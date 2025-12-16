@@ -3,6 +3,16 @@ import type { Deal } from '@dealdecision/contracts';
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:9000';
 const BACKEND_MODE = (import.meta.env.VITE_BACKEND_MODE || 'mock').toLowerCase();
 
+export type JobUpdatedEvent = {
+  job_id: string;
+  status: string;
+  progress_pct?: number;
+  message?: string;
+  deal_id?: string;
+  type?: string;
+  updated_at?: string;
+};
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
@@ -50,6 +60,39 @@ export function apiGetJob(jobId: string) {
     message?: string;
     updated_at?: string;
   }>(`/api/v1/jobs/${jobId}`);
+}
+
+export function subscribeToEvents(
+  dealId: string,
+  handlers: {
+    onReady?: () => void;
+    onJobUpdated?: (data: JobUpdatedEvent) => void;
+    onError?: (err: unknown) => void;
+  }
+) {
+  if (typeof EventSource === 'undefined') {
+    return () => {};
+  }
+
+  const url = `${API_BASE_URL}/api/v1/events?deal_id=${encodeURIComponent(dealId)}`;
+  const source = new EventSource(url);
+
+  const handleJobUpdated = (event: MessageEvent) => {
+    try {
+      const data = JSON.parse(event.data) as JobUpdatedEvent;
+      handlers.onJobUpdated?.(data);
+    } catch (err) {
+      handlers.onError?.(err);
+    }
+  };
+
+  source.addEventListener('ready', () => handlers.onReady?.());
+  source.addEventListener('job.updated', handleJobUpdated);
+  source.addEventListener('error', (event) => {
+    handlers.onError?.(event);
+  });
+
+  return () => source.close();
 }
 
 export const apiClient = {

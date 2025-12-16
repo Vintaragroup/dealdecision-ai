@@ -3,6 +3,7 @@ import { registerCors } from "./plugins/cors";
 import { registerHealthRoutes } from "./routes/health";
 import { registerDealRoutes } from "./routes/deals";
 import { registerJobRoutes } from "./routes/jobs";
+import { registerEventRoutes } from "./routes/events";
 import "./lib/queue";
 
 const app = fastify({
@@ -17,6 +18,7 @@ async function bootstrap() {
   await registerHealthRoutes(app);
   await registerDealRoutes(app);
   await registerJobRoutes(app);
+  await registerEventRoutes(app);
 }
 
 async function start() {

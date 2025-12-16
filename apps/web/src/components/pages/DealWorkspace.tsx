@@ -13,7 +13,7 @@ import { AnalysisTab } from '../workspace/AnalysisTab';
 import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
-import { apiGetDeal, apiPostAnalyze, apiGetJob, isLiveBackend } from '../../lib/apiClient';
+import { apiGetDeal, apiPostAnalyze, apiGetJob, isLiveBackend, subscribeToEvents, type JobUpdatedEvent } from '../../lib/apiClient';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { 
   FileText, 
@@ -73,6 +73,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [jobProgress, setJobProgress] = useState<number | null>(null);
   const [jobMessage, setJobMessage] = useState<string | null>(null);
   const [jobUpdatedAt, setJobUpdatedAt] = useState<string | null>(null);
+  const [sseReady, setSseReady] = useState(false);
 
   // Map dealId to deal information (in a real app, this would be from an API/database)
   const dealInfo = dealId === 'vintara-001' ? {
@@ -123,7 +124,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, [dealId]);
 
   useEffect(() => {
-    if (!jobId) return;
+    if (!jobId || sseReady) return;
     let cancelled = false;
 
     const poll = async () => {
@@ -151,7 +152,46 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return () => {
       cancelled = true;
     };
-  }, [jobId]);
+  }, [jobId, sseReady]);
+
+  useEffect(() => {
+    if (!dealId || !isLiveBackend() || typeof EventSource === 'undefined') {
+      setSseReady(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const unsubscribe = subscribeToEvents(dealId, {
+      onReady: () => {
+        if (cancelled) return;
+        setSseReady(true);
+      },
+      onJobUpdated: (job: JobUpdatedEvent) => {
+        if (cancelled) return;
+        if (job.deal_id && dealId && job.deal_id !== dealId) return;
+        if (jobId && job.job_id !== jobId) return;
+        setSseReady(true);
+        setJobStatus(job.status);
+        setJobProgress(typeof job.progress_pct === 'number' ? job.progress_pct : null);
+        setJobMessage(job.message ?? null);
+        setJobUpdatedAt(job.updated_at ?? null);
+        if (["succeeded", "failed", "cancelled"].includes(job.status)) {
+          setAnalyzing(false);
+          addToast(job.status === "succeeded" ? "success" : "error", "Analysis completed", job.message || job.status);
+        }
+      },
+      onError: () => {
+        if (cancelled) return;
+        setSseReady(false);
+      },
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [dealId, jobId]);
 
   // Role-specific tabs
   const tabs: Tab[] = isFounder ? [

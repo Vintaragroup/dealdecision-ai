@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
@@ -20,35 +20,39 @@ import {
   List,
   SortAsc
 } from 'lucide-react';
+import type { Document as ApiDocument } from '@dealdecision/contracts';
 
 interface DocumentLibraryProps {
   darkMode: boolean;
-  documents?: Document[];
+  documents?: ApiDocument[];
+  loading?: boolean;
+  onRetry?: (documentId: string) => void;
 }
 
-interface Document {
-  id: string;
-  name: string;
-  type: string;
-  category: string;
-  size: number;
-  uploadedAt: Date;
-  uploadedBy: string;
-  tags: string[];
-  url: string;
-  aiExtracted: boolean;
-  extractedData?: any;
-}
-
-export function DocumentLibrary({ darkMode, documents: initialDocuments }: DocumentLibraryProps) {
+export function DocumentLibrary({ darkMode, documents: initialDocuments, loading, onRetry }: DocumentLibraryProps) {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
-  const [selectedDocument, setSelectedDocument] = useState<Document | null>(null);
+  const [selectedDocument, setSelectedDocument] = useState<LibraryDoc | null>(null);
   const [showPreview, setShowPreview] = useState(false);
 
+  type LibraryDoc = {
+    id: string;
+    name: string;
+    type: string;
+    category: string;
+    size: number;
+    uploadedAt: Date;
+    uploadedBy: string;
+    tags: string[];
+    url: string;
+    aiExtracted: boolean;
+    extractedData?: any;
+    status?: string;
+  };
+
   // Mock documents
-  const mockDocuments: Document[] = initialDocuments || [
+  const mockDocuments: LibraryDoc[] = [
     {
       id: '1',
       name: 'Series A Pitch Deck.pdf',
@@ -127,6 +131,25 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments }: Docum
     }
   ];
 
+  const documents: LibraryDoc[] = useMemo(() => {
+    if (initialDocuments && initialDocuments.length > 0) {
+      return initialDocuments.map((doc) => ({
+        id: doc.document_id,
+        name: doc.title || 'Document',
+        type: doc.type,
+        category: doc.type,
+        size: 0,
+        uploadedAt: doc.uploaded_at ? new Date(doc.uploaded_at) : new Date(),
+        uploadedBy: 'System',
+        tags: [],
+        url: '#',
+        aiExtracted: false,
+        status: doc.status,
+      }));
+    }
+    return mockDocuments;
+  }, [initialDocuments]);
+
   const categories = ['all', 'Pitch Decks', 'Financial Models', 'Legal', 'Media', 'Research', 'Data'];
 
   const getFileIcon = (type: string) => {
@@ -153,22 +176,22 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments }: Docum
     }).format(date);
   };
 
-  const filteredDocuments = mockDocuments.filter(doc => {
+  const filteredDocuments = documents.filter(doc => {
     const matchesSearch = doc.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
                          doc.tags.some(tag => tag.toLowerCase().includes(searchQuery.toLowerCase()));
     const matchesCategory = selectedCategory === 'all' || doc.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });
 
-  const handlePreview = (doc: Document) => {
+  const handlePreview = (doc: LibraryDoc) => {
     setSelectedDocument(doc);
     setShowPreview(true);
   };
 
   const stats = {
-    total: mockDocuments.length,
-    aiProcessed: mockDocuments.filter(d => d.aiExtracted).length,
-    totalSize: mockDocuments.reduce((sum, d) => sum + d.size, 0)
+    total: documents.length,
+    aiProcessed: documents.filter(d => d.aiExtracted).length,
+    totalSize: documents.reduce((sum, d) => sum + d.size, 0)
   };
 
   return (
@@ -320,6 +343,18 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments }: Docum
                   {doc.name}
                 </div>
 
+                {doc.status && (
+                  <div className={`px-2 py-1 rounded-full text-[11px] mb-2 border ${
+                    doc.status === 'completed'
+                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                      : doc.status === 'processing' || doc.status === 'pending'
+                        ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                        : 'bg-red-500/10 text-red-300 border-red-500/30'
+                  }`}>
+                    {doc.status}
+                  </div>
+                )}
+
                 <div className={`text-xs mb-2 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                   {formatFileSize(doc.size)}
                 </div>
@@ -344,6 +379,17 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments }: Docum
                     }`}
                   >
                     <Eye className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRetry?.(doc.id);
+                    }}
+                    className={`p-1.5 rounded-lg transition-colors ${
+                      darkMode ? 'hover:bg-white/10 text-amber-300' : 'hover:bg-gray-100 text-amber-600'
+                    }`}
+                  >
+                    <Sparkles className="w-4 h-4" />
                   </button>
                   <button
                     className={`p-1.5 rounded-lg transition-colors ${
@@ -383,6 +429,17 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments }: Docum
                   <div className={`text-sm mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                     {doc.name}
                   </div>
+                  {doc.status && (
+                    <div className={`px-2 py-0.5 inline-flex items-center rounded-full text-[11px] mb-1 border ${
+                      doc.status === 'completed'
+                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                        : doc.status === 'processing' || doc.status === 'pending'
+                          ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                          : 'bg-red-500/10 text-red-300 border-red-500/30'
+                    }`}>
+                      {doc.status}
+                    </div>
+                  )}
                   <div className="flex items-center gap-3 text-xs">
                     <span className={darkMode ? 'text-gray-500' : 'text-gray-600'}>
                       {formatFileSize(doc.size)}
@@ -426,6 +483,17 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments }: Docum
                     }`}
                   >
                     <Eye className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onRetry?.(doc.id);
+                    }}
+                    className={`p-2 rounded-lg transition-colors ${
+                      darkMode ? 'hover:bg-white/10 text-amber-300' : 'hover:bg-gray-100 text-amber-600'
+                    }`}
+                  >
+                    <Sparkles className="w-4 h-4" />
                   </button>
                   <button
                     className={`p-2 rounded-lg transition-colors ${

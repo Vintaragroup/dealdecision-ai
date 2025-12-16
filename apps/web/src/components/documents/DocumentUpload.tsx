@@ -1,10 +1,10 @@
 import { useState, useRef, useCallback } from 'react';
 import { Button } from '../ui/button';
-import { 
-  Upload, 
-  File, 
-  FileText, 
-  Image, 
+import {
+  Upload,
+  File,
+  FileText,
+  Image,
   FileSpreadsheet,
   X,
   CheckCircle,
@@ -13,10 +13,15 @@ import {
   Sparkles,
   FolderOpen
 } from 'lucide-react';
+import type { Document } from '@dealdecision/contracts';
+import { apiUploadDocument, isLiveBackend } from '../../lib/apiClient';
 
 interface DocumentUploadProps {
   darkMode: boolean;
+  dealId?: string;
+  onUploaded?: (doc: Document) => void;
   onUploadComplete?: (files: UploadedFile[]) => void;
+  onError?: (message: string) => void;
   acceptedFileTypes?: string[];
   maxFileSize?: number; // in MB
   enableAIExtraction?: boolean;
@@ -37,7 +42,10 @@ interface UploadedFile {
 
 export function DocumentUpload({ 
   darkMode, 
+  dealId,
+  onUploaded,
   onUploadComplete,
+  onError,
   acceptedFileTypes = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.jpg', '.png', '.csv'],
   maxFileSize = 10,
   enableAIExtraction = true
@@ -129,26 +137,40 @@ export function DocumentUpload({
 
     setUploadedFiles(prev => [...prev, uploadedFile]);
 
-    // Simulate upload
+    const useLive = isLiveBackend() && dealId;
+
+    if (useLive) {
+      try {
+        const { document } = await apiUploadDocument(dealId as string, file, 'other', file.name);
+        setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'processing' } : f));
+        onUploaded?.(document as Document);
+        setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'complete' } : f));
+      } catch (err) {
+        onError?.(err instanceof Error ? err.message : 'Upload failed');
+        setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'error' } : f));
+      }
+      return;
+    }
+
+    // Offline/mock path
     await new Promise(resolve => setTimeout(resolve, 1000));
 
-    // Update to processing if AI extraction is enabled
     if (enableAIExtraction) {
-      setUploadedFiles(prev => 
+      setUploadedFiles(prev =>
         prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'processing' } : f)
       );
 
       const extractedData = await simulateAIExtraction(uploadedFile);
 
-      setUploadedFiles(prev => 
-        prev.map(f => 
-          f.id === uploadedFile.id 
-            ? { ...f, status: 'complete', aiExtracted: true, extractedData } 
+      setUploadedFiles(prev =>
+        prev.map(f =>
+          f.id === uploadedFile.id
+            ? { ...f, status: 'complete', aiExtracted: true, extractedData }
             : f
         )
       );
     } else {
-      setUploadedFiles(prev => 
+      setUploadedFiles(prev =>
         prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'complete' } : f)
       );
     }

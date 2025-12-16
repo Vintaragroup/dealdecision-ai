@@ -21,3 +21,14 @@ export async function closePool() {
     pool = null;
   }
 }
+
+export async function updateDocumentStatus(documentId: string, status: string) {
+  const currentPool = getPool();
+  await currentPool.query(
+    `UPDATE documents
+     SET status = $2,
+         updated_at = now()
+     WHERE document_id = $1`,
+    [documentId, status]
+  );
+}

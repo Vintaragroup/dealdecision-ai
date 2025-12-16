@@ -1102,7 +1102,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
             {/* Documents Tab */}
             {activeTab === 'documents' && (
-              <DocumentsTab dealId="1" darkMode={darkMode} />
+              <DocumentsTab dealId={dealId || 'demo'} darkMode={darkMode} />
             )}
 
             {/* AI Analysis Tab */}

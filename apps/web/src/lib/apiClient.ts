@@ -14,10 +14,11 @@ export type JobUpdatedEvent = {
 };
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const isFormData = options?.body instanceof FormData;
   const res = await fetch(`${API_BASE_URL}${path}`, {
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
       ...(options?.headers || {})
     }
   });
@@ -60,6 +61,54 @@ export function apiGetJob(jobId: string) {
     message?: string;
     updated_at?: string;
   }>(`/api/v1/jobs/${jobId}`);
+}
+
+export function apiGetDocuments(dealId: string) {
+  return request<{ documents: Array<{
+    document_id: string;
+    deal_id: string;
+    title: string;
+    type: string;
+    status: string;
+    uploaded_at?: string;
+  }> }>(`/api/v1/deals/${dealId}/documents`);
+}
+
+export async function apiUploadDocument(dealId: string, file: File, type = 'other', title?: string) {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('type', type);
+  if (title) form.append('title', title);
+
+  const res = await fetch(`${API_BASE_URL}/api/v1/deals/${dealId}/documents`, {
+    method: 'POST',
+    body: form,
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Request failed with ${res.status}`);
+  }
+
+  return res.json() as Promise<{ document: {
+    document_id: string;
+    deal_id: string;
+    title: string;
+    type: string;
+    status: string;
+    uploaded_at?: string;
+  }, job_status: string }>;
+}
+
+export async function apiRetryDocument(dealId: string, documentId: string) {
+  const res = await fetch(`${API_BASE_URL}/api/v1/deals/${dealId}/documents/${documentId}/retry`, {
+    method: 'POST'
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Request failed with ${res.status}`);
+  }
+  return res.json();
 }
 
 export function subscribeToEvents(

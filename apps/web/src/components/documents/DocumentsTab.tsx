@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button } from '../ui/button';
 import { DocumentUpload } from './DocumentUpload';
 import { DocumentLibrary } from './DocumentLibrary';
 import { Upload, Sparkles } from 'lucide-react';
+import { apiGetDocuments, apiRetryDocument, isLiveBackend } from '../../lib/apiClient';
+import type { Document } from '@dealdecision/contracts';
 
 interface DocumentsTabProps {
   dealId: string;
@@ -11,6 +13,36 @@ interface DocumentsTabProps {
 
 export function DocumentsTab({ dealId, darkMode = true }: DocumentsTabProps) {
   const [showUpload, setShowUpload] = useState(false);
+  const [documents, setDocuments] = useState<Document[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const loadDocuments = async () => {
+    if (!dealId || !isLiveBackend()) return;
+    setLoading(true);
+    try {
+      const res = await apiGetDocuments(dealId);
+      const normalized = (res.documents || []).map((doc) => ({
+        ...doc,
+        type: doc.type as Document['type'],
+        status: doc.status as Document['status'],
+      }));
+      setDocuments(normalized);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDocuments();
+  }, [dealId]);
+
+  const handleRetry = async (documentId: string) => {
+    if (!dealId || !isLiveBackend()) return;
+    await apiRetryDocument(dealId, documentId);
+    await loadDocuments();
+  };
 
   return (
     <div className="space-y-4">
@@ -45,13 +77,23 @@ export function DocumentsTab({ dealId, darkMode = true }: DocumentsTabProps) {
         >
           <DocumentUpload
             darkMode={darkMode}
-            enableAIExtraction={true}
+            dealId={dealId}
+            enableAIExtraction={!isLiveBackend()}
+            onUploaded={async () => {
+              await loadDocuments();
+            }}
+            onError={(message) => console.error(message)}
           />
         </div>
       )}
 
       {/* Document Library */}
-      <DocumentLibrary darkMode={darkMode} />
+      <DocumentLibrary
+        darkMode={darkMode}
+        documents={documents}
+        loading={loading}
+        onRetry={handleRetry}
+      />
     </div>
   );
 }

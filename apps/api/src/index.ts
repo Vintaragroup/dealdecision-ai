@@ -1,9 +1,11 @@
 import fastify from "fastify";
 import { registerCors } from "./plugins/cors";
+import multipart from "@fastify/multipart";
 import { registerHealthRoutes } from "./routes/health";
 import { registerDealRoutes } from "./routes/deals";
 import { registerJobRoutes } from "./routes/jobs";
 import { registerEventRoutes } from "./routes/events";
+import { registerDocumentRoutes } from "./routes/documents";
 import "./lib/queue";
 
 const app = fastify({
@@ -15,10 +17,12 @@ const host = "0.0.0.0";
 
 async function bootstrap() {
   await registerCors(app);
+  await app.register(multipart);
   await registerHealthRoutes(app);
   await registerDealRoutes(app);
   await registerJobRoutes(app);
   await registerEventRoutes(app);
+  await registerDocumentRoutes(app);
 }
 
 async function start() {

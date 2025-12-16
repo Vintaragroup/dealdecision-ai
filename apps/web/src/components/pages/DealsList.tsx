@@ -1,8 +1,10 @@
-import { useState } from 'react';
-import { Button } from '../ui/Button';
-import { Input } from '../ui/Input';
-import { Select } from '../ui/Select';
+import { useEffect, useMemo, useState } from 'react';
+import type { DealPriority, DealStage, DealTrend, Deal } from '@dealdecision/contracts';
+import { Button } from '../ui/button';
+import { Input } from '../ui/input';
+import { Select } from '../ui/select';
 import { ExportDealsModal } from '../ExportDealsModal';
+import { apiGetDeals, isLiveBackend } from '../../lib/apiClient';
 import { 
   Search,
   Plus,
@@ -28,14 +30,14 @@ import {
 interface DealData {
   id: string;
   name: string;
-  stage: 'idea' | 'progress' | 'ready' | 'pitched';
+  stage: DealStage;
   score: number;
   lastUpdated: string;
   documents: number;
   completeness: number;
   fundingTarget: string;
-  trend: 'up' | 'down' | 'stable';
-  priority: 'high' | 'medium' | 'low';
+  trend: DealTrend;
+  priority: DealPriority;
   views: number;
   owner: string;
 }
@@ -55,8 +57,11 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
   const [sortBy, setSortBy] = useState('updated');
   const [selectedDeals, setSelectedDeals] = useState<string[]>([]);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [liveDeals, setLiveDeals] = useState<Deal[]>([]);
 
-  const deals: DealData[] = [
+  const mockDeals: DealData[] = [
     {
       id: 'vintara-001',
       name: 'Vintara Group LLC',
@@ -184,6 +189,67 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
       owner: 'Sarah Chen'
     }
   ];
+
+  useEffect(() => {
+    if (!isLiveBackend()) return;
+
+    let isMounted = true;
+    setLoading(true);
+    setError(null);
+
+    apiGetDeals()
+      .then((data) => {
+        if (!isMounted) return;
+        setLiveDeals(data);
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        setError(err instanceof Error ? err.message : 'Failed to load deals');
+      })
+      .finally(() => {
+        if (isMounted) setLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const deals: DealData[] = useMemo(() => {
+    if (!isLiveBackend()) return mockDeals;
+
+    return liveDeals.map((deal) => ({
+      id: deal.id,
+      name: deal.name,
+      stage: deal.stage,
+      score: deal.score ?? 0,
+      lastUpdated: deal.lastUpdated ?? deal.id, // fallback to keep stable display
+      documents: (deal as any).documents ?? 0,
+      completeness: (deal as any).completeness ?? 0,
+      fundingTarget: (deal as any).fundingTarget ?? '',
+      trend: (deal.trend as DealTrend) ?? 'stable',
+      priority: deal.priority ?? 'medium',
+      views: (deal as any).views ?? 0,
+      owner: deal.owner ?? 'Unassigned'
+    }));
+  }, [liveDeals, mockDeals]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
+        Loading deals...
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-between rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+        <span>{error}</span>
+        <Button variant="outline" size="sm" onClick={() => window.location.reload()}>Retry</Button>
+      </div>
+    );
+  }
 
   const getStageColor = (stage: string) => {
     switch (stage) {
@@ -425,30 +491,24 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
               <div className={`flex items-center border rounded-lg overflow-hidden ${
                 darkMode ? 'border-white/10' : 'border-gray-200'
               }`}>
-                <button
+                <Button
+                  variant={viewMode === 'list' ? 'primary' : 'ghost'}
+                  size="icon"
+                  aria-label="List view"
                   onClick={() => setViewMode('list')}
-                  className={`p-2 transition-colors ${
-                    viewMode === 'list'
-                      ? 'bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] text-white'
-                      : darkMode
-                        ? 'text-gray-400 hover:text-white'
-                        : 'text-gray-600 hover:text-gray-900'
-                  }`}
+                  className={viewMode === 'list' ? 'dd-btn-icon' : 'dd-btn-icon text-muted-foreground'}
                 >
                   <List className="w-4 h-4" />
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant={viewMode === 'grid' ? 'primary' : 'ghost'}
+                  size="icon"
+                  aria-label="Grid view"
                   onClick={() => setViewMode('grid')}
-                  className={`p-2 transition-colors ${
-                    viewMode === 'grid'
-                      ? 'bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] text-white'
-                      : darkMode
-                        ? 'text-gray-400 hover:text-white'
-                        : 'text-gray-600 hover:text-gray-900'
-                  }`}
+                  className={viewMode === 'grid' ? 'dd-btn-icon' : 'dd-btn-icon text-muted-foreground'}
                 >
                   <Grid3x3 className="w-4 h-4" />
-                </button>
+                </Button>
               </div>
             </div>
 
@@ -600,21 +660,15 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
                       </td>
                       <td className="p-4" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center gap-1">
-                          <button className={`p-1.5 rounded transition-colors ${
-                            darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
-                          }`}>
-                            <Eye className={`w-4 h-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`} />
-                          </button>
-                          <button className={`p-1.5 rounded transition-colors ${
-                            darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
-                          }`}>
-                            <Edit className={`w-4 h-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`} />
-                          </button>
-                          <button className={`p-1.5 rounded transition-colors ${
-                            darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
-                          }`}>
-                            <MoreVertical className={`w-4 h-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`} />
-                          </button>
+                          <Button variant="ghost" size="icon" aria-label="View" className="dd-btn-icon text-muted-foreground">
+                            <Eye className="w-4 h-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" aria-label="Edit" className="dd-btn-icon text-muted-foreground">
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" aria-label="More" className="dd-btn-icon text-muted-foreground">
+                            <MoreVertical className="w-4 h-4" />
+                          </Button>
                         </div>
                       </td>
                     </tr>

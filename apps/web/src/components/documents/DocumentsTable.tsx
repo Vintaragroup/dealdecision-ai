@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
-import { Button } from '../ui/Button';
-import { Input } from '../ui/Input';
-import { Select } from '../ui/Select';
+import { Button } from '../ui/button';
+import { Input } from '../ui/input';
+import { Select } from '../ui/select';
 import { CircularProgress } from '../ui/CircularProgress';
 import { Document, DocumentType, DocumentStatus, DOCUMENT_TYPE_INFO } from '../../types/documents';
 import { mockDocuments } from '../../data/mockDocuments';

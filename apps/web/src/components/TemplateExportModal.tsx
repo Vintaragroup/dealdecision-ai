@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { X, Download, Eye, Settings, Check, Edit } from 'lucide-react';
-import { Button } from './ui/Button';
+import { Button } from './ui/button';
 import { DealFormData } from './NewDealModal';
 import { TemplateCustomizer, TemplateCustomization } from './TemplateCustomizer';
 import { TemplateEditor } from './TemplateEditor';

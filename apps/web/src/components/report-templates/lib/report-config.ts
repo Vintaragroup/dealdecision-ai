@@ -518,8 +518,7 @@ export function generateSampleReportData(dealName: string = 'TechVision AI Platf
           { label: 'Lead Brand Status', value: 'Califino', trend: 'Closing Q3 2025' },
           { label: 'Distribution Partners', value: '2 major', trend: 'Southern Glazer\'s, RNDC' },
           { label: 'Target Launch States', value: '3-5', trend: 'TX, FL, CO, AZ, GA' },
-        ],
-        customerList: []
+        ]
       },
       
       productTechnical: {

@@ -1,7 +1,7 @@
 import { OnboardingFlow, OnboardingData } from './components/onboarding/OnboardingFlow';
 import { NewDealModal, DealFormData } from './components/NewDealModal';
 import { useState } from 'react';
-import { Sidebar } from './components/Sidebar';
+import { Sidebar, PageView } from './components/Sidebar';
 import { Header } from './components/Header';
 import { RightSidebar, NotificationPreferences } from './components/RightSidebar';
 import { DashboardContent } from './components/DashboardContent';
@@ -26,7 +26,6 @@ import { UserRoleProvider } from './contexts/UserRoleContext';
 import { ChatAssistant } from './components/ChatAssistant';
 
 type LogoVariant = 'orbiting' | 'pulse' | 'network' | 'hexagon' | 'morph';
-type PageView = 'dashboard' | 'dealsList' | 'dealWorkspace' | 'analytics' | 'documents' | 'aiStudio' | 'dueDiligence' | 'dealComparison' | 'gamification' | 'templates' | 'team' | 'profile' | 'roiCalculator' | 'settings' | 'logoShowcase' | 'componentShowcase' | 'reportsGenerated';
 
 // Default notification preferences
 const defaultNotificationPreferences: NotificationPreferences = {

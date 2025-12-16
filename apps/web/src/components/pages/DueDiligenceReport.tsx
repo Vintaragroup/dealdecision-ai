@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 import { ScoreCircle } from '../ui/ScoreCircle';
 import { RiskMapGrid } from '../ui/RiskMapGrid';
 import { ValidationChecklist } from '../ui/ValidationChecklist';

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { useAppSettings } from '../../contexts/AppSettingsContext';
 import { useUserRole } from '../../contexts/UserRoleContext';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 
 interface TourStep {
   title: string;

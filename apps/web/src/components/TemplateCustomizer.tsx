@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ArrowLeft, Upload, Check, X } from 'lucide-react';
-import { Button } from './ui/Button';
+import { Button } from './ui/button';
 
 export interface TemplateCustomization {
   primaryColor: string;

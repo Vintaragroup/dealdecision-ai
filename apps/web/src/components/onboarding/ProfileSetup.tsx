@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 import { User, Briefcase, Target, Mail, Rocket } from 'lucide-react';
 import { useUserRole } from '../../contexts/UserRoleContext';
 

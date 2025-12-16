@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Trophy, Sparkles, Zap } from 'lucide-react';
 import { useAppSettings } from '../../contexts/AppSettingsContext';
 import { useUserRole } from '../../contexts/UserRoleContext';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 
 interface CelebrationModalProps {
   darkMode: boolean;

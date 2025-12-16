@@ -9,13 +9,14 @@ import {
   TrendingUp,
   ArrowRight
 } from 'lucide-react';
+import type { PageView } from '../Sidebar';
 
-interface QuickLink {
+export interface QuickLink {
   id: string;
   title: string;
   description: string;
-  icon: 'document' | 'team' | 'ai' | 'analytics' | 'target' | 'calendar' | 'briefcase' | 'trending';
-  action: string;
+  icon: 'document' | 'team' | 'users' | 'ai' | 'analytics' | 'target' | 'calendar' | 'briefcase' | 'trending';
+  action: PageView;
 }
 
 interface QuickLinksWidgetProps {
@@ -37,6 +38,8 @@ export function QuickLinksWidget({
       case 'document':
         return <FileText className={iconClass} />;
       case 'team':
+        return <Users className={iconClass} />;
+      case 'users':
         return <Users className={iconClass} />;
       case 'ai':
         return <Sparkles className={iconClass} />;

@@ -24,7 +24,24 @@ import { useAppSettings } from '../contexts/AppSettingsContext';
 import { useUserRole } from '../contexts/UserRoleContext';
 
 type LogoVariant = 'orbiting' | 'pulse' | 'network' | 'hexagon' | 'morph';
-type PageView = 'dashboard' | 'dealsList' | 'dealWorkspace' | 'analytics' | 'documents' | 'aiStudio' | 'gamification' | 'templates' | 'team' | 'profile' | 'roiCalculator' | 'settings' | 'logoShowcase' | 'componentShowcase' | 'dealComparison' | 'reportsGenerated';
+export type PageView =
+  | 'dashboard'
+  | 'dealsList'
+  | 'dealWorkspace'
+  | 'analytics'
+  | 'documents'
+  | 'aiStudio'
+  | 'dueDiligence'
+  | 'dealComparison'
+  | 'gamification'
+  | 'templates'
+  | 'team'
+  | 'profile'
+  | 'roiCalculator'
+  | 'settings'
+  | 'logoShowcase'
+  | 'componentShowcase'
+  | 'reportsGenerated';
 
 interface SidebarProps {
   darkMode: boolean;

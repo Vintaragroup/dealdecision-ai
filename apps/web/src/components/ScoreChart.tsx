@@ -1,5 +1,6 @@
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend } from 'recharts';
 import { Download, Maximize2 } from 'lucide-react';
+import { Button } from './ui/button';
 
 const data = [
   { name: 'Excellent', value: 38.6, color: '#6366f1' },
@@ -26,20 +27,12 @@ export function ScoreChart({ darkMode }: ScoreChartProps) {
       
       {/* Quick Actions */}
       <div className="absolute top-6 right-6 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-2 z-20">
-        <button className={`p-2 backdrop-blur-xl border rounded-lg transition-colors ${
-          darkMode 
-            ? 'bg-white/5 hover:bg-white/10 border-white/10' 
-            : 'bg-white/80 hover:bg-gray-100 border-gray-200'
-        }`}>
-          <Download className={`w-4 h-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`} />
-        </button>
-        <button className={`p-2 backdrop-blur-xl border rounded-lg transition-colors ${
-          darkMode 
-            ? 'bg-white/5 hover:bg-white/10 border-white/10' 
-            : 'bg-white/80 hover:bg-gray-100 border-gray-200'
-        }`}>
-          <Maximize2 className={`w-4 h-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`} />
-        </button>
+        <Button variant="ghost" size="icon" aria-label="Download" className="dd-btn-icon">
+          <Download className="w-4 h-4 text-muted-foreground" />
+        </Button>
+        <Button variant="ghost" size="icon" aria-label="Expand" className="dd-btn-icon">
+          <Maximize2 className="w-4 h-4 text-muted-foreground" />
+        </Button>
       </div>
 
       <div className="mb-6 relative z-10">

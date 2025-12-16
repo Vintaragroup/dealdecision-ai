@@ -1,12 +1,12 @@
 import { useState } from 'react';
-import { Button } from './ui/Button';
-import { Input } from './ui/Input';
-import { Textarea } from './ui/Textarea';
-import { Select } from './ui/Select';
+import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { Textarea } from './ui/textarea';
+import { Select } from './ui/select';
 import { Modal } from './ui/Modal';
-import { Tabs, Tab } from './ui/Tabs';
+import { Tabs, Tab } from './ui/tabs';
 import { CircularProgress } from './ui/CircularProgress';
-import { Accordion, AccordionItem } from './ui/Accordion';
+import { Accordion, AccordionItem } from './ui/accordion';
 import { ToastContainer, ToastType } from './ui/Toast';
 import { Search, Mail, Lock, Plus, Download, Settings, FileText, BarChart3, Target, Trophy } from 'lucide-react';
 

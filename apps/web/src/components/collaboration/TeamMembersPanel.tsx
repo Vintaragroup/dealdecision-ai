@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 import {
   Users,
   UserPlus,
@@ -30,6 +30,7 @@ interface TeamMember {
 
 interface TeamMembersPanelProps {
   darkMode: boolean;
+  dealId?: string;
   onClose?: () => void;
 }
 

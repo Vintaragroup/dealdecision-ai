@@ -14,7 +14,7 @@ import { FinancialAnalysis } from './sections/FinancialAnalysis';
 import { TeamAssessment } from './sections/TeamAssessment';
 import { KeyFindings } from './sections/KeyFindings';
 import { AIConfidenceScores } from './sections/AIConfidenceScores';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 import { DealReportData, generateSampleReportData } from './lib/report-config';
 
 interface ReportPreviewProps {

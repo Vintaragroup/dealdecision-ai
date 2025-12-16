@@ -1,8 +1,8 @@
 // Template Registry - All available report templates
 import { ExecutiveSummary } from './sections/ExecutiveSummary';
 import { MarketAnalysis } from './sections/MarketAnalysis';
-import { FinancialProjections } from './sections/FinancialProjections';
-import { TeamAnalysis } from './sections/TeamAnalysis';
+import { FinancialAnalysis } from './sections/FinancialAnalysis';
+import { TeamAssessment } from './sections/TeamAssessment';
 import { CompetitiveLandscape } from './sections/CompetitiveLandscape';
 import { ROISummary } from './sections/ROISummary';
 import { RiskAssessment } from './sections/RiskAssessment';
@@ -41,17 +41,17 @@ export const templateRegistry: TemplateSection[] = [
   },
   {
     id: 'financial-projections',
-    name: 'Financial Projections',
-    description: 'Revenue forecasts, burn rate, and path to profitability',
-    component: FinancialProjections,
+    name: 'Financial Analysis',
+    description: 'Revenue forecasts, burn, margins, and path to profitability',
+    component: FinancialAnalysis,
     category: 'financial',
     icon: 'DollarSign'
   },
   {
     id: 'team-analysis',
-    name: 'Team Analysis',
+    name: 'Team Assessment',
     description: 'Founding team, advisors, and organizational structure',
-    component: TeamAnalysis,
+    component: TeamAssessment,
     category: 'essential',
     icon: 'Users'
   },

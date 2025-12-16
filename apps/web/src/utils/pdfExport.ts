@@ -31,11 +31,15 @@ export async function generatePDF(
   }
 
   // Configure PDF options
+  const margin: [number, number, number, number] = options.pageSize === 'letter'
+    ? [0.5, 0.5, 0.5, 0.5]
+    : [1.27, 1.27, 1.27, 1.27]; // cm (top, right, bottom, left)
+
   const opt = {
-    margin: options.pageSize === 'letter' ? [0.5, 0.5] : [1.27, 1.27], // cm
+    margin,
     filename: `${filename}.${options.format}`,
     image: { 
-      type: 'jpeg', 
+      type: 'jpeg' as const, 
       quality: options.quality === 'print' ? 0.98 : options.quality === 'screen' ? 0.85 : 0.70 
     },
     html2canvas: { 

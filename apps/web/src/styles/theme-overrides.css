@@ -1,0 +1,174 @@
+/* Minimal theme utilities to re-enable design tokens for buttons/components */
+
+:root {
+  --color-primary-500: #6366f1;
+  --color-primary-600: #4f46e5;
+  --color-secondary-500: #8b5cf6;
+  --color-secondary-600: #7c3aed;
+  --color-accent-500: #e9ebef;
+  --color-muted-foreground: #717182;
+  --color-background: #ffffff;
+  --color-foreground: #0a0a0a;
+  --color-border: rgba(0, 0, 0, 0.1);
+  --color-input: transparent;
+  --color-input-background: #f3f3f5;
+  --color-ring: #6366f1;
+  --color-destructive: #d4183d;
+  --color-destructive-foreground: #ffffff;
+  --color-secondary-foreground: #030213;
+  --color-primary-foreground: #ffffff;
+  --color-accent-foreground: #030213;
+  --radius-base: 0.625rem;
+}
+
+.dark {
+  --color-background: #0a0a0a;
+  --color-foreground: #f8fafc;
+  --color-border: rgba(255, 255, 255, 0.1);
+  --color-input: rgba(255, 255, 255, 0.06);
+  --color-input-background: rgba(255, 255, 255, 0.06);
+  --color-ring: #8b5cf6;
+}
+
+.bg-background { background-color: var(--color-background); }
+.text-foreground { color: var(--color-foreground); }
+
+.bg-primary { background-color: var(--color-primary-500); }
+.hover\:bg-primary\/90:hover { background-color: color-mix(in srgb, var(--color-primary-500) 90%, transparent); }
+.text-primary-foreground { color: var(--color-primary-foreground); }
+
+.bg-secondary { background-color: var(--color-secondary-500); }
+.hover\:bg-secondary\/80:hover { background-color: color-mix(in srgb, var(--color-secondary-500) 80%, transparent); }
+.text-secondary-foreground { color: var(--color-secondary-foreground); }
+
+.bg-accent { background-color: var(--color-accent-500); }
+.hover\:bg-accent:hover { background-color: color-mix(in srgb, var(--color-accent-500) 80%, transparent); }
+.text-accent-foreground { color: var(--color-accent-foreground); }
+
+.bg-muted { background-color: #ececf0; }
+.text-muted-foreground { color: var(--color-muted-foreground); }
+
+.border-border { border-color: var(--color-border); }
+.border-input { border-color: var(--color-input); }
+.bg-input-background { background-color: var(--color-input-background); }
+
+.bg-destructive { background-color: var(--color-destructive); }
+.hover\:bg-destructive\/90:hover { background-color: color-mix(in srgb, var(--color-destructive) 90%, transparent); }
+.text-destructive-foreground { color: var(--color-destructive-foreground); }
+
+.focus-visible\:border-ring:focus-visible { border-color: var(--color-ring); }
+.focus-visible\:ring-ring\/50:focus-visible { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-ring) 50%, transparent); }
+.aria-invalid\:border-destructive[aria-invalid="true"] { border-color: var(--color-destructive); }
+.aria-invalid\:ring-destructive\/20[aria-invalid="true"] { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-destructive) 20%, transparent); }
+
+/* Icon-only button sizing helper */
+.size-9 { width: 2.25rem; height: 2.25rem; }
+
+/* Brand gradient utilities */
+.bg-brand-gradient {
+  background: linear-gradient(135deg, var(--color-primary-500) 0%, var(--color-secondary-500) 100%);
+}
+
+.text-brand-gradient {
+  background: linear-gradient(135deg, var(--color-primary-500) 0%, var(--color-secondary-500) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  color: transparent;
+}
+
+.text-brand { color: var(--color-primary-500); }
+
+/* Button system aligned to DESIGN_SYSTEM.md */
+.dd-btn-base {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-base);
+  font-weight: 500;
+  transition: all 150ms ease;
+  position: relative;
+  isolation: isolate;
+}
+
+.dd-btn-primary {
+  background: linear-gradient(135deg, var(--color-primary-500) 0%, var(--color-secondary-500) 100%);
+  color: #ffffff;
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.3);
+}
+
+.dd-btn-primary:hover {
+  transform: scale(1.02);
+  box-shadow: 0 0 26px rgba(99, 102, 241, 0.4);
+}
+
+.dd-btn-primary:active {
+  transform: scale(0.99);
+}
+
+.dd-btn-secondary {
+  background: rgba(255, 255, 255, 0.8);
+  color: #0a0a0a;
+  border-color: rgba(0, 0, 0, 0.1);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.dd-btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.9);
+  color: #000000;
+}
+
+.dark .dd-btn-secondary {
+  background: rgba(255, 255, 255, 0.06);
+  color: #e5e7eb;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.dark .dd-btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.dd-btn-ghost {
+  background: transparent;
+  color: inherit;
+}
+
+.dd-btn-ghost:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.dark .dd-btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.dd-btn-icon {
+  padding: 0.5rem;
+  border-radius: 0.75rem;
+}
+
+.dd-btn-sm { padding: 0.375rem 0.75rem; font-size: 0.875rem; }
+.dd-btn-md { padding: 0.5rem 1rem; font-size: 0.875rem; }
+.dd-btn-lg { padding: 0.75rem 1.5rem; font-size: 1rem; }
+
+.dd-btn-spinner {
+  width: 1rem;
+  height: 1rem;
+  border-radius: 9999px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #ffffff;
+  animation: dd-spin 0.8s linear infinite;
+}
+
+.dd-btn-icon-only {
+  padding: 0.5rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.75rem;
+}
+
+@keyframes dd-spin {
+  to { transform: rotate(360deg); }
+}

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { X, Sparkles, RefreshCw, Copy, Check } from 'lucide-react';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 import { DealFormData } from '../NewDealModal';
 
 interface AITextGeneratorProps {

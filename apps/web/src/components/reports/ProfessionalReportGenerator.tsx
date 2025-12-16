@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 import { ExportOptionsModal, ExportOptions } from './ExportOptionsModal';
 import { generatePDF, generateShareableLink, emailReport, saveExportHistory } from '../../utils/pdfExport';
 import {

@@ -10,7 +10,7 @@ import {
   Copy,
   ExternalLink
 } from 'lucide-react';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 
 interface DocumentPreviewModalProps {
   document: any;

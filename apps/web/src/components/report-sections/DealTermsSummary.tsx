@@ -377,7 +377,7 @@ export function DealTermsSummary({ darkMode }: DealTermsSummaryProps) {
                           Automatic Conversion
                         </div>
                         <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                          Upon IPO >$50M or majority vote
+                          Upon IPO {'>'}$50M or majority vote
                         </div>
                       </div>
                     </div>
@@ -674,7 +674,7 @@ export function DealTermsSummary({ darkMode }: DealTermsSummaryProps) {
                         Approval Threshold
                       </div>
                       <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                        Requires approval by Board and holders of >50% Series A
+                        Requires approval by Board and holders of {'>'}50% Series A
                       </div>
                     </div>
                   </div>
@@ -745,7 +745,7 @@ export function DealTermsSummary({ darkMode }: DealTermsSummaryProps) {
                         'text-cyan-500'
                       }`} />
                       <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                        {text}
+                        {provision.text}
                       </span>
                     </div>
                   ))}

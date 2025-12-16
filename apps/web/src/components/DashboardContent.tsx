@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button } from './ui/Button';
+import { Button } from './ui/button';
 import { Plus, FileText, Sparkles, BarChart3 } from 'lucide-react';
 import { QuickStatsBar } from './widgets/QuickStatsBar';
 import { ActiveDealsWidget } from './widgets/ActiveDealsWidget';
@@ -11,7 +11,8 @@ import { RecentAchievementsWidget } from './widgets/RecentAchievementsWidget';
 import { RecentDocumentsWidget } from './widgets/RecentDocumentsWidget';
 import { UpcomingTasksWidget } from './widgets/UpcomingTasksWidget';
 import { PerformanceMetricsWidget } from './widgets/PerformanceMetricsWidget';
-import { QuickLinksWidget } from './widgets/QuickLinksWidget';
+import { QuickLinksWidget, QuickLink } from './widgets/QuickLinksWidget';
+import type { PageView } from './Sidebar';
 import { StreakTracker } from './ui/StreakTracker';
 import { ChallengeCard } from './ui/ChallengeCard';
 import { useAppSettings } from '../contexts/AppSettingsContext';
@@ -19,14 +20,14 @@ import { useUserRole } from '../contexts/UserRoleContext';
 
 interface DashboardContentProps {
   darkMode: boolean;
-  onNavigate?: (page: string) => void;
+  onNavigate?: (page: PageView) => void;
   onDealClick?: (dealId: string) => void;
   onNewDeal?: () => void;
 }
 
 export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal }: DashboardContentProps) {
   const { settings } = useAppSettings();
-  const { role, isFounder, isInvestor } = useUserRole();
+  const { isFounder, isInvestor } = useUserRole();
   
   // Role-specific Quick Stats Data
   const quickStats = isFounder ? [
@@ -487,7 +488,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
   ];
 
   // Role-specific Quick Links Data
-  const quickLinks = isFounder ? [
+  const quickLinks: QuickLink[] = isFounder ? [
     {
       id: '1',
       title: 'Create Pitch Deck',
@@ -606,7 +607,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
             links={quickLinks}
             onLinkClick={(linkId) => {
               const link = quickLinks.find(l => l.id === linkId);
-              if (link) onNavigate?.(link.action);
+              if (link) onNavigate?.(link.action as PageView);
             }}
             title="Quick Actions"
           />

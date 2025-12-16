@@ -25,7 +25,7 @@ import {
   TrendingDown,
   Briefcase
 } from 'lucide-react';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 import { DealFormData } from '../NewDealModal';
 import { ProfessionalReportGenerator } from '../reports/ProfessionalReportGenerator';
 import { useUserRole } from '../../contexts/UserRoleContext';
@@ -192,7 +192,7 @@ export function AnalysisTab({ darkMode, dealData }: AnalysisTabProps) {
   const calculateTeamScore = (data: DealFormData): number => {
     let score = 40; // Base score
     if (data.teamSize && parseInt(data.teamSize) > 5) score += 20;
-    if (data.companyName?.length > 0) score += 20;
+    if ((data.companyName?.length ?? 0) > 0) score += 20;
     if (data.founderExperience) score += 20;
     return Math.min(score, 100);
   };
@@ -384,7 +384,8 @@ export function AnalysisTab({ darkMode, dealData }: AnalysisTabProps) {
     const flags: DealAnalysis['redFlags'] = [];
     
     const revenue = parseInt(data.revenue?.replace(/[^0-9]/g, '') || '0');
-    if (revenue === 0 && data.stage !== 'Pre-Seed') {
+    const normalizedStage = data.stage?.toLowerCase() || '';
+    if (revenue === 0 && normalizedStage !== 'pre-seed') {
       flags.push({
         severity: 'high',
         message: 'No revenue for a post-seed stage company',

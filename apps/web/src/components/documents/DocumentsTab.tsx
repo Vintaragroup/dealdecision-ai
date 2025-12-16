@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 import { DocumentUpload } from './DocumentUpload';
 import { DocumentLibrary } from './DocumentLibrary';
 import { Upload, Sparkles } from 'lucide-react';

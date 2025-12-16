@@ -1,6 +1,6 @@
 import { X, Download, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useState } from 'react';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 
 interface PitchDeckPreviewProps {
   isOpen: boolean;

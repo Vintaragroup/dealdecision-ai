@@ -12,7 +12,7 @@ import {
   Trash2,
   RotateCcw
 } from 'lucide-react';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { DealFormData } from '../NewDealModal';
 

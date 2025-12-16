@@ -1,5 +1,5 @@
 import { Bell, Activity, Users, DollarSign, TrendingUp, Sparkles, FileText, Trophy, MessageSquare, Target, CheckCheck, X, Eye, ChevronRight } from 'lucide-react';
-import { NotificationPreferences } from './pages/Settings';
+import type { NotificationPreferences } from './pages/Settings';
 import { useAppSettings } from '../contexts/AppSettingsContext';
 
 interface Notification {
@@ -491,3 +491,5 @@ export function RightSidebar({
     </aside>
   );
 }
+
+export type { NotificationPreferences };

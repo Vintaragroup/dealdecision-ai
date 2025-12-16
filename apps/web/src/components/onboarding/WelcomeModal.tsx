@@ -1,7 +1,7 @@
 import { Target, Sparkles, Users, Trophy, Zap, FileText, TrendingUp, BarChart3, Lightbulb, Rocket } from 'lucide-react';
 import { useAppSettings } from '../../contexts/AppSettingsContext';
 import { useUserRole } from '../../contexts/UserRoleContext';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 
 interface WelcomeModalProps {
   darkMode: boolean;

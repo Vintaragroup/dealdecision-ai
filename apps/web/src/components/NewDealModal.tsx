@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import { Modal } from './ui/Modal';
-import { Button } from './ui/Button';
-import { Input } from './ui/Input';
-import { Select } from './ui/Select';
-import { Textarea } from './ui/Textarea';
+import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { Select } from './ui/select';
+import { Textarea } from './ui/textarea';
 import { 
   Rocket, 
   DollarSign, 
@@ -27,9 +27,31 @@ export interface DealFormData {
   id: string;
   name: string;
   company: string;
-  type: 'seed' | 'series-a' | 'series-b' | 'series-c' | 'series-d';
-  stage: 'idea' | 'mvp' | 'growth' | 'scale';
+  companyName?: string;
+  industry?: string;
+  type: string;
+  stage: string;
   investmentAmount: number;
+  fundingAmount?: string;
+  targetMarket?: string;
+  revenue?: string;
+  teamSize?: string;
+  customers?: string;
+  growthRate?: string;
+  uniqueValue?: string;
+  competitiveAdvantage?: string;
+  previousFunding?: string;
+  founderExperience?: string;
+  marketSize?: string;
+  competitorAnalysis?: string;
+  advisors?: string;
+  burnRate?: string;
+  unitEconomics?: string;
+  financialProjections?: string;
+  keyMetrics?: string;
+  riskFactors?: string;
+  mitigationStrategy?: string;
+  moat?: string;
   description: string;
   estimatedSavings: {
     money: number;
@@ -70,14 +92,14 @@ export function NewDealModal({ isOpen, onClose, onSuccess, darkMode }: NewDealMo
       'series-b': 1.6,
       'series-c': 2.0,
       'series-d': 2.5
-    }[formData.type || 'seed'];
+    }[formData.type || 'seed'] ?? 1.0;
 
     const stageMultiplier = {
       'idea': 1.5,
       'mvp': 1.2,
       'growth': 1.0,
       'scale': 0.9
-    }[formData.stage || 'idea'];
+    }[formData.stage || 'idea'] ?? 1.0;
 
     // Traditional costs breakdown:
     // - Legal fees for document drafting: $5,000 - $15,000
@@ -104,9 +126,21 @@ export function NewDealModal({ isOpen, onClose, onSuccess, darkMode }: NewDealMo
         id: `deal-${Date.now()}`,
         name: formData.name || 'Untitled Deal',
         company: formData.company || 'Unknown Company',
+        companyName: formData.company || formData.name || 'Unknown Company',
         type: formData.type || 'seed',
         stage: formData.stage || 'idea',
         investmentAmount: formData.investmentAmount || 500000,
+        fundingAmount: (formData.investmentAmount || 500000).toString(),
+        industry: formData.industry || '',
+        targetMarket: formData.targetMarket || '',
+        revenue: formData.revenue || '',
+        teamSize: formData.teamSize || '',
+        customers: formData.customers || '',
+        growthRate: formData.growthRate || '',
+        uniqueValue: formData.uniqueValue || '',
+        competitiveAdvantage: formData.competitiveAdvantage || '',
+        previousFunding: formData.previousFunding || '',
+        founderExperience: formData.founderExperience || '',
         description: formData.description || '',
         estimatedSavings: savings
       };
@@ -397,7 +431,7 @@ export function NewDealModal({ isOpen, onClose, onSuccess, darkMode }: NewDealMo
                   <DollarSign className="w-6 h-6 text-emerald-400 mx-auto mb-2" />
                   <div className={`text-3xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                     <AnimatedCounter 
-                      value={formData.estimatedSavings?.money || 0} 
+                      end={formData.estimatedSavings?.money || 0} 
                       prefix="$"
                       duration={2000}
                     />
@@ -411,7 +445,7 @@ export function NewDealModal({ isOpen, onClose, onSuccess, darkMode }: NewDealMo
                   <Clock className="w-6 h-6 text-blue-400 mx-auto mb-2" />
                   <div className={`text-3xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                     <AnimatedCounter 
-                      value={formData.estimatedSavings?.hours || 0} 
+                      end={formData.estimatedSavings?.hours || 0} 
                       suffix=" hrs"
                       duration={2000}
                     />

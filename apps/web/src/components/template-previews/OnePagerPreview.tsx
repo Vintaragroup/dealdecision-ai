@@ -1,5 +1,5 @@
 import { X, Download } from 'lucide-react';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 
 interface OnePagerPreviewProps {
   isOpen: boolean;

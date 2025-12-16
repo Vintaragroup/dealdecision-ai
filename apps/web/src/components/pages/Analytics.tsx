@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Button } from '../ui/Button';
-import { Select } from '../ui/Select';
+import { Button } from '../ui/button';
+import { Select } from '../ui/select';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import {
   LineChart,

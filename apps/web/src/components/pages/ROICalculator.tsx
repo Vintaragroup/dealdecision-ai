@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 import { AnimatedCounter } from '../AnimatedCounter';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { useAppSettings } from '../../contexts/AppSettingsContext';
@@ -281,7 +281,7 @@ export function ROICalculator({ darkMode }: ROICalculatorProps) {
               }`}>
                 <DollarSign className={`w-8 h-8 mb-3 ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`} />
                 <div className={`text-4xl mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  $<AnimatedCounter value={totalSavings.money} duration={2000} />
+                  $<AnimatedCounter end={totalSavings.money} duration={2000} />
                 </div>
                 <div className={`text-sm ${darkMode ? 'text-emerald-400' : 'text-emerald-700'}`}>
                   Total Money Saved
@@ -298,7 +298,7 @@ export function ROICalculator({ darkMode }: ROICalculatorProps) {
               }`}>
                 <Clock className={`w-8 h-8 mb-3 ${darkMode ? 'text-purple-400' : 'text-purple-600'}`} />
                 <div className={`text-4xl mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  <AnimatedCounter value={totalSavings.hours} duration={2000} />h
+                  <AnimatedCounter end={totalSavings.hours} duration={2000} />h
                 </div>
                 <div className={`text-sm ${darkMode ? 'text-purple-400' : 'text-purple-700'}`}>
                   Time Saved
@@ -315,7 +315,7 @@ export function ROICalculator({ darkMode }: ROICalculatorProps) {
               }`}>
                 <Zap className={`w-8 h-8 mb-3 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`} />
                 <div className={`text-4xl mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  <AnimatedCounter value={totalSavings.deals} duration={2000} />
+                  <AnimatedCounter end={totalSavings.deals} duration={2000} />
                 </div>
                 <div className={`text-sm ${darkMode ? 'text-blue-400' : 'text-blue-700'}`}>
                   Deals Accelerated
@@ -332,7 +332,7 @@ export function ROICalculator({ darkMode }: ROICalculatorProps) {
               }`}>
                 <FileText className={`w-8 h-8 mb-3 ${darkMode ? 'text-amber-400' : 'text-amber-600'}`} />
                 <div className={`text-4xl mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  <AnimatedCounter value={totalSavings.documents} duration={2000} />
+                  <AnimatedCounter end={totalSavings.documents} duration={2000} />
                 </div>
                 <div className={`text-sm ${darkMode ? 'text-amber-400' : 'text-amber-700'}`}>
                   Documents Generated

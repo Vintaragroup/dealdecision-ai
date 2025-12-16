@@ -1,5 +1,5 @@
 import { Sparkles, TrendingUp, AlertTriangle, XCircle, ArrowRight, Calendar, DollarSign } from 'lucide-react';
-import { Button } from './Button';
+import { Button } from './button';
 
 interface Recommendation {
   dealName: string;

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 import { FileCode, Calendar, Target, FileText, Eye, Download, Share2, Search } from 'lucide-react';
 
 interface ReportsGeneratedProps {

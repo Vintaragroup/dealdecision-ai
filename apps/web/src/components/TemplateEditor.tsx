@@ -27,7 +27,7 @@ import {
   Settings,
   Check
 } from 'lucide-react';
-import { Button } from './ui/Button';
+import { Button } from './ui/button';
 import { AITextGenerator } from './editor/AITextGenerator';
 import { AIImageGenerator } from './editor/AIImageGenerator';
 import { DealFormData } from './NewDealModal';
@@ -270,7 +270,7 @@ export function TemplateEditor({ isOpen, onClose, darkMode, templateName, dealDa
         ? {
             ...slide,
             elements: slide.elements.map(el =>
-              el.id === elementId ? { ...el, ...updates } : el
+              el.id === elementId ? ({ ...el, ...updates } as Element) : el
             )
           }
         : slide

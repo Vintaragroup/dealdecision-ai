@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button } from '../ui/Button';
+import { Button } from '../ui/button';
 import { AchievementBadge } from '../ui/AchievementBadge';
 import { StreakTracker } from '../ui/StreakTracker';
 import { ChallengeCard } from '../ui/ChallengeCard';

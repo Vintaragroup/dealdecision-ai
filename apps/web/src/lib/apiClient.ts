@@ -155,18 +155,27 @@ export function subscribeToEvents(
     onReady?: () => void;
     onJobUpdated?: (data: JobUpdatedEvent) => void;
     onError?: (err: unknown) => void;
-  }
+  },
+  options?: { cursor?: string }
 ) {
   if (typeof EventSource === 'undefined') {
     return () => {};
   }
 
-  const url = `${API_BASE_URL}/api/v1/events?deal_id=${encodeURIComponent(dealId)}`;
+  const params = new URLSearchParams({ deal_id: dealId });
+  if (options?.cursor) {
+    params.set('cursor', options.cursor);
+  }
+
+  const url = `${API_BASE_URL}/api/v1/events?${params.toString()}`;
   const source = new EventSource(url);
+
+  const lastEventIdRef = { current: options?.cursor } as { current: string | undefined };
 
   const handleJobUpdated = (event: MessageEvent) => {
     try {
       const data = JSON.parse(event.data) as JobUpdatedEvent;
+      lastEventIdRef.current = data.updated_at ?? lastEventIdRef.current;
       handlers.onJobUpdated?.(data);
     } catch (err) {
       handlers.onError?.(err);

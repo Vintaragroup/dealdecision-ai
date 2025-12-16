@@ -13,14 +13,18 @@ type JobRow = {
 
 export async function registerEventRoutes(app: FastifyInstance, pool = getPool()) {
   app.get("/api/v1/events", async (request, reply) => {
-    const { deal_id } = request.query as { deal_id?: string };
+    const { deal_id, cursor } = request.query as { deal_id?: string; cursor?: string };
+    const lastEventIdHeader = request.headers["last-event-id"] as string | undefined;
 
     reply.raw.setHeader("Content-Type", "text/event-stream");
     reply.raw.setHeader("Cache-Control", "no-cache, no-transform");
     reply.raw.setHeader("Connection", "keep-alive");
     reply.raw.flushHeaders?.();
 
-    const send = (event: string, data: unknown) => {
+    const send = (event: string, data: unknown, id?: string) => {
+      if (id) {
+        reply.raw.write(`id: ${id}\n`);
+      }
       reply.raw.write(`event: ${event}\n`);
       reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
     };
@@ -39,8 +43,9 @@ export async function registerEventRoutes(app: FastifyInstance, pool = getPool()
 
     send("ready", { ok: true });
 
-    // Start from "now" to avoid replaying historical jobs on first connect.
-    let lastJobUpdatedAt = new Date().toISOString();
+    const initialCursor = lastEventIdHeader || cursor;
+    // Start from provided cursor or "now" to avoid replaying historical jobs on first connect.
+    let lastJobUpdatedAt = initialCursor ?? new Date().toISOString();
 
     const heartbeat = setInterval(() => {
       if (closed) return;
@@ -63,15 +68,19 @@ export async function registerEventRoutes(app: FastifyInstance, pool = getPool()
         if (rows.length > 0) {
           lastJobUpdatedAt = rows[rows.length - 1].updated_at;
           for (const row of rows) {
-            send("job.updated", {
-              job_id: row.job_id,
-              status: row.status,
-              progress_pct: row.progress_pct ?? undefined,
-              message: row.message ?? undefined,
-              deal_id: row.deal_id ?? undefined,
-              type: row.type ?? undefined,
-              updated_at: new Date(row.updated_at).toISOString(),
-            });
+            send(
+              "job.updated",
+              {
+                job_id: row.job_id,
+                status: row.status,
+                progress_pct: row.progress_pct ?? undefined,
+                message: row.message ?? undefined,
+                deal_id: row.deal_id ?? undefined,
+                type: row.type ?? undefined,
+                updated_at: new Date(row.updated_at).toISOString(),
+              },
+              row.updated_at
+            );
           }
         }
       } catch (err) {

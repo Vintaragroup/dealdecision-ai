@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Tabs, Tab } from '../ui/tabs';
 import { CircularProgress } from '../ui/CircularProgress';
 import { Accordion, AccordionItem } from '../ui/accordion';
@@ -78,6 +78,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [evidence, setEvidence] = useState<Array<{ evidence_id: string; deal_id: string; document_id?: string; source: string; kind: string; text: string; excerpt?: string; created_at?: string }>>([]);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
   const [lastEvidenceRefresh, setLastEvidenceRefresh] = useState<string | null>(null);
+  const lastEventIdRef = useRef<string | undefined>(undefined);
 
   // Map dealId to deal information (in a real app, this would be from an API/database)
   const dealInfo = dealId === 'vintara-001' ? {
@@ -198,6 +199,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         if (job.deal_id && dealId && job.deal_id !== dealId) return;
         if (job.type !== 'fetch_evidence' && jobId && job.job_id !== jobId) return;
         setSseReady(true);
+        if (job.updated_at) {
+          lastEventIdRef.current = job.updated_at;
+        }
         setJobStatus(job.status);
         setJobProgress(typeof job.progress_pct === 'number' ? job.progress_pct : null);
         setJobMessage(job.message ?? null);
@@ -216,7 +220,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         if (cancelled) return;
         setSseReady(false);
       },
-    });
+    }, { cursor: lastEventIdRef.current });
 
     return () => {
       cancelled = true;

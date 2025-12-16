@@ -254,3 +254,11 @@ VITE_BACKEND_MODE=live
 7) Add migrations + DB persistence
 
 This scaffold is intentionally minimal; we will evolve it with the sequential Copilot prompt package.
+
+---
+
+## Current implementation snapshot (Dec 2025)
+- API now exposes jobs status and analyze triggers, backed by Redis + Postgres plumbing.
+- Worker processes BullMQ jobs (`ingest_document`, `fetch_evidence`, `analyze_deal`) and updates job progress in the DB.
+- Web refreshed with theme overrides, updated deal workspace UI, and live-mode guards wired to the new API client.
+- Shared contracts expanded for jobs, DIO, ReportDTO, chat actions/responses; all packages typecheck clean.

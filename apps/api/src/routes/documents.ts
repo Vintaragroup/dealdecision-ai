@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { z } from "zod";
 import type { Document } from "@dealdecision/contracts";
 import { getPool } from "../lib/db";
+import { insertEvidence } from "../services/evidence";
 import { enqueueJob } from "../services/jobs";
 
 const documentTypeSchema = z
@@ -51,8 +52,10 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
     const parsedType = documentTypeSchema.safeParse(typeField);
     const docType = parsedType.success ? parsedType.data : "other";
 
-    // Drain the stream to avoid hanging the connection. We ignore contents for now.
-    await file.toBuffer();
+    // Drain the stream and capture a short excerpt for evidence
+    const buffer = await file.toBuffer();
+    const rawText = buffer.toString("utf8");
+    const excerpt = rawText.trim().replace(/\s+/g, " ").slice(0, 500) || undefined;
 
     const documentId = randomUUID();
     const title = titleField || file.filename || "document";
@@ -63,6 +66,17 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
        RETURNING document_id, deal_id, title, type, status, uploaded_at`,
       [documentId, dealId, title, docType, "pending"]
     );
+
+    if (excerpt) {
+      await insertEvidence({
+        deal_id: dealId,
+        document_id: documentId,
+        source: "upload",
+        kind: "document",
+        text: title,
+        excerpt,
+      });
+    }
 
     await enqueueJob({
       deal_id: dealId,

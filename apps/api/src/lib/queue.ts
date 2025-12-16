@@ -7,8 +7,17 @@ if (!redisUrl) {
   throw new Error("REDIS_URL is required for queue operations");
 }
 
-const connection = new IORedis(redisUrl);
+export const connection = new IORedis(redisUrl);
 
 export const ingestQueue = new Queue("ingest_document", { connection });
 export const fetchEvidenceQueue = new Queue("fetch_evidence", { connection });
 export const analyzeDealQueue = new Queue("analyze_deal", { connection });
+
+export async function closeQueues() {
+  await Promise.allSettled([
+    ingestQueue.close(),
+    fetchEvidenceQueue.close(),
+    analyzeDealQueue.close(),
+    connection.quit(),
+  ]);
+}

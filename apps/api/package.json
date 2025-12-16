@@ -9,7 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:migrate": "tsx scripts/migrate.ts",
-    "test": "tsx test/jobs.test.ts"
+    "test": "node --test --require ts-node/register test/*.test.ts"
   },
   "dependencies": {
     "fastify": "^4.28.1",

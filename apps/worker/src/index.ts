@@ -1,7 +1,16 @@
 import type { Job } from "bullmq";
+import { randomUUID } from "crypto";
 import type { JobStatus } from "@dealdecision/contracts";
 import { createWorker } from "./lib/queue";
-import { getPool, closePool, updateDocumentStatus } from "./lib/db";
+import {
+	getPool,
+	closePool,
+	updateDocumentStatus,
+	insertEvidence,
+	getDocumentsForDeal,
+	getEvidenceDocumentIds,
+} from "./lib/db";
+import { deriveEvidenceDrafts } from "./lib/evidence";
 
 async function updateJob(job: Job, status: JobStatus, message?: string) {
 	const pool = getPool();
@@ -38,7 +47,49 @@ function baseProcessor(statusOnStart: JobStatus, statusOnComplete: JobStatus) {
 }
 
 createWorker("ingest_document", ingestDocumentProcessor);
-createWorker("fetch_evidence", baseProcessor("running", "succeeded"));
+createWorker("fetch_evidence", async (job: Job) => {
+	const dealId = (job.data as { deal_id?: string } | undefined)?.deal_id;
+	const filter = (job.data as { filter?: string } | undefined)?.filter;
+	if (!dealId) {
+		await updateJob(job, "failed", "Missing deal_id for evidence fetch");
+		return { ok: false };
+	}
+
+	try {
+		await updateJob(job, "running", "Fetching evidence");
+		const documents = await getDocumentsForDeal(dealId);
+		if (documents.length === 0) {
+			await updateJob(job, "succeeded", "No documents available for evidence");
+			return { inserted: 0 };
+		}
+
+		const existingDocIds = await getEvidenceDocumentIds(dealId);
+		const drafts = deriveEvidenceDrafts(documents, { filter, excludeDocumentIds: existingDocIds });
+		let inserted = 0;
+
+		for (const draft of drafts) {
+			await insertEvidence({
+				evidence_id: randomUUID(),
+				deal_id: dealId,
+				document_id: draft.document_id,
+				source: draft.source,
+				kind: draft.kind,
+				text: draft.text,
+				excerpt: draft.excerpt,
+			});
+			inserted += 1;
+		}
+
+		const message = inserted === 0 ? "No new evidence created" : `Created ${inserted} evidence item(s)`;
+		await updateJob(job, "succeeded", message);
+		console.log(`[fetch_evidence] deal=${dealId} inserted=${inserted} filter=${filter ?? ""}`);
+		return { inserted };
+	} catch (err) {
+		const message = err instanceof Error ? err.message : "Failed to fetch evidence";
+		await updateJob(job, "failed", message);
+		throw err;
+	}
+});
 createWorker("analyze_deal", baseProcessor("running", "succeeded"));
 
 const shutdown = async () => {

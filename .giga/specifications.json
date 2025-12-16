@@ -1,0 +1,22 @@
+[
+  {
+    "fileName": "main-overview.mdc",
+    "description": "Complete system overview documenting the investment analysis platform architecture, key components, and their interactions. Includes high-level workflow diagrams and system boundaries."
+  },
+  {
+    "fileName": "data-models-investment.mdc",
+    "description": "Comprehensive documentation of the investment domain data models including Deal, Evidence, Document, and Analysis entities. Details relationships, constraints, and state transitions in the deal analysis pipeline."
+  },
+  {
+    "fileName": "algorithms-scoring.mdc",
+    "description": "Detailed documentation of core scoring algorithms including deal confidence scoring, risk assessment calculations, ROI projections, and market analysis formulas. Includes weightings, thresholds, and decision logic."
+  },
+  {
+    "fileName": "dataflow-analysis.mdc",
+    "description": "Documentation of the data flow through the deal analysis system, covering document processing pipeline, evidence extraction, AI analysis integration, and report generation workflow."
+  },
+  {
+    "fileName": "business-rules.mdc",
+    "description": "Comprehensive documentation of business rules governing deal evaluation, risk assessment, due diligence requirements, and investment decision criteria. Includes validation rules and threshold definitions."
+  }
+]

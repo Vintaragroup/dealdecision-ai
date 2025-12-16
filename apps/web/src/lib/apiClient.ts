@@ -1,4 +1,4 @@
-import type { Deal } from '@dealdecision/contracts';
+import type { Deal, WorkspaceChatResponse, DealChatResponse } from '@dealdecision/contracts';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:9000';
 const BACKEND_MODE = (import.meta.env.VITE_BACKEND_MODE || 'mock').toLowerCase();
@@ -72,6 +72,44 @@ export function apiGetDocuments(dealId: string) {
     status: string;
     uploaded_at?: string;
   }> }>(`/api/v1/deals/${dealId}/documents`);
+}
+
+export function apiGetEvidence(dealId: string) {
+  return request<{ evidence: Array<{
+    evidence_id: string;
+    deal_id: string;
+    document_id?: string;
+    source: string;
+    kind: string;
+    text: string;
+    excerpt?: string;
+    created_at?: string;
+  }> }>(`/api/v1/deals/${dealId}/evidence`);
+}
+
+export function apiFetchEvidence(dealId: string, filter?: string) {
+  return request<{ job_id: string; status: string }>(`/api/v1/evidence/fetch`, {
+    method: 'POST',
+    body: JSON.stringify({ deal_id: dealId, filter })
+  });
+}
+
+export function apiChatWorkspace(message: string) {
+  return request<WorkspaceChatResponse>(`/api/v1/chat/workspace`, {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  });
+}
+
+export function apiChatDeal(dealId: string, message: string, dioVersionId?: string) {
+  return request<DealChatResponse>(`/api/v1/chat/deal`, {
+    method: 'POST',
+    body: JSON.stringify({
+      message,
+      deal_id: dealId,
+      dio_version_id: dioVersionId,
+    }),
+  });
 }
 
 export async function apiUploadDocument(dealId: string, file: File, type = 'other', title?: string) {

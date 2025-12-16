@@ -1,58 +1,113 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: dealdecision-postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: dealdecision
     ports:
-      - "5444:5432" # host:container
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "dealdecision"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
-    container_name: dealdecision-redis
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
-  web:
+  migrate:
     build:
       context: ..
-      dockerfile: apps/web/Dockerfile
-    container_name: dealdecision-web
+      dockerfile: apps/api/Dockerfile.dev
+    command: ["pnpm", "--filter", "api", "db:migrate"]
     environment:
-      - VITE_API_BASE_URL=http://host.docker.internal:9000
-    ports:
-      - "4301:4173"
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/dealdecision
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - postgres
+    restart: "no"
 
   api:
     build:
       context: ..
-      dockerfile: apps/api/Dockerfile
-    container_name: dealdecision-api
-    env_file:
-      - ../.env.example
+      dockerfile: apps/api/Dockerfile.dev
+    command: ["pnpm", "--filter", "api", "dev"]
+    environment:
+      API_PORT: "9000"
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/dealdecision
+      REDIS_URL: redis://redis:6379
     ports:
       - "9000:9000"
+    volumes:
+      - ..:/app
+      - api_node_modules:/app/node_modules
+      - api_app_node_modules:/app/apps/api/node_modules
     depends_on:
-      - postgres
-      - redis
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   worker:
     build:
       context: ..
-      dockerfile: apps/worker/Dockerfile
-    container_name: dealdecision-worker
-    env_file:
-      - ../.env.example
+      dockerfile: apps/worker/Dockerfile.dev
+    command: ["pnpm", "--filter", "worker", "dev"]
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/dealdecision
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - ..:/app
+      - worker_node_modules:/app/node_modules
+      - worker_app_node_modules:/app/apps/worker/node_modules
     depends_on:
-      - redis
-      - postgres
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  web:
+    build:
+      context: ..
+      dockerfile: apps/web/Dockerfile.dev
+    command: ["pnpm", "--filter", "web", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
+    environment:
+      VITE_API_BASE_URL: http://localhost:9000
+      VITE_BACKEND_MODE: live
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ..:/app
+      - web_node_modules:/app/node_modules
+      - web_app_node_modules:/app/apps/web/node_modules
+    depends_on:
+      api:
+        condition: service_started
 
 volumes:
   postgres_data:
   redis_data:
+  api_node_modules:
+  api_app_node_modules:
+  worker_node_modules:
+  worker_app_node_modules:
+  web_node_modules:
+  web_app_node_modules:

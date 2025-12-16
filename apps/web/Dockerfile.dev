@@ -1,0 +1,10 @@
+FROM node:20
+WORKDIR /app
+ENV PNPM_HOME=/root/.local/share/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+RUN corepack enable
+
+COPY pnpm-lock.yaml package.json pnpm-workspace.yaml tsconfig.base.json ./
+RUN pnpm install --frozen-lockfile=false
+
+CMD ["pnpm", "--filter", "web", "dev"]

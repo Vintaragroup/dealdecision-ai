@@ -14,6 +14,8 @@ import {
   ChevronRight
 } from 'lucide-react';
 import { useUserRole } from '../contexts/UserRoleContext';
+import { apiChatWorkspace, isLiveBackend } from '../lib/apiClient';
+import type { ChatAction } from '@dealdecision/contracts';
 
 interface ChatAssistantProps {
   darkMode: boolean;
@@ -31,6 +33,8 @@ export function ChatAssistant({ darkMode }: ChatAssistantProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
+  const [suggestedActions, setSuggestedActions] = useState<ChatAction[]>([]);
+  const [isTyping, setIsTyping] = useState(false);
   const [activeTab, setActiveTab] = useState<'home' | 'messages' | 'help'>('home');
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -42,20 +46,49 @@ export function ChatAssistant({ darkMode }: ChatAssistantProps) {
     scrollToBottom();
   }, [messages]);
 
-  const handleSend = () => {
-    if (!message.trim()) return;
+  const handleSend = async (text?: string) => {
+    const outgoing = text ?? message;
+    if (!outgoing.trim()) return;
 
     const newMessage: Message = {
       id: Date.now().toString(),
-      text: message,
+      text: outgoing,
       sender: 'user',
       timestamp: new Date()
     };
 
-    setMessages([...messages, newMessage]);
+    setMessages(prev => [...prev, newMessage]);
     setMessage('');
+    setActiveTab('messages');
+    setIsTyping(true);
 
-    // Simulate AI response
+    if (isLiveBackend()) {
+      try {
+        const res = await apiChatWorkspace(outgoing);
+        const aiResponse: Message = {
+          id: (Date.now() + 1).toString(),
+          text: res.reply,
+          sender: 'assistant',
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, aiResponse]);
+        setSuggestedActions(res.suggested_actions ?? []);
+      } catch (err) {
+        const aiResponse: Message = {
+          id: (Date.now() + 1).toString(),
+          text: err instanceof Error ? err.message : 'Chat is unavailable right now.',
+          sender: 'assistant',
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, aiResponse]);
+        setSuggestedActions([]);
+      } finally {
+        setIsTyping(false);
+      }
+      return;
+    }
+
+    // Simulated response for mock mode
     setTimeout(() => {
       const aiResponse: Message = {
         id: (Date.now() + 1).toString(),
@@ -66,8 +99,22 @@ export function ChatAssistant({ darkMode }: ChatAssistantProps) {
         timestamp: new Date()
       };
       setMessages(prev => [...prev, aiResponse]);
-      setActiveTab('messages');
-    }, 1000);
+      setSuggestedActions([]);
+      setIsTyping(false);
+    }, 800);
+  };
+
+  const handleSuggestedAction = (action: ChatAction) => {
+    const label =
+      action.type === 'run_analysis'
+        ? 'Run analysis on my deal'
+        : action.type === 'fetch_evidence'
+          ? 'Fetch evidence for my deal'
+          : action.type === 'summarize_evidence'
+            ? 'Summarize recent evidence'
+            : 'Help me with my deal';
+    setMessage(label);
+    setActiveTab('messages');
   };
 
   const quickActions = isFounder
@@ -172,8 +219,7 @@ export function ChatAssistant({ darkMode }: ChatAssistantProps) {
                     <button
                       key={i}
                       onClick={() => {
-                        setMessage(action.label);
-                        handleSend();
+                        handleSend(action.label);
                       }}
                       className={`w-full flex items-center justify-between p-3 rounded-xl border transition-all hover:scale-[1.02] ${
                         darkMode
@@ -261,6 +307,42 @@ export function ChatAssistant({ darkMode }: ChatAssistantProps) {
                         </div>
                       </div>
                     ))
+                  )}
+
+                  {isTyping && (
+                    <div className="flex justify-start">
+                      <div className={`max-w-[60%] rounded-2xl px-4 py-2 ${
+                        darkMode ? 'bg-[#27272a] text-gray-200' : 'bg-gray-100 text-gray-900'
+                      }`}>
+                        <div className="flex items-center gap-1">
+                          <div className="w-2 h-2 rounded-full bg-[#6366f1] animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                          <div className="w-2 h-2 rounded-full bg-[#6366f1] animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                          <div className="w-2 h-2 rounded-full bg-[#6366f1] animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {suggestedActions.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {suggestedActions.map((action, idx) => (
+                        <button
+                          key={`${action.type}-${idx}`}
+                          onClick={() => handleSuggestedAction(action)}
+                          className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
+                            darkMode
+                              ? 'border-white/10 text-gray-200 hover:border-[#6366f1]/60'
+                              : 'border-gray-200 text-gray-700 hover:border-[#6366f1]/60'
+                          }`}
+                        >
+                          {action.type === 'run_analysis' && 'Run Analysis'}
+                          {action.type === 'fetch_evidence' && 'Fetch Evidence'}
+                          {action.type === 'summarize_evidence' && 'Summarize Evidence'}
+                          {action.type === 'generate_report' && 'Generate Report'}
+                          {action.type === 'fetch_dio' && 'Load Latest DIO'}
+                        </button>
+                      ))}
+                    </div>
                   )}
                   <div ref={messagesEndRef} />
                 </div>

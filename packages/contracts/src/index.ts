@@ -52,6 +52,7 @@ export interface Document {
 
 export type JobType =
 	| 'ingest_documents'
+	| 'fetch_evidence'
 	| 'analyze_deal'
 	| 'generate_report'
 	| 'sync_crm'
@@ -81,8 +82,10 @@ export interface EvidenceItem {
 	source: string;
 	kind: 'fact' | 'metric' | 'quote' | 'document' | 'other';
 	text: string;
+	document_id?: string;
 	created_at?: string;
 	confidence?: number;
+	excerpt?: string;
 }
 
 export type EvidenceMap = Record<string, EvidenceItem>;
@@ -145,13 +148,24 @@ export interface ChatMessage {
 }
 
 export type ChatAction =
-	| { type: 'fetch_dio'; deal_id: string; dio_version_id?: string }
 	| { type: 'run_analysis'; deal_id: string; focus?: string }
+	| { type: 'fetch_evidence'; deal_id: string; filter?: string }
+	| { type: 'fetch_dio'; deal_id: string; dio_version_id?: string }
 	| { type: 'generate_report'; deal_id: string; dio_version_id?: string }
 	| { type: 'summarize_evidence'; evidence_ids: string[] };
 
-export interface ChatResponse {
-	messages: ChatMessage[];
-	actions?: ChatAction[];
-	evidence_ids?: string[];
+export interface ChatCitation {
+	evidence_id: string;
+	excerpt?: string;
+}
+
+export interface WorkspaceChatResponse {
+	reply: string;
+	suggested_actions?: ChatAction[];
+}
+
+export interface DealChatResponse {
+	reply: string;
+	citations?: ChatCitation[];
+	suggested_actions?: ChatAction[];
 }

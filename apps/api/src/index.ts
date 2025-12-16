@@ -6,6 +6,8 @@ import { registerDealRoutes } from "./routes/deals";
 import { registerJobRoutes } from "./routes/jobs";
 import { registerEventRoutes } from "./routes/events";
 import { registerDocumentRoutes } from "./routes/documents";
+import { registerChatRoutes } from "./routes/chat";
+import { registerEvidenceRoutes } from "./routes/evidence";
 import "./lib/queue";
 
 const app = fastify({
@@ -23,6 +25,8 @@ async function bootstrap() {
   await registerJobRoutes(app);
   await registerEventRoutes(app);
   await registerDocumentRoutes(app);
+  await registerChatRoutes(app);
+  await registerEvidenceRoutes(app);
 }
 
 async function start() {

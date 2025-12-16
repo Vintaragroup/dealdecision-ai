@@ -15,6 +15,9 @@ import {
 import { Button } from '../ui/button';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { DealFormData } from '../NewDealModal';
+import { apiChatDeal, isLiveBackend } from '../../lib/apiClient';
+import type { ChatAction, ChatCitation } from '@dealdecision/contracts';
+import { EvidenceChip } from '../evidence/EvidenceChip';
 
 interface AIDealAssistantProps {
   darkMode: boolean;
@@ -22,6 +25,9 @@ interface AIDealAssistantProps {
   onClose: () => void;
   dealData: DealFormData;
   dealId: string;
+  dioVersionId?: string;
+  onRunAnalysis?: () => Promise<void>;
+  onFetchEvidence?: () => void;
 }
 
 interface ChatMessage {
@@ -30,9 +36,11 @@ interface ChatMessage {
   content: string;
   timestamp: Date;
   suggestions?: string[];
+  citations?: ChatCitation[];
+  actions?: ChatAction[];
 }
 
-export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId }: AIDealAssistantProps) {
+export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, dioVersionId, onRunAnalysis, onFetchEvidence }: AIDealAssistantProps) {
   const { isInvestor, isFounder } = useUserRole();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -90,11 +98,53 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId }:
       timestamp: new Date()
     };
 
+    const handleAction = async (action: ChatAction) => {
+      if (action.type === 'run_analysis' && onRunAnalysis) {
+        await onRunAnalysis();
+        return;
+      }
+      if (action.type === 'fetch_evidence' && onFetchEvidence) {
+        onFetchEvidence();
+        return;
+      }
+      if (action.type === 'summarize_evidence' && action.evidence_ids?.length) {
+        setInput(`Summarize evidence: ${action.evidence_ids.join(', ')}`);
+      }
+    };
+
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     setIsTyping(true);
 
-    // Simulate AI response
+    const canHitLive = isLiveBackend() && !!dealId;
+
+    if (canHitLive) {
+      try {
+        const res = await apiChatDeal(dealId, input, dioVersionId);
+        const aiMessage: ChatMessage = {
+          id: (Date.now() + 1).toString(),
+          sender: 'ai',
+          content: res.reply,
+          timestamp: new Date(),
+          citations: res.citations,
+          actions: res.suggested_actions,
+        };
+        setMessages(prev => [...prev, aiMessage]);
+      } catch (err) {
+        const aiMessage: ChatMessage = {
+          id: (Date.now() + 1).toString(),
+          sender: 'ai',
+          content: err instanceof Error ? err.message : 'Chat is unavailable right now.',
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, aiMessage]);
+      } finally {
+        setIsTyping(false);
+      }
+      return;
+    }
+
+    // Fallback simulated AI response when not in live mode
     setTimeout(() => {
       const aiResponse = generateAIResponse(input, dealData, isInvestor);
       const aiMessage: ChatMessage = {
@@ -106,7 +156,7 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId }:
       };
       setMessages(prev => [...prev, aiMessage]);
       setIsTyping(false);
-    }, 1500);
+    }, 800);
   };
 
   const handleSuggestionClick = (suggestion: string) => {
@@ -224,6 +274,41 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId }:
                   </div>
                 )}
               </div>
+
+              {message.citations && message.citations.length > 0 && (
+                <div className="ml-11 flex flex-wrap gap-2">
+                  {message.citations.map((citation) => (
+                    <EvidenceChip
+                      key={citation.evidence_id}
+                      evidenceId={citation.evidence_id}
+                      excerpt={citation.excerpt}
+                      darkMode={darkMode}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {message.actions && message.actions.length > 0 && (
+                <div className="ml-11 flex flex-wrap gap-2">
+                  {message.actions.map((action, idx) => (
+                    <button
+                      key={`${action.type}-${idx}`}
+                      onClick={() => handleAction(action)}
+                      className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
+                        darkMode
+                          ? 'border-white/10 text-gray-200 hover:border-[#6366f1]/60'
+                          : 'border-gray-200 text-gray-700 hover:border-[#6366f1]/60'
+                      }`}
+                    >
+                      {action.type === 'run_analysis' && 'Run Analysis'}
+                      {action.type === 'fetch_evidence' && 'Fetch Evidence'}
+                      {action.type === 'summarize_evidence' && 'Summarize Evidence'}
+                      {action.type === 'generate_report' && 'Generate Report'}
+                      {action.type === 'fetch_dio' && 'Load Latest DIO'}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {/* Suggestions */}
               {message.suggestions && message.suggestions.length > 0 && (

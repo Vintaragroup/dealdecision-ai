@@ -8,6 +8,7 @@ import {
 
 const queueMap: Record<JobType, typeof ingestQueue> = {
   ingest_documents: ingestQueue,
+  fetch_evidence: fetchEvidenceQueue,
   analyze_deal: analyzeDealQueue,
   generate_report: analyzeDealQueue,
   sync_crm: analyzeDealQueue,

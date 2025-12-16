@@ -3,7 +3,10 @@ import path from "path";
 import dotenv from "dotenv";
 import { getPool, closePool } from "../src/lib/db";
 
-dotenv.config({ path: path.resolve(__dirname, "../../.env") });
+// Load env from monorepo root; fallback to app-local .env if present
+const rootEnvPath = path.resolve(__dirname, "../../../.env");
+const appEnvPath = path.resolve(__dirname, "../../.env");
+dotenv.config({ path: fs.existsSync(rootEnvPath) ? rootEnvPath : appEnvPath });
 
 async function ensureMigrationsTable() {
   const pool = getPool();

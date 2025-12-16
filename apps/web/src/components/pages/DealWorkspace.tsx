@@ -13,7 +13,8 @@ import { AnalysisTab } from '../workspace/AnalysisTab';
 import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
-import { apiGetDeal, apiPostAnalyze, apiGetJob, isLiveBackend, subscribeToEvents, type JobUpdatedEvent } from '../../lib/apiClient';
+import { EvidencePanel } from '../evidence/EvidencePanel';
+import { apiGetDeal, apiPostAnalyze, apiGetJob, apiFetchEvidence, apiGetEvidence, isLiveBackend, subscribeToEvents, type JobUpdatedEvent } from '../../lib/apiClient';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { 
   FileText, 
@@ -74,6 +75,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [jobMessage, setJobMessage] = useState<string | null>(null);
   const [jobUpdatedAt, setJobUpdatedAt] = useState<string | null>(null);
   const [sseReady, setSseReady] = useState(false);
+  const [evidence, setEvidence] = useState<Array<{ evidence_id: string; deal_id: string; document_id?: string; source: string; kind: string; text: string; excerpt?: string; created_at?: string }>>([]);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+  const [lastEvidenceRefresh, setLastEvidenceRefresh] = useState<string | null>(null);
 
   // Map dealId to deal information (in a real app, this would be from an API/database)
   const dealInfo = dealId === 'vintara-001' ? {
@@ -123,6 +127,28 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     };
   }, [dealId]);
 
+  const loadEvidence = async () => {
+    if (!dealId || !isLiveBackend()) return;
+    setEvidenceLoading(true);
+    try {
+      const res = await apiGetEvidence(dealId);
+      setEvidence(res.evidence || []);
+      setLastEvidenceRefresh(new Date().toISOString());
+    } catch (err) {
+      addToast('error', 'Failed to load evidence', err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setEvidenceLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!dealId || !isLiveBackend()) {
+      setEvidence([]);
+      return;
+    }
+    loadEvidence();
+  }, [dealId]);
+
   useEffect(() => {
     if (!jobId || sseReady) return;
     let cancelled = false;
@@ -170,12 +196,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       onJobUpdated: (job: JobUpdatedEvent) => {
         if (cancelled) return;
         if (job.deal_id && dealId && job.deal_id !== dealId) return;
-        if (jobId && job.job_id !== jobId) return;
+        if (job.type !== 'fetch_evidence' && jobId && job.job_id !== jobId) return;
         setSseReady(true);
         setJobStatus(job.status);
         setJobProgress(typeof job.progress_pct === 'number' ? job.progress_pct : null);
         setJobMessage(job.message ?? null);
         setJobUpdatedAt(job.updated_at ?? null);
+        if (job.type === 'fetch_evidence' && job.status === 'succeeded') {
+          loadEvidence();
+          addToast('success', 'Evidence updated', job.message || 'Fetch completed');
+          return;
+        }
         if (["succeeded", "failed", "cancelled"].includes(job.status)) {
           setAnalyzing(false);
           addToast(job.status === "succeeded" ? "success" : "error", "Analysis completed", job.message || job.status);
@@ -197,6 +228,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const tabs: Tab[] = isFounder ? [
     { id: 'overview', label: 'Overview', icon: <BarChart3 className="w-4 h-4" /> },
     { id: 'documents', label: 'Pitch Materials', icon: <Presentation className="w-4 h-4" />, badge: 7 },
+    { id: 'evidence', label: 'Evidence', icon: <Shield className="w-4 h-4" /> },
     { id: 'analysis', label: 'AI Refinement', icon: <Sparkles className="w-4 h-4" /> },
     { id: 'feedback', label: 'Investor Feedback', icon: <Lightbulb className="w-4 h-4" />, badge: 12 },
     { id: 'diligence', label: 'Fundraising Progress', icon: <TrendingUp className="w-4 h-4" /> },
@@ -204,6 +236,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   ] : [
     { id: 'overview', label: 'Overview', icon: <BarChart3 className="w-4 h-4" /> },
     { id: 'documents', label: 'Documents', icon: <FileText className="w-4 h-4" />, badge: 8 },
+    { id: 'evidence', label: 'Evidence', icon: <Shield className="w-4 h-4" /> },
     { id: 'analysis', label: 'AI Analysis', icon: <Sparkles className="w-4 h-4" /> },
     { id: 'diligence', label: 'Due Diligence', icon: <Shield className="w-4 h-4" /> },
     { id: 'feedback', label: 'Investment Thesis', icon: <Target className="w-4 h-4" /> },
@@ -493,6 +526,19 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       addToast('error', 'Analysis failed to start', err instanceof Error ? err.message : 'Unknown error');
       setAnalyzing(false);
       return;
+    }
+  };
+
+  const handleFetchEvidence = async () => {
+    if (!dealId || !isLiveBackend()) {
+      addToast('info', 'Live mode required', 'Switch to live backend to fetch evidence');
+      return;
+    }
+    try {
+      const res = await apiFetchEvidence(dealId);
+      addToast('info', 'Evidence fetch queued', `Job ${res.job_id}`);
+    } catch (err) {
+      addToast('error', 'Evidence fetch failed', err instanceof Error ? err.message : 'Unknown error');
     }
   };
 
@@ -1105,6 +1151,18 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               <DocumentsTab dealId={dealId || 'demo'} darkMode={darkMode} />
             )}
 
+            {/* Evidence Tab */}
+            {activeTab === 'evidence' && (
+              <EvidencePanel
+                darkMode={darkMode}
+                evidence={evidence}
+                loading={evidenceLoading}
+                lastUpdated={lastEvidenceRefresh}
+                onRefresh={loadEvidence}
+                onFetchEvidence={handleFetchEvidence}
+              />
+            )}
+
             {/* AI Analysis Tab */}
             {activeTab === 'analysis' && (
               <AnalysisTab 
@@ -1433,7 +1491,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           description: 'Building next-gen AI infrastructure',
           estimatedSavings: { money: 18500, hours: 85 }
         }}
-        dealId="1"
+        dealId={dealId || 'demo'}
+        dioVersionId={dioMeta?.dioVersionId}
+        onRunAnalysis={runAIAnalysis}
+        onFetchEvidence={handleFetchEvidence}
       />
     </div>
   );

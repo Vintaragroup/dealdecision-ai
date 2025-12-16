@@ -4,8 +4,8 @@ Foundation for the DealDecision AI stack (apps, workers, shared packages, infra,
 
 ## Stack & Ports
 - API (Fastify): http://localhost:9000
-- Web (Vite React): http://localhost:4301
-- Postgres: localhost:5444 (container 5432)
+- Web (Vite React): http://localhost:5173
+- Postgres: localhost:5432
 - Redis: localhost:6379
 
 ## Repo Structure
@@ -25,15 +25,21 @@ Foundation for the DealDecision AI stack (apps, workers, shared packages, infra,
 ## Setup
 1) `pnpm install`
 2) Copy `.env.example` to `.env` and adjust as needed.
-3) Start infra: `pnpm infra:up` (Postgres, Redis, Web container)
-4) Run API locally: `pnpm --filter api dev`
-5) Run Web locally: `pnpm --filter web dev` (uses VITE_API_BASE_URL)
+3) Dockerized dev stack (hot reload + bind mounts)
+	- `docker compose -f infra/docker-compose.yml up --build`
+	- API: http://localhost:9000
+	- Web: http://localhost:5173
+	- Postgres: localhost:5432, user/pass `postgres`
+4) Local (no Docker):
+	- `pnpm --filter api dev`
+	- `pnpm --filter web dev` (uses VITE_API_BASE_URL)
 
 ## Scripts (root)
 - `pnpm dev` — api dev server
 - `pnpm --filter web dev` — web dev server
 - `pnpm -r typecheck` — typecheck all packages
-- `pnpm infra:up` / `pnpm infra:down` — bring up/down Postgres, Redis, Web
+- `docker compose -f infra/docker-compose.yml up --build` — full dev stack (postgres, redis, migrate, api, worker, web)
+- `docker compose -f infra/docker-compose.yml down` — stop dev stack
 
 ## Notes / Next additions
 - Add API service to docker-compose when ready to run API in Docker (keep port 9000).

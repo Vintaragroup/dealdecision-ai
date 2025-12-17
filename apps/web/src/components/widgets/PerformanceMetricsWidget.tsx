@@ -1,6 +1,7 @@
 import { TrendingUp, TrendingDown, Target, DollarSign, Users, Calendar } from 'lucide-react';
 
 interface Metric {
+  id?: string;
   label: string;
   value: string;
   change?: number;
@@ -51,9 +52,9 @@ export function PerformanceMetricsWidget({
       </h3>
 
       <div className="grid grid-cols-2 gap-3">
-        {metrics.map((metric, index) => (
+        {metrics.map((metric) => (
           <div
-            key={index}
+            key={metric.id || metric.label}
             className={`p-3 rounded-lg border ${
               darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'
             }`}

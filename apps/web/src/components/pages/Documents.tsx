@@ -1,13 +1,19 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '../ui/button';
 import { DocumentUpload } from '../documents/DocumentUpload';
 import { DocumentLibrary } from '../documents/DocumentLibrary';
+import { DocumentBatchUploadModal } from '../documents/DocumentBatchUploadModal';
+import { apiGetDeals, isLiveBackend } from '../../lib/apiClient';
 import { 
   Upload, 
   FolderOpen,
   FileText,
   Sparkles,
-  TrendingUp
+  TrendingUp,
+  Plus,
+  ChevronDown,
+  Loader,
+  AlertCircle
 } from 'lucide-react';
 
 interface DocumentsProps {
@@ -16,7 +22,34 @@ interface DocumentsProps {
 
 export function Documents({ darkMode }: DocumentsProps) {
   const [showUpload, setShowUpload] = useState(false);
+  const [showBatchUpload, setShowBatchUpload] = useState(false);
   const [uploadedDocuments, setUploadedDocuments] = useState<any[]>([]);
+  const [selectedDealId, setSelectedDealId] = useState<string>('');
+  const [showDealSelector, setShowDealSelector] = useState(false);
+  const [dealsLoading, setDealsLoading] = useState(true);
+  const [dealsError, setDealsError] = useState<string | null>(null);
+  const [availableDeals, setAvailableDeals] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (!isLiveBackend()) {
+      setDealsLoading(false);
+      return;
+    }
+
+    setDealsLoading(true);
+    setDealsError(null);
+
+    apiGetDeals()
+      .then(deals => {
+        setAvailableDeals(deals);
+        setDealsError(null);
+      })
+      .catch(err => {
+        setDealsError(err instanceof Error ? err.message : 'Failed to load deals');
+        setAvailableDeals([]);
+      })
+      .finally(() => setDealsLoading(false));
+  }, []);
 
   const handleUploadComplete = (files: any[]) => {
     setUploadedDocuments(prev => [...prev, ...files]);
@@ -66,14 +99,38 @@ export function Documents({ darkMode }: DocumentsProps) {
             Upload, manage, and analyze your deal documents with AI
           </p>
         </div>
-        <Button
-          variant="primary"
-          onClick={() => setShowUpload(!showUpload)}
-        >
-          <Upload className="w-4 h-4" />
-          {showUpload ? 'Close Upload' : 'Upload Documents'}
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="primary"
+            onClick={() => setShowBatchUpload(true)}
+            className="flex items-center gap-2"
+          >
+            <FolderOpen className="w-4 h-4" />
+            Batch Upload
+          </Button>
+          <Button
+            variant="primary"
+            onClick={() => setShowUpload(!showUpload)}
+          >
+            <Upload className="w-4 h-4" />
+            {showUpload ? 'Close Upload' : 'Upload Documents'}
+          </Button>
+        </div>
       </div>
+
+      {/* Batch Upload Modal */}
+      {showBatchUpload && (
+        <DocumentBatchUploadModal
+          onClose={() => setShowBatchUpload(false)}
+          onSuccess={(results) => {
+            setShowBatchUpload(false);
+            // Refresh deals list
+            apiGetDeals()
+              .then(deals => setAvailableDeals(deals))
+              .catch(() => {});
+          }}
+        />
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -122,8 +179,92 @@ export function Documents({ darkMode }: DocumentsProps) {
           <h2 className={`text-lg mb-4 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
             Upload New Documents
           </h2>
+          
+          {/* Deal Selector */}
+          <div className="mb-6">
+            <label className={`block text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+              Associated Deal
+            </label>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <button
+                  onClick={() => setShowDealSelector(!showDealSelector)}
+                  className={`w-full px-4 py-2 rounded-lg border text-left flex items-center justify-between ${
+                    darkMode
+                      ? 'bg-white/5 border-white/10 text-white hover:bg-white/10'
+                      : 'bg-white border-gray-300 text-gray-900 hover:bg-gray-50'
+                  }`}
+                >
+                  <span>
+                    {selectedDealId 
+                      ? availableDeals.find(d => d.id === selectedDealId)?.name 
+                      : dealsLoading ? 'Loading deals...' : 'Select a deal or create new...'}
+                  </span>
+                  <ChevronDown className={`w-4 h-4 transition-transform ${showDealSelector ? 'rotate-180' : ''}`} />
+                </button>
+                
+                {showDealSelector && (
+                  <div className={`absolute top-full left-0 right-0 mt-1 rounded-lg border z-10 ${
+                    darkMode
+                      ? 'bg-gray-900 border-white/10'
+                      : 'bg-white border-gray-300'
+                  } shadow-lg`}>
+                    {dealsLoading ? (
+                      <div className="px-4 py-3 text-sm text-gray-500 flex items-center gap-2">
+                        <Loader className="w-4 h-4 animate-spin" />
+                        Loading deals...
+                      </div>
+                    ) : dealsError ? (
+                      <div className="px-4 py-3 text-sm text-red-500 flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4" />
+                        {dealsError}
+                      </div>
+                    ) : availableDeals.length === 0 ? (
+                      <div className="px-4 py-3 text-sm text-gray-500">
+                        No deals found. Create one to get started.
+                      </div>
+                    ) : null}
+                    {availableDeals.map(deal => (
+                      <button
+                        key={deal.id}
+                        onClick={() => {
+                          setSelectedDealId(deal.id);
+                          setShowDealSelector(false);
+                        }}
+                        className={`w-full px-4 py-2 text-left text-sm hover:bg-white/10 first:rounded-t-lg last:rounded-b-lg ${
+                          selectedDealId === deal.id
+                            ? darkMode ? 'bg-purple-500/30 text-purple-300' : 'bg-purple-100 text-purple-900'
+                            : darkMode ? 'text-gray-300' : 'text-gray-900'
+                        }`}
+                      >
+                        <div className="font-medium">{deal.name}</div>
+                        <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                          {deal.stage}
+                        </div>
+                      </button>
+                    ))}
+                    <div className={`border-t ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
+                      <button
+                        className={`w-full px-4 py-2 text-left text-sm text-purple-500 hover:bg-white/10 flex items-center gap-2 rounded-b-lg`}
+                      >
+                        <Plus className="w-4 h-4" />
+                        Create New Deal
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            {selectedDealId && (
+              <p className="mt-2 text-xs text-emerald-500">
+                ✓ Documents will be associated with {availableDeals.find(d => d.id === selectedDealId)?.name}
+              </p>
+            )}
+          </div>
+
           <DocumentUpload
             darkMode={darkMode}
+            dealId={selectedDealId}
             onUploadComplete={handleUploadComplete}
             enableAIExtraction={true}
           />

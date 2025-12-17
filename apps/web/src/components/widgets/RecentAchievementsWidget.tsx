@@ -1,6 +1,7 @@
 import { Award } from 'lucide-react';
 
 interface Achievement {
+  id: string;
   title: string;
   icon: string;
   tier: 'common' | 'rare' | 'epic' | 'legendary';
@@ -41,9 +42,9 @@ export function RecentAchievementsWidget({ darkMode, achievements, onViewAll }: 
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        {achievements.map((achievement, index) => (
+        {achievements.map((achievement) => (
           <div
-            key={index}
+            key={achievement.id}
             className={`p-3 rounded-lg backdrop-blur-xl border transition-all hover:scale-105 cursor-pointer ${
               darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'
             }`}

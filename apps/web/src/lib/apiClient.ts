@@ -39,6 +39,20 @@ export function apiGetDeals() {
   return request<Deal[]>(`/api/v1/deals`);
 }
 
+export function apiCreateDeal(input: {
+  name: string;
+  stage: Deal['stage'];
+  priority: Deal['priority'];
+  trend?: Deal['trend'];
+  score?: number;
+  owner?: string;
+}) {
+  return request<Deal>(`/api/v1/deals`, {
+    method: 'POST',
+    body: JSON.stringify(input)
+  });
+}
+
 export function apiGetDeal(dealId: string) {
   return request<Deal & {
     dioVersionId?: string;
@@ -61,6 +75,17 @@ export function apiGetJob(jobId: string) {
     message?: string;
     updated_at?: string;
   }>(`/api/v1/jobs/${jobId}`);
+}
+
+export function apiAutoProgressDeal(dealId: string) {
+  return request<{
+    progressed: boolean;
+    newStage?: string;
+    currentStage?: string;
+    message: string;
+  }>(`/api/v1/deals/${dealId}/auto-progress`, {
+    method: 'POST'
+  });
 }
 
 export function apiGetDocuments(dealId: string) {
@@ -168,27 +193,50 @@ export function subscribeToEvents(
   }
 
   const url = `${API_BASE_URL}/api/v1/events?${params.toString()}`;
-  const source = new EventSource(url);
+  
+  let source: EventSource | null = null;
+  let hasConnected = false;
 
-  const lastEventIdRef = { current: options?.cursor } as { current: string | undefined };
+  try {
+    source = new EventSource(url);
 
-  const handleJobUpdated = (event: MessageEvent) => {
-    try {
-      const data = JSON.parse(event.data) as JobUpdatedEvent;
-      lastEventIdRef.current = data.updated_at ?? lastEventIdRef.current;
-      handlers.onJobUpdated?.(data);
-    } catch (err) {
-      handlers.onError?.(err);
-    }
-  };
+    const lastEventIdRef = { current: options?.cursor } as { current: string | undefined };
 
-  source.addEventListener('ready', () => handlers.onReady?.());
-  source.addEventListener('job.updated', handleJobUpdated);
-  source.addEventListener('error', (event) => {
-    handlers.onError?.(event);
-  });
+    const handleJobUpdated = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data) as JobUpdatedEvent;
+        lastEventIdRef.current = data.updated_at ?? lastEventIdRef.current;
+        handlers.onJobUpdated?.(data);
+      } catch (err) {
+        handlers.onError?.(err);
+      }
+    };
 
-  return () => source.close();
+    source.addEventListener('ready', () => {
+      hasConnected = true;
+      handlers.onReady?.();
+    });
+    source.addEventListener('job.updated', handleJobUpdated);
+    source.addEventListener('error', (event) => {
+      // Gracefully handle CORS and connection errors
+      // The frontend can continue without SSE if the backend doesn't support it
+      if (source?.readyState === EventSource.CLOSED) {
+        // Connection closed, app will continue with fallback
+      }
+      handlers.onError?.(event);
+    });
+
+    return () => {
+      if (source) {
+        source.close();
+        source = null;
+      }
+    };
+  } catch (err) {
+    // EventSource initialization failed (likely CORS), return no-op cleanup
+    // App continues to work without real-time updates
+    return () => {};
+  }
 }
 
 export const apiClient = {

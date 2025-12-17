@@ -15,11 +15,15 @@ import {
   PartyPopper
 } from 'lucide-react';
 import { AnimatedCounter } from './AnimatedCounter';
+import { apiCreateDeal, isLiveBackend } from '../lib/apiClient';
+
+import type { Deal } from '@dealdecision/contracts';
 
 interface NewDealModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess: (dealData: DealFormData) => void;
+  onSuccess: (dealData: DealFormData, createdDeal?: Deal) => void;
+  onCreatedDeal?: (deal: Deal | null) => void;
   darkMode: boolean;
 }
 
@@ -59,7 +63,7 @@ export interface DealFormData {
   };
 }
 
-export function NewDealModal({ isOpen, onClose, onSuccess, darkMode }: NewDealModalProps) {
+export function NewDealModal({ isOpen, onClose, onSuccess, onCreatedDeal, darkMode }: NewDealModalProps) {
   const [step, setStep] = useState(1);
   const [formData, setFormData] = useState<Partial<DealFormData>>({
     type: 'seed',
@@ -67,6 +71,8 @@ export function NewDealModal({ isOpen, onClose, onSuccess, darkMode }: NewDealMo
     investmentAmount: 500000
   });
   const [showSuccess, setShowSuccess] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const dealTypes = [
     { value: 'seed', label: 'Seed Round' },
@@ -120,10 +126,28 @@ export function NewDealModal({ isOpen, onClose, onSuccess, darkMode }: NewDealMo
     if (step === 1) {
       setStep(2);
     } else if (step === 2) {
-      // Calculate savings and show success screen
+      if (submitting) return;
+      setSubmitting(true);
+      setSubmitError(null);
+
       const savings = calculateSavings();
-      const dealData: DealFormData = {
-        id: `deal-${Date.now()}`,
+
+      const mapStageToApi = (stageValue: string | undefined): 'intake' | 'under_review' | 'in_diligence' | 'ready_decision' | 'pitched' => {
+        switch (stageValue) {
+          case 'mvp':
+            return 'under_review';
+          case 'growth':
+            return 'in_diligence';
+          case 'scale':
+            return 'ready_decision';
+          case 'idea':
+          default:
+            return 'intake';
+        }
+      };
+
+      const buildDealData = (id: string): DealFormData => ({
+        id,
         name: formData.name || 'Untitled Deal',
         company: formData.company || 'Unknown Company',
         companyName: formData.company || formData.name || 'Unknown Company',
@@ -143,15 +167,41 @@ export function NewDealModal({ isOpen, onClose, onSuccess, darkMode }: NewDealMo
         founderExperience: formData.founderExperience || '',
         description: formData.description || '',
         estimatedSavings: savings
+      });
+
+      const proceedToWorkspace = (deal: DealFormData, createdDeal?: Deal) => {
+        setFormData({ ...formData, estimatedSavings: savings });
+        setShowSuccess(true);
+        setTimeout(() => {
+          onSuccess(deal, createdDeal);
+          if (createdDeal) onCreatedDeal?.(createdDeal);
+          handleClose();
+        }, 3500);
       };
-      setFormData({ ...formData, estimatedSavings: savings });
-      setShowSuccess(true);
-      
-      // Auto-proceed to workspace after showing success
-      setTimeout(() => {
-        onSuccess(dealData);
-        handleClose();
-      }, 3500);
+
+      if (!isLiveBackend()) {
+        const dealData = buildDealData(`deal-${Date.now()}`);
+        proceedToWorkspace(dealData);
+        setSubmitting(false);
+        return;
+      }
+
+      apiCreateDeal({
+        name: formData.name || 'Untitled Deal',
+        stage: mapStageToApi(formData.stage),
+        priority: 'medium',
+        trend: undefined,
+        score: undefined,
+        owner: formData.company || undefined
+      })
+        .then((created) => {
+          const dealData = buildDealData(created.id);
+          proceedToWorkspace(dealData, created);
+        })
+        .catch((err) => {
+          setSubmitError(err instanceof Error ? err.message : 'Failed to create deal');
+        })
+        .finally(() => setSubmitting(false));
     }
   };
 
@@ -270,6 +320,12 @@ export function NewDealModal({ isOpen, onClose, onSuccess, darkMode }: NewDealMo
           {/* Step 2: Investment Details */}
           {step === 2 && (
             <div className="space-y-5">
+              {submitError && (
+                <div className={`text-sm rounded-md px-3 py-2 border ${darkMode ? 'border-red-500/50 text-red-300 bg-red-500/10' : 'border-red-400 text-red-600 bg-red-50'}`}>
+                  {submitError}
+                </div>
+              )}
+
               <div>
                 <label className={`block text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                   Target Investment Amount <span className="text-red-400">*</span>
@@ -388,10 +444,10 @@ export function NewDealModal({ isOpen, onClose, onSuccess, darkMode }: NewDealMo
               variant="primary"
               darkMode={darkMode}
               onClick={handleNext}
-              disabled={step === 1 ? !isStep1Valid : !isStep2Valid}
+              disabled={submitting || (step === 1 ? !isStep1Valid : !isStep2Valid)}
               icon={step === 2 ? <Rocket className="w-4 h-4" /> : <ArrowRight className="w-4 h-4" />}
             >
-              {step === 1 ? 'Continue' : 'Create Deal'}
+              {submitting ? 'Creating...' : step === 1 ? 'Continue' : 'Create Deal'}
             </Button>
           </div>
         </>

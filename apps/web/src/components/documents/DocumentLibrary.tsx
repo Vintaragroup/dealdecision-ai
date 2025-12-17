@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
@@ -21,6 +21,7 @@ import {
   SortAsc
 } from 'lucide-react';
 import type { Document as ApiDocument } from '@dealdecision/contracts';
+import { apiGetDocuments, isLiveBackend } from '../../lib/apiClient';
 
 interface DocumentLibraryProps {
   darkMode: boolean;
@@ -51,86 +52,6 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
     status?: string;
   };
 
-  // Mock documents
-  const mockDocuments: LibraryDoc[] = [
-    {
-      id: '1',
-      name: 'Series A Pitch Deck.pdf',
-      type: 'application/pdf',
-      category: 'Pitch Decks',
-      size: 2500000,
-      uploadedAt: new Date('2024-12-01'),
-      uploadedBy: 'John Doe',
-      tags: ['Series A', 'Investment', 'Pitch'],
-      url: '#',
-      aiExtracted: true,
-      extractedData: { companyName: 'TechCo', fundingRound: 'Series A' }
-    },
-    {
-      id: '2',
-      name: 'Financial Model Q4 2024.xlsx',
-      type: 'application/vnd.ms-excel',
-      category: 'Financial Models',
-      size: 1800000,
-      uploadedAt: new Date('2024-11-28'),
-      uploadedBy: 'Jane Smith',
-      tags: ['Financial', 'Q4', '2024'],
-      url: '#',
-      aiExtracted: true,
-      extractedData: { revenue: '$5M', growth: '120%' }
-    },
-    {
-      id: '3',
-      name: 'Term Sheet Draft.docx',
-      type: 'application/msword',
-      category: 'Legal',
-      size: 450000,
-      uploadedAt: new Date('2024-12-05'),
-      uploadedBy: 'Mike Johnson',
-      tags: ['Legal', 'Term Sheet', 'Draft'],
-      url: '#',
-      aiExtracted: false
-    },
-    {
-      id: '4',
-      name: 'Team Photo.jpg',
-      type: 'image/jpeg',
-      category: 'Media',
-      size: 3200000,
-      uploadedAt: new Date('2024-11-20'),
-      uploadedBy: 'Sarah Lee',
-      tags: ['Team', 'Photo'],
-      url: '#',
-      aiExtracted: false
-    },
-    {
-      id: '5',
-      name: 'Market Research Report.pdf',
-      type: 'application/pdf',
-      category: 'Research',
-      size: 5600000,
-      uploadedAt: new Date('2024-11-15'),
-      uploadedBy: 'John Doe',
-      tags: ['Market', 'Research', 'Analysis'],
-      url: '#',
-      aiExtracted: true,
-      extractedData: { marketSize: '$50B', growth: '25% CAGR' }
-    },
-    {
-      id: '6',
-      name: 'Customer List.csv',
-      type: 'text/csv',
-      category: 'Data',
-      size: 120000,
-      uploadedAt: new Date('2024-12-07'),
-      uploadedBy: 'Jane Smith',
-      tags: ['Customers', 'Data'],
-      url: '#',
-      aiExtracted: true,
-      extractedData: { totalCustomers: 145, activeCustomers: 132 }
-    }
-  ];
-
   const documents: LibraryDoc[] = useMemo(() => {
     if (initialDocuments && initialDocuments.length > 0) {
       return initialDocuments.map((doc) => ({
@@ -147,7 +68,7 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
         status: doc.status,
       }));
     }
-    return mockDocuments;
+    return []; // Return empty instead of mock data
   }, [initialDocuments]);
 
   const categories = ['all', 'Pitch Decks', 'Financial Models', 'Legal', 'Media', 'Research', 'Data'];

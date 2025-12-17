@@ -7,7 +7,10 @@ if (!redisUrl) {
   throw new Error("REDIS_URL is required for queue operations");
 }
 
-export const connection = new IORedis(redisUrl);
+export const connection = new IORedis(redisUrl, {
+  maxRetriesPerRequest: null,
+  enableReadyCheck: false,
+});
 
 export const ingestQueue = new Queue("ingest_document", { connection });
 export const fetchEvidenceQueue = new Queue("fetch_evidence", { connection });

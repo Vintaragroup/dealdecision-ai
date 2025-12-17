@@ -7,20 +7,19 @@ export async function insertEvidence(params: {
   source: string;
   kind: string;
   text: string;
-  excerpt?: string | null;
+  confidence?: number;
 }) {
   const pool = getPool();
   await pool.query(
-    `INSERT INTO evidence (evidence_id, deal_id, document_id, source, kind, text, excerpt)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    `INSERT INTO evidence (deal_id, document_id, source, kind, text, confidence)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
     [
-      randomUUID(),
       params.deal_id,
       params.document_id ?? null,
       params.source,
       params.kind,
       params.text,
-      params.excerpt ?? null,
+      params.confidence ?? 0.5,
     ]
   );
 }

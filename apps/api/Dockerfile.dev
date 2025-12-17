@@ -6,6 +6,9 @@ RUN corepack enable
 
 # Pre-copy lockfiles for better caching; source is bind-mounted at runtime
 COPY pnpm-lock.yaml package.json pnpm-workspace.yaml tsconfig.base.json ./
+# Include workspace package manifests needed for api install
+COPY apps/api/package.json apps/api/package.json
+COPY packages/contracts/package.json packages/contracts/package.json
 RUN pnpm install --frozen-lockfile=false
 
 CMD ["pnpm", "--filter", "api", "dev"]

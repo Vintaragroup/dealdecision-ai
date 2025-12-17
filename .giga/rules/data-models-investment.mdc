@@ -11,7 +11,7 @@ Core Data Models:
 ```typescript
 interface Deal {
   id: string
-  stage: 'idea' | 'progress' | 'ready' | 'pitched'
+  stage: 'intake' | 'under_review' | 'in_diligence' | 'ready_decision' | 'pitched'
   priority: 'high' | 'medium' | 'low'
   status: 'active' | 'hold' | 'closed'
   evidence: Evidence[]
@@ -63,10 +63,10 @@ Key Relationships:
 - Evidence N:N Claims
 
 State Transitions:
-1. Deal Pipeline
-   - idea -> progress -> ready -> pitched
-   - Can move back one stage if new evidence requires
-   - Status changes independent of stage
+1. Deal Pipeline (Analysis-Driven Workflow)
+   - intake (documents uploaded) -> under_review (analysis complete) -> in_diligence (DD gaps addressed) -> ready_decision (confidence >= 70%) -> pitched (decision made)
+   - Progression triggered by: document upload, analysis completion, confidence score, investor actions
+   - Manual override available from any stage to "pitched"
 
 2. Evidence Processing
    - Document Upload -> Evidence Extraction -> Verification

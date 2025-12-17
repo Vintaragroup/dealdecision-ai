@@ -1,6 +1,7 @@
 import { OnboardingFlow, OnboardingData } from './components/onboarding/OnboardingFlow';
 import { NewDealModal, DealFormData } from './components/NewDealModal';
 import { useState } from 'react';
+import type { Deal } from '@dealdecision/contracts';
 import { Sidebar, PageView } from './components/Sidebar';
 import { Header } from './components/Header';
 import { RightSidebar, NotificationPreferences } from './components/RightSidebar';
@@ -75,6 +76,7 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState<PageView>('dashboard');
   const [selectedDealId, setSelectedDealId] = useState<string | null>(null);
   const [selectedDealData, setSelectedDealData] = useState<DealFormData | null>(null);
+  const [createdDeal, setCreatedDeal] = useState<Deal | null>(null);
   const [showNewDealModal, setShowNewDealModal] = useState(false);
   const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>(defaultNotificationPreferences);
   const [showOnboarding, setShowOnboarding] = useState(() => {
@@ -99,9 +101,14 @@ export default function App() {
     setShowNewDealModal(true);
   };
 
-  const handleNewDealSuccess = (dealData: DealFormData) => {
+  const handleNewDealSuccess = (dealData: DealFormData, created?: Deal) => {
+    if (created) {
+      setCreatedDeal(created);
+      setSelectedDealId(created.id);
+    } else {
+      setSelectedDealId(null);
+    }
     setSelectedDealData(dealData);
-    setSelectedDealId(null); // Clear any selected deal ID
     setShowNewDealModal(false);
     setCurrentPage('dealWorkspace');
   };
@@ -187,6 +194,7 @@ export default function App() {
                     darkMode={darkMode} 
                     onDealClick={handleDealClick} 
                     onNewDeal={handleNewDeal}
+                    createdDeal={createdDeal}
                   />
                 )}
                 {currentPage === 'dealWorkspace' && (
@@ -271,6 +279,7 @@ export default function App() {
               isOpen={showNewDealModal}
               darkMode={darkMode} 
               onSuccess={handleNewDealSuccess}
+              onCreatedDeal={setCreatedDeal}
               onClose={() => setShowNewDealModal(false)}
             />
           )}

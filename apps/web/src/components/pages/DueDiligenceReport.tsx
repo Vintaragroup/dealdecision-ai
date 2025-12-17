@@ -4,6 +4,7 @@ import { ScoreCircle } from '../ui/ScoreCircle';
 import { RiskMapGrid } from '../ui/RiskMapGrid';
 import { ValidationChecklist } from '../ui/ValidationChecklist';
 import { ExportReportModal } from '../ExportReportModal';
+import { apiGetDeal } from '../../lib/apiClient';
 import {
   ArrowLeft,
   Download,
@@ -53,17 +54,34 @@ export function DueDiligenceReport({ darkMode, dealId, onBack, onCompare }: DueD
   const [showExportModal, setShowExportModal] = useState(false);
   const [overallScore, setOverallScore] = useState(0);
   const [activeSection, setActiveSection] = useState<string>('executive');
+  const [dealInfo, setDealInfo] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
-  // Check if this is the Vintara deal
-  const isVintaraDeal = dealId === 'vintara-001';
+  // Fetch deal data from API
+  useEffect(() => {
+    if (!dealId) {
+      setLoading(false);
+      return;
+    }
 
-  // Debug: Log the dealId
-  console.log('DueDiligenceReport dealId:', dealId, 'isVintaraDeal:', isVintaraDeal);
+    const loadDeal = async () => {
+      try {
+        const deal = await apiGetDeal(dealId);
+        setDealInfo(deal);
+      } catch (error) {
+        console.error('Failed to load deal:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
 
-  // Sample data - in real app would come from props or API
-  const dealName = isVintaraDeal ? 'Vintara Group LLC' : 'TechVision AI Platform';
-  const generatedDate = isVintaraDeal ? 'September 5, 2025' : 'December 1, 2024';
-  const lastUpdated = isVintaraDeal ? 'September 5, 2025' : 'December 12, 2024';
+    loadDeal();
+  }, [dealId]);
+
+  // Use real deal data, with fallback to defaults
+  const dealName = dealInfo?.name || 'Deal Report';
+  const generatedDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  const lastUpdated = dealInfo?.updated_at ? new Date(dealInfo.updated_at).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : generatedDate;
 
   const sectionScores = [
     { name: 'Market', score: 90, icon: TrendingUp },

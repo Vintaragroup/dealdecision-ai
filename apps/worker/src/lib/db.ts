@@ -34,26 +34,24 @@ export async function updateDocumentStatus(documentId: string, status: string) {
 }
 
 export async function insertEvidence(params: {
-  evidence_id: string;
   deal_id: string;
   document_id?: string | null;
   source: string;
   kind: string;
   text: string;
-  excerpt?: string | null;
+  confidence?: number;
 }) {
   const currentPool = getPool();
   await currentPool.query(
-    `INSERT INTO evidence (evidence_id, deal_id, document_id, source, kind, text, excerpt)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    `INSERT INTO evidence (deal_id, document_id, source, kind, text, confidence)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
     [
-      params.evidence_id,
       params.deal_id,
       params.document_id ?? null,
       params.source,
       params.kind,
       params.text,
-      params.excerpt ?? null,
+      params.confidence ?? 0.5,
     ]
   );
 }

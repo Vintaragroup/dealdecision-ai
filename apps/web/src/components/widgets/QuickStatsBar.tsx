@@ -1,6 +1,7 @@
 import { Briefcase, FileText, Trophy, Zap, Flame, TrendingUp } from 'lucide-react';
 
 interface Stat {
+  id?: string;
   label: string;
   value: string | number;
   icon: 'deals' | 'documents' | 'level' | 'xp' | 'streak' | 'growth';
@@ -44,9 +45,9 @@ export function QuickStatsBar({ darkMode, stats }: QuickStatsBarProps) {
         : 'bg-gradient-to-r from-[#6366f1]/5 via-[#8b5cf6]/5 to-transparent border-gray-200'
     }`}>
       <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
-        {stats.map((stat, index) => (
+        {stats.map((stat) => (
           <div
-            key={index}
+            key={stat.id || stat.label}
             className={`flex items-center gap-3 ${
               stat.highlight 
                 ? `p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-white/50'}` 

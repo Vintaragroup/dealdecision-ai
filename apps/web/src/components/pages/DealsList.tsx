@@ -4,7 +4,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Select } from '../ui/select';
 import { ExportDealsModal } from '../ExportDealsModal';
-import { apiGetDeals, isLiveBackend } from '../../lib/apiClient';
+import { apiGetDeals, apiGetDocuments, apiAutoProgressDeal, isLiveBackend } from '../../lib/apiClient';
 import { 
   Search,
   Plus,
@@ -24,7 +24,9 @@ import {
   Calendar,
   Users,
   Target,
-  Zap
+  Zap,
+  FileText,
+  ArrowRight
 } from 'lucide-react';
 
 interface DealData {
@@ -47,9 +49,10 @@ interface DealsListProps {
   onDealClick?: (dealId: string) => void;
   onNewDeal?: () => void;
   onExportAll?: () => void;
+  createdDeal?: Deal | null;
 }
 
-export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: DealsListProps) {
+export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, createdDeal }: DealsListProps) {
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [searchQuery, setSearchQuery] = useState('');
   const [stageFilter, setStageFilter] = useState('all');
@@ -60,135 +63,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [liveDeals, setLiveDeals] = useState<Deal[]>([]);
-
-  const mockDeals: DealData[] = [
-    {
-      id: 'vintara-001',
-      name: 'Vintara Group LLC',
-      stage: 'ready',
-      score: 86,
-      lastUpdated: '1 hour ago',
-      documents: 12,
-      completeness: 94,
-      fundingTarget: '$2M-$3M Series A',
-      trend: 'up',
-      priority: 'high',
-      views: 47,
-      owner: 'Sarah Chen'
-    },
-    {
-      id: '1',
-      name: 'TechVision AI Platform',
-      stage: 'ready',
-      score: 87,
-      lastUpdated: '2 hours ago',
-      documents: 8,
-      completeness: 88,
-      fundingTarget: '$3M Series A',
-      trend: 'up',
-      priority: 'high',
-      views: 24,
-      owner: 'Sarah Chen'
-    },
-    {
-      id: '2',
-      name: 'HealthTrack Wearables',
-      stage: 'progress',
-      score: 72,
-      lastUpdated: '1 day ago',
-      documents: 6,
-      completeness: 65,
-      fundingTarget: '$1.5M Seed',
-      trend: 'up',
-      priority: 'high',
-      views: 18,
-      owner: 'Sarah Chen'
-    },
-    {
-      id: '3',
-      name: 'EcoLogistics Network',
-      stage: 'pitched',
-      score: 91,
-      lastUpdated: '3 days ago',
-      documents: 10,
-      completeness: 95,
-      fundingTarget: '$5M Series A',
-      trend: 'stable',
-      priority: 'medium',
-      views: 42,
-      owner: 'Michael Park'
-    },
-    {
-      id: '4',
-      name: 'FinFlow Analytics',
-      stage: 'ready',
-      score: 84,
-      lastUpdated: '5 hours ago',
-      documents: 7,
-      completeness: 82,
-      fundingTarget: '$2M Seed',
-      trend: 'up',
-      priority: 'high',
-      views: 31,
-      owner: 'Sarah Chen'
-    },
-    {
-      id: '5',
-      name: 'EduConnect Platform',
-      stage: 'progress',
-      score: 68,
-      lastUpdated: '2 days ago',
-      documents: 5,
-      completeness: 58,
-      fundingTarget: '$800K Pre-Seed',
-      trend: 'down',
-      priority: 'medium',
-      views: 12,
-      owner: 'Sarah Chen'
-    },
-    {
-      id: '6',
-      name: 'SmartHome IoT Hub',
-      stage: 'idea',
-      score: 45,
-      lastUpdated: '1 week ago',
-      documents: 3,
-      completeness: 35,
-      fundingTarget: '$1M Seed',
-      trend: 'stable',
-      priority: 'low',
-      views: 8,
-      owner: 'Alex Rivera'
-    },
-    {
-      id: '7',
-      name: 'CryptoTrade Pro',
-      stage: 'ready',
-      score: 89,
-      lastUpdated: '4 hours ago',
-      documents: 9,
-      completeness: 92,
-      fundingTarget: '$4M Series A',
-      trend: 'up',
-      priority: 'high',
-      views: 38,
-      owner: 'Michael Park'
-    },
-    {
-      id: '8',
-      name: 'FoodDelivery Express',
-      stage: 'progress',
-      score: 76,
-      lastUpdated: '6 hours ago',
-      documents: 6,
-      completeness: 70,
-      fundingTarget: '$2.5M Seed',
-      trend: 'up',
-      priority: 'medium',
-      views: 15,
-      owner: 'Sarah Chen'
-    }
-  ];
+  const [progressionNotification, setProgressionNotification] = useState<{ dealId: string; oldStage: string; newStage: string } | null>(null);
 
   useEffect(() => {
     if (!isLiveBackend()) return;
@@ -197,18 +72,41 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
     setLoading(true);
     setError(null);
 
-    apiGetDeals()
-      .then((data) => {
+    const fetchDealsAndDocuments = async () => {
+      try {
+        const deals = await apiGetDeals();
         if (!isMounted) return;
-        setLiveDeals(data);
-      })
-      .catch((err) => {
+
+        // Fetch documents for each deal
+        const documentCounts: Record<string, number> = {};
+        for (const deal of deals) {
+          try {
+            const docsResponse = await apiGetDocuments(deal.id);
+            documentCounts[deal.id] = docsResponse.documents?.length || 0;
+          } catch (error) {
+            console.error(`Failed to fetch documents for deal ${deal.id}:`, error);
+            documentCounts[deal.id] = 0;
+          }
+        }
+
+        // Update deals with document counts
+        const dealsWithDocuments = deals.map(deal => ({
+          ...deal,
+          documents: documentCounts[deal.id] || 0
+        }));
+
+        if (!isMounted) return;
+        setLiveDeals(dealsWithDocuments);
+      } catch (err) {
         if (!isMounted) return;
         setError(err instanceof Error ? err.message : 'Failed to load deals');
-      })
-      .finally(() => {
-        if (isMounted) setLoading(false);
-      });
+      } finally {
+        if (!isMounted) return;
+        setLoading(false);
+      }
+    };
+
+    fetchDealsAndDocuments();
 
     return () => {
       isMounted = false;
@@ -216,9 +114,16 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
   }, []);
 
   const deals: DealData[] = useMemo(() => {
-    if (!isLiveBackend()) return mockDeals;
+    // Deduplicate deals by name, keeping the most recent one
+    const deduplicatedDeals = new Map<string, typeof liveDeals[0]>();
+    for (const deal of liveDeals) {
+      const existing = deduplicatedDeals.get(deal.name);
+      if (!existing || new Date(deal.lastUpdated || 0) > new Date(existing.lastUpdated || 0)) {
+        deduplicatedDeals.set(deal.name, deal);
+      }
+    }
 
-    return liveDeals.map((deal) => ({
+    return Array.from(deduplicatedDeals.values()).map((deal) => ({
       id: deal.id,
       name: deal.name,
       stage: deal.stage,
@@ -232,7 +137,17 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
       views: (deal as any).views ?? 0,
       owner: deal.owner ?? 'Unassigned'
     }));
-  }, [liveDeals, mockDeals]);
+  }, [liveDeals]);
+
+  useEffect(() => {
+    if (!isLiveBackend()) return;
+    if (!createdDeal) return;
+    setLiveDeals((prev) => {
+      const exists = prev.some((d) => d.id === createdDeal.id);
+      if (exists) return prev;
+      return [createdDeal, ...prev];
+    });
+  }, [createdDeal]);
 
   if (loading) {
     return (
@@ -253,11 +168,13 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
 
   const getStageColor = (stage: string) => {
     switch (stage) {
-      case 'idea':
+      case 'intake':
         return darkMode ? 'bg-gray-500/20 text-gray-400' : 'bg-gray-200 text-gray-700';
-      case 'progress':
+      case 'under_review':
         return darkMode ? 'bg-blue-500/20 text-blue-400' : 'bg-blue-100 text-blue-700';
-      case 'ready':
+      case 'in_diligence':
+        return darkMode ? 'bg-amber-500/20 text-amber-400' : 'bg-amber-100 text-amber-700';
+      case 'ready_decision':
         return darkMode ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-100 text-emerald-700';
       case 'pitched':
         return darkMode ? 'bg-purple-500/20 text-purple-400' : 'bg-purple-100 text-purple-700';
@@ -268,9 +185,10 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
 
   const getStageName = (stage: string) => {
     switch (stage) {
-      case 'idea': return 'Idea Stage';
-      case 'progress': return 'In Progress';
-      case 'ready': return 'Investor Ready';
+      case 'intake': return 'Intake';
+      case 'under_review': return 'Under Review';
+      case 'in_diligence': return 'In Due Diligence';
+      case 'ready_decision': return 'Ready for Decision';
       case 'pitched': return 'Pitched';
       default: return stage;
     }
@@ -298,7 +216,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
 
   const summaryStats = {
     total: deals.length,
-    ready: deals.filter(d => d.stage === 'ready').length,
+    ready: deals.filter(d => d.stage === 'ready_decision').length,
     avgScore: Math.round(deals.reduce((sum, d) => sum + d.score, 0) / deals.length),
     totalViews: deals.reduce((sum, d) => sum + d.views, 0)
   };
@@ -317,9 +235,48 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
     }
   };
 
+  const handleAutoProgressDeal = async (dealId: string) => {
+    try {
+      const result = await apiAutoProgressDeal(dealId);
+      if (result.progressed && result.newStage) {
+        setProgressionNotification({
+          dealId,
+          oldStage: '',
+          newStage: result.newStage
+        });
+        // Refresh deals list
+        const updatedDeals = await apiGetDeals();
+        setLiveDeals(updatedDeals);
+        // Clear notification after 4 seconds
+        setTimeout(() => setProgressionNotification(null), 4000);
+      }
+    } catch (error) {
+      console.error('Failed to check stage progression:', error);
+    }
+  };
+
   return (
     <div className="flex-1 overflow-auto">
       <div className="p-6 space-y-6">
+        {/* Stage Progression Notification */}
+        {progressionNotification && (
+          <div className={`p-4 rounded-lg border flex items-center gap-3 animate-pulse ${
+            darkMode
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+              : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+          }`}>
+            <CheckCircle className="w-5 h-5 flex-shrink-0" />
+            <div className="flex-1">
+              <p className="font-medium text-sm">
+                Deal automatically progressed to <strong>{progressionNotification.newStage}</strong>
+              </p>
+              <p className={`text-xs ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`}>
+                Conditions met for stage advancement
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Summary Stats */}
         <div className="grid grid-cols-4 gap-4">
           <div className={`backdrop-blur-xl border rounded-xl p-4 ${
@@ -456,9 +413,10 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
                 onChange={(e) => setStageFilter(e.target.value)}
                 options={[
                   { value: 'all', label: 'All Stages' },
-                  { value: 'idea', label: 'Idea Stage' },
-                  { value: 'progress', label: 'In Progress' },
-                  { value: 'ready', label: 'Investor Ready' },
+                  { value: 'intake', label: 'Intake' },
+                  { value: 'under_review', label: 'Under Review' },
+                  { value: 'in_diligence', label: 'In Due Diligence' },
+                  { value: 'ready_decision', label: 'Ready for Decision' },
                   { value: 'pitched', label: 'Pitched' }
                 ]}
               />
@@ -570,6 +528,9 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
                       Last Updated
                     </th>
                     <th className={`p-4 text-left text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      Documents
+                    </th>
+                    <th className={`p-4 text-left text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                       Views
                     </th>
                     <th className={`p-4 text-left text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
@@ -613,9 +574,18 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
                         </div>
                       </td>
                       <td className="p-4">
-                        <span className={`text-xs px-2 py-1 rounded-full ${getStageColor(deal.stage)}`}>
-                          {getStageName(deal.stage)}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xs px-2 py-1 rounded-full ${getStageColor(deal.stage)}`}>
+                            {getStageName(deal.stage)}
+                          </span>
+                          <span className={`text-xs px-1.5 py-0.5 rounded flex items-center gap-1 ${
+                            darkMode
+                              ? 'bg-amber-500/20 text-amber-400'
+                              : 'bg-amber-100 text-amber-700'
+                          }`} title="Click arrow button to check if deal can advance">
+                            <ArrowRight className="w-3 h-3" />
+                          </span>
+                        </div>
                       </td>
                       <td className="p-4">
                         <div className="flex items-center gap-2">
@@ -654,20 +624,45 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
                       </td>
                       <td className="p-4">
                         <span className={`text-xs flex items-center gap-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          <FileText className="w-3 h-3" />
+                          {deal.documents}
+                        </span>
+                      </td>
+                      <td className="p-4">
+                        <span className={`text-xs flex items-center gap-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                           <Eye className="w-3 h-3" />
                           {deal.views}
                         </span>
                       </td>
                       <td className="p-4" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center gap-1">
-                          <Button variant="ghost" size="icon" aria-label="View" className="dd-btn-icon text-muted-foreground">
+                          <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            aria-label="View" 
+                            className={`!text-gray-400 hover:!text-gray-300`}
+                            onClick={() => onDealClick?.(deal.id)}
+                          >
                             <Eye className="w-4 h-4" />
                           </Button>
-                          <Button variant="ghost" size="icon" aria-label="Edit" className="dd-btn-icon text-muted-foreground">
+                          <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            aria-label="Edit" 
+                            className={`!text-gray-400 hover:!text-gray-300`}
+                            onClick={() => onDealClick?.(deal.id)}
+                          >
                             <Edit className="w-4 h-4" />
                           </Button>
-                          <Button variant="ghost" size="icon" aria-label="More" className="dd-btn-icon text-muted-foreground">
-                            <MoreVertical className="w-4 h-4" />
+                          <Button 
+                            variant="ghost" 
+                            size="icon" 
+                            aria-label="Check Stage Progression" 
+                            className={`!text-gray-400 hover:!text-amber-400`}
+                            title="Check if deal can advance to next stage"
+                            onClick={() => handleAutoProgressDeal(deal.id)}
+                          >
+                            <ArrowRight className="w-4 h-4" />
                           </Button>
                         </div>
                       </td>
@@ -720,6 +715,18 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
                     <span className={`text-xs px-2 py-1 rounded-full ${getPriorityColor(deal.priority)}`}>
                       {deal.priority}
                     </span>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className={`ml-auto w-6 h-6 !text-gray-400 hover:!text-amber-400`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleAutoProgressDeal(deal.id);
+                      }}
+                      title="Check if deal can advance to next stage"
+                    >
+                      <ArrowRight className="w-3 h-3" />
+                    </Button>
                   </div>
 
                   <div className="flex items-center justify-between mb-2">
@@ -748,6 +755,10 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll }: Dea
                     <span className={`flex items-center gap-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                       <Clock className="w-3 h-3" />
                       {deal.lastUpdated}
+                    </span>
+                    <span className={`flex items-center gap-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                      <FileText className="w-3 h-3" />
+                      {deal.documents}
                     </span>
                     <span className={`flex items-center gap-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                       <Eye className="w-3 h-3" />

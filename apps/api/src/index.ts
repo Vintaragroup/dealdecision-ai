@@ -1,6 +1,8 @@
 import fastify from "fastify";
 import { registerCors } from "./plugins/cors";
 import multipart from "@fastify/multipart";
+import swagger from "@fastify/swagger";
+import swaggerUi from "@fastify/swagger-ui";
 import { registerHealthRoutes } from "./routes/health";
 import { registerDealRoutes } from "./routes/deals";
 import { registerJobRoutes } from "./routes/jobs";
@@ -9,6 +11,9 @@ import { registerDocumentRoutes } from "./routes/documents";
 import { registerChatRoutes } from "./routes/chat";
 import { registerEvidenceRoutes } from "./routes/evidence";
 import "./lib/queue";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const app = fastify({
   logger: true,
@@ -19,7 +24,29 @@ const host = "0.0.0.0";
 
 async function bootstrap() {
   await registerCors(app);
-  await app.register(multipart);
+  await app.register(swagger, {
+    openapi: {
+      info: {
+        title: "DealDecision API",
+        version: "0.1.0",
+        description: "Investment analysis and due diligence API"
+      },
+      servers: [{ url: `http://${host}:${port}` }],
+    },
+  });
+  await app.register(swaggerUi, {
+    routePrefix: "/docs",
+    uiConfig: {
+      docExpansion: "list",
+      deepLinking: true,
+    },
+    staticCSP: true,
+  });
+  await app.register(multipart, {
+    limits: {
+      fileSize: 50 * 1024 * 1024, // 50MB limit
+    },
+  });
   await registerHealthRoutes(app);
   await registerDealRoutes(app);
   await registerJobRoutes(app);

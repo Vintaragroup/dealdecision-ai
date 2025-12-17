@@ -12,10 +12,23 @@ type JobRow = {
 };
 
 export async function registerEventRoutes(app: FastifyInstance, pool = getPool()) {
+  // Handle OPTIONS preflight requests for EventSource CORS
+  app.options("/api/v1/events", async (request, reply) => {
+    reply.header("Access-Control-Allow-Origin", "*");
+    reply.header("Access-Control-Allow-Methods", "GET, OPTIONS");
+    reply.header("Access-Control-Allow-Headers", "Content-Type, Last-Event-ID");
+    reply.send();
+  });
+
   app.get("/api/v1/events", async (request, reply) => {
     const { deal_id, cursor } = request.query as { deal_id?: string; cursor?: string };
     const lastEventIdHeader = request.headers["last-event-id"] as string | undefined;
 
+    // Set CORS headers for streaming response
+    reply.header("Access-Control-Allow-Origin", "*");
+    reply.header("Access-Control-Allow-Methods", "GET, OPTIONS");
+    reply.header("Access-Control-Allow-Headers", "Content-Type, Last-Event-ID");
+    reply.header("Access-Control-Expose-Headers", "Content-Type");
     reply.raw.setHeader("Content-Type", "text/event-stream");
     reply.raw.setHeader("Cache-Control", "no-cache, no-transform");
     reply.raw.setHeader("Connection", "keep-alive");
@@ -53,7 +66,6 @@ export async function registerEventRoutes(app: FastifyInstance, pool = getPool()
     }, 15000);
 
     const pollInterval = setInterval(async () => {
-      if (closed) return;
       try {
         const { rows } = await pool.query<JobRow>(
           `SELECT job_id, status, progress_pct, message, deal_id, updated_at, type

@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-dealdecision}
     ports:
-      - "5432:5432"
+      - "55432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -35,6 +35,10 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/dealdecision
       REDIS_URL: redis://redis:6379
+    volumes:
+      - ..:/app
+      - /app/node_modules
+      - /app/apps/api/node_modules
     depends_on:
       - postgres
     restart: "no"
@@ -51,9 +55,10 @@ services:
     ports:
       - "9000:9000"
     volumes:
-      - ..:/app
-      - api_node_modules:/app/node_modules
-      - api_app_node_modules:/app/apps/api/node_modules
+      - ../apps/api/src:/app/apps/api/src
+      - ../apps/api/package.json:/app/apps/api/package.json
+      - ../tsconfig.base.json:/app/tsconfig.base.json
+      - ../pnpm-lock.yaml:/app/pnpm-lock.yaml
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -71,9 +76,10 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/dealdecision
       REDIS_URL: redis://redis:6379
     volumes:
-      - ..:/app
-      - worker_node_modules:/app/node_modules
-      - worker_app_node_modules:/app/apps/worker/node_modules
+      - ../apps/worker/src:/app/apps/worker/src
+      - ../apps/worker/package.json:/app/apps/worker/package.json
+      - ../tsconfig.base.json:/app/tsconfig.base.json
+      - ../pnpm-lock.yaml:/app/pnpm-lock.yaml
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -86,18 +92,22 @@ services:
     build:
       context: ..
       dockerfile: apps/web/Dockerfile.dev
-    command: ["pnpm", "--filter", "web", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
+    command: ["pnpm", "--filter", "web", "dev"]
     environment:
       VITE_API_BASE_URL: http://localhost:9000
       VITE_BACKEND_MODE: live
       CHOKIDAR_USEPOLLING: "true"
       WATCHPACK_POLLING: "true"
     ports:
-      - "5173:5173"
+      - "5199:5173"
     volumes:
-      - ..:/app
-      - web_node_modules:/app/node_modules
-      - web_app_node_modules:/app/apps/web/node_modules
+      - ../apps/web/src:/app/apps/web/src
+      - ../apps/web/package.json:/app/apps/web/package.json
+      - ../apps/web/vite.config.ts:/app/apps/web/vite.config.ts
+      - ../apps/web/index.html:/app/apps/web/index.html
+      - ../apps/web/tsconfig.json:/app/apps/web/tsconfig.json
+      - ../tsconfig.base.json:/app/tsconfig.base.json
+      - ../pnpm-lock.yaml:/app/pnpm-lock.yaml
     depends_on:
       api:
         condition: service_started
@@ -105,9 +115,3 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  api_node_modules:
-  api_app_node_modules:
-  worker_node_modules:
-  worker_app_node_modules:
-  web_node_modules:
-  web_app_node_modules:

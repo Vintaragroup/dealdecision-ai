@@ -1,0 +1,64 @@
+{
+  "auditCategories": {
+    "mockData": {
+      "description": "Hardcoded data that should come from API",
+      "patterns": [
+        "hardcoded arrays with object literals",
+        "fake data in useState initializers",
+        "sample/example/mock prefixed variables",
+        "data that duplicates API responses"
+      ]
+    },
+    "incorrectText": {
+      "description": "Text fields with wrong/placeholder/fake content",
+      "patterns": [
+        "Company names that don't match database",
+        "Email addresses that are placeholder format",
+        "Phone numbers that are fake (555-, 000-, etc)",
+        "Addresses that are Lorem ipsum or 'TBD'",
+        "Status values that don't match schema"
+      ]
+    },
+    "apiIntegrationGaps": {
+      "description": "Places that should fetch API data but don't",
+      "patterns": [
+        "Data rendered without apiGet* calls",
+        "Props that could come from API but are hardcoded",
+        "Components that have both mock and real data paths",
+        "Missing loading states for async data"
+      ]
+    },
+    "dataDiscrepancies": {
+      "description": "Inconsistencies between different data sources",
+      "patterns": [
+        "Component shows different count than database",
+        "Display name differs from API response",
+        "Status values mismatch between views",
+        "Calculated fields that don't match source data"
+      ]
+    }
+  },
+  "auditTargets": [
+    {
+      "file": "apps/web/src/components/documents/DocumentLibrary.tsx",
+      "issue": "Mock documents array still exists alongside real data",
+      "lines": "60-131",
+      "priority": "HIGH",
+      "status": "IDENTIFIED"
+    },
+    {
+      "file": "apps/web/src/components/pages/DealWorkspace.tsx",
+      "issue": "Need to audit all tabs for remaining mock content",
+      "lines": "entire file",
+      "priority": "HIGH",
+      "status": "IN_PROGRESS"
+    },
+    {
+      "file": "apps/web/src/components/DashboardContent.tsx",
+      "issue": "Active Deals section may have hardcoded data",
+      "lines": "TBD",
+      "priority": "MEDIUM",
+      "status": "PENDING"
+    }
+  ]
+}

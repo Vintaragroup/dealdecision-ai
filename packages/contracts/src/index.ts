@@ -1,6 +1,12 @@
 // Shared contracts for DealDecision AI
 
-export type DealStage = 'idea' | 'progress' | 'ready' | 'pitched';
+// Deal Stage Workflow:
+// Intake: Deal created + documents uploaded (pre-analysis)
+// Under Review: First analysis complete, AI identified gaps/opportunities
+// In Due Diligence: Investor actively addressing identified gaps
+// Ready for Decision: DD complete, confidence >= 70%, investment-ready
+// Pitched: Deal presented or investment decision made
+export type DealStage = 'intake' | 'under_review' | 'in_diligence' | 'ready_decision' | 'pitched';
 export type DealPriority = 'high' | 'medium' | 'low';
 export type DealTrend = 'up' | 'down' | 'stable';
 

@@ -4,4 +4,3 @@ import "./index.css";
 import "./styles/theme-overrides.css";
 
 createRoot(document.getElementById("root")!).render(<App />);
-  createRoot(document.getElementById("root")!).render(<App />);

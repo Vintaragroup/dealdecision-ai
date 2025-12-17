@@ -15,6 +15,7 @@ import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { EvidencePanel } from '../evidence/EvidencePanel';
 import { apiGetDeal, apiPostAnalyze, apiGetJob, apiFetchEvidence, apiGetEvidence, isLiveBackend, subscribeToEvents, type JobUpdatedEvent } from '../../lib/apiClient';
+import { debugLogger } from '../../lib/debugLogger';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { 
   FileText, 
@@ -58,7 +59,7 @@ interface DealWorkspaceProps {
 export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: DealWorkspaceProps) {
   const { isFounder, isInvestor } = useUserRole();
   const [activeTab, setActiveTab] = useState('overview');
-  const [investorScore, setInvestorScore] = useState(82);
+  const [investorScore, setInvestorScore] = useState(0);
   const [analyzing, setAnalyzing] = useState(false);
   const [toasts, setToasts] = useState<Array<{ id: string; type: ToastType; title: string; message?: string }>>([]);
   const [showExportModal, setShowExportModal] = useState(false);
@@ -78,41 +79,21 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [evidence, setEvidence] = useState<Array<{ evidence_id: string; deal_id: string; document_id?: string; source: string; kind: string; text: string; excerpt?: string; created_at?: string }>>([]);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
   const [lastEvidenceRefresh, setLastEvidenceRefresh] = useState<string | null>(null);
+  const [dealFromApi, setDealFromApi] = useState<any>(null);
   const lastEventIdRef = useRef<string | undefined>(undefined);
 
-  // Map dealId to deal information (in a real app, this would be from an API/database)
-  const dealInfo = dealId === 'vintara-001' ? {
-    name: 'Vintara Group LLC',
-    type: 'series-a',
-    stage: 'Investor Ready',
-    fundingTarget: '$2M-$3M Series A',
-    score: 86,
-    updatedTime: '1 hour ago',
-    createdDate: 'September 5, 2025',
-    description: 'Vintara Group is a spirits brand accelerator acquiring and scaling premium brands in high-growth categories. Lead asset is Califino Tequila, a celebrity-backed brand with strong DTC momentum and strategic distribution partnerships. The holding company model enables rapid portfolio expansion while maintaining lean operations.',
-    metrics: {
-      currentRevenue: '$0 (pre-revenue)',
-      year1Target: '$850K',
-      categoryGrowth: '+40% YoY',
-      runway: '24mo post-raise',
-      grossMargin: '42%',
-      brandAcquisitions: '2-3 per year',
-      distributorPartnerships: 'Southern Glazer\'s, RNDC',
-      breakEven: 'Q3 2026'
-    }
-  } : null;
-
-  // Use dealInfo if available, otherwise fall back to dealData
-  const displayName = dealInfo?.name || dealData?.name || 'TechVision AI Platform';
-  const displayType = dealInfo?.type || dealData?.type || 'series-a';
-  const displayScore = dealInfo?.score || investorScore;
-
+  // Fetch the actual deal from API
   useEffect(() => {
-    if (!dealId || !isLiveBackend()) return;
+    if (!dealId || !isLiveBackend()) {
+      setDealFromApi(null);
+      return;
+    }
     let active = true;
     apiGetDeal(dealId)
       .then((deal) => {
         if (!active) return;
+        setDealFromApi(deal);
+        debugLogger.logAPIData('DealWorkspace', 'dealFromApi', deal, `Fetched via apiGetDeal(${dealId})`);
         setDioMeta({
           dioVersionId: (deal as any).dioVersionId,
           dioStatus: (deal as any).dioStatus,
@@ -121,12 +102,49 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       })
       .catch((err) => {
         if (!active) return;
-        addToast('error', 'Failed to load deal metadata', err instanceof Error ? err.message : 'Unknown error');
+        debugLogger.logMockData('DealWorkspace', 'dealFromApi', null, `API call failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        addToast('error', 'Failed to load deal', err instanceof Error ? err.message : 'Unknown error');
       });
     return () => {
       active = false;
     };
   }, [dealId]);
+
+  // Map dealId to deal information (in a real app, this would be from an API/database)
+  const dealInfo = dealFromApi ? {
+    name: dealFromApi.name || 'Unknown Deal',
+    type: dealData?.type || 'series-a',
+    stage: dealFromApi.stage || 'intake',
+    fundingTarget: dealData?.fundingTarget || 'TBD',
+    score: dealFromApi.score || investorScore,
+    updatedTime: dealFromApi.updated_at ? new Date(dealFromApi.updated_at).toLocaleDateString() : 'Recently',
+    createdDate: dealFromApi.created_at ? new Date(dealFromApi.created_at).toLocaleDateString() : 'Unknown',
+    description: dealData?.description || 'No description provided',
+    metrics: {
+      currentRevenue: dealData?.revenue || 'N/A',
+      year1Target: dealData?.year1Target || 'N/A',
+      categoryGrowth: dealData?.categoryGrowth || 'N/A',
+      runway: dealData?.runway || 'N/A',
+      grossMargin: dealData?.grossMargin || 'N/A',
+      brandAcquisitions: dealData?.brandAcquisitions || 'N/A',
+      distributorPartnerships: dealData?.partnerships || 'N/A',
+      breakEven: dealData?.breakEven || 'N/A'
+    }
+  } : null;
+
+  // Use dealInfo if available, otherwise fall back to dealData
+  const displayName = dealInfo?.name || dealData?.name || 'Unnamed Deal';
+  const displayType = dealInfo?.type || dealData?.type || 'series-a';
+  const displayScore = typeof dealInfo?.score === 'number' ? dealInfo.score : investorScore;
+
+  // Log data sources for debugging
+  useEffect(() => {
+    if (typeof dealInfo?.score === 'number') {
+      debugLogger.logAPIData('DealWorkspace', 'displayScore', displayScore, 'From dealInfo.score (API data)');
+    } else {
+      debugLogger.logFallbackData('DealWorkspace', 'displayScore', displayScore, `No API score available, using fallback investorScore (${investorScore})`);
+    }
+  }, [displayScore, investorScore]);
 
   const loadEvidence = async () => {
     if (!dealId || !isLiveBackend()) return;
@@ -218,6 +236,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       },
       onError: () => {
         if (cancelled) return;
+        // EventSource connection failed (likely CORS or backend unreachable)
+        // App continues to work without real-time updates via polling
         setSseReady(false);
       },
     }, { cursor: lastEventIdRef.current });
@@ -248,254 +268,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   ];
 
   // Role-specific accordion items (Due Diligence vs Pitch Checklist)
-  const dueDiligenceItems: AccordionItem[] = isFounder ? [
-    // FOUNDER: Pitch Checklist
-    {
-      id: 'deck',
-      title: 'Pitch Deck Status',
-      icon: <Presentation className="w-4 h-4" />,
-      badge: '85%',
-      content: (
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Slides Complete</div>
-              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>14/16</div>
-            </div>
-            <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Design Quality</div>
-              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>Excellent</div>
-            </div>
-            <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Storytelling Flow</div>
-              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>Strong</div>
-            </div>
-            <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Data Backed</div>
-              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>Yes</div>
-            </div>
-          </div>
-          <div className={`p-3 rounded-lg border ${darkMode ? 'bg-amber-500/10 border-amber-500/30' : 'bg-amber-50 border-amber-200'}`}>
-            <div className="flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5" />
-              <div className="flex-1">
-                <div className={`text-xs ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>Action needed</div>
-                <div className={`text-xs mt-1 ${darkMode ? 'text-amber-400/70' : 'text-amber-600'}`}>Add customer testimonials to slide 12 and competitive analysis to slide 8.</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )
-    },
-    {
-      id: 'financials',
-      title: 'Financial Model Readiness',
-      icon: <DollarSign className="w-4 h-4" />,
-      badge: '92%',
-      content: (
-        <div className="space-y-4">
-          <div className="grid grid-cols-3 gap-4">
-            <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Revenue Model</div>
-              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>Complete</div>
-            </div>
-            <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>3-Year Forecast</div>
-              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>Done</div>
-            </div>
-            <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Unit Economics</div>
-              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>Validated</div>
-            </div>
-          </div>
-          <div className={`p-3 rounded-lg border ${darkMode ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200'}`}>
-            <div className="flex items-start gap-2">
-              <CheckCircle className="w-4 h-4 text-emerald-400 mt-0.5" />
-              <div className="flex-1">
-                <div className={`text-xs ${darkMode ? 'text-emerald-300' : 'text-emerald-700'}`}>Investor-ready</div>
-                <div className={`text-xs mt-1 ${darkMode ? 'text-emerald-400/70' : 'text-emerald-600'}`}>Financial projections are realistic and well-supported by market data.</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )
-    },
-    {
-      id: 'outreach',
-      title: 'Investor Outreach',
-      icon: <Users className="w-4 h-4" />,
-      badge: '67%',
-      content: (
-        <div className="space-y-3">
-          <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-            <div className="flex items-center justify-between mb-2">
-              <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Target Investor List</span>
-              <span className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>35 investors</span>
-            </div>
-            <div className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>Sequoia, a16z, Benchmark, Founders Fund, and 31 others</div>
-          </div>
-          <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-            <div className="flex items-center justify-between mb-2">
-              <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Meetings Scheduled</span>
-              <span className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>12 meetings</span>
-            </div>
-            <div className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>3 this week, 9 next two weeks. 5 follow-up meetings pending.</div>
-          </div>
-        </div>
-      )
-    },
-    {
-      id: 'legal',
-      title: 'Legal Documents',
-      icon: <Shield className="w-4 h-4" />,
-      badge: '75%',
-      content: (
-        <div className="space-y-3">
-          <div className={`p-3 rounded-lg border ${darkMode ? 'bg-amber-500/10 border-amber-500/30' : 'bg-amber-50 border-amber-200'}`}>
-            <div className="flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5" />
-              <div className="flex-1">
-                <div className={`text-xs ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>Almost ready</div>
-                <div className={`text-xs mt-1 ${darkMode ? 'text-amber-400/70' : 'text-amber-600'}`}>Cap table ready. Need to upload IP assignment agreements and updated incorporation docs.</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )
-    }
-  ] : [
-    // INVESTOR: Due Diligence
-    {
-      id: 'market',
-      title: 'Market Analysis',
-      icon: <Target className="w-4 h-4" />,
-      badge: '95%',
-      content: (
-        <div className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Total Addressable Market</div>
-              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>$2.5B</div>
-            </div>
-            <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Target Market Share</div>
-              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>5% by Y3</div>
-            </div>
-            <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Market Growth Rate</div>
-              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>24% YoY</div>
-            </div>
-            <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Competitive Position</div>
-              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>Strong</div>
-            </div>
-          </div>
-          <div className={`p-3 rounded-lg border ${darkMode ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200'}`}>
-            <div className="flex items-start gap-2">
-              <CheckCircle className="w-4 h-4 text-emerald-400 mt-0.5" />
-              <div className="flex-1">
-                <div className={`text-xs ${darkMode ? 'text-emerald-300' : 'text-emerald-700'}`}>Strong validation</div>
-                <div className={`text-xs mt-1 ${darkMode ? 'text-emerald-400/70' : 'text-emerald-600'}`}>Market timing is excellent. Growing demand in enterprise AI space with limited direct competition.</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )
-    },
-    {
-      id: 'financial',
-      title: 'Financial Projections',
-      icon: <DollarSign className="w-4 h-4" />,
-      badge: '88%',
-      content: (
-        <div className="space-y-4">
-          <div className="grid grid-cols-3 gap-4">
-            <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Year 1 Revenue</div>
-              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>$850K</div>
-            </div>
-            <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Year 3 Revenue</div>
-              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>$8.5M</div>
-            </div>
-            <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Break-even</div>
-              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>Month 18</div>
-            </div>
-          </div>
-          <div className={`p-3 rounded-lg border ${darkMode ? 'bg-amber-500/10 border-amber-500/30' : 'bg-amber-50 border-amber-200'}`}>
-            <div className="flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-amber-400 mt-0.5" />
-              <div className="flex-1">
-                <div className={`text-xs ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>Minor concern</div>
-                <div className={`text-xs mt-1 ${darkMode ? 'text-amber-400/70' : 'text-amber-600'}`}>Customer acquisition cost assumptions are slightly optimistic. Consider adding 15-20% buffer.</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )
-    },
-    {
-      id: 'team',
-      title: 'Team Assessment',
-      icon: <Users className="w-4 h-4" />,
-      badge: '82%',
-      content: (
-        <div className="space-y-3">
-          <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-            <div className="flex items-center justify-between mb-2">
-              <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Core Team Strength</span>
-              <span className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>5 members</span>
-            </div>
-            <div className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>Experienced founders with 2 prior exits. Strong technical team from FAANG companies.</div>
-          </div>
-          <div className={`p-3 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-            <div className="flex items-center justify-between mb-2">
-              <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Advisory Board</span>
-              <span className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>3 advisors</span>
-            </div>
-            <div className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>Industry experts from McKinsey, Sequoia, and enterprise SaaS veterans.</div>
-          </div>
-        </div>
-      )
-    },
-    {
-      id: 'legal',
-      title: 'Legal & Compliance',
-      icon: <Shield className="w-4 h-4" />,
-      badge: '65%',
-      content: (
-        <div className="space-y-3">
-          <div className={`p-3 rounded-lg border ${darkMode ? 'bg-red-500/10 border-red-500/30' : 'bg-red-50 border-red-200'}`}>
-            <div className="flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 text-red-400 mt-0.5" />
-              <div className="flex-1">
-                <div className={`text-xs ${darkMode ? 'text-red-300' : 'text-red-700'}`}>Action required</div>
-                <div className={`text-xs mt-1 ${darkMode ? 'text-red-400/70' : 'text-red-600'}`}>Missing incorporation documents and IP assignment agreements. Upload required before investor meetings.</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )
-    }
-  ];
+  const dueDiligenceItems: AccordionItem[] = [];
 
   // Role-specific feedback items
-  const feedbackItems = isFounder ? [
-    // FOUNDER: Pitch Improvement Feedback
-    { category: 'Pitch Deck', issue: 'Add more specific customer testimonials on slide 12', priority: 'high', impact: '+5 pts' },
-    { category: 'Financial Model', issue: 'Include sensitivity analysis for key assumptions', priority: 'medium', impact: '+3 pts' },
-    { category: 'Market Research', issue: 'Strengthen competitive differentiation section', priority: 'medium', impact: '+4 pts' },
-    { category: 'Executive Summary', issue: 'Highlight recent traction metrics more prominently', priority: 'high', impact: '+6 pts' },
-    { category: 'Team Bios', issue: 'Add LinkedIn profiles for all founders', priority: 'low', impact: '+2 pts' }
-  ] : [
-    // INVESTOR: Investment Considerations
-    { category: 'Market Risk', issue: 'Limited competition validates TAM, but watch for new entrants', priority: 'medium', impact: 'Monitor' },
-    { category: 'Financial Concern', issue: 'CAC assumptions optimistic - add 15-20% buffer to projections', priority: 'high', impact: 'Key Risk' },
-    { category: 'Team Strength', issue: '2 prior exits and strong FAANG team - major competitive advantage', priority: 'low', impact: 'Strength' },
-    { category: 'Valuation Question', issue: '$20M pre-money seems high for stage - negotiate to $16-18M', priority: 'high', impact: 'Action Item' },
-    { category: 'Portfolio Fit', issue: 'Aligns perfectly with AI/ML thesis - strong strategic fit', priority: 'low', impact: 'Alignment' }
-  ];
+  const feedbackItems = [];
 
   const addToast = (type: ToastType, title: string, message?: string) => {
     const newToast = {
@@ -607,14 +383,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 <span className={`${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>•</span>
                 <span className="flex items-center gap-1.5">
                   <Calendar className="w-3.5 h-3.5" />
-                  {isFounder ? 'Created' : 'Added'} Nov 15, 2024
+                  {isFounder ? 'Created' : 'Added'} {dealInfo?.createdDate || 'Unknown'}
                 </span>
                 <span className={`${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>•</span>
                 <span className="flex items-center gap-1.5">
                   <Eye className="w-3.5 h-3.5" />
                   {isFounder 
-                    ? '24 views, 5 interested, 2 meetings'
-                    : '3 partners, 2 reviewed'
+                    ? 'Engagement data not available'
+                    : 'Partnership data not available'
                   }
                 </span>
               </div>
@@ -799,87 +575,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               />
             </div>
             
-            <div className="lg:col-span-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              <div className={`backdrop-blur-xl border rounded-xl p-4 ${
+            <div className="lg:col-span-3">
+              <div className={`backdrop-blur-xl border rounded-xl p-6 h-full flex flex-col justify-center ${
                 darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'
               }`}>
-                <div className="flex items-center justify-between mb-2">
-                  <Target className={`w-5 h-5 ${darkMode ? 'text-[#6366f1]' : 'text-[#6366f1]'}`} />
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${
-                    darkMode ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-100 text-emerald-700'
-                  }`}>
-                    +12%
-                  </span>
-                </div>
-                <div className={`text-2xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>95%</div>
-                <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Market Validation</div>
-              </div>
-
-              <div className={`backdrop-blur-xl border rounded-xl p-4 ${
-                darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'
-              }`}>
-                <div className="flex items-center justify-between mb-2">
-                  <DollarSign className={`w-5 h-5 ${darkMode ? 'text-[#6366f1]' : 'text-[#6366f1]'}`} />
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${
-                    darkMode ? 'bg-amber-500/20 text-amber-400' : 'bg-amber-100 text-amber-700'
-                  }`}>
-                    +5%
-                  </span>
-                </div>
-                <div className={`text-2xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>88%</div>
-                <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Financial Strength</div>
-              </div>
-
-              <div className={`backdrop-blur-xl border rounded-xl p-4 ${
-                darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'
-              }`}>
-                <div className="flex items-center justify-between mb-2">
-                  <Users className={`w-5 h-5 ${darkMode ? 'text-[#6366f1]' : 'text-[#6366f1]'}`} />
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${
-                    darkMode ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-100 text-emerald-700'
-                  }`}>
-                    Strong
-                  </span>
-                </div>
-                <div className={`text-2xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>82%</div>
-                <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Team Quality</div>
-              </div>
-
-              <div className={`backdrop-blur-xl border rounded-xl p-4 ${
-                darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'
-              }`}>
-                <div className="flex items-center justify-between mb-2">
-                  <FileText className={`w-5 h-5 ${darkMode ? 'text-[#6366f1]' : 'text-[#6366f1]'}`} />
-                  <CheckCircle className="w-4 h-4 text-emerald-400" />
-                </div>
-                <div className={`text-2xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>7/8</div>
-                <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Documents Complete</div>
-              </div>
-
-              <div className={`backdrop-blur-xl border rounded-xl p-4 ${
-                darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'
-              }`}>
-                <div className="flex items-center justify-between mb-2">
-                  <TrendingUp className={`w-5 h-5 ${darkMode ? 'text-[#6366f1]' : 'text-[#6366f1]'}`} />
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${
-                    darkMode ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-100 text-emerald-700'
-                  }`}>
-                    +18%
-                  </span>
-                </div>
-                <div className={`text-2xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>$8.5M</div>
-                <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Y3 Revenue Target</div>
-              </div>
-
-              <div className={`backdrop-blur-xl border rounded-xl p-4 ${
-                darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'
-              }`}>
-                <div className="flex items-center justify-between mb-2">
-                  <Award className={`w-5 h-5 ${darkMode ? 'text-[#6366f1]' : 'text-[#6366f1]'}`} />
-                  <ArrowUpRight className="w-4 h-4 text-emerald-400" />
-                </div>
-                <div className={`text-2xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>3,250</div>
-                <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Total XP Earned</div>
+                <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  {displayScore >= 70 
+                    ? '✨ Strong investment profile. Run analysis for detailed insights.' 
+                    : displayScore >= 40
+                      ? '📊 Moderate potential. Additional due diligence recommended.'
+                      : '🔍 Early stage. Complete documents and analysis to refine score.'}
+                </p>
               </div>
             </div>
           </div>
@@ -1114,7 +820,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   </h3>
                   <div className={`p-4 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
                     <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                      {dealInfo?.description || dealData?.description || 'TechVision AI is building the next generation of enterprise AI infrastructure, enabling companies to deploy custom AI models at scale. With 2 prior exits and a team from Google, Meta, and OpenAI, we\'re uniquely positioned to capture the $2.5B market opportunity. Currently serving 15 enterprise customers with $850K ARR and 40% MoM growth.'}
+                      {dealInfo?.description || dealData?.description || 'No description provided'}
                     </p>
                   </div>
                 </div>
@@ -1127,17 +833,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     {(dealInfo?.metrics ? [
                       { label: 'Current Revenue', value: dealInfo.metrics.currentRevenue, change: 'Pre-revenue' },
                       { label: 'Year 1 Target', value: dealInfo.metrics.year1Target, change: 'First full year' },
-                      { label: 'Category Growth', value: dealInfo.metrics.categoryGrowth, change: 'Tequila market' },
+                      { label: 'Category Growth', value: dealInfo.metrics.categoryGrowth, change: 'Market analysis' },
                       { label: 'Gross Margin', value: dealInfo.metrics.grossMargin, change: 'Target margin' },
                       { label: 'Runway', value: dealInfo.metrics.runway, change: 'With funding' },
-                      { label: 'Brand Acquisitions', value: dealInfo.metrics.brandAcquisitions, change: 'HoldCo model' },
-                      { label: 'Distributors', value: 'SG + RNDC', change: dealInfo.metrics.distributorPartnerships },
+                      { label: 'Brand Acquisitions', value: dealInfo.metrics.brandAcquisitions, change: 'Strategic plan' },
+                      { label: 'Distributors', value: dealInfo.metrics.distributorPartnerships || 'N/A', change: 'Partnership structure' },
                       { label: 'Break-even', value: dealInfo.metrics.breakEven, change: 'Projected' }
                     ] : [
-                      { label: 'ARR', value: '$850K', change: '+145%' },
-                      { label: 'Enterprise Customers', value: '15', change: '+8 this month' },
-                      { label: 'MoM Growth', value: '40%', change: 'Accelerating' },
-                      { label: 'Burn Rate', value: '$125K', change: '18mo runway' }
+                      { label: 'Metrics', value: 'N/A', change: 'No data available' },
+                      { label: 'Revenue', value: 'N/A', change: 'Pending analysis' },
+                      { label: 'Growth', value: 'N/A', change: 'Awaiting input' },
+                      { label: 'Runway', value: 'N/A', change: 'To be determined' }
                     ]).map((metric, i) => (
                       <div key={i} className={`p-4 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
                         <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>{metric.label}</div>
@@ -1192,238 +898,106 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
             {/* Due Diligence Tab */}
             {activeTab === 'diligence' && (
-              <Accordion
-                items={dueDiligenceItems}
-                defaultOpenItems={['market']}
-                allowMultiple={true}
-                darkMode={darkMode}
-              />
+              dueDiligenceItems.length > 0 ? (
+                <Accordion
+                  items={dueDiligenceItems}
+                  defaultOpenItems={['market']}
+                  allowMultiple={true}
+                  darkMode={darkMode}
+                />
+              ) : (
+                <div className={`text-center py-12 rounded-lg border-2 border-dashed ${
+                  darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50/50'
+                }`}>
+                  <Shield className={`w-12 h-12 mx-auto mb-3 opacity-40 ${darkMode ? 'text-gray-400' : 'text-gray-400'}`} />
+                  <h3 className={`text-base mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>No diligence items yet</h3>
+                  <p className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                    Diligence items will appear here as they are created and tracked
+                  </p>
+                </div>
+              )
             )}
 
             {/* Feedback Tab */}
             {activeTab === 'feedback' && (
-              <div className="space-y-3">
-                {feedbackItems.map((item, i) => (
-                  <div key={i} className={`p-4 rounded-lg border ${
-                    darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'
-                  }`}>
-                    <div className="flex items-start justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <Lightbulb className={`w-4 h-4 ${darkMode ? 'text-[#6366f1]' : 'text-[#6366f1]'}`} />
-                        <span className={`text-xs px-2 py-0.5 rounded-full ${
-                          darkMode ? 'bg-white/10 text-gray-400' : 'bg-gray-200 text-gray-600'
-                        }`}>
-                          {item.category}
-                        </span>
+              <div>
+                {feedbackItems.length > 0 ? (
+                  <div className="space-y-3">
+                    {feedbackItems.map((item, i) => (
+                      <div key={i} className={`p-4 rounded-lg border ${
+                        darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'
+                      }`}>
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <Lightbulb className={`w-4 h-4 ${darkMode ? 'text-[#6366f1]' : 'text-[#6366f1]'}`} />
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${
+                              darkMode ? 'bg-white/10 text-gray-400' : 'bg-gray-200 text-gray-600'
+                            }`}>
+                              {item.category}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${
+                              item.priority === 'high'
+                                ? 'bg-red-500/20 text-red-400'
+                                : item.priority === 'medium'
+                                  ? 'bg-amber-500/20 text-amber-400'
+                                  : 'bg-blue-500/20 text-blue-400'
+                            }`}>
+                              {item.priority}
+                            </span>
+                            <span className="text-xs text-emerald-400">{item.impact}</span>
+                          </div>
+                        </div>
+                        <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{item.issue}</p>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className={`text-xs px-2 py-0.5 rounded-full ${
-                          item.priority === 'high'
-                            ? 'bg-red-500/20 text-red-400'
-                            : item.priority === 'medium'
-                              ? 'bg-amber-500/20 text-amber-400'
-                              : 'bg-blue-500/20 text-blue-400'
-                        }`}>
-                          {item.priority}
-                        </span>
-                        <span className="text-xs text-emerald-400">{item.impact}</span>
-                      </div>
-                    </div>
-                    <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{item.issue}</p>
+                    ))}
                   </div>
-                ))}
+                ) : (
+                  <div className={`text-center py-12 rounded-lg border-2 border-dashed ${
+                    darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50/50'
+                  }`}>
+                    <Lightbulb className={`w-12 h-12 mx-auto mb-3 opacity-40 ${darkMode ? 'text-gray-400' : 'text-gray-400'}`} />
+                    <h3 className={`text-base mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>No feedback yet</h3>
+                    <p className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                      Feedback will appear here after investor or stakeholder reviews
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 
             {/* Reports Generated Tab */}
             {activeTab === 'reports' && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between mb-4">
+              <div>
+                <div className="flex items-center justify-between mb-6">
                   <div>
                     <h3 className={`text-lg mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                       Generated Reports
                     </h3>
                     <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      Access and export previously generated due diligence reports
+                      Generated due diligence reports will appear here
                     </p>
                   </div>
                 </div>
 
-                {/* Report Cards */}
-                <div className="space-y-3">
-                  {/* Vintara Group LLC Report */}
-                  <div className={`p-5 rounded-xl border transition-all hover:shadow-lg ${
-                    darkMode 
-                      ? 'bg-white/5 border-white/10 hover:bg-white/10' 
-                      : 'bg-white border-gray-200 hover:border-[#6366f1]/30'
-                  }`}>
-                    <div className="flex items-start justify-between mb-4">
-                      <div className="flex items-start gap-4">
-                        <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${
-                          darkMode ? 'bg-gradient-to-br from-[#6366f1]/20 to-[#8b5cf6]/20' : 'bg-gradient-to-br from-[#6366f1]/10 to-[#8b5cf6]/10'
-                        }`}>
-                          <FileCode className="w-6 h-6 text-[#6366f1]" />
-                        </div>
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-1">
-                            <h4 className={`text-base ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                              Vintara Group LLC - Due Diligence Report
-                            </h4>
-                            <span className={`px-2 py-0.5 rounded-full text-xs ${
-                              darkMode ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-100 text-emerald-700'
-                            }`}>
-                              Complete
-                            </span>
-                          </div>
-                          <p className={`text-sm mb-3 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                            Beverage Alcohol / CPG • Series A • $2M-$3M
-                          </p>
-                          <div className="flex items-center gap-4">
-                            <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                              <span className="flex items-center gap-1">
-                                <Calendar className="w-3 h-3" />
-                                Generated: Sep 5, 2025
-                              </span>
-                            </div>
-                            <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                              <span className="flex items-center gap-1">
-                                <Target className="w-3 h-3" />
-                                Score: 86/100
-                              </span>
-                            </div>
-                            <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                              <span className="flex items-center gap-1">
-                                <FileText className="w-3 h-3" />
-                                48 pages
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                    
-                    {/* Action Buttons */}
-                    <div className="flex items-center gap-2">
-                      <Button
-                        variant="primary"
-                        darkMode={darkMode}
-                        icon={<Eye className="w-4 h-4" />}
-                        onClick={() => {
-                          onViewReport?.();
-                        }}
-                      >
-                        View Report
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        darkMode={darkMode}
-                        icon={<Download className="w-4 h-4" />}
-                        onClick={() => {
-                          setShowExportModal(true);
-                          addToast('info', 'Export Ready', 'Choose your preferred format');
-                        }}
-                      >
-                        Export
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        darkMode={darkMode}
-                        icon={<Share2 className="w-4 h-4" />}
-                        onClick={() => {
-                          setShowShareModal(true);
-                        }}
-                      >
-                        Share
-                      </Button>
-                    </div>
-                  </div>
-
-                  {/* TechVision AI Platform Report */}
-                  <div className={`p-5 rounded-xl border transition-all hover:shadow-lg ${
-                    darkMode 
-                      ? 'bg-white/5 border-white/10 hover:bg-white/10' 
-                      : 'bg-white border-gray-200 hover:border-[#6366f1]/30'
-                  }`}>
-                    <div className="flex items-start justify-between mb-4">
-                      <div className="flex items-start gap-4">
-                        <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${
-                          darkMode ? 'bg-gradient-to-br from-[#6366f1]/20 to-[#8b5cf6]/20' : 'bg-gradient-to-br from-[#6366f1]/10 to-[#8b5cf6]/10'
-                        }`}>
-                          <FileCode className="w-6 h-6 text-[#6366f1]" />
-                        </div>
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-1">
-                            <h4 className={`text-base ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                              TechVision AI Platform - Due Diligence Report
-                            </h4>
-                            <span className={`px-2 py-0.5 rounded-full text-xs ${
-                              darkMode ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-100 text-emerald-700'
-                            }`}>
-                              Complete
-                            </span>
-                          </div>
-                          <p className={`text-sm mb-3 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                            Enterprise SaaS • Series A • $5M
-                          </p>
-                          <div className="flex items-center gap-4">
-                            <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                              <span className="flex items-center gap-1">
-                                <Calendar className="w-3 h-3" />
-                                Generated: Dec 1, 2024
-                              </span>
-                            </div>
-                            <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                              <span className="flex items-center gap-1">
-                                <Target className="w-3 h-3" />
-                                Score: 87/100
-                              </span>
-                            </div>
-                            <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                              <span className="flex items-center gap-1">
-                                <FileText className="w-3 h-3" />
-                                52 pages
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                    
-                    {/* Action Buttons */}
-                    <div className="flex items-center gap-2">
-                      <Button
-                        variant="primary"
-                        darkMode={darkMode}
-                        icon={<Eye className="w-4 h-4" />}
-                        onClick={() => {
-                          addToast('info', 'Opening Report', 'Loading TechVision AI report...');
-                        }}
-                      >
-                        View Report
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        darkMode={darkMode}
-                        icon={<Download className="w-4 h-4" />}
-                        onClick={() => {
-                          setShowExportModal(true);
-                          addToast('info', 'Export Ready', 'Choose your preferred format');
-                        }}
-                      >
-                        Export
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        darkMode={darkMode}
-                        icon={<Share2 className="w-4 h-4" />}
-                        onClick={() => {
-                          setShowShareModal(true);
-                        }}
-                      >
-                        Share
-                      </Button>
-                    </div>
-                  </div>
+                <div className={`text-center py-12 rounded-lg border-2 border-dashed ${
+                  darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50/50'
+                }`}>
+                  <FileCode className={`w-12 h-12 mx-auto mb-3 opacity-40 ${darkMode ? 'text-gray-400' : 'text-gray-400'}`} />
+                  <h3 className={`text-base mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>No reports generated yet</h3>
+                  <p className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'} mb-4`}>
+                    Run an analysis to generate a comprehensive due diligence report
+                  </p>
+                  <Button
+                    variant="primary"
+                    darkMode={darkMode}
+                    icon={<Sparkles className="w-4 h-4" />}
+                    onClick={runAIAnalysis}
+                    loading={analyzing}
+                  >
+                    {analyzing ? 'Generating...' : 'Generate Report'}
+                  </Button>
                 </div>
               </div>
             )}

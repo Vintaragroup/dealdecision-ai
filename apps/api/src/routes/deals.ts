@@ -3,8 +3,10 @@ import { z } from "zod";
 import { getPool } from "../lib/db";
 import type { Deal } from "@dealdecision/contracts";
 import { enqueueJob } from "../services/jobs";
+import { autoProgressDealStage } from "../services/stageProgression";
+import { updateDealPriority, updateAllDealPriorities } from "../services/priorityClassification";
 
-const dealStageSchema = z.enum(["idea", "progress", "ready", "pitched"]);
+const dealStageSchema = z.enum(["intake", "under_review", "in_diligence", "ready_decision", "pitched"]);
 const dealPrioritySchema = z.enum(["high", "medium", "low"]);
 const dealTrendSchema = z.enum(["up", "down", "stable"]);
 
@@ -174,6 +176,98 @@ export async function registerDealRoutes(app: FastifyInstance) {
 
     const job = await enqueueJob({ deal_id: dealId, type: "analyze_deal" });
 
+    // After analysis job is enqueued, mark it so we can auto-progress when complete
+    // (This would typically happen in a background worker after job completes)
+    // For now, we queue the job and the worker will handle stage progression
+
     return reply.status(202).send({ job_id: job.job_id, status: job.status });
+  });
+
+  // Auto-check and progress deal stage based on metrics
+  app.post("/api/v1/deals/:deal_id/auto-progress", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+
+    const { rows } = await pool.query<DealRow>(
+      `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+      [dealId]
+    );
+
+    if (rows.length === 0) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    const result = await autoProgressDealStage(pool, dealId);
+
+    if (result.progressed) {
+      return reply.status(200).send({
+        progressed: true,
+        newStage: result.newStage,
+        message: `Deal automatically progressed from ${rows[0].stage} to ${result.newStage}`
+      });
+    }
+
+    return reply.status(200).send({
+      progressed: false,
+      currentStage: rows[0].stage,
+      message: "Deal does not meet conditions for stage progression"
+    });
+  });
+
+  // Recalculate priority for a single deal
+  app.post<{ Params: { dealId: string } }>("/api/v1/deals/:dealId/recalculate-priority", async (request, reply) => {
+    const { dealId } = request.params;
+    const pool = getPool();
+
+    try {
+      // Verify deal exists
+      const { rows } = await pool.query(
+        `SELECT id, name, priority FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+        [dealId]
+      );
+
+      if (!rows.length) {
+        return reply.status(404).send({ error: "Deal not found" });
+      }
+
+      const oldPriority = rows[0].priority;
+
+      // Recalculate priority
+      await updateDealPriority(dealId);
+
+      // Get updated priority
+      const { rows: updatedRows } = await pool.query(
+        `SELECT priority FROM deals WHERE id = $1`,
+        [dealId]
+      );
+
+      return reply.status(200).send({
+        dealId,
+        name: rows[0].name,
+        oldPriority,
+        newPriority: updatedRows[0].priority,
+        message: `Priority recalculated for deal ${rows[0].name}`
+      });
+    } catch (error) {
+      console.error(`Error recalculating priority for deal ${dealId}:`, error);
+      return reply.status(500).send({ error: "Failed to recalculate priority" });
+    }
+  });
+
+  // Recalculate priority for all deals
+  app.post("/api/v1/deals/batch/recalculate-priorities", async (request, reply) => {
+    const pool = getPool();
+
+    try {
+      const result = await updateAllDealPriorities();
+
+      return reply.status(200).send({
+        message: "All deal priorities recalculated",
+        stats: result,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error("Error recalculating all priorities:", error);
+      return reply.status(500).send({ error: "Failed to recalculate priorities" });
+    }
   });
 }

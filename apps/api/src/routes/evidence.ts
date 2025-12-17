@@ -45,7 +45,7 @@ export async function registerEvidenceRoutes(app: FastifyInstance, pool = getPoo
       return { evidence: [] };
     }
     const { rows } = await pool.query(
-      `SELECT evidence_id, deal_id, document_id, source, kind, text, excerpt, created_at
+      `SELECT id, deal_id, document_id, source, kind, text, confidence, created_at
        FROM evidence
        WHERE deal_id = $1
        ORDER BY created_at DESC
@@ -54,13 +54,13 @@ export async function registerEvidenceRoutes(app: FastifyInstance, pool = getPoo
     );
 
     return { evidence: rows.map((row) => ({
-      evidence_id: row.evidence_id,
+      id: row.id,
       deal_id: row.deal_id,
       document_id: row.document_id ?? undefined,
       source: row.source,
       kind: row.kind,
       text: row.text,
-      excerpt: row.excerpt ?? undefined,
+      confidence: row.confidence ?? undefined,
       created_at: row.created_at,
     })) };
   });

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Plus, FileText, Sparkles, BarChart3 } from 'lucide-react';
 import { QuickStatsBar } from './widgets/QuickStatsBar';
@@ -17,6 +17,7 @@ import { StreakTracker } from './ui/StreakTracker';
 import { ChallengeCard } from './ui/ChallengeCard';
 import { useAppSettings } from '../contexts/AppSettingsContext';
 import { useUserRole } from '../contexts/UserRoleContext';
+import { apiGetDeals } from '../lib/apiClient';
 
 interface DashboardContentProps {
   darkMode: boolean;
@@ -28,91 +29,83 @@ interface DashboardContentProps {
 export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal }: DashboardContentProps) {
   const { settings } = useAppSettings();
   const { isFounder, isInvestor } = useUserRole();
+  const [activeDeals, setActiveDeals] = useState<any[]>([]);
+  const [loadingDeals, setLoadingDeals] = useState(true);
+
+  // Fetch deals from API
+  useEffect(() => {
+    const loadDeals = async () => {
+      try {
+        const deals = await apiGetDeals();
+        // Limit to first 4 deals for dashboard display, transform API data to match UI format
+        const displayDeals = (deals || []).slice(0, 4).map((deal: any) => ({
+          id: deal.deal_id,
+          name: deal.name || 'Unknown Deal',
+          company: deal.company_name || 'Unknown Company',
+          score: deal.score || 0,
+          status: (deal.score || 0) >= 75 ? 'go' : (deal.score || 0) >= 50 ? 'hold' : 'no-go',
+          stage: deal.stage || 'intake',
+          lastUpdated: '2h ago', // Could be enhanced with actual last_updated timestamp
+          trend: 'up' as const
+        }));
+        setActiveDeals(displayDeals);
+      } catch (error) {
+        console.error('Failed to load deals:', error);
+        setActiveDeals([]);
+      } finally {
+        setLoadingDeals(false);
+      }
+    };
+
+    if (isInvestor) {
+      loadDeals();
+    } else {
+      // For founders, keep the placeholder data for now
+      setActiveDeals([
+        {
+          id: '1',
+          name: 'TechCorp Series A',
+          company: 'TechCorp Inc.',
+          score: 85,
+          status: 'go' as const,
+          stage: 'Pitch Ready',
+          lastUpdated: '1h ago',
+          trend: 'up' as const
+        },
+        {
+          id: '2',
+          name: 'StartupX Seed Round',
+          company: 'StartupX',
+          score: 68,
+          status: 'hold' as const,
+          stage: 'Refining Pitch',
+          lastUpdated: '3h ago',
+          trend: 'neutral' as const
+        }
+      ]);
+      setLoadingDeals(false);
+    }
+  }, [isInvestor]);
   
   // Role-specific Quick Stats Data
   const quickStats = isFounder ? [
-    { label: 'My Companies', value: 2, icon: 'deals' as const, trend: { value: 1, direction: 'up' as const } },
-    { label: 'Pitch Materials', value: 8, icon: 'documents' as const },
+    { id: 'stat-my-companies', label: 'My Companies', value: 2, icon: 'deals' as const, trend: { value: 1, direction: 'up' as const } },
+    { id: 'stat-pitch-materials', label: 'Pitch Materials', value: 8, icon: 'documents' as const },
     ...(settings.gamificationEnabled ? [
-      { label: 'Level', value: 12, icon: 'level' as const, highlight: true },
-      { label: 'Weekly XP', value: '+850', icon: 'xp' as const, trend: { value: 24, direction: 'up' as const } },
-      { label: 'Streak', value: '12d', icon: 'streak' as const, highlight: true },
+      { id: 'stat-level', label: 'Level', value: 12, icon: 'level' as const, highlight: true },
+      { id: 'stat-weekly-xp', label: 'Weekly XP', value: '+850', icon: 'xp' as const, trend: { value: 24, direction: 'up' as const } },
+      { id: 'stat-streak', label: 'Streak', value: '12d', icon: 'streak' as const, highlight: true },
     ] : []),
-    { label: 'Fundraising', value: '$2.5M', icon: 'growth' as const, trend: { value: 15, direction: 'up' as const } }
+    { id: 'stat-fundraising', label: 'Fundraising', value: '$2.5M', icon: 'growth' as const, trend: { value: 15, direction: 'up' as const } }
   ] : [
-    { label: 'Active Deals', value: 3, icon: 'deals' as const, trend: { value: 12, direction: 'up' as const } },
-    { label: 'Documents', value: 12, icon: 'documents' as const },
+    { id: 'stat-active-deals', label: 'Active Deals', value: 3, icon: 'deals' as const, trend: { value: 12, direction: 'up' as const } },
+    { id: 'stat-documents', label: 'Documents', value: 12, icon: 'documents' as const },
     ...(settings.gamificationEnabled ? [
-      { label: 'Level', value: 12, icon: 'level' as const, highlight: true },
-      { label: 'Weekly XP', value: '+850', icon: 'xp' as const, trend: { value: 24, direction: 'up' as const } },
-      { label: 'Streak', value: '12d', icon: 'streak' as const, highlight: true },
+      { id: 'stat-level', label: 'Level', value: 12, icon: 'level' as const, highlight: true },
+      { id: 'stat-weekly-xp', label: 'Weekly XP', value: '+850', icon: 'xp' as const, trend: { value: 24, direction: 'up' as const } },
+      { id: 'stat-streak', label: 'Streak', value: '12d', icon: 'streak' as const, highlight: true },
     ] : []),
-    { label: 'Portfolio', value: '+24%', icon: 'growth' as const, trend: { value: 24, direction: 'up' as const } }
-  ];
-
-  // Role-specific Active Deals/Companies Data
-  const activeDeals = isFounder ? [
-    {
-      id: '1',
-      name: 'TechCorp Series A',
-      company: 'TechCorp Inc.',
-      score: 85,
-      status: 'go' as const,
-      stage: 'Pitch Ready',
-      lastUpdated: '1h ago',
-      trend: 'up' as const
-    },
-    {
-      id: '2',
-      name: 'StartupX Seed Round',
-      company: 'StartupX',
-      score: 68,
-      status: 'hold' as const,
-      stage: 'Refining Pitch',
-      lastUpdated: '3h ago',
-      trend: 'neutral' as const
-    }
-  ] : [
-    {
-      id: '1',
-      name: 'CloudScale SaaS',
-      company: 'CloudScale Inc.',
-      score: 87,
-      status: 'go' as const,
-      stage: 'Due Diligence',
-      lastUpdated: '2h ago',
-      trend: 'up' as const
-    },
-    {
-      id: '2',
-      name: 'TechVision AI',
-      company: 'TechVision Labs',
-      score: 72,
-      status: 'hold' as const,
-      stage: 'Review',
-      lastUpdated: '5h ago',
-      trend: 'neutral' as const
-    },
-    {
-      id: '3',
-      name: 'FinTech Wallet',
-      company: 'WalletPro',
-      score: 64,
-      status: 'hold' as const,
-      stage: 'Analysis',
-      lastUpdated: '1d ago',
-      trend: 'down' as const
-    },
-    {
-      id: '4',
-      name: 'MedTech Diagnostics',
-      company: 'HealthAI Corp',
-      score: 91,
-      status: 'go' as const,
-      stage: 'Final Review',
-      lastUpdated: '3h ago',
-      trend: 'up' as const
-    }
+    { id: 'stat-portfolio', label: 'Portfolio', value: '+24%', icon: 'growth' as const, trend: { value: 24, direction: 'up' as const } }
   ];
 
   // Role-specific Activity Feed Data
@@ -287,21 +280,22 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
 
   // Recent Achievements Data
   const recentAchievements = [
-    { title: 'AI Master', icon: '🤖', tier: 'legendary' as const, unlockedAt: '2h ago' },
-    { title: 'Team Player', icon: '🤝', tier: 'epic' as const, unlockedAt: '1d ago' },
-    { title: 'Deal Hunter', icon: '🔍', tier: 'rare' as const, unlockedAt: '3d ago' },
-    { title: 'Early Bird', icon: '🌅', tier: 'rare' as const, unlockedAt: '5d ago' }
+    { id: 'achievement-ai-master', title: 'AI Master', icon: '🤖', tier: 'legendary' as const, unlockedAt: '2h ago' },
+    { id: 'achievement-team-player', title: 'Team Player', icon: '🤝', tier: 'epic' as const, unlockedAt: '1d ago' },
+    { id: 'achievement-deal-hunter', title: 'Deal Hunter', icon: '🔍', tier: 'rare' as const, unlockedAt: '3d ago' },
+    { id: 'achievement-early-bird', title: 'Early Bird', icon: '🌅', tier: 'rare' as const, unlockedAt: '5d ago' }
   ];
 
   // Streaks Data
   const streaks = [
-    { type: 'Daily Login', icon: '📅', current: 12, best: 45, target: 30 },
-    { type: 'Deal Reviews', icon: '📊', current: 5, best: 14, target: 7 }
+    { id: 'streak-daily-login', type: 'Daily Login', icon: '📅', current: 12, best: 45, target: 30 },
+    { id: 'streak-deal-reviews', type: 'Deal Reviews', icon: '📊', current: 5, best: 14, target: 7 }
   ];
 
   // Today's Challenges Data
   const todaysChallenges = [
     {
+      id: 'challenge-daily-review',
       title: 'Daily Deal Review',
       description: 'Review 3 deals today',
       progress: 2,
@@ -311,6 +305,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
       difficulty: 'easy' as const
     },
     {
+      id: 'challenge-ai-collab',
       title: 'AI Collaboration',
       description: 'Use AI Studio 10 times this week',
       progress: 10,
@@ -433,6 +428,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
   // Role-specific Performance Metrics Data
   const performanceMetrics = isFounder ? [
     {
+      id: 'metric-target-raised',
       label: 'Target Raised',
       value: '$2.5M',
       change: 15,
@@ -440,11 +436,13 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
       icon: 'dollar' as const
     },
     {
+      id: 'metric-target-goal',
       label: 'Target Goal',
       value: '$5M',
       icon: 'target' as const
     },
     {
+      id: 'metric-investor-meetings',
       label: 'Investor Meetings',
       value: '12',
       change: 20,
@@ -452,12 +450,14 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
       icon: 'users' as const
     },
     {
+      id: 'metric-days-active',
       label: 'Days Active',
       value: '45',
       icon: 'calendar' as const
     }
   ] : [
     {
+      id: 'metric-portfolio-value',
       label: 'Portfolio Value',
       value: '$24.5M',
       change: 18,
@@ -465,6 +465,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
       icon: 'dollar' as const
     },
     {
+      id: 'metric-target-irr',
       label: 'Target IRR',
       value: '32%',
       change: 5,
@@ -472,6 +473,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
       icon: 'target' as const
     },
     {
+      id: 'metric-active-deals',
       label: 'Active Deals',
       value: '8',
       change: 12,
@@ -479,6 +481,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
       icon: 'users' as const
     },
     {
+      id: 'metric-avg-deal-time',
       label: 'Avg Deal Time',
       value: '28d',
       change: -10,
@@ -633,8 +636,8 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
                 </span>
               </div>
               <div className="space-y-3">
-                {todaysChallenges.map((challenge, index) => (
-                  <ChallengeCard key={index} challenge={challenge} darkMode={darkMode} />
+                {todaysChallenges.map((challenge) => (
+                  <ChallengeCard key={challenge.id} challenge={challenge} darkMode={darkMode} />
                 ))}
               </div>
             </div>
@@ -649,12 +652,12 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
                 Active Streaks 🔥
               </h3>
               <div className="space-y-3">
-                {streaks.map((streak, index) => {
+                {streaks.map((streak) => {
                   const percentage = (streak.current / streak.target) * 100;
                   const isOnFire = streak.current >= 7;
                   
                   return (
-                    <div key={index}>
+                    <div key={streak.id}>
                       <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-2">
                           <span className="text-xl">{streak.icon}</span>

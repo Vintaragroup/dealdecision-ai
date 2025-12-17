@@ -7,6 +7,7 @@ import {
 } from "../lib/queue";
 
 const queueMap: Record<JobType, typeof ingestQueue> = {
+  ingest_document: ingestQueue,
   ingest_documents: ingestQueue,
   fetch_evidence: fetchEvidenceQueue,
   analyze_deal: analyzeDealQueue,

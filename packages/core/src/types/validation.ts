@@ -158,19 +158,6 @@ export const DEFAULT_LLM_CONFIGS: Record<number, LLMConfig> = {
 };
 
 /**
- * Prompt template variables
- */
-export interface PromptVariables {
-  deal_name: string;
-  deck_excerpt: string;
-  prior_hypotheses: string[];
-  prior_uncertainties: string[];
-  prior_facts: string[];
-  cycle_number: number;
-  cycle_focus: string;
-}
-
-/**
  * Stop reason codes
  */
 export enum StopReason {

@@ -15,6 +15,9 @@ import type {
   Citation
 } from "./hrmdd";
 
+// Re-export for convenience when importing from analysis.ts
+export type { AnalysisCycleResult };
+
 /**
  * Cycle type (1, 2, or 3)
  */
@@ -236,6 +239,19 @@ export interface Cycle3Output {
   }>;
   next_steps: string[];
   calibration_metrics: Record<string, number>;
+}
+
+/**
+ * Prompt template variables
+ */
+export interface PromptVariables {
+  deal_name: string;
+  deck_excerpt: string;
+  prior_hypotheses: string[];
+  prior_uncertainties: string[];
+  prior_facts: string[];
+  cycle_number: number;
+  cycle_focus: string;
 }
 
 /**

@@ -10,10 +10,16 @@ import { registerEventRoutes } from "./routes/events";
 import { registerDocumentRoutes } from "./routes/documents";
 import { registerChatRoutes } from "./routes/chat";
 import { registerEvidenceRoutes } from "./routes/evidence";
+import { registerAnalyticsRoutes } from "./routes/analytics";
+import { registerAdminRoutes } from "./routes/admin";
+import { initializeLLM } from "./lib/llm";
 import "./lib/queue";
 import dotenv from "dotenv";
 
 dotenv.config();
+
+// Initialize LLM module
+initializeLLM();
 
 const app = fastify({
   logger: true,
@@ -54,6 +60,8 @@ async function bootstrap() {
   await registerDocumentRoutes(app);
   await registerChatRoutes(app);
   await registerEvidenceRoutes(app);
+  await registerAnalyticsRoutes(app);
+  await registerAdminRoutes(app);
 }
 
 async function start() {

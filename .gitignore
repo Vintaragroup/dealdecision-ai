@@ -32,3 +32,8 @@ pnpm-debug.log*
 
 # coverage
 coverage/
+
+# Confidential internal documentation
+# All strategy, implementation, and internal docs are team-only
+docs/
+

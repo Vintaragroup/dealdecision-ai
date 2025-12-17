@@ -175,3 +175,35 @@ export interface DealChatResponse {
 	citations?: ChatCitation[];
 	suggested_actions?: ChatAction[];
 }
+
+// HRM-DD Analysis Types
+export interface AnalysisRequest {
+	deal_id: string;
+	max_cycles?: number;
+	force_restart?: boolean;
+	analysis_mode?: 'full' | 'targeted' | 'verification';
+}
+
+export interface AnalysisProgress {
+	deal_id: string;
+	current_cycle: number;
+	total_cycles_planned: number;
+	status: 'starting' | 'cycle_1' | 'cycle_2' | 'cycle_3' | 'synthesizing' | 'completed' | 'failed';
+	facts_extracted: number;
+	uncertainties_identified: number;
+	progress_percent: number;
+}
+
+export interface AnalysisResult {
+	deal_id: string;
+	analysis_id: string;
+	cycles_completed: number;
+	decision_recommendation: 'GO' | 'NO-GO' | 'CONDITIONAL';
+	executive_summary: string;
+	key_findings: string[];
+	risks_identified: string[];
+	next_steps: string[];
+	confidence_score: number;
+	completed_at: string;
+}
+

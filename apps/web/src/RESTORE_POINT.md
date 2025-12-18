@@ -1,3 +1,41 @@
+# 🔖 RESTORE POINT - December 17, 2025
+
+## ✅ STABLE CHECKPOINT - OCR & DIAGNOSTICS UPLIFT
+
+**This is an official restore point for the DealDecision AI platform.**
+
+---
+
+## 📊 PLATFORM STATUS
+
+**Version:** main@dd10910  
+**Date:** December 17, 2025  
+**Status:** ✅ Stable - OCR/document intelligence improvements landed  
+**Commit:** dd10910 (main)  
+**Scope:** Web + API + Worker (PDF/OCR pipeline refresh)
+
+---
+
+## 🎯 WHAT'S NEW SINCE LAST RESTORE
+
+1) Worker PDF/OCR
+- Paddle/DocTR provider with fallback to Tesseract
+- Region-based OCR with stricter noise filtering and confidence normalization
+- Slide title heuristics tightened; better key-number extraction
+- Debug artifacts saved per page/summary via `PDF_EXTRACT_DEBUG=1`
+
+2) Ingestion / Infra
+- New document/evidence migrations applied through 2025-12-17
+- Docker-compose worker refresh for OCR runtime stability
+
+3) Web/App Integrity
+- Front-end page set and component library remain aligned with prior stable checkpoint
+- Existing responsive/mobile-ready UI preserved
+
+Use this checkpoint to roll back to a stable state that includes the latest OCR and diagnostics enhancements while keeping the previously certified UI/feature set.
+
+---
+
 # 🔖 RESTORE POINT - December 7, 2024
 
 ## ✅ STABLE CHECKPOINT - PRODUCTION READY + MOBILE OPTIMIZED
@@ -332,21 +370,23 @@ This restore point marks the completion of:
 
 ```json
 {
-  "version": "1.1.0",
-  "date": "2024-12-07",
-  "status": "production-ready",
-  "completeness": "100%",
-  "pages": 14,
-  "features": 5,
-  "components": "100+",
-  "templates": 21,
-  "critical_issues": 0,
-  "major_issues": 0,
-  "minor_issues": 1,
-  "quality_score": "A+",
-  "production_ready": true,
-  "backend_required": true,
-  "documentation_complete": true
+   "version": "main@dd10910",
+   "date": "2025-12-17",
+   "status": "stable",
+   "focus": "ocr-diagnostics",
+   "completeness": "feature-complete",
+   "pages": 14,
+   "features": 5,
+   "components": "100+",
+   "templates": 21,
+   "critical_issues_known": 0,
+   "major_issues_known": 0,
+   "minor_issues_known": 0,
+   "quality_score": "A",
+   "production_ready": true,
+   "backend_required": true,
+   "documentation_complete": true,
+   "previous_restore_point": "2024-12-07"
 }
 ```
 
@@ -363,8 +403,8 @@ This restore point marks the completion of:
 - ✅ Safe to build upon
 
 **Certified by:** AI Code Review  
-**Date:** December 7, 2024  
-**Status:** APPROVED FOR PRODUCTION
+**Date:** December 17, 2025  
+**Status:** APPROVED FOR RESTORE USE
 
 ---
 
@@ -381,7 +421,7 @@ This restore point marks the completion of:
 
 ---
 
-*Restore Point Created: December 7, 2024*  
+*Restore Point Created: December 17, 2025*  
 *Platform: DealDecision AI*  
-*Version: 1.1.0*  
-*Status: ✅ STABLE & PRODUCTION READY*
+*Version: main@dd10910*  
+*Status: ✅ STABLE & RESTORE READY*

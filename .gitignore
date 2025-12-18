@@ -24,6 +24,9 @@ pnpm-debug.log*
 artifacts/
 scripts/experimental/
 
+# internal documentation (keep tracked files, ignore new additions)
+docs/
+
 # editor/os
 .DS_Store
 .idea/

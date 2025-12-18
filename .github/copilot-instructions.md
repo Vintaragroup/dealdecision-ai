@@ -13,62 +13,48 @@
 - Explain your OBSERVATIONS clearly, then provide REASONING to identify the exact issue. Add console logs when needed to gather more information.
 
 
-Investment Analysis & Due Diligence Platform
+Investment Analysis Platform Core Components:
 
-Core Business Components:
+1. Deal Analysis Engine (90/100)
+- Multi-dimensional scoring across market, team, financial, traction metrics
+- Risk assessment with impact/probability calculations
+- Stage-based progression workflow
+- Deal recommendation engine with confidence scoring
+- Custom validation checklist system
 
-1. Deal Analysis System
-- Multi-dimensional scoring across 5 investment categories
-- Confidence scoring with category-specific weightings
-- Risk assessment matrix combining probability and impact
-- Custom deal ranking algorithms with stage progression
+2. Due Diligence Framework (88/100)
+- Weighted scoring algorithms for investment evaluation
+- Investment-specific calculations for valuations and ownership
+- Risk assessment matrices with automated recommendations
+- Market sizing and competitive analysis frameworks
+- Proprietary AI confidence scoring algorithm
 
-2. Due Diligence Framework
-- Comprehensive verification workflow with weighted completion tracking
-- Industry-specific metrics and KPI evaluation
-- Document intelligence system for evidence extraction
-- Multi-stage deal evaluation pipeline:
-  * Initial screening
-  * Deep analysis
-  * Risk assessment
-  * Final recommendation
+3. Document Intelligence System (85/100)
+- Intelligent document grouping for deal analysis
+- Company name extraction and version management
+- Document type classification with confidence scoring
+- Deal-specific export controls and sharing rules
 
-3. ROI & Market Analysis
-- Sophisticated ROI calculations with industry benchmarks
-- TAM/SAM/SOM analysis framework
-- Market growth projections
-- Competitive positioning scoring
+4. Investment Workflow Management (85/100)
+- Stage-based deal pipeline (intake → under_review → in_diligence → ready_decision)
+- Automated progression rules with completion criteria
+- Deal scoring and prioritization system
+- ROI calculations for AI-assisted analysis
 
-4. Investment Intelligence
-- Evidence-based decision tracking
-- Structured claim validation system
-- Multi-dimensional analysis framework
-- AI-assisted analysis with evidence citations
+5. Achievement & Skill System (80/100)
+- Investment-specific achievement tiers
+- Skill tree progression focused on:
+  - Market Analysis
+  - Due Diligence
+  - AI Mastery
+- Challenge system with difficulty levels
+- Investment activity streak tracking
 
 Key Integration Points:
-
-1. Document Processing Pipeline
-`apps/web/src/components/workspace/AnalysisTab.tsx`
-- Automated document classification
-- Evidence extraction system
-- Deal metadata integration
-- Quality scoring framework
-
-2. Deal Evaluation Engine
-`apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx`
-- Investment criteria scoring
-- Risk assessment calculations
-- Market opportunity analysis
-- Team capability evaluation
-
-3. Due Diligence Workflow
-`apps/web/src/components/report-templates/sections/DealTermsSummary.tsx`
-- Deal terms analysis
-- Investment waterfall calculations
-- Board rights modeling
-- Cap table management
-
-The system implements a comprehensive investment analysis platform with sophisticated scoring algorithms, evidence-based decision making, and AI-assisted analysis capabilities. Business logic focuses on deal evaluation, risk assessment, and structured due diligence processes.
+- Deal analysis connects with document intelligence for evidence processing
+- Achievement system integrates with workflow progression
+- Risk assessment feeds into recommendation engine
+- AI scoring influences deal progression rules
 
 $END$
 

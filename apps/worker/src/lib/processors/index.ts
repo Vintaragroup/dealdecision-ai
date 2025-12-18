@@ -74,7 +74,7 @@ export async function processDocument(
   try {
     switch (contentType) {
       case "pdf":
-        extractedContent = await extractPDFContent(buffer);
+        extractedContent = await extractPDFContent(buffer, { docId: documentId });
         extractionSuccess = true;
         break;
 

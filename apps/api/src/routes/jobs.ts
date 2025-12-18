@@ -6,9 +6,10 @@ export async function registerJobRoutes(app: FastifyInstance, pool = getPool()) 
   app.get("/api/v1/jobs/:job_id", async (request, reply) => {
     const jobId = (request.params as { job_id: string }).job_id;
     const { rows } = await pool.query(
-      `SELECT job_id, status, progress_pct, message, deal_id, document_id, created_at, updated_at
+      `SELECT job_id, type, status, progress_pct, message, deal_id, document_id, created_at, updated_at
        FROM jobs
-       WHERE job_id = $1`,
+       WHERE job_id = $1
+       LIMIT 1`,
       [jobId]
     );
 
@@ -19,6 +20,7 @@ export async function registerJobRoutes(app: FastifyInstance, pool = getPool()) 
     const row = rows[0];
     return {
       job_id: row.job_id,
+      type: row.type ?? undefined,
       status: row.status,
       progress_pct: row.progress_pct ?? undefined,
       message: row.message ?? undefined,

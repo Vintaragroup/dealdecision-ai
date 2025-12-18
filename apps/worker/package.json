@@ -12,13 +12,15 @@
   },
   "dependencies": {
     "@dealdecision/contracts": "workspace:*",
+    "@napi-rs/canvas": "^0.1.84",
     "bullmq": "^5.21.6",
-    "ioredis": "^5.4.1",
-    "pg": "^8.13.1",
-    "pdfjs-dist": "^4.0.379",
     "docx": "^8.5.0",
-    "xlsx": "^0.18.5",
+    "ioredis": "^5.4.1",
+    "pdfjs-dist": "^3.11.174",
+    "pg": "^8.13.1",
+    "tesseract.js": "^5.1.0",
     "unzipper": "^0.10.14",
+    "xlsx": "^0.18.5",
     "xml2js": "^0.6.2"
   },
   "devDependencies": {

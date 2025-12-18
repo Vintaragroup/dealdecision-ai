@@ -1,4 +1,5 @@
 import type { JobType, JobStatus } from "@dealdecision/contracts";
+import { randomUUID } from "crypto";
 import { getPool } from "../lib/db";
 import {
   ingestQueue,
@@ -26,18 +27,18 @@ export interface EnqueueJobInput {
 export async function enqueueJob(input: EnqueueJobInput) {
   const pool = getPool();
   const queue = queueMap[input.type];
+  const jobId = randomUUID();
   const bullJob = await queue.add(input.type, input.payload ?? {}, {
+    jobId,
     removeOnComplete: true,
     removeOnFail: false,
   });
-
-  const bullJobId = (bullJob.id ?? bullJob.name).toString();
 
   const { rows } = await pool.query(
     `INSERT INTO jobs (job_id, deal_id, document_id, type, status)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING id, job_id, status`,
-    [bullJobId, input.deal_id ?? null, input.document_id ?? null, input.type, "queued"]
+    [jobId, input.deal_id ?? null, input.document_id ?? null, input.type, "queued"]
   );
 
   return rows[0];

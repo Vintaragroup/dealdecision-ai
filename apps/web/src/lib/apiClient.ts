@@ -70,6 +70,7 @@ export function apiPostAnalyze(dealId: string) {
 export function apiGetJob(jobId: string) {
   return request<{
     job_id: string;
+    type?: string;
     status: string;
     progress_pct?: number;
     message?: string;

@@ -21,6 +21,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .eslintcache
+artifacts/
+scripts/experimental/
 
 # editor/os
 .DS_Store

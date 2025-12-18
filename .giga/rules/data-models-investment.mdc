@@ -1,89 +1,86 @@
 ---
-description: Defines data models and relationships for investment deal analysis, evidence tracking, and document management.
+description: Defines investment domain data models for deal analysis, evidence tracking, and document management
 ---
 
-
-# data-models-investment
-
-Core Data Models:
-
-1. Deal Entity Model (Importance: 95)
-```typescript
-interface Deal {
-  id: string
-  stage: 'intake' | 'under_review' | 'in_diligence' | 'ready_decision' | 'pitched'
-  priority: 'high' | 'medium' | 'low'
-  status: 'active' | 'hold' | 'closed'
-  evidence: Evidence[]
-  documents: Document[]
-  analysis: Analysis[]
-}
-```
-
-2. Evidence Model (Importance: 90)
-```typescript
-interface Evidence {
-  id: string
-  source: Document
-  category: 'market' | 'financial' | 'team' | 'product' | 'risk'
-  confidence: number // 0-100
-  verification: 'pending' | 'verified' | 'rejected'
-  claims: Claim[]
-}
-```
-
-3. Document Intelligence Model (Importance: 85)
-```typescript
-interface Document {
-  id: string
-  type: 'pitch_deck' | 'financials' | 'legal' | 'market' | 'team'
-  status: 'pending' | 'processing' | 'analyzed'
-  evidenceCount: number
-  confidence: number // 0-100
-  metadata: DocumentMetadata
-}
-```
-
-4. Analysis Entity (Importance: 90)
-```typescript
-interface Analysis {
-  id: string
-  type: 'market' | 'financial' | 'team' | 'risk' | 'product'
-  score: number // 0-100
-  evidence: Evidence[]
-  recommendations: string[]
-  status: 'draft' | 'review' | 'final'
-}
-```
-
-Key Relationships:
-- Deal 1:N Evidence
-- Evidence N:1 Document
-- Deal 1:N Analysis
-- Evidence N:N Claims
-
-State Transitions:
+# === USER INSTRUCTIONS ===
+stage: 'intake' | 'under_review' | 'in_diligence' | 'ready_decision' | 'pitched'
 1. Deal Pipeline (Analysis-Driven Workflow)
    - intake (documents uploaded) -> under_review (analysis complete) -> in_diligence (DD gaps addressed) -> ready_decision (confidence >= 70%) -> pitched (decision made)
    - Progression triggered by: document upload, analysis completion, confidence score, investor actions
    - Manual override available from any stage to "pitched"
+# === END USER INSTRUCTIONS ===
 
-2. Evidence Processing
-   - Document Upload -> Evidence Extraction -> Verification
-   - Claims linked during extraction phase
-   - Confidence scores updated on verification
+# data-models-investment
 
-3. Analysis Workflow
-   - Draft created with initial evidence
-   - Review triggered at evidence threshold
-   - Final version requires minimum confidence scores
+## Core Data Models
 
-Domain Rules:
-- Deals require minimum evidence threshold per category
-- Evidence must link to verifiable document source
-- Analysis scores weighted by evidence confidence
-- Document intelligence extracts structured claims
-- Deal stages gate certain analysis requirements
+### Deal Model
+- Investment deal lifecycle tracking
+- Stage progression: intake → under_review → in_diligence → ready_decision → pitched
+- Multi-dimensional scoring across market, team, financial metrics
+- Deal classification system with stage-specific validation rules
+Importance Score: 95
+
+### Evidence Model
+- Hierarchical evidence collection structure
+- Citation tracking with confidence scoring
+- Source verification status tracking
+- Evidence categorization by business domain
+Importance Score: 90
+
+### Document Model
+- Investment document classification system
+- Version control with temporal tracking
+- Document grouping by company/deal
+- Metadata extraction for financial metrics
+Importance Score: 85
+
+### Analysis Model
+- Three-cycle analysis framework
+- Depth assessment scoring
+- Fact validation ledger
+- Citation compliance tracking
+Importance Score: 90
+
+## Relationships
+
+### Deal -> Evidence
+- One-to-many relationship
+- Evidence aggregation by category
+- Confidence scoring rollup
+- Citation network tracking
+
+### Evidence -> Document
+- Many-to-many mapping
+- Source verification links
+- Version awareness
+- Temporal validity tracking
+
+### Analysis -> Evidence
+- Hierarchical fact organization
+- Validation state management
+- Confidence calibration metrics
+- Citation requirement tracking
+
+## State Transitions
+
+### Deal Progression
+- Stage-based workflow
+- Required evidence thresholds
+- Validation completeness checks
+- Automated progression rules
+
+### Analysis Cycles
+- Three-tier depth progression
+- Confidence threshold gates
+- Evidence completeness requirements
+- Decision package formation
+
+### Document Processing
+- Classification workflow
+- Metadata extraction pipeline
+- Version control states
+- Group assignment rules
 
 $END$
 

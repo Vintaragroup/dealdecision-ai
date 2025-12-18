@@ -40,6 +40,71 @@ function mapDocument(row: DocumentRow): Document {
 }
 
 export async function registerDocumentRoutes(app: FastifyInstance, pool = getPool()) {
+  // JSON upload helper for automated tests (accepts base64 payload)
+  app.post("/api/v1/deals/:deal_id/documents/upload", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    const payload = request.body as {
+      file_buffer?: string;
+      file_name?: string;
+      type?: string;
+      title?: string;
+    };
+
+    if (!payload?.file_buffer) {
+      return reply.status(400).send({ error: "file_buffer is required" });
+    }
+
+    try {
+      const fileBufferB64 = payload.file_buffer;
+      const fileName = payload.file_name ?? "document";
+      const docType = payload.type ?? "other";
+      const titleValue = payload.title ?? fileName;
+
+      const parsedType = documentTypeSchema.safeParse(docType);
+      const finalType = parsedType.success ? parsedType.data : "other";
+
+      const { rows } = await pool.query<DocumentRow>(
+        `INSERT INTO documents (deal_id, title, type, status)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id, deal_id, title, type, status, uploaded_at`,
+        [dealId, titleValue, finalType, "pending"]
+      );
+
+      const documentId = rows[0].id;
+
+      const job = await enqueueJob({
+        deal_id: dealId,
+        document_id: documentId,
+        type: "ingest_document",
+        payload: {
+          document_id: documentId,
+          deal_id: dealId,
+          file_buffer: fileBufferB64,
+            file_name: fileName,
+            attempt: 1,
+        },
+      });
+
+      const progressionResult = await autoProgressDealStage(pool, dealId);
+
+      return reply.status(202).send({
+        document_id: documentId,
+        document: mapDocument(rows[0]),
+        job_status: "queued",
+        job_id: job.job_id,
+        stage_progression: progressionResult.progressed
+          ? { progressed: true, newStage: progressionResult.newStage }
+          : { progressed: false },
+      });
+    } catch (error: any) {
+      console.error("Document upload error:", error);
+      return reply.status(500).send({
+        error: "Failed to upload document",
+        message: error?.message || "Unknown error",
+      });
+    }
+  });
+
   app.post("/api/v1/deals/:deal_id/documents", async (request, reply) => {
     const dealId = (request.params as { deal_id: string }).deal_id;
     let fileBuffer: Buffer | null = null;
@@ -93,6 +158,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
           deal_id: dealId,
           file_buffer: fileBufferB64,
           file_name: fileName,
+          attempt: 1,
         },
       });
 
@@ -132,6 +198,49 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
     );
 
     return reply.send({ documents: rows.map(mapDocument) });
+  });
+
+  // Fetch stored analysis/structured data for a document
+  app.get("/api/v1/deals/:deal_id/documents/:document_id/analysis", async (request, reply) => {
+    const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
+
+    const { rows } = await pool.query(
+      `SELECT d.id,
+              d.deal_id,
+              d.status,
+              d.structured_data,
+              d.extraction_metadata,
+              j.status AS job_status,
+              j.message AS job_message,
+              j.progress_pct AS job_progress
+         FROM documents d
+         LEFT JOIN LATERAL (
+           SELECT status, message, progress_pct
+             FROM jobs
+            WHERE document_id = d.id
+            ORDER BY updated_at DESC
+            LIMIT 1
+         ) j ON TRUE
+        WHERE d.deal_id = $1 AND d.id = $2
+        LIMIT 1`,
+      [deal_id, document_id]
+    );
+
+    if (rows.length === 0) {
+      return reply.status(404).send({ error: "Document not found" });
+    }
+
+    const doc = rows[0];
+    return reply.send({
+      document_id: doc.id,
+      deal_id: doc.deal_id,
+      status: doc.status,
+      structured_data: doc.structured_data ?? null,
+      extraction_metadata: doc.extraction_metadata ?? null,
+      job_status: doc.job_status ?? null,
+      job_message: doc.job_message ?? null,
+      job_progress: doc.job_progress ?? null,
+    });
   });
 
   app.post("/api/v1/deals/:deal_id/documents/:document_id/retry", async (request, reply) => {

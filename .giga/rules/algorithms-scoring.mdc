@@ -1,62 +1,57 @@
 ---
-description: Specification for scoring algorithms and calculations in investment analysis platform
+description: Specification for implementing and documenting investment analysis scoring algorithms and calculations
 ---
 
 
 # algorithms-scoring
 
-Core Scoring Algorithms:
+Investment Scoring Components:
 
-1. Deal Confidence Scoring (85/100)
-- 5-dimension investment scoring matrix:
-  - Market opportunity (25%)
-  - Team capability (20%) 
-  - Financial health (20%)
-  - Product maturity (20%)
-  - Competition (15%)
-- Category-specific weighted calculations
-- Confidence thresholds: Low (<60), Medium (60-80), High (>80)
+1. Deal Confidence Scoring
+- Multi-dimensional scoring across market, financial, team factors
+- Weighted validation metrics with source verification checks
+- Custom confidence thresholds by deal stage
+- Domain-specific scoring calibration
+Importance Score: 85/100
 
-2. Risk Assessment Engine (88/100)
-- 6-category risk evaluation:
-  - Market risks
-  - Team risks
-  - Financial risks
-  - Technology risks
-  - Legal risks
-  - Competition risks
-- Risk level determination:
-  - Low: Score 0-3
-  - Medium: Score 4-6  
-  - High: Score 7-10
-- Weighted risk aggregation formula
-- Risk mitigation effectiveness tracking
+2. Risk Assessment Engine
+- Multi-dimensional risk scoring with probability/impact matrix
+- Risk categorization with severity weighting 
+- Automated mitigation strategy generation
+- Custom risk profile calculations
+Importance Score: 90/100
 
-3. ROI Projection System (82/100)
-- Cost savings calculations:
-  - Legal fees reduction
-  - Consultant cost avoidance
-  - Research time savings
-  - Design/presentation costs
-- Time-to-value measurements
-- Resource allocation optimization
-- Service comparison matrices
+3. ROI Projection System
+- Revenue and profitability forecasting algorithms
+- Unit economics calculations (LTV, CAC, margins)
+- Break-even analysis formulas
+- Market share projection models
+Importance Score: 85/100
 
-4. Market Analysis Scoring (85/100)
-- TAM/SAM/SOM calculations
-- Market growth rate analysis
-- Competitive positioning matrix
-- Market share projection formulas
+4. Market Analysis Calculator
+- TAM/SAM/SOM calculation framework
+- Competitive positioning algorithms 
+- Market growth rate formulas
 - Industry-specific multipliers
+Importance Score: 80/100
 
-5. Investment Due Diligence Framework (90/100)
-- Deal terms analysis
-- Liquidation preference calculations
-- Investment waterfall modeling
-- Cap table management
-- Dilution impact scoring
+Core Algorithms:
 
-The scoring algorithms implement industry-standard investment analysis methodologies with proprietary weightings and thresholds. The system uses multi-dimensional analysis combining quantitative metrics with qualitative assessments.
+1. Deal Score = Σ(Market*0.3 + Team*0.25 + Financial*0.25 + Traction*0.2)
+2. Risk Level = Probability * Impact * TrendFactor
+3. ROI = (ProjectedValue * Ownership%) - InvestmentAmount
+4. Market Score = TAM * GrowthRate * CompetitivePosition
+
+Decision Logic:
+- Invest: Score ≥ 85, Risk ≤ Medium
+- Consider: Score ≥ 70, Risk ≤ High
+- Pass: Score < 70 or Risk = Critical
+
+Validation Rules:
+- Minimum 3 data sources per metric
+- Confidence threshold ≥ 80%
+- Risk severity alignment within 15%
+- Market size validation within 25% range
 
 $END$
 

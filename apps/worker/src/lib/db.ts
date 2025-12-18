@@ -26,10 +26,26 @@ export async function updateDocumentStatus(documentId: string, status: string) {
   const currentPool = getPool();
   await currentPool.query(
     `UPDATE documents
-     SET status = $2,
-         updated_at = now()
-     WHERE document_id = $1`,
+     SET status = $2
+     WHERE id = $1`,
     [documentId, status]
+  );
+}
+
+export async function updateDocumentAnalysis(params: {
+  documentId: string;
+  status?: string;
+  structuredData?: unknown;
+  extractionMetadata?: unknown;
+}) {
+  const currentPool = getPool();
+  await currentPool.query(
+    `UPDATE documents
+       SET structured_data = COALESCE($2, structured_data),
+           extraction_metadata = COALESCE($3, extraction_metadata),
+           status = COALESCE($4, status)
+     WHERE id = $1`,
+    [params.documentId, params.structuredData ?? null, params.extractionMetadata ?? null, params.status ?? null]
   );
 }
 

@@ -5,6 +5,7 @@ import { registerJobRoutes } from '../src/routes/jobs';
 
 type MockRow = {
   job_id: string;
+  type: string | null;
   status: string;
   progress_pct: number | null;
   message: string | null;
@@ -17,6 +18,7 @@ type MockRow = {
 test('GET /api/v1/jobs/:job_id returns job data with progress and message', async () => {
   const mockRow: MockRow = {
     job_id: 'job-123',
+    type: 'ingest_document',
     status: 'running',
     progress_pct: 45,
     message: 'Processing documents',
@@ -45,6 +47,7 @@ test('GET /api/v1/jobs/:job_id returns job data with progress and message', asyn
   const body = response.json();
 
   assert.equal(body.job_id, mockRow.job_id);
+  assert.equal(body.type, mockRow.type ?? undefined);
   assert.equal(body.status, mockRow.status);
   assert.equal(body.progress_pct, mockRow.progress_pct);
   assert.equal(body.message, mockRow.message ?? undefined);

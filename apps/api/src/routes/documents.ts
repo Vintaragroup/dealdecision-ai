@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { randomUUID } from "crypto";
 import { z } from "zod";
 import type { Document } from "@dealdecision/contracts";
+import { sanitizeText } from "@dealdecision/core";
 import { getPool } from "../lib/db";
 import { insertEvidence } from "../services/evidence";
 import { enqueueJob } from "../services/jobs";
@@ -62,6 +63,23 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
 
       const parsedType = documentTypeSchema.safeParse(docType);
       const finalType = parsedType.success ? parsedType.data : "other";
+
+      // Check if document with this title already exists in this deal
+      const { rows: existingDocs } = await pool.query<DocumentRow>(
+        `SELECT id, deal_id, title, type, status, uploaded_at FROM documents
+         WHERE deal_id = $1 AND LOWER(title) = LOWER($2)
+         LIMIT 1`,
+        [dealId, titleValue]
+      );
+
+      if (existingDocs.length > 0) {
+        // Document already exists
+        return reply.status(409).send({
+          error: "Document with this title already exists in this deal",
+          existing_document_id: existingDocs[0].id,
+          document: mapDocument(existingDocs[0]),
+        });
+      }
 
       const { rows } = await pool.query<DocumentRow>(
         `INSERT INTO documents (deal_id, title, type, status)
@@ -343,7 +361,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
           await pool.query(
             `INSERT INTO deals (id, name, stage, priority, updated_at)
              VALUES ($1, $2, $3, $4, $5)`,
-            [dealId, newDeal.dealName, "intake", "medium", new Date().toISOString()],
+            [sanitizeText(dealId), sanitizeText(newDeal.dealName), "intake", "medium", new Date().toISOString()],
           );
 
           results.push({
@@ -367,6 +385,135 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
       assignments: results,
       message: "Documents have been assigned and are ready for upload",
     });
+  });
+
+  /**
+   * Trigger ingestion report generation for a deal
+   * Returns the latest ingestion summary status
+   */
+  app.get("/api/v1/deals/:deal_id/documents/ingestion-status", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+
+    try {
+      // Get all documents for this deal
+      const { rows: documents } = await pool.query(
+        `SELECT id, title, type, status, verification_status, verification_result,
+                page_count, extraction_metadata, ingestion_summary
+           FROM documents
+           WHERE deal_id = $1
+           ORDER BY uploaded_at DESC`,
+        [dealId]
+      );
+
+      if (documents.length === 0) {
+        return reply.status(404).send({ error: "No documents found for this deal" });
+      }
+
+      // Get verification status summary
+      const verifiedCount = (documents as any[]).filter((d: any) => d.verification_status === "verified").length;
+      const warningCount = (documents as any[]).filter((d: any) => d.verification_status === "warnings").length;
+      const failedCount = (documents as any[]).filter((d: any) => d.verification_status === "failed").length;
+      const pendingCount = (documents as any[]).filter((d: any) => !d.verification_status).length;
+
+      // Get overall readiness
+      let overallReadiness: "ready" | "needs_review" | "in_progress" | "failed" = "ready";
+      let readinessDetails = "All documents verified and ready for analysis";
+
+      if (pendingCount > 0) {
+        overallReadiness = "in_progress";
+        readinessDetails = `Processing ${pendingCount} document(s). Please wait...`;
+      } else if (failedCount > 0) {
+        overallReadiness = "failed";
+        readinessDetails = `${failedCount} document(s) failed verification. Please review and re-upload.`;
+      } else if (warningCount > 0) {
+        overallReadiness = "needs_review";
+        readinessDetails = `${warningCount} document(s) have warnings. Review before proceeding.`;
+      }
+
+      // Calculate aggregate metrics
+      const totalPages = (documents as any[]).reduce((sum: number, d: any) => sum + (d.page_count || 0), 0);
+
+      return reply.send({
+        deal_id: dealId,
+        ingestion_status: {
+          files_uploaded: documents.length,
+          total_pages: totalPages,
+          verification_summary: {
+            verified: verifiedCount,
+            warnings: warningCount,
+            failed: failedCount,
+            pending: pendingCount,
+          },
+          overall_readiness: overallReadiness,
+          readiness_details: readinessDetails,
+        },
+        documents: (documents as any[]).map((d: any) => ({
+          id: d.id,
+          title: d.title,
+          type: d.type,
+          status: d.status,
+          verification_status: d.verification_status || "pending",
+          pages: d.page_count || 0,
+          file_size_bytes: d.extraction_metadata?.fileSizeBytes || 0,
+          extraction_quality_score: (d.verification_result as any)?.overall_score || null,
+          ocr_avg_confidence: (d.verification_result as any)?.quality_checks?.ocr_confidence?.avg || null,
+          verification_warnings: (d.verification_result as any)?.warnings || [],
+          verification_recommendations: (d.verification_result as any)?.recommendations || [],
+        })),
+        last_updated: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      console.error("Ingestion status error:", error);
+      return reply.status(500).send({
+        error: "Failed to get ingestion status",
+        message: error?.message || "Unknown error",
+      });
+    }
+  });
+
+  /**
+   * Get detailed verification result for a specific document
+   */
+  app.get("/api/v1/deals/:deal_id/documents/:document_id/verification", async (request, reply) => {
+    const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
+
+    try {
+      const { rows } = await pool.query(
+        `SELECT id, title, type, status, verification_status, verification_result,
+                structured_data, extraction_metadata, page_count
+           FROM documents
+           WHERE deal_id = $1 AND id = $2`,
+        [deal_id, document_id]
+      );
+
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: "Document not found" });
+      }
+
+      const doc = rows[0] as any;
+      const verificationResult = doc.verification_result as any;
+      const structuredData = doc.structured_data as any;
+
+      return reply.send({
+        document_id: doc.id,
+        title: doc.title,
+        type: doc.type,
+        status: doc.status,
+        verification_status: doc.verification_status || "pending",
+        pages: doc.page_count || 0,
+        metrics_extracted: structuredData?.keyMetrics?.length || 0,
+        sections_found: structuredData?.mainHeadings?.length || 0,
+        verification_result: verificationResult || {
+          message: "Verification in progress or not yet started",
+        },
+      });
+    } catch (error: any) {
+      console.error("Verification details error:", error);
+      return reply.status(500).send({
+        error: "Failed to get verification details",
+        message: error?.message || "Unknown error",
+      });
+    }
   });
 }
 

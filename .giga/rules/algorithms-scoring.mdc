@@ -1,57 +1,66 @@
 ---
-description: Specification for implementing and documenting investment analysis scoring algorithms and calculations
+description: Analyzes and documents business-critical scoring algorithms, formulas and decision logic for investment analysis and deal evaluation.
 ---
 
 
 # algorithms-scoring
 
-Investment Scoring Components:
+Core Scoring Components:
 
 1. Deal Confidence Scoring
-- Multi-dimensional scoring across market, financial, team factors
-- Weighted validation metrics with source verification checks
-- Custom confidence thresholds by deal stage
-- Domain-specific scoring calibration
-Importance Score: 85/100
+Location: apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx
+- Weighted confidence metrics across market (30%), financial (25%), team (25%), docs (20%)
+- Domain thresholds: Very High (90+), High (80-89), Medium (65-79), Low (<65)
+- Multi-source validation with cross-reference checking
+Importance Score: 90
 
-2. Risk Assessment Engine
-- Multi-dimensional risk scoring with probability/impact matrix
-- Risk categorization with severity weighting 
-- Automated mitigation strategy generation
-- Custom risk profile calculations
-Importance Score: 90/100
+2. Risk Assessment Matrix
+Location: apps/web/src/components/report-templates/sections/RiskAssessment.tsx
+- Multi-dimensional risk scoring combining severity and probability
+- Risk categories: market, financial, team, competitive, legal
+- Impact calculations with weighted domain factors
+- Mitigation effectiveness scoring
+Importance Score: 85
 
-3. ROI Projection System
-- Revenue and profitability forecasting algorithms
-- Unit economics calculations (LTV, CAC, margins)
-- Break-even analysis formulas
-- Market share projection models
-Importance Score: 85/100
+3. Market Position Scoring
+Location: apps/web/src/components/report-templates/sections/CompetitiveLandscape.tsx
+- Market share distribution analysis
+- Feature comparison scoring matrix
+- Competitive positioning metrics
+- Market penetration scoring
+Importance Score: 80
 
-4. Market Analysis Calculator
-- TAM/SAM/SOM calculation framework
-- Competitive positioning algorithms 
-- Market growth rate formulas
-- Industry-specific multipliers
-Importance Score: 80/100
+4. ROI Projection Engine
+Location: apps/web/src/components/report-templates/sections/FinancialAnalysis.tsx
+- Unit economics calculations (LTV/CAC)
+- Custom revenue projection modeling
+- Financial health scoring system
+- Burn rate analysis
+Importance Score: 85
 
 Core Algorithms:
 
-1. Deal Score = Σ(Market*0.3 + Team*0.25 + Financial*0.25 + Traction*0.2)
-2. Risk Level = Probability * Impact * TrendFactor
-3. ROI = (ProjectedValue * Ownership%) - InvestmentAmount
-4. Market Score = TAM * GrowthRate * CompetitivePosition
+1. Deal Analysis Score = 
+   (Market Score * 0.3) + 
+   (Financial Score * 0.25) + 
+   (Team Score * 0.25) + 
+   (Documentation Score * 0.2)
 
-Decision Logic:
-- Invest: Score ≥ 85, Risk ≤ Medium
-- Consider: Score ≥ 70, Risk ≤ High
-- Pass: Score < 70 or Risk = Critical
+2. Risk Impact Score =
+   Severity Level (1-5) * 
+   Probability Factor (0.2-1.0) * 
+   Domain Weight
 
-Validation Rules:
-- Minimum 3 data sources per metric
-- Confidence threshold ≥ 80%
-- Risk severity alignment within 15%
-- Market size validation within 25% range
+3. Market Position Score =
+   (Market Share * 0.4) +
+   (Feature Score * 0.3) +
+   (Growth Rate * 0.3)
+
+4. Financial Health Score =
+   (Unit Economics * 0.35) +
+   (Burn Rate * 0.25) +
+   (Revenue Growth * 0.25) +
+   (Margins * 0.15)
 
 $END$
 

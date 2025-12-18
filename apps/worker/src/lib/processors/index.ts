@@ -2,8 +2,9 @@ import { extractPDFContent, type PDFContent } from "./pdf";
 import { extractExcelContent, type ExcelContent } from "./excel";
 import { extractPowerPointContent, type PowerPointContent } from "./powerpoint";
 import { extractWordContent, type WordContent } from "./word";
+import { extractImageContent, type ImageContent } from "./image";
 
-export type ExtractedContent = PDFContent | ExcelContent | PowerPointContent | WordContent;
+export type ExtractedContent = PDFContent | ExcelContent | PowerPointContent | WordContent | ImageContent;
 
 export interface DocumentAnalysis {
   documentId: string;
@@ -73,10 +74,20 @@ export async function processDocument(
 
   try {
     switch (contentType) {
-      case "pdf":
-        extractedContent = await extractPDFContent(buffer, { docId: documentId });
-        extractionSuccess = true;
+      case "pdf": {
+        try {
+          extractedContent = await extractPDFContent(buffer, { docId: documentId });
+          extractionSuccess = true;
+        } catch (pdfErr) {
+          const errMsg = pdfErr instanceof Error ? pdfErr.message : String(pdfErr);
+          // If PDF fails due to encoding, try to detect and report specifically
+          if (errMsg.includes("UTF") || errMsg.includes("encoding")) {
+            throw new Error(`PDF encoding error: ${errMsg}. The file may be corrupted or use an unsupported encoding.`);
+          }
+          throw pdfErr;
+        }
         break;
+      }
 
       case "excel":
         extractedContent = extractExcelContent(buffer);
@@ -94,10 +105,15 @@ export async function processDocument(
         break;
 
       case "image":
-        // For images, we'd normally use OCR or image analysis
-        // For now, just mark as requiring additional processing
-        extractionSuccess = false;
-        errorMessage = "Image processing requires OCR/vision API";
+        // Extract text from images using OCR (Tesseract)
+        try {
+          extractedContent = await extractImageContent(buffer);
+          extractionSuccess = true;
+        } catch (imgErr) {
+          const errMsg = imgErr instanceof Error ? imgErr.message : String(imgErr);
+          errorMessage = `Image OCR failed: ${errMsg}`;
+          extractionSuccess = false;
+        }
         break;
 
       default:
@@ -205,6 +221,18 @@ function extractStructuredData(
         key: "section_heading",
         value: h,
         source: "document",
+      }));
+      break;
+    }
+
+    case "image": {
+      const image = content as ImageContent;
+      baseData.mainHeadings = image.summary.mainHeadings;
+      baseData.textSummary = image.ocrText.substring(0, 500);
+      baseData.keyMetrics = image.summary.keyMetrics.map((m) => ({
+        key: "numeric_value",
+        value: m.value,
+        source: m.context,
       }));
       break;
     }

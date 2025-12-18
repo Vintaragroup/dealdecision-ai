@@ -1,4 +1,5 @@
 import { randomUUID } from "crypto";
+import { sanitizeText } from "@dealdecision/core";
 import { getPool } from "../lib/db";
 
 export async function insertEvidence(params: {
@@ -14,11 +15,11 @@ export async function insertEvidence(params: {
     `INSERT INTO evidence (deal_id, document_id, source, kind, text, confidence)
      VALUES ($1, $2, $3, $4, $5, $6)`,
     [
-      params.deal_id,
-      params.document_id ?? null,
-      params.source,
-      params.kind,
-      params.text,
+      sanitizeText(params.deal_id),
+      params.document_id ? sanitizeText(params.document_id) : null,
+      sanitizeText(params.source),
+      sanitizeText(params.kind),
+      sanitizeText(params.text),
       params.confidence ?? 0.5,
     ]
   );

@@ -5,6 +5,7 @@
  */
 
 import type { Pool } from "pg";
+import { sanitizeText, sanitizeDeep } from "@dealdecision/core";
 import {
   initializePlannerState,
   progressToCycle,
@@ -87,14 +88,14 @@ export async function initializeAnalysis(
        focus = EXCLUDED.focus,
        stop_reason = EXCLUDED.stop_reason`,
     [
-      dealId,
+      sanitizeText(dealId),
       planner_state.cycle,
-      planner_state.goals,
-      planner_state.constraints,
-      planner_state.hypotheses,
-      planner_state.subgoals,
-      planner_state.focus,
-      planner_state.stop_reason,
+      sanitizeDeep(planner_state.goals),
+      sanitizeDeep(planner_state.constraints),
+      sanitizeDeep(planner_state.hypotheses),
+      sanitizeDeep(planner_state.subgoals),
+      sanitizeText(planner_state.focus),
+      planner_state.stop_reason ? sanitizeText(planner_state.stop_reason) : null,
     ]
   );
 
@@ -105,7 +106,7 @@ export async function initializeAnalysis(
      ON CONFLICT (deal_id) DO UPDATE SET
        cycles_completed = EXCLUDED.cycles_completed,
        paraphrase_invariance = EXCLUDED.paraphrase_invariance`,
-    [dealId, ledger.cycles, ledger.paraphrase_invariance]
+    [sanitizeText(dealId), ledger.cycles, ledger.paraphrase_invariance]
   );
 
   return state;

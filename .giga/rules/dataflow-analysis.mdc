@@ -1,65 +1,70 @@
 ---
-description: Defines data flow analysis patterns for investment deal processing and document analysis pipeline
+description: Analyzes data flow patterns in deal analysis systems and document processing pipelines
 ---
 
 
 # dataflow-analysis
 
-## Document Processing Pipeline
-1. Document Ingestion Flow
-- Files uploaded through batch uploader component
-- Intelligent grouping by company name and document type
-- Version detection and duplicate identification
-- Assignment to relevant deal workspace
+Primary Data Flow Components:
 
-2. Analysis Pipeline Stages
-- Initial document classification and metadata extraction
-- Deep analysis with domain-specific LLM routing
-- Evidence extraction and fact validation
-- Integration with deal scoring system
+1. Document Processing Pipeline
+- Input: Raw deal documents (PDF, PPTX, DOCX)
+- Processing stages:
+  * Document classification and grouping
+  * Content extraction and structuring
+  * Evidence detection and validation
+  * Quality scoring and verification
+- Output: Structured deal evidence with confidence scores
 
-3. Evidence Collection Flow
-- Structured extraction of investment signals
-- Citation tracking and source verification
-- Confidence scoring for extracted facts
-- Real-time evidence panel updates
+2. Evidence Collection Flow
+- Structured fact gathering from documents
+- Multi-source verification system
+- Progressive confidence scoring
+- Citation tracking and validation
+- Evidence completeness assessment
 
-## AI Analysis Integration
-- Model router assigns tasks based on complexity
-- Context compression optimizes token usage
-- Multi-cycle analysis with increasing depth
-- Structured output generation for deal insights
+3. Analysis Integration Flow
+- Deal data aggregation from multiple sources
+- AI model integration points for analysis
+- Human-in-the-loop validation gates 
+- Progressive depth assessment tracking
+- Analysis state management through cycles
 
-## Report Generation Flow
-1. Template Selection
-- Role-specific template catalogs
-- Dynamic section organization
-- Required vs optional component handling
+4. Report Generation Pipeline
+- Evidence collection and validation
+- Confidence score aggregation
+- Risk assessment compilation
+- Recommendation synthesis
+- Template-based report assembly
 
-2. Data Population
-- Deal metrics integration
-- Evidence-based content generation
-- Risk assessment visualization
-- Performance metric calculations
+Key Data Transformations:
 
-3. Export Pipeline
-- Format-specific rendering (PDF, PPTX, DOCX)
-- Watermarking and security controls
-- Version tracking
-- Distribution rules enforcement
+1. Document → Evidence
+- Document classification
+- Content extraction
+- Fact detection
+- Citation mapping
+- Confidence scoring
 
-## Key Integration Points
-- Deal workspace → Analysis pipeline
-- Evidence panel → Report generator
-- Document processor → LLM router
-- Analysis results → Deal scoring
-- Template engine → Export system
+2. Evidence → Analysis
+- Fact aggregation
+- Pattern detection
+- Risk assessment
+- Depth calculation
+- Cycle progression
 
-## Data Flow Control
-- Persistent state management between analysis cycles
-- Real-time updates to workspace components
-- Bidirectional sync between evidence and reports
-- Progressive loading of analysis results
+3. Analysis → Reports
+- Finding synthesis
+- Score compilation
+- Risk mapping
+- Recommendation generation
+
+Critical Data Points:
+- Document confidence scores
+- Evidence validation status
+- Analysis depth metrics
+- Risk assessment values
+- Recommendation confidence
 
 $END$
 

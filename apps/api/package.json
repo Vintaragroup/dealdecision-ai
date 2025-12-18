@@ -22,7 +22,8 @@
     "dotenv": "^16.4.5",
     "bullmq": "^5.21.6",
     "ioredis": "^5.4.1",
-    "@dealdecision/contracts": "workspace:*"
+    "@dealdecision/contracts": "workspace:*",
+    "@dealdecision/core": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

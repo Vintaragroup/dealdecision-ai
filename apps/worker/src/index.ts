@@ -1,6 +1,7 @@
 import type { Job } from "bullmq";
 import { randomUUID } from "crypto";
 import type { JobStatus } from "@dealdecision/contracts";
+import { sanitizeText } from "@dealdecision/core";
 import { createWorker, getQueue } from "./lib/queue";
 import {
 	getPool,
@@ -10,10 +11,15 @@ import {
 	insertEvidence,
 	getDocumentsForDeal,
 	getEvidenceDocumentIds,
+	updateDocumentVerification,
+	saveIngestionReport,
+	getDocumentsByIds,
 } from "./lib/db";
 import { deriveEvidenceDrafts } from "./lib/evidence";
 import { processDocument } from "./lib/processors";
-import type { DocumentAnalysis } from "./lib/processors";
+import { verifyDocumentExtraction } from "./lib/verification";
+import type { DocumentAnalysis, ExtractedContent } from "./lib/processors";
+import type { VerificationResult } from "./lib/verification";
 
 // Polyfill Promise.withResolvers for Node runtimes that don't provide it yet (Node < 22)
 if (typeof (Promise as any).withResolvers !== "function") {
@@ -26,6 +32,102 @@ if (typeof (Promise as any).withResolvers !== "function") {
 		});
 		return { promise, resolve, reject };
 	};
+}
+
+/**
+ * Extract full text from extracted content for full-text search indexing
+ */
+function extractFullText(content: ExtractedContent | null, contentType: string): string {
+	if (!content) return "";
+
+	const parts: string[] = [];
+
+	switch (contentType) {
+		case "pdf": {
+			const pdf = content as any;
+			if (pdf.pages && Array.isArray(pdf.pages)) {
+				for (const page of pdf.pages) {
+					if (page.text) parts.push(page.text);
+					if (page.slideTitle) parts.push(page.slideTitle);
+				}
+			}
+			break;
+		}
+		case "excel": {
+			const excel = content as any;
+			if (excel.sheets && Array.isArray(excel.sheets)) {
+				for (const sheet of excel.sheets) {
+					if (sheet.name) parts.push(`Sheet: ${sheet.name}`);
+					if (sheet.headers) parts.push(sheet.headers.join(" "));
+					if (sheet.rows && Array.isArray(sheet.rows)) {
+						for (const row of sheet.rows) {
+							parts.push(Object.values(row).map(v => String(v)).join(" "));
+						}
+					}
+				}
+			}
+			break;
+		}
+		case "powerpoint": {
+			const ppt = content as any;
+			if (ppt.slides && Array.isArray(ppt.slides)) {
+				for (const slide of ppt.slides) {
+					if (slide.title) parts.push(slide.title);
+					if (slide.notes) parts.push(slide.notes);
+					if (slide.textContent) parts.push(slide.textContent);
+				}
+			}
+			break;
+		}
+		case "word": {
+			const word = content as any;
+			if (word.paragraphs && Array.isArray(word.paragraphs)) {
+				for (const para of word.paragraphs) {
+					if (para.text) parts.push(para.text);
+				}
+			}
+			if (word.summary?.totalText) parts.push(word.summary.totalText);
+			break;
+		}
+		case "image": {
+			const image = content as any;
+			if (image.ocrText) parts.push(image.ocrText);
+			break;
+		}
+	}
+
+	return parts.join(" ").substring(0, 1000000); // Cap at 1MB for storage
+}
+
+/**
+ * Get page count from extracted content
+ */
+function getPageCount(content: ExtractedContent | null, contentType: string): number {
+	if (!content) return 0;
+
+	switch (contentType) {
+		case "pdf": {
+			const pdf = content as any;
+			return pdf.metadata?.pages || pdf.summary?.totalPages || 0;
+		}
+		case "excel": {
+			const excel = content as any;
+			return excel.metadata?.totalSheets || 0;
+		}
+		case "powerpoint": {
+			const ppt = content as any;
+			return ppt.slides?.length || 0;
+		}
+		case "word": {
+			const word = content as any;
+			return 1; // Word documents are typically single file
+		}
+		case "image": {
+			return 1; // Single image file
+		}
+		default:
+			return 0;
+	}
 }
 
 function computeCompleteness(analysis: DocumentAnalysis) {
@@ -42,7 +144,7 @@ function computeCompleteness(analysis: DocumentAnalysis) {
 	else if (metrics >= 1) score += 0.15;
 
 	const reason = `summary=${summaryLen} chars, headings=${headings}, metrics=${metrics}, score=${score.toFixed(2)}`;
-	return { score, reason };
+	return { score, reason, summaryLen, headings, metrics };
 }
 
 async function updateJob(job: Job, status: JobStatus, message?: string, progressPct?: number | null) {
@@ -54,7 +156,7 @@ async function updateJob(job: Job, status: JobStatus, message?: string, progress
 		     message = COALESCE($3, message),
 		     progress_pct = COALESCE($4, progress_pct)
 		 WHERE job_id = $1`,
-		[(job.id ?? job.name).toString(), status, message ?? null, progressPct ?? null]
+		[sanitizeText((job.id ?? job.name).toString()), sanitizeText(status), message ? sanitizeText(message) : null, progressPct ?? null]
 	);
 }
 
@@ -132,19 +234,24 @@ async function ingestDocumentProcessor(job: Job) {
 			const message = analysis.metadata.errorMessage || "Extraction failed";
 			const needsOcr = message.toLowerCase().includes("no text extracted") || message.toLowerCase().includes("image-only");
 			extractionMetadata.needsOcr = needsOcr;
+			const fullText = extractFullText(analysis.content, analysis.contentType);
+			const pageCount = getPageCount(analysis.content, analysis.contentType);
 			await updateDocumentAnalysis({
 				documentId,
 				structuredData: analysis.structuredData,
 				extractionMetadata,
+				fullContent: analysis.content,
+				fullText: fullText || undefined,
+				pageCount: pageCount || undefined,
 			});
 			await updateDocumentStatus(documentId, needsOcr ? "needs_ocr" : "failed");
 			await updateJob(job, "failed", message);
 			return { ok: false, analysis };
 		}
 
-		// Store analysis in evidence
+		// Store analysis in evidence - now capturing ALL metrics and headings, not just top 10
 		let metricsInserted = 0;
-		for (const metric of analysis.structuredData.keyMetrics.slice(0, 10)) {
+		for (const metric of analysis.structuredData.keyMetrics) {
 			await insertEvidence({
 				deal_id: dealId,
 				document_id: documentId,
@@ -157,7 +264,7 @@ async function ingestDocumentProcessor(job: Job) {
 		}
 
 		let headingsInserted = 0;
-		for (const heading of analysis.structuredData.mainHeadings.slice(0, 10)) {
+		for (const heading of analysis.structuredData.mainHeadings) {
 			await insertEvidence({
 				deal_id: dealId,
 				document_id: documentId,
@@ -183,7 +290,19 @@ async function ingestDocumentProcessor(job: Job) {
 
 		await updateJob(job, "running", `Inserted evidence (metrics=${metricsInserted}, headings=${headingsInserted})`, 80);
 
-		const lowContent = completeness.score < 0.5;
+		const fullText = extractFullText(analysis.content, analysis.contentType);
+		const pageCount = getPageCount(analysis.content, analysis.contentType);
+		
+		// Determine content threshold based on document type
+		// Word docs (cut sheets, whitepapers) can be valid with minimal content
+		// Other formats need more substantial content
+		let contentThreshold = 0.5;
+		if (analysis.contentType === "word") {
+			contentThreshold = 0.25; // Lower threshold for Word docs
+		}
+		
+		const lowContent = completeness.score < contentThreshold;
+		
 		if (lowContent && attempt < 2) {
 			const message = `Low-content extraction (${completeness.reason}); retrying`;
 			extractionMetadata.errorMessage = message;
@@ -191,6 +310,9 @@ async function ingestDocumentProcessor(job: Job) {
 				documentId,
 				structuredData: analysis.structuredData,
 				extractionMetadata,
+				fullContent: analysis.content,
+				fullText: fullText || undefined,
+				pageCount: pageCount || undefined,
 			});
 			await updateDocumentStatus(documentId, "pending");
 			await updateJob(job, "failed", message, 100);
@@ -205,6 +327,9 @@ async function ingestDocumentProcessor(job: Job) {
 				documentId,
 				structuredData: analysis.structuredData,
 				extractionMetadata,
+				fullContent: analysis.content,
+				fullText: fullText || undefined,
+				pageCount: pageCount || undefined,
 			});
 			await updateDocumentStatus(documentId, "failed");
 			await updateJob(job, "failed", message, 100);
@@ -216,6 +341,9 @@ async function ingestDocumentProcessor(job: Job) {
 				status: "completed",
 				structuredData: analysis.structuredData,
 				extractionMetadata,
+				fullContent: analysis.content,
+				fullText: fullText || undefined,
+				pageCount: pageCount || undefined,
 			});
 			await updateJob(
 				job,
@@ -226,6 +354,17 @@ async function ingestDocumentProcessor(job: Job) {
 
 			console.log(
 				`[ingest_document] documentId=${documentId} dealId=${dealId} type=${analysis.contentType} success=true metrics=${metricsInserted} headings=${headingsInserted} score=${completeness.score.toFixed(2)}`
+			);
+
+			// Queue verification job for this document
+			const verifyQueue = getQueue("verify_documents");
+			await verifyQueue.add(
+				"verify_documents",
+				{
+					deal_id: dealId,
+					document_ids: [documentId],
+				},
+				{ removeOnComplete: true, removeOnFail: false, delay: 500 } // Small delay to ensure extraction is fully written
 			);
 		}
 		return { ok: true, analysis };
@@ -303,6 +442,239 @@ createWorker("fetch_evidence", async (job: Job) => {
 	}
 });
 createWorker("analyze_deal", baseProcessor("running", "succeeded"));
+
+/**
+ * Verification job: Runs after extraction to verify data quality and readiness
+ */
+createWorker("verify_documents", async (job: Job) => {
+	const dealId = (job.data as { deal_id?: string } | undefined)?.deal_id;
+	const documentIds = (job.data as { document_ids?: string[] } | undefined)?.document_ids;
+
+	if (!dealId || !documentIds || documentIds.length === 0) {
+		await updateJob(job, "failed", "Missing deal_id or document_ids");
+		return { ok: false };
+	}
+
+	try {
+		await updateJob(job, "running", `Verifying ${documentIds.length} document(s)...`, 10);
+
+		const pool = getPool();
+		const documents = await getDocumentsByIds(documentIds);
+
+		if (documents.length === 0) {
+			await updateJob(job, "failed", "Documents not found");
+			return { ok: false };
+		}
+
+		const verificationResults: Record<string, VerificationResult> = {};
+		let passCount = 0;
+		let warnCount = 0;
+		let failCount = 0;
+
+		// Verify each document
+		for (let i = 0; i < documents.length; i++) {
+			const doc = documents[i];
+			const progressPct = Math.round((i / documents.length) * 80) + 10;
+
+			try {
+				// Get the structured analysis data
+				const analysis = {
+					content: doc.full_content,
+					contentType: doc.type || "other",
+					structuredData: doc.structured_data || { keyMetrics: [], mainHeadings: [], textSummary: "" },
+					metadata: {
+						extractionSuccess: doc.status === "completed",
+						errorMessage: null,
+						processingTimeMs: 0,
+					},
+				} as DocumentAnalysis;
+
+				const verificationResult = verifyDocumentExtraction({
+					analysis,
+					fullText: doc.full_text,
+					pageCount: doc.page_count || 0,
+					extractionMetadata: doc.extraction_metadata,
+				});
+
+				verificationResults[doc.id] = verificationResult;
+
+				// Determine status based on overall score
+				const verificationStatus = verificationResult.overall_score >= 0.8
+					? "verified"
+					: verificationResult.overall_score >= 0.5
+					? "warnings"
+					: "failed";
+
+				if (verificationStatus === "verified") passCount++;
+				else if (verificationStatus === "warnings") warnCount++;
+				else failCount++;
+
+				// Update document with verification result
+				await updateDocumentVerification({
+					documentId: doc.id,
+					verificationStatus,
+					verificationResult,
+					readyForAnalysisAt: verificationStatus === "verified" ? new Date() : undefined,
+				});
+
+				// Mark as ready if verified
+				if (verificationStatus === "verified") {
+					await updateDocumentStatus(doc.id, "ready_for_analysis");
+				}
+
+				await updateJob(
+					job,
+					"running",
+					`Verified ${doc.title} (score: ${(verificationResult.overall_score * 100).toFixed(0)}%)`,
+					progressPct
+				);
+			} catch (err) {
+				console.error(`[verify_documents] error verifying ${doc.id}:`, err);
+				await updateDocumentVerification({
+					documentId: doc.id,
+					verificationStatus: "failed",
+					verificationResult: {
+						error: err instanceof Error ? err.message : "Unknown error",
+					},
+				});
+				failCount++;
+			}
+		}
+
+		const message = `Verification complete: ${passCount} verified, ${warnCount} warnings, ${failCount} failed`;
+		await updateJob(job, "succeeded", message, 100);
+		console.log(`[verify_documents] deal=${dealId} ${message}`);
+
+		return { ok: true, passCount, warnCount, failCount, verificationResults };
+	} catch (err) {
+		const message = err instanceof Error ? err.message : "Verification failed";
+		await updateJob(job, "failed", message);
+		console.error(`[verify_documents] error:`, err);
+		throw err;
+	}
+});
+
+/**
+ * Ingestion report job: Generates summary report after all docs are extracted and verified
+ */
+createWorker("generate_ingestion_report", async (job: Job) => {
+	const dealId = (job.data as { deal_id?: string } | undefined)?.deal_id;
+	const documentIds = (job.data as { document_ids?: string[] } | undefined)?.document_ids;
+
+	if (!dealId || !documentIds || documentIds.length === 0) {
+		await updateJob(job, "failed", "Missing deal_id or document_ids");
+		return { ok: false };
+	}
+
+	try {
+		await updateJob(job, "running", "Generating ingestion report...", 20);
+
+		const documents = await getDocumentsByIds(documentIds);
+
+		const documentSummaries = documents.map(doc => {
+			const structuredData = doc.structured_data as any;
+			const extractionMetadata = doc.extraction_metadata as any;
+			const verificationResult = doc.verification_result as VerificationResult | null;
+
+			return {
+				title: doc.title,
+				type: doc.type,
+				status: doc.status,
+				verification_status: doc.verification_status,
+				pages: doc.page_count || 0,
+				file_size_bytes: extractionMetadata?.fileSizeBytes || 0,
+				extraction_quality_score: (verificationResult?.overall_score ?? 0.5),
+				metrics_extracted: structuredData?.keyMetrics?.length || 0,
+				sections_found: structuredData?.mainHeadings?.length || 0,
+				ocr_avg_confidence: verificationResult?.quality_checks?.ocr_confidence?.avg || 100,
+				verification_warnings: verificationResult?.warnings || [],
+			};
+		});
+
+		// Calculate overall metrics
+		const totalPages = documents.reduce((sum, d) => sum + (d.page_count || 0), 0);
+		const totalMetrics = documents.reduce((sum, d) => {
+			const sd = d.structured_data as any;
+			return sum + (sd?.keyMetrics?.length || 0);
+		}, 0);
+		const totalSections = documents.reduce((sum, d) => {
+			const sd = d.structured_data as any;
+			return sum + (sd?.mainHeadings?.length || 0);
+		}, 0);
+		const avgQualityScore = documents.length > 0
+			? documentSummaries.reduce((sum, d) => sum + d.extraction_quality_score, 0) / documents.length
+			: 0;
+
+		// Determine overall readiness
+		const verifiedCount = documents.filter(d => d.verification_status === "verified").length;
+		const warningCount = documents.filter(d => d.verification_status === "warnings").length;
+		const failedCount = documents.filter(d => d.verification_status === "failed").length;
+
+		let overallReadiness: "ready" | "needs_review" | "failed" = "ready";
+		let readinessDetails = "All documents verified and ready for analysis";
+
+		if (failedCount > 0) {
+			overallReadiness = "failed";
+			readinessDetails = `${failedCount} document(s) failed verification. Please review and re-upload.`;
+		} else if (warningCount > 0) {
+			overallReadiness = "needs_review";
+			readinessDetails = `${warningCount} document(s) have warnings. Review before proceeding.`;
+		}
+
+		const summary = {
+			files_uploaded: documentIds.length,
+			total_pages: totalPages,
+			total_metrics: totalMetrics,
+			total_sections: totalSections,
+			avg_quality_score: avgQualityScore,
+			documents: documentSummaries,
+			overall_readiness: overallReadiness,
+			readiness_details: readinessDetails,
+			verification_summary: {
+				verified: verifiedCount,
+				warnings: warningCount,
+				failed: failedCount,
+			},
+			completed_at: new Date().toISOString(),
+			next_steps: overallReadiness === "ready"
+				? "Proceed to deal analysis with uploaded documents"
+				: "Address warnings/failures before proceeding",
+		};
+
+		const reportId = randomUUID();
+		await saveIngestionReport({
+			reportId,
+			dealId,
+			summary,
+			documentIds,
+		});
+
+		// Update all documents with ingestion summary
+		for (const doc of documents) {
+			const pool = getPool();
+			await pool.query(
+				`UPDATE documents SET ingestion_summary = $2 WHERE id = $1`,
+				[doc.id, summary]
+			);
+		}
+
+		await updateJob(
+			job,
+			"succeeded",
+			`Report generated: ${verifiedCount} verified, ${warningCount} warnings, ${failedCount} failed`,
+			100
+		);
+
+		console.log(`[generate_ingestion_report] deal=${dealId} report_id=${reportId} readiness=${overallReadiness}`);
+
+		return { ok: true, report_id: reportId, summary };
+	} catch (err) {
+		const message = err instanceof Error ? err.message : "Report generation failed";
+		await updateJob(job, "failed", message);
+		console.error(`[generate_ingestion_report] error:`, err);
+		throw err;
+	}
+});
 
 const shutdown = async () => {
 	await closePool();

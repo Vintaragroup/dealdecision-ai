@@ -1,5 +1,6 @@
 import type { JobType, JobStatus } from "@dealdecision/contracts";
 import { randomUUID } from "crypto";
+import { sanitizeText } from "@dealdecision/core";
 import { getPool } from "../lib/db";
 import {
   ingestQueue,
@@ -38,7 +39,7 @@ export async function enqueueJob(input: EnqueueJobInput) {
     `INSERT INTO jobs (job_id, deal_id, document_id, type, status)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING id, job_id, status`,
-    [jobId, input.deal_id ?? null, input.document_id ?? null, input.type, "queued"]
+    [sanitizeText(jobId), input.deal_id ? sanitizeText(input.deal_id) : null, input.document_id ? sanitizeText(input.document_id) : null, sanitizeText(input.type), "queued"]
   );
 
   return rows[0];
@@ -58,6 +59,6 @@ export async function updateJobStatus(
          progress_pct = COALESCE($3, progress_pct),
          message = COALESCE($4, message)
      WHERE job_id = $1`,
-    [jobId, status, progressPct ?? null, message ?? null]
+    [sanitizeText(jobId), sanitizeText(status), progressPct ?? null, message ? sanitizeText(message) : null]
   );
 }

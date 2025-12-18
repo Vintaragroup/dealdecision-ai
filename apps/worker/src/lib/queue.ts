@@ -23,7 +23,7 @@ connection.on('error', (err) => {
 });
 
 export function createWorker(
-  name: "ingest_document" | "fetch_evidence" | "analyze_deal",
+  name: "ingest_document" | "fetch_evidence" | "analyze_deal" | "verify_documents" | "generate_ingestion_report",
   processor: Processor<any, any, string>
 ) {
   console.log(`[queue] Creating worker for queue: ${name}`);
@@ -62,6 +62,6 @@ export function createWorker(
   return worker;
 }
 
-export function getQueue(name: "ingest_document" | "fetch_evidence" | "analyze_deal") {
+export function getQueue(name: "ingest_document" | "fetch_evidence" | "analyze_deal" | "verify_documents" | "generate_ingestion_report") {
 	return new Queue(name, { connection });
 }

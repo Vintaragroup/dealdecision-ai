@@ -1,5 +1,5 @@
 ---
-description: Defines investment domain data models for deal analysis, evidence tracking, and document management
+description: Documentation for investment domain data models including Deal, Evidence, Document, and Analysis entities
 ---
 
 # === USER INSTRUCTIONS ===
@@ -12,75 +12,59 @@ stage: 'intake' | 'under_review' | 'in_diligence' | 'ready_decision' | 'pitched'
 
 # data-models-investment
 
-## Core Data Models
+Core Investment Domain Models:
 
-### Deal Model
-- Investment deal lifecycle tracking
-- Stage progression: intake → under_review → in_diligence → ready_decision → pitched
-- Multi-dimensional scoring across market, team, financial metrics
-- Deal classification system with stage-specific validation rules
-Importance Score: 95
+1. Deal Model
+- Multi-state progression tracking (intake → under_review → in_diligence → ready_decision)
+- Evidence requirements mapped to stages
+- Custom scoring matrix for deal evaluation:
+  - Market score (0-100)
+  - Team score (0-100) 
+  - Financial health (0-100)
+  - Risk assessment (0-100)
 
-### Evidence Model
-- Hierarchical evidence collection structure
-- Citation tracking with confidence scoring
+2. Evidence Model
+- Hierarchical evidence structure with parent-child relationships
+- Evidence confidence scoring (0-100)
 - Source verification status tracking
-- Evidence categorization by business domain
-Importance Score: 90
+- Citation mapping to original documents
+- Evidence type classification system
 
-### Document Model
-- Investment document classification system
+3. Document Model 
+- Document classification system (pitch_deck, financials, legal, etc.)
 - Version control with temporal tracking
-- Document grouping by company/deal
-- Metadata extraction for financial metrics
-Importance Score: 85
+- Quality scoring framework:
+  - Completeness score
+  - Clarity score
+  - Reliability score
+- Document relationship mapping
 
-### Analysis Model
-- Three-cycle analysis framework
-- Depth assessment scoring
-- Fact validation ledger
-- Citation compliance tracking
-Importance Score: 90
+4. Analysis Model
+- Three-cycle analysis framework:
+  - Cycle 1: Initial scan
+  - Cycle 2: Deep dive
+  - Cycle 3: Synthesis
+- Analysis depth tracking
+- Finding confidence metrics
+- Citation requirement enforcement
 
-## Relationships
+Key Domain Relationships:
+- Deals contain multiple Evidence entries
+- Evidence links to source Documents
+- Analysis tracks Evidence progression
+- Documents support multiple Evidence points
 
-### Deal -> Evidence
-- One-to-many relationship
-- Evidence aggregation by category
-- Confidence scoring rollup
-- Citation network tracking
+Core Model Dependencies:
+- Deal progression requires Evidence thresholds
+- Evidence requires Document validation
+- Analysis requires Evidence confidence
+- Document scores impact Evidence reliability
 
-### Evidence -> Document
-- Many-to-many mapping
-- Source verification links
-- Version awareness
-- Temporal validity tracking
-
-### Analysis -> Evidence
-- Hierarchical fact organization
-- Validation state management
-- Confidence calibration metrics
-- Citation requirement tracking
-
-## State Transitions
-
-### Deal Progression
-- Stage-based workflow
-- Required evidence thresholds
-- Validation completeness checks
-- Automated progression rules
-
-### Analysis Cycles
-- Three-tier depth progression
-- Confidence threshold gates
-- Evidence completeness requirements
-- Decision package formation
-
-### Document Processing
-- Classification workflow
-- Metadata extraction pipeline
-- Version control states
-- Group assignment rules
+Importance Scores:
+- Deal Model: 95/100 (Core business entity)
+- Evidence Model: 90/100 (Critical for validation)
+- Document Model: 85/100 (Source of truth)  
+- Analysis Model: 90/100 (Key business process)
 
 $END$
 

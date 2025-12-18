@@ -108,13 +108,33 @@ function isBoilerplate(text: string): boolean {
 }
 
 function isLikelyGoodTitle(title: string): boolean {
-  const t = (title || "").replace(/\s+/g, " ").trim();
-  if (!t) return false;
-  if (t.length < 6) return false;
+  const raw = (title || "").replace(/\s+/g, " ").trim();
+  if (!raw) return false;
+
+  const t = stripLogoPrefix(raw);
+
+  if (t.length < 10) return false;
+  if (t.length > 120) return false;
   if (!/\b[a-zA-Z]{3,}\b/.test(t)) return false;
+
+  const words = t.split(/\s+/).filter(Boolean);
+  if (words.length < 2) return false;
+
+  const punct = (t.match(/[\]\[\)\(\{\}\|<>\\]/g) || []).length;
+  if (punct >= 2) return false;
+
   const letters = (t.match(/[A-Za-z]/g) || []).length;
-  if (letters / Math.max(1, t.length) < 0.45) return false;
+  if (letters / Math.max(1, t.length) < 0.55) return false;
+
   if (isBoilerplate(t)) return false;
+
+  const allCapsRuns = (t.match(/\b[A-Z]{3,}\b/g) || []).length;
+  const realWords = (t.match(/\b[a-zA-Z]{3,}\b/g) || []).length;
+  if (allCapsRuns >= 5 && realWords < 3) return false;
+
+  // kill the specific junk you're seeing
+  if (/\buse\)\b/i.test(t)) return false;
+
   return true;
 }
 
@@ -200,6 +220,73 @@ function normalizeBoilerplateText(input: string): string {
     .replace(/[^a-z0-9@\.\/\:\-\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeTitleKey(input: string): string {
+  return (input || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function stripLogoPrefix(title: string): string {
+  const t = (title || "").replace(/\s+/g, " ").trim();
+  const m = t.match(/^([a-zA-Z]{1,3})\s+(.{6,})$/);
+  if (!m) return t;
+
+  const rest = m[2].trim();
+  // only strip if remainder looks like a real title
+  if ((rest.match(/\b[a-zA-Z]{3,}\b/g) || []).length >= 2) return rest;
+  return t;
+}
+
+function isGarbledContext(ctx: string): boolean {
+  const c = (ctx || "").replace(/\s+/g, " ").trim();
+  if (!c) return true;
+
+  // Very long contexts from OCR are often garbage (we prefer short labels).
+  // In practice, metric "labels" should be fairly short; long spans tend to be sentence-like OCR soup.
+  if (c.length > 90) return true;
+
+  const letters = (c.match(/[A-Za-z]/g) || []).length;
+  const digits = (c.match(/[0-9]/g) || []).length;
+  const spaces = (c.match(/\s/g) || []).length;
+
+  // Allowed characters for a "label-ish" context.
+  const allowed = (c.match(/[A-Za-z0-9\s\-–%\$\.,\/:]/g) || []).length;
+  const allowedRatio = allowed / Math.max(1, c.length);
+
+  // Hard reject for too little real text.
+  if (letters < 4) return true;
+
+  // If OCR produced lots of weird glyphs, treat as garbage.
+  if (allowedRatio < 0.82) return true;
+
+  // Too dense (no spaces) tends to be OCR junk.
+  if (spaces < 2 && c.length > 25) return true;
+
+  // Lots of digit noise with few letters tends to be OCR debris.
+  if (digits > 0 && letters / Math.max(1, digits) < 0.6 && c.length > 25) return true;
+
+  // Structural junk.
+  if (/[|\\]{2,}/.test(c)) return true;
+  if (/[\[\]\{\}<>]/.test(c)) return true;
+  if (/[_]{3,}/.test(c)) return true;
+
+  // Excessive all-caps runs are usually broken OCR (e.g. "GTA MORTON SOTUTIONS").
+  const capsRuns = (c.match(/\b[A-Z]{3,}\b/g) || []).length;
+  if (capsRuns >= 4 && c.length > 30) return true;
+
+  // Lots of 1-char tokens is usually garbage.
+  const tokens = c.split(/\s+/).filter(Boolean);
+  const oneChar = tokens.filter((t) => t.length === 1).length;
+  if (tokens.length >= 6 && oneChar / tokens.length > 0.35) return true;
+
+  // Run-on fragments (lots of tokens) are rarely "labels".
+  if (tokens.length > 12) return true;
+
+  return false;
 }
 
 type Region = { x: number; y: number; w: number; h: number };
@@ -609,7 +696,7 @@ async function extractWithTextThenOcr(worker: pdfjs.PDFDocumentProxy, processedP
 
     const slideTitle = extractSlideTitle(words, pageHeight);
     if (isLikelyGoodTitle(slideTitle)) {
-      slideTitles.push(slideTitle);
+      slideTitles.push(stripLogoPrefix(slideTitle));
     }
 
     textItemsCount += words.length;
@@ -674,7 +761,7 @@ async function extractWithTextThenOcr(worker: pdfjs.PDFDocumentProxy, processedP
       }
 
       if (isLikelyGoodTitle(slideTitle)) {
-        slideTitles.push(slideTitle);
+        slideTitles.push(stripLogoPrefix(slideTitle));
       }
 
       const numberMatches = ocr.text.matchAll(/(\$[\d,]+(?:\.\d{2})?|[\d,]+(?:\.\d{2})?%|[\d,]+(?:\.\d+)?[KMB]?)/g);
@@ -801,18 +888,24 @@ async function extractWithTextThenOcr(worker: pdfjs.PDFDocumentProxy, processedP
   const filteredHeadings = (() => {
     const out: string[] = [];
     const seen = new Set<string>();
-    for (const t of slideTitles) {
-      if (!isLikelyGoodTitle(t)) continue;
-      const norm = normalizeBoilerplateText(t);
-      if (!norm || boilerplate.has(norm)) continue;
-      const key = norm.replace(/^[^a-z]+/g, "").trim();
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      out.push(t.replace(/\s+/g, " ").trim());
-      if (out.length >= 10) break;
+
+    for (const tRaw of slideTitles) {
+        const cleaned = stripLogoPrefix(tRaw);
+        if (!isLikelyGoodTitle(cleaned)) continue;
+
+        const norm = normalizeBoilerplateText(cleaned);
+        if (!norm || boilerplate.has(norm)) continue;
+
+        const key = normalizeTitleKey(cleaned).replace(/^[^a-z]+/g, "").trim();
+        if (!key || seen.has(key)) continue;
+
+        seen.add(key);
+        out.push(cleaned.replace(/\s+/g, " ").trim());
+        if (out.length >= 10) break;
     }
+
     return out;
-  })();
+})();
 
   // Build numbers list: prefer metric label contexts, dedupe by value, keep shortest/cleanest context.
   const derivedNumbers = pages
@@ -820,42 +913,51 @@ async function extractWithTextThenOcr(worker: pdfjs.PDFDocumentProxy, processedP
     .concat(numbers)
     .filter((n) => n.value && n.context && isNumericValue(n.value));
 
-  const filteredNumbers = (() => {
-    const bestByValue = new Map<string, { value: string; context: string }>();
+const filteredNumbers = (() => {
+  const bestByValue = new Map<string, { value: string; context: string }>();
 
-    const scoreContext = (ctx: string) => {
-      const c = (ctx || "").replace(/\s+/g, " ").trim();
-      if (!c) return 1e9;
-      const len = c.length;
-      const garbled = /[^a-zA-Z0-9\s\-–%\$\.,]/.test(c);
-      const manyCaps = (c.match(/[A-Z]{3,}/g) || []).length;
-      return len + (garbled ? 80 : 0) + (manyCaps > 6 ? 40 : 0);
-    };
+  const scoreContext = (ctx: string) => {
+    const c = (ctx || "").replace(/\s+/g, " ").trim();
+    if (!c) return 1e9;
 
-    for (const n of derivedNumbers) {
-      const value = (n.value || "").trim();
-      const ctxRaw = (n.context || "").replace(/\s+/g, " ").trim();
-      if (!value || !ctxRaw) continue;
-      if (!isNumericValue(value)) continue;
+    const len = c.length;
+    const manyCaps = (c.match(/[A-Z]{3,}/g) || []).length;
+    const weird = (c.match(/[^A-Za-z0-9\s\-–%\$\.,\/:]/g) || []).length;
 
-      const normCtx = normalizeBoilerplateText(ctxRaw);
-      if (normCtx && boilerplate.has(normCtx)) continue;
+    // shorter is better; lots of all-caps runs + weird glyphs are often OCR junk
+    return len + (manyCaps > 6 ? 40 : 0) + weird * 15;
+  };
 
-      const ctx = ctxRaw.length > 120 ? ctxRaw.slice(0, 117).trim() + "..." : ctxRaw;
-      const key = value.toLowerCase();
+  for (const n of derivedNumbers) {
+    const value = (n.value || "").trim();
+    const ctxRaw = (n.context || "").replace(/\s+/g, " ").trim();
+    if (!value || !ctxRaw) continue;
+    if (!isNumericValue(value)) continue;
 
-      const existing = bestByValue.get(key);
-      if (!existing) {
-        bestByValue.set(key, { value, context: ctx });
-        continue;
-      }
-      if (scoreContext(ctx) < scoreContext(existing.context)) {
-        bestByValue.set(key, { value, context: ctx });
-      }
+    // ✅ skip obvious OCR garbage contexts early
+    if (isGarbledContext(ctxRaw)) continue;
+
+    const normCtx = normalizeBoilerplateText(ctxRaw);
+    if (normCtx && boilerplate.has(normCtx)) continue;
+
+    const ctx = ctxRaw.length > 120 ? ctxRaw.slice(0, 117).trim() + "..." : ctxRaw;
+    // After truncation, check again for garbage
+    if (isGarbledContext(ctx)) continue;
+    const key = value.toLowerCase();
+
+    const existing = bestByValue.get(key);
+    if (!existing) {
+      bestByValue.set(key, { value, context: ctx });
+      continue;
     }
 
-    return Array.from(bestByValue.values());
-  })();
+    if (scoreContext(ctx) < scoreContext(existing.context)) {
+      bestByValue.set(key, { value, context: ctx });
+    }
+  }
+
+  return Array.from(bestByValue.values());
+})();
 
   return {
     pages,

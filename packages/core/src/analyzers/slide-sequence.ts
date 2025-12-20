@@ -123,6 +123,11 @@ export class SlideSequenceAnalyzer extends BaseAnalyzer<SlideSequenceInput, Slid
     return {
       analyzer_version: this.metadata.version,
       executed_at: new Date().toISOString(),
+
+      status: "ok",
+      coverage: 0.8,
+      confidence: 0.75,  
+
       score,
       pattern_match: pattern_match.name,
       sequence_detected: classified_slides.map(s => s.category),

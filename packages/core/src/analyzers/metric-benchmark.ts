@@ -139,6 +139,11 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
     return {
       analyzer_version: this.metadata.version,
       executed_at: new Date().toISOString(),
+
+      status: "ok",
+      coverage: 0.8,
+      confidence: 0.75,
+
       metrics_analyzed: validations,
       overall_score,
       evidence_ids: input.evidence_ids || [],

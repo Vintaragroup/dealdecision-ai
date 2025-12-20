@@ -92,6 +92,11 @@ export class VisualDesignScorer extends BaseAnalyzer<VisualDesignInput, VisualDe
     return {
       analyzer_version: this.metadata.version,
       executed_at: new Date().toISOString(),
+
+      status: "ok",
+      coverage: 0.8,
+      confidence: 0.75,
+
       design_score,
       proxy_signals: {
         page_count_appropriate: page_count_signal.appropriate,

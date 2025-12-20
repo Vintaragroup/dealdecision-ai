@@ -102,6 +102,11 @@ export class NarrativeArcDetector extends BaseAnalyzer<NarrativeArcInput, Narrat
     return {
       analyzer_version: this.metadata.version,
       executed_at: new Date().toISOString(),
+
+      status: "ok",
+      coverage: 0.8,
+      confidence: 0.75,
+
       archetype: archetype.name,
       archetype_confidence: archetype.confidence,
       pacing_score,

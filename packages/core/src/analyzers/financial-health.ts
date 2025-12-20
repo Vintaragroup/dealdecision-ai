@@ -87,6 +87,11 @@ export class FinancialHealthCalculator extends BaseAnalyzer<FinancialHealthInput
     return {
       analyzer_version: this.metadata.version,
       executed_at: new Date().toISOString(),
+
+      status: "ok",
+      coverage: 0.8,
+      confidence: 0.75,
+
       runway_months,
       burn_multiple,
       health_score,

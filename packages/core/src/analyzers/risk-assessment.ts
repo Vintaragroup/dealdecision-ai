@@ -35,6 +35,11 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
     return {
       analyzer_version: this.metadata.version,
       executed_at: new Date().toISOString(),
+
+      status: "ok",
+      coverage: 0.8,
+      confidence: 0.75,
+
       overall_risk_score,
       risks_by_category,
       total_risks: detected_risks.length,

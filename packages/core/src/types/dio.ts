@@ -165,6 +165,12 @@ export type RiskAssessmentInput = z.infer<typeof RiskAssessmentInputSchema>;
 // Analyzer Results (Deterministic Outputs)
 // ============================================================================
 
+const AnalyzerMetaSchema = z.object({
+  status: z.enum(["ok", "insufficient_data", "extraction_failed"]).optional(),
+  coverage: z.number().min(0).max(1).optional(),
+  confidence: z.number().min(0).max(1).optional(),
+});
+
 // Slide Sequence Analyzer
 export const DeviationSchema = z.object({
   position: z.number().int().nonnegative(),
@@ -178,8 +184,10 @@ export type Deviation = z.infer<typeof DeviationSchema>;
 export const SlideSequenceResultSchema = z.object({
   analyzer_version: z.string(),
   executed_at: z.string().datetime(),
+
+  ...AnalyzerMetaSchema.shape,
   
-  score: z.number().min(0).max(100),
+  score: z.number().min(0).max(100).nullable(),
   pattern_match: z.string(),
   sequence_detected: z.array(z.string()),
   expected_sequence: z.array(z.string()),
@@ -208,9 +216,11 @@ export type MetricValidation = z.infer<typeof MetricValidationSchema>;
 export const MetricBenchmarkResultSchema = z.object({
   analyzer_version: z.string(),
   executed_at: z.string().datetime(),
+
+  ...AnalyzerMetaSchema.shape,
   
   metrics_analyzed: z.array(MetricValidationSchema),
-  overall_score: z.number().min(0).max(100),
+  overall_score: z.number().min(0).max(100).nullable(),
   
   evidence_ids: z.array(z.string().uuid()),
 });
@@ -221,8 +231,10 @@ export type MetricBenchmarkResult = z.infer<typeof MetricBenchmarkResultSchema>;
 export const VisualDesignResultSchema = z.object({
   analyzer_version: z.string(),
   executed_at: z.string().datetime(),
+
+  ...AnalyzerMetaSchema.shape,
   
-  design_score: z.number().min(0).max(100),
+  design_score: z.number().min(0).max(100).nullable(),
   
   proxy_signals: z.object({
     page_count_appropriate: z.boolean(),
@@ -252,11 +264,13 @@ export type EmotionalBeat = z.infer<typeof EmotionalBeatSchema>;
 export const NarrativeArcResultSchema = z.object({
   analyzer_version: z.string(),
   executed_at: z.string().datetime(),
+
+  ...AnalyzerMetaSchema.shape,
   
   archetype: z.string(),
   archetype_confidence: z.number().min(0).max(1),
   
-  pacing_score: z.number().min(0).max(100),
+  pacing_score: z.number().min(0).max(100).nullable(),
   emotional_beats: z.array(EmotionalBeatSchema),
   
   evidence_ids: z.array(z.string().uuid()),
@@ -277,10 +291,12 @@ export type FinancialRisk = z.infer<typeof FinancialRiskSchema>;
 export const FinancialHealthResultSchema = z.object({
   analyzer_version: z.string(),
   executed_at: z.string().datetime(),
+
+  ...AnalyzerMetaSchema.shape,
   
   runway_months: z.number().nullable(),
   burn_multiple: z.number().nullable(),
-  health_score: z.number().min(0).max(100),
+  health_score: z.number().min(0).max(100).nullable(),
   
   metrics: z.object({
     revenue: z.number().nullable(),
@@ -312,8 +328,10 @@ export type Risk = z.infer<typeof RiskSchema>;
 export const RiskAssessmentResultSchema = z.object({
   analyzer_version: z.string(),
   executed_at: z.string().datetime(),
+
+  ...AnalyzerMetaSchema.shape,
   
-  overall_risk_score: z.number().min(0).max(100),
+  overall_risk_score: z.number().min(0).max(100).nullable(),
   
   risks_by_category: z.object({
     market: z.array(RiskSchema),

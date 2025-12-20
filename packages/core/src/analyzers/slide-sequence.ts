@@ -106,35 +106,74 @@ export class SlideSequenceAnalyzer extends BaseAnalyzer<SlideSequenceInput, Slid
    * DETERMINISTIC - no LLM, no external calls
    */
   async analyze(input: SlideSequenceInput): Promise<SlideSequenceResult> {
-    const start = Date.now();
+    const executed_at = new Date().toISOString();
 
-    // Classify each heading
-    const classified_slides = this.classifySlides(input.headings);
+    const headings = input.headings;
+    if (!Array.isArray(headings) || headings.length === 0 || headings.every((h) => !h || h.trim() === "")) {
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
 
-    // Find best matching pattern
-    const pattern_match = this.findBestPattern(classified_slides);
+        status: "insufficient_data",
+        coverage: 0,
+        confidence: 0.3,
 
-    // Calculate deviations
-    const deviations = this.findDeviations(classified_slides, pattern_match);
+        score: null,
+        pattern_match: "None",
+        sequence_detected: [],
+        expected_sequence: [],
+        deviations: [],
+        evidence_ids: input.evidence_ids || [],
+      };
+    }
 
-    // Calculate overall score (0-100)
-    const score = this.calculateScore(pattern_match, deviations, classified_slides);
+    try {
+      const start = Date.now();
 
-    return {
-      analyzer_version: this.metadata.version,
-      executed_at: new Date().toISOString(),
+      // Classify each heading
+      const classified_slides = this.classifySlides(headings);
 
-      status: "ok",
-      coverage: 0.8,
-      confidence: 0.75,  
+      // Find best matching pattern
+      const pattern_match = this.findBestPattern(classified_slides);
 
-      score,
-      pattern_match: pattern_match.name,
-      sequence_detected: classified_slides.map(s => s.category),
-      expected_sequence: pattern_match.ideal_sequence,
-      deviations,
-      evidence_ids: input.evidence_ids || [],
-    };
+      // Calculate deviations
+      const deviations = this.findDeviations(classified_slides, pattern_match);
+
+      // Calculate overall score (0-100)
+      const score = this.calculateScore(pattern_match, deviations, classified_slides);
+
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
+
+        status: "ok",
+        coverage: 0.8,
+        confidence: 0.75,
+
+        score,
+        pattern_match: pattern_match.name,
+        sequence_detected: classified_slides.map(s => s.category),
+        expected_sequence: pattern_match.ideal_sequence,
+        deviations,
+        evidence_ids: input.evidence_ids || [],
+      };
+    } catch {
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
+
+        status: "extraction_failed",
+        coverage: 0,
+        confidence: 0.2,
+
+        score: null,
+        pattern_match: "None",
+        sequence_detected: [],
+        expected_sequence: [],
+        deviations: [],
+        evidence_ids: input.evidence_ids || [],
+      };
+    }
   }
 
   /**

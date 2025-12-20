@@ -48,66 +48,118 @@ export class VisualDesignScorer extends BaseAnalyzer<VisualDesignInput, VisualDe
    * NOTE: This is v1.0.0 using proxies until layout extraction is available
    */
   async analyze(input: VisualDesignInput): Promise<VisualDesignResult> {
-    const start = Date.now();
+    const executed_at = new Date().toISOString();
 
-    // Calculate proxy signals
-    const page_count_signal = this.evaluatePageCount(input.page_count);
-    const image_ratio_signal = this.evaluateImageToTextRatio(
-      input.file_size_bytes,
-      input.page_count,
-      input.total_text_chars
-    );
-    const formatting_signal = this.evaluateFormatConsistency(
-      input.headings,
-      input.page_count
-    );
+    if (
+      !input.page_count || input.page_count < 1 ||
+      !input.file_size_bytes || input.file_size_bytes < 1 ||
+      !input.total_text_chars || input.total_text_chars < 1
+    ) {
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
 
-    // Calculate overall design score
-    const design_score = this.calculateDesignScore(
-      page_count_signal,
-      image_ratio_signal,
-      formatting_signal
-    );
+        status: "insufficient_data",
+        coverage: 0,
+        confidence: 0.3,
 
-    // Generate insights
-    const insights = this.generateInsights(
-      page_count_signal,
-      image_ratio_signal,
-      formatting_signal,
-      input
-    );
-
-    // Extract strengths and weaknesses from insights
-    const strengths: string[] = [];
-    const weaknesses: string[] = [];
-    
-    for (const insight of insights) {
-      if (insight.includes('good') || insight.includes('appropriate') || insight.includes('balanced')) {
-        strengths.push(insight);
-      } else {
-        weaknesses.push(insight);
-      }
+        design_score: null,
+        proxy_signals: {
+          page_count_appropriate: false,
+          image_to_text_ratio_balanced: false,
+          consistent_formatting: false,
+        },
+        strengths: [],
+        weaknesses: [],
+        evidence_ids: input.evidence_ids || [],
+        note: "Using proxy heuristics - full visual analysis requires layout extraction",
+      };
     }
 
-    return {
-      analyzer_version: this.metadata.version,
-      executed_at: new Date().toISOString(),
+    try {
+      const start = Date.now();
 
-      status: "ok",
-      coverage: 0.8,
-      confidence: 0.75,
+      const headings = Array.isArray(input.headings) ? input.headings : [];
 
-      design_score,
-      proxy_signals: {
-        page_count_appropriate: page_count_signal.appropriate,
-        image_to_text_ratio_balanced: image_ratio_signal.balanced,
-        consistent_formatting: formatting_signal.consistent,
-      },
-      strengths,
-      weaknesses,
-      evidence_ids: input.evidence_ids || [],
-      note: "Using proxy heuristics - full visual analysis requires layout extraction",
-    };
+      // Calculate proxy signals
+      const page_count_signal = this.evaluatePageCount(input.page_count);
+      const image_ratio_signal = this.evaluateImageToTextRatio(
+        input.file_size_bytes,
+        input.page_count,
+        input.total_text_chars
+      );
+      const formatting_signal = this.evaluateFormatConsistency(
+        headings,
+        input.page_count
+      );
+
+      // Calculate overall design score
+      const design_score = this.calculateDesignScore(
+        page_count_signal,
+        image_ratio_signal,
+        formatting_signal
+      );
+
+      // Generate insights
+      const insights = this.generateInsights(
+        page_count_signal,
+        image_ratio_signal,
+        formatting_signal,
+        input
+      );
+
+      // Extract strengths and weaknesses from insights
+      const strengths: string[] = [];
+      const weaknesses: string[] = [];
+      
+      for (const insight of insights) {
+        if (insight.includes('good') || insight.includes('appropriate') || insight.includes('balanced')) {
+          strengths.push(insight);
+        } else {
+          weaknesses.push(insight);
+        }
+      }
+
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
+
+        status: "ok",
+        coverage: 0.8,
+        confidence: 0.75,
+
+        design_score,
+        proxy_signals: {
+          page_count_appropriate: page_count_signal.appropriate,
+          image_to_text_ratio_balanced: image_ratio_signal.balanced,
+          consistent_formatting: formatting_signal.consistent,
+        },
+        strengths,
+        weaknesses,
+        evidence_ids: input.evidence_ids || [],
+        note: "Using proxy heuristics - full visual analysis requires layout extraction",
+      };
+    } catch {
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
+
+        status: "extraction_failed",
+        coverage: 0,
+        confidence: 0.2,
+
+        design_score: null,
+        proxy_signals: {
+          page_count_appropriate: false,
+          image_to_text_ratio_balanced: false,
+          consistent_formatting: false,
+        },
+        strengths: [],
+        weaknesses: [],
+        evidence_ids: input.evidence_ids || [],
+        note: "Using proxy heuristics - full visual analysis requires layout extraction",
+      };
+    }
   }
 
   /**

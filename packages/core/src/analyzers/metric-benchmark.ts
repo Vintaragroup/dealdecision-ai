@@ -122,32 +122,64 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
    * DETERMINISTIC - no LLM, no external calls
    */
   async analyze(input: MetricBenchmarkInput): Promise<MetricBenchmarkResult> {
-    const start = Date.now();
+    const executed_at = new Date().toISOString();
 
-    // Extract metrics from text
-    const extracted_metrics = this.extractMetrics([input.text]);
+    if (!input.text || input.text.length === 0) {
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
 
-    // Get appropriate benchmarks for industry (default to SaaS if not specified)
-    const benchmarks = this.getBenchmarks(input.industry || "saas", "series_a");
+        status: "insufficient_data",
+        coverage: 0,
+        confidence: 0.3,
 
-    // Validate each metric
-    const validations = this.validateMetrics(extracted_metrics, benchmarks, input.evidence_ids || []);
+        metrics_analyzed: [],
+        overall_score: null,
+        evidence_ids: input.evidence_ids || [],
+      };
+    }
 
-    // Calculate overall score
-    const overall_score = this.calculateScore(validations);
+    try {
+      const start = Date.now();
 
-    return {
-      analyzer_version: this.metadata.version,
-      executed_at: new Date().toISOString(),
+      // Extract metrics from text
+      const extracted_metrics = this.extractMetrics([input.text]);
 
-      status: "ok",
-      coverage: 0.8,
-      confidence: 0.75,
+      // Get appropriate benchmarks for industry (default to SaaS if not specified)
+      const benchmarks = this.getBenchmarks(input.industry || "saas", "series_a");
 
-      metrics_analyzed: validations,
-      overall_score,
-      evidence_ids: input.evidence_ids || [],
-    };
+      // Validate each metric
+      const validations = this.validateMetrics(extracted_metrics, benchmarks, input.evidence_ids || []);
+
+      // Calculate overall score
+      const overall_score = this.calculateScore(validations);
+
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
+
+        status: "ok",
+        coverage: 0.8,
+        confidence: 0.75,
+
+        metrics_analyzed: validations,
+        overall_score,
+        evidence_ids: input.evidence_ids || [],
+      };
+    } catch {
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
+
+        status: "extraction_failed",
+        coverage: 0,
+        confidence: 0.2,
+
+        metrics_analyzed: [],
+        overall_score: null,
+        evidence_ids: input.evidence_ids || [],
+      };
+    }
   }
 
   /**

@@ -54,57 +54,113 @@ export class FinancialHealthCalculator extends BaseAnalyzer<FinancialHealthInput
    * DETERMINISTIC - pure calculations
    */
   async analyze(input: FinancialHealthInput): Promise<FinancialHealthResult> {
-    const start = Date.now();
+    const executed_at = new Date().toISOString();
 
-    // Calculate runway
-    const runway_months = this.calculateRunway(
-      input.cash_balance || 0,
-      input.burn_rate || 0
-    );
+    if (
+      input.revenue === undefined &&
+      input.expenses === undefined &&
+      input.cash_balance === undefined &&
+      input.burn_rate === undefined &&
+      input.growth_rate === undefined
+    ) {
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
 
-    // Calculate burn multiple (not available from current input schema)
-    const burn_multiple = null;
+        status: "insufficient_data",
+        coverage: 0,
+        confidence: 0.3,
 
-    // Calculate monthly growth rate
-    const monthly_growth_rate = input.growth_rate || null;
+        runway_months: null,
+        burn_multiple: null,
+        health_score: null,
+        metrics: {
+          revenue: null,
+          expenses: null,
+          cash_balance: null,
+          burn_rate: null,
+          growth_rate: null,
+        },
+        risks: [],
+        evidence_ids: input.evidence_ids || [],
+      };
+    }
 
-    // Calculate health score
-    const health_score = this.calculateHealthScore(
-      runway_months,
-      burn_multiple,
-      undefined, // gross_margin not in schema
-      monthly_growth_rate
-    );
+    try {
+      const start = Date.now();
 
-    // Generate financial risks
-    const risks = this.generateFinancialRisks(
-      runway_months,
-      burn_multiple,
-      input,
-      input.evidence_ids || []
-    );
+      // Calculate runway
+      const runway_months = this.calculateRunway(
+        input.cash_balance || 0,
+        input.burn_rate || 0
+      );
 
-    return {
-      analyzer_version: this.metadata.version,
-      executed_at: new Date().toISOString(),
+      // Calculate burn multiple (not available from current input schema)
+      const burn_multiple = null;
 
-      status: "ok",
-      coverage: 0.8,
-      confidence: 0.75,
+      // Calculate monthly growth rate
+      const monthly_growth_rate = input.growth_rate || null;
 
-      runway_months,
-      burn_multiple,
-      health_score,
-      metrics: {
-        revenue: input.revenue || null,
-        expenses: input.expenses || null,
-        cash_balance: input.cash_balance || null,
-        burn_rate: input.burn_rate || null,
-        growth_rate: input.growth_rate || null,
-      },
-      risks,
-      evidence_ids: input.evidence_ids || [],
-    };
+      // Calculate health score
+      const health_score = this.calculateHealthScore(
+        runway_months,
+        burn_multiple,
+        undefined, // gross_margin not in schema
+        monthly_growth_rate
+      );
+
+      // Generate financial risks
+      const risks = this.generateFinancialRisks(
+        runway_months,
+        burn_multiple,
+        input,
+        input.evidence_ids || []
+      );
+
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
+
+        status: "ok",
+        coverage: 0.8,
+        confidence: 0.75,
+
+        runway_months,
+        burn_multiple,
+        health_score,
+        metrics: {
+          revenue: input.revenue || null,
+          expenses: input.expenses || null,
+          cash_balance: input.cash_balance || null,
+          burn_rate: input.burn_rate || null,
+          growth_rate: input.growth_rate || null,
+        },
+        risks,
+        evidence_ids: input.evidence_ids || [],
+      };
+    } catch {
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
+
+        status: "extraction_failed",
+        coverage: 0,
+        confidence: 0.2,
+
+        runway_months: null,
+        burn_multiple: null,
+        health_score: null,
+        metrics: {
+          revenue: null,
+          expenses: null,
+          cash_balance: null,
+          burn_rate: null,
+          growth_rate: null,
+        },
+        risks: [],
+        evidence_ids: input.evidence_ids || [],
+      };
+    }
   }
 
   /**

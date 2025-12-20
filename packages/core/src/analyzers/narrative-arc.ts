@@ -76,43 +76,79 @@ export class NarrativeArcDetector extends BaseAnalyzer<NarrativeArcInput, Narrat
    * DETERMINISTIC - pattern matching only
    */
   async analyze(input: NarrativeArcInput): Promise<NarrativeArcResult> {
-    const start = Date.now();
+    const executed_at = new Date().toISOString();
 
-    // Extract categories and content from slides
-    const slide_categories = input.slides.map(s => this.categorizeSlideBasedOnHeading(s.heading));
-    const slide_text_lengths = input.slides.map(s => s.text.length);
-    const slide_content = input.slides.map(s => s.text);
+    if (!Array.isArray(input.slides) || input.slides.length === 0) {
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
 
-    // Detect archetype
-    const archetype = this.detectArchetype(slide_categories);
+        status: "insufficient_data",
+        coverage: 0,
+        confidence: 0.3,
 
-    // Analyze pacing
-    const pacing_score = this.analyzePacing(slide_categories, slide_text_lengths);
+        archetype: "Unknown",
+        archetype_confidence: 0,
+        pacing_score: null,
+        emotional_beats: [],
+        evidence_ids: input.evidence_ids || [],
+      };
+    }
 
-    // Detect emotional beats
-    const emotional_beats = this.detectEmotionalBeats(slide_content);
+    try {
+      const start = Date.now();
 
-    // Convert emotional beats to match schema
-    const schema_beats = emotional_beats.map(beat => ({
-      section: `Slide ${beat.slide_index + 1}`,
-      emotion: this.mapBeatToEmotion(beat.beat),
-      strength: beat.intensity,
-    }));
+      // Extract categories and content from slides
+      const slide_categories = input.slides.map(s => this.categorizeSlideBasedOnHeading(s.heading));
+      const slide_text_lengths = input.slides.map(s => s.text.length);
+      const slide_content = input.slides.map(s => s.text);
 
-    return {
-      analyzer_version: this.metadata.version,
-      executed_at: new Date().toISOString(),
+      // Detect archetype
+      const archetype = this.detectArchetype(slide_categories);
 
-      status: "ok",
-      coverage: 0.8,
-      confidence: 0.75,
+      // Analyze pacing
+      const pacing_score = this.analyzePacing(slide_categories, slide_text_lengths);
 
-      archetype: archetype.name,
-      archetype_confidence: archetype.confidence,
-      pacing_score,
-      emotional_beats: schema_beats,
-      evidence_ids: input.evidence_ids || [],
-    };
+      // Detect emotional beats
+      const emotional_beats = this.detectEmotionalBeats(slide_content);
+
+      // Convert emotional beats to match schema
+      const schema_beats = emotional_beats.map(beat => ({
+        section: `Slide ${beat.slide_index + 1}`,
+        emotion: this.mapBeatToEmotion(beat.beat),
+        strength: beat.intensity,
+      }));
+
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
+
+        status: "ok",
+        coverage: 0.8,
+        confidence: 0.75,
+
+        archetype: archetype.name,
+        archetype_confidence: archetype.confidence,
+        pacing_score,
+        emotional_beats: schema_beats,
+        evidence_ids: input.evidence_ids || [],
+      };
+    } catch {
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
+
+        status: "extraction_failed",
+        coverage: 0,
+        confidence: 0.2,
+
+        archetype: "Unknown",
+        archetype_confidence: 0,
+        pacing_score: null,
+        emotional_beats: [],
+        evidence_ids: input.evidence_ids || [],
+      };
+    }
   }
 
   /**

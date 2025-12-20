@@ -26,27 +26,75 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
    * Analyze risks from pitch text and metrics
    */
   async analyze(input: RiskAssessmentInput): Promise<RiskAssessmentResult> {
-    const detected_risks = this.detectRisks(input);
-    const overall_risk_score = this.calculateRiskScore(detected_risks);
-    const risks_by_category = this.groupByCategory(detected_risks);
-    const critical_count = detected_risks.filter(r => r.severity === "critical").length;
-    const high_count = detected_risks.filter(r => r.severity === "high").length;
+    const executed_at = new Date().toISOString();
 
-    return {
-      analyzer_version: this.metadata.version,
-      executed_at: new Date().toISOString(),
+    if (!input.pitch_text || input.pitch_text.length < 10) {
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
 
-      status: "ok",
-      coverage: 0.8,
-      confidence: 0.75,
+        status: "insufficient_data",
+        coverage: 0,
+        confidence: 0.3,
 
-      overall_risk_score,
-      risks_by_category,
-      total_risks: detected_risks.length,
-      critical_count,
-      high_count,
-      evidence_ids: input.evidence_ids || [],
-    };
+        overall_risk_score: null,
+        risks_by_category: {
+          market: [],
+          team: [],
+          financial: [],
+          execution: [],
+        },
+        total_risks: 0,
+        critical_count: 0,
+        high_count: 0,
+        evidence_ids: input.evidence_ids || [],
+      };
+    }
+
+    try {
+      const detected_risks = this.detectRisks(input);
+      const overall_risk_score = this.calculateRiskScore(detected_risks);
+      const risks_by_category = this.groupByCategory(detected_risks);
+      const critical_count = detected_risks.filter(r => r.severity === "critical").length;
+      const high_count = detected_risks.filter(r => r.severity === "high").length;
+
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
+
+        status: "ok",
+        coverage: 0.8,
+        confidence: 0.75,
+
+        overall_risk_score,
+        risks_by_category,
+        total_risks: detected_risks.length,
+        critical_count,
+        high_count,
+        evidence_ids: input.evidence_ids || [],
+      };
+    } catch {
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
+
+        status: "extraction_failed",
+        coverage: 0,
+        confidence: 0.2,
+
+        overall_risk_score: null,
+        risks_by_category: {
+          market: [],
+          team: [],
+          financial: [],
+          execution: [],
+        },
+        total_risks: 0,
+        critical_count: 0,
+        high_count: 0,
+        evidence_ids: input.evidence_ids || [],
+      };
+    }
   }
 
   /**

@@ -311,6 +311,38 @@ export class DealOrchestrator {
     }
   }
 
+  private isInsufficientInput(name: keyof AnalyzerRegistry, analyzer_input: any): boolean {
+    switch (name) {
+      case 'slideSequence':
+        return !Array.isArray(analyzer_input?.headings) || analyzer_input.headings.length === 0;
+      case 'metricBenchmark': {
+        const text = typeof analyzer_input?.text === 'string' ? analyzer_input.text.trim() : '';
+        return text.length === 0 || text === 'No text content available';
+      }
+      case 'visualDesign': {
+        const headingsMissing = !Array.isArray(analyzer_input?.headings) || analyzer_input.headings.length === 0;
+        const noText = typeof analyzer_input?.total_text_chars !== 'number' || analyzer_input.total_text_chars <= 0;
+        return headingsMissing && noText;
+      }
+      case 'narrativeArc': {
+        const slides = Array.isArray(analyzer_input?.slides) ? analyzer_input.slides : [];
+        if (slides.length === 0) return true;
+        const hasAnyContent = slides.some((s: any) => typeof s?.text === 'string' && s.text.trim().length > 0);
+        return !hasAnyContent;
+      }
+      case 'financialHealth': {
+        const keys = analyzer_input && typeof analyzer_input === 'object' ? Object.keys(analyzer_input) : [];
+        return keys.length === 0;
+      }
+      case 'riskAssessment': {
+        const pitch = typeof analyzer_input?.pitch_text === 'string' ? analyzer_input.pitch_text.trim() : '';
+        return pitch.length === 0 || pitch === 'No content available';
+      }
+      default:
+        return true;
+    }
+  }
+
   /**
    * Run analyzer with retry logic
    */
@@ -329,6 +361,13 @@ export class DealOrchestrator {
         
         const analyzer = this.analyzers[name] as BaseAnalyzer<any, T>;
         const analyzer_input = this.prepareAnalyzerInput(name, input_data);
+
+        // If we don't have enough signal to run this analyzer, return an explicit
+        // insufficient_data result without invoking the analyzer.
+        if (this.isInsufficientInput(name, analyzer_input)) {
+          this.log(`Skipping analyzer due to insufficient input: ${name}`);
+          return this.insufficientDataResult(name) as unknown as T;
+        }
         
         const promise = analyzer.analyze(analyzer_input);
         const result = await this.withTimeout(promise, this.config.analyzerTimeout, name);
@@ -352,7 +391,7 @@ export class DealOrchestrator {
 
           if (this.config.continueOnError) {
             this.log(`Continuing despite ${name} failure`);
-            return null;
+            return this.extractionFailedResult(name) as unknown as T;
           } else {
             throw new OrchestrationError(`Analyzer ${name} failed after ${attempts} attempts`, error as Error);
           }
@@ -471,13 +510,16 @@ export class DealOrchestrator {
     return {
       analyzer_version: '1.0.0',
       executed_at: new Date().toISOString(),
-      score: 0,
+      status: 'extraction_failed',
+      coverage: 0,
+      confidence: 0,
+      score: null,
       pattern_match: 'unknown',
       sequence_detected: [],
       expected_sequence: [],
       deviations: [],
       evidence_ids: [],
-    };
+    } as any;
   }
 
   private fallbackMetricBenchmark(): MetricBenchmarkResult {
@@ -485,16 +527,22 @@ export class DealOrchestrator {
       analyzer_version: '1.0.0',
       executed_at: new Date().toISOString(),
       metrics_analyzed: [],
-      overall_score: 0,
+      status: 'extraction_failed',
+      coverage: 0,
+      confidence: 0,
+      overall_score: null,
       evidence_ids: [],
-    };
+    } as any;
   }
 
   private fallbackVisualDesign(): VisualDesignResult {
     return {
       analyzer_version: '1.0.0',
       executed_at: new Date().toISOString(),
-      design_score: 0,
+      status: 'extraction_failed',
+      coverage: 0,
+      confidence: 0,
+      design_score: null,
       proxy_signals: {
         page_count_appropriate: false,
         image_to_text_ratio_balanced: false,
@@ -504,7 +552,7 @@ export class DealOrchestrator {
       weaknesses: ['Analysis failed'],
       note: 'Fallback - analysis failed',
       evidence_ids: [],
-    };
+    } as any;
   }
 
   private fallbackNarrativeArc(): NarrativeArcResult {
@@ -513,10 +561,13 @@ export class DealOrchestrator {
       executed_at: new Date().toISOString(),
       archetype: 'unknown',
       archetype_confidence: 0,
-      pacing_score: 0,
+      status: 'extraction_failed',
+      coverage: 0,
+      confidence: 0,
+      pacing_score: null,
       emotional_beats: [],
       evidence_ids: [],
-    };
+    } as any;
   }
 
   private fallbackFinancialHealth(): FinancialHealthResult {
@@ -525,7 +576,10 @@ export class DealOrchestrator {
       executed_at: new Date().toISOString(),
       runway_months: null,
       burn_multiple: null,
-      health_score: 0,
+      status: 'extraction_failed',
+      coverage: 0,
+      confidence: 0,
+      health_score: null,
       metrics: {
         revenue: null,
         expenses: null,
@@ -535,7 +589,202 @@ export class DealOrchestrator {
       },
       risks: [],
       evidence_ids: [],
-    };
+    } as any;
+  }
+
+  private insufficientDataResult(name: keyof AnalyzerRegistry): any {
+    const now = new Date().toISOString();
+
+    switch (name) {
+      case 'slideSequence':
+        return {
+          analyzer_version: '1.0.0',
+          executed_at: now,
+          status: 'insufficient_data',
+          coverage: 0,
+          confidence: 0.3,
+          score: null,
+          pattern_match: 'unknown',
+          sequence_detected: [],
+          expected_sequence: [],
+          deviations: [],
+          evidence_ids: [],
+        };
+      case 'metricBenchmark':
+        return {
+          analyzer_version: '1.0.0',
+          executed_at: now,
+          status: 'insufficient_data',
+          coverage: 0,
+          confidence: 0.3,
+          metrics_analyzed: [],
+          overall_score: null,
+          evidence_ids: [],
+        };
+      case 'visualDesign':
+        return {
+          analyzer_version: '1.0.0',
+          executed_at: now,
+          status: 'insufficient_data',
+          coverage: 0,
+          confidence: 0.3,
+          design_score: null,
+          proxy_signals: {
+            page_count_appropriate: false,
+            image_to_text_ratio_balanced: false,
+            consistent_formatting: false,
+          },
+          strengths: [],
+          weaknesses: [],
+          note: 'Insufficient data',
+          evidence_ids: [],
+        };
+      case 'narrativeArc':
+        return {
+          analyzer_version: '1.0.0',
+          executed_at: now,
+          status: 'insufficient_data',
+          coverage: 0,
+          confidence: 0.3,
+          archetype: 'unknown',
+          archetype_confidence: 0,
+          pacing_score: null,
+          emotional_beats: [],
+          evidence_ids: [],
+        };
+      case 'financialHealth':
+        return {
+          analyzer_version: '1.0.0',
+          executed_at: now,
+          status: 'insufficient_data',
+          coverage: 0,
+          confidence: 0.3,
+          runway_months: null,
+          burn_multiple: null,
+          health_score: null,
+          metrics: {
+            revenue: null,
+            expenses: null,
+            cash_balance: null,
+            burn_rate: null,
+            growth_rate: null,
+          },
+          risks: [],
+          evidence_ids: [],
+        };
+      case 'riskAssessment':
+        return {
+          analyzer_version: '1.0.0',
+          executed_at: now,
+          status: 'insufficient_data',
+          coverage: 0,
+          confidence: 0.3,
+          overall_risk_score: null,
+          risks_by_category: {
+            market: [],
+            team: [],
+            financial: [],
+            execution: [],
+          },
+          total_risks: 0,
+          critical_count: 0,
+          high_count: 0,
+          evidence_ids: [],
+        };
+      default:
+        return { status: 'insufficient_data', coverage: 0, confidence: 0.3 };
+    }
+  }
+
+  private extractionFailedResult(name: keyof AnalyzerRegistry): any {
+    const now = new Date().toISOString();
+    switch (name) {
+      case 'slideSequence':
+        return {
+          analyzer_version: '1.0.0',
+          executed_at: now,
+          status: 'extraction_failed',
+          score: null,
+          pattern_match: 'unknown',
+          sequence_detected: [],
+          expected_sequence: [],
+          deviations: [],
+          evidence_ids: [],
+        };
+      case 'metricBenchmark':
+        return {
+          analyzer_version: '1.0.0',
+          executed_at: now,
+          status: 'extraction_failed',
+          metrics_analyzed: [],
+          overall_score: null,
+          evidence_ids: [],
+        };
+      case 'visualDesign':
+        return {
+          analyzer_version: '1.0.0',
+          executed_at: now,
+          status: 'extraction_failed',
+          design_score: null,
+          proxy_signals: {
+            page_count_appropriate: false,
+            image_to_text_ratio_balanced: false,
+            consistent_formatting: false,
+          },
+          strengths: [],
+          weaknesses: ['Analysis failed'],
+          note: 'Extraction failed',
+          evidence_ids: [],
+        };
+      case 'narrativeArc':
+        return {
+          analyzer_version: '1.0.0',
+          executed_at: now,
+          status: 'extraction_failed',
+          archetype: 'unknown',
+          archetype_confidence: 0,
+          pacing_score: null,
+          emotional_beats: [],
+          evidence_ids: [],
+        };
+      case 'financialHealth':
+        return {
+          analyzer_version: '1.0.0',
+          executed_at: now,
+          status: 'extraction_failed',
+          runway_months: null,
+          burn_multiple: null,
+          health_score: null,
+          metrics: {
+            revenue: null,
+            expenses: null,
+            cash_balance: null,
+            burn_rate: null,
+            growth_rate: null,
+          },
+          risks: [],
+          evidence_ids: [],
+        };
+      case 'riskAssessment':
+        return {
+          analyzer_version: '1.0.0',
+          executed_at: now,
+          status: 'extraction_failed',
+          overall_risk_score: null,
+          risks_by_category: {
+            market: [],
+            team: [],
+            financial: [],
+            execution: [],
+          },
+          total_risks: 0,
+          critical_count: 0,
+          high_count: 0,
+          evidence_ids: [],
+        };
+      default:
+        return { status: 'extraction_failed' };
+    }
   }
 
   private fallbackRiskAssessment(): RiskAssessmentResult {

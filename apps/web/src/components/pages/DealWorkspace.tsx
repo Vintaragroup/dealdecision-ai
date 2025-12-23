@@ -10,11 +10,12 @@ import { AnimatedCounter } from '../AnimatedCounter';
 import { ExportReportModal } from '../ExportReportModal';
 import { TemplateExportModal } from '../TemplateExportModal';
 import { AnalysisTab } from '../workspace/AnalysisTab';
+import { DataTab } from '../workspace/DataTab';
 import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { EvidencePanel } from '../evidence/EvidencePanel';
-import { apiGetDeal, apiPostAnalyze, apiGetJob, apiFetchEvidence, apiGetEvidence, isLiveBackend, subscribeToEvents, type JobUpdatedEvent } from '../../lib/apiClient';
+import { apiGetDeal, apiPostAnalyze, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, isLiveBackend, subscribeToEvents, type DealReport, type JobUpdatedEvent } from '../../lib/apiClient';
 import { debugLogger } from '../../lib/debugLogger';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { 
@@ -56,8 +57,27 @@ interface DealWorkspaceProps {
   dealId?: string;
 }
 
+type DealFormDataExtras = DealFormData & {
+  fundingTarget?: string;
+  year1Target?: string;
+  categoryGrowth?: string;
+  runway?: string;
+  grossMargin?: string;
+  brandAcquisitions?: string;
+  partnerships?: string;
+  breakEven?: string;
+};
+
+type FeedbackItem = {
+  category: string;
+  priority: 'high' | 'medium' | 'low';
+  impact: string;
+  issue: string;
+};
+
 export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: DealWorkspaceProps) {
   const { isFounder, isInvestor } = useUserRole();
+  const dealDataExt = dealData as DealFormDataExtras | null | undefined;
   const [activeTab, setActiveTab] = useState('overview');
   const [investorScore, setInvestorScore] = useState(0);
   const [analyzing, setAnalyzing] = useState(false);
@@ -69,23 +89,43 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [comments, setComments] = useState<Array<{ id: string; user: string; message: string; timestamp: Date }>>([]);
   const [showMoreActions, setShowMoreActions] = useState(false);
   const [showAIAssistant, setShowAIAssistant] = useState(false);
-  const [dioMeta, setDioMeta] = useState<{ dioVersionId?: string; dioStatus?: string; lastAnalyzedAt?: string } | null>(null);
+  const [dioMeta, setDioMeta] = useState<{ dioVersionId?: string; dioStatus?: string; lastAnalyzedAt?: string; dioRunCount?: number; dioAnalysisVersion?: number } | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<string | null>(null);
   const [jobProgress, setJobProgress] = useState<number | null>(null);
   const [jobMessage, setJobMessage] = useState<string | null>(null);
   const [jobUpdatedAt, setJobUpdatedAt] = useState<string | null>(null);
   const [sseReady, setSseReady] = useState(false);
-  const [evidence, setEvidence] = useState<Array<{ evidence_id: string; deal_id: string; document_id?: string; source: string; kind: string; text: string; excerpt?: string; created_at?: string }>>([]);
+  const [evidence, setEvidence] = useState<Array<{ evidence_id: string; deal_id: string; document_id?: string; source: string; kind: string; text: string; confidence?: number; created_at?: string }>>([]);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
   const [lastEvidenceRefresh, setLastEvidenceRefresh] = useState<string | null>(null);
+  const [documentTitles, setDocumentTitles] = useState<Record<string, string>>({});
   const [dealFromApi, setDealFromApi] = useState<any>(null);
+  const [reportFromApi, setReportFromApi] = useState<DealReport | null>(null);
   const lastEventIdRef = useRef<string | undefined>(undefined);
+
+  const loadReport = async () => {
+    if (!dealId || !isLiveBackend()) {
+      setReportFromApi(null);
+      return;
+    }
+    try {
+      const report = await apiGetDealReport(dealId);
+      setReportFromApi(report);
+      if (typeof report?.overallScore === 'number' && Number.isFinite(report.overallScore)) {
+        setInvestorScore(Math.round(report.overallScore));
+      }
+    } catch (err) {
+      // Report may not exist yet (no DIO). Keep UI usable.
+      setReportFromApi(null);
+    }
+  };
 
   // Fetch the actual deal from API
   useEffect(() => {
     if (!dealId || !isLiveBackend()) {
       setDealFromApi(null);
+      setReportFromApi(null);
       return;
     }
     let active = true;
@@ -98,6 +138,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           dioVersionId: (deal as any).dioVersionId,
           dioStatus: (deal as any).dioStatus,
           lastAnalyzedAt: (deal as any).lastAnalyzedAt,
+          dioRunCount: (deal as any).dioRunCount,
+          dioAnalysisVersion: (deal as any).dioAnalysisVersion,
         });
       })
       .catch((err) => {
@@ -105,6 +147,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         debugLogger.logMockData('DealWorkspace', 'dealFromApi', null, `API call failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
         addToast('error', 'Failed to load deal', err instanceof Error ? err.message : 'Unknown error');
       });
+
+    loadReport();
+
     return () => {
       active = false;
     };
@@ -115,20 +160,20 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     name: dealFromApi.name || 'Unknown Deal',
     type: dealData?.type || 'series-a',
     stage: dealFromApi.stage || 'intake',
-    fundingTarget: dealData?.fundingTarget || 'TBD',
+    fundingTarget: dealDataExt?.fundingTarget || 'TBD',
     score: dealFromApi.score || investorScore,
     updatedTime: dealFromApi.updated_at ? new Date(dealFromApi.updated_at).toLocaleDateString() : 'Recently',
     createdDate: dealFromApi.created_at ? new Date(dealFromApi.created_at).toLocaleDateString() : 'Unknown',
     description: dealData?.description || 'No description provided',
     metrics: {
       currentRevenue: dealData?.revenue || 'N/A',
-      year1Target: dealData?.year1Target || 'N/A',
-      categoryGrowth: dealData?.categoryGrowth || 'N/A',
-      runway: dealData?.runway || 'N/A',
-      grossMargin: dealData?.grossMargin || 'N/A',
-      brandAcquisitions: dealData?.brandAcquisitions || 'N/A',
-      distributorPartnerships: dealData?.partnerships || 'N/A',
-      breakEven: dealData?.breakEven || 'N/A'
+      year1Target: dealDataExt?.year1Target || 'N/A',
+      categoryGrowth: dealDataExt?.categoryGrowth || 'N/A',
+      runway: dealDataExt?.runway || 'N/A',
+      grossMargin: dealDataExt?.grossMargin || 'N/A',
+      brandAcquisitions: dealDataExt?.brandAcquisitions || 'N/A',
+      distributorPartnerships: dealDataExt?.partnerships || 'N/A',
+      breakEven: dealDataExt?.breakEven || 'N/A'
     }
   } : null;
 
@@ -160,12 +205,32 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     }
   };
 
+  const loadDocumentTitles = async () => {
+    if (!dealId || !isLiveBackend()) {
+      setDocumentTitles({});
+      return;
+    }
+    try {
+      const res = await apiGetDocuments(dealId);
+      const map: Record<string, string> = {};
+      for (const d of res?.documents ?? []) {
+        if (!d?.document_id) continue;
+        map[d.document_id] = d?.title || d.document_id;
+      }
+      setDocumentTitles(map);
+    } catch {
+      // Non-blocking: Evidence can still render without titles.
+      setDocumentTitles({});
+    }
+  };
+
   useEffect(() => {
     if (!dealId || !isLiveBackend()) {
       setEvidence([]);
       return;
     }
     loadEvidence();
+    loadDocumentTitles();
   }, [dealId]);
 
   useEffect(() => {
@@ -185,6 +250,22 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         } else {
           setAnalyzing(false);
           addToast(job.status === 'succeeded' ? 'success' : 'error', 'Analysis completed', job.message || job.status);
+          if (job.status === 'succeeded' && dealId) {
+            apiGetDeal(dealId)
+              .then((deal) => {
+                setDealFromApi(deal);
+                setDioMeta({
+                  dioVersionId: (deal as any).dioVersionId,
+                  dioStatus: (deal as any).dioStatus,
+                  lastAnalyzedAt: (deal as any).lastAnalyzedAt,
+                  dioRunCount: (deal as any).dioRunCount,
+                  dioAnalysisVersion: (deal as any).dioAnalysisVersion,
+                });
+              })
+              .catch(() => {});
+            loadReport();
+            loadEvidence();
+          }
         }
       } catch (err) {
         if (cancelled) return;
@@ -232,6 +313,24 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         if (["succeeded", "failed", "cancelled"].includes(job.status)) {
           setAnalyzing(false);
           addToast(job.status === "succeeded" ? "success" : "error", "Analysis completed", job.message || job.status);
+          if (job.status === 'succeeded') {
+            loadReport();
+            loadEvidence();
+            if (dealId) {
+              apiGetDeal(dealId)
+                .then((deal) => {
+                  setDealFromApi(deal);
+                  setDioMeta({
+                    dioVersionId: (deal as any).dioVersionId,
+                    dioStatus: (deal as any).dioStatus,
+                    lastAnalyzedAt: (deal as any).lastAnalyzedAt,
+                    dioRunCount: (deal as any).dioRunCount,
+                    dioAnalysisVersion: (deal as any).dioAnalysisVersion,
+                  });
+                })
+                .catch(() => {});
+            }
+          }
         }
       },
       onError: () => {
@@ -264,14 +363,26 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     { id: 'analysis', label: 'AI Analysis', icon: <Sparkles className="w-4 h-4" /> },
     { id: 'diligence', label: 'Due Diligence', icon: <Shield className="w-4 h-4" /> },
     { id: 'feedback', label: 'Investment Thesis', icon: <Target className="w-4 h-4" /> },
+    { id: 'data', label: 'Data', icon: <Eye className="w-4 h-4" /> },
     { id: 'reports', label: 'Reports Generated', icon: <FileCode className="w-4 h-4" />, badge: 2 }
   ];
 
   // Role-specific accordion items (Due Diligence vs Pitch Checklist)
-  const dueDiligenceItems: AccordionItem[] = [];
+  const dueDiligenceItems: AccordionItem[] = Array.isArray(reportFromApi?.sections)
+    ? reportFromApi!.sections!.map((section) => ({
+        id: section.id,
+        title: section.title,
+        icon: <FileText className="w-4 h-4" />,
+        content: (
+          <div className="space-y-2 whitespace-pre-wrap">
+            <div>{section.content}</div>
+          </div>
+        ),
+      }))
+    : [];
 
   // Role-specific feedback items
-  const feedbackItems = [];
+  const feedbackItems: FeedbackItem[] = [];
 
   const addToast = (type: ToastType, title: string, message?: string) => {
     const newToast = {
@@ -400,6 +511,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
                     DIO: {dioMeta?.dioVersionId ? dioMeta.dioVersionId : 'Not generated'}
                   </span>
+                  {typeof dioMeta?.dioRunCount === 'number' && (
+                    <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
+                      Runs: {dioMeta.dioRunCount}
+                      {typeof dioMeta.dioAnalysisVersion === 'number' ? ` (latest v${dioMeta.dioAnalysisVersion})` : ''}
+                    </span>
+                  )}
                   <span className={`px-2 py-1 rounded-full ${darkMode ? 'bg-blue-500/10 text-blue-200' : 'bg-blue-50 text-blue-700'}`}>
                     Status: {dioMeta?.dioStatus ?? 'unknown'}
                   </span>
@@ -870,6 +987,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 lastUpdated={lastEvidenceRefresh}
                 onRefresh={loadEvidence}
                 onFetchEvidence={handleFetchEvidence}
+                reportSections={Array.isArray(reportFromApi?.sections) ? reportFromApi!.sections!.map((s) => ({ title: s.title, evidence_ids: s.evidence_ids })) : []}
+                documentTitles={documentTitles}
               />
             )}
 
@@ -912,7 +1031,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   <Shield className={`w-12 h-12 mx-auto mb-3 opacity-40 ${darkMode ? 'text-gray-400' : 'text-gray-400'}`} />
                   <h3 className={`text-base mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>No diligence items yet</h3>
                   <p className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                    Diligence items will appear here as they are created and tracked
+                    Run analysis to generate a report with diligence sections
                   </p>
                 </div>
               )
@@ -965,6 +1084,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   </div>
                 )}
               </div>
+            )}
+
+            {/* Data Tab */}
+            {activeTab === 'data' && (
+              <DataTab dealId={dealId || 'demo'} darkMode={darkMode} />
             )}
 
             {/* Reports Generated Tab */}

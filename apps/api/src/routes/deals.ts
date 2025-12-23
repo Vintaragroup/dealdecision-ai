@@ -5,6 +5,7 @@ import type { Deal } from "@dealdecision/contracts";
 import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
 import { updateDealPriority, updateAllDealPriorities } from "../services/priorityClassification";
+import { normalizeDealName } from "../lib/normalize-deal-name";
 
 const dealStageSchema = z.enum(["intake", "under_review", "in_diligence", "ready_decision", "pitched"]);
 const dealPrioritySchema = z.enum(["high", "medium", "low"]);
@@ -35,9 +36,12 @@ type DealRow = {
 };
 
 type DIOAggregateRow = {
-  dio_version_id: string | null;
-  dio_status: string | null;
+  dio_id: string | null;
+  analysis_version: number | null;
+  recommendation: string | null;
+  overall_score: number | null;
   last_analyzed_at: string | null;
+  run_count: number | null;
 };
 
 function mapDeal(row: DealRow, dio?: DIOAggregateRow | null): Deal {
@@ -50,9 +54,11 @@ function mapDeal(row: DealRow, dio?: DIOAggregateRow | null): Deal {
     score: row.score ?? undefined,
     owner: row.owner ?? undefined,
     lastUpdated: new Date(row.updated_at).toISOString(),
-    dioVersionId: dio?.dio_version_id ?? undefined,
-    dioStatus: (dio?.dio_status as Deal["trend"]) ?? undefined,
+    dioVersionId: dio?.dio_id ?? undefined,
+    dioStatus: dio?.recommendation ?? undefined,
     lastAnalyzedAt: dio?.last_analyzed_at ? new Date(dio.last_analyzed_at).toISOString() : undefined,
+    dioRunCount: typeof dio?.run_count === 'number' ? dio.run_count : undefined,
+    dioAnalysisVersion: typeof dio?.analysis_version === 'number' ? dio.analysis_version : undefined,
   } as Deal;
 }
 
@@ -67,6 +73,23 @@ export async function registerDealRoutes(app: FastifyInstance) {
 
     const { name, stage, priority, trend, score, owner } = parsed.data;
 
+    // Guard against accidental duplicates (common in bulk assignment / OCR scenarios).
+    // We keep this lightweight (no schema changes) by normalizing and comparing in-app.
+    const normalized = normalizeDealName(name);
+    if (normalized) {
+      const { rows: existing } = await pool.query<{ id: string; name: string }>(
+        `SELECT id, name FROM deals WHERE deleted_at IS NULL`
+      );
+      const match = existing.find((d) => normalizeDealName(d.name) === normalized);
+      if (match) {
+        return reply.status(409).send({
+          error: "Deal already exists",
+          existing_deal_id: match.id,
+          existing_deal_name: match.name,
+        });
+      }
+    }
+
     const { rows } = await pool.query<DealRow>(
       `INSERT INTO deals (name, stage, priority, trend, score, owner)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -77,12 +100,147 @@ export async function registerDealRoutes(app: FastifyInstance) {
     return mapDeal(rows[0]);
   });
 
+  const dealMergeSchema = z.object({
+    source_deal_id: z.string().uuid(),
+    target_deal_id: z.string().uuid(),
+    delete_source_dio: z.boolean().optional().default(false),
+  });
+
+  // Merge one deal into another by reassigning documents (and related rows) and soft-deleting the source deal.
+  app.post("/api/v1/deals/merge", async (request, reply) => {
+    const parsed = dealMergeSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "Invalid input", details: parsed.error.flatten() });
+    }
+
+    const { source_deal_id, target_deal_id, delete_source_dio } = parsed.data;
+    if (source_deal_id === target_deal_id) {
+      return reply.status(400).send({ error: "source_deal_id and target_deal_id must be different" });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      const { rows: sourceRows } = await client.query<DealRow>(
+        `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+        [source_deal_id]
+      );
+      const { rows: targetRows } = await client.query<DealRow>(
+        `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+        [target_deal_id]
+      );
+
+      if (sourceRows.length === 0) {
+        await client.query("ROLLBACK");
+        return reply.status(404).send({ error: "Source deal not found" });
+      }
+      if (targetRows.length === 0) {
+        await client.query("ROLLBACK");
+        return reply.status(404).send({ error: "Target deal not found" });
+      }
+
+      const source = sourceRows[0];
+      const target = targetRows[0];
+
+      const docsRes = await client.query(
+        `UPDATE documents SET deal_id = $2, updated_at = now() WHERE deal_id = $1`,
+        [source_deal_id, target_deal_id]
+      );
+
+      const evidenceRes = await client.query(
+        `UPDATE evidence SET deal_id = $2 WHERE deal_id = $1`,
+        [source_deal_id, target_deal_id]
+      );
+      const dealEvidenceRes = await client.query(
+        `UPDATE deal_evidence SET deal_id = $2 WHERE deal_id = $1`,
+        [source_deal_id, target_deal_id]
+      );
+      const jobsRes = await client.query(
+        `UPDATE jobs SET deal_id = $2, updated_at = now() WHERE deal_id = $1`,
+        [source_deal_id, target_deal_id]
+      );
+
+      let dioDeleted = 0;
+      if (delete_source_dio) {
+        const del = await client.query(
+          `DELETE FROM deal_intelligence_objects WHERE deal_id = $1`,
+          [source_deal_id]
+        );
+        dioDeleted = del.rowCount ?? 0;
+      }
+
+      await client.query(
+        `UPDATE deals SET deleted_at = now(), updated_at = now() WHERE id = $1`,
+        [source_deal_id]
+      );
+
+      await client.query("COMMIT");
+
+      return reply.send({
+        ok: true,
+        source: { id: source.id, name: source.name },
+        target: { id: target.id, name: target.name },
+        moved: {
+          documents: docsRes.rowCount ?? 0,
+          evidence: evidenceRes.rowCount ?? 0,
+          deal_evidence: dealEvidenceRes.rowCount ?? 0,
+          jobs: jobsRes.rowCount ?? 0,
+        },
+        deleted: {
+          source_dio_rows: dioDeleted,
+        },
+      });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      const message = err instanceof Error ? err.message : "Merge failed";
+      return reply.status(500).send({ error: message });
+    } finally {
+      client.release();
+    }
+  });
+
   app.get("/api/v1/deals", async (request) => {
     // Accept optional filters but ignore for now (TODO)
-    const { rows } = await pool.query<DealRow>(
-      `SELECT * FROM deals WHERE deleted_at IS NULL ORDER BY created_at DESC`
+    const { rows } = await pool.query<DealRow & {
+      dio_id: string | null;
+      analysis_version: number | null;
+      recommendation: string | null;
+      overall_score: number | null;
+      last_analyzed_at: string | null;
+      run_count: number | null;
+    }>(
+      `SELECT d.*,
+              latest.dio_id,
+              latest.analysis_version,
+              latest.recommendation,
+              latest.overall_score,
+              latest.updated_at as last_analyzed_at,
+              stats.run_count
+         FROM deals d
+         LEFT JOIN LATERAL (
+           SELECT dio_id, analysis_version, recommendation, overall_score, updated_at
+             FROM deal_intelligence_objects
+            WHERE deal_id = d.id
+            ORDER BY analysis_version DESC
+            LIMIT 1
+         ) latest ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT COUNT(*)::int AS run_count
+             FROM deal_intelligence_objects
+            WHERE deal_id = d.id
+         ) stats ON TRUE
+        WHERE d.deleted_at IS NULL
+        ORDER BY d.created_at DESC`
     );
-    return rows.map((row) => mapDeal(row));
+    return rows.map((row) => mapDeal(row, {
+      dio_id: row.dio_id,
+      analysis_version: row.analysis_version,
+      recommendation: row.recommendation,
+      overall_score: row.overall_score,
+      last_analyzed_at: row.last_analyzed_at,
+      run_count: row.run_count,
+    }));
   });
 
   app.get("/api/v1/deals/:deal_id", async (request, reply) => {
@@ -96,11 +254,28 @@ export async function registerDealRoutes(app: FastifyInstance) {
     }
 
     const { rows: dioRows } = await pool.query<DIOAggregateRow>(
-      `SELECT id as dio_version_id, status as dio_status, created_at as last_analyzed_at
-       FROM dio_versions
-       WHERE deal_id = $1
-       ORDER BY version DESC
-       LIMIT 1`,
+      `WITH stats AS (
+         SELECT deal_id,
+                COUNT(*)::int AS run_count,
+                MAX(updated_at) AS last_analyzed_at
+           FROM deal_intelligence_objects
+          WHERE deal_id = $1
+          GROUP BY deal_id
+       )
+       SELECT latest.dio_id,
+              latest.analysis_version,
+              latest.recommendation,
+              latest.overall_score,
+              stats.last_analyzed_at,
+              stats.run_count
+         FROM stats
+         JOIN LATERAL (
+           SELECT dio_id, analysis_version, recommendation, overall_score
+             FROM deal_intelligence_objects
+            WHERE deal_id = $1
+            ORDER BY analysis_version DESC
+            LIMIT 1
+         ) latest ON TRUE`,
       [dealId]
     );
 
@@ -179,6 +354,31 @@ export async function registerDealRoutes(app: FastifyInstance) {
     // After analysis job is enqueued, mark it so we can auto-progress when complete
     // (This would typically happen in a background worker after job completes)
     // For now, we queue the job and the worker will handle stage progression
+
+    return reply.status(202).send({ job_id: job.job_id, status: job.status });
+  });
+
+  // Canonicalize extracted data (artifact cleanup) + re-verify documents.
+  // This does NOT re-extract from original binaries (those are only available at upload time).
+  app.post("/api/v1/deals/:deal_id/remediate-extraction", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+
+    const { rows } = await pool.query<DealRow>(
+      `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+      [dealId]
+    );
+
+    if (rows.length === 0) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    const includeWarnings = Boolean((request.body as any)?.include_warnings);
+
+    const job = await enqueueJob({
+      deal_id: dealId,
+      type: "remediate_extraction",
+      payload: { include_warnings: includeWarnings },
+    });
 
     return reply.status(202).send({ job_id: job.job_id, status: job.status });
   });

@@ -1,5 +1,4 @@
 import type { Pool } from "pg";
-import type { Deal } from "@dealdecision/contracts";
 import type { DealStage } from "@dealdecision/contracts";
 import { updateDealPriority } from "./priorityClassification";
 
@@ -66,7 +65,7 @@ export async function evaluateDealStageProgression(
   }
 
   const deal = dealRows[0];
-  const currentStage: DealStage = deal.stage;
+  const currentStage = deal.stage as DealStage;
 
   // Fetch document count
   const { rows: docCountRows } = await pool.query(
@@ -82,9 +81,9 @@ export async function evaluateDealStageProgression(
   );
   const hasEvidenceCount = parseInt(evidenceCountRows[0].count || 0, 10);
 
-  // Check if deal has analysis (dio_versions)
+  // Check if deal has analysis (latest DIO)
   const { rows: analysisRows } = await pool.query(
-    `SELECT id FROM dio_versions WHERE deal_id = $1 LIMIT 1`,
+    `SELECT id FROM deal_intelligence_objects WHERE deal_id = $1 LIMIT 1`,
     [dealId]
   );
   const hasAnalysis = analysisRows.length > 0;
@@ -126,6 +125,16 @@ export async function autoProgressDealStage(
   pool: Pool,
   dealId: string
 ): Promise<{ progressed: boolean; oldStage?: DealStage; newStage?: DealStage }> {
+  const { rows: beforeRows } = await pool.query(
+    `SELECT stage FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+    [dealId]
+  );
+
+  if (!beforeRows.length) {
+    return { progressed: false };
+  }
+
+  const oldStage = beforeRows[0].stage as DealStage;
   const evaluation = await evaluateDealStageProgression(pool, dealId);
 
   if (!evaluation.shouldProgress || !evaluation.newStage) {
@@ -145,16 +154,10 @@ export async function autoProgressDealStage(
   // Update priority based on new stage and metrics
   await updateDealPriority(dealId);
 
-  // Fetch old stage from deal query (we need to do this before update, so we'll return from evaluation)
-  const { rows: dealRows } = await pool.query(
-    `SELECT stage FROM deals WHERE id = $1 AND deleted_at IS NULL`,
-    [dealId]
-  );
-
   return {
     progressed: true,
-    oldStage: evaluation.newStage === "idea" ? "idea" : undefined, // This is simplified
-    newStage: evaluation.newStage
+    oldStage,
+    newStage: rows[0].stage as DealStage
   };
 }
 

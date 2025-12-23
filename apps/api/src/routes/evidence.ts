@@ -45,7 +45,7 @@ export async function registerEvidenceRoutes(app: FastifyInstance, pool = getPoo
       return { evidence: [] };
     }
     const { rows } = await pool.query(
-      `SELECT id, deal_id, document_id, source, kind, text, confidence, created_at
+      `SELECT id, deal_id, document_id, source, kind, text, confidence::float8 AS confidence, created_at
        FROM evidence
        WHERE deal_id = $1
        ORDER BY created_at DESC

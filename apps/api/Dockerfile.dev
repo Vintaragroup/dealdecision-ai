@@ -12,4 +12,7 @@ COPY packages/contracts/ packages/contracts/
 COPY packages/core/ packages/core/
 RUN pnpm install --frozen-lockfile=false
 
+# @dealdecision/core has "main": dist/index.js; build it so runtime imports work
+RUN pnpm --filter @dealdecision/core build
+
 CMD ["pnpm", "--filter", "api", "dev"]

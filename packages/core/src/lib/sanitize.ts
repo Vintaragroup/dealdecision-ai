@@ -21,8 +21,28 @@ export function sanitizeText(input: unknown): string {
   // (0x01-0x08, 0x0B-0x0C, 0x0E-0x1F, 0x7F)
   s = s.replace(/[\u0001-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ");
 
-  // Collapse excessive whitespace
+  // Collapse excessive whitespace while preserving tab/newline/carriage-return.
+  // NOTE: We intentionally do NOT collapse \n/\t/\r to spaces, because callers
+  // may depend on these separators for readability.
+  const TAB = "\uE000";
+  const NL = "\uE001";
+  const CR = "\uE002";
+  s = s
+    .replace(/\t/g, TAB)
+    .replace(/\n/g, NL)
+    .replace(/\r/g, CR);
+
   s = s.replace(/\s+/g, " ").trim();
+
+  s = s
+    .replace(new RegExp(TAB, "g"), "\t")
+    .replace(new RegExp(NL, "g"), "\n")
+    .replace(new RegExp(CR, "g"), "\r");
+
+  // Remove spaces adjacent to newlines/CR introduced by collapsing.
+  s = s
+    .replace(/ *\n */g, "\n")
+    .replace(/ *\r */g, "\r");
 
   return s;
 }

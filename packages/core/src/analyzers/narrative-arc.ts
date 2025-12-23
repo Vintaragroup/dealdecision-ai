@@ -8,7 +8,8 @@
  */
 
 import { BaseAnalyzer, AnalyzerMetadata, ValidationResult } from "./base";
-import type { NarrativeArcInput, NarrativeArcResult } from "../types/dio";
+import { buildRulesFromBaseAndDeltas } from "./debug-scoring";
+import type { DebugScoringTrace, NarrativeArcInput, NarrativeArcResult } from "../types/dio";
 
 // ============================================================================
 // Story Archetypes
@@ -78,7 +79,25 @@ export class NarrativeArcDetector extends BaseAnalyzer<NarrativeArcInput, Narrat
   async analyze(input: NarrativeArcInput): Promise<NarrativeArcResult> {
     const executed_at = new Date().toISOString();
 
+    const debugEnabled = Boolean((input as any).debug_scoring);
+
     if (!Array.isArray(input.slides) || input.slides.length === 0) {
+      const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+        ? {
+            inputs_used: ["slides"],
+            exclusion_reason: "missing_slides",
+            input_summary: {
+              completeness: { score: 0, notes: ["missing slides"] },
+              signals_count: 0,
+            },
+            signals: [],
+            penalties: [],
+            bonuses: [],
+            rules: [{ rule_id: "excluded", description: "Excluded: missing slides", delta: 0, running_total: 0 }],
+            final: { score: null, formula: "N/A (insufficient input)" },
+          }
+        : undefined;
+
       return {
         analyzer_version: this.metadata.version,
         executed_at,
@@ -92,6 +111,7 @@ export class NarrativeArcDetector extends BaseAnalyzer<NarrativeArcInput, Narrat
         pacing_score: null,
         emotional_beats: [],
         evidence_ids: input.evidence_ids || [],
+        ...(debugEnabled ? { debug_scoring } : {}),
       };
     }
 
@@ -119,6 +139,82 @@ export class NarrativeArcDetector extends BaseAnalyzer<NarrativeArcInput, Narrat
         strength: beat.intensity,
       }));
 
+      const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+        ? (() => {
+            const n = slide_text_lengths.length;
+            const avg_length = n > 0 ? slide_text_lengths.reduce((a, b) => a + b, 0) / n : 0;
+            const variance = n > 0
+              ? slide_text_lengths.reduce((sum, len) => sum + Math.pow(len - avg_length, 2), 0) / n
+              : 0;
+            const std_dev = Math.sqrt(variance);
+            const cv = avg_length > 0 ? std_dev / avg_length : 0;
+
+            const ask_index = slide_categories.indexOf("ask");
+            const askBonusApplied = ask_index !== -1 && ask_index > 0
+              ? (slide_text_lengths[ask_index] < (slide_text_lengths.slice(0, ask_index).reduce((a, b) => a + b, 0) / ask_index))
+              : false;
+
+            const signals = [
+              { key: "slides_count", value: input.slides.length },
+              { key: "avg_text_length", value: Math.round(avg_length) },
+              { key: "pacing_cv", value: Math.round(cv * 1000) / 1000 },
+              { key: "ask_index", value: ask_index },
+              { key: "ask_bonus_applied", value: askBonusApplied },
+              { key: "archetype", value: archetype.name },
+              { key: "archetype_confidence", value: Math.round(archetype.confidence * 1000) / 1000 },
+              { key: "emotional_beats_count", value: schema_beats.length },
+            ];
+
+            const penalties: Array<{ key: string; points: number; note: string }> = cv > 0.6
+              ? [{ key: "pacing_too_variable", points: 40, note: "CV > 0.6" }]
+              : (cv < 0.3
+                ? [{ key: "pacing_too_uniform", points: 30, note: "CV < 0.3" }]
+                : []);
+
+            const bonuses: Array<{ key: string; points: number; note: string }> = askBonusApplied
+              ? [{ key: "concise_ask_bonus", points: 10, note: "ask slide shorter than previous average" }]
+              : [];
+
+            const rules = buildRulesFromBaseAndDeltas({
+              base: 100,
+              base_rule_id: "base",
+              base_description: "Base pacing score",
+              penalties: penalties.map((p) => ({
+                rule_id: p.key,
+                description: p.note,
+                points: p.points,
+              })),
+              bonuses: bonuses.map((b) => ({
+                rule_id: b.key,
+                description: b.note,
+                points: b.points,
+              })),
+              final_score: pacing_score,
+              clamp_range: { min: 0, max: 100 },
+            });
+
+            return {
+              inputs_used: ["slides[].heading", "slides[].text"],
+              exclusion_reason: null,
+              input_summary: {
+                completeness: {
+                  score: 1,
+                  notes: ["slides present"],
+                },
+                signals_count: signals.length + bonuses.length + penalties.length,
+              },
+              signals,
+              penalties,
+              bonuses,
+              rules,
+              final: {
+                score: pacing_score,
+                formula: "pacing score from text-length CV with optional ask bonus",
+              },
+            };
+          })()
+        : undefined;
+
       return {
         analyzer_version: this.metadata.version,
         executed_at,
@@ -132,8 +228,25 @@ export class NarrativeArcDetector extends BaseAnalyzer<NarrativeArcInput, Narrat
         pacing_score,
         emotional_beats: schema_beats,
         evidence_ids: input.evidence_ids || [],
+        ...(debugEnabled ? { debug_scoring } : {}),
       };
     } catch {
+      const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+        ? {
+            inputs_used: ["slides[].heading", "slides[].text"],
+            exclusion_reason: "extraction_failed",
+            input_summary: {
+              completeness: { score: 1, notes: ["exception during analysis"] },
+              signals_count: 0,
+            },
+            signals: [],
+            penalties: [],
+            bonuses: [],
+            rules: [{ rule_id: "excluded", description: "Excluded: extraction_failed", delta: 0, running_total: 0 }],
+            final: { score: null, formula: "N/A (extraction_failed)" },
+          }
+        : undefined;
+
       return {
         analyzer_version: this.metadata.version,
         executed_at,
@@ -147,6 +260,7 @@ export class NarrativeArcDetector extends BaseAnalyzer<NarrativeArcInput, Narrat
         pacing_score: null,
         emotional_beats: [],
         evidence_ids: input.evidence_ids || [],
+        ...(debugEnabled ? { debug_scoring } : {}),
       };
     }
   }

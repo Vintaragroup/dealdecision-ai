@@ -8,6 +8,7 @@
 
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
+import { AnalysisConfigSchema, DEFAULT_ANALYSIS_CONFIG } from '../types/dio.js';
 import type {
   DealIntelligenceObject,
   DIOContext,
@@ -27,6 +28,8 @@ import type {
 import type { BaseAnalyzer } from '../analyzers/base.js';
 import type { DIOStorage, DIOStorageResult } from '../services/dio-storage.js';
 import { buildDIOContextFromInputData } from './dio-context';
+import { buildScoreExplanationFromDIO } from '../reports/score-explanation';
+import { getStableDocumentId, selectDocumentRoles } from './document-roles';
 
 // ==================== Configuration ====================
 
@@ -116,7 +119,7 @@ export class DealOrchestrator {
   async analyze(input: OrchestrationInput): Promise<OrchestrationResult> {
     const start_time = Date.now();
     const failures: Array<{ analyzer: string; error: string; retry_attempts: number }> = [];
-    let retry_count = 0;
+    const retryCounter = { count: 0 };
 
     this.log('Starting orchestration', { deal_id: input.deal_id, cycle: input.analysis_cycle });
     this.log('Input data keys', { keys: Object.keys(input.input_data), documents_count: (input.input_data.documents as any[])?.length || 0 });
@@ -132,12 +135,12 @@ export class DealOrchestrator {
 
       // Run all analyzers
       const results = {
-        slideSequence: (await this.runAnalyzerWithRetry('slideSequence', input.input_data, failures, retry_count)) as SlideSequenceResult | null,
-        metricBenchmark: (await this.runAnalyzerWithRetry('metricBenchmark', input.input_data, failures, retry_count)) as MetricBenchmarkResult | null,
-        visualDesign: (await this.runAnalyzerWithRetry('visualDesign', input.input_data, failures, retry_count)) as VisualDesignResult | null,
-        narrativeArc: (await this.runAnalyzerWithRetry('narrativeArc', input.input_data, failures, retry_count)) as NarrativeArcResult | null,
-        financialHealth: (await this.runAnalyzerWithRetry('financialHealth', input.input_data, failures, retry_count)) as FinancialHealthResult | null,
-        riskAssessment: (await this.runAnalyzerWithRetry('riskAssessment', input.input_data, failures, retry_count)) as RiskAssessmentResult | null,
+        slideSequence: (await this.runAnalyzerWithRetry('slideSequence', input.input_data, failures, retryCounter)) as SlideSequenceResult | null,
+        metricBenchmark: (await this.runAnalyzerWithRetry('metricBenchmark', input.input_data, failures, retryCounter)) as MetricBenchmarkResult | null,
+        visualDesign: (await this.runAnalyzerWithRetry('visualDesign', input.input_data, failures, retryCounter)) as VisualDesignResult | null,
+        narrativeArc: (await this.runAnalyzerWithRetry('narrativeArc', input.input_data, failures, retryCounter)) as NarrativeArcResult | null,
+        financialHealth: (await this.runAnalyzerWithRetry('financialHealth', input.input_data, failures, retryCounter)) as FinancialHealthResult | null,
+        riskAssessment: (await this.runAnalyzerWithRetry('riskAssessment', input.input_data, failures, retryCounter)) as RiskAssessmentResult | null,
       };
 
       // Aggregate into DIO
@@ -164,7 +167,7 @@ export class DealOrchestrator {
           total_duration_ms,
           analyzers_run,
           analyzers_failed,
-          retry_count,
+          retry_count: retryCounter.count,
         },
         failures: failures.length > 0 ? failures : undefined,
       };
@@ -179,7 +182,7 @@ export class DealOrchestrator {
           total_duration_ms,
           analyzers_run: 0,
           analyzers_failed: 6,
-          retry_count,
+          retry_count: retryCounter.count,
         },
         failures,
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -187,19 +190,313 @@ export class DealOrchestrator {
     }
   }
 
+  private getDocTitle(doc: any): string {
+    return (
+      (typeof doc?.fileName === 'string' && doc.fileName) ||
+      (typeof doc?.filename === 'string' && doc.filename) ||
+      (typeof doc?.title === 'string' && doc.title) ||
+      (typeof doc?.name === 'string' && doc.name) ||
+      ''
+    );
+  }
+
+  private pickPrimaryDeck(documents: any[]): { doc: any; score: number } | null {
+    const isPdf = (doc: any): boolean => {
+      const ctRaw = (typeof doc?.contentType === 'string' ? doc.contentType : (typeof doc?.content_type === 'string' ? doc.content_type : ''));
+      const ct = ctRaw.toLowerCase();
+      const name = this.getDocTitle(doc).toLowerCase();
+      return ct.includes('pdf') || name.endsWith('.pdf');
+    };
+
+    const isPitchDeckLike = (doc: any): boolean => {
+      const name = this.getDocTitle(doc).toLowerCase();
+      if (name.includes('pitch') || name.includes('deck') || name.includes('presentation')) return true;
+
+      const h = Array.isArray(doc?.mainHeadings) ? doc.mainHeadings : Array.isArray(doc?.headings) ? doc.headings : [];
+      const joined = h.filter((x: any) => typeof x === 'string').join(' ').toLowerCase();
+      return (
+        joined.includes('problem') ||
+        joined.includes('solution') ||
+        joined.includes('traction') ||
+        joined.includes('market') ||
+        joined.includes('team') ||
+        joined.includes('ask') ||
+        joined.includes('raising')
+      );
+    };
+
+    const toNumber = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+
+    const completenessScoreOf = (doc: any): number => {
+      const direct =
+        toNumber(doc?.completeness?.score) ??
+        toNumber(doc?.extractionMetadata?.completeness?.score) ??
+        toNumber(doc?.extraction_metadata?.completeness?.score);
+      if (direct != null) return Math.max(0, Math.min(1, direct));
+
+      // Fallback heuristic mirroring worker computeCompleteness() for deterministic behavior
+      const headingsCount = Array.isArray(doc?.mainHeadings) ? doc.mainHeadings.length : Array.isArray(doc?.headings) ? doc.headings.length : 0;
+      const metricsCount = Array.isArray(doc?.keyMetrics) ? doc.keyMetrics.length : 0;
+      const summaryLen = typeof doc?.textSummary === 'string' ? doc.textSummary.length : 0;
+
+      let score = 0;
+      if (summaryLen >= 100) score += 0.4;
+      else if (summaryLen >= 20) score += 0.2;
+      if (headingsCount >= 3) score += 0.3;
+      else if (headingsCount >= 1) score += 0.15;
+      if (metricsCount >= 5) score += 0.3;
+      else if (metricsCount >= 1) score += 0.15;
+
+      return Math.max(0, Math.min(1, score));
+    };
+
+    const totalWordsOf = (doc: any): number => {
+      const direct =
+        toNumber(doc?.totalWords) ??
+        toNumber(doc?.total_words) ??
+        toNumber(doc?.extractionMetadata?.totalWords) ??
+        toNumber(doc?.extraction_metadata?.totalWords);
+      if (direct != null) return Math.max(0, direct);
+
+      const text = typeof doc?.textSummary === 'string' ? doc.textSummary : '';
+      const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+      return words;
+    };
+
+    const textItemsOf = (doc: any): number => {
+      const direct =
+        toNumber(doc?.textItems) ??
+        toNumber(doc?.text_items) ??
+        toNumber(doc?.textItemsCount) ??
+        toNumber(doc?.text_items_count) ??
+        toNumber(doc?.extractionMetadata?.textItems) ??
+        toNumber(doc?.extraction_metadata?.textItems);
+      return direct != null ? Math.max(0, direct) : 0;
+    };
+
+    const headingsCountOf = (doc: any): number => {
+      const direct =
+        toNumber(doc?.headingsCount) ??
+        toNumber(doc?.headings_count) ??
+        toNumber(doc?.extractionMetadata?.headingsCount) ??
+        toNumber(doc?.extraction_metadata?.headingsCount);
+      if (direct != null) return Math.max(0, direct);
+
+      const h = Array.isArray(doc?.mainHeadings) ? doc.mainHeadings : Array.isArray(doc?.headings) ? doc.headings : [];
+      return h.filter((x: any) => typeof x === 'string' && x.trim().length > 0).length;
+    };
+
+    const needsOcrOf = (doc: any): boolean => {
+      const direct = doc?.needsOcr ?? doc?.needs_ocr ?? doc?.extractionMetadata?.needsOcr ?? doc?.extraction_metadata?.needsOcr;
+      return Boolean(direct);
+    };
+
+    const candidates = documents.filter((d) => isPdf(d) && isPitchDeckLike(d));
+    if (candidates.length < 2) return null;
+
+    let best: { doc: any; score: number; idx: number } | null = null;
+    for (let idx = 0; idx < documents.length; idx++) {
+      const doc = documents[idx];
+      if (!candidates.includes(doc)) continue;
+
+      const completeness = completenessScoreOf(doc);
+      const totalWords = totalWordsOf(doc);
+      const textItems = textItemsOf(doc);
+      const headingsCount = headingsCountOf(doc);
+      const needsOcr = needsOcrOf(doc);
+
+      const score =
+        3 * completeness +
+        0.002 * totalWords +
+        0.001 * textItems +
+        headingsCount -
+        (needsOcr ? 5 : 0) -
+        idx * 0.000001; // deterministic tie-break
+
+      if (!best || score > best.score) {
+        best = { doc, score, idx };
+      }
+    }
+
+    return best ? { doc: best.doc, score: best.score } : null;
+  }
+
   /**
    * Prepare analyzer-specific input from documents array
    */
   private prepareAnalyzerInput(name: keyof AnalyzerRegistry, input_data: Record<string, unknown>): any {
-    const documents = input_data.documents as any[] || [];
+    const rawDocuments = input_data.documents as any[] || [];
     const dio_context = input_data.dio_context as DIOContext | undefined;
+    const debug_scoring = Boolean((input_data as any)?.config?.features?.debug_scoring);
     
-    if (documents.length === 0) {
+    if (rawDocuments.length === 0) {
       this.log(`No documents available for analyzer: ${name}`);
       return {};
     }
 
-    // Combine all document data
+    // Use stable, deterministic ids even when upstream did not provide document_id
+    const documents = rawDocuments.map((doc, idx) => ({
+      ...doc,
+      __stable_doc_id: getStableDocumentId(doc, idx),
+    }));
+
+    const roles = selectDocumentRoles(documents);
+    const rolesPitchDeckDoc = roles.primary_pitch_deck_doc_id
+      ? documents.find((d) => d.__stable_doc_id === roles.primary_pitch_deck_doc_id) || null
+      : null;
+    const financialsDoc = roles.financials_doc_id
+      ? documents.find((d) => d.__stable_doc_id === roles.financials_doc_id) || null
+      : null;
+    const supportingDocs = new Set<string>(roles.supporting_doc_ids);
+
+    const pickedPrimaryDeck = this.pickPrimaryDeck(documents);
+    const pitchDeckDoc = pickedPrimaryDeck?.doc || rolesPitchDeckDoc;
+    if (pickedPrimaryDeck && pitchDeckDoc) {
+      this.log('Selected primary pitch deck (pickPrimaryDeck)', {
+        doc_id: pitchDeckDoc.__stable_doc_id,
+        title: this.getDocTitle(pitchDeckDoc),
+        score: pickedPrimaryDeck.score,
+      });
+    }
+
+    const parseNumberish = (raw: unknown): number | null => {
+      if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+        // Accept summary-stat objects from spreadsheet extraction.
+        // Priority: value -> avg -> mean -> max -> min
+        const o = raw as Record<string, unknown>;
+        const candidates: unknown[] = [o.value, o.avg, o.mean, o.max, o.min];
+        for (const c of candidates) {
+          const n = parseNumberish(c);
+          if (n != null && Number.isFinite(n)) return n;
+        }
+        return null;
+      }
+      if (typeof raw !== 'string') return null;
+      const s = raw.trim();
+      if (!s) return null;
+
+      // Handle percent
+      const pct = s.match(/(-?\d+(?:\.\d+)?)\s*%/);
+      if (pct) return parseFloat(pct[1]);
+
+      // Currency/number with K/M/B suffix
+      const m = s
+        .replace(/,/g, '')
+        .match(/\$?\s*(-?\d+(?:\.\d+)?)\s*([kmb]|thousand|million|billion)?\b/i);
+      if (!m) return null;
+      const base = parseFloat(m[1]);
+      if (!Number.isFinite(base)) return null;
+      const mag = (m[2] || '').toLowerCase();
+      const mult = mag === 'k' || mag === 'thousand' ? 1_000 : mag === 'm' || mag === 'million' ? 1_000_000 : mag === 'b' || mag === 'billion' ? 1_000_000_000 : 1;
+      return base * mult;
+    };
+
+    const inferMetricName = (key: string | undefined, value: unknown): string => {
+      const k = (key || '').toLowerCase();
+      const v = (value == null ? '' : String(value)).toLowerCase();
+
+      const combined = `${k} ${v}`;
+      if (combined.includes('mrr')) return 'mrr';
+      if (combined.includes('arr')) return 'arr';
+      if (combined.includes('revenue') || combined.includes('sales')) return 'revenue';
+      if (combined.includes('growth') || combined.includes('yoy') || combined.includes('month-over-month') || combined.includes('mom')) return 'growth_rate';
+      if (combined.includes('gross margin') || combined.includes('gm')) return 'gross_margin';
+      if (combined.includes('cac')) return 'cac';
+      if (combined.includes('ltv') || combined.includes('clv')) return 'ltv';
+      if (combined.includes('churn')) return 'churn';
+      if (combined.includes('retention') || combined.includes('nrr') || combined.includes('ndr')) return combined.includes('nrr') || combined.includes('ndr') ? 'ndr' : 'retention';
+      if (combined.includes('dau')) return 'dau';
+      if (combined.includes('mau')) return 'mau';
+
+      // Fund metrics
+      if (combined.includes('aum') || combined.includes('assets under management')) return 'aum';
+      if (combined.includes('irr')) return 'irr';
+      if (combined.includes('moic') || combined.includes('multiple')) return 'moic';
+
+      // Financial health cues
+      if (combined.includes('cash balance') || combined.includes('cash on hand') || combined.includes('cash')) return 'cash_balance';
+      if (combined.includes('burn') && combined.includes('rate')) return 'burn_rate';
+      if (combined.includes('burn')) return 'burn_rate';
+      if (combined.includes('expense') || combined.includes('opex') || combined.includes('cost')) return 'expenses';
+      if (combined.includes('runway')) return 'runway_months';
+
+      return k || 'other';
+    };
+
+    const unitFromValue = (value: unknown): string | undefined => {
+      if (typeof value !== 'string') return undefined;
+      const v = value.toLowerCase();
+      if (v.includes('%')) return '%';
+      if (v.includes('$')) return '$';
+      if (v.includes('month')) return 'months';
+      return undefined;
+    };
+
+    const docIdOf = (doc: any): string => {
+      return (
+        (typeof doc?.__stable_doc_id === 'string' && doc.__stable_doc_id) ||
+        (typeof doc?.document_id === 'string' && doc.document_id) ||
+        (typeof doc?.id === 'string' && doc.id) ||
+        'unknown'
+      );
+    };
+
+    const buildExtractedMetrics = (docsToScan: any[]): Array<{ name: string; value: number; unit?: string; source_doc_id: string }> => {
+      const out: Array<{ name: string; value: number; unit?: string; source_doc_id: string }> = [];
+
+      for (const doc of docsToScan) {
+        const source_doc_id = docIdOf(doc);
+
+        // keyFinancialMetrics (object) from Excel/structured extraction
+        const kfm = doc?.keyFinancialMetrics;
+        if (kfm && typeof kfm === 'object' && !Array.isArray(kfm)) {
+          for (const [rawKey, rawValue] of Object.entries(kfm as Record<string, unknown>)) {
+            const num = parseNumberish(rawValue);
+            if (num == null) continue;
+            const name = inferMetricName(rawKey, rawValue);
+            out.push({ name, value: num, unit: unitFromValue(rawValue), source_doc_id });
+          }
+        }
+
+        // keyMetrics (array) from deck/PDF extraction
+        if (doc?.keyMetrics && Array.isArray(doc.keyMetrics)) {
+          for (const m of doc.keyMetrics) {
+            const rawKey = typeof m?.key === 'string' ? m.key : undefined;
+            const rawValue = m?.value;
+            const num = parseNumberish(rawValue);
+            if (num == null) continue;
+            const name = inferMetricName(rawKey, rawValue);
+            out.push({ name, value: num, unit: unitFromValue(rawValue), source_doc_id });
+          }
+        }
+      }
+
+      // De-dupe by (name, source_doc_id, value)
+      const seen = new Set<string>();
+      const deduped: typeof out = [];
+      for (const m of out) {
+        const key = `${m.source_doc_id}::${m.name}::${m.value}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        deduped.push(m);
+      }
+      return deduped;
+    };
+
+    const getHeadings = (doc: any): string[] => {
+      return doc?.mainHeadings && Array.isArray(doc.mainHeadings) ? doc.mainHeadings : [];
+    };
+
+    const getMetrics = (doc: any): Array<{ key: string; value: string; source: string }> => {
+      return doc?.keyMetrics && Array.isArray(doc.keyMetrics) ? doc.keyMetrics : [];
+    };
+
+    const getText = (doc: any): string => {
+      return typeof doc?.textSummary === 'string' ? doc.textSummary : '';
+    };
+
+    // Combine all document data (used for analyzers that intentionally use all docs)
     const allHeadings: string[] = [];
     const allMetrics: Array<{ key: string; value: string; source: string }> = [];
     let combinedText = '';
@@ -208,72 +505,95 @@ export class DealOrchestrator {
     let totalChars = 0;
 
     for (const doc of documents) {
-      // Extract headings
-      if (doc.mainHeadings && Array.isArray(doc.mainHeadings)) {
-        allHeadings.push(...doc.mainHeadings);
-      }
+      const h = getHeadings(doc);
+      if (h.length > 0) allHeadings.push(...h);
 
-      // Extract metrics
-      if (doc.keyMetrics && Array.isArray(doc.keyMetrics)) {
-        allMetrics.push(...doc.keyMetrics);
-      }
+      const m = getMetrics(doc);
+      if (m.length > 0) allMetrics.push(...m);
 
-      // Combine text summaries
-      if (doc.textSummary) {
-        combinedText += doc.textSummary + '\n\n';
-      }
+      const t = getText(doc);
+      if (t) combinedText += t + '\n\n';
 
-      // Aggregate metadata
-      if (doc.totalPages) totalPages += doc.totalPages;
-      if (doc.fileSizeBytes) totalBytes += doc.fileSizeBytes;
-      if (doc.totalWords) totalChars += doc.totalWords * 5; // Rough estimate
+      if (doc?.totalPages) totalPages += doc.totalPages;
+      if (doc?.fileSizeBytes) totalBytes += doc.fileSizeBytes;
+      if (doc?.totalWords) totalChars += doc.totalWords * 5; // Rough estimate
     }
+
+    // Pitch-deck-only view for deck-sensitive analyzers
+    const deckDoc = pitchDeckDoc || documents[0];
+    const deckHeadings: string[] = getHeadings(deckDoc);
+    const deckText: string = getText(deckDoc);
+    const deckPages: number = typeof deckDoc?.totalPages === 'number' && deckDoc.totalPages > 0 ? deckDoc.totalPages : 1;
+    const deckBytes: number = typeof deckDoc?.fileSizeBytes === 'number' && deckDoc.fileSizeBytes > 0 ? deckDoc.fileSizeBytes : 1000;
+    const deckChars: number = typeof deckDoc?.totalWords === 'number' && deckDoc.totalWords > 0 ? deckDoc.totalWords * 5 : deckText.length;
 
     this.log(`Preparing input for ${name}`, { 
       headings: allHeadings.length, 
       metrics: allMetrics.length,
       textLength: combinedText.length,
-      documents: documents.length
+      documents: documents.length,
+      primary_pitch_deck_doc_id: pitchDeckDoc?.__stable_doc_id ?? roles.primary_pitch_deck_doc_id,
+      financials_doc_id: roles.financials_doc_id,
     });
+
+    const extracted_metrics_all = buildExtractedMetrics(documents);
+    const extracted_metrics_pitch_and_fin = buildExtractedMetrics(
+      [pitchDeckDoc, financialsDoc].filter(Boolean) as any[]
+    );
+    const extracted_metrics_financials_only = buildExtractedMetrics(
+      financialsDoc ? [financialsDoc] : []
+    );
 
     // Prepare analyzer-specific inputs based on their schemas
     switch (name) {
       case 'slideSequence':
         return {
-          headings: allHeadings,
+          debug_scoring,
+          headings: deckHeadings.length > 0 ? deckHeadings : allHeadings,
         };
 
       case 'metricBenchmark':
+        // Keep this deterministic: use pitch deck text as primary, optionally append financials text.
+        // Extract metrics only from pitch deck + financials.
+        const mbText = [deckText, financialsDoc ? getText(financialsDoc) : ''].filter(Boolean).join('\n\n');
         return {
-          text: combinedText || 'No text content available',
+          debug_scoring,
+          text: mbText,
           industry: (input_data.industry as string | undefined) || (dio_context?.vertical && dio_context.vertical !== 'other' ? dio_context.vertical : undefined),
+          extracted_metrics: extracted_metrics_pitch_and_fin.length > 0 ? extracted_metrics_pitch_and_fin : extracted_metrics_all,
         };
 
       case 'visualDesign':
         return {
-          page_count: totalPages > 0 ? totalPages : 1,
-          file_size_bytes: totalBytes > 0 ? totalBytes : 1000,
-          total_text_chars: totalChars > 0 ? totalChars : combinedText.length,
-          headings: allHeadings,
+          debug_scoring,
+          page_count: deckPages,
+          file_size_bytes: deckBytes,
+          total_text_chars: deckChars > 0 ? deckChars : deckText.length,
+          headings: deckHeadings.length > 0 ? deckHeadings : allHeadings,
+          primary_doc_type: (dio_context as any)?.primary_doc_type,
+          text_summary: typeof deckText === 'string' && deckText.length > 0 ? deckText.slice(0, 2000) : undefined,
         };
 
       case 'narrativeArc':
-        // Build slides from headings and text
-        const slides = allHeadings.map((heading, idx) => ({
+        // Build slides from the primary pitch deck only to avoid multi-doc page inflation and mismatched headings.
+        const narrativeHeadings = deckHeadings.length > 0 ? deckHeadings : allHeadings;
+        const slides = narrativeHeadings.map((heading) => ({
           heading,
-          text: idx < documents.length && documents[idx].textSummary 
-            ? documents[idx].textSummary.substring(0, 500)
-            : '',
+          text: deckText ? deckText.substring(0, 500) : '',
         }));
         return {
+          debug_scoring,
           slides: slides.length > 0 ? slides : [{ heading: 'Document', text: combinedText.substring(0, 500) }],
         };
 
       case 'financialHealth':
-        // Extract financial metrics from keyMetrics
+        // Extract financial metrics primarily from the selected financials doc.
+        const finDoc = financialsDoc;
+        const finMetrics = finDoc ? getMetrics(finDoc) : [];
+
         const financialData: any = {};
-        for (const metric of allMetrics) {
-          const value = metric.value?.toLowerCase() || '';
+        for (const metric of finMetrics) {
+          const value = (metric.value == null ? '' : String(metric.value)).toLowerCase();
           if (value.includes('revenue')) {
             const match = value.match(/\$?([\d,.]+)\s*(m|million|k|thousand)?/i);
             if (match) {
@@ -290,14 +610,19 @@ export class DealOrchestrator {
             }
           }
         }
-        return financialData;
+        return {
+          debug_scoring,
+          ...financialData,
+          extracted_metrics: extracted_metrics_financials_only.length > 0 ? extracted_metrics_financials_only : extracted_metrics_all,
+        };
 
       case 'riskAssessment':
         return {
+          debug_scoring,
           pitch_text: combinedText || 'No content available',
           headings: allHeadings,
           metrics: allMetrics.reduce((acc, m) => {
-            const match = m.value?.match(/([\d.]+)/);
+            const match = (m.value == null ? '' : String(m.value)).match(/([\d.]+)/);
             if (match) {
               acc[m.key || 'unknown'] = parseFloat(match[1]);
             }
@@ -317,7 +642,8 @@ export class DealOrchestrator {
         return !Array.isArray(analyzer_input?.headings) || analyzer_input.headings.length === 0;
       case 'metricBenchmark': {
         const text = typeof analyzer_input?.text === 'string' ? analyzer_input.text.trim() : '';
-        return text.length === 0 || text === 'No text content available';
+        const extracted = Array.isArray(analyzer_input?.extracted_metrics) ? analyzer_input.extracted_metrics : [];
+        return text.length === 0 && extracted.length === 0;
       }
       case 'visualDesign': {
         const headingsMissing = !Array.isArray(analyzer_input?.headings) || analyzer_input.headings.length === 0;
@@ -331,8 +657,11 @@ export class DealOrchestrator {
         return !hasAnyContent;
       }
       case 'financialHealth': {
-        const keys = analyzer_input && typeof analyzer_input === 'object' ? Object.keys(analyzer_input) : [];
-        return keys.length === 0;
+        const extracted = Array.isArray(analyzer_input?.extracted_metrics) ? analyzer_input.extracted_metrics : [];
+        const keys = analyzer_input && typeof analyzer_input === 'object'
+          ? Object.keys(analyzer_input).filter((k) => k !== 'extracted_metrics' && k !== 'evidence_ids')
+          : [];
+        return keys.length === 0 && extracted.length === 0;
       }
       case 'riskAssessment': {
         const pitch = typeof analyzer_input?.pitch_text === 'string' ? analyzer_input.pitch_text.trim() : '';
@@ -350,7 +679,7 @@ export class DealOrchestrator {
     name: keyof AnalyzerRegistry,
     input_data: Record<string, unknown>,
     failures: Array<{ analyzer: string; error: string; retry_attempts: number }>,
-    retry_count: number
+    retryCounter: { count: number }
   ): Promise<T | null> {
     let attempts = 0;
     const max_retries = this.config.maxRetries;
@@ -377,7 +706,9 @@ export class DealOrchestrator {
 
       } catch (error) {
         attempts++;
-        retry_count++;
+        if (attempts <= max_retries) {
+          retryCounter.count++;
+        }
         
         const error_message = error instanceof Error ? error.message : 'Unknown error';
         this.log(`Analyzer failed: ${name}`, { attempt: attempts, error: error_message });
@@ -414,12 +745,16 @@ export class DealOrchestrator {
     timeout: number,
     analyzerName: string
   ): Promise<T> {
-    return Promise.race([
-      promise,
-      new Promise<T>((_, reject) =>
-        setTimeout(() => reject(new AnalyzerTimeoutError(analyzerName, timeout)), timeout)
-      ),
-    ]);
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new AnalyzerTimeoutError(analyzerName, timeout)), timeout);
+    });
+
+    return Promise.race([promise, timeoutPromise]).finally(() => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    });
   }
 
   /**
@@ -437,6 +772,7 @@ export class DealOrchestrator {
     }
   ): DealIntelligenceObject {
     const now = new Date().toISOString();
+    const analyzerVersion = process.env.DIO_ANALYSIS_ENGINE_VERSION || '1.0.0';
     
     // Debug: check what's in input_data
     console.log('[buildDIO] input.input_data keys:', Object.keys(input.input_data));
@@ -451,7 +787,37 @@ export class DealOrchestrator {
       financial_health: results.financialHealth || this.fallbackFinancialHealth(),
       risk_assessment: results.riskAssessment || this.fallbackRiskAssessment(),
     };
+
+    const documents = Array.isArray((input.input_data as any)?.documents)
+      ? ((input.input_data as any).documents as DealIntelligenceObject["inputs"]["documents"])
+      : [];
+    const evidence = Array.isArray((input.input_data as any)?.evidence)
+      ? ((input.input_data as any).evidence as DealIntelligenceObject["inputs"]["evidence"])
+      : [];
     
+    const inputConfigRaw = (input.input_data as any)?.config;
+    const mergedConfig = AnalysisConfigSchema.parse({
+      ...DEFAULT_ANALYSIS_CONFIG,
+      ...(inputConfigRaw && typeof inputConfigRaw === 'object' ? inputConfigRaw : {}),
+      analyzer_versions: {
+        slide_sequence: analyzerVersion,
+        metric_benchmark: analyzerVersion,
+        visual_design: analyzerVersion,
+        narrative_arc: analyzerVersion,
+        financial_health: analyzerVersion,
+        risk_assessment: analyzerVersion,
+        ...(inputConfigRaw?.analyzer_versions || {}),
+      },
+      features: {
+        ...DEFAULT_ANALYSIS_CONFIG.features,
+        ...(inputConfigRaw?.features || {}),
+      },
+      parameters: {
+        ...DEFAULT_ANALYSIS_CONFIG.parameters,
+        ...(inputConfigRaw?.parameters || {}),
+      },
+    });
+
     // Build complete DIO
     const dio: DealIntelligenceObject = {
       schema_version: '1.0.0',
@@ -464,28 +830,9 @@ export class DealOrchestrator {
       dio_context: (input.input_data as any).dio_context || this.fallbackDIOContext(),
       
       inputs: {
-        documents: input.input_data?.documents || [],
-        evidence: input.input_data?.evidence || [],
-        config: {
-          analyzer_versions: {
-            slide_sequence: '1.0.0',
-            metric_benchmark: '1.0.0',
-            visual_design: '1.0.0',
-            narrative_arc: '1.0.0',
-            financial_health: '1.0.0',
-            risk_assessment: '1.0.0',
-          },
-          features: {
-            tavily_enabled: false,
-            mcp_enabled: false,
-            llm_synthesis_enabled: false,
-          },
-          parameters: {
-            max_cycles: 3,
-            depth_threshold: 2,
-            min_confidence: 0.7,
-          },
-        },
+        documents,
+        evidence,
+        config: mergedConfig,
       },
       
       analyzer_results,
@@ -500,6 +847,18 @@ export class DealOrchestrator {
     };
     
     console.log('[buildDIO] DIO created with inputs.documents length:', dio.inputs.documents.length);
+
+    // Attach score explainability and an extracted overall_score for downstream consumers.
+    // Storage persists its own score_explanation/overall_score, but this makes the in-memory DIO consistent.
+    const score_explanation = buildScoreExplanationFromDIO(dio);
+    (dio as any).score_explanation = score_explanation;
+    (dio as any).overall_score = score_explanation.totals.overall_score;
+    if (score_explanation.totals.overall_score == null) {
+      dio.decision = {
+        ...dio.decision,
+        confidence: Math.min(dio.decision.confidence ?? 0.5, 0.2),
+      };
+    }
     
     return dio;
   }
@@ -704,6 +1063,8 @@ export class DealOrchestrator {
           analyzer_version: '1.0.0',
           executed_at: now,
           status: 'extraction_failed',
+          coverage: 0,
+          confidence: 0,
           score: null,
           pattern_match: 'unknown',
           sequence_detected: [],
@@ -716,6 +1077,8 @@ export class DealOrchestrator {
           analyzer_version: '1.0.0',
           executed_at: now,
           status: 'extraction_failed',
+          coverage: 0,
+          confidence: 0,
           metrics_analyzed: [],
           overall_score: null,
           evidence_ids: [],
@@ -725,6 +1088,8 @@ export class DealOrchestrator {
           analyzer_version: '1.0.0',
           executed_at: now,
           status: 'extraction_failed',
+          coverage: 0,
+          confidence: 0,
           design_score: null,
           proxy_signals: {
             page_count_appropriate: false,
@@ -741,6 +1106,8 @@ export class DealOrchestrator {
           analyzer_version: '1.0.0',
           executed_at: now,
           status: 'extraction_failed',
+          coverage: 0,
+          confidence: 0,
           archetype: 'unknown',
           archetype_confidence: 0,
           pacing_score: null,
@@ -752,6 +1119,8 @@ export class DealOrchestrator {
           analyzer_version: '1.0.0',
           executed_at: now,
           status: 'extraction_failed',
+          coverage: 0,
+          confidence: 0,
           runway_months: null,
           burn_multiple: null,
           health_score: null,
@@ -770,6 +1139,8 @@ export class DealOrchestrator {
           analyzer_version: '1.0.0',
           executed_at: now,
           status: 'extraction_failed',
+          coverage: 0,
+          confidence: 0,
           overall_risk_score: null,
           risks_by_category: {
             market: [],

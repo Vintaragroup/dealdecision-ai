@@ -8,7 +8,8 @@
  */
 
 import { BaseAnalyzer, AnalyzerMetadata, ValidationResult } from "./base";
-import type { SlideSequenceInput, SlideSequenceResult } from "../types/dio";
+import type { DebugScoringTrace, SlideSequenceInput, SlideSequenceResult } from "../types/dio";
+import { buildRulesFromBaseAndDeltas } from "./debug-scoring";
 
 // ============================================================================
 // Ideal Patterns (from 25 funded decks analysis)
@@ -108,8 +109,26 @@ export class SlideSequenceAnalyzer extends BaseAnalyzer<SlideSequenceInput, Slid
   async analyze(input: SlideSequenceInput): Promise<SlideSequenceResult> {
     const executed_at = new Date().toISOString();
 
+    const debugEnabled = Boolean((input as any).debug_scoring);
+
     const headings = input.headings;
     if (!Array.isArray(headings) || headings.length === 0 || headings.every((h) => !h || h.trim() === "")) {
+      const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+        ? {
+            inputs_used: [],
+            rules: [{ rule_id: "excluded", description: "Excluded: missing headings", delta: 0, running_total: 0 }],
+            exclusion_reason: "insufficient_data: missing headings",
+            input_summary: {
+              completeness: { score: 0, notes: ["missing headings"] },
+              signals_count: 0,
+            },
+            signals: [],
+            penalties: [],
+            bonuses: [],
+            final: { score: null, formula: "N/A (insufficient input)" },
+          }
+        : undefined;
+
       return {
         analyzer_version: this.metadata.version,
         executed_at,
@@ -124,14 +143,73 @@ export class SlideSequenceAnalyzer extends BaseAnalyzer<SlideSequenceInput, Slid
         expected_sequence: [],
         deviations: [],
         evidence_ids: input.evidence_ids || [],
+        ...(debugEnabled ? { debug_scoring } : {}),
       };
     }
 
     try {
       const start = Date.now();
 
+      const slides = Array.isArray((input as any).slides) ? (input as any).slides : undefined;
+      const useBodyFallback = this.shouldUseBodyFallback(headings, slides);
+
+      const slideBodies = useBodyFallback
+        ? this.extractSlideBodies(headings, slides)
+        : undefined;
+
       // Classify each heading
-      const classified_slides = this.classifySlides(headings);
+      const classified_slides = this.classifySlides(headings, slideBodies);
+
+      const headingsCount = headings.filter((h) => typeof h === "string" && h.trim() !== "").length;
+      const recognizedSequence = classified_slides
+        .filter((s) => s.category !== "unknown")
+        .map((s) => s.category);
+      const recognized_ratio = headingsCount > 0 ? recognizedSequence.length / headingsCount : 0;
+
+      // Low-signal gate: not enough real slide labels to score reliably.
+      if (headingsCount < 6 || recognized_ratio < 0.35 || recognizedSequence.length < 6) {
+        const notes = [
+          `low_signal: headingsCount=${headingsCount}, recognized_ratio=${recognized_ratio.toFixed(3)}, sequence_len=${recognizedSequence.length}`,
+        ];
+
+        const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+          ? {
+              inputs_used: ["headings[]"],
+              rules: [{ rule_id: "excluded", description: "Excluded: low_signal gate", delta: 0, running_total: 0 }],
+              exclusion_reason: "insufficient_data: low_signal gate",
+              input_summary: {
+                completeness: { score: 0.5, notes },
+                signals_count: 1,
+              },
+              signals: [
+                { key: "headings_count", value: headingsCount },
+                { key: "recognized_ratio", value: Math.round(recognized_ratio * 1000) / 1000 },
+                { key: "recognized_sequence_len", value: recognizedSequence.length },
+              ],
+              penalties: [],
+              bonuses: [],
+              final: { score: null, formula: "N/A (low_signal gate)" },
+            }
+          : undefined;
+
+        return {
+          analyzer_version: this.metadata.version,
+          executed_at,
+
+          status: "insufficient_data",
+          coverage: 0,
+          confidence: 0.3,
+
+          score: null,
+          notes,
+          pattern_match: "None",
+          sequence_detected: recognizedSequence,
+          expected_sequence: [],
+          deviations: [],
+          evidence_ids: input.evidence_ids || [],
+          ...(debugEnabled ? { debug_scoring } : {}),
+        };
+      }
 
       // Find best matching pattern
       const pattern_match = this.findBestPattern(classified_slides);
@@ -141,6 +219,93 @@ export class SlideSequenceAnalyzer extends BaseAnalyzer<SlideSequenceInput, Slid
 
       // Calculate overall score (0-100)
       const score = this.calculateScore(pattern_match, deviations, classified_slides);
+
+      const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+        ? (() => {
+            const critical_slides = ["problem", "solution", "market", "team"];
+            const hasCritical = critical_slides.filter((c) => classified_slides.some((s) => s.category === c)).length;
+            const unknownCount = classified_slides.filter((s) => s.category === "unknown").length;
+            const unknownRatio = classified_slides.length > 0 ? unknownCount / classified_slides.length : 1;
+
+            const base = pattern_match.confidence * pattern_match.weight * 80;
+            const completeness_bonus = (hasCritical / critical_slides.length) * 10;
+            const clarity_bonus = (1 - unknownRatio) * 10;
+
+            let penalty = 0;
+            for (const dev of deviations) {
+              const sev = (dev as any)?.severity;
+              if (sev === "high") penalty += 10;
+              else if (sev === "medium") penalty += 5;
+              else penalty += 2;
+            }
+
+            const raw = base + completeness_bonus + clarity_bonus - penalty;
+
+            const signals = [
+              { key: "headings_count", value: headings.length },
+              { key: "use_body_fallback", value: useBodyFallback },
+              { key: "pattern_confidence", value: pattern_match.confidence },
+              { key: "pattern_weight", value: pattern_match.weight },
+              { key: "unknown_ratio", value: Math.round(unknownRatio * 1000) / 1000 },
+            ];
+
+            const bonuses: Array<{ key: string; points: number; note?: string }> = [
+              { key: "completeness_bonus", points: Math.round(completeness_bonus * 10) / 10 },
+              { key: "clarity_bonus", points: Math.round(clarity_bonus * 10) / 10 },
+            ];
+
+            const penalties: Array<{ key: string; points: number; note?: string }> = penalty > 0
+              ? [{ key: "deviation_penalty", points: -Math.round(penalty * 10) / 10, note: `${deviations.length} deviation(s)` }]
+              : [];
+
+            const completenessNotes: string[] = [];
+            if (headings.length > 0) completenessNotes.push("headings present");
+            completenessNotes.push(`${hasCritical}/${critical_slides.length} critical slide types present`);
+
+            const signals_count = signals.length + bonuses.length + penalties.length;
+
+            const rules = buildRulesFromBaseAndDeltas({
+              base: 50,
+              base_rule_id: "neutral_base",
+              base_description: "Neutral baseline (deterministic)",
+              bonuses: bonuses.map((b) => ({
+                rule_id: `bonus:${b.key}`,
+                description: b.note ? `${b.key}: ${b.note}` : b.key,
+                points: typeof (b as any).points === "number" ? (b as any).points : 0,
+              })),
+              penalties: penalties.map((p) => ({
+                rule_id: `penalty:${p.key}`,
+                description: p.note ? `${p.key}: ${p.note}` : p.key,
+                points: typeof (p as any).points === "number" ? (p as any).points : 0,
+              })),
+              final_score: score,
+              clamp_range: { min: 0, max: 100 },
+            });
+
+            return {
+              inputs_used: [
+                "headings[]",
+                ...(useBodyFallback ? ["slides[].text (fallback)"] : []),
+              ],
+              rules,
+              exclusion_reason: null,
+              input_summary: {
+                completeness: {
+                  score: 1,
+                  notes: completenessNotes,
+                },
+                signals_count,
+              },
+              signals,
+              penalties,
+              bonuses,
+              final: {
+                score,
+                formula: "score = round(clamp(base + completeness_bonus + clarity_bonus - deviation_penalty))",
+              },
+            };
+          })()
+        : undefined;
 
       return {
         analyzer_version: this.metadata.version,
@@ -156,8 +321,25 @@ export class SlideSequenceAnalyzer extends BaseAnalyzer<SlideSequenceInput, Slid
         expected_sequence: pattern_match.ideal_sequence,
         deviations,
         evidence_ids: input.evidence_ids || [],
+        ...(debugEnabled ? { debug_scoring } : {}),
       };
     } catch {
+      const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+        ? {
+            inputs_used: ["headings[]"],
+            rules: [{ rule_id: "excluded", description: "Excluded: exception during analysis", delta: 0, running_total: 0 }],
+            exclusion_reason: "extraction_failed: exception during analysis",
+            input_summary: {
+              completeness: { score: 1, notes: ["exception during analysis"] },
+              signals_count: 0,
+            },
+            signals: [],
+            penalties: [],
+            bonuses: [],
+            final: { score: null, formula: "N/A (extraction_failed)" },
+          }
+        : undefined;
+
       return {
         analyzer_version: this.metadata.version,
         executed_at,
@@ -172,6 +354,7 @@ export class SlideSequenceAnalyzer extends BaseAnalyzer<SlideSequenceInput, Slid
         expected_sequence: [],
         deviations: [],
         evidence_ids: input.evidence_ids || [],
+        ...(debugEnabled ? { debug_scoring } : {}),
       };
     }
   }
@@ -211,14 +394,15 @@ export class SlideSequenceAnalyzer extends BaseAnalyzer<SlideSequenceInput, Slid
   /**
    * Classify each slide by matching keywords
    */
-  private classifySlides(headings: string[]): Array<{
+  private classifySlides(headings: string[], slideBodies?: string[]): Array<{
     original: string;
     category: string;
     confidence: number;
     index: number;
   }> {
     return headings.map((heading, index) => {
-      const normalized = heading.toLowerCase().trim();
+      const body = Array.isArray(slideBodies) && typeof slideBodies[index] === "string" ? slideBodies[index] : "";
+      const normalized = `${heading} ${body}`.toLowerCase().trim();
       
       // Find best matching category
       let best_category = "unknown";
@@ -227,9 +411,14 @@ export class SlideSequenceAnalyzer extends BaseAnalyzer<SlideSequenceInput, Slid
       for (const [category, keywords] of Object.entries(SLIDE_KEYWORDS)) {
         let score = 0;
         for (const keyword of keywords) {
-          if (normalized.includes(keyword)) {
-            score += 1;
-          }
+          if (!keyword) continue;
+          if (!normalized.includes(keyword)) continue;
+
+          // Prefer stronger signals: exact/leading occurrences beat generic substrings.
+          // This is deterministic and helps avoid tie-bias from category iteration order.
+          const leading = normalized.startsWith(keyword);
+          const labelLike = normalized.includes(`${keyword}:`);
+          score += leading || labelLike ? 2 : 1;
         }
         if (score > best_score) {
           best_score = score;
@@ -247,6 +436,52 @@ export class SlideSequenceAnalyzer extends BaseAnalyzer<SlideSequenceInput, Slid
         index
       };
     });
+  }
+
+  private shouldUseBodyFallback(headings: string[], slides?: any[]): boolean {
+    if (!Array.isArray(headings) || headings.length === 0) return false;
+    if (!Array.isArray(slides) || slides.length === 0) return false;
+
+    // If the headings look low quality, fall back to slide text.
+    // Deterministic heuristics:
+    // - too many very short headings
+    // - high non-alphanumeric ratio
+    // - high repetition/boilerplate
+
+    const cleaned = headings.map((h) => (typeof h === "string" ? h.trim() : "")).filter(Boolean);
+    if (cleaned.length === 0) return true;
+
+    const shortCount = cleaned.filter((h) => h.replace(/\s+/g, "").length < 4).length;
+    const shortRatio = shortCount / cleaned.length;
+
+    const nonAlphaRatios = cleaned.map((h) => {
+      const s = h;
+      const non = (s.match(/[^a-z0-9\s]/gi) || []).length;
+      return s.length > 0 ? non / s.length : 1;
+    });
+    const avgNonAlpha = nonAlphaRatios.reduce((a, b) => a + b, 0) / nonAlphaRatios.length;
+
+    const normalized = cleaned.map((h) => h.toLowerCase().replace(/\s+/g, " ").trim());
+    const freq = new Map<string, number>();
+    for (const n of normalized) freq.set(n, (freq.get(n) || 0) + 1);
+    const maxFreq = Math.max(...Array.from(freq.values()));
+    const repetitionRatio = maxFreq / normalized.length;
+
+    const boilerplateTokens = ["slide", "page", "confidential", "company", "presentation", "deck"];
+    const boilerplateCount = normalized.filter((h) => boilerplateTokens.some((t) => h === t || h.startsWith(t + " "))).length;
+    const boilerplateRatio = boilerplateCount / normalized.length;
+
+    return shortRatio >= 0.5 || avgNonAlpha >= 0.35 || repetitionRatio >= 0.5 || boilerplateRatio >= 0.4;
+  }
+
+  private extractSlideBodies(headings: string[], slides?: any[]): string[] {
+    const out: string[] = [];
+    for (let i = 0; i < headings.length; i++) {
+      const s = Array.isArray(slides) ? slides[i] : undefined;
+      const text = typeof s?.text === "string" ? s.text : "";
+      out.push(text.slice(0, 300));
+    }
+    return out;
   }
 
   /**
@@ -412,7 +647,7 @@ export class SlideSequenceAnalyzer extends BaseAnalyzer<SlideSequenceInput, Slid
    */
   private calculateScore(
     pattern: { confidence: number; weight: number },
-    deviations: Array<{ severity: string }>,
+    deviations: Array<{ severity: string; position?: number; expected?: string; actual?: string }>,
     classified_slides: Array<{ category: string }>
   ): number {
     // Base score from pattern match (0-80 points)
@@ -434,6 +669,15 @@ export class SlideSequenceAnalyzer extends BaseAnalyzer<SlideSequenceInput, Slid
     // Deduct points for deviations
     let penalty = 0;
     for (const dev of deviations) {
+      // Only penalize "missing at position 0" (critical slides missing) when we have
+      // high-confidence signal and enough recognized slide labels.
+      if (
+        dev.position === 0 &&
+        dev.actual === "missing" &&
+        (pattern.confidence < 0.6 || classified_slides.filter((s) => s.category !== "unknown").length < 6)
+      ) {
+        continue;
+      }
       if (dev.severity === "high") penalty += 10;
       else if (dev.severity === "medium") penalty += 5;
       else penalty += 2;

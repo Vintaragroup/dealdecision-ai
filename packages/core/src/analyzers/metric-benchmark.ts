@@ -8,7 +8,8 @@
  */
 
 import { BaseAnalyzer, AnalyzerMetadata, ValidationResult } from "./base";
-import type { MetricBenchmarkInput, MetricBenchmarkResult } from "../types/dio";
+import type { DebugScoringTrace, MetricBenchmarkInput, MetricBenchmarkResult } from "../types/dio";
+import { buildRulesFromBaseAndDeltas } from "./debug-scoring";
 
 // ============================================================================
 // Industry Benchmarks
@@ -124,7 +125,90 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
   async analyze(input: MetricBenchmarkInput): Promise<MetricBenchmarkResult> {
     const executed_at = new Date().toISOString();
 
-    if (!input.text || input.text.length === 0) {
+    const debugEnabled = Boolean((input as any).debug_scoring);
+
+    const text = typeof input.text === "string" ? input.text.trim() : "";
+    const extractedInput = Array.isArray((input as any).extracted_metrics) ? (input as any).extracted_metrics : [];
+
+    const parseNumberish = (raw: unknown): number | null => {
+      if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+      if (typeof raw !== "string") return null;
+      const s = raw.trim();
+      if (!s) return null;
+
+      const pct = s.match(/(-?\d+(?:\.\d+)?)\s*%/);
+      if (pct) return parseFloat(pct[1]);
+
+      const m = s
+        .replace(/,/g, "")
+        .match(/\$?\s*(-?\d+(?:\.\d+)?)\s*([kmb]|thousand|million|billion)?\b/i);
+      if (!m) return null;
+      const base = parseFloat(m[1]);
+      if (!Number.isFinite(base)) return null;
+      const mag = (m[2] || "").toLowerCase();
+      const mult = mag === "k" || mag === "thousand" ? 1_000 : mag === "m" || mag === "million" ? 1_000_000 : mag === "b" || mag === "billion" ? 1_000_000_000 : 1;
+      return base * mult;
+    };
+
+    const unitFrom = (v: unknown): string => {
+      if (typeof v !== "string") return "";
+      const s = v.toLowerCase();
+      if (s.includes("%")) return "%";
+      if (s.includes("$")) return "$";
+      if (s.includes("month")) return "months";
+      return "";
+    };
+
+    const isNumericValueMetricName = (name: string): boolean => {
+      return name.trim().toLowerCase() === "numeric_value";
+    };
+
+    const normalizedExtracted = extractedInput
+      .map((m: any) => {
+        const metric_name = typeof m?.name === "string" ? m.name : "other";
+        const value = typeof m?.value === "number" ? m.value : parseNumberish(m?.value);
+        if (value == null || !Number.isFinite(value)) return null;
+        return {
+          metric_name,
+          value,
+          unit: typeof m?.unit === "string" ? m.unit : unitFrom(m?.value),
+          source: typeof m?.source_doc_id === "string" ? `doc:${m.source_doc_id}` : "structured",
+          confidence: 0.9,
+        };
+      })
+      .filter(Boolean) as Array<{ metric_name: string; value: number; unit: string; source: string; confidence: number }>;
+
+    // Treat numeric_value as untyped and exclude it from scoring unless it can be mapped to a known KPI.
+    // We do NOT attempt heuristic mapping here (no reliable context available).
+    const filteredExtracted = normalizedExtracted.filter((m) => !isNumericValueMetricName(m.metric_name));
+
+    const onlyNumericValue =
+      extractedInput.length > 0 &&
+      extractedInput.every((m: any) => {
+        const n = typeof m?.name === "string" ? m.name.trim().toLowerCase() : "numeric_value";
+        return n === "numeric_value" || n === "";
+      });
+
+    const MIN_USABLE_METRICS = 2;
+    const hasUsableExtracted = filteredExtracted.length >= MIN_USABLE_METRICS;
+
+    if (text.length === 0 && filteredExtracted.length === 0 && extractedInput.length === 0) {
+      const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+        ? {
+            inputs_used: [],
+            rules: [{ rule_id: "excluded", description: "Excluded: missing text and extracted_metrics", delta: 0, running_total: 0 }],
+            exclusion_reason: "insufficient_data: missing text and extracted_metrics",
+            input_summary: {
+              completeness: { score: 0, notes: ["missing text and extracted_metrics"] },
+              signals_count: 0,
+            },
+            signals: [],
+            penalties: [],
+            bonuses: [],
+            final: { score: null, formula: "N/A (insufficient input)" },
+          }
+        : undefined;
+
       return {
         analyzer_version: this.metadata.version,
         executed_at,
@@ -136,14 +220,58 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
         metrics_analyzed: [],
         overall_score: null,
         evidence_ids: input.evidence_ids || [],
+        ...(debugEnabled ? { debug_scoring } : {}),
+      };
+    }
+
+    // If we only got untyped numeric_value metrics (or nothing recognizable) and no text,
+    // this should be treated as insufficient data (do not fabricate a neutral score).
+    if (text.length === 0 && extractedInput.length > 0 && filteredExtracted.length === 0) {
+      const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+        ? {
+            inputs_used: ["extracted_metrics[]"],
+            rules: [{ rule_id: "excluded", description: "Excluded: no recognized KPIs (only numeric_value)", delta: 0, running_total: 0 }],
+            exclusion_reason: "insufficient_data: no recognized KPIs",
+            input_summary: {
+              completeness: { score: 0.4, notes: ["only untyped extracted metrics (numeric_value)"] },
+              signals_count: 4,
+            },
+            signals: [
+              { key: "text_length", value: text.length },
+              { key: "extracted_input_count", value: extractedInput.length },
+              { key: "filtered_extracted_count", value: filteredExtracted.length },
+              { key: "only_numeric_value", value: onlyNumericValue },
+            ],
+            penalties: [{ key: "no_recognized_kpis", points: -100, note: "excluded from scoring" }],
+            bonuses: [],
+            final: { score: null, formula: "N/A (no recognized KPIs)" },
+          }
+        : undefined;
+
+      return {
+        analyzer_version: this.metadata.version,
+        executed_at,
+
+        status: "insufficient_data",
+        coverage: 0,
+        confidence: 0.3,
+
+        metrics_analyzed: [],
+        overall_score: null,
+        note: onlyNumericValue ? "no recognized KPIs (only numeric_value)" : "no recognized KPIs",
+        evidence_ids: input.evidence_ids || [],
+        ...(debugEnabled ? { debug_scoring } : {}),
       };
     }
 
     try {
       const start = Date.now();
 
-      // Extract metrics from text
-      const extracted_metrics = this.extractMetrics([input.text]);
+      // Extract metrics from text (optional)
+      const extractedFromText = text.length > 0 ? this.extractMetrics([text]) : [];
+      const extracted_metrics = hasUsableExtracted
+        ? filteredExtracted
+        : [...filteredExtracted, ...extractedFromText];
 
       // Get appropriate benchmarks for industry (default to SaaS if not specified)
       const benchmarks = this.getBenchmarks(input.industry || "saas", "series_a");
@@ -151,8 +279,110 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
       // Validate each metric
       const validations = this.validateMetrics(extracted_metrics, benchmarks, input.evidence_ids || []);
 
+      // If we couldn't extract/validate any metrics from the text, treat this as insufficient data
+      // rather than a real 0-score metric benchmark.
+      if (validations.length === 0) {
+        const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+          ? {
+              inputs_used: [
+                ...(text.length > 0 ? ["text"] : []),
+                ...(extractedInput.length > 0 ? ["extracted_metrics[]"] : []),
+                ...(typeof input.industry === "string" && input.industry ? ["industry"] : []),
+              ],
+              rules: [{ rule_id: "excluded", description: "Excluded: no validated metrics", delta: 0, running_total: 0 }],
+              exclusion_reason: "insufficient_data: no validated metrics",
+              input_summary: {
+                completeness: { score: 0.3, notes: ["no metrics could be validated"] },
+                signals_count: 3,
+              },
+              signals: [
+                { key: "text_length", value: text.length },
+                { key: "filtered_extracted_count", value: filteredExtracted.length },
+                { key: "extracted_from_text_count", value: extractedFromText.length },
+              ],
+              penalties: [],
+              bonuses: [],
+              final: { score: null, formula: "N/A (no validated metrics)" },
+            }
+          : undefined;
+        return {
+          analyzer_version: this.metadata.version,
+          executed_at,
+
+          status: "insufficient_data",
+          coverage: 0,
+          confidence: 0.3,
+
+          metrics_analyzed: [],
+          overall_score: null,
+          evidence_ids: input.evidence_ids || [],
+          ...(debugEnabled ? { debug_scoring } : {}),
+        };
+      }
+
       // Calculate overall score
       const overall_score = this.calculateScore(validations);
+
+      const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+        ? (() => {
+            const ratings = validations.map((v) => v.rating);
+            const strong = ratings.filter((r) => r === "Strong").length;
+            const adequate = ratings.filter((r) => r === "Adequate").length;
+            const weak = ratings.filter((r) => r === "Weak").length;
+            const missing = ratings.filter((r) => r === "Missing").length;
+
+            const signals = [
+              { key: "text_length", value: text.length },
+              { key: "extracted_input_count", value: extractedInput.length },
+              { key: "normalized_extracted_count", value: normalizedExtracted.length },
+              { key: "filtered_extracted_count", value: filteredExtracted.length },
+              { key: "extracted_from_text_count", value: extractedFromText.length },
+              { key: "validations_count", value: validations.length },
+              { key: "ratings_strong", value: strong },
+              { key: "ratings_adequate", value: adequate },
+              { key: "ratings_weak", value: weak },
+              { key: "ratings_missing", value: missing },
+            ];
+
+            const bonuses = strong > 0 ? [{ key: "strong_metrics", points: strong * 5, note: "informational only" }] : [];
+            const penalties = weak > 0 ? [{ key: "weak_metrics", points: -weak * 5, note: "informational only" }] : [];
+
+            const rules = buildRulesFromBaseAndDeltas({
+              base: 0,
+              base_rule_id: "metric_mean_base",
+              base_description: "Metric benchmark score baseline",
+              final_score: overall_score,
+              clamp_range: { min: 0, max: 100 },
+            });
+
+            return {
+              inputs_used: [
+                ...(text.length > 0 ? ["text"] : []),
+                ...(extractedInput.length > 0 ? ["extracted_metrics[]"] : []),
+                ...(typeof input.industry === "string" && input.industry ? ["industry"] : []),
+              ],
+              rules,
+              exclusion_reason: null,
+              input_summary: {
+                completeness: {
+                  score: Math.min(1, validations.length / 5),
+                  notes: [
+                    text.length > 0 ? "text provided" : "no text",
+                    filteredExtracted.length > 0 ? "recognized extracted metrics provided" : "no recognized extracted metrics",
+                  ],
+                },
+                signals_count: signals.length + bonuses.length + penalties.length,
+              },
+              signals,
+              penalties,
+              bonuses,
+              final: {
+                score: overall_score,
+                formula: "score = round(mean(rating_points)) where Strong=100 Adequate=70 Weak=40 Missing=50",
+              },
+            };
+          })()
+        : undefined;
 
       return {
         analyzer_version: this.metadata.version,
@@ -165,8 +395,29 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
         metrics_analyzed: validations,
         overall_score,
         evidence_ids: input.evidence_ids || [],
+        ...(debugEnabled ? { debug_scoring } : {}),
       };
     } catch {
+      const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+        ? {
+            inputs_used: [
+              ...(text.length > 0 ? ["text"] : []),
+              ...(extractedInput.length > 0 ? ["extracted_metrics[]"] : []),
+              ...(typeof input.industry === "string" && input.industry ? ["industry"] : []),
+            ],
+            rules: [{ rule_id: "excluded", description: "Excluded: exception during analysis", delta: 0, running_total: 0 }],
+            exclusion_reason: "extraction_failed: exception during analysis",
+            input_summary: {
+              completeness: { score: Math.min(1, (text.length > 0 ? 0.6 : 0.3) + (filteredExtracted.length > 0 ? 0.4 : 0)), notes: ["exception during analysis"] },
+              signals_count: 0,
+            },
+            signals: [],
+            penalties: [],
+            bonuses: [],
+            final: { score: null, formula: "N/A (extraction_failed)" },
+          }
+        : undefined;
+
       return {
         analyzer_version: this.metadata.version,
         executed_at,
@@ -178,6 +429,7 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
         metrics_analyzed: [],
         overall_score: null,
         evidence_ids: input.evidence_ids || [],
+        ...(debugEnabled ? { debug_scoring } : {}),
       };
     }
   }
@@ -189,8 +441,10 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
     const errors: string[] = [];
     const warnings: string[] = [];
 
-    if (!input.text || input.text.length === 0) {
-      errors.push("text must be provided");
+    const text = typeof input.text === "string" ? input.text.trim() : "";
+    const extracted = Array.isArray((input as any).extracted_metrics) ? (input as any).extracted_metrics : [];
+    if (text.length === 0 && extracted.length === 0) {
+      errors.push("either text or extracted_metrics must be provided");
     }
 
     if (!input.industry) {

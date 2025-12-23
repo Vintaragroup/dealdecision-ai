@@ -82,6 +82,7 @@ export const AnalysisConfigSchema = z.object({
     tavily_enabled: z.boolean().default(false),
     mcp_enabled: z.boolean().default(true),
     llm_synthesis_enabled: z.boolean().default(true),
+    debug_scoring: z.boolean().default(false),
   }),
   
   parameters: z.object({
@@ -107,15 +108,32 @@ export type AnalysisInputs = z.infer<typeof AnalysisInputsSchema>;
 
 export const SlideSequenceInputSchema = z.object({
   headings: z.array(z.string()),
+  slides: z.array(z.object({
+    heading: z.string().optional(),
+    text: z.string().optional(),
+  })).optional(),
   evidence_ids: z.array(z.string().uuid()).optional(),
+  debug_scoring: z.boolean().optional(),
 });
 
 export type SlideSequenceInput = z.infer<typeof SlideSequenceInputSchema>;
 
+export const ExtractedMetricInputSchema = z.object({
+  name: z.string().min(1),
+  value: z.union([z.string(), z.number()]),
+  period: z.string().optional(),
+  unit: z.string().optional(),
+  source_doc_id: z.string().min(1),
+});
+
+export type ExtractedMetricInput = z.infer<typeof ExtractedMetricInputSchema>;
+
 export const MetricBenchmarkInputSchema = z.object({
   text: z.string(),
   industry: z.string().optional(),
+  extracted_metrics: z.array(ExtractedMetricInputSchema).optional(),
   evidence_ids: z.array(z.string().uuid()).optional(),
+  debug_scoring: z.boolean().optional(),
 });
 
 export type MetricBenchmarkInput = z.infer<typeof MetricBenchmarkInputSchema>;
@@ -125,7 +143,11 @@ export const VisualDesignInputSchema = z.object({
   file_size_bytes: z.number().int().positive(),
   total_text_chars: z.number().int().nonnegative(),
   headings: z.array(z.string()),
+  primary_doc_type: z.string().optional(),
+  text_summary: z.string().optional(),
+  text_items_count: z.number().int().nonnegative().optional(),
   evidence_ids: z.array(z.string().uuid()).optional(),
+  debug_scoring: z.boolean().optional(),
 });
 
 export type VisualDesignInput = z.infer<typeof VisualDesignInputSchema>;
@@ -136,6 +158,7 @@ export const NarrativeArcInputSchema = z.object({
     text: z.string(),
   })),
   evidence_ids: z.array(z.string().uuid()).optional(),
+  debug_scoring: z.boolean().optional(),
 });
 
 export type NarrativeArcInput = z.infer<typeof NarrativeArcInputSchema>;
@@ -146,7 +169,9 @@ export const FinancialHealthInputSchema = z.object({
   cash_balance: z.number().optional(),
   burn_rate: z.number().optional(),
   growth_rate: z.number().optional(),
+  extracted_metrics: z.array(ExtractedMetricInputSchema).optional(),
   evidence_ids: z.array(z.string().uuid()).optional(),
+  debug_scoring: z.boolean().optional(),
 });
 
 export type FinancialHealthInput = z.infer<typeof FinancialHealthInputSchema>;
@@ -157,6 +182,7 @@ export const RiskAssessmentInputSchema = z.object({
   metrics: z.record(z.number()).optional(),
   team_size: z.number().int().nonnegative().optional(),
   evidence_ids: z.array(z.string().uuid()).optional(),
+  debug_scoring: z.boolean().optional(),
 });
 
 export type RiskAssessmentInput = z.infer<typeof RiskAssessmentInputSchema>;
@@ -164,6 +190,52 @@ export type RiskAssessmentInput = z.infer<typeof RiskAssessmentInputSchema>;
 // ============================================================================
 // Analyzer Results (Deterministic Outputs)
 // ============================================================================
+
+const DebugScoringValueSchema = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+  z.null(),
+]);
+
+const DebugScoringItemSchema = z.object({
+  key: z.string(),
+  value: DebugScoringValueSchema.optional(),
+  weight: z.number().optional(),
+  points: z.number().optional(),
+  note: z.string().optional(),
+});
+
+const DebugScoringRuleSchema = z.object({
+  rule_id: z.string(),
+  description: z.string(),
+  delta: z.number(),
+  running_total: z.number(),
+});
+
+export const DebugScoringTraceSchema = z.object({
+  // Deterministic transparency fields (preferred)
+  inputs_used: z.array(z.string()).optional(),
+  rules: z.array(DebugScoringRuleSchema).optional(),
+  exclusion_reason: z.string().nullable().optional(),
+
+  input_summary: z.object({
+    completeness: z.object({
+      score: z.number().min(0).max(1),
+      notes: z.array(z.string()),
+    }),
+    signals_count: z.number().int().nonnegative(),
+  }),
+  signals: z.array(DebugScoringItemSchema),
+  penalties: z.array(DebugScoringItemSchema),
+  bonuses: z.array(DebugScoringItemSchema),
+  final: z.object({
+    score: z.number().min(0).max(100).nullable(),
+    formula: z.string().optional(),
+  }),
+});
+
+export type DebugScoringTrace = z.infer<typeof DebugScoringTraceSchema>;
 
 const AnalyzerMetaSchema = z.object({
   status: z.enum(["ok", "insufficient_data", "extraction_failed"]).optional(),
@@ -186,8 +258,10 @@ export const SlideSequenceResultSchema = z.object({
   executed_at: z.string().datetime(),
 
   ...AnalyzerMetaSchema.shape,
+  debug_scoring: DebugScoringTraceSchema.optional(),
   
   score: z.number().min(0).max(100).nullable(),
+  notes: z.array(z.string()).optional(),
   pattern_match: z.string(),
   sequence_detected: z.array(z.string()),
   expected_sequence: z.array(z.string()),
@@ -218,9 +292,12 @@ export const MetricBenchmarkResultSchema = z.object({
   executed_at: z.string().datetime(),
 
   ...AnalyzerMetaSchema.shape,
+  debug_scoring: DebugScoringTraceSchema.optional(),
   
   metrics_analyzed: z.array(MetricValidationSchema),
   overall_score: z.number().min(0).max(100).nullable(),
+
+  note: z.string().optional(),
   
   evidence_ids: z.array(z.string().uuid()),
 });
@@ -233,6 +310,7 @@ export const VisualDesignResultSchema = z.object({
   executed_at: z.string().datetime(),
 
   ...AnalyzerMetaSchema.shape,
+  debug_scoring: DebugScoringTraceSchema.optional(),
   
   design_score: z.number().min(0).max(100).nullable(),
   
@@ -266,6 +344,7 @@ export const NarrativeArcResultSchema = z.object({
   executed_at: z.string().datetime(),
 
   ...AnalyzerMetaSchema.shape,
+  debug_scoring: DebugScoringTraceSchema.optional(),
   
   archetype: z.string(),
   archetype_confidence: z.number().min(0).max(1),
@@ -293,6 +372,7 @@ export const FinancialHealthResultSchema = z.object({
   executed_at: z.string().datetime(),
 
   ...AnalyzerMetaSchema.shape,
+  debug_scoring: DebugScoringTraceSchema.optional(),
   
   runway_months: z.number().nullable(),
   burn_multiple: z.number().nullable(),
@@ -330,6 +410,7 @@ export const RiskAssessmentResultSchema = z.object({
   executed_at: z.string().datetime(),
 
   ...AnalyzerMetaSchema.shape,
+  debug_scoring: DebugScoringTraceSchema.optional(),
   
   overall_risk_score: z.number().min(0).max(100).nullable(),
   
@@ -343,6 +424,8 @@ export const RiskAssessmentResultSchema = z.object({
   total_risks: z.number().int().nonnegative(),
   critical_count: z.number().int().nonnegative(),
   high_count: z.number().int().nonnegative(),
+
+  note: z.string().optional(),
   
   evidence_ids: z.array(z.string().uuid()),
 });
@@ -664,6 +747,7 @@ export const DEFAULT_ANALYSIS_CONFIG: AnalysisConfig = {
     tavily_enabled: false,
     mcp_enabled: true,
     llm_synthesis_enabled: true,
+    debug_scoring: false,
   },
   parameters: {
     max_cycles: 3,

@@ -1,4 +1,6 @@
-import { buildDIOContext } from "../dio-context";
+import { buildDIOContext, buildDIOContextFromInputData } from "../dio-context";
+import fs from "fs";
+import path from "path";
 
 describe("buildDIOContext (heuristics)", () => {
   it("classifies a typical pitch deck startup raise", async () => {
@@ -95,5 +97,138 @@ describe("buildDIOContext (heuristics)", () => {
 
     expect(ctx.stage).toBe("seed");
     expect(ctx.confidence).toBeGreaterThanOrEqual(0.65);
+  });
+});
+
+describe("buildDIOContextFromInputData (multi-document aggregation)", () => {
+  it("pitch_deck + financials spreadsheet -> primary_doc_type pitch_deck; deal_type startup_raise", async () => {
+    const input_data = {
+      documents: [
+        {
+          title: "WebMax Pitch Deck.pdf",
+          filename: "WebMax_Pitch_Deck.pdf",
+          contentType: "application/pdf",
+          totalPages: 14,
+          mainHeadings: [
+            "Problem",
+            "Solution",
+            "Traction",
+            "Market",
+            "Team",
+            "Use of Funds",
+            "We are raising $5M Seed",
+          ],
+        },
+        {
+          title: "WebMax Financial Model.xlsx",
+          filename: "WebMax_Financial_Model.xlsx",
+          contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          totalPages: 0,
+          mainHeadings: ["P&L", "Cash Flow", "Forecast"],
+        },
+      ],
+    };
+
+    const ctx = await buildDIOContextFromInputData(input_data as any);
+
+    expect(ctx.primary_doc_type).toBe("pitch_deck");
+    expect(ctx.deal_type).toBe("startup_raise");
+    expect(ctx.confidence).toBeGreaterThanOrEqual(0.5);
+  });
+
+  it("long business plan + small pitch attachment -> primary_doc_type business_plan_im", async () => {
+    const input_data = {
+      documents: [
+        {
+          title: "Acme Business Plan (Investment Memorandum).pdf",
+          filename: "Acme_Business_Plan_IM.pdf",
+          contentType: "application/pdf",
+          totalPages: 42,
+          mainHeadings: [
+            "Investment Memorandum",
+            "Executive Summary",
+            "Business Plan",
+            "Market Overview",
+            "Financial Projections",
+            "Use of Funds",
+            "Valuation",
+            "Risk Factors",
+            "Terms",
+          ],
+        },
+        {
+          title: "Acme Pitch Attachment.pdf",
+          filename: "Acme_Pitch_Attachment.pdf",
+          contentType: "application/pdf",
+          totalPages: 5,
+          mainHeadings: ["Appendix", "Screenshots", "Team Bios"],
+        },
+      ],
+    };
+
+    const ctx = await buildDIOContextFromInputData(input_data as any);
+
+    expect(ctx.primary_doc_type).toBe("business_plan_im");
+    expect(ctx.primary_doc_type).not.toBe("pitch_deck");
+  });
+
+  it("fund deck + tear sheet + financials (no pitch deck) -> deal_type fund_spv", async () => {
+    const input_data = {
+      documents: [
+        {
+          title: "Vintara Fund Investment Memorandum.pdf",
+          filename: "Vintara_Fund_IM.pdf",
+          contentType: "application/pdf",
+          totalPages: 28,
+          mainHeadings: [
+            "Fund Overview",
+            "Limited Partners",
+            "General Partner",
+            "Management Fee & Carry",
+            "Subscription Agreement",
+            "SPV Structure",
+          ],
+        },
+        {
+          title: "Deal Tear Sheet.pdf",
+          filename: "Tear_Sheet.pdf",
+          contentType: "application/pdf",
+          totalPages: 2,
+          mainHeadings: ["Executive Summary", "Terms", "Private Placement"],
+        },
+        {
+          title: "Fund Financials.xlsx",
+          filename: "Fund_Financials.xlsx",
+          contentType: "application/vnd.ms-excel",
+          totalPages: 0,
+          mainHeadings: ["Financial", "Model"],
+        },
+      ],
+    };
+
+    const ctx = await buildDIOContextFromInputData(input_data as any);
+
+    expect(ctx.deal_type).toBe("fund_spv");
+    expect(["business_plan_im", "financials", "exec_summary", "one_pager", "other"]).toContain(ctx.primary_doc_type);
+    expect(ctx.primary_doc_type).not.toBe("pitch_deck");
+    expect(ctx.confidence).toBeGreaterThanOrEqual(0.34);
+  });
+
+  it("Vintara v4 report fixture: long IM/business-plan PDF should not be classified as pitch_deck", async () => {
+    const fixturePath = path.resolve(
+      __dirname,
+      "../../../../..",
+      "docs/dio-reports/reports/vintara-group-llc_v4.json"
+    );
+    const raw = fs.readFileSync(fixturePath, "utf-8");
+    const parsed = JSON.parse(raw);
+    const docs = parsed?.latestDio?.dio?.inputs?.documents;
+    expect(Array.isArray(docs)).toBe(true);
+    expect(docs.length).toBeGreaterThanOrEqual(1);
+
+    const ctx = await buildDIOContextFromInputData({ documents: docs } as any);
+
+    expect(ctx.primary_doc_type).not.toBe("pitch_deck");
+    expect(["business_plan_im", "exec_summary"]).toContain(ctx.primary_doc_type);
   });
 });

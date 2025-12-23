@@ -8,7 +8,8 @@
  */
 
 import { BaseAnalyzer, AnalyzerMetadata, ValidationResult } from "./base";
-import type { VisualDesignInput, VisualDesignResult } from "../types/dio";
+import type { DebugScoringTrace, VisualDesignInput, VisualDesignResult } from "../types/dio";
+import { buildRulesFromBaseAndDeltas } from "./debug-scoring";
 
 // ============================================================================
 // Design Quality Heuristics
@@ -50,11 +51,32 @@ export class VisualDesignScorer extends BaseAnalyzer<VisualDesignInput, VisualDe
   async analyze(input: VisualDesignInput): Promise<VisualDesignResult> {
     const executed_at = new Date().toISOString();
 
+    const debugEnabled = Boolean((input as any).debug_scoring);
+
     if (
       !input.page_count || input.page_count < 1 ||
       !input.file_size_bytes || input.file_size_bytes < 1 ||
       !input.total_text_chars || input.total_text_chars < 1
     ) {
+      const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+        ? {
+            inputs_used: ["page_count", "file_size_bytes", "total_text_chars"],
+            rules: [{ rule_id: "excluded", description: "Excluded: missing proxy inputs", delta: 0, running_total: 0 }],
+            exclusion_reason: "insufficient_data: missing page_count/file_size_bytes/total_text_chars",
+            input_summary: {
+              completeness: {
+                score: 0,
+                notes: ["missing page_count/file_size_bytes/total_text_chars"],
+              },
+              signals_count: 0,
+            },
+            signals: [],
+            penalties: [],
+            bonuses: [],
+            final: { score: null, formula: "N/A (insufficient input)" },
+          }
+        : undefined;
+
       return {
         analyzer_version: this.metadata.version,
         executed_at,
@@ -73,6 +95,7 @@ export class VisualDesignScorer extends BaseAnalyzer<VisualDesignInput, VisualDe
         weaknesses: [],
         evidence_ids: input.evidence_ids || [],
         note: "Using proxy heuristics - full visual analysis requires layout extraction",
+        ...(debugEnabled ? { debug_scoring } : {}),
       };
     }
 
@@ -80,9 +103,35 @@ export class VisualDesignScorer extends BaseAnalyzer<VisualDesignInput, VisualDe
       const start = Date.now();
 
       const headings = Array.isArray(input.headings) ? input.headings : [];
+      const headingsCount = headings.filter((h) => typeof h === "string" && h.trim().length > 0).length;
+
+      const primary_doc_type = (input as any).primary_doc_type as string | undefined;
+      const totalPages = typeof input.page_count === "number" && input.page_count > 0 ? input.page_count : 0;
+      const headingDensity = totalPages > 0 ? headingsCount / totalPages : 0;
+
+      const text_items_count = typeof (input as any).text_items_count === "number" ? ((input as any).text_items_count as number) : undefined;
+      const textItemsLow = (typeof text_items_count === "number" && text_items_count >= 0)
+        ? text_items_count < 80
+        : input.total_text_chars < 500;
+
+      const textSummary = typeof (input as any).text_summary === "string" && (input as any).text_summary.trim().length > 0
+        ? String((input as any).text_summary)
+        : headings.join(" ");
+      const symbolRatio = (() => {
+        const s = textSummary;
+        const chars = s.replace(/\s+/g, "");
+        if (chars.length === 0) return 0;
+        const symbols = (chars.match(/[^a-z0-9]/gi) || []).length;
+        return symbols / chars.length;
+      })();
+      const ocrNoisy = symbolRatio > 0.35;
+
+      const headingReliability: "reliable" | "unknown" =
+        headingDensity < 0.25 && (textItemsLow || ocrNoisy) ? "unknown" : "reliable";
+      const formattingWeightMultiplier = headingReliability === "unknown" ? 0.2 : 1;
 
       // Calculate proxy signals
-      const page_count_signal = this.evaluatePageCount(input.page_count);
+      const page_count_signal = this.evaluatePageCount(input.page_count, primary_doc_type);
       const image_ratio_signal = this.evaluateImageToTextRatio(
         input.file_size_bytes,
         input.page_count,
@@ -97,8 +146,120 @@ export class VisualDesignScorer extends BaseAnalyzer<VisualDesignInput, VisualDe
       const design_score = this.calculateDesignScore(
         page_count_signal,
         image_ratio_signal,
-        formatting_signal
+        formatting_signal,
+        { formattingWeightMultiplier }
       );
+
+      const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+        ? (() => {
+            const weights = {
+              page_count: 0.3,
+              image_ratio: 0.4,
+              formatting: 0.3 * formattingWeightMultiplier,
+            };
+
+            const weightsSum = weights.page_count + weights.image_ratio + weights.formatting;
+            const normalized = {
+              page_count: weights.page_count / weightsSum,
+              image_ratio: weights.image_ratio / weightsSum,
+              formatting: weights.formatting / weightsSum,
+            };
+
+            const signals = [
+              { key: "page_count", value: input.page_count },
+              { key: "file_size_bytes", value: input.file_size_bytes },
+              { key: "total_text_chars", value: input.total_text_chars },
+              { key: "primary_doc_type", value: primary_doc_type || "unknown" },
+              { key: "headings_count", value: headingsCount },
+              { key: "heading_density", value: Math.round(headingDensity * 1000) / 1000 },
+              { key: "symbol_ratio", value: Math.round(symbolRatio * 1000) / 1000 },
+              { key: "heading_reliability", value: headingReliability },
+              { key: "formatting_weight_multiplier", value: formattingWeightMultiplier },
+              { key: "page_count_signal_score", value: Math.round(page_count_signal.score * 1000) / 1000, weight: normalized.page_count },
+              { key: "image_ratio_signal_score", value: Math.round(image_ratio_signal.score * 1000) / 1000, weight: normalized.image_ratio },
+              { key: "formatting_signal_score", value: Math.round(formatting_signal.score * 1000) / 1000, weight: normalized.formatting },
+            ];
+
+            const bonuses = [
+              page_count_signal.appropriate ? { key: "page_count_appropriate", points: 0, note: page_count_signal.reason } : null,
+              image_ratio_signal.balanced ? { key: "image_to_text_balanced", points: 0, note: image_ratio_signal.reason } : null,
+              formatting_signal.consistent ? { key: "formatting_consistent", points: 0, note: formatting_signal.reason } : null,
+            ].filter(Boolean) as any[];
+
+            const penalties = [
+              !page_count_signal.appropriate ? { key: "page_count_issue", points: 0, note: page_count_signal.reason } : null,
+              !image_ratio_signal.balanced ? { key: "image_to_text_issue", points: 0, note: image_ratio_signal.reason } : null,
+              !formatting_signal.consistent ? {
+                key: "formatting_issue",
+                points: 0,
+                note: formattingWeightMultiplier < 1
+                  ? `${formatting_signal.reason} (heading reliability ${headingReliability}; formatting weight x${formattingWeightMultiplier})`
+                  : formatting_signal.reason,
+              } : null,
+            ].filter(Boolean) as any[];
+
+            // Deterministic rule breakdown: each weighted proxy component contribution.
+            const componentBonuses = [
+              {
+                key: "page_count_component",
+                points: normalized.page_count * page_count_signal.score * 100,
+                note: `w=${normalized.page_count.toFixed(3)} score=${page_count_signal.score.toFixed(3)}`,
+              },
+              {
+                key: "image_ratio_component",
+                points: normalized.image_ratio * image_ratio_signal.score * 100,
+                note: `w=${normalized.image_ratio.toFixed(3)} score=${image_ratio_signal.score.toFixed(3)}`,
+              },
+              {
+                key: "formatting_component",
+                points: normalized.formatting * formatting_signal.score * 100,
+                note: `w=${normalized.formatting.toFixed(3)} score=${formatting_signal.score.toFixed(3)}`,
+              },
+            ];
+
+            const rules = buildRulesFromBaseAndDeltas({
+              base: 0,
+              base_rule_id: "weighted_avg_base",
+              base_description: "Weighted proxy components sum",
+              bonuses: componentBonuses.map((b) => ({
+                rule_id: `component:${b.key}`,
+                description: b.note ? `${b.key}: ${b.note}` : b.key,
+                points: b.points,
+              })),
+              final_score: design_score,
+              clamp_range: { min: 0, max: 100 },
+            });
+
+            return {
+              inputs_used: [
+                "page_count",
+                "file_size_bytes",
+                "total_text_chars",
+                ...(Array.isArray(input.headings) ? ["headings[]"] : []),
+                ...((input as any).primary_doc_type ? ["primary_doc_type"] : []),
+                ...((input as any).text_summary ? ["text_summary"] : []),
+              ],
+              rules,
+              exclusion_reason: null,
+              input_summary: {
+                completeness: {
+                  score: 1,
+                  notes: ["proxy inputs present"],
+                },
+                signals_count: signals.length + bonuses.length + penalties.length,
+              },
+              signals,
+              penalties,
+              bonuses,
+              final: {
+                score: design_score,
+                formula: formattingWeightMultiplier < 1
+                  ? "score = round(weighted_avg(page_count,image_ratio,formatting; formatting weight reduced) * 100)"
+                  : "score = round((0.3*page_count + 0.4*image_ratio + 0.3*formatting) * 100)",
+              },
+            };
+          })()
+        : undefined;
 
       // Generate insights
       const insights = this.generateInsights(
@@ -138,8 +299,30 @@ export class VisualDesignScorer extends BaseAnalyzer<VisualDesignInput, VisualDe
         weaknesses,
         evidence_ids: input.evidence_ids || [],
         note: "Using proxy heuristics - full visual analysis requires layout extraction",
+        ...(debugEnabled ? { debug_scoring } : {}),
       };
     } catch {
+      const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+        ? {
+            inputs_used: [
+              ...(typeof input.page_count === "number" ? ["page_count"] : []),
+              ...(typeof input.file_size_bytes === "number" ? ["file_size_bytes"] : []),
+              ...(typeof input.total_text_chars === "number" ? ["total_text_chars"] : []),
+              ...(Array.isArray((input as any).headings) ? ["headings[]"] : []),
+            ],
+            rules: [{ rule_id: "excluded", description: "Excluded: exception during analysis", delta: 0, running_total: 0 }],
+            exclusion_reason: "extraction_failed: exception during analysis",
+            input_summary: {
+              completeness: { score: 1, notes: ["exception during analysis"] },
+              signals_count: 0,
+            },
+            signals: [],
+            penalties: [],
+            bonuses: [],
+            final: { score: null, formula: "N/A (extraction_failed)" },
+          }
+        : undefined;
+
       return {
         analyzer_version: this.metadata.version,
         executed_at,
@@ -158,6 +341,7 @@ export class VisualDesignScorer extends BaseAnalyzer<VisualDesignInput, VisualDe
         weaknesses: [],
         evidence_ids: input.evidence_ids || [],
         note: "Using proxy heuristics - full visual analysis requires layout extraction",
+        ...(debugEnabled ? { debug_scoring } : {}),
       };
     }
   }
@@ -199,7 +383,7 @@ export class VisualDesignScorer extends BaseAnalyzer<VisualDesignInput, VisualDe
   /**
    * Evaluate page count appropriateness
    */
-  private evaluatePageCount(page_count: number): {
+  private evaluatePageCountWithDocType(page_count: number, primary_doc_type?: string): {
     appropriate: boolean;
     score: number;
     reason: string;
@@ -221,12 +405,35 @@ export class VisualDesignScorer extends BaseAnalyzer<VisualDesignInput, VisualDe
         reason: `${page_count} pages is too short (minimum ${min} recommended)`
       };
     } else {
+      const docType = primary_doc_type || "unknown";
+      const applyTooLongPenalty = docType === "pitch_deck" && page_count >= 18;
+      if (applyTooLongPenalty) {
+        return {
+          appropriate: false,
+          score: Math.max(0, 1 - ((page_count - max) / max) * 0.5),
+          reason: `${page_count} pages is too long (maximum ${max} recommended)`
+        };
+      }
+
+      // Treat as within tolerance: do not apply the "too long" penalty unless pitch_deck && >= 18.
+      const softScore = docType === "pitch_deck" ? 0.85 : 0.9;
+      const reason = docType === "pitch_deck"
+        ? `${page_count} pages is slightly above pitch deck max (${max}); penalty suppressed until >= 18 pages`
+        : `${page_count} pages above pitch deck max (${max}); not penalized for primary_doc_type=${docType}`;
       return {
-        appropriate: false,
-        score: Math.max(0, 1 - ((page_count - max) / max) * 0.5),
-        reason: `${page_count} pages is too long (maximum ${max} recommended)`
+        appropriate: true,
+        score: softScore,
+        reason,
       };
     }
+  }
+
+  private evaluatePageCount(page_count: number, primary_doc_type?: string): {
+    appropriate: boolean;
+    score: number;
+    reason: string;
+  } {
+    return this.evaluatePageCountWithDocType(page_count, primary_doc_type);
   }
 
   /**
@@ -280,7 +487,8 @@ export class VisualDesignScorer extends BaseAnalyzer<VisualDesignInput, VisualDe
     reason: string;
     heading_coverage: number;
   } {
-    const heading_coverage = headings.length / page_count;
+    const headingsCount = headings.filter((h) => typeof h === "string" && h.trim().length > 0).length;
+    const heading_coverage = headingsCount / page_count;
     const { min_headings_ratio } = DESIGN_HEURISTICS;
 
     if (heading_coverage >= min_headings_ratio) {
@@ -306,21 +514,26 @@ export class VisualDesignScorer extends BaseAnalyzer<VisualDesignInput, VisualDe
   private calculateDesignScore(
     page_count_signal: { score: number },
     image_ratio_signal: { score: number },
-    formatting_signal: { score: number }
+    formatting_signal: { score: number },
+    opts?: { formattingWeightMultiplier?: number }
   ): number {
     // Weighted average
+    const formattingWeightMultiplier = typeof opts?.formattingWeightMultiplier === "number" ? opts.formattingWeightMultiplier : 1;
     const weights = {
       page_count: 0.3,
       image_ratio: 0.4,
-      formatting: 0.3
+      formatting: 0.3 * formattingWeightMultiplier,
     };
+
+    const denom = weights.page_count + weights.image_ratio + weights.formatting;
+    const safeDenom = denom > 0 ? denom : 1;
 
     const weighted_score =
       page_count_signal.score * weights.page_count +
       image_ratio_signal.score * weights.image_ratio +
       formatting_signal.score * weights.formatting;
 
-    return Math.round(weighted_score * 100);
+    return Math.round((weighted_score / safeDenom) * 100);
   }
 
   /**

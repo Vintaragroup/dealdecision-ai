@@ -8,7 +8,8 @@
  */
 
 import { BaseAnalyzer, AnalyzerMetadata, ValidationResult } from "./base";
-import type { RiskAssessmentInput, RiskAssessmentResult, Risk } from "../types/dio";
+import { buildRulesFromBaseAndDeltas } from "./debug-scoring";
+import type { DebugScoringTrace, RiskAssessmentInput, RiskAssessmentResult, Risk } from "../types/dio";
 
 // ============================================================================
 // Analyzer Implementation
@@ -28,7 +29,25 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
   async analyze(input: RiskAssessmentInput): Promise<RiskAssessmentResult> {
     const executed_at = new Date().toISOString();
 
+    const debugEnabled = Boolean((input as any).debug_scoring);
+
     if (!input.pitch_text || input.pitch_text.length < 10) {
+      const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+        ? {
+            inputs_used: ["pitch_text"],
+            exclusion_reason: "missing_pitch_text",
+            input_summary: {
+              completeness: { score: 0, notes: ["pitch_text missing/too short"] },
+              signals_count: 0,
+            },
+            signals: [],
+            penalties: [],
+            bonuses: [],
+            rules: [{ rule_id: "excluded", description: "Excluded: pitch_text missing/too short", delta: 0, running_total: 0 }],
+            final: { score: null, formula: "N/A (insufficient input)" },
+          }
+        : undefined;
+
       return {
         analyzer_version: this.metadata.version,
         executed_at,
@@ -48,15 +67,129 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
         critical_count: 0,
         high_count: 0,
         evidence_ids: input.evidence_ids || [],
+        ...(debugEnabled ? { debug_scoring } : {}),
       };
     }
 
     try {
       const detected_risks = this.detectRisks(input);
-      const overall_risk_score = this.calculateRiskScore(detected_risks);
+      const risk_note = "No explicit risk signals detected; using neutral baseline=50";
+      const overall_risk_score = detected_risks.length === 0 ? 50 : this.calculateRiskScore(detected_risks);
       const risks_by_category = this.groupByCategory(detected_risks);
       const critical_count = detected_risks.filter(r => r.severity === "critical").length;
       const high_count = detected_risks.filter(r => r.severity === "high").length;
+
+      const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+        ? (() => {
+            const severityPoints: Record<string, number> = {
+              critical: 100,
+              high: 70,
+              medium: 40,
+              low: 20,
+            };
+
+            const signals = [
+              { key: "pitch_text_length", value: input.pitch_text.length },
+              { key: "risks_detected", value: detected_risks.length },
+              { key: "critical_count", value: critical_count },
+              { key: "high_count", value: high_count },
+            ];
+
+            const penalties = detected_risks.slice(0, 10).map((r) => ({
+              key: `risk:${r.category}:${r.severity}`,
+              points: severityPoints[r.severity] ?? 0,
+              note: r.description,
+            }));
+
+            const rules: NonNullable<DebugScoringTrace["rules"]> = (() => {
+              // Mirror actual scoring:
+              // - if no risks: baseline=50
+              // - else: score = round(mean(severity_points)) clamped to 100
+              if (detected_risks.length === 0) {
+                return buildRulesFromBaseAndDeltas({
+                  base: 50,
+                  base_rule_id: "baseline",
+                  base_description: "Neutral baseline when no explicit risks detected",
+                  final_score: overall_risk_score,
+                  clamp_range: { min: 0, max: 100 },
+                });
+              }
+
+              const severity_weights = {
+                critical: 100,
+                high: 70,
+                medium: 40,
+                low: 20,
+              } as const;
+
+              const out: NonNullable<DebugScoringTrace["rules"]> = [];
+              let running = 0;
+              out.push({ rule_id: "base", description: "Start total severity points", delta: 0, running_total: running });
+
+              for (const r of detected_risks) {
+                const pts = (severity_weights as any)[r.severity] ?? 0;
+                running += pts;
+                out.push({
+                  rule_id: `risk:${r.risk_id}`,
+                  description: `${r.category}/${r.severity}: ${r.description}`,
+                  delta: pts,
+                  running_total: running,
+                });
+              }
+
+              const avg = detected_risks.length > 0 ? running / detected_risks.length : 0;
+              const deltaToAvg = avg - running;
+              running = avg;
+              out.push({
+                rule_id: "average",
+                description: `Average severity points = total / ${detected_risks.length}`,
+                delta: deltaToAvg,
+                running_total: running,
+              });
+
+              const final = Math.min(100, Math.round(avg));
+              const deltaToFinal = final - running;
+              if (Math.abs(deltaToFinal) > 1e-9) {
+                running = final;
+                out.push({
+                  rule_id: "final_adjust",
+                  description: "Final adjustment (rounding/clamp)",
+                  delta: deltaToFinal,
+                  running_total: running,
+                });
+              }
+
+              return out;
+            })();
+
+            const completenessNotes: string[] = [];
+            completenessNotes.push(input.pitch_text.length >= 10 ? "pitch_text present" : "pitch_text short");
+            if (Array.isArray(input.headings) && input.headings.length > 0) completenessNotes.push("headings present");
+            if (input.metrics && Object.keys(input.metrics).length > 0) completenessNotes.push("metrics present");
+
+            return {
+              inputs_used: ["pitch_text", "headings", "metrics", "team_size", "evidence_ids"],
+              exclusion_reason: null,
+              input_summary: {
+                completeness: {
+                  score: Math.min(1, (input.pitch_text.length >= 10 ? 0.6 : 0) + (Array.isArray(input.headings) && input.headings.length > 0 ? 0.2 : 0) + (input.metrics && Object.keys(input.metrics).length > 0 ? 0.2 : 0)),
+                  notes: completenessNotes,
+                },
+                signals_count: signals.length + penalties.length,
+              },
+              signals,
+              penalties,
+              bonuses: detected_risks.length === 0 ? [{ key: "no_signal_baseline", points: 50, note: risk_note }] : [],
+              rules,
+              final: {
+                score: overall_risk_score,
+                formula: detected_risks.length === 0
+                  ? "baseline risk score = 50 when no explicit risks detected"
+                  : "risk_score = round(mean(severity_points)) where critical=100 high=70 medium=40 low=20",
+              },
+            };
+          })()
+        : undefined;
 
       return {
         analyzer_version: this.metadata.version,
@@ -71,9 +204,27 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
         total_risks: detected_risks.length,
         critical_count,
         high_count,
+        note: detected_risks.length === 0 ? risk_note : undefined,
         evidence_ids: input.evidence_ids || [],
+        ...(debugEnabled ? { debug_scoring } : {}),
       };
     } catch {
+      const debug_scoring: DebugScoringTrace | undefined = debugEnabled
+        ? {
+            inputs_used: ["pitch_text", "headings", "metrics", "team_size", "evidence_ids"],
+            exclusion_reason: "extraction_failed",
+            input_summary: {
+              completeness: { score: 0.5, notes: ["exception during analysis"] },
+              signals_count: 0,
+            },
+            signals: [],
+            penalties: [],
+            bonuses: [],
+            rules: [{ rule_id: "excluded", description: "Excluded: extraction_failed", delta: 0, running_total: 0 }],
+            final: { score: null, formula: "N/A (extraction_failed)" },
+          }
+        : undefined;
+
       return {
         analyzer_version: this.metadata.version,
         executed_at,
@@ -93,6 +244,7 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
         critical_count: 0,
         high_count: 0,
         evidence_ids: input.evidence_ids || [],
+        ...(debugEnabled ? { debug_scoring } : {}),
       };
     }
   }

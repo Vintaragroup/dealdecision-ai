@@ -5,7 +5,7 @@ import fs from "fs/promises";
 import crypto from "crypto";
 import Tesseract from "tesseract.js";
 
-pdfjs.GlobalWorkerOptions.disableWorker = true;
+(pdfjs as any).GlobalWorkerOptions.disableWorker = true;
 
 // pdf.js render needs ImageData in the Node runtime
 if (typeof (global as any).ImageData === "undefined") {
@@ -586,7 +586,10 @@ async function ocrPage(
           conf,
         };
       })
-      .filter((w) => w.text.length > 0 && w.width > 0 && w.height > 0 && w.height >= 8 && w.conf >= 50);
+      .filter(
+        (w: { text: string; width: number; height: number; conf: number }) =>
+          w.text.length > 0 && w.width > 0 && w.height > 0 && w.height >= 8 && w.conf >= 50
+      );
 
     aggregateWords.push(...words);
     if (data.text) textParts.push(data.text);
@@ -683,8 +686,14 @@ async function extractWithTextThenOcr(worker: pdfjs.PDFDocumentProxy, processedP
     const [, , , pageHeight] = page.view;
     const textContent = await withTimeout(page.getTextContent(), `pdf text ${i}`);
 
-    const words = textContent.items
-      .filter((item): item is pdfjs.TextItem => "str" in item)
+    const words = (textContent.items as Array<any>)
+      .filter(
+        (item): item is { str: string; transform: number[]; width: number; height: number } =>
+          typeof item?.str === "string" &&
+          Array.isArray(item?.transform) &&
+          typeof item?.width === "number" &&
+          typeof item?.height === "number"
+      )
       .map((item) => ({
         text: item.str,
         x: item.transform[4],

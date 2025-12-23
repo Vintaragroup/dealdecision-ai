@@ -354,12 +354,12 @@ export class OpenAIGPT4oProvider extends BaseLLMProvider {
     });
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
+      const errorData = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
       const message = errorData.error?.message || `OpenAI API error: ${response.status}`;
       throw new Error(message);
     }
 
-    return response.json();
+    return (await response.json()) as OpenAICompletionResponse;
   }
 
   /**
@@ -381,7 +381,7 @@ export class OpenAIGPT4oProvider extends BaseLLMProvider {
     });
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
+      const errorData = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
       const message = errorData.error?.message || `OpenAI API error: ${response.status}`;
       throw new Error(message);
     }

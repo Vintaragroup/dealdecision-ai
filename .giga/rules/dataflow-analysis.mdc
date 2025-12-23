@@ -1,12 +1,10 @@
 ---
-description: Analyzes data flow patterns in deal analysis systems and document processing pipelines
+description: For analyzing data flow patterns in investment deal analysis systems, focusing on document processing pipelines and report generation workflows.
 ---
 
-
-# dataflow-analysis
-
+# === USER INSTRUCTIONS ===
+description: Analyzes data flow patterns in deal analysis systems and document processing pipelines
 Primary Data Flow Components:
-
 1. Document Processing Pipeline
 - Input: Raw deal documents (PDF, PPTX, DOCX)
 - Processing stages:
@@ -15,56 +13,108 @@ Primary Data Flow Components:
   * Evidence detection and validation
   * Quality scoring and verification
 - Output: Structured deal evidence with confidence scores
-
 2. Evidence Collection Flow
 - Structured fact gathering from documents
 - Multi-source verification system
 - Progressive confidence scoring
 - Citation tracking and validation
 - Evidence completeness assessment
-
 3. Analysis Integration Flow
 - Deal data aggregation from multiple sources
 - AI model integration points for analysis
 - Human-in-the-loop validation gates 
 - Progressive depth assessment tracking
 - Analysis state management through cycles
-
 4. Report Generation Pipeline
 - Evidence collection and validation
 - Confidence score aggregation
 - Risk assessment compilation
 - Recommendation synthesis
 - Template-based report assembly
-
 Key Data Transformations:
-
 1. Document → Evidence
 - Document classification
 - Content extraction
 - Fact detection
 - Citation mapping
 - Confidence scoring
-
 2. Evidence → Analysis
 - Fact aggregation
 - Pattern detection
 - Risk assessment
 - Depth calculation
 - Cycle progression
-
 3. Analysis → Reports
 - Finding synthesis
 - Score compilation
 - Risk mapping
 - Recommendation generation
-
 Critical Data Points:
 - Document confidence scores
 - Evidence validation status
 - Analysis depth metrics
 - Risk assessment values
 - Recommendation confidence
+# === END USER INSTRUCTIONS ===
+
+# dataflow-analysis
+
+The system implements a multi-stage data flow for investment deal analysis:
+
+1. Document Processing Pipeline
+- Input: Raw documents (pitch decks, financials, legal docs)
+- Processing stages:
+  * Text extraction with OCR fallback
+  * Intelligent categorization by document type
+  * Metric/data point extraction
+  * Evidence collection and validation
+- Output: Normalized document data with confidence scores
+
+2. Evidence Extraction Flow
+- Input: Processed documents
+- Extraction workflow:
+  * Fact identification and extraction
+  * Source attribution tracking
+  * Confidence scoring (0-100)
+  * Cross-validation against multiple sources
+- Output: Verified evidence objects
+
+3. AI Analysis Integration
+- Input: Evidence objects
+- Analysis stages:
+  * Market opportunity scoring
+  * Team assessment
+  * Financial health calculation
+  * Risk severity mapping
+- Output: Analysis results with confidence bands
+
+4. Report Generation Pipeline
+- Input: Analysis results and evidence
+- Generation flow:
+  * Section template selection
+  * Evidence mapping to sections
+  * Dynamic content generation
+  * Risk assessment incorporation
+- Output: Structured investment reports
+
+5. Data Quality Control Flow
+- Confidence thresholds at each stage (70%+ required)
+- Remediation workflows for low-confidence data
+- Version tracking for processed documents
+- Evidence validation state management
+
+The system maintains strict data quality controls through:
+- Multi-stage validation gates
+- Confidence scoring at each step
+- Source attribution tracking
+- Version control for processed data
+
+Data flows through specialized processors:
+- Document classification engine
+- Evidence extraction system
+- Analysis orchestration service
+- Report compilation engine
+- Quality control framework
 
 $END$
 

@@ -1,3 +1,49 @@
+# === USER INSTRUCTIONS ===
+The system implements a sophisticated investment analysis platform with these core business components:
+1. Due Diligence Engine
+- Three-cycle analysis workflow (broad scan, deep dive, synthesis) 
+- Progressive deal scoring across multiple dimensions
+- Confidence calibration system for investment decisions
+- Custom fact validation and evidence tracking
+- Stage-gated progression criteria
+2. Document Intelligence System
+- Multi-stage verification pipeline
+- Industry-specific classification algorithms
+- Version control for investment documents
+- Automated quality assessment scoring
+- Financial metric extraction engine
+3. Deal Analysis Framework  
+- Deal room organization by company/stage
+- Multi-factor scoring matrix (market, team, financials)
+- Risk assessment with severity mapping
+- Custom ROI calculations for tech/CPG sectors
+- Achievement tracking for deal analysis skills
+4. Investment Report Generation
+- Template-based document assembly
+- Role-specific content filtering (founder vs investor)
+- AI-powered content suggestions
+- Deal comparison visualizations
+- Risk matrix generation
+Core Business Workflows:
+1. Deal Progression Pipeline
+- Intake → Under Review → In Diligence → Decision Ready
+- Automated stage transitions based on confidence thresholds
+- Evidence collection requirements by stage
+- Priority classification system
+2. Analysis Cycles
+- Cycle 1: Initial assessment and classification
+- Cycle 2: Deep dive analysis and validation
+- Cycle 3: Synthesis and recommendation
+- Cross-cycle confidence scoring
+3. Document Processing
+- Intelligent grouping by deal/company
+- Version tracking and duplicate detection
+- Quality scoring and readiness assessment
+- Financial metric extraction
+- Citation validation
+The system emphasizes domain-specific investment analysis with sophisticated scoring algorithms, multi-stage verification, and AI-assisted content generation focused on venture capital workflows.
+# === END USER INSTRUCTIONS ===
+
 
 # main-overview
 
@@ -13,58 +59,53 @@
 - Explain your OBSERVATIONS clearly, then provide REASONING to identify the exact issue. Add console logs when needed to gather more information.
 
 
-The system implements a sophisticated investment analysis platform with these core business components:
+Investment Deal Analysis Platform
 
-1. Due Diligence Engine
-- Three-cycle analysis workflow (broad scan, deep dive, synthesis) 
-- Progressive deal scoring across multiple dimensions
-- Confidence calibration system for investment decisions
-- Custom fact validation and evidence tracking
-- Stage-gated progression criteria
+Core Business Logic Components:
 
-2. Document Intelligence System
-- Multi-stage verification pipeline
-- Industry-specific classification algorithms
-- Version control for investment documents
-- Automated quality assessment scoring
-- Financial metric extraction engine
+1. Deal Intelligence Processing Engine
+- Multi-stage analysis pipeline for investment opportunities
+- Proprietary scoring across market, team, financial dimensions
+- Risk assessment framework with automated mitigation mapping
+- Custom confidence bands for different analysis components
+- Deal-specific ROI calculation methodology
+- Market opportunity quantification algorithms
 
-3. Deal Analysis Framework  
-- Deal room organization by company/stage
-- Multi-factor scoring matrix (market, team, financials)
-- Risk assessment with severity mapping
-- Custom ROI calculations for tech/CPG sectors
-- Achievement tracking for deal analysis skills
+2. Document Analysis System
+- Intelligent classification of investment documents
+- Multi-factor extraction quality assessment
+- Domain-specific confidence scoring
+- Business-specific validation rules for deal documentation
+- Evidence collection and verification workflows
 
-4. Investment Report Generation
-- Template-based document assembly
-- Role-specific content filtering (founder vs investor)
-- AI-powered content suggestions
-- Deal comparison visualizations
-- Risk matrix generation
+3. Investment Workflow Engine
+- Stage progression logic for deal analysis
+- Custom verification checklists by deal type
+- Role-based investment workflows (founder vs investor)
+- Multi-cycle analysis orchestration
+- Deal readiness scoring system
 
-Core Business Workflows:
+4. Report Generation Framework
+- Industry-specific template management
+- Dynamic content population based on deal stage
+- Custom scoring visualizations
+- Evidence-based recommendation engine
+- Risk visualization matrix
 
-1. Deal Progression Pipeline
-- Intake → Under Review → In Diligence → Decision Ready
-- Automated stage transitions based on confidence thresholds
-- Evidence collection requirements by stage
-- Priority classification system
+5. AI-Assisted Analysis
+- Context-aware investment content generation
+- Deal-specific prompt engineering
+- Custom tone adjustment for investor communications
+- Document scoring and improvement suggestions
 
-2. Analysis Cycles
-- Cycle 1: Initial assessment and classification
-- Cycle 2: Deep dive analysis and validation
-- Cycle 3: Synthesis and recommendation
-- Cross-cycle confidence scoring
+Integration Architecture:
+- Hierarchical Reasoning Model for Due Diligence (HRM-DD)
+- Evidence-based progression between analysis stages
+- Confidence threshold management
+- Deal Intelligence Object (DIO) versioning system
+- Multi-dimensional scoring aggregation
 
-3. Document Processing
-- Intelligent grouping by deal/company
-- Version tracking and duplicate detection
-- Quality scoring and readiness assessment
-- Financial metric extraction
-- Citation validation
-
-The system emphasizes domain-specific investment analysis with sophisticated scoring algorithms, multi-stage verification, and AI-assisted content generation focused on venture capital workflows.
+The platform implements a comprehensive investment analysis system with sophisticated scoring algorithms, risk assessment methodologies, and evidence-based decision frameworks specifically designed for deal evaluation and due diligence processes.
 
 $END$
 

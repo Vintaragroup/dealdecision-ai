@@ -1,5 +1,5 @@
 ---
-description: Documentation for investment domain data models including Deal, Evidence, Document, and Analysis entities
+description: Specification for investment domain data models including Deal, Evidence, Document, and Analysis entities
 ---
 
 # === USER INSTRUCTIONS ===
@@ -8,12 +8,9 @@ stage: 'intake' | 'under_review' | 'in_diligence' | 'ready_decision' | 'pitched'
    - intake (documents uploaded) -> under_review (analysis complete) -> in_diligence (DD gaps addressed) -> ready_decision (confidence >= 70%) -> pitched (decision made)
    - Progression triggered by: document upload, analysis completion, confidence score, investor actions
    - Manual override available from any stage to "pitched"
-# === END USER INSTRUCTIONS ===
 
-# data-models-investment
-
+description: Documentation for investment domain data models including Deal, Evidence, Document, and Analysis entities
 Core Investment Domain Models:
-
 1. Deal Model
 - Multi-state progression tracking (intake → under_review → in_diligence → ready_decision)
 - Evidence requirements mapped to stages
@@ -22,14 +19,12 @@ Core Investment Domain Models:
   - Team score (0-100) 
   - Financial health (0-100)
   - Risk assessment (0-100)
-
 2. Evidence Model
 - Hierarchical evidence structure with parent-child relationships
 - Evidence confidence scoring (0-100)
 - Source verification status tracking
 - Citation mapping to original documents
 - Evidence type classification system
-
 3. Document Model 
 - Document classification system (pitch_deck, financials, legal, etc.)
 - Version control with temporal tracking
@@ -38,7 +33,6 @@ Core Investment Domain Models:
   - Clarity score
   - Reliability score
 - Document relationship mapping
-
 4. Analysis Model
 - Three-cycle analysis framework:
   - Cycle 1: Initial scan
@@ -47,24 +41,92 @@ Core Investment Domain Models:
 - Analysis depth tracking
 - Finding confidence metrics
 - Citation requirement enforcement
-
 Key Domain Relationships:
 - Deals contain multiple Evidence entries
 - Evidence links to source Documents
 - Analysis tracks Evidence progression
 - Documents support multiple Evidence points
-
 Core Model Dependencies:
 - Deal progression requires Evidence thresholds
 - Evidence requires Document validation
 - Analysis requires Evidence confidence
 - Document scores impact Evidence reliability
-
 Importance Scores:
 - Deal Model: 95/100 (Core business entity)
 - Evidence Model: 90/100 (Critical for validation)
 - Document Model: 85/100 (Source of truth)  
 - Analysis Model: 90/100 (Key business process)
+# === END USER INSTRUCTIONS ===
+
+# data-models-investment
+
+## Core Domain Models
+
+### Deal Model
+- Uniquely structured investment opportunity representation
+- Status progression: Intake -> Under Review -> In Diligence -> Ready Decision
+- Confidence scoring (0-100) across multiple dimensions:
+  - Market opportunity
+  - Team capability  
+  - Financial health
+  - Execution risk
+- Custom validation rules for stage transitions
+- Priority classification with weighted scoring
+
+### Evidence Model
+- Investment-specific evidence classification system
+- Evidence types: metrics, facts, quotes, references
+- Confidence scoring (0-100) with source attribution
+- Multi-stage verification workflow
+- Context preservation with deal linkage
+
+### Document Model 
+- Domain-specific document categorization
+- Types: pitch_deck, financials, legal, market, team
+- Extraction quality scoring (0-100)
+- Version control with relationship mapping
+- Document-to-deal matching logic
+
+### Analysis Model
+- Multi-cycle analysis framework (Cycles 1-3)
+- Composite scoring across dimensions
+- Evidence aggregation with confidence thresholds
+- Industry-specific benchmarking rules
+- Risk severity classification
+
+## State Transitions
+
+Deal Stage Progression:
+```
+Intake (50+ confidence)
+  -> Under Review (65+ confidence) 
+    -> In Diligence (80+ confidence)
+      -> Ready Decision (90+ confidence)
+```
+
+Document Status Flow:
+```
+Uploaded -> Extracted -> Verified -> Analyzed -> Referenced
+```
+
+Evidence Validation:
+```
+Collected -> Verified -> Scored -> Integrated
+```
+
+## Key Relationships
+
+- Deal <-> Documents (1:many)
+- Deal <-> Evidence (1:many) 
+- Document <-> Evidence (1:many)
+- Analysis <-> Evidence (many:many)
+
+## Validation Rules
+
+- Deal progression requires minimum confidence thresholds
+- Document extraction quality gates
+- Evidence source verification requirements
+- Analysis cycle completion criteria
 
 $END$
 

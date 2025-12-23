@@ -38,16 +38,23 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
       try {
         const deals = await apiGetDeals();
         // Limit to first 4 deals for dashboard display, transform API data to match UI format
-        const displayDeals = (deals || []).slice(0, 4).map((deal: any) => ({
-          id: deal.deal_id,
-          name: deal.name || 'Unknown Deal',
-          company: deal.company_name || 'Unknown Company',
-          score: deal.score || 0,
-          status: (deal.score || 0) >= 75 ? 'go' : (deal.score || 0) >= 50 ? 'hold' : 'no-go',
-          stage: deal.stage || 'intake',
-          lastUpdated: '2h ago', // Could be enhanced with actual last_updated timestamp
-          trend: 'up' as const
-        }));
+        const displayDeals = (deals || [])
+          .slice(0, 4)
+          .map((deal: any) => {
+            const dealId = deal?.id ?? deal?.deal_id ?? deal?.dealId ?? deal?.dealID;
+            const score = Number(deal?.score ?? deal?.overall_score ?? 0) || 0;
+            return {
+              id: String(dealId ?? ''),
+              name: deal?.name || 'Unknown Deal',
+              company: (deal?.company ?? deal?.company_name ?? deal?.companyName ?? deal?.name) || 'Unknown Company',
+              score,
+              status: score >= 75 ? 'go' : score >= 50 ? 'hold' : 'no-go',
+              stage: deal?.stage || 'intake',
+              lastUpdated: 'Recently',
+              trend: 'up' as const,
+            };
+          })
+          .filter((d: any) => typeof d.id === 'string' && d.id.length > 0);
         setActiveDeals(displayDeals);
       } catch (error) {
         console.error('Failed to load deals:', error);
@@ -704,7 +711,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
             onActivityClick={(activityId, type) => {
               // Navigate based on activity type
               if (type === 'achievement') onNavigate?.('gamification');
-              if (type === 'deal') onDealClick?.('1'); // Navigate to deal
+              if (type === 'deal' && activeDeals?.[0]?.id) onDealClick?.(activeDeals[0].id);
               if (type === 'document') onNavigate?.('documents');
               if (type === 'rank' || type === 'level') onNavigate?.('gamification');
             }}
@@ -720,7 +727,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
               if (insight?.id === '1') onNavigate?.('dealsList'); // Review deals
               if (insight?.id === '2') onNavigate?.('documents'); // Update document
               if (insight?.id === '3') onNavigate?.('analytics'); // View analysis
-              if (insight?.id === '4') onDealClick?.('1'); // View CloudScale details
+              if (insight?.id === '4' && activeDeals?.[0]?.id) onDealClick?.(activeDeals[0].id);
             }}
           />
         </div>

@@ -1,12 +1,9 @@
 ---
-description: Rules and logic for evaluating investment deals, managing risk assessment, and conducting due diligence
+description: Apply when analyzing business rules, validation logic, and domain-specific algorithms for investment deal evaluation and risk assessment
 ---
 
-
-# business-rules
-
-Core Investment Analysis Rules:
-
+# === USER INSTRUCTIONS ===
+description: Rules and logic for evaluating investment deals, managing risk assessment, and conducting due diligence
 1. Deal Scoring Framework
 - Weighted scoring across 4 key dimensions:
   * Market Opportunity (30%)
@@ -17,7 +14,6 @@ Core Investment Analysis Rules:
   * Minimum 70% overall score for "Recommended"
   * No dimension below 60%
   * Risk score must not exceed critical thresholds
-
 2. Due Diligence Requirements
 - Mandatory document verification checklist:
   * Corporate governance documents
@@ -28,9 +24,7 @@ Core Investment Analysis Rules:
   * Initial Review (completeness check)
   * Deep Analysis (content verification)
   * Expert Validation (specialist review)
-
 3. Risk Assessment Matrix
-- Severity levels:
   * Critical (16-25 points)
   * High (10-15 points)
   * Medium (5-9 points)  
@@ -41,7 +35,6 @@ Core Investment Analysis Rules:
   * Operational Viability
   * Legal/Regulatory
   * Team Stability
-
 4. Investment Decision Criteria
 - Stage-specific thresholds:
   * Seed: Focus on team/market (70% weight)
@@ -51,7 +44,6 @@ Core Investment Analysis Rules:
   * Critical risk factors identified
   * Incomplete mandatory documentation
   * Failed validation checks
-
 5. Validation Rules
 - Document authenticity requirements:
   * Original source verification
@@ -61,6 +53,69 @@ Core Investment Analysis Rules:
   * Growth rate minimums by stage
   * Burn rate limits
   * Revenue validation rules
+# === END USER INSTRUCTIONS ===
+
+# business-rules
+
+INVESTMENT DEAL ANALYSIS FRAMEWORK
+
+1. Deal Evaluation Logic
+- Multi-stage scoring system (0-100) across 6 key dimensions:
+  - Market Opportunity (25%)
+  - Team Capability (20%) 
+  - Financial Health (20%)
+  - Product/Tech (15%)
+  - Competition (10%)
+  - Deal Terms (10%)
+- Stage-specific validation thresholds:
+  - Seed: 65+ composite score
+  - Series A: 75+ composite score
+  - Series B+: 85+ composite score
+
+2. Risk Assessment Framework
+- Risk severity classification:
+  - Critical (blocks deal progress)
+  - High (requires mitigation)
+  - Medium (needs monitoring)
+  - Low (acceptable risk)
+- Automated risk detection rules:
+  - Financial: burn rate > 18 months runway
+  - Team: key role gaps, founder experience
+  - Market: TAM validation, growth rate
+  - Competition: market share analysis
+
+3. Due Diligence Requirements
+- Stage-based document requirements:
+  - Seed: pitch deck, financial model, team bios
+  - Series A: + customer data, market analysis
+  - Series B+: + detailed unit economics, compliance
+- Verification thresholds:
+  - Document completeness (90%+)
+  - Data validation (85%+)
+  - Source credibility (75%+)
+
+4. Investment Decision Criteria
+- GO decision requires:
+  - Composite score above stage threshold
+  - No critical risks outstanding
+  - Due diligence completion >= 90%
+  - Evidence confidence >= 85%
+- NO-GO triggers:
+  - Any unmitigated critical risks
+  - Composite score < stage threshold
+  - Missing core documentation
+  - Failed verification checks
+
+5. AI Confidence Scoring
+- Three-tier confidence bands:
+  - High: 85-100%
+  - Medium: 70-84%
+  - Low: < 70%
+- Confidence adjustments based on:
+  - Data completeness
+  - Source verification
+  - Analysis depth
+  - Evidence quality
 
 $END$
 

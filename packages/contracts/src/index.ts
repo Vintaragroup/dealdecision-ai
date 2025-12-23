@@ -20,6 +20,16 @@ export interface Deal {
 	owner?: string;
 	lastUpdated?: string;
 	evidence_ids?: string[];
+
+	// Latest DIO metadata (derived from versioned DIO history)
+	dioVersionId?: string;
+	// Current DIO status/recommendation (e.g. GO/NO-GO/CONDITIONAL)
+	dioStatus?: string;
+	lastAnalyzedAt?: string;
+	// Number of analysis runs (DIO versions) for this deal
+	dioRunCount?: number;
+	// Latest DIO analysis_version
+	dioAnalysisVersion?: number;
 }
 
 export interface DealListItem extends Deal {
@@ -60,6 +70,9 @@ export type JobType =
 	| 'ingest_documents'
 	| 'fetch_evidence'
 	| 'analyze_deal'
+	| 'verify_documents'
+	| 'remediate_extraction'
+	| 'reextract_documents'
 	| 'generate_report'
 	| 'sync_crm'
 	| 'classify_document';

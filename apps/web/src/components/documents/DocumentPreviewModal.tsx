@@ -7,8 +7,7 @@ import {
   Calendar,
   User,
   Tag,
-  Copy,
-  ExternalLink
+  Copy
 } from 'lucide-react';
 import { Button } from '../ui/button';
 
@@ -228,16 +227,6 @@ export function DocumentPreviewModal({ document, darkMode, onClose }: DocumentPr
 
               {/* Actions */}
               <div className="space-y-2">
-                <button
-                  className={`w-full p-3 rounded-lg text-sm flex items-center justify-center gap-2 transition-colors ${
-                    darkMode
-                      ? 'bg-white/5 hover:bg-white/10 text-white'
-                      : 'bg-gray-100 hover:bg-gray-200 text-gray-900'
-                  }`}
-                >
-                  <ExternalLink className="w-4 h-4" />
-                  Open in New Tab
-                </button>
                 <button
                   className={`w-full p-3 rounded-lg text-sm flex items-center justify-center gap-2 transition-colors text-red-500 ${
                     darkMode

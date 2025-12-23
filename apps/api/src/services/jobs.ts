@@ -6,13 +6,18 @@ import {
   ingestQueue,
   fetchEvidenceQueue,
   analyzeDealQueue,
+  verifyDocumentsQueue,
+  remediateExtractionQueue,
+  reextractDocumentsQueue,
 } from "../lib/queue";
 
 const queueMap: Record<JobType, typeof ingestQueue> = {
-  ingest_document: ingestQueue,
   ingest_documents: ingestQueue,
   fetch_evidence: fetchEvidenceQueue,
   analyze_deal: analyzeDealQueue,
+  verify_documents: verifyDocumentsQueue,
+  remediate_extraction: remediateExtractionQueue,
+  reextract_documents: reextractDocumentsQueue,
   generate_report: analyzeDealQueue,
   sync_crm: analyzeDealQueue,
   classify_document: ingestQueue,
@@ -29,7 +34,16 @@ export async function enqueueJob(input: EnqueueJobInput) {
   const pool = getPool();
   const queue = queueMap[input.type];
   const jobId = randomUUID();
-  const bullJob = await queue.add(input.type, input.payload ?? {}, {
+
+  // Include identifiers in the BullMQ payload so workers don't depend on a DB read
+  // (and to avoid a race where the job is picked up before the jobs table insert completes).
+  const bullPayload = {
+    ...(input.payload ?? {}),
+    ...(input.deal_id ? { deal_id: input.deal_id } : {}),
+    ...(input.document_id ? { document_id: input.document_id } : {}),
+  };
+
+  const bullJob = await queue.add(input.type, bullPayload, {
     jobId,
     removeOnComplete: true,
     removeOnFail: false,

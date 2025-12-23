@@ -8,11 +8,15 @@ import { registerDealRoutes } from "./routes/deals";
 import { registerJobRoutes } from "./routes/jobs";
 import { registerEventRoutes } from "./routes/events";
 import { registerDocumentRoutes } from "./routes/documents";
+import { registerOrchestrationRoutes } from "./routes/orchestration";
+import { registerReportRoutes } from "./routes/reports";
+import { registerDashboardRoutes } from "./routes/dashboard";
 import { registerChatRoutes } from "./routes/chat";
 import { registerEvidenceRoutes } from "./routes/evidence";
 import { registerAnalyticsRoutes } from "./routes/analytics";
 import { registerAdminRoutes } from "./routes/admin";
 import { initializeLLM } from "./lib/llm";
+import { getPool } from "./lib/db";
 import "./lib/queue";
 import dotenv from "dotenv";
 
@@ -31,6 +35,7 @@ const host = "0.0.0.0";
 
 async function bootstrap() {
   await registerCors(app);
+  const pool = getPool();
   await app.register(swagger, {
     openapi: {
       info: {
@@ -59,6 +64,9 @@ async function bootstrap() {
   await registerJobRoutes(app);
   await registerEventRoutes(app);
   await registerDocumentRoutes(app);
+  await registerOrchestrationRoutes(app, pool);
+  await registerReportRoutes(app, pool);
+  await registerDashboardRoutes(app);
   await registerChatRoutes(app);
   await registerEvidenceRoutes(app);
   await registerAnalyticsRoutes(app);

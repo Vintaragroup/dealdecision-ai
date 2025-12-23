@@ -24,7 +24,7 @@ export interface VerificationResult {
     data_completeness: {
       score: number;
       status: "pass" | "warn" | "fail";
-      details?: string;
+      details?: string | Record<string, any>;
     };
     extraction_success: boolean;
   };

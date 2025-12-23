@@ -88,6 +88,20 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
     }
   }, [isOpen]);
 
+  const handleAction = async (action: ChatAction) => {
+    if (action.type === 'run_analysis' && onRunAnalysis) {
+      await onRunAnalysis();
+      return;
+    }
+    if (action.type === 'fetch_evidence' && onFetchEvidence) {
+      onFetchEvidence();
+      return;
+    }
+    if (action.type === 'summarize_evidence' && action.evidence_ids?.length) {
+      setInput(`Summarize evidence: ${action.evidence_ids.join(', ')}`);
+    }
+  };
+
   const handleSend = async () => {
     if (!input.trim()) return;
 
@@ -96,20 +110,6 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
       sender: 'user',
       content: input,
       timestamp: new Date()
-    };
-
-    const handleAction = async (action: ChatAction) => {
-      if (action.type === 'run_analysis' && onRunAnalysis) {
-        await onRunAnalysis();
-        return;
-      }
-      if (action.type === 'fetch_evidence' && onFetchEvidence) {
-        onFetchEvidence();
-        return;
-      }
-      if (action.type === 'summarize_evidence' && action.evidence_ids?.length) {
-        setInput(`Summarize evidence: ${action.evidence_ids.join(', ')}`);
-      }
     };
 
     setMessages(prev => [...prev, userMessage]);

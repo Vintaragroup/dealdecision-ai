@@ -7,6 +7,7 @@ import { getPool } from "../lib/db";
 import { insertEvidence } from "../services/evidence";
 import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
+import { normalizeDealName } from "../lib/normalize-deal-name";
 
 const documentTypeSchema = z
   .enum([
@@ -38,6 +39,189 @@ function mapDocument(row: DocumentRow): Document {
     status: row.status,
     uploaded_at: new Date(row.uploaded_at).toISOString(),
   } as Document;
+}
+
+type ExtractionRecommendedAction = "proceed" | "remediate" | "re_extract" | "wait";
+type ConfidenceBand = "high" | "medium" | "low" | "unknown";
+
+const EXTRACTION_CONFIDENCE_THRESHOLDS = {
+  high: 0.9,
+  medium: 0.75,
+} as const;
+
+function getOverallScore(verificationResult: any): number | null {
+  const score = verificationResult?.overall_score;
+  return typeof score === "number" && Number.isFinite(score) ? score : null;
+}
+
+function toConfidenceBand(score: number | null): ConfidenceBand {
+  if (score === null) return "unknown";
+  if (score >= EXTRACTION_CONFIDENCE_THRESHOLDS.high) return "high";
+  if (score >= EXTRACTION_CONFIDENCE_THRESHOLDS.medium) return "medium";
+  return "low";
+}
+
+function recommendActionForDocument(args: {
+  verificationStatus: string;
+  score: number | null;
+  hasWarnings: boolean;
+  hasRecommendations: boolean;
+}): { recommended_action: ExtractionRecommendedAction; reason: string } {
+  const { verificationStatus, score } = args;
+
+  if (!verificationStatus || verificationStatus === "pending") {
+    return { recommended_action: "wait", reason: "Verification has not completed" };
+  }
+
+  if (verificationStatus === "failed") {
+    return {
+      recommended_action: "re_extract",
+      reason: "Verification failed; extraction confidence is insufficient",
+    };
+  }
+
+  if (verificationStatus === "warnings") {
+    // Warnings can be acceptable for many documents (e.g., short docs or limited structure).
+    // If the confidence score is at least medium, allow proceeding while still surfacing the warnings.
+    if (score !== null && score >= EXTRACTION_CONFIDENCE_THRESHOLDS.medium) {
+      return {
+        recommended_action: "proceed",
+        reason: `Warnings present but extraction confidence is acceptable (score ${score.toFixed(2)}); proceed`,
+      };
+    }
+
+    return {
+      recommended_action: "remediate",
+      reason: "Verification warnings present; remediate artifacts and re-verify",
+    };
+  }
+
+  if (score === null) {
+    return {
+      recommended_action: "remediate",
+      reason: "Missing confidence score; review or remediate extraction artifacts",
+    };
+  }
+
+  const band = toConfidenceBand(score);
+  if (band === "high" || band === "medium") {
+    return {
+      recommended_action: "proceed",
+      reason: band === "high" ? "High confidence extraction" : `Verified extraction (score ${score.toFixed(2)}); proceed`,
+    };
+  }
+
+  if (band === "low") {
+    return {
+      recommended_action: "re_extract",
+      reason: `Low confidence extraction (score ${score.toFixed(2)}); re-extraction is recommended`,
+    };
+  }
+
+  return {
+    recommended_action: "remediate",
+    reason: "Missing/unknown confidence; remediate artifacts and re-verify",
+  };
+}
+
+function buildDocumentExtractionReport(d: any) {
+  const verificationResult = d.verification_result as any;
+  const score = getOverallScore(verificationResult);
+  const warnings = Array.isArray(verificationResult?.warnings) ? verificationResult.warnings : [];
+  const recommendations = Array.isArray(verificationResult?.recommendations)
+    ? verificationResult.recommendations
+    : [];
+
+  const action = recommendActionForDocument({
+    verificationStatus: d.verification_status || "pending",
+    score,
+    hasWarnings: warnings.length > 0,
+    hasRecommendations: recommendations.length > 0,
+  });
+
+  return {
+    id: d.id,
+    title: d.title,
+    type: d.type,
+    status: d.status,
+    verification_status: d.verification_status || "pending",
+    pages: d.page_count || 0,
+    file_size_bytes: d.extraction_metadata?.fileSizeBytes || 0,
+    extraction_quality_score: score,
+    confidence_band: toConfidenceBand(score),
+    ocr_avg_confidence: verificationResult?.quality_checks?.ocr_confidence?.avg ?? null,
+    verification_warnings: warnings,
+    verification_recommendations: recommendations,
+    recommended_action: action.recommended_action,
+    recommendation_reason: action.reason,
+  };
+}
+
+function buildDealExtractionReport(args: {
+  dealId: string;
+  documents: Array<ReturnType<typeof buildDocumentExtractionReport>>;
+  totalPages: number;
+}) {
+  const { dealId, documents, totalPages } = args;
+
+  const completed = documents.filter((d) => d.verification_status !== "pending");
+  const failed = documents.filter((d) => d.verification_status === "failed");
+  const anyWait = documents.some((d) => d.recommended_action === "wait");
+  const anyReextract = documents.some((d) => d.recommended_action === "re_extract");
+  const anyRemediate = documents.some((d) => d.recommended_action === "remediate");
+
+  const weightedScore = documents.reduce(
+    (acc, d) => {
+      const weight = d.pages > 0 ? d.pages : 1;
+      const score = typeof d.extraction_quality_score === "number" ? d.extraction_quality_score : null;
+      if (score === null) return acc;
+      return { sum: acc.sum + score * weight, weight: acc.weight + weight };
+    },
+    { sum: 0, weight: 0 }
+  );
+
+  const overallScore = weightedScore.weight > 0 ? weightedScore.sum / weightedScore.weight : null;
+  const confidenceBand = toConfidenceBand(overallScore);
+
+  let recommended_action: ExtractionRecommendedAction = "proceed";
+  let recommendation_reason = "High confidence across documents";
+
+  if (anyWait) {
+    recommended_action = "wait";
+    recommendation_reason = "Some documents are still processing";
+  } else if (failed.length > 0 || anyReextract) {
+    recommended_action = "re_extract";
+    recommendation_reason = "At least one document has low confidence or failed verification";
+  } else if (anyRemediate) {
+    recommended_action = "remediate";
+    recommendation_reason = "Some documents have warnings or medium confidence";
+  }
+
+  return {
+    deal_id: dealId,
+    overall_confidence_score: overallScore,
+    confidence_band: confidenceBand,
+    thresholds: {
+      high: EXTRACTION_CONFIDENCE_THRESHOLDS.high,
+      medium: EXTRACTION_CONFIDENCE_THRESHOLDS.medium,
+    },
+    counts: {
+      total_documents: documents.length,
+      completed_verification: completed.length,
+      failed_verification: failed.length,
+      total_pages: totalPages,
+      high_confidence: documents.filter((d) => d.confidence_band === "high").length,
+      medium_confidence: documents.filter((d) => d.confidence_band === "medium").length,
+      low_confidence: documents.filter((d) => d.confidence_band === "low").length,
+      unknown_confidence: documents.filter((d) => d.confidence_band === "unknown").length,
+    },
+    recommended_action,
+    recommendation_reason,
+    note:
+      recommended_action === "re_extract"
+        ? "True re-extraction requires original file bytes or storage keys to be available."
+        : null,
+  };
 }
 
 export async function registerDocumentRoutes(app: FastifyInstance, pool = getPool()) {
@@ -93,13 +277,13 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
       const job = await enqueueJob({
         deal_id: dealId,
         document_id: documentId,
-        type: "ingest_document",
+        type: "ingest_documents",
         payload: {
           document_id: documentId,
           deal_id: dealId,
           file_buffer: fileBufferB64,
-            file_name: fileName,
-            attempt: 1,
+          file_name: fileName,
+          attempt: 1,
         },
       });
 
@@ -138,7 +322,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
           fileBuffer = await part.toBuffer();
           fileName = part.filename || "document";
         } else if (part.type === "field") {
-          const fieldValue = part.value;
+          const fieldValue = typeof part.value === "string" ? part.value : String(part.value ?? "");
           if (part.fieldname === "type") {
             docType = fieldValue;
           } else if (part.fieldname === "title") {
@@ -170,7 +354,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
       const job = await enqueueJob({
         deal_id: dealId,
         document_id: documentId,
-        type: "ingest_document",
+        type: "ingest_documents",
         payload: {
           document_id: documentId,
           deal_id: dealId,
@@ -271,14 +455,42 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
       [deal_id, document_id]
     );
 
-    await enqueueJob({
+    // Retry now uses persisted original bytes (stored during initial ingestion).
+    const job = await enqueueJob({
       deal_id,
       document_id,
-      type: "ingest_documents",
-      payload: { document_id },
+      type: "reextract_documents",
+      payload: { deal_id, document_ids: [document_id] },
     });
 
-    return reply.status(202).send({ ok: true });
+    return reply.status(202).send({ ok: true, job_id: job.job_id });
+  });
+
+  /**
+   * True re-extraction from persisted original bytes.
+   *
+   * If document_ids omitted, re-extracts only failed/low-confidence documents.
+   */
+  app.post("/api/v1/deals/:deal_id/documents/re-extract", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    const body = (request.body ?? {}) as {
+      document_ids?: string[];
+      threshold_low?: number;
+      include_warnings?: boolean;
+    };
+
+    const job = await enqueueJob({
+      deal_id: dealId,
+      type: "reextract_documents",
+      payload: {
+        deal_id: dealId,
+        document_ids: Array.isArray(body.document_ids) ? body.document_ids : undefined,
+        threshold_low: typeof body.threshold_low === "number" ? body.threshold_low : undefined,
+        include_warnings: Boolean(body.include_warnings),
+      },
+    });
+
+    return reply.status(202).send({ ok: true, job_id: job.job_id });
   });
 
   /**
@@ -334,9 +546,11 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
       }>;
     };
 
-    if (!body.assignments || body.assignments.length === 0) {
+    const hasAssignments = Array.isArray(body.assignments) && body.assignments.length > 0;
+    const hasNewDeals = Array.isArray(body.newDeals) && body.newDeals.length > 0;
+    if (!hasAssignments && !hasNewDeals) {
       return reply.status(400).send({
-        error: "assignments are required",
+        error: "assignments or newDeals are required",
       });
     }
 
@@ -344,32 +558,47 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
 
     // Note: Actual file upload and processing would happen in a separate step
     // This endpoint just records the assignments in the database
-    for (const assignment of body.assignments) {
-      results.push({
-        filename: assignment.filename,
-        dealId: assignment.dealId,
-        status: "assigned",
-        message: `File will be uploaded to deal ${assignment.dealId}`,
-      });
+    if (hasAssignments) {
+      for (const assignment of body.assignments) {
+        results.push({
+          filename: assignment.filename,
+          dealId: assignment.dealId,
+          status: "assigned",
+          message: `File will be uploaded to deal ${assignment.dealId}`,
+        });
+      }
     }
 
     // Handle new deals if requested
     if (body.newDeals && body.newDeals.length > 0) {
+      const { rows: existingDeals } = await pool.query<{ id: string; name: string }>(
+        `SELECT id, name FROM deals WHERE deleted_at IS NULL`
+      );
+
       for (const newDeal of body.newDeals) {
-        const dealId = randomUUID();
+        const normalized = normalizeDealName(newDeal.dealName);
+        const match = normalized
+          ? existingDeals.find((d) => normalizeDealName(d.name) === normalized)
+          : undefined;
+
+        const dealId = match?.id ?? randomUUID();
         try {
-          await pool.query(
-            `INSERT INTO deals (id, name, stage, priority, updated_at)
-             VALUES ($1, $2, $3, $4, $5)`,
-            [sanitizeText(dealId), sanitizeText(newDeal.dealName), "intake", "medium", new Date().toISOString()],
-          );
+          if (!match) {
+            await pool.query(
+              `INSERT INTO deals (id, name, stage, priority, updated_at)
+               VALUES ($1, $2, $3, $4, $5)`,
+              [sanitizeText(dealId), sanitizeText(newDeal.dealName), "intake", "medium", new Date().toISOString()],
+            );
+          }
 
           results.push({
             filename: newDeal.filename,
             dealId,
             dealName: newDeal.dealName,
-            status: "deal_created",
-            message: `New deal "${newDeal.dealName}" created`,
+            status: match ? "deal_reused" : "deal_created",
+            message: match
+              ? `Matched existing deal "${match.name}" (${match.id})`
+              : `New deal "${newDeal.dealName}" created`,
           });
         } catch (error) {
           results.push({
@@ -433,6 +662,9 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
       // Calculate aggregate metrics
       const totalPages = (documents as any[]).reduce((sum: number, d: any) => sum + (d.page_count || 0), 0);
 
+      const documentReports = (documents as any[]).map((d: any) => buildDocumentExtractionReport(d));
+      const dealReport = buildDealExtractionReport({ dealId, documents: documentReports, totalPages });
+
       return reply.send({
         deal_id: dealId,
         ingestion_status: {
@@ -447,25 +679,125 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
           overall_readiness: overallReadiness,
           readiness_details: readinessDetails,
         },
-        documents: (documents as any[]).map((d: any) => ({
-          id: d.id,
-          title: d.title,
-          type: d.type,
-          status: d.status,
-          verification_status: d.verification_status || "pending",
-          pages: d.page_count || 0,
-          file_size_bytes: d.extraction_metadata?.fileSizeBytes || 0,
-          extraction_quality_score: (d.verification_result as any)?.overall_score || null,
-          ocr_avg_confidence: (d.verification_result as any)?.quality_checks?.ocr_confidence?.avg || null,
-          verification_warnings: (d.verification_result as any)?.warnings || [],
-          verification_recommendations: (d.verification_result as any)?.recommendations || [],
-        })),
+        extraction_report: dealReport,
+        documents: documentReports,
         last_updated: new Date().toISOString(),
       });
     } catch (error: any) {
       console.error("Ingestion status error:", error);
       return reply.status(500).send({
         error: "Failed to get ingestion status",
+        message: error?.message || "Unknown error",
+      });
+    }
+  });
+
+  /**
+   * Get an extraction report + confidence-based recommendations for a deal.
+   * This is a pure read endpoint built from stored verification results.
+   */
+  app.get("/api/v1/deals/:deal_id/documents/extraction-report", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+
+    try {
+      const { rows: documents } = await pool.query(
+        `SELECT id, title, type, status, verification_status, verification_result,
+                page_count, extraction_metadata
+           FROM documents
+           WHERE deal_id = $1
+           ORDER BY uploaded_at DESC`,
+        [dealId]
+      );
+
+      if (documents.length === 0) {
+        return reply.status(404).send({ error: "No documents found for this deal" });
+      }
+
+      const totalPages = (documents as any[]).reduce((sum: number, d: any) => sum + (d.page_count || 0), 0);
+      const documentReports = (documents as any[]).map((d: any) => buildDocumentExtractionReport(d));
+      const dealReport = buildDealExtractionReport({ dealId, documents: documentReports, totalPages });
+
+      return reply.send({
+        deal_id: dealId,
+        extraction_report: dealReport,
+        documents: documentReports,
+        last_updated: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      console.error("Extraction report error:", error);
+      return reply.status(500).send({
+        error: "Failed to get extraction report",
+        message: error?.message || "Unknown error",
+      });
+    }
+  });
+
+  /**
+   * Enqueue verification for documents in a deal.
+   *
+   * If document_ids omitted, verifies up to the most recent 200 documents in the deal.
+   */
+  app.post("/api/v1/deals/:deal_id/documents/verify", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    const body = (request.body ?? {}) as { document_ids?: string[] };
+
+    try {
+      const requestedIds = Array.isArray(body.document_ids) ? body.document_ids.filter(Boolean) : null;
+
+      let documentIds: string[] = [];
+
+      if (requestedIds && requestedIds.length > 0) {
+        const { rows } = await pool.query<{ id: string }>(
+          `SELECT id
+             FROM documents
+            WHERE deal_id = $1
+              AND id = ANY($2::uuid[])
+            ORDER BY uploaded_at DESC`,
+          [dealId, requestedIds]
+        );
+
+        documentIds = rows.map((r) => r.id);
+
+        if (documentIds.length !== requestedIds.length) {
+          return reply.status(400).send({
+            error: "Some document_ids do not belong to this deal",
+            requested: requestedIds.length,
+            found: documentIds.length,
+          });
+        }
+      } else {
+        const { rows } = await pool.query<{ id: string }>(
+          `SELECT id
+             FROM documents
+            WHERE deal_id = $1
+            ORDER BY uploaded_at DESC
+            LIMIT 200`,
+          [dealId]
+        );
+        documentIds = rows.map((r) => r.id);
+      }
+
+      if (documentIds.length === 0) {
+        return reply.status(404).send({ error: "No documents found for this deal" });
+      }
+
+      const job = await enqueueJob({
+        deal_id: dealId,
+        type: "verify_documents",
+        payload: { deal_id: dealId, document_ids: documentIds },
+      });
+
+      return reply.status(202).send({
+        ok: true,
+        deal_id: dealId,
+        job_id: job.job_id,
+        status: job.status,
+        document_count: documentIds.length,
+      });
+    } catch (error: any) {
+      console.error("Verify documents enqueue error:", error);
+      return reply.status(500).send({
+        error: "Failed to enqueue verification",
         message: error?.message || "Unknown error",
       });
     }

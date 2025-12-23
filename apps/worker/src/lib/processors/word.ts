@@ -34,7 +34,7 @@ export async function extractWordContent(buffer: Buffer): Promise<WordContent> {
     const directory = await unzipper.Open.buffer(buffer);
 
     // Get document.xml
-    const docFile = directory.files.find((f) => f.path === "word/document.xml");
+    const docFile = directory.files.find((f: any) => f.path === "word/document.xml");
     if (!docFile) {
       throw new Error("document.xml not found");
     }

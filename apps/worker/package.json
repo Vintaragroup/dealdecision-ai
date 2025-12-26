@@ -8,7 +8,8 @@
     "start": "node dist/index.js",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --require ts-node/register --test src/**/*.test.ts"
+    "test": "node --require ts-node/register --test src/**/*.test.ts",
+    "trace:financial-readiness": "node scripts/trace_audit/financial_readiness.js"
   },
   "dependencies": {
     "@dealdecision/contracts": "workspace:*",

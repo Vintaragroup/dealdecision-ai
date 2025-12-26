@@ -24,8 +24,13 @@ pnpm-debug.log*
 artifacts/
 scripts/experimental/
 
-# internal documentation (keep tracked files, ignore new additions)
+# internal documentation
+# Keep the bulk of docs ignored (trace runs can be large), but allow committing
+# the human-readable trace audit rollup.
 docs/
+!docs/trace_audit/
+docs/trace_audit/**
+!docs/trace_audit/ROLLUP.md
 
 # editor/os
 .DS_Store

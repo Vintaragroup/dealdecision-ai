@@ -102,10 +102,13 @@ export class FinancialHealthCalculator extends BaseAnalyzer<FinancialHealthInput
       })
       .filter(Boolean) as Array<{ name: string; value: number }>;
 
-    const inferMetricName = (key: string, value: unknown): string => {
-      const k = key.toLowerCase();
+    const inferMetricName = (key: string, value: unknown, source?: unknown): string => {
+      const rawKey = key.toLowerCase().trim();
+      const isGenericKey = rawKey === "numeric_value" || rawKey === "slide_title" || rawKey === "value" || rawKey === "number";
+      const k = isGenericKey ? "" : rawKey;
       const v = (value == null ? "" : String(value)).toLowerCase();
-      const combined = `${k} ${v}`;
+      const s = typeof source === "string" ? source.toLowerCase() : "";
+      const combined = `${k} ${v} ${s}`;
 
       // Revenue metrics
       if (combined.includes("mrr")) return "mrr";
@@ -140,7 +143,7 @@ export class FinancialHealthCalculator extends BaseAnalyzer<FinancialHealthInput
       // Runway
       if (combined.includes("months of runway") || combined.includes("runway")) return "runway_months";
 
-      return k || "other";
+      return rawKey || "other";
     };
 
     // If an Excel doc provided keyFinancialMetrics directly (DIO input doc shape), normalize it

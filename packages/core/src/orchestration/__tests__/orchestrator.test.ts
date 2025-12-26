@@ -422,6 +422,61 @@ describe('DealOrchestrator (unit)', () => {
     );
   });
 
+  it('infers financial metric names from keyMetrics.source when key is generic (numeric_value)', async () => {
+    const storage = createStorage();
+
+    const analyzers = {
+      slideSequence: createAnalyzer(okSlideSequence()),
+      metricBenchmark: createAnalyzer(okMetricBenchmark()),
+      visualDesign: createAnalyzer(okVisualDesign()),
+      narrativeArc: createAnalyzer(okNarrativeArc()),
+      financialHealth: createAnalyzer(okFinancialHealth()),
+      riskAssessment: createAnalyzer(okRiskAssessment()),
+    };
+
+    const orchestrator = new DealOrchestrator(analyzers as any, storage, { debug: false });
+
+    const input: OrchestrationInput = {
+      deal_id: '55555555-5555-5555-5555-555555555555',
+      analysis_cycle: 1,
+      input_data: {
+        documents: [
+          {
+            fileName: 'Generic Metrics Deck.pdf',
+            contentType: 'application/pdf',
+            totalPages: 12,
+            fileSizeBytes: 1000,
+            totalWords: 400,
+            mainHeadings: ['Traction'],
+            textSummary: 'Key metrics summary.',
+            keyMetrics: [
+              { key: 'numeric_value', value: '18', source: 'Runway: 18 months' },
+              { key: 'numeric_value', value: '$500k', source: 'Cash on hand' },
+              { key: 'numeric_value', value: '$50k', source: 'Monthly burn rate' },
+            ],
+          },
+        ],
+      },
+    };
+
+    const result = await orchestrator.analyze(input);
+    expect(result.success).toBe(true);
+
+    expect(analyzers.financialHealth.analyze).toHaveBeenCalledTimes(1);
+    const finInput = (analyzers.financialHealth.analyze as jest.Mock).mock.calls[0][0];
+    const extracted = Array.isArray(finInput?.extracted_metrics) ? finInput.extracted_metrics : [];
+
+    expect(extracted).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'runway_months', value: 18 }),
+        expect.objectContaining({ name: 'cash_balance', value: expect.any(Number) }),
+        expect.objectContaining({ name: 'burn_rate', value: expect.any(Number) }),
+      ])
+    );
+
+    expect(extracted.some((m: any) => m?.name === 'numeric_value')).toBe(false);
+  });
+
   it('fails the orchestration when continueOnError=false', async () => {
     const storage = createStorage();
 

@@ -392,11 +392,14 @@ export class DealOrchestrator {
       return base * mult;
     };
 
-    const inferMetricName = (key: string | undefined, value: unknown): string => {
-      const k = (key || '').toLowerCase();
+    const inferMetricName = (key: string | undefined, value: unknown, source?: unknown): string => {
+      const rawKey = (key || '').toLowerCase().trim();
+      const isGenericKey = rawKey === 'numeric_value' || rawKey === 'slide_title' || rawKey === 'value' || rawKey === 'number';
+      const k = isGenericKey ? '' : rawKey;
       const v = (value == null ? '' : String(value)).toLowerCase();
+      const s = typeof source === 'string' ? source.toLowerCase() : '';
 
-      const combined = `${k} ${v}`;
+      const combined = `${k} ${v} ${s}`;
       if (combined.includes('mrr')) return 'mrr';
       if (combined.includes('arr')) return 'arr';
       if (combined.includes('revenue') || combined.includes('sales')) return 'revenue';
@@ -421,7 +424,7 @@ export class DealOrchestrator {
       if (combined.includes('expense') || combined.includes('opex') || combined.includes('cost')) return 'expenses';
       if (combined.includes('runway')) return 'runway_months';
 
-      return k || 'other';
+      return rawKey || 'other';
     };
 
     const unitFromValue = (value: unknown): string | undefined => {
@@ -466,7 +469,7 @@ export class DealOrchestrator {
             const rawValue = m?.value;
             const num = parseNumberish(rawValue);
             if (num == null) continue;
-            const name = inferMetricName(rawKey, rawValue);
+            const name = inferMetricName(rawKey, rawValue, m?.source);
             out.push({ name, value: num, unit: unitFromValue(rawValue), source_doc_id });
           }
         }

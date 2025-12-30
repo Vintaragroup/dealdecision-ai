@@ -14,6 +14,88 @@
 import { z } from "zod";
 
 // ============================================================================
+// Phase 1 UI-usability contract (V1)
+// ============================================================================
+
+export const Phase1ConfidenceBandSchema = z.enum(["low", "med", "high"]);
+export type Phase1ConfidenceBand = z.infer<typeof Phase1ConfidenceBandSchema>;
+
+export const Phase1ExecutiveSummaryEvidenceRefV1Schema = z.object({
+  claim_id: z.string().min(1),
+  document_id: z.string().min(1),
+  page: z.number().int().positive().optional(),
+  page_range: z.tuple([z.number().int().positive(), z.number().int().positive()]).optional(),
+  snippet: z.string().optional(),
+});
+
+export const Phase1ExecutiveSummaryV1Schema = z.object({
+  title: z.string(),
+  one_liner: z.string(),
+  deal_type: z.string(),
+  raise: z.string(),
+  business_model: z.string(),
+  traction_signals: z.array(z.string()),
+  key_risks_detected: z.array(z.string()),
+  unknowns: z.array(z.string()),
+  confidence: z.object({
+    overall: Phase1ConfidenceBandSchema,
+    sections: z.record(Phase1ConfidenceBandSchema).optional(),
+  }),
+  evidence: z.array(Phase1ExecutiveSummaryEvidenceRefV1Schema),
+});
+
+export type Phase1ExecutiveSummaryV1 = z.infer<typeof Phase1ExecutiveSummaryV1Schema>;
+
+export const Phase1ClaimCategoryV1Schema = z.enum([
+  "product",
+  "market",
+  "traction",
+  "terms",
+  "team",
+  "risk",
+  "other",
+]);
+
+export const Phase1ClaimEvidenceV1Schema = z.object({
+  document_id: z.string().min(1),
+  page: z.number().int().positive().optional(),
+  page_range: z.tuple([z.number().int().positive(), z.number().int().positive()]).optional(),
+  snippet: z.string().min(1),
+});
+
+export const Phase1ClaimV1Schema = z.object({
+  claim_id: z.string().min(1),
+  category: Phase1ClaimCategoryV1Schema,
+  text: z.string().min(1),
+  evidence: z.array(Phase1ClaimEvidenceV1Schema),
+});
+
+export const Phase1CoverageV1Schema = z.object({
+  sections: z.record(z.enum(["present", "partial", "missing"])),
+});
+
+export const Phase1DecisionRecommendationV1Schema = z.enum(["PASS", "CONSIDER", "GO"]);
+export type Phase1DecisionRecommendationV1 = z.infer<typeof Phase1DecisionRecommendationV1Schema>;
+
+export const Phase1DecisionSummaryV1Schema = z.object({
+  score: z.number().min(0).max(100),
+  recommendation: Phase1DecisionRecommendationV1Schema,
+  reasons: z.array(z.string()),
+  blockers: z.array(z.string()),
+  next_requests: z.array(z.string()),
+  confidence: Phase1ConfidenceBandSchema,
+});
+
+export type Phase1DecisionSummaryV1 = z.infer<typeof Phase1DecisionSummaryV1Schema>;
+
+export const Phase1DIOV1Schema = z.object({
+  executive_summary_v1: Phase1ExecutiveSummaryV1Schema,
+  decision_summary_v1: Phase1DecisionSummaryV1Schema,
+  claims: z.array(Phase1ClaimV1Schema),
+  coverage: Phase1CoverageV1Schema,
+});
+
+// ============================================================================
 // Schema Version
 // ============================================================================
 
@@ -690,6 +772,14 @@ export const DealIntelligenceObjectSchema = z.object({
 
   // Derived context (computed before analyzers run)
   dio_context: DIOContextSchema.optional(),
+
+  // UI usability addenda (Phase 1): always-on executive summary + claim→evidence mapping
+  // Stored under `dio.phase1.*` to avoid clashing with existing top-level schema fields.
+  dio: z
+    .object({
+      phase1: Phase1DIOV1Schema.optional(),
+    })
+    .optional(),
   
   // Input snapshot
   inputs: AnalysisInputsSchema,

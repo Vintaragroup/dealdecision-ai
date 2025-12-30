@@ -7,6 +7,44 @@ import { autoProgressDealStage } from "../services/stageProgression";
 import { updateDealPriority, updateAllDealPriorities } from "../services/priorityClassification";
 import { normalizeDealName } from "../lib/normalize-deal-name";
 
+type QueryResult<T> = { rows: T[]; rowCount?: number };
+type DealRoutesClient = {
+  query: <T = any>(sql: string, params?: unknown[]) => Promise<QueryResult<T>>;
+  release: () => void;
+};
+type DealRoutesPool = {
+  query: <T = any>(sql: string, params?: unknown[]) => Promise<QueryResult<T>>;
+  connect?: () => Promise<DealRoutesClient>;
+};
+
+type DealApiMode = "phase1" | "full";
+
+function parseDealApiMode(request: any): DealApiMode {
+  const q = (request?.query ?? {}) as any;
+  const raw = typeof q?.mode === "string" ? q.mode : undefined;
+  if (!raw) return "full";
+  const m = raw.trim().toLowerCase();
+  if (m === "phase1" || m === "p1") return "phase1";
+  return "full";
+}
+
+function stripEvidenceFromExecutiveSummary(exec: any): any {
+  if (!exec || typeof exec !== "object") return undefined;
+  const { evidence, ...rest } = exec as any;
+  return rest;
+}
+
+function stripEvidenceFromClaims(claims: any): any[] {
+  const list = Array.isArray(claims) ? claims : [];
+  return list
+    .map((c: any) => {
+      if (!c || typeof c !== "object") return null;
+      const { evidence, ...rest } = c as any;
+      return rest;
+    })
+    .filter(Boolean);
+}
+
 const dealStageSchema = z.enum(["intake", "under_review", "in_diligence", "ready_decision", "pitched"]);
 const dealPrioritySchema = z.enum(["high", "medium", "low"]);
 const dealTrendSchema = z.enum(["up", "down", "stable"]);
@@ -42,28 +80,55 @@ type DIOAggregateRow = {
   overall_score: number | null;
   last_analyzed_at: string | null;
   run_count: number | null;
+	// Optional Phase 1 executive summary (jsonb slice from dio_data)
+	executive_summary_v1?: any;
+	decision_summary_v1?: any;
+	phase1_coverage?: any;
+	phase1_claims?: any;
 };
 
-function mapDeal(row: DealRow, dio?: DIOAggregateRow | null): Deal {
-  return {
+function mapDeal(row: DealRow, dio: DIOAggregateRow | null | undefined, mode: DealApiMode): Deal {
+  const safeExec = stripEvidenceFromExecutiveSummary((dio as any)?.executive_summary_v1);
+  const decision = (dio as any)?.decision_summary_v1;
+  const coverage = (dio as any)?.phase1_coverage;
+  const topClaims = stripEvidenceFromClaims((dio as any)?.phase1_claims).slice(0, 8);
+
+  const out: any = {
     id: row.id,
     name: row.name,
     stage: row.stage,
     priority: row.priority,
     trend: row.trend ?? undefined,
-    score: row.score ?? undefined,
     owner: row.owner ?? undefined,
     lastUpdated: new Date(row.updated_at).toISOString(),
     dioVersionId: dio?.dio_id ?? undefined,
-    dioStatus: dio?.recommendation ?? undefined,
     lastAnalyzedAt: dio?.last_analyzed_at ? new Date(dio.last_analyzed_at).toISOString() : undefined,
     dioRunCount: typeof dio?.run_count === 'number' ? dio.run_count : undefined,
     dioAnalysisVersion: typeof dio?.analysis_version === 'number' ? dio.analysis_version : undefined,
-  } as Deal;
+	};
+
+	if (mode !== "phase1") {
+		out.score = row.score ?? undefined;
+		out.dioStatus = dio?.recommendation ?? undefined;
+	}
+
+	// Additive field: UI can render summary without extra calls.
+	if (safeExec) out.executive_summary_v1 = safeExec;
+
+	if (mode === "phase1") {
+		out.phase1 = {
+			executive_summary_v1: safeExec,
+      decision_summary_v1: decision && typeof decision === "object" ? decision : undefined,
+			coverage: coverage && typeof coverage === "object" ? coverage : undefined,
+			unknowns: Array.isArray(safeExec?.unknowns) ? safeExec.unknowns : [],
+			top_claims: topClaims,
+		};
+	}
+	return out as Deal;
 }
 
-export async function registerDealRoutes(app: FastifyInstance) {
-  const pool = getPool();
+export async function registerDealRoutes(app: FastifyInstance, poolOverride?: any) {
+  const pool = (poolOverride ?? getPool()) as DealRoutesPool;
 
   app.post("/api/v1/deals", async (request, reply) => {
     const parsed = dealCreateSchema.safeParse(request.body);
@@ -80,7 +145,7 @@ export async function registerDealRoutes(app: FastifyInstance) {
       const { rows: existing } = await pool.query<{ id: string; name: string }>(
         `SELECT id, name FROM deals WHERE deleted_at IS NULL`
       );
-      const match = existing.find((d) => normalizeDealName(d.name) === normalized);
+      const match = existing.find((d: { id: string; name: string }) => normalizeDealName(d.name) === normalized);
       if (match) {
         return reply.status(409).send({
           error: "Deal already exists",
@@ -97,7 +162,7 @@ export async function registerDealRoutes(app: FastifyInstance) {
       [name, stage, priority, trend ?? null, score ?? null, owner ?? null]
     );
 
-    return mapDeal(rows[0]);
+    return mapDeal(rows[0], null, "full");
   });
 
   const dealMergeSchema = z.object({
@@ -118,7 +183,8 @@ export async function registerDealRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "source_deal_id and target_deal_id must be different" });
     }
 
-    const client = await pool.connect();
+    const client = await pool.connect?.();
+    if (!client) return reply.status(500).send({ error: "Database connection unavailable" });
     try {
       await client.query("BEGIN");
 
@@ -201,6 +267,7 @@ export async function registerDealRoutes(app: FastifyInstance) {
   });
 
   app.get("/api/v1/deals", async (request) => {
+    const mode = parseDealApiMode(request);
     // Accept optional filters but ignore for now (TODO)
     const { rows } = await pool.query<DealRow & {
       dio_id: string | null;
@@ -209,6 +276,9 @@ export async function registerDealRoutes(app: FastifyInstance) {
       overall_score: number | null;
       last_analyzed_at: string | null;
       run_count: number | null;
+		executive_summary_v1: any | null;
+    decision_summary_v1: any | null;
+		phase1_coverage: any | null;
     }>(
       `SELECT d.*,
               latest.dio_id,
@@ -216,10 +286,15 @@ export async function registerDealRoutes(app: FastifyInstance) {
               latest.recommendation,
               latest.overall_score,
               latest.updated_at as last_analyzed_at,
+				  latest.executive_summary_v1,
+				  latest.phase1_coverage,
               stats.run_count
          FROM deals d
          LEFT JOIN LATERAL (
-           SELECT dio_id, analysis_version, recommendation, overall_score, updated_at
+           SELECT dio_id, analysis_version, recommendation, overall_score, updated_at,
+					  (dio_data #> '{dio,phase1,executive_summary_v1}') AS executive_summary_v1
+  					, (dio_data #> '{dio,phase1,decision_summary_v1}') AS decision_summary_v1
+					, (dio_data #> '{dio,phase1,coverage}') AS phase1_coverage
              FROM deal_intelligence_objects
             WHERE deal_id = d.id
             ORDER BY analysis_version DESC
@@ -240,10 +315,15 @@ export async function registerDealRoutes(app: FastifyInstance) {
       overall_score: row.overall_score,
       last_analyzed_at: row.last_analyzed_at,
       run_count: row.run_count,
-    }));
+		executive_summary_v1: row.executive_summary_v1,
+    decision_summary_v1: row.decision_summary_v1,
+		phase1_coverage: row.phase1_coverage,
+		phase1_claims: null,
+    }, mode));
   });
 
   app.get("/api/v1/deals/:deal_id", async (request, reply) => {
+    const mode = parseDealApiMode(request);
     const dealId = (request.params as { deal_id: string }).deal_id;
     const { rows } = await pool.query<DealRow>(
       `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
@@ -266,11 +346,18 @@ export async function registerDealRoutes(app: FastifyInstance) {
               latest.analysis_version,
               latest.recommendation,
               latest.overall_score,
+              latest.executive_summary_v1,
+              latest.phase1_coverage,
+              latest.phase1_claims,
               stats.last_analyzed_at,
               stats.run_count
          FROM stats
          JOIN LATERAL (
-           SELECT dio_id, analysis_version, recommendation, overall_score
+           SELECT dio_id, analysis_version, recommendation, overall_score,
+                  (dio_data #> '{dio,phase1,executive_summary_v1}') AS executive_summary_v1,
+    				  (dio_data #> '{dio,phase1,decision_summary_v1}') AS decision_summary_v1,
+                  (dio_data #> '{dio,phase1,coverage}') AS phase1_coverage,
+                  (dio_data #> '{dio,phase1,claims}') AS phase1_claims
              FROM deal_intelligence_objects
             WHERE deal_id = $1
             ORDER BY analysis_version DESC
@@ -279,7 +366,7 @@ export async function registerDealRoutes(app: FastifyInstance) {
       [dealId]
     );
 
-    return mapDeal(rows[0], dioRows[0] ?? null);
+    return mapDeal(rows[0], dioRows[0] ?? null, mode);
   });
 
   app.put("/api/v1/deals/:deal_id", async (request, reply) => {
@@ -318,7 +405,7 @@ export async function registerDealRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Deal not found" });
     }
 
-    return mapDeal(rows[0]);
+    return mapDeal(rows[0], null, "full");
   });
 
   app.delete("/api/v1/deals/:deal_id", async (request, reply) => {
@@ -334,7 +421,7 @@ export async function registerDealRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Deal not found" });
     }
 
-    return mapDeal(rows[0]);
+    return mapDeal(rows[0], null, "full");
   });
 
   app.post("/api/v1/deals/:deal_id/analyze", async (request, reply) => {
@@ -348,7 +435,7 @@ export async function registerDealRoutes(app: FastifyInstance) {
     if (rows.length === 0) {
       return reply.status(404).send({ error: "Deal not found" });
     }
-
+        return mapDeal(rows[0], null, "full");
     const job = await enqueueJob({ deal_id: dealId, type: "analyze_deal" });
 
     // After analysis job is enqueued, mark it so we can auto-progress when complete
@@ -396,7 +483,7 @@ export async function registerDealRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: "Deal not found" });
     }
 
-    const result = await autoProgressDealStage(pool, dealId);
+    const result = await autoProgressDealStage(pool as any, dealId);
 
     if (result.progressed) {
       return reply.status(200).send({

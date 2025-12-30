@@ -206,7 +206,7 @@ export function ChatAssistant({ darkMode }: ChatAssistantProps) {
                     }`}
                   />
                   <button
-                    onClick={() => handleSend()}
+                    onClick={handleSend}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6366f1] hover:text-[#8b5cf6] transition-colors"
                   >
                     <Send className="w-5 h-5" />
@@ -363,7 +363,7 @@ export function ChatAssistant({ darkMode }: ChatAssistantProps) {
                       }`}
                     />
                     <button
-                      onClick={() => handleSend()}
+                      onClick={handleSend}
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6366f1] hover:text-[#8b5cf6] transition-colors"
                     >
                       <Send className="w-5 h-5" />

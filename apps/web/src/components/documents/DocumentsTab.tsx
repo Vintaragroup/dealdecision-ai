@@ -2,10 +2,9 @@ import { useEffect, useState } from 'react';
 import { Button } from '../ui/button';
 import { DocumentUpload } from './DocumentUpload';
 import { DocumentLibrary } from './DocumentLibrary';
-import { Upload, Sparkles, FileText } from 'lucide-react';
+import { Upload, Sparkles } from 'lucide-react';
 import { apiGetDocuments, apiRetryDocument, isLiveBackend } from '../../lib/apiClient';
 import type { Document } from '@dealdecision/contracts';
-import { ExtractionReportModal } from './ExtractionReportModal';
 
 interface DocumentsTabProps {
   dealId: string;
@@ -14,7 +13,6 @@ interface DocumentsTabProps {
 
 export function DocumentsTab({ dealId, darkMode = true }: DocumentsTabProps) {
   const [showUpload, setShowUpload] = useState(false);
-  const [showExtractionReport, setShowExtractionReport] = useState(false);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -58,24 +56,14 @@ export function DocumentsTab({ dealId, darkMode = true }: DocumentsTabProps) {
             AI-Powered Extraction
           </span>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => setShowExtractionReport(true)}
-          >
-            <FileText className="w-4 h-4" />
-            Extraction Report
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => setShowUpload(!showUpload)}
-          >
-            <Upload className="w-4 h-4" />
-            {showUpload ? 'Close Upload' : 'Upload'}
-          </Button>
-        </div>
+        <Button
+          variant="primary"
+          size="sm"
+          onClick={() => setShowUpload(!showUpload)}
+        >
+          <Upload className="w-4 h-4" />
+          {showUpload ? 'Close Upload' : 'Upload'}
+        </Button>
       </div>
 
       {/* Upload Section */}
@@ -106,14 +94,6 @@ export function DocumentsTab({ dealId, darkMode = true }: DocumentsTabProps) {
         loading={loading}
         onRetry={handleRetry}
       />
-
-      {showExtractionReport && (
-        <ExtractionReportModal
-          dealId={dealId}
-          darkMode={darkMode}
-          onClose={() => setShowExtractionReport(false)}
-        />
-      )}
     </div>
   );
 }

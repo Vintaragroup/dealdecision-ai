@@ -54,12 +54,11 @@ export function apiCreateDeal(input: {
 }
 
 export function apiGetDeal(dealId: string) {
-  return request<Deal>(`/api/v1/deals/${dealId}`);
-}
-
-// Phase 1 contract view (no legacy scoring language; includes deal.phase1.* slices)
-export function apiGetDealPhase1(dealId: string) {
-  return request<any>(`/api/v1/deals/${dealId}?mode=phase1`);
+  return request<Deal & {
+    dioVersionId?: string;
+    dioStatus?: string;
+    lastAnalyzedAt?: string;
+  }>(`/api/v1/deals/${dealId}`);
 }
 
 export function apiPostAnalyze(dealId: string) {
@@ -101,110 +100,17 @@ export function apiGetDocuments(dealId: string) {
   }> }>(`/api/v1/deals/${dealId}/documents`);
 }
 
-export type ExtractionConfidenceBand = 'high' | 'medium' | 'low' | 'unknown';
-export type ExtractionRecommendedAction = 'proceed' | 'remediate' | 're_extract' | 'wait';
-
-export type DocumentExtractionReport = {
-  id: string;
-  title: string | null;
-  type: string | null;
-  status: string | null;
-  verification_status: string;
-  pages: number;
-  file_size_bytes: number;
-  extraction_quality_score: number | null;
-  confidence_band: ExtractionConfidenceBand;
-  ocr_avg_confidence?: number | null;
-  verification_warnings?: string[];
-  verification_recommendations?: string[];
-  recommended_action: ExtractionRecommendedAction;
-  recommendation_reason: string;
-};
-
-export type DealExtractionReport = {
-  deal_id: string;
-  overall_confidence_score: number | null;
-  confidence_band: ExtractionConfidenceBand;
-  thresholds?: { high: number; medium: number };
-  counts: {
-    total_documents: number;
-    completed_verification: number;
-    failed_verification: number;
-    total_pages: number;
-    high_confidence: number;
-    medium_confidence: number;
-    low_confidence: number;
-    unknown_confidence: number;
-  };
-  recommended_action: ExtractionRecommendedAction;
-  recommendation_reason: string;
-  note?: string | null;
-};
-
-export function apiGetDealExtractionReport(dealId: string) {
-  return request<{
-    deal_id: string;
-    extraction_report: DealExtractionReport;
-    documents: DocumentExtractionReport[];
-    last_updated?: string;
-  }>(`/api/v1/deals/${dealId}/documents/extraction-report`);
-}
-
-export type DocumentAnalysisResponse = {
-  document_id: string;
-  deal_id: string;
-  status: string;
-  structured_data: any | null;
-  extraction_metadata: any | null;
-  job_status: string | null;
-  job_message: string | null;
-  job_progress: number | null;
-};
-
-export function apiGetDocumentAnalysis(dealId: string, documentId: string) {
-  return request<DocumentAnalysisResponse>(
-    `/api/v1/deals/${dealId}/documents/${documentId}/analysis`
-  );
-}
-
 export function apiGetEvidence(dealId: string) {
-  return request<{ evidence: Array<any> }>(`/api/v1/deals/${dealId}/evidence`).then((res) => {
-    // API returns `id` (UUID) as the primary evidence identifier.
-    const evidence = Array.isArray(res?.evidence)
-      ? res.evidence
-          .map((row) => ({
-            evidence_id: row?.evidence_id ?? row?.id,
-            deal_id: row?.deal_id,
-            document_id: row?.document_id ?? undefined,
-            source: row?.source,
-            kind: row?.kind,
-            text: row?.text,
-            confidence: typeof row?.confidence === 'number' ? row.confidence : row?.confidence ?? undefined,
-            created_at: row?.created_at ?? undefined,
-          }))
-          .filter((row) => typeof row.evidence_id === 'string' && row.evidence_id.length > 0)
-      : [];
-    return { evidence };
-  });
-}
-
-export type DealReport = {
-  dealId: string;
-  generatedAt: string;
-  version: number;
-  overallScore: number;
-  grade: string;
-  recommendation: 'strong_yes' | 'yes' | 'consider' | 'pass';
-  categories?: Array<{ name: string; score: number; issues?: string[]; strengths?: string[]; recommendations?: string[] }>;
-  redFlags?: Array<{ severity: 'high' | 'medium' | 'low'; message: string; action: string }>;
-  greenFlags?: string[];
-  sections?: Array<{ id: string; title: string; content: string; evidence_ids?: string[] }>;
-  completeness?: number;
-  metadata?: Record<string, any>;
-};
-
-export function apiGetDealReport(dealId: string) {
-  return request<DealReport>(`/api/v1/deals/${dealId}/report`);
+  return request<{ evidence: Array<{
+    evidence_id: string;
+    deal_id: string;
+    document_id?: string;
+    source: string;
+    kind: string;
+    text: string;
+    excerpt?: string;
+    created_at?: string;
+  }> }>(`/api/v1/deals/${dealId}/evidence`);
 }
 
 export function apiFetchEvidence(dealId: string, filter?: string) {

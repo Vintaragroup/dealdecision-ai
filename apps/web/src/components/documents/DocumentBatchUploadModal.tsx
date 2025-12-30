@@ -1,5 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { AlertCircle, CheckCircle, FileText, Upload, X, ChevronDown, ChevronUp } from 'lucide-react';
+import type { DocumentGroup, BatchAnalysisResult, DocumentFile } from '@/lib/documentGrouping';
+import { analyzeFilenamesForGrouping, analyzeBatchDocuments } from '@/lib/documentGrouping';
 
 interface DocumentBatchUploadProps {
   onClose: () => void;
@@ -73,27 +75,21 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
     setLoading(true);
     try {
       // Build assignments based on user confirmations
-      // NOTE: We only send one "newDeals" entry per company to avoid duplicate deal creation.
-      // We still upload all files in the group after we resolve the target deal id.
       const assignments = analysisResult.groups
         .filter((group: any) => userConfirmation[group.company] === 'confirm' && group.dealId)
-        .flatMap((group: any) =>
-          (group.files || []).map((filename: string) => ({
-            filename,
-            dealId: group.dealId,
-            type: group.documentType,
-          }))
-        );
+        .map((group: any) => ({
+          filename: group.files[0],
+          dealId: group.dealId,
+          type: group.documentType,
+        }));
 
       const newDeals = analysisResult.groups
         .filter((group: any) => userConfirmation[group.company] === 'newdeal' && !group.dealId)
         .map((group: any) => ({
-          // Keep a representative filename so the backend can echo back a row for this group
-          filename: (group.files || [])[0],
+          filename: group.files[0],
           dealName: group.company,
           type: group.documentType,
-        }))
-        .filter((d: any) => !!d.filename);
+        }));
 
       // Send to backend
       const response = await fetch('/api/v1/documents/bulk-assign', {
@@ -106,37 +102,20 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
 
       const result = await response.json();
 
-      // Resolve deal ids for any newly created/reused deals from the bulk-assign response.
-      // The backend returns { assignments: [{ filename, dealId, dealName, status, ... }, ...] }
-      const createdDealIdsByName = new Map<string, string>();
-      const responseAssignments: any[] = Array.isArray(result?.assignments) ? result.assignments : [];
-      for (const row of responseAssignments) {
-        if (row?.dealName && row?.dealId) {
-          createdDealIdsByName.set(String(row.dealName), String(row.dealId));
-        }
-      }
+      // Now upload the actual files
+      for (const file of selectedFiles) {
+        const assignment = assignments.find((a: any) => a.filename === file.name);
+        const newDeal = newDeals.find((d: any) => d.filename === file.name);
 
-      // Index selected files by filename for quick lookup
-      const fileByName = new Map<string, File>();
-      for (const f of selectedFiles) fileByName.set(f.name, f);
-
-      // Upload every file in each group to its resolved deal
-      for (const group of analysisResult.groups) {
-        const action = userConfirmation[group.company];
-        if (action === 'skip') continue;
-
-        const targetDealId = action === 'confirm'
-          ? group.dealId
-          : createdDealIdsByName.get(group.company);
-
-        if (!targetDealId) {
-          throw new Error(`Could not resolve deal id for group "${group.company}"`);
-        }
-
-        for (const filename of group.files || []) {
-          const file = fileByName.get(filename);
-          if (!file) continue;
-          await uploadDocumentToDeal(file, targetDealId, group.documentType);
+        if (assignment) {
+          await uploadDocumentToDeal(file, assignment.dealId);
+        } else if (newDeal) {
+          // Find the newly created deal by name
+          const deals = await fetch('/api/v1/deals').then((r) => r.json());
+          const deal = deals.find((d: any) => d.name === newDeal.dealName);
+          if (deal) {
+            await uploadDocumentToDeal(file, deal.id);
+          }
         }
       }
 
@@ -149,11 +128,9 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
     }
   };
 
-  const uploadDocumentToDeal = async (file: File, dealId: string, documentType?: string) => {
+  const uploadDocumentToDeal = async (file: File, dealId: string) => {
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('title', file.name);
-    formData.append('type', documentType || 'other');
 
     const response = await fetch(`/api/v1/deals/${dealId}/documents`, {
       method: 'POST',

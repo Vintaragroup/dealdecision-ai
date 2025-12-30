@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { vi } from 'vitest';
 import { DealWorkspace } from '../components/pages/DealWorkspace';
-import { apiGetDealPhase1, apiGetJob } from '../lib/apiClient';
+import { apiGetDeal, apiGetJob } from '../lib/apiClient';
 
 vi.mock('../contexts/UserRoleContext', () => ({
   useUserRole: () => ({ isFounder: true, isInvestor: false }),
@@ -11,13 +11,11 @@ vi.mock('../contexts/UserRoleContext', () => ({
 
 vi.mock('../lib/apiClient', () => {
   const apiGetDeal = vi.fn();
-  const apiGetDealPhase1 = vi.fn();
   const apiPostAnalyze = vi.fn();
   const apiGetJob = vi.fn();
   return {
     isLiveBackend: () => true,
     apiGetDeal,
-    apiGetDealPhase1,
     apiPostAnalyze,
     apiGetJob,
   };
@@ -53,7 +51,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
   };
 
   test('renders DIO badges and Job Center placeholders', async () => {
-    vi.mocked(apiGetDealPhase1).mockResolvedValue({
+    vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: 'v1.0.0',
       dioStatus: 'ready',
       lastAnalyzedAt: '2024-01-02T00:00:00.000Z',
@@ -73,7 +71,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
   });
 
   test('AI Assistant button is gated without DIO in live mode', async () => {
-    vi.mocked(apiGetDealPhase1).mockResolvedValue({
+    vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: undefined,
       dioStatus: 'missing',
       lastAnalyzedAt: null,
@@ -91,7 +89,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
   });
 
   test('AI Assistant button enables when DIO exists', async () => {
-    vi.mocked(apiGetDealPhase1).mockResolvedValue({
+    vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: 'v2.0.0',
       dioStatus: 'ready',
       lastAnalyzedAt: '2024-01-03T00:00:00.000Z',
@@ -109,7 +107,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
   test('Run Analysis button (header) does not call api when dealId missing', async () => {
     const { apiPostAnalyze } = await import('../lib/apiClient');
-    vi.mocked(apiGetDealPhase1).mockResolvedValue({} as any);
+    vi.mocked(apiGetDeal).mockResolvedValue({} as any);
     vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-x', status: 'queued' } as any);
 
     renderWorkspace({ dealId: undefined });
@@ -122,7 +120,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
   test('Run Analysis triggers apiPostAnalyze and shows loading state', async () => {
     const { apiPostAnalyze } = await import('../lib/apiClient');
-    vi.mocked(apiGetDealPhase1).mockResolvedValue({ dioVersionId: 'v3', dioStatus: 'ready' } as any);
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v3', dioStatus: 'ready' } as any);
     vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-99', status: 'queued' } as any);
 
     renderWorkspace({ dealId: 'deal-4' });
@@ -138,7 +136,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
   test('Job Center shows progress bar when job reports progress', async () => {
     const { apiPostAnalyze } = await import('../lib/apiClient');
 
-    vi.mocked(apiGetDealPhase1).mockResolvedValue({
+    vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: 'v4',
       dioStatus: 'running',
       lastAnalyzedAt: '2024-01-04T00:00:00.000Z',

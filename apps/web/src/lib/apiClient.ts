@@ -57,6 +57,11 @@ export function apiGetDeal(dealId: string) {
   return request<Deal>(`/api/v1/deals/${dealId}`);
 }
 
+// Phase 1 contract view (no legacy scoring language; includes deal.phase1.* slices)
+export function apiGetDealPhase1(dealId: string) {
+  return request<any>(`/api/v1/deals/${dealId}?mode=phase1`);
+}
+
 export function apiPostAnalyze(dealId: string) {
   return request<{ job_id: string; status: string }>(`/api/v1/deals/${dealId}/analyze`, {
     method: 'POST'

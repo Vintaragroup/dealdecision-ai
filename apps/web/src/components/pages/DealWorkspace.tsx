@@ -15,7 +15,7 @@ import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { EvidencePanel } from '../evidence/EvidencePanel';
-import { apiGetDeal, apiPostAnalyze, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, isLiveBackend, subscribeToEvents, type DealReport, type JobUpdatedEvent } from '../../lib/apiClient';
+import { apiGetDealPhase1, apiPostAnalyze, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, isLiveBackend, subscribeToEvents, type DealReport, type JobUpdatedEvent } from '../../lib/apiClient';
 import { debugLogger } from '../../lib/debugLogger';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { 
@@ -104,6 +104,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [reportFromApi, setReportFromApi] = useState<DealReport | null>(null);
   const lastEventIdRef = useRef<string | undefined>(undefined);
 
+  const phase1ExecSummary = dealFromApi?.phase1?.executive_summary_v1;
+  const phase1DecisionSummary = dealFromApi?.phase1?.decision_summary_v1;
+  const isPhase1View = Boolean(phase1ExecSummary);
+
   const loadReport = async () => {
     if (!dealId || !isLiveBackend()) {
       setReportFromApi(null);
@@ -129,11 +133,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       return;
     }
     let active = true;
-    apiGetDeal(dealId)
+    apiGetDealPhase1(dealId)
       .then((deal) => {
         if (!active) return;
         setDealFromApi(deal);
-        debugLogger.logAPIData('DealWorkspace', 'dealFromApi', deal, `Fetched via apiGetDeal(${dealId})`);
+        debugLogger.logAPIData('DealWorkspace', 'dealFromApi', deal, `Fetched via apiGetDealPhase1(${dealId})`);
         setDioMeta({
           dioVersionId: (deal as any).dioVersionId,
           dioStatus: (deal as any).dioStatus,
@@ -148,6 +152,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         addToast('error', 'Failed to load deal', err instanceof Error ? err.message : 'Unknown error');
       });
 
+    // Keep report loading for non-Phase1 tabs, but Phase1 view should not depend on it.
     loadReport();
 
     return () => {
@@ -164,7 +169,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     score: dealFromApi.score || investorScore,
     updatedTime: dealFromApi.updated_at ? new Date(dealFromApi.updated_at).toLocaleDateString() : 'Recently',
     createdDate: dealFromApi.created_at ? new Date(dealFromApi.created_at).toLocaleDateString() : 'Unknown',
-    description: dealData?.description || 'No description provided',
+    description:
+      phase1ExecSummary?.one_liner ||
+      dealData?.description ||
+      'Summary pending…',
     metrics: {
       currentRevenue: dealData?.revenue || 'N/A',
       year1Target: dealDataExt?.year1Target || 'N/A',
@@ -251,7 +259,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           setAnalyzing(false);
           addToast(job.status === 'succeeded' ? 'success' : 'error', 'Analysis completed', job.message || job.status);
           if (job.status === 'succeeded' && dealId) {
-            apiGetDeal(dealId)
+            apiGetDealPhase1(dealId)
               .then((deal) => {
                 setDealFromApi(deal);
                 setDioMeta({
@@ -317,7 +325,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             loadReport();
             loadEvidence();
             if (dealId) {
-              apiGetDeal(dealId)
+              apiGetDealPhase1(dealId)
                 .then((deal) => {
                   setDealFromApi(deal);
                   setDioMeta({
@@ -936,9 +944,61 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     Executive Summary
                   </h3>
                   <div className={`p-4 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-                    <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                      {dealInfo?.description || dealData?.description || 'No description provided'}
+                    <p
+                      data-testid={isPhase1View ? 'phase1-exec-summary' : undefined}
+                      className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+                    >
+                      {phase1ExecSummary?.one_liner || dealInfo?.description || dealData?.description || 'Summary pending…'}
                     </p>
+
+                    {isPhase1View && phase1DecisionSummary && (
+                      <div
+                        data-testid="phase1-decision-summary"
+                        className={`mt-4 p-4 rounded-lg border ${
+                          darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200'
+                        }`}
+                      >
+                        <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          Phase 1 Decision Summary
+                        </div>
+                        <div className="flex flex-wrap items-center gap-4">
+                          <div className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                            <span className="font-medium">Recommendation:</span> {String(phase1DecisionSummary.recommendation)}
+                          </div>
+                          {typeof phase1DecisionSummary.score === 'number' && (
+                            <div className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                              <span className="font-medium">Score:</span> {phase1DecisionSummary.score}
+                            </div>
+                          )}
+                        </div>
+
+                        {Array.isArray(phase1DecisionSummary.blockers) && phase1DecisionSummary.blockers.length > 0 && (
+                          <div className="mt-3">
+                            <div className={`text-xs mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                              Blockers
+                            </div>
+                            <ul className={`text-sm list-disc pl-5 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                              {phase1DecisionSummary.blockers.slice(0, 5).map((b: string, i: number) => (
+                                <li key={i}>{b}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {Array.isArray(phase1DecisionSummary.next_requests) && phase1DecisionSummary.next_requests.length > 0 && (
+                          <div className="mt-3">
+                            <div className={`text-xs mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                              Next requests
+                            </div>
+                            <ul className={`text-sm list-disc pl-5 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                              {phase1DecisionSummary.next_requests.slice(0, 5).map((r: string, i: number) => (
+                                <li key={i}>{r}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 

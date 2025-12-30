@@ -37,6 +37,9 @@ docs/trace_audit/**
 .idea/
 *.iml
 
+# local git worktrees
+.worktrees/
+
 # pnpm store
 .pnpm-store/
 

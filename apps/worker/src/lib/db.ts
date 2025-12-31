@@ -40,6 +40,7 @@ export async function updateDocumentAnalysis(params: {
   extractionMetadata?: unknown;
   fullContent?: unknown;
   fullText?: string;
+  fullTextAbsentReason?: string;
   pageCount?: number;
 }) {
   const currentPool = getPool();
@@ -50,7 +51,8 @@ export async function updateDocumentAnalysis(params: {
            status = COALESCE($4, status),
            full_content = COALESCE($5, full_content),
            full_text = COALESCE($6, full_text),
-           page_count = COALESCE($7, page_count)
+           full_text_absent_reason = COALESCE($7, full_text_absent_reason),
+           page_count = COALESCE($8, page_count)
      WHERE id = $1`,
     [
       sanitizeText(params.documentId),
@@ -59,6 +61,7 @@ export async function updateDocumentAnalysis(params: {
       params.status === undefined ? null : sanitizeText(params.status ?? null),
       params.fullContent === undefined ? null : sanitizeDeep(params.fullContent ?? null),
       params.fullText === undefined ? null : sanitizeText(params.fullText ?? null),
+      params.fullTextAbsentReason === undefined ? null : sanitizeText(params.fullTextAbsentReason ?? null),
       params.pageCount ?? null,
     ]
   );
@@ -285,9 +288,12 @@ export type DocumentForAnalysis = {
   status: string;
   structured_data: unknown | null;
   extraction_metadata: unknown | null;
+  full_content: unknown | null;
   verification_status: string | null;
   verification_result: unknown | null;
   page_count: number | null;
+  full_text: string | null;
+  full_text_absent_reason: string | null;
   uploaded_at: string;
   updated_at: string;
 };
@@ -297,8 +303,11 @@ export async function getDocumentsForDealWithAnalysis(dealId: string): Promise<D
   const { rows } = await currentPool.query<DocumentForAnalysis>(
     `SELECT id, deal_id, title, type, status,
             structured_data, extraction_metadata,
+            full_content,
             verification_status, verification_result,
             page_count,
+            full_text,
+            full_text_absent_reason,
             uploaded_at, updated_at
        FROM documents
       WHERE deal_id = $1

@@ -182,6 +182,74 @@ function baseInputWithDocuments(): OrchestrationInput {
   };
 }
 
+it('prefers canonical financial metrics over keyFinancialMetrics when building extracted_metrics', async () => {
+  const storage = createStorage();
+
+  const seen: { finInput?: any } = {};
+  const finAnalyzer: AnyAnalyzer = {
+    analyze: jest.fn(async (input: any) => {
+      seen.finInput = input;
+      return okFinancialHealth();
+    }),
+  };
+
+  const analyzers = {
+    slideSequence: createAnalyzer(okSlideSequence()),
+    metricBenchmark: createAnalyzer(okMetricBenchmark()),
+    visualDesign: createAnalyzer(okVisualDesign()),
+    narrativeArc: createAnalyzer(okNarrativeArc()),
+    financialHealth: finAnalyzer,
+    riskAssessment: createAnalyzer(okRiskAssessment()),
+  };
+
+  const orchestrator = new DealOrchestrator(analyzers as any, storage, { debug: false });
+
+  const input: OrchestrationInput = {
+    deal_id: '33333333-3333-3333-3333-333333333333',
+    analysis_cycle: 1,
+    input_data: {
+      documents: [
+        {
+          fileName: 'Financials.xlsx',
+          totalPages: 1,
+          fileSizeBytes: 1000,
+          totalWords: 10,
+          mainHeadings: ['Financials'],
+          keyMetrics: [],
+          keyFinancialMetrics: { revenue: 999 },
+          structured_data: {
+            canonical: {
+              financials: {
+                canonical_metrics: {
+                  revenue: 100,
+                  expenses: 130,
+                  cogs: 50,
+                  cash_balance: 520,
+                  burn_rate: 30,
+                  runway_months: 17.3333,
+                  gross_margin: 50,
+                },
+              },
+            },
+          },
+          textSummary: 'Financial spreadsheet',
+        },
+      ],
+    },
+  };
+
+  const result = await orchestrator.analyze(input);
+  expect(result.success).toBe(true);
+  expect(finAnalyzer.analyze).toHaveBeenCalledTimes(1);
+  expect(seen.finInput).toBeTruthy();
+
+  const extracted = Array.isArray(seen.finInput.extracted_metrics) ? seen.finInput.extracted_metrics : [];
+  const revenueEntries = extracted.filter((m: any) => m?.name === 'revenue').map((m: any) => m.value);
+
+  // Canonical should appear before any legacy keyFinancialMetrics-derived value.
+  expect(revenueEntries[0]).toBe(100);
+});
+
 describe('DealOrchestrator (unit)', () => {
   let logSpy: jest.SpyInstance;
 
@@ -192,6 +260,51 @@ describe('DealOrchestrator (unit)', () => {
   afterEach(() => {
     logSpy.mockRestore();
     jest.useRealTimers();
+  });
+
+  it('composes executive_summary_v2 from worker phase1_deal_overview_v2 extras', async () => {
+    const storage = createStorage();
+
+    const analyzers = {
+      slideSequence: createAnalyzer(okSlideSequence()),
+      metricBenchmark: createAnalyzer(okMetricBenchmark()),
+      visualDesign: createAnalyzer(okVisualDesign()),
+      narrativeArc: createAnalyzer(okNarrativeArc()),
+      financialHealth: createAnalyzer(okFinancialHealth()),
+      riskAssessment: createAnalyzer(okRiskAssessment()),
+    };
+
+    const orchestrator = new DealOrchestrator(analyzers as any, storage, { debug: false });
+
+    const input: OrchestrationInput = {
+      ...baseInputWithDocuments(),
+      deal_id: '44444444-4444-4444-4444-444444444444',
+      analysis_cycle: 1,
+      input_data: {
+        ...(baseInputWithDocuments().input_data as any),
+        phase1_deal_overview_v2: {
+          product_solution: 'We provide a platform that automates investor deal screening for teams.',
+          market_icp: 'Built for venture funds and angel syndicates.',
+          raise: '$2.5M seed',
+          business_model: 'SaaS / subscription',
+          traction_signals: ['Revenue mentioned', 'Customers mentioned'],
+          key_risks_detected: ['Competition'],
+        },
+      },
+    };
+
+    const result = await orchestrator.analyze(input);
+    expect(result.success).toBe(true);
+
+    const saved = storage.saved[storage.saved.length - 1] as any;
+    expect(saved?.dio?.phase1?.deal_overview_v2).toBeTruthy();
+    const es2 = saved?.dio?.phase1?.executive_summary_v2;
+    expect(es2).toBeTruthy();
+
+    const missing = Array.isArray(es2?.missing) ? es2.missing : [];
+    for (const key of ['raise', 'business_model', 'traction_signals', 'key_risks_detected']) {
+      expect(missing).not.toContain(key);
+    }
   });
 
   it('short-circuits analyzers when documents are missing (insufficient_data)', async () => {
@@ -217,6 +330,10 @@ describe('DealOrchestrator (unit)', () => {
     const result = await orchestrator.analyze(input);
     expect(result.success).toBe(true);
     expect(result.dio).toBeDefined();
+
+    // Phase 1 deterministic slices are always present.
+    expect((result.dio as any).dio?.phase1?.executive_summary_v1).toBeTruthy();
+    expect((result.dio as any).dio?.phase1?.decision_summary_v1).toBeTruthy();
 
     // No analyzers should be invoked.
     expect(analyzers.slideSequence.analyze).not.toHaveBeenCalled();

@@ -93,6 +93,84 @@ export const Phase1DIOV1Schema = z.object({
   decision_summary_v1: Phase1DecisionSummaryV1Schema,
   claims: z.array(Phase1ClaimV1Schema),
   coverage: Phase1CoverageV1Schema,
+
+  // Additive: deterministic business archetype classification (worker-provided).
+  business_archetype_v1: z
+    .object({
+      value: z.string().min(1),
+      confidence: z.number().min(0).max(1),
+      generated_at: z.string().datetime().optional(),
+      evidence: z
+        .array(
+          z.object({
+            document_id: z.string().min(1),
+            page_range: z.tuple([z.number().int().positive(), z.number().int().positive()]).optional(),
+            snippet: z.string().min(1),
+            rule: z.string().optional(),
+          })
+        )
+        .optional(),
+    })
+    .optional(),
+
+  // Additive: worker-computed canonical overview for Phase 1 (V2).
+  // This is the preferred single source for executive-summary one-liner composition.
+  deal_overview_v2: z
+    .object({
+      deal_name: z.string().optional(),
+      product_solution: z.string().optional(),
+      market_icp: z.string().optional(),
+      deal_type: z.string().optional(),
+      raise: z.string().optional(),
+      business_model: z.string().optional(),
+      traction_signals: z.array(z.string()).optional(),
+      key_risks_detected: z.array(z.string()).optional(),
+      generated_at: z.string().datetime().optional(),
+      sources: z
+        .array(
+          z.object({
+            document_id: z.string().min(1),
+            page_range: z.tuple([z.number().int().positive(), z.number().int().positive()]).optional(),
+            note: z.string().optional(),
+          })
+        )
+        .optional(),
+    })
+    .optional(),
+
+  // Additive: diff summary between the latest stored DIO and the current run.
+  update_report_v1: z
+    .object({
+      generated_at: z.string().datetime(),
+	  previous_dio_found: z.boolean().optional(),
+      since_dio_id: z.string().uuid().optional(),
+      since_version: z.number().int().positive().optional(),
+	  docs_fingerprint: z.string().min(1).optional(),
+	  previous_docs_fingerprint: z.string().min(1).optional(),
+      changes: z
+        .array(
+          z.object({
+            field: z.string().min(1),
+            change_type: z.enum(["added", "updated", "removed"]),
+			category: z
+			  .enum([
+				"field_populated",
+				"field_lost",
+				"field_updated",
+				"coverage_changed",
+				"decision_changed",
+				"confidence_changed",
+				"docs_changed",
+			  ])
+			  .optional(),
+            before: z.string().optional(),
+            after: z.string().optional(),
+          })
+        )
+        .default([]),
+	  summary: z.string().optional(),
+    })
+    .optional(),
 });
 
 // ============================================================================

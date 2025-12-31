@@ -30,6 +30,7 @@ import type { DIOStorage, DIOStorageResult } from '../services/dio-storage.js';
 import { buildDIOContextFromInputData } from './dio-context';
 import { buildScoreExplanationFromDIO } from '../reports/score-explanation';
 import { getStableDocumentId, selectDocumentRoles } from './document-roles';
+import { generatePhase1DIOV1, mergePhase1IntoDIO } from '../phase1/phase1-dio-v1.js';
 
 // ==================== Configuration ====================
 
@@ -451,6 +452,25 @@ export class DealOrchestrator {
       for (const doc of docsToScan) {
         const source_doc_id = docIdOf(doc);
 
+        // Canonical metrics (deterministic normalization output). These should take precedence.
+        const canonical =
+          (doc?.structured_data?.canonical?.financials?.canonical_metrics ??
+            doc?.structuredData?.canonical?.financials?.canonical_metrics ??
+            doc?.structured_data?.canonical?.financials?.canonicalMetrics ??
+            doc?.structuredData?.canonical?.financials?.canonicalMetrics) as any;
+        if (canonical && typeof canonical === 'object' && !Array.isArray(canonical)) {
+          for (const [rawKey, rawValue] of Object.entries(canonical as Record<string, unknown>)) {
+            const num = parseNumberish(rawValue);
+            if (num == null) continue;
+            out.push({
+              name: rawKey,
+              value: num,
+              unit: rawKey === 'gross_margin' ? '%' : undefined,
+              source_doc_id,
+            });
+          }
+        }
+
         // keyFinancialMetrics (object) from Excel/structured extraction
         const kfm = doc?.keyFinancialMetrics;
         if (kfm && typeof kfm === 'object' && !Array.isArray(kfm)) {
@@ -822,7 +842,7 @@ export class DealOrchestrator {
     });
 
     // Build complete DIO
-    const dio: DealIntelligenceObject = {
+    let dio: DealIntelligenceObject = {
       schema_version: '1.0.0',
       dio_id: randomUUID(),
       deal_id: input.deal_id,
@@ -850,6 +870,53 @@ export class DealOrchestrator {
     };
     
     console.log('[buildDIO] DIO created with inputs.documents length:', dio.inputs.documents.length);
+
+    // Phase 1 deterministic addendum (DoD): always attach under `dio.phase1.*`
+    // Never fail orchestration due to Phase 1 addenda.
+    try {
+      const phase1 = generatePhase1DIOV1({
+        deal: {
+          deal_id: input.deal_id,
+          name: null,
+          stage: null,
+        },
+        // Worker-provided Phase 1 extras must be included at composition time,
+        // so composers (e.g., executive_summary_v2) see the populated overview.
+        deal_overview_v2: (input.input_data as any).phase1_deal_overview_v2,
+        business_archetype_v1: (input.input_data as any).phase1_business_archetype_v1,
+        update_report_v1: (input.input_data as any).phase1_update_report_v1,
+        inputDocuments: dio.inputs.documents
+          .filter((d: any) => d && typeof d === 'object')
+          .map((d: any) => ({
+            document_id: String(d.document_id ?? ''),
+            title: d.title ?? null,
+            type: d.type ?? null,
+            page_count: d.page_count ?? null,
+            full_text: typeof d.full_text === 'string' ? d.full_text : undefined,
+            fullText: typeof d.fullText === 'string' ? d.fullText : undefined,
+            text_summary: typeof d.text_summary === 'string' ? d.text_summary : undefined,
+            summary: typeof d.summary === 'string' ? d.summary : undefined,
+            mainHeadings: Array.isArray(d.mainHeadings) ? d.mainHeadings : undefined,
+            headings: Array.isArray(d.headings) ? d.headings : undefined,
+            keyMetrics: Array.isArray(d.keyMetrics) ? d.keyMetrics : undefined,
+            metrics: Array.isArray(d.metrics) ? d.metrics : undefined,
+            pages: Array.isArray(d.pages) ? d.pages : undefined,
+          }))
+          .filter((d: any) => d.document_id.trim().length > 0),
+      });
+
+      const phase1WithWorkerExtras = {
+        ...(phase1 as any),
+        deal_overview_v2: (input.input_data as any).phase1_deal_overview_v2,
+        business_archetype_v1: (input.input_data as any).phase1_business_archetype_v1,
+        update_report_v1: (input.input_data as any).phase1_update_report_v1,
+      };
+
+      dio = mergePhase1IntoDIO(dio as any, phase1WithWorkerExtras as any) as DealIntelligenceObject;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log('Phase 1 addendum failed (ignored)', { deal_id: input.deal_id, error: message });
+    }
 
     // Attach score explainability and an extracted overall_score for downstream consumers.
     // Storage persists its own score_explanation/overall_score, but this makes the in-memory DIO consistent.

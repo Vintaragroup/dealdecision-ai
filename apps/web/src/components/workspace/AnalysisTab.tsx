@@ -33,6 +33,8 @@ import { useUserRole } from '../../contexts/UserRoleContext';
 interface AnalysisTabProps {
   darkMode: boolean;
   dealData: DealFormData;
+	// Optional hook to trigger the real backend analysis flow (DealWorkspace: apiPostAnalyze + jobs)
+	onRunAnalysis?: () => Promise<void> | void;
 }
 
 interface CategoryScore {
@@ -58,7 +60,7 @@ interface DealAnalysis {
   achievements: { id: string; title: string; unlocked: boolean }[];
 }
 
-export function AnalysisTab({ darkMode, dealData }: AnalysisTabProps) {
+export function AnalysisTab({ darkMode, dealData, onRunAnalysis }: AnalysisTabProps) {
   const [analysis, setAnalysis] = useState<DealAnalysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -81,6 +83,21 @@ export function AnalysisTab({ darkMode, dealData }: AnalysisTabProps) {
     const result = analyzeDeal(dealData);
     setAnalysis(result);
     setAnalyzing(false);
+  };
+
+  const handleReAnalyze = async () => {
+    // Always recompute local UI analysis for immediate feedback, but if a backend analysis hook
+    // is provided (DealWorkspace), also trigger that existing flow.
+    setAnalyzing(true);
+    try {
+      if (onRunAnalysis) {
+        await onRunAnalysis();
+      }
+      const result = analyzeDeal(dealData);
+      setAnalysis(result);
+    } finally {
+      setAnalyzing(false);
+    }
   };
 
   const analyzeDeal = (data: DealFormData): DealAnalysis => {
@@ -527,7 +544,7 @@ export function AnalysisTab({ darkMode, dealData }: AnalysisTabProps) {
               variant="outline"
               size="sm"
               darkMode={darkMode}
-              onClick={runAnalysis}
+              onClick={handleReAnalyze}
               icon={<RefreshCw className="w-4 h-4" />}
             >
               Re-analyze

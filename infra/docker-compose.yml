@@ -75,6 +75,13 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/dealdecision
       REDIS_URL: redis://redis:6379
+      # Phase 1 DealOverviewV2 debug logs (candidate scoring + selection):
+      # - Set to "1" to enable
+      # - Set to "0" or remove to disable
+      # Verify:
+      #   docker compose -f infra/docker-compose.yml up -d worker
+      #   docker compose -f infra/docker-compose.yml logs -f --tail=200 worker
+      DEBUG_PHASE1_OVERVIEW_V2: "1"
     volumes:
       - ../apps/worker/src:/app/apps/worker/src
       - ../apps/worker/package.json:/app/apps/worker/package.json
@@ -92,22 +99,19 @@ services:
     build:
       context: ..
       dockerfile: apps/web/Dockerfile.dev
-    command: ["pnpm", "--filter", "web", "dev"]
+    command: ["pnpm", "--filter", "web", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
     environment:
       VITE_API_BASE_URL: http://localhost:9000
       VITE_BACKEND_MODE: live
       CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "200"
       WATCHPACK_POLLING: "true"
     ports:
       - "5199:5173"
     volumes:
-      - ../apps/web/src:/app/apps/web/src
-      - ../apps/web/package.json:/app/apps/web/package.json
-      - ../apps/web/vite.config.ts:/app/apps/web/vite.config.ts
-      - ../apps/web/index.html:/app/apps/web/index.html
-      - ../apps/web/tsconfig.json:/app/apps/web/tsconfig.json
-      - ../tsconfig.base.json:/app/tsconfig.base.json
-      - ../pnpm-lock.yaml:/app/pnpm-lock.yaml
+      - ..:/app
+      - /app/node_modules
+      - /app/apps/web/node_modules
     depends_on:
       api:
         condition: service_started

@@ -2,6 +2,13 @@
   import { defineConfig } from 'vitest/config';
   import react from '@vitejs/plugin-react-swc';
   import path from 'path';
+  import fs from 'fs';
+
+  const isDocker = fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv');
+  if (isDocker && !process.env.BROWSER) {
+    // Prevent Vite from trying to spawn xdg-open in containers.
+    process.env.BROWSER = 'none';
+  }
 
   export default defineConfig({
     plugins: [react()],
@@ -56,7 +63,7 @@
     server: {
       port: 5173,
       host: true,
-      open: true,
+      open: false,
     },
     test: {
       environment: 'jsdom',

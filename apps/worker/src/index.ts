@@ -3,6 +3,7 @@ import { randomUUID, createHash } from "crypto";
 import type { JobStatus } from "@dealdecision/contracts";
 import {
 	sanitizeText,
+	generatePhase1DIOV1,
 	DealOrchestrator,
 	DIOStorageImpl,
 	SlideSequenceAnalyzer,
@@ -33,9 +34,12 @@ import {
 	upsertDocumentOriginalFile,
 } from "./lib/db";
 import { deriveEvidenceDrafts } from "./lib/evidence";
+import { normalizeToCanonical } from "./lib/normalization";
 import { processDocument } from "./lib/processors";
 import { verifyDocumentExtraction } from "./lib/verification";
 import { remediateStructuredData } from "./lib/remediation";
+import { buildPhase1DealOverviewV2, buildPhase1UpdateReportV1 } from "./lib/phase1/dealOverviewV2";
+import { buildPhase1BusinessArchetypeV1 } from "./lib/phase1/businessArchetypeV1";
 import type { DocumentAnalysis, ExtractedContent } from "./lib/processors";
 import type { VerificationResult } from "./lib/verification";
 
@@ -208,6 +212,7 @@ async function ingestDocumentProcessor(job: Job) {
 	}
 
 	try {
+		const extractionStartedAt = new Date().toISOString();
 		await updateJob(job, "running", `Starting document extraction (attempt ${attempt})`, 5);
 		if (documentId) {
 			await updateDocumentStatus(documentId, "processing");
@@ -254,6 +259,14 @@ async function ingestDocumentProcessor(job: Job) {
 			dealId
 		);
 
+		// Normalization (always runs): ensure structured_data.canonical.* exists.
+		const normalized = normalizeToCanonical({
+			contentType: analysis.contentType,
+			content: analysis.content,
+			structuredData: analysis.structuredData,
+		});
+		analysis.structuredData = normalized.structuredData;
+
 		await updateJob(
 			job,
 			"running",
@@ -262,7 +275,26 @@ async function ingestDocumentProcessor(job: Job) {
 		);
 
 		const completeness = computeCompleteness(analysis);
-		const extractionMetadata = {
+		const extractorNameByKind: Record<string, string> = {
+			pdf: "worker.pdf",
+			excel: "worker.excel",
+			powerpoint: "worker.powerpoint",
+			word: "worker.word",
+			image: "worker.ocr",
+			unknown: "worker.unknown",
+		};
+		const docKind = analysis.contentType;
+		const extractionFinishedAt = new Date().toISOString();
+		const extractionMetadata: any = {
+			// DoD-required fields
+			doc_kind: docKind,
+			extractor_name: extractorNameByKind[docKind] ?? "worker.unknown",
+			extractor_version: process.env.DOC_EXTRACTOR_VERSION || "1.0.0",
+			started_at: extractionStartedAt,
+			finished_at: extractionFinishedAt,
+			status: analysis.metadata.extractionSuccess ? "succeeded" : "failed",
+
+			// Existing fields kept for compatibility
 			contentType: analysis.contentType,
 			fileSizeBytes: decodedBytes,
 			processingTimeMs: analysis.metadata.processingTimeMs,
@@ -285,14 +317,33 @@ async function ingestDocumentProcessor(job: Job) {
 			extractionMetadata.needsOcr = needsOcr;
 			const fullText = extractFullText(analysis.content, analysis.contentType);
 			const pageCount = getPageCount(analysis.content, analysis.contentType);
+			const fullTextAbsentReason = fullText && fullText.trim().length > 0
+				? null
+				: needsOcr
+					? "no_text_extracted_needs_ocr"
+					: "no_text_extracted";
 			await updateDocumentAnalysis({
 				documentId,
 				structuredData: analysis.structuredData,
 				extractionMetadata,
 				fullContent: analysis.content,
 				fullText: fullText || undefined,
+				fullTextAbsentReason: fullTextAbsentReason ?? undefined,
 				pageCount: pageCount || undefined,
 			});
+
+			// Evidence emission (best-effort): even on failed extraction, canonical may contain derived/null metrics.
+			// Only emit when we have concrete detected values.
+			for (const ev of normalized.canonicalEvidence) {
+				await insertEvidence({
+					deal_id: dealId,
+					document_id: documentId,
+					source: "extraction",
+					kind: "canonical_metric",
+					text: `${ev.metric_key}: ${ev.value} • ${ev.source_pointer}`,
+					confidence: 0.9,
+				});
+			}
 			await updateDocumentStatus(documentId, needsOcr ? "needs_ocr" : "failed");
 			await updateJob(job, "failed", message);
 			return { ok: false, analysis };
@@ -353,8 +404,30 @@ async function ingestDocumentProcessor(job: Job) {
 
 		await updateJob(job, "running", `Inserted evidence (metrics=${metricsInserted}, headings=${headingsInserted})`, 80);
 
+		// Evidence emission (DoD): canonical metrics with pointers (esp. Excel)
+		let canonicalInserted = 0;
+		for (const ev of normalized.canonicalEvidence) {
+			await insertEvidence({
+				deal_id: dealId,
+				document_id: documentId,
+				source: "extraction",
+				kind: "canonical_metric",
+				text: `${ev.metric_key}: ${ev.value} • ${ev.source_pointer}`,
+				confidence: 0.9,
+			});
+			canonicalInserted += 1;
+		}
+		if (canonicalInserted > 0) {
+			await updateJob(job, "running", `Inserted canonical metric evidence (${canonicalInserted})`, 82);
+		}
+
 		const fullText = extractFullText(analysis.content, analysis.contentType);
 		const pageCount = getPageCount(analysis.content, analysis.contentType);
+		const fullTextAbsentReason = fullText && fullText.trim().length > 0
+			? null
+			: analysis.contentType === "excel"
+				? "excel_has_no_full_text"
+				: "no_text_extracted";
 		
 		// Determine content threshold based on document type
 		// Word docs (cut sheets, whitepapers) can be valid with minimal content
@@ -375,6 +448,7 @@ async function ingestDocumentProcessor(job: Job) {
 				extractionMetadata,
 				fullContent: analysis.content,
 				fullText: fullText || undefined,
+				fullTextAbsentReason: fullTextAbsentReason ?? undefined,
 				pageCount: pageCount || undefined,
 			});
 			await updateDocumentStatus(documentId, "pending");
@@ -392,6 +466,7 @@ async function ingestDocumentProcessor(job: Job) {
 				extractionMetadata,
 				fullContent: analysis.content,
 				fullText: fullText || undefined,
+				fullTextAbsentReason: fullTextAbsentReason ?? undefined,
 				pageCount: pageCount || undefined,
 			});
 			await updateDocumentStatus(documentId, "failed");
@@ -406,6 +481,7 @@ async function ingestDocumentProcessor(job: Job) {
 				extractionMetadata,
 				fullContent: analysis.content,
 				fullText: fullText || undefined,
+				fullTextAbsentReason: fullTextAbsentReason ?? undefined,
 				pageCount: pageCount || undefined,
 			});
 			await updateJob(
@@ -438,11 +514,18 @@ async function ingestDocumentProcessor(job: Job) {
 			await updateDocumentAnalysis({
 				documentId,
 				extractionMetadata: {
+					doc_kind: fileName?.toLowerCase().split(".").pop() ?? null,
+					extractor_name: "worker.unknown",
+					extractor_version: process.env.DOC_EXTRACTOR_VERSION || "1.0.0",
+					started_at: null,
+					finished_at: new Date().toISOString(),
+					status: "failed",
 					contentType: fileName?.toLowerCase().split(".").pop() ?? null,
 					attempt,
 					errorMessage: message,
 					needsOcr,
 				},
+				fullTextAbsentReason: "extraction_failed",
 			});
 			await updateDocumentStatus(documentId, needsOcr ? "needs_ocr" : "failed");
 		}
@@ -604,19 +687,31 @@ createWorker("analyze_deal", async (job: Job) => {
 	try {
 		await updateJob(job, "running", "Loading documents for analysis", 10);
 		const rows = await getDocumentsForDealWithAnalysis(dealId);
-		const completed = rows.filter((doc) => doc.status === "completed" && doc.extraction_metadata);
-		if (completed.length === 0) {
-			await updateJob(job, "failed", "No completed documents available for analysis", 100);
+		const eligible = rows.filter(
+			(doc) => (doc.status === "completed" || doc.status === "ready_for_analysis") && doc.extraction_metadata
+		);
+		if (eligible.length === 0) {
+			await updateJob(job, "failed", "No extracted documents available for analysis", 100);
 			return { ok: false };
 		}
 
-		const inputDocuments = completed.map((doc) => {
+		const inputDocuments = eligible.map((doc) => {
 			const extraction = (doc.extraction_metadata && typeof doc.extraction_metadata === "object")
 				? (doc.extraction_metadata as Record<string, unknown>)
 				: {};
 			const structured = (doc.structured_data && typeof doc.structured_data === "object")
 				? (doc.structured_data as Record<string, unknown>)
 				: {};
+			const canonical = (structured as any)?.canonical && typeof (structured as any).canonical === "object"
+				? (structured as any).canonical
+				: undefined;
+			const canonicalMetrics = (canonical as any)?.financials?.canonical_metrics && typeof (canonical as any).financials.canonical_metrics === "object"
+				? ((canonical as any).financials.canonical_metrics as Record<string, unknown>)
+				: {};
+			const canonicalKeyMetrics = Object.entries(canonicalMetrics)
+				.filter(([, v]) => typeof v === "number" && Number.isFinite(v as number))
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([k, v]) => ({ key: k, value: v, source: "canonical" }));
 
 			return {
 				document_id: doc.id,
@@ -625,8 +720,27 @@ createWorker("analyze_deal", async (job: Job) => {
 				page_count: doc.page_count ?? undefined,
 				verification_status: doc.verification_status ?? null,
 				verification_result: doc.verification_result ?? null,
-				...extraction,
-				...structured,
+
+				// DoD: analyzers consume canonical structured data only
+				canonical: canonical ?? {
+					company: {},
+					deal: {},
+					traction: {},
+					financials: { canonical_metrics: {} },
+					risks: {},
+				},
+				keyMetrics: canonicalKeyMetrics,
+				mainHeadings: [],
+				textSummary: "",
+
+				// DoD: full_text allowed only as fallback
+				full_text: typeof doc.full_text === "string" ? doc.full_text : undefined,
+				full_text_absent_reason: typeof doc.full_text_absent_reason === "string" ? doc.full_text_absent_reason : undefined,
+
+				// Keep only non-content metadata that helps orchestration; no raw extractor artifacts.
+				doc_kind: (extraction as any).doc_kind ?? undefined,
+				extractor_name: (extraction as any).extractor_name ?? undefined,
+				extractor_version: (extraction as any).extractor_version ?? undefined,
 			};
 		});
 
@@ -641,6 +755,107 @@ createWorker("analyze_deal", async (job: Job) => {
 		await updateJob(job, "running", `Running analysis (${inputDocuments.length} document(s))`, 40);
 
 		const storage = new DIOStorageImpl(process.env.DATABASE_URL || "");
+		let previousDio: any | null = null;
+		try {
+			previousDio = await storage.getLatestDIO(dealId);
+		} catch {
+			previousDio = null;
+		}
+
+		const nowIso = new Date().toISOString();
+		const phase1_deal_overview_v2 = buildPhase1DealOverviewV2({
+			nowIso,
+			documents: eligible.map((doc) => ({
+				document_id: doc.id,
+				title: doc.title,
+				type: doc.type,
+				full_text: doc.full_text,
+				full_content: doc.full_content,
+			})),
+		});
+		const phase1_business_archetype_v1 = buildPhase1BusinessArchetypeV1({
+			nowIso,
+			documents: eligible.map((doc) => ({
+				document_id: doc.id,
+				title: doc.title,
+				type: doc.type,
+				full_text: doc.full_text,
+				full_content: doc.full_content,
+			})),
+		});
+
+		// Deterministic docs fingerprint for change acknowledgement.
+		const docsFingerprint = createHash("sha256")
+			.update(
+				eligible
+					.map((d) => ({
+						id: String(d.id ?? ""),
+						type: typeof d.type === "string" ? d.type : "",
+						title: typeof d.title === "string" ? d.title : "",
+					}))
+					.sort((a, b) => a.id.localeCompare(b.id))
+					.map((d) => `${d.id}|${d.type}|${d.title}`)
+					.join("\n")
+			)
+			.digest("hex");
+		const previousDocsFingerprint =
+			(typeof (previousDio as any)?.dio?.phase1?.update_report_v1?.docs_fingerprint === "string")
+				? (previousDio as any).dio.phase1.update_report_v1.docs_fingerprint
+				: undefined;
+
+		// Compute a deterministic current Phase 1 snapshot (no LLM; no new mining) so we can diff
+		// coverage/decision/missing against the previous stored Phase 1.
+		const currentPhase1 = generatePhase1DIOV1({
+			deal: {
+				deal_id: dealId,
+				name:
+					(typeof (previousDio as any)?.deal?.name === "string" ? (previousDio as any).deal.name : undefined)
+					?? (typeof phase1_deal_overview_v2.deal_name === "string" ? phase1_deal_overview_v2.deal_name : undefined),
+			},
+			inputDocuments,
+			deal_overview_v2: phase1_deal_overview_v2,
+			business_archetype_v1: phase1_business_archetype_v1,
+		});
+		if (process.env.DEBUG_PHASE1_OVERVIEW_V2 === "1") {
+			console.log(
+				JSON.stringify({
+					event: "phase1_deal_overview_v2_selected",
+					deal_id: dealId,
+					product_solution: phase1_deal_overview_v2.product_solution ?? null,
+					market_icp: phase1_deal_overview_v2.market_icp ?? null,
+					sources: Array.isArray(phase1_deal_overview_v2.sources) ? phase1_deal_overview_v2.sources : [],
+				})
+			);
+		}
+		const phase1_update_report_v1 = buildPhase1UpdateReportV1({
+			previousDio,
+			currentOverview: phase1_deal_overview_v2,
+			currentPhase1,
+			docsFingerprint,
+			previousDocsFingerprint,
+			nowIso,
+		});
+		{
+			const hasPrevDio = !!previousDio;
+			const prevDioHasPhase1 = !!(previousDio as any)?.dio?.phase1;
+			const t = typeof phase1_update_report_v1;
+			const isObj = !!phase1_update_report_v1 && t === "object";
+			const keys = isObj ? Object.keys(phase1_update_report_v1 as any) : [];
+			const summary =
+				isObj && typeof (phase1_update_report_v1 as any).summary === "string" ? (phase1_update_report_v1 as any).summary : "";
+			const summary_head = summary ? summary.slice(0, 80) : "";
+			console.log(
+				JSON.stringify({
+					event: "phase1_update_report_v1_built",
+					deal_id: dealId,
+					hasPrevDio,
+					prevDioHasPhase1,
+					typeof_phase1_update_report_v1: t,
+					update_report_v1_keys: keys,
+					update_report_v1_summary_head: summary_head,
+				})
+			);
+		}
 		const analyzers = {
 			slideSequence: new SlideSequenceAnalyzer(),
 			metricBenchmark: new MetricBenchmarkValidator(),
@@ -663,6 +878,9 @@ createWorker("analyze_deal", async (job: Job) => {
 			input_data: {
 				documents: inputDocuments,
 				dio_context,
+				phase1_deal_overview_v2,
+				phase1_business_archetype_v1,
+				phase1_update_report_v1,
 			},
 		});
 

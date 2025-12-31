@@ -17,6 +17,7 @@ import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { EvidencePanel } from '../evidence/EvidencePanel';
 import { apiGetDeal, apiPostAnalyze, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, isLiveBackend, subscribeToEvents, type DealReport, type JobUpdatedEvent } from '../../lib/apiClient';
 import { debugLogger } from '../../lib/debugLogger';
+import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { 
   FileText, 
@@ -103,6 +104,18 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [dealFromApi, setDealFromApi] = useState<any>(null);
   const [reportFromApi, setReportFromApi] = useState<DealReport | null>(null);
   const lastEventIdRef = useRef<string | undefined>(undefined);
+  const handledTerminalJobKeysRef = useRef<Set<string>>(new Set());
+  const shownToastKeysRef = useRef<Set<string>>(new Set());
+
+  const [debugApiEntries, setDebugApiEntries] = useState<DebugApiEntry[]>(() => (debugApiIsEnabled() ? debugApiGetEntries() : []));
+
+  useEffect(() => {
+    if (!debugApiIsEnabled()) return;
+    setDebugApiEntries(debugApiGetEntries());
+    return debugApiSubscribe(() => {
+      setDebugApiEntries(debugApiGetEntries());
+    });
+  }, []);
 
   const loadReport = async () => {
     if (!dealId || !isLiveBackend()) {
@@ -155,6 +168,25 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     };
   }, [dealId]);
 
+  const isProbablyOcrJunk = (value: unknown): boolean => {
+    if (typeof value !== 'string') return true;
+    const s = value.replace(/[\u0000-\u001F\u007F]+/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!s) return true;
+    if (/[\uFFFD�]/.test(s)) return true;
+    if (/[@#%*=^~`|\\]{2,}/.test(s)) return true;
+    if (/([!?.,:;])\1{2,}/.test(s)) return true;
+    const noSpace = s.replace(/\s+/g, '');
+    const letters = (noSpace.match(/[A-Za-z]/g) ?? []).length;
+    const symbols = (noSpace.match(/[^A-Za-z0-9]/g) ?? []).length;
+    if (noSpace.length >= 20) {
+      const letterRatio = letters / noSpace.length;
+      const symbolRatio = symbols / noSpace.length;
+      if (letterRatio < 0.35) return true;
+      if (symbolRatio > 0.55) return true;
+    }
+    return false;
+  };
+
   // Map dealId to deal information (in a real app, this would be from an API/database)
   const dealInfo = dealFromApi ? {
     name: dealFromApi.name || 'Unknown Deal',
@@ -164,7 +196,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     score: dealFromApi.score || investorScore,
     updatedTime: dealFromApi.updated_at ? new Date(dealFromApi.updated_at).toLocaleDateString() : 'Recently',
     createdDate: dealFromApi.created_at ? new Date(dealFromApi.created_at).toLocaleDateString() : 'Unknown',
-    description: dealData?.description || 'No description provided',
+    description:
+      (typeof (dealFromApi as any)?.ui?.executiveSummary?.summary === 'string' &&
+        (dealFromApi as any).ui.executiveSummary.summary.trim().length > 0
+        ? (!isProbablyOcrJunk((dealFromApi as any).ui.executiveSummary.summary)
+          ? (dealFromApi as any).ui.executiveSummary.summary
+          : '')
+        : undefined) ||
+      dealData?.description ||
+      '',
     metrics: {
       currentRevenue: dealData?.revenue || 'N/A',
       year1Target: dealDataExt?.year1Target || 'N/A',
@@ -176,6 +216,36 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       breakEven: dealDataExt?.breakEven || 'N/A'
     }
   } : null;
+
+  const overviewV2 = ((dealFromApi as any)?.ui?.overviewV2 ?? (dealFromApi as any)?.ui?.dealOverviewV2) as any;
+  const updateReportV1 = (dealFromApi as any)?.ui?.updateReportV1 as any;
+	const businessArchetypeV1 = (dealFromApi as any)?.ui?.businessArchetypeV1 as any;
+  const executiveSummaryV2 = (dealFromApi as any)?.ui?.executiveSummaryV2 as any;
+  const executiveSummaryV1 = (dealFromApi as any)?.ui?.executiveSummary as any;
+
+  useEffect(() => {
+    if (!debugApiIsEnabled()) return;
+    if (!dealId || !dealFromApi) return;
+
+    const topLevelKeys = (value: unknown): string[] => {
+      if (value == null) return [];
+      if (Array.isArray(value)) return ['[array]'];
+      if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).slice(0, 50);
+      return [`[${typeof value}]`];
+    };
+
+    console.info('[DDAI]', {
+      type: 'ddai.dealworkspace.v2_presence',
+      dealId,
+      executiveSummaryV2_present: executiveSummaryV2 != null,
+      executiveSummaryV2_paragraphs: Array.isArray(executiveSummaryV2?.paragraphs) ? executiveSummaryV2.paragraphs.length : 0,
+      executiveSummaryV2_highlights: Array.isArray(executiveSummaryV2?.highlights) ? executiveSummaryV2.highlights.length : 0,
+      overviewV2_present: overviewV2 != null,
+      overviewV2_keys: topLevelKeys(overviewV2),
+      updateReportV1_present: updateReportV1 != null,
+      updateReportV1_keys: topLevelKeys(updateReportV1),
+    });
+  }, [dealId, dealFromApi, executiveSummaryV2, overviewV2, updateReportV1]);
 
   // Use dealInfo if available, otherwise fall back to dealData
   const displayName = dealInfo?.name || dealData?.name || 'Unnamed Deal';
@@ -249,7 +319,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           setTimeout(poll, 2000);
         } else {
           setAnalyzing(false);
-          addToast(job.status === 'succeeded' ? 'success' : 'error', 'Analysis completed', job.message || job.status);
+          addToastOnce(`analysis-complete:${jobId}:${job.status}`, job.status === 'succeeded' ? 'success' : 'error', 'Analysis completed', job.message || job.status);
           if (job.status === 'succeeded' && dealId) {
             apiGetDeal(dealId)
               .then((deal) => {
@@ -311,8 +381,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           return;
         }
         if (["succeeded", "failed", "cancelled"].includes(job.status)) {
+          const terminalKey = `job-terminal:${job.job_id}:${job.status}`;
+          if (handledTerminalJobKeysRef.current.has(terminalKey)) return;
+          handledTerminalJobKeysRef.current.add(terminalKey);
           setAnalyzing(false);
-          addToast(job.status === "succeeded" ? "success" : "error", "Analysis completed", job.message || job.status);
+          addToastOnce(`analysis-complete:${job.job_id}:${job.status}`, job.status === "succeeded" ? "success" : "error", "Analysis completed", job.message || job.status);
           if (job.status === 'succeeded') {
             loadReport();
             loadEvidence();
@@ -392,6 +465,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       message
     };
     setToasts(prev => [...prev, newToast]);
+  };
+
+  const addToastOnce = (key: string, type: ToastType, title: string, message?: string) => {
+    const keys = shownToastKeysRef.current;
+    if (keys.has(key)) return;
+    keys.add(key);
+    // Avoid unbounded growth in long sessions.
+    if (keys.size > 200) keys.clear();
+    addToast(type, title, message);
   };
 
   const removeToast = (id: string) => {
@@ -818,6 +900,71 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         )}
 
         {/* Tabs Section */}
+
+        {debugApiIsEnabled() && (
+          <details
+            className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
+              darkMode
+                ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
+                : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
+            }`}
+          >
+            <summary className={`px-4 py-3 cursor-pointer select-none text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+              Debug → API Map <span className={`${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>({debugApiEntries.length} recent)</span>
+            </summary>
+            <div className={`px-4 pb-4 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+              {debugApiEntries.length === 0 ? (
+                <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No calls/events captured yet.</div>
+              ) : (
+                <div className="space-y-2">
+                  {debugApiEntries.map((e, idx) => {
+                    const time = new Date(e.ts).toLocaleTimeString();
+                    if (e.kind === 'api') {
+                      return (
+                        <div
+                          key={`${e.kind}-${e.ts}-${idx}`}
+                          className={`rounded-lg border px-3 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                            <div className="font-mono">
+                              {time} · {e.method} {e.path}
+                            </div>
+                            <div>
+                              <span className="font-mono">{e.status}</span> · <span className="font-mono">{e.duration_ms}ms</span>
+                              {e.dealId ? <span> · deal={e.dealId}</span> : null}
+                            </div>
+                          </div>
+                          <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} mt-1`}>keys: {e.keys.join(', ') || '—'}{e.error ? ` · error: ${e.error}` : ''}</div>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div
+                        key={`${e.kind}-${e.ts}-${idx}`}
+                        className={`rounded-lg border px-3 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                          <div className="font-mono">
+                            {time} · SSE {e.event}
+                          </div>
+                          <div>
+                            {e.dealId ? <span>deal={e.dealId}</span> : null}
+                          </div>
+                        </div>
+                        <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} mt-1`}>
+                          {e.keys ? `keys: ${e.keys.join(', ') || '—'}` : 'keys: —'}
+                          {e.error ? ` · error: ${e.error}` : ''}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </details>
+        )}
+
         <div className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
           darkMode
             ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
@@ -936,9 +1083,136 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     Executive Summary
                   </h3>
                   <div className={`p-4 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
-                    <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                      {dealInfo?.description || dealData?.description || 'No description provided'}
-                    </p>
+                    {Array.isArray(executiveSummaryV2?.paragraphs) && executiveSummaryV2.paragraphs.some((p: any) => typeof p === 'string' && p.trim().length > 0) ? (
+                      <div className="space-y-3">
+                        {executiveSummaryV2.paragraphs
+                          .filter((p: any) => typeof p === 'string' && p.trim().length > 0)
+                          .slice(0, 2)
+                          .map((p: string, i: number) => (
+                            <p key={i} className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                              {p}
+                            </p>
+                          ))}
+
+                        {Array.isArray(executiveSummaryV2?.highlights) && executiveSummaryV2.highlights.length > 0 ? (
+                          <ul className={`list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                            {executiveSummaryV2.highlights
+                              .filter((h: any) => typeof h === 'string' && h.trim().length > 0)
+                              .slice(0, 6)
+                              .map((h: string, i: number) => (
+                                <li key={i}>{h}</li>
+                              ))}
+                          </ul>
+                        ) : null}
+
+                        {Array.isArray(executiveSummaryV2?.missing) && executiveSummaryV2.missing.length > 0 ? (
+                          <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                            Missing: {executiveSummaryV2.missing.filter((m: any) => typeof m === 'string' && m.trim().length > 0).slice(0, 12).join(', ')}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      typeof executiveSummaryV1?.summary === 'string' && executiveSummaryV1.summary.trim().length > 0 && !isProbablyOcrJunk(executiveSummaryV1.summary) ? (
+                        <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                          {executiveSummaryV1.summary}
+                        </p>
+                      ) : (
+                        <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          Not available
+                        </div>
+                      )
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className={`text-sm mb-3 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    Deal Overview (V2)
+                  </h3>
+                  <div className={`p-4 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
+                    {overviewV2 && typeof overviewV2 === 'object' ? (
+                      <div className="space-y-2">
+              {businessArchetypeV1 && typeof businessArchetypeV1 === 'object' && typeof businessArchetypeV1.value === 'string' && businessArchetypeV1.value.trim() ? (
+                <div>
+                  <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Business archetype</div>
+                  <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                    {businessArchetypeV1.value}
+                    {typeof businessArchetypeV1.confidence === 'number' && Number.isFinite(businessArchetypeV1.confidence)
+                      ? ` (${Math.round(businessArchetypeV1.confidence * 100)}%)`
+                      : ''}
+                  </div>
+                </div>
+              ) : null}
+                        {typeof overviewV2.product_solution === 'string' && overviewV2.product_solution.trim() ? (
+                          <div>
+                            <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Product</div>
+                            <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{overviewV2.product_solution}</div>
+                          </div>
+                        ) : null}
+                        {typeof overviewV2.market_icp === 'string' && overviewV2.market_icp.trim() ? (
+                          <div>
+                            <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Market / ICP</div>
+                            <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{overviewV2.market_icp}</div>
+                          </div>
+                        ) : null}
+                        {typeof overviewV2.business_model === 'string' && overviewV2.business_model.trim() ? (
+                          <div>
+                            <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Business model</div>
+                            <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{overviewV2.business_model}</div>
+                          </div>
+                        ) : null}
+                        {typeof overviewV2.raise === 'string' && overviewV2.raise.trim() ? (
+                          <div>
+                            <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Raise</div>
+                            <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{overviewV2.raise}</div>
+                          </div>
+                        ) : null}
+                        {(
+                          !(typeof overviewV2.product_solution === 'string' && overviewV2.product_solution.trim()) &&
+                          !(typeof overviewV2.market_icp === 'string' && overviewV2.market_icp.trim()) &&
+                          !(typeof overviewV2.business_model === 'string' && overviewV2.business_model.trim()) &&
+                          !(typeof overviewV2.raise === 'string' && overviewV2.raise.trim())
+                        ) ? (
+                          <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Not available</div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Not available</div>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className={`text-sm mb-3 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    Update Report
+                  </h3>
+                  <div className={`p-4 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
+                    {updateReportV1 && typeof updateReportV1 === 'object' ? (
+                      <>
+                        {typeof updateReportV1.summary === 'string' && updateReportV1.summary.trim() ? (
+                          <div className={`text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{updateReportV1.summary}</div>
+                        ) : null}
+                        {Array.isArray((updateReportV1 as any).changed_fields) && (updateReportV1 as any).changed_fields.length > 0 ? (
+                          <div className="space-y-1">
+                            {(updateReportV1 as any).changed_fields.slice(0, 12).map((f: any, idx: number) => (
+                              <div key={idx} className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{String(f)}</div>
+                            ))}
+                          </div>
+                        ) : Array.isArray((updateReportV1 as any).changes) && (updateReportV1 as any).changes.length > 0 ? (
+                          <div className="space-y-1">
+                            {(updateReportV1 as any).changes.slice(0, 12).map((c: any, idx: number) => (
+                              <div key={idx} className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                {String(c?.field ?? c?.path ?? 'field')} · {String(c?.change_type ?? c?.type ?? 'updated')}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Not available</div>
+                        )}
+                      </>
+                    ) : (
+                      <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Not available</div>
+                    )}
                   </div>
                 </div>
 
@@ -1011,7 +1285,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   description: 'Building next-gen AI infrastructure',
                   estimatedSavings: { money: 18500, hours: 85 }
                 }} 
-                darkMode={darkMode} 
+                darkMode={darkMode}
+					onRunAnalysis={runAIAnalysis}
               />
             )}
 

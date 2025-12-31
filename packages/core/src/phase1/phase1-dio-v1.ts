@@ -28,6 +28,21 @@ export type Phase1ExecutiveSummaryV1 = {
 	evidence: Phase1ExecutiveSummaryEvidenceRefV1[];
 };
 
+export type Phase1ExecutiveSummaryV2 = {
+	// Deterministic, investor-grade composer output from Phase 1 structured signals.
+	title: string;
+	paragraphs: string[]; // 1–2 short paragraphs
+	highlights: string[]; // bullets
+	missing: string[]; // explicit acknowledgement of missing fields
+	signals: {
+		recommendation: Phase1RecommendationV1;
+		score: number; // 0–100
+		confidence: Phase1ConfidenceBand;
+		blockers_count: number;
+	};
+	generated_at?: string; // derived from overview_v2.generated_at when present
+};
+
 export type Phase1ClaimCategoryV1 =
 	| "product"
 	| "market"
@@ -66,9 +81,39 @@ export type Phase1DecisionSummaryV1 = {
 
 export type Phase1DIOV1 = {
 	executive_summary_v1: Phase1ExecutiveSummaryV1;
+	executive_summary_v2?: Phase1ExecutiveSummaryV2;
 	decision_summary_v1: Phase1DecisionSummaryV1;
 	claims: Phase1ClaimV1[];
 	coverage: Phase1CoverageV1;
+	// Additive: deterministic business archetype classification (worker-provided).
+	business_archetype_v1?: {
+		value: string;
+		confidence: number;
+		generated_at?: string;
+		evidence?: Array<{ document_id: string; page_range?: [number, number]; snippet: string; rule?: string }>;
+	};
+	// Additive: worker-computed canonical overview for Phase 1.
+	deal_overview_v2?: {
+		deal_name?: string;
+		product_solution?: string | null;
+		market_icp?: string | null;
+		deal_type?: string;
+		raise?: string;
+		business_model?: string;
+		traction_signals?: string[];
+		key_risks_detected?: string[];
+		generated_at?: string;
+		sources?: Array<{ document_id: string; page_range?: [number, number]; note?: string }>;
+	};
+	// Additive: diff between latest stored DIO and current run.
+	update_report_v1?: {
+		generated_at: string;
+		previous_dio_found?: boolean;
+		since_dio_id?: string;
+		since_version?: number;
+		changes: Array<{ field: string; change_type: "added" | "updated" | "removed"; before?: string; after?: string }>;
+		summary?: string;
+	};
 };
 
 export type Phase1GeneratorDealInfo = {
@@ -92,6 +137,20 @@ export type Phase1GeneratorInputDocument = {
 	keyMetrics?: any[];
 	metrics?: any[];
 	pages?: Array<{ page?: number; text?: string }>; // if available
+};
+
+type DealOverviewV1 = {
+	deal_name?: string;
+	product_solution: string;
+	market_icp: string;
+	deal_type: string;
+	raise: string;
+	business_model: string;
+	traction_signals: string[];
+	traction_metrics: string[];
+	key_risks_detected: string[];
+	product_solution_present: boolean;
+	market_icp_present: boolean;
 };
 
 function stableId(prefix: string, text: string): string {
@@ -118,6 +177,362 @@ function uniqStrings(values: string[]): string[] {
 	return out;
 }
 
+function sanitizeInlineText(value: string): string {
+	return value
+		.replace(/[\u0000-\u001F\u007F]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function normalizeOverviewSentence(value: string, maxChars: number): string {
+	let s = safeString(value);
+	if (!s.trim()) return "";
+
+	// Collapse common OCR junk / artifacts.
+	s = s
+		.replace(/[\u0000-\u001F\u007F]+/g, " ")
+		.replace(/[“”]/g, '"')
+		.replace(/[‘’]/g, "'")
+		.replace(/(?:—|–|_){2,}/g, " ")
+		.replace(/[@#%*=^~`|\\]{2,}/g, " ")
+		.replace(/\bRp\b\s*[—–-]+\s*\d+(?:\s*[—–-]+\s*\d+)?/gi, " ")
+		.replace(/\b\d+\s*[—–-]+\s*\d+\b/g, " ")
+		.replace(/([!?.,:;])\1{2,}/g, "$1")
+		.replace(/\s+/g, " ");
+
+	s = sanitizeInlineText(s);
+	if (!s) return "";
+
+	// Ensure we return a sentence-like fragment.
+	if (!/[.!?]$/.test(s)) s = `${s}.`;
+	return capOneLiner(s, maxChars);
+}
+
+function isHighQualityOverviewCandidate(value: string): boolean {
+	const s = sanitizeInlineText(value);
+	if (s.length < 18) return false;
+	if ((s.match(/\uFFFD|�/g) ?? []).length >= 2) return false;
+	if (/[@#%*=^~`|\\]{2,}/.test(s)) return false;
+	if (/([!?.,:;])\1{2,}/.test(s)) return false;
+	if (/(?:—|–|_){2,}/.test(s)) return false;
+
+	const noSpace = s.replace(/\s+/g, "");
+	if (noSpace.length < 14) return false;
+	const letters = (noSpace.match(/[A-Za-z]/g) ?? []).length;
+	const symbolLike = (noSpace.match(/[^A-Za-z0-9]/g) ?? []).length;
+	const letterRatio = letters / noSpace.length;
+	const symbolRatio = symbolLike / noSpace.length;
+	if (letterRatio < 0.55) return false;
+	if (symbolRatio > 0.35) return false;
+
+	const tokens = s.split(/\s+/g).filter(Boolean);
+	const letterTokens = tokens.filter((t) => /[A-Za-z]/.test(t));
+	const upperTokens = letterTokens.filter((t) => /^[A-Z]{2,}$/.test(t.replace(/[^A-Za-z]/g, "")));
+	if (letterTokens.length >= 5 && upperTokens.length / letterTokens.length > 0.4) return false;
+
+	return true;
+}
+
+function normalizeForMatch(value: string): string {
+	return safeString(value)
+		.toLowerCase()
+		.replace(/[^a-z0-9\s]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+function headingMatches(line: string, needles: string[]): boolean {
+	const norm = normalizeForMatch(line);
+	if (!norm) return false;
+	for (const n of needles) {
+		const needle = normalizeForMatch(n);
+		if (!needle) continue;
+		if (norm.includes(needle)) return true;
+	}
+	return false;
+}
+
+function isProbableHeading(line: string): boolean {
+	const s = sanitizeInlineText(line);
+	if (!s) return false;
+	if (s.length > 72) return false;
+	if (/:$/.test(s)) return true;
+	const lettersOnly = s.replace(/[^A-Za-z]/g, "");
+	if (lettersOnly.length >= 6 && lettersOnly === lettersOnly.toUpperCase()) return true;
+	return false;
+}
+
+function splitDeckLines(text: string): string[] {
+	return safeString(text)
+		.split(/\r\n|\n|\r/g)
+		.map((l) => sanitizeInlineText(l))
+		.filter(Boolean);
+}
+
+function extractFromPitchDeckPages(params: {
+	pages: Array<{ page?: number; text?: string }>;
+	mode: "product" | "market";
+}): string {
+	const pages = Array.isArray(params.pages) ? params.pages : [];
+	if (pages.length === 0) return "";
+
+	const ordered = [...pages].sort((a, b) => {
+		const ap = typeof a.page === "number" ? a.page : Number.POSITIVE_INFINITY;
+		const bp = typeof b.page === "number" ? b.page : Number.POSITIVE_INFINITY;
+		return ap - bp;
+	});
+
+	const firstPages = ordered.slice(0, 3);
+	const taglineCandidates: string[] = [];
+	const headingCandidates: string[] = [];
+
+	const productHeadings = ["what we do", "overview", "our product", "product", "solution", "platform", "our solution"];
+	const marketHeadings = ["who we serve", "customers", "customer", "built for", "for", "ideal customer", "icp", "target customer", "target market"];
+
+	const builtForRe = /\b(built\s+for|for)\b\s+[^\n\r]{0,140}/i;
+	const helpsRe = /\b\w[^\n\r]{0,60}\b(helps|enables|empowers|lets|allows|automates|provides|builds|delivers)\b[^\n\r]{0,140}/i;
+
+	// (a) Title slide + first 2 pages: look for short, sentence-like taglines.
+	for (const p of firstPages) {
+		const lines = splitDeckLines(p.text ?? "");
+		for (const line of lines) {
+			const m = params.mode === "market" ? line.match(builtForRe) : line.match(helpsRe);
+			if (m && isHighQualityOverviewCandidate(m[0])) taglineCandidates.push(m[0]);
+			// Fallback: accept a clean short sentence-like line (product only).
+			if (
+				params.mode === "product" &&
+				taglineCandidates.length < 4 &&
+				isHighQualityOverviewCandidate(line) &&
+				line.length <= 220
+			) {
+				taglineCandidates.push(line);
+			}
+			if (taglineCandidates.length >= 6) break;
+		}
+		if (taglineCandidates.length >= 6) break;
+	}
+
+	// (b,c) Headings + bullet lines under headings.
+	const needles = params.mode === "market" ? marketHeadings : productHeadings;
+	for (const p of ordered) {
+		const lines = splitDeckLines(p.text ?? "");
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i];
+			if (!headingMatches(line, needles)) continue;
+			if (!isProbableHeading(line) && line.length > 36) continue;
+
+			for (let j = i + 1; j < Math.min(lines.length, i + 8); j++) {
+				const nxt = lines[j];
+				if (!nxt) continue;
+				if (isProbableHeading(nxt) && headingMatches(nxt, needles)) break;
+				const bullet = nxt.replace(/^[-•*\u2022]\s+/, "").trim();
+				if (!bullet) continue;
+				if (!/^[-•*\u2022]/.test(nxt) && bullet.length > 220) continue;
+				if (!isHighQualityOverviewCandidate(bullet)) continue;
+				headingCandidates.push(bullet);
+				if (headingCandidates.length >= 8) break;
+			}
+			if (headingCandidates.length >= 8) break;
+		}
+		if (headingCandidates.length >= 8) break;
+	}
+
+	const pick = (arr: string[]) => arr.find((c) => isHighQualityOverviewCandidate(c)) ?? "";
+	return pick(taglineCandidates) || pick(headingCandidates);
+}
+
+function extractCanonicalValue(docs: Phase1GeneratorInputDocument[], key: "product_solution" | "market_icp"): string {
+	for (const d of docs) {
+		const v = (d as any)?.structured_data?.canonical?.[key] ?? (d as any)?.structuredData?.canonical?.[key] ?? (d as any)?.canonical?.[key];
+		const s = sanitizeInlineText(safeString(v));
+		if (!s) continue;
+		if (s.toLowerCase() === "unknown") continue;
+		if (!isHighQualityOverviewCandidate(s)) continue;
+		return s;
+	}
+	return "";
+}
+
+function extractOverviewField(params: {
+	docs: Phase1GeneratorInputDocument[];
+	field: "product_solution" | "market_icp";
+	readableText: string;
+}): string {
+	const docs = Array.isArray(params.docs) ? params.docs : [];
+	const canonical = extractCanonicalValue(docs, params.field);
+	if (canonical) return canonical;
+
+	// Pitch deck page heuristics.
+	for (const d of docs) {
+		if (safeString(d.type).trim() !== "pitch_deck") continue;
+		const pages = Array.isArray((d as any).pages) ? (((d as any).pages as any[]) ?? []) : [];
+		const extracted = extractFromPitchDeckPages({
+			pages,
+			mode: params.field === "market_icp" ? "market" : "product",
+		});
+		if (extracted) return extracted;
+	}
+
+	// Safe non-deck fallback: deterministic, sentence-like snippets from extracted text.
+	const fallback =
+		params.field === "market_icp" ? detectMarketSnippet(params.readableText) : detectProductSnippet(params.readableText);
+	if (fallback && isHighQualityOverviewCandidate(fallback)) return fallback;
+
+	return "";
+}
+
+function isReadableSpan(value: string): boolean {
+	const s = sanitizeInlineText(value);
+	if (s.length < 40) return false;
+	const noSpace = s.replace(/\s+/g, "");
+	if (noSpace.length < 30) return false;
+	const letters = (noSpace.match(/[A-Za-z]/g) ?? []).length;
+	const symbols = (noSpace.match(/[^A-Za-z0-9]/g) ?? []).length;
+	const letterRatio = letters / noSpace.length;
+	const symbolRatio = symbols / noSpace.length;
+	if (letterRatio < 0.55) return false;
+	if (symbolRatio > 0.35) return false;
+	if ((s.match(/�/g) ?? []).length >= 2) return false;
+	return true;
+}
+
+function isReadableSignalSpan(value: string): boolean {
+	const s = sanitizeInlineText(value);
+	if (s.length < 18) return false;
+	if (!/(\brais(ing|e)\b|\bseeking\b|\bfunding\b|\bthe ask\b|\$|\bseed\b|\bpre-?seed\b|series\s+[a-d]|\bMRR\b|\bARR\b|\brevenue\b|\bcustomers?\b|\busers?\b)/i.test(s)) {
+		return false;
+	}
+	const noSpace = s.replace(/\s+/g, "");
+	if (noSpace.length < 14) return false;
+	const letters = (noSpace.match(/[A-Za-z]/g) ?? []).length;
+	const symbols = (noSpace.match(/[^A-Za-z0-9]/g) ?? []).length;
+	const letterRatio = letters / noSpace.length;
+	const symbolRatio = symbols / noSpace.length;
+	if (letterRatio < 0.4) return false;
+	if (symbolRatio > 0.5) return false;
+	if ((s.match(/�/g) ?? []).length >= 2) return false;
+	return true;
+}
+
+function extractReadableSpansFromText(value: string): string[] {
+	const raw = safeString(value);
+	if (!raw.trim()) return [];
+	const spans = raw
+		.split(/\n{2,}|\r\n{2,}/g)
+		.flatMap((p) => p.split(/\n|\r/g))
+		.map((s) => sanitizeInlineText(s))
+		.filter(Boolean);
+	const out: string[] = [];
+	for (const s of spans) {
+		if (!isReadableSpan(s) && !isReadableSignalSpan(s)) continue;
+		out.push(s);
+		if (out.length >= 20) break;
+	}
+	return out;
+}
+
+function extractAllReadableText(docs: Phase1GeneratorInputDocument[]): string {
+	const parts: string[] = [];
+	for (const d of docs) {
+		const text = pickBestText(d);
+		if (text && isReadableSpan(text)) {
+			parts.push(text);
+		} else if (text) {
+			parts.push(...extractReadableSpansFromText(text));
+		}
+		const pages = Array.isArray((d as any).pages) ? ((d as any).pages as any[]) : [];
+		for (const p of pages) {
+			const t = safeString(p?.text);
+			if (t && isReadableSpan(t)) {
+				parts.push(t);
+			} else if (t) {
+				parts.push(...extractReadableSpansFromText(t));
+			}
+		}
+	}
+	return parts.join("\n\n");
+}
+
+function capOneLiner(value: string, maxChars: number): string {
+	const s = sanitizeInlineText(value);
+	if (s.length <= maxChars) return s;
+	const cut = s.slice(0, maxChars - 1);
+	const lastSpace = cut.lastIndexOf(" ");
+	const trimmed = (lastSpace >= Math.floor(maxChars * 0.6) ? cut.slice(0, lastSpace) : cut).trim();
+	return `${trimmed}…`;
+}
+
+function buildDealOverviewV1(params: {
+	dealName?: string | null;
+	docs: Phase1GeneratorInputDocument[];
+	canonical?: Partial<
+		Pick<
+			DealOverviewV1,
+			"deal_type" | "raise" | "business_model" | "traction_signals" | "key_risks_detected" | "product_solution" | "market_icp"
+		>
+	>;
+}): DealOverviewV1 {
+	const docs = Array.isArray(params.docs) ? params.docs : [];
+	const readableText = extractAllReadableText(docs).slice(0, 60_000);
+
+	const deal_type_detected = detectDealTypeFromDocs(docs) ?? "Unknown";
+	const raiseDetected = detectRaise(readableText);
+	const raise_detected = raiseDetected ?? "Unknown";
+	const business_model_detected = detectBusinessModel(readableText) ?? "Unknown";
+	const traction_signals_detected = detectTractionSignals(readableText);
+	const traction_metrics_detected = detectTractionMetrics(readableText);
+	const key_risks_detected = detectRiskSignals(readableText);
+
+	const canonicalDealType = sanitizeInlineText(safeString(params.canonical?.deal_type));
+	const canonicalRaise = sanitizeInlineText(safeString(params.canonical?.raise));
+	const canonicalBusinessModel = sanitizeInlineText(safeString(params.canonical?.business_model));
+	const canonicalTractionSignals = Array.isArray(params.canonical?.traction_signals)
+		? params.canonical?.traction_signals.map((s) => sanitizeInlineText(safeString(s))).filter(Boolean)
+		: undefined;
+	const canonicalRisks = Array.isArray(params.canonical?.key_risks_detected)
+		? params.canonical?.key_risks_detected.map((s) => sanitizeInlineText(safeString(s))).filter(Boolean)
+		: undefined;
+	const canonicalProductSolution = sanitizeInlineText(safeString((params.canonical as any)?.product_solution));
+	const canonicalMarketIcp = sanitizeInlineText(safeString((params.canonical as any)?.market_icp));
+
+	const deal_type = canonicalDealType && canonicalDealType.toLowerCase() !== "unknown" ? canonicalDealType : deal_type_detected;
+	const raise = canonicalRaise && canonicalRaise.toLowerCase() !== "unknown" ? canonicalRaise : raise_detected;
+	const business_model =
+		canonicalBusinessModel && canonicalBusinessModel.toLowerCase() !== "unknown" ? canonicalBusinessModel : business_model_detected;
+	const traction_signals = (canonicalTractionSignals && canonicalTractionSignals.length > 0 ? canonicalTractionSignals : traction_signals_detected).slice(0, 8);
+	const risks = (canonicalRisks && canonicalRisks.length > 0 ? canonicalRisks : key_risks_detected).slice(0, 8);
+
+	const extractedProduct = canonicalProductSolution && canonicalProductSolution.toLowerCase() !== "unknown" ? canonicalProductSolution : extractOverviewField({
+		docs,
+		field: "product_solution",
+		readableText,
+	});
+	const extractedMarket = canonicalMarketIcp && canonicalMarketIcp.toLowerCase() !== "unknown" ? canonicalMarketIcp : extractOverviewField({
+		docs,
+		field: "market_icp",
+		readableText,
+	});
+
+	const product_solution = normalizeOverviewSentence(extractedProduct, 180);
+	const market_icp = normalizeOverviewSentence(extractedMarket, 180);
+	const product_solution_present = !!product_solution.trim();
+	const market_icp_present = !!market_icp.trim();
+
+	return {
+		deal_name: sanitizeInlineText(safeString(params.dealName)),
+		product_solution,
+		market_icp,
+		deal_type,
+		raise,
+		business_model,
+		traction_signals: uniqStrings(traction_signals),
+		traction_metrics: uniqStrings(traction_metrics_detected),
+		key_risks_detected: uniqStrings(risks),
+		product_solution_present,
+		market_icp_present,
+	};
+}
+
 function pickBestText(doc: Phase1GeneratorInputDocument): string {
 	const candidates = [
 		safeString((doc as any).full_text),
@@ -140,37 +555,134 @@ function pickBestText(doc: Phase1GeneratorInputDocument): string {
 	return "";
 }
 
+function uppercaseLetterRatio(value: string): number {
+	const s = sanitizeInlineText(value);
+	const letters = (s.match(/[A-Za-z]/g) ?? []).length;
+	if (letters <= 0) return 0;
+	const upper = (s.match(/[A-Z]/g) ?? []).length;
+	return upper / letters;
+}
+
+function isHighQualityEvidenceSnippet(value: string): boolean {
+	const s = sanitizeInlineText(value);
+	if (!s) return false;
+	if (s.length < 24) return false;
+
+	// OCR replacement chars / obvious artifact blocks.
+	if ((s.match(/\uFFFD|�/g) ?? []).length >= 1) return false;
+	if (/[@#%*=^~`|\\]{2,}/.test(s)) return false;
+	if (/([!?.,:;])\1{2,}/.test(s)) return false;
+
+	const noSpace = s.replace(/\s+/g, "");
+	if (noSpace.length < 18) return false;
+	const letters = (noSpace.match(/[A-Za-z]/g) ?? []).length;
+	const symbolLike = (noSpace.match(/[^A-Za-z0-9]/g) ?? []).length;
+	const letterRatio = letters / noSpace.length;
+	const symbolRatio = symbolLike / noSpace.length;
+	if (letterRatio < 0.45) return false;
+	if (symbolRatio > 0.45) return false;
+
+	// Reject roster/team / credits / staff lists.
+	if (/\b(on\s*-?\s*air|talent|roster|lineup|coaches|players|extended\s+team|advisors?|staff|board\s+of\s+directors)\b/i.test(s)) {
+		return false;
+	}
+
+	// Reject schedule/format/broadcast blocks (common OCR false positives).
+	if (/\b(format|schedule|season|week|game|tournament|rules|scoring|broadcast|timeslot|airing)\b/i.test(s)) {
+		return false;
+	}
+
+	// Reject table-like / separator-heavy blocks.
+	const commaCount = (s.match(/,/g) ?? []).length;
+	const bulletCount = (s.match(/[•\u2022\u00B7]/g) ?? []).length;
+	const sepCount = (s.match(/[,;|\/\\•\u2022\u00B7\-–—:]/g) ?? []).length;
+	const sepDensity = sepCount / (noSpace.length || 1);
+	if (commaCount >= 5) return false;
+	if (bulletCount >= 2) return false;
+	if (s.length > 60 && sepDensity > 0.18) return false;
+
+	// Allow ALL-CAPS taglines if they are actually descriptive (verb-like patterns).
+	const upperRatio = uppercaseLetterRatio(s);
+	const capsHeavy = s.length > 40 && upperRatio > 0.65;
+	if (capsHeavy) {
+		const verbLike = /\b(HELPS|ENABLES|BUILT\s+FOR|PROVIDES|DELIVERS|AUTOMATES|CONNECTS|PLATFORM\s+FOR)\b/i.test(s);
+		if (!verbLike) return false;
+	}
+
+	return true;
+}
+
 function pickSnippetFromDoc(doc: Phase1GeneratorInputDocument, hint?: RegExp): { snippet: string; page?: number } {
 	const pages = Array.isArray((doc as any).pages) ? ((doc as any).pages as any[]) : [];
-	if (pages.length > 0) {
-		for (const p of pages) {
-			const text = safeString(p?.text).trim();
-			if (!text) continue;
-			if (hint && !hint.test(text)) continue;
-			return { snippet: text.slice(0, 280), page: typeof p?.page === "number" ? p.page : undefined };
+	const orderedPages = [...pages].sort((a, b) => {
+		const ap = typeof a?.page === "number" ? a.page : Number.POSITIVE_INFINITY;
+		const bp = typeof b?.page === "number" ? b.page : Number.POSITIVE_INFINITY;
+		return ap - bp;
+	});
+
+	const buildPageSnippetCandidate = (raw: string): string => {
+		const lines = raw
+			.split(/\r\n|\n|\r/g)
+			.map((l) => sanitizeInlineText(l))
+			.filter(Boolean);
+		if (lines.length === 0) return sanitizeInlineText(raw).slice(0, 280);
+		// Prefer a short multi-line excerpt (avoids pure headings in the first line).
+		const joined = lines.slice(0, 3).join(" ");
+		return sanitizeInlineText(joined).slice(0, 280);
+	};
+
+	const tryCandidate = (snippetRaw: string, page?: number): { snippet: string; page?: number } | null => {
+		const snippet = buildPageSnippetCandidate(snippetRaw);
+		if (!snippet) return null;
+		if (!isHighQualityEvidenceSnippet(snippet)) return null;
+		return { snippet, page };
+	};
+
+	// 1) Hint-matching pages first (deterministic order).
+	if (orderedPages.length > 0) {
+		if (hint) {
+			for (const p of orderedPages) {
+				const text = safeString(p?.text).trim();
+				if (!text) continue;
+				if (!hint.test(text)) continue;
+				const page = typeof p?.page === "number" ? p.page : undefined;
+				const hit = tryCandidate(text, page);
+				if (hit) return hit;
+			}
 		}
-		// fallback first non-empty
-		for (const p of pages) {
+
+		// 2) Then first ~5 non-empty pages.
+		let seenNonEmpty = 0;
+		for (const p of orderedPages) {
 			const text = safeString(p?.text).trim();
 			if (!text) continue;
-			return { snippet: text.slice(0, 280), page: typeof p?.page === "number" ? p.page : undefined };
+			seenNonEmpty += 1;
+			const page = typeof p?.page === "number" ? p.page : undefined;
+			const hit = tryCandidate(text, page);
+			if (hit) return hit;
+			if (seenNonEmpty >= 5) break;
 		}
 	}
 
+	// 3) Fallback: use best available extracted text, with optional hint window.
 	const text = pickBestText(doc);
 	if (text) {
 		if (hint) {
 			const m = text.match(hint);
 			if (m && m.index != null) {
 				const start = Math.max(0, m.index - 60);
-				return { snippet: text.slice(start, start + 280) };
+				const window = text.slice(start, start + 280);
+				const windowCandidate = sanitizeInlineText(window);
+				if (windowCandidate && isHighQualityEvidenceSnippet(windowCandidate)) return { snippet: windowCandidate };
 			}
 		}
-		return { snippet: text.slice(0, 280) };
+		const firstCandidate = sanitizeInlineText(text.slice(0, 280));
+		if (firstCandidate && isHighQualityEvidenceSnippet(firstCandidate)) return { snippet: firstCandidate };
 	}
 
+	// 4) Deterministic safe fallback (never empty).
 	const title = safeString(doc.title).trim();
-	return { snippet: title ? `Document: ${title}` : "Document provided" };
+	return { snippet: title ? `See document: ${title}` : "See source document" };
 }
 
 function detectBusinessModel(text: string): string | null {
@@ -492,10 +1004,151 @@ function confidenceFromCoverage(coverage: Phase1CoverageV1): Phase1ConfidenceBan
 	return "low";
 }
 
+function safeNonEmpty(value: unknown): string {
+	const s = sanitizeInlineText(safeString(value));
+	return s;
+}
+
+function formatList(values: string[], maxItems: number): string {
+	const items = uniqStrings(values).slice(0, maxItems);
+	if (items.length === 0) return "";
+	return items.join(", ");
+}
+
+function coverageGapsSummary(coverage: Phase1CoverageV1): { missing: string[]; partial: string[] } {
+	const sections = coverage && typeof coverage === "object" ? coverage.sections : null;
+	const missing: string[] = [];
+	const partial: string[] = [];
+	if (!sections || typeof sections !== "object") return { missing, partial };
+
+	const ordered: Array<{ key: string; label: string }> = [
+		{ key: "product_solution", label: "product" },
+		{ key: "market_icp", label: "market" },
+		{ key: "raise_terms", label: "raise/terms" },
+		{ key: "business_model", label: "business model" },
+		{ key: "traction", label: "traction" },
+		{ key: "financials", label: "financials" },
+		{ key: "team", label: "team" },
+		{ key: "gtm", label: "go-to-market" },
+		{ key: "risks", label: "risks" },
+	];
+
+	for (const s of ordered) {
+		const status = (sections as any)[s.key];
+		if (status === "missing") missing.push(s.label);
+		if (status === "partial") partial.push(s.label);
+	}
+	return { missing, partial };
+}
+
+export function composeExecutiveSummaryV2(params: {
+	deal: Phase1GeneratorDealInfo;
+	overview_v2: unknown;
+	coverage: Phase1CoverageV1;
+	decision_summary_v1: Phase1DecisionSummaryV1;
+}): Phase1ExecutiveSummaryV2 {
+	const overview = (params.overview_v2 && typeof params.overview_v2 === "object") ? (params.overview_v2 as any) : null;
+
+	const dealName = safeNonEmpty(overview?.deal_name) || safeNonEmpty(params.deal?.name) || "This deal";
+	const product = safeNonEmpty(overview?.product_solution);
+	const market = safeNonEmpty(overview?.market_icp);
+	const raise = safeNonEmpty(overview?.raise);
+	const businessModel = safeNonEmpty(overview?.business_model);
+	const tractionSignals = Array.isArray(overview?.traction_signals)
+		? overview.traction_signals.filter((x: any) => typeof x === "string").map((x: string) => sanitizeInlineText(x)).filter(Boolean)
+		: [];
+	const riskSignals = Array.isArray(overview?.key_risks_detected)
+		? overview.key_risks_detected.filter((x: any) => typeof x === "string").map((x: string) => sanitizeInlineText(x)).filter(Boolean)
+		: [];
+
+	const missing: string[] = [];
+	if (!product) missing.push("product_solution");
+	if (!market) missing.push("market_icp");
+	if (!raise) missing.push("raise");
+	if (!businessModel) missing.push("business_model");
+	if (tractionSignals.length === 0) missing.push("traction_signals");
+	if (riskSignals.length === 0) missing.push("key_risks_detected");
+
+	const gaps = coverageGapsSummary(params.coverage);
+	if (gaps.missing.length > 0) missing.push("coverage_missing_sections");
+
+	const rec = params.decision_summary_v1.recommendation;
+	const score = params.decision_summary_v1.score;
+	const confidence = params.decision_summary_v1.confidence;
+	const blockersCount = Array.isArray(params.decision_summary_v1.blockers) ? params.decision_summary_v1.blockers.length : 0;
+
+	const p1Parts: string[] = [];
+	if (product) {
+		p1Parts.push(`${dealName}: ${product}`);
+	} else {
+		p1Parts.push(`${dealName}: Product description not provided yet.`);
+	}
+	if (market) p1Parts.push(`Target customer: ${market}`);
+	if (businessModel) p1Parts.push(`Business model: ${businessModel}`);
+	if (raise) p1Parts.push(`Raise/terms: ${raise}`);
+	const p1 = capOneLiner(normalizeOverviewSentence(p1Parts.join(" "), 340), 340);
+
+	const p2Bits: string[] = [];
+	p2Bits.push(`Phase 1 signal: ${rec} (${score}/100, confidence ${confidence}).`);
+	if (blockersCount > 0) p2Bits.push(`Blockers flagged: ${blockersCount}.`);
+	if (gaps.missing.length > 0 || gaps.partial.length > 0) {
+		const gapTextParts: string[] = [];
+		if (gaps.missing.length > 0) gapTextParts.push(`missing ${gaps.missing.join(", ")}`);
+		if (gaps.partial.length > 0) gapTextParts.push(`partial ${gaps.partial.join(", ")}`);
+		p2Bits.push(`Coverage gaps: ${gapTextParts.join("; ")}.`);
+	}
+	const p2 = capOneLiner(normalizeOverviewSentence(p2Bits.join(" "), 340), 340);
+
+	const highlights: string[] = [];
+	highlights.push(`Recommendation: ${rec} (${score}/100, confidence ${confidence}).`);
+	highlights.push(product ? `Product: ${capOneLiner(product, 220)}` : "Product: not provided in Phase 1 overview.");
+	highlights.push(market ? `ICP: ${capOneLiner(market, 220)}` : "ICP: not provided in Phase 1 overview.");
+	highlights.push(raise ? `Raise/terms: ${capOneLiner(raise, 140)}` : "Raise/terms: not provided.");
+	highlights.push(businessModel ? `Business model: ${capOneLiner(businessModel, 120)}` : "Business model: not provided.");
+	const tractionText = formatList(tractionSignals, 3);
+	const risksText = formatList(riskSignals, 3);
+	if (tractionText || risksText) {
+		const bits: string[] = [];
+		if (tractionText) bits.push(`Traction: ${tractionText}.`);
+		if (risksText) bits.push(`Risks: ${risksText}.`);
+		highlights.push(bits.join(" "));
+	} else {
+		highlights.push("Traction & risks: not evidenced yet.");
+	}
+
+	const title = safeNonEmpty(params.deal?.name)
+		? `${safeNonEmpty(params.deal.name)} — Executive Summary`
+		: "Executive Summary";
+
+	const generatedAt = safeNonEmpty(overview?.generated_at);
+	const out: Phase1ExecutiveSummaryV2 = {
+		title,
+		paragraphs: [p1, p2].filter((x) => x.trim()).slice(0, 2),
+		highlights: highlights.filter((x) => x.trim()).slice(0, 6),
+		missing: uniqStrings(missing),
+		signals: {
+			recommendation: rec,
+			score,
+			confidence,
+			blockers_count: blockersCount,
+		},
+		...(generatedAt ? { generated_at: generatedAt } : {}),
+	};
+
+	// Enforce 1–2 paragraphs deterministically.
+	if (out.paragraphs.length === 0) out.paragraphs = ["Executive summary pending: Phase 1 overview not available yet."];
+	if (out.paragraphs.length > 2) out.paragraphs = out.paragraphs.slice(0, 2);
+
+	return out;
+}
+
 export function generatePhase1DIOV1(params: {
 	deal: Phase1GeneratorDealInfo;
 	inputDocuments: Phase1GeneratorInputDocument[];
 	dio?: unknown;
+	deal_overview_v2?: unknown;
+	business_archetype_v1?: unknown;
+	update_report_v1?: unknown;
 	maxClaims?: number;
 }): Phase1DIOV1 {
 	const maxClaims = Math.max(1, Math.min(25, params.maxClaims ?? 10));
@@ -507,37 +1160,78 @@ export function generatePhase1DIOV1(params: {
 		.join("\n\n")
 		.slice(0, 60_000);
 
-	const deal_type = detectDealTypeFromDocs(docs) ?? "Unknown";
-	const raiseDetected = detectRaise(combinedText);
-	const raise = raiseDetected ?? "Unknown";
-	const business_model = detectBusinessModel(combinedText) ?? "Unknown";
-	const traction_signals = detectTractionSignals(combinedText);
-	const key_risks_detected = detectRiskSignals(combinedText);
+	const overview = buildDealOverviewV1({
+		dealName: params.deal.name,
+		docs,
+	});
+
+	const overviewV2 = (params.deal_overview_v2 && typeof params.deal_overview_v2 === "object")
+		? (params.deal_overview_v2 as any)
+		: null;
+	const businessArchetypeV1 = (params.business_archetype_v1 && typeof params.business_archetype_v1 === "object")
+		? (params.business_archetype_v1 as any)
+		: null;
+
+	const v2Product = overviewV2?.product_solution && typeof overviewV2.product_solution === "string"
+		? normalizeOverviewSentence(overviewV2.product_solution, 220)
+		: "";
+	const v2Market = overviewV2?.market_icp && typeof overviewV2.market_icp === "string"
+		? normalizeOverviewSentence(overviewV2.market_icp, 220)
+		: "";
+	const v2DealType = overviewV2?.deal_type && typeof overviewV2.deal_type === "string"
+		? sanitizeInlineText(overviewV2.deal_type)
+		: "";
+	const v2Raise = overviewV2?.raise && typeof overviewV2.raise === "string"
+		? sanitizeInlineText(overviewV2.raise)
+		: "";
+	const v2BusinessModel = overviewV2?.business_model && typeof overviewV2.business_model === "string"
+		? sanitizeInlineText(overviewV2.business_model)
+		: "";
+	const v2Traction = Array.isArray(overviewV2?.traction_signals)
+		? overviewV2.traction_signals.filter((x: any) => typeof x === "string").map((x: string) => sanitizeInlineText(x)).filter(Boolean)
+		: [];
+	const v2Risks = Array.isArray(overviewV2?.key_risks_detected)
+		? overviewV2.key_risks_detected.filter((x: any) => typeof x === "string").map((x: string) => sanitizeInlineText(x)).filter(Boolean)
+		: [];
+
+	const deal_type = v2DealType || overview.deal_type;
+	const raise = v2Raise || overview.raise;
+	const business_model = v2BusinessModel || overview.business_model;
+	const traction_signals = v2Traction.length > 0 ? uniqStrings(v2Traction) : overview.traction_signals;
+	const key_risks_detected = v2Risks.length > 0 ? uniqStrings(v2Risks) : overview.key_risks_detected;
+	const raiseDetected = raise !== "Unknown" ? raise : null;
 
 	const title = params.deal.name?.trim() ? `${params.deal.name} — Executive Summary` : "Executive Summary";
 	const anyText = hasAnyExtractedText(docs);
 
-	// Build an understanding-only one-liner from extracted text (deterministic; no invention).
-	const primaryDoc = docs.find((d) => safeString(d.type).trim() === "pitch_deck") ?? docs[0];
-	const primaryText = primaryDoc ? pickBestText(primaryDoc) : "";
-	const productSnippet = primaryText ? detectProductSnippet(primaryText) : null;
-	const marketSnippet = primaryText ? detectMarketSnippet(primaryText) : null;
-	const tractionMetrics = detectTractionMetrics(combinedText);
-
+	// Build an understanding-only one-liner from the deterministic overview (no raw snippets; no invention).
+	const tractionMetrics = overview.traction_metrics;
 	const oneLinerParts: string[] = [];
-	if (params.deal.name?.trim()) oneLinerParts.push(`${params.deal.name}:`);
-	if (productSnippet) oneLinerParts.push(productSnippet.replace(/\s+/g, " ").trim());
-	if (marketSnippet) oneLinerParts.push(marketSnippet.replace(/\s+/g, " ").trim());
-	if (business_model !== "Unknown") oneLinerParts.push(`Business model signal: ${business_model}.`);
-	if (raiseDetected) oneLinerParts.push(`Raise mentioned: ${raiseDetected}.`);
-	if (tractionMetrics.length > 0) oneLinerParts.push(`Traction: ${tractionMetrics.slice(0, 3).join("; ")}.`);
+	const dealName = overview.deal_name?.trim() ? overview.deal_name.trim() : "";
+	const productSentence = v2Product || (overview.product_solution?.trim() ? overview.product_solution.trim() : "");
+	const marketSentence = v2Market || (overview.market_icp?.trim() ? overview.market_icp.trim() : "");
+	if (productSentence && dealName && productSentence.toLowerCase().startsWith(dealName.toLowerCase())) {
+		oneLinerParts.push(productSentence);
+	} else {
+		if (dealName) oneLinerParts.push(`${dealName}:`);
+		if (productSentence) oneLinerParts.push(`Product: ${productSentence}`);
+	}
+	if (marketSentence) oneLinerParts.push(`Serves: ${marketSentence}`);
+	if (deal_type !== "Unknown") oneLinerParts.push(`Deal type: ${deal_type}.`);
+	if (business_model !== "Unknown") oneLinerParts.push(`Business model: ${business_model}.`);
+	if (raise !== "Unknown") oneLinerParts.push(`Raise: ${raise}.`);
+	const tractionBits = uniqStrings([
+		...traction_signals,
+		...tractionMetrics,
+	]).slice(0, 3);
+	if (tractionBits.length > 0) oneLinerParts.push(`Traction: ${tractionBits.join("; ")}.`);
 	if (oneLinerParts.length <= 1) {
 		// Fallback that is never empty when docs exist.
 		if (docs.length > 0) oneLinerParts.push(`Documents present: ${docs.length}.`);
 		if (!anyText && docs.length > 0) oneLinerParts.push("Extracted text not available yet.");
 	}
-	let one_liner = oneLinerParts.join(" ").replace(/\s+/g, " ").trim();
-	if (!one_liner && docs.length > 0) one_liner = `Summary pending. Documents present: ${docs.length}.`;
+	let one_liner = capOneLiner(oneLinerParts.join(" "), 300);
+	if (!one_liner && docs.length > 0) one_liner = capOneLiner(`Summary pending. Documents present: ${docs.length}.`, 300);
 	if (!one_liner) one_liner = "Summary pending.";
 
 	const unknowns: string[] = [];
@@ -546,16 +1240,12 @@ export function generatePhase1DIOV1(params: {
 	if (business_model === "Unknown") unknowns.push("business_model");
 	if (traction_signals.length === 0 && tractionMetrics.length === 0) unknowns.push("traction_signals");
 	if (key_risks_detected.length === 0) unknowns.push("key_risks_detected");
-	if (!productSnippet) unknowns.push("product_solution");
-	if (!marketSnippet) unknowns.push("market_icp");
+	if (!productSentence.trim()) unknowns.push("product_solution");
+	if (!marketSentence.trim()) unknowns.push("market_icp");
 
 	const termsStatus: "present" | "partial" | "missing" = raise === "Unknown" ? "missing" : "present";
-	const productStatus: "present" | "partial" | "missing" = productSnippet
-		? "present"
-		: coverageStatusFromText(combinedText, [/(problem|solution|product|platform|technology)\b/i], "missing");
-	const marketStatus: "present" | "partial" | "missing" = marketSnippet
-		? "present"
-		: coverageStatusFromText(combinedText, [/(market|tam|sam|som|icp|customer segment|buyer|persona)\b/i], "missing");
+	const productStatus: "present" | "partial" | "missing" = productSentence.trim() ? "present" : "missing";
+	const marketStatus: "present" | "partial" | "missing" = marketSentence.trim() ? "present" : "missing";
 	const tractionStatus: "present" | "partial" | "missing" = sectionStatus(
 		"",
 		traction_signals.length > 0 ? traction_signals : tractionMetrics
@@ -592,8 +1282,8 @@ export function generatePhase1DIOV1(params: {
 		business_model: business_model === "Unknown" ? "low" : "med",
 		traction: traction_signals.length > 0 ? "med" : "low",
 		risks: key_risks_detected.length > 0 ? "med" : "low",
-		product_solution: productSnippet ? "med" : "low",
-		market_icp: marketSnippet ? "med" : "low",
+		product_solution: overview.product_solution.trim() ? "med" : "low",
+		market_icp: overview.market_icp.trim() ? "med" : "low",
 		gtm: coverage.sections.gtm === "present" ? "med" : "low",
 		team: coverage.sections.team === "present" ? "med" : "low",
 		financials: coverage.sections.financials === "present" ? "med" : coverage.sections.financials === "partial" ? "low" : "low",
@@ -602,6 +1292,13 @@ export function generatePhase1DIOV1(params: {
 	const overall = confidenceFromCoverage(coverage);
 
 	const decision_summary_v1 = buildDecisionSummary({ coverage, docs });
+
+	const executive_summary_v2 = composeExecutiveSummaryV2({
+		deal: params.deal,
+		overview_v2: overviewV2,
+		coverage,
+		decision_summary_v1,
+	});
 
 	const claims: Phase1ClaimV1[] = [];
 
@@ -705,28 +1402,49 @@ export function generatePhase1DIOV1(params: {
 			},
 			evidence: executiveEvidence,
 		},
+		executive_summary_v2,
 		decision_summary_v1,
 		claims: uniqueClaims,
 		coverage,
+		business_archetype_v1: businessArchetypeV1 ? (businessArchetypeV1 as any) : undefined,
+		deal_overview_v2: overviewV2 ? (overviewV2 as any) : undefined,
+		update_report_v1:
+			params.update_report_v1 && typeof params.update_report_v1 === "object" ? (params.update_report_v1 as any) : undefined,
 	};
 }
 
 export function mergePhase1IntoDIO(dio: any, phase1: Phase1DIOV1): any {
-	const base = dio && typeof dio === "object" ? dio : {};
-	const dioNode = base.dio && typeof base.dio === "object" ? base.dio : {};
-	return {
-		...base,
-		dio: {
-			...dioNode,
-			phase1: {
-				// overwrite deterministically (Phase 1 contract is always-on)
+  const base = dio && typeof dio === "object" ? dio : {};
+  const dioNode = base.dio && typeof base.dio === "object" ? base.dio : {};
+  const existingPhase1 =
+    dioNode.phase1 && typeof dioNode.phase1 === "object" ? dioNode.phase1 : {};
+
+	const business_archetype_v1 = (phase1 as any)?.business_archetype_v1;
+	const deal_overview_v2 = (phase1 as any)?.deal_overview_v2;
+	const update_report_v1 = (phase1 as any)?.update_report_v1;
+	const executive_summary_v2 = (phase1 as any)?.executive_summary_v2;
+
+  return {
+    ...base,
+    dio: {
+      ...dioNode,
+      phase1: {
+        // Preserve extra nodes (deal_overview_v2, update_report_v1, etc.)
+        ...existingPhase1,
+
+        // Overwrite deterministic Phase 1 contract keys
 				executive_summary_v1: phase1.executive_summary_v1,
-				decision_summary_v1: phase1.decision_summary_v1,
-				claims: phase1.claims,
-				coverage: phase1.coverage,
-			},
-		},
-	};
+				...(executive_summary_v2 && typeof executive_summary_v2 === "object" ? { executive_summary_v2 } : {}),
+        decision_summary_v1: phase1.decision_summary_v1,
+        claims: phase1.claims,
+        coverage: phase1.coverage,
+
+				...(business_archetype_v1 && typeof business_archetype_v1 === "object" ? { business_archetype_v1 } : {}),
+				...(deal_overview_v2 && typeof deal_overview_v2 === "object" ? { deal_overview_v2 } : {}),
+				...(update_report_v1 && typeof update_report_v1 === "object" ? { update_report_v1 } : {}),
+      },
+    },
+  };
 }
 
 export function stripExecutiveSummaryEvidenceForList(input: any): any {

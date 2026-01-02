@@ -95,6 +95,7 @@ type DIOAggregateRow = {
 	phase1_business_archetype_v1?: any;
   phase1_deal_overview_v2?: any;
   phase1_update_report_v1?: any;
+	phase1_deal_summary_v2?: any;
 };
 
 function mapDeal(row: DealRow, dio: DIOAggregateRow | null | undefined, mode: DealApiMode): Deal {
@@ -105,6 +106,7 @@ function mapDeal(row: DealRow, dio: DIOAggregateRow | null | undefined, mode: De
 	const businessArchetypeV1 = (dio as any)?.phase1_business_archetype_v1;
   const dealOverviewV2 = (dio as any)?.phase1_deal_overview_v2;
   const updateReportV1 = (dio as any)?.phase1_update_report_v1;
+	const dealSummaryV2 = (dio as any)?.phase1_deal_summary_v2;
   const topClaims = stripEvidenceFromClaims((dio as any)?.phase1_claims).slice(0, 8);
 
   const out: any = {
@@ -132,6 +134,7 @@ function mapDeal(row: DealRow, dio: DIOAggregateRow | null | undefined, mode: De
 	if (businessArchetypeV1 && typeof businessArchetypeV1 === "object") out.business_archetype_v1 = businessArchetypeV1;
   if (dealOverviewV2 && typeof dealOverviewV2 === "object") out.deal_overview_v2 = dealOverviewV2;
   if (updateReportV1 && typeof updateReportV1 === "object") out.update_report_v1 = updateReportV1;
+  if (dealSummaryV2 && typeof dealSummaryV2 === "object") (out as any).deal_summary_v2 = dealSummaryV2;
 
   // Additive field: ensure ES2 is also reachable under phase1.* even in full mode.
   if (mode !== "phase1" && execV2 && typeof execV2 === "object") {
@@ -147,6 +150,7 @@ function mapDeal(row: DealRow, dio: DIOAggregateRow | null | undefined, mode: De
       business_archetype_v1: businessArchetypeV1 && typeof businessArchetypeV1 === "object" ? businessArchetypeV1 : undefined,
       deal_overview_v2: dealOverviewV2 && typeof dealOverviewV2 === "object" ? dealOverviewV2 : undefined,
       update_report_v1: updateReportV1 && typeof updateReportV1 === "object" ? updateReportV1 : undefined,
+      deal_summary_v2: dealSummaryV2 && typeof dealSummaryV2 === "object" ? dealSummaryV2 : undefined,
 			unknowns: Array.isArray(safeExec?.unknowns) ? safeExec.unknowns : [],
 			top_claims: topClaims,
 		};
@@ -334,6 +338,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           , (dio_data #> '{dio,phase1,business_archetype_v1}') AS phase1_business_archetype_v1
 					, (dio_data #> '{dio,phase1,deal_overview_v2}') AS deal_overview_v2
 					, (dio_data #> '{dio,phase1,update_report_v1}') AS update_report_v1
+            , (dio_data #> '{dio,phase1,deal_summary_v2}') AS deal_summary_v2
              FROM deal_intelligence_objects
             WHERE deal_id = d.id
             ORDER BY analysis_version DESC
@@ -361,6 +366,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 		phase1_business_archetype_v1: (row as any).phase1_business_archetype_v1,
     phase1_deal_overview_v2: row.phase1_deal_overview_v2,
     phase1_update_report_v1: row.phase1_update_report_v1,
+		phase1_deal_summary_v2: (row as any).deal_summary_v2,
 		phase1_claims: null,
     }, mode));
   });
@@ -395,6 +401,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         latest.phase1_business_archetype_v1,
               latest.phase1_deal_overview_v2,
               latest.phase1_update_report_v1,
+    			  latest.phase1_deal_summary_v2,
               latest.phase1_coverage,
               latest.phase1_claims,
               stats.last_analyzed_at,
@@ -409,6 +416,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       				  (dio_data #> '{dio,phase1,business_archetype_v1}') AS phase1_business_archetype_v1,
                   (dio_data #> '{dio,phase1,deal_overview_v2}') AS phase1_deal_overview_v2,
                   (dio_data #> '{dio,phase1,update_report_v1}') AS phase1_update_report_v1,
+      				  (dio_data #> '{dio,phase1,deal_summary_v2}') AS phase1_deal_summary_v2,
                   (dio_data #> '{dio,phase1,claims}') AS phase1_claims
              FROM deal_intelligence_objects
             WHERE deal_id = $1

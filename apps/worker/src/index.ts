@@ -38,10 +38,12 @@ import { normalizeToCanonical } from "./lib/normalization";
 import { processDocument } from "./lib/processors";
 import { verifyDocumentExtraction } from "./lib/verification";
 import { remediateStructuredData } from "./lib/remediation";
-import { buildPhase1DealOverviewV2, buildPhase1UpdateReportV1 } from "./lib/phase1/dealOverviewV2";
+import { buildPhase1DealOverviewV2, buildPhase1DealUnderstandingV1, buildPhase1UpdateReportV1 } from "./lib/phase1/dealOverviewV2";
 import { buildPhase1BusinessArchetypeV1 } from "./lib/phase1/businessArchetypeV1";
 import type { DocumentAnalysis, ExtractedContent } from "./lib/processors";
 import type { VerificationResult } from "./lib/verification";
+import { OpenAIGPT4oProvider } from "./lib/llm/providers/openai-provider";
+import type { ProviderConfig } from "./lib/llm/types";
 
 // Polyfill Promise.withResolvers for Node runtimes that don't provide it yet (Node < 22)
 if (typeof (Promise as any).withResolvers !== "function") {
@@ -167,6 +169,370 @@ function computeCompleteness(analysis: DocumentAnalysis) {
 
 	const reason = `summary=${summaryLen} chars, headings=${headings}, metrics=${metrics}, score=${score.toFixed(2)}`;
 	return { score, reason, summaryLen, headings, metrics };
+}
+
+function safeJsonParseObject(raw: string): Record<string, unknown> | null {
+	const trimmed = (raw ?? "").trim();
+	if (!trimmed) return null;
+	try {
+		const parsed = JSON.parse(trimmed);
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+	} catch {
+		// Best-effort recovery: extract first {...} block.
+		const start = trimmed.indexOf("{");
+		const end = trimmed.lastIndexOf("}");
+		if (start >= 0 && end > start) {
+			const candidate = trimmed.slice(start, end + 1);
+			try {
+				const parsed = JSON.parse(candidate);
+				return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+			} catch {
+				return null;
+			}
+		}
+		return null;
+	}
+}
+
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((v) => typeof v === "string");
+}
+
+type DealSummaryV2 = {
+	generated_at: string;
+	model: string;
+	summary: {
+		one_liner: string;
+		paragraphs: [string, string, string];
+	};
+	strengths: string[];
+	risks: string[];
+	open_questions: string[];
+};
+
+function countWords(value: string): number {
+	const s = String(value ?? "");
+	const words = s.trim().split(/\s+/).filter(Boolean);
+	return words.length;
+}
+
+function countSentences(value: string): number {
+	const s = String(value ?? "").trim();
+	if (!s) return 0;
+	const parts = s.split(/[.!?]+\s*/).map((p) => p.trim()).filter(Boolean);
+	return parts.length;
+}
+
+function ensureParagraphConstraints(paragraph: string, opts: { minWords: number; minSentences: number; maxSentences: number; padSentences: string[] }): string {
+	let p = String(paragraph ?? "").replace(/\s+/g, " ").trim();
+	if (!p) p = "Key details are not provided in Phase 1 yet.";
+
+	const makeSentence = (s: string) => {
+		let t = String(s ?? "").replace(/\s+/g, " ").trim();
+		if (!t) return "";
+		if (!/[.!?]$/.test(t)) t += ".";
+		return t;
+	};
+
+	if (!/[.!?]$/.test(p)) p += ".";
+
+	let sentences = p.split(/[.!?]+\s*/).map((s) => s.trim()).filter(Boolean);
+	while (sentences.length > opts.maxSentences) {
+		sentences = [sentences.slice(0, opts.maxSentences - 1).join("; "), ...sentences.slice(opts.maxSentences - 1)];
+	}
+
+	let padIdx = 0;
+	while (sentences.length < opts.minSentences && padIdx < opts.padSentences.length) {
+		const s = makeSentence(opts.padSentences[padIdx++]);
+		if (s) sentences.push(s.replace(/[.!?]$/, ""));
+	}
+
+	p = sentences.map((s) => makeSentence(s)).join(" ").trim();
+	while (countWords(p) < opts.minWords && padIdx < opts.padSentences.length) {
+		const s = makeSentence(opts.padSentences[padIdx++]);
+		if (s) p = (p + " " + s).trim();
+		if (countSentences(p) > opts.maxSentences) {
+			const parts = p.split(/[.!?]+\s*/).map((x) => x.trim()).filter(Boolean);
+			const clamped = [parts.slice(0, opts.maxSentences - 1).join("; "), ...parts.slice(opts.maxSentences - 1)];
+			p = clamped.map((s2) => makeSentence(s2)).join(" ").trim();
+		}
+	}
+	return p;
+}
+
+function normalizeParagraphs(value: unknown, padSentences: string[]): [string, string, string] | null {
+	if (!Array.isArray(value) || value.length !== 3) return null;
+	const raw = value.map((p) => (typeof p === "string" ? p.replace(/\s+/g, " ").trim() : ""));
+	const p1 = ensureParagraphConstraints(raw[0], { minWords: 60, minSentences: 2, maxSentences: 4, padSentences });
+	const p2 = ensureParagraphConstraints(raw[1], { minWords: 60, minSentences: 2, maxSentences: 4, padSentences });
+	const p3 = ensureParagraphConstraints(raw[2], { minWords: 60, minSentences: 2, maxSentences: 4, padSentences });
+	return [p1, p2, p3];
+}
+
+function coerceDealSummaryV2(parsed: Record<string, unknown>, nowIso: string, padSentences: string[]): DealSummaryV2 | null {
+	const summaryNode = (parsed as any).summary;
+	const oneLinerRaw =
+		summaryNode && typeof summaryNode === "object" && typeof (summaryNode as any).one_liner === "string"
+			? (summaryNode as any).one_liner
+			: "";
+	const one_liner = oneLinerRaw.replace(/\s+/g, " ").trim();
+	if (!one_liner) return null;
+
+	const paragraphs =
+		summaryNode && typeof summaryNode === "object" ? normalizeParagraphs((summaryNode as any).paragraphs, padSentences) : null;
+	if (!paragraphs) return null;
+
+	const strengths =
+		isStringArray(parsed.strengths)
+			? parsed.strengths
+			: isStringArray((parsed as any).key_strengths)
+				? (parsed as any).key_strengths
+				: [];
+	const risks =
+		isStringArray(parsed.risks)
+			? parsed.risks
+			: isStringArray((parsed as any).key_risks)
+				? (parsed as any).key_risks
+				: [];
+	const open_questions =
+		isStringArray(parsed.open_questions)
+			? parsed.open_questions
+			: isStringArray((parsed as any).openQuestions)
+				? (parsed as any).openQuestions
+				: [];
+	const model = typeof parsed.model === "string" ? parsed.model : "gpt-4o-mini";
+	return {
+		generated_at: typeof parsed.generated_at === "string" ? parsed.generated_at : nowIso,
+		model,
+		summary: {
+			one_liner,
+			paragraphs,
+		},
+		strengths,
+		risks,
+		open_questions,
+	};
+}
+
+function buildDeterministicDealSummaryV2Fallback(nowIso: string, input: {
+	dealId: string;
+	dealName?: string | null;
+	phase1_deal_overview_v2: unknown;
+	phase1_executive_summary_v2: unknown;
+	phase1_decision_summary_v1: unknown;
+	eligibleDocuments: Array<{ id: string; title: string | null; type: string | null; page_count: number | null }>;
+}): DealSummaryV2 {
+	const overview = input.phase1_deal_overview_v2 && typeof input.phase1_deal_overview_v2 === "object" ? (input.phase1_deal_overview_v2 as any) : {};
+	const exec = input.phase1_executive_summary_v2 && typeof input.phase1_executive_summary_v2 === "object" ? (input.phase1_executive_summary_v2 as any) : {};
+	const signals = exec.signals && typeof exec.signals === "object" ? exec.signals : {};
+	const score = typeof signals.score === "number" && Number.isFinite(signals.score) ? signals.score : null;
+	const recommendation = typeof signals.recommendation === "string" ? signals.recommendation : null;
+	const confidence = typeof signals.confidence === "string" ? signals.confidence : null;
+
+	const product = typeof overview.product_solution === "string" && overview.product_solution.trim() ? overview.product_solution.trim() : "Product not provided in Phase 1.";
+	const icp = typeof overview.market_icp === "string" && overview.market_icp.trim() ? overview.market_icp.trim() : "ICP not provided in Phase 1.";
+	const model = typeof overview.business_model === "string" && overview.business_model.trim() ? overview.business_model.trim() : "Business model not provided in Phase 1.";
+	const missing = Array.isArray(exec.missing) ? exec.missing.filter((x: any) => typeof x === "string" && x.trim()).map((x: string) => x.trim()).slice(0, 8) : [];
+	const tractionSignals = Array.isArray(overview.traction_signals) ? overview.traction_signals.filter((x: any) => typeof x === "string" && x.trim()).map((x: string) => x.trim()).slice(0, 5) : [];
+
+	const docCount = input.eligibleDocuments.length;
+	const totalPages = input.eligibleDocuments.reduce((sum, d) => sum + (typeof d.page_count === "number" ? d.page_count : 0), 0);
+	const dealName = typeof input.dealName === "string" && input.dealName.trim() ? input.dealName.trim() : "This deal";
+	const one_liner = `${dealName}: ${product.length > 140 ? product.slice(0, 140).trimEnd() + "…" : product}`;
+
+	const padSentences = [
+		`What it is: ${product}`,
+		`Target customer / ICP: ${icp}`,
+		`Business model signal: ${model}`,
+		recommendation && score != null && confidence ? `Phase 1 signal: ${recommendation} (${score}/100, confidence ${confidence}).` : "Phase 1 signal exists but scoring details may be incomplete.",
+		missing.length > 0 ? `Coverage gaps flagged in Phase 1 include: ${missing.join(", ")}.` : "Coverage gaps were not explicitly listed in Phase 1 output.",
+		`Inputs available at this stage come from ${docCount} extracted document(s) (${totalPages} page(s) total) and Phase 1 structured summaries; treat unknowns as open diligence items.`,
+	];
+
+	const p1 = ensureParagraphConstraints("", { minWords: 60, minSentences: 2, maxSentences: 4, padSentences });
+	const p2 = ensureParagraphConstraints("", { minWords: 60, minSentences: 2, maxSentences: 4, padSentences });
+	const p3 = ensureParagraphConstraints(
+		tractionSignals.length > 0 ? `Traction signals observed: ${tractionSignals.join(", ")}.` : "Traction signals were not evidenced in Phase 1.",
+		{ minWords: 60, minSentences: 2, maxSentences: 4, padSentences }
+	);
+
+	const strengths: string[] = [];
+	if (typeof overview.product_solution === "string" && overview.product_solution.trim()) strengths.push("Clear product description present in Phase 1.");
+	if (typeof overview.market_icp === "string" && overview.market_icp.trim()) strengths.push("Identified ICP / target customer.");
+	if (tractionSignals.length > 0) strengths.push(`Traction signals: ${tractionSignals.slice(0, 2).join(", ")}.`);
+	if (strengths.length === 0) strengths.push("Phase 1 provides a starting point but coverage is limited.");
+
+	const risks = missing.length > 0 ? missing.slice(0, 5).map((m: string) => `Missing: ${m}.`) : ["Missing key diligence details (raise/terms, go-to-market, risks)."];
+	const open_questions = missing.length > 0 ? missing.slice(0, 6).map((m: string) => `Clarify: ${m}.`) : ["Clarify raise amount and terms.", "Clarify go-to-market strategy.", "Clarify traction metrics and unit economics."];
+
+	return {
+		generated_at: nowIso,
+		model: "gpt-4o-mini",
+		summary: {
+			one_liner,
+			paragraphs: [p1, p2, p3],
+		},
+		strengths,
+		risks,
+		open_questions,
+	};
+}
+
+async function generateDealSummaryV2FromPhase1(input: {
+	nowIso: string;
+	dealId: string;
+	dealName?: string | null;
+	phase1_deal_overview_v2: unknown;
+	phase1_business_archetype_v1: unknown;
+	phase1_update_report_v1: unknown;
+	phase1_executive_summary_v2: unknown;
+	phase1_decision_summary_v1: unknown;
+	eligibleDocuments: Array<{ id: string; title: string | null; type: string | null; page_count: number | null }>;
+}): Promise<DealSummaryV2 | null> {
+	const apiKey = process.env.OPENAI_API_KEY;
+	if (!apiKey) {
+		console.warn(
+			JSON.stringify({
+				event: "phase1_deal_summary_v2_skipped",
+				deal_id: input.dealId,
+				reason: "missing_openai_api_key",
+			})
+		);
+		return null;
+	}
+
+	const providerConfig: ProviderConfig = {
+		type: "openai",
+		enabled: true,
+		priority: 1,
+		apiKey,
+		// Keep this lightweight; rely on provider's built-in retry/backoff.
+		timeout: 30_000,
+		retries: 2,
+	};
+
+	const provider = new OpenAIGPT4oProvider(providerConfig);
+
+	const system =
+		"You are a deal analyst writing for professional investors. " +
+		"Use ONLY the provided Phase 1 artifacts and document metadata. Do not invent facts or numbers. " +
+		"If a detail is missing, state it explicitly as a gap (e.g., 'Raise/terms not provided'). " +
+		"Output MUST be valid JSON only (no markdown, no backticks, no extra text). " +
+		"Return JSON with EXACT schema and keys: {" +
+		"\"generated_at\": string, " +
+		"\"model\": \"gpt-4o-mini\", " +
+		"\"summary\": {\"one_liner\": string, \"paragraphs\": [string,string,string]}, " +
+		"\"strengths\": string[], \"risks\": string[], \"open_questions\": string[]" +
+		"}. " +
+		"Requirements: summary.paragraphs MUST be exactly 3 paragraphs. " +
+		"Each paragraph MUST be 2–4 sentences and at least 60 words. " +
+		"No bullet points in paragraphs. Use investor-grade, neutral language. " +
+		"Prefer deal_overview_v2 for product/ICP/model and executive_summary_v2.signals for recommendation/score/confidence.";
+
+	const payload = {
+		deal: {
+			id: input.dealId,
+			name: typeof input.dealName === "string" ? input.dealName : null,
+		},
+		phase1: {
+			deal_overview_v2: input.phase1_deal_overview_v2,
+			executive_summary_v2: input.phase1_executive_summary_v2,
+			business_archetype_v1: input.phase1_business_archetype_v1,
+			decision_summary_v1: input.phase1_decision_summary_v1,
+			update_report_v1: input.phase1_update_report_v1,
+		},
+		documents: input.eligibleDocuments,
+	};
+
+	const response = await provider.complete({
+		task: "synthesis",
+		model: "gpt-4o-mini" as any,
+		temperature: 0,
+		max_tokens: 1000,
+		messages: [
+			{ role: "system", content: system },
+			{ role: "user", content: JSON.stringify(payload) },
+		],
+		metadata: { dealId: input.dealId, kind: "deal_summary_v2" },
+	});
+
+	const parsed = safeJsonParseObject(response.content);
+	if (!parsed) {
+		console.warn(
+			JSON.stringify({
+				event: "phase1_deal_summary_v2_failed",
+				deal_id: input.dealId,
+				reason: "json_parse_failed",
+				content_head: String(response.content ?? "").slice(0, 220),
+			})
+		);
+		const fallback = buildDeterministicDealSummaryV2Fallback(input.nowIso, {
+			dealId: input.dealId,
+			dealName: input.dealName,
+			phase1_deal_overview_v2: input.phase1_deal_overview_v2,
+			phase1_executive_summary_v2: input.phase1_executive_summary_v2,
+			phase1_decision_summary_v1: input.phase1_decision_summary_v1,
+			eligibleDocuments: input.eligibleDocuments,
+		});
+		console.log(
+			JSON.stringify({
+				event: "phase1_deal_summary_v2_fallback_used",
+				deal_id: input.dealId,
+				reason: "json_parse_failed",
+				paragraph_words: fallback.summary.paragraphs.map((p) => countWords(p)),
+			})
+		);
+		return fallback;
+	}
+	const padSentences = [
+		`What it is: ${typeof (input.phase1_deal_overview_v2 as any)?.product_solution === "string" ? (input.phase1_deal_overview_v2 as any).product_solution : "not provided"}`,
+		`Target customer / ICP: ${typeof (input.phase1_deal_overview_v2 as any)?.market_icp === "string" ? (input.phase1_deal_overview_v2 as any).market_icp : "not provided"}`,
+		`Business model signal: ${typeof (input.phase1_deal_overview_v2 as any)?.business_model === "string" ? (input.phase1_deal_overview_v2 as any).business_model : "not provided"}`,
+		"This summary is Phase 1 only; if a detail is missing, treat it as an open diligence gap.",
+	];
+	const coerced = coerceDealSummaryV2(parsed, input.nowIso, padSentences);
+	if (!coerced) {
+		console.warn(
+			JSON.stringify({
+				event: "phase1_deal_summary_v2_failed",
+				deal_id: input.dealId,
+				reason: "schema_coercion_failed",
+				parsed_keys: Object.keys(parsed),
+			})
+		);
+		const fallback = buildDeterministicDealSummaryV2Fallback(input.nowIso, {
+			dealId: input.dealId,
+			dealName: input.dealName,
+			phase1_deal_overview_v2: input.phase1_deal_overview_v2,
+			phase1_executive_summary_v2: input.phase1_executive_summary_v2,
+			phase1_decision_summary_v1: input.phase1_decision_summary_v1,
+			eligibleDocuments: input.eligibleDocuments,
+		});
+		console.log(
+			JSON.stringify({
+				event: "phase1_deal_summary_v2_fallback_used",
+				deal_id: input.dealId,
+				reason: "schema_coercion_failed",
+				paragraph_words: fallback.summary.paragraphs.map((p) => countWords(p)),
+			})
+		);
+		return fallback;
+	}
+	// Ensure model matches the required one even if the model omits it.
+	coerced.model = "gpt-4o-mini";
+	console.log(
+		JSON.stringify({
+			event: "phase1_deal_summary_v2_built",
+			deal_id: input.dealId,
+			model: coerced.model,
+			one_liner_len: coerced.summary.one_liner.length,
+			paragraph_words: coerced.summary.paragraphs.map((p) => countWords(p)),
+			strengths: coerced.strengths.length,
+			risks: coerced.risks.length,
+			open_questions: coerced.open_questions.length,
+		})
+	);
+	return coerced;
 }
 
 async function updateJob(job: Job, status: JobStatus, message?: string, progressPct?: number | null) {
@@ -695,10 +1061,47 @@ createWorker("analyze_deal", async (job: Job) => {
 			return { ok: false };
 		}
 
-		const inputDocuments = eligible.map((doc) => {
-			const extraction = (doc.extraction_metadata && typeof doc.extraction_metadata === "object")
-				? (doc.extraction_metadata as Record<string, unknown>)
+		// Build two document arrays:
+		// A) `phase1Documents`: Phase 1 deterministic builders may use minimal pitch-deck layout tokens
+		// B) `documentsForAnalyzers`: downstream analyzers remain canonical-only (no `full_content`)
+		const pickPages = (value: unknown): any[] | null => {
+			if (!value || typeof value !== "object") return null;
+			const pages = (value as any).pages;
+			if (!Array.isArray(pages)) return null;
+			return pages as any[];
+		};
+
+		type Phase1Doc = { document_id: string; title?: string | null; type?: string | null; full_text?: string | null; full_content?: unknown | null };
+		const phase1Documents: Phase1Doc[] = eligible.map((doc) => {
+			const structured = (doc.structured_data && typeof doc.structured_data === "object")
+				? (doc.structured_data as Record<string, unknown>)
 				: {};
+
+			let minimalFullContent: unknown | undefined = undefined;
+			if (doc.type === "pitch_deck") {
+				const fromDb = pickPages(doc.full_content);
+				const fromStructured = pickPages((structured as any).full_content);
+				const pages = fromDb ?? fromStructured;
+				if (pages && pages.length > 0) {
+					minimalFullContent = {
+						pages: pages.map((p: any, idx: number) => ({
+							page: (p?.page ?? idx + 1) as any,
+							words: Array.isArray(p?.words) ? p.words : [],
+						})),
+					};
+				}
+			}
+
+			return {
+				document_id: doc.id,
+				title: doc.title,
+				type: doc.type,
+				full_text: typeof doc.full_text === "string" ? doc.full_text : null,
+				...(minimalFullContent ? { full_content: minimalFullContent } : {}),
+			};
+		});
+
+		const documentsForAnalyzers = eligible.map((doc) => {
 			const structured = (doc.structured_data && typeof doc.structured_data === "object")
 				? (doc.structured_data as Record<string, unknown>)
 				: {};
@@ -720,8 +1123,6 @@ createWorker("analyze_deal", async (job: Job) => {
 				page_count: doc.page_count ?? undefined,
 				verification_status: doc.verification_status ?? null,
 				verification_result: doc.verification_result ?? null,
-
-				// DoD: analyzers consume canonical structured data only
 				canonical: canonical ?? {
 					company: {},
 					deal: {},
@@ -732,27 +1133,20 @@ createWorker("analyze_deal", async (job: Job) => {
 				keyMetrics: canonicalKeyMetrics,
 				mainHeadings: [],
 				textSummary: "",
-
-				// DoD: full_text allowed only as fallback
 				full_text: typeof doc.full_text === "string" ? doc.full_text : undefined,
 				full_text_absent_reason: typeof doc.full_text_absent_reason === "string" ? doc.full_text_absent_reason : undefined,
-
-				// Keep only non-content metadata that helps orchestration; no raw extractor artifacts.
-				doc_kind: (extraction as any).doc_kind ?? undefined,
-				extractor_name: (extraction as any).extractor_name ?? undefined,
-				extractor_version: (extraction as any).extractor_version ?? undefined,
 			};
 		});
 
 		const dio_context = {
-			primary_doc_type: inputDocuments.some((d: any) => d.type === "pitch_deck") ? "pitch_deck" : "other",
+			primary_doc_type: documentsForAnalyzers.some((d: any) => d.type === "pitch_deck") ? "pitch_deck" : "other",
 			deal_type: "other",
 			vertical: "other",
 			stage: "unknown",
 			confidence: 0.5,
 		};
 
-		await updateJob(job, "running", `Running analysis (${inputDocuments.length} document(s))`, 40);
+		await updateJob(job, "running", `Running analysis (${documentsForAnalyzers.length} document(s))`, 40);
 
 		const storage = new DIOStorageImpl(process.env.DATABASE_URL || "");
 		let previousDio: any | null = null;
@@ -763,25 +1157,42 @@ createWorker("analyze_deal", async (job: Job) => {
 		}
 
 		const nowIso = new Date().toISOString();
+		if (process.env.NODE_ENV !== "production" && process.env.DEBUG_PHASE1_LAYOUT === "1") {
+			for (const d of phase1Documents) {
+				if (d.type !== "pitch_deck") continue;
+				const pages = (d.full_content && typeof d.full_content === "object" && Array.isArray((d.full_content as any).pages))
+					? ((d.full_content as any).pages as any[])
+					: [];
+				let wordsTotal = 0;
+				for (const p of pages) {
+					const words = Array.isArray((p as any)?.words) ? ((p as any).words as any[]) : [];
+					wordsTotal += words.length;
+				}
+				const fullTextLen = typeof d.full_text === "string" ? d.full_text.length : 0;
+				console.log(
+					JSON.stringify({
+						event: "phase1_documents_layout_presence",
+						deal_id: dealId,
+						document_id: d.document_id,
+						pages_count: pages.length,
+						words_total: wordsTotal,
+						full_text_len: fullTextLen,
+					})
+				);
+			}
+		}
+
+		// Phase 1 deterministic builders (may use pitch deck OCR/layout tokens).
+		// Keep raw `full_content` out of orchestrator input documents.
+		// Note: Overview V2 internally uses Deal Understanding V1 extraction.
+		buildPhase1DealUnderstandingV1({ nowIso, documents: phase1Documents });
 		const phase1_deal_overview_v2 = buildPhase1DealOverviewV2({
 			nowIso,
-			documents: eligible.map((doc) => ({
-				document_id: doc.id,
-				title: doc.title,
-				type: doc.type,
-				full_text: doc.full_text,
-				full_content: doc.full_content,
-			})),
+			documents: phase1Documents,
 		});
 		const phase1_business_archetype_v1 = buildPhase1BusinessArchetypeV1({
 			nowIso,
-			documents: eligible.map((doc) => ({
-				document_id: doc.id,
-				title: doc.title,
-				type: doc.type,
-				full_text: doc.full_text,
-				full_content: doc.full_content,
-			})),
+			documents: phase1Documents,
 		});
 
 		// Deterministic docs fingerprint for change acknowledgement.
@@ -812,7 +1223,7 @@ createWorker("analyze_deal", async (job: Job) => {
 					(typeof (previousDio as any)?.deal?.name === "string" ? (previousDio as any).deal.name : undefined)
 					?? (typeof phase1_deal_overview_v2.deal_name === "string" ? phase1_deal_overview_v2.deal_name : undefined),
 			},
-			inputDocuments,
+			inputDocuments: documentsForAnalyzers,
 			deal_overview_v2: phase1_deal_overview_v2,
 			business_archetype_v1: phase1_business_archetype_v1,
 		});
@@ -835,6 +1246,57 @@ createWorker("analyze_deal", async (job: Job) => {
 			previousDocsFingerprint,
 			nowIso,
 		});
+
+		// One lightweight investor-readable synthesis step (Phase 1 only).
+		// Must not alter orchestration order or scoring; stored as dio.phase1.deal_summary_v2.
+		let phase1_deal_summary_v2: DealSummaryV2 | null = null;
+		try {
+			const dealName =
+				(typeof (previousDio as any)?.deal?.name === "string" ? (previousDio as any).deal.name : undefined) ??
+				(typeof phase1_deal_overview_v2.deal_name === "string" ? phase1_deal_overview_v2.deal_name : undefined) ??
+				null;
+			phase1_deal_summary_v2 = await generateDealSummaryV2FromPhase1({
+				nowIso,
+				dealId,
+				dealName,
+				phase1_deal_overview_v2,
+				phase1_business_archetype_v1,
+				phase1_update_report_v1,
+				phase1_executive_summary_v2: (currentPhase1 as any).executive_summary_v2,
+				phase1_decision_summary_v1: (currentPhase1 as any).decision_summary_v1,
+				eligibleDocuments: eligible.map((d) => ({
+					id: String(d.id ?? ""),
+					title: typeof d.title === "string" ? d.title : null,
+					type: typeof d.type === "string" ? d.type : null,
+					page_count: typeof (d as any).page_count === "number" ? (d as any).page_count : null,
+				})),
+			});
+		} catch (err) {
+			// Best-effort: do not fail the deal analysis if summary generation fails.
+			console.warn(
+				JSON.stringify({
+					event: "phase1_deal_summary_v2_failed",
+					deal_id: dealId,
+					reason: "exception",
+					error: err instanceof Error ? err.message : String(err),
+				})
+			);
+			phase1_deal_summary_v2 = null;
+		}
+
+		// Reruns must not erase previously good summaries.
+		if (!phase1_deal_summary_v2) {
+			const prev = (previousDio as any)?.dio?.phase1?.deal_summary_v2;
+			if (prev && typeof prev === "object") {
+				phase1_deal_summary_v2 = prev as DealSummaryV2;
+				console.log(
+					JSON.stringify({
+						event: "phase1_deal_summary_v2_preserved",
+						deal_id: dealId,
+					})
+				);
+			}
+		}
 		{
 			const hasPrevDio = !!previousDio;
 			const prevDioHasPhase1 = !!(previousDio as any)?.dio?.phase1;
@@ -872,15 +1334,32 @@ createWorker("analyze_deal", async (job: Job) => {
 			debug: process.env.ORCHESTRATOR_DEBUG === "true",
 		});
 
+		if (process.env.DEBUG_PHASE1_DEAL_SUMMARY_V2 === "1") {
+			console.log(
+				JSON.stringify({
+					event: "phase1_deal_summary_v2_pre_orchestrator",
+					deal_id: dealId,
+					has_openai_key: typeof process.env.OPENAI_API_KEY === "string" && process.env.OPENAI_API_KEY.length > 0,
+					eligible_docs_count: eligible.length,
+					phase1_deal_summary_v2_is_null: phase1_deal_summary_v2 == null,
+					phase1_deal_summary_v2_summary_len:
+						phase1_deal_summary_v2 && typeof (phase1_deal_summary_v2 as any).summary === "string"
+							? (phase1_deal_summary_v2 as any).summary.length
+							: null,
+				})
+			);
+		}
+
 		const result = await orchestrator.analyze({
 			deal_id: dealId,
 			analysis_cycle: 1,
 			input_data: {
-				documents: inputDocuments,
+				documents: documentsForAnalyzers,
 				dio_context,
 				phase1_deal_overview_v2,
 				phase1_business_archetype_v1,
 				phase1_update_report_v1,
+				phase1_deal_summary_v2,
 			},
 		});
 

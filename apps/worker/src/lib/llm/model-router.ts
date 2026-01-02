@@ -45,6 +45,7 @@ export class ModelRouter {
    */
   private modelCosts: Record<ModelName, number> = {
     'gpt-4o': 5.0, // $5 per 1M input tokens
+    'gpt-4o-mini': 5.0, // Treat as same class for routing heuristics
     'qwen-14b': 0.02, // Self-hosted, very cheap
     'qwen-7b-quantized': 0.01, // Self-hosted quantized, cheaper
     'llama-70b': 0.05, // Self-hosted heavy, slightly more
@@ -58,6 +59,11 @@ export class ModelRouter {
       'synthesis' as TaskType, // Great for complex reasoning
       'validation' as TaskType, // Good at contradiction detection
       'chat-response' as TaskType, // Excellent user-facing
+    ] as TaskType[]),
+    'gpt-4o-mini': new Set([
+      'synthesis' as TaskType,
+      'validation' as TaskType,
+      'chat-response' as TaskType,
     ] as TaskType[]),
     'qwen-14b': new Set([
       'fact-extraction' as TaskType, // Very good
@@ -307,6 +313,7 @@ export class ModelRouter {
     // Map models to likely providers
     const modelToProviders: Record<ModelName, ProviderType[]> = {
       'gpt-4o': ['openai'],
+      'gpt-4o-mini': ['openai'],
       'qwen-14b': ['self-hosted'],
       'qwen-7b-quantized': ['self-hosted'],
       'llama-70b': ['self-hosted'],

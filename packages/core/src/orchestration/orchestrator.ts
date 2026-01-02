@@ -910,6 +910,8 @@ export class DealOrchestrator {
         deal_overview_v2: (input.input_data as any).phase1_deal_overview_v2,
         business_archetype_v1: (input.input_data as any).phase1_business_archetype_v1,
         update_report_v1: (input.input_data as any).phase1_update_report_v1,
+		// Additive: optional investor-readable synthesis from worker (Phase 1 only)
+		deal_summary_v2: (input.input_data as any).phase1_deal_summary_v2,
       };
 
       dio = mergePhase1IntoDIO(dio as any, phase1WithWorkerExtras as any) as DealIntelligenceObject;

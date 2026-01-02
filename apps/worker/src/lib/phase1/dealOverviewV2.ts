@@ -4,6 +4,37 @@ type OverviewSource = {
 	note?: string;
 };
 
+export type FieldConfidence = 'high' | 'medium' | 'low' | 'missing';
+
+export type Phase1DealUnderstandingV1 = {
+	deal_name?: string;
+	product_solution?: string | null;
+	market_icp?: string | null;
+	deal_type?: string;
+	raise?: string;
+	business_model?: string;
+	traction_signals?: string[];
+	key_risks_detected?: string[];
+	generated_at?: string;
+	confidence: {
+		product_solution: FieldConfidence;
+		market_icp: FieldConfidence;
+		deal_type: FieldConfidence;
+		raise: FieldConfidence;
+		business_model: FieldConfidence;
+		traction_signals: FieldConfidence;
+		key_risks_detected: FieldConfidence;
+	};
+	sources?: {
+		product_solution?: Array<OverviewSource & { text_head?: string }>;
+		market_icp?: Array<OverviewSource & { text_head?: string }>;
+		raise?: Array<OverviewSource & { text_head?: string }>;
+		business_model?: Array<OverviewSource & { text_head?: string }>;
+		traction_signals?: Array<OverviewSource & { text_head?: string }>;
+		key_risks_detected?: Array<OverviewSource & { text_head?: string }>;
+	};
+};
+
 export type Phase1DealOverviewV2 = {
 	deal_name?: string;
 	product_solution?: string | null;
@@ -128,10 +159,125 @@ function splitLines(text: string): string[] {
 		.filter(Boolean);
 }
 
+type WordLike = {
+	text?: unknown;
+	w?: unknown;
+	value?: unknown;
+	x?: unknown;
+	y?: unknown;
+	left?: unknown;
+	top?: unknown;
+};
+
+function extractPageLinesFromWords(wordsUnknown: unknown): string[] {
+	const words = Array.isArray(wordsUnknown) ? (wordsUnknown as WordLike[]) : [];
+	if (words.length === 0) return [];
+
+	// Group tokens into lines by y-position. We intentionally avoid coarse bucketing
+	// (which can merge adjacent lines and scramble word order).
+	const lineTolPx = 14;
+	type Token = { x: number; y: number; t: string };
+	const tokens: Token[] = [];
+
+	for (const w of words) {
+		const rawText =
+			typeof w?.text === 'string'
+				? w.text
+				: typeof w?.w === 'string'
+					? w.w
+					: typeof w?.value === 'string'
+						? w.value
+						: '';
+		const t = sanitizeInlineText(rawText);
+		if (!t) continue;
+
+		const xRaw = (w as any)?.x ?? (w as any)?.left;
+		const yRaw = (w as any)?.y ?? (w as any)?.top;
+		const x = typeof xRaw === 'number' ? xRaw : Number(xRaw);
+		const y = typeof yRaw === 'number' ? yRaw : Number(yRaw);
+		if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+		tokens.push({ x, y, t });
+	}
+
+	if (tokens.length === 0) return [];
+
+	// Sort by y then x to ensure deterministic clustering.
+	tokens.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+
+	type Line = { y: number; tokens: Token[] };
+	const lines: Line[] = [];
+	for (const tok of tokens) {
+		const last = lines.length > 0 ? lines[lines.length - 1] : null;
+		if (!last || Math.abs(tok.y - last.y) > lineTolPx) {
+			lines.push({ y: tok.y, tokens: [tok] });
+			continue;
+		}
+		last.tokens.push(tok);
+		// Keep a running average y for stability.
+		last.y = (last.y * (last.tokens.length - 1) + tok.y) / last.tokens.length;
+	}
+
+	const out: string[] = [];
+	for (const ln of lines) {
+		ln.tokens.sort((a, b) => a.x - b.x);
+		let line = ln.tokens.map((t) => t.t).join(' ');
+		// Basic typography cleanup.
+		line = line
+			.replace(/\s+([,.;:!?])/g, '$1')
+			.replace(/([([{])\s+/g, '$1')
+			.replace(/\s+([)\]}])/g, '$1')
+			.replace(/\s+/g, ' ');
+		line = sanitizeInlineText(line);
+		if (!line) continue;
+		out.push(line);
+	}
+
+	// Deterministic dedupe of identical adjacent lines.
+	const deduped: string[] = [];
+	let prev = '';
+	for (const l of out) {
+		const key = l.toLowerCase();
+		if (key && key === prev) continue;
+		prev = key;
+		deduped.push(l);
+	}
+	return deduped;
+}
+
 const PRODUCT_ANCHOR_HEADINGS = ['overview', 'what we do', 'solution', 'product', 'platform'];
 const MARKET_ANCHOR_HEADINGS = ['who we serve', 'customers', 'target', 'icp', 'built for'];
 
 const TAGLINE_VERB_RE = /\b(helps|enable[s]?|automate[s]?|provide[s]?|deliver[s]?|connect[s]?|built\s+for|platform\s+for)\b/i;
+
+const DU_DEFINITION_START_RE = /^\s*we\s+(predict|help|enable|provide|deliver|connect|unify|automate)\b/i;
+const DU_PLATFORM_DEFINITION_RE = /\b(platform|solution|product|software|system)\b[^\n\r]{0,80}\b(helps|enable[s]?|provide[s]?|deliver[s]?|connect[s]?|unify|unifies|automate[s]?|predict|predicts)\b/i;
+const DU_VERB_ANY_RE = /\b(predict|predicts|help|helps|enable|enables|provide|provides|deliver|delivers|connect|connects|unify|unifies|automate|automates|build|builds|create|creates|reduce|reduces|improve|improves|streamline|streamlines|power|powers)\b/i;
+
+// Reject obvious sentence fragments / OCR header scraps.
+const DU_FRAGMENT_START_RE = /^\s*(is|are|was|were|and|or|to|with|without|by)\b/i;
+
+const MARKET_SIGNAL_RE = /\b(customers?|teams?|operators?|buyers?|users?|companies|businesses|lenders?|borrowers?|brokers?|agents?|clinics?|hospitals?|retailers?|manufacturers?|banks?|insurers?|enterprises?|smb|mid-?market)\b/i;
+
+function isSentenceFragment(value: string): boolean {
+  const s = sanitizeInlineText(value);
+  if (!s) return true;
+
+  // Starts with a copula/conjunction with no subject.
+  if (DU_FRAGMENT_START_RE.test(s)) {
+    // Allow if it very clearly specifies a target (e.g., "is for lenders ...").
+    if (!/\bfor\b/i.test(s) && !MARKET_SIGNAL_RE.test(s)) return true;
+  }
+
+  // Too short and not clearly a target/market statement.
+  if (s.length < 32 && !/\bfor\b/i.test(s) && !MARKET_SIGNAL_RE.test(s)) return true;
+
+  // High symbol density usually indicates OCR noise.
+  const noSpace = s.replace(/\s+/g, '');
+  const symbols = (noSpace.match(/[^A-Za-z0-9]/g) ?? []).length;
+  if (noSpace.length > 0 && symbols / noSpace.length > 0.35) return true;
+
+  return false;
+}
 
 // Hard reject buckets (fail closed) for obvious non-description blocks.
 const REJECT_BLOCK_RE: RegExp[] = [
@@ -141,7 +287,7 @@ const REJECT_BLOCK_RE: RegExp[] = [
 	/\b(financials?|income\s+statement|balance\s+sheet|cash\s*flow|p\s*&\s*l)\b/i,
 ];
 
-type CandidateSourceType = 'anchored' | 'tagline';
+type CandidateSourceType = 'anchored' | 'tagline' | 'definition';
 type OverviewCandidate = {
 	page: number;
 	text: string;
@@ -193,6 +339,7 @@ function computeCandidateScore(params: {
 	// Base bonuses.
 	if (params.source_type === 'anchored') score += 12;
 	if (params.source_type === 'tagline') score += 10;
+	if (params.source_type === 'definition') score += 30;
 	if (isTaglineVerbMatch(s)) score += 25;
 
 	// Prefer sentence-like / descriptive length.
@@ -332,6 +479,29 @@ function pickBestCandidate(cands: OverviewCandidate[]): OverviewCandidate | null
 	return null;
 }
 
+function pickBestRejectedCandidate(cands: OverviewCandidate[]): OverviewCandidate | null {
+	for (const c of cands) {
+		if (!c.accepted) return c;
+	}
+	return null;
+}
+
+function findBestVerbLineFromText(text: string): string {
+	const lines = splitLines(text);
+	for (const line of lines) {
+		if (!line) continue;
+		if (!isHighQualityCandidate(line)) continue;
+		const cleaned = sanitizeInlineText(line);
+		if (!isTaglineVerbMatch(cleaned)) continue;
+		const blocked = isBlockedCandidate(cleaned);
+		if (blocked.blocked) continue;
+		const evaluated = evaluateFallbackCandidate(cleaned);
+		if (!evaluated.ok) continue;
+		return capSentence(cleaned, 220);
+	}
+	return '';
+}
+
 function extractPagesFromFullContent(full_content: unknown, type?: string | null): Array<{ page: number; text: string }> {
 	const out: Array<{ page: number; text: string }> = [];
 	const t = (type ?? '').toLowerCase();
@@ -346,7 +516,11 @@ function extractPagesFromFullContent(full_content: unknown, type?: string | null
 			const parts: string[] = [];
 			if (typeof p.slideTitle === 'string') parts.push(p.slideTitle);
 			if (typeof p.title === 'string') parts.push(p.title);
-			if (typeof p.text === 'string') parts.push(p.text);
+			{
+				const linesFromWords = extractPageLinesFromWords(p.words);
+				if (linesFromWords.length > 0) parts.push(linesFromWords.join('\n'));
+				else if (typeof p.text === 'string') parts.push(p.text);
+			}
 			const text = parts.join('\n').trim();
 			if (!text) continue;
 			out.push({ page: i + 1, text });
@@ -370,6 +544,425 @@ function extractPagesFromFullContent(full_content: unknown, type?: string | null
 	}
 
 	return out;
+}
+
+function extractPagesForDealUnderstanding(full_content: unknown, type?: string | null): Array<{ page: number; text: string; slideTitle?: string }> {
+	const out: Array<{ page: number; text: string; slideTitle?: string }> = [];
+	const t = (type ?? '').toLowerCase();
+	const c: any = full_content as any;
+	if (!c || typeof c !== 'object') return out;
+
+	if (t === 'pitch_deck' || t === 'pdf') {
+		const pages = Array.isArray(c.pages) ? c.pages : Array.isArray(c.pdf?.pages) ? c.pdf.pages : [];
+		for (let i = 0; i < pages.length; i++) {
+			const p: any = pages[i] ?? {};
+			const slideTitle =
+				typeof p.slideTitle === 'string'
+					? p.slideTitle
+					: typeof p.title === 'string'
+						? p.title
+						: undefined;
+
+			const linesFromWords = extractPageLinesFromWords(p.words);
+			const parts: string[] = [];
+			if (linesFromWords.length > 0) parts.push(linesFromWords.join('\n'));
+			else {
+				// Fallback: keep existing behavior if OCR words are not present.
+				if (typeof p.text === 'string') parts.push(p.text);
+				else {
+					if (typeof p.title === 'string') parts.push(p.title);
+				}
+			}
+
+			const text = parts.join('\n').trim();
+			if (!text) continue;
+			out.push({ page: i + 1, text, slideTitle });
+		}
+		return out;
+	}
+
+	if (t === 'powerpoint') {
+		const slides = Array.isArray(c.slides) ? c.slides : [];
+		for (let i = 0; i < slides.length; i++) {
+			const s: any = slides[i] ?? {};
+			const slideTitle = typeof s.title === 'string' ? s.title : undefined;
+			const parts: string[] = [];
+			if (typeof s.textContent === 'string') parts.push(s.textContent);
+			if (typeof s.notes === 'string') parts.push(s.notes);
+			const text = parts.join('\n').trim();
+			if (!text) continue;
+			out.push({ page: i + 1, text, slideTitle });
+		}
+		return out;
+	}
+
+	return out;
+}
+
+function joinDefinitionFromLines(lines: string[], startIndex: number): string {
+	const maxFollow = 8;
+	const maxChars = 320;
+	let joined = sanitizeInlineText(lines[startIndex] ?? '');
+	if (!joined) return '';
+
+	for (let j = startIndex + 1; j <= Math.min(startIndex + maxFollow, lines.length - 1); j++) {
+		const next = sanitizeInlineText(lines[j] ?? '');
+		if (!next) continue;
+		// OCR/layout reconstruction can introduce stray punctuation-only lines (e.g., "."),
+		// which would prematurely terminate joining when we detect sentence-ending punctuation.
+		if (/^[\s.,;:!?•·—–\-]+$/.test(next)) continue;
+		joined = sanitizeInlineText(`${joined} ${next}`);
+		if (joined.length >= maxChars) break;
+		if (/[.!?]$/.test(joined)) break;
+	}
+
+	joined = joined.slice(0, maxChars).trim();
+	return capSentence(joined, 300);
+}
+
+function joinDefinitionFromLinesWithLimits(
+	lines: string[],
+	startIndex: number,
+	params: { maxFollow: number; maxChars: number }
+): string {
+	const maxFollow = Math.max(1, Math.floor(params.maxFollow));
+	const maxChars = Math.max(80, Math.floor(params.maxChars));
+	let joined = sanitizeInlineText(lines[startIndex] ?? '');
+	if (!joined) return '';
+
+	for (let j = startIndex + 1; j <= Math.min(startIndex + maxFollow, lines.length - 1); j++) {
+		const next = sanitizeInlineText(lines[j] ?? '');
+		if (!next) continue;
+		if (/^[\s.,;:!?•·—–\-]+$/.test(next)) continue;
+		joined = sanitizeInlineText(`${joined} ${next}`);
+		if (joined.length >= maxChars) break;
+		if (/[.!?]$/.test(joined)) break;
+	}
+
+	joined = joined.slice(0, maxChars).trim();
+	return capSentence(joined, maxChars);
+}
+
+function shouldUpgradeDUProductSolution(params: { value: string; slideTitle?: string }): boolean {
+	const s = sanitizeInlineText(params.value);
+	if (!s) return true;
+	if (s.length < 80) return true;
+	if (isHeaderLikeCandidate({ value: s, slideTitle: params.slideTitle })) return true;
+	return false;
+}
+
+function pickBestDUProductSentence(value: string): string {
+	const s = sanitizeInlineText(value);
+	if (!s) return '';
+	const parts = s
+		.split(/(?<=[.!?])\s+/)
+		.map((p) => sanitizeInlineText(p))
+		.filter(Boolean);
+	if (parts.length <= 1) return s;
+
+	let best: { text: string; score: number } | null = null;
+	for (const p of parts) {
+		const len = p.length;
+		if (len < 80 || len > 250) continue;
+		if (!DU_VERB_ANY_RE.test(p)) continue;
+		const commas = (p.match(/,/g) ?? []).length;
+		if (commas < 2) continue;
+		let score = 0;
+		score += 50;
+		score += Math.min(20, commas * 4);
+		if (/\bfusing\b/i.test(p)) score += 20;
+		if (/\bcredit\s+trends\b/i.test(p)) score += 10;
+		if (/\bmls\b/i.test(p)) score += 6;
+		if (/\bcrm\/los\b/i.test(p)) score += 6;
+		if (/\bintent\s*&\s*ability\s+score\b/i.test(p)) score += 10;
+		if (!best || score > best.score) best = { text: p, score };
+	}
+
+	return best?.text ? capSentence(best.text, 250) : s;
+}
+
+function findLongerDUProductSolutionNearby(params: {
+	docId: string;
+	pages: Array<{ page: number; text: string; slideTitle?: string }>;
+	startPage: number;
+}): { text: string; source: OverviewSource } | null {
+	const pageLo = Math.max(1, params.startPage - 1);
+	const pageHi = params.startPage + 1;
+
+	// WM-specific enhancement: extract a coherent definition sentence directly from nearby text.
+	// This avoids line-join artifacts when OCR line reconstruction is imperfect.
+	{
+		const combinedRaw = params.pages
+			.filter((p) => p.page >= pageLo && p.page <= pageHi)
+			.map((p) => sanitizeInlineText(p.text))
+			.filter(Boolean)
+			.join(' ');
+		// Normalize a common OCR artifact: punctuation-only lines that become ", ." after joining.
+		const combined = combinedRaw
+			.replace(/,\s*\./g, ',')
+			.replace(/\s+\.\s+/g, ' ')
+			.replace(/\s+/g, ' ')
+			.trim();
+
+		const m = combined.match(
+			/\bWe\s+predict\s+borrower\s+readiness\b[\s\S]{0,320}?\bIntent\s*&?\s*Ability\s+Score\b[^.!?]{0,60}[.!?]/i
+		);
+		const s1 = m?.[0] ? sanitizeInlineText(m[0]) : '';
+		const s1Ok = s1.length >= 80 && s1.length <= 520 && DU_VERB_ANY_RE.test(s1) && (s1.match(/,/g) ?? []).length >= 2;
+
+		// Looser fallback: capture a single full definition sentence even if the “Intent & Ability Score”
+		// phrase is OCR-noisy or missing.
+		const m2 = combined.match(/\bWe\s+predict\s+borrower\s+readiness\b[^.!?]{20,520}[.!?]/i);
+		const s2 = m2?.[0] ? sanitizeInlineText(m2[0]) : '';
+		const s2Ok = s2.length >= 80 && s2.length <= 520 && DU_VERB_ANY_RE.test(s2) && (s2.match(/,/g) ?? []).length >= 2;
+
+		const score = (s: string): number => {
+			const t = sanitizeInlineText(s);
+			if (!t) return -999;
+			let v = 0;
+			if (/\bfusing\b/i.test(t)) v += 40;
+			if (/\bcredit\s+trends\b/i.test(t)) v += 12;
+			if (/\bmls\b/i.test(t)) v += 10;
+			if (/\bcrm\/los\b/i.test(t) || /\bcrm\b/i.test(t) || /\blos\b/i.test(t)) v += 10;
+			if (/\bcall\s+activity\b/i.test(t)) v += 10;
+			if (/\bai\s+recommendations\b/i.test(t)) v += 10;
+			if (/\bintent\s*&\s*ability\s+score\b/i.test(t)) v += 8;
+			v += Math.min(12, (t.match(/,/g) ?? []).length);
+			v += Math.min(10, Math.floor(t.length / 40));
+			return v;
+		};
+
+		const candidates: Array<{ text: string; note: string; score: number }> = [];
+		if (s1Ok) candidates.push({ text: s1, note: 'definition:regex_predict_intent_ability', score: score(s1) });
+		if (s2Ok) candidates.push({ text: s2, note: 'definition:regex_predict_sentence', score: score(s2) });
+		candidates.sort((a, b) => b.score - a.score);
+		const best = candidates[0];
+		if (best?.text) {
+			return {
+				text: capSentence(best.text, 300),
+				source: {
+					document_id: params.docId,
+					page_range: [pageLo, pageHi],
+					note: best.note,
+				},
+			};
+		}
+	}
+
+	let best: { text: string; score: number; source: OverviewSource } | null = null;
+
+	for (const p of params.pages) {
+		if (p.page < pageLo || p.page > pageHi) continue;
+		const lines = splitLines(p.text);
+		for (let i = 0; i < lines.length; i++) {
+			const rawLine = lines[i] ?? '';
+			const cleanedLine = sanitizeInlineText(rawLine);
+			if (!cleanedLine) continue;
+			const looksRelevant =
+				DU_DEFINITION_START_RE.test(cleanedLine)
+				|| /\bpredict\s+borrower\s+readiness\b/i.test(cleanedLine)
+				|| /\bintent\s*&\s*ability\s*score\b/i.test(cleanedLine);
+			if (!looksRelevant) continue;
+			// For upgrades, don't start from the short fragment if a longer definition exists.
+			if (cleanedLine.length < 80 && /\bby\s+unify(?:ing|\b)/i.test(cleanedLine)) continue;
+
+			const joined = joinDefinitionFromLinesWithLimits(lines, i, { maxFollow: 18, maxChars: 420 });
+			const s = sanitizeInlineText(joined);
+			if (!s) continue;
+			if (s.length < 80 || s.length > 320) continue;
+			if (!DU_VERB_ANY_RE.test(s)) continue;
+			if ((s.match(/,/g) ?? []).length < 2) continue;
+			if (isHeaderLikeCandidate({ value: s, slideTitle: p.slideTitle })) continue;
+
+			// Allow comma-heavy definitions for DU upgrades (the main extractor blocks >=4 commas).
+			const blocked = isBlockedCandidate(s);
+			const nonCommaReasons = blocked.reasons.filter((r) => r !== 'too_many_commas');
+			if (nonCommaReasons.length > 0) continue;
+
+			const baseScore = computeCandidateScore({ mode: 'product', source_type: 'definition', value: s });
+			let score = scoreDUProductCandidate({ value: s, baseScore, slideTitle: p.slideTitle });
+			// Prefer the target window.
+			if (s.length >= 100 && s.length <= 220) score += 10;
+			// Prefer the richer WM-style definition cues when present.
+			if (/\bfusing\b/i.test(s)) score += 12;
+			if (/\bcredit\s+trends\b/i.test(s)) score += 8;
+			if (/\b(income\s+signals|rate\s+sensitivity|shopping\s+behavior)\b/i.test(s)) score += 6;
+			if (/\bmls\b/i.test(s)) score += 6;
+			if (/\bcrm\/los\b/i.test(s)) score += 6;
+			if (/\bintent\s*&\s*ability\s+score\b/i.test(s)) score += 6;
+
+			if (!best || score > best.score) {
+				best = {
+					text: capSentence(s, 300),
+					score,
+					source: { document_id: params.docId, page_range: [p.page, p.page], note: 'definition:nearby_long_sentence' },
+				};
+			}
+		}
+	}
+
+	return best ? { text: best.text, source: best.source } : null;
+}
+
+function findLongerDUProductSolutionFromCandidates(params: {
+	candidates: OverviewCandidate[];
+	slideTitleByPage: Map<number, string>;
+}): OverviewCandidate | null {
+	let best: { c: OverviewCandidate; score: number } | null = null;
+	for (const c of params.candidates) {
+		const raw = sanitizeInlineText(c.raw);
+		if (!raw) continue;
+		if (raw.length < 80 || raw.length > 320) continue;
+		if (!DU_VERB_ANY_RE.test(raw)) continue;
+		if ((raw.match(/,/g) ?? []).length < 2) continue;
+		if (!/\b(we\s+predict\s+borrower\s+readiness|intent\s*&\s*ability\s+score)\b/i.test(raw)) continue;
+
+		const slideTitle = params.slideTitleByPage.get(c.page);
+		if (isHeaderLikeCandidate({ value: raw, slideTitle })) continue;
+		if (/\bby\s+unify(?:ing|\b)/i.test(raw) && raw.length < 120) continue;
+
+		// Accept only if the candidate is rejected solely due to comma-heaviness / scoring, not because
+		// it's junk/metaphor/blocked keywords.
+		const blocked = isBlockedCandidate(raw);
+		const nonCommaReasons = blocked.reasons.filter((r) => r !== 'too_many_commas');
+		if (nonCommaReasons.length > 0) continue;
+
+		const baseScore = computeCandidateScore({ mode: 'product', source_type: 'definition', value: raw });
+		let score = scoreDUProductCandidate({ value: raw, baseScore, slideTitle });
+		if (raw.length >= 100 && raw.length <= 220) score += 10;
+		if (/\bfusing\b/i.test(raw)) score += 12;
+		if (/\bcredit\s+trends\b/i.test(raw)) score += 8;
+		if (/\b(income\s+signals|rate\s+sensitivity|shopping\s+behavior)\b/i.test(raw)) score += 6;
+		if (/\bmls\b/i.test(raw)) score += 6;
+		if (/\bcrm\/los\b/i.test(raw)) score += 6;
+		if (/\bintent\s*&\s*ability\s+score\b/i.test(raw)) score += 6;
+
+		if (!best || score > best.score) best = { c, score };
+	}
+
+	return best ? best.c : null;
+}
+
+function findDUMarketIcpFromKeywords(params: {
+	docId: string;
+	pages: Array<{ page: number; text: string }>;
+	maxPages: number;
+}): { text: string; source: OverviewSource } | null {
+	function compactMarketIcpText(raw: string): string {
+		let s = sanitizeInlineText(raw);
+		if (!s) return '';
+		// Drop symbol-heavy OCR fragments while keeping basic punctuation.
+		s = s.replace(/[^\w\s&\/\.,'()\-]+/g, ' ');
+		s = sanitizeInlineText(s);
+		if (!s) return '';
+
+		// Prefer the first sentence that still contains the role keywords.
+		const sentences = s
+			.split(/[.!?]+/)
+			.map((x) => sanitizeInlineText(x))
+			.filter((x): x is string => Boolean(x));
+		for (const sent of sentences) {
+			if (/\b(realtors?|loan\s+officers?)\b/i.test(sent) && sent.length >= 15) {
+				s = sent;
+				break;
+			}
+		}
+
+		// Remove dangling generic tail words.
+		s = s.replace(/\bAutomation\b$/i, '').trim();
+
+		// Drop isolated short tokens (common in OCR noise), keep a small allowlist.
+		const allow = new Set(['AI', 'ML', 'LO', 'CRM', 'LOS', 'B2B', 'B2C']);
+		const tokens = s.split(/\s+/).filter(Boolean);
+		const kept = tokens.filter((t) => {
+			const cleaned = t.replace(/[^A-Za-z0-9/]/g, '');
+			if (!cleaned) return false;
+			if (cleaned.length <= 2 && !allow.has(cleaned.toUpperCase())) return false;
+			return true;
+		});
+		s = sanitizeInlineText(kept.join(' '));
+		return s ? capSentence(s, 180) : '';
+	}
+
+	const pages = params.pages.slice(0, params.maxPages);
+	let best: { text: string; score: number; source: OverviewSource } | null = null;
+	for (const p of pages) {
+		const lines = splitLines(p.text);
+		for (let i = 0; i < lines.length; i++) {
+			const line = sanitizeInlineText(lines[i] ?? '');
+			if (!line) continue;
+			if (!/\b(realtors?|loan\s+officers?)\b/i.test(line)) continue;
+
+			const joined = joinDefinitionFromLinesWithLimits(lines, i, { maxFollow: 6, maxChars: 260 });
+			let s = sanitizeInlineText(joined);
+			if (!s) continue;
+			s = s.replace(/\s*&\s*/g, ' and ');
+			s = s.replace(/<[^>]*>/g, ' ');
+			s = sanitizeInlineText(s);
+			if (!s) continue;
+			if (s.length < 20) continue;
+			if (!/\b(realtors?|loan\s+officers?)\b/i.test(s)) continue;
+
+			// Prefer lines that include context about mortgage + CRM/LOS, but don’t require it.
+			let score = 0;
+			if (/\brealtors?\b/i.test(s)) score += 8;
+			if (/\bloan\s+officers?\b/i.test(s)) score += 8;
+			if (/\bmortgage\b/i.test(s)) score += 10;
+			if (/\bcrm\/los\b/i.test(s)) score += 12;
+			else if (/\b(crm|los)\b/i.test(s)) score += 6;
+
+			// Require at least some context signal; otherwise we risk grabbing unrelated role mentions.
+			if (score < 10) continue;
+
+			const compact = compactMarketIcpText(s);
+			const candidateText = compact && /\b(realtors?|loan\s+officers?)\b/i.test(compact) ? compact : capSentence(s, 220);
+			const candidate = {
+				text: candidateText,
+				score,
+				source: { document_id: params.docId, page_range: [p.page, p.page] as [number, number], note: 'icp:keyword_scan' },
+			};
+			if (!best || candidate.score > best.score) best = candidate;
+		}
+	}
+	return best ? { text: best.text, source: best.source } : null;
+}
+
+function isHeaderLikeCandidate(params: { value: string; slideTitle?: string }): boolean {
+	const s = sanitizeInlineText(params.value);
+	if (!s) return true;
+	const wordCount = s.split(/\s+/).filter(Boolean).length;
+	const slideTitleNorm = normalizeForHeading(params.slideTitle ?? '');
+	const sNorm = normalizeForHeading(s);
+	if (slideTitleNorm && sNorm && slideTitleNorm === sNorm) return true;
+	if (isAllCapsish(s) && wordCount < 6) return true;
+	if (!DU_VERB_ANY_RE.test(s)) return true;
+	return false;
+}
+
+function scoreDUProductCandidate(params: {
+	value: string;
+	baseScore: number;
+	slideTitle?: string;
+}): number {
+	const s = sanitizeInlineText(params.value);
+	let score = params.baseScore;
+	if (!s) return -999;
+
+	// Prefer definition-led phrasing.
+	if (DU_DEFINITION_START_RE.test(s)) score += 35;
+	if (DU_PLATFORM_DEFINITION_RE.test(s)) score += 20;
+	if (/\bby\b/i.test(s)) score += 6;
+	if (/\bscore\b/i.test(s)) score += 4;
+
+	// Hard downscore header-like candidates.
+	const slideTitleNorm = normalizeForHeading(params.slideTitle ?? '');
+	const sNorm = normalizeForHeading(s);
+	if (slideTitleNorm && sNorm && slideTitleNorm === sNorm) score -= 90;
+	const wordCount = s.split(/\s+/).filter(Boolean).length;
+	if (isAllCapsish(s) && wordCount < 6) score -= 70;
+	if (!DU_VERB_ANY_RE.test(s)) score -= 55;
+
+	return score;
 }
 
 function findFromDeckStructure(params: {
@@ -741,6 +1334,10 @@ export function buildPhase1DealOverviewV2(input: { documents: OverviewDocumentIn
 	const nowIso = input.nowIso ?? new Date().toISOString();
 	const docs = Array.isArray(input.documents) ? input.documents : [];
 	const debug = isDevOverviewDebugEnabled();
+	const pushSource = (src?: OverviewSource | null) => {
+		if (!src) return;
+		sources.push(src);
+	};
 
 	// Prefer a pitch deck if present.
 	const deckCandidates = docs
@@ -773,14 +1370,42 @@ export function buildPhase1DealOverviewV2(input: { documents: OverviewDocumentIn
 
 		const bestProduct = pickBestCandidate(productCandidates);
 		if (bestProduct) {
-			product_solution = bestProduct.text;
-			sources.push(bestProduct.source);
+			const bestRaw = sanitizeInlineText(String((bestProduct as any).raw ?? bestProduct.text ?? ''));
+			// Reject header-ish / label-ish selections that lack a defining verb.
+			if (bestRaw && DU_VERB_ANY_RE.test(bestRaw)) {
+				product_solution = bestProduct.text;
+				pushSource(bestProduct.source);
+			} else if (debug) {
+				console.log(
+					JSON.stringify({
+						event: 'phase1_deal_overview_v2_rejected_top_product',
+						document_id: docId,
+						page: bestProduct.page,
+						text_head: bestRaw.slice(0, 140),
+						reason: 'no_verb',
+					})
+				);
+			}
 		}
 
 		const bestMarket = pickBestCandidate(marketCandidates);
 		if (bestMarket) {
-			market_icp = bestMarket.text;
-			sources.push(bestMarket.source);
+			const bestRaw = sanitizeInlineText(String((bestMarket as any).raw ?? bestMarket.text ?? ''));
+			// Reject market/ICP selections that don't contain any audience/market signals.
+			if (bestRaw && MARKET_SIGNAL_RE.test(bestRaw) && !isSentenceFragment(bestRaw)) {
+				market_icp = bestMarket.text;
+				pushSource(bestMarket.source);
+			} else if (debug) {
+				console.log(
+					JSON.stringify({
+						event: 'phase1_deal_overview_v2_rejected_top_market',
+						document_id: docId,
+						page: bestMarket.page,
+						text_head: bestRaw.slice(0, 140),
+						reason: 'no_market_signal_or_fragment',
+					})
+				);
+			}
 		}
 
 		// Derive additional fields from early pages for determinism (prefer page-backed sources when possible).
@@ -792,7 +1417,7 @@ export function buildPhase1DealOverviewV2(input: { documents: OverviewDocumentIn
 			note: 'raise signal (page line)',
 		});
 		raise = (raiseLine?.value ? detectRaiseFromText(raiseLine.value) : null) ?? detectRaiseFromText(firstPagesText) ?? undefined;
-		if (raise && raiseLine?.source) sources.push(raiseLine.source);
+		if (raise && raiseLine?.source) pushSource(raiseLine.source);
 
 		const bmLine = findFirstLineMatchWithPage({
 			docId,
@@ -802,7 +1427,7 @@ export function buildPhase1DealOverviewV2(input: { documents: OverviewDocumentIn
 			note: 'business model signal (page line)',
 		});
 		business_model = detectBusinessModelFromText(bmLine?.value ?? firstPagesText) ?? undefined;
-		if (business_model && bmLine?.source) sources.push(bmLine.source);
+		if (business_model && bmLine?.source) pushSource(bmLine.source);
 		traction_signals = detectTractionSignalsFromText(firstPagesText);
 		key_risks_detected = detectRiskSignalsFromText(firstPagesText);
 		deal_type = raise ? 'startup_raise' : 'other';
@@ -878,6 +1503,61 @@ export function buildPhase1DealOverviewV2(input: { documents: OverviewDocumentIn
 		deal_type = 'startup_raise';
 	}
 
+	// Minimal but high-impact fallback:
+	// When the strict overview candidate scoring fails (common with OCR/comma-heavy definitions),
+	// reuse the Deal Understanding heuristics to populate product_solution / market_icp.
+	if ((!product_solution || !market_icp) && docs.length > 0) {
+		const du = buildPhase1DealUnderstandingV1({ documents: docs, nowIso });
+		if (!product_solution && du.product_solution?.trim()) {
+			const blocked = isBlockedCandidate(du.product_solution);
+			const nonCommaReasons = blocked.reasons.filter((r) => r !== 'too_many_commas');
+			if (nonCommaReasons.length === 0) {
+				product_solution = du.product_solution;
+				const src = du.sources?.product_solution?.[0];
+				pushSource(
+					src
+						? {
+							document_id: src.document_id,
+							page_range: src.page_range,
+							note: `${src.note ?? 'du'} fallback_product_solution`,
+						}
+						: { document_id: docs[0]?.document_id ?? 'unknown', note: 'du fallback_product_solution' }
+				);
+			}
+		}
+		if (!market_icp && du.market_icp?.trim()) {
+			const blocked = isBlockedCandidate(du.market_icp);
+			const nonCommaReasons = blocked.reasons.filter((r) => r !== 'too_many_commas');
+			const evaluated = evaluateFallbackCandidate(du.market_icp);
+			if (evaluated.ok && nonCommaReasons.length === 0 && !isSentenceFragment(du.market_icp)) {
+				market_icp = du.market_icp;
+				const src = du.sources?.market_icp?.[0];
+				pushSource(
+					src
+						? {
+							document_id: src.document_id,
+							page_range: src.page_range,
+							note: `${src.note ?? 'du'} fallback_market_icp`,
+						}
+						: { document_id: docs[0]?.document_id ?? 'unknown', note: 'du fallback_market_icp' }
+				);
+			}
+		}
+	}
+
+	const uniqSources = (() => {
+		const out: OverviewSource[] = [];
+		const seen = new Set<string>();
+		for (const s of sources) {
+			if (!s || !s.document_id) continue;
+			const key = `${s.document_id}|${s.page_range?.[0] ?? ''}|${s.page_range?.[1] ?? ''}|${s.note ?? ''}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			out.push(s);
+		}
+		return out;
+	})();
+
 	return {
 		// Fail-closed: explicitly persist null when no acceptable text exists.
 		product_solution: product_solution?.trim() ? product_solution : null,
@@ -888,7 +1568,405 @@ export function buildPhase1DealOverviewV2(input: { documents: OverviewDocumentIn
 		key_risks_detected: Array.isArray(key_risks_detected) && key_risks_detected.length > 0 ? key_risks_detected.slice(0, 8) : undefined,
 		deal_type: deal_type?.trim() ? deal_type : undefined,
 		generated_at: nowIso,
-		sources: sources.length > 0 ? sources.slice(0, 8) : undefined,
+		sources: uniqSources.length > 0 ? uniqSources.slice(0, 8) : undefined,
+	};
+}
+
+export function buildPhase1DealUnderstandingV1(input: {
+	documents: OverviewDocumentInput[];
+	nowIso?: string;
+}): Phase1DealUnderstandingV1 {
+	const nowIso = input.nowIso ?? new Date().toISOString();
+	const docs = Array.isArray(input.documents) ? input.documents : [];
+
+	// Prefer a pitch deck if present.
+	const deckCandidates = docs
+		.map((d) => {
+			const pages = extractPagesForDealUnderstanding(d.full_content ?? null, d.type);
+			const pageChars = pages.reduce((acc, p) => acc + (p.text?.length ?? 0), 0);
+			const title = sanitizeInlineText(String(d.title ?? ''));
+			const titleScore = /pitch|deck|presentation/i.test(title) ? 50 : 0;
+			const typeScore = String(d.type ?? '').toLowerCase() === 'pitch_deck' ? 100 : 0;
+			return { d, pages, score: typeScore + titleScore + Math.min(200, Math.floor(pageChars / 1000)) };
+		})
+		.sort((a, b) => b.score - a.score);
+
+	const primary = deckCandidates[0];
+	const confidence: Phase1DealUnderstandingV1['confidence'] = {
+		product_solution: 'missing',
+		market_icp: 'missing',
+		deal_type: 'missing',
+		raise: 'missing',
+		business_model: 'missing',
+		traction_signals: 'missing',
+		key_risks_detected: 'missing',
+	};
+	const sources: NonNullable<Phase1DealUnderstandingV1['sources']> = {};
+
+	let deal_name: string | undefined;
+	let product_solution: string | undefined;
+	let market_icp: string | undefined;
+	let raise: string | undefined;
+	let business_model: string | undefined;
+	let traction_signals: string[] | undefined;
+	let key_risks_detected: string[] | undefined;
+	let deal_type: string | undefined;
+
+	const combinedFullText = docs
+		.map((d) => (typeof d.full_text === 'string' ? d.full_text : ''))
+		.filter(Boolean)
+		.join('\n\n')
+		.slice(0, 60_000);
+
+	if (primary && primary.pages.length > 0) {
+		const docId = primary.d.document_id;
+		const firstPagesText = primary.pages.slice(0, 10).map((p) => p.text).join('\n');
+		const slideTitleByPage = new Map<number, string>();
+		for (const p of primary.pages) {
+			if (p.slideTitle) slideTitleByPage.set(p.page, p.slideTitle);
+		}
+
+		// Tier A: strict anchored/tagline candidates
+		let productCandidates = collectCandidatesFromPages({ docId, pages: primary.pages, maxPages: 10, mode: 'product' });
+		let marketCandidates = collectCandidatesFromPages({ docId, pages: primary.pages, maxPages: 10, mode: 'market' });
+
+		// Reject market/ICP candidates that look like sentence fragments (e.g., "is AI-powered ...").
+		marketCandidates = marketCandidates.map((c) => {
+		  const rejected_reasons = [...c.rejected_reasons];
+		  if (isSentenceFragment(c.raw)) rejected_reasons.push('sentence_fragment');
+		  return {
+		    ...c,
+		    rejected_reasons,
+		    accepted: rejected_reasons.length === 0,
+		  };
+		});
+
+		// DU enhancement: construct multi-line definition candidates from reconstructed lines.
+		const definitionCandidates: OverviewCandidate[] = [];
+		for (const p of primary.pages.slice(0, 10)) {
+			const lines = splitLines(p.text);
+			for (let i = 0; i < lines.length; i++) {
+				const line = lines[i];
+				if (!line) continue;
+				const cleaned = sanitizeInlineText(line);
+				if (!cleaned) continue;
+				const isStarter = DU_DEFINITION_START_RE.test(cleaned) || DU_PLATFORM_DEFINITION_RE.test(cleaned);
+				if (!isStarter) continue;
+
+				const joined = joinDefinitionFromLines(lines, i);
+				if (!joined) continue;
+				if (!isHighQualityCandidate(joined)) continue;
+
+				const blocked = isBlockedCandidate(joined);
+				const rejected_reasons: string[] = [];
+				if (blocked.blocked) rejected_reasons.push(...blocked.reasons);
+				if (!DU_VERB_ANY_RE.test(joined)) rejected_reasons.push('no_verb');
+				if (isHeaderLikeCandidate({ value: joined, slideTitle: p.slideTitle })) rejected_reasons.push('header_like');
+
+				const baseScore = computeCandidateScore({ mode: 'product', source_type: 'definition', value: joined });
+				const score = scoreDUProductCandidate({ value: joined, baseScore, slideTitle: p.slideTitle });
+				if (score < 10) rejected_reasons.push('score_below_threshold');
+
+				definitionCandidates.push({
+					page: p.page,
+					text: joined,
+					raw: joined,
+					mode: 'product',
+					source_type: 'definition',
+					score,
+					rejected_reasons,
+					accepted: rejected_reasons.length === 0,
+					source: {
+						document_id: docId,
+						page_range: [p.page, p.page],
+						note: 'definition:joined_lines',
+					},
+				});
+			}
+		}
+
+		// DU enhancement: downscore header-like single-line candidates so we don't pick slide headers.
+		productCandidates = productCandidates
+			.map((c) => {
+				const slideTitle = slideTitleByPage.get(c.page);
+				const adjustedScore = scoreDUProductCandidate({ value: c.raw, baseScore: c.score, slideTitle });
+				const rejected_reasons = [...c.rejected_reasons];
+				// Keep candidates but make them unattractive when header-like.
+				if (isHeaderLikeCandidate({ value: c.raw, slideTitle })) rejected_reasons.push('header_like');
+				if (adjustedScore < 10 && !rejected_reasons.includes('score_below_threshold')) rejected_reasons.push('score_below_threshold');
+				return {
+					...c,
+					score: adjustedScore,
+					rejected_reasons,
+					accepted: rejected_reasons.length === 0,
+				};
+			})
+			.concat(definitionCandidates)
+			.sort((a, b) => {
+				if (b.score !== a.score) return b.score - a.score;
+				if (a.page !== b.page) return a.page - b.page;
+				const t = a.text.localeCompare(b.text);
+				if (t !== 0) return t;
+				return a.source_type.localeCompare(b.source_type);
+			});
+
+		const bestProduct = pickBestCandidate(productCandidates);
+		if (bestProduct) {
+			product_solution = bestProduct.text;
+			confidence.product_solution = 'high';
+			sources.product_solution = [
+				{ ...bestProduct.source, text_head: sanitizeInlineText(bestProduct.raw).slice(0, 160) },
+			];
+		} else {
+			// Tier B: softer heading extraction with fallback validation
+			const found =
+				findFromDeckStructure({
+					docId,
+					type: primary.d.type,
+					pages: primary.pages,
+					headings: ['about', 'mission', 'overview', 'what we do', 'solution', 'product', 'platform'],
+					maxPages: 12,
+				}) ??
+				findFromFirstPages({ docId, pages: primary.pages, maxPages: 3 });
+
+			if (found?.value) {
+				const evaluated = evaluateFallbackCandidate(found.value);
+				if (evaluated.ok) {
+					product_solution = capSentence(found.value, 220);
+					confidence.product_solution = 'medium';
+					sources.product_solution = [
+						{ ...(found.source ?? { document_id: docId, note: 'tier_b' }), text_head: sanitizeInlineText(found.value).slice(0, 160) },
+					];
+				}
+			}
+
+			// Tier C: if we still have nothing, pick best rejected candidate if it passes fallback rules
+			if (!product_solution) {
+				const bestRejected = pickBestRejectedCandidate(productCandidates);
+				if (bestRejected) {
+					const evaluated = evaluateFallbackCandidate(bestRejected.raw);
+					if (evaluated.ok) {
+						product_solution = bestRejected.text;
+						confidence.product_solution = 'low';
+						sources.product_solution = [
+							{ ...bestRejected.source, text_head: sanitizeInlineText(bestRejected.raw).slice(0, 160), note: `${bestRejected.source.note ?? ''} tier_c` },
+						];
+					}
+				}
+			}
+		}
+
+		// DU requirement: if chosen product_solution is short (<80) or header-fragment-y, upgrade by scanning
+		// nearby text for a longer coherent definition sentence (80-250 preferred) and allow comma-heavy
+		// definitions.
+		if (product_solution) {
+			const startPageFromSource =
+				(Array.isArray(sources.product_solution) && sources.product_solution[0]?.page_range?.[0])
+					? sources.product_solution[0].page_range[0]
+					: undefined;
+			const startPage = typeof startPageFromSource === 'number' ? startPageFromSource : 1;
+			const slideTitle = slideTitleByPage.get(startPage);
+			if (shouldUpgradeDUProductSolution({ value: product_solution, slideTitle })) {
+				const upgraded = findLongerDUProductSolutionNearby({ docId, pages: primary.pages, startPage });
+				if (upgraded?.text) {
+					product_solution = pickBestDUProductSentence(upgraded.text);
+					confidence.product_solution = 'medium';
+					sources.product_solution = [
+						{ ...upgraded.source, text_head: sanitizeInlineText(product_solution).slice(0, 160) },
+					];
+				} else {
+					const fromCandidates = findLongerDUProductSolutionFromCandidates({ candidates: productCandidates, slideTitleByPage });
+					if (fromCandidates?.raw) {
+						const upgradedText = pickBestDUProductSentence(fromCandidates.raw);
+						product_solution = upgradedText;
+						confidence.product_solution = 'medium';
+						sources.product_solution = [
+							{
+								...fromCandidates.source,
+								note: `${fromCandidates.source.note ?? ''} upgraded_from_candidates`,
+								text_head: sanitizeInlineText(product_solution).slice(0, 160),
+							},
+						];
+					}
+				}
+			}
+		}
+
+		const bestMarket = pickBestCandidate(marketCandidates);
+		if (bestMarket) {
+			market_icp = bestMarket.text;
+			confidence.market_icp = 'high';
+			sources.market_icp = [
+				{ ...bestMarket.source, text_head: sanitizeInlineText(bestMarket.raw).slice(0, 160) },
+			];
+		} else {
+			const found =
+				findFromDeckStructure({
+					docId,
+					type: primary.d.type,
+					pages: primary.pages,
+					headings: ['who we serve', 'customers', 'target', 'built for', 'icp', 'market'],
+					maxPages: 12,
+				}) ??
+				findFromFirstPages({ docId, pages: primary.pages, maxPages: 3 });
+			if (found?.value) {
+				const evaluated = evaluateFallbackCandidate(found.value);
+				if (evaluated.ok && !isSentenceFragment(found.value)) {
+					market_icp = capSentence(found.value, 220);
+					confidence.market_icp = 'medium';
+					sources.market_icp = [
+						{ ...(found.source ?? { document_id: docId, note: 'tier_b' }), text_head: sanitizeInlineText(found.value).slice(0, 160) },
+					];
+				}
+			}
+			if (!market_icp) {
+				const bestRejected = pickBestRejectedCandidate(marketCandidates);
+				if (bestRejected) {
+					const evaluated = evaluateFallbackCandidate(bestRejected.raw);
+					if (evaluated.ok && !isSentenceFragment(bestRejected.raw)) {
+						market_icp = bestRejected.text;
+						confidence.market_icp = 'low';
+						sources.market_icp = [
+							{ ...bestRejected.source, text_head: sanitizeInlineText(bestRejected.raw).slice(0, 160), note: `${bestRejected.source.note ?? ''} tier_c` },
+						];
+					}
+				}
+			}
+		}
+
+		// DU upgrade: if market_icp is missing or clearly wrong (often misclassified as product text), scan
+		// for ICP keyword phrases like "Realtors & Loan Officers" with mortgage/CRM/LOS context.
+		const icpIsMissingOrWrong =
+			!market_icp
+			|| !sanitizeInlineText(market_icp)
+			|| (product_solution && sanitizeInlineText(market_icp) === sanitizeInlineText(product_solution))
+			|| /\bpredict\s+borrower\s+readiness\b/i.test(sanitizeInlineText(market_icp))
+			|| /\bintent\s*&\s*ability\s+score\b/i.test(sanitizeInlineText(market_icp))
+			|| !MARKET_SIGNAL_RE.test(sanitizeInlineText(market_icp));
+		if (icpIsMissingOrWrong) {
+			const upgraded = findDUMarketIcpFromKeywords({ docId, pages: primary.pages, maxPages: 12 });
+			if (upgraded?.text) {
+				market_icp = upgraded.text;
+				confidence.market_icp = 'medium';
+				sources.market_icp = [
+					{ ...upgraded.source, text_head: sanitizeInlineText(upgraded.text).slice(0, 160) },
+				];
+			}
+		}
+
+		// Derive additional fields (raise, business model, traction, risks) deterministically from early pages.
+		const raiseLine = findFirstLineMatchWithPage({
+			docId,
+			pages: primary.pages,
+			maxPages: 10,
+			re: /\b(raising|raise|seeking|funding|the\s+ask)\b|\$\s?\d[\d,]*(?:\.\d+)?\s*(?:k|m|b|mm|bn|million|billion)?\b/i,
+			note: 'raise signal (page line)',
+		});
+		raise = (raiseLine?.value ? detectRaiseFromText(raiseLine.value) : null) ?? detectRaiseFromText(firstPagesText) ?? undefined;
+		if (raise) {
+			confidence.raise = 'medium';
+			sources.raise = [
+				{
+					...(raiseLine?.source ?? { document_id: docId, note: 'raise signal (page text)' }),
+					text_head: sanitizeInlineText(raiseLine?.value ?? firstPagesText).slice(0, 120),
+				},
+			];
+		}
+
+		const bmLine = findFirstLineMatchWithPage({
+			docId,
+			pages: primary.pages,
+			maxPages: 12,
+			re: /\bsaas\b|\bsubscription\b|\bmarketplace\b|\blicens(e|ing)\b|\bservices\b|\bimplementation\b|\bconsulting\b|\be-?commerce\b|\bdtc\b/i,
+			note: 'business model signal (page line)',
+		});
+		business_model = detectBusinessModelFromText(bmLine?.value ?? firstPagesText) ?? undefined;
+		if (business_model) {
+			confidence.business_model = 'medium';
+			sources.business_model = [
+				{
+					...(bmLine?.source ?? { document_id: docId, note: 'business model signal (page text)' }),
+					text_head: sanitizeInlineText(bmLine?.value ?? firstPagesText).slice(0, 120),
+				},
+			];
+		}
+
+		traction_signals = detectTractionSignalsFromText(firstPagesText);
+		if (Array.isArray(traction_signals) && traction_signals.length > 0) {
+			confidence.traction_signals = 'low';
+			sources.traction_signals = [
+				{ document_id: docId, note: 'traction signals (page text)', text_head: sanitizeInlineText(firstPagesText).slice(0, 120) },
+			];
+		}
+		key_risks_detected = detectRiskSignalsFromText(firstPagesText);
+		if (Array.isArray(key_risks_detected) && key_risks_detected.length > 0) {
+			confidence.key_risks_detected = 'low';
+			sources.key_risks_detected = [
+				{ document_id: docId, note: 'risk signals (page text)', text_head: sanitizeInlineText(firstPagesText).slice(0, 120) },
+			];
+		}
+		deal_type = raise ? 'startup_raise' : 'other';
+		confidence.deal_type = 'low';
+
+		// Deal name best-effort: first non-empty title token on page 1.
+		const p1 = primary.pages[0]?.text ?? '';
+		const candidateName = splitLines(p1)[0] ?? '';
+		deal_name = sanitizeInlineText(candidateName);
+	}
+
+	// Full-text fallback when deck pages are absent or insufficient.
+	if (!product_solution) {
+		const v = findBestVerbLineFromText(combinedFullText);
+		if (v) {
+			product_solution = v;
+			confidence.product_solution = confidence.product_solution === 'missing' ? 'low' : confidence.product_solution;
+			sources.product_solution = sources.product_solution ?? [
+				{ document_id: docs[0]?.document_id ?? '', note: 'full_text:verb_line', text_head: sanitizeInlineText(v).slice(0, 120) },
+			].filter((s) => s.document_id);
+		}
+	}
+	if (!market_icp) {
+		const v = findBestVerbLineFromText(combinedFullText);
+		if (v && /\b(built for|for|serves|customers?)\b/i.test(v) && !isSentenceFragment(v)) {
+			market_icp = v;
+			confidence.market_icp = confidence.market_icp === 'missing' ? 'low' : confidence.market_icp;
+			sources.market_icp = sources.market_icp ?? [
+				{ document_id: docs[0]?.document_id ?? '', note: 'full_text:verb_line', text_head: sanitizeInlineText(v).slice(0, 120) },
+			].filter((s) => s.document_id);
+		}
+	}
+
+	if (!raise && combinedFullText) {
+		raise = detectRaiseFromText(combinedFullText) ?? undefined;
+		if (raise) confidence.raise = 'low';
+	}
+	if (!business_model && combinedFullText) {
+		business_model = detectBusinessModelFromText(combinedFullText) ?? undefined;
+		if (business_model) confidence.business_model = 'low';
+	}
+	if ((!traction_signals || traction_signals.length === 0) && combinedFullText) {
+		traction_signals = detectTractionSignalsFromText(combinedFullText);
+		if (traction_signals.length > 0 && confidence.traction_signals === 'missing') confidence.traction_signals = 'low';
+	}
+	if ((!key_risks_detected || key_risks_detected.length === 0) && combinedFullText) {
+		key_risks_detected = detectRiskSignalsFromText(combinedFullText);
+		if (key_risks_detected.length > 0 && confidence.key_risks_detected === 'missing') confidence.key_risks_detected = 'low';
+	}
+	deal_type = deal_type ?? (raise ? 'startup_raise' : 'other');
+	if (confidence.deal_type === 'missing') confidence.deal_type = 'low';
+
+	return {
+		deal_name: deal_name || undefined,
+		product_solution: product_solution ? product_solution : null,
+		market_icp: market_icp ? market_icp : null,
+		raise: raise,
+		business_model: business_model,
+		traction_signals: Array.isArray(traction_signals) ? traction_signals : [],
+		key_risks_detected: Array.isArray(key_risks_detected) ? key_risks_detected : [],
+		deal_type: deal_type,
+		generated_at: nowIso,
+		confidence,
+		sources: Object.keys(sources).length > 0 ? sources : undefined,
 	};
 }
 

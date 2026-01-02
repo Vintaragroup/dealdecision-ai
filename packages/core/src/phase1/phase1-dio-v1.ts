@@ -82,6 +82,15 @@ export type Phase1DecisionSummaryV1 = {
 export type Phase1DIOV1 = {
 	executive_summary_v1: Phase1ExecutiveSummaryV1;
 	executive_summary_v2?: Phase1ExecutiveSummaryV2;
+	// Additive: optional investor-readable synthesis from the worker (Phase 1 only).
+	deal_summary_v2?: {
+		generated_at: string;
+		model: string;
+		summary: string;
+		strengths: string[];
+		risks: string[];
+		open_questions: string[];
+	};
 	decision_summary_v1: Phase1DecisionSummaryV1;
 	claims: Phase1ClaimV1[];
 	coverage: Phase1CoverageV1;
@@ -1423,6 +1432,7 @@ export function mergePhase1IntoDIO(dio: any, phase1: Phase1DIOV1): any {
 	const deal_overview_v2 = (phase1 as any)?.deal_overview_v2;
 	const update_report_v1 = (phase1 as any)?.update_report_v1;
 	const executive_summary_v2 = (phase1 as any)?.executive_summary_v2;
+	const deal_summary_v2 = (phase1 as any)?.deal_summary_v2;
 
   return {
     ...base,
@@ -1438,6 +1448,8 @@ export function mergePhase1IntoDIO(dio: any, phase1: Phase1DIOV1): any {
         decision_summary_v1: phase1.decision_summary_v1,
         claims: phase1.claims,
         coverage: phase1.coverage,
+
+			...(deal_summary_v2 && typeof deal_summary_v2 === "object" ? { deal_summary_v2 } : {}),
 
 				...(business_archetype_v1 && typeof business_archetype_v1 === "object" ? { business_archetype_v1 } : {}),
 				...(deal_overview_v2 && typeof deal_overview_v2 === "object" ? { deal_overview_v2 } : {}),

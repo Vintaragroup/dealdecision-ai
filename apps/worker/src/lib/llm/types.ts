@@ -5,7 +5,7 @@
  * Supports OpenAI API, self-hosted (vLLM), and other providers.
  */
 
-export type ModelName = 'gpt-4o' | 'qwen-14b' | 'llama-70b' | 'qwen-7b-quantized';
+export type ModelName = 'gpt-4o' | 'gpt-4o-mini' | 'qwen-14b' | 'llama-70b' | 'qwen-7b-quantized';
 export type ProviderType = 'openai' | 'self-hosted' | 'bedrock';
 
 /**

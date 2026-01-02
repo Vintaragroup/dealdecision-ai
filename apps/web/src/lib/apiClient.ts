@@ -14,6 +14,7 @@ type DealUiPayload = {
   dealOverviewV2?: unknown;
   updateReportV1?: unknown;
 	businessArchetypeV1?: unknown;
+	dealSummaryV2?: unknown;
 };
 
 export type ExecutiveSummaryV2 = {
@@ -64,6 +65,10 @@ export function normalizeDeal(raw: Deal): DealWithUi {
 		anyDeal?.business_archetype_v1 ??
 		anyDeal?.phase1?.business_archetype_v1 ??
 		anyDeal?.dio?.phase1?.business_archetype_v1;
+  const dealSummaryV2 =
+    anyDeal?.deal_summary_v2 ??
+    anyDeal?.phase1?.deal_summary_v2 ??
+    anyDeal?.dio?.phase1?.deal_summary_v2;
 
   const existingUi = (anyDeal?.ui ?? {}) as DealUiPayload;
 
@@ -137,6 +142,7 @@ export function normalizeDeal(raw: Deal): DealWithUi {
     dealOverviewV2: (existingUi as any).dealOverviewV2 ?? (existingUi as any).overviewV2 ?? dealOverviewV2,
     updateReportV1: (existingUi as any).updateReportV1 ?? updateReportV1,
 		businessArchetypeV1: (existingUi as any).businessArchetypeV1 ?? businessArchetypeV1,
+		dealSummaryV2: (existingUi as any).dealSummaryV2 ?? dealSummaryV2,
   };
 
   const normalized: DealWithUi = {

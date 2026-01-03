@@ -328,6 +328,114 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		expect(snippet0).not.toMatch(/ON-AIR|TALENT TEAM/i);
 	});
 
+	it("rejects_industry_revenue_as_traction", () => {
+		// 1) Industry/macro commentary should NOT count as company traction.
+		const macro = generatePhase1DIOV1({
+			deal: { deal_id: "deal-traction-macro", name: "Dropables", stage: "intake" },
+			inputDocuments: [
+				{
+					document_id: "doc-traction-macro",
+					title: "Dropables Pitch Deck",
+					type: "pitch_deck",
+					full_text:
+						"Global music revenue growth is accelerating as streaming platforms command the majority of revenue.",
+				},
+			],
+		});
+		expect(macro.executive_summary_v1.traction_signals).not.toContain("Revenue mentioned");
+		expect(macro.executive_summary_v1.traction_signals).not.toContain("Growth mentioned");
+		expect(macro.executive_summary_v1.traction_signals).not.toContain("ARR mentioned");
+
+		// 2) Company-owned revenue statement SHOULD count.
+		const ownedRevenue = generatePhase1DIOV1({
+			deal: { deal_id: "deal-traction-owned", name: "Acme", stage: "intake" },
+			inputDocuments: [
+				{
+					document_id: "doc-traction-owned",
+					title: "Acme Deck",
+					type: "pitch_deck",
+					full_text: "We generated $2M in revenue in 2025.",
+				},
+			],
+		});
+		expect(ownedRevenue.executive_summary_v1.traction_signals).toContain("Revenue mentioned");
+
+		// 3) ARR mention without ownership/metrics should be rejected.
+		const arrNoContext = generatePhase1DIOV1({
+			deal: { deal_id: "deal-traction-arr-no-context", name: "NoContextCo", stage: "intake" },
+			inputDocuments: [
+				{
+					document_id: "doc-traction-arr-no-context",
+					title: "NoContextCo Deck",
+					type: "pitch_deck",
+					full_text: "ARR is important in this market.",
+				},
+			],
+		});
+		expect(arrNoContext.executive_summary_v1.traction_signals).not.toContain("ARR mentioned");
+
+		// 4) ARR mention with ownership OR numeric should pass.
+		const arrWithContext = generatePhase1DIOV1({
+			deal: { deal_id: "deal-traction-arr-context", name: "ContextCo", stage: "intake" },
+			inputDocuments: [
+				{
+					document_id: "doc-traction-arr-context",
+					title: "ContextCo Deck",
+					type: "pitch_deck",
+					full_text: "Our ARR is $500k annually.",
+				},
+			],
+		});
+		expect(arrWithContext.executive_summary_v1.traction_signals).toContain("ARR mentioned");
+	});
+
+	it("caps confidence to med when product_solution is missing (even if coverage would be high)", () => {
+		const out = generatePhase1DIOV1({
+			deal: { deal_id: "deal-conf-cap-1", name: "NoProductCo", stage: "intake" },
+			inputDocuments: [
+				{
+					document_id: "doc-conf-cap-1",
+					title: "NoProductCo Deck",
+					type: "pitch_deck",
+					full_text:
+						"Target customers: mid-market retail operators. Go-to-market: channel partnerships and direct sales. " +
+						"Team: founders previously led growth at Shopify. We generated $2M in revenue in 2025 with 40 customers. " +
+						"Raising $1.5M seed.",
+				},
+			],
+		});
+
+		expect(out.coverage.sections.product_solution).toBe("missing");
+		expect(out.coverage.sections.gtm).toBe("present");
+		// Cap: cannot be high when product_solution is missing.
+		expect(out.executive_summary_v1.confidence.overall).toBe("med");
+		expect(out.decision_summary_v1.confidence).toBe("med");
+		expect(out.executive_summary_v2?.signals.confidence).toBe("med");
+	});
+
+	it("forces confidence to low when product_solution and gtm are both missing", () => {
+		const out = generatePhase1DIOV1({
+			deal: { deal_id: "deal-conf-cap-2", name: "NoCoreCo", stage: "intake" },
+			inputDocuments: [
+				{
+					document_id: "doc-conf-cap-2",
+					title: "NoCoreCo Memo",
+					type: "memo",
+					full_text:
+						"Target customers: mid-market retail operators. Team: founders previously led operations at Amazon. " +
+						"We generated $2M in revenue in 2025 with 40 customers. Raising $1.5M seed.",
+				},
+			],
+		});
+
+		expect(out.coverage.sections.product_solution).toBe("missing");
+		expect(out.coverage.sections.gtm).toBe("missing");
+		// Force: 2+ of {product_solution, gtm, traction} missing => low.
+		expect(out.executive_summary_v1.confidence.overall).toBe("low");
+		expect(out.decision_summary_v1.confidence).toBe("low");
+		expect(out.executive_summary_v2?.signals.confidence).toBe("low");
+	});
+
     it("mergePhase1IntoDIO preserves extra dio.phase1 fields (deal_overview_v2/update_report_v1)", () => {
         const existing = {
             dio: {

@@ -193,6 +193,91 @@ function sanitizeInlineText(value: string): string {
 		.trim();
 }
 
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function inferCompanyHint(params: { dealName?: string | null; docs: Phase1GeneratorInputDocument[] }): string {
+	const fromDeal = sanitizeInlineText(safeString(params.dealName));
+	if (fromDeal) {
+		// Prefer the first non-generic token from the deal name.
+		for (const tok of fromDeal.split(/\s+/).filter(Boolean)) {
+			const cleaned = tok.replace(/[^A-Za-z0-9]/g, "");
+			if (!cleaned) continue;
+			if (cleaned.length < 3 || cleaned.length > 24) continue;
+			if (/^(deal|project|inc|llc|ltd|co)$/i.test(cleaned)) continue;
+			return cleaned;
+		}
+	}
+
+	// Fallback: pull a likely company token from a doc title (e.g., "Acme Deck").
+	for (const d of params.docs) {
+		const title = sanitizeInlineText(safeString(d?.title));
+		if (!title) continue;
+		for (const tok of title.split(/\s+/).filter(Boolean)) {
+			const cleaned = tok.replace(/[^A-Za-z0-9]/g, "");
+			if (!cleaned) continue;
+			if (cleaned.length < 3 || cleaned.length > 24) continue;
+			if (/^(pitch|deck|presentation|confidential|memo|report|overview)$/i.test(cleaned)) continue;
+			return cleaned;
+		}
+	}
+
+	return "";
+}
+
+function extractCandidateSentences(text: string): string[] {
+	const raw = safeString(text);
+	if (!raw.trim()) return [];
+	const lines = raw.split(/\r?\n/g);
+	const out: string[] = [];
+	for (const ln of lines) {
+		const line = sanitizeInlineText(ln);
+		if (!line) continue;
+		// Split on sentence endings when possible, but preserve short pitch-deck style fragments.
+		const parts = line.split(/(?<=[.!?])\s+/g).map((p) => sanitizeInlineText(p)).filter(Boolean);
+		for (const p of parts) {
+			if (p.length < 18) continue;
+			out.push(p);
+			if (out.length >= 180) return out;
+		}
+	}
+	return out;
+}
+
+function isCompanyTractionSnippet(snippet: string, companyHint?: string): boolean {
+	const s = sanitizeInlineText(snippet);
+	if (!s) return false;
+
+	const ownership = /\b(we|our|us)\b/i.test(s)
+		|| (companyHint
+			? new RegExp(`\\b${escapeRegExp(companyHint)}\\b`, "i").test(s)
+			: false);
+
+	// Concrete company traction metrics (prefer numeric/units) rather than generic mentions.
+	const hasCurrencyOrPercent = /[$€£]\s?\d/.test(s) || /\b\d+(?:\.\d+)?\s*%\b/.test(s);
+	const hasKpiCount = /\b\d[\d,]*(?:\.\d+)?\s+(customers?|users?|transactions?)\b/i.test(s);
+	const hasArrMrrGmvWithNumber = /\b(arr|mrr|gmv)\b[^\n\r]{0,18}[$€£]?\s?\d/i.test(s);
+	const hasRunRateWithNumber = /\brun\s+rate\b/i.test(s) && /[$€£]?\s?\d/.test(s);
+	const hasRetentionOrChurnWithNumber = /\b(retention|churn)\b/i.test(s) && /\d/.test(s);
+	const hasBookingsWithNumber = /\bbookings?\b/i.test(s) && /[$€£]?\s?\d/.test(s);
+	const hasConcreteMetric =
+		hasCurrencyOrPercent
+		|| hasKpiCount
+		|| hasArrMrrGmvWithNumber
+		|| hasRunRateWithNumber
+		|| hasRetentionOrChurnWithNumber
+		|| hasBookingsWithNumber;
+
+	// Reject clear macro/industry context unless ownership is present.
+	const industryContext = /\b(global|industry|market|sector|worldwide|macro|cagr|forecast|projection|streaming\s+platforms?)\b/i.test(s)
+		|| /\bthe\s+market\b/i.test(s)
+		|| /\bmarket\s+(grew|growth|size|revenue)\b/i.test(s);
+	if (industryContext && !ownership) return false;
+
+	return ownership || hasConcreteMetric;
+}
+
 function normalizeOverviewSentence(value: string, maxChars: number): string {
 	let s = safeString(value);
 	if (!s.trim()) return "";
@@ -492,12 +577,13 @@ function buildDealOverviewV1(params: {
 }): DealOverviewV1 {
 	const docs = Array.isArray(params.docs) ? params.docs : [];
 	const readableText = extractAllReadableText(docs).slice(0, 60_000);
+	const companyHint = inferCompanyHint({ dealName: params.dealName, docs });
 
 	const deal_type_detected = detectDealType({ docs, readableText }) ?? "Unknown";
 	const raiseDetected = detectRaise(readableText);
 	const raise_detected = raiseDetected ?? "Unknown";
 	const business_model_detected = detectBusinessModel(readableText) ?? "Unknown";
-	const traction_signals_detected = detectTractionSignals(readableText);
+	const traction_signals_detected = detectTractionSignals(readableText, companyHint);
 	const traction_metrics_detected = detectTractionMetrics(readableText);
 	const key_risks_detected = detectRiskSignals(readableText);
 
@@ -1090,7 +1176,8 @@ function detectDealType(params: { docs: Phase1GeneratorInputDocument[]; readable
 	return detectDealTypeFromDocs(params.docs);
 }
 
-function detectTractionSignals(text: string): string[] {
+function detectTractionSignals(text: string, companyHint?: string): string[] {
+	const sentences = extractCandidateSentences(text);
 	const signals: Array<{ re: RegExp; label: string }> = [
 		{ re: /\barr\b/i, label: "ARR mentioned" },
 		{ re: /\bmrr\b/i, label: "MRR mentioned" },
@@ -1102,8 +1189,23 @@ function detectTractionSignals(text: string): string[] {
 		{ re: /\bpartnership\b|\bpilot\b|\bcontract\b/i, label: "Pilots / partnerships mentioned" },
 	];
 	const out: string[] = [];
-	for (const s of signals) {
-		if (s.re.test(text)) out.push(s.label);
+	const gated = new Set(["ARR mentioned", "Revenue mentioned", "Growth mentioned"]);
+	for (const sig of signals) {
+		if (!gated.has(sig.label)) {
+			if (sig.re.test(text)) out.push(sig.label);
+			continue;
+		}
+
+		// Gate revenue/growth/ARR to avoid counting industry commentary as traction.
+		let ok = false;
+		for (const sent of sentences) {
+			if (!sig.re.test(sent)) continue;
+			if (isCompanyTractionSnippet(sent, companyHint)) {
+				ok = true;
+				break;
+			}
+		}
+		if (ok) out.push(sig.label);
 	}
 	return uniqStrings(out);
 }
@@ -1137,6 +1239,23 @@ function confidenceFromCoverage(coverage: Phase1CoverageV1): Phase1ConfidenceBan
 	if (present >= 5) return "high";
 	if (present >= 3 || (present >= 2 && partial >= 2)) return "med";
 	return "low";
+}
+
+function capConfidenceFromCoreMissing(
+	sections: Phase1CoverageV1["sections"],
+	confidence: Phase1ConfidenceBand
+): Phase1ConfidenceBand {
+	if (!sections || typeof sections !== "object") return confidence;
+	const status = (k: string) => (sections as any)[k] as "present" | "partial" | "missing" | undefined;
+	const missingCore = ["product_solution", "gtm", "traction"].filter((k) => status(k) === "missing").length;
+	if (missingCore >= 2) return "low";
+	if (
+		confidence === "high" &&
+		(status("product_solution") === "missing" || status("gtm") === "missing")
+	) {
+		return "med";
+	}
+	return confidence;
 }
 
 function safeNonEmpty(value: unknown): string {
@@ -1445,9 +1564,10 @@ export function generatePhase1DIOV1(params: {
 		financials: coverage.sections.financials === "present" ? "med" : coverage.sections.financials === "partial" ? "low" : "low",
 	};
 
-	const overall = confidenceFromCoverage(coverage);
+	const overall = capConfidenceFromCoreMissing(coverage.sections, confidenceFromCoverage(coverage));
 
 	const decision_summary_v1 = buildDecisionSummary({ coverage, docs });
+	decision_summary_v1.confidence = overall;
 
 	const mergedOverviewForV2 = overviewV2 && typeof overviewV2 === "object"
 		? {

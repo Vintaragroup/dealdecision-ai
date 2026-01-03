@@ -244,7 +244,7 @@ function extractPageLinesFromWords(wordsUnknown: unknown): string[] {
 	return deduped;
 }
 
-const PRODUCT_ANCHOR_HEADINGS = ['overview', 'what we do', 'solution', 'product', 'platform'];
+const PRODUCT_ANCHOR_HEADINGS = ['overview', 'general overview', 'what we do', 'solution', 'product', 'platform'];
 const MARKET_ANCHOR_HEADINGS = ['who we serve', 'customers', 'target', 'icp', 'built for'];
 
 const TAGLINE_VERB_RE = /\b(helps|enable[s]?|automate[s]?|provide[s]?|deliver[s]?|connect[s]?|built\s+for|platform\s+for)\b/i;
@@ -252,6 +252,11 @@ const TAGLINE_VERB_RE = /\b(helps|enable[s]?|automate[s]?|provide[s]?|deliver[s]
 const DU_DEFINITION_START_RE = /^\s*we\s+(predict|help|enable|provide|deliver|connect|unify|automate)\b/i;
 const DU_PLATFORM_DEFINITION_RE = /\b(platform|solution|product|software|system)\b[^\n\r]{0,80}\b(helps|enable[s]?|provide[s]?|deliver[s]?|connect[s]?|unify|unifies|automate[s]?|predict|predicts)\b/i;
 const DU_VERB_ANY_RE = /\b(predict|predicts|help|helps|enable|enables|provide|provides|deliver|delivers|connect|connects|unify|unifies|automate|automates|build|builds|create|creates|reduce|reduces|improve|improves|streamline|streamlines|power|powers)\b/i;
+
+// Higher-priority definition patterns: "<Company> is a …" / "We are a …".
+const DU_IS_A_DEFINITION_RE = /\b(?:is|are)\s+(?:a|an|the)\b/i;
+const DU_COMPANY_IS_A_START_RE = /^\s*(?:we|[A-Za-z0-9][A-Za-z0-9&.'\-]{1,25})\s+(?:is|are)\s+(?:a|an|the)\b/i;
+const DU_BUSINESS_NOUN_RE = /\b(league|platform|marketplace|software|media\s+company|new\s+media|professional\s+ice\s+hockey\s+league|ice\s+hockey\s+league|sports\s+league|company)\b/i;
 
 // Reject obvious sentence fragments / OCR header scraps.
 const DU_FRAGMENT_START_RE = /^\s*(is|are|was|were|and|or|to|with|without|by)\b/i;
@@ -277,6 +282,44 @@ function isSentenceFragment(value: string): boolean {
   if (noSpace.length > 0 && symbols / noSpace.length > 0.35) return true;
 
   return false;
+}
+
+function inferCompanyHintFromDocTitle(title: string): string {
+	const t = sanitizeInlineText(title);
+	if (!t) return '';
+	// Prefer short uppercase-ish tokens (e.g., "3ICE") from the title.
+	const tokens = t.split(/\s+/).filter(Boolean);
+	for (const tok of tokens) {
+		const cleaned = tok.replace(/[^A-Za-z0-9]/g, '');
+		if (!cleaned) continue;
+		if (cleaned.length < 2 || cleaned.length > 16) continue;
+		if (/^(pd|pitch|deck|presentation|confidential)$/i.test(cleaned)) continue;
+		if (uppercaseLetterRatio(cleaned) >= 0.6) return cleaned;
+	}
+	return '';
+}
+
+function looksLikeCoverTagline(value: string): boolean {
+	const s = sanitizeInlineText(value);
+	if (!s) return false;
+	// Typical marketing tagline: short, no defining verb, no punctuation, not a definition.
+	if (s.length > 60) return false;
+	const words = s.split(/\s+/).filter(Boolean);
+	if (words.length < 3 || words.length > 10) return false;
+	if (/[.!?]$/.test(s)) return false;
+	if (DU_VERB_ANY_RE.test(s)) return false;
+	if (DU_COMPANY_IS_A_START_RE.test(s) || DU_IS_A_DEFINITION_RE.test(s)) return false;
+	// Avoid excluding short definitions that clearly name a business noun.
+	if (DU_BUSINESS_NOUN_RE.test(s) && DU_IS_A_DEFINITION_RE.test(s)) return false;
+	return true;
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function escapeRegExpSafe(value: string): string {
+	return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // Hard reject buckets (fail closed) for obvious non-description blocks.
@@ -935,7 +978,7 @@ function isHeaderLikeCandidate(params: { value: string; slideTitle?: string }): 
 	const sNorm = normalizeForHeading(s);
 	if (slideTitleNorm && sNorm && slideTitleNorm === sNorm) return true;
 	if (isAllCapsish(s) && wordCount < 6) return true;
-	if (!DU_VERB_ANY_RE.test(s)) return true;
+	if (!DU_VERB_ANY_RE.test(s) && !DU_COMPANY_IS_A_START_RE.test(s)) return true;
 	return false;
 }
 
@@ -943,6 +986,8 @@ function scoreDUProductCandidate(params: {
 	value: string;
 	baseScore: number;
 	slideTitle?: string;
+	page?: number;
+	companyHint?: string;
 }): number {
 	const s = sanitizeInlineText(params.value);
 	let score = params.baseScore;
@@ -951,6 +996,14 @@ function scoreDUProductCandidate(params: {
 	// Prefer definition-led phrasing.
 	if (DU_DEFINITION_START_RE.test(s)) score += 35;
 	if (DU_PLATFORM_DEFINITION_RE.test(s)) score += 20;
+	// Simple scoring requested: prefer "is a" + business noun phrase and company mention.
+	if (DU_IS_A_DEFINITION_RE.test(s) && DU_BUSINESS_NOUN_RE.test(s)) score += 2;
+	if (params.companyHint) {
+		const escapedCompanyHint = String(params.companyHint).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+		if (new RegExp(`\\b${escapedCompanyHint}\\b`, 'i').test(s)) score += 2;
+	}
+	// Downweight cover/title slide content.
+	if (params.page === 1) score -= 2;
 	if (/\bby\b/i.test(s)) score += 6;
 	if (/\bscore\b/i.test(s)) score += 4;
 
@@ -960,7 +1013,9 @@ function scoreDUProductCandidate(params: {
 	if (slideTitleNorm && sNorm && slideTitleNorm === sNorm) score -= 90;
 	const wordCount = s.split(/\s+/).filter(Boolean).length;
 	if (isAllCapsish(s) && wordCount < 6) score -= 70;
-	if (!DU_VERB_ANY_RE.test(s)) score -= 55;
+	// Downweight all-caps/tagline-like marketing lines with no defining verb.
+	if (isAllCapsish(s) && wordCount < 10 && !DU_VERB_ANY_RE.test(s) && !DU_COMPANY_IS_A_START_RE.test(s)) score -= 3;
+	if (!DU_VERB_ANY_RE.test(s) && !DU_COMPANY_IS_A_START_RE.test(s)) score -= 55;
 
 	return score;
 }

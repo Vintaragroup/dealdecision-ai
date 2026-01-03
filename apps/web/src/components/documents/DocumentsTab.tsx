@@ -102,9 +102,11 @@ export function DocumentsTab({ dealId, darkMode = true }: DocumentsTabProps) {
       {/* Document Library */}
       <DocumentLibrary
         darkMode={darkMode}
+        dealId={dealId}
         documents={documents}
         loading={loading}
         onRetry={handleRetry}
+        onDeleted={loadDocuments}
       />
 
       {showExtractionReport && (

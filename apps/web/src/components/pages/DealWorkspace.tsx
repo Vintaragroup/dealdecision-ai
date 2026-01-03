@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { Tabs, Tab } from '../ui/tabs';
-import { CircularProgress } from '../ui/CircularProgress';
 import { Accordion, AccordionItem } from '../ui/accordion';
 import { Button } from '../ui/button';
 import { ToastContainer, ToastType } from '../ui/Toast';
@@ -222,6 +221,228 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 	const businessArchetypeV1 = (dealFromApi as any)?.ui?.businessArchetypeV1 as any;
   const executiveSummaryV2 = (dealFromApi as any)?.ui?.executiveSummaryV2 as any;
   const executiveSummaryV1 = (dealFromApi as any)?.ui?.executiveSummary as any;
+	const dealSummaryV2 = (dealFromApi as any)?.ui?.dealSummaryV2 as any;
+
+  const phase1Signals = (executiveSummaryV2 && typeof executiveSummaryV2 === 'object' ? executiveSummaryV2.signals : null) as any;
+  const recommendationRaw = typeof phase1Signals?.recommendation === 'string' ? phase1Signals.recommendation : null;
+  const normalizedRecommendation = recommendationRaw ? recommendationRaw.toLowerCase().trim() : null;
+  const decisionLabel = normalizedRecommendation
+    ? (normalizedRecommendation.includes('pass') || normalizedRecommendation.includes('reject')
+      ? 'PASS'
+      : normalizedRecommendation.includes('go') || normalizedRecommendation.includes('invest') || normalizedRecommendation.includes('proceed')
+        ? 'GO'
+        : 'CONSIDER')
+    : '—';
+  const phase1Score = typeof phase1Signals?.score === 'number' && Number.isFinite(phase1Signals.score)
+    ? Math.round(phase1Signals.score)
+    : null;
+  const phase1ConfidenceRaw = typeof phase1Signals?.confidence === 'string' ? phase1Signals.confidence : null;
+  const phase1ConfidenceLabel = phase1ConfidenceRaw
+    ? `${phase1ConfidenceRaw.charAt(0).toUpperCase()}${phase1ConfidenceRaw.slice(1)} confidence`
+    : null;
+  const blockersCount = typeof phase1Signals?.blockers_count === 'number'
+    ? phase1Signals.blockers_count
+    : Array.isArray((executiveSummaryV2 as any)?.blockers)
+      ? (executiveSummaryV2 as any).blockers.length
+      : null;
+
+  const sectionConfidence =
+    (executiveSummaryV2 && typeof executiveSummaryV2 === 'object' ? (executiveSummaryV2 as any)?.confidence?.sections : null)
+    ?? (executiveSummaryV1 && typeof executiveSummaryV1 === 'object' ? (executiveSummaryV1 as any)?.confidence?.sections : null);
+  const toBand = (value: unknown): 'high' | 'med' | 'low' | 'unknown' => {
+    if (typeof value !== 'string') return 'unknown';
+    const s = value.toLowerCase().trim();
+    if (s.startsWith('h')) return 'high';
+    if (s.startsWith('m')) return 'med';
+    if (s.startsWith('l')) return 'low';
+    return 'unknown';
+  };
+  const getBandForCategory = (category: string): 'high' | 'med' | 'low' | 'unknown' => {
+    const sec = sectionConfidence && typeof sectionConfidence === 'object' ? (sectionConfidence as any) : null;
+    if (!sec) return 'unknown';
+    switch (category) {
+      case 'Product':
+        return toBand(sec.product_solution ?? sec.product);
+      case 'Market/ICP':
+        return toBand(sec.market_icp ?? sec.market);
+      case 'Traction':
+        return toBand(sec.traction);
+      case 'Team':
+        return toBand(sec.team);
+      case 'Terms':
+        return toBand(sec.raise_terms ?? sec.terms);
+      case 'Risks':
+        return toBand(sec.risks);
+      default:
+        return toBand(sec.deal_type ?? sec.business_model ?? sec.financials ?? sec.gtm);
+    }
+  };
+  const categories: Array<{ key: string; label: string }> = [
+    { key: 'Product', label: 'Product' },
+    { key: 'Market/ICP', label: 'Market/ICP' },
+    { key: 'Traction', label: 'Traction' },
+    { key: 'Team', label: 'Team' },
+    { key: 'Terms', label: 'Terms' },
+    { key: 'Risks', label: 'Risks' },
+    { key: 'Other', label: 'Other' },
+  ];
+  const bandToClasses = (band: 'high' | 'med' | 'low' | 'unknown') => {
+    if (band === 'high') return 'bg-emerald-500/20';
+    if (band === 'med') return 'bg-amber-500/20';
+    if (band === 'low') return 'bg-red-500/20';
+    return darkMode ? 'bg-white/10' : 'bg-gray-200/60';
+  };
+  const decisionAccent = decisionLabel === 'GO'
+    ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
+    : decisionLabel === 'CONSIDER'
+      ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
+      : decisionLabel === 'PASS'
+        ? 'bg-red-500/10 border-red-500/40 text-red-200'
+        : (darkMode ? 'bg-white/5 border-white/10 text-gray-300' : 'bg-white/60 border-gray-200 text-gray-700');
+
+  const missingFromV2 = Array.isArray(executiveSummaryV2?.missing) ? executiveSummaryV2.missing : [];
+  const missingFromSignals = Array.isArray(phase1Signals?.coverage_missing_sections) ? phase1Signals.coverage_missing_sections : [];
+  const missingFromV1 = Array.isArray(executiveSummaryV1?.unknowns) ? executiveSummaryV1.unknowns : [];
+  const missingChips = [...missingFromV2, ...missingFromSignals, ...missingFromV1]
+    .filter((x) => typeof x === 'string' && x.trim().length > 0)
+    .map((x) => x.trim())
+    .filter((x, i, arr) => arr.indexOf(x) === i)
+    .slice(0, 10);
+
+  const decisionHighlights = Array.isArray(executiveSummaryV2?.highlights)
+    ? executiveSummaryV2.highlights
+        .filter((h: any) => typeof h === 'string')
+        .map((h: string) => h.trim())
+        .filter((h: string) => h.length > 0)
+        .filter((h: string) => !/^Recommendation:/i.test(h))
+        .slice(0, 3)
+    : [];
+
+  const decisionMissing = missingChips.slice(0, 4);
+
+  // Use dealInfo if available, otherwise fall back to dealData
+  const displayName = dealInfo?.name || dealData?.name || 'Unnamed Deal';
+  const displayType = dealInfo?.type || dealData?.type || 'series-a';
+  const displayScore: number | null =
+    typeof dealInfo?.score === 'number' && Number.isFinite(dealInfo.score)
+      ? dealInfo.score
+      : (typeof investorScore === 'number' && Number.isFinite(investorScore) ? investorScore : null);
+
+  const safeText = (value: unknown): string => {
+    if (typeof value !== 'string') return '';
+    const s = value.replace(/\s+/g, ' ').trim();
+    if (!s) return '';
+    if (isProbablyOcrJunk(s)) return '';
+    return s;
+  };
+
+  const collectMetricText = (): string => {
+    const out: string[] = [];
+
+    // Primary structured signals
+    out.push(safeText(overviewV2?.raise));
+    out.push(safeText(overviewV2?.business_model));
+    out.push(safeText(overviewV2?.deal_type));
+    out.push(safeText(overviewV2?.product_solution));
+    out.push(safeText(overviewV2?.market_icp));
+
+    if (Array.isArray(overviewV2?.traction_signals)) {
+      for (const t of overviewV2.traction_signals) out.push(safeText(t));
+    }
+
+    // Executive Summary V2
+    if (Array.isArray(executiveSummaryV2?.highlights)) {
+      for (const h of executiveSummaryV2.highlights) out.push(safeText(h));
+    }
+    if (Array.isArray(executiveSummaryV2?.paragraphs)) {
+      for (const p of executiveSummaryV2.paragraphs) out.push(safeText(p));
+    }
+
+    // Deal summary
+    if (typeof dealSummaryV2?.summary === 'string') {
+      out.push(safeText(dealSummaryV2.summary));
+    } else if (dealSummaryV2?.summary && typeof dealSummaryV2.summary === 'object') {
+      out.push(safeText((dealSummaryV2.summary as any)?.one_liner));
+      if (Array.isArray((dealSummaryV2.summary as any)?.paragraphs)) {
+        for (const p of (dealSummaryV2.summary as any).paragraphs) out.push(safeText(p));
+      }
+    }
+
+    // Executive Summary V1 (normalized)
+    out.push(safeText(executiveSummaryV1?.summary));
+    out.push(safeText(executiveSummaryV1?.one_liner));
+
+    return out.filter(Boolean).join('\n');
+  };
+
+  const metricText = collectMetricText();
+  const archetypeValue = typeof businessArchetypeV1?.value === 'string' ? businessArchetypeV1.value.toLowerCase() : '';
+  const looksRealEstate =
+    archetypeValue.includes('real_estate') ||
+    /\breal\s+estate\b/i.test(String(overviewV2?.business_model ?? '')) ||
+    /\b(real_estate|preferred\s+equity|offering\s+memorandum|cap\s*rate|noi|ltv|dscr)\b/i.test(metricText);
+
+  const pickMatch = (re: RegExp): RegExpMatchArray | null => {
+    try {
+      return metricText.match(re);
+    } catch {
+      return null;
+    }
+  };
+
+  const pickValue = (re: RegExp, format: (m: RegExpMatchArray) => string): string => {
+    const m = pickMatch(re);
+    if (!m) return '—';
+    const v = format(m).trim();
+    return v.length > 0 ? v : '—';
+  };
+
+  const pickMoney = (): string => {
+    const direct = safeText(overviewV2?.raise);
+    if (direct) return direct;
+    // Look for $ amounts (supports $11.7M, $46.7MM, $1,200,000)
+    return pickValue(/\$\s*([\d,]+(?:\.\d+)?)\s*(m|mm|million|b|bn|billion)?/i, (m) => {
+      const num = m[1];
+      const suf = (m[2] ?? '').toLowerCase();
+      const suffix = suf ? suf.replace(/^mm$/, 'M').replace(/^m$/, 'M').replace(/^million$/, 'M').replace(/^bn$/, 'B').replace(/^billion$/, 'B').toUpperCase() : '';
+      return `$${num}${suffix}`;
+    });
+  };
+
+  type MetricCard = { label: string; value: string; change: string };
+  const keyMetricsCards: MetricCard[] = looksRealEstate
+    ? [
+        { label: 'Raise / Terms', value: pickMoney(), change: 'Capital sought / structure' },
+        { label: 'Target IRR', value: pickValue(/\b(?:target\s+)?irr\b[^\d]{0,24}(\d{1,2}(?:\.\d+)?)\s*%/i, (m) => `${m[1]}%`), change: 'Target return' },
+        { label: 'MOIC', value: pickValue(/\b(?:moic|multiple)\b[^\d]{0,24}(\d+(?:\.\d+)?)\s*x/i, (m) => `${m[1]}x`), change: 'Equity multiple' },
+        { label: 'LTV', value: pickValue(/\bltv\b[^\d]{0,24}(\d{1,3}(?:\.\d+)?)\s*%/i, (m) => `${m[1]}%`), change: 'Leverage' },
+        { label: 'DSCR', value: pickValue(/\bdscr\b[^\d]{0,24}(\d+(?:\.\d+)?)(?:\s*x)?/i, (m) => `${m[1]}x`), change: 'Debt coverage' },
+        { label: 'Cap Rate', value: pickValue(/\bcap\s*rate\b[^\d]{0,24}(\d{1,2}(?:\.\d+)?)\s*%/i, (m) => `${m[1]}%`), change: 'Yield' },
+        { label: 'NOI', value: pickValue(/\bnoi\b[^\d\$]{0,24}\$?([\d,]+(?:\.\d+)?)/i, (m) => `$${m[1]}`), change: 'Net operating income' },
+        { label: 'Term', value: pickValue(/\bterm\b[^\d]{0,24}(\d{1,3})\s*(months|month|mos|years|year|yrs)\b/i, (m) => `${m[1]} ${m[2]}`), change: 'Duration' },
+      ]
+    : [
+        { label: 'Raise', value: pickMoney(), change: 'Capital sought' },
+        {
+          label: 'Revenue / ARR',
+          value: pickValue(/\b(revenue|arr|mrr)\b[\s:,-]{0,12}(\$?\s*[\d,]+(?:\.\d+)?\s*(?:k|m|mm|million|b|bn|billion)?)\b/i, (m) => m[2].replace(/\s+/g, ' ').trim()),
+          change: 'Traction signal',
+        },
+        {
+          label: 'Growth',
+          value: pickValue(/(\d{1,3}(?:\.\d+)?)\s*%\s*(?:mom|m\/m|yoy|y\/y|qoq|q\/q)/i, (m) => `${m[1]}%`),
+          change: 'MoM / YoY',
+        },
+        {
+          label: 'Customers',
+          value: pickValue(/\b(\d[\d,]*)\s*(customers|users|teams|clients)\b/i, (m) => `${m[1]} ${m[2]}`),
+          change: 'Usage / adoption',
+        },
+        { label: 'Business Model', value: safeText(overviewV2?.business_model) || safeText(executiveSummaryV1?.business_model) || '—', change: 'Model' },
+        { label: 'Deal Type', value: safeText(overviewV2?.deal_type) || safeText(executiveSummaryV1?.deal_type) || '—', change: 'Classification' },
+        { label: 'Score', value: phase1Score != null ? `${phase1Score}/100` : (displayScore != null ? `${Math.round(displayScore)}/100` : '—'), change: 'Phase 1 signal' },
+        { label: 'Confidence', value: phase1ConfidenceRaw ? phase1ConfidenceRaw.toUpperCase() : '—', change: 'Overall' },
+      ];
 
   useEffect(() => {
     if (!debugApiIsEnabled()) return;
@@ -242,15 +463,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       executiveSummaryV2_highlights: Array.isArray(executiveSummaryV2?.highlights) ? executiveSummaryV2.highlights.length : 0,
       overviewV2_present: overviewV2 != null,
       overviewV2_keys: topLevelKeys(overviewV2),
+		  dealSummaryV2_present: dealSummaryV2 != null,
+		  dealSummaryV2_keys: topLevelKeys(dealSummaryV2),
       updateReportV1_present: updateReportV1 != null,
       updateReportV1_keys: topLevelKeys(updateReportV1),
     });
-  }, [dealId, dealFromApi, executiveSummaryV2, overviewV2, updateReportV1]);
+  }, [dealId, dealFromApi, executiveSummaryV2, overviewV2, dealSummaryV2, updateReportV1]);
 
-  // Use dealInfo if available, otherwise fall back to dealData
-  const displayName = dealInfo?.name || dealData?.name || 'Unnamed Deal';
-  const displayType = dealInfo?.type || dealData?.type || 'series-a';
-  const displayScore = typeof dealInfo?.score === 'number' ? dealInfo.score : investorScore;
 
   // Log data sources for debugging
   useEffect(() => {
@@ -763,29 +982,130 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           </div>
 
           {/* Score Cards */}
-          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-            <div className="lg:col-span-1 flex items-center justify-center">
-              <CircularProgress
-                value={displayScore}
-                label={isFounder ? "Pitch Readiness" : "Investment Score"}
-                darkMode={darkMode}
-                size={160}
-                strokeWidth={12}
-              />
-            </div>
-            
-            <div className="lg:col-span-3">
-              <div className={`backdrop-blur-xl border rounded-xl p-6 h-full flex flex-col justify-center ${
-                darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'
-              }`}>
-                <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                  {displayScore >= 70 
-                    ? '✨ Strong investment profile. Run analysis for detailed insights.' 
-                    : displayScore >= 40
-                      ? '📊 Moderate potential. Additional due diligence recommended.'
-                      : '🔍 Early stage. Complete documents and analysis to refine score.'}
-                </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+            {/* Decision Tile */}
+            <div className={`backdrop-blur-xl border rounded-xl p-6 w-full max-w-md ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Decision</div>
+                  <div className={`mt-2 text-3xl sm:text-4xl font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{decisionLabel}</div>
+                  <div className={`mt-2 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    {phase1Score != null
+                      ? `${phase1Score}/100${phase1ConfidenceLabel ? ` · ${phase1ConfidenceLabel}` : ''}`
+                      : (displayScore != null ? `${Math.round(displayScore)}/100` : '—')}
+                  </div>
+                  {blockersCount != null && (
+                    <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      {blockersCount} blocker{blockersCount === 1 ? '' : 's'}
+                    </div>
+                  )}
+                  <p className={`mt-3 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    Snapshot based on Phase 1 signals.
+                  </p>
+                </div>
+                <span className={`px-3 py-1 rounded-full border text-xs font-medium ${decisionAccent}`}>
+                  {isFounder ? 'Pitch snapshot' : 'Investment snapshot'}
+                </span>
               </div>
+            </div>
+
+            {/* Why This Decision Tile */}
+            <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
+              <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Why this decision</div>
+              {decisionHighlights.length > 0 ? (
+                <ul className={`mt-3 list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  {decisionHighlights.map((h: string, i: number) => (
+                    <li key={`why-${i}`}>{h}</li>
+                  ))}
+                </ul>
+              ) : (
+                <div className={`mt-3 text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Run analysis to populate decision reasoning.</div>
+              )}
+
+              <div className="mt-5">
+                <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Gaps to fill</div>
+                {decisionMissing.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {decisionMissing.map((chip) => (
+                      <span
+                        key={`gap-${chip}`}
+                        className={`px-2 py-1 rounded-full border text-xs ${darkMode ? 'bg-amber-500/10 border-amber-500/30 text-amber-200' : 'bg-amber-50 border-amber-200 text-amber-800'}`}
+                      >
+                        {chip}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No gaps flagged.</div>
+                )}
+              </div>
+            </div>
+
+            {/* Score Driver Tile */}
+            <div
+              className={`backdrop-blur-xl border rounded-xl p-6 w-full md:col-span-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}
+              style={{ gridColumn: '1 / -1' }}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Score drivers</div>
+                  <div className={`mt-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    {executiveSummaryV2 || executiveSummaryV1 ? 'Phase 1 coverage by category' : 'Run analysis to populate score drivers.'}
+                  </div>
+                </div>
+              </div>
+
+              {(executiveSummaryV2 || executiveSummaryV1) ? (
+                <>
+                  <div className={`mt-4 rounded-lg border overflow-hidden ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'}`}>
+                    <div className="flex h-3">
+                      {categories.map((c, idx) => {
+                        const band = getBandForCategory(c.key);
+                        return (
+                          <div
+                            key={c.key}
+                            className={`flex-1 ${bandToClasses(band)} ${idx > 0 ? (darkMode ? 'border-l border-white/10' : 'border-l border-gray-200') : ''}`}
+                            title={`${c.label}: ${band}`}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1">
+                    {categories.map((c) => {
+                      const band = getBandForCategory(c.key);
+                      return (
+                        <div key={`${c.key}-legend`} className="flex items-center gap-2">
+                          <span className={`inline-block w-2.5 h-2.5 rounded-sm ${bandToClasses(band)}`} />
+                          <span className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>{c.label}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-4">
+                    <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Missing</div>
+                    {missingChips.length > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {missingChips.map((chip) => (
+                          <span
+                            key={chip}
+                            className={`px-2 py-1 rounded-full border text-xs ${darkMode ? 'bg-amber-500/10 border-amber-500/30 text-amber-200' : 'bg-amber-50 border-amber-200 text-amber-800'}`}
+                          >
+                            {chip}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No missing sections flagged.</div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className={`mt-4 p-4 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10 text-gray-400' : 'bg-gray-50 border-gray-200 text-gray-600'}`}>
+                  Run analysis to populate score drivers.
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1167,6 +1487,60 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                             <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{overviewV2.raise}</div>
                           </div>
                         ) : null}
+            {dealSummaryV2 && typeof dealSummaryV2 === 'object' && (
+              (
+                typeof (dealSummaryV2 as any).summary === 'string' &&
+                (dealSummaryV2 as any).summary.trim().length > 0
+              ) ||
+              (
+                (dealSummaryV2 as any).summary &&
+                typeof (dealSummaryV2 as any).summary === 'object' &&
+                typeof (dealSummaryV2 as any).summary.one_liner === 'string' &&
+                (dealSummaryV2 as any).summary.one_liner.trim().length > 0 &&
+                Array.isArray((dealSummaryV2 as any).summary.paragraphs) &&
+                (dealSummaryV2 as any).summary.paragraphs.length === 3
+              )
+            ) ? (
+              <div>
+              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>AI deal summary</div>
+              {typeof (dealSummaryV2 as any).summary === 'string' ? (
+                <div className={`text-sm leading-relaxed ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{(dealSummaryV2 as any).summary}</div>
+              ) : (
+                <div className="space-y-3">
+                  {typeof (dealSummaryV2 as any).summary.one_liner === 'string' && (dealSummaryV2 as any).summary.one_liner.trim() ? (
+                    <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{(dealSummaryV2 as any).summary.one_liner}</div>
+                  ) : null}
+                  {Array.isArray((dealSummaryV2 as any).summary.paragraphs)
+                    ? (dealSummaryV2 as any).summary.paragraphs
+                      .filter((p: any) => typeof p === 'string' && p.trim().length > 0)
+                      .map((p: string, idx: number) => (
+                        <p key={`deal-summary-v2-p-${idx}`} className={`text-sm leading-relaxed ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{p}</p>
+                      ))
+                    : null}
+                </div>
+              )}
+                {Array.isArray((dealSummaryV2 as any).strengths) && (dealSummaryV2 as any).strengths.length > 0 ? (
+                  <ul className={`mt-2 list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    {(dealSummaryV2 as any).strengths
+                      .filter((x: any) => typeof x === 'string' && x.trim().length > 0)
+                      .slice(0, 4)
+                      .map((x: string, i: number) => (
+                        <li key={`strength-${i}`}>{x}</li>
+                      ))}
+                  </ul>
+                ) : null}
+                {Array.isArray((dealSummaryV2 as any).risks) && (dealSummaryV2 as any).risks.length > 0 ? (
+                  <ul className={`mt-2 list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    {(dealSummaryV2 as any).risks
+                      .filter((x: any) => typeof x === 'string' && x.trim().length > 0)
+                      .slice(0, 3)
+                      .map((x: string, i: number) => (
+                        <li key={`risk-${i}`}>{x}</li>
+                      ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
                         {(
                           !(typeof overviewV2.product_solution === 'string' && overviewV2.product_solution.trim()) &&
                           !(typeof overviewV2.market_icp === 'string' && overviewV2.market_icp.trim()) &&
@@ -1221,21 +1595,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     Key Metrics
                   </h3>
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                    {(dealInfo?.metrics ? [
-                      { label: 'Current Revenue', value: dealInfo.metrics.currentRevenue, change: 'Pre-revenue' },
-                      { label: 'Year 1 Target', value: dealInfo.metrics.year1Target, change: 'First full year' },
-                      { label: 'Category Growth', value: dealInfo.metrics.categoryGrowth, change: 'Market analysis' },
-                      { label: 'Gross Margin', value: dealInfo.metrics.grossMargin, change: 'Target margin' },
-                      { label: 'Runway', value: dealInfo.metrics.runway, change: 'With funding' },
-                      { label: 'Brand Acquisitions', value: dealInfo.metrics.brandAcquisitions, change: 'Strategic plan' },
-                      { label: 'Distributors', value: dealInfo.metrics.distributorPartnerships || 'N/A', change: 'Partnership structure' },
-                      { label: 'Break-even', value: dealInfo.metrics.breakEven, change: 'Projected' }
-                    ] : [
-                      { label: 'Metrics', value: 'N/A', change: 'No data available' },
-                      { label: 'Revenue', value: 'N/A', change: 'Pending analysis' },
-                      { label: 'Growth', value: 'N/A', change: 'Awaiting input' },
-                      { label: 'Runway', value: 'N/A', change: 'To be determined' }
-                    ]).map((metric, i) => (
+                    {keyMetricsCards.map((metric, i) => (
                       <div key={i} className={`p-4 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
                         <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>{metric.label}</div>
                         <div className={`text-xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>{metric.value}</div>

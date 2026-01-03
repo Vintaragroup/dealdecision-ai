@@ -3,6 +3,7 @@ import { Button } from '../ui/button';
 import { DocumentUpload } from '../documents/DocumentUpload';
 import { DocumentLibrary } from '../documents/DocumentLibrary';
 import { DocumentBatchUploadModal } from '../documents/DocumentBatchUploadModal';
+import { NewDealModal } from '../NewDealModal';
 import { apiGetDeals, isLiveBackend } from '../../lib/apiClient';
 import { 
   Upload, 
@@ -23,12 +24,14 @@ interface DocumentsProps {
 export function Documents({ darkMode }: DocumentsProps) {
   const [showUpload, setShowUpload] = useState(false);
   const [showBatchUpload, setShowBatchUpload] = useState(false);
+  const [showCreateDealModal, setShowCreateDealModal] = useState(false);
   const [uploadedDocuments, setUploadedDocuments] = useState<any[]>([]);
   const [selectedDealId, setSelectedDealId] = useState<string>('');
   const [showDealSelector, setShowDealSelector] = useState(false);
   const [dealsLoading, setDealsLoading] = useState(true);
   const [dealsError, setDealsError] = useState<string | null>(null);
   const [availableDeals, setAvailableDeals] = useState<any[]>([]);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isLiveBackend()) {
@@ -54,6 +57,13 @@ export function Documents({ darkMode }: DocumentsProps) {
   const handleUploadComplete = (files: any[]) => {
     setUploadedDocuments(prev => [...prev, ...files]);
     setShowUpload(false);
+  };
+
+  const refreshDeals = () => {
+    if (!isLiveBackend()) return;
+    apiGetDeals()
+      .then(deals => setAvailableDeals(deals))
+      .catch(() => {});
   };
 
   const stats = [
@@ -124,10 +134,27 @@ export function Documents({ darkMode }: DocumentsProps) {
           onClose={() => setShowBatchUpload(false)}
           onSuccess={(results) => {
             setShowBatchUpload(false);
-            // Refresh deals list
-            apiGetDeals()
-              .then(deals => setAvailableDeals(deals))
-              .catch(() => {});
+            refreshDeals();
+          }}
+        />
+      )}
+
+      {showCreateDealModal && (
+        <NewDealModal
+          isOpen={showCreateDealModal}
+          darkMode={darkMode}
+          onClose={() => setShowCreateDealModal(false)}
+          onSuccess={(dealData, createdDeal) => {
+            const newId = createdDeal?.id ?? dealData.id;
+            if (newId) {
+              setSelectedDealId(newId);
+              setUploadError(null);
+              setShowDealSelector(false);
+            }
+            refreshDeals();
+          }}
+          onCreatedDeal={(deal) => {
+            if (deal?.id) setSelectedDealId(deal.id);
           }}
         />
       )}
@@ -229,6 +256,7 @@ export function Documents({ darkMode }: DocumentsProps) {
                         key={deal.id}
                         onClick={() => {
                           setSelectedDealId(deal.id);
+                          setUploadError(null);
                           setShowDealSelector(false);
                         }}
                         className={`w-full px-4 py-2 text-left text-sm hover:bg-white/10 first:rounded-t-lg last:rounded-b-lg ${
@@ -245,6 +273,10 @@ export function Documents({ darkMode }: DocumentsProps) {
                     ))}
                     <div className={`border-t ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
                       <button
+                        onClick={() => {
+                          setShowDealSelector(false);
+                          setShowCreateDealModal(true);
+                        }}
                         className={`w-full px-4 py-2 text-left text-sm text-purple-500 hover:bg-white/10 flex items-center gap-2 rounded-b-lg`}
                       >
                         <Plus className="w-4 h-4" />
@@ -260,12 +292,21 @@ export function Documents({ darkMode }: DocumentsProps) {
                 ✓ Documents will be associated with {availableDeals.find(d => d.id === selectedDealId)?.name}
               </p>
             )}
+            {!selectedDealId && isLiveBackend() && (
+              <p className={`mt-2 text-xs ${darkMode ? 'text-amber-400' : 'text-amber-700'}`}>
+                Select a deal (or create a new one) before uploading.
+              </p>
+            )}
+            {uploadError && (
+              <p className="mt-2 text-xs text-red-500">{uploadError}</p>
+            )}
           </div>
 
           <DocumentUpload
             darkMode={darkMode}
             dealId={selectedDealId}
             onUploadComplete={handleUploadComplete}
+            onError={(message) => setUploadError(message)}
             enableAIExtraction={true}
           />
         </div>

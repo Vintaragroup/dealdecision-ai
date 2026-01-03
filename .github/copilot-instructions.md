@@ -42,6 +42,46 @@ Core Business Workflows:
 - Financial metric extraction
 - Citation validation
 The system emphasizes domain-specific investment analysis with sophisticated scoring algorithms, multi-stage verification, and AI-assisted content generation focused on venture capital workflows.
+
+Investment Deal Analysis Platform
+Core Business Logic Components:
+1. Deal Intelligence Processing Engine
+- Multi-stage analysis pipeline for investment opportunities
+- Proprietary scoring across market, team, financial dimensions
+- Risk assessment framework with automated mitigation mapping
+- Custom confidence bands for different analysis components
+- Deal-specific ROI calculation methodology
+- Market opportunity quantification algorithms
+2. Document Analysis System
+- Intelligent classification of investment documents
+- Multi-factor extraction quality assessment
+- Domain-specific confidence scoring
+- Business-specific validation rules for deal documentation
+- Evidence collection and verification workflows
+3. Investment Workflow Engine
+- Stage progression logic for deal analysis
+- Custom verification checklists by deal type
+- Role-based investment workflows (founder vs investor)
+- Multi-cycle analysis orchestration
+- Deal readiness scoring system
+4. Report Generation Framework
+- Industry-specific template management
+- Dynamic content population based on deal stage
+- Custom scoring visualizations
+- Evidence-based recommendation engine
+- Risk visualization matrix
+5. AI-Assisted Analysis
+- Context-aware investment content generation
+- Deal-specific prompt engineering
+- Custom tone adjustment for investor communications
+- Document scoring and improvement suggestions
+Integration Architecture:
+- Hierarchical Reasoning Model for Due Diligence (HRM-DD)
+- Evidence-based progression between analysis stages
+- Confidence threshold management
+- Deal Intelligence Object (DIO) versioning system
+- Multi-dimensional scoring aggregation
+The platform implements a comprehensive investment analysis system with sophisticated scoring algorithms, risk assessment methodologies, and evidence-based decision frameworks specifically designed for deal evaluation and due diligence processes.
 # === END USER INSTRUCTIONS ===
 
 
@@ -59,53 +99,46 @@ The system emphasizes domain-specific investment analysis with sophisticated sco
 - Explain your OBSERVATIONS clearly, then provide REASONING to identify the exact issue. Add console logs when needed to gather more information.
 
 
-Investment Deal Analysis Platform
+The platform implements a multi-layered investment analysis system centered around deal evaluation and due diligence workflows.
 
 Core Business Logic Components:
 
-1. Deal Intelligence Processing Engine
-- Multi-stage analysis pipeline for investment opportunities
-- Proprietary scoring across market, team, financial dimensions
-- Risk assessment framework with automated mitigation mapping
-- Custom confidence bands for different analysis components
-- Deal-specific ROI calculation methodology
-- Market opportunity quantification algorithms
+1. Deal Analysis Engine (90/100)
+Path: apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx
+- Multi-dimensional scoring system across market, team, financial, technical, and execution metrics
+- Confidence level calculations incorporating data completeness and validation
+- Industry-specific weighting algorithms per investment category
+- Red/yellow/green flag classification with severity mapping
 
-2. Document Analysis System
-- Intelligent classification of investment documents
-- Multi-factor extraction quality assessment
-- Domain-specific confidence scoring
-- Business-specific validation rules for deal documentation
-- Evidence collection and verification workflows
+2. Risk Assessment Framework (85/100)
+Path: apps/web/src/components/workspace/AnalysisTab.tsx
+- Six-dimension risk evaluation matrix (market, team, financial, competitive, execution, legal)
+- Severity classification system with impact/probability scoring
+- Risk trend analysis with directional indicators
+- Mitigation strategy mapping and tracking
 
-3. Investment Workflow Engine
-- Stage progression logic for deal analysis
-- Custom verification checklists by deal type
-- Role-based investment workflows (founder vs investor)
-- Multi-cycle analysis orchestration
-- Deal readiness scoring system
+3. Due Diligence Orchestration (85/100)
+Path: apps/api/src/services/analysis.ts
+- Three-cycle analysis workflow (broad scan, deep dive, synthesis)
+- Progressive depth assessment with confidence thresholds
+- Evidence collection and verification pipeline
+- Automated stage progression based on completeness metrics
 
-4. Report Generation Framework
-- Industry-specific template management
-- Dynamic content population based on deal stage
-- Custom scoring visualizations
-- Evidence-based recommendation engine
-- Risk visualization matrix
+4. Investment Term Analysis (80/100)
+Path: apps/web/src/components/report-templates/sections/DealTermsSummary.tsx
+- Waterfall calculations for multiple exit scenarios
+- Cap table modeling with security type handling
+- Ownership dilution projections
+- Liquidation preference analysis
 
-5. AI-Assisted Analysis
-- Context-aware investment content generation
-- Deal-specific prompt engineering
-- Custom tone adjustment for investor communications
-- Document scoring and improvement suggestions
+5. Document Intelligence System (75/100)
+Path: packages/core/src/services/cycle-analyzer.ts
+- Multi-stage document processing pipeline
+- Industry-specific document classification
+- Financial metric extraction and normalization
+- Evidence quality scoring and validation
 
-Integration Architecture:
-- Hierarchical Reasoning Model for Due Diligence (HRM-DD)
-- Evidence-based progression between analysis stages
-- Confidence threshold management
-- Deal Intelligence Object (DIO) versioning system
-- Multi-dimensional scoring aggregation
-
-The platform implements a comprehensive investment analysis system with sophisticated scoring algorithms, risk assessment methodologies, and evidence-based decision frameworks specifically designed for deal evaluation and due diligence processes.
+The system is organized around a Hierarchical Reasoning Model for Due Diligence (HRM-DD), progressively building investment intelligence through multiple analysis cycles while maintaining evidence chains and confidence scoring throughout the process.
 
 $END$
 

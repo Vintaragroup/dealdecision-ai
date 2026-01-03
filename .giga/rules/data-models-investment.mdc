@@ -1,5 +1,5 @@
 ---
-description: Specification for investment domain data models including Deal, Evidence, Document, and Analysis entities
+description: Defines data models and relationships for investment deals, evidence, documents, and analysis entities
 ---
 
 # === USER INSTRUCTIONS ===
@@ -56,12 +56,9 @@ Importance Scores:
 - Evidence Model: 90/100 (Critical for validation)
 - Document Model: 85/100 (Source of truth)  
 - Analysis Model: 90/100 (Key business process)
-# === END USER INSTRUCTIONS ===
 
-# data-models-investment
-
+description: Specification for investment domain data models including Deal, Evidence, Document, and Analysis entities
 ## Core Domain Models
-
 ### Deal Model
 - Uniquely structured investment opportunity representation
 - Status progression: Intake -> Under Review -> In Diligence -> Ready Decision
@@ -72,30 +69,25 @@ Importance Scores:
   - Execution risk
 - Custom validation rules for stage transitions
 - Priority classification with weighted scoring
-
 ### Evidence Model
 - Investment-specific evidence classification system
 - Evidence types: metrics, facts, quotes, references
 - Confidence scoring (0-100) with source attribution
 - Multi-stage verification workflow
 - Context preservation with deal linkage
-
 ### Document Model 
 - Domain-specific document categorization
 - Types: pitch_deck, financials, legal, market, team
 - Extraction quality scoring (0-100)
 - Version control with relationship mapping
 - Document-to-deal matching logic
-
 ### Analysis Model
 - Multi-cycle analysis framework (Cycles 1-3)
 - Composite scoring across dimensions
 - Evidence aggregation with confidence thresholds
 - Industry-specific benchmarking rules
 - Risk severity classification
-
 ## State Transitions
-
 Deal Stage Progression:
 ```
 Intake (50+ confidence)
@@ -103,30 +95,91 @@ Intake (50+ confidence)
     -> In Diligence (80+ confidence)
       -> Ready Decision (90+ confidence)
 ```
-
 Document Status Flow:
 ```
 Uploaded -> Extracted -> Verified -> Analyzed -> Referenced
 ```
-
 Evidence Validation:
 ```
 Collected -> Verified -> Scored -> Integrated
 ```
-
 ## Key Relationships
-
 - Deal <-> Documents (1:many)
 - Deal <-> Evidence (1:many) 
 - Document <-> Evidence (1:many)
 - Analysis <-> Evidence (many:many)
-
 ## Validation Rules
-
 - Deal progression requires minimum confidence thresholds
 - Document extraction quality gates
 - Evidence source verification requirements
 - Analysis cycle completion criteria
+# === END USER INSTRUCTIONS ===
+
+# data-models-investment
+
+## Core Domain Models
+
+### Deal Entity
+Core investment deal data model representing fundraising opportunities:
+- Hierarchical stages: intake -> under_review -> in_diligence -> ready_decision
+- Priority classification (P0-P3) based on weighted scoring
+- Evidence mapping to support claims and risks
+- Version control with parent-child relationships
+- Importance Score: 95
+
+### Evidence Entity
+Structured proof points supporting deal analysis:
+- Multi-dimensional classification (metrics, narratives, risks)
+- Confidence scoring based on source quality
+- Document reference tracking
+- Bidirectional linking with deals and documents
+- Importance Score: 90
+
+### Document Entity
+Investment document classification and metadata:
+- Domain-specific types (pitch_deck, financials, legal)
+- Processing state tracking
+- Content extraction confidence scoring
+- Evidence extraction mapping
+- Importance Score: 85
+
+### Analysis Entity
+Deal intelligence object tracking analysis cycles:
+- Three-phase analysis depth tracking
+- Finding categorization and confidence scoring
+- Evidence-based claim validation
+- Recommendation generation logic
+- Importance Score: 90
+
+## Key Relationships
+
+1. Deal -> Evidence
+- One-to-many relationship
+- Evidence strength impacts deal scoring
+- Priority classification dependencies
+
+2. Evidence -> Documents
+- Many-to-many mapping
+- Source validation tracking
+- Confidence inheritance
+
+3. Analysis -> Deal
+- Versioned relationship
+- Progressive depth tracking
+- State transition rules
+
+## State Transitions
+
+Deal analysis pipeline progression:
+1. Intake validation
+2. Initial review depth assessment
+3. Due diligence evidence collection
+4. Decision readiness evaluation
+
+State changes governed by:
+- Evidence coverage thresholds
+- Confidence scoring minimums
+- Document completeness checks
 
 $END$
 

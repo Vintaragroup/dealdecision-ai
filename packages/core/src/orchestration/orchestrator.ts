@@ -31,6 +31,7 @@ import { buildDIOContextFromInputData } from './dio-context';
 import { buildScoreExplanationFromDIO } from '../reports/score-explanation';
 import { getStableDocumentId, selectDocumentRoles } from './document-roles';
 import { generatePhase1DIOV1, mergePhase1IntoDIO } from '../phase1/phase1-dio-v1.js';
+import { buildRealAssetFactArtifacts, detectRealEstatePreferredEquity } from './real-asset-facts';
 
 // ==================== Configuration ====================
 
@@ -508,15 +509,64 @@ export class DealOrchestrator {
     };
 
     const getHeadings = (doc: any): string[] => {
-      return doc?.mainHeadings && Array.isArray(doc.mainHeadings) ? doc.mainHeadings : [];
+      const candidates: unknown[] = [
+        doc?.mainHeadings,
+        doc?.main_headings,
+        doc?.headings,
+        doc?.outlineHeadings,
+        doc?.outline_headings,
+        doc?.structuredData?.mainHeadings,
+        doc?.structured_data?.mainHeadings,
+        doc?.structuredData?.headings,
+        doc?.structured_data?.headings,
+      ];
+
+      for (const v of candidates) {
+        if (Array.isArray(v)) {
+          const out = v.filter((h) => typeof h === 'string' && h.trim().length > 0) as string[];
+          if (out.length > 0) return out;
+        }
+      }
+
+      return [];
     };
 
     const getMetrics = (doc: any): Array<{ key: string; value: string; source: string }> => {
-      return doc?.keyMetrics && Array.isArray(doc.keyMetrics) ? doc.keyMetrics : [];
+      const candidates: unknown[] = [
+        doc?.keyMetrics,
+        doc?.key_metrics,
+        doc?.metrics,
+        doc?.structuredData?.keyMetrics,
+        doc?.structured_data?.keyMetrics,
+      ];
+      for (const v of candidates) {
+        if (Array.isArray(v) && v.length > 0) return v as any;
+      }
+      return [];
     };
 
     const getText = (doc: any): string => {
-      return typeof doc?.textSummary === 'string' ? doc.textSummary : '';
+      const candidates: unknown[] = [
+        doc?.textSummary,
+        doc?.text_summary,
+        doc?.structuredData?.textSummary,
+        doc?.structured_data?.textSummary,
+        doc?.summary,
+        doc?.structuredData?.summary,
+        doc?.structured_data?.summary,
+        doc?.full_text,
+        doc?.fullText,
+        doc?.fulltext,
+        doc?.text,
+        doc?.extracted_text,
+      ];
+      for (const v of candidates) {
+        if (typeof v === 'string') {
+          const s = v.trim();
+          if (s.length > 0) return s;
+        }
+      }
+      return '';
     };
 
     // Combine all document data (used for analyzers that intentionally use all docs)
@@ -540,6 +590,7 @@ export class DealOrchestrator {
       if (doc?.totalPages) totalPages += doc.totalPages;
       if (doc?.fileSizeBytes) totalBytes += doc.fileSizeBytes;
       if (doc?.totalWords) totalChars += doc.totalWords * 5; // Rough estimate
+      else if (t) totalChars += t.length;
     }
 
     // Pitch-deck-only view for deck-sensitive analyzers
@@ -817,6 +868,18 @@ export class DealOrchestrator {
     const evidence = Array.isArray((input.input_data as any)?.evidence)
       ? ((input.input_data as any).evidence as DealIntelligenceObject["inputs"]["evidence"])
       : [];
+
+    // Deterministic fact_table population for real-asset preferred equity offering memoranda.
+    // This is additive and does not change analyzer behavior; it improves downstream coverage.
+    const nowForFacts = now;
+    const realAssetArtifacts = buildRealAssetFactArtifacts({
+      documents: documents as any[],
+      analysis_cycle: input.analysis_cycle,
+      now_iso: nowForFacts,
+    });
+    if (realAssetArtifacts.appended_evidence.length > 0) {
+      evidence.push(...realAssetArtifacts.appended_evidence);
+    }
     
     const inputConfigRaw = (input.input_data as any)?.config;
     const mergedConfig = AnalysisConfigSchema.parse({
@@ -861,7 +924,7 @@ export class DealOrchestrator {
       analyzer_results,
       
       planner_state: this.fallbackPlannerState(input.analysis_cycle),
-      fact_table: [],
+      fact_table: realAssetArtifacts.fact_table,
       ledger_manifest: this.fallbackLedgerManifest(),
       risk_map: [],
       decision: this.fallbackDecision(),
@@ -918,6 +981,50 @@ export class DealOrchestrator {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.log('Phase 1 addendum failed (ignored)', { deal_id: input.deal_id, error: message });
+    }
+
+    // Confidence gate for real-asset offering memos: if fact coverage is missing,
+    // mark low-confidence and add a verification blocker instead of proceeding silently.
+    try {
+      const primaryText = Array.isArray(documents) && documents.length > 0
+        ? (() => {
+            const d0: any = (documents as any[]).find((d) => typeof d?.full_text === 'string' && d.full_text.trim().length > 0)
+              ?? (documents as any[]).find((d) => typeof d?.fullText === 'string' && d.fullText.trim().length > 0)
+              ?? (documents as any[])[0];
+            const t =
+              (typeof d0?.full_text === 'string' ? d0.full_text : '') ||
+              (typeof d0?.fullText === 'string' ? d0.fullText : '') ||
+              (typeof d0?.text_summary === 'string' ? d0.text_summary : '') ||
+              (typeof d0?.textSummary === 'string' ? d0.textSummary : '') ||
+              (typeof d0?.summary === 'string' ? d0.summary : '');
+            return typeof t === 'string' ? t : '';
+          })()
+        : '';
+
+      const isRealAssetMemo = detectRealEstatePreferredEquity(primaryText);
+      const MIN_FACTS = 8;
+
+      if (isRealAssetMemo && (!Array.isArray(dio.fact_table) || dio.fact_table.length < MIN_FACTS)) {
+        const existing = Array.isArray(dio.decision.verification_checklist) ? dio.decision.verification_checklist : [];
+        dio.decision = {
+          ...dio.decision,
+          confidence: Math.min(dio.decision.confidence ?? 0.5, 0.2),
+          recommendation: 'CONDITIONAL',
+          verification_checklist: [
+            ...existing,
+            `Blocker: insufficient real-asset fact coverage (need >=${MIN_FACTS} evidence-backed facts)`
+          ],
+        };
+        if (dio.dio_context) {
+          dio.dio_context = {
+            ...dio.dio_context,
+            confidence: Math.min(dio.dio_context.confidence ?? 0.8, 0.4),
+          };
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log('Real-asset confidence gate failed (ignored)', { deal_id: input.deal_id, error: message });
     }
 
     // Attach score explainability and an extracted overall_score for downstream consumers.

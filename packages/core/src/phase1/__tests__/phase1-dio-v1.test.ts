@@ -149,6 +149,43 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		expect(out.executive_summary_v1.unknowns).toContain("traction_signals");
 	});
 
+	it("real-estate preferred equity memo: executive_summary_v2 falls back to deterministic product/ICP and recognizes leasing GTM", () => {
+		const memoText =
+			"Offering Memorandum\n" +
+			"We are raising $10M of preferred equity for the acquisition of a value-add multifamily property located in Austin, TX.\n" +
+			"Market: Austin MSA with strong job growth and in-migration. Target renters include workforce households.\n" +
+			"Business plan includes unit renovations, lease-up, and a leasing strategy to drive occupancy and rent growth.\n" +
+			"Underwriting: NOI, cap rate, DSCR, LTV, IRR and equity multiple are provided in the pro forma.";
+
+		const out = generatePhase1DIOV1({
+			deal: { deal_id: "deal-re-1", name: "Austin Multifamily PrefEq", stage: "intake" },
+			inputDocuments: [
+				{
+					document_id: "doc-re-1",
+					title: "Offering Memo",
+					type: "memo",
+					full_text: memoText,
+				},
+			],
+			// Simulate upstream structured overview missing key fields
+			deal_overview_v2: {
+				deal_name: "Austin Multifamily PrefEq",
+				deal_type: "startup_raise",
+				business_model: "Services",
+				raise: "Raising $10M preferred equity",
+				// product_solution + market_icp intentionally omitted
+				generated_at: "2025-01-01T00:00:00.000Z",
+			},
+		});
+
+		expect(out.executive_summary_v2).toBeTruthy();
+		const bullets = (out.executive_summary_v2?.highlights ?? []).join("\n");
+		expect(bullets).not.toMatch(/Product:\s*not provided/i);
+		expect(bullets).not.toMatch(/ICP:\s*not provided/i);
+		// Coverage should treat leasing/occupancy strategy as GTM-equivalent for real estate
+		expect(out.coverage.sections.gtm).not.toBe("missing");
+	});
+
 	it("extracts product_solution from pitch deck tagline on page 1", () => {
 		const out = generatePhase1DIOV1({
 			deal: { deal_id: "deal-4", name: "TaglineCo", stage: "intake" },

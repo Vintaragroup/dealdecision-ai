@@ -124,7 +124,10 @@ function mapDeal(row: DealRow, dio: DIOAggregateRow | null | undefined, mode: De
 	};
 
 	if (mode !== "phase1") {
-		out.score = row.score ?? undefined;
+    const fallbackScore = typeof dio?.overall_score === 'number' && Number.isFinite(dio.overall_score)
+      ? dio.overall_score
+      : undefined;
+    out.score = (row.score ?? fallbackScore) ?? undefined;
 		out.dioStatus = dio?.recommendation ?? undefined;
 	}
 

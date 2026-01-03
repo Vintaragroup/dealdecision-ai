@@ -15,6 +15,24 @@ function docWithPages(document_id: string, pages: Page[], title = 'Pitch Deck'):
 }
 
 describe('buildPhase1DealOverviewV2 (product_solution / market_icp extraction)', () => {
+	it('prefers explicit company definition over cover tagline (3ICE regression)', () => {
+		const docs: OverviewDocumentInput[] = [
+			docWithPages('doc-3ice', [
+				{ text: '3ICE\nTHE BEST PART OF HOCKEY' },
+				{ text: "3ICE is a 'new media' company and the first ever 3-on-3 professional ice hockey league." },
+				{ text: 'We are raising approximately $10M' },
+			], 'PD - 3ICE'),
+		];
+
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		expect(out.product_solution ?? '').toMatch(/3ICE\s+is\s+a\s+'new\s+media'\s+company/i);
+		expect(out.product_solution ?? '').toMatch(/3-on-3\s+professional\s+ice\s+hockey\s+league/i);
+		expect(out.product_solution).not.toBe('THE BEST PART OF HOCKEY');
+		expect(out.product_solution ?? '').not.toMatch(/best\s+part\s+of\s+hockey/i);
+		expect(out.raise ?? '').toMatch(/approximately\s*\$?\s*10\s*m/i);
+		expect(out.deal_type).toBe('startup_raise');
+	});
+
 	it('accepts ALL-CAPS tagline if it matches verb pattern', () => {
 		const docs: OverviewDocumentInput[] = [
 			docWithPages('doc1', [

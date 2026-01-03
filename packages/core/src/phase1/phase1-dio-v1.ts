@@ -387,6 +387,15 @@ function extractOverviewField(params: {
 		params.field === "market_icp" ? detectMarketSnippet(params.readableText) : detectProductSnippet(params.readableText);
 	if (fallback && isHighQualityOverviewCandidate(fallback)) return fallback;
 
+	// Real-estate memo fallback: map offer memo signals into product/market fields.
+	if (looksLikeRealEstateOffering(params.readableText)) {
+		const reFallback =
+			params.field === "market_icp"
+				? detectRealEstateMarketIcp(params.readableText)
+				: detectRealEstateProductSolution(params.readableText);
+		if (reFallback && isHighQualityOverviewCandidate(reFallback)) return reFallback;
+	}
+
 	return "";
 }
 
@@ -484,7 +493,7 @@ function buildDealOverviewV1(params: {
 	const docs = Array.isArray(params.docs) ? params.docs : [];
 	const readableText = extractAllReadableText(docs).slice(0, 60_000);
 
-	const deal_type_detected = detectDealTypeFromDocs(docs) ?? "Unknown";
+	const deal_type_detected = detectDealType({ docs, readableText }) ?? "Unknown";
 	const raiseDetected = detectRaise(readableText);
 	const raise_detected = raiseDetected ?? "Unknown";
 	const business_model_detected = detectBusinessModel(readableText) ?? "Unknown";
@@ -696,6 +705,11 @@ function pickSnippetFromDoc(doc: Phase1GeneratorInputDocument, hint?: RegExp): {
 
 function detectBusinessModel(text: string): string | null {
 	const lower = text.toLowerCase();
+	if (looksLikeRealEstateOffering(text)) {
+		return /\bpreferred\s+equity\b/i.test(text)
+			? "Real estate investment (preferred equity)"
+			: "Real estate investment";
+	}
 	const patterns: Array<{ re: RegExp; label: string }> = [
 		{ re: /\bsaas\b|\bsubscription\b|\barr\b|\bmrr\b/i, label: "SaaS / subscription" },
 		{ re: /\bmarketplace\b/i, label: "Marketplace" },
@@ -707,6 +721,111 @@ function detectBusinessModel(text: string): string | null {
 		if (p.re.test(lower)) return p.label;
 	}
 	return null;
+}
+
+function looksLikeRealEstateOffering(text: string): boolean {
+	const t = safeString(text);
+	if (!t.trim()) return false;
+	const signals = [
+		/\b(preferred\s+equity|mezzanine|bridge\s+loan|senior\s+loan|debt\s+service|dscr|ltv)\b/i,
+		/\b(real\s+estate|property|multifamily|apartment|industrial|office|retail|self-?storage|hospitality|hotel|resort)\b/i,
+		/\b(noi|cap\s*rate|cash-?on-?cash|equity\s+multiple|irr|pro\s*forma|rent\s+roll)\b/i,
+		/\b(occupanc|lease-?up|leasing|tenant|rent\s+growth|absorption|submarket|msa)\b/i,
+		/\b(sponsor|operator|general\s+partner|\bgp\b|\blp\b|fund|spv)\b/i,
+	];
+	let hit = 0;
+	for (const re of signals) {
+		if (re.test(t)) hit += 1;
+		if (hit >= 2) return true;
+	}
+	return false;
+}
+
+function detectRealEstateProductSolution(text: string): string | null {
+	const t = safeString(text);
+	if (!t.trim()) return null;
+
+	const instrumentMatch = t.match(/\b(preferred\s+equity|mezzanine|bridge\s+loan|senior\s+loan)\b/i);
+	const instrument = instrumentMatch ? instrumentMatch[1].toLowerCase().replace(/\s+/g, " ").trim() : "investment";
+
+	const propertyMatch = t.match(/\b(multifamily|apartment|industrial|office|retail|self-?storage|hospitality|hotel)\b/i);
+	const property = propertyMatch ? propertyMatch[1].toLowerCase().replace(/\s+/g, " ").trim() : "property";
+
+	const locMatch = t.match(/\b(located\s+in|in)\s+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3}(?:,\s*[A-Z]{2})?)\b/);
+	const loc = locMatch ? sanitizeInlineText(locMatch[2]) : "";
+
+	const sentence = loc
+		? `Preferred equity investment in a ${property} property in ${loc}.`
+		: instrument.includes("preferred equity")
+			? `Preferred equity investment in a ${property} property.`
+			: `Real estate ${instrument} for a ${property} property.`;
+
+	const normalized = normalizeOverviewSentence(sentence, 180);
+	return normalized.trim().length >= 24 ? normalized : null;
+}
+
+function detectRealEstateMarketIcp(text: string): string | null {
+	const t = safeString(text);
+	if (!t.trim()) return null;
+	const patterns: RegExp[] = [
+		/\b(submarket|msa|market)\b[\s\S]{0,180}/i,
+		/\b(demographic|population|median\s+income|job\s+growth)\b[\s\S]{0,180}/i,
+		/\b(tenant|renters?|leasing|occupanc)\b[\s\S]{0,180}/i,
+		/\b(workforce\s+housing|class\s*[abc])\b[\s\S]{0,180}/i,
+	];
+	for (const re of patterns) {
+		const m = t.match(re);
+		if (!m) continue;
+		const s = sanitizeInlineText(m[0].replace(/\s+/g, " ").trim());
+		if (s.length >= 35) return s.slice(0, 180);
+	}
+	return null;
+}
+
+function extractSnippetWindow(text: string, re: RegExp, windowChars: number): string {
+	const t = safeString(text);
+	const m = t.match(re);
+	if (!m || m.index == null) return "";
+	const start = Math.max(0, m.index - Math.floor(windowChars * 0.25));
+	const end = Math.min(t.length, m.index + (m[0]?.length ?? 0) + Math.floor(windowChars * 0.75));
+	return sanitizeInlineText(t.slice(start, end));
+}
+
+function detectRealEstateProductFromSparseText(text: string): string {
+	const t = safeString(text);
+	if (!t.trim()) return "";
+
+	const window =
+		extractSnippetWindow(
+			t,
+			/\b(preferred\s+equity|offering\s+memorandum|investment\s+opportunit|total\s+investment|total\s+capitalization|acquisition|development|project|property|asset)\b/i,
+			240
+		) || "";
+	if (window && isHighQualityOverviewCandidate(window)) return normalizeOverviewSentence(window, 180);
+
+	// Deterministic, non-specific paraphrase only when a real-estate investment keyword is present.
+	if (/\b(preferred\s+equity|offering\s+memorandum|total\s+investment|property|asset|real\s+estate)\b/i.test(t)) {
+		return normalizeOverviewSentence("Real estate investment opportunity (see offering memo for details)", 180);
+	}
+	return "";
+}
+
+function detectRealEstateMarketFromSparseText(text: string): string {
+	const t = safeString(text);
+	if (!t.trim()) return "";
+
+	const window =
+		extractSnippetWindow(
+			t,
+			/\b(market|msa|submarket|tenant|leasing|occupanc|rent\s+growth|demographic|population|job\s+growth|in-?migration)\b/i,
+			240
+		) || "";
+	if (window && isHighQualityOverviewCandidate(window)) return normalizeOverviewSentence(window, 180);
+
+	if (/\b(market|tenant|leasing|occupanc|msa|submarket)\b/i.test(t)) {
+		return normalizeOverviewSentence("Target market and tenant profile are described in the offering memo", 180);
+	}
+	return "";
 }
 
 function hasAnyExtractedText(docs: Phase1GeneratorInputDocument[]): boolean {
@@ -964,6 +1083,13 @@ function detectDealTypeFromDocs(docs: Phase1GeneratorInputDocument[]): string | 
 	return "other";
 }
 
+function detectDealType(params: { docs: Phase1GeneratorInputDocument[]; readableText: string }): string | null {
+	if (looksLikeRealEstateOffering(params.readableText)) {
+		return /\bpreferred\s+equity\b/i.test(params.readableText) ? "real_estate_preferred_equity" : "real_estate_offering";
+	}
+	return detectDealTypeFromDocs(params.docs);
+}
+
 function detectTractionSignals(text: string): string[] {
 	const signals: Array<{ re: RegExp; label: string }> = [
 		{ re: /\barr\b/i, label: "ARR mentioned" },
@@ -1180,6 +1306,8 @@ export function generatePhase1DIOV1(params: {
 	const businessArchetypeV1 = (params.business_archetype_v1 && typeof params.business_archetype_v1 === "object")
 		? (params.business_archetype_v1 as any)
 		: null;
+	const businessArchetypeValue = safeString(businessArchetypeV1?.value).toLowerCase();
+	const archetypeLooksRE = businessArchetypeValue === "real_estate" || businessArchetypeValue.includes("real_estate");
 
 	const v2Product = overviewV2?.product_solution && typeof overviewV2.product_solution === "string"
 		? normalizeOverviewSentence(overviewV2.product_solution, 220)
@@ -1203,9 +1331,13 @@ export function generatePhase1DIOV1(params: {
 		? overviewV2.key_risks_detected.filter((x: any) => typeof x === "string").map((x: string) => sanitizeInlineText(x)).filter(Boolean)
 		: [];
 
-	const deal_type = v2DealType || overview.deal_type;
+	const looksRE = looksLikeRealEstateOffering(combinedText) || archetypeLooksRE;
+
+	const deal_type = (looksRE && /\bstartup_raise\b/i.test(v2DealType)) ? overview.deal_type : (v2DealType || overview.deal_type);
 	const raise = v2Raise || overview.raise;
-	const business_model = v2BusinessModel || overview.business_model;
+	const business_model = (looksRE && /\bservices\b/i.test(v2BusinessModel) && /real\s+estate/i.test(overview.business_model))
+		? overview.business_model
+		: (v2BusinessModel || overview.business_model);
 	const traction_signals = v2Traction.length > 0 ? uniqStrings(v2Traction) : overview.traction_signals;
 	const key_risks_detected = v2Risks.length > 0 ? uniqStrings(v2Risks) : overview.key_risks_detected;
 	const raiseDetected = raise !== "Unknown" ? raise : null;
@@ -1217,8 +1349,17 @@ export function generatePhase1DIOV1(params: {
 	const tractionMetrics = overview.traction_metrics;
 	const oneLinerParts: string[] = [];
 	const dealName = overview.deal_name?.trim() ? overview.deal_name.trim() : "";
-	const productSentence = v2Product || (overview.product_solution?.trim() ? overview.product_solution.trim() : "");
-	const marketSentence = v2Market || (overview.market_icp?.trim() ? overview.market_icp.trim() : "");
+	let productSentence = v2Product || (overview.product_solution?.trim() ? overview.product_solution.trim() : "");
+	let marketSentence = v2Market || (overview.market_icp?.trim() ? overview.market_icp.trim() : "");
+
+	// Last-resort fallback for real-estate memos where worker deal_overview_v2 omits product/ICP and
+	// extracted text may be sparse or numeric-heavy.
+	if (looksRE && !productSentence.trim()) {
+		productSentence = detectRealEstateProductFromSparseText(combinedText) || productSentence;
+	}
+	if (looksRE && !marketSentence.trim()) {
+		marketSentence = detectRealEstateMarketFromSparseText(combinedText) || marketSentence;
+	}
 	if (productSentence && dealName && productSentence.toLowerCase().startsWith(dealName.toLowerCase())) {
 		oneLinerParts.push(productSentence);
 	} else {
@@ -1261,7 +1402,7 @@ export function generatePhase1DIOV1(params: {
 	);
 	const financialsStatus: "present" | "partial" | "missing" = coverageStatusFromText(
 		combinedText,
-		[/(revenue|arr|mrr|burn|runway|cash|margin|expenses|profit)\b/i],
+		[/(revenue|arr|mrr|burn|runway|cash|margin|expenses|profit|noi|cap\s*rate|dscr|ltv|irr|equity\s+multiple|cash-?on-?cash|pro\s*forma)\b/i],
 		docs.some((d) => safeString(d.type).trim() === "financials") ? "partial" : "missing"
 	);
 	const risksStatus: "present" | "partial" | "missing" = sectionStatus("", key_risks_detected);
@@ -1276,7 +1417,13 @@ export function generatePhase1DIOV1(params: {
 			product: productStatus,
 			market_icp: marketStatus,
 			market: marketStatus,
-			gtm: coverageStatusFromText(combinedText, [/(go\s*-?to\s*-?market|\bgtm\b|pricing|sales\s+motion|distribution|channel)\b/i], "missing"),
+			gtm: looksRE
+				? coverageStatusFromText(
+					combinedText,
+					[/(leasing|lease-?up|tenant|occupanc|rent\s+growth|broker|marketing\s+plan|absorption|value-?add|renovation)\b/i],
+					"missing"
+				)
+				: coverageStatusFromText(combinedText, [/(go\s*-?to\s*-?market|\bgtm\b|pricing|sales\s+motion|distribution|channel)\b/i], "missing"),
 			team: coverageStatusFromText(combinedText, [/(founder|team|ceo|cto|co-founder|background|experience)\b/i], "missing"),
 			traction: tractionStatus,
 			financials: financialsStatus,
@@ -1291,8 +1438,8 @@ export function generatePhase1DIOV1(params: {
 		business_model: business_model === "Unknown" ? "low" : "med",
 		traction: traction_signals.length > 0 ? "med" : "low",
 		risks: key_risks_detected.length > 0 ? "med" : "low",
-		product_solution: overview.product_solution.trim() ? "med" : "low",
-		market_icp: overview.market_icp.trim() ? "med" : "low",
+		product_solution: productSentence.trim() ? "med" : "low",
+		market_icp: marketSentence.trim() ? "med" : "low",
 		gtm: coverage.sections.gtm === "present" ? "med" : "low",
 		team: coverage.sections.team === "present" ? "med" : "low",
 		financials: coverage.sections.financials === "present" ? "med" : coverage.sections.financials === "partial" ? "low" : "low",
@@ -1302,9 +1449,21 @@ export function generatePhase1DIOV1(params: {
 
 	const decision_summary_v1 = buildDecisionSummary({ coverage, docs });
 
+	const mergedOverviewForV2 = overviewV2 && typeof overviewV2 === "object"
+		? {
+			...overviewV2,
+			deal_name: safeNonEmpty((overviewV2 as any).deal_name) || overview.deal_name,
+			product_solution: safeNonEmpty((overviewV2 as any).product_solution) || productSentence,
+			market_icp: safeNonEmpty((overviewV2 as any).market_icp) || marketSentence,
+			deal_type: safeNonEmpty((overviewV2 as any).deal_type) || deal_type,
+			business_model: safeNonEmpty((overviewV2 as any).business_model) || business_model,
+			raise: safeNonEmpty((overviewV2 as any).raise) || raise,
+		}
+		: null;
+
 	const executive_summary_v2 = composeExecutiveSummaryV2({
 		deal: params.deal,
-		overview_v2: overviewV2,
+		overview_v2: mergedOverviewForV2 ?? overviewV2,
 		coverage,
 		decision_summary_v1,
 	});

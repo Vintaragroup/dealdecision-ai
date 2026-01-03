@@ -33,14 +33,14 @@ interface DealData {
   id: string;
   name: string;
   stage: DealStage;
-  score: number;
+  score: number | null;
   lastUpdated: string;
   documents: number;
-  completeness: number;
+  completeness: number | null;
   fundingTarget: string;
   trend: DealTrend;
   priority: DealPriority;
-  views: number;
+  views: number | null;
   owner: string;
 }
 
@@ -114,6 +114,52 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
   }, []);
 
   const deals: DealData[] = useMemo(() => {
+    const toNonEmptyString = (value: unknown): string | null => {
+      if (typeof value !== 'string') return null;
+      const s = value.trim();
+      return s.length > 0 ? s : null;
+    };
+
+    const extractFundingTarget = (deal: any): string => {
+      const direct = toNonEmptyString(deal?.fundingTarget);
+      if (direct) return direct;
+
+      const overview = deal?.ui?.overviewV2 ?? deal?.ui?.dealOverviewV2 ?? deal?.deal_overview_v2 ?? deal?.phase1?.deal_overview_v2;
+      const raise = toNonEmptyString(overview?.raise);
+      return raise ?? '';
+    };
+
+    const computeCompleteness = (deal: any): number | null => {
+      const existing = typeof deal?.completeness === 'number' && Number.isFinite(deal.completeness) ? deal.completeness : null;
+      if (existing != null) return Math.max(0, Math.min(100, Math.round(existing)));
+
+      const overview = deal?.ui?.overviewV2 ?? deal?.ui?.dealOverviewV2 ?? deal?.deal_overview_v2 ?? deal?.phase1?.deal_overview_v2;
+      if (!overview || typeof overview !== 'object') return null;
+
+      const fields: Array<unknown> = [
+        overview?.product_solution,
+        overview?.market_icp,
+        overview?.deal_type,
+        overview?.raise,
+        overview?.business_model,
+      ];
+      const filledScalar = fields.filter((v) => typeof v === 'string' && v.trim().length > 0).length;
+      const tractionFilled = Array.isArray(overview?.traction_signals) && overview.traction_signals.filter((x: any) => typeof x === 'string' && x.trim().length > 0).length > 0 ? 1 : 0;
+      const total = fields.length + 1;
+      const filled = filledScalar + tractionFilled;
+      return Math.round((filled / total) * 100);
+    };
+
+    const normalizeViews = (deal: any): number | null => {
+      const v = deal?.views;
+      return typeof v === 'number' && Number.isFinite(v) ? v : null;
+    };
+
+    const normalizeScore = (deal: any): number | null => {
+      const s = deal?.score;
+      return typeof s === 'number' && Number.isFinite(s) ? s : null;
+    };
+
     // Deduplicate deals by name, keeping the most recent one
     const deduplicatedDeals = new Map<string, typeof liveDeals[0]>();
     for (const deal of liveDeals) {
@@ -127,14 +173,14 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
       id: deal.id,
       name: deal.name,
       stage: deal.stage,
-      score: deal.score ?? 0,
+      score: normalizeScore(deal as any),
       lastUpdated: deal.lastUpdated ?? deal.id, // fallback to keep stable display
       documents: (deal as any).documents ?? 0,
-      completeness: (deal as any).completeness ?? 0,
-      fundingTarget: (deal as any).fundingTarget ?? '',
+      completeness: computeCompleteness(deal as any),
+      fundingTarget: extractFundingTarget(deal as any),
       trend: (deal.trend as DealTrend) ?? 'stable',
       priority: deal.priority ?? 'medium',
-      views: (deal as any).views ?? 0,
+      views: normalizeViews(deal as any),
       owner: deal.owner ?? 'Unassigned'
     }));
   }, [liveDeals]);
@@ -207,6 +253,21 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
     }
   };
 
+  const formatPercent = (value: number | null) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+    return `${Math.round(value)}%`;
+  };
+
+  const formatMaybeNumber = (value: number | null) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+    return String(Math.round(value));
+  };
+
+  const formatLastUpdated = (value: string) => {
+    const d = new Date(value);
+    return Number.isFinite(d.getTime()) ? d.toLocaleString() : value;
+  };
+
   const filteredDeals = deals.filter(deal => {
     const matchesSearch = deal.name.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesStage = stageFilter === 'all' || deal.stage === stageFilter;
@@ -217,8 +278,12 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
   const summaryStats = {
     total: deals.length,
     ready: deals.filter(d => d.stage === 'ready_decision').length,
-    avgScore: Math.round(deals.reduce((sum, d) => sum + d.score, 0) / deals.length),
-    totalViews: deals.reduce((sum, d) => sum + d.views, 0)
+		avgScore: deals.length > 0
+			? Math.round(
+				deals.reduce((sum, d) => sum + (typeof d.score === 'number' ? d.score : 0), 0) / deals.length
+			)
+			: 0,
+		totalViews: deals.reduce((sum, d) => sum + (typeof d.views === 'number' ? d.views : 0), 0)
   };
 
   const toggleDealSelection = (dealId: string) => {
@@ -590,7 +655,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                       <td className="p-4">
                         <div className="flex items-center gap-2">
                           <span className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                            {deal.score}%
+							{formatPercent(deal.score)}
                           </span>
                           {deal.trend === 'up' && <TrendingUp className="w-3 h-3 text-emerald-400" />}
                           {deal.trend === 'down' && <TrendingDown className="w-3 h-3 text-red-400" />}
@@ -603,11 +668,11 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                           }`}>
                             <div
                               className="h-full bg-gradient-to-r from-[#6366f1] to-[#8b5cf6]"
-                              style={{ width: `${deal.completeness}%` }}
+							style={{ width: `${typeof deal.completeness === 'number' ? deal.completeness : 0}%` }}
                             />
                           </div>
                           <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                            {deal.completeness}%
+							{formatPercent(deal.completeness)}
                           </span>
                         </div>
                       </td>
@@ -619,7 +684,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                       <td className="p-4">
                         <span className={`text-xs flex items-center gap-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                           <Clock className="w-3 h-3" />
-                          {deal.lastUpdated}
+							{formatLastUpdated(deal.lastUpdated)}
                         </span>
                       </td>
                       <td className="p-4">
@@ -631,7 +696,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                       <td className="p-4">
                         <span className={`text-xs flex items-center gap-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                           <Eye className="w-3 h-3" />
-                          {deal.views}
+							{formatMaybeNumber(deal.views)}
                         </span>
                       </td>
                       <td className="p-4" onClick={(e) => e.stopPropagation()}>
@@ -735,7 +800,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                     </span>
                     <div className="flex items-center gap-1">
                       <span className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                        {deal.score}%
+						{formatPercent(deal.score)}
                       </span>
                       {deal.trend === 'up' && <TrendingUp className="w-3 h-3 text-emerald-400" />}
                       {deal.trend === 'down' && <TrendingDown className="w-3 h-3 text-red-400" />}
@@ -747,14 +812,14 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                   }`}>
                     <div
                       className="h-full bg-gradient-to-r from-[#6366f1] to-[#8b5cf6]"
-                      style={{ width: `${deal.completeness}%` }}
+						style={{ width: `${typeof deal.completeness === 'number' ? deal.completeness : 0}%` }}
                     />
                   </div>
 
                   <div className="flex items-center justify-between text-xs">
                     <span className={`flex items-center gap-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                       <Clock className="w-3 h-3" />
-                      {deal.lastUpdated}
+						{formatLastUpdated(deal.lastUpdated)}
                     </span>
                     <span className={`flex items-center gap-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                       <FileText className="w-3 h-3" />
@@ -762,7 +827,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                     </span>
                     <span className={`flex items-center gap-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                       <Eye className="w-3 h-3" />
-                      {deal.views}
+						{formatMaybeNumber(deal.views)}
                     </span>
                   </div>
                 </div>
@@ -788,7 +853,20 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
         <ExportDealsModal
           isOpen={showExportModal}
           darkMode={darkMode}
-          deals={filteredDeals}
+          deals={filteredDeals.map((d) => ({
+            id: d.id,
+            name: d.name,
+            stage: d.stage,
+            priority: d.priority,
+            trend: d.trend,
+            score: d.score ?? undefined,
+            owner: d.owner || undefined,
+            lastUpdated: d.lastUpdated || undefined,
+            documents: d.documents,
+            completeness: d.completeness ?? undefined,
+            fundingTarget: d.fundingTarget || undefined,
+            views: d.views ?? undefined,
+          }))}
           onClose={() => setShowExportModal(false)}
         />
       )}

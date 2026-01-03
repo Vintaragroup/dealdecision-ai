@@ -1,5 +1,5 @@
 ---
-description: Specification for analyzing and documenting core investment analysis scoring algorithms and deal evaluation logic
+description: Specification for documenting and analyzing core scoring algorithms and decision logic in investment analysis systems
 ---
 
 # === USER INSTRUCTIONS ===
@@ -51,15 +51,11 @@ Core Algorithms:
    (Burn Rate * 0.25) +
    (Revenue Growth * 0.25) +
    (Margins * 0.15)
-# === END USER INSTRUCTIONS ===
 
-# algorithms-scoring
-
+description: Specification for analyzing and documenting core investment analysis scoring algorithms and deal evaluation logic
 Core Investment Scoring Algorithms:
-
 1. Deal Confidence Scoring System
 Importance Score: 95/100
-
 Primary components:
 - Multi-factor confidence calculation incorporating:
   - Market Analysis (40% weight)
@@ -71,10 +67,8 @@ Primary components:
   High: 85%+
   Medium: 70-84%
   Low: <70%
-
 2. Risk Assessment Framework 
 Importance Score: 90/100
-
 Implements 6-category risk scoring:
 - Market risk
 - Team risk  
@@ -82,16 +76,13 @@ Implements 6-category risk scoring:
 - Competitive risk
 - Execution risk
 - Legal/regulatory risk
-
 Risk severity levels:
 - Critical (multiplier: 3.0)
 - High (multiplier: 2.0)
 - Medium (multiplier: 1.5) 
 - Low (multiplier: 1.0)
-
 3. ROI Projection Engine
 Importance Score: 85/100
-
 Calculations include:
 - Time savings ROI:
   - Legal fee reductions
@@ -101,24 +92,73 @@ Calculations include:
   - Consultant fee reduction
   - Travel cost elimination
   - Process automation gains
-
 4. Market Analysis Engine
 Importance Score: 85/100
-
 Key metrics:
 - TAM/SAM/SOM calculations
 - Growth rate projections
 - Competitive positioning score
 - Market penetration potential
 - Entry barrier assessment
-
 All scoring components feed into the master deal score (0-100) which drives investment recommendations:
-
 Deal Score Thresholds:
 - 85-100: Strong invest
 - 70-84: Consider 
 - 50-69: Watch
 - 0-49: Pass
+# === END USER INSTRUCTIONS ===
+
+# algorithms-scoring
+
+Core Scoring Components:
+
+1. Deal Confidence Scoring
+Path: apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx
+- Multi-dimensional scoring across market, team, financials, technology, and traction
+- Category-specific weightings based on deal stage and type
+- Confidence bands (0-100) with tiered thresholds:
+  * 85-100: High confidence 
+  * 70-84: Medium confidence
+  * Below 70: Low confidence
+Importance Score: 90
+
+2. Risk Assessment Calculations  
+Path: apps/web/src/components/report-templates/sections/RiskAssessment.tsx
+- Six core risk dimensions with impact/probability matrices
+- Risk severity classification (low/medium/high/critical)
+- Custom weighting system for overall risk score
+- Mitigation recommendation engine based on risk profiles
+Importance Score: 85
+
+3. ROI Projections
+Path: apps/web/src/components/report-templates/sections/ROISummary.tsx
+- Multi-scenario ROI modeling based on deal attributes
+- Cost savings calculations across legal, consulting, and analyst fees
+- Time-to-value projections with milestone tracking
+- Comparative analysis against traditional methods
+Importance Score: 80
+
+4. Market Analysis Formulas
+Path: apps/web/src/components/report-templates/sections/MarketAnalysis.tsx
+- TAM/SAM/SOM calculations with industry-specific multipliers
+- Growth rate projections using weighted market signals
+- Competitive position scoring using feature matrices
+- Market trend correlation analysis
+Importance Score: 85
+
+Key Decision Logic:
+
+1. Investment Recommendations
+- Three-tier system: Invest/Consider/Pass
+- Weighted scoring across 12 key metrics
+- Stage-appropriate threshold adjustments
+- Evidence-based scoring requirements
+
+2. Deal Priority Classification
+- Priority scoring algorithm (P0-P3)
+- Urgency multipliers based on deal stage
+- Document completeness impact
+- Team capacity considerations
 
 $END$
 

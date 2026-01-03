@@ -195,6 +195,8 @@ export function NewDealModal({ isOpen, onClose, onSuccess, onCreatedDeal, darkMo
         owner: formData.company || undefined
       })
         .then((created) => {
+          // Notify immediately so callers can use the deal id right away (e.g. attach uploads).
+          onCreatedDeal?.(created);
           const dealData = buildDealData(created.id);
           proceedToWorkspace(dealData, created);
         })

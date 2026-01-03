@@ -15,9 +15,10 @@ interface DocumentPreviewModalProps {
   document: any;
   darkMode: boolean;
   onClose: () => void;
+  onRequestDelete?: () => void;
 }
 
-export function DocumentPreviewModal({ document, darkMode, onClose }: DocumentPreviewModalProps) {
+export function DocumentPreviewModal({ document, darkMode, onClose, onRequestDelete }: DocumentPreviewModalProps) {
   const formatFileSize = (bytes: number) => {
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
@@ -37,11 +38,17 @@ export function DocumentPreviewModal({ document, darkMode, onClose }: DocumentPr
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm"
+      style={{ zIndex: 1000 }}
+      onMouseDown={onClose}
+    >
+      <div className="min-h-screen flex items-center justify-center p-4">
       <div
         className={`w-full max-w-5xl max-h-[90vh] rounded-2xl overflow-hidden flex flex-col ${
           darkMode ? 'bg-[#18181b]' : 'bg-white'
         }`}
+        onMouseDown={(e) => e.stopPropagation()}
       >
         {/* Header */}
         <div
@@ -228,6 +235,7 @@ export function DocumentPreviewModal({ document, darkMode, onClose }: DocumentPr
               {/* Actions */}
               <div className="space-y-2">
                 <button
+                  onClick={onRequestDelete}
                   className={`w-full p-3 rounded-lg text-sm flex items-center justify-center gap-2 transition-colors text-red-500 ${
                     darkMode
                       ? 'bg-red-500/10 hover:bg-red-500/20'
@@ -240,6 +248,7 @@ export function DocumentPreviewModal({ document, darkMode, onClose }: DocumentPr
             </div>
           </div>
         </div>
+      </div>
       </div>
     </div>
   );

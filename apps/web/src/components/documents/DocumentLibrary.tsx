@@ -21,21 +21,26 @@ import {
   SortAsc
 } from 'lucide-react';
 import type { Document as ApiDocument } from '@dealdecision/contracts';
-import { apiGetDocuments, isLiveBackend } from '../../lib/apiClient';
+import { apiDeleteDocument, isLiveBackend } from '../../lib/apiClient';
 
 interface DocumentLibraryProps {
   darkMode: boolean;
+  dealId?: string;
   documents?: ApiDocument[];
   loading?: boolean;
   onRetry?: (documentId: string) => void;
+  onDeleted?: () => void;
 }
 
-export function DocumentLibrary({ darkMode, documents: initialDocuments, loading, onRetry }: DocumentLibraryProps) {
+export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments, loading, onRetry, onDeleted }: DocumentLibraryProps) {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [selectedDocument, setSelectedDocument] = useState<LibraryDoc | null>(null);
   const [showPreview, setShowPreview] = useState(false);
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
+  const [deleteTargets, setDeleteTargets] = useState<string[] | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   type LibraryDoc = {
     id: string;
@@ -107,6 +112,37 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
   const handlePreview = (doc: LibraryDoc) => {
     setSelectedDocument(doc);
     setShowPreview(true);
+  };
+
+  const toggleSelected = (documentId: string) => {
+    setSelectedDocumentIds((prev) => (prev.includes(documentId) ? prev.filter((id) => id !== documentId) : [...prev, documentId]));
+  };
+
+  const requestDelete = (documentIds: string[]) => {
+    if (!isLiveBackend()) return;
+    if (!dealId) return;
+    if (documentIds.length === 0) return;
+    setDeleteTargets(documentIds);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTargets || deleteTargets.length === 0) return;
+    if (!dealId || !isLiveBackend()) return;
+    setDeleting(true);
+    try {
+      for (const documentId of deleteTargets) {
+        await apiDeleteDocument(dealId, documentId);
+      }
+      setDeleteTargets(null);
+      setSelectedDocumentIds([]);
+      setShowPreview(false);
+      setSelectedDocument(null);
+      onDeleted?.();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const stats = {
@@ -194,6 +230,20 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
         </div>
 
         <div className="flex items-center gap-2">
+          {selectedDocumentIds.length > 0 && (
+            <button
+              onClick={() => requestDelete(selectedDocumentIds)}
+              className={`px-3 py-2 rounded-lg text-sm transition-colors text-red-500 ${
+                darkMode ? 'bg-red-500/10 hover:bg-red-500/20' : 'bg-red-50 hover:bg-red-100'
+              }`}
+              title={`Delete ${selectedDocumentIds.length} document${selectedDocumentIds.length === 1 ? '' : 's'}`}
+            >
+              <div className="flex items-center gap-2">
+                <Trash2 className="w-4 h-4" />
+                Delete ({selectedDocumentIds.length})
+              </div>
+            </button>
+          )}
           <button
             onClick={() => setViewMode('grid')}
             className={`p-2 rounded-lg transition-colors ${
@@ -254,6 +304,14 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
               onClick={() => handlePreview(doc)}
             >
               <div className="flex flex-col items-center text-center">
+                <div className="w-full flex justify-end mb-1">
+                  <input
+                    type="checkbox"
+                    checked={selectedDocumentIds.includes(doc.id)}
+                    onChange={() => toggleSelected(doc.id)}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </div>
                 <div className={`w-16 h-16 rounded-lg flex items-center justify-center mb-3 ${
                   darkMode ? 'bg-white/10' : 'bg-gray-100'
                 }`}>
@@ -323,6 +381,10 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
                     className={`p-1.5 rounded-lg transition-colors text-red-500 ${
                       darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
                     }`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      requestDelete([doc.id]);
+                    }}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -344,6 +406,12 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
               onClick={() => handlePreview(doc)}
             >
               <div className="flex items-center gap-4">
+                <input
+                  type="checkbox"
+                  checked={selectedDocumentIds.includes(doc.id)}
+                  onChange={() => toggleSelected(doc.id)}
+                  onClick={(e) => e.stopPropagation()}
+                />
                 {getFileIcon(doc.type)}
 
                 <div className="flex-1 min-w-0">
@@ -427,6 +495,10 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
                     className={`p-2 rounded-lg transition-colors text-red-500 ${
                       darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
                     }`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      requestDelete([doc.id]);
+                    }}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -460,7 +532,52 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
           document={selectedDocument}
           darkMode={darkMode}
           onClose={() => setShowPreview(false)}
+          onRequestDelete={() => requestDelete([selectedDocument.id])}
         />
+      )}
+
+      {/* Delete Confirm Modal */}
+      {deleteTargets && (
+        <div
+          className="fixed inset-0 z-50 bg-black/50"
+          style={{ zIndex: 1000 }}
+          onMouseDown={() => (deleting ? undefined : setDeleteTargets(null))}
+        >
+          <div className="min-h-screen flex items-center justify-center p-4">
+            <div
+              className={`w-full max-w-md rounded-xl border p-4 ${
+                darkMode ? 'bg-[#18181b] border-white/10' : 'bg-white border-gray-200'
+              }`}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className={`text-base mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                Delete {deleteTargets.length === 1 ? 'document' : 'documents'}?
+              </div>
+              <div className={`text-sm mb-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                This will permanently remove {deleteTargets.length === 1 ? 'this document' : `these ${deleteTargets.length} documents`}.
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  darkMode={darkMode}
+                  onClick={() => setDeleteTargets(null)}
+                >
+                  Cancel
+                </Button>
+                <button
+                  disabled={deleting}
+                  onClick={confirmDelete}
+                  className={`px-3 py-2 rounded-lg text-sm text-white ${
+                    deleting ? 'opacity-60' : ''
+                  } bg-red-600`}
+                >
+                  {deleting ? 'Deleting…' : 'Delete'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

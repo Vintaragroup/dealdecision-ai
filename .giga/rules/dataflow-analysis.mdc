@@ -1,5 +1,5 @@
 ---
-description: For analyzing data flow patterns in investment deal analysis systems, focusing on document processing pipelines and report generation workflows.
+description: Document processing pipeline, evidence extraction, AI analysis integration, and report generation workflow specification.
 ---
 
 # === USER INSTRUCTIONS ===
@@ -55,21 +55,15 @@ Critical Data Points:
 - Analysis depth metrics
 - Risk assessment values
 - Recommendation confidence
-# === END USER INSTRUCTIONS ===
 
-# dataflow-analysis
-
+description: For analyzing data flow patterns in investment deal analysis systems, focusing on document processing pipelines and report generation workflows.
 The system implements a multi-stage data flow for investment deal analysis:
-
-1. Document Processing Pipeline
 - Input: Raw documents (pitch decks, financials, legal docs)
-- Processing stages:
   * Text extraction with OCR fallback
   * Intelligent categorization by document type
   * Metric/data point extraction
   * Evidence collection and validation
 - Output: Normalized document data with confidence scores
-
 2. Evidence Extraction Flow
 - Input: Processed documents
 - Extraction workflow:
@@ -78,7 +72,6 @@ The system implements a multi-stage data flow for investment deal analysis:
   * Confidence scoring (0-100)
   * Cross-validation against multiple sources
 - Output: Verified evidence objects
-
 3. AI Analysis Integration
 - Input: Evidence objects
 - Analysis stages:
@@ -87,8 +80,6 @@ The system implements a multi-stage data flow for investment deal analysis:
   * Financial health calculation
   * Risk severity mapping
 - Output: Analysis results with confidence bands
-
-4. Report Generation Pipeline
 - Input: Analysis results and evidence
 - Generation flow:
   * Section template selection
@@ -96,25 +87,80 @@ The system implements a multi-stage data flow for investment deal analysis:
   * Dynamic content generation
   * Risk assessment incorporation
 - Output: Structured investment reports
-
 5. Data Quality Control Flow
 - Confidence thresholds at each stage (70%+ required)
 - Remediation workflows for low-confidence data
 - Version tracking for processed documents
 - Evidence validation state management
-
 The system maintains strict data quality controls through:
 - Multi-stage validation gates
 - Confidence scoring at each step
 - Source attribution tracking
 - Version control for processed data
-
 Data flows through specialized processors:
 - Document classification engine
 - Evidence extraction system
 - Analysis orchestration service
 - Report compilation engine
 - Quality control framework
+# === END USER INSTRUCTIONS ===
+
+# dataflow-analysis
+
+Document Processing Pipeline:
+1. Initial Document Intake
+- Multi-stage document classification system
+- Industry-specific document type detection
+- Automatic company/deal matching algorithms
+- Confidence scoring for document relevance
+Path: apps/web/src/components/documents/DocumentBatchUploadModal.tsx
+
+2. Evidence Extraction System
+- Structured data extraction with confidence bands
+- Financial metric detection and normalization
+- Team/market/product evidence classification
+- Evidence quality assessment framework
+Path: apps/web/src/components/evidence/EvidencePanel.tsx
+
+3. AI Analysis Integration
+- Three-cycle analysis workflow:
+  * Cycle 1: Broad scan and initial assessment
+  * Cycle 2: Deep dive analysis
+  * Cycle 3: Synthesis and recommendations
+- Progressive depth tracking with confidence thresholds
+Path: packages/core/src/services/cycle-analyzer.ts
+
+4. Report Generation Workflow
+- Evidence-backed sectional reporting
+- Investment recommendation classification
+- Multi-dimensional scoring aggregation
+- Risk assessment matrices
+Path: apps/web/src/components/reports/ProfessionalReportGenerator.tsx
+
+Data Flow Integration Points:
+- Document intelligence pipeline feeds evidence extraction
+- Evidence system provides inputs for AI analysis cycles
+- Analysis results flow into report generation
+- Confidence scores and validation states control progression
+
+Key Business Components:
+1. Deal Intelligence Object (DIO)
+- Versioned deal analysis container
+- Parent-child relationship tracking
+- Evidence mapping system
+Path: packages/core/src/types/analysis.ts
+
+2. Hierarchical Reasoning Model
+- Multi-cycle fact extraction framework
+- Uncertainty resolution workflow
+- Evidence validation system
+Path: packages/core/src/types/hrmdd.ts
+
+Importance Scores:
+- Document Processing: 85/100
+- Evidence Extraction: 90/100 
+- AI Analysis: 85/100
+- Report Generation: 80/100
 
 $END$
 

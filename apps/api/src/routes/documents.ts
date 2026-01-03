@@ -402,6 +402,57 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
     return reply.send({ documents: rows.map(mapDocument) });
   });
 
+  app.delete("/api/v1/deals/:deal_id/documents/:document_id", async (request, reply) => {
+    const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
+
+    const existing = await pool.query<{ id: string }>(
+      `SELECT id
+         FROM documents
+        WHERE deal_id = $1 AND id = $2
+        LIMIT 1`,
+      [deal_id, document_id]
+    );
+
+    if (!existing.rows.length) {
+      return reply.status(404).send({ error: "Document not found" });
+    }
+
+    try {
+      await pool.query("BEGIN");
+
+      // Evidence rows don't FK to documents; clean up best-effort by document id.
+      await pool.query(
+        `DELETE FROM evidence
+          WHERE deal_id = $1
+            AND document_id = $2`,
+        [deal_id, document_id]
+      );
+
+      const deleted = await pool.query<{ id: string }>(
+        `DELETE FROM documents
+          WHERE deal_id = $1 AND id = $2
+          RETURNING id`,
+        [deal_id, document_id]
+      );
+
+      await pool.query("COMMIT");
+
+      if (!deleted.rows.length) {
+        return reply.status(404).send({ error: "Document not found" });
+      }
+
+      return reply.send({ ok: true, deal_id, document_id: deleted.rows[0].id });
+    } catch (error: any) {
+      try {
+        await pool.query("ROLLBACK");
+      } catch {
+        // ignore rollback errors
+      }
+      console.error("Document delete error:", error);
+      return reply.status(500).send({ error: "Failed to delete document", message: error?.message || "Unknown error" });
+    }
+  });
+
   // Fetch stored analysis/structured data for a document
   app.get("/api/v1/deals/:deal_id/documents/:document_id/analysis", async (request, reply) => {
     const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };

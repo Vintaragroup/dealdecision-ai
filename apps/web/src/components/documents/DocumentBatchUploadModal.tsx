@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { AlertCircle, CheckCircle, FileText, Upload, X, ChevronDown, ChevronUp } from 'lucide-react';
+import { apiAnalyzeDocumentsBatch, apiBulkAssignDocuments, apiUploadDocument, isLiveBackend } from '../../lib/apiClient';
 
 interface DocumentBatchUploadProps {
   onClose: () => void;
@@ -28,16 +29,11 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
     try {
       const filenames = files.map((f) => f.name);
 
-      // Call backend to analyze
-      const response = await fetch('/api/v1/documents/analyze-batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filenames }),
-      });
+      if (!isLiveBackend()) {
+        throw new Error('Batch upload requires live backend');
+      }
 
-      if (!response.ok) throw new Error('Failed to analyze documents');
-
-      const data = await response.json();
+      const data = await apiAnalyzeDocumentsBatch(filenames);
       setAnalysisResult(data.analysis);
 
       // Initialize user confirmations
@@ -72,6 +68,10 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
   const handleUpload = async () => {
     setLoading(true);
     try {
+      if (!isLiveBackend()) {
+        throw new Error('Batch upload requires live backend');
+      }
+
       // Build assignments based on user confirmations
       // NOTE: We only send one "newDeals" entry per company to avoid duplicate deal creation.
       // We still upload all files in the group after we resolve the target deal id.
@@ -95,16 +95,7 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
         }))
         .filter((d: any) => !!d.filename);
 
-      // Send to backend
-      const response = await fetch('/api/v1/documents/bulk-assign', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assignments, newDeals }),
-      });
-
-      if (!response.ok) throw new Error('Failed to assign documents');
-
-      const result = await response.json();
+      const result = await apiBulkAssignDocuments({ assignments, newDeals });
 
       // Resolve deal ids for any newly created/reused deals from the bulk-assign response.
       // The backend returns { assignments: [{ filename, dealId, dealName, status, ... }, ...] }
@@ -150,19 +141,7 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
   };
 
   const uploadDocumentToDeal = async (file: File, dealId: string, documentType?: string) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('title', file.name);
-    formData.append('type', documentType || 'other');
-
-    const response = await fetch(`/api/v1/deals/${dealId}/documents`, {
-      method: 'POST',
-      body: formData,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to upload ${file.name}`);
-    }
+    await apiUploadDocument(dealId, file, documentType || 'other', file.name);
   };
 
   const confirmedCount = analysisResult?.groups.filter((g: any) => userConfirmation[g.company] === 'confirm').length || 0;

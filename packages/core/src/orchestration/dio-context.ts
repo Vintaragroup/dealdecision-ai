@@ -3,6 +3,7 @@ import { DIOContextSchema, type DIOContext } from "../types/dio";
 export type DIOContextBuilderInput = {
   filename?: string;
   headings?: string[];
+  full_text?: string;
   page_count?: number;
   total_words?: number;
   headings_count?: number;
@@ -78,7 +79,8 @@ function confidenceFromBestScore(bestScore: number, maxPossible: number): number
 function classifyPrimaryDocType(input: Required<DIOContextBuilderInput>): { value: PrimaryDocType; confidence: number; score_margin: number } {
   const title = normalizeText(input.filename);
   const headingsText = normalizeText(input.headings.join(" \n "));
-  const combined = `${title}\n${headingsText}`;
+  const fullText = normalizeText(input.full_text);
+  const combined = `${title}\n${headingsText}\n${fullText}`;
   const pageCount = input.page_count;
   const totalWords = input.total_words;
   const headingsCount = input.headings_count;
@@ -248,7 +250,8 @@ function classifyPrimaryDocType(input: Required<DIOContextBuilderInput>): { valu
 function classifyDealType(input: Required<DIOContextBuilderInput>, primaryDocType: PrimaryDocType): { value: DealType; confidence: number } {
   const title = normalizeText(input.filename);
   const headingsText = normalizeText(input.headings.join(" \n "));
-  const combined = `${title}\n${headingsText}`;
+  const fullText = normalizeText(input.full_text);
+  const combined = `${title}\n${headingsText}\n${fullText}`;
 
   const fundSignals = keywordScore(combined, [
     "spv",
@@ -461,6 +464,7 @@ export async function buildDIOContext(input: DIOContextBuilderInput): Promise<DI
   const normalized: Required<DIOContextBuilderInput> = {
     filename: input.filename || "",
     headings: Array.isArray(input.headings) ? input.headings : [],
+    full_text: typeof input.full_text === "string" ? input.full_text : "",
     page_count: typeof input.page_count === "number" && input.page_count > 0 ? input.page_count : 0,
     total_words: typeof input.total_words === "number" && input.total_words > 0 ? input.total_words : 0,
     headings_count: typeof input.headings_count === "number" && input.headings_count > 0
@@ -535,7 +539,32 @@ export async function buildDIOContextFromInputData(input_data: Record<string, un
     if (Array.isArray(doc?.mainHeadings)) return doc.mainHeadings.filter((h: any) => typeof h === "string");
     if (Array.isArray(doc?.headings)) return doc.headings.filter((h: any) => typeof h === "string");
     if (Array.isArray(doc?.outlineHeadings)) return doc.outlineHeadings.filter((h: any) => typeof h === "string");
+    if (Array.isArray(doc?.structuredData?.mainHeadings)) return doc.structuredData.mainHeadings.filter((h: any) => typeof h === "string");
+    if (Array.isArray(doc?.structured_data?.mainHeadings)) return doc.structured_data.mainHeadings.filter((h: any) => typeof h === "string");
     return [];
+  }
+
+  function getDocFullText(doc: any): string {
+    const candidates: unknown[] = [
+      doc?.full_text,
+      doc?.fullText,
+      doc?.fulltext,
+      doc?.text_summary,
+      doc?.textSummary,
+      doc?.summary,
+      doc?.structuredData?.textSummary,
+      doc?.structured_data?.textSummary,
+      doc?.structuredData?.summary,
+      doc?.structured_data?.summary,
+      doc?.text,
+    ];
+    for (const v of candidates) {
+      if (typeof v === "string") {
+        const s = v.trim();
+        if (s.length > 0) return s;
+      }
+    }
+    return "";
   }
 
   function getDocPageCount(doc: any): number {
@@ -586,9 +615,12 @@ export async function buildDIOContextFromInputData(input_data: Record<string, un
 
     // Include contentType + extension in the string fed to heuristics.
     const combinedName = [title, filename, contentType, ext].filter(Boolean).join(" ");
+    const fullText = getDocFullText(doc);
+    const boundedFullText = fullText.length > 12000 ? fullText.slice(0, 12000) : fullText;
     return {
       filename: combinedName,
       headings: getDocHeadings(doc),
+      full_text: boundedFullText,
       page_count: getDocPageCount(doc),
       total_words: getDocTotalWords(doc),
       headings_count: getDocHeadingsCount(doc),
@@ -612,7 +644,8 @@ export async function buildDIOContextFromInputData(input_data: Record<string, un
     const title = normalizeText(getDocTitle(doc));
     const filename = normalizeText(getDocFilename(doc));
     const headingsText = normalizeText(getDocHeadings(doc).join(" \n "));
-    const combined = `${title}\n${filename}\n${headingsText}`;
+    const fullText = normalizeText(getDocFullText(doc));
+    const combined = `${title}\n${filename}\n${headingsText}\n${fullText}`;
     return (
       keywordScore(combined, [
         "spv",
@@ -639,7 +672,8 @@ export async function buildDIOContextFromInputData(input_data: Record<string, un
     const title = normalizeText(getDocTitle(doc));
     const filename = normalizeText(getDocFilename(doc));
     const headingsText = normalizeText(getDocHeadings(doc).join(" \n "));
-    const combined = `${title}\n${filename}\n${headingsText}`;
+    const fullText = normalizeText(getDocFullText(doc));
+    const combined = `${title}\n${filename}\n${headingsText}\n${fullText}`;
     return (
       keywordScore(combined, [
         "raising",
@@ -828,9 +862,15 @@ export async function buildDIOContextFromInputData(input_data: Record<string, un
     // Fallback to existing heuristic deal-type classifier, but on combined content.
     const combinedTitles = documents.map(getDocTitle).filter(Boolean);
     const combinedHeadings = uniqStrings(documents.flatMap(getDocHeadings));
+    const combinedFullText = documents
+      .map(getDocFullText)
+      .filter((t) => typeof t === "string" && t.trim().length > 0)
+      .join("\n\n---\n\n");
+    const boundedCombinedFullText = combinedFullText.length > 24000 ? combinedFullText.slice(0, 24000) : combinedFullText;
     const combinedInput: Required<DIOContextBuilderInput> = {
       filename: combinedTitles.join(" | "),
       headings: combinedHeadings,
+      full_text: boundedCombinedFullText,
       page_count: totalPages,
       total_words: 0,
       headings_count: combinedHeadings.length,
@@ -843,9 +883,15 @@ export async function buildDIOContextFromInputData(input_data: Record<string, un
   // Vertical/stage computed using all docs (existing heuristics).
   const combinedTitles = documents.map(getDocTitle).filter(Boolean);
   const combinedHeadings = uniqStrings(documents.flatMap(getDocHeadings));
+  const combinedFullText = documents
+    .map(getDocFullText)
+    .filter((t) => typeof t === "string" && t.trim().length > 0)
+    .join("\n\n---\n\n");
+  const boundedCombinedFullText = combinedFullText.length > 24000 ? combinedFullText.slice(0, 24000) : combinedFullText;
   const combinedInput: Required<DIOContextBuilderInput> = {
     filename: combinedTitles.join(" | "),
     headings: combinedHeadings,
+    full_text: boundedCombinedFullText,
     page_count: totalPages,
     total_words: 0,
     headings_count: combinedHeadings.length,
@@ -853,6 +899,43 @@ export async function buildDIOContextFromInputData(input_data: Record<string, un
 
   const vertical = classifyVertical(combinedInput, deal_type);
   const stage = classifyStage(combinedInput, deal_type);
+
+  // Deterministic real-asset routing (preferred equity offering memo)
+  // Mapped to existing enums: vertical=other, deal_type=fund_spv, primary_doc_type=business_plan_im.
+  // This prevents real-estate offering memoranda from being misclassified as startup raises.
+  const combinedTextForOverride = normalizeText(
+    `${combinedInput.filename}\n${combinedInput.headings.join("\n")}\n${combinedInput.full_text}`
+  );
+  const realEstateSignal = keywordScore(combinedTextForOverride, [
+    "real estate",
+    "property",
+    "multifamily",
+    "apartment",
+    "noi",
+    "cap rate",
+    "rent roll",
+    "ltv",
+    "dscr",
+    "debt service",
+  ]);
+  const prefEquitySignal = keywordScore(combinedTextForOverride, [
+    "preferred equity",
+    "pref equity",
+    "mezzanine",
+    "capital stack",
+    "offering memorandum",
+    "private placement",
+    "subscription agreement",
+    "ppm",
+  ]);
+  const hasStrongRealAsset = realEstateSignal >= 2 && prefEquitySignal >= 2;
+
+  if (hasStrongRealAsset) {
+    primary_doc_type = "business_plan_im";
+    deal_type = "fund_spv";
+    (vertical as any).value = "other";
+    (stage as any).value = "fund_ops";
+  }
 
   // Confidence based on agreement across docs (simple % support).
   const primarySupport = totalDocs > 0 ? perDoc.filter((d) => d.doc_doc_type === primary_doc_type).length / totalDocs : 0;
@@ -867,12 +950,14 @@ export async function buildDIOContextFromInputData(input_data: Record<string, un
   const dealSupport = clamp01(typeof dealTypeConfidenceFromRules === "number" ? dealTypeConfidenceFromRules : 0);
   const confidence = clamp01(primarySupport * 0.45 + primaryStrength * 0.25 + dealSupport * 0.30);
 
+  const boostedConfidence = hasStrongRealAsset ? Math.max(confidence, 0.8) : confidence;
+
   const heuristic: DIOContext = {
     primary_doc_type,
     deal_type,
-    vertical: vertical.value,
-    stage: stage.value,
-    confidence,
+    vertical: (vertical as any).value,
+    stage: (stage as any).value,
+    confidence: boostedConfidence,
   };
 
   // Preserve existing LLM fallback behavior (deterministic by default).

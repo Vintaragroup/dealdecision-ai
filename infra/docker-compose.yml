@@ -57,6 +57,10 @@ services:
     volumes:
       - ../apps/api/src:/app/apps/api/src
       - ../apps/api/package.json:/app/apps/api/package.json
+      - ../packages/core/dist:/app/packages/core/dist
+      - ../packages/core/package.json:/app/packages/core/package.json
+      - ../packages/contracts/dist:/app/packages/contracts/dist
+      - ../packages/contracts/package.json:/app/packages/contracts/package.json
       - ../tsconfig.base.json:/app/tsconfig.base.json
       - ../pnpm-lock.yaml:/app/pnpm-lock.yaml
     depends_on:
@@ -87,6 +91,10 @@ services:
     volumes:
       - ../apps/worker/src:/app/apps/worker/src
       - ../apps/worker/package.json:/app/apps/worker/package.json
+      - ../packages/core/dist:/app/packages/core/dist
+      - ../packages/core/package.json:/app/packages/core/package.json
+      - ../packages/contracts/dist:/app/packages/contracts/dist
+      - ../packages/contracts/package.json:/app/packages/contracts/package.json
       - ../tsconfig.base.json:/app/tsconfig.base.json
       - ../pnpm-lock.yaml:/app/pnpm-lock.yaml
     depends_on:

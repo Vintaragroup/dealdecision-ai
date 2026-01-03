@@ -53,6 +53,7 @@ export function DocumentUpload({
   const [isDragging, setIsDragging] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const requiresDealSelection = isLiveBackend() && !dealId;
 
   const getFileIcon = (fileName: string) => {
     const ext = fileName.split('.').pop()?.toLowerCase();
@@ -124,7 +125,7 @@ export function DocumentUpload({
     return extractedData;
   };
 
-  const processFile = async (file: File) => {
+  const processFile = async (file: File): Promise<UploadedFile> => {
     const uploadedFile: UploadedFile = {
       id: Math.random().toString(36).substr(2, 9),
       name: file.name,
@@ -145,11 +146,12 @@ export function DocumentUpload({
         setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'processing' } : f));
         onUploaded?.(document as Document);
         setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'complete' } : f));
+        return { ...uploadedFile, status: 'complete' };
       } catch (err) {
         onError?.(err instanceof Error ? err.message : 'Upload failed');
         setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'error' } : f));
+        return { ...uploadedFile, status: 'error' };
       }
-      return;
     }
 
     // Offline/mock path
@@ -169,15 +171,22 @@ export function DocumentUpload({
             : f
         )
       );
+      return { ...uploadedFile, status: 'complete', aiExtracted: true, extractedData };
     } else {
       setUploadedFiles(prev =>
         prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'complete' } : f)
       );
+      return { ...uploadedFile, status: 'complete' };
     }
   };
 
   const handleFiles = async (files: FileList | null) => {
     if (!files) return;
+
+    if (isLiveBackend() && !dealId) {
+      onError?.('Select a deal (or create a new one) before uploading.');
+      return;
+    }
 
     const fileArray = Array.from(files);
     const validFiles = fileArray.filter(file => {
@@ -186,12 +195,13 @@ export function DocumentUpload({
       return acceptedFileTypes.includes(ext) && sizeInMB <= maxFileSize;
     });
 
+    const processed: UploadedFile[] = [];
     for (const file of validFiles) {
-      await processFile(file);
+      processed.push(await processFile(file));
     }
 
-    if (onUploadComplete && validFiles.length > 0) {
-      onUploadComplete(uploadedFiles);
+    if (onUploadComplete && processed.length > 0) {
+      onUploadComplete(processed);
     }
   };
 
@@ -221,6 +231,15 @@ export function DocumentUpload({
 
   return (
     <div className="space-y-4">
+      {requiresDealSelection && (
+        <div className={`p-3 rounded-lg border text-sm ${
+          darkMode
+            ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+            : 'border-amber-300 bg-amber-50 text-amber-800'
+        }`}>
+          Select a deal before uploading documents.
+        </div>
+      )}
       {/* Drop Zone */}
       <div
         onDragOver={handleDragOver}

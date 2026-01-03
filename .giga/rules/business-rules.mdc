@@ -1,5 +1,5 @@
 ---
-description: Apply when analyzing business rules, validation logic, and domain-specific algorithms for investment deal evaluation and risk assessment
+description: Defines core business rules for investment deal evaluation, risk assessment, and decision workflows
 ---
 
 # === USER INSTRUCTIONS ===
@@ -53,12 +53,9 @@ description: Rules and logic for evaluating investment deals, managing risk asse
   * Growth rate minimums by stage
   * Burn rate limits
   * Revenue validation rules
-# === END USER INSTRUCTIONS ===
 
-# business-rules
-
+description: Apply when analyzing business rules, validation logic, and domain-specific algorithms for investment deal evaluation and risk assessment
 INVESTMENT DEAL ANALYSIS FRAMEWORK
-
 1. Deal Evaluation Logic
 - Multi-stage scoring system (0-100) across 6 key dimensions:
   - Market Opportunity (25%)
@@ -71,7 +68,6 @@ INVESTMENT DEAL ANALYSIS FRAMEWORK
   - Seed: 65+ composite score
   - Series A: 75+ composite score
   - Series B+: 85+ composite score
-
 2. Risk Assessment Framework
 - Risk severity classification:
   - Critical (blocks deal progress)
@@ -83,8 +79,6 @@ INVESTMENT DEAL ANALYSIS FRAMEWORK
   - Team: key role gaps, founder experience
   - Market: TAM validation, growth rate
   - Competition: market share analysis
-
-3. Due Diligence Requirements
 - Stage-based document requirements:
   - Seed: pitch deck, financial model, team bios
   - Series A: + customer data, market analysis
@@ -93,8 +87,6 @@ INVESTMENT DEAL ANALYSIS FRAMEWORK
   - Document completeness (90%+)
   - Data validation (85%+)
   - Source credibility (75%+)
-
-4. Investment Decision Criteria
 - GO decision requires:
   - Composite score above stage threshold
   - No critical risks outstanding
@@ -105,7 +97,6 @@ INVESTMENT DEAL ANALYSIS FRAMEWORK
   - Composite score < stage threshold
   - Missing core documentation
   - Failed verification checks
-
 5. AI Confidence Scoring
 - Three-tier confidence bands:
   - High: 85-100%
@@ -116,6 +107,51 @@ INVESTMENT DEAL ANALYSIS FRAMEWORK
   - Source verification
   - Analysis depth
   - Evidence quality
+# === END USER INSTRUCTIONS ===
+
+# business-rules
+
+Investment Deal Analysis Framework:
+
+1. Deal Evaluation System
+- Deal scoring across 6 dimensions (market, team, financial, traction, risk, competitive)
+- Multi-stage progression workflow: intake -> review -> diligence -> decision
+- Custom confidence thresholds: 70% for investment readiness, 80% for strong recommendations
+- Red/yellow/green flag classification with weighted impact scores
+
+2. Risk Assessment Matrix 
+- 4-tier severity classification (low, medium, high, critical)
+- Impact/probability scoring (1-5 scale each)
+- Industry-specific risk categories with custom weightings
+- Automated risk trend analysis with directional indicators
+
+3. Due Diligence Requirements
+- Mandatory document verification checklist with criticality levels
+- Industry-specific validation rules for different company stages
+- Evidence quality scoring (0-100) with minimum thresholds
+- Progressive unlocking of report sections based on evidence coverage
+
+4. Investment Decision Criteria
+- Three-tier recommendation system (invest, consider, pass)
+- Multi-cycle analysis depth requirements (min 3 cycles)
+- Automated stage progression based on confidence scores
+- Weighted scoring algorithm combining:
+  * Deal metrics (40%)
+  * Document completeness (25%)  
+  * Stage position (20%)
+  * Evidence quality (15%)
+
+5. ROI Calculation Framework
+- Role-specific savings calculations (investors vs founders)
+- Category-based cost analysis (legal, consulting, research, design)
+- Custom milestone tracking with progress-based rewards
+- Industry benchmark comparisons for efficiency metrics
+
+Relevant Paths:
+- apps/web/src/components/report-templates/sections/*
+- packages/core/src/analyzers/*
+- packages/core/src/orchestration/*
+- packages/contracts/src/index.ts
 
 $END$
 

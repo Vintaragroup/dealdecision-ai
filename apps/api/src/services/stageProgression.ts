@@ -83,7 +83,7 @@ export async function evaluateDealStageProgression(
 
   // Check if deal has analysis (latest DIO)
   const { rows: analysisRows } = await pool.query(
-    `SELECT id FROM deal_intelligence_objects WHERE deal_id = $1 LIMIT 1`,
+    `SELECT 1 FROM deal_intelligence_objects WHERE deal_id = $1 LIMIT 1`,
     [dealId]
   );
   const hasAnalysis = analysisRows.length > 0;

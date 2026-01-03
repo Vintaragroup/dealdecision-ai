@@ -461,6 +461,36 @@ export async function apiRetryDocument(dealId: string, documentId: string) {
   });
 }
 
+export async function apiDeleteDocument(dealId: string, documentId: string) {
+  return request<{ ok: true; deal_id: string; document_id: string }>(
+    `/api/v1/deals/${dealId}/documents/${documentId}`,
+    { method: 'DELETE' }
+  );
+}
+
+export async function apiAnalyzeDocumentsBatch(filenames: string[]) {
+  return request<{
+    analysis: any;
+    deals: Array<{ id: string; name: string }>;
+  }>(`/api/v1/documents/analyze-batch`, {
+    method: 'POST',
+    body: JSON.stringify({ filenames }),
+  });
+}
+
+export async function apiBulkAssignDocuments(input: {
+  assignments: Array<{ filename: string; dealId: string; type?: string }>;
+  newDeals?: Array<{ filename: string; dealName: string; type?: string }>;
+}) {
+  return request<{
+    assignments: any[];
+    message: string;
+  }>(`/api/v1/documents/bulk-assign`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
 export function subscribeToEvents(
   dealId: string,
   handlers: {

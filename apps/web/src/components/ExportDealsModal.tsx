@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Button } from './ui/button';
+import type { DealListItem } from '@dealdecision/contracts';
 import { 
   X, 
   Download, 
@@ -13,23 +14,11 @@ import {
   Settings
 } from 'lucide-react';
 
-interface Deal {
-  id: string;
-  name: string;
-  stage: string;
-  score: number;
-  lastUpdated: string;
-  documents: number;
-  completeness: number;
-  fundingTarget: string;
-  owner: string;
-}
-
 interface ExportDealsModalProps {
   isOpen: boolean;
   onClose: () => void;
   darkMode: boolean;
-  deals: Deal[];
+  deals: DealListItem[];
 }
 
 type ExportFormat = 'csv' | 'excel' | 'pdf';
@@ -210,8 +199,16 @@ export function ExportDealsModal({ isOpen, onClose, darkMode, deals }: ExportDea
                 darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'
               }`}>
                 <div className="max-h-64 overflow-y-auto">
-                  {deals.map((deal) => (
-                    <label
+                  {deals.map((deal) => {
+                    const scoreLabel = typeof deal.score === 'number' && Number.isFinite(deal.score) ? `${Math.round(deal.score)}%` : '—';
+                    const documentsLabel = typeof deal.documents === 'number' && Number.isFinite(deal.documents) ? `${deal.documents} docs` : '— docs';
+                    const completenessValue =
+                      typeof deal.completeness === 'number' && Number.isFinite(deal.completeness)
+                        ? Math.max(0, Math.min(100, Math.round(deal.completeness)))
+                        : null;
+
+                    return (
+                      <label
                       key={deal.id}
                       className={`flex items-center gap-3 p-4 cursor-pointer transition-colors border-b last:border-b-0 ${
                         darkMode
@@ -232,22 +229,25 @@ export function ExportDealsModal({ isOpen, onClose, darkMode, deals }: ExportDea
                         <div className={`text-xs flex items-center gap-3 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                           <span className="capitalize">{deal.stage}</span>
                           <span>•</span>
-                          <span>Score: {deal.score}%</span>
+                          <span>Score: {scoreLabel}</span>
                           <span>•</span>
-                          <span>{deal.documents} docs</span>
+                          <span>{documentsLabel}</span>
                         </div>
                       </div>
                       <div className={`px-2 py-1 rounded text-xs ${
-                        deal.completeness >= 80
+                        completenessValue == null
+                          ? (darkMode ? 'bg-white/10 text-gray-300' : 'bg-gray-200 text-gray-700')
+                          : completenessValue >= 80
                           ? darkMode ? 'bg-emerald-500/20 text-emerald-400' : 'bg-emerald-100 text-emerald-700'
-                          : deal.completeness >= 50
+                          : completenessValue >= 50
                           ? darkMode ? 'bg-amber-500/20 text-amber-400' : 'bg-amber-100 text-amber-700'
                           : darkMode ? 'bg-red-500/20 text-red-400' : 'bg-red-100 text-red-700'
                       }`}>
-                        {deal.completeness}% complete
+                        {completenessValue == null ? '— complete' : `${completenessValue}% complete`}
                       </div>
                     </label>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </div>

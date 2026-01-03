@@ -87,10 +87,44 @@ function sanitizeInlineText(value: string): string {
 		.trim();
 }
 
+function looksLikeSpacedLogoArtifact(value: string): boolean {
+	const s = sanitizeInlineText(value);
+	if (!s) return false;
+
+	// Common OCR/logo artifact: single-letter tokens spaced out (e.g., "D R O P A B L E S").
+	const tokens = s.split(/\s+/).filter(Boolean);
+	if (tokens.length < 6) return false;
+
+	let singleLetter = 0;
+	let consecutiveSingleLetter = 0;
+	let maxConsecutive = 0;
+	for (const t of tokens) {
+		const cleaned = t.replace(/[^A-Za-z]/g, '');
+		const isSingle = cleaned.length === 1;
+		if (isSingle) {
+			singleLetter += 1;
+			consecutiveSingleLetter += 1;
+			maxConsecutive = Math.max(maxConsecutive, consecutiveSingleLetter);
+		} else {
+			consecutiveSingleLetter = 0;
+		}
+	}
+
+	// Strong indicator: long run of spaced letters.
+	if (maxConsecutive >= 4) return true;
+
+	// Weaker indicator: many single-letter tokens + very uppercase.
+	const singleLetterRatio = tokens.length > 0 ? singleLetter / tokens.length : 0;
+	if (singleLetter >= 6 && singleLetterRatio >= 0.5 && uppercaseRatio(s) >= 0.8) return true;
+
+	return false;
+}
+
 function isHighQualityCandidate(value: string): boolean {
 	const s = sanitizeInlineText(value);
 	if (s.length < 18) return false;
 	if (s.length > 260) return false;
+	if (looksLikeSpacedLogoArtifact(s)) return false;
 	if ((s.match(/\uFFFD|�/g) ?? []).length >= 2) return false;
 	if (/[@#%*=^~`|\\]{2,}/.test(s)) return false;
 	if (/([!?.,:;])\1{2,}/.test(s)) return false;
@@ -266,6 +300,9 @@ const MARKET_SIGNAL_RE = /\b(customers?|teams?|operators?|buyers?|users?|compani
 function isSentenceFragment(value: string): boolean {
   const s = sanitizeInlineText(value);
   if (!s) return true;
+
+	// Spaced-letter/logo OCR fragments should never be treated as valid sentences/ICPs.
+	if (looksLikeSpacedLogoArtifact(s)) return true;
 
   // Starts with a copula/conjunction with no subject.
   if (DU_FRAGMENT_START_RE.test(s)) {
@@ -1322,6 +1359,10 @@ function evaluateFallbackCandidate(raw: string): { ok: boolean; score: number; r
 	const s = sanitizeInlineText(raw);
 	let score = 0;
 	if (!s) return { ok: false, score, rejected_reason: 'empty' };
+
+	// Reject OCR logo artifacts and short cover taglines (common on title slides).
+	if (looksLikeSpacedLogoArtifact(s)) return { ok: false, score, rejected_reason: 'spaced_logo_artifact' };
+	if (looksLikeCoverTagline(s)) return { ok: false, score, rejected_reason: 'cover_tagline' };
 
 	// Reject all-caps blocks.
 	const upperRatio = uppercaseLetterRatio(s);

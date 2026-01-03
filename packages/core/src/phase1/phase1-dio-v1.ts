@@ -269,13 +269,49 @@ function isCompanyTractionSnippet(snippet: string, companyHint?: string): boolea
 		|| hasRetentionOrChurnWithNumber
 		|| hasBookingsWithNumber;
 
-	// Reject clear macro/industry context unless ownership is present.
-	const industryContext = /\b(global|industry|market|sector|worldwide|macro|cagr|forecast|projection|streaming\s+platforms?)\b/i.test(s)
+	// Hard reject macro/industry commentary even if numeric.
+	// This is intentionally strict to avoid counting industry-level numbers as company traction.
+	const macroHardBlock = /\b(industry|market|global|platforms|streaming\s+industry|streaming\s+platforms?)\b/i.test(s)
 		|| /\bthe\s+market\b/i.test(s)
-		|| /\bmarket\s+(grew|growth|size|revenue)\b/i.test(s);
-	if (industryContext && !ownership) return false;
+		|| /\bmarket\s+(grew|growth|size|revenue)\b/i.test(s)
+		|| /\b(worldwide|sector|macro|cagr|forecast|projection)\b/i.test(s);
+	if (macroHardBlock) return false;
 
-	return ownership || hasConcreteMetric;
+	// Require ownership AND either a numeric metric OR an operational traction verb.
+	const operationalVerb = /\b(generated|reached|hit|achieved|booked|signed|closed|launched|onboarded|acquired|retained|renewed|expanded|grew|increased|decreased|scaled)\b/i.test(s);
+	return ownership && (hasConcreteMetric || operationalVerb);
+}
+
+function hasSpacedLogoOcrArtifact(value: string): boolean {
+	const s = sanitizeInlineText(value);
+	if (!s) return false;
+	// e.g. "D R O P A B L E S" (5+ single-letter tokens separated by spaces)
+	return /\b(?:[A-Za-z]\s+){4,}[A-Za-z]\b/.test(s);
+}
+
+function capsTokenRatio(value: string): number {
+	const s = sanitizeInlineText(value);
+	if (!s) return 0;
+	const tokens = s.split(/\s+/g).filter(Boolean);
+	const letterTokens = tokens.filter((t) => /[A-Za-z]/.test(t));
+	if (letterTokens.length === 0) return 0;
+	const upperTokens = letterTokens.filter((t) => /^[A-Z]{2,}$/.test(t.replace(/[^A-Za-z]/g, "")));
+	return upperTokens.length / letterTokens.length;
+}
+
+function hasBusinessVerb(value: string): boolean {
+	const s = sanitizeInlineText(value);
+	if (!s) return false;
+	return /\b(builds?|build|building|built|operates?|operating|enables?|enabling|monetizes?|monetizing|provides?|providing|runs?|running|helps?|helping|automates?|automating|delivers?|delivering)\b/i.test(s);
+}
+
+function hardValidateProductOrMarket(value: string): string {
+	const s = sanitizeInlineText(value);
+	if (!s) return "";
+	if (hasSpacedLogoOcrArtifact(s)) return "";
+	if (capsTokenRatio(s) > 0.4) return "";
+	if (!hasBusinessVerb(s)) return "";
+	return s;
 }
 
 function normalizeOverviewSentence(value: string, maxChars: number): string {
@@ -1212,7 +1248,7 @@ function domainAnchorScores(text: string): DomainAnchorScores {
 	const count = (re: RegExp) => (t.match(re) ?? []).length;
 	return {
 		sports_media:
-			count(/\b(hockey|nhl|nba|nfl|mlb|soccer|football|baseball|basketball|league|athlete|team|fan|fans|broadcast|media\s+rights|on-?air|streaming)\b/gi) +
+			count(/\b(hockey|nhl|nba|nfl|mlb|soccer|football|baseball|basketball|league|athlete|athletes|team|teams|fan|fans|broadcast|broadcast\s+partners?|media\s+rights|on-?air|streaming|season|seasons|arena|arenas|stadium|stadiums)\b/gi) +
 			count(/\b(podcast|creator|influencer|content)\b/gi),
 		real_asset:
 			count(/\b(preferred\s+equity|offering\s+memorandum|cap\s*rate|noi|dscr|ltv|irr|equity\s+multiple)\b/gi) +
@@ -1222,6 +1258,56 @@ function domainAnchorScores(text: string): DomainAnchorScores {
 		marketplace:
 			count(/\b(marketplace|buyers?\b|sellers?\b|two-?sided|take\s*rate|gmv)\b/gi),
 	};
+}
+
+function isLegalBoilerplate(value: string): boolean {
+	const s = sanitizeInlineText(value);
+	if (!s) return false;
+	return /\b(offering\s+memorandum|private\s+placement|regulation\s+d|securities\s+act|not\s+an\s+offer|no\s+representation\s+or\s+warranty|forward-?looking)\b/i.test(s);
+}
+
+function hasBusinessVerbForModelEvidence(value: string): boolean {
+	const s = sanitizeInlineText(value);
+	return /\b(build|built|building|operate|operates|operating|monetize|monetizes|monetizing|enable|enables|enabling|provide|provides|providing|sell|sells|selling|license|licenses|licensing)\b/i.test(s);
+}
+
+function hasValidBusinessModelEvidence(params: {
+	evidenceText: string;
+	business_model: string;
+	primary: keyof DomainAnchorScores;
+	scores: DomainAnchorScores;
+}): boolean {
+	const model = sanitizeInlineText(params.business_model);
+	if (!model || model === "Unknown") return false;
+
+	const lower = model.toLowerCase();
+	let modelHint: RegExp | null = null;
+	if (/saas|subscription/.test(lower)) modelHint = /\b(saas|subscription|arr|mrr|api|platform|workflow|automation)\b/i;
+	else if (/marketplace/.test(lower)) modelHint = /\b(marketplace|two-?sided|buyers?|sellers?|take\s*rate|gmv)\b/i;
+	else if (/licens/.test(lower)) modelHint = /\b(license|licensing|royalt)\b/i;
+	else if (/services/.test(lower)) modelHint = /\b(services|consulting|implementation)\b/i;
+	else if (/consumer|commerce|e-?commerce|dtc/.test(lower)) modelHint = /\b(e-?commerce|dtc|consumer|checkout|cart|orders?)\b/i;
+
+	// Domain alignment: for strong sports/media or real-asset domains, avoid software-ish models
+	// unless explicit software anchors exist.
+	if (params.primary === "sports_media" || params.primary === "real_asset") {
+		const softwareish = /saas|subscription|marketplace/.test(lower);
+		const hasExplicitSoftware = params.scores.saas > 0 || params.scores.marketplace > 0;
+		if (softwareish && !hasExplicitSoftware) return false;
+	}
+
+	const sentences = extractCandidateSentences(params.evidenceText);
+	for (const sent of sentences) {
+		const s = sanitizeInlineText(sent);
+		if (!s) continue;
+		if (isLegalBoilerplate(s)) continue;
+		if (!isHighQualityEvidenceSnippet(s)) continue;
+		if (!hasBusinessVerbForModelEvidence(s)) continue;
+		if (modelHint && !modelHint.test(s)) continue;
+		return true;
+	}
+
+	return false;
 }
 
 function pickPrimaryDomain(scores: DomainAnchorScores): { primary: keyof DomainAnchorScores; strong: boolean } {
@@ -1258,8 +1344,26 @@ function arbitrateDealTruth(params: {
 	const scores = domainAnchorScores(params.domainText);
 	const pick = pickPrimaryDomain(scores);
 
-	const reBlockers = [/\bpreferred\s+equity\b/i, /\bhotel\b/i, /\bproperty\b/i, /\bcap\s*rate\b/i, /\bnoi\b/i];
-	const saasBlockers = [/\bsaas\b/i, /\bsubscription\b/i, /\bmarketplace\b/i, /\btake\s*rate\b/i];
+	const reBlockers = [
+		/\bpreferred\s+equity\b/i,
+		/\boffering\s+memorandum\b/i,
+		/\bcap\s*rate\b/i,
+		/\bnoi\b/i,
+		/\bdscr\b/i,
+		/\bltv\b/i,
+		/\birr\b/i,
+		/\bequity\s+multiple\b/i,
+		/\bproperty\b/i,
+		/\bmultifamily\b/i,
+		/\bapartment\b/i,
+		/\bhotel\b/i,
+		/\btenant\b/i,
+		/\boccupanc\w*\b/i,
+		/\blease-?up\b/i,
+		/\brent\s+growth\b/i,
+		/\bacquisition\b/i,
+	];
+	const saasBlockers = [/\bsaas\b/i, /\bsubscription\b/i, /\bmarketplace\b/i, /\btake\s*rate\b/i, /\bapi\b/i, /\bplatform\b/i];
 
 	let looksRE = params.looksRE;
 	let deal_type = params.deal_type;
@@ -1269,10 +1373,16 @@ function arbitrateDealTruth(params: {
 
 	if (pick.primary === "sports_media" && pick.strong) {
 		looksRE = false;
-		if (deal_type.startsWith("real_estate_")) deal_type = "startup_raise";
+		deal_type = "startup_raise";
+
+		// Strip real-asset contamination deterministically (fail closed to empty/Unknown).
 		if (containsAny(product_solution, reBlockers)) product_solution = "";
-		if (containsAny(business_model, reBlockers) || /real\s*estate/i.test(business_model)) business_model = "Unknown";
 		if (containsAny(market_icp, reBlockers)) market_icp = "";
+		if (containsAny(business_model, reBlockers) || /real\s*estate/i.test(business_model)) business_model = "Unknown";
+
+		// Prevent SaaS/subscription classification unless explicit software signals exist.
+		const hasExplicitSoftware = scores.saas > 0 || scores.marketplace > 0;
+		if (!hasExplicitSoftware && containsAny(business_model, saasBlockers)) business_model = "Unknown";
 	} else if (pick.primary === "real_asset" && pick.strong) {
 		looksRE = true;
 		const hasDigitalSupport = scores.saas > 0 || scores.marketplace > 0;
@@ -1539,7 +1649,7 @@ export function generatePhase1DIOV1(params: {
 	const overviewV2 = (params.deal_overview_v2 && typeof params.deal_overview_v2 === "object")
 		? (params.deal_overview_v2 as any)
 		: null;
-	const businessArchetypeV1 = (params.business_archetype_v1 && typeof params.business_archetype_v1 === "object")
+	let businessArchetypeV1 = (params.business_archetype_v1 && typeof params.business_archetype_v1 === "object")
 		? (params.business_archetype_v1 as any)
 		: null;
 	const businessArchetypeValue = safeString(businessArchetypeV1?.value).toLowerCase();
@@ -1602,26 +1712,73 @@ export function generatePhase1DIOV1(params: {
 	marketSentence = arbitration.market_icp;
 	const looksRE = arbitration.looksRE;
 
+	// Business model / archetype evidence quality gate (after arbitration, before coverage/score).
+	if (business_model !== "Unknown") {
+		const scores = domainAnchorScores(domainText);
+		const pick = pickPrimaryDomain(scores);
+		const evidenceTextForModelGate = extractAllReadableText(docs).slice(0, 60_000);
+		const ok = hasValidBusinessModelEvidence({
+			evidenceText: evidenceTextForModelGate,
+			business_model,
+			primary: pick.primary,
+			scores,
+		});
+		if (!ok) {
+			business_model = "Unknown";
+			if (businessArchetypeV1 && typeof (businessArchetypeV1 as any).confidence === "number") {
+				businessArchetypeV1 = {
+					...(businessArchetypeV1 as any),
+					confidence: Math.min((businessArchetypeV1 as any).confidence, 0.3),
+				};
+			}
+		}
+	}
+
+	// Hard validation: reject contaminated/low-quality product/ICP values and do not replace with fallback.
+	let productHardRejected = false;
+	let marketHardRejected = false;
+	const validatedProduct = hardValidateProductOrMarket(productSentence);
+	if (productSentence.trim() && !validatedProduct.trim()) productHardRejected = true;
+	productSentence = validatedProduct;
+	const validatedMarket = hardValidateProductOrMarket(marketSentence);
+	if (marketSentence.trim() && !validatedMarket.trim()) marketHardRejected = true;
+	marketSentence = validatedMarket;
+
 	// Last-resort fallback for real-estate memos where worker deal_overview_v2 omits product/ICP and
 	// extracted text may be sparse or numeric-heavy.
-	if (looksRE && !productSentence.trim()) {
+	// IMPORTANT: do not apply fallbacks if values were hard-rejected.
+	if (looksRE && !productHardRejected && !productSentence.trim()) {
 		productSentence = detectRealEstateProductFromSparseText(combinedText) || productSentence;
 	}
-	if (looksRE && !marketSentence.trim()) {
+	if (looksRE && !marketHardRejected && !marketSentence.trim()) {
 		marketSentence = detectRealEstateMarketFromSparseText(combinedText) || marketSentence;
 	}
+	// Validate again after any real-estate fallback.
+	if (!productHardRejected) productSentence = hardValidateProductOrMarket(productSentence);
+	if (!marketHardRejected) marketSentence = hardValidateProductOrMarket(marketSentence);
+
+	// Final post-arbitration, post-validation truth object.
+	const finalTruth = {
+		deal_type,
+		product_solution: productSentence.trim() ? productSentence : "",
+		market_icp: marketSentence.trim() ? marketSentence : "",
+		business_model,
+		raise,
+		traction_signals,
+		key_risks_detected,
+	};
 	if (productSentence && dealName && productSentence.toLowerCase().startsWith(dealName.toLowerCase())) {
 		oneLinerParts.push(productSentence);
 	} else {
 		if (dealName) oneLinerParts.push(`${dealName}:`);
 		if (productSentence) oneLinerParts.push(`Product: ${productSentence}`);
 	}
-	if (marketSentence) oneLinerParts.push(`Serves: ${marketSentence}`);
-	if (deal_type !== "Unknown") oneLinerParts.push(`Deal type: ${deal_type}.`);
-	if (business_model !== "Unknown") oneLinerParts.push(`Business model: ${business_model}.`);
-	if (raise !== "Unknown") oneLinerParts.push(`Raise: ${raise}.`);
+	if (finalTruth.market_icp) oneLinerParts.push(`Serves: ${finalTruth.market_icp}`);
+	if (finalTruth.deal_type !== "Unknown") oneLinerParts.push(`Deal type: ${finalTruth.deal_type}.`);
+	if (finalTruth.business_model !== "Unknown") oneLinerParts.push(`Business model: ${finalTruth.business_model}.`);
+	if (finalTruth.raise !== "Unknown") oneLinerParts.push(`Raise: ${finalTruth.raise}.`);
 	const tractionBits = uniqStrings([
-		...traction_signals,
+		...finalTruth.traction_signals,
 		...tractionMetrics,
 	]).slice(0, 3);
 	if (tractionBits.length > 0) oneLinerParts.push(`Traction: ${tractionBits.join("; ")}.`);
@@ -1635,34 +1792,34 @@ export function generatePhase1DIOV1(params: {
 	if (!one_liner) one_liner = "Summary pending.";
 
 	const unknowns: string[] = [];
-	if (deal_type === "Unknown") unknowns.push("deal_type");
-	if (raise === "Unknown") unknowns.push("raise");
-	if (business_model === "Unknown") unknowns.push("business_model");
-	if (traction_signals.length === 0 && tractionMetrics.length === 0) unknowns.push("traction_signals");
-	if (key_risks_detected.length === 0) unknowns.push("key_risks_detected");
-	if (!productSentence.trim()) unknowns.push("product_solution");
-	if (!marketSentence.trim()) unknowns.push("market_icp");
+	if (finalTruth.deal_type === "Unknown") unknowns.push("deal_type");
+	if (finalTruth.raise === "Unknown") unknowns.push("raise");
+	if (finalTruth.business_model === "Unknown") unknowns.push("business_model");
+	if (finalTruth.traction_signals.length === 0 && tractionMetrics.length === 0) unknowns.push("traction_signals");
+	if (finalTruth.key_risks_detected.length === 0) unknowns.push("key_risks_detected");
+	if (!finalTruth.product_solution.trim()) unknowns.push("product_solution");
+	if (!finalTruth.market_icp.trim()) unknowns.push("market_icp");
 
-	const termsStatus: "present" | "partial" | "missing" = raise === "Unknown" ? "missing" : "present";
-	const productStatus: "present" | "partial" | "missing" = productSentence.trim() ? "present" : "missing";
-	const marketStatus: "present" | "partial" | "missing" = marketSentence.trim() ? "present" : "missing";
+	const termsStatus: "present" | "partial" | "missing" = finalTruth.raise === "Unknown" ? "missing" : "present";
+	const productStatus: "present" | "partial" | "missing" = finalTruth.product_solution.trim() ? "present" : "missing";
+	const marketStatus: "present" | "partial" | "missing" = finalTruth.market_icp.trim() ? "present" : "missing";
 	const tractionStatus: "present" | "partial" | "missing" = sectionStatus(
 		"",
-		traction_signals.length > 0 ? traction_signals : tractionMetrics
+		finalTruth.traction_signals.length > 0 ? finalTruth.traction_signals : tractionMetrics
 	);
 	const financialsStatus: "present" | "partial" | "missing" = coverageStatusFromText(
 		combinedText,
 		[/(revenue|arr|mrr|burn|runway|cash|margin|expenses|profit|noi|cap\s*rate|dscr|ltv|irr|equity\s+multiple|cash-?on-?cash|pro\s*forma)\b/i],
 		docs.some((d) => safeString(d.type).trim() === "financials") ? "partial" : "missing"
 	);
-	const risksStatus: "present" | "partial" | "missing" = sectionStatus("", key_risks_detected);
+	const risksStatus: "present" | "partial" | "missing" = sectionStatus("", finalTruth.key_risks_detected);
 
 	const coverage: Phase1CoverageV1 = {
 		sections: {
-			deal_type: deal_type === "Unknown" ? "missing" : "present",
+			deal_type: finalTruth.deal_type === "Unknown" ? "missing" : "present",
 			raise_terms: termsStatus,
 			terms: termsStatus,
-			business_model: business_model === "Unknown" ? "missing" : "present",
+			business_model: finalTruth.business_model === "Unknown" ? "missing" : "present",
 			product_solution: productStatus,
 			product: productStatus,
 			market_icp: marketStatus,
@@ -1683,32 +1840,53 @@ export function generatePhase1DIOV1(params: {
 	};
 
 	const sectionConfidence: Record<string, Phase1ConfidenceBand> = {
-		deal_type: deal_type === "Unknown" ? "low" : "med",
-		raise_terms: raise === "Unknown" ? "low" : "med",
-		business_model: business_model === "Unknown" ? "low" : "med",
-		traction: traction_signals.length > 0 ? "med" : "low",
-		risks: key_risks_detected.length > 0 ? "med" : "low",
-		product_solution: productSentence.trim() ? "med" : "low",
-		market_icp: marketSentence.trim() ? "med" : "low",
+		deal_type: finalTruth.deal_type === "Unknown" ? "low" : "med",
+		raise_terms: finalTruth.raise === "Unknown" ? "low" : "med",
+		business_model: finalTruth.business_model === "Unknown" ? "low" : "med",
+		traction: finalTruth.traction_signals.length > 0 ? "med" : "low",
+		risks: finalTruth.key_risks_detected.length > 0 ? "med" : "low",
+		product_solution: finalTruth.product_solution.trim() ? "med" : "low",
+		market_icp: finalTruth.market_icp.trim() ? "med" : "low",
 		gtm: coverage.sections.gtm === "present" ? "med" : "low",
 		team: coverage.sections.team === "present" ? "med" : "low",
 		financials: coverage.sections.financials === "present" ? "med" : coverage.sections.financials === "partial" ? "low" : "low",
 	};
 
-	const overall = capConfidenceFromCoreMissing(coverage.sections, confidenceFromCoverage(coverage));
+	let overall = capConfidenceFromCoreMissing(coverage.sections, confidenceFromCoverage(coverage));
 
 	const decision_summary_v1 = buildDecisionSummary({ coverage, docs });
 	decision_summary_v1.confidence = overall;
+
+	// Post-score penalty step (applies after arbitration+validation): ensure missing fundamentals reduce the numeric score.
+	// Do not change scoring weights; apply deterministic adjustments on top of the existing rubric.
+	let postPenalty = 0;
+	if (!finalTruth.product_solution.trim()) postPenalty += 10;
+	if (!finalTruth.market_icp.trim()) postPenalty += 10;
+	if (finalTruth.raise === "Unknown" || coverage.sections.raise_terms === "missing") postPenalty += 5;
+	if (coverage.sections.gtm === "missing") postPenalty += 5;
+	if (postPenalty > 0) {
+		decision_summary_v1.score = clampScore((decision_summary_v1.score ?? 0) - postPenalty);
+	}
+
+	// Hard rule: if product_solution OR market_icp is empty after arbitration+validation,
+	// confidence MUST be low and recommendation MUST NOT be GO.
+	if (!finalTruth.product_solution.trim() || !finalTruth.market_icp.trim()) {
+		overall = "low";
+		decision_summary_v1.confidence = "low";
+		if (decision_summary_v1.recommendation === "GO") decision_summary_v1.recommendation = "CONSIDER";
+	}
 
 	const mergedOverviewForV2 = overviewV2 && typeof overviewV2 === "object"
 		? {
 			...overviewV2,
 			deal_name: safeNonEmpty((overviewV2 as any).deal_name) || overview.deal_name,
-			product_solution: productSentence,
-			market_icp: marketSentence,
-			deal_type,
-			business_model,
-			raise: safeNonEmpty((overviewV2 as any).raise) || raise,
+			product_solution: finalTruth.product_solution.trim() ? finalTruth.product_solution : null,
+			market_icp: finalTruth.market_icp.trim() ? finalTruth.market_icp : null,
+			deal_type: finalTruth.deal_type,
+			business_model: finalTruth.business_model,
+			raise: safeNonEmpty((overviewV2 as any).raise) || finalTruth.raise,
+			traction_signals: finalTruth.traction_signals,
+			key_risks_detected: finalTruth.key_risks_detected,
 		}
 		: null;
 
@@ -1758,16 +1936,16 @@ export function generatePhase1DIOV1(params: {
 		addClaim("terms", `Raise mentioned: ${raiseDetected}`, docWithRaise, /\b(raising|raise|seeking|ask|funding)\b|\$\s?\d/i);
 	}
 
-	if (business_model !== "Unknown" && docs.length > 0) {
-		addClaim("product", `Business model signal detected: ${business_model}.`, docs[0], /\bsaas\b|\bsubscription\b|\bmarketplace\b|\blicens/i);
+	if (finalTruth.business_model !== "Unknown" && docs.length > 0) {
+		addClaim("product", `Business model signal detected: ${finalTruth.business_model}.`, docs[0], /\bsaas\b|\bsubscription\b|\bmarketplace\b|\blicens/i);
 	}
 
-	if (traction_signals.length > 0 && docs.length > 0) {
-		addClaim("traction", `Traction signals detected: ${traction_signals.join(", ")}.`, docs[0], /\barr\b|\bmrr\b|\brevenue\b|\bgrowth\b|\bcustomer/i);
+	if (finalTruth.traction_signals.length > 0 && docs.length > 0) {
+		addClaim("traction", `Traction signals detected: ${finalTruth.traction_signals.join(", ")}.`, docs[0], /\barr\b|\bmrr\b|\brevenue\b|\bgrowth\b|\bcustomer/i);
 	}
 
-	if (key_risks_detected.length > 0 && docs.length > 0) {
-		addClaim("risk", `Risk signals mentioned: ${key_risks_detected.join(", ")}.`, docs[0], /\brisk\b|\bcompetition\b|\bregulatory\b|\bsecurity\b/i);
+	if (finalTruth.key_risks_detected.length > 0 && docs.length > 0) {
+		addClaim("risk", `Risk signals mentioned: ${finalTruth.key_risks_detected.join(", ")}.`, docs[0], /\brisk\b|\bcompetition\b|\bregulatory\b|\bsecurity\b/i);
 	}
 
 	// Additional evidence-backed claims from document types
@@ -1809,11 +1987,11 @@ export function generatePhase1DIOV1(params: {
 		executive_summary_v1: {
 			title,
 			one_liner,
-			deal_type,
-			raise,
-			business_model,
-			traction_signals,
-			key_risks_detected,
+			deal_type: finalTruth.deal_type,
+			raise: finalTruth.raise,
+			business_model: finalTruth.business_model,
+			traction_signals: finalTruth.traction_signals,
+			key_risks_detected: finalTruth.key_risks_detected,
 			unknowns: uniqStrings(unknowns),
 			confidence: {
 				overall,
@@ -1826,7 +2004,7 @@ export function generatePhase1DIOV1(params: {
 		claims: uniqueClaims,
 		coverage,
 		business_archetype_v1: businessArchetypeV1 ? (businessArchetypeV1 as any) : undefined,
-		deal_overview_v2: overviewV2 ? (overviewV2 as any) : undefined,
+		deal_overview_v2: mergedOverviewForV2 ? (mergedOverviewForV2 as any) : undefined,
 		update_report_v1:
 			params.update_report_v1 && typeof params.update_report_v1 === "object" ? (params.update_report_v1 as any) : undefined,
 	};

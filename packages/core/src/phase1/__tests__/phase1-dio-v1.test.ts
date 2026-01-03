@@ -180,10 +180,13 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 
 		expect(out.executive_summary_v2).toBeTruthy();
 		const bullets = (out.executive_summary_v2?.highlights ?? []).join("\n");
-		expect(bullets).not.toMatch(/Product:\s*not provided/i);
-		expect(bullets).not.toMatch(/ICP:\s*not provided/i);
+		// Hard validation now fails closed: do not manufacture product/ICP from boilerplate.
+		expect(bullets).toMatch(/Product:\s*not provided/i);
+		expect(bullets).toMatch(/ICP:\s*not provided/i);
 		// Coverage should treat leasing/occupancy strategy as GTM-equivalent for real estate
 		expect(out.coverage.sections.gtm).not.toBe("missing");
+		expect(out.decision_summary_v1.confidence).toBe("low");
+		expect(out.decision_summary_v1.recommendation).not.toBe("GO");
 	});
 
 	it("extracts product_solution from pitch deck tagline on page 1", () => {
@@ -338,7 +341,7 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 					title: "Dropables Pitch Deck",
 					type: "pitch_deck",
 					full_text:
-						"Global music revenue growth is accelerating as streaming platforms command the majority of revenue.",
+						"Global music revenue grew to $10B as streaming platforms command the majority of revenue.",
 				},
 			],
 		});
@@ -389,6 +392,68 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		expect(arrWithContext.executive_summary_v1.traction_signals).toContain("ARR mentioned");
 	});
 
+	it("Dropables: score penalizes missing ICP", () => {
+		const withICP = generatePhase1DIOV1({
+			deal: { deal_id: "deal-dropables-with-icp", name: "Dropables", stage: "intake" },
+			inputDocuments: [
+				{
+					document_id: "doc-dropables-with-icp",
+					title: "Dropables Pitch Deck",
+					type: "pitch_deck",
+					full_text:
+						"Dropables helps musicians sell digital collectibles to fans. " +
+						"Go-to-market: partnerships and direct sales. " +
+						"Team: founders previously built and operated creator platforms. " +
+						"We generated $2M in revenue in 2025. " +
+						"Raising $1.5M seed.",
+				},
+			],
+			deal_overview_v2: {
+				deal_name: "Dropables",
+				product_solution: "Dropables helps musicians sell digital collectibles to fans.",
+				market_icp: "Built for independent musicians and superfans.",
+				deal_type: "startup_raise",
+				raise: "Raising $1.5M seed",
+				business_model: "Unknown",
+				traction_signals: [],
+				key_risks_detected: [],
+				generated_at: "2025-01-01T00:00:00.000Z",
+			},
+		});
+
+		const missingICP = generatePhase1DIOV1({
+			deal: { deal_id: "deal-dropables-missing-icp", name: "Dropables", stage: "intake" },
+			inputDocuments: [
+				{
+					document_id: "doc-dropables-missing-icp",
+					title: "Dropables Pitch Deck",
+					type: "pitch_deck",
+					full_text:
+						"Dropables helps musicians sell digital collectibles to fans. " +
+						"Go-to-market: partnerships and direct sales. " +
+						"Team: founders previously built and operated creator platforms. " +
+						"We generated $2M in revenue in 2025. " +
+						"Raising $1.5M seed.",
+				},
+			],
+			deal_overview_v2: {
+				deal_name: "Dropables",
+				product_solution: "Dropables helps musicians sell digital collectibles to fans.",
+				market_icp: null,
+				deal_type: "startup_raise",
+				raise: "Raising $1.5M seed",
+				business_model: "Unknown",
+				traction_signals: [],
+				key_risks_detected: [],
+				generated_at: "2025-01-01T00:00:00.000Z",
+			},
+		});
+
+		expect(withICP.coverage.sections.market_icp).toBe("present");
+		expect(missingICP.coverage.sections.market_icp).toBe("missing");
+		expect(withICP.decision_summary_v1.score - missingICP.decision_summary_v1.score).toBeGreaterThanOrEqual(10);
+	});
+
 	it("caps confidence to med when product_solution is missing (even if coverage would be high)", () => {
 		const out = generatePhase1DIOV1({
 			deal: { deal_id: "deal-conf-cap-1", name: "NoProductCo", stage: "intake" },
@@ -407,10 +472,11 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 
 		expect(out.coverage.sections.product_solution).toBe("missing");
 		expect(out.coverage.sections.gtm).toBe("present");
-		// Cap: cannot be high when product_solution is missing.
-		expect(out.executive_summary_v1.confidence.overall).toBe("med");
-		expect(out.decision_summary_v1.confidence).toBe("med");
-		expect(out.executive_summary_v2?.signals.confidence).toBe("med");
+		// Hard rule: if product_solution OR ICP is empty after arbitration, confidence must be low and not GO.
+		expect(out.executive_summary_v1.confidence.overall).toBe("low");
+		expect(out.decision_summary_v1.confidence).toBe("low");
+		expect(out.decision_summary_v1.recommendation).not.toBe("GO");
+		expect(out.executive_summary_v2?.signals.confidence).toBe("low");
 	});
 
 	it("forces confidence to low when product_solution and gtm are both missing", () => {
@@ -433,6 +499,7 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		// Force: 2+ of {product_solution, gtm, traction} missing => low.
 		expect(out.executive_summary_v1.confidence.overall).toBe("low");
 		expect(out.decision_summary_v1.confidence).toBe("low");
+		expect(out.decision_summary_v1.recommendation).not.toBe("GO");
 		expect(out.executive_summary_v2?.signals.confidence).toBe("low");
 	});
 
@@ -452,10 +519,10 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 			],
 			deal_overview_v2: {
 				deal_name: "3ICE",
-				deal_type: "startup_raise",
+				deal_type: "real_estate_preferred_equity",
 				product_solution: "3ICE operates a professional hockey league and broadcasts games to fans.",
 				market_icp: "Sports fans and media partners",
-				business_model: "Media rights / sponsorship",
+				business_model: "SaaS / subscription",
 				raise: "Raising $5M",
 				traction_signals: [],
 				key_risks_detected: [],
@@ -464,12 +531,64 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		});
 
 		expect(out.executive_summary_v1.deal_type).toBe("startup_raise");
+		// Truth wiring: executive summary and overview must agree.
+		expect(out.deal_overview_v2?.deal_type).toBe("startup_raise");
+		expect(out.executive_summary_v1.deal_type).toBe(out.deal_overview_v2?.deal_type);
+		expect(out.executive_summary_v1.business_model).not.toMatch(/saas|subscription/i);
+		expect(out.deal_overview_v2?.business_model ?? "").not.toMatch(/saas|subscription/i);
 		expect(out.executive_summary_v1.one_liner).not.toMatch(/preferred\s+equity|hotel|property|offering\s+memorandum/i);
 		const v2Text = [
 			...(out.executive_summary_v2?.paragraphs ?? []),
 			...(out.executive_summary_v2?.highlights ?? []),
 		].join("\n");
 		expect(v2Text).not.toMatch(/preferred\s+equity|hotel|property|offering\s+memorandum/i);
+
+		// Clamp regression: if product_solution or market_icp are missing post-validation,
+		// confidence must be low and recommendation cannot be GO.
+		const outMissingCore = generatePhase1DIOV1({
+			deal: { deal_id: "deal-arb-1-missing-core", name: "3ICE", stage: "intake" },
+			inputDocuments: [
+				{
+					document_id: "doc-arb-1-missing-core",
+					title: "3ICE League Deck",
+					type: "pitch_deck",
+					full_text:
+						"3ICE is a professional hockey league with teams, athletes, and broadcast distribution. " +
+						"We monetize via media rights and streaming partnerships. " +
+						"(Legal boilerplate) This is not an offering memorandum for preferred equity in any hotel or property.",
+				},
+			],
+			deal_overview_v2: {
+				deal_name: "3ICE",
+				deal_type: "real_estate_preferred_equity",
+				product_solution: null,
+				market_icp: null,
+				business_model: "SaaS / subscription",
+				raise: "Raising $5M",
+				traction_signals: [],
+				key_risks_detected: [],
+				generated_at: "2025-01-01T00:00:00.000Z",
+			},
+		});
+
+		expect(outMissingCore.executive_summary_v1.deal_type).toBe("startup_raise");
+		expect(outMissingCore.deal_overview_v2?.deal_type).toBe("startup_raise");
+		expect(outMissingCore.executive_summary_v1.deal_type).toBe(outMissingCore.deal_overview_v2?.deal_type);
+		expect(outMissingCore.executive_summary_v1.business_model).not.toMatch(/saas|subscription/i);
+		expect(outMissingCore.deal_overview_v2?.business_model ?? "").not.toMatch(/saas|subscription/i);
+		// Score must reflect missing fundamentals (post-processed truth), not remain inflated.
+		expect(outMissingCore.decision_summary_v1.score).toBeLessThanOrEqual(out.decision_summary_v1.score - 20);
+		expect(outMissingCore.executive_summary_v1.confidence.overall).toBe("low");
+		expect(outMissingCore.decision_summary_v1.confidence).toBe("low");
+		expect(outMissingCore.decision_summary_v1.recommendation).not.toBe("GO");
+		expect(outMissingCore.executive_summary_v2?.signals.confidence).toBe("low");
+		expect(outMissingCore.deal_overview_v2?.product_solution).toBeNull();
+		expect(outMissingCore.deal_overview_v2?.market_icp).toBeNull();
+		const v2TextMissingCore = [
+			...(outMissingCore.executive_summary_v2?.paragraphs ?? []),
+			...(outMissingCore.executive_summary_v2?.highlights ?? []),
+		].join("\n");
+		expect(v2TextMissingCore).not.toMatch(/preferred\s+equity|hotel|property|offering\s+memorandum/i);
 	});
 
     it("mergePhase1IntoDIO preserves extra dio.phase1 fields (deal_overview_v2/update_report_v1)", () => {

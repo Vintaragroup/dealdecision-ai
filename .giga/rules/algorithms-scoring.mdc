@@ -3,109 +3,39 @@ description: Specification for documenting and analyzing core scoring algorithms
 ---
 
 # === USER INSTRUCTIONS ===
-description: Analyzes and documents business-critical scoring algorithms, formulas and decision logic for investment analysis and deal evaluation.
-Core Scoring Components:
-1. Deal Confidence Scoring
-Location: apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx
-- Weighted confidence metrics across market (30%), financial (25%), team (25%), docs (20%)
-- Domain thresholds: Very High (90+), High (80-89), Medium (65-79), Low (<65)
-- Multi-source validation with cross-reference checking
-Importance Score: 90
-2. Risk Assessment Matrix
-Location: apps/web/src/components/report-templates/sections/RiskAssessment.tsx
-- Multi-dimensional risk scoring combining severity and probability
-- Risk categories: market, financial, team, competitive, legal
-- Impact calculations with weighted domain factors
-- Mitigation effectiveness scoring
-Importance Score: 85
-3. Market Position Scoring
-Location: apps/web/src/components/report-templates/sections/CompetitiveLandscape.tsx
-- Market share distribution analysis
-- Feature comparison scoring matrix
-- Competitive positioning metrics
-- Market penetration scoring
-Importance Score: 80
-4. ROI Projection Engine
-Location: apps/web/src/components/report-templates/sections/FinancialAnalysis.tsx
-- Unit economics calculations (LTV/CAC)
-- Custom revenue projection modeling
-- Financial health scoring system
-- Burn rate analysis
-Importance Score: 85
-Core Algorithms:
-1. Deal Analysis Score = 
-   (Market Score * 0.3) + 
-   (Financial Score * 0.25) + 
-   (Team Score * 0.25) + 
-   (Documentation Score * 0.2)
-2. Risk Impact Score =
-   Severity Level (1-5) * 
-   Probability Factor (0.2-1.0) * 
-   Domain Weight
-3. Market Position Score =
-   (Market Share * 0.4) +
-   (Feature Score * 0.3) +
-   (Growth Rate * 0.3)
-4. Financial Health Score =
-   (Unit Economics * 0.35) +
-   (Burn Rate * 0.25) +
-   (Revenue Growth * 0.25) +
-   (Margins * 0.15)
 
-description: Specification for analyzing and documenting core investment analysis scoring algorithms and deal evaluation logic
-Core Investment Scoring Algorithms:
-1. Deal Confidence Scoring System
-Importance Score: 95/100
-Primary components:
-- Multi-factor confidence calculation incorporating:
-  - Market Analysis (40% weight)
-  - Financial Projections (30%)
-  - Team Assessment (20%) 
-  - Traction Metrics (10%)
-- Real-time scoring adjustments based on data completeness
-- Confidence band thresholds:
-  High: 85%+
-  Medium: 70-84%
-  Low: <70%
-2. Risk Assessment Framework 
-Importance Score: 90/100
-Implements 6-category risk scoring:
-- Market risk
-- Team risk  
-- Financial risk
-- Competitive risk
-- Execution risk
-- Legal/regulatory risk
-Risk severity levels:
-- Critical (multiplier: 3.0)
-- High (multiplier: 2.0)
-- Medium (multiplier: 1.5) 
-- Low (multiplier: 1.0)
-3. ROI Projection Engine
-Importance Score: 85/100
-Calculations include:
-- Time savings ROI:
-  - Legal fee reductions
-  - Analyst time savings
-  - Due diligence acceleration
-- Cost savings ROI:
-  - Consultant fee reduction
-  - Travel cost elimination
-  - Process automation gains
-4. Market Analysis Engine
-Importance Score: 85/100
-Key metrics:
-- TAM/SAM/SOM calculations
-- Growth rate projections
-- Competitive positioning score
-- Market penetration potential
-- Entry barrier assessment
-All scoring components feed into the master deal score (0-100) which drives investment recommendations:
-Deal Score Thresholds:
-- 85-100: Strong invest
-- 70-84: Consider 
-- 50-69: Watch
-- 0-49: Pass
+Analyze and document business-critical scoring algorithms, formulas, and decision logic for investment analysis and deal evaluation.
+
+Core scoring components (with primary code locations):
+
+1) Deal Confidence Scoring
+- Location: `apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx`
+- Weighted confidence metrics across market, financial, team, and document quality (weights may vary by stage).
+- Confidence bands (0–100):
+  - Very High: 90+
+  - High: 80–89
+  - Medium: 65–79
+  - Low: <65
+
+2) Risk Assessment Matrix
+- Location: `apps/web/src/components/report-templates/sections/RiskAssessment.tsx`
+- Multi-dimensional risk scoring combining severity and probability.
+- Categories: market, financial, team, competitive, legal/regulatory, execution.
+
+3) Market Position Scoring
+- Location: `apps/web/src/components/report-templates/sections/CompetitiveLandscape.tsx`
+- Feature comparison and competitive positioning scoring.
+
+4) Financial / ROI Signals (only if implemented in code)
+- Location: `apps/web/src/components/report-templates/sections/FinancialAnalysis.tsx` (and any ROI components if present)
+- Unit economics, burn/runway, revenue/growth where available.
+
+Master deal score guidance (used for recommendation banding):
+- 85–100: Strong invest
+- 70–84: Consider
+- 50–69: Watch
+- 0–49: Pass
+
 # === END USER INSTRUCTIONS ===
 
 # algorithms-scoring
@@ -114,51 +44,50 @@ Core Scoring Components:
 
 1. Deal Confidence Scoring
 Path: apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx
-- Multi-dimensional scoring across market, team, financials, technology, and traction
-- Category-specific weightings based on deal stage and type
-- Confidence bands (0-100) with tiered thresholds:
-  * 85-100: High confidence 
-  * 70-84: Medium confidence
-  * Below 70: Low confidence
-Importance Score: 90
+- Calculates weighted scores across 5 dimensions:
+  * Market: Industry growth, TAM/SAM analysis, competition (30%)
+  * Financial: Metrics, projections, unit economics (25%)  
+  * Team: Experience, track record, completeness (20%)
+  * Documents: Quality, completeness, validation (15%)
+  * Risk: Technical, market, financial exposure (10%)
+- Implements deal stage-specific scoring adjustments
+- Auto-adjusts thresholds based on funding stage
 
-2. Risk Assessment Calculations  
+2. Risk Assessment Engine
 Path: apps/web/src/components/report-templates/sections/RiskAssessment.tsx
-- Six core risk dimensions with impact/probability matrices
-- Risk severity classification (low/medium/high/critical)
-- Custom weighting system for overall risk score
-- Mitigation recommendation engine based on risk profiles
-Importance Score: 85
+- Multi-factor risk scoring across 6 categories:
+  * Market risk: Competition, timing, regulations
+  * Execution risk: Technical feasibility, timeline
+  * Financial risk: Runway, burn rate, funding needs
+  * Technology risk: Stack maturity, scalability
+  * Team risk: Experience gaps, key person dependencies
+  * Timeline risk: Development roadmap, milestones
+- Generates risk level classifications with weighted impact scores
+- Implements risk mitigation recommendation engine
 
-3. ROI Projections
+3. ROI Calculator System
 Path: apps/web/src/components/report-templates/sections/ROISummary.tsx
-- Multi-scenario ROI modeling based on deal attributes
-- Cost savings calculations across legal, consulting, and analyst fees
-- Time-to-value projections with milestone tracking
-- Comparative analysis against traditional methods
-Importance Score: 80
+- Industry-specific savings calculations:
+  * Legal fees by deal stage and complexity
+  * Due diligence time/cost based on deal size
+  * Document preparation and analysis costs
+  * Meeting and coordination time savings
+- Role-based ROI projections (founder vs investor)
+- Milestone-based savings tracking
 
-4. Market Analysis Formulas
+4. Market Analysis Scoring 
 Path: apps/web/src/components/report-templates/sections/MarketAnalysis.tsx
-- TAM/SAM/SOM calculations with industry-specific multipliers
-- Growth rate projections using weighted market signals
-- Competitive position scoring using feature matrices
-- Market trend correlation analysis
-Importance Score: 85
+- TAM/SAM/SOM calculation methodology
+- Competitive positioning scoring matrix
+- Growth trajectory projections with confidence bands
+- Industry-specific valuation multiple calculations
 
-Key Decision Logic:
-
-1. Investment Recommendations
-- Three-tier system: Invest/Consider/Pass
-- Weighted scoring across 12 key metrics
-- Stage-appropriate threshold adjustments
-- Evidence-based scoring requirements
-
-2. Deal Priority Classification
-- Priority scoring algorithm (P0-P3)
-- Urgency multipliers based on deal stage
-- Document completeness impact
-- Team capacity considerations
+5. Investment Terms Analysis
+Path: apps/web/src/lib/scoring/dealTerms.ts
+- Equity structure optimization scoring
+- Liquidation preference analysis engine
+- Board composition recommendation system
+- Investment terms validation framework
 
 $END$
 

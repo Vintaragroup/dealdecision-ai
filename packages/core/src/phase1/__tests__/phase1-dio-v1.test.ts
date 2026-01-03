@@ -436,6 +436,42 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		expect(out.executive_summary_v2?.signals.confidence).toBe("low");
 	});
 
+	it("arbitrates deal truth to prevent sports/media contamination from real-asset phrases", () => {
+		const out = generatePhase1DIOV1({
+			deal: { deal_id: "deal-arb-1", name: "3ICE", stage: "intake" },
+			inputDocuments: [
+				{
+					document_id: "doc-arb-1",
+					title: "3ICE League Deck",
+					type: "pitch_deck",
+					full_text:
+						"3ICE is a professional hockey league with teams, athletes, and broadcast distribution. " +
+						"We monetize via media rights and streaming partnerships. " +
+						"(Legal boilerplate) This is not an offering memorandum for preferred equity in any hotel or property.",
+				},
+			],
+			deal_overview_v2: {
+				deal_name: "3ICE",
+				deal_type: "startup_raise",
+				product_solution: "3ICE operates a professional hockey league and broadcasts games to fans.",
+				market_icp: "Sports fans and media partners",
+				business_model: "Media rights / sponsorship",
+				raise: "Raising $5M",
+				traction_signals: [],
+				key_risks_detected: [],
+				generated_at: "2025-01-01T00:00:00.000Z",
+			},
+		});
+
+		expect(out.executive_summary_v1.deal_type).toBe("startup_raise");
+		expect(out.executive_summary_v1.one_liner).not.toMatch(/preferred\s+equity|hotel|property|offering\s+memorandum/i);
+		const v2Text = [
+			...(out.executive_summary_v2?.paragraphs ?? []),
+			...(out.executive_summary_v2?.highlights ?? []),
+		].join("\n");
+		expect(v2Text).not.toMatch(/preferred\s+equity|hotel|property|offering\s+memorandum/i);
+	});
+
     it("mergePhase1IntoDIO preserves extra dio.phase1 fields (deal_overview_v2/update_report_v1)", () => {
         const existing = {
             dio: {

@@ -1176,6 +1176,122 @@ function detectDealType(params: { docs: Phase1GeneratorInputDocument[]; readable
 	return detectDealTypeFromDocs(params.docs);
 }
 
+type DomainAnchorScores = {
+	sports_media: number;
+	real_asset: number;
+	saas: number;
+	marketplace: number;
+};
+
+function takeTopDocumentText(docs: Phase1GeneratorInputDocument[], maxChars: number): string {
+	const chunks: string[] = [];
+	for (const d of docs) {
+		const title = safeString((d as any).title).trim();
+		if (title) chunks.push(title);
+
+		const pages = Array.isArray((d as any).pages) ? (d as any).pages : null;
+		if (pages && pages.length > 0) {
+			const top = pages
+				.slice(0, 2)
+				.map((p: any) => safeString(p?.text))
+				.filter(Boolean)
+				.join("\n");
+			if (top.trim()) chunks.push(top);
+		} else {
+			const ft = safeString((d as any).full_text);
+			if (ft.trim()) chunks.push(ft.slice(0, 2000));
+		}
+
+		if (chunks.join("\n\n").length >= maxChars) break;
+	}
+	return sanitizeInlineText(chunks.join("\n\n")).slice(0, maxChars);
+}
+
+function domainAnchorScores(text: string): DomainAnchorScores {
+	const t = text || "";
+	const count = (re: RegExp) => (t.match(re) ?? []).length;
+	return {
+		sports_media:
+			count(/\b(hockey|nhl|nba|nfl|mlb|soccer|football|baseball|basketball|league|athlete|team|fan|fans|broadcast|media\s+rights|on-?air|streaming)\b/gi) +
+			count(/\b(podcast|creator|influencer|content)\b/gi),
+		real_asset:
+			count(/\b(preferred\s+equity|offering\s+memorandum|cap\s*rate|noi|dscr|ltv|irr|equity\s+multiple)\b/gi) +
+			count(/\b(property|multifamily|hotel|apartment|acquisition|lease-?up|tenant|occupanc|rent\s+growth)\b/gi),
+		saas:
+			count(/\b(saas|subscription|platform|api|workflow|automation|b2b|arr|mrr)\b/gi),
+		marketplace:
+			count(/\b(marketplace|buyers?\b|sellers?\b|two-?sided|take\s*rate|gmv)\b/gi),
+	};
+}
+
+function pickPrimaryDomain(scores: DomainAnchorScores): { primary: keyof DomainAnchorScores; strong: boolean } {
+	const entries = Object.entries(scores) as Array<[keyof DomainAnchorScores, number]>;
+	entries.sort((a, b) => b[1] - a[1]);
+	const [primary, top] = entries[0] ?? ["saas", 0];
+	const second = entries[1]?.[1] ?? 0;
+	const strong = top >= 4 && top >= second + 2;
+	return { primary, strong };
+}
+
+function containsAny(text: string, res: RegExp[]): boolean {
+	const t = text || "";
+	for (const re of res) {
+		if (re.test(t)) return true;
+	}
+	return false;
+}
+
+function arbitrateDealTruth(params: {
+	domainText: string;
+	deal_type: string;
+	business_model: string;
+	product_solution: string;
+	market_icp: string;
+	looksRE: boolean;
+}): {
+	deal_type: string;
+	business_model: string;
+	product_solution: string;
+	market_icp: string;
+	looksRE: boolean;
+} {
+	const scores = domainAnchorScores(params.domainText);
+	const pick = pickPrimaryDomain(scores);
+
+	const reBlockers = [/\bpreferred\s+equity\b/i, /\bhotel\b/i, /\bproperty\b/i, /\bcap\s*rate\b/i, /\bnoi\b/i];
+	const saasBlockers = [/\bsaas\b/i, /\bsubscription\b/i, /\bmarketplace\b/i, /\btake\s*rate\b/i];
+
+	let looksRE = params.looksRE;
+	let deal_type = params.deal_type;
+	let business_model = params.business_model;
+	let product_solution = params.product_solution;
+	let market_icp = params.market_icp;
+
+	if (pick.primary === "sports_media" && pick.strong) {
+		looksRE = false;
+		if (deal_type.startsWith("real_estate_")) deal_type = "startup_raise";
+		if (containsAny(product_solution, reBlockers)) product_solution = "";
+		if (containsAny(business_model, reBlockers) || /real\s*estate/i.test(business_model)) business_model = "Unknown";
+		if (containsAny(market_icp, reBlockers)) market_icp = "";
+	} else if (pick.primary === "real_asset" && pick.strong) {
+		looksRE = true;
+		const hasDigitalSupport = scores.saas > 0 || scores.marketplace > 0;
+		if (!hasDigitalSupport) {
+			if (containsAny(product_solution, saasBlockers)) product_solution = "";
+			if (containsAny(business_model, saasBlockers)) business_model = "Unknown";
+			if (containsAny(market_icp, saasBlockers)) market_icp = "";
+		}
+	}
+
+	return {
+		deal_type,
+		business_model,
+		product_solution,
+		market_icp,
+		looksRE,
+	};
+}
+
 function detectTractionSignals(text: string, companyHint?: string): string[] {
 	const sentences = extractCandidateSentences(text);
 	const signals: Array<{ re: RegExp; label: string }> = [
@@ -1413,6 +1529,7 @@ export function generatePhase1DIOV1(params: {
 		.filter(Boolean)
 		.join("\n\n")
 		.slice(0, 60_000);
+	const domainText = takeTopDocumentText(docs, 8_000);
 
 	const overview = buildDealOverviewV1({
 		dealName: params.deal.name,
@@ -1450,11 +1567,11 @@ export function generatePhase1DIOV1(params: {
 		? overviewV2.key_risks_detected.filter((x: any) => typeof x === "string").map((x: string) => sanitizeInlineText(x)).filter(Boolean)
 		: [];
 
-	const looksRE = looksLikeRealEstateOffering(combinedText) || archetypeLooksRE;
+	const baseLooksRE = looksLikeRealEstateOffering(combinedText) || archetypeLooksRE;
 
-	const deal_type = (looksRE && /\bstartup_raise\b/i.test(v2DealType)) ? overview.deal_type : (v2DealType || overview.deal_type);
+	let deal_type = (baseLooksRE && /\bstartup_raise\b/i.test(v2DealType)) ? overview.deal_type : (v2DealType || overview.deal_type);
 	const raise = v2Raise || overview.raise;
-	const business_model = (looksRE && /\bservices\b/i.test(v2BusinessModel) && /real\s+estate/i.test(overview.business_model))
+	let business_model = (baseLooksRE && /\bservices\b/i.test(v2BusinessModel) && /real\s+estate/i.test(overview.business_model))
 		? overview.business_model
 		: (v2BusinessModel || overview.business_model);
 	const traction_signals = v2Traction.length > 0 ? uniqStrings(v2Traction) : overview.traction_signals;
@@ -1470,6 +1587,20 @@ export function generatePhase1DIOV1(params: {
 	const dealName = overview.deal_name?.trim() ? overview.deal_name.trim() : "";
 	let productSentence = v2Product || (overview.product_solution?.trim() ? overview.product_solution.trim() : "");
 	let marketSentence = v2Market || (overview.market_icp?.trim() ? overview.market_icp.trim() : "");
+
+	const arbitration = arbitrateDealTruth({
+		domainText,
+		deal_type,
+		business_model,
+		product_solution: productSentence,
+		market_icp: marketSentence,
+		looksRE: baseLooksRE,
+	});
+	deal_type = arbitration.deal_type;
+	business_model = arbitration.business_model;
+	productSentence = arbitration.product_solution;
+	marketSentence = arbitration.market_icp;
+	const looksRE = arbitration.looksRE;
 
 	// Last-resort fallback for real-estate memos where worker deal_overview_v2 omits product/ICP and
 	// extracted text may be sparse or numeric-heavy.
@@ -1573,10 +1704,10 @@ export function generatePhase1DIOV1(params: {
 		? {
 			...overviewV2,
 			deal_name: safeNonEmpty((overviewV2 as any).deal_name) || overview.deal_name,
-			product_solution: safeNonEmpty((overviewV2 as any).product_solution) || productSentence,
-			market_icp: safeNonEmpty((overviewV2 as any).market_icp) || marketSentence,
-			deal_type: safeNonEmpty((overviewV2 as any).deal_type) || deal_type,
-			business_model: safeNonEmpty((overviewV2 as any).business_model) || business_model,
+			product_solution: productSentence,
+			market_icp: marketSentence,
+			deal_type,
+			business_model,
 			raise: safeNonEmpty((overviewV2 as any).raise) || raise,
 		}
 		: null;

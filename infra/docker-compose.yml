@@ -52,6 +52,7 @@ services:
       API_PORT: "9000"
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/dealdecision
       REDIS_URL: redis://redis:6379
+      UPLOAD_DIR: /app/uploads
       # Required for destructive operations (hard purge delete)
       ADMIN_TOKEN: ${ADMIN_TOKEN}
     ports:
@@ -65,6 +66,7 @@ services:
       - ../packages/contracts/package.json:/app/packages/contracts/package.json
       - ../tsconfig.base.json:/app/tsconfig.base.json
       - ../pnpm-lock.yaml:/app/pnpm-lock.yaml
+      - dealdecision_uploads:/app/uploads
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -83,6 +85,8 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/dealdecision
       REDIS_URL: redis://redis:6379
+      UPLOAD_DIR: /app/uploads
+      VISION_WORKER_URL: http://vision_worker:8000
       # Phase 1 DealOverviewV2 debug logs (candidate scoring + selection):
       # - Set to "1" to enable
       # - Set to "0" or remove to disable
@@ -99,6 +103,7 @@ services:
       - ../packages/contracts/package.json:/app/packages/contracts/package.json
       - ../tsconfig.base.json:/app/tsconfig.base.json
       - ../pnpm-lock.yaml:/app/pnpm-lock.yaml
+      - dealdecision_uploads:/app/uploads
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -106,6 +111,22 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      vision_worker:
+        condition: service_healthy
+
+  vision_worker:
+    build:
+      context: ../services/vision_worker
+      dockerfile: Dockerfile
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - dealdecision_uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   web:
     build:
@@ -140,3 +161,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  dealdecision_uploads:

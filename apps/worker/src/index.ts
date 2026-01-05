@@ -1,5 +1,6 @@
 import type { Job } from "bullmq";
 import { randomUUID, createHash } from "crypto";
+import path from "path";
 import type { JobStatus } from "@dealdecision/contracts";
 import {
 	sanitizeText,
@@ -19,6 +20,7 @@ import {
 	closePool,
 	updateDocumentStatus,
 	updateDocumentAnalysis,
+	mergeDocumentExtractionMetadata,
 	insertEvidence,
 	deleteExtractionEvidenceForDeal,
 	deleteExtractionEvidenceForDocument,
@@ -47,6 +49,7 @@ import { verifyDocumentExtraction } from "./lib/verification";
 import { remediateStructuredData } from "./lib/remediation";
 import { buildPhase1DealOverviewV2, buildPhase1DealUnderstandingV1, buildPhase1UpdateReportV1 } from "./lib/phase1/dealOverviewV2";
 import { buildPhase1BusinessArchetypeV1 } from "./lib/phase1/businessArchetypeV1";
+import { getVisualPageImagePersistConfig, persistRenderedPageImages } from "./lib/rendered-pages";
 import type { DocumentAnalysis, ExtractedContent } from "./lib/processors";
 import type { VerificationResult } from "./lib/verification";
 import { OpenAIGPT4oProvider } from "./lib/llm/providers/openai-provider";
@@ -829,6 +832,8 @@ async function ingestDocumentProcessor(job: Job) {
 			: analysis.contentType === "excel"
 				? "excel_has_no_full_text"
 				: "no_text_extracted";
+
+		const uploadDir = process.env.UPLOAD_DIR ? path.resolve(process.env.UPLOAD_DIR) : path.resolve(process.cwd(), "uploads");
 		
 		// Determine content threshold based on document type
 		// Word docs (cut sheets, whitepapers) can be valid with minimal content
@@ -895,6 +900,42 @@ async function ingestDocumentProcessor(job: Job) {
 			console.log(
 				`[ingest_document] documentId=${documentId} dealId=${dealId} type=${analysis.contentType} success=true metrics=${metricsInserted} headings=${headingsInserted} score=${completeness.score.toFixed(2)}`
 			);
+
+			// Step 6: persist rendered page images to a stable artifacts directory (best-effort)
+			if (analysis.contentType === "pdf") {
+				try {
+					const persistCfg = getVisualPageImagePersistConfig();
+					if (persistCfg.enabled && persistCfg.persist) {
+						// re-use resolved uploadDir
+						const res = await persistRenderedPageImages({
+							buffer,
+							documentId,
+							pageCount: pageCount || 0,
+							uploadDir,
+							config: persistCfg,
+							logger: console,
+						});
+						if (res.rendered_pages_dir) {
+							await mergeDocumentExtractionMetadata({
+								documentId,
+								patch: {
+									rendered_pages_dir: res.rendered_pages_dir,
+									rendered_pages_format: res.rendered_pages_format,
+									rendered_pages_count: res.rendered_pages_count,
+									rendered_pages_max_pages: res.rendered_pages_max_pages,
+									rendered_pages_created_at: res.rendered_pages_created_at,
+								},
+							});
+						}
+					}
+				} catch (err) {
+					console.warn(
+						`[ingest_document] rendered page persistence failed doc=${documentId}: ${
+							err instanceof Error ? err.message : String(err)
+						}`
+					);
+				}
+			}
 
 			// Queue verification job for this document
 			const verifyQueue = getQueue("verify_documents");

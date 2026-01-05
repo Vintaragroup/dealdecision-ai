@@ -67,6 +67,23 @@ export async function updateDocumentAnalysis(params: {
   );
 }
 
+export async function mergeDocumentExtractionMetadata(params: {
+  documentId: string;
+  patch: Record<string, unknown>;
+}) {
+  // Merge without overwriting unrelated keys. Right-side wins on conflicts.
+  const currentPool = getPool();
+  await currentPool.query(
+    `
+    UPDATE documents
+    SET extraction_metadata = COALESCE(extraction_metadata, '{}'::jsonb) || $2::jsonb,
+      updated_at = now()
+    WHERE id = $1
+    `,
+    [params.documentId, JSON.stringify(params.patch)]
+  );
+}
+
 export async function insertEvidence(params: {
   deal_id: string;
   document_id?: string | null;

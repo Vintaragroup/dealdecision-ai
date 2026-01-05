@@ -26,6 +26,11 @@ services:
       file: infra/docker-compose.yml
       service: worker
 
+  vision_worker:
+    extends:
+      file: infra/docker-compose.yml
+      service: vision_worker
+
   web:
     extends:
       file: infra/docker-compose.yml
@@ -34,3 +39,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  dealdecision_uploads:

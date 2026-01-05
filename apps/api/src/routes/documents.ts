@@ -9,6 +9,18 @@ import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
 import { normalizeDealName } from "../lib/normalize-deal-name";
 
+async function hasTable(pool: ReturnType<typeof getPool>, table: string) {
+  try {
+    const { rows } = await pool.query<{ oid: string | null }>(
+      "SELECT to_regclass($1) as oid",
+      [table]
+    );
+    return rows[0]?.oid !== null;
+  } catch {
+    return false;
+  }
+}
+
 const documentTypeSchema = z
   .enum([
     "pitch_deck",
@@ -225,6 +237,211 @@ function buildDealExtractionReport(args: {
 }
 
 export async function registerDocumentRoutes(app: FastifyInstance, pool = getPool()) {
+  app.get(
+    "/api/v1/deals/:deal_id/documents/:document_id/visual-assets",
+    {
+      schema: {
+        description: "List visual assets extracted for a document (safe no-op if visual tables are missing).",
+        tags: ["documents"],
+        params: {
+          type: "object",
+          properties: {
+            deal_id: { type: "string" },
+            document_id: { type: "string" },
+          },
+          required: ["deal_id", "document_id"],
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              deal_id: { type: "string" },
+              document_id: { type: "string" },
+              assets: { type: "array", items: { type: "object", additionalProperties: true } },
+              warnings: { type: "array", items: { type: "string" } },
+            },
+            required: ["deal_id", "document_id", "assets", "warnings"],
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+    const dealId = sanitizeText((request.params as any)?.deal_id);
+    const documentId = sanitizeText((request.params as any)?.document_id);
+    const warnings: string[] = [];
+
+    if (!dealId) {
+      return reply.status(400).send({ error: "deal_id is required" });
+    }
+    if (!documentId) {
+      return reply.status(400).send({ error: "document_id is required" });
+    }
+
+    // Enforce scoping consistent with other document endpoints.
+    const existing = await pool.query<{ id: string }>(
+      `SELECT id
+         FROM documents
+        WHERE deal_id = $1 AND id = $2
+        LIMIT 1`,
+      [dealId, documentId]
+    );
+    if (!existing.rows.length) {
+      return reply.status(404).send({ error: "Document not found" });
+    }
+
+    // Safety: if the visual lane tables are not installed, this endpoint returns an empty response.
+    const assetsOk = await hasTable(pool, "public.visual_assets");
+    const extractionsOk = await hasTable(pool, "public.visual_extractions");
+    const evidenceOk = await hasTable(pool, "public.evidence_links");
+
+    if (!assetsOk || !extractionsOk || !evidenceOk) {
+      warnings.push("visual extraction tables not installed");
+      request.log.info(
+        {
+          request_id: (request as any).id,
+          deal_id: dealId,
+          document_id: documentId,
+          counts: { assets: 0 },
+          warnings_count: warnings.length,
+        },
+        "document.visual_assets"
+      );
+      return reply.send({ deal_id: dealId, document_id: documentId, assets: [], warnings });
+    }
+
+    type Row = {
+      id: string;
+      page_index: number;
+      asset_type: string;
+      bbox: any;
+      image_uri: string | null;
+      image_hash: string | null;
+      extractor_version: string;
+      confidence: number | string;
+      quality_flags: any;
+      created_at: string;
+
+      extraction_id: string | null;
+      ocr_text: string | null;
+      ocr_blocks: any;
+      structured_json: any;
+      units: string | null;
+      labels: any;
+      model_version: string | null;
+      extraction_confidence: number | string | null;
+      extraction_created_at: string | null;
+
+      evidence_count: number;
+      evidence_sample_snippets: string[] | null;
+    };
+
+    // Simplest stable behavior: return a single "latest_extraction" per visual asset
+    // (latest by visual_extractions.created_at), regardless of extractor_version.
+    const { rows } = await pool.query<Row>(
+      `WITH latest_extractions AS (
+         SELECT
+           ve.*,
+           ROW_NUMBER() OVER (PARTITION BY ve.visual_asset_id ORDER BY ve.created_at DESC) AS rn
+         FROM visual_extractions ve
+       )
+       SELECT
+         va.id,
+         va.page_index,
+         va.asset_type,
+         va.bbox,
+         va.image_uri,
+         va.image_hash,
+         va.extractor_version,
+         va.confidence,
+         va.quality_flags,
+         va.created_at,
+         le.id AS extraction_id,
+         le.ocr_text,
+         le.ocr_blocks,
+         le.structured_json,
+         le.units,
+         le.labels,
+         le.model_version,
+         le.confidence AS extraction_confidence,
+         le.created_at AS extraction_created_at,
+         COALESCE(ev.count, 0) AS evidence_count,
+         COALESCE(ev.sample_snippets, ARRAY[]::text[]) AS evidence_sample_snippets
+       FROM visual_assets va
+       LEFT JOIN latest_extractions le
+         ON le.visual_asset_id = va.id AND le.rn = 1
+       LEFT JOIN LATERAL (
+         SELECT
+           COUNT(*)::int AS count,
+           ARRAY(
+             SELECT LEFT(el2.snippet, 200)
+             FROM evidence_links el2
+             WHERE el2.visual_asset_id = va.id
+               AND el2.snippet IS NOT NULL
+               AND el2.snippet <> ''
+             ORDER BY el2.created_at DESC
+             LIMIT 3
+           ) AS sample_snippets
+         FROM evidence_links el
+         WHERE el.visual_asset_id = va.id
+       ) ev ON true
+       JOIN documents d ON d.id = va.document_id
+       WHERE d.deal_id = $1
+         AND va.document_id = $2
+       ORDER BY va.page_index ASC, va.created_at ASC`,
+      [dealId, documentId]
+    );
+
+    const assets = rows.map((r) => {
+      const createdAt = new Date(r.created_at).toISOString();
+      const extractionCreatedAt = r.extraction_created_at ? new Date(r.extraction_created_at).toISOString() : null;
+      const confidence = Number(r.confidence);
+      const extractionConfidence = r.extraction_confidence == null ? null : Number(r.extraction_confidence);
+
+      return {
+        id: r.id,
+        page_index: r.page_index,
+        asset_type: r.asset_type,
+        bbox: r.bbox ?? {},
+        image_uri: r.image_uri,
+        image_hash: r.image_hash,
+        extractor_version: r.extractor_version,
+        confidence: Number.isFinite(confidence) ? confidence : 0,
+        quality_flags: r.quality_flags ?? {},
+        created_at: createdAt,
+        latest_extraction: r.extraction_id
+          ? {
+              id: r.extraction_id,
+              ocr_text: r.ocr_text,
+              ocr_blocks: r.ocr_blocks ?? [],
+              structured_json: r.structured_json ?? {},
+              units: r.units,
+              labels: r.labels ?? {},
+              model_version: r.model_version,
+              confidence: extractionConfidence != null && Number.isFinite(extractionConfidence) ? extractionConfidence : 0,
+              created_at: extractionCreatedAt,
+            }
+          : null,
+        evidence: {
+          count: Number.isFinite(r.evidence_count) ? r.evidence_count : 0,
+          sample_snippets: Array.isArray(r.evidence_sample_snippets) ? r.evidence_sample_snippets : [],
+        },
+      };
+    });
+
+    request.log.info(
+      {
+        request_id: (request as any).id,
+        deal_id: dealId,
+        document_id: documentId,
+        counts: { assets: assets.length },
+        warnings_count: warnings.length,
+      },
+      "document.visual_assets"
+    );
+
+    return reply.send({ deal_id: dealId, document_id: documentId, assets, warnings });
+  });
+
   // JSON upload helper for automated tests (accepts base64 payload)
   app.post("/api/v1/deals/:deal_id/documents/upload", async (request, reply) => {
     const dealId = (request.params as { deal_id: string }).deal_id;
@@ -316,7 +533,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
 
     try {
       // Parse multipart form data
-      const parts = request.parts();
+      const parts = (request as any).parts();
       for await (const part of parts) {
         if (part.type === "file") {
           fileBuffer = await part.toBuffer();
@@ -556,7 +773,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
     const deals = dealsResult.rows;
 
     // Parse multipart form data
-    const parts = request.file();
+    const parts = (request as any).file();
     const filenames: string[] = [];
 
     // Unfortunately Fastify's file() returns a single file iterator

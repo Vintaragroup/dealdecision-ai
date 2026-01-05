@@ -6,7 +6,7 @@ import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
 import { updateDealPriority, updateAllDealPriorities } from "../services/priorityClassification";
 import { normalizeDealName } from "../lib/normalize-deal-name";
-import { purgeDealCascade, isPurgeDealNotFoundError } from "@dealdecision/core";
+import { purgeDealCascade, isPurgeDealNotFoundError, sanitizeText } from "@dealdecision/core";
 
 type QueryResult<T> = { rows: T[]; rowCount?: number };
 type DealRoutesClient = {
@@ -19,6 +19,18 @@ type DealRoutesPool = {
 };
 
 type DealApiMode = "phase1" | "full";
+
+async function hasTable(pool: DealRoutesPool, table: string) {
+  try {
+    const { rows } = await pool.query<{ oid: string | null }>(
+      "SELECT to_regclass($1) as oid",
+      [table]
+    );
+    return rows[0]?.oid !== null;
+  } catch {
+    return false;
+  }
+}
 
 function requireDestructiveAuth(request: any): { ok: true } | { ok: false; status: number; error: string } {
   const adminToken = process.env.ADMIN_TOKEN;
@@ -188,6 +200,250 @@ function mapDeal(row: DealRow, dio: DIOAggregateRow | null | undefined, mode: De
 
 export async function registerDealRoutes(app: FastifyInstance, poolOverride?: any) {
   const pool = (poolOverride ?? getPool()) as DealRoutesPool;
+
+  app.get(
+    "/api/v1/deals/:deal_id/lineage",
+    {
+      schema: {
+        description: "Return a minimal deal lineage graph (React Flow ready).",
+        tags: ["deals"],
+        params: {
+          type: "object",
+          properties: {
+            deal_id: { type: "string" },
+          },
+          required: ["deal_id"],
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              deal_id: { type: "string" },
+              nodes: { type: "array", items: { type: "object", additionalProperties: true } },
+              edges: { type: "array", items: { type: "object", additionalProperties: true } },
+              warnings: { type: "array", items: { type: "string" } },
+            },
+            required: ["deal_id", "nodes", "edges", "warnings"],
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+    const dealIdRaw = (request.params as any)?.deal_id;
+    const dealId = sanitizeText(typeof dealIdRaw === "string" ? dealIdRaw : String(dealIdRaw ?? ""));
+    const warnings: string[] = [];
+
+    if (!dealId) {
+      return reply.status(400).send({ error: "deal_id is required" });
+    }
+
+    // Load deal label if it exists; keep endpoint read-only and resilient.
+    let dealName: string | null = null;
+    try {
+      const { rows } = await pool.query<{ id: string; name: string }>(
+        "SELECT id, name FROM deals WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
+        [dealId]
+      );
+      if (rows?.[0]?.name) dealName = rows[0].name;
+      else warnings.push("deal not found");
+    } catch {
+      warnings.push("deal lookup failed");
+    }
+
+    // Documents are always included if present.
+    type DocRow = {
+      id: string;
+      title: string;
+      type: string | null;
+      page_count: number | null;
+      uploaded_at: string;
+    };
+
+    let docs: DocRow[] = [];
+    try {
+      const { rows } = await pool.query<DocRow>(
+        `SELECT id, title, type, page_count, uploaded_at
+           FROM documents
+          WHERE deal_id = $1
+          ORDER BY uploaded_at ASC, id ASC`,
+        [dealId]
+      );
+      docs = rows ?? [];
+    } catch {
+      warnings.push("document lookup failed");
+      docs = [];
+    }
+
+    const dealNodeId = `deal:${dealId}`;
+    const nodes: any[] = [
+      {
+        id: dealNodeId,
+        type: "deal",
+        data: {
+          label: dealName || `Deal ${dealId}`,
+          deal_id: dealId,
+          name: dealName,
+        },
+      },
+    ];
+    const edges: any[] = [];
+
+    for (const d of docs) {
+      const docNodeId = `doc:${d.id}`;
+      nodes.push({
+        id: docNodeId,
+        type: "document",
+        data: {
+          label: d.title,
+          document_id: d.id,
+          title: d.title,
+          type: d.type ?? undefined,
+          page_count: typeof d.page_count === "number" ? d.page_count : 0,
+        },
+      });
+      edges.push({
+        id: `e:deal-doc:${dealId}:${d.id}`,
+        source: dealNodeId,
+        target: docNodeId,
+      });
+    }
+
+    // Visual lane is optional; if tables are missing return deal+docs and warnings.
+    const visualsOk =
+      (await hasTable(pool, "public.visual_assets")) &&
+      (await hasTable(pool, "public.visual_extractions")) &&
+      (await hasTable(pool, "public.evidence_links"));
+
+    if (!visualsOk) {
+      warnings.push("visual extraction tables not installed");
+      request.log.info(
+        {
+          request_id: (request as any).id,
+          deal_id: dealId,
+          counts: {
+            documents: docs.length,
+            visual_assets: 0,
+            evidence_nodes: 0,
+          },
+          warnings_count: warnings.length,
+        },
+        "deal.lineage"
+      );
+      return reply.send({ deal_id: dealId, nodes, edges, warnings });
+    }
+
+    type VisualRow = {
+      id: string;
+      document_id: string;
+      page_index: number;
+      asset_type: string;
+      bbox: any;
+      image_uri: string | null;
+      image_hash: string | null;
+      extractor_version: string;
+      confidence: number | string;
+      quality_flags: any;
+      created_at: string;
+      evidence_count: number;
+    };
+
+    let visuals: VisualRow[] = [];
+    try {
+      const { rows } = await pool.query<VisualRow>(
+        `SELECT
+           va.id,
+           va.document_id,
+           va.page_index,
+           va.asset_type,
+           va.bbox,
+           va.image_uri,
+           va.image_hash,
+           va.extractor_version,
+           va.confidence,
+           va.quality_flags,
+           va.created_at,
+           COALESCE(ev.count, 0) AS evidence_count
+         FROM visual_assets va
+         JOIN documents d ON d.id = va.document_id
+         LEFT JOIN LATERAL (
+           SELECT COUNT(*)::int AS count
+           FROM evidence_links el
+           WHERE el.visual_asset_id = va.id
+         ) ev ON true
+         WHERE d.deal_id = $1
+         ORDER BY va.document_id ASC, va.page_index ASC, va.created_at ASC`,
+        [dealId]
+      );
+      visuals = rows ?? [];
+    } catch {
+      warnings.push("visual asset lookup failed");
+      visuals = [];
+    }
+
+    for (const v of visuals) {
+      const docNodeId = `doc:${v.document_id}`;
+      const vaNodeId = `va:${v.id}`;
+      const evNodeId = `evagg:${v.id}`;
+      const conf = Number(v.confidence);
+      const confidence = Number.isFinite(conf) ? conf : 0;
+      const pageLabel = typeof v.page_index === "number" ? v.page_index + 1 : 0;
+
+      nodes.push({
+        id: vaNodeId,
+        type: "visual_asset",
+        data: {
+          label: `Page ${pageLabel} • ${v.asset_type}`,
+          visual_asset_id: v.id,
+          document_id: v.document_id,
+          page_index: v.page_index,
+          asset_type: v.asset_type,
+          bbox: v.bbox ?? {},
+          image_uri: v.image_uri,
+          image_hash: v.image_hash,
+          confidence,
+          extractor_version: v.extractor_version,
+        },
+      });
+
+      edges.push({
+        id: `e:doc-va:${v.document_id}:${v.id}`,
+        source: docNodeId,
+        target: vaNodeId,
+      });
+
+      const count = Number.isFinite(v.evidence_count) ? v.evidence_count : 0;
+      nodes.push({
+        id: evNodeId,
+        type: "evidence",
+        data: {
+          label: `Evidence (${count})`,
+          count,
+          visual_asset_id: v.id,
+        },
+      });
+      edges.push({
+        id: `e:va-evagg:${v.id}`,
+        source: vaNodeId,
+        target: evNodeId,
+      });
+    }
+
+    request.log.info(
+      {
+        request_id: (request as any).id,
+        deal_id: dealId,
+        counts: {
+          documents: docs.length,
+          visual_assets: visuals.length,
+          evidence_nodes: visuals.length,
+        },
+        warnings_count: warnings.length,
+      },
+      "deal.lineage"
+    );
+
+    return reply.send({ deal_id: dealId, nodes, edges, warnings });
+  });
 
   app.post("/api/v1/deals", async (request, reply) => {
     const parsed = dealCreateSchema.safeParse(request.body);

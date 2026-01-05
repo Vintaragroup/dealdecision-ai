@@ -36,6 +36,7 @@ import {
 import { deriveEvidenceDrafts } from "./lib/evidence";
 import {
 	callVisionWorker,
+	enqueueExtractVisualsIfPossible,
 	getVisionExtractorConfig,
 	hasTable,
 	persistVisionResponse,
@@ -911,11 +912,18 @@ async function ingestDocumentProcessor(job: Job) {
 			if (visionCfg.enabled) {
 				try {
 					const visualsQueue = getQueue("extract_visuals");
-					await visualsQueue.add(
-						"extract_visuals",
-						{ document_id: documentId, deal_id: dealId },
-						{ removeOnComplete: true, removeOnFail: false, delay: 750 }
-					);
+					const enqueued = await enqueueExtractVisualsIfPossible({
+						pool: getPool(),
+						queue: visualsQueue,
+						config: visionCfg,
+						documentId,
+						dealId,
+					});
+					if (!enqueued) {
+						console.log(
+							`[ingest_document] visual extraction skipped doc=${documentId} (NO_PAGE_IMAGES_AVAILABLE)`
+						);
+					}
 				} catch (err) {
 					console.warn(
 						`[ingest_document] visual extraction enqueue failed doc=${documentId}: ${
@@ -968,6 +976,7 @@ createWorker("ingest_documents", ingestDocumentProcessor);
 createWorker("extract_visuals", async (job: Job) => {
 	const documentId = (job.data as { document_id?: string } | undefined)?.document_id;
 	const imageUris = (job.data as { image_uris?: string[] } | undefined)?.image_uris;
+	const extractorVersionOverride = (job.data as { extractor_version?: string } | undefined)?.extractor_version;
 
 	if (!documentId) {
 		console.warn("[extract_visuals] Missing document_id");
@@ -978,6 +987,10 @@ createWorker("extract_visuals", async (job: Job) => {
 	if (!config.enabled) {
 		return { ok: true, skipped: true, reason: "disabled" };
 	}
+
+	const extractorVersion = typeof extractorVersionOverride === "string" && extractorVersionOverride.trim()
+		? extractorVersionOverride.trim()
+		: config.extractorVersion;
 
 	const pool = getPool();
 	const tablesOk =
@@ -1009,7 +1022,7 @@ createWorker("extract_visuals", async (job: Job) => {
 			document_id: documentId,
 			page_index: i,
 			image_uri,
-			extractor_version: config.extractorVersion,
+			extractor_version: extractorVersion,
 		});
 
 		if (!response) {

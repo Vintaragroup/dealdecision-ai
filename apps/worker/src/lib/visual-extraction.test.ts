@@ -2,7 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+	enqueueExtractVisualsIfPossible,
 	getVisionExtractorConfig,
+	resolvePageImageUris,
 	upsertVisualAsset,
 	persistVisionResponse,
 } from "./visual-extraction";
@@ -98,4 +100,114 @@ test("persistVisionResponse writes assets + extraction + evidence link", async (
 	assert.ok(calls.some((c) => c.sql.includes("INSERT INTO visual_assets")));
 	assert.ok(calls.some((c) => c.sql.includes("INSERT INTO visual_extractions")));
 	assert.ok(calls.some((c) => c.sql.includes("INSERT INTO evidence_links")));
+});
+
+test("resolvePageImageUris returns [] and logs NO_PAGE_IMAGES_AVAILABLE when dirs missing", async () => {
+	const logs: string[] = [];
+	const logger = {
+		log: (s: any) => logs.push(String(s)),
+		warn: (s: any) => logs.push(String(s)),
+		error: (s: any) => logs.push(String(s)),
+	};
+
+	const pool = {
+		query: async () => ({ rows: [{ page_count: 3, extraction_metadata: null }] }),
+	} as any;
+
+	const fsImpl = {
+		stat: async () => {
+			throw new Error("ENOENT");
+		},
+		readdir: async () => [],
+	} as any;
+
+	const uris = await resolvePageImageUris(pool, "00000000-0000-0000-0000-000000000000", { logger, fsImpl });
+	assert.deepEqual(uris, []);
+	assert.ok(logs.some((l) => l.includes("NO_PAGE_IMAGES_AVAILABLE")));
+});
+
+test("enqueueExtractVisualsIfPossible does not enqueue when resolver finds no images", async () => {
+	const pool = {
+		query: async () => ({ rows: [{ page_count: 2, extraction_metadata: null }] }),
+	} as any;
+
+	const fsImpl = {
+		stat: async () => {
+			throw new Error("ENOENT");
+		},
+		readdir: async () => [],
+	} as any;
+
+	// Monkeypatch by calling resolve directly via env-less option: pass a logger/fsImpl through pool wrapper
+	let added = 0;
+	const queue = {
+		add: async () => {
+			added += 1;
+		},
+	};
+
+	const cfg = { ...getVisionExtractorConfig({} as any), enabled: true, extractorVersion: "vision_v1" };
+
+	const ok = await enqueueExtractVisualsIfPossible({
+		pool: pool as any,
+		queue,
+		config: cfg,
+		documentId: "00000000-0000-0000-0000-000000000000",
+		dealId: "00000000-0000-0000-0000-000000000999",
+		logger: { log: () => {}, warn: () => {}, error: () => {} } as any,
+		resolveOptions: { fsImpl },
+	});
+
+	// If enqueue helper returns false, it skipped. Also verify queue.add not called.
+	assert.equal(ok, false);
+	assert.equal(added, 0);
+
+	// sanity: ensure our resolve stub indeed returns none
+	const uris = await resolvePageImageUris(pool as any, "00000000-0000-0000-0000-000000000000", { fsImpl });
+	assert.equal(uris.length, 0);
+});
+
+test("enqueueExtractVisualsIfPossible enqueues with extractor_version and image_uris when images exist", async () => {
+	const pool = {
+		query: async () => ({ rows: [{ page_count: 2, extraction_metadata: null }] }),
+	} as any;
+
+	const fsImpl = {
+		stat: async () => ({ isDirectory: () => true }),
+		readdir: async () => ["page_001_raw.png", "page_002_raw.png"],
+	} as any;
+
+	let captured: any = null;
+	const queue = {
+		add: async (_name: string, data: any) => {
+			captured = data;
+		},
+	};
+
+	const cfg = { ...getVisionExtractorConfig({} as any), enabled: true, extractorVersion: "vision_v1" };
+
+	// Force resolver to look only at /tmp path by using a documentId that maps there.
+	// It will find our mocked files there.
+	const ok = await enqueueExtractVisualsIfPossible({
+		pool: pool as any,
+		queue,
+		config: cfg,
+		documentId: "doc-123",
+		dealId: "deal-456",
+		logger: { log: () => {}, warn: () => {}, error: () => {} } as any,
+		resolveOptions: { fsImpl },
+	});
+
+	assert.equal(ok, true);
+	assert.ok(captured);
+	assert.equal(captured.document_id, "doc-123");
+	assert.equal(captured.deal_id, "deal-456");
+	assert.equal(captured.extractor_version, "vision_v1");
+	assert.ok(Array.isArray(captured.image_uris));
+	assert.equal(captured.image_uris.length, 2);
+
+	// Also validate resolver ordering produces absolute paths containing the expected filenames.
+	const uris = await resolvePageImageUris(pool as any, "doc-123", { fsImpl, logger: { log: () => {}, warn: () => {} } as any });
+	assert.ok(uris[0].endsWith("page_001_raw.png"));
+	assert.ok(uris[1].endsWith("page_002_raw.png"));
 });

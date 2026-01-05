@@ -321,6 +321,64 @@ export function apiGetDocuments(dealId: string) {
   }> }>(`/api/v1/deals/${dealId}/documents`);
 }
 
+export type DealLineageNode = {
+  id: string;
+  type?: string;
+  data?: Record<string, unknown>;
+};
+
+export type DealLineageEdge = {
+  id: string;
+  source: string;
+  target: string;
+};
+
+export type DealLineageResponse = {
+  deal_id: string;
+  nodes: DealLineageNode[];
+  edges: DealLineageEdge[];
+  warnings: string[];
+};
+
+export function apiGetDealLineage(dealId: string) {
+  return request<DealLineageResponse>(`/api/v1/deals/${dealId}/lineage`);
+}
+
+export type VisualAssetEvidenceSummary = {
+  evidence_count: number;
+  sample_snippets: string[];
+};
+
+export type DocumentVisualAsset = {
+  visual_asset_id: string;
+  document_id: string;
+  page_index: number;
+  asset_type: string;
+  bbox: unknown;
+  image_uri: string | null;
+  image_hash: string | null;
+  confidence: number;
+  extractor_version: string;
+  extracted_at: string | null;
+  ocr_text: string | null;
+  structured_json: unknown;
+  quality_flags: unknown;
+  evidence: VisualAssetEvidenceSummary;
+};
+
+export type DocumentVisualAssetsResponse = {
+  deal_id: string;
+  document_id: string;
+  visual_assets: DocumentVisualAsset[];
+  warnings: string[];
+};
+
+export function apiGetDocumentVisualAssets(dealId: string, documentId: string) {
+  return request<DocumentVisualAssetsResponse>(
+    `/api/v1/deals/${dealId}/documents/${documentId}/visual-assets`
+  );
+}
+
 export type ExtractionConfidenceBand = 'high' | 'medium' | 'low' | 'unknown';
 export type ExtractionRecommendedAction = 'proceed' | 'remediate' | 're_extract' | 'wait';
 

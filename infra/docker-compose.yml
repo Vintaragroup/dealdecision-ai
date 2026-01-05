@@ -111,7 +111,14 @@ services:
     build:
       context: ..
       dockerfile: apps/web/Dockerfile.dev
-    command: ["pnpm", "--filter", "web", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
+    command:
+      - sh
+      - -lc
+      - |
+        if [ ! -f /app/apps/web/node_modules/reactflow/dist/style.css ]; then
+          pnpm install --frozen-lockfile=false
+        fi
+        pnpm --filter web dev -- --host 0.0.0.0 --port 5173
     environment:
       VITE_API_BASE_URL: http://localhost:9000
       VITE_BACKEND_MODE: live

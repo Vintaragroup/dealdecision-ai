@@ -10,6 +10,7 @@ import { ExportReportModal } from '../ExportReportModal';
 import { TemplateExportModal } from '../TemplateExportModal';
 import { AnalysisTab } from '../workspace/AnalysisTab';
 import { DataTab } from '../workspace/DataTab';
+import { DealAnalystTab } from '../deals/tabs/DealAnalystTab';
 import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
@@ -662,6 +663,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     { id: 'overview', label: 'Overview', icon: <BarChart3 className="w-4 h-4" /> },
     { id: 'documents', label: 'Pitch Materials', icon: <Presentation className="w-4 h-4" />, badge: 7 },
     { id: 'evidence', label: 'Evidence', icon: <Shield className="w-4 h-4" /> },
+    { id: 'analyst', label: 'Analyst', icon: <Eye className="w-4 h-4" /> },
     { id: 'analysis', label: 'AI Refinement', icon: <Sparkles className="w-4 h-4" /> },
     { id: 'feedback', label: 'Investor Feedback', icon: <Lightbulb className="w-4 h-4" />, badge: 12 },
     { id: 'diligence', label: 'Fundraising Progress', icon: <TrendingUp className="w-4 h-4" /> },
@@ -670,6 +672,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     { id: 'overview', label: 'Overview', icon: <BarChart3 className="w-4 h-4" /> },
     { id: 'documents', label: 'Documents', icon: <FileText className="w-4 h-4" />, badge: 8 },
     { id: 'evidence', label: 'Evidence', icon: <Shield className="w-4 h-4" /> },
+    { id: 'analyst', label: 'Analyst', icon: <Eye className="w-4 h-4" /> },
     { id: 'analysis', label: 'AI Analysis', icon: <Sparkles className="w-4 h-4" /> },
     { id: 'diligence', label: 'Due Diligence', icon: <Shield className="w-4 h-4" /> },
     { id: 'feedback', label: 'Investment Thesis', icon: <Target className="w-4 h-4" /> },
@@ -1644,6 +1647,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 reportSections={Array.isArray(reportFromApi?.sections) ? reportFromApi!.sections!.map((s) => ({ title: s.title, evidence_ids: s.evidence_ids })) : []}
                 documentTitles={documentTitles}
               />
+            )}
+
+            {/* Analyst Mode Tab */}
+            {activeTab === 'analyst' && (
+              <DealAnalystTab dealId={dealId || 'demo'} darkMode={darkMode} />
             )}
 
             {/* AI Analysis Tab */}

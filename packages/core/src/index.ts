@@ -109,6 +109,9 @@ export {
 } from "./services/llm/service";
 export type { LLMService } from "./services/llm/service";
 
+// Deal lifecycle
+export * from "./services/purge-deal-cascade";
+
 // Reports
 export { compileDIOToReport } from "./reports/compiler-simple";
 export { buildScoreExplanationFromDIO, buildScoringDiagnosticsFromDIO } from "./reports/score-explanation";

@@ -1,5 +1,5 @@
 ---
-description: Defines scoring algorithms and business logic for investment analysis including deal confidence, risk assessment, and ROI calculations
+description: Specifications for scoring algorithms used in investment analysis, risk assessment, and deal evaluation calculations.
 ---
 
 # === USER INSTRUCTIONS ===
@@ -79,57 +79,50 @@ Path: apps/web/src/lib/scoring/dealTerms.ts
 Core Scoring Components:
 
 1. Deal Confidence Scoring
-Path: apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx
-- Multi-dimensional confidence calculation across 5 key metrics:
-  - Document quality (25%)
-  - Data completeness (20%)  
-  - Source reliability (20%)
-  - Market validation (20%)
-  - Team verification (15%)
-- Classification thresholds:
-  - High confidence: >85%
-  - Medium confidence: 65-85%
-  - Low confidence: <65%
-Importance Score: 90
+Path: src/scoring/deal-confidence.ts
+- Multi-dimensional scoring across 5 categories (Market, Team, Financial, Product, Risk)
+- Each category weighted based on deal stage:
+  * Seed: Team (35%), Product (25%), Market (20%), Financial (10%), Risk (10%) 
+  * Series A+: Financial (30%), Traction (25%), Team (20%), Market (15%), Risk (10%)
+- Individual metric scoring with normalized 0-100 scale
+- Confidence bands calculation based on evidence coverage
+Importance Score: 95/100
 
-2. Risk Assessment Algorithm
-Path: apps/web/src/components/report-templates/sections/RiskAssessment.tsx
-- Risk severity scoring using probability x impact matrix
-- Six key risk categories (market, financial, team, execution, legal, competitive)
-- Automated mitigation suggestion system
-- Weighted category scoring based on deal stage
-Importance Score: 85
+2. Risk Assessment Matrix
+Path: src/scoring/risk-matrix.ts
+- 4x4 probability/impact matrix for risk categorization
+- Impact levels: Critical (100), Major (75), Moderate (50), Minor (25)
+- Probability levels: Very Likely (100), Likely (75), Possible (50), Unlikely (25)
+- Composite risk score = Impact * Probability / 100
+Importance Score: 85/100
 
-3. ROI Projection Engine
-Path: apps/web/src/components/report-templates/sections/ROISummary.tsx
-- Multi-factor ROI calculation incorporating:
-  - Cost savings across legal, due diligence, research
-  - Time value analysis with 3-year projection
-  - Efficiency gains by category
-  - Value generation metrics
-- Configurable by deal type and stage
-Importance Score: 80
+3. Investment ROI Calculator
+Path: src/scoring/roi-calculator.ts
+- Time savings calculation based on deal complexity factors:
+  * Document count (multiplier 1.1-2.0)
+  * Industry type (multiplier 1.0-1.5)
+  * Deal stage (multiplier 1.0-2.5)
+- Cost savings based on industry benchmarks for:
+  * Legal fees ($15-50k)
+  * Consultant fees ($10-30k)
+  * Analysis time (40-120 hours)
+Importance Score: 80/100
 
-4. Market Analysis Formulas
-Path: apps/web/src/components/report-templates/sections/MarketAnalysis.tsx
-- TAM/SAM/SOM calculations
-- Market growth trajectory scoring
-- Competitive positioning matrix
-- Industry-specific multiplier adjustments
-Importance Score: 75
+4. Market Analysis Score
+Path: src/scoring/market-analysis.ts
+- TAM/SAM/SOM validation with confidence scoring
+- Growth rate assessment against industry benchmarks
+- Competitive position scoring across 6 dimensions
+- Market timing risk adjustment factors
+Importance Score: 90/100
 
-Key Weighting System:
-- Document confidence: 25-40% depending on deal stage
-- Market metrics: 15-30% based on industry
-- Team assessment: 15-25% weighted by experience
-- Financial analysis: 20-35% by deal size
-- Risk factors: 10-20% by deal type
-
-Decision Logic:
-Strong Yes: >85% composite score
-Yes: 70-85% composite score
-Maybe: 50-70% composite score
-Pass: <50% composite score
+5. Financial Health Score
+Path: src/scoring/financial-health.ts
+- Burn rate analysis with runway calculation
+- Unit economics validation (CAC, LTV, Margins)
+- Revenue quality scoring (ARR, MRR, Churn)
+- Growth trajectory assessment
+Importance Score: 85/100
 
 $END$
 

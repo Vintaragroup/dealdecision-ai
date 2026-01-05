@@ -126,6 +126,70 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		expect(bullets).toMatch(/ICP: not provided/i);
 	});
 
+	it("coverage.section_details marks present=true but provided=false when key exists with empty content", () => {
+		const out = generatePhase1DIOV1({
+			deal: { deal_id: "deal-missing-sections-1", name: "EmptyCo", stage: "intake" },
+			inputDocuments: [
+				{
+					document_id: "doc-empty",
+					title: "Placeholder",
+					type: "memo",
+					full_text: "Confidential memo. Placeholder document with no substantive deal content.",
+				},
+			],
+			deal_overview_v2: {
+				deal_name: "EmptyCo",
+				product_solution: "",
+				market_icp: "",
+				raise: "Unknown",
+				generated_at: "2026-01-05T00:00:00.000Z",
+			},
+		});
+
+		const details = (out.coverage as any)?.section_details;
+		expect(details).toBeTruthy();
+		expect(details.product_solution.present).toBe(true);
+		expect(details.product_solution.provided).toBe(false);
+		expect(details.product_solution.why_missing).toBe("empty_text");
+
+		const missingList = (out.coverage as any)?.sections_missing_list ?? [];
+		expect(missingList).toContain("product_solution");
+	});
+
+	it("real_estate_underwriting uses policy-aware required sections and does not penalize RE tenant/market evidence as missing ICP", () => {
+		const memoText =
+			"Offering Memorandum\n" +
+			"We are raising $10M of preferred equity for the acquisition of a value-add multifamily property located in Austin, TX.\n" +
+			"Market: Austin MSA with strong job growth and in-migration. Target renters include workforce households.\n" +
+			"Business plan includes unit renovations, lease-up, and a leasing strategy to drive occupancy and rent growth.\n" +
+			"Underwriting: NOI, cap rate, DSCR, LTV, IRR and equity multiple are provided in the pro forma.";
+
+		const defaultOut = generatePhase1DIOV1({
+			deal: { deal_id: "deal-re-req-default", name: "RE Default", stage: "intake" },
+			inputDocuments: [{ document_id: "doc-1", title: "OM", type: "memo", full_text: memoText }],
+		});
+
+		const reOut = generatePhase1DIOV1({
+			deal: { deal_id: "deal-re-req", name: "RE Policy", stage: "intake" },
+			inputDocuments: [{ document_id: "doc-2", title: "OM", type: "memo", full_text: memoText }],
+			dio: { dio: { deal_classification_v1: { selected_policy: "real_estate_underwriting" } } },
+			deal_overview_v2: {
+				deal_name: "RE Policy",
+				raise: "Raising $10M preferred equity",
+				// market_icp intentionally omitted to simulate upstream drift
+				generated_at: "2026-01-05T00:00:00.000Z",
+			},
+		});
+
+		expect((defaultOut.coverage as any)?.required_sections).toBeTruthy();
+		expect((reOut.coverage as any)?.required_sections).toBeTruthy();
+		expect((reOut.coverage as any).required_sections).not.toEqual((defaultOut.coverage as any).required_sections);
+
+		const missingList = (reOut.coverage as any)?.sections_missing_list ?? [];
+		// RE memo contains market/tenant evidence; should not be treated as a missing ICP requirement.
+		expect(missingList).not.toContain("market_icp");
+	});
+
 	it("builds one_liner from overview only (OCR noise safe) and caps length", () => {
 		const out = generatePhase1DIOV1({
 			deal: { deal_id: "deal-2", name: "NoiseCo", stage: "intake" },

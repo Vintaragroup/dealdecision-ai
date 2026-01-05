@@ -101,6 +101,1107 @@ type RubricEval = {
   has_revenue_metric: boolean;
 };
 
+const getNormalizedPresenceSetForRubric = (dio: DealIntelligenceObject): Set<string> => {
+  const classification = getDealClassificationV1Any(dio as any);
+  const selectedSignalsRaw: string[] = asStringArray(classification?.selected?.signals);
+  const selectedSignals = selectedSignalsRaw.map(normalizeKey);
+
+  const mbMetrics: string[] = Array.isArray((dio as any)?.analyzer_results?.metric_benchmark?.metrics_analyzed)
+    ? (dio as any).analyzer_results.metric_benchmark.metrics_analyzed
+        .map((m: any) => (typeof m?.metric === "string" ? m.metric : ""))
+        .filter(Boolean)
+    : [];
+
+  const mbMetricKeys = mbMetrics.map(normalizeKey);
+  const extractedInputMetricKeys = getExtractedMetricKeysFromInputs(dio).map(normalizeKey);
+
+  const present = new Set<string>([...selectedSignals, ...mbMetricKeys, ...extractedInputMetricKeys]);
+
+  // Map KPI presence to rubric readiness signals.
+  if (present.has("loi_count") || present.has("contract_value")) present.add("loi_or_contract");
+  if (present.has("partnership_count") || present.has("distribution_partners")) present.add("partnership_or_distribution");
+  if (present.has("launch_timeline_months")) present.add("launch_timeline");
+  if (present.has("manufacturing_capacity") || selectedSignals.includes("manufacturing_ready")) present.add("product_ready");
+  if (selectedSignals.includes("product_ready")) present.add("product_ready");
+
+  // Ecommerce mapping: treat common unit economics KPIs as "unit_economics".
+  if (present.has("ltv_to_cac") || present.has("ltv") || present.has("cac") || present.has("roas")) {
+    present.add("unit_economics");
+  }
+  if (present.has("gross_margin_pct") || present.has("contribution_margin_pct")) {
+    present.add("gross_margin_or_unit_economics");
+    present.add("unit_economics");
+  }
+  // Operational control signals for ecommerce (repeat purchase / cohorts / conversion tracking).
+  if (present.has("repeat_purchase_rate") || present.has("conversion_rate") || present.has("cohort")) {
+    present.add("risk_controls");
+  }
+
+  // Physical product / CPG / spirits mapping.
+  if (
+    present.has("gross_margin") ||
+    present.has("contribution_margin") ||
+    present.has("cogs") ||
+    present.has("landed_cost") ||
+    present.has("inventory_turns") ||
+    present.has("cash_conversion_cycle")
+  ) {
+    present.add("gross_margin_or_unit_economics");
+    present.add("unit_economics");
+  }
+
+  if (present.has("repeat_rate") || present.has("retention_90d") || present.has("sell_through") || present.has("velocity")) {
+    present.add("repeat_or_velocity");
+    present.add("risk_controls");
+  }
+
+  if (present.has("doors") || present.has("distribution_points") || present.has("signed_distribution_agreement")) {
+    present.add("distribution_traction_or_agreements");
+    present.add("risk_controls");
+  }
+
+  if (present.has("working_capital_plan") || present.has("cash_conversion_cycle")) {
+    present.add("risk_controls");
+  }
+
+  if (present.has("ttb") || present.has("excise") || present.has("regulatory_compliance")) {
+    present.add("regulatory_compliance");
+  }
+
+  // Fintech mapping: transaction volume/adoption and compliance signals.
+  if (
+    present.has("tpv") ||
+    present.has("gtv") ||
+    present.has("transaction_volume") ||
+    present.has("payment_volume") ||
+    present.has("processed_volume") ||
+    present.has("transaction_count") ||
+    present.has("txn_count")
+  ) {
+    present.add("transaction_volume_or_gtv");
+  }
+
+  if (
+    present.has("active_users") ||
+    present.has("monthly_active_users") ||
+    present.has("mau") ||
+    present.has("dau") ||
+    present.has("users")
+  ) {
+    present.add("transaction_volume_or_gtv");
+  }
+
+  if (
+    present.has("kyc") ||
+    present.has("aml") ||
+    present.has("anti_money_laundering") ||
+    present.has("compliance") ||
+    present.has("regulatory") ||
+    present.has("regulatory_status") ||
+    present.has("license") ||
+    present.has("licence") ||
+    present.has("money_transmitter") ||
+    present.has("mtl")
+  ) {
+    present.add("compliance_controls");
+    present.add("risk_controls");
+  }
+
+  if (present.has("fraud_rate") || present.has("chargeback_rate")) {
+    present.add("risk_controls");
+  }
+
+  // SaaS mapping: treat recurring revenue + retention + unit economics as rubric readiness signals.
+  if (present.has("arr") || present.has("mrr") || present.has("bookings") || present.has("revenue")) {
+    present.add("revenue");
+  }
+  if (present.has("nrr") || present.has("ndr") || present.has("grr") || present.has("churn") || present.has("churn_logo") || present.has("churn_revenue")) {
+    present.add("retention_or_churn");
+  }
+  if (present.has("gross_margin") || present.has("ltv_to_cac") || present.has("payback_months")) {
+    present.add("gross_margin_or_unit_economics");
+    present.add("unit_economics");
+  }
+  if (present.has("acv") || present.has("pipeline_coverage") || present.has("sales_cycle_days") || present.has("magic_number")) {
+    present.add("risk_controls");
+  }
+
+  // Healthcare / biotech mapping.
+  // Regulatory path signals.
+  if (present.has("regulatory_path_clear") || present.has("fda") || present.has("ind") || present.has("ide") || present.has("pma") || present.has("510k") || present.has("510_k")) {
+    present.add("regulatory_path_clear");
+  }
+  if (present.has("regulatory_path_unclear")) {
+    present.add("regulatory_path_unclear");
+  }
+
+  // Validation signals (trials/IRB/data) and validation metrics.
+  if (
+    present.has("validation_signal") ||
+    present.has("trial_phase") ||
+    present.has("clinical_trial") ||
+    present.has("irb") ||
+    present.has("peer_reviewed") ||
+    present.has("endpoints") ||
+    present.has("sensitivity") ||
+    present.has("specificity") ||
+    present.has("strong_validation_metrics")
+  ) {
+    present.add("validation_signal");
+  }
+  if (present.has("strong_validation_metrics") || present.has("sensitivity") || present.has("specificity")) {
+    present.add("strong_validation_metrics");
+  }
+
+  // Team credibility (heuristic from classifier signals).
+  if (present.has("team_credibility") || present.has("kol") || present.has("key_opinion_leader")) {
+    present.add("team_credibility");
+  }
+
+  // Timeline + costs realism.
+  if (present.has("timeline_costs_realistic") || present.has("time_to_clearance_months") || present.has("runway_months") || present.has("burn_rate")) {
+    present.add("timeline_costs_realistic");
+  }
+
+  // Reimbursement (positive driver, not required).
+  if (present.has("reimbursement_status") || present.has("reimbursement_path") || present.has("cpt") || present.has("drg") || present.has("payer")) {
+    present.add("reimbursement_path");
+  }
+
+  // Safety/ethics red flag.
+  if (present.has("safety_ethics_risk")) {
+    present.add("safety_ethics_risk");
+  }
+
+  // Media / entertainment / IP mapping.
+  // Rights verification (option / chain of title).
+  if (present.has("rights_verifiable") || present.has("chain_of_title") || present.has("option") || present.has("rights") || present.has("rights_agreement")) {
+    present.add("rights_verifiable");
+  }
+
+  // Distribution package (distribution agreement / MG / pre-sales) as a gating/positive driver.
+  if (
+    present.has("distribution_package") ||
+    present.has("distribution") ||
+    present.has("distributor") ||
+    present.has("mg_amount") ||
+    present.has("minimum_guarantee") ||
+    present.has("presales_amount") ||
+    present.has("presales")
+  ) {
+    present.add("distribution_package");
+  }
+
+  // Attachments and financeability.
+  if (present.has("strong_attachments") || present.has("attachment_strength") || present.has("talent_attachments")) {
+    present.add("strong_attachments");
+  }
+  if (present.has("financing_plan")) {
+    present.add("financing_plan");
+  }
+  if (present.has("completion_bond_plan") || present.has("completion_bond")) {
+    present.add("completion_bond_plan");
+  }
+  if (present.has("waterfall_recoupment_clarity") || present.has("recoupment_multiple") || present.has("recoupment") || present.has("waterfall")) {
+    present.add("waterfall_recoupment_clarity");
+  }
+
+  // Red flags.
+  if (present.has("rights_unclear")) present.add("rights_unclear");
+  if (present.has("no_distribution_path")) present.add("no_distribution_path");
+  if (present.has("aggressive_assumptions_no_comps")) present.add("aggressive_assumptions_no_comps");
+  if (present.has("recoupment_waterfall_unclear")) present.add("recoupment_waterfall_unclear");
+
+  // Rubric convenience: a financeable structure exists if there's a distribution package OR strong attachments + financing + completion bond plan.
+  if (
+    present.has("distribution_package") ||
+    (present.has("strong_attachments") && present.has("financing_plan") && present.has("completion_bond_plan"))
+  ) {
+    present.add("financeable_structure");
+  }
+
+  // Marketing commitment (proxy KPI or narrative signal).
+  if (present.has("marketing_commitment") || present.has("p_and_a") || present.has("prints_and_advertising")) {
+    present.add("marketing_commitment");
+  }
+
+  return present;
+};
+
+type PolicyCapBucket = "positive_signals" | "coverage_gaps" | "red_flags";
+
+const computeHealthcareBiotechV1Caps = (params: {
+  dio: DealIntelligenceObject;
+  overall: number | null;
+  unadjustedOverall: number | null;
+  adjustmentFactor: number;
+}): {
+  capped_overall: number | null;
+  cap_applied: number | null;
+  diagnostics: Array<{ bucket: PolicyCapBucket; text: string }>;
+} => {
+  const { dio, overall, unadjustedOverall, adjustmentFactor } = params;
+  const policyId = getSelectedPolicyIdFromAny(dio);
+  if (policyId !== "healthcare_biotech_v1") {
+    return { capped_overall: overall, cap_applied: null, diagnostics: [] };
+  }
+
+  const present = getNormalizedPresenceSetForRubric(dio);
+
+  const hasRegulatoryPath = present.has("regulatory_path_clear") && !present.has("regulatory_path_unclear");
+  const regulatoryUnclear = present.has("regulatory_path_unclear") && !present.has("regulatory_path_clear");
+  const hasValidation = present.has("validation_signal");
+  const hasTeamCredibility = present.has("team_credibility");
+  const hasTimelineCosts = present.has("timeline_costs_realistic");
+  const safetyEthicsRisk = present.has("safety_ethics_risk");
+
+  const preCap =
+    unadjustedOverall === null ? null : Math.round(unadjustedOverall * adjustmentFactor + 50 * (1 - adjustmentFactor));
+  const baseline = preCap !== null ? preCap : overall;
+
+  let capped = overall;
+  let capApplied: number | null = null;
+  const diagnostics: Array<{ bucket: PolicyCapBucket; text: string }> = [];
+
+  // Explicit safety/ethics risk caps at 50 (red_flags bucket).
+  if (baseline !== null && baseline > 50 && safetyEthicsRisk) {
+    const cap = 50;
+    capped = cap;
+    capApplied = cap;
+    diagnostics.push({
+      bucket: "red_flags",
+      text: "Healthcare/Biotech: red flag — safety/ethics/compliance risk indicated (e.g., fraudulent claims or missing compliance). Policy caps score at 50 until resolved.",
+    });
+  }
+
+  // Regulatory path unclear caps at 60 with explicit diagnostic.
+  if (baseline !== null && baseline > 60 && !safetyEthicsRisk && regulatoryUnclear) {
+    const cap = 60;
+    capped = cap;
+    capApplied = capApplied ?? cap;
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: "Healthcare/Biotech: regulatory pathway appears unclear (FDA/IND/IDE/510(k)/PMA not specified). Policy caps score at 60 until regulatory path is clarified.",
+    });
+  }
+
+  // >75 gating requires clear regulatory path + validation + team credibility + realistic timeline/costs.
+  const qualifies75 = Boolean(hasRegulatoryPath && hasValidation && hasTeamCredibility && hasTimelineCosts);
+  if (baseline !== null && baseline > 75 && !safetyEthicsRisk && !regulatoryUnclear && !qualifies75) {
+    const cap = 75;
+    capped = Math.min(typeof capped === "number" ? capped : cap, cap);
+    capApplied = capApplied ?? cap;
+
+    const missing: string[] = [];
+    if (!hasRegulatoryPath) missing.push("clear regulatory path");
+    if (!hasValidation) missing.push("validation signal (trial/IRB/data/endpoints)");
+    if (!hasTeamCredibility) missing.push("team credibility (KOL/clinical leadership)");
+    if (!hasTimelineCosts) missing.push("realistic timeline/costs (clearance timeline + burn/runway)");
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: `Healthcare/Biotech: score >75 requires regulatory path + validation + team credibility + realistic timeline/costs. Missing: ${missing.join(", ") || "gating signals"}.`,
+    });
+  }
+
+  if (!safetyEthicsRisk && hasRegulatoryPath && hasValidation && hasTeamCredibility && hasTimelineCosts) {
+    diagnostics.push({
+      bucket: "positive_signals",
+      text: "Healthcare/Biotech: clear regulatory path with validation evidence, credible team, and realistic timeline/cost framing.",
+    });
+  }
+
+  const applied = preCap !== null && capApplied !== null && preCap > capApplied && capped === capApplied ? capApplied : null;
+  return { capped_overall: capped, cap_applied: applied, diagnostics };
+};
+
+const computeMediaEntertainmentIpV1Caps = (params: {
+  dio: DealIntelligenceObject;
+  overall: number | null;
+  unadjustedOverall: number | null;
+  adjustmentFactor: number;
+}): {
+  capped_overall: number | null;
+  cap_applied: number | null;
+  diagnostics: Array<{ bucket: PolicyCapBucket; text: string }>;
+} => {
+  const { dio, overall, unadjustedOverall, adjustmentFactor } = params;
+  const policyId = getSelectedPolicyIdFromAny(dio);
+  if (policyId !== "media_entertainment_ip_v1") {
+    return { capped_overall: overall, cap_applied: null, diagnostics: [] };
+  }
+
+  const present = getNormalizedPresenceSetForRubric(dio);
+
+  const hasRights = present.has("rights_verifiable") && !present.has("rights_unclear");
+  const rightsUnclear = present.has("rights_unclear") && !present.has("rights_verifiable");
+
+  const hasDistributionPackage = present.has("distribution_package");
+  const hasAttachments = present.has("strong_attachments");
+  const hasFinancingPlan = present.has("financing_plan");
+  const hasCompletionBond = present.has("completion_bond_plan");
+  const hasWaterfallClarity = present.has("waterfall_recoupment_clarity") && !present.has("recoupment_waterfall_unclear");
+
+  const noDistributionPath = present.has("no_distribution_path");
+  const aggressiveAssumptions = present.has("aggressive_assumptions_no_comps");
+  const recoupmentUnclear = present.has("recoupment_waterfall_unclear");
+
+  const preCap =
+    unadjustedOverall === null ? null : Math.round(unadjustedOverall * adjustmentFactor + 50 * (1 - adjustmentFactor));
+  const baseline = preCap !== null ? preCap : overall;
+
+  let capped = overall;
+  let capApplied: number | null = null;
+  const diagnostics: Array<{ bucket: PolicyCapBucket; text: string }> = [];
+
+  // Red-flag caps: keep deterministic and policy-local.
+  // Rights uncertainty is the most severe.
+  if (baseline !== null && baseline > 60 && rightsUnclear) {
+    const cap = 60;
+    capped = cap;
+    capApplied = cap;
+    diagnostics.push({
+      bucket: "red_flags",
+      text: "Media/IP: red flag — rights/chain-of-title appears unclear or not secured. Policy caps score at 60 until rights are verified.",
+    });
+  }
+
+  if (baseline !== null && baseline > 60 && !rightsUnclear && noDistributionPath) {
+    const cap = 60;
+    capped = cap;
+    capApplied = capApplied ?? cap;
+    diagnostics.push({
+      bucket: "red_flags",
+      text: "Media/IP: red flag — no clear distribution path (no distribution/MG/pre-sales). Policy caps score at 60 until distribution is clarified.",
+    });
+  }
+
+  if (baseline !== null && baseline > 60 && !rightsUnclear && !noDistributionPath && aggressiveAssumptions) {
+    const cap = 60;
+    capped = cap;
+    capApplied = capApplied ?? cap;
+    diagnostics.push({
+      bucket: "red_flags",
+      text: "Media/IP: red flag — aggressive assumptions without comps/comparables. Policy caps score at 60 until assumptions are grounded.",
+    });
+  }
+
+  if (baseline !== null && baseline > 60 && !rightsUnclear && !noDistributionPath && !aggressiveAssumptions && recoupmentUnclear) {
+    const cap = 60;
+    capped = cap;
+    capApplied = capApplied ?? cap;
+    diagnostics.push({
+      bucket: "red_flags",
+      text: "Media/IP: red flag — recoupment/waterfall appears unclear (missing or TBD). Policy caps score at 60 until waterfall/recoupment is clarified.",
+    });
+  }
+
+  const qualifies75 = Boolean(
+    hasRights &&
+      (hasDistributionPackage || (hasAttachments && hasFinancingPlan && hasCompletionBond))
+  );
+
+  // >75 gating: rights + (distribution package OR (attachments + financing + completion bond)).
+  if (baseline !== null && baseline > 75 && !rightsUnclear && !noDistributionPath && !aggressiveAssumptions && !recoupmentUnclear && !qualifies75) {
+    const cap = 75;
+    capped = Math.min(typeof capped === "number" ? capped : cap, cap);
+    capApplied = capApplied ?? cap;
+
+    const missing: string[] = [];
+    if (!hasRights) missing.push("verifiable rights (option/chain of title)");
+    const pathA = hasDistributionPackage;
+    const pathB = hasAttachments && hasFinancingPlan && hasCompletionBond;
+    if (!pathA && !pathB) {
+      missing.push("distribution/MG/pre-sales OR strong attachments + financing plan + completion bond plan");
+    } else {
+      if (hasAttachments && !hasFinancingPlan) missing.push("credible financing plan");
+      if (hasAttachments && hasFinancingPlan && !hasCompletionBond) missing.push("completion bond plan");
+    }
+
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: `Media/IP: score >75 requires verifiable rights + distribution/MG/pre-sales OR strong attachments + credible financing plan + completion bond plan. Missing: ${missing.join(", ") || "gating signals"}.`,
+    });
+  }
+
+  // Missing revenue is acceptable if contracts/attachments are strong and structure is financeable.
+  const hasRevenueMetric = present.has("contracted_revenue") || present.has("revenue") || present.has("arr") || present.has("mrr");
+  const financeableWithoutRevenue = Boolean(!hasRevenueMetric && hasRights && (hasDistributionPackage || (hasAttachments && hasFinancingPlan && hasCompletionBond)));
+  if (financeableWithoutRevenue) {
+    diagnostics.push({
+      bucket: "positive_signals",
+      text: "Media/IP: missing revenue is acceptable when rights are verified and the package is financeable (distribution/MG/pre-sales or strong attachments + financing + completion plan).",
+    });
+  }
+
+  if (qualifies75 && hasRights && (hasDistributionPackage || (hasAttachments && hasFinancingPlan && hasCompletionBond)) && hasWaterfallClarity) {
+    diagnostics.push({
+      bucket: "positive_signals",
+      text: "Media/IP: rights verified with a financeable distribution/attachments package and clear waterfall/recoupment structure.",
+    });
+  }
+
+  const applied = preCap !== null && capApplied !== null && preCap > capApplied && capped === capApplied ? capApplied : null;
+  return { capped_overall: capped, cap_applied: applied, diagnostics };
+};
+
+const computeEnterpriseSaasB2BV1Caps = (params: {
+  dio: DealIntelligenceObject;
+  overall: number | null;
+  unadjustedOverall: number | null;
+  adjustmentFactor: number;
+}): {
+  capped_overall: number | null;
+  cap_applied: number | null;
+  diagnostics: Array<{ bucket: "positive_signals" | "coverage_gaps"; text: string }>;
+} => {
+  const { dio, overall, unadjustedOverall, adjustmentFactor } = params;
+  const policyId = getSelectedPolicyIdFromAny(dio);
+  if (policyId !== "enterprise_saas_b2b_v1") {
+    return { capped_overall: overall, cap_applied: null, diagnostics: [] };
+  }
+
+  const present = getNormalizedPresenceSetForRubric(dio);
+
+  const hasRevenue = present.has("arr") || present.has("mrr") || present.has("bookings") || present.has("revenue");
+  const hasRetention = present.has("nrr") || present.has("ndr") || present.has("grr") || present.has("retention_or_churn") || present.has("churn_logo") || present.has("churn_revenue") || present.has("churn");
+  const hasUnitEconomics = present.has("gross_margin_or_unit_economics") || present.has("gross_margin") || present.has("ltv_to_cac") || present.has("payback_months") || present.has("unit_economics");
+  const hasSalesMotion = present.has("acv") || present.has("pipeline_coverage") || present.has("sales_cycle_days") || present.has("magic_number") || present.has("acv_pipeline");
+
+  const qualitySignals = [hasRetention, hasUnitEconomics, hasSalesMotion].filter(Boolean).length;
+  const revenueOnly = Boolean(hasRevenue && qualitySignals === 0);
+
+  const metricsAnalyzed: any[] = Array.isArray((dio as any)?.analyzer_results?.metric_benchmark?.metrics_analyzed)
+    ? (dio as any).analyzer_results.metric_benchmark.metrics_analyzed
+    : [];
+
+  const normalizePct = (v: unknown): number | null => {
+    if (typeof v !== "number" || !Number.isFinite(v)) return null;
+    // Heuristic: treat values in (0,1] as fractions.
+    if (v > 0 && v <= 1) return v * 100;
+    return v;
+  };
+
+  const findMetric = (keys: string[]): { value: number | null; rating: string | null } => {
+    for (const m of metricsAnalyzed) {
+      const metric = typeof m?.metric === "string" ? normalizeKey(m.metric) : "";
+      if (!metric) continue;
+      if (!keys.includes(metric)) continue;
+      const value = typeof m?.value === "number" ? m.value : null;
+      const rating = typeof m?.rating === "string" ? m.rating : null;
+      return { value, rating };
+    }
+    return { value: null, rating: null };
+  };
+
+  const nrr = findMetric(["nrr", "ndr", "net_dollar_retention", "net_revenue_retention"]);
+  const grr = findMetric(["grr", "gross_revenue_retention", "gross_dollar_retention"]);
+  const churn = findMetric(["churn", "churn_revenue", "churn_logo", "churn_rate"]);
+
+  const nrrPct = normalizePct(nrr.value);
+  const grrPct = normalizePct(grr.value);
+  const churnPct = normalizePct(churn.value);
+
+  const retentionWeakByRating = [nrr.rating, grr.rating, churn.rating].some((r) => typeof r === "string" && r.toLowerCase() === "weak");
+  const badRetentionByValue =
+    (typeof nrrPct === "number" && nrrPct > 0 && nrrPct < 90) ||
+    (typeof grrPct === "number" && grrPct > 0 && grrPct < 85) ||
+    (typeof churnPct === "number" && churnPct > 10);
+  const badRetention = Boolean(retentionWeakByRating || badRetentionByValue);
+
+  const preCap = unadjustedOverall === null
+    ? null
+    : Math.round(unadjustedOverall * adjustmentFactor + 50 * (1 - adjustmentFactor));
+  const baseline = preCap !== null ? preCap : overall;
+
+  let capped = overall;
+  let capApplied: number | null = null;
+  const diagnostics: Array<{ bucket: "positive_signals" | "coverage_gaps"; text: string }> = [];
+
+  // Bad retention caps final score at 60.
+  if (baseline !== null && baseline > 60 && badRetention) {
+    const cap = 60;
+    capped = cap;
+    capApplied = cap;
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: "Enterprise SaaS: retention/churn appears weak; policy caps score at 60 until retention improves or is clarified.",
+    });
+  }
+
+  // Revenue-only cannot exceed 70.
+  if (baseline !== null && baseline > 70 && !badRetention && revenueOnly) {
+    const cap = 70;
+    capped = cap;
+    capApplied = capApplied ?? cap;
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: "Enterprise SaaS: revenue present but missing retention, unit economics, or sales motion context. Revenue-only is capped at 70.",
+    });
+  }
+
+  // >75 requires at least 3 quality signals (retention + unit economics + sales motion).
+  if (baseline !== null && baseline > 75 && !badRetention && qualitySignals < 3) {
+    const cap = 75;
+    capped = Math.min(typeof capped === "number" ? capped : cap, cap);
+    capApplied = capApplied ?? cap;
+
+    const missing: string[] = [];
+    if (!hasRetention) missing.push("retention/churn (NRR/GRR)");
+    if (!hasUnitEconomics) missing.push("unit economics (gross margin, LTV:CAC, payback)");
+    if (!hasSalesMotion) missing.push("sales motion (ACV, pipeline coverage, sales cycle)");
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: `Enterprise SaaS: score >75 requires 3 quality signals. Missing: ${missing.join(", ") || "quality signals"}.`,
+    });
+  }
+
+  if (!badRetention && hasRevenue && qualitySignals >= 3) {
+    diagnostics.push({
+      bucket: "positive_signals",
+      text: "Enterprise SaaS: recurring revenue supported by retention, unit economics, and sales motion signals.",
+    });
+  }
+
+  const applied = preCap !== null && capApplied !== null && preCap > capApplied && capped === capApplied ? capApplied : null;
+  return { capped_overall: capped, cap_applied: applied, diagnostics };
+};
+
+const computePhysicalProductCpgSpiritsV1Caps = (params: {
+  dio: DealIntelligenceObject;
+  overall: number | null;
+  unadjustedOverall: number | null;
+  adjustmentFactor: number;
+}): {
+  capped_overall: number | null;
+  cap_applied: number | null;
+  diagnostics: Array<{ bucket: "positive_signals" | "coverage_gaps"; text: string }>;
+} => {
+  const { dio, overall, unadjustedOverall, adjustmentFactor } = params;
+  const policyId = getSelectedPolicyIdFromAny(dio);
+  if (policyId !== "physical_product_cpg_spirits_v1") {
+    return { capped_overall: overall, cap_applied: null, diagnostics: [] };
+  }
+
+  const present = getNormalizedPresenceSetForRubric(dio);
+
+  const metricsAnalyzed: any[] = Array.isArray((dio as any)?.analyzer_results?.metric_benchmark?.metrics_analyzed)
+    ? (dio as any).analyzer_results.metric_benchmark.metrics_analyzed
+    : [];
+
+  const normalizePct = (v: unknown): number | null => {
+    if (typeof v !== "number" || !Number.isFinite(v)) return null;
+    if (v > 0 && v <= 1) return v * 100;
+    return v;
+  };
+
+  const findMetric = (keys: string[]): { value: number | null; rating: string | null } => {
+    for (const m of metricsAnalyzed) {
+      const metric = typeof m?.metric === "string" ? normalizeKey(m.metric) : "";
+      if (!metric) continue;
+      if (!keys.includes(metric)) continue;
+      const value = typeof m?.value === "number" ? m.value : null;
+      const rating = typeof m?.rating === "string" ? m.rating : null;
+      return { value, rating };
+    }
+    return { value: null, rating: null };
+  };
+
+  const ratingLc = (r: string | null): string => (typeof r === "string" ? r.toLowerCase() : "");
+  const isStrong = (r: string | null): boolean => ratingLc(r) === "strong";
+  const isWeak = (r: string | null): boolean => {
+    const s = ratingLc(r);
+    return s === "weak" || s === "poor";
+  };
+
+  const gm = findMetric(["gross_margin", "gross_margin_pct", "gm"]);
+  const cm = findMetric(["contribution_margin", "contribution_margin_pct", "cm"]);
+  const repeat = findMetric(["repeat_rate", "repeat_purchase_rate", "repeat_purchase"]);
+  const retention90 = findMetric(["retention_90d", "90_day_retention", "d90_retention"]);
+  const velocity = findMetric(["velocity", "retail_velocity", "units_per_store_per_week", "upsw"]);
+  const sellThrough = findMetric(["sell_through", "sellthrough"]);
+  const doors = findMetric(["doors", "retail_doors", "store_doors"]);
+  const pod = findMetric(["distribution_points", "points_of_distribution", "pod"]);
+  const chargebacks = findMetric(["chargebacks", "chargeback_rate", "returns", "return_rate"]);
+
+  const gmPct = normalizePct(gm.value);
+  const cmPct = normalizePct(cm.value);
+  const repeatPct = normalizePct(repeat.value);
+  const retention90Pct = normalizePct(retention90.value);
+  const sellThroughPct = normalizePct(sellThrough.value);
+  const chargebacksPct = normalizePct(chargebacks.value);
+
+  const strongGm = Boolean(isStrong(gm.rating) || isStrong(cm.rating) || (typeof gmPct === "number" && gmPct >= 55) || (typeof cmPct === "number" && cmPct >= 30));
+  const strongRepeatOrVelocity = Boolean(
+    isStrong(repeat.rating) ||
+      isStrong(retention90.rating) ||
+      isStrong(velocity.rating) ||
+      isStrong(sellThrough.rating) ||
+      (typeof repeatPct === "number" && repeatPct >= 25) ||
+      (typeof retention90Pct === "number" && retention90Pct >= 25) ||
+      (typeof sellThroughPct === "number" && sellThroughPct >= 70) ||
+      (typeof velocity.value === "number" && velocity.value >= 3)
+  );
+
+  const distributionTraction = Boolean(
+    (typeof doors.value === "number" && doors.value >= 50) ||
+      (typeof pod.value === "number" && pod.value >= 2) ||
+      present.has("distribution_traction_or_agreements")
+  );
+
+  const signedDistributionAgreements = present.has("signed_distribution_agreement") || present.has("loi_or_contract");
+  const workingCapitalPlan = present.has("working_capital_plan") || present.has("cash_conversion_cycle") || present.has("inventory_turns");
+  const productionReady = present.has("production_ready") || present.has("manufacturing_ready") || present.has("product_ready");
+
+  const hasRevenueMetric = present.has("revenue") || present.has("arr") || present.has("mrr");
+  const hasUnitEconomics = present.has("gross_margin_or_unit_economics") || present.has("unit_economics");
+
+  const negativeUnitMargins = Boolean((typeof gmPct === "number" && gmPct < 0) || (typeof cmPct === "number" && cmPct < 0));
+  const severeChargebacksOrReturns = Boolean(isWeak(chargebacks.rating) || (typeof chargebacksPct === "number" && chargebacksPct > 2.0));
+  const ttbComplianceUnclear = present.has("ttb_compliance_unclear");
+  const noDistributionPath = present.has("no_distribution_path");
+
+  const preCap =
+    unadjustedOverall === null ? null : Math.round(unadjustedOverall * adjustmentFactor + 50 * (1 - adjustmentFactor));
+  const baseline = preCap !== null ? preCap : overall;
+
+  let capped = overall;
+  let capApplied: number | null = null;
+  const diagnostics: Array<{ bucket: "positive_signals" | "coverage_gaps"; text: string }> = [];
+
+  // Policy-local red flag caps (deterministic). These do not change global scoring math.
+  if (baseline !== null && baseline > 55 && negativeUnitMargins) {
+    const cap = 55;
+    capped = cap;
+    capApplied = cap;
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: "Spirits/CPG: red flag — negative unit margins detected (gross or contribution margin < 0). Policy caps score at 55 until margins are clarified/improved.",
+    });
+  }
+
+  if (baseline !== null && baseline > 60 && !negativeUnitMargins && severeChargebacksOrReturns) {
+    const cap = 60;
+    capped = cap;
+    capApplied = capApplied ?? cap;
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: "Spirits/CPG: red flag — severe returns/chargebacks indicated. Policy caps score at 60 until the returns/chargebacks story is resolved.",
+    });
+  }
+
+  if (baseline !== null && baseline > 60 && !negativeUnitMargins && !severeChargebacksOrReturns && ttbComplianceUnclear) {
+    const cap = 60;
+    capped = cap;
+    capApplied = capApplied ?? cap;
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: "Spirits/CPG: red flag — TTB/state licensing or regulatory compliance appears unclear/pending. Policy caps score at 60 until compliance is confirmed.",
+    });
+  }
+
+  if (baseline !== null && baseline > 60 && !negativeUnitMargins && !severeChargebacksOrReturns && !ttbComplianceUnclear && noDistributionPath) {
+    const cap = 60;
+    capped = cap;
+    capApplied = capApplied ?? cap;
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: "Spirits/CPG: red flag — no clear path to distribution (explicitly stated). Policy caps score at 60 until a distribution plan/partner is secured.",
+    });
+  }
+
+  // >75 gating: GM strong + repeat/velocity strong + (distribution traction OR (signed agreements + working capital plan)).
+  const qualifies75 = Boolean(strongGm && strongRepeatOrVelocity && (distributionTraction || (signedDistributionAgreements && workingCapitalPlan)));
+  if (
+    baseline !== null &&
+    baseline > 75 &&
+    !negativeUnitMargins &&
+    !severeChargebacksOrReturns &&
+    !ttbComplianceUnclear &&
+    !noDistributionPath &&
+    !qualifies75
+  ) {
+    const cap = 75;
+    capped = Math.min(typeof capped === "number" ? capped : cap, cap);
+    capApplied = capApplied ?? cap;
+
+    const missing: string[] = [];
+    if (!strongGm) missing.push("gross/contribution margin strength");
+    if (!strongRepeatOrVelocity) missing.push("repeat/retention or velocity/sell-through");
+    if (!(distributionTraction || signedDistributionAgreements)) missing.push("distribution traction or signed distribution agreements");
+    if (signedDistributionAgreements && !workingCapitalPlan) missing.push("working capital plan (inventory turns / cash conversion cycle)");
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: `Spirits/CPG: score >75 requires strong GM + repeat/velocity + distribution traction (or signed agreements + working capital plan). Missing: ${missing.join(", ") || "gating signals"}.`,
+    });
+  }
+
+  // Missing revenue is acceptable if execution-ready distribution is present and unit economics are solid.
+  const executionReadyDistribution = Boolean(!hasRevenueMetric && productionReady && (distributionTraction || signedDistributionAgreements) && hasUnitEconomics);
+  if (executionReadyDistribution) {
+    diagnostics.push({
+      bucket: "positive_signals",
+      text: "Spirits/CPG: execution-ready distribution — production + distribution/contract signals present with solid unit economics even without revenue.",
+    });
+  }
+
+  if (qualifies75 && strongGm && strongRepeatOrVelocity && (distributionTraction || signedDistributionAgreements) && (hasRevenueMetric || executionReadyDistribution)) {
+    diagnostics.push({
+      bucket: "positive_signals",
+      text: "Spirits/CPG: unit economics supported by repeat/velocity and distribution traction/agreements.",
+    });
+  }
+
+  const applied = preCap !== null && capApplied !== null && preCap > capApplied && capped === capApplied ? capApplied : null;
+  return { capped_overall: capped, cap_applied: applied, diagnostics };
+};
+
+const computeOperatingStartupRevenueV1Caps = (params: {
+  dio: DealIntelligenceObject;
+  overall: number | null;
+  unadjustedOverall: number | null;
+  adjustmentFactor: number;
+  riskInvestmentScore: number | null;
+}): {
+  capped_overall: number | null;
+  cap_applied: number | null;
+  diagnostics: Array<{ bucket: "positive_signals" | "coverage_gaps"; text: string }>;
+} => {
+  const { dio, overall, unadjustedOverall, adjustmentFactor, riskInvestmentScore } = params;
+  const policyId = getSelectedPolicyIdFromAny(dio);
+  if (policyId !== "operating_startup_revenue_v1") {
+    return { capped_overall: overall, cap_applied: null, diagnostics: [] };
+  }
+
+  const present = getNormalizedPresenceSetForRubric(dio);
+  const hasRevenue = present.has("revenue") || present.has("arr") || present.has("mrr");
+  const hasMarginsOrUnitEcon = present.has("gross_margin_or_unit_economics") || present.has("gross_margin") || present.has("unit_economics") || present.has("contribution_margin");
+  const hasRiskControls = present.has("risk_controls") || present.has("kpi") || present.has("cohort") || present.has("unit_economics");
+  const hasRetention = present.has("retention_or_churn") || present.has("retention") || present.has("churn") || present.has("ndr") || present.has("nrr");
+
+  // "Strong execution" for this deal class means revenue PLUS margin/unit economics PLUS some operational control signal.
+  const strongExecution = Boolean(hasRevenue && hasMarginsOrUnitEcon && hasRiskControls);
+
+  const riskScore = typeof riskInvestmentScore === "number" && Number.isFinite(riskInvestmentScore) ? riskInvestmentScore : 50;
+  const riskMap: any[] = Array.isArray((dio as any).risk_map) ? (dio as any).risk_map : [];
+  const hasHighOrCritical = riskMap.some((r) => {
+    const sev = typeof r?.severity === "string" ? r.severity.toLowerCase() : "";
+    return sev === "high" || sev === "critical";
+  });
+
+  // Acceptable risk: no high/critical risks and a decent inverted risk score.
+  const acceptableRisk = !hasHighOrCritical && riskScore >= 60;
+
+  const preCap = unadjustedOverall === null
+    ? null
+    : Math.round(unadjustedOverall * adjustmentFactor + 50 * (1 - adjustmentFactor));
+
+  const baseline = preCap !== null ? preCap : overall;
+
+  let capped = overall;
+  let capApplied: number | null = null;
+  const diagnostics: Array<{ bucket: "positive_signals" | "coverage_gaps"; text: string }> = [];
+
+  // Revenue-only cannot push the deal above 70.
+  if (baseline !== null && hasRevenue && !strongExecution) {
+    const cap = 70;
+    if (baseline > cap) {
+      capped = cap;
+      capApplied = cap;
+    }
+    const missingParts: string[] = [];
+    if (!hasMarginsOrUnitEcon) missingParts.push("margins/unit economics");
+    if (!hasRiskControls) missingParts.push("risk controls / operating KPIs");
+    if (!hasRetention) missingParts.push("retention/churn (if applicable)");
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: `Operating startup: revenue present but execution evidence incomplete (${missingParts.join(", ") || "execution signals"}). Revenue-only is capped at 70.`,
+    });
+  }
+
+  // >75 requires strong execution AND acceptable risk.
+  // If execution is not strong, the revenue-only cap above already applies (<=70).
+  if (baseline !== null && baseline > 75 && strongExecution && !acceptableRisk) {
+    const cap = 75;
+    if (baseline > cap) {
+      capped = cap;
+      capApplied = capApplied ?? cap;
+    }
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: `Operating startup: score >75 requires strong execution signals and acceptable risk. Current gating: execution=${strongExecution ? "ok" : "missing"}, risk=${acceptableRisk ? "ok" : "not acceptable"}.`,
+    });
+  }
+
+  if (capped !== null && hasRevenue && strongExecution && acceptableRisk) {
+    diagnostics.push({
+      bucket: "positive_signals",
+      text: "Operating startup: revenue supported by execution signals (margins/unit economics + operating controls) with acceptable risk.",
+    });
+  }
+
+  // Only report cap as applied when we can show it actually changed the outcome.
+  const applied = preCap !== null && capApplied !== null && preCap > capApplied && capped === capApplied ? capApplied : null;
+  return { capped_overall: capped, cap_applied: applied, diagnostics };
+};
+
+const computeConsumerEcommerceBrandV1Caps = (params: {
+  dio: DealIntelligenceObject;
+  overall: number | null;
+  unadjustedOverall: number | null;
+  adjustmentFactor: number;
+  riskInvestmentScore: number | null;
+  metricInvestmentScore: number | null;
+}): {
+  capped_overall: number | null;
+  cap_applied: number | null;
+  diagnostics: Array<{ bucket: "positive_signals" | "coverage_gaps"; text: string }>;
+} => {
+  const { dio, overall, unadjustedOverall, adjustmentFactor, riskInvestmentScore, metricInvestmentScore } = params;
+  const policyId = getSelectedPolicyIdFromAny(dio);
+  if (policyId !== "consumer_ecommerce_brand_v1") {
+    return { capped_overall: overall, cap_applied: null, diagnostics: [] };
+  }
+
+  const present = getNormalizedPresenceSetForRubric(dio);
+
+  const hasMargin = present.has("gross_margin_pct") || present.has("contribution_margin_pct") || present.has("gross_margin") || present.has("contribution_margin");
+  const hasLtv = present.has("ltv");
+  const hasCac = present.has("cac");
+  const hasLtvToCac = present.has("ltv_to_cac") || present.has("ltv_cac");
+  const hasAov = present.has("aov");
+  const hasConversion = present.has("conversion_rate");
+  const hasRepeatability = present.has("repeat_purchase_rate") || present.has("cohort") || present.has("retention") || present.has("repeat_purchase");
+
+  const coreKpiCount = [hasMargin, hasLtv, hasCac, hasLtvToCac, hasAov].filter(Boolean).length;
+  const hasUnitEconomics = Boolean(hasMargin && (hasLtvToCac || (hasLtv && hasCac)));
+
+  const metricScore = typeof metricInvestmentScore === "number" && Number.isFinite(metricInvestmentScore) ? metricInvestmentScore : 50;
+  const strongUnitEconomics = Boolean(hasUnitEconomics && metricScore >= 70);
+
+  const riskScore = typeof riskInvestmentScore === "number" && Number.isFinite(riskInvestmentScore) ? riskInvestmentScore : 50;
+  const riskMap: any[] = Array.isArray((dio as any).risk_map) ? (dio as any).risk_map : [];
+  const hasHighOrCritical = riskMap.some((r) => {
+    const sev = typeof r?.severity === "string" ? r.severity.toLowerCase() : "";
+    return sev === "high" || sev === "critical";
+  });
+
+  const acceptableRisk = !hasHighOrCritical && riskScore >= 60;
+
+  const preCap = unadjustedOverall === null
+    ? null
+    : Math.round(unadjustedOverall * adjustmentFactor + 50 * (1 - adjustmentFactor));
+  const baseline = preCap !== null ? preCap : overall;
+
+  let capped = overall;
+  let capApplied: number | null = null;
+  const diagnostics: Array<{ bucket: "positive_signals" | "coverage_gaps"; text: string }> = [];
+
+  // Coverage gating: if key unit-econ KPIs are missing, keep score near neutral.
+  if (coreKpiCount < 2) {
+    const missing: string[] = [];
+    if (!hasMargin) missing.push("gross/contribution margin");
+    if (!hasCac) missing.push("CAC");
+    if (!hasLtv && !hasLtvToCac) missing.push("LTV or LTV:CAC");
+    if (!hasAov) missing.push("AOV");
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: `Ecommerce: limited benchmarkable unit economics (${missing.join(", ") || "core KPIs"}). Score stays near neutral until KPIs are present.`,
+    });
+
+    if (baseline !== null && baseline > 60) {
+      const cap = 60;
+      if (baseline > cap) {
+        capped = cap;
+        capApplied = cap;
+      }
+    }
+  }
+
+  // 75+ requires strong unit economics AND acceptable risk.
+  if (baseline !== null && baseline > 75 && (!strongUnitEconomics || !acceptableRisk)) {
+    const cap = 75;
+    if (baseline > cap) {
+      capped = cap;
+      capApplied = capApplied ?? cap;
+    }
+    const gating: string[] = [];
+    if (!strongUnitEconomics) gating.push("unit economics (LTV:CAC + margins) not strong/confirmed");
+    if (!acceptableRisk) gating.push("risk not acceptable (high/critical risks or low risk score)");
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: `Ecommerce: 75+ requires strong unit economics and acceptable risk. Gating: ${gating.join("; ")}.`,
+    });
+  }
+
+  // 90+ semantics (diagnostics only): unit economics + repeatability + scaling proof + low risk.
+  const qualifies90 = Boolean(strongUnitEconomics && acceptableRisk && !hasHighOrCritical && riskScore >= 75 && metricScore >= 85 && hasRepeatability && hasConversion);
+
+  if (strongUnitEconomics && acceptableRisk) {
+    diagnostics.push({
+      bucket: "positive_signals",
+      text: "Ecommerce: strong unit economics (LTV:CAC + margins) supported by benchmarks with acceptable risk.",
+    });
+  }
+  if (qualifies90) {
+    diagnostics.push({
+      bucket: "positive_signals",
+      text: "Ecommerce: 90+ signals present (unit economics + repeatability/cohorts + conversion performance) with no high/critical risks.",
+    });
+  } else if (strongUnitEconomics && acceptableRisk && (!hasRepeatability || !hasConversion)) {
+    const missing: string[] = [];
+    if (!hasRepeatability) missing.push("repeat purchase/cohorts/retention");
+    if (!hasConversion) missing.push("conversion rate");
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: `Ecommerce: scaling proof for 90+ typically needs ${missing.join(" and ")}.`,
+    });
+  }
+
+  const applied = preCap !== null && capApplied !== null && preCap > capApplied && capped === capApplied ? capApplied : null;
+  return { capped_overall: capped, cap_applied: applied, diagnostics };
+};
+
+const computeConsumerFintechPlatformV1Caps = (params: {
+  dio: DealIntelligenceObject;
+  overall: number | null;
+  unadjustedOverall: number | null;
+  adjustmentFactor: number;
+  riskInvestmentScore: number | null;
+  metricInvestmentScore: number | null;
+}): {
+  capped_overall: number | null;
+  cap_applied: number | null;
+  diagnostics: Array<{ bucket: "positive_signals" | "coverage_gaps"; text: string }>;
+} => {
+  const { dio, overall, unadjustedOverall, adjustmentFactor, riskInvestmentScore, metricInvestmentScore } = params;
+  const policyId = getSelectedPolicyIdFromAny(dio);
+  if (policyId !== "consumer_fintech_platform_v1") {
+    return { capped_overall: overall, cap_applied: null, diagnostics: [] };
+  }
+
+  const present = getNormalizedPresenceSetForRubric(dio);
+
+  const hasRevenue = present.has("revenue") || present.has("arr") || present.has("mrr");
+  const hasGrowth = present.has("growth_rate") || present.has("revenue_growth_rate") || present.has("yoy_growth") || present.has("mom_growth");
+  const hasVolume =
+    present.has("tpv") ||
+    present.has("gtv") ||
+    present.has("transaction_volume") ||
+    present.has("payment_volume") ||
+    present.has("processed_volume") ||
+    present.has("transaction_value");
+  const hasTxnCount = present.has("transaction_count") || present.has("txn_count") || present.has("monthly_transactions") || present.has("transactions");
+  const hasUsers = present.has("active_users") || present.has("monthly_active_users") || present.has("mau") || present.has("dau") || present.has("users");
+  const hasTakeRate = present.has("take_rate") || present.has("interchange_rate") || present.has("net_take_rate");
+  const hasCompliance = present.has("compliance_controls") || present.has("kyc") || present.has("aml") || present.has("regulatory_status");
+
+  const adoptionEvidence = Boolean(hasVolume || hasTxnCount || hasUsers);
+  const revenueOnly = Boolean(hasRevenue && !hasGrowth && !adoptionEvidence && !hasTakeRate);
+  const growthOnly = Boolean(hasGrowth && !hasRevenue && !adoptionEvidence && !hasTakeRate);
+
+  const metricScore = typeof metricInvestmentScore === "number" && Number.isFinite(metricInvestmentScore) ? metricInvestmentScore : 50;
+  const riskScore = typeof riskInvestmentScore === "number" && Number.isFinite(riskInvestmentScore) ? riskInvestmentScore : 50;
+
+  const riskMap: any[] = Array.isArray((dio as any).risk_map) ? (dio as any).risk_map : [];
+  const highOrCriticalRisks = riskMap.filter((r) => {
+    const sev = typeof r?.severity === "string" ? r.severity.toLowerCase() : "";
+    return sev === "high" || sev === "critical";
+  });
+
+  const regFraudRe = /(regulatory|compliance|licen[cs]e|kyc|aml|anti[-\s]?money\s+laundering|sanctions|ofac|money\s+transmitter|fraud|chargeback|dispute|money\s+laundering)/i;
+  const hasUnmitigatedRegOrFraud = highOrCriticalRisks.some((r) => {
+    const cat = typeof r?.category === "string" ? r.category : "";
+    const title = typeof r?.title === "string" ? r.title : "";
+    const desc = typeof r?.description === "string" ? r.description : "";
+    const mitigation = typeof r?.mitigation === "string" ? r.mitigation.trim() : "";
+    const haystack = `${cat} ${title} ${desc}`;
+    return regFraudRe.test(haystack) && mitigation.length === 0;
+  });
+
+  const hasHighOrCritical = highOrCriticalRisks.length > 0;
+  const acceptableRisk = !hasHighOrCritical && riskScore >= 60;
+
+  const preCap =
+    unadjustedOverall === null ? null : Math.round(unadjustedOverall * adjustmentFactor + 50 * (1 - adjustmentFactor));
+  const baseline = preCap !== null ? preCap : overall;
+
+  let capped = overall;
+  let capApplied: number | null = null;
+  const diagnostics: Array<{ bucket: "positive_signals" | "coverage_gaps"; text: string }> = [];
+
+  // Hard cap: unmitigated regulatory/fraud risk caps final score at 70.
+  if (baseline !== null && baseline > 70 && hasUnmitigatedRegOrFraud) {
+    const cap = 70;
+    capped = cap;
+    capApplied = cap;
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: "Fintech: policy cap at 70 due to unmitigated regulatory/fraud risk (missing mitigation details).",
+    });
+  }
+
+  // Revenue alone cannot push score above 70.
+  if (baseline !== null && baseline > 70 && !hasUnmitigatedRegOrFraud && revenueOnly) {
+    const cap = 70;
+    capped = cap;
+    capApplied = capApplied ?? cap;
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: "Fintech: revenue present but missing volume/adoption, growth, or unit economics. Revenue-only is capped at 70.",
+    });
+  }
+
+  // Growth alone should not guarantee high scores.
+  if (baseline !== null && baseline > 70 && !hasUnmitigatedRegOrFraud && growthOnly) {
+    const cap = 70;
+    capped = cap;
+    capApplied = capApplied ?? cap;
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: "Fintech: growth reported without adoption/volume or unit economics context. Growth-only is capped at 70.",
+    });
+  }
+
+  // 75+ requires adoption/volume evidence and acceptable risk.
+  const qualifies75 = Boolean(acceptableRisk && adoptionEvidence && (hasRevenue || hasGrowth) && metricScore >= 70);
+  if (baseline !== null && baseline > 75 && !hasUnmitigatedRegOrFraud && !qualifies75) {
+    const cap = 75;
+    capped = Math.min(typeof capped === "number" ? capped : cap, cap);
+    capApplied = capApplied ?? cap;
+    const gating: string[] = [];
+    if (!adoptionEvidence) gating.push("adoption/volume (TPV/GTV, transactions, or users)");
+    if (!(hasRevenue || hasGrowth)) gating.push("growth or revenue context");
+    if (!acceptableRisk) gating.push("acceptable risk (no high/critical risks)");
+    if (metricScore < 70) gating.push("benchmark strength");
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: `Fintech: 75+ requires ${gating.join(", ") || "strong traction and acceptable risk"}.`,
+    });
+  }
+
+  if (hasCompliance) {
+    diagnostics.push({
+      bucket: "positive_signals",
+      text: "Fintech: compliance posture signals present (KYC/AML / licensing / regulatory readiness).",
+    });
+  } else {
+    diagnostics.push({
+      bucket: "coverage_gaps",
+      text: "Fintech: compliance posture not clearly stated (KYC/AML, licensing, regulatory readiness).",
+    });
+  }
+
+  if (adoptionEvidence && (hasGrowth || hasRevenue) && metricScore >= 70 && (!hasHighOrCritical || acceptableRisk)) {
+    diagnostics.push({
+      bucket: "positive_signals",
+      text: "Fintech: adoption/volume evidence plus growth/revenue context with strong benchmarks.",
+    });
+  }
+
+  const applied = preCap !== null && capApplied !== null && preCap > capApplied && capped === capApplied ? capApplied : null;
+  return { capped_overall: capped, cap_applied: applied, diagnostics };
+};
+
 const getDealClassificationV1Any = (dioLike: any): any | null =>
   (dioLike as any)?.dio?.deal_classification_v1 ??
   (dioLike as any)?.deal_classification_v1 ??
@@ -124,27 +1225,7 @@ const evaluatePolicyRubric = (dio: DealIntelligenceObject, policyId: string | nu
 
   if (!rubric) return null;
 
-  const classification = getDealClassificationV1Any(dio as any);
-  const selectedSignalsRaw: string[] = asStringArray(classification?.selected?.signals);
-  const selectedSignals = selectedSignalsRaw.map(normalizeKey);
-
-  const mbMetrics: string[] = Array.isArray((dio as any)?.analyzer_results?.metric_benchmark?.metrics_analyzed)
-    ? (dio as any).analyzer_results.metric_benchmark.metrics_analyzed
-        .map((m: any) => (typeof m?.metric === "string" ? m.metric : ""))
-        .filter(Boolean)
-    : [];
-
-  const mbMetricKeys = mbMetrics.map(normalizeKey);
-  const extractedInputMetricKeys = getExtractedMetricKeysFromInputs(dio).map(normalizeKey);
-
-  const present = new Set<string>([...selectedSignals, ...mbMetricKeys, ...extractedInputMetricKeys]);
-
-  // Map KPI presence to rubric readiness signals.
-  if (present.has("loi_count") || present.has("contract_value")) present.add("loi_or_contract");
-  if (present.has("partnership_count") || present.has("distribution_partners")) present.add("partnership_or_distribution");
-  if (present.has("launch_timeline_months")) present.add("launch_timeline");
-  if (present.has("manufacturing_capacity") || selectedSignals.includes("manufacturing_ready")) present.add("product_ready");
-  if (selectedSignals.includes("product_ready")) present.add("product_ready");
+  const present = getNormalizedPresenceSetForRubric(dio);
 
   const requiredPairs = (rubric.required_signals || []).map((s) => ({ raw: s, key: normalizeKey(s) }));
   const missingRequired = requiredPairs.filter((p) => !present.has(p.key)).map((p) => p.raw);
@@ -158,9 +1239,80 @@ const evaluatePolicyRubric = (dio: DealIntelligenceObject, policyId: string | nu
     ? ["revenue"]
     : [];
 
+  const allowedRedFlags = new Set((rubric.red_flags || []).map((s) => normalizeKey(s)));
+
+  // Policy-local rubric red flags can be triggered either by risk_map (high/critical) or by
+  // metric benchmark values when available (deterministic, no global scoring impact).
+  const metricsAnalyzed: any[] = Array.isArray((dio as any)?.analyzer_results?.metric_benchmark?.metrics_analyzed)
+    ? (dio as any).analyzer_results.metric_benchmark.metrics_analyzed
+    : [];
+
+  const normalizePct = (v: unknown): number | null => {
+    if (typeof v !== "number" || !Number.isFinite(v)) return null;
+    if (v > 0 && v <= 1) return v * 100;
+    return v;
+  };
+
+  const findMetric = (keys: string[]): { value: number | null; rating: string | null } => {
+    for (const m of metricsAnalyzed) {
+      const metric = typeof m?.metric === "string" ? normalizeKey(m.metric) : "";
+      if (!metric) continue;
+      if (!keys.includes(metric)) continue;
+      const value = typeof m?.value === "number" ? m.value : null;
+      const rating = typeof m?.rating === "string" ? m.rating : null;
+      return { value, rating };
+    }
+    return { value: null, rating: null };
+  };
+
   // Red flags: use risk_map severity/category heuristics (deterministic).
   const riskMap: any[] = Array.isArray((dio as any).risk_map) ? (dio as any).risk_map : [];
   const redFlagsTriggered: string[] = [];
+
+  // Metric-based policy red flags (used by physical_product_cpg_spirits_v1 and similar).
+  if (allowedRedFlags.has("negative_unit_margins")) {
+    const gm = findMetric(["gross_margin", "gross_margin_pct", "gm"]);
+    const cm = findMetric(["contribution_margin", "contribution_margin_pct", "cm"]);
+    const gmPct = normalizePct(gm.value);
+    const cmPct = normalizePct(cm.value);
+    if ((typeof gmPct === "number" && gmPct < 0) || (typeof cmPct === "number" && cmPct < 0)) {
+      redFlagsTriggered.push("negative_unit_margins");
+    }
+  }
+
+  if (allowedRedFlags.has("severe_chargebacks_or_returns")) {
+    const cb = findMetric(["chargebacks", "chargeback_rate", "returns", "return_rate"]);
+    const cbPct = normalizePct(cb.value);
+    const rating = typeof cb.rating === "string" ? cb.rating.toLowerCase() : "";
+    if ((typeof cbPct === "number" && cbPct > 2.0) || rating === "weak" || rating === "poor") {
+      redFlagsTriggered.push("severe_chargebacks_or_returns");
+    }
+  }
+
+  if (allowedRedFlags.has("ttb_compliance_unclear")) {
+    const selectedSignalsRaw: string[] = asStringArray(getDealClassificationV1Any(dio as any)?.selected?.signals);
+    const selectedSignals = selectedSignalsRaw.map(normalizeKey);
+    if (selectedSignals.includes("ttb_compliance_unclear")) {
+      redFlagsTriggered.push("ttb_compliance_unclear");
+    }
+  }
+
+  if (allowedRedFlags.has("no_distribution_path")) {
+    const selectedSignalsRaw: string[] = asStringArray(getDealClassificationV1Any(dio as any)?.selected?.signals);
+    const selectedSignals = selectedSignalsRaw.map(normalizeKey);
+    if (selectedSignals.includes("no_distribution_path")) {
+      redFlagsTriggered.push("no_distribution_path");
+    }
+  }
+
+  if (allowedRedFlags.has("safety_ethics_risk")) {
+    const selectedSignalsRaw: string[] = asStringArray(getDealClassificationV1Any(dio as any)?.selected?.signals);
+    const selectedSignals = selectedSignalsRaw.map(normalizeKey);
+    if (selectedSignals.includes("safety_ethics_risk")) {
+      redFlagsTriggered.push("safety_ethics_risk");
+    }
+  }
+
   for (const r of riskMap) {
     const sev = typeof r?.severity === "string" ? r.severity.toLowerCase() : "";
     const cat = typeof r?.category === "string" ? r.category.toLowerCase() : "";
@@ -169,9 +1321,13 @@ const evaluatePolicyRubric = (dio: DealIntelligenceObject, policyId: string | nu
     const blob = `${cat} ${title} ${desc}`;
 
     if (sev === "critical" || sev === "high") {
-      if (/fraud|misrepresent/.test(blob)) redFlagsTriggered.push("fraud");
-      if (/ownership|cap\s*table|ip\s+ownership|assignment/.test(blob)) redFlagsTriggered.push("ownership_unclear");
-      if (/regulator|regulatory|fda|compliance|license|permits?/.test(blob)) redFlagsTriggered.push("regulatory_blocker");
+      if (allowedRedFlags.has("fraud") && /fraud|misrepresent/.test(blob)) redFlagsTriggered.push("fraud");
+      if (allowedRedFlags.has("ownership_unclear") && /ownership|cap\s*table|ip\s+ownership|assignment/.test(blob)) {
+        redFlagsTriggered.push("ownership_unclear");
+      }
+      if (allowedRedFlags.has("regulatory_blocker") && /regulator|regulatory|fda|compliance|license|permits?/.test(blob)) {
+        redFlagsTriggered.push("regulatory_blocker");
+      }
     }
   }
 
@@ -834,6 +1990,26 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
     }
   }
 
+  // Policy behavior: consumer_ecommerce_brand_v1 should not inflate without benchmarkable unit economics.
+  // When core unit-econ KPIs are missing, keep the final score near neutral (~50-60).
+  if (classificationSelectedPolicy === "consumer_ecommerce_brand_v1") {
+    const present = getNormalizedPresenceSetForRubric(dio);
+    const hasMargin = present.has("gross_margin_pct") || present.has("contribution_margin_pct") || present.has("gross_margin") || present.has("contribution_margin");
+    const hasCac = present.has("cac");
+    const hasLtv = present.has("ltv") || present.has("ltv_to_cac") || present.has("ltv_cac");
+    const hasAov = present.has("aov");
+    const coreCount = [hasMargin, hasCac, hasLtv, hasAov].filter(Boolean).length;
+    if (coreCount < 2) {
+      const cap = 0.22;
+      if (evidenceFactor > cap) {
+        evidenceFactor = cap;
+        notes.metric_benchmark.push(
+          `consumer_ecommerce_brand_v1: missing core unit economics KPIs (${coreCount}) -> evidence_factor capped to ${cap.toFixed(2)}`
+        );
+      }
+    }
+  }
+
   const getDueDiligenceReadiness = (docs: any[]): number => {
     if (docs.length === 0) return 1;
 
@@ -882,6 +2058,186 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
     if (overall > cap) {
       overall = cap;
       notes.risk_assessment.push(`rubric cap applied (${cap}) due to red_flags: ${rubricEval.red_flags_triggered.join(", ")}`);
+    }
+  }
+
+  // Policy semantics: operating_startup_revenue_v1
+  // - Revenue alone cannot exceed 70
+  // - >75 requires strong execution signals + acceptable risk
+  if (classificationSelectedPolicy === "operating_startup_revenue_v1") {
+    const riskInvestmentScore = effectiveScores.risk_assessment ?? null;
+    const capResult = computeOperatingStartupRevenueV1Caps({
+      dio,
+      overall,
+      unadjustedOverall,
+      adjustmentFactor,
+      riskInvestmentScore,
+    });
+    if (capResult.capped_overall !== overall) {
+      const cap = capResult.capped_overall;
+      if (typeof cap === "number") {
+        notes.metric_benchmark.push(`operating_startup_revenue_v1: policy cap applied -> overall_score=${cap}`);
+      }
+    }
+    overall = capResult.capped_overall;
+    for (const d of capResult.diagnostics) {
+      // Keep deterministic breadcrumbs in component notes for auditability.
+      if (d.bucket === "coverage_gaps") notes.metric_benchmark.push(d.text);
+      if (d.bucket === "positive_signals") notes.metric_benchmark.push(d.text);
+    }
+  }
+
+  // Policy semantics: consumer_fintech_platform_v1
+  // - Revenue alone cannot exceed 70
+  // - >75 requires adoption/volume evidence + acceptable risk
+  // - Unmitigated regulatory/fraud risk caps final score <=70
+  if (classificationSelectedPolicy === "consumer_fintech_platform_v1") {
+    const riskInvestmentScore = effectiveScores.risk_assessment ?? null;
+    const metricInvestmentScore = effectiveScores.metric_benchmark ?? null;
+    const capResult = computeConsumerFintechPlatformV1Caps({
+      dio,
+      overall,
+      unadjustedOverall,
+      adjustmentFactor,
+      riskInvestmentScore,
+      metricInvestmentScore,
+    });
+    if (capResult.capped_overall !== overall) {
+      const cap = capResult.capped_overall;
+      if (typeof cap === "number") {
+        notes.metric_benchmark.push(`consumer_fintech_platform_v1: policy cap applied -> overall_score=${cap}`);
+      }
+    }
+    overall = capResult.capped_overall;
+    for (const d of capResult.diagnostics) {
+      if (d.bucket === "coverage_gaps") notes.metric_benchmark.push(d.text);
+      if (d.bucket === "positive_signals") notes.metric_benchmark.push(d.text);
+    }
+  }
+
+  // Policy semantics: consumer_ecommerce_brand_v1
+  // - 75+ requires strong unit economics (LTV:CAC + margins) AND acceptable risk
+  // - missing core unit economics KPIs caps score near neutral
+  // - policy gating caps must not populate rubric.red_flags_triggered (handled in diagnostics)
+  if (classificationSelectedPolicy === "consumer_ecommerce_brand_v1") {
+    const riskInvestmentScore = effectiveScores.risk_assessment ?? null;
+    const metricInvestmentScore = effectiveScores.metric_benchmark ?? null;
+    const capResult = computeConsumerEcommerceBrandV1Caps({
+      dio,
+      overall,
+      unadjustedOverall,
+      adjustmentFactor,
+      riskInvestmentScore,
+      metricInvestmentScore,
+    });
+    if (capResult.capped_overall !== overall) {
+      const cap = capResult.capped_overall;
+      if (typeof cap === "number") {
+        notes.metric_benchmark.push(`consumer_ecommerce_brand_v1: policy cap applied -> overall_score=${cap}`);
+      }
+    }
+    overall = capResult.capped_overall;
+    for (const d of capResult.diagnostics) {
+      if (d.bucket === "coverage_gaps") notes.metric_benchmark.push(d.text);
+      if (d.bucket === "positive_signals") notes.metric_benchmark.push(d.text);
+    }
+  }
+
+  // Policy semantics: enterprise_saas_b2b_v1
+  // - Revenue-only cannot exceed 70
+  // - Bad retention caps at 60
+  // - >75 requires 3 quality signals (retention + unit economics + sales motion)
+  if (classificationSelectedPolicy === "enterprise_saas_b2b_v1") {
+    const capResult = computeEnterpriseSaasB2BV1Caps({
+      dio,
+      overall,
+      unadjustedOverall,
+      adjustmentFactor,
+    });
+    if (capResult.capped_overall !== overall) {
+      const cap = capResult.capped_overall;
+      if (typeof cap === "number") {
+        notes.metric_benchmark.push(`enterprise_saas_b2b_v1: policy cap applied -> overall_score=${cap}`);
+      }
+    }
+    overall = capResult.capped_overall;
+    for (const d of capResult.diagnostics) {
+      if (d.bucket === "coverage_gaps") notes.metric_benchmark.push(d.text);
+      if (d.bucket === "positive_signals") notes.metric_benchmark.push(d.text);
+    }
+  }
+
+  // Policy semantics: healthcare_biotech_v1
+  // - >75 requires clear regulatory path + validation + team credibility + realistic timeline/costs
+  // - Regulatory path unclear caps at 60 (explicit diagnostic)
+  // - Safety/ethics risk caps at 50 (red_flags bucket)
+  if (classificationSelectedPolicy === "healthcare_biotech_v1") {
+    const capResult = computeHealthcareBiotechV1Caps({
+      dio,
+      overall,
+      unadjustedOverall,
+      adjustmentFactor,
+    });
+    if (capResult.capped_overall !== overall) {
+      const cap = capResult.capped_overall;
+      if (typeof cap === "number") {
+        notes.metric_benchmark.push(`healthcare_biotech_v1: policy cap applied -> overall_score=${cap}`);
+      }
+    }
+    overall = capResult.capped_overall;
+    for (const d of capResult.diagnostics) {
+      if (d.bucket === "coverage_gaps") notes.metric_benchmark.push(d.text);
+      if (d.bucket === "positive_signals") notes.metric_benchmark.push(d.text);
+      if (d.bucket === "red_flags") notes.risk_assessment.push(d.text);
+    }
+  }
+
+  // Policy semantics: media_entertainment_ip_v1
+  // - >75 requires verifiable rights + (distribution/MG/pre-sales OR (strong attachments + financing + completion bond))
+  // - Missing revenue acceptable if contracts/attachments are strong and structure is financeable
+  // - Red flags cap at 60 (rights unclear, no distribution path, aggressive assumptions w/o comps, waterfall/recoupment unclear)
+  if (classificationSelectedPolicy === "media_entertainment_ip_v1") {
+    const capResult = computeMediaEntertainmentIpV1Caps({
+      dio,
+      overall,
+      unadjustedOverall,
+      adjustmentFactor,
+    });
+    if (capResult.capped_overall !== overall) {
+      const cap = capResult.capped_overall;
+      if (typeof cap === "number") {
+        notes.metric_benchmark.push(`media_entertainment_ip_v1: policy cap applied -> overall_score=${cap}`);
+      }
+    }
+    overall = capResult.capped_overall;
+    for (const d of capResult.diagnostics) {
+      if (d.bucket === "coverage_gaps") notes.metric_benchmark.push(d.text);
+      if (d.bucket === "positive_signals") notes.metric_benchmark.push(d.text);
+      if (d.bucket === "red_flags") notes.risk_assessment.push(d.text);
+    }
+  }
+
+  // Policy semantics: physical_product_cpg_spirits_v1
+  // - >75 requires: strong GM + repeat/velocity + distribution traction OR signed distribution agreements + working capital plan
+  // - Missing revenue is acceptable when execution-ready distribution is present (diagnostic only)
+  // - Policy-local red flag caps for negative margins / severe chargebacks / unclear TTB compliance / no distribution path
+  if (classificationSelectedPolicy === "physical_product_cpg_spirits_v1") {
+    const capResult = computePhysicalProductCpgSpiritsV1Caps({
+      dio,
+      overall,
+      unadjustedOverall,
+      adjustmentFactor,
+    });
+    if (capResult.capped_overall !== overall) {
+      const cap = capResult.capped_overall;
+      if (typeof cap === "number") {
+        notes.metric_benchmark.push(`physical_product_cpg_spirits_v1: policy cap applied -> overall_score=${cap}`);
+      }
+    }
+    overall = capResult.capped_overall;
+    for (const d of capResult.diagnostics) {
+      if (d.bucket === "coverage_gaps") notes.metric_benchmark.push(d.text);
+      if (d.bucket === "positive_signals") notes.metric_benchmark.push(d.text);
     }
   }
 
@@ -1058,9 +2414,69 @@ export function buildScoringDiagnosticsFromDIO(dio: DealIntelligenceObject): Sco
   // Add rubric-derived diagnostics as first-class fields + buckets.
   let rubric: ScoringDiagnosticsV1["rubric"] = undefined;
   if (rubricEval) {
-    const cap = 70;
     const preCap = Math.round(unadjusted_overall_score * explanation.totals.adjustment_factor + 50 * (1 - explanation.totals.adjustment_factor));
-    const scoreCapApplied = rubricEval.red_flags_triggered.length > 0 && preCap > cap && overall_score === cap ? cap : null;
+    const redFlagCap = 70;
+    const scoreCapAppliedFromRedFlags = rubricEval.red_flags_triggered.length > 0 && preCap > redFlagCap && overall_score === redFlagCap ? redFlagCap : null;
+
+    // Policy-specific cap reporting (additive).
+    const policyId = explanation.aggregation.policy_id;
+    const policyCap = policyId === "operating_startup_revenue_v1"
+      ? computeOperatingStartupRevenueV1Caps({
+          dio,
+          overall: overall_score,
+          unadjustedOverall: unadjusted_overall_score,
+          adjustmentFactor: explanation.totals.adjustment_factor,
+          riskInvestmentScore: typeof (components as any)?.risk_assessment?.used_score === "number" ? (components as any).risk_assessment.used_score : null,
+        }).cap_applied
+      : policyId === "enterprise_saas_b2b_v1"
+        ? computeEnterpriseSaasB2BV1Caps({
+            dio,
+            overall: overall_score,
+            unadjustedOverall: unadjusted_overall_score,
+            adjustmentFactor: explanation.totals.adjustment_factor,
+          }).cap_applied
+      : policyId === "healthcare_biotech_v1"
+        ? computeHealthcareBiotechV1Caps({
+            dio,
+            overall: overall_score,
+            unadjustedOverall: unadjusted_overall_score,
+            adjustmentFactor: explanation.totals.adjustment_factor,
+          }).cap_applied
+      : policyId === "media_entertainment_ip_v1"
+        ? computeMediaEntertainmentIpV1Caps({
+            dio,
+            overall: overall_score,
+            unadjustedOverall: unadjusted_overall_score,
+            adjustmentFactor: explanation.totals.adjustment_factor,
+          }).cap_applied
+      : policyId === "physical_product_cpg_spirits_v1"
+        ? computePhysicalProductCpgSpiritsV1Caps({
+            dio,
+            overall: overall_score,
+            unadjustedOverall: unadjusted_overall_score,
+            adjustmentFactor: explanation.totals.adjustment_factor,
+          }).cap_applied
+      : policyId === "consumer_ecommerce_brand_v1"
+        ? computeConsumerEcommerceBrandV1Caps({
+            dio,
+            overall: overall_score,
+            unadjustedOverall: unadjusted_overall_score,
+            adjustmentFactor: explanation.totals.adjustment_factor,
+            riskInvestmentScore: typeof (components as any)?.risk_assessment?.used_score === "number" ? (components as any).risk_assessment.used_score : null,
+            metricInvestmentScore: typeof (components as any)?.metric_benchmark?.used_score === "number" ? (components as any).metric_benchmark.used_score : null,
+          }).cap_applied
+        : policyId === "consumer_fintech_platform_v1"
+          ? computeConsumerFintechPlatformV1Caps({
+              dio,
+              overall: overall_score,
+              unadjustedOverall: unadjusted_overall_score,
+              adjustmentFactor: explanation.totals.adjustment_factor,
+              riskInvestmentScore: typeof (components as any)?.risk_assessment?.used_score === "number" ? (components as any).risk_assessment.used_score : null,
+              metricInvestmentScore: typeof (components as any)?.metric_benchmark?.used_score === "number" ? (components as any).metric_benchmark.used_score : null,
+            }).cap_applied
+        : null;
+
+    const scoreCapApplied = scoreCapAppliedFromRedFlags ?? policyCap ?? null;
 
     rubric = {
       id: rubricEval.id,
@@ -1086,6 +2502,125 @@ export function buildScoringDiagnosticsFromDIO(dio: DealIntelligenceObject): Sco
         text: `Rubric red flags: ${rubricEval.red_flags_triggered.join(", ")}`,
         evidence_ids: [],
       });
+    }
+  }
+
+  // Add explicit policy diagnostics for operating_startup_revenue_v1 (diagnostics-first).
+  if (explanation.aggregation.policy_id === "operating_startup_revenue_v1") {
+    const cap = computeOperatingStartupRevenueV1Caps({
+      dio,
+      overall: overall_score,
+      unadjustedOverall: unadjusted_overall_score,
+      adjustmentFactor: explanation.totals.adjustment_factor,
+      riskInvestmentScore: typeof (components as any)?.risk_assessment?.used_score === "number" ? (components as any).risk_assessment.used_score : null,
+    });
+
+    for (const d of cap.diagnostics) {
+      const item = { component: "policy", text: d.text, evidence_ids: [] as string[] };
+      if (d.bucket === "positive_signals") buckets.positive_signals.push(item);
+      if (d.bucket === "coverage_gaps") buckets.coverage_gaps.push(item);
+    }
+  }
+
+  // Add explicit policy diagnostics for healthcare_biotech_v1 (diagnostics-first).
+  if (explanation.aggregation.policy_id === "healthcare_biotech_v1") {
+    const cap = computeHealthcareBiotechV1Caps({
+      dio,
+      overall: overall_score,
+      unadjustedOverall: unadjusted_overall_score,
+      adjustmentFactor: explanation.totals.adjustment_factor,
+    });
+
+    for (const d of cap.diagnostics) {
+      const item = { component: "policy", text: d.text, evidence_ids: [] as string[] };
+      if (d.bucket === "positive_signals") buckets.positive_signals.push(item);
+      if (d.bucket === "coverage_gaps") buckets.coverage_gaps.push(item);
+      if (d.bucket === "red_flags") buckets.red_flags.push(item);
+    }
+  }
+
+  // Add explicit policy diagnostics for media_entertainment_ip_v1 (diagnostics-first).
+  if (explanation.aggregation.policy_id === "media_entertainment_ip_v1") {
+    const cap = computeMediaEntertainmentIpV1Caps({
+      dio,
+      overall: overall_score,
+      unadjustedOverall: unadjusted_overall_score,
+      adjustmentFactor: explanation.totals.adjustment_factor,
+    });
+
+    for (const d of cap.diagnostics) {
+      const item = { component: "policy", text: d.text, evidence_ids: [] as string[] };
+      if (d.bucket === "positive_signals") buckets.positive_signals.push(item);
+      if (d.bucket === "coverage_gaps") buckets.coverage_gaps.push(item);
+      if (d.bucket === "red_flags") buckets.red_flags.push(item);
+    }
+  }
+
+  // Add explicit policy diagnostics for consumer_ecommerce_brand_v1 (diagnostics-first).
+  if (explanation.aggregation.policy_id === "consumer_ecommerce_brand_v1") {
+    const cap = computeConsumerEcommerceBrandV1Caps({
+      dio,
+      overall: overall_score,
+      unadjustedOverall: unadjusted_overall_score,
+      adjustmentFactor: explanation.totals.adjustment_factor,
+      riskInvestmentScore: typeof (components as any)?.risk_assessment?.used_score === "number" ? (components as any).risk_assessment.used_score : null,
+      metricInvestmentScore: typeof (components as any)?.metric_benchmark?.used_score === "number" ? (components as any).metric_benchmark.used_score : null,
+    });
+
+    for (const d of cap.diagnostics) {
+      const item = { component: "policy", text: d.text, evidence_ids: [] as string[] };
+      if (d.bucket === "positive_signals") buckets.positive_signals.push(item);
+      if (d.bucket === "coverage_gaps") buckets.coverage_gaps.push(item);
+    }
+  }
+
+  // Add explicit policy diagnostics for consumer_fintech_platform_v1 (diagnostics-first).
+  if (explanation.aggregation.policy_id === "consumer_fintech_platform_v1") {
+    const cap = computeConsumerFintechPlatformV1Caps({
+      dio,
+      overall: overall_score,
+      unadjustedOverall: unadjusted_overall_score,
+      adjustmentFactor: explanation.totals.adjustment_factor,
+      riskInvestmentScore: typeof (components as any)?.risk_assessment?.used_score === "number" ? (components as any).risk_assessment.used_score : null,
+      metricInvestmentScore: typeof (components as any)?.metric_benchmark?.used_score === "number" ? (components as any).metric_benchmark.used_score : null,
+    });
+
+    for (const d of cap.diagnostics) {
+      const item = { component: "policy", text: d.text, evidence_ids: [] as string[] };
+      if (d.bucket === "positive_signals") buckets.positive_signals.push(item);
+      if (d.bucket === "coverage_gaps") buckets.coverage_gaps.push(item);
+    }
+  }
+
+  // Add explicit policy diagnostics for enterprise_saas_b2b_v1 (diagnostics-first).
+  if (explanation.aggregation.policy_id === "enterprise_saas_b2b_v1") {
+    const cap = computeEnterpriseSaasB2BV1Caps({
+      dio,
+      overall: overall_score,
+      unadjustedOverall: unadjusted_overall_score,
+      adjustmentFactor: explanation.totals.adjustment_factor,
+    });
+
+    for (const d of cap.diagnostics) {
+      const item = { component: "policy", text: d.text, evidence_ids: [] as string[] };
+      if (d.bucket === "positive_signals") buckets.positive_signals.push(item);
+      if (d.bucket === "coverage_gaps") buckets.coverage_gaps.push(item);
+    }
+  }
+
+  // Add explicit policy diagnostics for physical_product_cpg_spirits_v1 (diagnostics-first).
+  if (explanation.aggregation.policy_id === "physical_product_cpg_spirits_v1") {
+    const cap = computePhysicalProductCpgSpiritsV1Caps({
+      dio,
+      overall: overall_score,
+      unadjustedOverall: unadjusted_overall_score,
+      adjustmentFactor: explanation.totals.adjustment_factor,
+    });
+
+    for (const d of cap.diagnostics) {
+      const item = { component: "policy", text: d.text, evidence_ids: [] as string[] };
+      if (d.bucket === "positive_signals") buckets.positive_signals.push(item);
+      if (d.bucket === "coverage_gaps") buckets.coverage_gaps.push(item);
     }
   }
 

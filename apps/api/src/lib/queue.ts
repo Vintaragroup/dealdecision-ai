@@ -1,5 +1,9 @@
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
+import dotenv from "dotenv";
+
+// Ensure env is loaded before queues initialize.
+dotenv.config();
 
 const redisUrl = process.env.REDIS_URL;
 

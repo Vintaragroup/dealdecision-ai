@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { getSelectedPolicyIdFromAny } from "../classification/get-selected-policy-id";
 
 export type Phase1ConfidenceBand = "low" | "med" | "high";
 
@@ -68,6 +69,26 @@ export type Phase1ClaimV1 = {
 
 export type Phase1CoverageV1 = {
 	sections: Record<string, "present" | "partial" | "missing">;
+	// Additive: richer semantics for UI/analytics without changing scoring math.
+	section_details?: Record<string, Phase1CoverageSectionContractV1>;
+	required_sections?: string[];
+	sections_missing_list?: string[];
+	missing_counts?: { required: number; missing: number; provided: number };
+	section_labels?: Record<string, string>;
+};
+
+export type Phase1CoverageSectionWhyMissingV1 =
+	| "empty_text"
+	| "explicit_not_provided"
+	| "no_evidence"
+	| "low_confidence";
+
+export type Phase1CoverageSectionContractV1 = {
+	present: boolean;
+	provided: boolean;
+	confidence: number;
+	confidence_band?: Phase1ConfidenceBand;
+	why_missing?: Phase1CoverageSectionWhyMissingV1;
 };
 
 export type Phase1DecisionSummaryV1 = {
@@ -184,6 +205,132 @@ function uniqStrings(values: string[]): string[] {
 		out.push(s);
 	}
 	return out;
+}
+
+function normalizeConfidenceToNumber(confidence: unknown): number | null {
+	if (typeof confidence === "number" && Number.isFinite(confidence)) {
+		return Math.max(0, Math.min(1, confidence));
+	}
+	if (typeof confidence === "string") {
+		const c = confidence.trim().toLowerCase();
+		if (c === "high") return 0.8;
+		if (c === "med" || c === "medium") return 0.6;
+		if (c === "low") return 0.35;
+	}
+	return null;
+}
+
+export function isSectionProvided(sectionObj: any): { provided: boolean; why_missing?: Phase1CoverageSectionWhyMissingV1 } {
+	const MIN_TEXT_LEN = 20;
+	const MIN_CONFIDENCE = 0.6;
+	const LOW_CONFIDENCE = 0.4;
+
+	if (sectionObj == null) return { provided: false, why_missing: "empty_text" };
+	if (typeof sectionObj !== "object") {
+		const s = sanitizeInlineText(safeString(sectionObj));
+		if (!s.trim()) return { provided: false, why_missing: "empty_text" };
+		const lower = s.toLowerCase();
+		if (/(not\s+provided|n\/?a|tbd|unknown|none)/i.test(lower)) return { provided: false, why_missing: "explicit_not_provided" };
+		if (s.length < MIN_TEXT_LEN) return { provided: false, why_missing: "empty_text" };
+		return { provided: true };
+	}
+
+	const evidenceIds = Array.isArray(sectionObj?.evidence_ids)
+		? sectionObj.evidence_ids.filter((x: any) => typeof x === "string" && x.trim())
+		: [];
+	if (evidenceIds.length > 0) return { provided: true };
+
+	const candidates: unknown[] = [
+		sectionObj?.text,
+		sectionObj?.summary,
+		sectionObj?.value,
+		sectionObj?.content,
+		sectionObj?.description,
+		sectionObj?.answer,
+	];
+	let text = "";
+	for (const c of candidates) {
+		if (typeof c === "string" && c.trim()) {
+			text = sanitizeInlineText(c);
+			break;
+		}
+	}
+
+	const conf = normalizeConfidenceToNumber(sectionObj?.confidence) ?? normalizeConfidenceToNumber(sectionObj?.confidence_band);
+
+	// Deterministic: if there is no meaningful content, it is missing due to empty text (regardless of confidence).
+	if (!text.trim()) {
+		return { provided: false, why_missing: "empty_text" };
+	}
+
+	const lower = text.toLowerCase();
+	if (/(not\s+provided|n\/?a|tbd|unknown|none)/i.test(lower)) return { provided: false, why_missing: "explicit_not_provided" };
+	if (text.length < MIN_TEXT_LEN) {
+		if (conf !== null && conf < LOW_CONFIDENCE) return { provided: false, why_missing: "low_confidence" };
+		return { provided: false, why_missing: "empty_text" };
+	}
+
+	return { provided: true };
+}
+
+function getRequiredPhase1Sections(policy_id: string | null): string[] {
+	// Default: keep existing Phase 1 coverage/scoring keys.
+	const defaultRequired = [
+		"product_solution",
+		"market_icp",
+		"raise_terms",
+		"business_model",
+		"traction",
+		"financials",
+		"team",
+		"gtm",
+		"risks",
+	];
+
+	if (policy_id === "real_estate_underwriting") {
+		// Real-estate underwriting: avoid penalizing generic startup semantics (e.g., SaaS ICP phrasing).
+		// Keep stored keys stable; UI can translate via section_labels.
+		return [
+			"product_solution",
+			"market_icp",
+			"raise_terms",
+			"financials",
+			"team",
+			"gtm",
+			"risks",
+			"traction",
+		];
+	}
+
+	return defaultRequired;
+}
+
+function getPhase1SectionLabels(policy_id: string | null): Record<string, string> {
+	if (policy_id === "real_estate_underwriting") {
+		return {
+			product_solution: "asset / property overview",
+			market_icp: "market & tenant profile",
+			raise_terms: "capital stack / terms",
+			financials: "underwriting / financials",
+			team: "sponsor / operator",
+			gtm: "business plan / leasing strategy",
+			risks: "risks",
+			traction: "occupancy / rent roll / performance",
+			business_model: "strategy / model",
+		};
+	}
+
+	return {
+		product_solution: "product / solution",
+		market_icp: "market / ICP",
+		raise_terms: "raise / terms",
+		business_model: "business model",
+		traction: "traction",
+		financials: "financials",
+		team: "team",
+		gtm: "go-to-market",
+		risks: "risks",
+	};
 }
 
 function sanitizeInlineText(value: string): string {
@@ -326,6 +473,24 @@ function hardValidateMarketICP(value: string): string {
 	const hasIcpSignal = hasBusinessVerb(s)
 		|| /\b(for|target|targets|targeting|built\s+for|designed\s+for|used\s+by|serves?|customers?|buyers?|operators?)\b/i.test(s);
 	if (!hasIcpSignal && s.split(/\s+/g).filter(Boolean).length < 3) return "";
+	return s;
+}
+
+function hardValidateRealEstateMarketIcp(value: string): string {
+	const s = sanitizeInlineText(value);
+	if (!s) return "";
+	if (hasSpacedLogoOcrArtifact(s)) return "";
+	if (capsTokenRatio(s) > 0.4) return "";
+	if (/^(unknown|n\/?a|none)$/i.test(s.trim())) return "";
+
+	// For RE underwriting, we treat market_icp as "market & tenant profile".
+	// Allow noun-phrase evidence (no business verb required), but require RE market/tenant signals.
+	const hasSignal =
+		/\b(market|msa|submarket|tenant|renters?|leasing|occupanc|job\s+growth|in-?migration|demographic|population|workforce)\b/i.test(s);
+	if (!hasSignal) return "";
+
+	const tokens = s.split(/\s+/g).filter(Boolean);
+	if (tokens.length < 4) return "";
 	return s;
 }
 
@@ -1783,6 +1948,8 @@ export function generatePhase1DIOV1(params: {
 }): Phase1DIOV1 {
 	const maxClaims = Math.max(1, Math.min(25, params.maxClaims ?? 10));
 	const docs = Array.isArray(params.inputDocuments) ? params.inputDocuments : [];
+	const policyId = getSelectedPolicyIdFromAny(params.dio);
+	const policyAllowsRealEstateMarketIcp = policyId === "real_estate_underwriting";
 
 	const combinedText = docs
 		.map((d) => pickBestText(d))
@@ -1905,7 +2072,7 @@ export function generatePhase1DIOV1(params: {
 	if (productSentence.trim() && !validatedProduct.trim()) productHardRejected = true;
 	productSentence = validatedProduct;
 	const validatedMarket = looksRE
-		? hardValidateProductSolution(marketSentence)
+		? (policyAllowsRealEstateMarketIcp ? hardValidateRealEstateMarketIcp(marketSentence) : hardValidateProductSolution(marketSentence))
 		: hardValidateMarketICP(marketSentence);
 	if (marketSentence.trim() && !validatedMarket.trim()) marketHardRejected = true;
 	marketSentence = validatedMarket;
@@ -1932,9 +2099,9 @@ export function generatePhase1DIOV1(params: {
 	// Validate again after any real-estate fallback.
 	if (!productHardRejected) productSentence = hardValidateProductSolution(productSentence);
 	if (!marketHardRejected) {
-		// Keep real-estate deals conservative: avoid promoting market blurbs into ICP.
+		// Keep real-estate deals conservative: require explicit market/tenant signals.
 		marketSentence = looksRE
-			? hardValidateProductSolution(marketSentence)
+			? (policyAllowsRealEstateMarketIcp ? hardValidateRealEstateMarketIcp(marketSentence) : hardValidateProductSolution(marketSentence))
 			: hardValidateMarketICP(marketSentence);
 	}
 
@@ -2160,6 +2327,93 @@ export function generatePhase1DIOV1(params: {
 		if (uniqueClaims.length >= maxClaims) break;
 	}
 
+	// Additive: richer section semantics for UI. Keep coverage.sections as-is to avoid changing scoring math.
+	const labelMap = getPhase1SectionLabels(policyId);
+	const required = getRequiredPhase1Sections(policyId);
+
+	const evidenceIdsFor = (category: Phase1ClaimCategoryV1): string[] =>
+		uniqueClaims.filter((c) => c.category === category).map((c) => c.claim_id).filter(Boolean);
+
+	const looksLikeRealEstateMarketEvidence = /\b(market|msa|submarket|tenant|tenants|leasing|lease-?up|occupanc|rent\s+growth|workforce\s+housing)\b/i.test(combinedText);
+
+	const sectionInputs: Record<string, any> = {
+		product_solution: {
+			text: safeNonEmpty(mergedOverviewForV2?.product_solution) || safeNonEmpty(finalTruth.product_solution) || "",
+			evidence_ids: evidenceIdsFor("product"),
+			confidence_band: sectionConfidence.product_solution,
+		},
+		market_icp: {
+			text: safeNonEmpty(mergedOverviewForV2?.market_icp) || safeNonEmpty(finalTruth.market_icp) || (policyId === "real_estate_underwriting" && looksLikeRealEstateMarketEvidence ? "Market and tenant profile are described in the offering memo." : ""),
+			evidence_ids: evidenceIdsFor("market"),
+			confidence_band: sectionConfidence.market_icp,
+		},
+		raise_terms: {
+			text: safeNonEmpty(mergedOverviewForV2?.raise_terms) || safeNonEmpty(mergedOverviewForV2?.raise) || safeNonEmpty(finalTruth.raise) || "",
+			evidence_ids: evidenceIdsFor("terms"),
+			confidence_band: sectionConfidence.raise_terms,
+		},
+		business_model: {
+			text: safeNonEmpty(mergedOverviewForV2?.business_model) || safeNonEmpty(finalTruth.business_model) || "",
+			evidence_ids: [],
+			confidence_band: sectionConfidence.business_model,
+		},
+		traction: {
+			text: formatList([...(finalTruth.traction_signals ?? []), ...(tractionMetrics ?? [])], 6),
+			evidence_ids: evidenceIdsFor("traction"),
+			confidence_band: sectionConfidence.traction,
+		},
+		financials: {
+			text: coverage.sections.financials === "present" ? "Financial metrics are referenced in the documents." : coverage.sections.financials === "partial" ? "Financials are partially provided (document present)." : "",
+			evidence_ids: [],
+			confidence_band: sectionConfidence.financials,
+		},
+		team: {
+			text: coverage.sections.team === "present" ? "Team/sponsor information is referenced in the documents." : "",
+			evidence_ids: evidenceIdsFor("team"),
+			confidence_band: sectionConfidence.team,
+		},
+		gtm: {
+			text: coverage.sections.gtm === "present" ? "Go-to-market / plan is referenced in the documents." : "",
+			evidence_ids: [],
+			confidence_band: sectionConfidence.gtm,
+		},
+		risks: {
+			text: formatList(finalTruth.key_risks_detected ?? [], 6),
+			evidence_ids: evidenceIdsFor("risk"),
+			confidence_band: sectionConfidence.risks,
+		},
+	};
+
+	const section_details: Record<string, Phase1CoverageSectionContractV1> = {};
+	for (const k of Object.keys(sectionInputs)) {
+		const present = Boolean(coverage.sections && Object.prototype.hasOwnProperty.call(coverage.sections, k));
+		const src = sectionInputs[k];
+		const conf = normalizeConfidenceToNumber(src?.confidence) ?? normalizeConfidenceToNumber(src?.confidence_band) ?? 0.5;
+		const provided = isSectionProvided({ ...src, confidence: conf });
+		section_details[k] = {
+			present,
+			provided: provided.provided,
+			confidence: conf,
+			...(typeof src?.confidence_band === "string" ? { confidence_band: src.confidence_band } : {}),
+			...(provided.provided ? {} : { why_missing: provided.why_missing ?? "empty_text" }),
+		};
+	}
+
+	const sections_missing_list = required.filter((k) => {
+		const d = section_details[k];
+		return !d || d.provided !== true;
+	});
+
+	coverage.section_details = section_details;
+	coverage.required_sections = required;
+	coverage.sections_missing_list = sections_missing_list;
+	coverage.missing_counts = {
+		required: required.length,
+		missing: sections_missing_list.length,
+		provided: Math.max(0, required.length - sections_missing_list.length),
+	};
+	coverage.section_labels = labelMap;
+
 	// Executive summary evidence: include claim pointers + snippet if available
 	const executiveEvidence: Phase1ExecutiveSummaryEvidenceRefV1[] = uniqueClaims
 		.slice(0, 6)
@@ -2302,8 +2556,10 @@ export function mergePhase1IntoDIO(dio: any, phase1: Phase1DIOV1): any {
 	}
 
 	function ensurePhase1Coverage(incomingPhase1: any, existing: any): Phase1CoverageV1 {
-		const existingSections = normalizeCoverageSections(existing?.coverage?.sections);
-		const incomingSections = normalizeCoverageSections(incomingPhase1?.coverage?.sections);
+			const existingCoverage = existing?.coverage && typeof existing.coverage === "object" ? existing.coverage : {};
+			const incomingCoverage = incomingPhase1?.coverage && typeof incomingPhase1.coverage === "object" ? incomingPhase1.coverage : {};
+			const existingSections = normalizeCoverageSections(existingCoverage?.sections);
+			const incomingSections = normalizeCoverageSections(incomingCoverage?.sections);
 		const inferred = inferCoverageSectionsFromPhase1(incomingPhase1 && typeof incomingPhase1 === "object" ? incomingPhase1 : existing);
 
 		const merged: Record<string, CoverageStatus> = {
@@ -2315,7 +2571,12 @@ export function mergePhase1IntoDIO(dio: any, phase1: Phase1DIOV1): any {
 			if (!merged[k]) merged[k] = inferred[k] ?? "missing";
 		}
 
-		return { sections: merged };
+		// Preserve additive coverage metadata for UI/analytics while keeping canonical sections normalized.
+		return {
+			...existingCoverage,
+			...incomingCoverage,
+			sections: merged,
+		};
 	}
 
 	const business_archetype_v1 = (phase1 as any)?.business_archetype_v1;

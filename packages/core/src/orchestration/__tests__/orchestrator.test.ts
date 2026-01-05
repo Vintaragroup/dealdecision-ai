@@ -11,6 +11,7 @@ import { DealOrchestrator } from '../orchestrator';
 import type { OrchestrationInput } from '../orchestrator';
 import type { DealIntelligenceObject } from '../../types/dio';
 import type { DIOStorage, DIOStorageResult } from '../../services/dio-storage';
+import { buildScoreExplanationFromDIO } from '../../reports/score-explanation';
 
 type AnyAnalyzer = { analyze: jest.Mock<Promise<any>, any[]> };
 
@@ -344,6 +345,270 @@ it('enforces policy analyzer bundle for execution_ready_v1 (skips financialHealt
   expect(financialHealthAnalyzer.analyze).toHaveBeenCalledTimes(0);
   expect(slideSequenceAnalyzer.analyze).toHaveBeenCalledTimes(0);
   expect(visualDesignAnalyzer.analyze).toHaveBeenCalledTimes(0);
+});
+
+it('enforces policy analyzer bundle for operating_startup_revenue_v1 (requires financialHealth; skips slideSequence/visualDesign)', async () => {
+  const storage = createStorage();
+
+  const slideSequenceAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okSlideSequence()) };
+  const metricBenchmarkAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okMetricBenchmark()) };
+  const visualDesignAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okVisualDesign()) };
+  const narrativeArcAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okNarrativeArc()) };
+  const financialHealthAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okFinancialHealth()) };
+  const riskAssessmentAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okRiskAssessment()) };
+
+  const analyzers = {
+    slideSequence: slideSequenceAnalyzer,
+    metricBenchmark: metricBenchmarkAnalyzer,
+    visualDesign: visualDesignAnalyzer,
+    narrativeArc: narrativeArcAnalyzer,
+    financialHealth: financialHealthAnalyzer,
+    riskAssessment: riskAssessmentAnalyzer,
+  };
+
+  const orchestrator = new DealOrchestrator(analyzers as any, storage, { debug: false });
+
+  const input: OrchestrationInput = {
+    deal_id: 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee',
+    analysis_cycle: 1,
+    input_data: {
+      documents: [
+        {
+          fileName: 'Operating Startup Deck.pdf',
+          totalPages: 12,
+          fileSizeBytes: 1000,
+          totalWords: 600,
+          mainHeadings: ['Problem', 'Solution', 'Traction', 'Financials', 'KPIs'],
+          keyMetrics: [
+            { key: 'MRR', value: '$50,000', source: 'deck' },
+            { key: 'Gross Margin', value: '70%', source: 'deck' },
+            { key: 'Churn', value: '4%', source: 'deck' },
+          ],
+          textSummary:
+            'Seed stage startup with MRR $50,000. Revenue growing. Gross margin 70%. Cohort KPIs tracked.',
+        },
+      ],
+    },
+  };
+
+  const result = await orchestrator.analyze(input);
+  expect(result.success).toBe(true);
+  expect(result.execution.analyzers_run).toBe(4);
+
+  // Enabled by policy: metric_benchmark, financial_health, risk_assessment, narrative_arc
+  expect(metricBenchmarkAnalyzer.analyze).toHaveBeenCalledTimes(1);
+  expect(financialHealthAnalyzer.analyze).toHaveBeenCalledTimes(1);
+  expect(riskAssessmentAnalyzer.analyze).toHaveBeenCalledTimes(1);
+  expect(narrativeArcAnalyzer.analyze).toHaveBeenCalledTimes(1);
+
+  // Disabled by policy
+  expect(slideSequenceAnalyzer.analyze).toHaveBeenCalledTimes(0);
+  expect(visualDesignAnalyzer.analyze).toHaveBeenCalledTimes(0);
+});
+
+it('enforces policy analyzer bundle for consumer_ecommerce_brand_v1 (skips financialHealth/slideSequence/visualDesign) and excluded analyzers do not affect coverage', async () => {
+  const storage = createStorage();
+
+  const slideSequenceAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okSlideSequence()) };
+  const metricBenchmarkAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okMetricBenchmark()) };
+  const visualDesignAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okVisualDesign()) };
+  const narrativeArcAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okNarrativeArc()) };
+  const financialHealthAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okFinancialHealth()) };
+  const riskAssessmentAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okRiskAssessment()) };
+
+  const analyzers = {
+    slideSequence: slideSequenceAnalyzer,
+    metricBenchmark: metricBenchmarkAnalyzer,
+    visualDesign: visualDesignAnalyzer,
+    narrativeArc: narrativeArcAnalyzer,
+    financialHealth: financialHealthAnalyzer,
+    riskAssessment: riskAssessmentAnalyzer,
+  };
+
+  const orchestrator = new DealOrchestrator(analyzers as any, storage, { debug: false });
+
+  const input: OrchestrationInput = {
+    deal_id: 'ffffffff-ffff-ffff-ffff-ffffffffffff',
+    analysis_cycle: 1,
+    input_data: {
+      documents: [
+        {
+          fileName: 'Ecommerce Brand Deck.pdf',
+          totalPages: 12,
+          fileSizeBytes: 1000,
+          totalWords: 600,
+          mainHeadings: ['Brand', 'Traction', 'Unit Economics', 'Cohorts'],
+          keyMetrics: [
+            { key: 'LTV:CAC', value: '4.2x', source: 'deck' },
+            { key: 'CAC', value: '$35', source: 'deck' },
+            { key: 'AOV', value: '$95', source: 'deck' },
+            { key: 'Gross Margin', value: '62%', source: 'deck' },
+            { key: 'ROAS', value: '3.1', source: 'deck' },
+          ],
+          textSummary:
+            'DTC ecommerce brand on Shopify. Unit economics: LTV:CAC 4.2x, CAC $35, AOV $95, ROAS 3.1. Gross margin 62%. Cohort repeat purchase tracked.',
+        },
+      ],
+    },
+  };
+
+  const result = await orchestrator.analyze(input);
+  expect(result.success).toBe(true);
+  expect(result.execution.analyzers_run).toBe(3);
+
+  // Orchestrator must thread the selected policy_id into analyzer inputs.
+  const metricBenchmarkInput = (metricBenchmarkAnalyzer.analyze as jest.Mock).mock.calls?.[0]?.[0];
+  expect(metricBenchmarkInput?.policy_id).toBe('consumer_ecommerce_brand_v1');
+
+  // Enabled by policy: metric_benchmark, risk_assessment, narrative_arc (optional but enabled)
+  expect(metricBenchmarkAnalyzer.analyze).toHaveBeenCalledTimes(1);
+  expect(riskAssessmentAnalyzer.analyze).toHaveBeenCalledTimes(1);
+  expect(narrativeArcAnalyzer.analyze).toHaveBeenCalledTimes(1);
+
+  // Disabled by policy
+  expect(financialHealthAnalyzer.analyze).toHaveBeenCalledTimes(0);
+  expect(slideSequenceAnalyzer.analyze).toHaveBeenCalledTimes(0);
+  expect(visualDesignAnalyzer.analyze).toHaveBeenCalledTimes(0);
+
+  // Excluded-by-policy analyzers must not affect coverage_ratio/evidence_factor.
+  const dio = result.dio as DealIntelligenceObject;
+  const explanation = buildScoreExplanationFromDIO(dio);
+  expect(explanation.aggregation.policy_id).toBe('consumer_ecommerce_brand_v1');
+  expect(explanation.totals.coverage_ratio).toBeGreaterThanOrEqual(0.9);
+  expect(explanation.totals.evidence_factor).toBeGreaterThanOrEqual(0.9);
+});
+
+it('enforces policy analyzer bundle for healthcare_biotech_v1 (includes financialHealth; skips slideSequence/visualDesign)', async () => {
+  const storage = createStorage();
+
+  const slideSequenceAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okSlideSequence()) };
+  const metricBenchmarkAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okMetricBenchmark()) };
+  const visualDesignAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okVisualDesign()) };
+  const narrativeArcAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okNarrativeArc()) };
+  const financialHealthAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okFinancialHealth()) };
+  const riskAssessmentAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okRiskAssessment()) };
+
+  const analyzers = {
+    slideSequence: slideSequenceAnalyzer,
+    metricBenchmark: metricBenchmarkAnalyzer,
+    visualDesign: visualDesignAnalyzer,
+    narrativeArc: narrativeArcAnalyzer,
+    financialHealth: financialHealthAnalyzer,
+    riskAssessment: riskAssessmentAnalyzer,
+  };
+
+  const orchestrator = new DealOrchestrator(analyzers as any, storage, { debug: false });
+
+  const input: OrchestrationInput = {
+    deal_id: '99999999-9999-9999-9999-999999999999',
+    analysis_cycle: 1,
+    input_data: {
+      documents: [
+        {
+          fileName: 'Healthcare Deck.pdf',
+          totalPages: 12,
+          fileSizeBytes: 1000,
+          totalWords: 600,
+          mainHeadings: ['Regulatory', 'Clinical', 'Reimbursement', 'Team', 'Financials'],
+          keyMetrics: [
+            { key: 'Sensitivity', value: '94%', source: 'deck' },
+            { key: 'Specificity', value: '92%', source: 'deck' },
+            { key: 'Time to clearance (months)', value: '12', source: 'deck' },
+            { key: 'Runway (months)', value: '18', source: 'deck' },
+          ],
+          textSummary:
+            'FDA 510(k) pathway with IDE planning. Clinical trial Phase II with IRB oversight and endpoints. CPT/DRG reimbursement strategy with payers. Team includes MD/PhD and KOL advisors. Burn rate and runway planning included.',
+        },
+      ],
+    },
+  };
+
+  const result = await orchestrator.analyze(input);
+  expect(result.success).toBe(true);
+  expect(result.execution.analyzers_run).toBe(4);
+
+  const metricBenchmarkInput = (metricBenchmarkAnalyzer.analyze as jest.Mock).mock.calls?.[0]?.[0];
+  expect(metricBenchmarkInput?.policy_id).toBe('healthcare_biotech_v1');
+
+  // Enabled by policy: metric_benchmark, risk_assessment, narrative_arc, financial_health (optional but enabled)
+  expect(metricBenchmarkAnalyzer.analyze).toHaveBeenCalledTimes(1);
+  expect(riskAssessmentAnalyzer.analyze).toHaveBeenCalledTimes(1);
+  expect(narrativeArcAnalyzer.analyze).toHaveBeenCalledTimes(1);
+  expect(financialHealthAnalyzer.analyze).toHaveBeenCalledTimes(1);
+
+  // Disabled by policy
+  expect(slideSequenceAnalyzer.analyze).toHaveBeenCalledTimes(0);
+  expect(visualDesignAnalyzer.analyze).toHaveBeenCalledTimes(0);
+
+  const dio = result.dio as DealIntelligenceObject;
+  const explanation = buildScoreExplanationFromDIO(dio);
+  expect(explanation.aggregation.policy_id).toBe('healthcare_biotech_v1');
+});
+
+it('enforces policy analyzer bundle for media_entertainment_ip_v1 (includes financialHealth; skips slideSequence/visualDesign)', async () => {
+  const storage = createStorage();
+
+  const slideSequenceAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okSlideSequence()) };
+  const metricBenchmarkAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okMetricBenchmark()) };
+  const visualDesignAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okVisualDesign()) };
+  const narrativeArcAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okNarrativeArc()) };
+  const financialHealthAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okFinancialHealth()) };
+  const riskAssessmentAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okRiskAssessment()) };
+
+  const analyzers = {
+    slideSequence: slideSequenceAnalyzer,
+    metricBenchmark: metricBenchmarkAnalyzer,
+    visualDesign: visualDesignAnalyzer,
+    narrativeArc: narrativeArcAnalyzer,
+    financialHealth: financialHealthAnalyzer,
+    riskAssessment: riskAssessmentAnalyzer,
+  };
+
+  const orchestrator = new DealOrchestrator(analyzers as any, storage, { debug: false });
+
+  const input: OrchestrationInput = {
+    deal_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    analysis_cycle: 1,
+    input_data: {
+      documents: [
+        {
+          fileName: 'Media IP Deck.pdf',
+          totalPages: 12,
+          fileSizeBytes: 1000,
+          totalWords: 600,
+          mainHeadings: ['Rights', 'Distribution', 'Budget', 'Waterfall'],
+          keyMetrics: [
+            { key: 'MG amount', value: '$500,000', source: 'deck' },
+            { key: 'Pre-sales amount', value: '$750,000', source: 'deck' },
+            { key: 'Recoupment multiple', value: '2.0', source: 'deck' },
+          ],
+          textSummary:
+            'Chain of title verified and option agreement executed. Distribution agreement discussed with minimum guarantee (MG) and pre-sales. Completion bond and financing plan outlined. Waterfall/recoupment schedule defined.',
+        },
+      ],
+    },
+  };
+
+  const result = await orchestrator.analyze(input);
+  expect(result.success).toBe(true);
+  expect(result.execution.analyzers_run).toBe(4);
+
+  const metricBenchmarkInput = (metricBenchmarkAnalyzer.analyze as jest.Mock).mock.calls?.[0]?.[0];
+  expect(metricBenchmarkInput?.policy_id).toBe('media_entertainment_ip_v1');
+
+  // Enabled by policy: metric_benchmark, risk_assessment, narrative_arc, financial_health (optional but enabled)
+  expect(metricBenchmarkAnalyzer.analyze).toHaveBeenCalledTimes(1);
+  expect(riskAssessmentAnalyzer.analyze).toHaveBeenCalledTimes(1);
+  expect(narrativeArcAnalyzer.analyze).toHaveBeenCalledTimes(1);
+  expect(financialHealthAnalyzer.analyze).toHaveBeenCalledTimes(1);
+
+  // Disabled by policy
+  expect(slideSequenceAnalyzer.analyze).toHaveBeenCalledTimes(0);
+  expect(visualDesignAnalyzer.analyze).toHaveBeenCalledTimes(0);
+
+  const dio = result.dio as DealIntelligenceObject;
+  const explanation = buildScoreExplanationFromDIO(dio);
+  expect(explanation.aggregation.policy_id).toBe('media_entertainment_ip_v1');
 });
 
 it('merges worker-provided llm_calls into execution_metadata', async () => {

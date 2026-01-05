@@ -6,6 +6,7 @@ import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
 import { updateDealPriority, updateAllDealPriorities } from "../services/priorityClassification";
 import { normalizeDealName } from "../lib/normalize-deal-name";
+import { purgeDealCascade, isPurgeDealNotFoundError } from "@dealdecision/core";
 
 type QueryResult<T> = { rows: T[]; rowCount?: number };
 type DealRoutesClient = {
@@ -18,6 +19,21 @@ type DealRoutesPool = {
 };
 
 type DealApiMode = "phase1" | "full";
+
+function requireDestructiveAuth(request: any): { ok: true } | { ok: false; status: number; error: string } {
+  const adminToken = process.env.ADMIN_TOKEN;
+  if (!adminToken) {
+    if (process.env.NODE_ENV === "development") return { ok: true };
+    return { ok: false, status: 403, error: "Admin token not configured" };
+  }
+
+  const authHeader = request?.headers?.authorization;
+  const token = typeof authHeader === "string" ? authHeader.replace("Bearer ", "") : undefined;
+  if (token !== adminToken) {
+    return { ok: false, status: 403, error: "Unauthorized" };
+  }
+  return { ok: true };
+}
 
 function parseDealApiMode(request: any): DealApiMode {
   const q = (request?.query ?? {}) as any;
@@ -507,18 +523,43 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 
   app.delete("/api/v1/deals/:deal_id", async (request, reply) => {
     const dealId = (request.params as { deal_id: string }).deal_id;
-    const { rows } = await pool.query<DealRow>(
-      `UPDATE deals SET deleted_at = now(), updated_at = now()
-       WHERE id = $1 AND deleted_at IS NULL
-       RETURNING *`,
-      [dealId]
-    );
 
-    if (rows.length === 0) {
-      return reply.status(404).send({ error: "Deal not found" });
+    const q = (request.query ?? {}) as any;
+    const rawPurge = q?.purge;
+    const purge =
+      rawPurge === true ||
+      rawPurge === "true" ||
+      (Array.isArray(rawPurge) && String(rawPurge[0]).toLowerCase() === "true");
+    if (!purge) {
+      return reply.status(400).send({ error: "purge=true is required for hard delete" });
     }
 
-    return mapDeal(rows[0], null, "full");
+    const auth = requireDestructiveAuth(request);
+    if (!auth.ok) {
+      return reply.status(auth.status).send({ error: auth.error });
+    }
+
+    const actor_user_id =
+      typeof (request.headers as any)?.["x-actor-user-id"] === "string"
+        ? String((request.headers as any)["x-actor-user-id"]).trim()
+        : null;
+
+    try {
+      const result = await purgeDealCascade({
+        deal_id: dealId,
+        actor_user_id,
+        db: pool as any,
+        logger: console as any,
+      });
+
+      return reply.send({ ok: true, deal_id: dealId, purge: result });
+    } catch (err) {
+      if (isPurgeDealNotFoundError(err)) {
+        return reply.status(404).send({ error: "Deal not found" });
+      }
+      const message = err instanceof Error ? err.message : "Purge failed";
+      return reply.status(500).send({ error: message });
+    }
   });
 
   app.post("/api/v1/deals/:deal_id/analyze", async (request, reply) => {

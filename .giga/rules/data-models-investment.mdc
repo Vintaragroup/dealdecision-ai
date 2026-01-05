@@ -1,5 +1,5 @@
 ---
-description: Specification for investment domain data models including Deal, Evidence, Document, and Analysis entities
+description: Specification for investment data models including Deal, Evidence, Document, Analysis entities and their relationships.
 ---
 
 # === USER INSTRUCTIONS ===
@@ -117,107 +117,68 @@ Collected -> Verified -> Scored -> Integrated
 
 # data-models-investment
 
-## Core Domain Models
+Core Data Model Components:
 
-1. Deal Entity
-```typescript
-interface Deal {
-  id: string;
-  stage: DealStage;
-  status: DealStatus; 
-  score: number;
-  confidence: number;
-  metrics: DealMetrics;
-  evidence: Evidence[];
-  documents: Document[];
-  analysis: Analysis[];
-}
-```
+1. Deal Intelligence Object (DIO)
+Path: apps/core/src/models/DIO.ts
+- Central data model for investment analysis
+- Properties:
+  - deal_id: Unique identifier
+  - deal_stage: intake -> review -> diligence -> decision
+  - confidence_score: 0-100 analysis confidence rating
+  - evidence_map: Links to supporting documentation
+  - analysis_cycles: Array of analysis iterations
+- Analysis state transitions with validation rules
+Importance Score: 95/100
 
 2. Evidence Model
-```typescript
-interface Evidence {
-  id: string;
-  type: EvidenceType;
-  source: Document;
-  confidence: number;
-  context: string;
-  validation: ValidationStatus;
-}
-```
+Path: apps/core/src/models/Evidence.ts
+- Structured evidence collection for deal analysis
+- Categories: 
+  - Metrics (financial, operational)
+  - Facts (market, team, product)
+  - Claims (from documents)
+  - Citations (source references)
+- Confidence scoring per evidence item
+Importance Score: 90/100
 
-3. Document Model 
-```typescript
-interface Document {
-  id: string;
-  type: DocumentType;
-  status: ProcessingStatus;
-  extracted: ExtractedContent;
-  confidence: number;
-  version: number;
-}
-```
+3. Document Model
+Path: apps/core/src/models/Document.ts
+- Investment document classification system
+- Types:
+  - pitch_deck
+  - financials 
+  - legal
+  - market_research
+  - team_profiles
+- Document quality scoring
+- Version tracking
+Importance Score: 85/100
 
-4. Analysis Model
-```typescript
-interface Analysis {
-  id: string;
-  cycle: AnalysisCycle;
-  findings: Finding[];
-  evidence: Evidence[];
-  confidence: number;
-  recommendation: Recommendation;
-}
-```
+4. Analysis Entities
+Path: apps/core/src/models/Analysis.ts
+- Multi-dimensional analysis scoring
+- Components:
+  - market_score
+  - team_score
+  - financial_health
+  - risk_assessment
+  - competitive_position
+- Category-specific scoring algorithms
+Importance Score: 85/100
 
-## State Transitions
+Key Relationships:
+- DIO contains multiple Evidence references
+- Evidence links to source Documents
+- Analysis aggregates Evidence scoring
+- Documents maintain version history
+- Evidence tracks confidence levels
 
-Deal Stage Transitions:
-- INTAKE -> UNDER_REVIEW: Document processing complete
-- UNDER_REVIEW -> IN_DILIGENCE: Initial analysis cycle complete
-- IN_DILIGENCE -> READY_DECISION: All analysis cycles complete
-- READY_DECISION -> CLOSED: Final recommendation made
-
-Document Processing States:
-- UPLOADED -> PROCESSING -> EXTRACTED -> VERIFIED
-- Error states: FAILED_PROCESSING, INVALID_CONTENT
-
-Analysis Cycle States:  
-- PLANNING -> IN_PROGRESS -> REVIEWING -> COMPLETE
-- Confidence gates between cycles
-
-## Domain Relationships
-
-- Deal contains many Documents
-- Documents produce multiple Evidence items
-- Evidence supports Analysis findings
-- Analysis spans multiple cycles
-- Recommendations require minimum confidence thresholds
-- Document processing status affects Deal stage progression
-
-## Key Business Rules
-
-1. Deal Progression
-- Stage advancement requires minimum confidence scores
-- Document completeness requirements per stage
-- Evidence validation rules for findings
-
-2. Evidence Validation  
-- Source traceability requirements
-- Confidence threshold minimums
-- Cross-validation between documents
-
-3. Analysis Requirements
-- Minimum evidence coverage per finding
-- Confidence scoring formulas
-- Required analysis dimensions
-
-4. Document Processing
-- Type-specific extraction rules
-- Version control requirements
-- Processing status impact on deal workflow
-
-Importance Score: 95
+Domain-Specific Rules:
+- Stage progression requires minimum confidence thresholds
+- Evidence requires source document citations
+- Analysis scores influence deal recommendations
+- Document versions affect evidence validity
 
 $END$
 

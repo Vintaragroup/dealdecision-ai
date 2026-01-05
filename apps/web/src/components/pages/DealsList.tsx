@@ -4,7 +4,8 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Select } from '../ui/select';
 import { ExportDealsModal } from '../ExportDealsModal';
-import { apiGetDeals, apiGetDocuments, apiAutoProgressDeal, isLiveBackend } from '../../lib/apiClient';
+import { apiGetDeals, apiGetDocuments, apiAutoProgressDeal, apiDeleteDeal, isLiveBackend } from '../../lib/apiClient';
+import { Modal } from '../ui/Modal';
 import { 
   Search,
   Plus,
@@ -65,6 +66,11 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
   const [liveDeals, setLiveDeals] = useState<Deal[]>([]);
   const [progressionNotification, setProgressionNotification] = useState<{ dealId: string; oldStage: string; newStage: string } | null>(null);
 
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deletingDealId, setDeletingDealId] = useState<string | null>(null);
+
   useEffect(() => {
     if (!isLiveBackend()) return;
 
@@ -112,6 +118,51 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
       isMounted = false;
     };
   }, []);
+
+  const openDeleteModal = (deal: { id: string; name: string }) => {
+    setError(null);
+    setDeleteTarget({ id: deal.id, name: deal.name });
+    setDeleteConfirmText('');
+    setDeleteModalOpen(true);
+  };
+
+  const closeDeleteModal = () => {
+    if (deletingDealId) return;
+    setDeleteModalOpen(false);
+    setDeleteTarget(null);
+    setDeleteConfirmText('');
+  };
+
+  const isDeleteConfirmed = (() => {
+    const typed = deleteConfirmText.trim();
+    if (!deleteTarget) return false;
+    if (typed === 'DELETE') return true;
+    return typed === deleteTarget.name;
+  })();
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    if (!isLiveBackend()) {
+      setError('Delete Deal is only available in live backend mode.');
+      return;
+    }
+    if (!isDeleteConfirmed) return;
+
+    setDeletingDealId(deleteTarget.id);
+    setError(null);
+    try {
+      await apiDeleteDeal(deleteTarget.id, { purge: true });
+      setLiveDeals((prev) => prev.filter((d) => d.id !== deleteTarget.id));
+      setSelectedDeals((prev) => prev.filter((id) => id !== deleteTarget.id));
+      setDeleteModalOpen(false);
+      setDeleteTarget(null);
+      setDeleteConfirmText('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete deal');
+    } finally {
+      setDeletingDealId(null);
+    }
+  };
 
   const deals: DealData[] = useMemo(() => {
     const toNonEmptyString = (value: unknown): string | null => {
@@ -729,6 +780,17 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                           >
                             <ArrowRight className="w-4 h-4" />
                           </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="Delete"
+                            className={`!text-gray-400 hover:!text-red-400`}
+                            title="Delete deal"
+                            onClick={() => openDeleteModal({ id: deal.id, name: deal.name })}
+                            loading={deletingDealId === deal.id}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
                         </div>
                       </td>
                     </tr>
@@ -870,6 +932,50 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
           onClose={() => setShowExportModal(false)}
         />
       )}
+
+      <Modal isOpen={deleteModalOpen} onClose={closeDeleteModal} size="md" darkMode={darkMode}>
+        <div className="space-y-4">
+          <div>
+            <h2 className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>Delete Deal</h2>
+            <p className={`text-sm mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+              This permanently deletes the deal and all related data. This action is irreversible.
+            </p>
+          </div>
+
+          {deleteTarget && (
+            <div className={`rounded-lg p-3 text-sm ${darkMode ? 'bg-red-500/10 text-red-200' : 'bg-red-50 text-red-800'}`}>
+              <div className="font-medium">You are deleting:</div>
+              <div className="mt-1 break-words">{deleteTarget.name}</div>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+              Type <span className="font-semibold">{deleteTarget?.name || 'DELETE'}</span> or <span className="font-semibold">DELETE</span> to confirm.
+            </p>
+            <Input
+              value={deleteConfirmText}
+              onChange={(e) => setDeleteConfirmText(e.target.value)}
+              placeholder={deleteTarget?.name || 'DELETE'}
+              disabled={Boolean(deletingDealId)}
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={closeDeleteModal} disabled={Boolean(deletingDealId)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmDelete}
+              disabled={!isDeleteConfirmed || Boolean(deletingDealId)}
+              loading={Boolean(deletingDealId)}
+            >
+              Delete permanently
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

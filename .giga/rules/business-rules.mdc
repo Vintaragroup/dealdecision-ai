@@ -1,5 +1,5 @@
 ---
-description: Defines core business rules, validation logic, and decision criteria for investment deal analysis and evaluation
+description: Document and analyze business rules, validation logic, and domain-specific calculations for investment deal analysis and evaluation
 ---
 
 # === USER INSTRUCTIONS ===
@@ -111,86 +111,56 @@ INVESTMENT DEAL ANALYSIS FRAMEWORK
 
 # business-rules
 
-Core Investment Analysis Rules:
+Deal Analysis Scoring Framework:
+- Multi-dimensional scoring across 5 key categories:
+  1. Market Analysis (25%)
+  2. Financial Projections (25%) 
+  3. Team Assessment (20%)
+  4. Document Completeness (15%)
+  5. Risk Assessment (15%)
+- Custom confidence scoring with thresholds per category
+- Red/yellow/green flag generation based on domain rules
 
-1. Deal Evaluation Framework
-- Multi-dimensional scoring across 5 key metrics:
-  - Market (25%): TAM, growth rate, competitive dynamics
-  - Team (25%): Experience, domain expertise, execution history  
-  - Financial (20%): Unit economics, margins, burn rate
-  - Product (15%): Technology, differentiation, IP
-  - Traction (15%): Revenue growth, customer metrics, pipeline
-- Scoring thresholds:
-  - Strong Yes: >85%
-  - Yes: 70-85%
-  - Maybe: 50-70% 
-  - Pass: <50%
+Risk Assessment Matrix:
+- 6 core risk domains with weighted impact:
+  1. Market Risk (0.25)
+  2. Execution Risk (0.20) 
+  3. Financial Risk (0.20)
+  4. Technology Risk (0.15)
+  5. Team Risk (0.10)
+  6. Timeline Risk (0.10)
+- Risk severity levels: Low (0-33), Medium (34-66), High (67-100)
+- Mitigation requirement thresholds based on severity
 
-2. Risk Assessment Matrix
-- Six risk categories with severity levels:
-  - Market Risk (L/M/H/Critical)
-  - Team Risk (L/M/H/Critical)
-  - Financial Risk (L/M/H/Critical)
-  - Product Risk (L/M/H/Critical)
-  - Legal Risk (L/M/H/Critical)
-  - Execution Risk (L/M/H/Critical)
-- Critical thresholds:
-  - Deal blocked if any risk rated Critical
-  - Max 2 High risks allowed
-  - Required mitigation plans for High/Critical risks
+Due Diligence Validation Rules:
+- Critical document requirements by deal stage
+- Completion percentage calculations with weighted sections
+- Three-state verification (missing, partial, complete)
+- Blocking rules for critical validation failures
 
-3. Due Diligence Requirements
-- Required documentation by stage:
-  Initial Review:
-  - Executive summary
-  - Pitch deck
-  - Cap table
-  
-  Deep Dive:
-  - Financial model
-  - Customer references
-  - Legal docs
-  - Team background
-  
-  Final Decision:
-  - Term sheet
-  - Market research
-  - Tech assessment
-  - Risk analysis
+Deal Stage Progression Logic:
+- Automated stage transitions based on validation rules:
+  1. Intake -> Under Review: Initial doc requirements met
+  2. Under Review -> In Diligence: Analysis score > 65
+  3. In Diligence -> Ready Decision: Risk assessment complete
+- Manual override controls with approval workflow
 
-4. Deal Stage Validation Rules
-- Intake → Review:
-  - All required docs received
-  - Initial scoring complete
-  
-- Review → Due Diligence:  
-  - Score >50%
-  - No critical risks
-  - Team validated
+Financial Metric Thresholds:
+- Industry-specific benchmarks for key metrics:
+  - SaaS: MRR, CAC, LTV, Churn
+  - Marketplace: GMV, Take Rate
+  - Hardware: Margins, BOM Costs
+- Stage-appropriate target ranges
+- Red flag triggers for out-of-range values
 
-- Due Diligence → Decision:
-  - Full doc review complete
-  - All references checked
-  - Risk assessment done
-
-5. ROI Calculation Rules
-- Required minimum IRR: 25%
-- Target return multiple: 3-5x
-- Investment horizon: 5-7 years
-- Liquidation preferences:
-  - 1x for Series A/B
-  - Up to 2x for later stages
-
-6. Red Flag Criteria
-- Automatic deal rejection if:
-  - Burn rate >18 months runway
-  - Customer churn >5% monthly
-  - Gross margins <40%
-  - Outstanding litigation
-  - Incomplete founder background checks
-
-Importance Score: 95
-These rules represent the core decision framework and validation logic that drives the entire investment analysis process.
+Deal Classification Rules:
+- Multi-signal classifier using:
+  - Document contents 
+  - Financial metrics
+  - Team composition
+  - Market signals
+- Confidence scoring for classification accuracy
+- Industry-specific validation criteria
 
 $END$
 

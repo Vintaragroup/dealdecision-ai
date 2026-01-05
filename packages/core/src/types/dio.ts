@@ -194,6 +194,12 @@ export const DealClassificationSchema = z.object({
   asset_class: DealAssetClassSchema,
   deal_structure: z.string().min(1),
   strategy_subtype: z.string().min(1).nullable().optional(),
+  // Additive (classification upgrade): explicit policy id for this candidate.
+  // Optional to preserve backward compatibility with stored legacy DIOs.
+  policy_id: z.string().min(1).optional(),
+  // Additive (classification upgrade): raw candidate score (0..1) prior to confidence heuristics.
+  // Optional to preserve backward compatibility.
+  score: z.number().min(0).max(1).optional(),
   confidence: z.number().min(0).max(1),
   signals: z.array(z.string()),
 });
@@ -203,6 +209,9 @@ export type DealClassification = z.infer<typeof DealClassificationSchema>;
 export const DealClassificationResultSchema = z.object({
   candidates: z.array(DealClassificationSchema).max(5),
   selected: DealClassificationSchema,
+  // Additive (classification upgrade): broad domain policy derived from domain-first routing.
+  // Optional to preserve backward compatibility.
+  domain_policy_id: z.string().min(1).optional(),
   selected_policy: z.string().min(1),
   routing_reason: z.array(z.string()),
 });

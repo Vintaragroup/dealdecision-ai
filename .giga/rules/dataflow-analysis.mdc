@@ -1,5 +1,5 @@
 ---
-description: Dataflow analysis patterns for document processing, evidence extraction, AI insights, and report generation workflows
+description: Documentation of data flow through deal analysis system including processing pipelines, AI analysis and report generation
 ---
 
 # === USER INSTRUCTIONS ===
@@ -105,65 +105,52 @@ Data flows through specialized processors:
 - Quality control framework
 # === END USER INSTRUCTIONS ===
 
-# dataflow-analysis
+# dataflow-analysis 
 
-Document Processing Pipeline:
-- Multi-stage document ingestion workflow
-- Initial document classification and routing
-- Parallel processing across document types
-- Evidence extraction and validation queues
-- Quality assessment checkpoints
+Core Data Flow Components:
 
-Key Data Flows:
+1. Document Processing Pipeline
+- Document intake through extraction
+- Classification and grouping based on deal context 
+- Verification and confidence scoring
+- Evidence extraction and validation
+- File paths: apps/api/src/services/documents.ts
 
-1. Document Analysis Pipeline
-```
-Raw Documents → Classification → Content Extraction → Evidence Detection → Quality Validation
-```
-- Intelligent routing based on document type
-- Confidence scoring at each stage
-- Evidence aggregation across documents
-- Quality gates with minimum confidence thresholds
+2. Deal Analysis Workflow
+- Multi-stage analysis cycles
+- Progressive confidence scoring
+- Evidence collection and validation
+- Stage progression based on completion criteria
+- File paths: packages/core/src/services/cycle-analyzer.ts
 
-2. AI Analysis Integration
-```
-Extracted Evidence → AI Processing → Insight Generation → Report Integration
-```
-- Multi-dimensional confidence scoring
-- Source reliability weighting 
-- Validation methodology scoring
-- Cross-reference validation
+3. AI Analysis Integration Points
+- LLM-based document analysis 
+- Contextual routing for specialized analysis tasks
+- Domain-specific prompt generation and response parsing
+- Confidence scoring and validation
+- File paths: apps/worker/src/lib/llm/model-router.ts
 
-3. Report Generation Workflow
-```
-Analysis Results → Template Selection → Content Population → Review → Export
-```
-- Domain-specific template mapping
-- Evidence-backed content generation
-- Multi-stage review process
-- Version control and audit trail
+4. Report Generation Pipeline
+- Evidence aggregation and scoring
+- Section-specific content generation
+- Dynamic template population
+- Quality validation and scoring
+- File paths: apps/web/src/components/reports/ProfessionalReportGenerator.tsx
 
-Core Components:
+Data Flow Stages:
+1. Document Intake -> Classification -> Extraction
+2. Analysis Cycles with Evidence Collection
+3. AI-Assisted Analysis and Validation  
+4. Report Generation and Review
+5. Export and Distribution
 
-1. Document Processor (src/services/document-processor.ts)
-- Handles document classification and routing
-- Manages extraction queue priorities
-- Implements quality validation gates
-Importance Score: 85
+Key Integration Points:
+- Document processor -> Analysis pipeline
+- Analysis results -> Report generator
+- AI analysis -> Evidence collection
+- Evidence validation -> Confidence scoring
 
-2. Evidence Collector (src/services/evidence-collector.ts)
-- Aggregates evidence across documents
-- Cross-validates extracted information
-- Maintains evidence confidence scores
-Importance Score: 90
-
-3. Report Generator (src/services/report-generator.ts)
-- Orchestrates report assembly workflow
-- Maps evidence to report sections
-- Handles template customization
-Importance Score: 80
-
-Data transformation focuses on converting raw documents into structured evidence and insights through a multi-stage pipeline with validation checkpoints and confidence scoring at each stage.
+The system implements a comprehensive data flow for investment document analysis with sophisticated validation, scoring and report generation capabilities.
 
 $END$
 

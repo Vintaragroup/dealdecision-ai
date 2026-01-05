@@ -5,6 +5,15 @@ import { debugApiInferDealId, debugApiIsEnabled, debugApiLogCall, debugApiLogSse
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:9000';
 const BACKEND_MODE = (import.meta.env.VITE_BACKEND_MODE || 'mock').toLowerCase();
 
+function getDevAdminToken(): string | null {
+  const metaEnv = (import.meta as any)?.env as any;
+  if (!metaEnv?.DEV) return null;
+  const raw = metaEnv?.VITE_ADMIN_TOKEN;
+  if (typeof raw !== 'string') return null;
+  const token = raw.trim();
+  return token.length > 0 ? token : null;
+}
+
 type DealUiPayload = {
   executiveSummary?: unknown;
   executiveSummaryV2?: unknown;
@@ -261,6 +270,16 @@ export function apiCreateDeal(input: {
 
 export function apiGetDeal(dealId: string) {
   return request<Deal>(`/api/v1/deals/${dealId}`).then((deal) => normalizeDeal(deal));
+}
+
+export function apiDeleteDeal(dealId: string, opts?: { purge?: boolean }) {
+  const purge = opts?.purge !== false;
+  const qs = purge ? '?purge=true' : '';
+  const adminToken = getDevAdminToken();
+  return request<{ ok: boolean; deal_id: string; purge?: unknown }>(`/api/v1/deals/${dealId}${qs}`, {
+    method: 'DELETE',
+    headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : undefined,
+  });
 }
 
 export function apiPostAnalyze(dealId: string) {

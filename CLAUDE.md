@@ -99,53 +99,52 @@ The platform implements a comprehensive investment analysis system with sophisti
 - Explain your OBSERVATIONS clearly, then provide REASONING to identify the exact issue. Add console logs when needed to gather more information.
 
 
-REPORT GENERATION & ANALYSIS SYSTEM
-Importance Score: 92/100
+Investment Analysis & Due Diligence Platform
 
-System Architecture:
+Core Business Components:
 
-1. Deal Analysis Core
-- Investment structure modeling engine
-- Multi-dimensional confidence scoring
-- Risk severity classification
-- Financial health assessment
-- ROI impact calculation
+1. Deal Analysis Pipeline
+- Multi-dimensional scoring system across 5 categories: Market, Financial, Team, Risk, Competition
+- Custom confidence metrics for each analysis dimension
+- Progressive analysis cycles with depth and validation thresholds
+- Industry-specific scoring algorithms for different deal types
 
-2. Document Processing Pipeline
-Path: apps/web/src/components/report-templates/sections/
-- Deal terms analysis with ownership distribution
-- Financial metrics processing (LTV, CAC, margins)
-- Risk assessment matrix scoring
-- Evidence collection and validation
-- Source reliability weighting
+2. Document Intelligence System
+- Advanced document categorization for investment materials
+- Extraction confidence scoring with domain-specific validation
+- Version tracking and relationship mapping between documents
+- Business-specific metadata extraction and classification
 
-3. Analysis Components
-- Multi-factor risk scoring
-- Category-specific risk weighting 
-- Cost savings calculations
-- Time value analysis
-- Value generation tracking
+3. Risk Assessment Framework
+- Six-domain risk categorization (Market, Execution, Financial, Technology, Team, Timeline)
+- Risk severity classification with custom scoring algorithms
+- Mitigation strategy mapping and impact assessment
+- Aggregated risk scoring with category-specific weights
 
-4. Specialized Processors
-- Deal investment structure analysis
-- Liquidation preference waterfall modeling
-- Board composition mapping
-- Voting rights assessment
-- Cap table visualization
+4. Financial Analysis Engine
+- Unit economics calculations for different business models
+- Revenue projection modeling with multiple scenarios
+- Industry-specific benchmark comparisons
+- Profitability analysis with vertical-specific metrics
 
-Core Business Rules:
-- Risk classification using probability/impact matrix
-- Critical document verification requirements
-- Revenue retention calculations
-- Industry-specific segmentation logic
-- Growth trajectory analysis
+5. Deal Terms Analysis
+- Equity structure analysis with multiple share classes
+- Liquidation preference calculations
+- Cap table modeling for various scenarios
+- Board rights and voting power assessment
 
-The system implements proprietary algorithms for:
-- Deal structure evaluation
-- AI-powered confidence scoring  
+Integration Architecture:
+- Evidence-based analysis pipeline connecting documents to conclusions
+- Multi-cycle analysis workflow with confidence thresholds
+- Domain-specific validation rules for different business types
+- Integrated risk assessment across business dimensions
+
+Domain-Specific Features:
+- Investment due diligence automation
+- Deal analysis standardization
 - Risk assessment matrices
-- Financial projections
-- ROI calculations
+- Financial modeling templates
+- Industry benchmark integration
 
 $END$
 

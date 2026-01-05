@@ -122,7 +122,50 @@ describe("score_explanation", () => {
     expect(explanation.totals.overall_score as number).toBe(expectedAdjusted);
   });
 
-  it("should not penalize overall_score when metric_benchmark is null/insufficient", () => {
+  it("never skips components: missing analyzer results => all components present with penalties", () => {
+    const now = new Date().toISOString();
+
+    const dio: any = {
+      schema_version: "1.0.0",
+      dio_id: "00000000-0000-4000-8000-000000000901",
+      deal_id: "00000000-0000-4000-8000-000000000902",
+      created_at: now,
+      updated_at: now,
+      analysis_version: 1,
+      dio_context: {
+        primary_doc_type: "pitch_deck",
+        deal_type: "startup_raise",
+        vertical: "saas",
+        stage: "seed",
+        confidence: 1,
+      },
+      inputs: { documents: [], evidence: [], config: { features: {} } },
+      analyzer_results: {},
+      risk_map: [],
+    };
+
+    const explanation = buildScoreExplanationFromDIO(dio);
+
+    expect(explanation.aggregation.included_components).toEqual(
+      expect.arrayContaining(["slide_sequence", "metric_benchmark", "visual_design", "narrative_arc", "financial_health", "risk_assessment"])
+    );
+    expect(explanation.aggregation.excluded_components).toEqual([]);
+
+    for (const key of ["slide_sequence", "metric_benchmark", "visual_design", "narrative_arc", "financial_health", "risk_assessment"]) {
+      const c: any = (explanation.components as any)[key];
+      expect(c).toBeTruthy();
+      expect(c.status).toBe("penalized_missing");
+      expect(c.used_score).toBe(50);
+      expect(c.penalty).toBeGreaterThan(0);
+      expect(typeof c.weighted_contribution).toBe("number");
+    }
+
+    // Deterministic expectation: all-missing baseline should land below neutral.
+    expect(explanation.totals.unadjusted_overall_score).toBeLessThan(50);
+    expect(explanation.totals.overall_score).toBeLessThan(50);
+  });
+
+  it("includes non-ok components with neutral baseline + penalty (no skipping)", () => {
     const now = new Date().toISOString();
 
     const dio: any = {
@@ -222,15 +265,22 @@ describe("score_explanation", () => {
 
     const explanation = buildScoreExplanationFromDIO(dio);
 
-    // metric_benchmark is excluded and should not reduce overall_score.
-    expect(explanation.aggregation.excluded_components).toEqual(
-      expect.arrayContaining([{ component: "metric_benchmark", reason: "status_not_ok" }])
-    );
+    // Non-ok components are not excluded; they are neutral+penalized.
+    expect(explanation.aggregation.excluded_components).toEqual([]);
+    expect(explanation.components.metric_benchmark.status).toBe("penalized_non_ok");
+    expect(explanation.components.metric_benchmark.used_score).toBe(50);
+    expect(explanation.components.metric_benchmark.penalty).toBeGreaterThan(0);
+    expect(explanation.components.metric_benchmark.reason).toMatch(/no financial metrics extracted/i);
 
-    // Expected weighted mean (pitch deck base weights):
-    // slide 40 (w=1), visual 50 (w=1), narrative 70 (w=1.5), financial 80 (w=0.5), risk inverted 42 (w=1)
-    // sum = 40 + 50 + 105 + 40 + 42 = 277; totalWeight = 5 => 55.4 => 55
-    expect(explanation.totals.unadjusted_overall_score).toBe(55);
+    // Expected weighted mean (pitch deck base weights total = 6.0):
+    // slide 40 (w=1)
+    // metric_benchmark insufficient_data => neutral 50 - penalty(6) => 44 (w=1)
+    // visual 50 (w=1)
+    // narrative 70 (w=1.5)
+    // financial 80 (w=0.5)
+    // risk inverted 58 -> 42 (w=1)
+    // sum = 40 + 44 + 50 + 1.5*70 + 0.5*80 + 42 = 321; /6 = 53.5 => 54
+    expect(explanation.totals.unadjusted_overall_score).toBe(54);
 
     const expectedAdjusted = Math.round(
       (explanation.totals.unadjusted_overall_score as number) * explanation.totals.adjustment_factor
@@ -397,14 +447,17 @@ describe("score_explanation", () => {
     expect(explanation.aggregation.included_components).toEqual(
       expect.arrayContaining(["risk_assessment"])
     );
-    expect(explanation.aggregation.excluded_components).toEqual(
-      expect.not.arrayContaining([expect.objectContaining({ component: "risk_assessment" })])
-    );
-    expect(explanation.components.risk_assessment.inverted_investment_score).toBe(50);
-    expect(explanation.components.risk_assessment.notes.join("\n")).toMatch(/neutral baseline/i);
+    expect(explanation.aggregation.excluded_components).toEqual([]);
 
-    // Included 6 components: 40 + 60 + 50 + 70 + 80 + (risk baseline 50) = 350 => /6 = 58.33 => 58
-    expect(explanation.totals.unadjusted_overall_score).toBe(58);
+    // No-signal risk is neutral+penalized (still included).
+    expect(explanation.components.risk_assessment.status).toBe("penalized_non_ok");
+    expect(explanation.components.risk_assessment.used_score).toBe(50);
+    expect(explanation.components.risk_assessment.penalty).toBeGreaterThan(0);
+    expect(explanation.components.risk_assessment.inverted_investment_score).toBe(50);
+    expect(explanation.components.risk_assessment.notes.join("\n")).toMatch(/no_signal/i);
+
+    // Included 6 components: 40 + 60 + 50 + 70 + 80 + (risk baseline 50 - penalty(6)=44) = 344 => /6 = 57.33 => 57
+    expect(explanation.totals.unadjusted_overall_score).toBe(57);
 
     const expectedAdjusted = Math.round(
       (explanation.totals.unadjusted_overall_score as number) * explanation.totals.adjustment_factor

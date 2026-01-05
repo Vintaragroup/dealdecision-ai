@@ -46,6 +46,31 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		expect(out.executive_summary_v2?.highlights.length).toBeGreaterThan(0);
 	});
 
+	it("does not hard-reject product/ICP phrasing like 'predict' or 'Engine for …'", () => {
+		const { generatePhase1DIOV1 } = require("../phase1-dio-v1");
+		const out = generatePhase1DIOV1({
+			deal: { deal_id: "webmax", name: "WebMax" },
+			inputDocuments: [
+				{
+					document_id: "doc1",
+					title: "WebMax Deck",
+					full_text: "WebMax\nWe predict borrower readiness by unifying credit trends and CRM activity.",
+				},
+			],
+			deal_overview_v2: {
+				product_solution:
+					"We predict borrower readiness by unifying credit trends, income signals, and CRM/LOS activity into an Intent & Ability Score.",
+				market_icp: "Engine for Realtors and Loan Officers.",
+				raise: "Unknown",
+			},
+		});
+
+		expect(out.deal_overview_v2?.product_solution).toMatch(/predict borrower readiness/i);
+		expect(out.deal_overview_v2?.market_icp).toMatch(/Realtors and Loan Officers/i);
+		expect(out.executive_summary_v2?.missing ?? []).not.toContain("product_solution");
+		expect(out.executive_summary_v2?.missing ?? []).not.toContain("market_icp");
+	});
+
 	it("executive_summary_v2 uses only structured Phase 1 signals (no OCR junk)", () => {
 		const out = generatePhase1DIOV1({
 			deal: { deal_id: "deal-v2-no-ocr", name: "CleanCo", stage: "intake" },
@@ -591,6 +616,63 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		expect(v2TextMissingCore).not.toMatch(/preferred\s+equity|hotel|property|offering\s+memorandum/i);
 	});
 
+	it("normalizes Phase 1 overview synonyms into canonical fields (prevents 'Product: not provided')", () => {
+		const out = generatePhase1DIOV1({
+			deal: { deal_id: "deal-synonyms", name: "SynonymCo", stage: "intake" },
+			inputDocuments: [
+				{
+					document_id: "doc-synonyms",
+					title: "SynonymCo Deck",
+					type: "pitch_deck",
+					full_text: "SynonymCo helps retailers automate inventory workflows. Built for mid-market retailers. Raising $2M on a SAFE.",
+				},
+			],
+			// Note: canonical keys intentionally omitted; synonyms provided instead.
+			deal_overview_v2: {
+				deal_name: "SynonymCo",
+				product: "SynonymCo helps retailers automate inventory workflows.",
+				icp: "Built for mid-market retailers.",
+				terms: "Raising $2M on a SAFE",
+			},
+		});
+
+		expect(out.deal_overview_v2).toBeTruthy();
+		expect(out.deal_overview_v2?.product_solution).toMatch(/helps\s+retailers/i);
+		expect(out.deal_overview_v2?.market_icp).toMatch(/mid-market\s+retailers/i);
+		expect((out.deal_overview_v2 as any)?.raise_terms).toMatch(/\$2M/i);
+
+		// Executive summary should not claim product/ICP missing if synonyms were present.
+		expect(out.executive_summary_v2?.missing ?? []).not.toContain("product_solution");
+		expect(out.executive_summary_v2?.missing ?? []).not.toContain("market_icp");
+	});
+
+	it("ExecutiveSummaryV2 uses canonical-first then synonym fallbacks for product/ICP/terms", () => {
+		const { composeExecutiveSummaryV2 } = require("../phase1-dio-v1");
+		const out = composeExecutiveSummaryV2({
+			deal: { name: "TestCo" },
+			overview_v2: {
+				// Canonical fields intentionally missing
+				product: "A workflow tool for operators",
+				icp: "Mid-market logistics teams",
+				terms: "$2M seed",
+			},
+			coverage: { sections: { documents: "present" } },
+			decision_summary_v1: {
+				score: 55,
+				recommendation: "CONSIDER",
+				reasons: [],
+				blockers: [],
+				next_requests: [],
+				confidence: "low",
+			},
+		});
+
+		expect(out.highlights.join("\n")).toMatch(/Product:\s+A workflow tool for operators/i);
+		expect(out.highlights.join("\n")).toMatch(/ICP:\s+Mid-market logistics teams/i);
+		expect(out.highlights.join("\n")).toMatch(/Raise\/terms:\s+\$2M seed/i);
+		expect(out.highlights.join("\n")).not.toMatch(/not provided in Phase 1 overview/i);
+	});
+
     it("mergePhase1IntoDIO preserves extra dio.phase1 fields (deal_overview_v2/update_report_v1)", () => {
         const existing = {
             dio: {
@@ -659,6 +741,42 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		expect(out.dio.phase1.update_report_v1).toBeTruthy();
 		expect(out.dio.phase1.update_report_v1.summary).toEqual("No changes detected.");
 		expect(out.dio.phase1.update_report_v1.changes).toEqual([]);
+	});
+
+	it("can fall back to update_report_v1.after values when deal_overview_v2 omits product/ICP", () => {
+		const { generatePhase1DIOV1 } = require("../phase1-dio-v1");
+		const out = generatePhase1DIOV1({
+			deal: { deal_id: "webmax", name: "WebMax" },
+			inputDocuments: [
+				{
+					document_id: "doc1",
+					title: "WebMax Deck",
+					full_text: "(intentionally sparse)",
+				},
+			],
+			deal_overview_v2: {
+				product_solution: null,
+				market_icp: null,
+			},
+			update_report_v1: {
+				generated_at: new Date().toISOString(),
+				changes: [
+					{
+						field: "deal_overview_v2.product_solution",
+						change_type: "added",
+						after: "We predict borrower readiness by unifying credit trends and CRM/LOS activity.",
+					},
+					{
+						field: "deal_overview_v2.market_icp",
+						change_type: "added",
+						after: "Engine for Realtors and Loan Officers.",
+					},
+				],
+			},
+		});
+
+		expect(out.deal_overview_v2?.product_solution).toMatch(/predict borrower readiness/i);
+		expect(out.deal_overview_v2?.market_icp).toMatch(/Realtors and Loan Officers/i);
 	});
 });
 

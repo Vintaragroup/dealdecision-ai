@@ -10,6 +10,11 @@
 import { BaseAnalyzer, AnalyzerMetadata, ValidationResult } from "./base";
 import type { DebugScoringTrace, MetricBenchmarkInput, MetricBenchmarkResult } from "../types/dio";
 import { buildRulesFromBaseAndDeltas } from "./debug-scoring";
+import {
+  buildPolicyBenchmarkMap,
+  mapMetricNameToPolicyKpi,
+  maybeNormalizePolicyKpiValue,
+} from "../scoring/policy-kpi-registry";
 
 // ============================================================================
 // Industry Benchmarks
@@ -104,6 +109,17 @@ const METRIC_PATTERNS = {
   churn: /(?:Churn|Churn Rate)[:\s]*([\d,]+\.?\d*)%?/i,
   retention: /(?:Retention|Retention Rate)[:\s]*([\d,]+\.?\d*)%?/i,
   ndr: /(?:NDR|Net Dollar Retention|NRR)[:\s]*([\d,]+\.?\d*)%?/i,
+
+  // Real estate underwriting
+  dscr: /(?:DSCR|Debt Service Coverage(?: Ratio)?)[:\s]*([\d,]+\.?\d*)/i,
+  loan_to_value: /(?:LTV|Loan[-\s]?to[-\s]?Value)[:\s]*([\d,]+\.?\d*)\s*%?/i,
+  cap_rate: /(?:Cap Rate|Caprate)[:\s]*([\d,]+\.?\d*)\s*%?/i,
+  occupancy_rate: /(?:Occupancy|Occupancy Rate)[:\s]*([\d,]+\.?\d*)\s*%?/i,
+  noi: /(?:NOI|Net Operating Income)[:\s]*\$?([\d,]+\.?\d*)\s*([KMB]?)/i,
+  lease_term: /(?:Lease Term|WALT|Weighted Average Lease Term)[:\s]*([\d,]+\.?\d*)\s*(years?|yrs?|y|months?|mos?|m)?/i,
+  rent_escalation: /(?:Rent Escalations?|Annual Rent Escalations?|Rent Bumps?|Annual Escalation)[:\s]*([\d,]+\.?\d*)\s*%?/i,
+  loan_to_cost: /(?:LTC|Loan[-\s]?to[-\s]?Cost)[:\s]*([\d,]+\.?\d*)\s*%?/i,
+  yield_on_cost: /(?:Yield on Cost|YoC|Build[-\s]?to[-\s]?Cap(?: Rate)?)[:\s]*([\d,]+\.?\d*)\s*%?/i,
 };
 
 // ============================================================================
@@ -129,6 +145,7 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
 
     const text = typeof input.text === "string" ? input.text.trim() : "";
     const extractedInput = Array.isArray((input as any).extracted_metrics) ? (input as any).extracted_metrics : [];
+    const policyId = typeof (input as any).policy_id === "string" ? String((input as any).policy_id) : undefined;
 
     const parseNumberish = (raw: unknown): number | null => {
       if (typeof raw === "number" && Number.isFinite(raw)) return raw;
@@ -178,9 +195,20 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
       })
       .filter(Boolean) as Array<{ metric_name: string; value: number; unit: string; source: string; confidence: number }>;
 
+    // Policy-driven KPI mapping: map arbitrary extracted metric names into canonical KPI keys.
+    // We do not fabricate mapping for numeric_value.
+    const mappedByPolicy = normalizedExtracted
+      .map((m) => {
+        const mapped = mapMetricNameToPolicyKpi(policyId, m.metric_name);
+        if (!mapped) return m;
+        const normalizedValue = maybeNormalizePolicyKpiValue(policyId, mapped, m.value);
+        return { ...m, metric_name: mapped, value: normalizedValue };
+      })
+      .filter(Boolean) as typeof normalizedExtracted;
+
     // Treat numeric_value as untyped and exclude it from scoring unless it can be mapped to a known KPI.
     // We do NOT attempt heuristic mapping here (no reliable context available).
-    const filteredExtracted = normalizedExtracted.filter((m) => !isNumericValueMetricName(m.metric_name));
+    const filteredExtracted = mappedByPolicy.filter((m) => !isNumericValueMetricName(m.metric_name));
 
     const onlyNumericValue =
       extractedInput.length > 0 &&
@@ -229,7 +257,10 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
     if (text.length === 0 && extractedInput.length > 0 && filteredExtracted.length === 0) {
       const debug_scoring: DebugScoringTrace | undefined = debugEnabled
         ? {
-            inputs_used: ["extracted_metrics[]"],
+            inputs_used: [
+              "extracted_metrics[]",
+              ...(policyId ? ["policy_id"] : []),
+            ],
             rules: [{ rule_id: "excluded", description: "Excluded: no recognized KPIs (only numeric_value)", delta: 0, running_total: 0 }],
             exclusion_reason: "insufficient_data: no recognized KPIs",
             input_summary: {
@@ -268,13 +299,25 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
       const start = Date.now();
 
       // Extract metrics from text (optional)
-      const extractedFromText = text.length > 0 ? this.extractMetrics([text]) : [];
+      const extractedFromTextRaw = text.length > 0 ? this.extractMetrics([text]) : [];
+      const extractedFromText = extractedFromTextRaw
+        .map((m) => {
+          const mapped = mapMetricNameToPolicyKpi(policyId, m.metric_name);
+          if (!mapped) return m;
+          const normalizedValue = maybeNormalizePolicyKpiValue(policyId, mapped, m.value);
+          return { ...m, metric_name: mapped, value: normalizedValue };
+        })
+        .filter((m) => !isNumericValueMetricName(m.metric_name));
       const extracted_metrics = hasUsableExtracted
         ? filteredExtracted
         : [...filteredExtracted, ...extractedFromText];
 
-      // Get appropriate benchmarks for industry (default to SaaS if not specified)
-      const benchmarks = this.getBenchmarks(input.industry || "saas", "series_a");
+      // Policy-first benchmarks; fall back to industry defaults.
+      const policyBenchmarks = buildPolicyBenchmarkMap(policyId);
+      const hasPolicyBenchmarks = policyBenchmarks && Object.keys(policyBenchmarks).length > 0;
+      const benchmarks = hasPolicyBenchmarks
+        ? policyBenchmarks
+        : this.getBenchmarks(input.industry || "saas", "series_a");
 
       // Validate each metric
       const validations = this.validateMetrics(extracted_metrics, benchmarks, input.evidence_ids || []);
@@ -287,6 +330,7 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
               inputs_used: [
                 ...(text.length > 0 ? ["text"] : []),
                 ...(extractedInput.length > 0 ? ["extracted_metrics[]"] : []),
+                ...(policyId ? ["policy_id"] : []),
                 ...(typeof input.industry === "string" && input.industry ? ["industry"] : []),
               ],
               rules: [{ rule_id: "excluded", description: "Excluded: no validated metrics", delta: 0, running_total: 0 }],
@@ -359,6 +403,7 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
               inputs_used: [
                 ...(text.length > 0 ? ["text"] : []),
                 ...(extractedInput.length > 0 ? ["extracted_metrics[]"] : []),
+                ...(policyId ? ["policy_id"] : []),
                 ...(typeof input.industry === "string" && input.industry ? ["industry"] : []),
               ],
               rules,
@@ -403,6 +448,7 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
             inputs_used: [
               ...(text.length > 0 ? ["text"] : []),
               ...(extractedInput.length > 0 ? ["extracted_metrics[]"] : []),
+              ...(policyId ? ["policy_id"] : []),
               ...(typeof input.industry === "string" && input.industry ? ["industry"] : []),
             ],
             rules: [{ rule_id: "excluded", description: "Excluded: exception during analysis", delta: 0, running_total: 0 }],
@@ -513,6 +559,10 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
     if (mag === "K") return num * 1000;
     if (mag === "M") return num * 1000000;
     if (mag === "B") return num * 1000000000;
+
+    // Basic time normalization for lease_term patterns.
+    if (/^(Y|YR|YRS|YEAR|YEARS)$/.test(mag)) return num * 12;
+    if (/^(M|MO|MOS|MONTH|MONTHS)$/.test(mag)) return num;
     
     return num;
   }
@@ -530,6 +580,14 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
     if (["dau", "mau"].includes(metric_name)) {
       return magnitude || "users";
     }
+
+    if (["cap_rate", "occupancy_rate", "rent_escalation", "loan_to_cost", "yield_on_cost", "loan_to_value"].includes(metric_name)) {
+      return "%";
+    }
+
+    if (metric_name === "lease_term") return "months";
+    if (metric_name === "noi") return magnitude ? `$${magnitude}` : "$";
+
     return "";
   }
 
@@ -611,26 +669,48 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
         continue;
       }
 
-      const { min, ideal, max } = benchmark;
+      const { min, ideal, max, direction } = benchmark as {
+        min?: number;
+        ideal: number;
+        max?: number;
+        direction?: "higher_is_better" | "lower_is_better";
+      };
+
+      const isLowerBetter = direction === "lower_is_better";
       let rating: "Strong" | "Adequate" | "Weak" | "Missing" = "Weak";
-      
-      if (metric.value >= ideal) {
-        rating = "Strong";
-      } else if (metric.value >= (min + ideal) / 2) {
-        rating = "Adequate";
-      } else if (metric.value >= min) {
-        rating = "Adequate";
+
+      if (!isLowerBetter) {
+        const minOk = typeof min === "number" && Number.isFinite(min) ? min : ideal;
+        if (metric.value >= ideal) {
+          rating = "Strong";
+        } else if (metric.value >= minOk) {
+          rating = "Adequate";
+        } else {
+          rating = "Weak";
+        }
       } else {
-        rating = "Weak";
+        const maxOk = typeof max === "number" && Number.isFinite(max) ? max : ideal;
+        if (metric.value <= ideal) {
+          rating = "Strong";
+        } else if (metric.value <= maxOk) {
+          rating = "Adequate";
+        } else {
+          rating = "Weak";
+        }
       }
 
-      const deviation_pct = ((metric.value - ideal) / ideal) * 100;
+      const deviation_pct = !isLowerBetter
+        ? ((metric.value - ideal) / ideal) * 100
+        : ((ideal - metric.value) / ideal) * 100;
 
       validations.push({
         metric: metric.metric_name,
         value: metric.value,
         benchmark_value: ideal,
-        benchmark_source: "Industry benchmarks (SaaS/E-commerce/Marketplace)",
+        benchmark_source:
+          typeof (benchmark as any)?.source === "string"
+            ? String((benchmark as any).source)
+            : "Industry benchmarks (SaaS/E-commerce/Marketplace)",
         rating,
         deviation_pct: Math.round(deviation_pct * 10) / 10,
         evidence_id: default_evidence_id,

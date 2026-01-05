@@ -118,17 +118,54 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     : null;
 
   const explanationOverall = (scoreExplanation as any)?.totals?.overall_score;
+
+  const computeOverallFromExplanation = (se: any): number | null => {
+    if (!se || typeof se !== 'object') return null;
+    const weights = se?.aggregation?.weights && typeof se.aggregation.weights === 'object' ? se.aggregation.weights : null;
+    const components = se?.components && typeof se.components === 'object' ? se.components : null;
+    if (!components) return null;
+
+    const keys = Object.keys(components);
+    if (keys.length === 0) return null;
+
+    const pairs: Array<{ key: string; w: number; eff: number }> = [];
+    for (const key of keys) {
+      const comp = components[key];
+      if (!comp || typeof comp !== 'object') continue;
+      const used = typeof comp.used_score === 'number' && Number.isFinite(comp.used_score) ? comp.used_score : null;
+      const penalty = typeof comp.penalty === 'number' && Number.isFinite(comp.penalty) ? comp.penalty : 0;
+      if (used == null) continue;
+      const eff = Math.max(0, Math.min(100, used - penalty));
+      const wRaw = weights && typeof weights[key] === 'number' && Number.isFinite(weights[key]) ? weights[key] : null;
+      pairs.push({ key, w: wRaw ?? 1, eff });
+    }
+
+    if (pairs.length === 0) return null;
+    const totalW = pairs.reduce((s, p) => s + p.w, 0);
+    if (!(totalW > 0)) {
+      const avg = pairs.reduce((s, p) => s + p.eff, 0) / pairs.length;
+      return Math.round(avg);
+    }
+    const weighted = pairs.reduce((s, p) => s + (p.w / totalW) * p.eff, 0);
+    return Math.round(weighted);
+  };
+
+  const explanationFallback = computeOverallFromExplanation(scoreExplanation);
   const overallScoreNullable: number | null = (typeof persistedOverall === 'number' && Number.isFinite(persistedOverall))
     ? persistedOverall
     : (typeof explanationOverall === 'number' && Number.isFinite(explanationOverall))
       ? explanationOverall
-      : overallScoreComputed;
+      : (typeof explanationFallback === 'number' && Number.isFinite(explanationFallback))
+        ? explanationFallback
+        : overallScoreComputed;
 
   const scoreAvailable = typeof overallScoreNullable === 'number' && Number.isFinite(overallScoreNullable);
   const overallScoreFinal = scoreAvailable ? Math.round(overallScoreNullable) : 0;
 
-  const includedCount = Array.isArray((scoreExplanation as any)?.aggregation?.included_components)
-    ? (scoreExplanation as any).aggregation.included_components.length
+  const includedCount = scoreExplanation && (scoreExplanation as any).components
+    ? Object.values((scoreExplanation as any).components)
+      .filter((c: any) => c && typeof c === 'object' && c.status === 'ok')
+      .length
     : scores.length;
 
   let grade: ReportDTO['grade'] = scoreAvailable ? scoreToGrade(overallScoreFinal) : 'Needs Improvement';

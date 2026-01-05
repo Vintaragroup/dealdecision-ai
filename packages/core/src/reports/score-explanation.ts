@@ -1,4 +1,6 @@
-import type { DealIntelligenceObject } from "../types/dio.js";
+import type { DealIntelligenceObject, ScoringDiagnosticsV1 } from "../types/dio.js";
+import { getDealPolicy } from "../classification/deal-policy-registry";
+import { getSelectedPolicyIdFromAny } from "../classification/get-selected-policy-id";
 
 export type ScoreExplainExcludedReason = "status_not_ok" | "null_score" | "doc_type_excluded";
 
@@ -6,6 +8,7 @@ export type ScoreExplanation = {
   context: DealIntelligenceObject["dio_context"];
   aggregation: {
     method: "weighted_mean";
+    policy_id: string | null;
     weights: {
       slide_sequence: number;
       metric_benchmark: number;
@@ -40,6 +43,13 @@ export type ScoreExplanation = {
 
 export type ScoreComponent = {
   status: string | null;
+  used_score: number | null;
+  penalty: number;
+  reason: string;
+  reasons: string[];
+  evidence_ids: string[];
+  gaps: string[];
+  red_flags: string[];
   coverage: number | null;
   confidence: number | null;
   raw_score: number | null;
@@ -48,10 +58,29 @@ export type ScoreComponent = {
   debug_ref?: string;
 };
 
+const PENALTY_MISSING = 8;
+const PENALTY_NON_OK = 6;
+
 const isFiniteNumber = (v: unknown): v is number =>
   typeof v === "number" && Number.isFinite(v);
 
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
+
+const asStringArray = (v: unknown): string[] =>
+  Array.isArray(v) ? (v.filter((x) => typeof x === "string") as string[]) : [];
+
+const uniqueStrings = (xs: string[]): string[] => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const x of xs) {
+    const s = x.trim();
+    if (!s) continue;
+    if (seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+};
 
 const getMeta = (res: any): { status: string | null; coverage: number | null; confidence: number | null } => {
   const status = typeof res?.status === "string" ? res.status : null;
@@ -61,6 +90,14 @@ const getMeta = (res: any): { status: string | null; coverage: number | null; co
 };
 
 type ScoreComponentKey = "slide_sequence" | "metric_benchmark" | "visual_design" | "narrative_arc" | "financial_health" | "risk_assessment";
+
+type ComponentDetail = {
+  reason: string;
+  reasons: string[];
+  evidence_ids: string[];
+  gaps: string[];
+  red_flags: string[];
+};
 
 export type DocInventory = {
   documents_count: number;
@@ -160,6 +197,255 @@ const buildDocInventory = (dio: DealIntelligenceObject): DocInventory => {
   };
 };
 
+const getExtractedMetricKeysFromInputs = (dio: DealIntelligenceObject): string[] => {
+  const docs: any[] = Array.isArray((dio as any)?.inputs?.documents) ? (dio as any).inputs.documents : [];
+  const keys: string[] = [];
+  for (const doc of docs) {
+    const metrics = Array.isArray(doc?.metrics) ? doc.metrics : [];
+    for (const m of metrics) {
+      if (typeof m?.key === "string" && m.key.trim()) keys.push(m.key.trim());
+      else if (typeof m?.name === "string" && m.name.trim()) keys.push(m.name.trim());
+    }
+  }
+  return uniqueStrings(keys);
+};
+
+const getEvidenceIdsForComponent = (key: ScoreComponentKey, dio: DealIntelligenceObject, results: any): string[] => {
+  const base = uniqueStrings(asStringArray(results?.[key]?.evidence_ids));
+  switch (key) {
+    case "metric_benchmark": {
+      const metricEvidence = Array.isArray(results?.metric_benchmark?.metrics_analyzed)
+        ? results.metric_benchmark.metrics_analyzed
+            .map((m: any) => (typeof m?.evidence_id === "string" ? m.evidence_id : null))
+            .filter(Boolean)
+        : [];
+      return uniqueStrings([...base, ...(metricEvidence as string[])]);
+    }
+    case "financial_health": {
+      const riskEvidence = Array.isArray(results?.financial_health?.risks)
+        ? results.financial_health.risks
+            .map((r: any) => (typeof r?.evidence_id === "string" ? r.evidence_id : null))
+            .filter(Boolean)
+        : [];
+      return uniqueStrings([...base, ...(riskEvidence as string[])]);
+    }
+    case "risk_assessment": {
+      const cats = results?.risk_assessment?.risks_by_category;
+      const allRisks: any[] = cats && typeof cats === "object"
+        ? ([] as any[])
+            .concat(Array.isArray(cats.market) ? cats.market : [])
+            .concat(Array.isArray(cats.team) ? cats.team : [])
+            .concat(Array.isArray(cats.financial) ? cats.financial : [])
+            .concat(Array.isArray(cats.execution) ? cats.execution : [])
+        : [];
+      const riskEvidence = allRisks
+        .map((r: any) => (typeof r?.evidence_id === "string" ? r.evidence_id : null))
+        .filter(Boolean) as string[];
+      return uniqueStrings([...base, ...riskEvidence]);
+    }
+    default:
+      return base;
+  }
+};
+
+const buildComponentDetail = (params: {
+  key: ScoreComponentKey;
+  dio: DealIntelligenceObject;
+  results: any;
+  status: string | null;
+  computed_status: string | null;
+  raw_score: number | null;
+  used_score: number | null;
+  penalty: number;
+  confidence: number | null;
+}): ComponentDetail => {
+  const { key, dio, results, status, computed_status, raw_score, used_score, penalty, confidence } = params;
+
+  const evidence_ids = getEvidenceIdsForComponent(key, dio, results);
+  const gaps: string[] = [];
+  const red_flags: string[] = [];
+  const reasons: string[] = [];
+
+  const set = (reason: string, extra?: { gaps?: string[]; red_flags?: string[]; reasons?: string[] }): void => {
+    if (extra?.gaps) gaps.push(...extra.gaps);
+    if (extra?.red_flags) red_flags.push(...extra.red_flags);
+    if (extra?.reasons) reasons.push(...extra.reasons);
+    reasons.unshift(reason);
+  };
+
+  const analyzerStatus = status;
+
+  // Error/missing paths
+  if (analyzerStatus == null) {
+    set("Missing analyzer result; neutral baseline applied", { gaps: ["analyzer_result_missing"] });
+  } else if (analyzerStatus === "extraction_failed") {
+    set("Analyzer failed; neutral baseline applied", { gaps: ["analyzer_failed"] });
+  } else if (analyzerStatus === "insufficient_data") {
+    switch (key) {
+      case "slide_sequence":
+        set("Insufficient structure signal; expected slide headings/sections not detected", { gaps: ["headings", "sections"] });
+        break;
+      case "financial_health":
+        set("No financial KPIs extracted (revenue/expenses/burn/runway)", {
+          gaps: ["revenue", "expenses", "burn_rate", "cash_balance", "runway_months", "burn_multiple"],
+        });
+        break;
+      case "metric_benchmark":
+        set("No financial metrics extracted for benchmarking", { gaps: ["metrics"] });
+        break;
+      case "risk_assessment":
+        set("Insufficient risk signal; expected pitch text and/or risk cues not detected", { gaps: ["pitch_text", "risk_cues"] });
+        break;
+      case "narrative_arc":
+        set("Insufficient narrative signal; expected section progression not detected", { gaps: ["sections", "structure"] });
+        break;
+      case "visual_design":
+        set("Insufficient design signal; expected layout/format cues not detected", { gaps: ["layout", "formatting"] });
+        break;
+      default:
+        set("Insufficient data; neutral baseline applied", { gaps: ["insufficient_data"] });
+        break;
+    }
+  }
+
+  // Special neutral/baseline and red-flag logic when status is ok
+  if (analyzerStatus === "ok") {
+    if (key === "risk_assessment") {
+      const ra: any = results?.risk_assessment;
+      const total = typeof ra?.total_risks === "number" ? ra.total_risks : 0;
+      const critical = typeof ra?.critical_count === "number" ? ra.critical_count : 0;
+      const high = typeof ra?.high_count === "number" ? ra.high_count : 0;
+
+      if ((critical > 0 || high > 0) && ra?.risks_by_category) {
+        const cats = ra.risks_by_category;
+        const allRisks: any[] = ([] as any[])
+          .concat(Array.isArray(cats.market) ? cats.market : [])
+          .concat(Array.isArray(cats.team) ? cats.team : [])
+          .concat(Array.isArray(cats.financial) ? cats.financial : [])
+          .concat(Array.isArray(cats.execution) ? cats.execution : []);
+        const flagged = allRisks.filter((r) => r && (r.severity === "critical" || r.severity === "high"));
+        const texts = flagged
+          .map((r) => {
+            const sev = typeof r?.severity === "string" ? r.severity : "risk";
+            const desc = typeof r?.description === "string" ? r.description : "(missing description)";
+            return `${sev}: ${desc}`;
+          })
+          .filter(Boolean) as string[];
+        if (texts.length > 0) {
+          red_flags.push(...texts);
+          set(`Red flags detected in risk assessment (${texts.length})`);
+        }
+      } else if (raw_score === 50 && total === 0) {
+        // Deterministic neutral baseline when no explicit risks extracted.
+        set("No explicit risks extracted; neutral baseline used", { gaps: ["explicit_risks"] });
+      } else if (reasons.length === 0) {
+        set("Risks assessed; risk score inverted for investment score");
+      }
+    }
+
+    if (key === "metric_benchmark") {
+      const metricsAnalyzed = Array.isArray(results?.metric_benchmark?.metrics_analyzed)
+        ? results.metric_benchmark.metrics_analyzed
+        : [];
+      const extractedKeys = getExtractedMetricKeysFromInputs(dio);
+
+      if (raw_score == null) {
+        if (extractedKeys.length > 0) {
+          set("Metrics present but not mapped to benchmark set", {
+            gaps: extractedKeys.map((k) => `benchmark_mapping:${k}`),
+          });
+        } else {
+          set("No financial metrics extracted for benchmarking", { gaps: ["metrics"] });
+        }
+      } else if (metricsAnalyzed.length === 0) {
+        // OK score but no explicit metric-by-metric validation: treat as partial signal.
+        set("No benchmark-mapped KPIs found; neutral baseline used", { gaps: ["benchmark_mapping"] });
+      } else if (reasons.length === 0) {
+        set("Benchmarks applied to extracted metrics");
+      }
+    }
+
+    if (key === "financial_health") {
+      const fh: any = results?.financial_health;
+      const risks = Array.isArray(fh?.risks) ? fh.risks : [];
+      const severe = risks.filter((r: any) => r && (r.severity === "critical" || r.severity === "high"));
+      if (severe.length > 0) {
+        const texts = severe
+          .map((r: any) => {
+            const sev = typeof r?.severity === "string" ? r.severity : "risk";
+            const desc = typeof r?.description === "string" ? r.description : "(missing description)";
+            return `${sev}: ${desc}`;
+          })
+          .filter(Boolean) as string[];
+        red_flags.push(...texts);
+        set(`Red flags detected in financial health (${texts.length})`);
+      } else {
+        const metrics: any = fh?.metrics;
+        const missing: string[] = [];
+        const need = [
+          ["revenue", metrics?.revenue],
+          ["expenses", metrics?.expenses],
+          ["burn_rate", metrics?.burn_rate],
+          ["cash_balance", metrics?.cash_balance],
+          ["runway_months", fh?.runway_months],
+          ["burn_multiple", fh?.burn_multiple],
+        ] as const;
+        for (const [name, val] of need) {
+          if (val == null) missing.push(name);
+        }
+        if (raw_score == null) {
+          set("Financial KPIs present but insufficient to compute health score", { gaps: missing.length > 0 ? missing : ["financial_kpis"] });
+        } else if (missing.length > 0) {
+          set("Some financial KPIs missing; score computed with partial data", { gaps: missing });
+        } else if (reasons.length === 0) {
+          set("Financial KPIs extracted; health score computed");
+        }
+      }
+    }
+
+    if (key === "slide_sequence" && reasons.length === 0) {
+      const deviations = Array.isArray(results?.slide_sequence?.deviations) ? results.slide_sequence.deviations : [];
+      if (deviations.length > 0) set(`Slide sequence deviations detected (${deviations.length})`);
+      else set("Slide structure matches common patterns");
+    }
+
+    if (key === "narrative_arc" && reasons.length === 0) {
+      set("Narrative pacing score computed");
+    }
+
+    if (key === "visual_design" && reasons.length === 0) {
+      const weaknesses = asStringArray(results?.visual_design?.weaknesses);
+      if (weaknesses.length > 0) set(`Visual design weaknesses detected (${weaknesses.length})`);
+      else set("Visual design score computed");
+    }
+  }
+
+  // Penalization / blending context
+  if (computed_status && computed_status.startsWith("penalized_")) {
+    const suffix = computed_status.replace("penalized_", "");
+    if (suffix === "missing") gaps.push("score_missing");
+    if (suffix === "non_ok") gaps.push("status_not_ok");
+    reasons.push(`Neutral baseline=50 applied with penalty=${penalty}`);
+  }
+  if (typeof confidence === "number" && Number.isFinite(confidence) && confidence < 0.5) {
+    gaps.push("confidence_low");
+    reasons.push(`Low confidence (${confidence.toFixed(2)}); blended toward neutral baseline`);
+  }
+
+  // Ensure a single best required reason.
+  const reason = reasons.length > 0
+    ? reasons[0]
+    : (analyzerStatus === "ok" ? "Analyzer score used" : "Neutral baseline used");
+
+  return {
+    reason,
+    reasons: uniqueStrings(reasons),
+    evidence_ids,
+    gaps: uniqueStrings(gaps),
+    red_flags: uniqueStrings(red_flags),
+  };
+};
+
 const getAnalyzerNumericScore = (key: ScoreComponentKey, results: any): number | null => {
   switch (key) {
     case "slide_sequence":
@@ -183,9 +469,6 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   const docInventory = buildDocInventory(dio);
 
   const inputDocuments: any[] = Array.isArray((dio as any)?.inputs?.documents) ? (dio as any).inputs.documents : [];
-
-  const excluded: Array<{ component: string; reason: ScoreExplainExcludedReason }> = [];
-  const included: string[] = [];
 
   const notes: Record<string, string[]> = {
     slide_sequence: [],
@@ -218,10 +501,6 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
     risk_assessment: getMeta(results?.risk_assessment),
   };
 
-  // If the analyzer ran but found no explicit risks, treat it as neutral baseline (50), not perfect (100) or excluded.
-  const applyNeutralRiskBaseline = componentMeta.risk_assessment.status === "ok"
-    && riskLooksLikeNoSignal;
-
   // Determine which components are included in the aggregate
   const componentsInOrder = [
     "slide_sequence",
@@ -236,12 +515,16 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   const slidePatternMatch = typeof results?.slide_sequence?.pattern_match === "string" ? results.slide_sequence.pattern_match : "";
   const isTractionFirst = isPitchDeck && /traction/i.test(slidePatternMatch);
 
-  // Context-aware base weights (pre-normalization).
-  // Note: excluded components always get weight 0.
-  const baseWeights: ScoreExplanation["aggregation"]["weights"] = getContextWeights(ctx, docInventory);
+  const classificationSelectedPolicy = getSelectedPolicyIdFromAny(dio);
 
-  // Preserve the existing traction-first pitch deck override.
-  const adjustedBaseWeights: ScoreExplanation["aggregation"]["weights"] = isPitchDeck && isTractionFirst
+  // Policy-aware base weights (pre-normalization).
+  // If classification exists, use policy weights; otherwise fall back to legacy context behavior.
+  const baseWeights: ScoreExplanation["aggregation"]["weights"] = classificationSelectedPolicy
+    ? getDealPolicy(classificationSelectedPolicy).weights
+    : getContextWeights(ctx, docInventory);
+
+  // Preserve the existing traction-first pitch deck override for the legacy context path.
+  const adjustedBaseWeights: ScoreExplanation["aggregation"]["weights"] = !classificationSelectedPolicy && isPitchDeck && isTractionFirst
     ? {
         ...baseWeights,
         narrative_arc: 1.9,
@@ -249,64 +532,21 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
       }
     : baseWeights;
 
-  for (const key of componentsInOrder) {
-    const status = componentMeta[key].status;
-    const rawScore = raw[key];
-
-    // Only aggregate scores from analyzers that explicitly succeeded.
-    if (status !== "ok") {
-      notes[key].push(`status=${status} -> excluded`);
-      excluded.push({ component: key, reason: "status_not_ok" });
-      continue;
-    }
-
-    if (key === "risk_assessment" && riskLooksLikeNoSignal && !applyNeutralRiskBaseline) {
-      notes[key].push("risk score 0 with empty risk_map -> excluded (no signal)");
-      excluded.push({ component: key, reason: "null_score" });
-      continue;
-    }
-
-    if (!isFiniteNumber(rawScore)) {
-      if (key === "metric_benchmark") {
-        const metricsCount = Array.isArray(results?.metric_benchmark?.metrics_analyzed)
-          ? results.metric_benchmark.metrics_analyzed.length
-          : 0;
-        if (metricsCount === 0) {
-          notes[key].push("no metrics extracted -> excluded");
-        }
-      }
-
-      notes[key].push("null score -> excluded");
-      excluded.push({ component: key, reason: "null_score" });
-      continue;
-    }
-
-    included.push(key);
-
-    if (key === "slide_sequence") {
-      const deviationsCount = Array.isArray(results?.slide_sequence?.deviations)
-        ? results.slide_sequence.deviations.length
-        : 0;
-      if (deviationsCount > 0) {
-        notes[key].push(`${deviationsCount} sequence deviations detected`);
-      }
-    }
-  }
-
+  // CRITICAL: do not skip components. Always include expected components from getContextWeights().
+  // When missing/non-ok/no-signal, we use neutral baseline (50) plus an explicit deterministic penalty.
   const weights: ScoreExplanation["aggregation"]["weights"] = {
-    slide_sequence: included.includes("slide_sequence") ? adjustedBaseWeights.slide_sequence : 0,
-    metric_benchmark: included.includes("metric_benchmark") ? adjustedBaseWeights.metric_benchmark : 0,
-    visual_design: included.includes("visual_design") ? adjustedBaseWeights.visual_design : 0,
-    narrative_arc: included.includes("narrative_arc") ? adjustedBaseWeights.narrative_arc : 0,
-    financial_health: included.includes("financial_health") ? adjustedBaseWeights.financial_health : 0,
-    risk_assessment: included.includes("risk_assessment") ? adjustedBaseWeights.risk_assessment : 0,
+    slide_sequence: adjustedBaseWeights.slide_sequence,
+    metric_benchmark: adjustedBaseWeights.metric_benchmark,
+    visual_design: adjustedBaseWeights.visual_design,
+    narrative_arc: adjustedBaseWeights.narrative_arc,
+    financial_health: adjustedBaseWeights.financial_health,
+    risk_assessment: adjustedBaseWeights.risk_assessment,
   };
 
   const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
 
   const toInvestmentScore = (key: (typeof componentsInOrder)[number], rawScore: number): number => {
     if (key === "risk_assessment") {
-      if (applyNeutralRiskBaseline) return 50;
       return 100 - rawScore;
     }
     return rawScore;
@@ -330,50 +570,127 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
     return (w / totalWeight) * toEffectiveInvestmentScore(key, rawScore);
   };
 
+  const effectiveScores: Record<string, number | null> = {};
+  const penalties: Record<string, number> = {};
+  const usedScores: Record<string, number | null> = {};
+  const componentDetails: Record<string, ComponentDetail> = {};
+  const statuses: Record<string, string | null> = {};
+
+  const penalize = (key: (typeof componentsInOrder)[number], kind: "missing" | "non_ok", why: string): void => {
+    statuses[key] = kind === "missing" ? "penalized_missing" : "penalized_non_ok";
+    usedScores[key] = 50;
+    penalties[key] = kind === "missing" ? PENALTY_MISSING : PENALTY_NON_OK;
+    notes[key].push(`${statuses[key]} -> used_score=50 penalty=${penalties[key]} (${why})`);
+  };
+
+  // Always compute a contribution for each component.
   const contributions: Record<string, number | null> = {};
   for (const key of componentsInOrder) {
-    if (!included.includes(key)) {
+    const status = componentMeta[key].status;
+    const rawScore = raw[key];
+
+    // Default outputs.
+    statuses[key] = status;
+    penalties[key] = 0;
+    usedScores[key] = null;
+
+    // Missing / warn / no-signal -> neutral + penalty.
+    if (status == null) {
+      penalize(key, "missing", "missing analyzer result");
+    } else if (status !== "ok") {
+      penalize(key, "non_ok", `status=${status}`);
+    } else if (key === "risk_assessment" && riskLooksLikeNoSignal) {
+      penalize(key, "non_ok", "no_signal (risk_score=0 and empty risk_map)");
+    } else if (!isFiniteNumber(rawScore)) {
+      if (key === "metric_benchmark") {
+        const metricsCount = Array.isArray(results?.metric_benchmark?.metrics_analyzed)
+          ? results.metric_benchmark.metrics_analyzed.length
+          : 0;
+        if (metricsCount === 0) notes[key].push("no metrics extracted");
+      }
+      penalize(key, "missing", "null score");
+    } else {
+      // OK path: use analyzer score (with risk inversion + low-confidence blending).
+      statuses[key] = "ok";
+      usedScores[key] = toEffectiveInvestmentScore(key, rawScore);
+
+      const conf = componentMeta[key].confidence;
+      if (isFiniteNumber(conf) && conf < 0.5) {
+        notes[key].push(`low confidence (${conf.toFixed(2)} < 0.50) -> blended toward neutral baseline (50)`);
+      }
+      if (key === "risk_assessment") {
+        notes[key].push(`risk inverted: ${rawScore} -> ${100 - rawScore}`);
+      }
+      if (key === "slide_sequence") {
+        const deviationsCount = Array.isArray(results?.slide_sequence?.deviations)
+          ? results.slide_sequence.deviations.length
+          : 0;
+        if (deviationsCount > 0) {
+          notes[key].push(`${deviationsCount} sequence deviations detected`);
+        }
+      }
+    }
+
+    const used = usedScores[key];
+    const penalty = penalties[key] ?? 0;
+    const effective = used == null ? null : Math.min(100, Math.max(0, used - penalty));
+    effectiveScores[key] = effective;
+
+    const detail = buildComponentDetail({
+      key,
+      dio,
+      results,
+      status: componentMeta[key].status,
+      computed_status: statuses[key],
+      raw_score: rawScore,
+      used_score: usedScores[key],
+      penalty,
+      confidence: componentMeta[key].confidence,
+    });
+    componentDetails[key] = detail;
+
+    // Weighted contribution uses the effective score.
+    if (effective == null) {
       contributions[key] = null;
       continue;
     }
 
-    const rawScore = raw[key] as number;
-    contributions[key] = weightedContribution(key, rawScore);
-
-    const conf = componentMeta[key].confidence;
-    if (isFiniteNumber(conf) && conf < 0.5) {
-      notes[key].push(`low confidence (${conf.toFixed(2)} < 0.50) -> blended toward neutral baseline (50)`);
+    if (totalWeight === 0) {
+      contributions[key] = 0;
+      continue;
     }
 
-    if (key === "risk_assessment") {
-      if (applyNeutralRiskBaseline) {
-        notes[key].push("risk had no signal (0 + empty risk_map) -> neutral baseline applied: 50");
-      } else {
-        notes[key].push(`risk inverted: ${rawScore} -> ${100 - rawScore}`);
-      }
+    const w = (weights as any)[key] as number;
+    if (!w) {
+      contributions[key] = 0;
+      continue;
     }
+    contributions[key] = (w / totalWeight) * effective;
   }
 
+  const unadjustedSum = Object.values(contributions)
+    .reduce((sum: number, v) => sum + (isFiniteNumber(v) ? v : 0), 0);
   const unadjustedOverall = totalWeight > 0
-    ? Math.round(Object.values(contributions).reduce((sum: number, v) => sum + (isFiniteNumber(v) ? v : 0), 0))
+    ? Math.round(unadjustedSum + 1e-9)
     : null;
 
-  const includedWeightedKeys = componentsInOrder
-    .filter(k => included.includes(k))
+  const weightedKeys = componentsInOrder
     .filter(k => ((weights as any)[k] as number) > 0);
 
-  const includedCoverages = includedWeightedKeys
-    .map(k => componentMeta[k].coverage)
-    .filter((v): v is number => isFiniteNumber(v));
-  const coverageRatio = includedCoverages.length > 0
-    ? Math.min(1, Math.max(0, includedCoverages.reduce((a, b) => a + b, 0) / includedCoverages.length))
+  const coverageValues = weightedKeys.map((k) => {
+    if (statuses[k] === "ok") return isFiniteNumber(componentMeta[k].coverage) ? (componentMeta[k].coverage as number) : 0;
+    return 0;
+  });
+  const coverageRatio = coverageValues.length > 0
+    ? clamp01(coverageValues.reduce((a, b) => a + b, 0) / coverageValues.length)
     : 0;
 
-  const includedConfidences = includedWeightedKeys
-    .map(k => componentMeta[k].confidence)
-    .filter((v): v is number => isFiniteNumber(v));
-  const analyzerConfidence = includedConfidences.length > 0
-    ? Math.min(1, Math.max(0, includedConfidences.reduce((a, b) => a + b, 0) / includedConfidences.length))
+  const confidenceValues = weightedKeys.map((k) => {
+    if (statuses[k] === "ok") return isFiniteNumber(componentMeta[k].confidence) ? (componentMeta[k].confidence as number) : 0;
+    return 0;
+  });
+  const analyzerConfidence = confidenceValues.length > 0
+    ? clamp01(confidenceValues.reduce((a, b) => a + b, 0) / confidenceValues.length)
     : 0;
 
   const contextConfidence = isFiniteNumber((ctx as any)?.confidence) ? (ctx as any).confidence : 1;
@@ -434,9 +751,23 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
     const wc = contributions[key];
     const hasDebug = Boolean((results as any)?.[key]?.debug_scoring);
     const debug_ref = hasDebug ? `dio.analyzer_results.${key}.debug_scoring` : undefined;
+    const detail = (componentDetails[key] ?? {
+      reason: "Neutral baseline used",
+      reasons: ["Neutral baseline used"],
+      evidence_ids: [],
+      gaps: [],
+      red_flags: [],
+    }) as ComponentDetail;
 
     return {
-      status,
+      status: statuses[key] ?? status,
+      used_score: usedScores[key],
+      penalty: penalties[key] ?? 0,
+      reason: detail.reason,
+      reasons: detail.reasons,
+      evidence_ids: detail.evidence_ids,
+      gaps: detail.gaps,
+      red_flags: detail.red_flags,
       coverage,
       confidence,
       raw_score: rawScore,
@@ -450,9 +781,10 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
     context: ctx,
     aggregation: {
       method: "weighted_mean",
+      policy_id: classificationSelectedPolicy,
       weights,
-      included_components: included,
-      excluded_components: excluded,
+      included_components: [...componentsInOrder],
+      excluded_components: [],
     },
     components: {
       slide_sequence: mkComponent("slide_sequence"),
@@ -463,11 +795,9 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
       risk_assessment: {
         ...mkComponent("risk_assessment"),
         inverted_investment_score:
-          included.includes("risk_assessment") && applyNeutralRiskBaseline
-            ? 50
-            : (included.includes("risk_assessment") && isFiniteNumber(rawRisk) && !riskLooksLikeNoSignal
-              ? 100 - rawRisk
-              : null),
+          statuses.risk_assessment === "ok" && isFiniteNumber(rawRisk) && !riskLooksLikeNoSignal
+            ? 100 - rawRisk
+            : 50,
       },
     },
     totals: {
@@ -479,5 +809,87 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
       due_diligence_factor: dueDiligenceFactor,
       adjustment_factor: adjustmentFactor,
     },
+  };
+}
+
+const mapComponentStatusForDiagnostics = (status: string | null): string => {
+  if (!status) return "error";
+  if (status === "ok") return "ok";
+  if (status === "insufficient_data") return "insufficient_data";
+  if (status.startsWith("penalized")) return "penalized";
+  if (status === "extraction_failed") return "error";
+  return status;
+};
+
+export function buildScoringDiagnosticsFromDIO(dio: DealIntelligenceObject): ScoringDiagnosticsV1 {
+  const explanation = buildScoreExplanationFromDIO(dio);
+
+  const componentsInOrder = [
+    "slide_sequence",
+    "metric_benchmark",
+    "visual_design",
+    "narrative_arc",
+    "financial_health",
+    "risk_assessment",
+  ] as const;
+
+  const components: ScoringDiagnosticsV1["components"] = {};
+
+  for (const key of componentsInOrder) {
+    const c: any = (explanation.components as any)[key];
+    const weight = (explanation.aggregation.weights as any)[key] as number;
+    components[key] = {
+      status: mapComponentStatusForDiagnostics(typeof c?.status === "string" ? c.status : null),
+      raw_score: typeof c?.raw_score === "number" ? c.raw_score : null,
+      used_score: typeof c?.used_score === "number" ? c.used_score : null,
+      weight: typeof weight === "number" ? weight : 0,
+      confidence: typeof c?.confidence === "number" ? c.confidence : null,
+      reason: typeof c?.reason === "string" && c.reason.trim() ? c.reason : "Neutral baseline used",
+      reasons: Array.isArray(c?.reasons) ? (c.reasons as string[]) : [],
+      evidence_ids: Array.isArray(c?.evidence_ids) ? (c.evidence_ids as string[]) : [],
+      gaps: Array.isArray(c?.gaps) ? (c.gaps as string[]) : [],
+      red_flags: Array.isArray(c?.red_flags) ? (c.red_flags as string[]) : [],
+    };
+  }
+
+  const buckets: ScoringDiagnosticsV1["buckets"] = {
+    positive_signals: [],
+    red_flags: [],
+    coverage_gaps: [],
+  };
+
+  for (const key of componentsInOrder) {
+    const comp = components[key];
+    const evidence_ids = Array.isArray(comp.evidence_ids) ? comp.evidence_ids : [];
+
+    if (Array.isArray(comp.red_flags) && comp.red_flags.length > 0) {
+      for (const text of comp.red_flags) {
+        buckets.red_flags.push({ component: key, text, evidence_ids });
+      }
+    }
+
+    if ((Array.isArray(comp.gaps) && comp.gaps.length > 0) || comp.status === "insufficient_data" || comp.status === "penalized" || comp.status === "error") {
+      buckets.coverage_gaps.push({ component: key, text: comp.reason, evidence_ids });
+    }
+
+    const used = typeof comp.used_score === "number" ? comp.used_score : null;
+    if (comp.status === "ok" && used !== null && used >= 60 && (!Array.isArray(comp.red_flags) || comp.red_flags.length === 0)) {
+      buckets.positive_signals.push({ component: key, text: comp.reason, evidence_ids });
+    }
+  }
+
+  const overall_score = explanation.totals.overall_score ?? 50;
+  const unadjusted_overall_score = explanation.totals.unadjusted_overall_score ?? 50;
+
+  return {
+    policy_id: explanation.aggregation.policy_id,
+    overall_score,
+    unadjusted_overall_score,
+    adjustment_factor: explanation.totals.adjustment_factor,
+    evidence_factor: explanation.totals.evidence_factor,
+    due_diligence_factor: explanation.totals.due_diligence_factor,
+    coverage_ratio: explanation.totals.coverage_ratio,
+    components,
+    buckets,
   };
 }

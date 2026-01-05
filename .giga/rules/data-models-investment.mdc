@@ -1,5 +1,5 @@
 ---
-description: Defines data models and relationships for investment deals, evidence, documents, and analysis entities
+description: Specification for investment domain data models including Deal, Evidence, Document, and Analysis entities
 ---
 
 # === USER INSTRUCTIONS ===
@@ -119,67 +119,105 @@ Collected -> Verified -> Scored -> Integrated
 
 ## Core Domain Models
 
-### Deal Entity
-Core investment deal data model representing fundraising opportunities:
-- Hierarchical stages: intake -> under_review -> in_diligence -> ready_decision
-- Priority classification (P0-P3) based on weighted scoring
-- Evidence mapping to support claims and risks
-- Version control with parent-child relationships
-- Importance Score: 95
+1. Deal Entity
+```typescript
+interface Deal {
+  id: string;
+  stage: DealStage;
+  status: DealStatus; 
+  score: number;
+  confidence: number;
+  metrics: DealMetrics;
+  evidence: Evidence[];
+  documents: Document[];
+  analysis: Analysis[];
+}
+```
 
-### Evidence Entity
-Structured proof points supporting deal analysis:
-- Multi-dimensional classification (metrics, narratives, risks)
-- Confidence scoring based on source quality
-- Document reference tracking
-- Bidirectional linking with deals and documents
-- Importance Score: 90
+2. Evidence Model
+```typescript
+interface Evidence {
+  id: string;
+  type: EvidenceType;
+  source: Document;
+  confidence: number;
+  context: string;
+  validation: ValidationStatus;
+}
+```
 
-### Document Entity
-Investment document classification and metadata:
-- Domain-specific types (pitch_deck, financials, legal)
-- Processing state tracking
-- Content extraction confidence scoring
-- Evidence extraction mapping
-- Importance Score: 85
+3. Document Model 
+```typescript
+interface Document {
+  id: string;
+  type: DocumentType;
+  status: ProcessingStatus;
+  extracted: ExtractedContent;
+  confidence: number;
+  version: number;
+}
+```
 
-### Analysis Entity
-Deal intelligence object tracking analysis cycles:
-- Three-phase analysis depth tracking
-- Finding categorization and confidence scoring
-- Evidence-based claim validation
-- Recommendation generation logic
-- Importance Score: 90
-
-## Key Relationships
-
-1. Deal -> Evidence
-- One-to-many relationship
-- Evidence strength impacts deal scoring
-- Priority classification dependencies
-
-2. Evidence -> Documents
-- Many-to-many mapping
-- Source validation tracking
-- Confidence inheritance
-
-3. Analysis -> Deal
-- Versioned relationship
-- Progressive depth tracking
-- State transition rules
+4. Analysis Model
+```typescript
+interface Analysis {
+  id: string;
+  cycle: AnalysisCycle;
+  findings: Finding[];
+  evidence: Evidence[];
+  confidence: number;
+  recommendation: Recommendation;
+}
+```
 
 ## State Transitions
 
-Deal analysis pipeline progression:
-1. Intake validation
-2. Initial review depth assessment
-3. Due diligence evidence collection
-4. Decision readiness evaluation
+Deal Stage Transitions:
+- INTAKE -> UNDER_REVIEW: Document processing complete
+- UNDER_REVIEW -> IN_DILIGENCE: Initial analysis cycle complete
+- IN_DILIGENCE -> READY_DECISION: All analysis cycles complete
+- READY_DECISION -> CLOSED: Final recommendation made
 
-State changes governed by:
-- Evidence coverage thresholds
-- Confidence scoring minimums
-- Document completeness checks
+Document Processing States:
+- UPLOADED -> PROCESSING -> EXTRACTED -> VERIFIED
+- Error states: FAILED_PROCESSING, INVALID_CONTENT
+
+Analysis Cycle States:  
+- PLANNING -> IN_PROGRESS -> REVIEWING -> COMPLETE
+- Confidence gates between cycles
+
+## Domain Relationships
+
+- Deal contains many Documents
+- Documents produce multiple Evidence items
+- Evidence supports Analysis findings
+- Analysis spans multiple cycles
+- Recommendations require minimum confidence thresholds
+- Document processing status affects Deal stage progression
+
+## Key Business Rules
+
+1. Deal Progression
+- Stage advancement requires minimum confidence scores
+- Document completeness requirements per stage
+- Evidence validation rules for findings
+
+2. Evidence Validation  
+- Source traceability requirements
+- Confidence threshold minimums
+- Cross-validation between documents
+
+3. Analysis Requirements
+- Minimum evidence coverage per finding
+- Confidence scoring formulas
+- Required analysis dimensions
+
+4. Document Processing
+- Type-specific extraction rules
+- Version control requirements
+- Processing status impact on deal workflow
+
+Importance Score: 95
 
 $END$
 

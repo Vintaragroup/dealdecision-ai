@@ -1,5 +1,5 @@
 ---
-description: Document processing pipeline, evidence extraction, AI analysis integration, and report generation workflow specification.
+description: Dataflow analysis patterns for document processing, evidence extraction, AI insights, and report generation workflows
 ---
 
 # === USER INSTRUCTIONS ===
@@ -108,59 +108,62 @@ Data flows through specialized processors:
 # dataflow-analysis
 
 Document Processing Pipeline:
-1. Initial Document Intake
-- Multi-stage document classification system
-- Industry-specific document type detection
-- Automatic company/deal matching algorithms
-- Confidence scoring for document relevance
-Path: apps/web/src/components/documents/DocumentBatchUploadModal.tsx
+- Multi-stage document ingestion workflow
+- Initial document classification and routing
+- Parallel processing across document types
+- Evidence extraction and validation queues
+- Quality assessment checkpoints
 
-2. Evidence Extraction System
-- Structured data extraction with confidence bands
-- Financial metric detection and normalization
-- Team/market/product evidence classification
-- Evidence quality assessment framework
-Path: apps/web/src/components/evidence/EvidencePanel.tsx
+Key Data Flows:
 
-3. AI Analysis Integration
-- Three-cycle analysis workflow:
-  * Cycle 1: Broad scan and initial assessment
-  * Cycle 2: Deep dive analysis
-  * Cycle 3: Synthesis and recommendations
-- Progressive depth tracking with confidence thresholds
-Path: packages/core/src/services/cycle-analyzer.ts
+1. Document Analysis Pipeline
+```
+Raw Documents → Classification → Content Extraction → Evidence Detection → Quality Validation
+```
+- Intelligent routing based on document type
+- Confidence scoring at each stage
+- Evidence aggregation across documents
+- Quality gates with minimum confidence thresholds
 
-4. Report Generation Workflow
-- Evidence-backed sectional reporting
-- Investment recommendation classification
-- Multi-dimensional scoring aggregation
-- Risk assessment matrices
-Path: apps/web/src/components/reports/ProfessionalReportGenerator.tsx
+2. AI Analysis Integration
+```
+Extracted Evidence → AI Processing → Insight Generation → Report Integration
+```
+- Multi-dimensional confidence scoring
+- Source reliability weighting 
+- Validation methodology scoring
+- Cross-reference validation
 
-Data Flow Integration Points:
-- Document intelligence pipeline feeds evidence extraction
-- Evidence system provides inputs for AI analysis cycles
-- Analysis results flow into report generation
-- Confidence scores and validation states control progression
+3. Report Generation Workflow
+```
+Analysis Results → Template Selection → Content Population → Review → Export
+```
+- Domain-specific template mapping
+- Evidence-backed content generation
+- Multi-stage review process
+- Version control and audit trail
 
-Key Business Components:
-1. Deal Intelligence Object (DIO)
-- Versioned deal analysis container
-- Parent-child relationship tracking
-- Evidence mapping system
-Path: packages/core/src/types/analysis.ts
+Core Components:
 
-2. Hierarchical Reasoning Model
-- Multi-cycle fact extraction framework
-- Uncertainty resolution workflow
-- Evidence validation system
-Path: packages/core/src/types/hrmdd.ts
+1. Document Processor (src/services/document-processor.ts)
+- Handles document classification and routing
+- Manages extraction queue priorities
+- Implements quality validation gates
+Importance Score: 85
 
-Importance Scores:
-- Document Processing: 85/100
-- Evidence Extraction: 90/100 
-- AI Analysis: 85/100
-- Report Generation: 80/100
+2. Evidence Collector (src/services/evidence-collector.ts)
+- Aggregates evidence across documents
+- Cross-validates extracted information
+- Maintains evidence confidence scores
+Importance Score: 90
+
+3. Report Generator (src/services/report-generator.ts)
+- Orchestrates report assembly workflow
+- Maps evidence to report sections
+- Handles template customization
+Importance Score: 80
+
+Data transformation focuses on converting raw documents into structured evidence and insights through a multi-stage pipeline with validation checkpoints and confidence scoring at each stage.
 
 $END$
 

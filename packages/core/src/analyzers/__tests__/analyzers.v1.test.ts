@@ -193,6 +193,25 @@ describe("MetricBenchmarkValidator", () => {
     expect(result.metrics_analyzed.length).toBeGreaterThan(0);
     expect(result.overall_score).not.toBeNull();
   });
+
+  test("Real estate underwriting: policy KPIs map and benchmark to non-neutral score", async () => {
+    const result = await metricBenchmarkValidator.analyze({
+      text: "",
+      policy_id: "real_estate_underwriting",
+      extracted_metrics: [
+        { name: "DSCR", value: "1.35", source_doc_id: "doc-re" },
+        { name: "LTV", value: "70%", source_doc_id: "doc-re" },
+        { name: "Cap Rate", value: "5.5%", source_doc_id: "doc-re" },
+      ],
+      evidence_ids: [EVIDENCE_ID],
+    } as any);
+
+    expect(result.status).toBe("ok");
+    expect(result.metrics_analyzed.length).toBeGreaterThan(0);
+    expect(result.overall_score).not.toBeNull();
+    // At least one benchmarked KPI should yield a non-neutral rating.
+    expect(result.metrics_analyzed.some((m) => m.rating !== "Missing")).toBe(true);
+  });
 });
 
 describe("VisualDesignScorer", () => {

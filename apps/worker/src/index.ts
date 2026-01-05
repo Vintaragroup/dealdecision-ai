@@ -388,7 +388,22 @@ async function generateDealSummaryV2FromPhase1(input: {
 	phase1_executive_summary_v2: unknown;
 	phase1_decision_summary_v1: unknown;
 	eligibleDocuments: Array<{ id: string; title: string | null; type: string | null; page_count: number | null }>;
-}): Promise<DealSummaryV2 | null> {
+}): Promise<{
+	summary: DealSummaryV2;
+	llm_call: {
+		purpose: "narrative_synthesis";
+		called_at: string;
+		token_usage: {
+			input_tokens: number;
+			output_tokens: number;
+			total_tokens: number;
+			estimated_cost: number;
+		};
+		duration_ms: number;
+		success: boolean;
+		error?: string;
+	};
+} | null> {
 	const apiKey = process.env.OPENAI_API_KEY;
 	if (!apiKey) {
 		console.warn(
@@ -456,6 +471,19 @@ async function generateDealSummaryV2FromPhase1(input: {
 		metadata: { dealId: input.dealId, kind: "deal_summary_v2" },
 	});
 
+	const baseCallLog = {
+		purpose: "narrative_synthesis" as const,
+		called_at: input.nowIso,
+		token_usage: {
+			input_tokens: Number(response?.usage?.prompt_tokens ?? 0),
+			output_tokens: Number(response?.usage?.completion_tokens ?? 0),
+			total_tokens: Number(response?.usage?.total_tokens ?? 0),
+			estimated_cost: Number(response?.cost ?? 0),
+		},
+		duration_ms: Number(response?.latency_ms ?? 0),
+		success: true,
+	} as const;
+
 	const parsed = safeJsonParseObject(response.content);
 	if (!parsed) {
 		console.warn(
@@ -482,7 +510,7 @@ async function generateDealSummaryV2FromPhase1(input: {
 				paragraph_words: fallback.summary.paragraphs.map((p) => countWords(p)),
 			})
 		);
-		return fallback;
+		return { summary: fallback, llm_call: { ...baseCallLog, success: false, error: "json_parse_failed" } };
 	}
 	const padSentences = [
 		`What it is: ${typeof (input.phase1_deal_overview_v2 as any)?.product_solution === "string" ? (input.phase1_deal_overview_v2 as any).product_solution : "not provided"}`,
@@ -516,7 +544,7 @@ async function generateDealSummaryV2FromPhase1(input: {
 				paragraph_words: fallback.summary.paragraphs.map((p) => countWords(p)),
 			})
 		);
-		return fallback;
+		return { summary: fallback, llm_call: { ...baseCallLog, success: false, error: "schema_coercion_failed" } };
 	}
 	// Ensure model matches the required one even if the model omits it.
 	coerced.model = "gpt-4o-mini";
@@ -532,7 +560,7 @@ async function generateDealSummaryV2FromPhase1(input: {
 			open_questions: coerced.open_questions.length,
 		})
 	);
-	return coerced;
+	return { summary: coerced, llm_call: baseCallLog };
 }
 
 async function updateJob(job: Job, status: JobStatus, message?: string, progressPct?: number | null) {
@@ -1250,12 +1278,13 @@ createWorker("analyze_deal", async (job: Job) => {
 		// One lightweight investor-readable synthesis step (Phase 1 only).
 		// Must not alter orchestration order or scoring; stored as dio.phase1.deal_summary_v2.
 		let phase1_deal_summary_v2: DealSummaryV2 | null = null;
+		const llm_calls: any[] = [];
 		try {
 			const dealName =
 				(typeof (previousDio as any)?.deal?.name === "string" ? (previousDio as any).deal.name : undefined) ??
 				(typeof phase1_deal_overview_v2.deal_name === "string" ? phase1_deal_overview_v2.deal_name : undefined) ??
 				null;
-			phase1_deal_summary_v2 = await generateDealSummaryV2FromPhase1({
+			const synthesized = await generateDealSummaryV2FromPhase1({
 				nowIso,
 				dealId,
 				dealName,
@@ -1271,6 +1300,8 @@ createWorker("analyze_deal", async (job: Job) => {
 					page_count: typeof (d as any).page_count === "number" ? (d as any).page_count : null,
 				})),
 			});
+			phase1_deal_summary_v2 = synthesized?.summary ?? null;
+			if (synthesized?.llm_call) llm_calls.push(synthesized.llm_call);
 		} catch (err) {
 			// Best-effort: do not fail the deal analysis if summary generation fails.
 			console.warn(
@@ -1360,6 +1391,7 @@ createWorker("analyze_deal", async (job: Job) => {
 				phase1_business_archetype_v1,
 				phase1_update_report_v1,
 				phase1_deal_summary_v2,
+				llm_calls,
 			},
 		});
 

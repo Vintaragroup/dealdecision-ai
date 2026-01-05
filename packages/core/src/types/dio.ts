@@ -174,6 +174,42 @@ export const Phase1DIOV1Schema = z.object({
 });
 
 // ============================================================================
+// Deal Classification (V1)
+// ============================================================================
+
+export const DealAssetClassSchema = z.enum([
+  "operating_company",
+  "real_estate",
+  "fund_vehicle",
+  "credit",
+  "infrastructure_project",
+  "structured_product",
+  "other",
+  "unknown",
+]);
+
+export type DealAssetClass = z.infer<typeof DealAssetClassSchema>;
+
+export const DealClassificationSchema = z.object({
+  asset_class: DealAssetClassSchema,
+  deal_structure: z.string().min(1),
+  strategy_subtype: z.string().min(1).nullable().optional(),
+  confidence: z.number().min(0).max(1),
+  signals: z.array(z.string()),
+});
+
+export type DealClassification = z.infer<typeof DealClassificationSchema>;
+
+export const DealClassificationResultSchema = z.object({
+  candidates: z.array(DealClassificationSchema).max(5),
+  selected: DealClassificationSchema,
+  selected_policy: z.string().min(1),
+  routing_reason: z.array(z.string()),
+});
+
+export type DealClassificationResult = z.infer<typeof DealClassificationResultSchema>;
+
+// ============================================================================
 // Schema Version
 // ============================================================================
 
@@ -291,6 +327,7 @@ export type ExtractedMetricInput = z.infer<typeof ExtractedMetricInputSchema>;
 export const MetricBenchmarkInputSchema = z.object({
   text: z.string(),
   industry: z.string().optional(),
+  policy_id: z.string().optional(),
   extracted_metrics: z.array(ExtractedMetricInputSchema).optional(),
   evidence_ids: z.array(z.string().uuid()).optional(),
   debug_scoring: z.boolean().optional(),
@@ -836,6 +873,51 @@ export const DIOContextSchema = z.object({
 export type DIOContext = z.infer<typeof DIOContextSchema>;
 
 // ============================================================================
+// Scoring Diagnostics (V1) - persisted, UI-ready explainability
+// ============================================================================
+
+export const ScoringDiagnosticsBucketItemV1Schema = z.object({
+  component: z.string().min(1),
+  text: z.string().min(1),
+  evidence_ids: z.array(z.string()).default([]),
+});
+
+export type ScoringDiagnosticsBucketItemV1 = z.infer<typeof ScoringDiagnosticsBucketItemV1Schema>;
+
+export const ScoringDiagnosticsComponentV1Schema = z.object({
+  status: z.string().min(1),
+  raw_score: z.number().min(0).max(100).nullable(),
+  used_score: z.number().min(0).max(100).nullable(),
+  weight: z.number(),
+  confidence: z.number().min(0).max(1).nullable(),
+  reason: z.string().min(1),
+  reasons: z.array(z.string()).default([]),
+  evidence_ids: z.array(z.string()).default([]),
+  gaps: z.array(z.string()).default([]),
+  red_flags: z.array(z.string()).default([]),
+});
+
+export type ScoringDiagnosticsComponentV1 = z.infer<typeof ScoringDiagnosticsComponentV1Schema>;
+
+export const ScoringDiagnosticsV1Schema = z.object({
+  policy_id: z.string().nullable(),
+  overall_score: z.number(),
+  unadjusted_overall_score: z.number(),
+  adjustment_factor: z.number(),
+  evidence_factor: z.number(),
+  due_diligence_factor: z.number(),
+  coverage_ratio: z.number(),
+  components: z.record(ScoringDiagnosticsComponentV1Schema),
+  buckets: z.object({
+    positive_signals: z.array(ScoringDiagnosticsBucketItemV1Schema).default([]),
+    red_flags: z.array(ScoringDiagnosticsBucketItemV1Schema).default([]),
+    coverage_gaps: z.array(ScoringDiagnosticsBucketItemV1Schema).default([]),
+  }),
+});
+
+export type ScoringDiagnosticsV1 = z.infer<typeof ScoringDiagnosticsV1Schema>;
+
+// ============================================================================
 // Deal Intelligence Object (Top-Level)
 // ============================================================================
 
@@ -856,6 +938,7 @@ export const DealIntelligenceObjectSchema = z.object({
   dio: z
     .object({
       phase1: Phase1DIOV1Schema.optional(),
+      deal_classification_v1: DealClassificationResultSchema.optional(),
     })
     .optional(),
   
@@ -879,6 +962,10 @@ export const DealIntelligenceObjectSchema = z.object({
   
   // Audit trail
   execution_metadata: ExecutionMetadataSchema,
+
+  // Additive: deterministic scoring diagnostics for UX/debugging (V1).
+  // Optional for backward compatibility with older stored DIOs.
+  scoring_diagnostics_v1: ScoringDiagnosticsV1Schema.optional(),
 });
 
 export type DealIntelligenceObject = z.infer<typeof DealIntelligenceObjectSchema>;

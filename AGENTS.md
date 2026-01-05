@@ -99,46 +99,53 @@ The platform implements a comprehensive investment analysis system with sophisti
 - Explain your OBSERVATIONS clearly, then provide REASONING to identify the exact issue. Add console logs when needed to gather more information.
 
 
-The platform implements a multi-layered investment analysis system centered around deal evaluation and due diligence workflows.
+REPORT GENERATION & ANALYSIS SYSTEM
+Importance Score: 92/100
 
-Core Business Logic Components:
+System Architecture:
 
-1. Deal Analysis Engine (90/100)
-Path: apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx
-- Multi-dimensional scoring system across market, team, financial, technical, and execution metrics
-- Confidence level calculations incorporating data completeness and validation
-- Industry-specific weighting algorithms per investment category
-- Red/yellow/green flag classification with severity mapping
+1. Deal Analysis Core
+- Investment structure modeling engine
+- Multi-dimensional confidence scoring
+- Risk severity classification
+- Financial health assessment
+- ROI impact calculation
 
-2. Risk Assessment Framework (85/100)
-Path: apps/web/src/components/workspace/AnalysisTab.tsx
-- Six-dimension risk evaluation matrix (market, team, financial, competitive, execution, legal)
-- Severity classification system with impact/probability scoring
-- Risk trend analysis with directional indicators
-- Mitigation strategy mapping and tracking
+2. Document Processing Pipeline
+Path: apps/web/src/components/report-templates/sections/
+- Deal terms analysis with ownership distribution
+- Financial metrics processing (LTV, CAC, margins)
+- Risk assessment matrix scoring
+- Evidence collection and validation
+- Source reliability weighting
 
-3. Due Diligence Orchestration (85/100)
-Path: apps/api/src/services/analysis.ts
-- Three-cycle analysis workflow (broad scan, deep dive, synthesis)
-- Progressive depth assessment with confidence thresholds
-- Evidence collection and verification pipeline
-- Automated stage progression based on completeness metrics
+3. Analysis Components
+- Multi-factor risk scoring
+- Category-specific risk weighting 
+- Cost savings calculations
+- Time value analysis
+- Value generation tracking
 
-4. Investment Term Analysis (80/100)
-Path: apps/web/src/components/report-templates/sections/DealTermsSummary.tsx
-- Waterfall calculations for multiple exit scenarios
-- Cap table modeling with security type handling
-- Ownership dilution projections
-- Liquidation preference analysis
+4. Specialized Processors
+- Deal investment structure analysis
+- Liquidation preference waterfall modeling
+- Board composition mapping
+- Voting rights assessment
+- Cap table visualization
 
-5. Document Intelligence System (75/100)
-Path: packages/core/src/services/cycle-analyzer.ts
-- Multi-stage document processing pipeline
-- Industry-specific document classification
-- Financial metric extraction and normalization
-- Evidence quality scoring and validation
+Core Business Rules:
+- Risk classification using probability/impact matrix
+- Critical document verification requirements
+- Revenue retention calculations
+- Industry-specific segmentation logic
+- Growth trajectory analysis
 
-The system is organized around a Hierarchical Reasoning Model for Due Diligence (HRM-DD), progressively building investment intelligence through multiple analysis cycles while maintaining evidence chains and confidence scoring throughout the process.
+The system implements proprietary algorithms for:
+- Deal structure evaluation
+- AI-powered confidence scoring  
+- Risk assessment matrices
+- Financial projections
+- ROI calculations
 
 $END$
 

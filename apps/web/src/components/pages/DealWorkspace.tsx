@@ -192,7 +192,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     type: dealData?.type || 'series-a',
     stage: dealFromApi.stage || 'intake',
     fundingTarget: dealDataExt?.fundingTarget || 'TBD',
-    score: dealFromApi.score || investorScore,
+    score:
+      (typeof dealFromApi.score === 'number' && Number.isFinite(dealFromApi.score))
+        ? dealFromApi.score
+        : investorScore,
     updatedTime: dealFromApi.updated_at ? new Date(dealFromApi.updated_at).toLocaleDateString() : 'Recently',
     createdDate: dealFromApi.created_at ? new Date(dealFromApi.created_at).toLocaleDateString() : 'Unknown',
     description:
@@ -226,13 +229,28 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const phase1Signals = (executiveSummaryV2 && typeof executiveSummaryV2 === 'object' ? executiveSummaryV2.signals : null) as any;
   const recommendationRaw = typeof phase1Signals?.recommendation === 'string' ? phase1Signals.recommendation : null;
   const normalizedRecommendation = recommendationRaw ? recommendationRaw.toLowerCase().trim() : null;
-  const decisionLabel = normalizedRecommendation
-    ? (normalizedRecommendation.includes('pass') || normalizedRecommendation.includes('reject')
-      ? 'PASS'
-      : normalizedRecommendation.includes('go') || normalizedRecommendation.includes('invest') || normalizedRecommendation.includes('proceed')
-        ? 'GO'
-        : 'CONSIDER')
-    : '—';
+
+  const scoreToWorkspaceDecision = (score: number): 'PASS' | 'CONSIDER' | 'FUND' => {
+    // Keep this aligned with backend report recommendation thresholds.
+    if (score >= 70) return 'FUND';
+    if (score >= 55) return 'CONSIDER';
+    return 'PASS';
+  };
+
+  const overallScoreForDecision: number | null =
+    typeof (dealFromApi as any)?.score === 'number' && Number.isFinite((dealFromApi as any).score)
+      ? Math.round((dealFromApi as any).score)
+      : (typeof investorScore === 'number' && Number.isFinite(investorScore) ? Math.round(investorScore) : null);
+
+  const decisionLabel = overallScoreForDecision != null
+    ? scoreToWorkspaceDecision(overallScoreForDecision)
+    : (normalizedRecommendation
+      ? (normalizedRecommendation.includes('pass') || normalizedRecommendation.includes('reject')
+        ? 'PASS'
+        : normalizedRecommendation.includes('go') || normalizedRecommendation.includes('invest') || normalizedRecommendation.includes('proceed')
+          ? 'FUND'
+          : 'CONSIDER')
+      : '—');
   const phase1Score = typeof phase1Signals?.score === 'number' && Number.isFinite(phase1Signals.score)
     ? Math.round(phase1Signals.score)
     : null;
@@ -292,7 +310,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     if (band === 'low') return 'bg-red-500/20';
     return darkMode ? 'bg-white/10' : 'bg-gray-200/60';
   };
-  const decisionAccent = decisionLabel === 'GO'
+  const decisionAccent = decisionLabel === 'FUND'
     ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
     : decisionLabel === 'CONSIDER'
       ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
@@ -440,7 +458,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         },
         { label: 'Business Model', value: safeText(overviewV2?.business_model) || safeText(executiveSummaryV1?.business_model) || '—', change: 'Model' },
         { label: 'Deal Type', value: safeText(overviewV2?.deal_type) || safeText(executiveSummaryV1?.deal_type) || '—', change: 'Classification' },
-        { label: 'Score', value: phase1Score != null ? `${phase1Score}/100` : (displayScore != null ? `${Math.round(displayScore)}/100` : '—'), change: 'Phase 1 signal' },
+        { label: 'Score', value: displayScore != null ? `${Math.round(displayScore)}/100` : (phase1Score != null ? `${phase1Score}/100` : '—'), change: 'Overall score' },
         { label: 'Confidence', value: phase1ConfidenceRaw ? phase1ConfidenceRaw.toUpperCase() : '—', change: 'Overall' },
       ];
 
@@ -990,9 +1008,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Decision</div>
                   <div className={`mt-2 text-3xl sm:text-4xl font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{decisionLabel}</div>
                   <div className={`mt-2 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                    {phase1Score != null
-                      ? `${phase1Score}/100${phase1ConfidenceLabel ? ` · ${phase1ConfidenceLabel}` : ''}`
-                      : (displayScore != null ? `${Math.round(displayScore)}/100` : '—')}
+                    {displayScore != null
+                      ? `${Math.round(displayScore)}/100`
+                      : (phase1Score != null
+                        ? `${phase1Score}/100${phase1ConfidenceLabel ? ` · ${phase1ConfidenceLabel}` : ''}`
+                        : '—')}
                   </div>
                   {blockersCount != null && (
                     <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
@@ -1000,7 +1020,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     </div>
                   )}
                   <p className={`mt-3 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    Snapshot based on Phase 1 signals.
+                    Overall score when available; falls back to Phase 1 signals.
                   </p>
                 </div>
                 <span className={`px-3 py-1 rounded-full border text-xs font-medium ${decisionAccent}`}>

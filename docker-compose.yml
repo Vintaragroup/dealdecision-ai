@@ -1,0 +1,36 @@
+name: infra
+
+services:
+  postgres:
+    extends:
+      file: infra/docker-compose.yml
+      service: postgres
+
+  redis:
+    extends:
+      file: infra/docker-compose.yml
+      service: redis
+
+  migrate:
+    extends:
+      file: infra/docker-compose.yml
+      service: migrate
+
+  api:
+    extends:
+      file: infra/docker-compose.yml
+      service: api
+
+  worker:
+    extends:
+      file: infra/docker-compose.yml
+      service: worker
+
+  web:
+    extends:
+      file: infra/docker-compose.yml
+      service: web
+
+volumes:
+  postgres_data:
+  redis_data:

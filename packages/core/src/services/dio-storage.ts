@@ -14,7 +14,7 @@
 import { z } from "zod";
 import type { DealIntelligenceObject } from "../types/dio";
 import { createHash } from "crypto";
-import { buildScoreExplanationFromDIO } from "../reports/score-explanation";
+import { buildScoreExplanationFromDIO, buildScoringDiagnosticsFromDIO } from "../reports/score-explanation";
 
 // ============================================================================
 // Schemas
@@ -248,6 +248,7 @@ class PostgreSQLDIODatabase implements DIODatabase {
     // Keep scoring formulas unchanged by sourcing overall_score from the explanation totals.
     const score_explanation = buildScoreExplanationFromDIO(row.dio_data as DealIntelligenceObject);
     const overall_score = score_explanation.totals.overall_score;
+    const scoring_diagnostics_v1 = buildScoringDiagnosticsFromDIO(row.dio_data as DealIntelligenceObject);
 
     const total_risks = row.dio_data.risk_map?.length || 0;
     const critical_risks = (row.dio_data.risk_map || []).filter((r: any) => r.severity === 'critical').length;
@@ -258,6 +259,7 @@ class PostgreSQLDIODatabase implements DIODatabase {
       updated_at: new Date().toISOString(),
       score_explanation,
       overall_score,
+      scoring_diagnostics_v1,
     };
     
     const result = await pool.query(
@@ -494,6 +496,7 @@ export class DIOStorageImpl implements DIOStorage {
       const now = new Date().toISOString();
       const score_explanation = buildScoreExplanationFromDIO(dio);
       const overall_score = score_explanation.totals.overall_score;
+      const scoring_diagnostics_v1 = buildScoringDiagnosticsFromDIO(dio);
       const recommendation = dio.decision?.recommendation || 'CONDITIONAL';
 
       const dio_data_with_explanation = {
@@ -502,6 +505,7 @@ export class DIOStorageImpl implements DIOStorage {
         updated_at: now,
         score_explanation,
         overall_score,
+        scoring_diagnostics_v1,
       };
 
       await this.database.updateDIO(existing.dio_id, {

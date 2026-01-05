@@ -182,6 +182,157 @@ function baseInputWithDocuments(): OrchestrationInput {
   };
 }
 
+it('uses page_count when totalPages is missing for visualDesign input', async () => {
+  const storage = createStorage();
+
+  const seen: { visual?: any } = {};
+  const visualAnalyzer: AnyAnalyzer = {
+    analyze: jest.fn(async (input: any) => {
+      seen.visual = input;
+      return okVisualDesign();
+    }),
+  };
+
+  const analyzers = {
+    slideSequence: createAnalyzer(okSlideSequence()),
+    metricBenchmark: createAnalyzer(okMetricBenchmark()),
+    visualDesign: visualAnalyzer,
+    narrativeArc: createAnalyzer(okNarrativeArc()),
+    financialHealth: createAnalyzer(okFinancialHealth()),
+    riskAssessment: createAnalyzer(okRiskAssessment()),
+  };
+
+  const orchestrator = new DealOrchestrator(analyzers as any, storage, { debug: false });
+
+  const input: OrchestrationInput = {
+    deal_id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    analysis_cycle: 1,
+    input_data: {
+      documents: [
+        {
+          fileName: 'Deck.pdf',
+          // totalPages intentionally omitted
+          page_count: 17,
+          fileSizeBytes: 1000,
+          totalWords: 100,
+          mainHeadings: ['Problem', 'Solution'],
+          textSummary: 'hello',
+        },
+      ],
+    },
+  };
+
+  await orchestrator.analyze(input);
+  expect(seen.visual?.page_count).toBe(17);
+});
+
+it('enforces policy analyzer bundle for real_estate_underwriting (skips financialHealth/slideSequence/visualDesign)', async () => {
+  const storage = createStorage();
+
+  const slideSequenceAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okSlideSequence()) };
+  const metricBenchmarkAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okMetricBenchmark()) };
+  const visualDesignAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okVisualDesign()) };
+  const narrativeArcAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okNarrativeArc()) };
+  const financialHealthAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okFinancialHealth()) };
+  const riskAssessmentAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okRiskAssessment()) };
+
+  const analyzers = {
+    slideSequence: slideSequenceAnalyzer,
+    metricBenchmark: metricBenchmarkAnalyzer,
+    visualDesign: visualDesignAnalyzer,
+    narrativeArc: narrativeArcAnalyzer,
+    financialHealth: financialHealthAnalyzer,
+    riskAssessment: riskAssessmentAnalyzer,
+  };
+
+  const orchestrator = new DealOrchestrator(analyzers as any, storage, { debug: false });
+
+  const input: OrchestrationInput = {
+    deal_id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+    analysis_cycle: 1,
+    input_data: {
+      documents: [
+        {
+          fileName: 'Real Estate OM.pdf',
+          totalPages: 15,
+          fileSizeBytes: 1000,
+          totalWords: 600,
+          mainHeadings: ['Overview', 'Property', 'Debt', 'Lease', 'Financials'],
+          keyMetrics: [
+            { key: 'NOI', value: '$1,000,000', source: 'om' },
+            { key: 'DSCR', value: '1.30', source: 'om' },
+            { key: 'LTV', value: '65%', source: 'om' },
+            { key: 'Cap Rate', value: '6%', source: 'om' },
+            { key: 'Occupancy', value: '95%', source: 'om' },
+          ],
+          textSummary:
+            'Real estate underwriting memo. NOI $1,000,000. DSCR 1.30. LTV 65%. Cap rate 6%. Occupancy 95%. Lease term 5 years.',
+        },
+      ],
+    },
+  };
+
+  const result = await orchestrator.analyze(input);
+  expect(result.success).toBe(true);
+  expect(result.execution.analyzers_run).toBe(3);
+
+  // Enabled by policy: metric_benchmark, risk_assessment, narrative_arc
+  expect(metricBenchmarkAnalyzer.analyze).toHaveBeenCalledTimes(1);
+  expect(riskAssessmentAnalyzer.analyze).toHaveBeenCalledTimes(1);
+  expect(narrativeArcAnalyzer.analyze).toHaveBeenCalledTimes(1);
+
+  // Disabled by policy
+  expect(financialHealthAnalyzer.analyze).toHaveBeenCalledTimes(0);
+  expect(slideSequenceAnalyzer.analyze).toHaveBeenCalledTimes(0);
+  expect(visualDesignAnalyzer.analyze).toHaveBeenCalledTimes(0);
+});
+
+it('merges worker-provided llm_calls into execution_metadata', async () => {
+  const storage = createStorage();
+  const analyzers = {
+    slideSequence: createAnalyzer(okSlideSequence()),
+    metricBenchmark: createAnalyzer(okMetricBenchmark()),
+    visualDesign: createAnalyzer(okVisualDesign()),
+    narrativeArc: createAnalyzer(okNarrativeArc()),
+    financialHealth: createAnalyzer(okFinancialHealth()),
+    riskAssessment: createAnalyzer(okRiskAssessment()),
+  };
+
+  const orchestrator = new DealOrchestrator(analyzers as any, storage, { debug: false });
+
+  const input: OrchestrationInput = {
+    deal_id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+    analysis_cycle: 1,
+    input_data: {
+      documents: [
+        {
+          fileName: 'Deck.pdf',
+          totalPages: 10,
+          fileSizeBytes: 1000,
+          totalWords: 100,
+          mainHeadings: ['Problem', 'Solution'],
+          textSummary: 'hello',
+        },
+      ],
+      llm_calls: [
+        {
+          purpose: 'narrative_synthesis',
+          called_at: nowIso(),
+          token_usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30, estimated_cost: 0.01 },
+          duration_ms: 123,
+          success: true,
+        },
+      ],
+    },
+  };
+
+  const res = await orchestrator.analyze(input);
+  expect(res.success).toBe(true);
+  expect(res.dio?.execution_metadata?.dependencies?.llm_calls?.length).toBe(1);
+  expect(res.dio?.execution_metadata?.dependencies?.llm_calls?.[0]?.purpose).toBe('narrative_synthesis');
+  expect(res.dio?.execution_metadata?.performance?.llm_total_ms).toBeGreaterThanOrEqual(123);
+});
+
 it('prefers canonical financial metrics over keyFinancialMetrics when building extracted_metrics', async () => {
   const storage = createStorage();
 
@@ -353,6 +504,54 @@ describe('DealOrchestrator (unit)', () => {
     expect(result.execution.analyzers_failed).toBe(0);
     expect(result.execution.retry_count).toBe(0);
     expect(storage.saveDIO).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists phase1.coverage.sections with standard keys', async () => {
+    const storage = createStorage();
+
+    const analyzers = {
+      slideSequence: createAnalyzer(okSlideSequence()),
+      metricBenchmark: createAnalyzer(okMetricBenchmark()),
+      visualDesign: createAnalyzer(okVisualDesign()),
+      narrativeArc: createAnalyzer(okNarrativeArc()),
+      financialHealth: createAnalyzer(okFinancialHealth()),
+      riskAssessment: createAnalyzer(okRiskAssessment()),
+    };
+
+    const orchestrator = new DealOrchestrator(analyzers as any, storage, { debug: false });
+
+    const input: OrchestrationInput = {
+      deal_id: '33333333-3333-3333-3333-333333333333',
+      analysis_cycle: 1,
+      input_data: { documents: [] },
+    };
+
+    const result = await orchestrator.analyze(input);
+    expect(result.success).toBe(true);
+    expect(storage.saveDIO).toHaveBeenCalledTimes(1);
+
+    const saved = storage.saved[storage.saved.length - 1] as any;
+    const sections = saved?.dio?.phase1?.coverage?.sections;
+    expect(sections).toBeTruthy();
+
+    const required = [
+      'product_solution',
+      'market_icp',
+      'raise_terms',
+      'business_model',
+      'traction',
+      'risks',
+      'team',
+      'gtm',
+      'financials',
+      'deal_type',
+      'documents',
+    ];
+
+    for (const k of required) {
+      expect(Object.prototype.hasOwnProperty.call(sections, k)).toBe(true);
+      expect(['present', 'partial', 'missing']).toContain(sections[k]);
+    }
   });
 
   it('continues on analyzer failure when continueOnError=true and records failures', async () => {

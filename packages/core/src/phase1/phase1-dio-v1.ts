@@ -302,15 +302,30 @@ function capsTokenRatio(value: string): number {
 function hasBusinessVerb(value: string): boolean {
 	const s = sanitizeInlineText(value);
 	if (!s) return false;
-	return /\b(builds?|build|building|built|operates?|operating|enables?|enabling|monetizes?|monetizing|provides?|providing|runs?|running|helps?|helping|automates?|automating|delivers?|delivering)\b/i.test(s);
+	return /\b(builds?|build|building|built|operates?|operating|enables?|enabling|monetizes?|monetizing|provides?|providing|runs?|running|helps?|helping|automates?|automating|delivers?|delivering|predicts?|predicting|scores?|scoring|unifies?|unifying|analyzes?|analyzing|detects?|detecting|models?|modeling|identifies?|identifying|recommends?|recommending|optimizes?|optimizing)\b/i.test(s);
 }
 
-function hardValidateProductOrMarket(value: string): string {
+
+function hardValidateProductSolution(value: string): string {
 	const s = sanitizeInlineText(value);
 	if (!s) return "";
 	if (hasSpacedLogoOcrArtifact(s)) return "";
 	if (capsTokenRatio(s) > 0.4) return "";
 	if (!hasBusinessVerb(s)) return "";
+	return s;
+}
+
+function hardValidateMarketICP(value: string): string {
+	const s = sanitizeInlineText(value);
+	if (!s) return "";
+	if (hasSpacedLogoOcrArtifact(s)) return "";
+	if (capsTokenRatio(s) > 0.4) return "";
+	if (/^(unknown|n\/?a|none)$/i.test(s.trim())) return "";
+
+	// ICP lines are often noun phrases; allow "for/target/built for" without requiring a business verb.
+	const hasIcpSignal = hasBusinessVerb(s)
+		|| /\b(for|target|targets|targeting|built\s+for|designed\s+for|used\s+by|serves?|customers?|buyers?|operators?)\b/i.test(s);
+	if (!hasIcpSignal && s.split(/\s+/g).filter(Boolean).length < 3) return "";
 	return s;
 }
 
@@ -1489,6 +1504,97 @@ function safeNonEmpty(value: unknown): string {
 	return s;
 }
 
+function normalizePhase1OverviewV2(input: unknown): any {
+	if (!input || typeof input !== "object") return null;
+	const obj: any = input;
+
+	const pick = (keys: string[]): string => {
+		for (const k of keys) {
+			const v = obj?.[k];
+			if (typeof v === "string" && v.trim()) return sanitizeInlineText(v);
+		}
+		return "";
+	};
+
+	const toNullOrNormalizedSentence = (value: string, maxChars: number): string | null => {
+		const s = sanitizeInlineText(value);
+		if (!s.trim()) return null;
+		return normalizeOverviewSentence(s, maxChars).trim() ? normalizeOverviewSentence(s, maxChars) : null;
+	};
+
+	const toNullOrInline = (value: string): string | null => {
+		const s = sanitizeInlineText(value);
+		return s.trim() ? s : null;
+	};
+
+	const out: any = { ...obj };
+
+	const existingProduct = typeof obj.product_solution === "string" ? sanitizeInlineText(obj.product_solution) : "";
+	const existingMarket = typeof obj.market_icp === "string" ? sanitizeInlineText(obj.market_icp) : "";
+	const existingRaiseTerms = typeof obj.raise_terms === "string" ? sanitizeInlineText(obj.raise_terms) : "";
+
+	if (existingProduct.trim()) {
+		out.product_solution = toNullOrNormalizedSentence(existingProduct, 220);
+	} else {
+		const candidate = pick([
+			"product",
+			"solution",
+			"product_description",
+			"productDescription",
+			"value_prop",
+			"valueProp",
+			"offering",
+			"one_liner",
+			"oneLiner",
+		]);
+		out.product_solution = toNullOrNormalizedSentence(candidate, 220);
+	}
+
+	if (existingMarket.trim()) {
+		out.market_icp = toNullOrNormalizedSentence(existingMarket, 220);
+	} else {
+		const candidate = pick([
+			"icp",
+			"target_customer",
+			"targetCustomer",
+			"target_market",
+			"targetMarket",
+			"customers",
+			"customer",
+			"audience",
+			"who_we_serve",
+			"whoWeServe",
+			"buyer",
+		]);
+		out.market_icp = toNullOrNormalizedSentence(candidate, 220);
+	}
+
+	if (existingRaiseTerms.trim()) {
+		out.raise_terms = toNullOrInline(existingRaiseTerms);
+	} else {
+		// Prefer explicit terms/raise fields; fall back to round/ask wording.
+		const candidate = pick([
+			"raiseTerms",
+			"raise_terms",
+			"terms",
+			"raise",
+			"round",
+			"ask",
+			"fundraise",
+			"fundraising",
+		]);
+		out.raise_terms = toNullOrInline(candidate);
+	}
+
+	// Convenience: if raise is missing but raise_terms exists, set raise (do not overwrite non-empty).
+	const existingRaise = typeof obj.raise === "string" ? sanitizeInlineText(obj.raise) : "";
+	if (!existingRaise.trim() && typeof out.raise_terms === "string" && out.raise_terms.trim()) {
+		out.raise = out.raise_terms;
+	}
+
+	return out;
+}
+
 function formatList(values: string[], maxItems: number): string {
 	const items = uniqStrings(values).slice(0, maxItems);
 	if (items.length === 0) return "";
@@ -1529,11 +1635,55 @@ export function composeExecutiveSummaryV2(params: {
 }): Phase1ExecutiveSummaryV2 {
 	const overview = (params.overview_v2 && typeof params.overview_v2 === "object") ? (params.overview_v2 as any) : null;
 
+	const safeNonEmptyKnown = (v: unknown): string | null => {
+		const s = safeNonEmpty(v);
+		if (!s) return null;
+		if (s.trim().toLowerCase() === "unknown") return null;
+		return s;
+	};
+
+	const pickOverviewText = (o: any, keys: string[]): string | null => {
+		if (!o || typeof o !== "object") return null;
+		for (const k of keys) {
+			const v = safeNonEmptyKnown((o as any)[k]);
+			if (v) return v;
+		}
+		return null;
+	};
+
 	const dealName = safeNonEmpty(overview?.deal_name) || safeNonEmpty(params.deal?.name) || "This deal";
-	const product = safeNonEmpty(overview?.product_solution);
-	const market = safeNonEmpty(overview?.market_icp);
-	const raise = safeNonEmpty(overview?.raise);
-	const businessModel = safeNonEmpty(overview?.business_model);
+	const product = pickOverviewText(overview, [
+		"product_solution",
+		"product",
+		"solution",
+		"product_description",
+		"value_prop",
+		"value_proposition",
+		"Product",
+	]);
+	const market = pickOverviewText(overview, [
+		"market_icp",
+		"icp",
+		"market",
+		"target_customer",
+		"target_market",
+		"ICP",
+		"Market",
+	]);
+	const raise = pickOverviewText(overview, [
+		"raise",
+		"raise_terms",
+		"terms",
+		"round",
+		"Raise",
+		"Terms",
+	]);
+	const businessModel = pickOverviewText(overview, [
+		"business_model",
+		"model",
+		"businessModel",
+		"BusinessModel",
+	]);
 	const tractionSignals = Array.isArray(overview?.traction_signals)
 		? overview.traction_signals.filter((x: any) => typeof x === "string").map((x: string) => sanitizeInlineText(x)).filter(Boolean)
 		: [];
@@ -1649,32 +1799,46 @@ export function generatePhase1DIOV1(params: {
 	const overviewV2 = (params.deal_overview_v2 && typeof params.deal_overview_v2 === "object")
 		? (params.deal_overview_v2 as any)
 		: null;
+	const overviewV2Normalized = normalizePhase1OverviewV2(overviewV2);
+	const updateReportV1 = (params.update_report_v1 && typeof params.update_report_v1 === "object")
+		? (params.update_report_v1 as any)
+		: null;
+	const updateAfter = (field: string): string => {
+		const changes = Array.isArray(updateReportV1?.changes) ? updateReportV1.changes : [];
+		for (const c of changes) {
+			if (!c || typeof c !== "object") continue;
+			if ((c as any).field !== field) continue;
+			const after = (c as any).after;
+			if (typeof after === "string" && after.trim()) return sanitizeInlineText(after);
+		}
+		return "";
+	};
 	let businessArchetypeV1 = (params.business_archetype_v1 && typeof params.business_archetype_v1 === "object")
 		? (params.business_archetype_v1 as any)
 		: null;
 	const businessArchetypeValue = safeString(businessArchetypeV1?.value).toLowerCase();
 	const archetypeLooksRE = businessArchetypeValue === "real_estate" || businessArchetypeValue.includes("real_estate");
 
-	const v2Product = overviewV2?.product_solution && typeof overviewV2.product_solution === "string"
-		? normalizeOverviewSentence(overviewV2.product_solution, 220)
+	const v2Product = overviewV2Normalized?.product_solution && typeof overviewV2Normalized.product_solution === "string"
+		? normalizeOverviewSentence(overviewV2Normalized.product_solution, 220)
+		: normalizeOverviewSentence(updateAfter("deal_overview_v2.product_solution"), 220);
+	const v2Market = overviewV2Normalized?.market_icp && typeof overviewV2Normalized.market_icp === "string"
+		? normalizeOverviewSentence(overviewV2Normalized.market_icp, 220)
+		: normalizeOverviewSentence(updateAfter("deal_overview_v2.market_icp"), 220);
+	const v2DealType = overviewV2Normalized?.deal_type && typeof overviewV2Normalized.deal_type === "string"
+		? sanitizeInlineText(overviewV2Normalized.deal_type)
 		: "";
-	const v2Market = overviewV2?.market_icp && typeof overviewV2.market_icp === "string"
-		? normalizeOverviewSentence(overviewV2.market_icp, 220)
+	const v2Raise = overviewV2Normalized?.raise && typeof overviewV2Normalized.raise === "string"
+		? sanitizeInlineText(overviewV2Normalized.raise)
 		: "";
-	const v2DealType = overviewV2?.deal_type && typeof overviewV2.deal_type === "string"
-		? sanitizeInlineText(overviewV2.deal_type)
+	const v2BusinessModel = overviewV2Normalized?.business_model && typeof overviewV2Normalized.business_model === "string"
+		? sanitizeInlineText(overviewV2Normalized.business_model)
 		: "";
-	const v2Raise = overviewV2?.raise && typeof overviewV2.raise === "string"
-		? sanitizeInlineText(overviewV2.raise)
-		: "";
-	const v2BusinessModel = overviewV2?.business_model && typeof overviewV2.business_model === "string"
-		? sanitizeInlineText(overviewV2.business_model)
-		: "";
-	const v2Traction = Array.isArray(overviewV2?.traction_signals)
-		? overviewV2.traction_signals.filter((x: any) => typeof x === "string").map((x: string) => sanitizeInlineText(x)).filter(Boolean)
+	const v2Traction = Array.isArray(overviewV2Normalized?.traction_signals)
+		? overviewV2Normalized.traction_signals.filter((x: any) => typeof x === "string").map((x: string) => sanitizeInlineText(x)).filter(Boolean)
 		: [];
-	const v2Risks = Array.isArray(overviewV2?.key_risks_detected)
-		? overviewV2.key_risks_detected.filter((x: any) => typeof x === "string").map((x: string) => sanitizeInlineText(x)).filter(Boolean)
+	const v2Risks = Array.isArray(overviewV2Normalized?.key_risks_detected)
+		? overviewV2Normalized.key_risks_detected.filter((x: any) => typeof x === "string").map((x: string) => sanitizeInlineText(x)).filter(Boolean)
 		: [];
 
 	const baseLooksRE = looksLikeRealEstateOffering(combinedText) || archetypeLooksRE;
@@ -1737,25 +1901,42 @@ export function generatePhase1DIOV1(params: {
 	// Hard validation: reject contaminated/low-quality product/ICP values and do not replace with fallback.
 	let productHardRejected = false;
 	let marketHardRejected = false;
-	const validatedProduct = hardValidateProductOrMarket(productSentence);
+	const validatedProduct = hardValidateProductSolution(productSentence);
 	if (productSentence.trim() && !validatedProduct.trim()) productHardRejected = true;
 	productSentence = validatedProduct;
-	const validatedMarket = hardValidateProductOrMarket(marketSentence);
+	const validatedMarket = looksRE
+		? hardValidateProductSolution(marketSentence)
+		: hardValidateMarketICP(marketSentence);
 	if (marketSentence.trim() && !validatedMarket.trim()) marketHardRejected = true;
 	marketSentence = validatedMarket;
 
 	// Last-resort fallback for real-estate memos where worker deal_overview_v2 omits product/ICP and
 	// extracted text may be sparse or numeric-heavy.
 	// IMPORTANT: do not apply fallbacks if values were hard-rejected.
+	let productFromRealEstateFallback = false;
+	let marketFromRealEstateFallback = false;
 	if (looksRE && !productHardRejected && !productSentence.trim()) {
-		productSentence = detectRealEstateProductFromSparseText(combinedText) || productSentence;
+		const fallback = detectRealEstateProductFromSparseText(combinedText);
+		if (fallback) {
+			productSentence = fallback;
+			productFromRealEstateFallback = true;
+		}
 	}
 	if (looksRE && !marketHardRejected && !marketSentence.trim()) {
-		marketSentence = detectRealEstateMarketFromSparseText(combinedText) || marketSentence;
+		const fallback = detectRealEstateMarketFromSparseText(combinedText);
+		if (fallback) {
+			marketSentence = fallback;
+			marketFromRealEstateFallback = true;
+		}
 	}
 	// Validate again after any real-estate fallback.
-	if (!productHardRejected) productSentence = hardValidateProductOrMarket(productSentence);
-	if (!marketHardRejected) marketSentence = hardValidateProductOrMarket(marketSentence);
+	if (!productHardRejected) productSentence = hardValidateProductSolution(productSentence);
+	if (!marketHardRejected) {
+		// Keep real-estate deals conservative: avoid promoting market blurbs into ICP.
+		marketSentence = looksRE
+			? hardValidateProductSolution(marketSentence)
+			: hardValidateMarketICP(marketSentence);
+	}
 
 	// Final post-arbitration, post-validation truth object.
 	const finalTruth = {
@@ -1876,15 +2057,25 @@ export function generatePhase1DIOV1(params: {
 		if (decision_summary_v1.recommendation === "GO") decision_summary_v1.recommendation = "CONSIDER";
 	}
 
-	const mergedOverviewForV2 = overviewV2 && typeof overviewV2 === "object"
+	const mergedOverviewForV2 = overviewV2Normalized && typeof overviewV2Normalized === "object"
 		? {
-			...overviewV2,
-			deal_name: safeNonEmpty((overviewV2 as any).deal_name) || overview.deal_name,
+			...overviewV2Normalized,
+			deal_name: safeNonEmpty((overviewV2Normalized as any).deal_name) || overview.deal_name,
 			product_solution: finalTruth.product_solution.trim() ? finalTruth.product_solution : null,
 			market_icp: finalTruth.market_icp.trim() ? finalTruth.market_icp : null,
 			deal_type: finalTruth.deal_type,
-			business_model: finalTruth.business_model,
-			raise: safeNonEmpty((overviewV2 as any).raise) || finalTruth.raise,
+			business_model: (() => {
+				if (finalTruth.business_model !== "Unknown") return finalTruth.business_model;
+				const candidate = safeNonEmpty((overviewV2Normalized as any).business_model) || safeNonEmpty(overview.business_model);
+				if (!candidate) return "Unknown";
+				const sourceDealType = safeNonEmpty((overviewV2Normalized as any).deal_type) || safeNonEmpty(overview.deal_type);
+				const sourceLooksRealEstate = /^real_estate/i.test(sourceDealType);
+				// If worker labeled the deal as real-estate, do not carry forward business_model that arbitration rejected.
+				if (sourceLooksRealEstate) return "Unknown";
+				return candidate;
+			})(),
+			raise: safeNonEmpty((overviewV2Normalized as any).raise) || finalTruth.raise,
+			raise_terms: safeNonEmpty((overviewV2Normalized as any).raise_terms) || (finalTruth.raise !== "Unknown" ? finalTruth.raise : null),
 			traction_signals: finalTruth.traction_signals,
 			key_risks_detected: finalTruth.key_risks_detected,
 		}
@@ -1892,7 +2083,7 @@ export function generatePhase1DIOV1(params: {
 
 	const executive_summary_v2 = composeExecutiveSummaryV2({
 		deal: params.deal,
-		overview_v2: mergedOverviewForV2 ?? overviewV2,
+		overview_v2: mergedOverviewForV2 ?? overviewV2Normalized ?? overviewV2,
 		coverage,
 		decision_summary_v1,
 	});
@@ -2016,11 +2207,124 @@ export function mergePhase1IntoDIO(dio: any, phase1: Phase1DIOV1): any {
   const existingPhase1 =
     dioNode.phase1 && typeof dioNode.phase1 === "object" ? dioNode.phase1 : {};
 
+	const STANDARD_PHASE1_COVERAGE_KEYS = [
+		"product_solution",
+		"market_icp",
+		"raise_terms",
+		"business_model",
+		"traction",
+		"risks",
+		"team",
+		"gtm",
+		"financials",
+		"deal_type",
+		"documents",
+	] as const;
+
+	type CoverageStatus = "present" | "partial" | "missing";
+
+	function isCoverageStatus(v: unknown): v is CoverageStatus {
+		return v === "present" || v === "partial" || v === "missing";
+	}
+
+	function normalizeCoverageSections(input: unknown): Record<string, CoverageStatus> {
+		if (!input || typeof input !== "object") return {};
+		const out: Record<string, CoverageStatus> = {};
+		for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+			if (typeof k !== "string") continue;
+			if (isCoverageStatus(v)) out[k] = v;
+		}
+		return out;
+	}
+
+	function inferCoverageSectionsFromPhase1(source: any): Record<string, CoverageStatus> {
+		const s = source && typeof source === "object" ? source : {};
+		const es1 = (s as any).executive_summary_v1;
+		const ov2 = (s as any).deal_overview_v2;
+		const claims = Array.isArray((s as any).claims) ? ((s as any).claims as any[]) : [];
+
+		const dealType = typeof ov2?.deal_type === "string" ? ov2.deal_type : typeof es1?.deal_type === "string" ? es1.deal_type : "";
+		const raise = typeof ov2?.raise === "string" ? ov2.raise : typeof es1?.raise === "string" ? es1.raise : "";
+		const businessModel =
+			typeof ov2?.business_model === "string" ? ov2.business_model : typeof es1?.business_model === "string" ? es1.business_model : "";
+
+		const productSolution =
+			typeof ov2?.product_solution === "string" && ov2.product_solution.trim()
+				? ov2.product_solution
+				: typeof es1?.one_liner === "string"
+					? es1.one_liner
+					: "";
+		const marketIcp = typeof ov2?.market_icp === "string" ? ov2.market_icp : "";
+
+		const tractionSignals = Array.isArray(es1?.traction_signals) ? es1.traction_signals : [];
+		const keyRisks = Array.isArray(es1?.key_risks_detected) ? es1.key_risks_detected : [];
+
+		const claimText = claims
+			.map((c: any) => (typeof c?.text === "string" ? c.text : ""))
+			.filter((t: string) => t.trim().length > 0)
+			.join(" \n");
+		const combinedText = `${typeof es1?.one_liner === "string" ? es1.one_liner : ""}\n${claimText}`;
+
+		const anyEvidence = claims.some((c: any) => Array.isArray(c?.evidence) && c.evidence.some((e: any) => typeof e?.document_id === "string" && e.document_id.trim()));
+		const anyClaims = claims.length > 0;
+
+		const anyCategory = (cat: string) => claims.some((c: any) => c?.category === cat);
+
+		const gtmPresent = /(go\s*-?to\s*-?market|\bgtm\b|pricing|sales\s+motion|distribution|channel)\b/i.test(combinedText);
+		const teamPresent = /(founder|team|ceo|cto|co-founder|background|experience)\b/i.test(combinedText) || anyCategory("team");
+		const financialsPresent =
+			/(revenue|arr|mrr|burn|runway|cash|margin|expenses|profit|noi|cap\s*rate|dscr|ltv|irr|equity\s+multiple|cash-?on-?cash|pro\s*forma)\b/i.test(
+				combinedText
+			);
+
+		const out: Record<string, CoverageStatus> = {
+			deal_type: dealType && dealType !== "Unknown" ? "present" : "missing",
+			raise_terms: raise && raise !== "Unknown" ? "present" : "missing",
+			business_model: businessModel && businessModel !== "Unknown" ? "present" : "missing",
+			product_solution:
+				typeof ov2?.product_solution === "string" && ov2.product_solution.trim()
+					? "present"
+					: anyCategory("product")
+						? "partial"
+						: productSolution.trim()
+							? "partial"
+							: "missing",
+			market_icp: typeof marketIcp === "string" && marketIcp.trim() ? "present" : anyCategory("market") ? "partial" : "missing",
+			traction: tractionSignals.length > 0 || anyCategory("traction") ? "present" : "missing",
+			risks: keyRisks.length > 0 || anyCategory("risk") ? "present" : "missing",
+			gtm: gtmPresent ? "present" : "missing",
+			team: teamPresent ? "present" : "missing",
+			financials: financialsPresent ? "present" : "missing",
+			documents: anyEvidence ? "present" : anyClaims ? "partial" : "missing",
+		};
+
+		return out;
+	}
+
+	function ensurePhase1Coverage(incomingPhase1: any, existing: any): Phase1CoverageV1 {
+		const existingSections = normalizeCoverageSections(existing?.coverage?.sections);
+		const incomingSections = normalizeCoverageSections(incomingPhase1?.coverage?.sections);
+		const inferred = inferCoverageSectionsFromPhase1(incomingPhase1 && typeof incomingPhase1 === "object" ? incomingPhase1 : existing);
+
+		const merged: Record<string, CoverageStatus> = {
+			...existingSections,
+			...incomingSections,
+		};
+
+		for (const k of STANDARD_PHASE1_COVERAGE_KEYS) {
+			if (!merged[k]) merged[k] = inferred[k] ?? "missing";
+		}
+
+		return { sections: merged };
+	}
+
 	const business_archetype_v1 = (phase1 as any)?.business_archetype_v1;
 	const deal_overview_v2 = (phase1 as any)?.deal_overview_v2;
 	const update_report_v1 = (phase1 as any)?.update_report_v1;
 	const executive_summary_v2 = (phase1 as any)?.executive_summary_v2;
 	const deal_summary_v2 = (phase1 as any)?.deal_summary_v2;
+
+	const coverage = ensurePhase1Coverage(phase1 as any, existingPhase1);
 
   return {
     ...base,
@@ -2035,7 +2339,7 @@ export function mergePhase1IntoDIO(dio: any, phase1: Phase1DIOV1): any {
 				...(executive_summary_v2 && typeof executive_summary_v2 === "object" ? { executive_summary_v2 } : {}),
         decision_summary_v1: phase1.decision_summary_v1,
         claims: phase1.claims,
-        coverage: phase1.coverage,
+		coverage,
 
 			...(deal_summary_v2 && typeof deal_summary_v2 === "object" ? { deal_summary_v2 } : {}),
 

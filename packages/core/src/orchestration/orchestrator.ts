@@ -28,7 +28,10 @@ import type {
 import type { BaseAnalyzer } from '../analyzers/base.js';
 import type { DIOStorage, DIOStorageResult } from '../services/dio-storage.js';
 import { buildDIOContextFromInputData } from './dio-context';
-import { buildScoreExplanationFromDIO } from '../reports/score-explanation';
+import { buildScoreExplanationFromDIO, buildScoringDiagnosticsFromDIO } from '../reports/score-explanation';
+import { classifyDealForDioLike } from '../classification/deal-classifier';
+import { getDealPolicy, type AnalyzerKey } from '../classification/deal-policy-registry';
+import { getSelectedPolicyIdFromAny } from '../classification/get-selected-policy-id';
 import { getStableDocumentId, selectDocumentRoles } from './document-roles';
 import { generatePhase1DIOV1, mergePhase1IntoDIO } from '../phase1/phase1-dio-v1.js';
 import { buildRealAssetFactArtifacts, detectRealEstatePreferredEquity } from './real-asset-facts';
@@ -123,6 +126,17 @@ export class DealOrchestrator {
     const failures: Array<{ analyzer: string; error: string; retry_attempts: number }> = [];
     const retryCounter = { count: 0 };
 
+    let precomputedDealClassificationV1: any | null = null;
+
+    const ANALYZER_KEY_TO_REGISTRY: Record<AnalyzerKey, keyof AnalyzerRegistry> = {
+      slide_sequence: 'slideSequence',
+      metric_benchmark: 'metricBenchmark',
+      visual_design: 'visualDesign',
+      narrative_arc: 'narrativeArc',
+      financial_health: 'financialHealth',
+      risk_assessment: 'riskAssessment',
+    };
+
     this.log('Starting orchestration', { deal_id: input.deal_id, cycle: input.analysis_cycle });
     this.log('Input data keys', { keys: Object.keys(input.input_data), documents_count: (input.input_data.documents as any[])?.length || 0 });
 
@@ -135,14 +149,57 @@ export class DealOrchestrator {
         (input.input_data as any).industry = computed_context.vertical;
       }
 
-      // Run all analyzers
+      // Deterministic deal classification + policy routing BEFORE analyzers run so
+      // policy-aware analyzers (e.g. metric_benchmark KPI mapping) can use it.
+      try {
+        const dioLike = {
+          inputs: {
+            documents: (input.input_data as any).documents,
+            evidence: (input.input_data as any).evidence,
+          },
+        };
+        precomputedDealClassificationV1 = classifyDealForDioLike(dioLike as any);
+        (input.input_data as any).deal_classification_v1 = precomputedDealClassificationV1;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.log('Deal classification precompute failed (ignored)', { deal_id: input.deal_id, error: message });
+        precomputedDealClassificationV1 = null;
+      }
+
+          const selectedPolicyId: string | undefined =
+            getSelectedPolicyIdFromAny(input.input_data as any) ??
+            (typeof precomputedDealClassificationV1?.selected_policy === 'string' ? String(precomputedDealClassificationV1.selected_policy) : undefined);
+
+      const policy = getDealPolicy(selectedPolicyId);
+      const enabledPolicyAnalyzerKeys = new Set<AnalyzerKey>([
+        ...policy.required_analyzers,
+        ...policy.optional_analyzers,
+      ]);
+
+      const isAnalyzerEnabled = (k: AnalyzerKey): boolean => enabledPolicyAnalyzerKeys.has(k);
+
+      const runIfEnabled = async <T>(
+        policyKey: AnalyzerKey,
+        registryName: keyof AnalyzerRegistry,
+      ): Promise<T | null> => {
+        if (isAnalyzerEnabled(policyKey)) {
+          return (await this.runAnalyzerWithRetry(registryName, input.input_data, failures, retryCounter)) as T | null;
+        }
+
+        // Do not invoke analyzer; emit an explicit insufficient_data result.
+        return this.insufficientDataResult(registryName, {
+          reason: `excluded_by_policy:${policy.id}`,
+        }) as unknown as T;
+      };
+
+      // Run policy-selected analyzers
       const results = {
-        slideSequence: (await this.runAnalyzerWithRetry('slideSequence', input.input_data, failures, retryCounter)) as SlideSequenceResult | null,
-        metricBenchmark: (await this.runAnalyzerWithRetry('metricBenchmark', input.input_data, failures, retryCounter)) as MetricBenchmarkResult | null,
-        visualDesign: (await this.runAnalyzerWithRetry('visualDesign', input.input_data, failures, retryCounter)) as VisualDesignResult | null,
-        narrativeArc: (await this.runAnalyzerWithRetry('narrativeArc', input.input_data, failures, retryCounter)) as NarrativeArcResult | null,
-        financialHealth: (await this.runAnalyzerWithRetry('financialHealth', input.input_data, failures, retryCounter)) as FinancialHealthResult | null,
-        riskAssessment: (await this.runAnalyzerWithRetry('riskAssessment', input.input_data, failures, retryCounter)) as RiskAssessmentResult | null,
+        slideSequence: (await runIfEnabled<SlideSequenceResult>('slide_sequence', 'slideSequence')),
+        metricBenchmark: (await runIfEnabled<MetricBenchmarkResult>('metric_benchmark', 'metricBenchmark')),
+        visualDesign: (await runIfEnabled<VisualDesignResult>('visual_design', 'visualDesign')),
+        narrativeArc: (await runIfEnabled<NarrativeArcResult>('narrative_arc', 'narrativeArc')),
+        financialHealth: (await runIfEnabled<FinancialHealthResult>('financial_health', 'financialHealth')),
+        riskAssessment: (await runIfEnabled<RiskAssessmentResult>('risk_assessment', 'riskAssessment')),
       };
 
       // Aggregate into DIO
@@ -152,7 +209,9 @@ export class DealOrchestrator {
       const storage_result = await this.storage.saveDIO(dio);
 
       const total_duration_ms = Date.now() - start_time;
-      const analyzers_run = 6;
+      const analyzers_run = (Object.keys(ANALYZER_KEY_TO_REGISTRY) as AnalyzerKey[])
+        .filter((k) => enabledPolicyAnalyzerKeys.has(k))
+        .length;
       const analyzers_failed = failures.length;
 
       this.log('Orchestration complete', { 
@@ -419,6 +478,14 @@ export class DealOrchestrator {
       if (combined.includes('irr')) return 'irr';
       if (combined.includes('moic') || combined.includes('multiple')) return 'moic';
 
+      // Real estate / credit metrics
+      if (combined.includes('noi') || combined.includes('net operating income')) return 'noi';
+      if (combined.includes('dscr') || combined.includes('debt service coverage')) return 'dscr';
+      if (combined.includes('ltv') || combined.includes('loan-to-value') || combined.includes('loan to value')) return 'ltv';
+      if (combined.includes('cap rate') || combined.includes('caprate')) return 'cap_rate';
+      if (combined.includes('occupancy')) return 'occupancy';
+      if (combined.includes('interest coverage') || combined.includes('icr')) return 'interest_coverage';
+
       // Financial health cues
       if (combined.includes('cash balance') || combined.includes('cash on hand') || combined.includes('cash')) return 'cash_balance';
       if (combined.includes('burn') && combined.includes('rate')) return 'burn_rate';
@@ -597,7 +664,22 @@ export class DealOrchestrator {
     const deckDoc = pitchDeckDoc || documents[0];
     const deckHeadings: string[] = getHeadings(deckDoc);
     const deckText: string = getText(deckDoc);
-    const deckPages: number = typeof deckDoc?.totalPages === 'number' && deckDoc.totalPages > 0 ? deckDoc.totalPages : 1;
+
+    const pagesOf = (doc: any): number | null => {
+      const candidates: unknown[] = [
+        doc?.totalPages,
+        doc?.total_pages,
+        doc?.page_count,
+        doc?.pageCount,
+        Array.isArray(doc?.pages) ? doc.pages.length : null,
+      ];
+      for (const c of candidates) {
+        if (typeof c === 'number' && Number.isFinite(c) && c > 0) return c;
+      }
+      return null;
+    };
+
+    const deckPages: number = pagesOf(deckDoc) ?? 1;
     const deckBytes: number = typeof deckDoc?.fileSizeBytes === 'number' && deckDoc.fileSizeBytes > 0 ? deckDoc.fileSizeBytes : 1000;
     const deckChars: number = typeof deckDoc?.totalWords === 'number' && deckDoc.totalWords > 0 ? deckDoc.totalWords * 5 : deckText.length;
 
@@ -634,6 +716,7 @@ export class DealOrchestrator {
           debug_scoring,
           text: mbText,
           industry: (input_data.industry as string | undefined) || (dio_context?.vertical && dio_context.vertical !== 'other' ? dio_context.vertical : undefined),
+          policy_id: getSelectedPolicyIdFromAny(input_data as any) ?? undefined,
           extracted_metrics: extracted_metrics_pitch_and_fin.length > 0 ? extracted_metrics_pitch_and_fin : extracted_metrics_all,
         };
 
@@ -937,6 +1020,7 @@ export class DealOrchestrator {
     // Phase 1 deterministic addendum (DoD): always attach under `dio.phase1.*`
     // Never fail orchestration due to Phase 1 addenda.
     try {
+      const workerPhase1Overview = (input.input_data as any).phase1_deal_overview_v2;
       const phase1 = generatePhase1DIOV1({
         deal: {
           deal_id: input.deal_id,
@@ -950,8 +1034,19 @@ export class DealOrchestrator {
         update_report_v1: (input.input_data as any).phase1_update_report_v1,
         inputDocuments: dio.inputs.documents
           .filter((d: any) => d && typeof d === 'object')
-          .map((d: any) => ({
-            document_id: String(d.document_id ?? ''),
+          .map((d: any, idx: number) => {
+            const rawId = (d as any).document_id ?? (d as any).id ?? (d as any).documentId;
+            const numericOrStringId =
+              typeof rawId === 'string'
+                ? rawId
+                : typeof rawId === 'number' && Number.isFinite(rawId)
+                  ? String(rawId)
+                  : '';
+            const stable = numericOrStringId.trim() ? numericOrStringId : getStableDocumentId(d, idx);
+            const document_id = stable && String(stable).trim().length > 0 ? String(stable) : `idx_${idx}`;
+
+            return {
+              document_id,
             title: d.title ?? null,
             type: d.type ?? null,
             page_count: d.page_count ?? null,
@@ -964,13 +1059,21 @@ export class DealOrchestrator {
             keyMetrics: Array.isArray(d.keyMetrics) ? d.keyMetrics : undefined,
             metrics: Array.isArray(d.metrics) ? d.metrics : undefined,
             pages: Array.isArray(d.pages) ? d.pages : undefined,
-          }))
-          .filter((d: any) => d.document_id.trim().length > 0),
+            };
+          })
+          .filter((d: any) => typeof d.document_id === 'string' && d.document_id.trim().length > 0),
       });
+
+      const normalizedPhase1Overview = (phase1 as any)?.deal_overview_v2;
+      const mergedPhase1Overview = {
+        ...(workerPhase1Overview && typeof workerPhase1Overview === 'object' ? workerPhase1Overview : {}),
+        ...(normalizedPhase1Overview && typeof normalizedPhase1Overview === 'object' ? normalizedPhase1Overview : {}),
+      };
 
       const phase1WithWorkerExtras = {
         ...(phase1 as any),
-        deal_overview_v2: (input.input_data as any).phase1_deal_overview_v2,
+        // Preserve normalized canonical fields while still retaining any worker-provided synonym keys.
+        deal_overview_v2: Object.keys(mergedPhase1Overview).length > 0 ? mergedPhase1Overview : undefined,
         business_archetype_v1: (input.input_data as any).phase1_business_archetype_v1,
         update_report_v1: (input.input_data as any).phase1_update_report_v1,
 		// Additive: optional investor-readable synthesis from worker (Phase 1 only)
@@ -981,6 +1084,59 @@ export class DealOrchestrator {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.log('Phase 1 addendum failed (ignored)', { deal_id: input.deal_id, error: message });
+    }
+
+    // Merge worker-provided dependency logs (best-effort; never fail DIO build).
+    try {
+      const incomingCalls = Array.isArray((input.input_data as any)?.llm_calls)
+        ? ((input.input_data as any).llm_calls as any[])
+        : [];
+      if (incomingCalls.length > 0) {
+        const merged = [...dio.execution_metadata.dependencies.llm_calls, ...incomingCalls]
+          .filter((c: any) => c && typeof c === 'object');
+
+        dio.execution_metadata = {
+          ...dio.execution_metadata,
+          dependencies: {
+            ...dio.execution_metadata.dependencies,
+            llm_calls: merged as any,
+          },
+          performance: {
+            ...dio.execution_metadata.performance,
+            llm_total_ms:
+              (dio.execution_metadata.performance?.llm_total_ms ?? 0) +
+              merged.reduce((sum: number, c: any) => sum + (typeof c?.duration_ms === 'number' ? c.duration_ms : 0), 0),
+          },
+        };
+
+        // If narrative is still fallback, at least surface token usage totals for observability.
+        const tokenTotals = merged.reduce(
+          (acc: { input: number; output: number; total: number; cost: number }, c: any) => {
+            const tu = c?.token_usage;
+            acc.input += typeof tu?.input_tokens === 'number' ? tu.input_tokens : 0;
+            acc.output += typeof tu?.output_tokens === 'number' ? tu.output_tokens : 0;
+            acc.total += typeof tu?.total_tokens === 'number' ? tu.total_tokens : 0;
+            acc.cost += typeof tu?.estimated_cost === 'number' ? tu.estimated_cost : 0;
+            return acc;
+          },
+          { input: 0, output: 0, total: 0, cost: 0 }
+        );
+
+        if (dio.narrative && dio.narrative.executive_summary === 'Analysis incomplete') {
+          dio.narrative = {
+            ...dio.narrative,
+            token_usage: {
+              input_tokens: tokenTotals.input,
+              output_tokens: tokenTotals.output,
+              total_tokens: tokenTotals.total,
+              estimated_cost: tokenTotals.cost,
+            },
+          };
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log('LLM call merge failed (ignored)', { deal_id: input.deal_id, error: message });
     }
 
     // Confidence gate for real-asset offering memos: if fact coverage is missing,
@@ -1027,11 +1183,27 @@ export class DealOrchestrator {
       this.log('Real-asset confidence gate failed (ignored)', { deal_id: input.deal_id, error: message });
     }
 
+    // Deterministic deal classification + policy routing (additive, does not replace deal_type).
+    try {
+      const deal_classification_v1 =
+        (input.input_data as any)?.deal_classification_v1 ?? classifyDealForDioLike(dio as any);
+      (dio as any).dio = {
+        ...((dio as any).dio ?? {}),
+        deal_classification_v1,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log('Deal classification failed (ignored)', { deal_id: input.deal_id, error: message });
+    }
+
     // Attach score explainability and an extracted overall_score for downstream consumers.
     // Storage persists its own score_explanation/overall_score, but this makes the in-memory DIO consistent.
     const score_explanation = buildScoreExplanationFromDIO(dio);
     (dio as any).score_explanation = score_explanation;
     (dio as any).overall_score = score_explanation.totals.overall_score;
+
+    // Persisted, UI-ready diagnostics: always explains red-flags vs coverage gaps.
+    (dio as any).scoring_diagnostics_v1 = buildScoringDiagnosticsFromDIO(dio);
     if (score_explanation.totals.overall_score == null) {
       dio.decision = {
         ...dio.decision,
@@ -1130,8 +1302,9 @@ export class DealOrchestrator {
     } as any;
   }
 
-  private insufficientDataResult(name: keyof AnalyzerRegistry): any {
+  private insufficientDataResult(name: keyof AnalyzerRegistry, opts?: { reason?: string }): any {
     const now = new Date().toISOString();
+    const reason = typeof opts?.reason === 'string' && opts.reason.trim().length > 0 ? opts.reason.trim() : undefined;
 
     switch (name) {
       case 'slideSequence':
@@ -1142,6 +1315,7 @@ export class DealOrchestrator {
           coverage: 0,
           confidence: 0.3,
           score: null,
+          ...(reason ? { notes: [reason] } : {}),
           pattern_match: 'unknown',
           sequence_detected: [],
           expected_sequence: [],
@@ -1157,6 +1331,7 @@ export class DealOrchestrator {
           confidence: 0.3,
           metrics_analyzed: [],
           overall_score: null,
+          ...(reason ? { note: reason } : {}),
           evidence_ids: [],
         };
       case 'visualDesign':
@@ -1174,7 +1349,7 @@ export class DealOrchestrator {
           },
           strengths: [],
           weaknesses: [],
-          note: 'Insufficient data',
+          note: reason ? `Insufficient data (${reason})` : 'Insufficient data',
           evidence_ids: [],
         };
       case 'narrativeArc':
@@ -1227,6 +1402,7 @@ export class DealOrchestrator {
           total_risks: 0,
           critical_count: 0,
           high_count: 0,
+          ...(reason ? { note: reason } : {}),
           evidence_ids: [],
         };
       default:

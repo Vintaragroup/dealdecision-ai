@@ -111,8 +111,9 @@ export type { LLMService } from "./services/llm/service";
 
 // Reports
 export { compileDIOToReport } from "./reports/compiler-simple";
-export { buildScoreExplanationFromDIO } from "./reports/score-explanation";
+export { buildScoreExplanationFromDIO, buildScoringDiagnosticsFromDIO } from "./reports/score-explanation";
 export type { ScoreExplanation } from "./reports/score-explanation";
+export type { ScoringDiagnosticsV1 } from "./types/dio";
 
 // Phase 1 deterministic composer (used by worker for change acknowledgement)
 export { generatePhase1DIOV1 } from "./phase1/phase1-dio-v1";

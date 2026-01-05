@@ -13,7 +13,9 @@
     "validate:llm": "tsx scripts/validate-llm-config.ts",
     "rerun:analysis:all": "tsx scripts/rerun-analysis-all-deals.ts",
     "verify:documents:all": "tsx scripts/verify-documents-all-deals.ts",
-    "reprocess:extraction:all": "tsx scripts/reprocess-extraction-all-deals.ts"
+    "reprocess:extraction:all": "tsx scripts/reprocess-extraction-all-deals.ts",
+    "rebuild:deals": "tsx scripts/rebuild-deals.ts",
+    "refresh:extraction:analysis:all": "tsx scripts/refresh-extraction-analysis-all-deals.ts"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

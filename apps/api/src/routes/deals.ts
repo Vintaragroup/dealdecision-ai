@@ -98,6 +98,15 @@ type DIOAggregateRow = {
 	phase1_deal_summary_v2?: any;
 };
 
+function parseNullableNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 function mapDeal(row: DealRow, dio: DIOAggregateRow | null | undefined, mode: DealApiMode): Deal {
   const safeExec = stripEvidenceFromExecutiveSummary((dio as any)?.executive_summary_v1);
   const execV2 = (dio as any)?.executive_summary_v2;
@@ -308,6 +317,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       analysis_version: number | null;
       recommendation: string | null;
       overall_score: number | null;
+      overall_score_resolved: number | null;
       last_analyzed_at: string | null;
       run_count: number | null;
 		executive_summary_v1: any | null;
@@ -323,6 +333,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
               latest.analysis_version,
               latest.recommendation,
               latest.overall_score,
+              latest.overall_score_resolved,
               latest.updated_at as last_analyzed_at,
 				  latest.executive_summary_v1,
 				  latest.executive_summary_v2,
@@ -333,7 +344,16 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
               stats.run_count
          FROM deals d
          LEFT JOIN LATERAL (
-           SELECT dio_id, analysis_version, recommendation, overall_score, updated_at,
+           SELECT dio_id,
+                  analysis_version,
+                  recommendation,
+                  overall_score,
+                  COALESCE(
+                    overall_score,
+                    NULLIF((dio_data #>> '{overall_score}'), '')::double precision,
+                    NULLIF((dio_data #>> '{score_explanation,totals,overall_score}'), '')::double precision
+                  ) AS overall_score_resolved,
+                  updated_at,
 					  (dio_data #> '{dio,phase1,executive_summary_v1}') AS executive_summary_v1
 					, (dio_data #> '{dio,phase1,executive_summary_v2}') AS executive_summary_v2
   					, (dio_data #> '{dio,phase1,decision_summary_v1}') AS decision_summary_v1
@@ -359,7 +379,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       dio_id: row.dio_id,
       analysis_version: row.analysis_version,
       recommendation: row.recommendation,
-      overall_score: row.overall_score,
+      overall_score: parseNullableNumber((row as any).overall_score_resolved) ?? row.overall_score,
       last_analyzed_at: row.last_analyzed_at,
       run_count: row.run_count,
 		executive_summary_v1: row.executive_summary_v1,
@@ -385,7 +405,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       return reply.status(404).send({ error: "Deal not found" });
     }
 
-    const { rows: dioRows } = await pool.query<DIOAggregateRow>(
+    const { rows: dioRows } = await pool.query<(DIOAggregateRow & { overall_score_resolved?: any })>(
       `WITH stats AS (
          SELECT deal_id,
                 COUNT(*)::int AS run_count,
@@ -398,6 +418,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
               latest.analysis_version,
               latest.recommendation,
               latest.overall_score,
+              latest.overall_score_resolved,
               latest.executive_summary_v1,
               latest.executive_summary_v2,
               latest.decision_summary_v1,
@@ -411,7 +432,15 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
               stats.run_count
          FROM stats
          JOIN LATERAL (
-           SELECT dio_id, analysis_version, recommendation, overall_score,
+           SELECT dio_id,
+                  analysis_version,
+                  recommendation,
+                  overall_score,
+                  COALESCE(
+                    overall_score,
+                    NULLIF((dio_data #>> '{overall_score}'), '')::double precision,
+                    NULLIF((dio_data #>> '{score_explanation,totals,overall_score}'), '')::double precision
+                  ) AS overall_score_resolved,
                   (dio_data #> '{dio,phase1,executive_summary_v1}') AS executive_summary_v1,
 				  (dio_data #> '{dio,phase1,executive_summary_v2}') AS executive_summary_v2,
     				  (dio_data #> '{dio,phase1,decision_summary_v1}') AS decision_summary_v1,
@@ -428,6 +457,11 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
          ) latest ON TRUE`,
       [dealId]
     );
+
+    if (dioRows[0]) {
+      (dioRows[0] as any).overall_score =
+        parseNullableNumber((dioRows[0] as any).overall_score_resolved) ?? (dioRows[0] as any).overall_score;
+    }
 
     return mapDeal(rows[0], dioRows[0] ?? null, mode);
   });

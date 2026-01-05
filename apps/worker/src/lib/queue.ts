@@ -25,6 +25,7 @@ connection.on('error', (err) => {
 export function createWorker(
   name:
     | "ingest_documents"
+    | "extract_visuals"
     | "fetch_evidence"
     | "analyze_deal"
     | "verify_documents"
@@ -73,6 +74,7 @@ export function createWorker(
 export function getQueue(
   name:
     | "ingest_documents"
+    | "extract_visuals"
     | "fetch_evidence"
     | "analyze_deal"
     | "verify_documents"

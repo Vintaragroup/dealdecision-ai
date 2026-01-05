@@ -34,6 +34,12 @@ import {
 	upsertDocumentOriginalFile,
 } from "./lib/db";
 import { deriveEvidenceDrafts } from "./lib/evidence";
+import {
+	callVisionWorker,
+	getVisionExtractorConfig,
+	hasTable,
+	persistVisionResponse,
+} from "./lib/visual-extraction";
 import { normalizeToCanonical } from "./lib/normalization";
 import { processDocument } from "./lib/processors";
 import { verifyDocumentExtraction } from "./lib/verification";
@@ -899,6 +905,25 @@ async function ingestDocumentProcessor(job: Job) {
 				},
 				{ removeOnComplete: true, removeOnFail: false, delay: 500 } // Small delay to ensure extraction is fully written
 			);
+
+			// Optional: queue visual extraction (best-effort, never blocks ingestion)
+			const visionCfg = getVisionExtractorConfig();
+			if (visionCfg.enabled) {
+				try {
+					const visualsQueue = getQueue("extract_visuals");
+					await visualsQueue.add(
+						"extract_visuals",
+						{ document_id: documentId, deal_id: dealId },
+						{ removeOnComplete: true, removeOnFail: false, delay: 750 }
+					);
+				} catch (err) {
+					console.warn(
+						`[ingest_document] visual extraction enqueue failed doc=${documentId}: ${
+							err instanceof Error ? err.message : String(err)
+						}`
+					);
+				}
+			}
 		}
 		return { ok: true, analysis };
 	} catch (err) {
@@ -939,6 +964,72 @@ function baseProcessor(statusOnStart: JobStatus, statusOnComplete: JobStatus) {
 }
 
 createWorker("ingest_documents", ingestDocumentProcessor);
+
+createWorker("extract_visuals", async (job: Job) => {
+	const documentId = (job.data as { document_id?: string } | undefined)?.document_id;
+	const imageUris = (job.data as { image_uris?: string[] } | undefined)?.image_uris;
+
+	if (!documentId) {
+		console.warn("[extract_visuals] Missing document_id");
+		return { ok: false };
+	}
+
+	const config = getVisionExtractorConfig();
+	if (!config.enabled) {
+		return { ok: true, skipped: true, reason: "disabled" };
+	}
+
+	const pool = getPool();
+	const tablesOk =
+		(await hasTable(pool, "visual_assets")) &&
+		(await hasTable(pool, "visual_extractions")) &&
+		(await hasTable(pool, "evidence_links"));
+
+	if (!tablesOk) {
+		console.warn(
+			`[extract_visuals] Visual tables missing; skipping doc=${documentId} (did you run migrations?)`
+		);
+		return { ok: true, skipped: true, reason: "tables_missing" };
+	}
+
+	// If we don't have explicit image URIs, we currently cannot render per-page images.
+	// Keep this stage safe/no-op until a renderer is wired in.
+	const uris: string[] = Array.isArray(imageUris) ? imageUris.filter((u) => typeof u === "string" && u.length > 0) : [];
+	if (uris.length === 0) {
+		console.log(
+			`[extract_visuals] No image_uris provided; skipping doc=${documentId} (renderer not configured)`
+		);
+		return { ok: true, skipped: true, reason: "no_image_uris" };
+	}
+
+	let persisted = 0;
+	for (let i = 0; i < uris.length && i < config.maxPages; i += 1) {
+		const image_uri = uris[i];
+		const response = await callVisionWorker(config, {
+			document_id: documentId,
+			page_index: i,
+			image_uri,
+			extractor_version: config.extractorVersion,
+		});
+
+		if (!response) {
+			console.warn(`[extract_visuals] Vision worker failed for doc=${documentId} page=${i}`);
+			continue;
+		}
+
+		try {
+			persisted += await persistVisionResponse(pool, response);
+		} catch (err) {
+			console.warn(
+				`[extract_visuals] Persist failed doc=${documentId} page=${i}: ${
+					err instanceof Error ? err.message : String(err)
+				}`
+			);
+		}
+	}
+
+	return { ok: true, persisted };
+});
 createWorker("fetch_evidence", async (job: Job) => {
 	const dealId = (job.data as { deal_id?: string } | undefined)?.deal_id;
 	const filter = (job.data as { filter?: string } | undefined)?.filter;

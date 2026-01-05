@@ -68,6 +68,7 @@ export interface Document {
 
 export type JobType =
 	| 'ingest_documents'
+	| 'extract_visuals'
 	| 'fetch_evidence'
 	| 'analyze_deal'
 	| 'verify_documents'

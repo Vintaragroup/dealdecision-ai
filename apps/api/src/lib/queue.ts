@@ -17,6 +17,7 @@ export const connection = new IORedis(redisUrl, {
 });
 
 export const ingestQueue = new Queue("ingest_documents", { connection });
+export const extractVisualsQueue = new Queue("extract_visuals", { connection });
 export const fetchEvidenceQueue = new Queue("fetch_evidence", { connection });
 export const analyzeDealQueue = new Queue("analyze_deal", { connection });
 export const verifyDocumentsQueue = new Queue("verify_documents", { connection });
@@ -26,6 +27,7 @@ export const reextractDocumentsQueue = new Queue("reextract_documents", { connec
 export async function closeQueues() {
   await Promise.allSettled([
     ingestQueue.close(),
+    extractVisualsQueue.close(),
     fetchEvidenceQueue.close(),
     analyzeDealQueue.close(),
     verifyDocumentsQueue.close(),

@@ -4,6 +4,7 @@ import { sanitizeText } from "@dealdecision/core";
 import { getPool } from "../lib/db";
 import {
   ingestQueue,
+  extractVisualsQueue,
   fetchEvidenceQueue,
   analyzeDealQueue,
   verifyDocumentsQueue,
@@ -13,6 +14,7 @@ import {
 
 const queueMap: Record<JobType, typeof ingestQueue> = {
   ingest_documents: ingestQueue,
+  extract_visuals: extractVisualsQueue,
   fetch_evidence: fetchEvidenceQueue,
   analyze_deal: analyzeDealQueue,
   verify_documents: verifyDocumentsQueue,

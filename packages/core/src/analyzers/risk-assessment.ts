@@ -11,6 +11,105 @@ import { BaseAnalyzer, AnalyzerMetadata, ValidationResult } from "./base";
 import { buildRulesFromBaseAndDeltas } from "./debug-scoring";
 import type { DebugScoringTrace, RiskAssessmentInput, RiskAssessmentResult, Risk } from "../types/dio";
 
+const normalizeKey = (s: string): string =>
+  s
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_{2,}/g, "_");
+
+export type RealEstateUnderwritingProtections = {
+  lease_term_months: number | null;
+  occupancy: number | null;
+  dscr: number | null;
+  has_nnn_lease: boolean;
+  has_guaranty: boolean;
+  protections_score: number; // 0..5
+  fully_protected: boolean;
+};
+
+export function detectRealEstateUnderwritingProtections(params: {
+  pitch_text: string;
+  metrics?: Record<string, number> | undefined;
+}): RealEstateUnderwritingProtections {
+  const text = (params.pitch_text || "").toLowerCase();
+  const metricsRaw = params.metrics && typeof params.metrics === "object" ? params.metrics : {};
+
+  const metrics = new Map<string, number>();
+  for (const [k, v] of Object.entries(metricsRaw)) {
+    if (typeof v !== "number" || !Number.isFinite(v)) continue;
+    metrics.set(normalizeKey(k), v);
+  }
+
+  const fromMetrics = (keys: string[]): number | null => {
+    for (const k of keys) {
+      const v = metrics.get(normalizeKey(k));
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+    }
+    return null;
+  };
+
+  const parseFirst = (re: RegExp): number | null => {
+    const m = text.match(re);
+    if (!m) return null;
+    const n = parseFloat(m[1]);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const parseLeaseTermMonths = (): number | null => {
+    // Prefer explicit lease term mention.
+    const m = text.match(/(?:lease\s+term|walt|weighted\s+average\s+lease\s+term)\D{0,20}(\d+(?:\.\d+)?)\s*(years?|yrs?|y|months?|mos?|m)\b/);
+    if (m) {
+      const num = parseFloat(m[1]);
+      if (!Number.isFinite(num)) return null;
+      const unit = m[2];
+      if (/year|yr\b|y\b/.test(unit)) return Math.round(num * 12);
+      return Math.round(num);
+    }
+
+    // Fallback: if a metric key exists.
+    const v = fromMetrics(["lease_term_months", "lease_term", "walt"]);
+    if (v == null) return null;
+    // Heuristic: <= 40 likely years, else months.
+    if (v > 0 && v <= 40) return Math.round(v * 12);
+    return Math.round(v);
+  };
+
+  const lease_term_months = parseLeaseTermMonths();
+  const occupancy =
+    parseFirst(/occupancy(?:\s+rate)?\D{0,10}(\d+(?:\.\d+)?)\s*%/) ??
+    fromMetrics(["occupancy", "occupancy_rate"]);
+
+  const dscr =
+    parseFirst(/dscr\D{0,10}(\d+(?:\.\d+)?)/) ??
+    fromMetrics(["dscr", "debt_service_coverage_ratio"]);
+
+  const has_nnn_lease = /absolute\s+nnn|\bnnn\b|triple\s+net/.test(text);
+  const has_guaranty = /corporate\s+guarant|\bguarant(?:y|ee)\b/.test(text);
+
+  const leaseOk = typeof lease_term_months === "number" && lease_term_months >= 120;
+  const occOk = typeof occupancy === "number" && occupancy >= 95;
+  const dscrOk = typeof dscr === "number" && dscr >= 1.3;
+
+  const protections_score =
+    (leaseOk ? 1 : 0) +
+    (occOk ? 1 : 0) +
+    (has_nnn_lease ? 1 : 0) +
+    (has_guaranty ? 1 : 0) +
+    (dscrOk ? 1 : 0);
+
+  return {
+    lease_term_months,
+    occupancy,
+    dscr,
+    has_nnn_lease,
+    has_guaranty,
+    protections_score,
+    fully_protected: protections_score === 5,
+  };
+}
+
 // ============================================================================
 // Analyzer Implementation
 // ============================================================================
@@ -31,19 +130,39 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
 
     const debugEnabled = Boolean((input as any).debug_scoring);
 
-    if (!input.pitch_text || input.pitch_text.length < 10) {
+    const documents_text = Array.isArray((input as any).documents)
+      ? ((input as any).documents as any[])
+          .map((d: any) => (typeof d?.full_text === "string" ? d.full_text : ""))
+          .join("\n")
+      : "";
+
+    const evidence_text = Array.isArray((input as any).evidence)
+      ? ((input as any).evidence as any[])
+          .map((e: any) => (typeof e?.text === "string" ? e.text : ""))
+          .join("\n")
+      : "";
+
+    const pitch_text = typeof (input as any).pitch_text === "string" ? String((input as any).pitch_text) : "";
+
+    // Per spec: documents[*].full_text + evidence[*].text + pitch_text (if present), all lowercased.
+    const haystack = (documents_text + "\n" + evidence_text + "\n" + pitch_text).toLowerCase();
+    const documents_len = documents_text.trim().length;
+    const evidence_len = evidence_text.trim().length;
+    const pitch_len = pitch_text.trim().length;
+
+    if (Math.max(documents_len, evidence_len, pitch_len) < 10) {
       const debug_scoring: DebugScoringTrace | undefined = debugEnabled
         ? {
-            inputs_used: ["pitch_text"],
-            exclusion_reason: "missing_pitch_text",
+            inputs_used: ["documents", "evidence", "pitch_text"],
+            exclusion_reason: "missing_text",
             input_summary: {
-              completeness: { score: 0, notes: ["pitch_text missing/too short"] },
+              completeness: { score: 0, notes: ["documents/evidence/pitch_text missing/too short"] },
               signals_count: 0,
             },
             signals: [],
             penalties: [],
             bonuses: [],
-            rules: [{ rule_id: "excluded", description: "Excluded: pitch_text missing/too short", delta: 0, running_total: 0 }],
+            rules: [{ rule_id: "excluded", description: "Excluded: documents/evidence/pitch_text missing/too short", delta: 0, running_total: 0 }],
             final: { score: null, formula: "N/A (insufficient input)" },
           }
         : undefined;
@@ -72,9 +191,57 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
     }
 
     try {
-      const detected_risks = this.detectRisks(input);
+      const policyId = typeof (input as any).policy_id === "string" ? String((input as any).policy_id) : undefined;
+      // Keep existing generic risk detection logic, but run it on the haystack.
+      const detected_risks = this.detectRisks({ ...input, pitch_text: haystack } as any);
       const risk_note = "No explicit risk signals detected; using neutral baseline=50";
-      const overall_risk_score = detected_risks.length === 0 ? 50 : this.calculateRiskScore(detected_risks);
+      let overall_risk_score = detected_risks.length === 0 ? 50 : this.calculateRiskScore(detected_risks);
+
+      // RE policy reducer (policy-scoped): if haystack contains >=3 protections, reduce risk to 25.
+      // Otherwise preserve existing RE behavior and global behavior.
+      let reProtections: RealEstateUnderwritingProtections | null = null;
+      let reProtectionsTriggered = false;
+      let reProtectionsList: string[] = [];
+      if (policyId === "real_estate_underwriting") {
+        const protections: Array<{ label: string; present: boolean }> = [
+          {
+            label: "absolute nnn",
+            present: /\babsolute\s+nnn\b/.test(haystack) || (haystack.includes("absolute") && /\bnnn\b/.test(haystack)),
+          },
+          {
+            label: "triple net",
+            present: /\btriple\s+net\b/.test(haystack) || /\btriple-net\b/.test(haystack),
+          },
+          {
+            label: "20-year lease",
+            present: /\b20\s*-\s*year\s+lease\b/.test(haystack) || /\b20\s+year\s+lease\b/.test(haystack) || /\b20-year\s+lease\b/.test(haystack),
+          },
+          {
+            label: "guaranty",
+            present: /\bguarant(?:y|ee)\b/.test(haystack) || /\bguarant\w+\b/.test(haystack) || /\bguaranteed\s+lease\b/.test(haystack),
+          },
+          {
+            label: "100% leased",
+            present: /\b100%\s*leased\b/.test(haystack),
+          },
+          {
+            label: "pre-leased",
+            present: /\bpre\s*-\s*leased\b/.test(haystack) || /\bpre\s+leased\b/.test(haystack) || /\bpreleased\b/.test(haystack),
+          },
+        ];
+
+        reProtectionsList = protections.filter((p) => p.present).map((p) => p.label);
+        if (reProtectionsList.length >= 3) {
+          overall_risk_score = 25;
+          reProtectionsTriggered = true;
+        } else if (detected_risks.length === 0) {
+          // Preserve previous RE non-trigger behavior (protections-score heuristic).
+          reProtections = detectRealEstateUnderwritingProtections({ pitch_text: haystack, metrics: input.metrics });
+          const s = reProtections.protections_score;
+          const reduced = s >= 5 ? 25 : s === 4 ? 35 : s === 3 ? 40 : s === 2 ? 45 : 50;
+          overall_risk_score = reduced;
+        }
+      }
       const risks_by_category = this.groupByCategory(detected_risks);
       const critical_count = detected_risks.filter(r => r.severity === "critical").length;
       const high_count = detected_risks.filter(r => r.severity === "high").length;
@@ -89,7 +256,7 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
             };
 
             const signals = [
-              { key: "pitch_text_length", value: input.pitch_text.length },
+              { key: "haystack_length", value: haystack.length },
               { key: "risks_detected", value: detected_risks.length },
               { key: "critical_count", value: critical_count },
               { key: "high_count", value: high_count },
@@ -163,16 +330,16 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
             })();
 
             const completenessNotes: string[] = [];
-            completenessNotes.push(input.pitch_text.length >= 10 ? "pitch_text present" : "pitch_text short");
+            completenessNotes.push(haystack.length >= 10 ? "text present" : "text short");
             if (Array.isArray(input.headings) && input.headings.length > 0) completenessNotes.push("headings present");
             if (input.metrics && Object.keys(input.metrics).length > 0) completenessNotes.push("metrics present");
 
             return {
-              inputs_used: ["pitch_text", "headings", "metrics", "team_size", "evidence_ids"],
+              inputs_used: ["documents", "evidence", "pitch_text", "headings", "metrics", "team_size", "evidence_ids", "policy_id"],
               exclusion_reason: null,
               input_summary: {
                 completeness: {
-                  score: Math.min(1, (input.pitch_text.length >= 10 ? 0.6 : 0) + (Array.isArray(input.headings) && input.headings.length > 0 ? 0.2 : 0) + (input.metrics && Object.keys(input.metrics).length > 0 ? 0.2 : 0)),
+                  score: Math.min(1, (haystack.length >= 10 ? 0.6 : 0) + (Array.isArray(input.headings) && input.headings.length > 0 ? 0.2 : 0) + (input.metrics && Object.keys(input.metrics).length > 0 ? 0.2 : 0)),
                   notes: completenessNotes,
                 },
                 signals_count: signals.length + penalties.length,
@@ -204,7 +371,13 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
         total_risks: detected_risks.length,
         critical_count,
         high_count,
-        note: detected_risks.length === 0 ? risk_note : undefined,
+        note: reProtectionsTriggered
+          ? `RE protections detected: ${reProtectionsList.join(", ")}; risk_score=25`
+          : (detected_risks.length === 0
+              ? (policyId === "real_estate_underwriting" && reProtections && reProtections.protections_score >= 2
+                  ? `Protections detected (score=${reProtections.protections_score}/5); reduced risk below neutral baseline`
+                  : risk_note)
+              : undefined),
         evidence_ids: input.evidence_ids || [],
         ...(debugEnabled ? { debug_scoring } : {}),
       };
@@ -254,8 +427,23 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
    */
   validateInput(input: RiskAssessmentInput): ValidationResult {
     const errors: string[] = [];
-    if (!input.pitch_text || input.pitch_text.length < 10) {
-      errors.push("pitch_text required and must be at least 10 characters");
+    const documents_text = Array.isArray((input as any).documents)
+      ? ((input as any).documents as any[])
+          .map((d: any) => (typeof d?.full_text === "string" ? d.full_text : ""))
+          .join("\n")
+      : "";
+    const evidence_text = Array.isArray((input as any).evidence)
+      ? ((input as any).evidence as any[])
+          .map((e: any) => (typeof e?.text === "string" ? e.text : ""))
+          .join("\n")
+      : "";
+    const pitch_text = typeof (input as any).pitch_text === "string" ? String((input as any).pitch_text) : "";
+    const documents_len = documents_text.trim().length;
+    const evidence_len = evidence_text.trim().length;
+    const pitch_len = pitch_text.trim().length;
+
+    if (Math.max(documents_len, evidence_len, pitch_len) < 10) {
+      errors.push("documents/evidence/pitch_text text required and must be at least 10 characters");
     }
 
     return {
@@ -275,7 +463,7 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
   private detectRisks(input: RiskAssessmentInput): Risk[] {
     const risks: Risk[] = [];
     const default_evidence_id = input.evidence_ids?.[0] || "00000000-0000-0000-0000-000000000000";
-    const text_lower = input.pitch_text.toLowerCase();
+    const text_lower = (input.pitch_text || "").toLowerCase();
 
     // Team risks
     if (input.team_size !== undefined && input.team_size < 3) {

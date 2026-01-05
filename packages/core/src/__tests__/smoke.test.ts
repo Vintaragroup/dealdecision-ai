@@ -128,6 +128,8 @@ describe("Phase 2 & 3 Smoke Tests", () => {
     test("should run without errors", async () => {
       const input = {
         pitch_text: "We are building AI for healthcare",
+        documents: [{ full_text: "We are building AI for healthcare" }],
+        evidence: [],
         headings: ["Problem", "Solution"],
         metrics: { revenue: 100000 },
         team_size: 5,

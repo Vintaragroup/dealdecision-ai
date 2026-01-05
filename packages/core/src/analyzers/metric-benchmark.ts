@@ -147,6 +147,81 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
     const extractedInput = Array.isArray((input as any).extracted_metrics) ? (input as any).extracted_metrics : [];
     const policyId = typeof (input as any).policy_id === "string" ? String((input as any).policy_id) : undefined;
 
+    const extractExecutionReadyReadinessMetrics = (rawText: string): Array<{
+      metric_name: string;
+      value: number;
+      unit: string;
+      source: string;
+      confidence: number;
+    }> => {
+      const t = rawText.toLowerCase();
+      if (!t) return [];
+
+      const count = (re: RegExp): number => {
+        const m = t.match(re);
+        return m ? m.length : 0;
+      };
+
+      const parseMoneyNear = (re: RegExp): number | null => {
+        const m = rawText.match(re);
+        if (!m) return null;
+        const num = parseFloat(String(m[1]).replace(/,/g, ""));
+        if (!Number.isFinite(num)) return null;
+        const mag = String(m[2] || "").toLowerCase();
+        const mult = mag === "k" ? 1_000 : mag === "m" ? 1_000_000 : mag === "b" ? 1_000_000_000 : 1;
+        return num * mult;
+      };
+
+      const parseLaunchMonths = (): number | null => {
+        const m = t.match(/launch\s+in\s+(\d+)\s+months?/);
+        if (!m) return null;
+        const n = parseInt(m[1], 10);
+        return Number.isFinite(n) ? n : null;
+      };
+
+      const parseManufacturingCapacity = (): number | null => {
+        const m = t.match(/(\d{2,})\s*(?:units?)\s*(?:per\s*month|\/month)/);
+        if (!m) return null;
+        const n = parseInt(m[1], 10);
+        return Number.isFinite(n) ? n : null;
+      };
+
+      const regulatoryScore = (): number | null => {
+        // Deterministic categorical mapping.
+        if (/fda\s+(approved|cleared)|510\(k\)\s+(cleared|approved)|ce\s*mark\s+(approved|granted)/i.test(rawText)) return 90;
+        if (/submission\s+in\s+progress|submitted|in\s+review|pending/i.test(rawText) && /fda|510\(k\)|ce\s*mark|regulatory/i.test(rawText)) return 70;
+        if (/regulatory\s+(strategy|plan)|compliance\s+(plan|roadmap)/i.test(rawText)) return 60;
+        return null;
+      };
+
+      const loiCount = count(/\bloi\b|letter\s+of\s+intent/g);
+      const partnershipCount = count(/partnership|strategic\s+partner/g);
+      const distributionPartners = count(/distribution\s+partner|channel\s+partner|reseller/g);
+
+      const contractValue =
+        parseMoneyNear(/(?:signed\s+)?(?:contract|agreement|msa|purchase\s+order)[^\n\r$]{0,60}\$\s*([\d,.]+)\s*([KMB])?/i) ??
+        parseMoneyNear(/contract\s+value[^\n\r$]{0,40}\$\s*([\d,.]+)\s*([KMB])?/i);
+      const pipelineValue = parseMoneyNear(/pipeline[^\n\r$]{0,40}\$\s*([\d,.]+)\s*([KMB])?/i);
+
+      const launchMonths = parseLaunchMonths();
+      const mfgCapacity = parseManufacturingCapacity();
+      const reg = regulatoryScore();
+
+      const out: Array<{ metric_name: string; value: number; unit: string; source: string; confidence: number }> = [];
+      const src = rawText.substring(0, 120) + "...";
+
+      if (loiCount > 0) out.push({ metric_name: "loi_count", value: loiCount, unit: "count", source: src, confidence: 0.7 });
+      if (partnershipCount > 0) out.push({ metric_name: "partnership_count", value: partnershipCount, unit: "count", source: src, confidence: 0.7 });
+      if (distributionPartners > 0) out.push({ metric_name: "distribution_partners", value: distributionPartners, unit: "count", source: src, confidence: 0.7 });
+      if (contractValue != null) out.push({ metric_name: "contract_value", value: contractValue, unit: "$", source: src, confidence: 0.7 });
+      if (pipelineValue != null) out.push({ metric_name: "pipeline_value", value: pipelineValue, unit: "$", source: src, confidence: 0.7 });
+      if (launchMonths != null) out.push({ metric_name: "launch_timeline_months", value: launchMonths, unit: "months", source: src, confidence: 0.6 });
+      if (mfgCapacity != null) out.push({ metric_name: "manufacturing_capacity", value: mfgCapacity, unit: "units/month", source: src, confidence: 0.6 });
+      if (reg != null) out.push({ metric_name: "regulatory_status", value: reg, unit: "score", source: src, confidence: 0.6 });
+
+      return out;
+    };
+
     const parseNumberish = (raw: unknown): number | null => {
       if (typeof raw === "number" && Number.isFinite(raw)) return raw;
       if (typeof raw !== "string") return null;
@@ -298,6 +373,39 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
     try {
       const start = Date.now();
 
+      const maybeApplyRealEstateUnderwritingCalibration = (params: {
+        policyId?: string;
+        validations: Array<{ metric: string; value: number; rating: "Strong" | "Adequate" | "Weak" | "Missing" }>;
+        baseScore: number;
+      }): { calibratedScore: number; applied: boolean } => {
+        if (params.policyId !== "real_estate_underwriting") return { calibratedScore: params.baseScore, applied: false };
+
+        const byMetric = new Map<string, { value: number; rating: string }>();
+        for (const v of params.validations) byMetric.set(String(v.metric), { value: v.value, rating: v.rating });
+
+        const noi = byMetric.get("noi")?.value ?? null;
+        const dscr = byMetric.get("dscr")?.value ?? null;
+        const leaseMonths = byMetric.get("lease_term_months")?.value ?? null;
+
+        // Safe ranges (policy-scoped, deterministic):
+        // - NOI must be positive and meaningfully sized
+        // - DSCR should be >= 1.20
+        // - Lease term should be long-term (>= 60 months)
+        const safeNoi = typeof noi === "number" && Number.isFinite(noi) && noi >= 250_000;
+        const safeDscr = typeof dscr === "number" && Number.isFinite(dscr) && dscr >= 1.2;
+        const safeLease = typeof leaseMonths === "number" && Number.isFinite(leaseMonths) && leaseMonths >= 60;
+
+        if (!(safeNoi && safeDscr && safeLease)) return { calibratedScore: params.baseScore, applied: false };
+
+        // If the core RE underwriting signals are strong, we should never land at neutral.
+        // This prevents non-policy metrics (e.g., SaaS revenue) from diluting the average.
+        const floor = 80;
+        return {
+          calibratedScore: Math.max(params.baseScore, floor),
+          applied: params.baseScore < floor,
+        };
+      };
+
       // Extract metrics from text (optional)
       const extractedFromTextRaw = text.length > 0 ? this.extractMetrics([text]) : [];
       const extractedFromText = extractedFromTextRaw
@@ -308,9 +416,13 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
           return { ...m, metric_name: mapped, value: normalizedValue };
         })
         .filter((m) => !isNumericValueMetricName(m.metric_name));
+
+      const extractedExecutionReady =
+        policyId === "execution_ready_v1" && text.length > 0 ? extractExecutionReadyReadinessMetrics(text) : [];
+
       const extracted_metrics = hasUsableExtracted
         ? filteredExtracted
-        : [...filteredExtracted, ...extractedFromText];
+        : [...filteredExtracted, ...extractedFromText, ...extractedExecutionReady];
 
       // Policy-first benchmarks; fall back to industry defaults.
       const policyBenchmarks = buildPolicyBenchmarkMap(policyId);
@@ -365,7 +477,12 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
       }
 
       // Calculate overall score
-      const overall_score = this.calculateScore(validations);
+      const baseScore = this.calculateScore(validations);
+      const { calibratedScore: overall_score } = maybeApplyRealEstateUnderwritingCalibration({
+        policyId,
+        validations,
+        baseScore,
+      });
 
       const debug_scoring: DebugScoringTrace | undefined = debugEnabled
         ? (() => {

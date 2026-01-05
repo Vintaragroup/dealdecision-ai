@@ -50,6 +50,25 @@ export const POLICY_KPI_REGISTRY: PolicyKpiRegistry = {
     mk({ kpi: "ndr", synonyms: ["ndr", "nrr", "net_dollar_retention"], benchmark: { min: 100, ideal: 120, source: "startup_raise baseline" }, fraction_to_percent: true }),
   ],
 
+  execution_ready_v1: [
+    // Readiness signals (pre-revenue): counts and values extracted from text.
+    mk({ kpi: "loi_count", synonyms: ["loi", "lois", "letters_of_intent", "letter_of_intent"], benchmark: { min: 1, ideal: 2, source: "execution_ready_v1" } }),
+    mk({ kpi: "partnership_count", synonyms: ["partnerships", "strategic_partners", "partners"], benchmark: { min: 1, ideal: 2, source: "execution_ready_v1" } }),
+    mk({ kpi: "distribution_partners", synonyms: ["distribution_partners", "channel_partners", "resellers"], benchmark: { min: 1, ideal: 2, source: "execution_ready_v1" } }),
+    mk({ kpi: "contract_value", synonyms: ["contract_value", "signed_contract_value"], benchmark: { min: 100_000, ideal: 500_000, source: "execution_ready_v1" } }),
+    mk({ kpi: "pipeline_value", synonyms: ["pipeline", "pipeline_value", "booked_pipeline"], benchmark: { min: 250_000, ideal: 1_000_000, source: "execution_ready_v1" } }),
+    mk({ kpi: "launch_timeline_months", synonyms: ["launch_timeline", "launch_in_months", "launch_timeline_months"], benchmark: { ideal: 6, max: 12, direction: "lower_is_better", source: "execution_ready_v1" } }),
+    mk({ kpi: "manufacturing_capacity", synonyms: ["manufacturing_capacity", "units_per_month", "units_month"], benchmark: { min: 1000, ideal: 5000, source: "execution_ready_v1" } }),
+    mk({ kpi: "regulatory_status", synonyms: ["regulatory", "regulatory_status", "compliance"], benchmark: { min: 60, ideal: 85, source: "execution_ready_v1" } }),
+  ],
+
+  operating_business: [
+    mk({ kpi: "revenue", synonyms: ["revenue", "sales"], benchmark: { min: 1_000_000, ideal: 5_000_000, source: "operating_business" } }),
+    mk({ kpi: "gross_margin", synonyms: ["gross_margin", "gm"], benchmark: { min: 30, ideal: 50, source: "operating_business" }, fraction_to_percent: true }),
+    mk({ kpi: "churn", synonyms: ["churn", "churn_rate"], benchmark: { ideal: 5, max: 10, direction: "lower_is_better", source: "operating_business" }, fraction_to_percent: true }),
+    mk({ kpi: "retention", synonyms: ["retention", "retention_rate", "ndr", "nrr"], benchmark: { min: 90, ideal: 110, source: "operating_business" }, fraction_to_percent: true }),
+  ],
+
   real_estate_underwriting: [
     mk({ kpi: "dscr", synonyms: ["dscr", "debt_service_coverage_ratio"], benchmark: { min: 1.1, ideal: 1.25, source: "real_estate underwriting baseline" } }),
     mk({ kpi: "ltv", synonyms: ["ltv", "loan_to_value"], benchmark: { ideal: 65, max: 80, direction: "lower_is_better", source: "real_estate underwriting baseline" }, fraction_to_percent: true }),
@@ -93,10 +112,10 @@ export function buildPolicyBenchmarkMap(policyId: string | null | undefined): Re
   const out: Record<string, KpiBenchmarkBand> = {};
   for (const s of specs) {
     if (s.benchmark) {
-      const rawSource = typeof s.benchmark.source === "string" ? s.benchmark.source : "";
+      const id = (policyId || "unknown_generic").toString();
       out[s.kpi] = {
         ...s.benchmark,
-        source: rawSource.startsWith("policy:") ? rawSource : `policy:${rawSource || "unspecified"}`,
+        source: `policy:${id}:${s.kpi}`,
       };
     }
   }

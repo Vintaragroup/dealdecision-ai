@@ -1,6 +1,7 @@
 import type { DealIntelligenceObject, ScoringDiagnosticsV1 } from "../types/dio.js";
 import { getDealPolicy } from "../classification/deal-policy-registry";
 import { getSelectedPolicyIdFromAny } from "../classification/get-selected-policy-id";
+import { detectRealEstateUnderwritingProtections } from "../analyzers/risk-assessment";
 
 export type ScoreExplainExcludedReason = "status_not_ok" | "null_score" | "doc_type_excluded";
 
@@ -80,6 +81,109 @@ const uniqueStrings = (xs: string[]): string[] => {
     out.push(s);
   }
   return out;
+};
+
+const normalizeKey = (s: string): string =>
+  s
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_{2,}/g, "_");
+
+type RubricEval = {
+  id: string;
+  required_signals: string[];
+  missing_required: string[];
+  positive_drivers_present: string[];
+  acceptable_missing_present: string[];
+  red_flags_triggered: string[];
+  has_revenue_metric: boolean;
+};
+
+const getDealClassificationV1Any = (dioLike: any): any | null =>
+  (dioLike as any)?.dio?.deal_classification_v1 ??
+  (dioLike as any)?.deal_classification_v1 ??
+  (dioLike as any)?.dio?.dio?.deal_classification_v1 ??
+  (dioLike as any)?.phase1?.deal_classification_v1 ??
+  (dioLike as any)?.dio?.phase1?.deal_classification_v1 ??
+  null;
+
+const evaluatePolicyRubric = (dio: DealIntelligenceObject, policyId: string | null): RubricEval | null => {
+  if (!policyId) return null;
+  const policy = getDealPolicy(policyId);
+  const rubric = (policy as any)?.rubric as
+    | {
+        id: string;
+        required_signals: string[];
+        positive_drivers: string[];
+        acceptable_missing: string[];
+        red_flags: string[];
+      }
+    | undefined;
+
+  if (!rubric) return null;
+
+  const classification = getDealClassificationV1Any(dio as any);
+  const selectedSignalsRaw: string[] = asStringArray(classification?.selected?.signals);
+  const selectedSignals = selectedSignalsRaw.map(normalizeKey);
+
+  const mbMetrics: string[] = Array.isArray((dio as any)?.analyzer_results?.metric_benchmark?.metrics_analyzed)
+    ? (dio as any).analyzer_results.metric_benchmark.metrics_analyzed
+        .map((m: any) => (typeof m?.metric === "string" ? m.metric : ""))
+        .filter(Boolean)
+    : [];
+
+  const mbMetricKeys = mbMetrics.map(normalizeKey);
+  const extractedInputMetricKeys = getExtractedMetricKeysFromInputs(dio).map(normalizeKey);
+
+  const present = new Set<string>([...selectedSignals, ...mbMetricKeys, ...extractedInputMetricKeys]);
+
+  // Map KPI presence to rubric readiness signals.
+  if (present.has("loi_count") || present.has("contract_value")) present.add("loi_or_contract");
+  if (present.has("partnership_count") || present.has("distribution_partners")) present.add("partnership_or_distribution");
+  if (present.has("launch_timeline_months")) present.add("launch_timeline");
+  if (present.has("manufacturing_capacity") || selectedSignals.includes("manufacturing_ready")) present.add("product_ready");
+  if (selectedSignals.includes("product_ready")) present.add("product_ready");
+
+  const requiredPairs = (rubric.required_signals || []).map((s) => ({ raw: s, key: normalizeKey(s) }));
+  const missingRequired = requiredPairs.filter((p) => !present.has(p.key)).map((p) => p.raw);
+
+  const positivePairs = (rubric.positive_drivers || []).map((s) => ({ raw: s, key: normalizeKey(s) }));
+  const positivePresent = positivePairs.filter((p) => present.has(p.key)).map((p) => p.raw);
+
+  const acceptableMissing = (rubric.acceptable_missing || []).map(normalizeKey);
+  const hasRevenueMetric = present.has("revenue") || present.has("arr") || present.has("mrr");
+  const acceptableMissingPresent = !hasRevenueMetric && acceptableMissing.some((s) => s === "revenue" || s === "arr" || s === "mrr")
+    ? ["revenue"]
+    : [];
+
+  // Red flags: use risk_map severity/category heuristics (deterministic).
+  const riskMap: any[] = Array.isArray((dio as any).risk_map) ? (dio as any).risk_map : [];
+  const redFlagsTriggered: string[] = [];
+  for (const r of riskMap) {
+    const sev = typeof r?.severity === "string" ? r.severity.toLowerCase() : "";
+    const cat = typeof r?.category === "string" ? r.category.toLowerCase() : "";
+    const title = typeof r?.title === "string" ? r.title.toLowerCase() : "";
+    const desc = typeof r?.description === "string" ? r.description.toLowerCase() : "";
+    const blob = `${cat} ${title} ${desc}`;
+
+    if (sev === "critical" || sev === "high") {
+      if (/fraud|misrepresent/.test(blob)) redFlagsTriggered.push("fraud");
+      if (/ownership|cap\s*table|ip\s+ownership|assignment/.test(blob)) redFlagsTriggered.push("ownership_unclear");
+      if (/regulator|regulatory|fda|compliance|license|permits?/.test(blob)) redFlagsTriggered.push("regulatory_blocker");
+    }
+  }
+
+  return {
+    id: rubric.id,
+    required_signals: rubric.required_signals || [],
+    missing_required: missingRequired,
+    positive_drivers_present: positivePresent,
+    acceptable_missing_present: acceptableMissingPresent,
+    red_flags_triggered: uniqueStrings(redFlagsTriggered),
+    has_revenue_metric: hasRevenueMetric,
+  };
 };
 
 const getMeta = (res: any): { status: string | null; coverage: number | null; confidence: number | null } => {
@@ -517,6 +621,8 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
 
   const classificationSelectedPolicy = getSelectedPolicyIdFromAny(dio);
 
+  const rubricEval = evaluatePolicyRubric(dio, classificationSelectedPolicy);
+
   // Policy-aware base weights (pre-normalization).
   // If classification exists, use policy weights; otherwise fall back to legacy context behavior.
   const baseWeights: ScoreExplanation["aggregation"]["weights"] = classificationSelectedPolicy
@@ -674,8 +780,18 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
     ? Math.round(unadjustedSum + 1e-9)
     : null;
 
+  // For coverage/confidence, do not count analyzers excluded by the active policy.
+  // This prevents excluded-by-policy components from dragging down coverage_ratio/evidence_factor.
+  const enabledByPolicy = classificationSelectedPolicy
+    ? new Set([
+        ...getDealPolicy(classificationSelectedPolicy).required_analyzers,
+        ...getDealPolicy(classificationSelectedPolicy).optional_analyzers,
+      ])
+    : null;
+
   const weightedKeys = componentsInOrder
-    .filter(k => ((weights as any)[k] as number) > 0);
+    .filter(k => ((weights as any)[k] as number) > 0)
+    .filter(k => (enabledByPolicy ? enabledByPolicy.has(k as any) : true));
 
   const coverageValues = weightedKeys.map((k) => {
     if (statuses[k] === "ok") return isFiniteNumber(componentMeta[k].coverage) ? (componentMeta[k].coverage as number) : 0;
@@ -701,7 +817,22 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   // - due_diligence_factor: uses document verification readiness when present
   // - adjustment_factor = evidence_factor * due_diligence_factor
   // - overall_score = unadjusted*adjustment + 50*(1-adjustment)
-  const evidenceFactor = clamp01(0.5 + 0.5 * coverageRatio);
+  let evidenceFactor = clamp01(0.5 + 0.5 * coverageRatio);
+
+  // Policy behavior: execution_ready_v1 should not auto-fail for missing revenue.
+  // Readiness evidence is required; if missing, keep the final score close to neutral (~50) even if other components are strong.
+  if (classificationSelectedPolicy === "execution_ready_v1" && rubricEval) {
+    const missingReadiness = rubricEval.missing_required.length;
+    if (missingReadiness > 0) {
+      const cap = missingReadiness >= 2 ? 0.1 : 0.15;
+      if (evidenceFactor > cap) {
+        evidenceFactor = cap;
+        notes.metric_benchmark.push(
+          `execution_ready_v1: missing required readiness signals (${missingReadiness}) -> evidence_factor capped to ${cap.toFixed(2)}`
+        );
+      }
+    }
+  }
 
   const getDueDiligenceReadiness = (docs: any[]): number => {
     if (docs.length === 0) return 1;
@@ -741,9 +872,18 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   const dueDiligenceFactor = clamp01(0.5 + 0.5 * dueDiligenceReadiness);
   const adjustmentFactor = clamp01(evidenceFactor * dueDiligenceFactor);
 
-  const overall = unadjustedOverall === null
+  let overall = unadjustedOverall === null
     ? null
     : Math.round(unadjustedOverall * adjustmentFactor + 50 * (1 - adjustmentFactor));
+
+  // Policy rubric caps: if critical red flags are present, cap overall below the "75+" threshold.
+  if (overall !== null && rubricEval && Array.isArray(rubricEval.red_flags_triggered) && rubricEval.red_flags_triggered.length > 0) {
+    const cap = 70;
+    if (overall > cap) {
+      overall = cap;
+      notes.risk_assessment.push(`rubric cap applied (${cap}) due to red_flags: ${rubricEval.red_flags_triggered.join(", ")}`);
+    }
+  }
 
   const mkComponent = (key: (typeof componentsInOrder)[number]): ScoreComponent => {
     const { status, coverage, confidence } = componentMeta[key];
@@ -823,6 +963,7 @@ const mapComponentStatusForDiagnostics = (status: string | null): string => {
 
 export function buildScoringDiagnosticsFromDIO(dio: DealIntelligenceObject): ScoringDiagnosticsV1 {
   const explanation = buildScoreExplanationFromDIO(dio);
+  const rubricEval = evaluatePolicyRubric(dio, explanation.aggregation.policy_id);
 
   const componentsInOrder = [
     "slide_sequence",
@@ -881,6 +1022,73 @@ export function buildScoringDiagnosticsFromDIO(dio: DealIntelligenceObject): Sco
   const overall_score = explanation.totals.overall_score ?? 50;
   const unadjusted_overall_score = explanation.totals.unadjusted_overall_score ?? 50;
 
+  // Policy-scoped: for real_estate_underwriting, explicitly explain why a 75+ score is justified.
+  // This is additive only (does not remove/alter existing diagnostics).
+  if (explanation.aggregation.policy_id === "real_estate_underwriting") {
+    const docs: any[] = Array.isArray((dio as any)?.inputs?.documents) ? (dio as any).inputs.documents : [];
+    const combinedText = docs
+      .map((d) => (typeof d?.textSummary === "string" ? d.textSummary : typeof d?.text_summary === "string" ? d.text_summary : ""))
+      .filter(Boolean)
+      .join("\n\n");
+
+    // Build a metrics map from the metric_benchmark analyzer output when available.
+    const metricsAnalyzed: any[] = Array.isArray((dio as any)?.analyzer_results?.metric_benchmark?.metrics_analyzed)
+      ? (dio as any).analyzer_results.metric_benchmark.metrics_analyzed
+      : [];
+    const metricsMap: Record<string, number> = {};
+    for (const m of metricsAnalyzed) {
+      if (typeof m?.metric !== "string") continue;
+      if (typeof m?.value !== "number" || !Number.isFinite(m.value)) continue;
+      metricsMap[m.metric] = m.value;
+    }
+
+    const protections = detectRealEstateUnderwritingProtections({ pitch_text: combinedText, metrics: metricsMap });
+    if (protections.fully_protected || protections.protections_score >= 4) {
+      const mb: any = (explanation.components as any).metric_benchmark;
+      const evidence_ids = Array.isArray(mb?.evidence_ids) ? (mb.evidence_ids as string[]) : [];
+
+      const hasCashFlows = !buckets.positive_signals.some((b) => b.text === "Contracted cash flows");
+      const hasDownside = !buckets.positive_signals.some((b) => b.text === "Downside protection via lease/guarantees");
+
+      if (hasCashFlows) buckets.positive_signals.push({ component: "metric_benchmark", text: "Contracted cash flows", evidence_ids });
+      if (hasDownside) buckets.positive_signals.push({ component: "metric_benchmark", text: "Downside protection via lease/guarantees", evidence_ids });
+    }
+  }
+
+  // Add rubric-derived diagnostics as first-class fields + buckets.
+  let rubric: ScoringDiagnosticsV1["rubric"] = undefined;
+  if (rubricEval) {
+    const cap = 70;
+    const preCap = Math.round(unadjusted_overall_score * explanation.totals.adjustment_factor + 50 * (1 - explanation.totals.adjustment_factor));
+    const scoreCapApplied = rubricEval.red_flags_triggered.length > 0 && preCap > cap && overall_score === cap ? cap : null;
+
+    rubric = {
+      id: rubricEval.id,
+      required_signals: rubricEval.required_signals,
+      missing_required: rubricEval.missing_required,
+      positive_drivers_present: rubricEval.positive_drivers_present,
+      acceptable_missing_present: rubricEval.acceptable_missing_present,
+      red_flags_triggered: rubricEval.red_flags_triggered,
+      has_revenue_metric: rubricEval.has_revenue_metric,
+      score_cap_applied: scoreCapApplied,
+    };
+
+    if (rubricEval.missing_required.length > 0) {
+      buckets.coverage_gaps.push({
+        component: "rubric",
+        text: `Missing required signals: ${rubricEval.missing_required.join(", ")}`,
+        evidence_ids: [],
+      });
+    }
+    if (rubricEval.red_flags_triggered.length > 0) {
+      buckets.red_flags.push({
+        component: "rubric",
+        text: `Rubric red flags: ${rubricEval.red_flags_triggered.join(", ")}`,
+        evidence_ids: [],
+      });
+    }
+  }
+
   return {
     policy_id: explanation.aggregation.policy_id,
     overall_score,
@@ -891,5 +1099,6 @@ export function buildScoringDiagnosticsFromDIO(dio: DealIntelligenceObject): Sco
     coverage_ratio: explanation.totals.coverage_ratio,
     components,
     buckets,
+    rubric,
   };
 }

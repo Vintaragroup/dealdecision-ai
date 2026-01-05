@@ -377,6 +377,15 @@ export const RiskAssessmentInputSchema = z.object({
   pitch_text: z.string(),
   headings: z.array(z.string()),
   metrics: z.record(z.number()).optional(),
+  // Additive: allow risk assessment to scan full document text and evidence text.
+  documents: z.array(z.object({
+    full_text: z.string().optional(),
+  })).optional(),
+  evidence: z.array(z.object({
+    text: z.string().optional(),
+  })).optional(),
+  // Additive: policy-aware risk reducers (e.g., real_estate_underwriting).
+  policy_id: z.string().optional(),
   team_size: z.number().int().nonnegative().optional(),
   evidence_ids: z.array(z.string().uuid()).optional(),
   debug_scoring: z.boolean().optional(),
@@ -913,6 +922,19 @@ export const ScoringDiagnosticsV1Schema = z.object({
     red_flags: z.array(ScoringDiagnosticsBucketItemV1Schema).default([]),
     coverage_gaps: z.array(ScoringDiagnosticsBucketItemV1Schema).default([]),
   }),
+  // Additive: policy-specific rubric checks used to interpret “75+” consistently by deal class.
+  rubric: z
+    .object({
+      id: z.string().min(1),
+      required_signals: z.array(z.string()).default([]),
+      missing_required: z.array(z.string()).default([]),
+      positive_drivers_present: z.array(z.string()).default([]),
+      acceptable_missing_present: z.array(z.string()).default([]),
+      red_flags_triggered: z.array(z.string()).default([]),
+      has_revenue_metric: z.boolean().optional(),
+      score_cap_applied: z.number().min(0).max(100).nullable().optional(),
+    })
+    .optional(),
 });
 
 export type ScoringDiagnosticsV1 = z.infer<typeof ScoringDiagnosticsV1Schema>;

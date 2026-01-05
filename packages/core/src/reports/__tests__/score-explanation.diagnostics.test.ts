@@ -141,4 +141,94 @@ describe("scoring_diagnostics_v1", () => {
     expect(scoring_diagnostics_v1.buckets.red_flags.some((b) => b.component === "risk_assessment")).toBe(true);
     expect(scoring_diagnostics_v1.buckets.red_flags.some((b) => b.evidence_ids.includes(riskEvidenceId))).toBe(true);
   });
+
+  it("execution_ready_v1: strong readiness (no revenue) can score >= 75 and rubric treats revenue as acceptable missing", () => {
+    const dio = baseDio();
+
+    dio.dio = {
+      deal_classification_v1: {
+        candidates: [
+          { asset_class: "venture", deal_structure: "equity", strategy_subtype: "execution_ready_v1", confidence: 0.85, signals: ["product_ready"] },
+        ],
+        selected: { asset_class: "venture", deal_structure: "equity", strategy_subtype: "execution_ready_v1", confidence: 0.85, signals: ["product_ready"] },
+        selected_policy: "execution_ready_v1",
+        routing_reason: ["test"],
+      },
+    };
+
+    dio.analyzer_results = {
+      narrative_arc: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, pacing_score: 85, archetype: "test", archetype_confidence: 0.8, emotional_beats: [], evidence_ids: [] },
+      metric_benchmark: {
+        analyzer_version: "1.0.0",
+        executed_at: now,
+        status: "ok",
+        coverage: 1,
+        confidence: 0.9,
+        overall_score: 90,
+        metrics_analyzed: [
+          { metric: "loi_count", value: 3, benchmark_value: 1, benchmark_source: "policy:execution_ready_v1:loi_count", rating: "Strong", deviation_pct: 200, evidence_id: "00000000-0000-4000-8000-000000001001" },
+          { metric: "partnership_count", value: 2, benchmark_value: 1, benchmark_source: "policy:execution_ready_v1:partnership_count", rating: "Strong", deviation_pct: 100, evidence_id: "00000000-0000-4000-8000-000000001002" },
+          { metric: "launch_timeline_months", value: 3, benchmark_value: 6, benchmark_source: "policy:execution_ready_v1:launch_timeline_months", rating: "Strong", deviation_pct: -50, evidence_id: "00000000-0000-4000-8000-000000001003" },
+        ],
+        evidence_ids: [],
+      },
+      risk_assessment: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, overall_risk_score: 20, risks_by_category: { market: [], team: [], financial: [], execution: [] }, total_risks: 0, critical_count: 0, high_count: 0, evidence_ids: [] },
+      slide_sequence: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, score: 70, pattern_match: "problem_first", sequence_detected: [], expected_sequence: [], deviations: [], evidence_ids: [] },
+      financial_health: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, runway_months: null, burn_multiple: null, health_score: null, metrics: { revenue: null, expenses: null, cash_balance: null, burn_rate: null, growth_rate: null }, risks: [], evidence_ids: [] },
+      visual_design: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, design_score: 55, proxy_signals: { page_count_appropriate: true, image_to_text_ratio_balanced: true, consistent_formatting: true }, strengths: [], weaknesses: [], evidence_ids: [] },
+    };
+
+    const diagnostics = buildScoringDiagnosticsFromDIO(dio);
+
+    expect(diagnostics.policy_id).toBe("execution_ready_v1");
+    expect(diagnostics.overall_score).toBeGreaterThanOrEqual(75);
+    expect(diagnostics.rubric).toBeDefined();
+    expect(diagnostics.rubric?.id).toBe("execution_ready_v1");
+    expect(diagnostics.rubric?.missing_required ?? []).toHaveLength(0);
+    expect(diagnostics.rubric?.acceptable_missing_present ?? []).toEqual(expect.arrayContaining(["revenue"]));
+    expect(diagnostics.buckets.coverage_gaps.some((b) => b.component === "rubric")).toBe(false);
+  });
+
+  it("execution_ready_v1: missing readiness keeps score near neutral and surfaces rubric coverage gaps", () => {
+    const dio = baseDio();
+
+    dio.dio = {
+      deal_classification_v1: {
+        candidates: [
+          { asset_class: "venture", deal_structure: "equity", strategy_subtype: "execution_ready_v1", confidence: 0.8, signals: [] },
+        ],
+        selected: { asset_class: "venture", deal_structure: "equity", strategy_subtype: "execution_ready_v1", confidence: 0.8, signals: [] },
+        selected_policy: "execution_ready_v1",
+        routing_reason: ["test"],
+      },
+    };
+
+    dio.analyzer_results = {
+      narrative_arc: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, pacing_score: 85, archetype: "test", archetype_confidence: 0.8, emotional_beats: [], evidence_ids: [] },
+      metric_benchmark: {
+        analyzer_version: "1.0.0",
+        executed_at: now,
+        status: "ok",
+        coverage: 1,
+        confidence: 0.9,
+        overall_score: 90,
+        metrics_analyzed: [
+          { metric: "revenue", value: 10000, benchmark_value: 5000, benchmark_source: "policy:execution_ready_v1:revenue", rating: "Strong", deviation_pct: 100, evidence_id: "00000000-0000-4000-8000-000000002001" },
+        ],
+        evidence_ids: [],
+      },
+      risk_assessment: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, overall_risk_score: 20, risks_by_category: { market: [], team: [], financial: [], execution: [] }, total_risks: 0, critical_count: 0, high_count: 0, evidence_ids: [] },
+      slide_sequence: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, score: 70, pattern_match: "problem_first", sequence_detected: [], expected_sequence: [], deviations: [], evidence_ids: [] },
+      financial_health: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, runway_months: 12, burn_multiple: 1.2, health_score: 60, metrics: { revenue: 10000, expenses: null, cash_balance: null, burn_rate: null, growth_rate: null }, risks: [], evidence_ids: [] },
+      visual_design: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, design_score: 55, proxy_signals: { page_count_appropriate: true, image_to_text_ratio_balanced: true, consistent_formatting: true }, strengths: [], weaknesses: [], evidence_ids: [] },
+    };
+
+    const diagnostics = buildScoringDiagnosticsFromDIO(dio);
+
+    expect(diagnostics.policy_id).toBe("execution_ready_v1");
+    expect(diagnostics.overall_score).toBeLessThanOrEqual(60);
+    expect(diagnostics.rubric).toBeDefined();
+    expect((diagnostics.rubric?.missing_required ?? []).length).toBeGreaterThan(0);
+    expect(diagnostics.buckets.coverage_gaps.some((b) => b.component === "rubric")).toBe(true);
+  });
 });

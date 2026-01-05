@@ -103,6 +103,9 @@ function routePolicyFromCandidate(c: DealClassification): DealPolicyId {
   if (c.asset_class === "fund_vehicle") return "fund_spv";
   if (c.asset_class === "credit") return "credit_memo";
 
+  if (c.strategy_subtype === "execution_ready_v1") return "execution_ready_v1";
+  if (c.strategy_subtype === "operating_business") return "operating_business";
+
   // Operating company can still be acquisition/startup raise.
   if (c.deal_structure === "acquisition" || c.deal_structure === "asset_purchase") return "acquisition_memo";
   if (c.deal_structure === "safe" || c.deal_structure === "priced_round" || c.deal_structure === "equity_raise") return "startup_raise";
@@ -113,6 +116,10 @@ function routePolicyFromCandidate(c: DealClassification): DealPolicyId {
 export function classifyDealV1(input: TextInputs): DealClassificationResult {
   const { text } = normalizeTextInputs(input);
   const textLc = text.toLowerCase();
+
+  const hasRevenueSignal = /\barr\b|\bmrr\b|\brevenue\b|\bsales\b|\bbookings\b|\$\s*\d{1,3}(?:,\d{3})+/.test(textLc);
+  const explicitlyPreRevenue = /pre[-\s]?revenue|no\s+revenue|revenue\s*:\s*\$?0\b/.test(textLc);
+  const looksPreRevenue = explicitlyPreRevenue || !hasRevenueSignal;
 
   const realEstateRules: SignalRule[] = [
     { id: "noi", re: /\bnoi\b|net operating income/, weight: 0.25, reason: "Contains NOI" },
@@ -148,6 +155,23 @@ export function classifyDealV1(input: TextInputs): DealClassificationResult {
     { id: "saas_metrics", re: /\barr\b|\bmrr\b|\bcac\b|\bltv\b|churn|ndr|gross\s+margin/, weight: 0.25, reason: "Mentions SaaS metrics" },
   ];
 
+  // Execution-ready (pre-revenue) signals: evidence of readiness without revenue.
+  const executionReadyRules: SignalRule[] = [
+    { id: "loi_or_contract", re: /\bloi\b|letter\s+of\s+intent|signed\s+(?:contract|agreement)|master\s+services\s+agreement|msa\b|purchase\s+order|po\b/, weight: 0.3, reason: "loi_or_contract" },
+    { id: "partnership_or_distribution", re: /partnership\b|strategic\s+partner|distribution\b|distribution\s+partner|channel\s+partner|reseller\b|\bwholesale\b/, weight: 0.25, reason: "partnership_or_distribution" },
+    { id: "manufacturing_ready", re: /manufacturer\b|manufacturing\b|contract\s+manufacturer|cm\b|pilot\s+run|production\s+ready|tooling\b|\bqc\b|quality\s+control/, weight: 0.2, reason: "manufacturing_ready" },
+    { id: "regulatory_ready", re: /regulatory\b|fda\b|510\(k\)|ce\s*mark|hipaa\b|soc\s*2|iso\s*13485|gmp\b|compliance\b/, weight: 0.2, reason: "regulatory_ready" },
+    { id: "product_ready", re: /mvp\b|product\s+complete|ready\s+to\s+launch|launched\s+beta|ga\b|general\s+availability|v1\b/, weight: 0.25, reason: "product_ready" },
+    { id: "launch_timeline", re: /launch\s+in\s+\d+\s+months?|launch\s+date\b|go[-\s]?to[-\s]?market|gtm\b|rollout\b/, weight: 0.25, reason: "launch_timeline" },
+  ];
+
+  const operatingBusinessRules: SignalRule[] = [
+    { id: "revenue", re: /\brevenue\b|\bsales\b|\barr\b|\bmrr\b|\bbookings\b/, weight: 0.35, reason: "revenue" },
+    { id: "margin", re: /gross\s+margin|\bgm\b|contribution\s+margin|ebitda\b/, weight: 0.25, reason: "gross_margin_or_unit_economics" },
+    { id: "retention", re: /churn\b|retention\b|ndr\b|nrr\b/, weight: 0.2, reason: "retention_or_churn" },
+    { id: "ops", re: /operating\s+plan|kpi\b|cohort\b|unit\s+economics/, weight: 0.15, reason: "risk_controls" },
+  ];
+
   const creditRules: SignalRule[] = [
     { id: "interest", re: /interest\s+rate|\bapr\b|\bcoupon\b/, weight: 0.25, reason: "Mentions interest/coupon" },
     { id: "collateral", re: /collateral|security\s+interest|lien/, weight: 0.25, reason: "Mentions collateral" },
@@ -161,6 +185,8 @@ export function classifyDealV1(input: TextInputs): DealClassificationResult {
   const acquisition = scoreSignals(textLc, acquisitionRules);
   const startupRaise = scoreSignals(textLc, startupRaiseRules);
   const credit = scoreSignals(textLc, creditRules);
+  const executionReady = scoreSignals(textLc, executionReadyRules);
+  const operatingBusiness = scoreSignals(textLc, operatingBusinessRules);
 
   const candidates: DealClassification[] = [];
 
@@ -194,6 +220,32 @@ export function classifyDealV1(input: TextInputs): DealClassificationResult {
   if (startupRaise.score > 0) {
     const structure = /\bsafe\b/.test(textLc) ? "safe" : /priced\s+round|series\s+[ab]/.test(textLc) ? "priced_round" : "equity_raise";
     candidates.push(mkCandidate("operating_company", structure, "startup_raise", startupRaise.score, startupRaise.signals));
+  }
+
+  // Execution-ready: only consider when pre-revenue (or explicitly pre-revenue) and readiness evidence exists.
+  if (looksPreRevenue && executionReady.score >= 0.7) {
+    candidates.push(
+      mkCandidate(
+        "operating_company",
+        "equity_raise",
+        "execution_ready_v1",
+        Math.min(1, executionReady.score + 0.1),
+        executionReady.signals
+      )
+    );
+  }
+
+  // Operating business: revenue/margin signals without strong acquisition/raise cues.
+  if (operatingBusiness.score >= 0.7 && startupRaise.score < 0.4 && acquisition.score < 0.4) {
+    candidates.push(
+      mkCandidate(
+        "operating_company",
+        "operating_business",
+        "operating_business",
+        operatingBusiness.score,
+        operatingBusiness.signals
+      )
+    );
   }
 
   // Always include an unknown candidate as a safe fallback.

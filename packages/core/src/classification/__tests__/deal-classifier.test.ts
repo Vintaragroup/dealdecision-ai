@@ -66,4 +66,22 @@ describe("deal-classifier v1", () => {
     expect(out.selected_policy).toBe("unknown_generic");
     expect(out.candidates.length).toBeGreaterThan(0);
   });
+
+  it("classifies execution-ready pre-revenue ventures and routes to execution_ready_v1", () => {
+    const text = `
+    We are pre-revenue today.
+    Signed LOI with a national distributor and a strategic partnership agreement.
+    Manufacturing is production-ready with a contract manufacturer.
+    Launch in 3 months with a detailed go-to-market plan.
+    Regulatory: FDA 510(k) submission in progress.
+    `;
+
+    const out = classifyDealV1({
+      documents: [{ full_text: text }],
+      evidence: [],
+    });
+
+    expect(out.selected_policy).toBe("execution_ready_v1");
+    expect(out.selected.confidence).toBeGreaterThanOrEqual(0.7);
+  });
 });

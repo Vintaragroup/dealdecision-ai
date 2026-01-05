@@ -35,4 +35,22 @@ describe("MetricBenchmarkValidator policy routing", () => {
     expect(result.metrics_analyzed[0].benchmark_source).not.toBe("No benchmark available");
     expect(result.metrics_analyzed[0].rating).not.toBe("Missing");
   });
+
+  it("is non-neutral for execution_ready_v1 readiness signals without revenue", async () => {
+    const text = "Pre-revenue. Signed LOI with distribution partner. Launch in 3 months. Pipeline $750K.";
+
+    const result = await metricBenchmarkValidator.analyze({
+      text,
+      industry: "cpg",
+      policy_id: "execution_ready_v1",
+      evidence_ids: [],
+    } as any);
+
+    expect(result.status).toBe("ok");
+    expect(result.overall_score).not.toBeNull();
+    expect(result.overall_score).not.toBe(50);
+
+    const hasPolicyBench = (result.metrics_analyzed || []).some((m: any) => typeof m?.benchmark_source === "string" && m.benchmark_source.startsWith("policy:execution_ready_v1:"));
+    expect(hasPolicyBench).toBe(true);
+  });
 });

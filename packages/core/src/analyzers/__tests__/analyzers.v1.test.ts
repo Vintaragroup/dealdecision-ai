@@ -413,9 +413,13 @@ describe("FinancialHealthCalculator", () => {
 
 describe("RiskAssessmentEngine", () => {
   test("detects multiple risks from pitch text and metrics", async () => {
+    const fullText =
+      "We are pre-revenue with an MVP. This is a crowded market with many competitors. We are looking for a CTO. Regulatory compliance is required.";
+
     const result = await riskAssessmentEngine.analyze({
-      pitch_text:
-        "We are pre-revenue with an MVP. This is a crowded market with many competitors. We are looking for a CTO. Regulatory compliance is required.",
+      pitch_text: fullText,
+      documents: [{ full_text: fullText }],
+      evidence: [],
       headings: ["Problem", "Solution", "Market", "Team", "Ask"],
       metrics: { runway: 4, burn_rate: 200_000 },
       team_size: 2,
@@ -438,6 +442,8 @@ describe("RiskAssessmentEngine", () => {
   test("insufficient_data on short pitch text", async () => {
     const result = await riskAssessmentEngine.analyze({
       pitch_text: "Too short",
+      documents: [{ full_text: "Too short" }],
+      evidence: [],
       headings: [],
       evidence_ids: [EVIDENCE_ID],
     });
@@ -448,9 +454,13 @@ describe("RiskAssessmentEngine", () => {
   });
 
   test("ok + neutral baseline when no risks detected", async () => {
+    const fullText =
+      "We have a clear plan, a differentiated product, and strong customer interest. The team is complete and execution is on track.";
+
     const result = await riskAssessmentEngine.analyze({
-      pitch_text:
-        "We have a clear plan, a differentiated product, and strong customer interest. The team is complete and execution is on track.",
+      pitch_text: fullText,
+      documents: [{ full_text: fullText }],
+      evidence: [],
       headings: ["Problem", "Solution", "Market", "Team", "Traction"],
       evidence_ids: [EVIDENCE_ID],
     });
@@ -459,6 +469,29 @@ describe("RiskAssessmentEngine", () => {
     expect(result.total_risks).toBe(0);
     expect(result.overall_risk_score).toBe(50);
     expect(result.note || "").toMatch(/neutral baseline=50/i);
+  });
+
+  test("real_estate_underwriting: detects protections in documents full_text and reduces risk", async () => {
+    const reText = [
+      "Absolute NNN lease.",
+      "20-year lease.",
+      "Corporate guaranty provided.",
+      "100% leased.",
+      "DSCR is 1.30 and LTV is 60%.",
+    ].join(" ");
+
+    const result = await riskAssessmentEngine.analyze({
+      pitch_text: "(ignored)",
+      documents: [{ full_text: reText }],
+      evidence: [],
+      headings: ["Lease", "Financials"],
+      policy_id: "real_estate_underwriting",
+      evidence_ids: [EVIDENCE_ID],
+    } as any);
+
+    expect(result.status).toBe("ok");
+    expect(result.overall_risk_score as number).toBeLessThanOrEqual(30);
+    expect(String(result.note || "")).toContain("RE protections detected");
   });
 });
 

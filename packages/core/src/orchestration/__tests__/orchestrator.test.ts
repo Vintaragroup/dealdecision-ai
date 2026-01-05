@@ -287,6 +287,65 @@ it('enforces policy analyzer bundle for real_estate_underwriting (skips financia
   expect(visualDesignAnalyzer.analyze).toHaveBeenCalledTimes(0);
 });
 
+it('enforces policy analyzer bundle for execution_ready_v1 (skips financialHealth/slideSequence/visualDesign)', async () => {
+  const storage = createStorage();
+
+  const slideSequenceAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okSlideSequence()) };
+  const metricBenchmarkAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okMetricBenchmark()) };
+  const visualDesignAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okVisualDesign()) };
+  const narrativeArcAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okNarrativeArc()) };
+  const financialHealthAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okFinancialHealth()) };
+  const riskAssessmentAnalyzer: AnyAnalyzer = { analyze: jest.fn(async () => okRiskAssessment()) };
+
+  const analyzers = {
+    slideSequence: slideSequenceAnalyzer,
+    metricBenchmark: metricBenchmarkAnalyzer,
+    visualDesign: visualDesignAnalyzer,
+    narrativeArc: narrativeArcAnalyzer,
+    financialHealth: financialHealthAnalyzer,
+    riskAssessment: riskAssessmentAnalyzer,
+  };
+
+  const orchestrator = new DealOrchestrator(analyzers as any, storage, { debug: false });
+
+  const input: OrchestrationInput = {
+    deal_id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+    analysis_cycle: 1,
+    input_data: {
+      documents: [
+        {
+          fileName: 'Execution Ready Deck.pdf',
+          totalPages: 12,
+          fileSizeBytes: 1000,
+          totalWords: 600,
+          mainHeadings: ['Problem', 'Solution', 'Go-To-Market', 'Launch Plan'],
+          keyMetrics: [
+            { key: 'LOI', value: '3 LOIs signed', source: 'deck' },
+            { key: 'Pipeline', value: '$750k pipeline', source: 'deck' },
+            { key: 'Launch', value: 'Launch in 3 months', source: 'deck' },
+          ],
+          textSummary:
+            'Pre-revenue but execution-ready. Signed 3 LOIs and a distribution partnership. Manufacturing ready. Launch in 3 months.',
+        },
+      ],
+    },
+  };
+
+  const result = await orchestrator.analyze(input);
+  expect(result.success).toBe(true);
+  expect(result.execution.analyzers_run).toBe(3);
+
+  // Enabled by policy: metric_benchmark, risk_assessment, narrative_arc
+  expect(metricBenchmarkAnalyzer.analyze).toHaveBeenCalledTimes(1);
+  expect(riskAssessmentAnalyzer.analyze).toHaveBeenCalledTimes(1);
+  expect(narrativeArcAnalyzer.analyze).toHaveBeenCalledTimes(1);
+
+  // Disabled by policy
+  expect(financialHealthAnalyzer.analyze).toHaveBeenCalledTimes(0);
+  expect(slideSequenceAnalyzer.analyze).toHaveBeenCalledTimes(0);
+  expect(visualDesignAnalyzer.analyze).toHaveBeenCalledTimes(0);
+});
+
 it('merges worker-provided llm_calls into execution_metadata', async () => {
   const storage = createStorage();
   const analyzers = {

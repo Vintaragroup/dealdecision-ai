@@ -169,6 +169,9 @@ export class DealOrchestrator {
           const selectedPolicyId: string | undefined =
             getSelectedPolicyIdFromAny(input.input_data as any) ??
             (typeof precomputedDealClassificationV1?.selected_policy === 'string' ? String(precomputedDealClassificationV1.selected_policy) : undefined);
+      // Persist the selected policy id onto input_data so prepareAnalyzerInput can reliably pass it
+      // into analyzers even when upstream nesting varies.
+      (input.input_data as any).__selected_policy_id = selectedPolicyId;
 
       const policy = getDealPolicy(selectedPolicyId);
       const enabledPolicyAnalyzerKeys = new Set<AnalyzerKey>([
@@ -716,7 +719,10 @@ export class DealOrchestrator {
           debug_scoring,
           text: mbText,
           industry: (input_data.industry as string | undefined) || (dio_context?.vertical && dio_context.vertical !== 'other' ? dio_context.vertical : undefined),
-          policy_id: getSelectedPolicyIdFromAny(input_data as any) ?? undefined,
+          policy_id:
+            (typeof (input_data as any).__selected_policy_id === 'string' && (input_data as any).__selected_policy_id) ||
+            getSelectedPolicyIdFromAny(input_data as any) ||
+            undefined,
           extracted_metrics: extracted_metrics_pitch_and_fin.length > 0 ? extracted_metrics_pitch_and_fin : extracted_metrics_all,
         };
 
@@ -774,10 +780,33 @@ export class DealOrchestrator {
         };
 
       case 'riskAssessment':
+        // Provide full-text and evidence text so risk_assessment can detect protections
+        // that may not appear in summaries.
+        const riskDocuments = Array.isArray(documents)
+          ? documents.map((d: any) => ({
+              full_text:
+                (typeof d?.full_text === 'string' ? d.full_text : '') ||
+                (typeof d?.fullText === 'string' ? d.fullText : '') ||
+                undefined,
+            }))
+          : undefined;
+
+        const riskEvidence = Array.isArray((input_data as any)?.evidence)
+          ? ((input_data as any).evidence as any[]).map((e: any) => ({
+              text: typeof e?.text === 'string' ? e.text : undefined,
+            }))
+          : undefined;
+
         return {
           debug_scoring,
           pitch_text: combinedText || 'No content available',
           headings: allHeadings,
+          policy_id:
+            (typeof (input_data as any).__selected_policy_id === 'string' && (input_data as any).__selected_policy_id) ||
+            getSelectedPolicyIdFromAny(input_data as any) ||
+            undefined,
+          documents: riskDocuments,
+          evidence: riskEvidence,
           metrics: allMetrics.reduce((acc, m) => {
             const match = (m.value == null ? '' : String(m.value)).match(/([\d.]+)/);
             if (match) {
@@ -822,7 +851,22 @@ export class DealOrchestrator {
       }
       case 'riskAssessment': {
         const pitch = typeof analyzer_input?.pitch_text === 'string' ? analyzer_input.pitch_text.trim() : '';
-        return pitch.length === 0 || pitch === 'No content available';
+        const docsText = Array.isArray(analyzer_input?.documents)
+          ? (analyzer_input.documents as any[])
+              .map((d: any) => (typeof d?.full_text === 'string' ? d.full_text : ''))
+              .join('\n')
+              .trim()
+          : '';
+        const evText = Array.isArray(analyzer_input?.evidence)
+          ? (analyzer_input.evidence as any[])
+              .map((e: any) => (typeof e?.text === 'string' ? e.text : ''))
+              .join('\n')
+              .trim()
+          : '';
+
+        // Allow docs/evidence to provide sufficient signal even if pitch_text is minimal.
+        const anySignal = `${docsText}\n${evText}\n${pitch}`.trim();
+        return anySignal.length === 0 || anySignal === 'No content available';
       }
       default:
         return true;

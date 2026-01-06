@@ -29,6 +29,87 @@ type InspectorSelection =
   | { kind: 'visual_asset'; document_id: string; visual_asset_id: string }
   | { kind: 'evidence'; visual_asset_id: string; count?: number };
 
+type StructuredViewMode = 'preview' | 'raw';
+
+export type TablePreviewModel = {
+  rows: string[][];
+  method?: string;
+  confidence?: number;
+  notes?: string;
+  totalRows: number;
+  totalCols: number;
+  shownRows: number;
+  shownCols: number;
+  truncated: boolean;
+};
+
+export function formatTableTruncationLabel(model: TablePreviewModel): string | null {
+  if (!model.truncated) return null;
+  return `Showing first ${model.shownRows} of ${model.totalRows} rows, first ${model.shownCols} of ${model.totalCols} columns`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+export function getTablePreviewModel(
+  structuredJson: unknown,
+  caps: { maxRows: number; maxCols: number } = { maxRows: 30, maxCols: 12 }
+): TablePreviewModel | null {
+  if (!isRecord(structuredJson)) return null;
+  const table = structuredJson.table;
+  if (!isRecord(table)) return null;
+
+  const rawRows = table.rows;
+  if (!Array.isArray(rawRows) || rawRows.length === 0) return null;
+  if (!rawRows.every((r) => Array.isArray(r))) return null;
+
+  const normalizedRows: string[][] = rawRows.map((r) =>
+    (r as unknown[]).map((cell) => {
+      if (cell == null) return '';
+      if (typeof cell === 'string') return cell;
+      if (typeof cell === 'number' || typeof cell === 'boolean') return String(cell);
+      try {
+        return JSON.stringify(cell);
+      } catch {
+        return String(cell);
+      }
+    })
+  );
+
+  const totalRows = normalizedRows.length;
+  const totalCols = normalizedRows.reduce((m, r) => Math.max(m, r.length), 0);
+  if (totalCols <= 0) return null;
+
+  const shownRows = Math.max(0, Math.min(totalRows, caps.maxRows));
+  const shownCols = Math.max(0, Math.min(totalCols, caps.maxCols));
+  if (shownRows === 0 || shownCols === 0) return null;
+
+  const rows = normalizedRows.slice(0, shownRows).map((r) => {
+    const sliced = r.slice(0, shownCols);
+    while (sliced.length < shownCols) sliced.push('');
+    return sliced;
+  });
+
+  const confidence = typeof table.confidence === 'number' ? table.confidence : undefined;
+  const method = typeof table.method === 'string' ? table.method : undefined;
+  const notes = typeof table.notes === 'string' ? table.notes : undefined;
+
+  const truncated = totalRows > shownRows || totalCols > shownCols;
+
+  return {
+    rows,
+    method,
+    confidence,
+    notes,
+    totalRows,
+    totalCols,
+    shownRows,
+    shownCols,
+    truncated,
+  };
+}
+
 function safeJson(value: unknown): string {
   try {
     return JSON.stringify(value, null, 2);
@@ -197,6 +278,17 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
   const [visualDetailLoading, setVisualDetailLoading] = useState(false);
   const [visualDetailError, setVisualDetailError] = useState<string | null>(null);
   const [selectedVisual, setSelectedVisual] = useState<DocumentVisualAsset | null>(null);
+
+  const [structuredViewMode, setStructuredViewMode] = useState<StructuredViewMode>('raw');
+
+  const tablePreviewModel = useMemo(
+    () => (selectedVisual ? getTablePreviewModel(selectedVisual.structured_json) : null),
+    [selectedVisual]
+  );
+
+  useEffect(() => {
+    setStructuredViewMode(tablePreviewModel ? 'preview' : 'raw');
+  }, [selectedVisual?.visual_asset_id, tablePreviewModel]);
 
   const docAssetCacheRef = useRef(new Map<string, DocumentVisualAsset[]>());
 
@@ -516,9 +608,112 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                   {selectedVisual.structured_json != null ? (
                     <details>
                       <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Structured JSON</summary>
-                      <pre className={`mt-2 whitespace-pre-wrap text-xs rounded-md p-2 border ${darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'}`}>
-                        {safeJson(selectedVisual.structured_json)}
-                      </pre>
+                      {tablePreviewModel ? (
+                        <div className="mt-2 space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                              <span className={`font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Table extracted</span>
+                              {typeof tablePreviewModel.method === 'string' ? ` · ${tablePreviewModel.method}` : ''}
+                              {typeof tablePreviewModel.confidence === 'number' && Number.isFinite(tablePreviewModel.confidence)
+                                ? ` · ${tablePreviewModel.confidence.toFixed(2)}`
+                                : ''}
+                              {' · '}
+                              {tablePreviewModel.totalRows} rows × {tablePreviewModel.totalCols} cols
+                              {(() => {
+                                const label = formatTableTruncationLabel(tablePreviewModel);
+                                return label ? ` · ${label}` : '';
+                              })()}
+                            </div>
+
+                            <div
+                              className={`inline-flex rounded-md border overflow-hidden ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
+                              role="group"
+                              aria-label="Structured data view"
+                            >
+                              <button
+                                type="button"
+                                className={`px-2 py-1 text-xs ${
+                                  structuredViewMode === 'preview'
+                                    ? darkMode
+                                      ? 'bg-white/10 text-gray-100'
+                                      : 'bg-gray-100 text-gray-900'
+                                    : darkMode
+                                      ? 'bg-transparent text-gray-400 hover:text-gray-200'
+                                      : 'bg-transparent text-gray-600 hover:text-gray-900'
+                                }`}
+                                onClick={() => setStructuredViewMode('preview')}
+                              >
+                                Preview
+                              </button>
+                              <button
+                                type="button"
+                                className={`px-2 py-1 text-xs border-l ${
+                                  darkMode ? 'border-white/10' : 'border-gray-200'
+                                } ${
+                                  structuredViewMode === 'raw'
+                                    ? darkMode
+                                      ? 'bg-white/10 text-gray-100'
+                                      : 'bg-gray-100 text-gray-900'
+                                    : darkMode
+                                      ? 'bg-transparent text-gray-400 hover:text-gray-200'
+                                      : 'bg-transparent text-gray-600 hover:text-gray-900'
+                                }`}
+                                onClick={() => setStructuredViewMode('raw')}
+                              >
+                                Raw JSON
+                              </button>
+                            </div>
+                          </div>
+
+                          {structuredViewMode === 'preview' ? (
+                            <>
+                              {typeof tablePreviewModel.notes === 'string' && tablePreviewModel.notes.trim().length > 0 ? (
+                                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Notes: {tablePreviewModel.notes}</div>
+                              ) : null}
+                              <div
+                                className={`overflow-auto max-h-[420px] rounded-md border ${
+                                  darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'
+                                }`}
+                              >
+                                <table className={`min-w-full text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                  <tbody>
+                                    {tablePreviewModel.rows.map((row, rIdx) => (
+                                      <tr key={`row-${rIdx}`} className={darkMode ? 'border-b border-white/5' : 'border-b border-gray-100'}>
+                                        {row.map((cell, cIdx) => (
+                                          <td
+                                            key={`cell-${rIdx}-${cIdx}`}
+                                            className={`align-top px-2 py-1 whitespace-pre-wrap ${
+                                              darkMode ? 'border-r border-white/5' : 'border-r border-gray-100'
+                                            }`}
+                                          >
+                                            {cell}
+                                          </td>
+                                        ))}
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </>
+                          ) : (
+                            <pre
+                              className={`whitespace-pre-wrap text-xs rounded-md p-2 border ${
+                                darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
+                              }`}
+                            >
+                              {safeJson(selectedVisual.structured_json)}
+                            </pre>
+                          )}
+                        </div>
+                      ) : (
+                        <pre
+                          className={`mt-2 whitespace-pre-wrap text-xs rounded-md p-2 border ${
+                            darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
+                          }`}
+                        >
+                          {safeJson(selectedVisual.structured_json)}
+                        </pre>
+                      )}
                     </details>
                   ) : null}
 

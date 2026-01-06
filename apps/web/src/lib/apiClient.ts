@@ -544,6 +544,35 @@ export async function apiUploadDocument(dealId: string, file: File, type = 'othe
   });
 }
 
+export type ProposedDealProfile = {
+  company_name: string | null;
+  deal_name: string | null;
+  investment_type: string | null;
+  round: string | null;
+  industry: string | null;
+};
+
+export type AutoProfileResponse = {
+  deal_id: string;
+  proposed_profile: ProposedDealProfile;
+  confidence: Record<string, number>;
+  sources: Record<string, string[]>;
+  warnings: string[];
+};
+
+export function apiAutoProfileDeal(dealId: string) {
+  return request<AutoProfileResponse>(`/api/v1/deals/${dealId}/auto-profile`, {
+    method: 'POST',
+  });
+}
+
+export function apiConfirmDealProfile(dealId: string, profile: ProposedDealProfile) {
+  return request<Deal>(`/api/v1/deals/${dealId}/confirm-profile`, {
+    method: 'POST',
+    body: JSON.stringify(profile),
+  }).then((deal) => normalizeDeal(deal));
+}
+
 export async function apiRetryDocument(dealId: string, documentId: string) {
   return request<Record<string, unknown>>(`/api/v1/deals/${dealId}/documents/${documentId}/retry`, {
     method: 'POST'

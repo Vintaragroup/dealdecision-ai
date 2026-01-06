@@ -33,6 +33,23 @@ async function hasTable(pool: DealRoutesPool, table: string) {
   }
 }
 
+async function hasColumn(pool: DealRoutesPool, tableName: string, columnName: string) {
+  try {
+    const { rows } = await pool.query<{ ok: number }>(
+      `SELECT 1 as ok
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = $1
+         AND column_name = $2
+       LIMIT 1`,
+      [tableName, columnName]
+    );
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 function requireDestructiveAuth(request: any): { ok: true } | { ok: false; status: number; error: string } {
   const adminToken = process.env.ADMIN_TOKEN;
   if (!adminToken) {
@@ -101,6 +118,204 @@ const dealDraftCreateSchema = z
     owner: z.string().optional(),
   })
   .optional();
+
+const dealConfirmProfileSchema = z.object({
+  company_name: z.string().min(1).nullable().optional(),
+  deal_name: z.string().min(1).nullable().optional(),
+  investment_type: z.string().min(1).nullable().optional(),
+  round: z.string().min(1).nullable().optional(),
+  industry: z.string().min(1).nullable().optional(),
+});
+
+type AutoProfileDocRow = {
+  id: string;
+  title: string;
+  full_text: string | null;
+  structured_data: any | null;
+  full_content: any | null;
+};
+
+function sanitizeProfileValue(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const s = sanitizeText(value).replace(/\s+/g, " ").trim();
+  if (!s) return null;
+  if (s.length > 120) return s.slice(0, 120);
+  return s;
+}
+
+function extractLabeledValue(text: string, label: string): string | null {
+  const re = new RegExp(`${label}\\s*[:\\-]\\s*([^\\n\\r]{2,120})`, "i");
+  const m = text.match(re);
+  return m ? sanitizeProfileValue(m[1]) : null;
+}
+
+function deriveNameFromFilenameLike(title: string): string | null {
+  const raw = String(title || "").trim();
+  if (!raw) return null;
+  const noExt = raw.replace(/\.[A-Za-z0-9]{2,6}$/, "");
+  const cleaned = noExt
+    .replace(/[_]+/g, " ")
+    .replace(/\b(pitch\s*deck|deck|presentation|data\s*room|dataroom|financials|model|term\s*sheet)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (cleaned.length < 2) return null;
+  const seg = cleaned.split(/\s[-–—|:]\s/)[0]?.trim();
+  if (!seg) return null;
+  return sanitizeProfileValue(seg);
+}
+
+function computeAutoProfileFromDocuments(docs: AutoProfileDocRow[]) {
+  const warnings: string[] = [];
+
+  const sources: Record<string, string[]> = {
+    company_name: [],
+    deal_name: [],
+    investment_type: [],
+    round: [],
+    industry: [],
+  };
+
+  const confidence: Record<string, number> = {
+    company_name: 0,
+    deal_name: 0,
+    investment_type: 0,
+    round: 0,
+    industry: 0,
+  };
+
+  const candidates: Record<string, Array<{ value: string; score: number; docId: string }>> = {
+    company_name: [],
+    investment_type: [],
+    round: [],
+    industry: [],
+  };
+
+  const docTexts = docs.map((d) => {
+    const fullText = typeof d.full_text === "string" ? d.full_text : "";
+    const base = `${d.title || ""}\n${fullText}`;
+    return { id: d.id, text: base.slice(0, 80_000) };
+  });
+
+  for (const { id: docId, text } of docTexts) {
+    if (!text.trim()) continue;
+
+    const labeledCompany =
+      extractLabeledValue(text, "Company Name") ||
+      extractLabeledValue(text, "Company") ||
+      extractLabeledValue(text, "Legal Name");
+
+    if (labeledCompany) {
+      candidates.company_name.push({ value: labeledCompany, score: 0.75, docId });
+    }
+
+    const industry = extractLabeledValue(text, "Industry") || extractLabeledValue(text, "Sector");
+    if (industry) {
+      candidates.industry.push({ value: industry, score: 0.65, docId });
+    }
+
+    const roundPatterns: Array<{ re: RegExp; value: string; score: number }> = [
+      { re: /\bpre[- ]?seed\b/i, value: "pre-seed", score: 0.9 },
+      { re: /\bseed\b/i, value: "seed", score: 0.8 },
+      { re: /\bseries\s*a\b/i, value: "series a", score: 0.9 },
+      { re: /\bseries\s*b\b/i, value: "series b", score: 0.9 },
+      { re: /\bseries\s*c\b/i, value: "series c", score: 0.9 },
+      { re: /\bseries\s*d\b/i, value: "series d", score: 0.9 },
+      { re: /\bbridge\b/i, value: "bridge", score: 0.7 },
+      { re: /\bangel\b/i, value: "angel", score: 0.6 },
+    ];
+
+    for (const p of roundPatterns) {
+      if (p.re.test(text)) {
+        candidates.round.push({ value: p.value, score: p.score, docId });
+      }
+    }
+
+    const investmentPatterns: Array<{ re: RegExp; value: string; score: number }> = [
+      { re: /\bSAFE\b/i, value: "safe", score: 0.9 },
+      { re: /convertible\s+note/i, value: "note", score: 0.85 },
+      { re: /\bterm\s*sheet\b/i, value: "equity", score: 0.65 },
+      { re: /preferred\s+stock/i, value: "equity", score: 0.75 },
+      { re: /\bequity\b/i, value: "equity", score: 0.7 },
+    ];
+
+    for (const p of investmentPatterns) {
+      if (p.re.test(text)) {
+        candidates.investment_type.push({ value: p.value, score: p.score, docId });
+      }
+    }
+  }
+
+  if (candidates.company_name.length === 0) {
+    for (const d of docs) {
+      const fromTitle = deriveNameFromFilenameLike(d.title);
+      if (fromTitle) {
+        candidates.company_name.push({ value: fromTitle, score: 0.35, docId: d.id });
+      }
+    }
+    if (candidates.company_name.length > 0) warnings.push("company_name inferred from filename (low confidence)");
+  }
+
+  const pickBest = (key: keyof typeof candidates): { value: string | null; conf: number; docIds: string[] } => {
+    const list = candidates[key] ?? [];
+    if (list.length === 0) return { value: null, conf: 0, docIds: [] };
+
+    const byValue = new Map<string, { value: string; max: number; docs: Set<string> }>();
+    for (const c of list) {
+      const v = c.value.trim();
+      const item = byValue.get(v) ?? { value: v, max: 0, docs: new Set<string>() };
+      item.max = Math.max(item.max, c.score);
+      item.docs.add(c.docId);
+      byValue.set(v, item);
+    }
+
+    const ranked = Array.from(byValue.values())
+      .map((x) => {
+        const agreeBoost = x.docs.size >= 2 ? 0.1 : 0;
+        const conf = Math.min(1, x.max + agreeBoost);
+        return { value: x.value, conf, docs: Array.from(x.docs) };
+      })
+      .sort((a, b) => b.conf - a.conf);
+
+    return { value: ranked[0]?.value ?? null, conf: ranked[0]?.conf ?? 0, docIds: ranked[0]?.docs ?? [] };
+  };
+
+  const company = pickBest("company_name");
+  const round = pickBest("round");
+  const investmentType = pickBest("investment_type");
+  const industry = pickBest("industry");
+
+  const dealName = company.value && round.value ? `${company.value} — ${round.value}` : company.value ? company.value : null;
+  const dealNameConf = dealName ? Math.min(1, Math.max(company.conf, round.conf) * 0.9) : 0;
+  const dealNameDocs = Array.from(new Set([...company.docIds, ...round.docIds]));
+
+  const proposed_profile = {
+    company_name: company.value,
+    deal_name: dealName,
+    investment_type: investmentType.value,
+    round: round.value,
+    industry: industry.value,
+  };
+
+  confidence.company_name = company.conf;
+  confidence.deal_name = dealNameConf;
+  confidence.investment_type = investmentType.conf;
+  confidence.round = round.conf;
+  confidence.industry = industry.conf;
+
+  sources.company_name = company.docIds;
+  sources.deal_name = dealNameDocs;
+  sources.investment_type = investmentType.docIds;
+  sources.round = round.docIds;
+  sources.industry = industry.docIds;
+
+  if (!docs.length) warnings.push("no documents found for deal");
+  if (!company.value) warnings.push("company_name not inferred");
+  if (!round.value) warnings.push("round not inferred");
+  if (!investmentType.value) warnings.push("investment_type not inferred");
+  if (!industry.value) warnings.push("industry not inferred");
+
+  return { proposed_profile, confidence, sources, warnings };
+}
 
 const dealUpdateSchema = dealCreateSchema.partial();
 
@@ -479,7 +694,156 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       [name, stage, priority, owner]
     );
 
-    return reply.status(201).send({ deal_id: rows[0]?.id });
+    const dealId = rows[0]?.id;
+
+    if (dealId && (await hasColumn(pool, "deals", "lifecycle_status"))) {
+      try {
+        await pool.query(`UPDATE deals SET lifecycle_status = 'draft', updated_at = now() WHERE id = $1`, [dealId]);
+      } catch {
+        // ignore
+      }
+    }
+
+    return reply.status(201).send({ deal_id: dealId });
+  });
+
+  app.post("/api/v1/deals/:deal_id/auto-profile", async (request, reply) => {
+    const dealIdRaw = (request.params as any)?.deal_id;
+    const dealId = sanitizeText(typeof dealIdRaw === "string" ? dealIdRaw : String(dealIdRaw ?? ""));
+    const warnings: string[] = [];
+
+    if (!dealId) {
+      return reply.status(400).send({ error: "deal_id is required" });
+    }
+
+    let docs: AutoProfileDocRow[] = [];
+    try {
+      const res = await pool.query<AutoProfileDocRow>(
+        `SELECT id, title, full_text, structured_data, full_content
+         FROM documents
+         WHERE deal_id = $1
+         ORDER BY uploaded_at DESC`,
+        [dealId]
+      );
+      docs = res.rows ?? [];
+    } catch {
+      warnings.push("failed to load documents for auto-profile");
+      docs = [];
+    }
+
+    const computed = computeAutoProfileFromDocuments(docs);
+    warnings.push(...computed.warnings);
+
+    const canPersist =
+      (await hasColumn(pool, "deals", "proposed_profile")) &&
+      (await hasColumn(pool, "deals", "proposed_profile_confidence")) &&
+      (await hasColumn(pool, "deals", "proposed_profile_sources"));
+
+    if (canPersist) {
+      try {
+        await pool.query(
+          `UPDATE deals
+           SET proposed_profile = $2,
+               proposed_profile_confidence = $3,
+               proposed_profile_sources = $4,
+               proposed_profile_warnings = $5,
+               updated_at = now()
+           WHERE id = $1`,
+          [dealId, computed.proposed_profile, computed.confidence, computed.sources, warnings]
+        );
+      } catch {
+        warnings.push("failed to persist proposed profile (non-fatal)");
+      }
+    } else {
+      warnings.push("proposed profile storage not available (missing columns)");
+    }
+
+    return reply.status(200).send({
+      deal_id: dealId,
+      proposed_profile: computed.proposed_profile,
+      confidence: computed.confidence,
+      sources: computed.sources,
+      warnings,
+    });
+  });
+
+  app.post("/api/v1/deals/:deal_id/confirm-profile", async (request, reply) => {
+    const dealIdRaw = (request.params as any)?.deal_id;
+    const dealId = sanitizeText(typeof dealIdRaw === "string" ? dealIdRaw : String(dealIdRaw ?? ""));
+    if (!dealId) {
+      return reply.status(400).send({ error: "deal_id is required" });
+    }
+
+    const parsed = dealConfirmProfileSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "Invalid input", details: parsed.error.flatten() });
+    }
+
+    const body = parsed.data;
+    const dealName = sanitizeProfileValue(body.deal_name) ?? null;
+    const companyName = sanitizeProfileValue(body.company_name) ?? null;
+    const industry = sanitizeProfileValue(body.industry) ?? null;
+    const investmentType = sanitizeProfileValue(body.investment_type) ?? null;
+    const round = sanitizeProfileValue(body.round) ?? null;
+
+    const hasLifecycle = await hasColumn(pool, "deals", "lifecycle_status");
+    const hasInvestmentType = await hasColumn(pool, "deals", "investment_type");
+    const hasRound = await hasColumn(pool, "deals", "round");
+    const hasProposal = await hasColumn(pool, "deals", "proposed_profile");
+    const hasIndustry = await hasColumn(pool, "deals", "industry");
+
+    try {
+      const setFragments: string[] = [];
+      const params: any[] = [dealId];
+      let idx = 2;
+
+      if (dealName) {
+        setFragments.push(`name = $${idx++}`);
+        params.push(dealName);
+      }
+      if (companyName) {
+        setFragments.push(`owner = $${idx++}`);
+        params.push(companyName);
+      }
+      if (industry && hasIndustry) {
+        setFragments.push(`industry = $${idx++}`);
+        params.push(industry);
+      }
+      if (investmentType && hasInvestmentType) {
+        setFragments.push(`investment_type = $${idx++}`);
+        params.push(investmentType);
+      }
+      if (round && hasRound) {
+        setFragments.push(`round = $${idx++}`);
+        params.push(round);
+      }
+      if (hasLifecycle) {
+        setFragments.push(`lifecycle_status = 'active'`);
+      }
+      if (hasProposal) {
+        setFragments.push(`proposed_profile = NULL`);
+        if (await hasColumn(pool, "deals", "proposed_profile_confidence")) setFragments.push(`proposed_profile_confidence = NULL`);
+        if (await hasColumn(pool, "deals", "proposed_profile_sources")) setFragments.push(`proposed_profile_sources = NULL`);
+        if (await hasColumn(pool, "deals", "proposed_profile_warnings")) setFragments.push(`proposed_profile_warnings = NULL`);
+      }
+
+      if (setFragments.length === 0) {
+        return reply.status(400).send({ error: "No fields provided to confirm" });
+      }
+
+      const { rows } = await pool.query<DealRow>(
+        `UPDATE deals SET ${setFragments.join(", ")}, updated_at = now() WHERE id = $1 RETURNING *`,
+        params
+      );
+
+      if (!rows?.[0]) {
+        return reply.status(404).send({ error: "Deal not found" });
+      }
+
+      return reply.status(200).send(mapDeal(rows[0], null, "full"));
+    } catch {
+      return reply.status(500).send({ error: "Failed to confirm profile" });
+    }
   });
 
   app.post("/api/v1/deals", async (request, reply) => {

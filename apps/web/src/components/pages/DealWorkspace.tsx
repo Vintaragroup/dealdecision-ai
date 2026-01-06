@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Tabs, Tab } from '../ui/tabs';
 import { Accordion, AccordionItem } from '../ui/accordion';
 import { Button } from '../ui/button';
+import { Input } from '../ui/input';
 import { ToastContainer, ToastType } from '../ui/Toast';
 import { DocumentsTab } from '../documents/DocumentsTab';
 import { DealFormData } from '../NewDealModal';
@@ -15,7 +16,7 @@ import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { EvidencePanel } from '../evidence/EvidencePanel';
-import { apiGetDeal, apiPostAnalyze, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, isLiveBackend, subscribeToEvents, type DealReport, type JobUpdatedEvent } from '../../lib/apiClient';
+import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiPostAnalyze, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, isLiveBackend, subscribeToEvents, type AutoProfileResponse, type DealReport, type JobUpdatedEvent, type ProposedDealProfile } from '../../lib/apiClient';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
 import { useUserRole } from '../../contexts/UserRoleContext';
@@ -103,6 +104,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [documentTitles, setDocumentTitles] = useState<Record<string, string>>({});
   const [dealFromApi, setDealFromApi] = useState<any>(null);
   const [reportFromApi, setReportFromApi] = useState<DealReport | null>(null);
+
+  const [autoProfileLoading, setAutoProfileLoading] = useState(false);
+  const [autoProfileResult, setAutoProfileResult] = useState<AutoProfileResponse | null>(null);
+  const [profileEdits, setProfileEdits] = useState<ProposedDealProfile>({
+    company_name: null,
+    deal_name: null,
+    investment_type: null,
+    round: null,
+    industry: null,
+  });
+  const [showProfileEditor, setShowProfileEditor] = useState(false);
   const lastEventIdRef = useRef<string | undefined>(undefined);
   const handledTerminalJobKeysRef = useRef<Set<string>>(new Set());
   const shownToastKeysRef = useRef<Set<string>>(new Set());
@@ -167,6 +179,55 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       active = false;
     };
   }, [dealId]);
+
+  const getConfidenceLabel = (v: unknown): 'High' | 'Med' | 'Low' => {
+    const n = typeof v === 'number' && Number.isFinite(v) ? v : 0;
+    if (n >= 0.8) return 'High';
+    if (n >= 0.5) return 'Med';
+    return 'Low';
+  };
+
+  const handleAnalyzeAndAutofill = async () => {
+    if (!dealId || !isLiveBackend()) return;
+    setAutoProfileLoading(true);
+    try {
+      const res = await apiAutoProfileDeal(dealId);
+      setAutoProfileResult(res);
+      setShowProfileEditor(true);
+
+      // Never overwrite user edits: only fill empty fields.
+      setProfileEdits((prev) => {
+        const next: ProposedDealProfile = { ...prev };
+        const proposed = res?.proposed_profile;
+        if (proposed) {
+          (['company_name', 'deal_name', 'investment_type', 'round', 'industry'] as const).forEach((k) => {
+            const current = prev[k];
+            const incoming = proposed[k];
+            if ((current === null || String(current).trim() === '') && incoming) {
+              next[k] = incoming;
+            }
+          });
+        }
+        return next;
+      });
+    } catch (err) {
+      addToast('error', 'Auto-profile failed', err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setAutoProfileLoading(false);
+    }
+  };
+
+  const handleConfirmProfile = async () => {
+    if (!dealId || !isLiveBackend()) return;
+    try {
+      const updated = await apiConfirmDealProfile(dealId, profileEdits);
+      setDealFromApi(updated);
+      setShowProfileEditor(false);
+      addToast('success', 'Profile confirmed', 'Deal fields updated.');
+    } catch (err) {
+      addToast('error', 'Confirm failed', err instanceof Error ? err.message : 'Unknown error');
+    }
+  };
 
   const isProbablyOcrJunk = (value: unknown): boolean => {
     if (typeof value !== 'string') return true;
@@ -1324,6 +1385,107 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             {/* Overview Tab */}
             {activeTab === 'overview' && (
               <div className="space-y-6">
+                {isLiveBackend() && dealId && (
+                  <div className={`p-5 rounded-2xl border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}>
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                          Upload-first: Auto-profile
+                        </div>
+                        <div className={`text-xs mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          Review and edit before confirming. No canonical fields are written until you confirm.
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          darkMode={darkMode}
+                          loading={autoProfileLoading}
+                          onClick={handleAnalyzeAndAutofill}
+                        >
+                          Analyze & Autofill
+                        </Button>
+                        {showProfileEditor && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            darkMode={darkMode}
+                            onClick={() => setShowProfileEditor(false)}
+                          >
+                            Skip for now
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    {showProfileEditor && (
+                      <div className="mt-4 space-y-3">
+                        {(
+                          [
+                            { key: 'company_name', label: 'Company name' },
+                            { key: 'deal_name', label: 'Deal name' },
+                            { key: 'investment_type', label: 'Investment type' },
+                            { key: 'round', label: 'Round' },
+                            { key: 'industry', label: 'Industry' },
+                          ] as const
+                        ).map(({ key, label }) => {
+                          const conf = autoProfileResult?.confidence?.[key];
+                          const confLabel = getConfidenceLabel(conf);
+                          const isLow = (typeof conf === 'number' ? conf : 0) < 0.5;
+                          const proposed = autoProfileResult?.proposed_profile?.[key] ?? null;
+                          const value = profileEdits[key] ?? '';
+                          return (
+                            <div key={key} className="space-y-1">
+                              <div className="flex items-center justify-between">
+                                <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{label}</div>
+                                <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                                  Confidence: {confLabel}
+                                </div>
+                              </div>
+                              <Input
+                                darkMode={darkMode}
+                                value={String(value)}
+                                placeholder={isLow && !proposed ? "Couldn't infer confidently." : ''}
+                                onChange={(e) =>
+                                  setProfileEdits((prev) => ({
+                                    ...prev,
+                                    [key]: e.target.value.trim() ? e.target.value : null,
+                                  }))
+                                }
+                              />
+                            </div>
+                          );
+                        })}
+
+                        {Array.isArray(autoProfileResult?.warnings) && autoProfileResult!.warnings.length > 0 && (
+                          <div className={`text-xs rounded-md px-3 py-2 border ${darkMode ? 'border-white/10 text-gray-400 bg-black/10' : 'border-gray-200 text-gray-600 bg-gray-50'}`}>
+                            {autoProfileResult!.warnings.join(' • ')}
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-end gap-2 pt-2">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            darkMode={darkMode}
+                            onClick={() => setShowProfileEditor(false)}
+                          >
+                            Skip for now
+                          </Button>
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            darkMode={darkMode}
+                            onClick={handleConfirmProfile}
+                          >
+                            Confirm & Create Deal
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
                 {/* VALUE CARD - Hero Element */}
                 {dealData?.estimatedSavings && (
                   <div className={`p-6 rounded-2xl border-2 shadow-[0_0_40px_rgba(99,102,241,0.25)] ${

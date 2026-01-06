@@ -98,6 +98,45 @@ Table extraction has a soft time budget (default ~4s) to avoid blocking the pipe
 - OCR is optional; without `pytesseract` + `tesseract`, table `rows` may be empty or sparsely filled.
 - Heuristic detection can miss borderless tables or dense non-tabular grids.
 
+## Bar chart extraction (v1)
+
+When a page looks like a **simple vertical bar chart** (single series), the service:
+
+- Sets `asset_type` to `"chart"`.
+- Keeps OCR fields the same.
+- Populates `extraction.structured_json` as:
+
+```json
+{
+  "chart": {
+    "type": "bar",
+    "title": "optional",
+    "x_labels": ["..."],
+    "series": [
+      { "name": "Series 1", "values": [0.1, 0.2], "unit": "optional", "values_are_normalized": true }
+    ],
+    "y_unit": "optional",
+    "confidence": 0.0,
+    "method": "bar_pixels_v1",
+    "notes": "optional"
+  }
+}
+```
+
+### Notes
+
+- If numeric axis mapping is not reliable, the extractor returns **normalized** values (`0..1`) and sets `values_are_normalized=true`.
+- `x_labels` are best-effort and may be empty.
+
+### Time budget
+
+- Env: `CHART_TIME_BUDGET_S` (default `4.0`)
+
+### Limitations
+
+- MVP assumes a single series (multiple colors/stacked bars are not handled yet).
+- Tables take precedence: if a page is detected as a table, it will not be classified as a chart.
+
 ## Run locally
 
 From repo root:

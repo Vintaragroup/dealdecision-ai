@@ -14,6 +14,7 @@ from PIL import Image
 
 from .extractors.layout import detect_layout_assets
 from .extractors.ocr import run_ocr_lite
+from .extractors.chart_bar import detect_bar_chart, extract_bar_chart
 from .extractors.table import detect_table, extract_table
 from .models import BBox, ExtractVisualsRequest, ExtractVisualsResponse, VisualAsset
 
@@ -94,6 +95,8 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
     # Soft time budget for table extraction so we never block the worker.
     table_budget_s = float(os.getenv("TABLE_TIME_BUDGET_S", "4.0"))
     table_deadline = started + table_budget_s
+    chart_budget_s = float(os.getenv("CHART_TIME_BUDGET_S", "4.0"))
+    chart_deadline = started + chart_budget_s
 
     base_log = {
         "document_id": req.document_id,
@@ -179,6 +182,13 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
             "table_cols": 0,
         }
 
+        chart_summary: Dict[str, Any] = {
+            "bar_detected": False,
+            "bar_count": 0,
+            "axis_mapping_succeeded": False,
+            "values_normalized": False,
+        }
+
         for a in assets:
             extraction, ocr_flags = run_ocr_lite(img)
             a.extraction = extraction
@@ -227,6 +237,40 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
                 # Bump confidences based on table extraction quality
                 a.extraction.confidence = max(a.extraction.confidence, table_conf)
                 a.confidence = max(a.confidence, table_conf)
+            else:
+                # Chart detection/extraction (full-page only in v1)
+                chart_res, chart_detect_flags = detect_bar_chart(img, deadline=chart_deadline)
+                if chart_detect_flags:
+                    a.quality_flags.update(chart_detect_flags)
+
+                if chart_res.detected:
+                    a.asset_type = "chart"
+                    structured, chart_flags = extract_bar_chart(
+                        img,
+                        detect=chart_res,
+                        ocr_blocks=extraction.ocr_blocks,
+                        deadline=chart_deadline,
+                    )
+                    if chart_flags:
+                        a.quality_flags.update(chart_flags)
+                    a.extraction.structured_json = structured
+
+                    chart_conf = float(structured.get("chart", {}).get("confidence", 0.0) or 0.0)
+                    a.extraction.confidence = max(a.extraction.confidence, chart_conf)
+                    a.confidence = max(a.confidence, chart_conf)
+
+                    try:
+                        series = structured.get("chart", {}).get("series", [])
+                        values_norm = bool(series and series[0].get("values_are_normalized") is True)
+                    except Exception:
+                        values_norm = False
+
+                    chart_summary = {
+                        "bar_detected": True,
+                        "bar_count": int(chart_res.bar_count),
+                        "axis_mapping_succeeded": bool(a.quality_flags.get("axis_mapping_succeeded") is True),
+                        "values_normalized": bool(values_norm),
+                    }
 
             # If OCR text exists, bump confidence a bit
             if extraction.ocr_text:
@@ -243,6 +287,7 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
                 "status": "ok",
                 "assets": len(assets),
                 **table_summary,
+                **chart_summary,
             },
         )
 

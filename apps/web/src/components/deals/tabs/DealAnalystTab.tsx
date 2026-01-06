@@ -60,6 +60,8 @@ export type BarChartPreviewModel = {
   truncated: boolean;
 };
 
+type NormalizedBbox = { x: number; y: number; w: number; h: number };
+
 export function formatTableTruncationLabel(model: TablePreviewModel): string | null {
   if (!model.truncated) return null;
   return `Showing first ${model.shownRows} of ${model.totalRows} rows, first ${model.shownCols} of ${model.totalCols} columns`;
@@ -72,6 +74,52 @@ export function formatBarChartTruncationLabel(model: BarChartPreviewModel): stri
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function parseNormalizedBbox(bbox: unknown): NormalizedBbox | null {
+  if (!isRecord(bbox)) return null;
+  const x = (bbox as any).x;
+  const y = (bbox as any).y;
+  const w = (bbox as any).w;
+  const h = (bbox as any).h;
+  if (typeof x !== 'number' || typeof y !== 'number' || typeof w !== 'number' || typeof h !== 'number') return null;
+  if (![x, y, w, h].every((v) => Number.isFinite(v))) return null;
+  return { x, y, w, h };
+}
+
+export function formatBboxLabel(bbox: unknown): string | null {
+  const b = parseNormalizedBbox(bbox);
+  if (!b) return null;
+  return `bbox x=${b.x.toFixed(2)} y=${b.y.toFixed(2)} w=${b.w.toFixed(2)} h=${b.h.toFixed(2)}`;
+}
+
+export function getQualityFlagChips(
+  qualityFlags: unknown,
+  caps: { maxChips: number } = { maxChips: 8 }
+): { chips: string[]; moreCount: number } {
+  const maxChips = Math.max(0, Math.floor(caps.maxChips));
+  const keys: string[] = [];
+
+  if (Array.isArray(qualityFlags)) {
+    for (const item of qualityFlags) {
+      if (typeof item === 'string' && item.trim().length > 0) keys.push(item.trim());
+      else if (isRecord(item) && typeof (item as any).key === 'string') keys.push(String((item as any).key).trim());
+      else if (isRecord(item) && typeof (item as any).name === 'string') keys.push(String((item as any).name).trim());
+    }
+  } else if (isRecord(qualityFlags)) {
+    for (const [k, v] of Object.entries(qualityFlags)) {
+      if (!k || k.trim().length === 0) continue;
+      // Prefer boolean true flags; also allow non-empty strings / non-null values.
+      if (v === true) keys.push(k);
+      else if (typeof v === 'string' && v.trim().length > 0) keys.push(k);
+      else if (v != null && v !== false) keys.push(k);
+    }
+  }
+
+  const uniqueSorted = Array.from(new Set(keys)).sort((a, b) => a.localeCompare(b));
+  const chips = uniqueSorted.slice(0, maxChips);
+  const moreCount = Math.max(0, uniqueSorted.length - chips.length);
+  return { chips, moreCount };
 }
 
 function formatCompactNumber(value: number, maxLen: number = 6): string {
@@ -390,6 +438,9 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
   const [visualDetailError, setVisualDetailError] = useState<string | null>(null);
   const [selectedVisual, setSelectedVisual] = useState<DocumentVisualAsset | null>(null);
 
+  const [imageLoadError, setImageLoadError] = useState(false);
+  const [showBboxOverlay, setShowBboxOverlay] = useState(false);
+
   const [structuredViewMode, setStructuredViewMode] = useState<StructuredViewMode>('raw');
 
   const tablePreviewModel = useMemo(
@@ -406,6 +457,11 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     const hasPreview = Boolean(tablePreviewModel || (!tablePreviewModel && barChartPreviewModel));
     setStructuredViewMode(hasPreview ? 'preview' : 'raw');
   }, [selectedVisual?.visual_asset_id, tablePreviewModel, barChartPreviewModel]);
+
+  useEffect(() => {
+    setImageLoadError(false);
+    setShowBboxOverlay(false);
+  }, [selectedVisual?.visual_asset_id]);
 
   const docAssetCacheRef = useRef(new Map<string, DocumentVisualAsset[]>());
 
@@ -679,21 +735,98 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
 
               {selectedVisual ? (
                 <>
-                  {resolveImageSrc(selectedVisual.image_uri) ? (
-                    <img
-                      src={resolveImageSrc(selectedVisual.image_uri) as string}
-                      alt="Visual asset"
-                      className={`w-full rounded-md border ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
-                    />
-                  ) : (
-                    <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                      Preview not available (image_uri: {selectedVisual.image_uri ?? '—'}).
-                    </div>
-                  )}
+                  <div className="space-y-2">
+                    <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Evidence</div>
 
-                  <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                    Page: {selectedVisual.page_index + 1} · Type: {selectedVisual.asset_type}
-                    {Number.isFinite(selectedVisual.confidence) ? ` · Confidence: ${(selectedVisual.confidence * 100).toFixed(0)}%` : ''}
+                    {(() => {
+                      const imgSrc = resolveImageSrc(selectedVisual.image_uri);
+                      const bbox = parseNormalizedBbox(selectedVisual.bbox);
+                      const bboxLabel = formatBboxLabel(selectedVisual.bbox);
+                      const flags = getQualityFlagChips(selectedVisual.quality_flags, { maxChips: 8 });
+
+                      return (
+                        <div className={`rounded-md border p-2 ${darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'}`}>
+                          {imgSrc && !imageLoadError ? (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <button
+                                  type="button"
+                                  className={`text-xs underline-offset-2 hover:underline ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+                                  onClick={() => setShowBboxOverlay((v) => !v)}
+                                >
+                                  {showBboxOverlay ? 'Hide bbox overlay' : 'Show bbox overlay'}
+                                </button>
+                                {showBboxOverlay ? (
+                                  <span className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Overlay is approximate</span>
+                                ) : null}
+                              </div>
+
+                              <div className="relative">
+                                <img
+                                  src={imgSrc}
+                                  alt="Visual asset crop"
+                                  className={`w-full max-h-[260px] object-contain rounded-md border ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
+                                  onError={() => setImageLoadError(true)}
+                                />
+                                {showBboxOverlay && bbox ? (
+                                  <div
+                                    className={`pointer-events-none absolute border-2 ${darkMode ? 'border-red-300/70' : 'border-red-500/70'}`}
+                                    style={{
+                                      left: `${bbox.x * 100}%`,
+                                      top: `${bbox.y * 100}%`,
+                                      width: `${bbox.w * 100}%`,
+                                      height: `${bbox.h * 100}%`,
+                                    }}
+                                  />
+                                ) : null}
+                              </div>
+                            </div>
+                          ) : imgSrc && imageLoadError ? (
+                            <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Failed to load image</div>
+                          ) : (
+                            <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                              No image crop available for this asset yet.
+                            </div>
+                          )}
+
+                          <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-700'}`}>
+                            Page {selectedVisual.page_index + 1} • {selectedVisual.asset_type}
+                            {Number.isFinite(selectedVisual.confidence) ? ` • confidence ${selectedVisual.confidence.toFixed(2)}` : ''}
+                          </div>
+
+                          <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                            Extractor: {selectedVisual.extractor_version || '—'}
+                            {selectedVisual.extracted_at ? ` • extracted ${selectedVisual.extracted_at}` : ''}
+                          </div>
+
+                          {bboxLabel ? (
+                            <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>{bboxLabel}</div>
+                          ) : (
+                            <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>bbox: —</div>
+                          )}
+
+                          {flags.chips.length > 0 ? (
+                            <div className="mt-2 flex flex-wrap items-center gap-1">
+                              {flags.chips.map((c) => (
+                                <span
+                                  key={`qf-${c}`}
+                                  className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${
+                                    darkMode ? 'border-white/10 bg-white/5 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
+                                  }`}
+                                >
+                                  {c}
+                                </span>
+                              ))}
+                              {flags.moreCount > 0 ? (
+                                <span className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>+{flags.moreCount} more</span>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <div className={`mt-2 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>quality_flags: —</div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>

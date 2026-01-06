@@ -14,6 +14,7 @@ from PIL import Image
 
 from .extractors.layout import detect_layout_assets
 from .extractors.ocr import run_ocr_lite
+from .extractors.table import detect_table, extract_table
 from .models import BBox, ExtractVisualsRequest, ExtractVisualsResponse, VisualAsset
 
 
@@ -90,6 +91,9 @@ def health() -> Dict[str, str]:
 @app.post("/extract-visuals")
 def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
     started = time.perf_counter()
+    # Soft time budget for table extraction so we never block the worker.
+    table_budget_s = float(os.getenv("TABLE_TIME_BUDGET_S", "4.0"))
+    table_deadline = started + table_budget_s
 
     base_log = {
         "document_id": req.document_id,
@@ -168,6 +172,13 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
         )
 
         # OCR-lite on each asset (v1: full-page only)
+        table_summary: Dict[str, Any] = {
+            "table_detected": False,
+            "table_method": None,
+            "table_rows": 0,
+            "table_cols": 0,
+        }
+
         for a in assets:
             extraction, ocr_flags = run_ocr_lite(img)
             a.extraction = extraction
@@ -176,6 +187,47 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
             a.image_hash = image_hash
             if ocr_flags:
                 a.quality_flags.update(ocr_flags)
+
+            # Table detection/extraction (full-page only in v1)
+            detect_res, table_detect_flags = detect_table(img, deadline=table_deadline)
+            if table_detect_flags:
+                a.quality_flags.update(table_detect_flags)
+
+            if detect_res.detected:
+                a.asset_type = "table"
+                # Keep OCR output as-is; only add structured_json.table
+                structured, table_flags = extract_table(
+                    img,
+                    detect=detect_res,
+                    ocr_blocks=extraction.ocr_blocks,
+                    deadline=table_deadline,
+                )
+                if table_flags:
+                    a.quality_flags.update(table_flags)
+
+                a.extraction.structured_json = structured
+
+                try:
+                    rows = structured.get("table", {}).get("rows", [])
+                    table_rows = len(rows) if isinstance(rows, list) else 0
+                    table_cols = len(rows[0]) if table_rows and isinstance(rows[0], list) else 0
+                except Exception:
+                    table_rows = 0
+                    table_cols = 0
+
+                table_conf = float(structured.get("table", {}).get("confidence", 0.0) or 0.0)
+                table_method = structured.get("table", {}).get("method")
+                table_summary = {
+                    "table_detected": True,
+                    "table_method": table_method,
+                    "table_rows": table_rows,
+                    "table_cols": table_cols,
+                }
+
+                # Bump confidences based on table extraction quality
+                a.extraction.confidence = max(a.extraction.confidence, table_conf)
+                a.confidence = max(a.confidence, table_conf)
+
             # If OCR text exists, bump confidence a bit
             if extraction.ocr_text:
                 a.confidence = max(a.confidence, extraction.confidence)
@@ -185,7 +237,13 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         _log_event(
             "extract_visuals",
-            {**base_log, "elapsed_ms": elapsed_ms, "status": "ok", "assets": len(assets)},
+            {
+                **base_log,
+                "elapsed_ms": elapsed_ms,
+                "status": "ok",
+                "assets": len(assets),
+                **table_summary,
+            },
         )
 
         out = ExtractVisualsResponse(

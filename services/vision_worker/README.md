@@ -5,6 +5,7 @@ Internal-only microservice for **visual extraction v1** (layout-lite + OCR-lite)
 - Stable API contract for extracting per-page visual assets (charts/tables/maps/diagrams/image-text regions).
 - **Safe by default**: always returns HTTP 200 with a well-formed response.
 - OCR is **optional**: if `pytesseract` or the `tesseract` binary is missing, responses include `quality_flags` and empty OCR fields.
+- Table extraction is supported (heuristic) and populates `extraction.structured_json` while preserving the stable API contract.
 
 ## Endpoints
 
@@ -51,6 +52,52 @@ Internal-only microservice for **visual extraction v1** (layout-lite + OCR-lite)
 }
 ```
 
+## Table extraction (v1)
+
+When a page looks like a grid/table, the service:
+
+- Sets `asset_type` to `"table"` (schema stays the same; only the value changes).
+- Keeps `extraction.ocr_text` / `extraction.ocr_blocks` the same as before.
+- Populates `extraction.structured_json` as:
+
+```json
+{
+  "table": {
+    "rows": [["...", "..."], ["...", "..."]],
+    "confidence": 0.0,
+    "method": "grid_lines_v1",
+    "notes": "optional"
+  }
+}
+```
+
+### Methods
+
+- `grid_lines_v1` (preferred): OpenCV morphology finds horizontal/vertical grid lines and slices cells.
+- `ocr_cluster_v1` (fallback): clusters OCR word boxes into row/column buckets.
+
+### Quality flags
+
+Flags are attached to `asset.quality_flags` and are best-effort:
+
+- `table_detected`: `true|false`
+- `grid_detected`: `true|false`
+- `used_fallback_clustering`: `true|false`
+- `time_budget_exceeded`: `true` if table extraction hit the per-request budget
+- OCR flags may also appear (existing behavior): `pytesseract_missing`, `tesseract_binary_missing`, `ocr=failed`, etc.
+
+### Time budget
+
+Table extraction has a soft time budget (default ~4s) to avoid blocking the pipeline.
+
+- Env: `TABLE_TIME_BUDGET_S` (default `4.0`)
+
+## Limitations
+
+- v1 runs table detection/extraction on the full page only (no region segmentation yet).
+- OCR is optional; without `pytesseract` + `tesseract`, table `rows` may be empty or sparsely filled.
+- Heuristic detection can miss borderless tables or dense non-tabular grids.
+
 ## Run locally
 
 From repo root:
@@ -78,6 +125,26 @@ curl -s http://localhost:8000/extract-visuals \
 ```
 
 ## Run in Docker
+
+From repo root:
+
+```bash
+docker build -t dealdecision-vision-worker services/vision_worker
+docker run --rm -p 8000:8000 dealdecision-vision-worker
+```
+
+If port `8000` is already in use:
+
+```bash
+docker run --rm -p 18000:8000 dealdecision-vision-worker
+curl -s http://localhost:18000/health
+```
+
+Health check:
+
+```bash
+curl -s http://localhost:8000/health
+```
 
 ```bash
 cd services/vision_worker

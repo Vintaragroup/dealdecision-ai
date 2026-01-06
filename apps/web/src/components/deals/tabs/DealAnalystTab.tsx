@@ -43,13 +43,59 @@ export type TablePreviewModel = {
   truncated: boolean;
 };
 
+export type BarChartPreviewModel = {
+  values: number[];
+  labels: string[];
+  displayHeights: number[]; // 0..1 (display only)
+  displayValues: string[];
+  title?: string;
+  unit?: string;
+  yUnit?: string;
+  method?: string;
+  confidence?: number;
+  notes?: string;
+  valuesAreNormalized: boolean;
+  totalBars: number;
+  shownBars: number;
+  truncated: boolean;
+};
+
 export function formatTableTruncationLabel(model: TablePreviewModel): string | null {
   if (!model.truncated) return null;
   return `Showing first ${model.shownRows} of ${model.totalRows} rows, first ${model.shownCols} of ${model.totalCols} columns`;
 }
 
+export function formatBarChartTruncationLabel(model: BarChartPreviewModel): string | null {
+  if (!model.truncated) return null;
+  return `Showing first ${model.shownBars} of ${model.totalBars} bars`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+function formatCompactNumber(value: number, maxLen: number = 6): string {
+  if (!Number.isFinite(value)) return '';
+
+  const fixed = (() => {
+    // Prefer a short fixed representation for typical chart values.
+    const s = value.toFixed(2);
+    // Trim trailing zeros and dot.
+    return s.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+  })();
+
+  if (fixed.length <= maxLen) return fixed;
+
+  const prec = (() => {
+    const abs = Math.abs(value);
+    if (abs >= 1000) return value.toPrecision(3);
+    if (abs >= 100) return value.toPrecision(4);
+    return value.toPrecision(3);
+  })();
+
+  const cleaned = prec.replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+  if (cleaned.length <= maxLen) return cleaned;
+  return cleaned.slice(0, maxLen);
 }
 
 export function getTablePreviewModel(
@@ -106,6 +152,71 @@ export function getTablePreviewModel(
     totalCols,
     shownRows,
     shownCols,
+    truncated,
+  };
+}
+
+export function getBarChartPreviewModel(
+  structuredJson: unknown,
+  caps: { maxBars: number } = { maxBars: 24 }
+): BarChartPreviewModel | null {
+  if (!isRecord(structuredJson)) return null;
+  const chart = structuredJson.chart;
+  if (!isRecord(chart)) return null;
+  if (chart.type !== 'bar') return null;
+
+  const series = chart.series;
+  if (!Array.isArray(series) || series.length === 0) return null;
+  const s0 = series[0];
+  if (!isRecord(s0)) return null;
+
+  const rawValues = s0.values;
+  if (!Array.isArray(rawValues) || rawValues.length === 0) return null;
+  if (!rawValues.every((v) => typeof v === 'number' && Number.isFinite(v))) return null;
+
+  const valuesAll = rawValues as number[];
+  const totalBars = valuesAll.length;
+  const shownBars = Math.max(0, Math.min(totalBars, caps.maxBars));
+  if (shownBars === 0) return null;
+
+  const values = valuesAll.slice(0, shownBars);
+  const maxValue = Math.max(0, ...valuesAll);
+  const denom = maxValue > 0 ? maxValue : 0;
+  const displayHeights = values.map((v) => {
+    if (denom <= 0) return 0;
+    return Math.max(0, Math.min(1, v / denom));
+  });
+
+  const xLabels = chart.x_labels;
+  const useXLabels = Array.isArray(xLabels) && xLabels.length === totalBars && xLabels.every((l) => typeof l === 'string');
+  const labels = (useXLabels ? (xLabels as string[]) : valuesAll.map((_, i) => String(i + 1))).slice(0, shownBars);
+
+  const displayValues = values.map((v) => formatCompactNumber(v, 6));
+
+  const title = typeof chart.title === 'string' ? chart.title : undefined;
+  const yUnit = typeof chart.y_unit === 'string' ? chart.y_unit : undefined;
+  const unit = typeof s0.unit === 'string' ? s0.unit : undefined;
+  const method = typeof chart.method === 'string' ? chart.method : undefined;
+  const confidence = typeof chart.confidence === 'number' ? chart.confidence : undefined;
+  const notes = typeof chart.notes === 'string' ? chart.notes : undefined;
+  const valuesAreNormalized = s0.values_are_normalized === true;
+
+  const truncated = totalBars > shownBars;
+
+  return {
+    values,
+    labels,
+    displayHeights,
+    displayValues,
+    title,
+    unit,
+    yUnit,
+    method,
+    confidence,
+    notes,
+    valuesAreNormalized,
+    totalBars,
+    shownBars,
     truncated,
   };
 }
@@ -286,9 +397,15 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     [selectedVisual]
   );
 
+  const barChartPreviewModel = useMemo(
+    () => (selectedVisual ? getBarChartPreviewModel(selectedVisual.structured_json) : null),
+    [selectedVisual]
+  );
+
   useEffect(() => {
-    setStructuredViewMode(tablePreviewModel ? 'preview' : 'raw');
-  }, [selectedVisual?.visual_asset_id, tablePreviewModel]);
+    const hasPreview = Boolean(tablePreviewModel || (!tablePreviewModel && barChartPreviewModel));
+    setStructuredViewMode(hasPreview ? 'preview' : 'raw');
+  }, [selectedVisual?.visual_asset_id, tablePreviewModel, barChartPreviewModel]);
 
   const docAssetCacheRef = useRef(new Map<string, DocumentVisualAsset[]>());
 
@@ -608,21 +725,55 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                   {selectedVisual.structured_json != null ? (
                     <details>
                       <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Structured JSON</summary>
-                      {tablePreviewModel ? (
+                      {tablePreviewModel || barChartPreviewModel ? (
                         <div className="mt-2 space-y-2">
                           <div className="flex items-center justify-between gap-2">
                             <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                              <span className={`font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Table extracted</span>
-                              {typeof tablePreviewModel.method === 'string' ? ` · ${tablePreviewModel.method}` : ''}
-                              {typeof tablePreviewModel.confidence === 'number' && Number.isFinite(tablePreviewModel.confidence)
-                                ? ` · ${tablePreviewModel.confidence.toFixed(2)}`
-                                : ''}
-                              {' · '}
-                              {tablePreviewModel.totalRows} rows × {tablePreviewModel.totalCols} cols
-                              {(() => {
-                                const label = formatTableTruncationLabel(tablePreviewModel);
-                                return label ? ` · ${label}` : '';
-                              })()}
+                              {tablePreviewModel ? (
+                                <>
+                                  <span className={`font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Table extracted</span>
+                                  {typeof tablePreviewModel.method === 'string' ? ` · ${tablePreviewModel.method}` : ''}
+                                  {typeof tablePreviewModel.confidence === 'number' && Number.isFinite(tablePreviewModel.confidence)
+                                    ? ` · ${tablePreviewModel.confidence.toFixed(2)}`
+                                    : ''}
+                                  {' · '}
+                                  {tablePreviewModel.totalRows} rows × {tablePreviewModel.totalCols} cols
+                                  {(() => {
+                                    const label = formatTableTruncationLabel(tablePreviewModel);
+                                    return label ? ` · ${label}` : '';
+                                  })()}
+                                </>
+                              ) : barChartPreviewModel ? (
+                                <>
+                                  <span className={`font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Bar chart extracted</span>
+                                  {typeof barChartPreviewModel.method === 'string' ? ` · ${barChartPreviewModel.method}` : ''}
+                                  {typeof barChartPreviewModel.confidence === 'number' && Number.isFinite(barChartPreviewModel.confidence)
+                                    ? ` · ${barChartPreviewModel.confidence.toFixed(2)}`
+                                    : ''}
+                                  {typeof barChartPreviewModel.title === 'string' && barChartPreviewModel.title.trim().length > 0
+                                    ? ` · ${barChartPreviewModel.title}`
+                                    : ''}
+                                  {typeof barChartPreviewModel.unit === 'string' && barChartPreviewModel.unit.trim().length > 0
+                                    ? ` · Unit: ${barChartPreviewModel.unit}`
+                                    : typeof barChartPreviewModel.yUnit === 'string' && barChartPreviewModel.yUnit.trim().length > 0
+                                      ? ` · Unit: ${barChartPreviewModel.yUnit}`
+                                      : ''}
+                                  {(() => {
+                                    const label = formatBarChartTruncationLabel(barChartPreviewModel);
+                                    return label ? ` · ${label}` : '';
+                                  })()}
+                                </>
+                              ) : null}
+                              {barChartPreviewModel?.valuesAreNormalized ? (
+                                <span
+                                  className={`ml-2 inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${
+                                    darkMode ? 'border-white/10 bg-white/5 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
+                                  }`}
+                                  title="Heights reflect relative proportions; not absolute units."
+                                >
+                                  Normalized values (axis not read)
+                                </span>
+                              ) : null}
                             </div>
 
                             <div
@@ -667,33 +818,83 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
 
                           {structuredViewMode === 'preview' ? (
                             <>
-                              {typeof tablePreviewModel.notes === 'string' && tablePreviewModel.notes.trim().length > 0 ? (
-                                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Notes: {tablePreviewModel.notes}</div>
-                              ) : null}
-                              <div
-                                className={`overflow-auto max-h-[420px] rounded-md border ${
-                                  darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'
-                                }`}
-                              >
-                                <table className={`min-w-full text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                                  <tbody>
-                                    {tablePreviewModel.rows.map((row, rIdx) => (
-                                      <tr key={`row-${rIdx}`} className={darkMode ? 'border-b border-white/5' : 'border-b border-gray-100'}>
-                                        {row.map((cell, cIdx) => (
-                                          <td
-                                            key={`cell-${rIdx}-${cIdx}`}
-                                            className={`align-top px-2 py-1 whitespace-pre-wrap ${
-                                              darkMode ? 'border-r border-white/5' : 'border-r border-gray-100'
-                                            }`}
-                                          >
-                                            {cell}
-                                          </td>
+                              {tablePreviewModel ? (
+                                <>
+                                  {typeof tablePreviewModel.notes === 'string' && tablePreviewModel.notes.trim().length > 0 ? (
+                                    <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Notes: {tablePreviewModel.notes}</div>
+                                  ) : null}
+                                  <div
+                                    className={`overflow-auto max-h-[420px] rounded-md border ${
+                                      darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'
+                                    }`}
+                                  >
+                                    <table className={`min-w-full text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                      <tbody>
+                                        {tablePreviewModel.rows.map((row, rIdx) => (
+                                          <tr key={`row-${rIdx}`} className={darkMode ? 'border-b border-white/5' : 'border-b border-gray-100'}>
+                                            {row.map((cell, cIdx) => (
+                                              <td
+                                                key={`cell-${rIdx}-${cIdx}`}
+                                                className={`align-top px-2 py-1 whitespace-pre-wrap ${
+                                                  darkMode ? 'border-r border-white/5' : 'border-r border-gray-100'
+                                                }`}
+                                              >
+                                                {cell}
+                                              </td>
+                                            ))}
+                                          </tr>
                                         ))}
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </>
+                              ) : barChartPreviewModel ? (
+                                <>
+                                  {barChartPreviewModel.valuesAreNormalized ? (
+                                    <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                                      Heights reflect relative proportions; not absolute units.
+                                    </div>
+                                  ) : null}
+                                  {typeof barChartPreviewModel.notes === 'string' && barChartPreviewModel.notes.trim().length > 0 ? (
+                                    <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Notes: {barChartPreviewModel.notes}</div>
+                                  ) : null}
+                                  <div
+                                    className={`overflow-auto max-h-[420px] rounded-md border p-3 ${
+                                      darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'
+                                    }`}
+                                  >
+                                    <div className="min-w-max">
+                                      <div className="flex items-end gap-3">
+                                        {barChartPreviewModel.values.map((v, i) => {
+                                          const h = barChartPreviewModel.displayHeights[i] ?? 0;
+                                          const label = barChartPreviewModel.labels[i] ?? String(i + 1);
+                                          const dv = barChartPreviewModel.displayValues[i] ?? '';
+                                          return (
+                                            <div key={`bar-${i}`} className="flex flex-col items-center justify-end">
+                                              <div className={`text-[10px] leading-none mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`} title={String(v)}>
+                                                {dv}
+                                              </div>
+                                              <div className="h-28 w-10 flex items-end">
+                                                <div
+                                                  className={`w-full rounded-sm ${darkMode ? 'bg-white/20' : 'bg-gray-700'}`}
+                                                  style={{ height: `${Math.round(h * 100)}%` }}
+                                                  title={barChartPreviewModel.valuesAreNormalized ? 'Normalized values (axis not read)' : undefined}
+                                                />
+                                              </div>
+                                              <div
+                                                className={`mt-1 max-w-[2.5rem] truncate text-[10px] leading-none ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}
+                                                title={label}
+                                              >
+                                                {label}
+                                              </div>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </>
+                              ) : null}
                             </>
                           ) : (
                             <pre

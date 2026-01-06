@@ -15,7 +15,7 @@ import {
   PartyPopper
 } from 'lucide-react';
 import { AnimatedCounter } from './AnimatedCounter';
-import { apiCreateDeal, isLiveBackend } from '../lib/apiClient';
+import { apiCreateDeal, apiCreateDealDraft, apiGetDeal, apiUploadDocument, isLiveBackend } from '../lib/apiClient';
 
 import type { Deal } from '@dealdecision/contracts';
 
@@ -73,6 +73,17 @@ export function NewDealModal({ isOpen, onClose, onSuccess, onCreatedDeal, darkMo
   const [showSuccess, setShowSuccess] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  type UploadItem = {
+    file: File;
+    status: 'pending' | 'uploading' | 'success' | 'error';
+    error?: string;
+    documentId?: string;
+  };
+
+  const [showUploadFirst, setShowUploadFirst] = useState(false);
+  const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
+  const [uploadDealId, setUploadDealId] = useState<string | null>(null);
 
   const dealTypes = [
     { value: 'seed', label: 'Seed Round' },
@@ -207,9 +218,129 @@ export function NewDealModal({ isOpen, onClose, onSuccess, onCreatedDeal, darkMo
     }
   };
 
+  const handleStartUploadFirst = () => {
+    setSubmitError(null);
+    if (!isLiveBackend()) {
+      setSubmitError('Upload-first creation requires the live backend.');
+      return;
+    }
+    setShowUploadFirst(true);
+  };
+
+  const handlePickUploadFiles = (files: FileList | null) => {
+    setSubmitError(null);
+    if (!files || files.length === 0) {
+      setUploadItems([]);
+      return;
+    }
+    const next: UploadItem[] = Array.from(files).map((file) => ({ file, status: 'pending' }));
+    setUploadItems(next);
+  };
+
+  const uploadSingle = async (dealId: string, idx: number) => {
+    const item = uploadItems[idx];
+    if (!item) return;
+
+    setUploadItems((prev) => prev.map((it, i) => (i === idx ? { ...it, status: 'uploading', error: undefined } : it)));
+    try {
+      const res = await apiUploadDocument(dealId, item.file, 'other', item.file.name);
+      const docId = res?.document?.document_id;
+      setUploadItems((prev) =>
+        prev.map((it, i) => (i === idx ? { ...it, status: 'success', documentId: docId } : it))
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Upload failed';
+      setUploadItems((prev) => prev.map((it, i) => (i === idx ? { ...it, status: 'error', error: message } : it)));
+      throw err;
+    }
+  };
+
+  const handleCreateDraftAndUpload = async () => {
+    if (submitting) return;
+    setSubmitError(null);
+
+    if (!isLiveBackend()) {
+      setSubmitError('Upload-first creation requires the live backend.');
+      return;
+    }
+
+    if (uploadItems.length === 0) {
+      setSubmitError('Select at least one document to upload.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const draft = await apiCreateDealDraft({
+        name: formData.name || undefined,
+        owner: formData.company || undefined,
+        stage: 'intake',
+        priority: 'medium',
+      });
+
+      if (!draft?.deal_id) {
+        throw new Error('Draft deal creation failed');
+      }
+
+      setUploadDealId(draft.deal_id);
+
+      // Upload sequentially for deterministic progress UX.
+      for (let i = 0; i < uploadItems.length; i += 1) {
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await uploadSingle(draft.deal_id, i);
+        } catch {
+          // keep going; user can retry failed items
+        }
+      }
+
+      // Fetch the created deal so the app can navigate using the existing createdDeal path.
+      const createdDeal = await apiGetDeal(draft.deal_id);
+      onCreatedDeal?.(createdDeal);
+
+      const savings = calculateSavings();
+      const dealData: DealFormData = {
+        id: draft.deal_id,
+        name: formData.name || createdDeal.name || 'Untitled Deal',
+        company: formData.company || createdDeal.owner || 'Unknown Company',
+        companyName: formData.company || formData.name || createdDeal.name || 'Unknown Company',
+        type: formData.type || 'seed',
+        stage: formData.stage || 'idea',
+        investmentAmount: formData.investmentAmount || 500000,
+        fundingAmount: (formData.investmentAmount || 500000).toString(),
+        industry: formData.industry || '',
+        targetMarket: formData.targetMarket || '',
+        revenue: formData.revenue || '',
+        teamSize: formData.teamSize || '',
+        customers: formData.customers || '',
+        growthRate: formData.growthRate || '',
+        uniqueValue: formData.uniqueValue || '',
+        competitiveAdvantage: formData.competitiveAdvantage || '',
+        previousFunding: formData.previousFunding || '',
+        founderExperience: formData.founderExperience || '',
+        description: formData.description || '',
+        estimatedSavings: savings,
+      };
+
+      setFormData({ ...formData, estimatedSavings: savings });
+      setShowSuccess(true);
+      setTimeout(() => {
+        onSuccess(dealData, createdDeal);
+        handleClose();
+      }, 1500);
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Failed to create draft deal');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const handleClose = () => {
     setStep(1);
     setShowSuccess(false);
+    setShowUploadFirst(false);
+    setUploadItems([]);
+    setUploadDealId(null);
     setFormData({
       type: 'seed',
       stage: 'idea',
@@ -315,6 +446,77 @@ export function NewDealModal({ isOpen, onClose, onSuccess, onCreatedDeal, darkMo
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                   rows={3}
                 />
+              </div>
+
+              {/* Upload-first (additive) */}
+              <div className={`mt-2 p-4 rounded-xl border ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'}`}>
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                      Upload documents first
+                    </div>
+                    <div className={`text-xs mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      Create a draft deal, then upload your pitch deck, financials, or data room docs.
+                    </div>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    darkMode={darkMode}
+                    onClick={handleStartUploadFirst}
+                    disabled={submitting}
+                  >
+                    {showUploadFirst ? 'Selected' : 'Upload First'}
+                  </Button>
+                </div>
+
+                {showUploadFirst && (
+                  <div className="mt-4 space-y-3">
+                    <Input
+                      darkMode={darkMode}
+                      type="file"
+                      multiple
+                      onChange={(e) => handlePickUploadFiles(e.target.files)}
+                    />
+
+                    {uploadItems.length > 0 && (
+                      <div className="space-y-2">
+                        {uploadItems.map((item, idx) => (
+                          <div
+                            key={`${item.file.name}-${item.file.size}-${idx}`}
+                            className={`flex items-center justify-between gap-3 text-sm rounded-md px-3 py-2 border ${
+                              darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <div className={`truncate ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                {item.file.name}
+                              </div>
+                              <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                {item.status === 'pending' && 'Ready'}
+                                {item.status === 'uploading' && 'Uploading...'}
+                                {item.status === 'success' && 'Uploaded'}
+                                {item.status === 'error' && (item.error || 'Failed')}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2 shrink-0">
+                              {item.status === 'error' && uploadDealId && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  darkMode={darkMode}
+                                  onClick={() => uploadSingle(uploadDealId, idx)}
+                                >
+                                  Retry
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -442,15 +644,29 @@ export function NewDealModal({ isOpen, onClose, onSuccess, onCreatedDeal, darkMo
               </Button>
             )}
 
-            <Button
-              variant="primary"
-              darkMode={darkMode}
-              onClick={handleNext}
-              disabled={submitting || (step === 1 ? !isStep1Valid : !isStep2Valid)}
-              icon={step === 2 ? <Rocket className="w-4 h-4" /> : <ArrowRight className="w-4 h-4" />}
-            >
-              {submitting ? 'Creating...' : step === 1 ? 'Continue' : 'Create Deal'}
-            </Button>
+            <div className="flex items-center gap-2">
+              {step === 1 && showUploadFirst && (
+                <Button
+                  variant="primary"
+                  darkMode={darkMode}
+                  onClick={handleCreateDraftAndUpload}
+                  disabled={submitting || !isStep1Valid}
+                  icon={<Rocket className="w-4 h-4" />}
+                >
+                  {submitting ? 'Creating...' : 'Create Draft & Upload'}
+                </Button>
+              )}
+
+              <Button
+                variant="primary"
+                darkMode={darkMode}
+                onClick={handleNext}
+                disabled={submitting || (step === 1 ? !isStep1Valid : !isStep2Valid)}
+                icon={step === 2 ? <Rocket className="w-4 h-4" /> : <ArrowRight className="w-4 h-4" />}
+              >
+                {submitting ? 'Creating...' : step === 1 ? 'Continue' : 'Create Deal'}
+              </Button>
+            </div>
           </div>
         </>
       ) : (

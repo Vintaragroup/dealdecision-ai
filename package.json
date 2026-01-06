@@ -15,6 +15,8 @@
     "verify:documents:all": "tsx scripts/verify-documents-all-deals.ts",
     "reprocess:extraction:all": "tsx scripts/reprocess-extraction-all-deals.ts",
     "rebuild:deals": "tsx scripts/rebuild-deals.ts",
+    "smoke:analyst-evidence": "tsx apps/api/scripts/smoke-test-analyst-evidence.ts",
+    "smoke:analyst-evidence:docker": "pnpm smoke:analyst-evidence --api-base-url http://localhost:9000",
     "refresh:extraction:analysis:all": "tsx scripts/refresh-extraction-analysis-all-deals.ts"
   },
   "devDependencies": {

@@ -67,6 +67,8 @@ function parseIntWithDefault(input: string | undefined, fallback: number): numbe
 	return Number.isFinite(v) ? v : fallback;
 }
 
+let didWarnVisualExtractionDisabled = false;
+
 export function getVisionExtractorConfig(env: NodeJS.ProcessEnv = process.env): VisionExtractorConfig {
 	return {
 		enabled: parseBool(env.ENABLE_VISUAL_EXTRACTION),
@@ -468,7 +470,17 @@ export async function enqueueExtractVisualsIfPossible(params: {
 	resolveOptions?: { fsImpl?: FsLike; env?: NodeJS.ProcessEnv };
 }): Promise<boolean> {
 	const logger = params.logger ?? console;
-	if (!params.config.enabled) return false;
+	if (!params.config.enabled) {
+		// Optional fail-safe warning: once per process, when ingest completion tries to enqueue visuals.
+		// Only warn for unset or explicit "0" to avoid noisy logs for other falsey values.
+		const raw = process.env.ENABLE_VISUAL_EXTRACTION;
+		const normalized = typeof raw === "string" ? raw.trim() : "";
+		if (!didWarnVisualExtractionDisabled && (normalized.length === 0 || normalized === "0")) {
+			didWarnVisualExtractionDisabled = true;
+			logger.warn("Visual extraction disabled: ENABLE_VISUAL_EXTRACTION not set");
+		}
+		return false;
+	}
 
 	const imageUris = await resolvePageImageUris(params.pool, params.documentId, {
 		logger,

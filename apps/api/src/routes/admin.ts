@@ -62,6 +62,52 @@ export async function registerAdminRoutes(app: FastifyInstance) {
   });
 
   /**
+   * GET /api/v1/system/env-check
+   * Dev-only runtime check for environment flags.
+   * Safe to remove later; must not mutate state.
+   */
+  app.get(
+    "/api/v1/system/env-check",
+    {
+      preHandler: (request, reply, next) => {
+        // Dev-only endpoint: hide in production.
+        // Treat NODE_ENV unset as non-production (common in local Docker dev).
+        if (process.env.NODE_ENV === "production") {
+          reply.status(404).send({ error: "Not found" });
+          return;
+        }
+
+        // If an admin token is configured, require it. Otherwise allow in non-production.
+        const adminToken = process.env.ADMIN_TOKEN;
+        if (typeof adminToken === "string" && adminToken.trim().length > 0) {
+          requireAdminAuth(request, reply, next);
+          return;
+        }
+
+        next();
+      },
+    },
+    async (request, reply) => {
+      const raw = process.env.ENABLE_VISUAL_EXTRACTION;
+      const normalized = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+
+      const enabled = normalized
+        ? ["1", "true", "yes", "on"].includes(normalized)
+          ? "1"
+          : "0"
+        : null;
+
+      return reply.send({
+        api: {
+          ENABLE_VISUAL_EXTRACTION: enabled,
+        },
+        worker_expected: true,
+        notes: ["worker logs will show ENABLE_VISUAL_EXTRACTION at startup"],
+      });
+    }
+  );
+
+  /**
    * POST /api/v1/admin/feature-flags/:featureName/percentage
    * Set percentage rollout for a feature
    * 

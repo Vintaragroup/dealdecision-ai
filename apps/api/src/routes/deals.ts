@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { randomUUID } from "crypto";
 import { getPool } from "../lib/db";
 import type { Deal } from "@dealdecision/contracts";
 import { enqueueJob } from "../services/jobs";
@@ -91,6 +92,15 @@ const dealCreateSchema = z.object({
   score: z.number().optional(),
   owner: z.string().optional(),
 });
+
+const dealDraftCreateSchema = z
+  .object({
+    name: z.string().min(1).optional(),
+    stage: dealStageSchema.optional(),
+    priority: dealPrioritySchema.optional(),
+    owner: z.string().optional(),
+  })
+  .optional();
 
 const dealUpdateSchema = dealCreateSchema.partial();
 
@@ -443,6 +453,33 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     );
 
     return reply.send({ deal_id: dealId, nodes, edges, warnings });
+  });
+
+  // Create a minimal deal record suitable for an upload-first flow.
+  // Returns only {deal_id} so the client can immediately attach documents.
+  app.post("/api/v1/deals/draft", async (request, reply) => {
+    const parsed = dealDraftCreateSchema?.safeParse(request.body);
+    if (parsed && !parsed.success) {
+      return reply.status(400).send({ error: "Invalid input", details: parsed.error.flatten() });
+    }
+
+    const data = parsed?.success ? parsed.data : undefined;
+
+    const stage = data?.stage ?? "intake";
+    const priority = data?.priority ?? "medium";
+    const owner = data?.owner ?? null;
+
+    const requestedName = typeof data?.name === "string" ? sanitizeText(data.name) : "";
+    const name = requestedName || `Draft Deal ${randomUUID().slice(0, 8)}`;
+
+    const { rows } = await pool.query<{ id: string }>(
+      `INSERT INTO deals (name, stage, priority, owner)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id`,
+      [name, stage, priority, owner]
+    );
+
+    return reply.status(201).send({ deal_id: rows[0]?.id });
   });
 
   app.post("/api/v1/deals", async (request, reply) => {

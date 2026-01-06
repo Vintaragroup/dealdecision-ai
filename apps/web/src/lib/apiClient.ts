@@ -268,6 +268,18 @@ export function apiCreateDeal(input: {
   }).then((deal) => normalizeDeal(deal));
 }
 
+export function apiCreateDealDraft(input?: {
+  name?: string;
+  stage?: Deal['stage'];
+  priority?: Deal['priority'];
+  owner?: string;
+}) {
+  return request<{ deal_id: string }>(`/api/v1/deals/draft`, {
+    method: 'POST',
+    body: JSON.stringify(input ?? {}),
+  });
+}
+
 export function apiGetDeal(dealId: string) {
   return request<Deal>(`/api/v1/deals/${dealId}`).then((deal) => normalizeDeal(deal));
 }

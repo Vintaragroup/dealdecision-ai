@@ -55,6 +55,12 @@ import type { VerificationResult } from "./lib/verification";
 import { OpenAIGPT4oProvider } from "./lib/llm/providers/openai-provider";
 import type { ProviderConfig } from "./lib/llm/types";
 
+// Deterministic startup log for Docker verification.
+// Do not log secrets; only the explicit flag value.
+console.info(
+	`VISUAL_EXTRACTION_FLAG: ENABLE_VISUAL_EXTRACTION=${process.env.ENABLE_VISUAL_EXTRACTION || "(unset)"}`
+);
+
 // Polyfill Promise.withResolvers for Node runtimes that don't provide it yet (Node < 22)
 if (typeof (Promise as any).withResolvers !== "function") {
 	(Promise as any).withResolvers = function <T = unknown>() {

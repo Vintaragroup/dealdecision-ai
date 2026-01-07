@@ -1,21 +1,51 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import ReactFlow, {
+import {
+  ReactFlow,
   Background,
   Controls,
   MiniMap,
-  type Node,
+  Panel,
+  useEdgesState,
+  useNodesState,
   type Edge,
-  type NodeProps,
-} from 'reactflow';
-import { AlertCircle, RefreshCw } from 'lucide-react';
+  type Node,
+  type ReactFlowInstance,
+} from '@xyflow/react';
+import { AlertCircle, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
 import { Button } from '../../ui/button';
 import {
   apiGetDealLineage,
   apiGetDocumentVisualAssets,
   isLiveBackend,
+  resolveApiAssetUrl,
   type DealLineageResponse,
   type DocumentVisualAsset,
 } from '../../../lib/apiClient';
+
+import { layoutGraph } from '../analyst/graph/layout';
+import { FloatingEdge } from '../analyst/graph/FloatingEdge';
+import {
+  computeVisibleGraph,
+  defaultExpandedForNode,
+  type ExpandedById,
+} from '../analyst/graph/visibility';
+import {
+  DealNode,
+  DefaultNode,
+  DocumentNode,
+  EvidenceNode,
+  SegmentNode,
+  VisualAssetNode as AnalystVisualAssetNode,
+} from '../analyst/graph/nodes';
+
+import {
+  getDevtoolsConsoleLoggingEnabled,
+  getReactFlowDevtoolsEnabled,
+  ReactFlowDevToolsOverlay,
+  ReactFlowViewportBadge,
+  useReactFlowChangeLogger,
+  type DevtoolsSelection,
+} from './reactflow-devtools';
 
 type DealAnalystTabProps = {
   dealId: string;
@@ -277,163 +307,138 @@ function safeJson(value: unknown): string {
   }
 }
 
-function resolveImageSrc(imageUri: string | null): string | null {
-  if (!imageUri) return null;
-  const trimmed = imageUri.trim();
-  if (!trimmed) return null;
-  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed;
-  if (trimmed.startsWith('/')) {
-    const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:9000';
-    return `${apiBase}${trimmed}`;
-  }
-  return null;
+function normalizeLineageNodeType(raw: any): 'deal' | 'document' | 'segment' | 'visual_asset' | 'evidence' | 'default' {
+  const t0 = String(raw?.type ?? raw?.node_type ?? '').trim();
+  const t = t0.toLowerCase();
+  if (t === 'deal') return 'deal';
+  if (t === 'document') return 'document';
+  if (t === 'segment') return 'segment';
+  if (t === 'visual_asset' || t === 'visual asset') return 'visual_asset';
+  if (t === 'evidence') return 'evidence';
+  return 'default';
 }
 
-function buildLayout(lineage: DealLineageResponse, darkMode: boolean): { nodes: Node[]; edges: Edge[] } {
-  const byId = new Map<string, any>();
-  for (const n of lineage.nodes || []) byId.set(n.id, n);
+function getLineageNodeId(raw: any): string {
+  const id = raw?.node_id ?? raw?.id;
+  return typeof id === 'string' && id.trim().length > 0 ? id : '';
+}
 
-  const edges: Edge[] = (lineage.edges || []).map((e) => ({
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    animated: false,
-    style: darkMode ? { stroke: 'rgba(255,255,255,0.2)' } : { stroke: 'rgba(17,24,39,0.25)' },
-  }));
+let didLogVisualAssetNodeTypes = false;
 
-  const dealNode = (lineage.nodes || []).find((n) => n.type === 'deal') ?? lineage.nodes?.[0];
-  const dealNodeId = typeof dealNode?.id === 'string' ? dealNode.id : `deal:${lineage.deal_id}`;
+function buildFullGraphFromLineage(lineage: DealLineageResponse): { nodes: Node[]; edges: Edge[] } {
+  const nodes: Node[] = [];
+  const edges: Edge[] = [];
 
-  const docEdgeTargets = edges
-    .filter((e) => e.source === dealNodeId)
-    .map((e) => e.target);
+  // DEV-only: verify lineage-enriched visual_asset fields survive mapping into React Flow nodes.
+  let didLogLineageVisualAssetMapping = false;
 
-  const docIds = docEdgeTargets.length > 0
-    ? docEdgeTargets
-    : (lineage.nodes || []).filter((n) => n.type === 'document').map((n) => n.id);
+  for (let idx = 0; idx < (lineage.nodes || []).length; idx++) {
+    const raw = (lineage.nodes || [])[idx] as any;
+    const nodeType = normalizeLineageNodeType(raw);
+    const id = getLineageNodeId(raw) || `unknown:${nodeType}:${idx}`;
+    const label =
+      raw?.data?.label ??
+      raw?.label ??
+      raw?.data?.title ??
+      raw?.metadata?.title ??
+      id;
 
-  const visualByDoc = new Map<string, string[]>();
-  for (const e of edges) {
-    const src = byId.get(e.source);
-    const tgt = byId.get(e.target);
-    if (src?.type === 'document' && tgt?.type === 'visual_asset') {
-      const list = visualByDoc.get(e.source) ?? [];
-      list.push(e.target);
-      visualByDoc.set(e.source, list);
-    }
-  }
+    const mapped: Node = {
+      id,
+      type: nodeType,
+      position: { x: 0, y: 0 },
+      data: {
+        ...(raw?.data ?? {}),
+        ...(raw?.metadata ? { __metadata: raw.metadata } : {}),
+        label,
+        __node_type: nodeType,
+      },
+      selectable: true,
+    } as Node;
 
-  const evidenceByVa = new Map<string, string[]>();
-  for (const e of edges) {
-    const src = byId.get(e.source);
-    const tgt = byId.get(e.target);
-    if (src?.type === 'visual_asset' && tgt?.type === 'evidence') {
-      const list = evidenceByVa.get(e.source) ?? [];
-      list.push(e.target);
-      evidenceByVa.set(e.source, list);
-    }
-  }
-
-  const positioned = new Map<string, { x: number; y: number }>();
-
-  positioned.set(dealNodeId, { x: 0, y: 0 });
-
-  const docX = 260;
-  const vaX = 560;
-  const evX = 820;
-  const docGapY = 170;
-  const vaGapY = 130;
-
-  let globalMaxY = 0;
-  for (let i = 0; i < docIds.length; i++) {
-    const docId = docIds[i];
-    const docY = i * docGapY;
-    positioned.set(docId, { x: docX, y: docY });
-    globalMaxY = Math.max(globalMaxY, docY);
-
-    const vaIds = visualByDoc.get(docId) ?? [];
-    for (let j = 0; j < vaIds.length; j++) {
-      const vaId = vaIds[j];
-      const vaY = docY + j * vaGapY;
-      positioned.set(vaId, { x: vaX, y: vaY });
-      globalMaxY = Math.max(globalMaxY, vaY);
-
-      const evIds = evidenceByVa.get(vaId) ?? [];
-      for (let k = 0; k < evIds.length; k++) {
-        const evId = evIds[k];
-        positioned.set(evId, { x: evX, y: vaY });
-        globalMaxY = Math.max(globalMaxY, vaY);
+    if (
+      !didLogLineageVisualAssetMapping &&
+      import.meta.env.DEV &&
+      getDevtoolsConsoleLoggingEnabled() &&
+      nodeType === 'visual_asset'
+    ) {
+      didLogLineageVisualAssetMapping = true;
+      try {
+        // eslint-disable-next-line no-console
+        console.log('[DEV lineage→mapped visual_asset]', {
+          id,
+          rawKeys: Object.keys(raw?.data ?? {}),
+          raw: {
+            ocr_text_snippet: raw?.data?.ocr_text_snippet,
+            evidence0: raw?.data?.evidence_snippets?.[0],
+            structured_kind: raw?.data?.structured_kind,
+          },
+          mappedKeys: Object.keys((mapped as any)?.data ?? {}),
+          mapped: {
+            ocr_text_snippet: (mapped as any)?.data?.ocr_text_snippet,
+            evidence0: (mapped as any)?.data?.evidence_snippets?.[0],
+            structured_kind: (mapped as any)?.data?.structured_kind,
+          },
+        });
+      } catch {
+        // ignore
       }
     }
+
+    nodes.push(mapped);
   }
 
-  const nodes: Node[] = (lineage.nodes || []).map((raw) => {
-    const pos = positioned.get(raw.id) ?? { x: docX, y: globalMaxY + docGapY };
-    return {
-      id: raw.id,
-      type: raw.type || 'default',
-      position: pos,
-      data: {
-        ...(raw.data ?? {}),
-        label: (raw.data as any)?.label ?? raw.id,
-        __node_type: raw.type ?? 'unknown',
-        __darkMode: darkMode,
-      },
-      draggable: false,
-      selectable: true,
-    };
-  });
+  if (!didLogVisualAssetNodeTypes && import.meta.env.DEV && getDevtoolsConsoleLoggingEnabled() && typeof window !== 'undefined') {
+    didLogVisualAssetNodeTypes = true;
+    const firstThree = nodes
+      .filter((n) => String((n as any)?.type ?? '') === 'visual_asset')
+      .slice(0, 3)
+      .map((n) => ({ id: n.id, type: (n as any).type, __node_type: (n as any)?.data?.__node_type }));
+    if (firstThree.length > 0) console.log('[DealAnalystTab] visual_asset node types', firstThree);
+  }
+
+  for (const rawEdge of lineage.edges || []) {
+    edges.push({
+      id: rawEdge.id,
+      source: rawEdge.source,
+      target: rawEdge.target,
+    } as Edge);
+  }
 
   return { nodes, edges };
 }
 
-function AnalystNode({ data, selected }: NodeProps) {
-  const darkMode = Boolean((data as any)?.__darkMode);
-  const nodeType = String((data as any)?.__node_type ?? '');
-
-  const base = darkMode
-    ? 'bg-white/5 border-white/10 text-gray-200'
-    : 'bg-white border-gray-200 text-gray-800';
-
-  const selectedCls = selected
-    ? (darkMode ? 'border-white/30' : 'border-gray-400')
-    : '';
-
-  const label = typeof (data as any)?.label === 'string' ? (data as any).label : String((data as any)?.label ?? 'Node');
-
-  const meta = (() => {
-    if (nodeType === 'document') {
-      const pages = typeof (data as any)?.page_count === 'number' ? (data as any).page_count : null;
-      return pages != null ? `${pages} pages` : null;
-    }
-    if (nodeType === 'visual_asset') {
-      const conf = typeof (data as any)?.confidence === 'number' ? (data as any).confidence : null;
-      return conf != null ? `conf ${(conf * 100).toFixed(0)}%` : null;
-    }
-    if (nodeType === 'evidence') {
-      const c = typeof (data as any)?.count === 'number' ? (data as any).count : null;
-      return c != null ? `${c} items` : null;
-    }
-    return null;
-  })();
-
-  return (
-    <div className={`rounded-lg border px-3 py-2 shadow-sm ${base} ${selectedCls}`} style={{ minWidth: 180 }}>
-      <div className="text-xs uppercase tracking-wide opacity-70">{nodeType || 'node'}</div>
-      <div className="text-sm font-medium leading-snug">{label}</div>
-      {meta ? <div className="text-xs opacity-70 mt-1">{meta}</div> : null}
-    </div>
-  );
+function findDealRootId(nodes: Node[], dealId: string): string {
+  const explicit = nodes.find((n) => String((n as any)?.type ?? '').toLowerCase() === 'deal');
+  return explicit?.id ?? `deal:${dealId}`;
 }
 
 export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const devtoolsEnabled = useMemo(() => getReactFlowDevtoolsEnabled(), []);
+
   const [lineage, setLineage] = useState<DealLineageResponse | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
 
+  const [fullGraph, setFullGraph] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null);
+  const [expandedById, setExpandedById] = useState<ExpandedById>({});
+  const [layoutNonce, setLayoutNonce] = useState(0);
+  const [rfInstance, setRfInstance] = useState<ReactFlowInstance | null>(null);
+
+  const [nodes, setNodes, onNodesChange] = useNodesState([] as Node[]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([] as Edge[]);
+
+  const { logNodesChange, logEdgesChange } = useReactFlowChangeLogger(devtoolsEnabled);
+
+  const relayoutScheduledRef = useRef(false);
+  const hasMeasuredDimensionsRef = useRef(false);
+  const lastFitCountsRef = useRef({ nodes: 0, edges: 0 });
+
   const [selection, setSelection] = useState<InspectorSelection>({ kind: 'none' });
+  const [selectedRfNodeId, setSelectedRfNodeId] = useState<string | null>(null);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
   const [visualDetailLoading, setVisualDetailLoading] = useState(false);
   const [visualDetailError, setVisualDetailError] = useState<string | null>(null);
   const [selectedVisual, setSelectedVisual] = useState<DocumentVisualAsset | null>(null);
@@ -463,6 +468,10 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     setShowBboxOverlay(false);
   }, [selectedVisual?.visual_asset_id]);
 
+  useEffect(() => {
+    if (selection.kind !== 'none' && !inspectorOpen) setInspectorOpen(true);
+  }, [selection.kind, inspectorOpen]);
+
   const docAssetCacheRef = useRef(new Map<string, DocumentVisualAsset[]>());
 
   const refresh = async () => {
@@ -475,9 +484,24 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
 
     try {
       const res = await apiGetDealLineage(dealId);
+      // DEV: expose lineage for quick inspection in the browser console.
+      // Usage: window.__lineage?.nodes?.find(n => String(n.id).startsWith('visual_asset:'))
+      if (typeof window !== 'undefined') {
+        (window as any).__lineage = res;
+        if (import.meta.env.DEV && getDevtoolsConsoleLoggingEnabled()) {
+          try {
+            const sample = (res?.nodes ?? []).find((n: any) => String(n?.id ?? '').startsWith('visual_asset:'));
+            // eslint-disable-next-line no-console
+            console.log('[lineage sample visual_asset]', sample?.id, sample?.data);
+          } catch {
+            // ignore
+          }
+        }
+      }
       setLineage(res);
       setWarnings(Array.isArray(res?.warnings) ? res.warnings : []);
       setSelection({ kind: 'none' });
+      setSelectedRfNodeId(null);
       docAssetCacheRef.current.clear();
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load analyst graph');
@@ -493,25 +517,218 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dealId]);
 
-  const rf = useMemo(() => {
-    if (!lineage) return { nodes: [] as Node[], edges: [] as Edge[] };
-    return buildLayout(lineage, darkMode);
-  }, [lineage, darkMode]);
+  useEffect(() => {
+    if (!lineage) {
+      setFullGraph(null);
+      setExpandedById({});
+      return;
+    }
+
+    const g = buildFullGraphFromLineage(lineage);
+    setFullGraph(g);
+
+    const initExpanded: ExpandedById = {};
+    for (const n of g.nodes) initExpanded[n.id] = defaultExpandedForNode(n);
+    setExpandedById(initExpanded);
+  }, [lineage]);
+
+  const dealRootId = useMemo(() => {
+    if (!fullGraph) return `deal:${dealId}`;
+    return findDealRootId(fullGraph.nodes, dealId);
+  }, [fullGraph, dealId]);
+
+  const visible = useMemo(() => {
+    if (!fullGraph) {
+      return {
+        visibleNodes: [] as Node[],
+        visibleEdges: [] as Edge[],
+        descendantCountsById: {} as Record<string, number>,
+        connectedNodeIds: new Set<string>(),
+      };
+    }
+    return computeVisibleGraph({
+      nodes: fullGraph.nodes,
+      edges: fullGraph.edges,
+      rootId: dealRootId,
+      expandedById,
+    });
+  }, [fullGraph, dealRootId, expandedById]);
+
+  const renderedEdges = useMemo(() => {
+    return visible.visibleEdges.map((e) => ({
+      ...e,
+      type: 'floating',
+      animated: false,
+      style: darkMode ? { stroke: 'rgba(255,255,255,0.2)' } : { stroke: 'rgba(17,24,39,0.25)' },
+    } as Edge));
+  }, [visible.visibleEdges, darkMode]);
+
+  const renderedNodesUnlaid = useMemo(() => {
+    const toggle = (id: string) => {
+      setExpandedById((prev) => {
+        const node = fullGraph?.nodes.find((n) => n.id === id);
+        const cur = prev[id] ?? (node ? defaultExpandedForNode(node) : true);
+        return { ...prev, [id]: !cur };
+      });
+    };
+
+    return visible.visibleNodes.map((n) => {
+      const baseNode = fullGraph?.nodes.find((bn) => bn.id === n.id);
+      const stableType = String((baseNode as any)?.type ?? (n as any)?.type ?? 'default').trim().toLowerCase();
+      const expanded = expandedById[n.id] ?? defaultExpandedForNode(n);
+      const descendantCount = visible.descendantCountsById[n.id] ?? 0;
+      return {
+        ...n,
+        type: stableType,
+        draggable: false,
+        // Force node to receive pointer events even if the pane layer is draggable.
+        className: `${typeof (n as any).className === 'string' ? (n as any).className : ''} pointer-events-auto`.trim(),
+        style: {
+          ...(((n as any).style as any) ?? {}),
+          pointerEvents: 'all',
+        },
+        data: {
+          ...((baseNode as any)?.data ?? {}),
+          ...(n.data ?? {}),
+          __darkMode: darkMode,
+          __node_type: stableType,
+          expanded,
+          descendantCount,
+          onToggleExpand: () => toggle(n.id),
+        },
+      } as Node;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible.visibleNodes, visible.descendantCountsById, expandedById, darkMode, fullGraph]);
+
+  const renderedNodes = useMemo(() => {
+    // Re-run layout when lineage loads, when expansion changes, or on explicit re-layout.
+    void layoutNonce;
+    // Switch to left-to-right layout (LR) to avoid vertical cascading. Slightly tighten rank spacing for horizontal flow.
+    return layoutGraph(renderedNodesUnlaid, renderedEdges, { direction: 'LR', ranksep: 140, nodesep: 120 });
+  }, [renderedNodesUnlaid, renderedEdges, layoutNonce]);
+
+  useEffect(() => {
+    if (import.meta.env.DEV && getDevtoolsConsoleLoggingEnabled()) {
+      try {
+        const sample = renderedNodes.find((n) => String((n as any)?.id ?? '').startsWith('visual_asset:')) as any;
+        // eslint-disable-next-line no-console
+        console.log('[renderedNodes sample visual_asset]', sample?.id, sample?.data);
+      } catch {
+        // ignore
+      }
+    }
+
+    setNodes(renderedNodes);
+    setEdges(renderedEdges);
+  }, [renderedNodes, renderedEdges, setNodes, setEdges]);
+
+  // After collapse/expand changes the visible graph, keep something on-screen.
+  useEffect(() => {
+    if (!rfInstance) return;
+    const counts = { nodes: visible.visibleNodes.length, edges: visible.visibleEdges.length };
+    const prev = lastFitCountsRef.current;
+    const shouldFit = (prev.nodes === 0 && counts.nodes > 0) || counts.nodes !== prev.nodes || counts.edges !== prev.edges;
+    if (!shouldFit) return;
+    lastFitCountsRef.current = counts;
+
+    const t = setTimeout(() => {
+      try {
+        rfInstance.fitView({ padding: 0.2, duration: 120 });
+      } catch {
+        // ignore
+      }
+    }, 40);
+    return () => clearTimeout(t);
+  }, [rfInstance, visible.visibleNodes.length, visible.visibleEdges.length]);
+
+  const handleNodesChange = (changes: any) => {
+    onNodesChange(changes);
+
+    if (devtoolsEnabled) logNodesChange(changes as any);
+
+    // When nodes get measured (real dimensions), re-run dagre once to reduce overlaps.
+    const hasDimensions = Array.isArray(changes) && changes.some((c) => c?.type === 'dimensions');
+    if (hasDimensions && !hasMeasuredDimensionsRef.current && !relayoutScheduledRef.current) {
+      relayoutScheduledRef.current = true;
+      hasMeasuredDimensionsRef.current = true;
+      queueMicrotask(() => {
+        relayoutScheduledRef.current = false;
+        setLayoutNonce((v) => v + 1);
+      });
+    }
+  };
+
+  const handleEdgesChange = (changes: any) => {
+    onEdgesChange(changes);
+
+    if (devtoolsEnabled) logEdgesChange(changes as any);
+  };
+
+  const selectedNodeIdForDevtools = useMemo(() => {
+    if (selectedRfNodeId) return selectedRfNodeId;
+    if (selection.kind === 'none') return null;
+    if (selection.kind === 'deal') return `deal:${selection.deal_id || dealId}`;
+    if (selection.kind === 'document') return `document:${selection.document_id}`;
+    if (selection.kind === 'visual_asset') return `visual_asset:${selection.visual_asset_id}`;
+    if (selection.kind === 'evidence') return `evidence:${selection.visual_asset_id}`;
+    return null;
+  }, [selectedRfNodeId, selection, dealId]);
+
+  const selectedRfNode = useMemo(() => {
+    const id = selectedNodeIdForDevtools;
+    if (!id) return null;
+    return nodes.find((n) => String((n as any)?.id ?? '') === id) ?? null;
+  }, [nodes, selectedNodeIdForDevtools]);
+
+  const hasSelectedLineageVisualDetails = useMemo(() => {
+    if (!selectedRfNode) return false;
+    const t = String((selectedRfNode as any)?.type ?? '').toLowerCase();
+    if (t !== 'visual_asset') return false;
+    const d = ((selectedRfNode as any)?.data ?? {}) as any;
+    return Boolean(
+      (typeof d.image_uri === 'string' && d.image_uri.trim()) ||
+        (typeof d.ocr_text_snippet === 'string' && d.ocr_text_snippet.trim())
+    );
+  }, [selectedRfNode]);
+
+  const devtoolsSelection: DevtoolsSelection = useMemo(
+    () => ({ enabled: devtoolsEnabled, selectedNodeId: selectedNodeIdForDevtools, selectedKind: selection.kind }),
+    [devtoolsEnabled, selectedNodeIdForDevtools, selection.kind]
+  );
 
   const nodeTypes = useMemo(
     () => ({
-      deal: AnalystNode,
-      document: AnalystNode,
-      visual_asset: AnalystNode,
-      evidence: AnalystNode,
-      default: AnalystNode,
+      deal: DealNode,
+      document: DocumentNode,
+      segment: SegmentNode,
+      visual_asset: AnalystVisualAssetNode,
+      evidence: EvidenceNode,
+      default: DefaultNode,
     }),
     []
   );
 
+  const edgeTypes = useMemo(() => ({ floating: FloatingEdge }), []);
+
   const hasVisuals = useMemo(() => {
     return Boolean(lineage?.nodes?.some((n) => n.type === 'visual_asset'));
   }, [lineage]);
+
+  const summarizeVisualAsset = (asset: DocumentVisualAsset): string | null => {
+    const t = asset.asset_type ? String(asset.asset_type) : '';
+    const page = Number.isFinite(asset.page_index) ? asset.page_index + 1 : null;
+
+    const table = getTablePreviewModel(asset.structured_json, { maxRows: 6, maxCols: 6 });
+    if (table) return `Table detected${page != null ? ` (p${page})` : ''}${t ? ` · ${t}` : ''}`;
+
+    const chart = getBarChartPreviewModel(asset.structured_json, { maxBars: 8 });
+    if (chart) return `Bar chart detected${page != null ? ` (p${page})` : ''}${t ? ` · ${t}` : ''}`;
+
+    if (asset.ocr_text && asset.ocr_text.trim().length > 0) return `OCR text available${page != null ? ` (p${page})` : ''}${t ? ` · ${t}` : ''}`;
+
+    return t || null;
+  };
 
   const loadVisualDetails = async (documentId: string, visualAssetId: string) => {
     if (!dealId || !documentId || !visualAssetId) return;
@@ -522,8 +739,76 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
 
     try {
       const cached = docAssetCacheRef.current.get(documentId);
-      const assets = cached ?? (await apiGetDocumentVisualAssets(dealId, documentId)).visual_assets;
-      if (!cached) docAssetCacheRef.current.set(documentId, assets);
+      let assets: DocumentVisualAsset[] = [];
+
+      if (cached) {
+        assets = cached;
+      } else {
+        const resp: any = await apiGetDocumentVisualAssets(dealId, documentId);
+        const fromVisualAssets = Array.isArray(resp?.visual_assets) ? resp.visual_assets : null;
+        const fromAssets = Array.isArray(resp?.assets) ? resp.assets : null;
+        assets = (fromVisualAssets ?? fromAssets ?? []) as DocumentVisualAsset[];
+        docAssetCacheRef.current.set(documentId, assets);
+      }
+      if (!Array.isArray(assets)) assets = [];
+
+      // Enrich graph nodes so Visual/Evidence nodes can show thumbnails and summaries.
+      setFullGraph((prev) => {
+        if (!prev) return prev;
+        const byVaId = new Map(assets.map((a) => [a.visual_asset_id, a] as const));
+        const updatedNodes = prev.nodes.map((n) => {
+          const id = n.id;
+          if (id.startsWith('visual_asset:')) {
+            const vaId = id.slice('visual_asset:'.length);
+            const a = byVaId.get(vaId);
+            if (!a) return n;
+
+            const existing = (n.data ?? {}) as any;
+            const ocrText = typeof a.ocr_text === 'string' ? a.ocr_text.trim() : '';
+            const derivedOcrSnippet = ocrText.length > 0 ? (ocrText.length > 180 ? `${ocrText.slice(0, 180).trimEnd()}…` : ocrText) : undefined;
+
+            const table = getTablePreviewModel(a.structured_json, { maxRows: 6, maxCols: 8 });
+            const chart = !table ? getBarChartPreviewModel(a.structured_json, { maxBars: 12 }) : null;
+            const derivedStructuredKind = table ? 'table' : chart ? 'bar' : undefined;
+            const derivedStructuredSummary = table
+              ? `Table • ${table.totalRows}×${table.totalCols}`
+              : chart
+                ? `Bar chart • ${chart.totalBars} bars`
+                : undefined;
+
+            return {
+              ...n,
+              data: {
+                ...(n.data ?? {}),
+                image_uri: (n.data as any)?.image_uri ?? a.image_uri,
+                confidence: (n.data as any)?.confidence ?? a.confidence,
+                asset_type: (n.data as any)?.asset_type ?? a.asset_type,
+                page_index: (n.data as any)?.page_index ?? a.page_index,
+                evidence_count: existing.evidence_count ?? a.evidence?.evidence_count,
+                ocr_text_snippet: existing.ocr_text_snippet ?? derivedOcrSnippet,
+                structured_kind: existing.structured_kind ?? derivedStructuredKind,
+                structured_summary: existing.structured_summary ?? derivedStructuredSummary,
+              },
+            } as Node;
+          }
+          if (id.startsWith('evidence:')) {
+            const vaId = id.slice('evidence:'.length);
+            const a = byVaId.get(vaId);
+            if (!a) return n;
+            const snippet = a.evidence?.sample_snippets?.[0];
+            return {
+              ...n,
+              data: {
+                ...(n.data ?? {}),
+                count: a.evidence?.evidence_count ?? (n.data as any)?.count,
+                sample_snippet: typeof snippet === 'string' && snippet.trim().length > 0 ? snippet.trim() : undefined,
+              },
+            } as Node;
+          }
+          return n;
+        });
+        return { ...prev, nodes: updatedNodes };
+      });
 
       const match = assets.find((a) => a.visual_asset_id === visualAssetId) ?? null;
       setSelectedVisual(match);
@@ -587,17 +872,56 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className={`lg:col-span-2 rounded-lg border overflow-hidden ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
+      <div
+        className={`grid grid-cols-1 gap-4 ${
+          inspectorOpen
+            ? 'lg:grid-cols-[minmax(0,1fr)_380px]'
+            : 'lg:grid-cols-[minmax(0,1fr)_56px]'
+        }`}
+      >
+        <div className={`rounded-lg border overflow-hidden ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
           <div className="h-[600px]">
             <ReactFlow
-              nodes={rf.nodes}
-              edges={rf.edges}
-              nodeTypes={nodeTypes as any}
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
+              defaultEdgeOptions={{ type: 'floating' }}
+              nodesDraggable={false}
+              nodesConnectable={false}
+              edgesFocusable={false}
+              elementsSelectable
+              selectNodesOnDrag={false}
+              // Allow natural left-drag panning; rely on click for selection.
+              panOnDrag
+              panOnScroll={false}
+              zoomOnScroll={false}
+              zoomOnDoubleClick={false}
+              preventScrolling
+              nodeClickDistance={18}
+              paneClickDistance={6}
+              className="[&_.react-flow__container]:cursor-grab [&_.react-flow__viewport]:cursor-grab [&_.react-flow__pane]:cursor-grab [&_.react-flow__pane]:active:cursor-grabbing [&_.react-flow__node]:cursor-grab [&_.react-flow__nodes]:pointer-events-auto"
+              onInit={(instance: ReactFlowInstance) => setRfInstance(instance)}
               fitView
-              onNodeClick={(_, node) => {
+              onNodesChange={handleNodesChange}
+              onEdgesChange={handleEdgesChange}
+              onNodeClick={(evt, node) => {
+                if (import.meta.env.DEV && getDevtoolsConsoleLoggingEnabled()) console.log('[NODE CLICK]', node.id, node.type);
+                evt?.stopPropagation?.();
+
+                // Use the actual rendered React Flow node id for devtools lookup.
+                setSelectedRfNodeId(String((node as any)?.id ?? ''));
+
                 const data = (node as any)?.data ?? {};
-                const t = String(data.__node_type ?? node.type ?? '');
+                const nodeId = String((node as any)?.id ?? '');
+                const fromPrefix = (prefix: string) =>
+                  nodeId.startsWith(prefix) ? nodeId.slice(prefix.length) : '';
+
+                const documentIdFromNode = fromPrefix('document:') || fromPrefix('document_id:');
+                const visualIdFromNode = fromPrefix('visual_asset:') || fromPrefix('visual:');
+                const evidenceVisualIdFromNode = fromPrefix('evidence:');
+
+                const t = String(data.__node_type ?? node.type ?? '').toLowerCase();
 
                 if (t === 'deal') {
                   setSelection({ kind: 'deal', deal_id: String(data.deal_id ?? dealId), name: (data.name as any) ?? null });
@@ -609,7 +933,7 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                 if (t === 'document') {
                   setSelection({
                     kind: 'document',
-                    document_id: String(data.document_id ?? ''),
+                    document_id: String(data.document_id ?? documentIdFromNode ?? ''),
                     title: typeof data.title === 'string' ? data.title : undefined,
                     type: typeof data.type === 'string' ? data.type : undefined,
                     page_count: typeof data.page_count === 'number' ? data.page_count : undefined,
@@ -620,15 +944,20 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                 }
 
                 if (t === 'visual_asset') {
-                  const document_id = String(data.document_id ?? '');
-                  const visual_asset_id = String(data.visual_asset_id ?? '');
+                  const document_id = String(data.document_id ?? documentIdFromNode ?? '');
+                  const visual_asset_id = String(data.visual_asset_id ?? visualIdFromNode ?? '');
+                  if (!document_id || !visual_asset_id) {
+                    setVisualDetailError('Visual asset node missing document_id or visual_asset_id.');
+                    setSelectedVisual(null);
+                    return;
+                  }
                   setSelection({ kind: 'visual_asset', document_id, visual_asset_id });
                   loadVisualDetails(document_id, visual_asset_id);
                   return;
                 }
 
                 if (t === 'evidence') {
-                  const visual_asset_id = String(data.visual_asset_id ?? '');
+                  const visual_asset_id = String(data.visual_asset_id ?? evidenceVisualIdFromNode ?? '');
                   const count = typeof data.count === 'number' ? data.count : undefined;
                   setSelection({ kind: 'evidence', visual_asset_id, count });
                   setSelectedVisual(null);
@@ -637,8 +966,63 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                 }
 
                 setSelection({ kind: 'none' });
+                setSelectedRfNodeId(null);
               }}
             >
+              {devtoolsEnabled ? (
+                <>
+                  <ReactFlowDevToolsOverlay
+                    enabled={devtoolsEnabled}
+                    darkMode={darkMode}
+                    selection={devtoolsSelection}
+                  />
+                  <ReactFlowViewportBadge
+                    enabled={devtoolsEnabled}
+                    darkMode={darkMode}
+                    selectedNodeId={selectedNodeIdForDevtools}
+                  />
+                </>
+              ) : null}
+
+              <Panel position="top-right">
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="secondary"
+                    darkMode={darkMode}
+                    onClick={() => setLayoutNonce((v) => v + 1)}
+                  >
+                    Re-layout
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    darkMode={darkMode}
+                    onClick={() => {
+                      if (!fullGraph) return;
+                      const next: ExpandedById = {};
+                      for (const n of fullGraph.nodes) next[n.id] = true;
+                      setExpandedById(next);
+                      setLayoutNonce((v) => v + 1);
+                    }}
+                  >
+                    Expand all
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    darkMode={darkMode}
+                    onClick={() => {
+                      if (!fullGraph) return;
+                      const next: ExpandedById = {};
+                      for (const n of fullGraph.nodes) next[n.id] = false;
+                      // Always keep the deal root visible.
+                      next[dealRootId] = true;
+                      setExpandedById(next);
+                      setLayoutNonce((v) => v + 1);
+                    }}
+                  >
+                    Collapse all
+                  </Button>
+                </div>
+              </Panel>
               <MiniMap
                 pannable
                 zoomable
@@ -672,394 +1056,510 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
           </div>
         </div>
 
-        <div className={`rounded-lg border p-4 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
-          <div className={`text-sm font-medium mb-2 ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Inspector</div>
+        <div
+          className={`rounded-lg border ${
+            darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'
+          } ${inspectorOpen ? 'p-4' : 'p-2'}`}
+        >
+          <div className="flex items-center justify-between gap-2">
+            {inspectorOpen ? (
+              <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Inspector</div>
+            ) : (
+              <div className="sr-only">Inspector</div>
+            )}
+            <button
+              type="button"
+              className={`inline-flex items-center justify-center rounded-md p-1 ${
+                darkMode ? 'text-gray-300 hover:bg-white/5' : 'text-gray-700 hover:bg-gray-100'
+              }`}
+              onClick={() => setInspectorOpen((v) => !v)}
+              aria-expanded={inspectorOpen}
+              aria-label={inspectorOpen ? 'Collapse inspector' : 'Expand inspector'}
+            >
+              {inspectorOpen ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}
+            </button>
+          </div>
 
-          {selection.kind === 'none' ? (
-            <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              Click a node to inspect details.
-            </div>
-          ) : null}
-
-          {selection.kind === 'deal' ? (
-            <div className="space-y-2">
-              <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                <div className="text-xs opacity-70">Deal</div>
-                <div className="font-medium">{selection.name || selection.deal_id}</div>
-              </div>
-            </div>
-          ) : null}
-
-          {selection.kind === 'document' ? (
-            <div className="space-y-2">
-              <div className="text-xs opacity-70">Document</div>
-              <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{selection.title || selection.document_id}</div>
-              <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                {selection.type ? `Type: ${selection.type}` : 'Type: —'}
-                {typeof selection.page_count === 'number' ? ` · Pages: ${selection.page_count}` : ''}
-              </div>
-              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                Select a visual asset node to view OCR, structured JSON, and evidence.
-              </div>
-            </div>
-          ) : null}
-
-          {selection.kind === 'evidence' ? (
-            <div className="space-y-2">
-              <div className="text-xs opacity-70">Evidence</div>
-              <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                Visual asset: <span className="font-mono">{selection.visual_asset_id}</span>
-              </div>
-              <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                Count: {typeof selection.count === 'number' ? selection.count : '—'}
-              </div>
-              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                Select the visual asset node to view evidence snippets.
-              </div>
-            </div>
-          ) : null}
-
-          {selection.kind === 'visual_asset' ? (
-            <div className="space-y-3">
-              <div className="text-xs opacity-70">Visual asset</div>
-              <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                Asset ID: <span className="font-mono">{selection.visual_asset_id}</span>
-              </div>
-
-              {visualDetailLoading ? (
-                <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Loading details…</div>
-              ) : null}
-              {visualDetailError ? (
-                <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{visualDetailError}</div>
+          {inspectorOpen ? (
+            <div className="mt-3 space-y-4">
+              {selection.kind === 'none' ? (
+                <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  Click a node to inspect details.
+                </div>
               ) : null}
 
-              {selectedVisual ? (
-                <>
-                  <div className="space-y-2">
-                    <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Evidence</div>
-
-                    {(() => {
-                      const imgSrc = resolveImageSrc(selectedVisual.image_uri);
-                      const bbox = parseNormalizedBbox(selectedVisual.bbox);
-                      const bboxLabel = formatBboxLabel(selectedVisual.bbox);
-                      const flags = getQualityFlagChips(selectedVisual.quality_flags, { maxChips: 8 });
-
-                      return (
-                        <div className={`rounded-md border p-2 ${darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'}`}>
-                          {imgSrc && !imageLoadError ? (
-                            <div className="space-y-2">
-                              <div className="flex items-center justify-between gap-2">
-                                <button
-                                  type="button"
-                                  className={`text-xs underline-offset-2 hover:underline ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
-                                  onClick={() => setShowBboxOverlay((v) => !v)}
-                                >
-                                  {showBboxOverlay ? 'Hide bbox overlay' : 'Show bbox overlay'}
-                                </button>
-                                {showBboxOverlay ? (
-                                  <span className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Overlay is approximate</span>
-                                ) : null}
-                              </div>
-
-                              <div className="relative">
-                                <img
-                                  src={imgSrc}
-                                  alt="Visual asset crop"
-                                  className={`w-full max-h-[260px] object-contain rounded-md border ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
-                                  onError={() => setImageLoadError(true)}
-                                />
-                                {showBboxOverlay && bbox ? (
-                                  <div
-                                    className={`pointer-events-none absolute border-2 ${darkMode ? 'border-red-300/70' : 'border-red-500/70'}`}
-                                    style={{
-                                      left: `${bbox.x * 100}%`,
-                                      top: `${bbox.y * 100}%`,
-                                      width: `${bbox.w * 100}%`,
-                                      height: `${bbox.h * 100}%`,
-                                    }}
-                                  />
-                                ) : null}
-                              </div>
-                            </div>
-                          ) : imgSrc && imageLoadError ? (
-                            <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Failed to load image</div>
-                          ) : (
-                            <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                              No image crop available for this asset yet.
-                            </div>
-                          )}
-
-                          <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-700'}`}>
-                            Page {selectedVisual.page_index + 1} • {selectedVisual.asset_type}
-                            {Number.isFinite(selectedVisual.confidence) ? ` • confidence ${selectedVisual.confidence.toFixed(2)}` : ''}
-                          </div>
-
-                          <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                            Extractor: {selectedVisual.extractor_version || '—'}
-                            {selectedVisual.extracted_at ? ` • extracted ${selectedVisual.extracted_at}` : ''}
-                          </div>
-
-                          {bboxLabel ? (
-                            <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>{bboxLabel}</div>
-                          ) : (
-                            <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>bbox: —</div>
-                          )}
-
-                          {flags.chips.length > 0 ? (
-                            <div className="mt-2 flex flex-wrap items-center gap-1">
-                              {flags.chips.map((c) => (
-                                <span
-                                  key={`qf-${c}`}
-                                  className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${
-                                    darkMode ? 'border-white/10 bg-white/5 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
-                                  }`}
-                                >
-                                  {c}
-                                </span>
-                              ))}
-                              {flags.moreCount > 0 ? (
-                                <span className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>+{flags.moreCount} more</span>
-                              ) : null}
-                            </div>
-                          ) : (
-                            <div className={`mt-2 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>quality_flags: —</div>
-                          )}
-                        </div>
-                      );
-                    })()}
+              {selection.kind === 'deal' ? (
+                <div className="space-y-2">
+                  <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    <div className="text-xs opacity-70">Deal</div>
+                    <div className="font-medium">{selection.name || selection.deal_id}</div>
                   </div>
+                </div>
+              ) : null}
 
+              {selection.kind === 'document' ? (
+                <div className="space-y-2">
+                  <div className="text-xs opacity-70">Document</div>
+                  <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{selection.title || selection.document_id}</div>
                   <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    Evidence: {selectedVisual.evidence?.evidence_count ?? 0}
+                    {selection.type ? `Type: ${selection.type}` : 'Type: —'}
+                    {typeof selection.page_count === 'number' ? ` · Pages: ${selection.page_count}` : ''}
+                  </div>
+                  <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                    Select a visual asset node to view OCR, structured JSON, and evidence.
+                  </div>
+                </div>
+              ) : null}
+
+              {selection.kind === 'evidence' ? (
+                <div className="space-y-2">
+                  <div className="text-xs opacity-70">Evidence</div>
+                  <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    Visual asset: <span className="font-mono">{selection.visual_asset_id}</span>
+                  </div>
+                  <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    Count: {typeof selection.count === 'number' ? selection.count : '—'}
+                  </div>
+                  <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                    Select the visual asset node to view evidence snippets.
+                  </div>
+                </div>
+              ) : null}
+
+              {selection.kind === 'visual_asset' ? (
+                <div className="space-y-3">
+                  <div className="text-xs opacity-70">Visual asset</div>
+                  <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    Asset ID: <span className="font-mono">{selection.visual_asset_id}</span>
                   </div>
 
-                  {Array.isArray(selectedVisual.evidence?.sample_snippets) && selectedVisual.evidence.sample_snippets.length > 0 ? (
-                    <details className="rounded-md">
-                      <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                        Evidence snippets
-                      </summary>
-                      <ul className={`mt-2 list-disc pl-5 text-sm space-y-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                        {selectedVisual.evidence.sample_snippets.slice(0, 6).map((s, idx) => (
-                          <li key={`snip-${idx}`}>{s}</li>
-                        ))}
-                      </ul>
-                    </details>
-                  ) : null}
+                  {(() => {
+                    const rfData = ((selectedRfNode as any)?.data ?? {}) as any;
+                    const rfImgSrc = resolveApiAssetUrl(typeof rfData.image_uri === 'string' ? rfData.image_uri : null);
+                    const rfEvidence = Array.isArray(rfData.evidence_snippets) ? (rfData.evidence_snippets as unknown[]) : [];
+                    const rfEvidenceSnips = rfEvidence
+                      .filter((s) => typeof s === 'string' && s.trim().length > 0)
+                      .map((s) => (s as string).trim());
+                    const rfOcr = typeof rfData.ocr_text_snippet === 'string' ? rfData.ocr_text_snippet.trim() : '';
+                    const rfSlideTitle = typeof rfData.slide_title === 'string' ? rfData.slide_title.trim() : '';
+                    const rfSlideTitleConf =
+                      typeof rfData.slide_title_confidence === 'number' && Number.isFinite(rfData.slide_title_confidence)
+                        ? Math.round(rfData.slide_title_confidence * 100)
+                        : null;
+                    const rfSlideTitleSource = typeof rfData.slide_title_source === 'string' ? rfData.slide_title_source : '';
+                    const rfStructuredKind = typeof rfData.structured_kind === 'string' ? rfData.structured_kind : null;
+                    const rfStructuredSummary = rfData.structured_summary as any;
 
-                  {typeof selectedVisual.ocr_text === 'string' && selectedVisual.ocr_text.trim().length > 0 ? (
-                    <details>
-                      <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>OCR text</summary>
-                      <pre className={`mt-2 whitespace-pre-wrap text-xs rounded-md p-2 border ${darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'}`}>
-                        {selectedVisual.ocr_text}
-                      </pre>
-                    </details>
-                  ) : null}
+                    const hasRfEnrichment = Boolean(
+                      rfImgSrc ||
+                      rfEvidenceSnips.length > 0 ||
+                      (rfOcr && rfOcr.length > 0) ||
+                      (rfSlideTitle && rfSlideTitle.length > 0) ||
+                      rfStructuredKind
+                    );
 
-                  {selectedVisual.structured_json != null ? (
-                    <details>
-                      <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Structured JSON</summary>
-                      {tablePreviewModel || barChartPreviewModel ? (
-                        <div className="mt-2 space-y-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                              {tablePreviewModel ? (
-                                <>
-                                  <span className={`font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Table extracted</span>
-                                  {typeof tablePreviewModel.method === 'string' ? ` · ${tablePreviewModel.method}` : ''}
-                                  {typeof tablePreviewModel.confidence === 'number' && Number.isFinite(tablePreviewModel.confidence)
-                                    ? ` · ${tablePreviewModel.confidence.toFixed(2)}`
-                                    : ''}
-                                  {' · '}
-                                  {tablePreviewModel.totalRows} rows × {tablePreviewModel.totalCols} cols
-                                  {(() => {
-                                    const label = formatTableTruncationLabel(tablePreviewModel);
-                                    return label ? ` · ${label}` : '';
-                                  })()}
-                                </>
-                              ) : barChartPreviewModel ? (
-                                <>
-                                  <span className={`font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Bar chart extracted</span>
-                                  {typeof barChartPreviewModel.method === 'string' ? ` · ${barChartPreviewModel.method}` : ''}
-                                  {typeof barChartPreviewModel.confidence === 'number' && Number.isFinite(barChartPreviewModel.confidence)
-                                    ? ` · ${barChartPreviewModel.confidence.toFixed(2)}`
-                                    : ''}
-                                  {typeof barChartPreviewModel.title === 'string' && barChartPreviewModel.title.trim().length > 0
-                                    ? ` · ${barChartPreviewModel.title}`
-                                    : ''}
-                                  {typeof barChartPreviewModel.unit === 'string' && barChartPreviewModel.unit.trim().length > 0
-                                    ? ` · Unit: ${barChartPreviewModel.unit}`
-                                    : typeof barChartPreviewModel.yUnit === 'string' && barChartPreviewModel.yUnit.trim().length > 0
-                                      ? ` · Unit: ${barChartPreviewModel.yUnit}`
-                                      : ''}
-                                  {(() => {
-                                    const label = formatBarChartTruncationLabel(barChartPreviewModel);
-                                    return label ? ` · ${label}` : '';
-                                  })()}
-                                </>
-                              ) : null}
-                              {barChartPreviewModel?.valuesAreNormalized ? (
-                                <span
-                                  className={`ml-2 inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${
-                                    darkMode ? 'border-white/10 bg-white/5 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
-                                  }`}
-                                  title="Heights reflect relative proportions; not absolute units."
-                                >
-                                  Normalized values (axis not read)
-                                </span>
-                              ) : null}
-                            </div>
+                    if (!hasRfEnrichment) return null;
 
-                            <div
-                              className={`inline-flex rounded-md border overflow-hidden ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
-                              role="group"
-                              aria-label="Structured data view"
-                            >
-                              <button
-                                type="button"
-                                className={`px-2 py-1 text-xs ${
-                                  structuredViewMode === 'preview'
-                                    ? darkMode
-                                      ? 'bg-white/10 text-gray-100'
-                                      : 'bg-gray-100 text-gray-900'
-                                    : darkMode
-                                      ? 'bg-transparent text-gray-400 hover:text-gray-200'
-                                      : 'bg-transparent text-gray-600 hover:text-gray-900'
-                                }`}
-                                onClick={() => setStructuredViewMode('preview')}
-                              >
-                                Preview
-                              </button>
-                              <button
-                                type="button"
-                                className={`px-2 py-1 text-xs border-l ${
-                                  darkMode ? 'border-white/10' : 'border-gray-200'
-                                } ${
-                                  structuredViewMode === 'raw'
-                                    ? darkMode
-                                      ? 'bg-white/10 text-gray-100'
-                                      : 'bg-gray-100 text-gray-900'
-                                    : darkMode
-                                      ? 'bg-transparent text-gray-400 hover:text-gray-200'
-                                      : 'bg-transparent text-gray-600 hover:text-gray-900'
-                                }`}
-                                onClick={() => setStructuredViewMode('raw')}
-                              >
-                                Raw JSON
-                              </button>
-                            </div>
+                    const structuredLine = (() => {
+                      if (rfStructuredKind === 'table') {
+                        const t = rfStructuredSummary?.table;
+                        const rows = typeof t?.rows === 'number' && Number.isFinite(t.rows) ? t.rows : null;
+                        const cols = typeof t?.cols === 'number' && Number.isFinite(t.cols) ? t.cols : null;
+                        return `Table • ${rows != null ? rows : '—'}×${cols != null ? cols : '—'}`;
+                      }
+                      if (rfStructuredKind === 'bar') {
+                        const b = rfStructuredSummary?.bar ?? rfStructuredSummary?.chart;
+                        const bars = typeof b?.bars === 'number' && Number.isFinite(b.bars) ? b.bars : null;
+                        return `Bar chart • ${bars != null ? bars : '—'} bars`;
+                      }
+                      return null;
+                    })();
+
+                    return (
+                      <div className="space-y-2">
+                        <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Lineage (enriched)</div>
+
+                        {rfImgSrc ? (
+                          <img
+                            src={rfImgSrc}
+                            alt="Visual asset"
+                            className={`w-full max-h-[220px] object-contain rounded-md border ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
+                          />
+                        ) : null}
+
+                        {structuredLine ? (
+                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{structuredLine}</div>
+                        ) : null}
+
+                        {rfSlideTitle ? (
+                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            Slide title: {rfSlideTitle}
+                            {rfSlideTitleConf != null ? ` · ${rfSlideTitleConf}%` : ''}
+                            {rfSlideTitleSource ? ` (${rfSlideTitleSource})` : ''}
                           </div>
+                        ) : null}
 
-                          {structuredViewMode === 'preview' ? (
-                            <>
-                              {tablePreviewModel ? (
-                                <>
-                                  {typeof tablePreviewModel.notes === 'string' && tablePreviewModel.notes.trim().length > 0 ? (
-                                    <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Notes: {tablePreviewModel.notes}</div>
+                        <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          Evidence: {typeof rfData.evidence_count === 'number' ? rfData.evidence_count : '—'}
+                        </div>
+
+                        {rfEvidenceSnips.length > 0 ? (
+                          <div className="space-y-1">
+                            <div className={`text-xs font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Evidence snippets</div>
+                            <ul className={`list-disc pl-5 text-xs space-y-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                              {rfEvidenceSnips.slice(0, 3).map((s, idx) => (
+                                <li key={`rf-ev-${idx}`}>{s}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : rfOcr ? (
+                          <div className="space-y-1">
+                            <div className={`text-xs font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>OCR snippet</div>
+                            <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{rfOcr}</div>
+                          </div>
+                        ) : (
+                          <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No evidence extracted yet</div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {visualDetailLoading ? (
+                    <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Loading details…</div>
+                  ) : null}
+                  {visualDetailError && !selectedVisual && !hasSelectedLineageVisualDetails ? (
+                    <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{visualDetailError}</div>
+                  ) : null}
+
+                  {selectedVisual ? (
+                    <>
+                      <div className="space-y-2">
+                        <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Evidence</div>
+
+                        {(() => {
+            							const imgSrc = resolveApiAssetUrl(selectedVisual.image_uri);
+                          const bbox = parseNormalizedBbox(selectedVisual.bbox);
+                          const bboxLabel = formatBboxLabel(selectedVisual.bbox);
+                          const flags = getQualityFlagChips(selectedVisual.quality_flags, { maxChips: 8 });
+
+                          return (
+                            <div className={`rounded-md border p-2 ${darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'}`}>
+                              {imgSrc && !imageLoadError ? (
+                                <div className="space-y-2">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <button
+                                      type="button"
+                                      className={`text-xs underline-offset-2 hover:underline ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+                                      onClick={() => setShowBboxOverlay((v) => !v)}
+                                    >
+                                      {showBboxOverlay ? 'Hide bbox overlay' : 'Show bbox overlay'}
+                                    </button>
+                                    {showBboxOverlay ? (
+                                      <span className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Overlay is approximate</span>
+                                    ) : null}
+                                  </div>
+
+                                  <div className="relative">
+                                    <img
+                                      src={imgSrc}
+                                      alt="Visual asset crop"
+                                      className={`w-full max-h-[260px] object-contain rounded-md border ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
+                                      onError={() => setImageLoadError(true)}
+                                    />
+                                    {showBboxOverlay && bbox ? (
+                                      <div
+                                        className={`pointer-events-none absolute border-2 ${darkMode ? 'border-red-300/70' : 'border-red-500/70'}`}
+                                        style={{
+                                          left: `${bbox.x * 100}%`,
+                                          top: `${bbox.y * 100}%`,
+                                          width: `${bbox.w * 100}%`,
+                                          height: `${bbox.h * 100}%`,
+                                        }}
+                                      />
+                                    ) : null}
+                                  </div>
+                                </div>
+                              ) : imgSrc && imageLoadError ? (
+                                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Failed to load image</div>
+                              ) : (
+                                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                                  No image crop available for this asset yet.
+                                </div>
+                              )}
+
+                              <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-700'}`}>
+                                Page {selectedVisual.page_index + 1} • {selectedVisual.asset_type}
+                                {Number.isFinite(selectedVisual.confidence) ? ` • confidence ${selectedVisual.confidence.toFixed(2)}` : ''}
+                              </div>
+
+                              <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                                Extractor: {selectedVisual.extractor_version || '—'}
+                                {selectedVisual.extracted_at ? ` • extracted ${selectedVisual.extracted_at}` : ''}
+                              </div>
+
+                              {bboxLabel ? (
+                                <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>{bboxLabel}</div>
+                              ) : (
+                                <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>bbox: —</div>
+                              )}
+
+                              {flags.chips.length > 0 ? (
+                                <div className="mt-2 flex flex-wrap items-center gap-1">
+                                  {flags.chips.map((c) => (
+                                    <span
+                                      key={`qf-${c}`}
+                                      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${
+                                        darkMode ? 'border-white/10 bg-white/5 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
+                                      }`}
+                                    >
+                                      {c}
+                                    </span>
+                                  ))}
+                                  {flags.moreCount > 0 ? (
+                                    <span className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>+{flags.moreCount} more</span>
                                   ) : null}
-                                  <div
-                                    className={`overflow-auto max-h-[420px] rounded-md border ${
-                                      darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'
+                                </div>
+                              ) : (
+                                <div className={`mt-2 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>quality_flags: —</div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+
+                      <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        Evidence: {selectedVisual.evidence?.evidence_count ?? 0}
+                      </div>
+
+                      {Array.isArray(selectedVisual.evidence?.sample_snippets) && selectedVisual.evidence.sample_snippets.length > 0 ? (
+                        <details className="rounded-md">
+                          <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                            Evidence snippets
+                          </summary>
+                          <ul className={`mt-2 list-disc pl-5 text-sm space-y-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            {selectedVisual.evidence.sample_snippets.slice(0, 6).map((s, idx) => (
+                              <li key={`snip-${idx}`}>{s}</li>
+                            ))}
+                          </ul>
+                        </details>
+                      ) : null}
+
+                      {typeof selectedVisual.ocr_text === 'string' && selectedVisual.ocr_text.trim().length > 0 ? (
+                        <details>
+                          <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>OCR text</summary>
+                          <pre className={`mt-2 whitespace-pre-wrap text-xs rounded-md p-2 border ${darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'}`}>
+                            {selectedVisual.ocr_text}
+                          </pre>
+                        </details>
+                      ) : null}
+
+                      {selectedVisual.structured_json != null ? (
+                        <details>
+                          <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Structured JSON</summary>
+                          {tablePreviewModel || barChartPreviewModel ? (
+                            <div className="mt-2 space-y-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                  {tablePreviewModel ? (
+                                    <>
+                                      <span className={`font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Table extracted</span>
+                                      {typeof tablePreviewModel.method === 'string' ? ` · ${tablePreviewModel.method}` : ''}
+                                      {typeof tablePreviewModel.confidence === 'number' && Number.isFinite(tablePreviewModel.confidence)
+                                        ? ` · ${tablePreviewModel.confidence.toFixed(2)}`
+                                        : ''}
+                                      {' · '}
+                                      {tablePreviewModel.totalRows} rows × {tablePreviewModel.totalCols} cols
+                                      {(() => {
+                                        const label = formatTableTruncationLabel(tablePreviewModel);
+                                        return label ? ` · ${label}` : '';
+                                      })()}
+                                    </>
+                                  ) : barChartPreviewModel ? (
+                                    <>
+                                      <span className={`font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Bar chart extracted</span>
+                                      {typeof barChartPreviewModel.method === 'string' ? ` · ${barChartPreviewModel.method}` : ''}
+                                      {typeof barChartPreviewModel.confidence === 'number' && Number.isFinite(barChartPreviewModel.confidence)
+                                        ? ` · ${barChartPreviewModel.confidence.toFixed(2)}`
+                                        : ''}
+                                      {typeof barChartPreviewModel.title === 'string' && barChartPreviewModel.title.trim().length > 0
+                                        ? ` · ${barChartPreviewModel.title}`
+                                        : ''}
+                                      {typeof barChartPreviewModel.unit === 'string' && barChartPreviewModel.unit.trim().length > 0
+                                        ? ` · Unit: ${barChartPreviewModel.unit}`
+                                        : typeof barChartPreviewModel.yUnit === 'string' && barChartPreviewModel.yUnit.trim().length > 0
+                                          ? ` · Unit: ${barChartPreviewModel.yUnit}`
+                                          : ''}
+                                      {(() => {
+                                        const label = formatBarChartTruncationLabel(barChartPreviewModel);
+                                        return label ? ` · ${label}` : '';
+                                      })()}
+                                    </>
+                                  ) : null}
+                                  {barChartPreviewModel?.valuesAreNormalized ? (
+                                    <span
+                                      className={`ml-2 inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${
+                                        darkMode ? 'border-white/10 bg-white/5 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
+                                      }`}
+                                      title="Heights reflect relative proportions; not absolute units."
+                                    >
+                                      Normalized values (axis not read)
+                                    </span>
+                                  ) : null}
+                                </div>
+
+                                <div
+                                  className={`inline-flex rounded-md border overflow-hidden ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
+                                  role="group"
+                                  aria-label="Structured data view"
+                                >
+                                  <button
+                                    type="button"
+                                    className={`px-2 py-1 text-xs ${
+                                      structuredViewMode === 'preview'
+                                        ? darkMode
+                                          ? 'bg-white/10 text-gray-100'
+                                          : 'bg-gray-100 text-gray-900'
+                                        : darkMode
+                                          ? 'bg-transparent text-gray-400 hover:text-gray-200'
+                                          : 'bg-transparent text-gray-600 hover:text-gray-900'
                                     }`}
+                                    onClick={() => setStructuredViewMode('preview')}
                                   >
-                                    <table className={`min-w-full text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                                      <tbody>
-                                        {tablePreviewModel.rows.map((row, rIdx) => (
-                                          <tr key={`row-${rIdx}`} className={darkMode ? 'border-b border-white/5' : 'border-b border-gray-100'}>
-                                            {row.map((cell, cIdx) => (
-                                              <td
-                                                key={`cell-${rIdx}-${cIdx}`}
-                                                className={`align-top px-2 py-1 whitespace-pre-wrap ${
-                                                  darkMode ? 'border-r border-white/5' : 'border-r border-gray-100'
-                                                }`}
-                                              >
-                                                {cell}
-                                              </td>
+                                    Preview
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={`px-2 py-1 text-xs border-l ${
+                                      darkMode ? 'border-white/10' : 'border-gray-200'
+                                    } ${
+                                      structuredViewMode === 'raw'
+                                        ? darkMode
+                                          ? 'bg-white/10 text-gray-100'
+                                          : 'bg-gray-100 text-gray-900'
+                                        : darkMode
+                                          ? 'bg-transparent text-gray-400 hover:text-gray-200'
+                                          : 'bg-transparent text-gray-600 hover:text-gray-900'
+                                    }`}
+                                    onClick={() => setStructuredViewMode('raw')}
+                                  >
+                                    Raw JSON
+                                  </button>
+                                </div>
+                              </div>
+
+                              {structuredViewMode === 'preview' ? (
+                                <>
+                                  {tablePreviewModel ? (
+                                    <>
+                                      {typeof tablePreviewModel.notes === 'string' && tablePreviewModel.notes.trim().length > 0 ? (
+                                        <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Notes: {tablePreviewModel.notes}</div>
+                                      ) : null}
+                                      <div
+                                        className={`overflow-auto max-h-[420px] rounded-md border ${
+                                          darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'
+                                        }`}
+                                      >
+                                        <table className={`min-w-full text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                          <tbody>
+                                            {tablePreviewModel.rows.map((row, rIdx) => (
+                                              <tr key={`row-${rIdx}`} className={darkMode ? 'border-b border-white/5' : 'border-b border-gray-100'}>
+                                                {row.map((cell, cIdx) => (
+                                                  <td
+                                                    key={`cell-${rIdx}-${cIdx}`}
+                                                    className={`align-top px-2 py-1 whitespace-pre-wrap ${
+                                                      darkMode ? 'border-r border-white/5' : 'border-r border-gray-100'
+                                                    }`}
+                                                  >
+                                                    {cell}
+                                                  </td>
+                                                ))}
+                                              </tr>
                                             ))}
-                                          </tr>
-                                        ))}
-                                      </tbody>
-                                    </table>
-                                  </div>
-                                </>
-                              ) : barChartPreviewModel ? (
-                                <>
-                                  {barChartPreviewModel.valuesAreNormalized ? (
-                                    <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                                      Heights reflect relative proportions; not absolute units.
-                                    </div>
-                                  ) : null}
-                                  {typeof barChartPreviewModel.notes === 'string' && barChartPreviewModel.notes.trim().length > 0 ? (
-                                    <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Notes: {barChartPreviewModel.notes}</div>
-                                  ) : null}
-                                  <div
-                                    className={`overflow-auto max-h-[420px] rounded-md border p-3 ${
-                                      darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'
-                                    }`}
-                                  >
-                                    <div className="min-w-max">
-                                      <div className="flex items-end gap-3">
-                                        {barChartPreviewModel.values.map((v, i) => {
-                                          const h = barChartPreviewModel.displayHeights[i] ?? 0;
-                                          const label = barChartPreviewModel.labels[i] ?? String(i + 1);
-                                          const dv = barChartPreviewModel.displayValues[i] ?? '';
-                                          return (
-                                            <div key={`bar-${i}`} className="flex flex-col items-center justify-end">
-                                              <div className={`text-[10px] leading-none mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`} title={String(v)}>
-                                                {dv}
-                                              </div>
-                                              <div className="h-28 w-10 flex items-end">
-                                                <div
-                                                  className={`w-full rounded-sm ${darkMode ? 'bg-white/20' : 'bg-gray-700'}`}
-                                                  style={{ height: `${Math.round(h * 100)}%` }}
-                                                  title={barChartPreviewModel.valuesAreNormalized ? 'Normalized values (axis not read)' : undefined}
-                                                />
-                                              </div>
-                                              <div
-                                                className={`mt-1 max-w-[2.5rem] truncate text-[10px] leading-none ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}
-                                                title={label}
-                                              >
-                                                {label}
-                                              </div>
-                                            </div>
-                                          );
-                                        })}
+                                          </tbody>
+                                        </table>
                                       </div>
-                                    </div>
-                                  </div>
+                                    </>
+                                  ) : barChartPreviewModel ? (
+                                    <>
+                                      {barChartPreviewModel.valuesAreNormalized ? (
+                                        <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                                          Heights reflect relative proportions; not absolute units.
+                                        </div>
+                                      ) : null}
+                                      {typeof barChartPreviewModel.notes === 'string' && barChartPreviewModel.notes.trim().length > 0 ? (
+                                        <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Notes: {barChartPreviewModel.notes}</div>
+                                      ) : null}
+                                      <div
+                                        className={`overflow-auto max-h-[420px] rounded-md border p-3 ${
+                                          darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'
+                                        }`}
+                                      >
+                                        <div className="min-w-max">
+                                          <div className="flex items-end gap-3">
+                                            {barChartPreviewModel.values.map((v, i) => {
+                                              const h = barChartPreviewModel.displayHeights[i] ?? 0;
+                                              const label = barChartPreviewModel.labels[i] ?? String(i + 1);
+                                              const dv = barChartPreviewModel.displayValues[i] ?? '';
+                                              return (
+                                                <div key={`bar-${i}`} className="flex flex-col items-center justify-end">
+                                                  <div className={`text-[10px] leading-none mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`} title={String(v)}>
+                                                    {dv}
+                                                  </div>
+                                                  <div className="h-28 w-10 flex items-end">
+                                                    <div
+                                                      className={`w-full rounded-sm ${darkMode ? 'bg-white/20' : 'bg-gray-700'}`}
+                                                      style={{ height: `${Math.round(h * 100)}%` }}
+                                                      title={barChartPreviewModel.valuesAreNormalized ? 'Normalized values (axis not read)' : undefined}
+                                                    />
+                                                  </div>
+                                                  <div
+                                                    className={`mt-1 max-w-[2.5rem] truncate text-[10px] leading-none ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}
+                                                    title={label}
+                                                  >
+                                                    {label}
+                                                  </div>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </>
+                                  ) : null}
                                 </>
-                              ) : null}
-                            </>
+                              ) : (
+                                <pre
+                                  className={`whitespace-pre-wrap text-xs rounded-md p-2 border ${
+                                    darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
+                                  }`}
+                                >
+                                  {safeJson(selectedVisual.structured_json)}
+                                </pre>
+                              )}
+                            </div>
                           ) : (
                             <pre
-                              className={`whitespace-pre-wrap text-xs rounded-md p-2 border ${
+                              className={`mt-2 whitespace-pre-wrap text-xs rounded-md p-2 border ${
                                 darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
                               }`}
                             >
                               {safeJson(selectedVisual.structured_json)}
                             </pre>
                           )}
-                        </div>
-                      ) : (
-                        <pre
-                          className={`mt-2 whitespace-pre-wrap text-xs rounded-md p-2 border ${
-                            darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
-                          }`}
-                        >
-                          {safeJson(selectedVisual.structured_json)}
-                        </pre>
-                      )}
-                    </details>
-                  ) : null}
+                        </details>
+                      ) : null}
 
-                  {selectedVisual.quality_flags != null ? (
-                    <details>
-                      <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Quality flags</summary>
-                      <pre className={`mt-2 whitespace-pre-wrap text-xs rounded-md p-2 border ${darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'}`}>
-                        {safeJson(selectedVisual.quality_flags)}
-                      </pre>
-                    </details>
+                      {selectedVisual.quality_flags != null ? (
+                        <details>
+                          <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Quality flags</summary>
+                          <pre className={`mt-2 whitespace-pre-wrap text-xs rounded-md p-2 border ${darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'}`}>
+                            {safeJson(selectedVisual.quality_flags)}
+                          </pre>
+                        </details>
+                      ) : null}
+                    </>
                   ) : null}
-                </>
+                </div>
               ) : null}
             </div>
           ) : null}

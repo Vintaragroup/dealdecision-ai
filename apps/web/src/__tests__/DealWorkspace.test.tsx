@@ -12,11 +12,13 @@ vi.mock('../contexts/UserRoleContext', () => ({
 vi.mock('../lib/apiClient', () => {
   const apiGetDeal = vi.fn();
   const apiPostAnalyze = vi.fn();
+  const apiPostExtractVisuals = vi.fn();
   const apiGetJob = vi.fn();
   return {
     isLiveBackend: () => true,
     apiGetDeal,
     apiPostAnalyze,
+    apiPostExtractVisuals,
     apiGetJob,
   };
 });
@@ -131,6 +133,19 @@ describe('DealWorkspace Job Center (live mode)', () => {
     await userEvent.click(headerRunButton);
 
     await waitFor(() => expect(apiPostAnalyze).toHaveBeenCalledWith('deal-4'));
+  });
+
+  test('Extract visuals button triggers apiPostExtractVisuals', async () => {
+    const { apiPostExtractVisuals } = await import('../lib/apiClient');
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v3', dioStatus: 'ready' } as any);
+    vi.mocked(apiPostExtractVisuals).mockResolvedValue({ job_id: 'job-viz-1', status: 'queued' } as any);
+
+    renderWorkspace({ dealId: 'deal-5' });
+
+    const extractButton = screen.getByRole('button', { name: /Extract visuals/i });
+    await userEvent.click(extractButton);
+
+    await waitFor(() => expect(apiPostExtractVisuals).toHaveBeenCalledWith('deal-5'));
   });
 
   test('Job Center shows progress bar when job reports progress', async () => {

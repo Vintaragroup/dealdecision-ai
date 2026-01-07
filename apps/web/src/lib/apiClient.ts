@@ -200,6 +200,15 @@ export type JobUpdatedEvent = {
   updated_at?: string;
 };
 
+export function resolveApiAssetUrl(path: string | null): string | null {
+  if (!path) return null;
+  const trimmed = path.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed;
+  if (trimmed.startsWith('/uploads/')) return `${API_BASE_URL}${trimmed}`;
+  return trimmed;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const debugEnabled = debugApiIsEnabled();
   const method = String(options?.method ?? 'GET').toUpperCase();
@@ -300,6 +309,12 @@ export function apiPostAnalyze(dealId: string) {
   });
 }
 
+export function apiPostExtractVisuals(dealId: string) {
+	return request<{ job_id: string; status: string }>(`/api/v1/deals/${dealId}/extract-visuals`, {
+		method: 'POST'
+	});
+}
+
 export function apiGetJob(jobId: string) {
   return request<{
     job_id: string;
@@ -334,8 +349,14 @@ export function apiGetDocuments(dealId: string) {
 }
 
 export type DealLineageNode = {
+  // API-stable node identifier (preferred). Backend also mirrors this into `id` for React Flow compatibility.
+  node_id?: string;
   id: string;
+  // Canonical semantic type (preferred); backend may also populate `type` for React Flow.
+  node_type?: string;
   type?: string;
+  label?: string;
+  metadata?: Record<string, unknown>;
   data?: Record<string, unknown>;
 };
 
@@ -343,6 +364,7 @@ export type DealLineageEdge = {
   id: string;
   source: string;
   target: string;
+  edge_type?: string;
 };
 
 export type DealLineageResponse = {

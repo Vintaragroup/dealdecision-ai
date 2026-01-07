@@ -16,7 +16,7 @@ import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { EvidencePanel } from '../evidence/EvidencePanel';
-import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiPostAnalyze, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, isLiveBackend, subscribeToEvents, type AutoProfileResponse, type DealReport, type JobUpdatedEvent, type ProposedDealProfile } from '../../lib/apiClient';
+import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiPostAnalyze, apiPostExtractVisuals, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, isLiveBackend, subscribeToEvents, type AutoProfileResponse, type DealReport, type JobUpdatedEvent, type ProposedDealProfile } from '../../lib/apiClient';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
 import { useUserRole } from '../../contexts/UserRoleContext';
@@ -97,6 +97,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [jobProgress, setJobProgress] = useState<number | null>(null);
   const [jobMessage, setJobMessage] = useState<string | null>(null);
   const [jobUpdatedAt, setJobUpdatedAt] = useState<string | null>(null);
+  const [jobQueuedSeconds, setJobQueuedSeconds] = useState<number>(0);
   const [sseReady, setSseReady] = useState(false);
   const [evidence, setEvidence] = useState<Array<{ evidence_id: string; deal_id: string; document_id?: string; source: string; kind: string; text: string; confidence?: number; created_at?: string }>>([]);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
@@ -104,6 +105,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [documentTitles, setDocumentTitles] = useState<Record<string, string>>({});
   const [dealFromApi, setDealFromApi] = useState<any>(null);
   const [reportFromApi, setReportFromApi] = useState<DealReport | null>(null);
+  const [analystReloadKey, setAnalystReloadKey] = useState(0);
 
   const [autoProfileLoading, setAutoProfileLoading] = useState(false);
   const [autoProfileResult, setAutoProfileResult] = useState<AutoProfileResponse | null>(null);
@@ -603,19 +605,63 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, [dealId]);
 
   useEffect(() => {
-    if (!jobId || sseReady) return;
+    if (!jobId || jobStatus !== 'queued') {
+      setJobQueuedSeconds(0);
+      return;
+    }
+
+    const startedAt = Date.now();
+    const id = window.setInterval(() => {
+      setJobQueuedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+
+    return () => {
+      window.clearInterval(id);
+    };
+  }, [jobId, jobStatus]);
+
+  useEffect(() => {
+    if (!jobId) return;
     let cancelled = false;
+
+    const jobsLogEnabled = (() => {
+      if (!import.meta.env.DEV) return false;
+      if (typeof window === 'undefined') return false;
+      try {
+        return new URLSearchParams(window.location.search).get('jobs_log') === '1';
+      } catch {
+        return false;
+      }
+    })();
+
+    const jobsLog = (...args: any[]) => {
+      if (!jobsLogEnabled) return;
+      // eslint-disable-next-line no-console
+      console.info('[jobs]', ...args);
+    };
 
     const poll = async () => {
       try {
+        jobsLog('poll:getJob:start', { jobId, sseReady });
         const job = await apiGetJob(jobId);
         if (cancelled) return;
+
+        jobsLog('poll:getJob:result', {
+          job_id: job.job_id,
+          type: job.type,
+          status: job.status,
+          progress_pct: job.progress_pct,
+          updated_at: job.updated_at,
+        });
+
         setJobStatus(job.status);
         setJobProgress(typeof job.progress_pct === 'number' ? job.progress_pct : null);
         setJobMessage(job.message || null);
         setJobUpdatedAt(job.updated_at || null);
         if (job.status === 'queued' || job.status === 'running' || job.status === 'retrying') {
-          setTimeout(poll, 2000);
+          // SSE is best-effort; keep polling as a safety net.
+          // When SSE is connected, back off to reduce load.
+          setTimeout(poll, sseReady ? 10000 : 2000);
         } else {
           setAnalyzing(false);
           addToastOnce(`analysis-complete:${jobId}:${job.status}`, job.status === 'succeeded' ? 'success' : 'error', 'Analysis completed', job.message || job.status);
@@ -634,6 +680,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               .catch(() => {});
             loadReport();
             loadEvidence();
+            if (job.type === 'extract_visuals') {
+              setAnalystReloadKey((v) => v + 1);
+            }
           }
         }
       } catch (err) {
@@ -701,6 +750,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   });
                 })
                 .catch(() => {});
+            }
+            if (job.type === 'extract_visuals') {
+              setAnalystReloadKey((v) => v + 1);
             }
           }
         }
@@ -798,6 +850,28 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       addToast('info', 'Job queued', `Job ${res.job_id}`);
     } catch (err) {
       addToast('error', 'Analysis failed to start', err instanceof Error ? err.message : 'Unknown error');
+      setAnalyzing(false);
+      return;
+    }
+  };
+
+  const runExtractVisuals = async () => {
+    if (!dealId || !isLiveBackend()) {
+      addToast('info', 'Live mode required', 'Switch to live backend to extract visuals');
+      return;
+    }
+    setAnalyzing(true);
+    setJobProgress(null);
+    setJobMessage(null);
+    setJobUpdatedAt(null);
+    addToast('info', 'Visual extraction started', 'Queued extract visuals job...');
+    try {
+      const res = await apiPostExtractVisuals(dealId);
+      setJobId(res.job_id);
+      setJobStatus(res.status);
+      addToast('info', 'Job queued', `Job ${res.job_id}`);
+    } catch (err) {
+      addToast('error', 'Visual extraction failed to start', err instanceof Error ? err.message : 'Unknown error');
       setAnalyzing(false);
       return;
     }
@@ -1258,6 +1332,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 {jobMessage && typeof jobProgress === 'number' && (
                   <div className={`text-xs mt-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{jobMessage}</div>
                 )}
+                {jobStatus === 'queued' && jobQueuedSeconds >= 20 && (
+                  <div
+                    className={`mt-3 rounded-lg border px-3 py-2 text-xs ${
+                      darkMode
+                        ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+                        : 'bg-amber-50 border-amber-200 text-amber-800'
+                    }`}
+                  >
+                    Still queued after {jobQueuedSeconds}s. If this persists, the worker may not be running or may be pointed at a different Redis/DB.
+                  </div>
+                )}
               </div>
 
               <div className="flex flex-wrap gap-2 mt-4">
@@ -1293,9 +1378,19 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 >
                   {analyzing ? 'Analyzing...' : 'Run / Re-run analysis'}
                 </Button>
+
+                <Button
+                  variant="secondary"
+                  darkMode={darkMode}
+                  icon={<Eye className="w-4 h-4" />}
+                  onClick={runExtractVisuals}
+                  loading={analyzing}
+                >
+                  {analyzing ? 'Working...' : 'Extract visuals'}
+                </Button>
                 {jobStatus && (
                   <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    Auto-polling every 2s. Status updates when the job finishes.
+                    Auto-polling while a job is active (2–10s). Status updates when the job finishes.
                   </span>
                 )}
               </div>
@@ -1813,7 +1908,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
             {/* Analyst Mode Tab */}
             {activeTab === 'analyst' && (
-              <DealAnalystTab dealId={dealId || 'demo'} darkMode={darkMode} />
+              <DealAnalystTab key={analystReloadKey} dealId={dealId || 'demo'} darkMode={darkMode} />
             )}
 
             {/* AI Analysis Tab */}

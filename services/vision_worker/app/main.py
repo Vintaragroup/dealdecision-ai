@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import time
 from typing import Any, Dict, Optional, Tuple
 
@@ -23,6 +24,16 @@ logger = logging.getLogger("vision_worker")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 app = FastAPI(title="vision_worker", version="1.0.0")
+
+
+@app.on_event("startup")
+def _startup_log() -> None:
+    tesseract_path = shutil.which("tesseract")
+    logger.info(
+        "startup tesseract_available=%s tesseract_path=%s",
+        bool(tesseract_path),
+        tesseract_path,
+    )
 
 
 def _log_event(event: str, payload: Dict[str, Any]) -> None:
@@ -85,8 +96,13 @@ class _BytesIO:  # tiny local BytesIO to avoid importing io in hot path
 
 
 @app.get("/health")
-def health() -> Dict[str, str]:
-    return {"status": "ok"}
+def health() -> Dict[str, Any]:
+    tesseract_path = shutil.which("tesseract")
+    return {
+        "status": "ok",
+        "tesseract_available": bool(tesseract_path),
+        "tesseract_path": tesseract_path,
+    }
 
 
 @app.post("/extract-visuals")
@@ -103,6 +119,27 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
         "page_index": req.page_index,
         "extractor_version": req.extractor_version,
     }
+
+    debug_logs = os.getenv("VISION_DEBUG_LOGS", "").strip().lower() in {"1", "true", "yes", "on"}
+    if debug_logs:
+        image_uri_kind = "http" if (req.image_uri or "").startswith(("http://", "https://")) else "file"
+        local_exists = None
+        if image_uri_kind == "file":
+            try:
+                local_exists = bool(os.path.exists(req.image_uri))
+            except Exception:
+                local_exists = None
+        _log_event(
+            "extract_visuals_debug",
+            {
+                **base_log,
+                "image_uri_kind": image_uri_kind,
+                "image_uri": req.image_uri,
+                "local_exists": local_exists,
+                "crop_saved": False,
+                "note": "vision_v1 does not write per-asset crops; assets.image_uri will be null",
+            },
+        )
 
     try:
         image_bytes, load_flags = _read_image_bytes(req.image_uri)
@@ -174,6 +211,34 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
             image_height=img.size[1],
         )
 
+        def _parse_bool(v: Optional[str]) -> Optional[bool]:
+            if v is None:
+                return None
+            s = v.strip().lower()
+            if s in {"1", "true", "yes", "on"}:
+                return True
+            if s in {"0", "false", "no", "off"}:
+                return False
+            return None
+
+        tesseract_path = shutil.which("tesseract")
+        tesseract_available = bool(tesseract_path)
+        ocr_enabled_env = _parse_bool(os.getenv("VISION_OCR_ENABLED"))
+        ocr_enabled = tesseract_available if ocr_enabled_env is None else bool(ocr_enabled_env)
+
+        def _crop_by_bbox(page: Image.Image, bbox: BBox) -> Image.Image:
+            try:
+                w, h = page.size
+                x0 = int(max(0.0, min(1.0, float(bbox.x))) * w)
+                y0 = int(max(0.0, min(1.0, float(bbox.y))) * h)
+                x1 = int(max(0.0, min(1.0, float(bbox.x + bbox.w))) * w)
+                y1 = int(max(0.0, min(1.0, float(bbox.y + bbox.h))) * h)
+                if x1 <= x0 or y1 <= y0:
+                    return page
+                return page.crop((x0, y0, x1, y1))
+            except Exception:
+                return page
+
         # OCR-lite on each asset (v1: full-page only)
         table_summary: Dict[str, Any] = {
             "table_detected": False,
@@ -190,13 +255,42 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
         }
 
         for a in assets:
-            extraction, ocr_flags = run_ocr_lite(img)
-            a.extraction = extraction
+            ocr_flags: Dict[str, Any] = {}
+            if ocr_enabled:
+                # OCR should run at least for image_text and table; in v1 we OCR all regions.
+                ocr_img = _crop_by_bbox(img, a.bbox)
+                extraction, ocr_flags = run_ocr_lite(ocr_img)
+                a.extraction.ocr_text = extraction.ocr_text
+                a.extraction.ocr_blocks = extraction.ocr_blocks
+                a.extraction.confidence = extraction.confidence
+            else:
+                a.extraction.ocr_text = None
+                a.extraction.ocr_blocks = []
+                a.extraction.confidence = 0.0
+                ocr_flags["ocr"] = "disabled"
+                ocr_flags["tesseract_available"] = tesseract_available
+
             # Attach URI/hash metadata (no crop in v1)
             a.image_uri = None
             a.image_hash = image_hash
             if ocr_flags:
                 a.quality_flags.update(ocr_flags)
+
+            # Per-asset OCR log line for debugging in Docker.
+            try:
+                _log_event(
+                    "asset_ocr",
+                    {
+                        **base_log,
+                        "asset_type": a.asset_type,
+                        "ocr_ran": bool(ocr_enabled),
+                        "ocr_len": len(a.extraction.ocr_text or ""),
+                        "tesseract_available": tesseract_available,
+                        "tesseract_path": tesseract_path,
+                    },
+                )
+            except Exception:
+                pass
 
             # Table detection/extraction (full-page only in v1)
             detect_res, table_detect_flags = detect_table(img, deadline=table_deadline)

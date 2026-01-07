@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { randomUUID } from "crypto";
 import { getPool } from "../lib/db";
@@ -8,6 +8,7 @@ import { autoProgressDealStage } from "../services/stageProgression";
 import { updateDealPriority, updateAllDealPriorities } from "../services/priorityClassification";
 import { normalizeDealName } from "../lib/normalize-deal-name";
 import { purgeDealCascade, isPurgeDealNotFoundError, sanitizeText } from "@dealdecision/core";
+import { BrandModel, PageInput, buildBrandModel, inferDocumentBrandName, inferSlideTitleForSlide, normalizePhrase } from "../lib/slide-title";
 
 type QueryResult<T> = { rows: T[]; rowCount?: number };
 type DealRoutesClient = {
@@ -21,91 +22,70 @@ type DealRoutesPool = {
 
 type DealApiMode = "phase1" | "full";
 
-async function hasTable(pool: DealRoutesPool, table: string) {
+// Lightweight helpers reused across routes. These mirror the patterns used in tests (information_schema + to_regclass).
+async function hasTable(pool: DealRoutesPool, table: string): Promise<boolean> {
   try {
-    const { rows } = await pool.query<{ oid: string | null }>(
-      "SELECT to_regclass($1) as oid",
-      [table]
-    );
-    return rows[0]?.oid !== null;
+    const { rows } = await pool.query<{ oid: string | null }>("SELECT to_regclass($1) as oid", [table]);
+    return rows?.[0]?.oid !== null;
   } catch {
     return false;
   }
 }
 
-async function hasColumn(pool: DealRoutesPool, tableName: string, columnName: string) {
+async function hasColumn(pool: DealRoutesPool, table: string, column: string): Promise<boolean> {
   try {
     const { rows } = await pool.query<{ ok: number }>(
-      `SELECT 1 as ok
-       FROM information_schema.columns
-       WHERE table_schema = 'public'
-         AND table_name = $1
-         AND column_name = $2
-       LIMIT 1`,
-      [tableName, columnName]
+      `SELECT 1 as ok FROM information_schema.columns WHERE table_name = $1 AND column_name = $2 LIMIT 1`,
+      [table, column]
     );
-    return rows.length > 0;
+    return Array.isArray(rows) && rows.length > 0;
   } catch {
     return false;
   }
-}
-
-function requireDestructiveAuth(request: any): { ok: true } | { ok: false; status: number; error: string } {
-  const adminToken = process.env.ADMIN_TOKEN;
-  if (!adminToken) {
-    if (process.env.NODE_ENV === "development") return { ok: true };
-    return { ok: false, status: 403, error: "Admin token not configured" };
-  }
-
-  const authHeader = request?.headers?.authorization;
-  const token = typeof authHeader === "string" ? authHeader.replace("Bearer ", "") : undefined;
-  if (token !== adminToken) {
-    return { ok: false, status: 403, error: "Unauthorized" };
-  }
-  return { ok: true };
-}
-
-function parseDealApiMode(request: any): DealApiMode {
-  const q = (request?.query ?? {}) as any;
-  const modeParam = q?.mode;
-  const raw =
-    typeof modeParam === "string"
-      ? modeParam
-      : Array.isArray(modeParam) && typeof modeParam[0] === "string"
-        ? modeParam[0]
-        : undefined;
-  if (!raw) return "full";
-  const m = raw.trim().toLowerCase();
-  if (m === "phase1" || m === "p1") return "phase1";
-  return "full";
 }
 
 function stripEvidenceFromExecutiveSummary(exec: any): any {
-  if (!exec || typeof exec !== "object") return undefined;
-  const { evidence, ...rest } = exec as any;
-  return rest;
+  if (!exec || typeof exec !== "object") return null;
+  const clone = { ...exec } as any;
+  if ("evidence" in clone) delete clone.evidence;
+  return clone;
 }
 
 function stripEvidenceFromClaims(claims: any): any[] {
-  const list = Array.isArray(claims) ? claims : [];
-  return list
-    .map((c: any) => {
-      if (!c || typeof c !== "object") return null;
-      const { evidence, ...rest } = c as any;
-      return rest;
-    })
-    .filter(Boolean);
+  if (!Array.isArray(claims)) return [];
+  return claims.map((c) => {
+    if (!c || typeof c !== "object") return c;
+    const clone = { ...c } as any;
+    if ("evidence" in clone) delete clone.evidence;
+    return clone;
+  });
 }
 
-const dealStageSchema = z.enum(["intake", "under_review", "in_diligence", "ready_decision", "pitched"]);
-const dealPrioritySchema = z.enum(["high", "medium", "low"]);
-const dealTrendSchema = z.enum(["up", "down", "stable"]);
+function parseDealApiMode(request: FastifyRequest | any): DealApiMode {
+  const modeRaw = (request?.query as any)?.mode ?? (request as any)?.mode;
+  return typeof modeRaw === "string" && modeRaw.toLowerCase() === "phase1" ? "phase1" : "full";
+}
+
+function requireDestructiveAuth(request: FastifyRequest | any): { ok: true } | { ok: false; status: number; error: string } {
+  // Allow destructive operations in non-production by default to keep tests/dev simple.
+  if (process.env.NODE_ENV !== "production") return { ok: true };
+
+  const headers = (request?.headers ?? {}) as any;
+  const token = headers["x-admin-token"] ?? headers["admin-token"];
+  if (typeof token === "string" && token.trim() && token === process.env.ADMIN_TOKEN) return { ok: true };
+
+  return { ok: false, status: 403, error: "Unauthorized destructive operation" };
+}
+
+const dealStageEnum = z.enum(["intake", "under_review", "in_diligence", "ready_decision", "pitched"]);
+const dealPriorityEnum = z.enum(["high", "medium", "low"]);
+const dealTrendEnum = z.enum(["up", "down", "flat"]);
 
 const dealCreateSchema = z.object({
   name: z.string().min(1),
-  stage: dealStageSchema,
-  priority: dealPrioritySchema,
-  trend: dealTrendSchema.optional(),
+  stage: dealStageEnum.default("intake"),
+  priority: dealPriorityEnum.default("medium"),
+  trend: dealTrendEnum.optional(),
   score: z.number().optional(),
   owner: z.string().optional(),
 });
@@ -113,27 +93,23 @@ const dealCreateSchema = z.object({
 const dealDraftCreateSchema = z
   .object({
     name: z.string().min(1).optional(),
-    stage: dealStageSchema.optional(),
-    priority: dealPrioritySchema.optional(),
+    stage: dealStageEnum.optional(),
+    priority: dealPriorityEnum.optional(),
     owner: z.string().optional(),
   })
   .optional();
 
-const dealConfirmProfileSchema = z.object({
-  company_name: z.string().min(1).nullable().optional(),
-  deal_name: z.string().min(1).nullable().optional(),
-  investment_type: z.string().min(1).nullable().optional(),
-  round: z.string().min(1).nullable().optional(),
-  industry: z.string().min(1).nullable().optional(),
-});
-
-type AutoProfileDocRow = {
-  id: string;
-  title: string;
-  full_text: string | null;
-  structured_data: any | null;
-  full_content: any | null;
-};
+const dealConfirmProfileSchema = z
+  .object({
+    company_name: z.string().min(1).optional(),
+    deal_name: z.string().min(1).optional(),
+    investment_type: z.string().min(1).optional(),
+    round: z.string().min(1).optional(),
+    industry: z.string().min(1).optional(),
+  })
+  .refine((data) => Object.values(data).some((v) => typeof v === "string" && v.trim().length > 0), {
+    message: "At least one profile field is required",
+  });
 
 function sanitizeProfileValue(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -149,20 +125,96 @@ function extractLabeledValue(text: string, label: string): string | null {
   return m ? sanitizeProfileValue(m[1]) : null;
 }
 
-function deriveNameFromFilenameLike(title: string): string | null {
-  const raw = String(title || "").trim();
+function isGenericCandidateName(value: string): boolean {
+  const s = String(value || "").trim();
+  if (!s) return true;
+  const normalized = s
+    .toLowerCase()
+    .replace(/\.[a-z0-9]{2,6}$/i, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) return true;
+  if (normalized.length <= 2) return true;
+  if (/^(?:pd|deck|pitch|presentation)$/.test(normalized)) return true;
+  if (/^(?:pitch deck|pitchdeck|data room|dataroom|financials|model|term sheet|teaser|one pager|onepager)$/.test(normalized)) {
+    return true;
+  }
+  if (/^(?:document|doc|file|scan)$/.test(normalized)) return true;
+  if (/^\d+$/.test(normalized)) return true;
+  return false;
+}
+
+function deriveNameFromFilenameLike(fileNameOrTitle: string): string | null {
+  const raw = String(fileNameOrTitle || "").trim();
   if (!raw) return null;
-  const noExt = raw.replace(/\.[A-Za-z0-9]{2,6}$/, "");
+  const noExt = raw.replace(/\.[A-Za-z0-9]{2,6}$/i, "");
   const cleaned = noExt
     .replace(/[_]+/g, " ")
-    .replace(/\b(pitch\s*deck|deck|presentation|data\s*room|dataroom|financials|model|term\s*sheet)\b/gi, "")
+    .replace(
+      /\b(pd|pitch\s*deck|pitch\s*deck\s*v\d+|pitch\s*deck\s*final|pitchdeck|deck|presentation|data\s*room|dataroom|financials|model|term\s*sheet|teaser|one\s*pager|onepager|executive\s*summary|overview)\b/gi,
+      ""
+    )
     .replace(/\s+/g, " ")
     .trim();
   if (cleaned.length < 2) return null;
   const seg = cleaned.split(/\s[-–—|:]\s/)[0]?.trim();
   if (!seg) return null;
-  return sanitizeProfileValue(seg);
+  const candidate = sanitizeProfileValue(seg);
+  if (!candidate) return null;
+  if (isGenericCandidateName(candidate)) return null;
+  return candidate;
 }
+
+function extractCompanyFromEarlyText(fullText: string): string | null {
+  const text = String(fullText || "").trim();
+  if (!text) return null;
+
+  const head = text.slice(0, 6_000);
+  const lines = head
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  for (const line of lines.slice(0, 10)) {
+    if (line.length < 3 || line.length > 70) continue;
+    if (line.includes(":")) continue; // likely a label/value line handled elsewhere
+    const candidate = sanitizeProfileValue(line);
+    if (!candidate) continue;
+    if (isGenericCandidateName(candidate)) continue;
+    // avoid obvious section headings
+    if (/^(?:pitch\s*deck|company\s*overview|overview|contents|table\s*of\s*contents)$/i.test(candidate)) continue;
+    return candidate;
+  }
+
+  const about = head.match(
+    /\b(?:about|welcome to|introducing)\s+([A-Z][A-Za-z0-9&.'\-]{1,40}(?:\s+[A-Z][A-Za-z0-9&.'\-]{1,40}){0,3})\b/
+  );
+  if (about?.[1]) {
+    const candidate = sanitizeProfileValue(about[1]);
+    if (candidate && !isGenericCandidateName(candidate)) return candidate;
+  }
+
+  const legal = head.match(
+    /\b([A-Z][A-Za-z0-9&.'\-]{1,40}(?:\s+[A-Z][A-Za-z0-9&.'\-]{1,40}){0,4})\s+(?:Inc\.?|LLC|Ltd\.?|Corporation|Corp\.?|GmbH|S\.A\.|SAS)\b/
+  );
+  if (legal?.[1]) {
+    const candidate = sanitizeProfileValue(legal[1]);
+    if (candidate && !isGenericCandidateName(candidate)) return candidate;
+  }
+
+  return null;
+}
+
+type AutoProfileDocRow = {
+  id: string;
+  title: string;
+  file_name?: string | null;
+  full_text: string | null;
+  structured_data: any | null;
+  full_content: any | null;
+};
 
 function computeAutoProfileFromDocuments(docs: AutoProfileDocRow[]) {
   const warnings: string[] = [];
@@ -192,11 +244,11 @@ function computeAutoProfileFromDocuments(docs: AutoProfileDocRow[]) {
 
   const docTexts = docs.map((d) => {
     const fullText = typeof d.full_text === "string" ? d.full_text : "";
-    const base = `${d.title || ""}\n${fullText}`;
-    return { id: d.id, text: base.slice(0, 80_000) };
+    return { id: d.id, fullText: fullText.slice(0, 80_000) };
   });
 
-  for (const { id: docId, text } of docTexts) {
+  for (const { id: docId, fullText } of docTexts) {
+    const text = String(fullText || "");
     if (!text.trim()) continue;
 
     const labeledCompany =
@@ -206,6 +258,11 @@ function computeAutoProfileFromDocuments(docs: AutoProfileDocRow[]) {
 
     if (labeledCompany) {
       candidates.company_name.push({ value: labeledCompany, score: 0.75, docId });
+    }
+
+    const earlyCompany = extractCompanyFromEarlyText(text);
+    if (earlyCompany) {
+      candidates.company_name.push({ value: earlyCompany, score: 0.6, docId });
     }
 
     const industry = extractLabeledValue(text, "Industry") || extractLabeledValue(text, "Sector");
@@ -247,9 +304,11 @@ function computeAutoProfileFromDocuments(docs: AutoProfileDocRow[]) {
 
   if (candidates.company_name.length === 0) {
     for (const d of docs) {
-      const fromTitle = deriveNameFromFilenameLike(d.title);
-      if (fromTitle) {
-        candidates.company_name.push({ value: fromTitle, score: 0.35, docId: d.id });
+      const preferredNameSource = (d.file_name ?? d.title) as string;
+      const fromFileName = deriveNameFromFilenameLike(preferredNameSource);
+      if (fromFileName) candidates.company_name.push({ value: fromFileName, score: 0.35, docId: d.id });
+      else if (preferredNameSource && isGenericCandidateName(preferredNameSource)) {
+        warnings.push("filename looked generic (e.g. PD/deck); ignored for company_name");
       }
     }
     if (candidates.company_name.length > 0) warnings.push("company_name inferred from filename (low confidence)");
@@ -315,6 +374,44 @@ function computeAutoProfileFromDocuments(docs: AutoProfileDocRow[]) {
   if (!industry.value) warnings.push("industry not inferred");
 
   return { proposed_profile, confidence, sources, warnings };
+}
+
+export function normalizeWarningsForPersistence(input: unknown): string[] | null {
+  if (input == null) return null;
+
+  const coerceOne = (value: unknown): string[] => {
+    if (value == null) return [];
+    if (typeof value !== "string") return [];
+    const raw = value.trim();
+    if (!raw) return [];
+    if (raw.includes(" • ")) {
+      return raw
+        .split(" • ")
+        .map((p) => p.trim())
+        .filter((p) => p.length > 0);
+    }
+    return [raw];
+  };
+
+  const out: string[] = [];
+
+  if (Array.isArray(input)) {
+    for (const item of input) out.push(...coerceOne(item));
+  } else {
+    out.push(...coerceOne(input));
+  }
+
+  return out.length > 0 ? out : null;
+}
+
+function jsonbParam(value: unknown): any {
+  if (value == null) return null;
+  // node-postgres treats JS arrays as Postgres array literals (not JSON);
+  // using a toPostgres wrapper ensures json/jsonb columns receive valid JSON.
+  if (Array.isArray(value)) {
+    return { toPostgres: () => JSON.stringify(value) };
+  }
+  return value;
 }
 
 const dealUpdateSchema = dealCreateSchema.partial();
@@ -426,6 +523,161 @@ function mapDeal(row: DealRow, dio: DIOAggregateRow | null | undefined, mode: De
 export async function registerDealRoutes(app: FastifyInstance, poolOverride?: any) {
   const pool = (poolOverride ?? getPool()) as DealRoutesPool;
 
+  function safeJsonValue(input: unknown): any {
+    try {
+      if (input == null) return null;
+      if (typeof input === "string") {
+        const s = input.trim();
+        if (!s) return null;
+        return JSON.parse(s);
+      }
+      return input;
+    } catch {
+      return null;
+    }
+  }
+
+  function ocrSnippet(text: unknown): string | null {
+    if (typeof text !== "string") return null;
+    const s = text.replace(/\s+/g, " ").trim();
+    if (!s) return null;
+    return s.length > 140 ? s.slice(0, 140) : s;
+  }
+
+  function deriveStructuredSummary(
+    structuredJson: any,
+    units: string | null
+  ): {
+    structured_kind: "table" | "bar" | null;
+    structured_summary:
+      | { table: { rows: number; cols: number }; method?: string; confidence?: number | null }
+      | { bar: { bars: number; title?: string; unit?: string; normalized?: boolean }; method?: string; confidence?: number | null }
+      | null;
+  } {
+    try {
+      const parsed = safeJsonValue(structuredJson);
+      const sj = parsed && typeof parsed === "object" ? parsed : null;
+      if (!sj) return { structured_kind: null, structured_summary: null };
+
+      const asNumber = (v: any): number | null => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+      };
+
+      // Table: required behavior
+      // If structured_json.table exists, attempt to infer rows/cols.
+      const tableObj = (sj as any)?.table;
+      if (tableObj && typeof tableObj === "object") {
+        const tableRowsRaw = (tableObj as any)?.rows;
+
+        let rows: number | null = null;
+        let cols: number | null = null;
+
+        if (Array.isArray(tableRowsRaw)) {
+          rows = tableRowsRaw.length;
+          cols = 0;
+          for (const r of tableRowsRaw) {
+            if (!Array.isArray(r)) continue;
+            cols = Math.max(cols, r.length);
+          }
+        } else {
+          // Fallback table heuristics (older shapes)
+          rows = asNumber((sj as any).rows) ?? asNumber((sj as any).row_count) ?? asNumber((tableObj as any)?.row_count);
+          cols = asNumber((sj as any).cols) ?? asNumber((sj as any).col_count) ?? asNumber((tableObj as any)?.col_count);
+        }
+
+        const methodRaw = (tableObj as any)?.method ?? (sj as any)?.method;
+        const method = typeof methodRaw === "string" && methodRaw.trim() ? methodRaw.trim().slice(0, 64) : undefined;
+
+        const confRaw = (tableObj as any)?.confidence ?? (sj as any)?.confidence;
+        const confidence = confRaw == null ? null : asNumber(confRaw);
+
+        const structured_summary: any = { table: { rows: rows ?? 0, cols: cols ?? 0 } };
+        if (method) structured_summary.method = method;
+        if (confidence != null) structured_summary.confidence = confidence;
+        return { structured_kind: "table", structured_summary };
+      }
+
+      // Bar chart: required behavior
+      // If structured_json.chart.type === "bar" OR chart has bar-ish structure, infer bar count.
+      const chart = (sj as any)?.chart;
+      if (chart && typeof chart === "object") {
+        const chartType = (chart as any).type;
+        const barsArray = Array.isArray((chart as any).bars) ? (chart as any).bars : null;
+        const bars = barsArray ? barsArray.length : asNumber((chart as any).bars);
+
+        const isBar = chartType === "bar" || barsArray != null || bars != null;
+        if (!isBar) return { structured_kind: null, structured_summary: null };
+
+        const titleRaw =
+          typeof (chart as any).title === "string"
+            ? (chart as any).title
+            : typeof (chart as any).chart_title === "string"
+              ? (chart as any).chart_title
+              : typeof (sj as any).title === "string"
+                ? (sj as any).title
+                : undefined;
+
+        const normalizedRaw = (chart as any).normalized;
+        const normalized = typeof normalizedRaw === "boolean" ? normalizedRaw : undefined;
+
+        const unitRaw =
+          typeof (chart as any).unit === "string" && (chart as any).unit.trim()
+            ? (chart as any).unit.trim()
+            : typeof units === "string" && units.trim()
+              ? units.trim()
+              : undefined;
+
+        const out: { bars: number; title?: string; unit?: string; normalized?: boolean } = { bars: bars ?? 0 };
+        if (titleRaw && titleRaw.trim()) out.title = titleRaw.trim().slice(0, 120);
+        if (unitRaw) out.unit = unitRaw.slice(0, 40);
+        if (normalized !== undefined) out.normalized = normalized;
+
+        const methodRaw = (chart as any)?.method;
+        const method = typeof methodRaw === "string" && methodRaw.trim() ? methodRaw.trim().slice(0, 64) : undefined;
+
+        const confRaw = (chart as any)?.confidence;
+        const confidence = confRaw == null ? null : asNumber(confRaw);
+
+        const structured_summary: any = { bar: out };
+        if (method) structured_summary.method = method;
+        if (confidence != null) structured_summary.confidence = confidence;
+        return { structured_kind: "bar", structured_summary };
+      }
+
+      return { structured_kind: null, structured_summary: null };
+    } catch {
+      return { structured_kind: null, structured_summary: null };
+    }
+  }
+
+  function deriveBestExtractionConfidence(params: {
+    structuredJson: unknown;
+    fallback: unknown;
+  }): number | null {
+    try {
+      const fallbackRaw = params.fallback == null ? null : Number(params.fallback);
+      const fallback = fallbackRaw != null && Number.isFinite(fallbackRaw) ? fallbackRaw : null;
+
+      const parsed = safeJsonValue(params.structuredJson);
+      if (!parsed || typeof parsed !== "object") return fallback;
+
+      const sj: any = parsed as any;
+      const tableConf = sj?.table?.confidence;
+      const chartConf = sj?.chart?.confidence;
+
+      const pick = (v: any): number | null => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+      };
+
+      return pick(tableConf) ?? pick(chartConf) ?? fallback;
+    } catch {
+      const fallbackRaw = params.fallback == null ? null : Number(params.fallback);
+      return fallbackRaw != null && Number.isFinite(fallbackRaw) ? fallbackRaw : null;
+    }
+  }
+
   app.get(
     "/api/v1/deals/:deal_id/lineage",
     {
@@ -462,15 +714,34 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       return reply.status(400).send({ error: "deal_id is required" });
     }
 
-    // Load deal label if it exists; keep endpoint read-only and resilient.
+    // Load deal label + minimal metadata if it exists; keep endpoint read-only and resilient.
     let dealName: string | null = null;
+    let dealLifecycleStatus: string | null = null;
+    let dealScore: number | null = null;
     try {
-      const { rows } = await pool.query<{ id: string; name: string }>(
-        "SELECT id, name FROM deals WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
+      const hasLifecycle = await hasColumn(pool, "deals", "lifecycle_status");
+      const hasScore = await hasColumn(pool, "deals", "score");
+      const selectCols = ["id", "name"].concat(
+        hasLifecycle ? ["lifecycle_status"] : [],
+        hasScore ? ["score"] : []
+      );
+      const { rows } = await pool.query<any>(
+        `SELECT ${selectCols.join(", ")}
+           FROM deals
+          WHERE id = $1 AND deleted_at IS NULL
+          LIMIT 1`,
         [dealId]
       );
-      if (rows?.[0]?.name) dealName = rows[0].name;
-      else warnings.push("deal not found");
+      if (!rows?.[0]) {
+        warnings.push("deal not found");
+      } else {
+        if (typeof rows[0].name === "string" && rows[0].name.trim().length > 0) dealName = rows[0].name;
+        if (hasLifecycle && typeof rows[0].lifecycle_status === "string") dealLifecycleStatus = rows[0].lifecycle_status;
+        if (hasScore) {
+          const s = Number(rows[0].score);
+          dealScore = Number.isFinite(s) ? s : null;
+        }
+      }
     } catch {
       warnings.push("deal lookup failed");
     }
@@ -482,42 +753,69 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       type: string | null;
       page_count: number | null;
       uploaded_at: string;
+      updated_at?: string;
+        extraction_metadata?: any;
     };
 
-    let docs: DocRow[] = [];
-    try {
-      const { rows } = await pool.query<DocRow>(
-        `SELECT id, title, type, page_count, uploaded_at
+      let docs: DocRow[] = [];
+      let hasExtractionMetadata = false;
+      try {
+        const hasUpdatedAt = await hasColumn(pool, "documents", "updated_at");
+        hasExtractionMetadata = await hasColumn(pool, "documents", "extraction_metadata");
+        const { rows } = await pool.query<DocRow & { extraction_metadata?: any }>(
+          `SELECT id, title, type, page_count, uploaded_at${hasUpdatedAt ? ", updated_at" : ""}${
+            hasExtractionMetadata ? ", extraction_metadata" : ""
+          }
            FROM documents
           WHERE deal_id = $1
-          ORDER BY uploaded_at ASC, id ASC`,
-        [dealId]
-      );
-      docs = rows ?? [];
-    } catch {
-      warnings.push("document lookup failed");
-      docs = [];
-    }
+          ORDER BY ${hasUpdatedAt ? "updated_at" : "uploaded_at"} DESC, uploaded_at DESC, id ASC`,
+          [dealId]
+        );
+        docs = rows ?? [];
+      } catch {
+        warnings.push("document lookup failed");
+        docs = [];
+      }
 
     const dealNodeId = `deal:${dealId}`;
     const nodes: any[] = [
       {
         id: dealNodeId,
+        node_id: dealNodeId,
+        kind: "deal",
         type: "deal",
+        node_type: "DEAL",
+        label: dealName || "Deal",
+        metadata: {
+          deal_id: dealId,
+          lifecycle_status: dealLifecycleStatus,
+          score: dealScore,
+        },
         data: {
-          label: dealName || `Deal ${dealId}`,
+          label: dealName || "Deal",
           deal_id: dealId,
           name: dealName,
+          lifecycle_status: dealLifecycleStatus,
+          score: dealScore,
         },
       },
     ];
     const edges: any[] = [];
 
     for (const d of docs) {
-      const docNodeId = `doc:${d.id}`;
+      const docNodeId = `document:${d.id}`;
       nodes.push({
         id: docNodeId,
+        node_id: docNodeId,
+        kind: "document",
         type: "document",
+        node_type: "DOCUMENT",
+        label: d.title,
+        metadata: {
+          document_id: d.id,
+          uploaded_at: d.uploaded_at,
+          updated_at: (d as any).updated_at ?? null,
+        },
         data: {
           label: d.title,
           document_id: d.id,
@@ -527,9 +825,10 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         },
       });
       edges.push({
-        id: `e:deal-doc:${dealId}:${d.id}`,
+        id: `e:has_document:${dealId}:${d.id}`,
         source: dealNodeId,
         target: docNodeId,
+        edge_type: "HAS_DOCUMENT",
       });
     }
 
@@ -569,13 +868,422 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       confidence: number | string;
       quality_flags: any;
       created_at: string;
+
+      ocr_text: string | null;
+      ocr_blocks: any;
+      structured_json: any;
+      units: string | null;
+      extraction_confidence: number | string | null;
+      structured_kind?: string | null;
+      structured_summary?: any;
+
+      extraction_method: string | null;
+
       evidence_count: number;
+      evidence_sample_snippets: string[] | null;
+
+      segment?: string | null;
+      segment_confidence?: number | null;
     };
 
+    type AnalystSegment =
+      | "problem"
+      | "solution"
+      | "market"
+      | "traction"
+      | "business_model"
+      | "distribution"
+      | "team"
+      | "competition"
+      | "risks"
+      | "financials"
+      | "raise_terms"
+      | "exit"
+      | "overview"
+      | "unknown";
+
+    const canonicalSegments: AnalystSegment[] = [
+      "overview",
+      "problem",
+      "solution",
+      "market",
+      "traction",
+      "business_model",
+      "distribution",
+      "team",
+      "competition",
+      "risks",
+      "financials",
+      "raise_terms",
+      "exit",
+      "unknown",
+    ];
+
+    const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+      function classifySegment(input: {
+        ocr_text?: string | null;
+        ocr_snippet?: string | null;
+        structured_kind?: string | null;
+        structured_summary?: unknown;
+        asset_type?: string | null;
+        page_index?: number | null;
+        slide_title?: string | null;
+        slide_title_confidence?: number | null;
+        evidence_snippets?: string[] | null;
+        brand_blacklist?: Set<string> | string[] | null;
+        brand_name?: string | null;
+      }): { segment: AnalystSegment; confidence: number; debug?: Record<string, unknown> } {
+        const MIN_SCORE = 0.55;
+        const MIN_MARGIN = 0.1;
+        const TITLE_MIN_CONF = 0.6;
+
+        const normalized = (value: unknown): string | null => {
+          if (typeof value !== "string") return null;
+          const trimmed = value.trim();
+          return trimmed ? trimmed.toLowerCase() : null;
+        };
+
+        const brandTokens: string[] = [];
+        if (input.brand_blacklist instanceof Set) {
+          brandTokens.push(...Array.from(input.brand_blacklist));
+        } else if (Array.isArray(input.brand_blacklist)) {
+          brandTokens.push(...input.brand_blacklist);
+        }
+        const bn = normalized(input.brand_name);
+        if (bn) brandTokens.push(bn);
+
+        const normalizedBrandTokens = Array.from(
+          new Set(brandTokens.map(normalized).filter((t): t is string => typeof t === "string" && t.length >= 3))
+        );
+
+        const headingKeywords = [
+          "traction",
+          "business model",
+          "pricing",
+          "go-to-market",
+          "go to market",
+          "distribution",
+          "market",
+          "competition",
+          "team",
+          "meet our team",
+          "financial",
+          "financials",
+          "financial strategy",
+          "exit",
+          "acquisition",
+          "acquirer",
+          "acquirers",
+          "strategic buyers",
+          "use of funds",
+          "raise",
+          "gtm",
+        ];
+
+        const findHeadingKeyword = (value: string | null): string | null => {
+          if (!value) return null;
+          const lower = value.toLowerCase();
+          for (const kw of headingKeywords) {
+            const idx = lower.indexOf(kw);
+            if (idx >= 0) return value.slice(idx, idx + kw.length);
+          }
+          return null;
+        };
+
+        const stripBrands = (value: string, preserveHeading?: string | null): string => {
+          let cleaned = value;
+          for (const token of normalizedBrandTokens) {
+            const pattern = new RegExp(`\\b${escapeRegExp(token.toLowerCase())}\\b`, "gi");
+            cleaned = cleaned.replace(pattern, " ");
+          }
+          cleaned = cleaned.replace(/\s+/g, " ").trim();
+
+          if (preserveHeading) {
+            const lowerHeading = preserveHeading.toLowerCase();
+            if (!cleaned.toLowerCase().includes(lowerHeading)) {
+              cleaned = cleaned ? `${preserveHeading} ${cleaned}`.trim() : preserveHeading;
+            }
+          }
+
+          return cleaned;
+        };
+
+        const isBrandish = (value: string | null): boolean => {
+          if (!value) return false;
+          const lower = value.toLowerCase();
+          return normalizedBrandTokens.some((t) => lower.includes(t));
+        };
+
+        const isTitleUsable = (title: string | null): boolean => {
+          if (typeof title !== "string") return false;
+          const collapsed = title.trim().replace(/\s+/g, " ");
+            if (!collapsed || collapsed.length < 3) return false;
+
+          const alphaCount = (collapsed.match(/[A-Za-z]/g) || []).length;
+          if (alphaCount / collapsed.length < 0.45) return false;
+
+          const nonAlnumRatio = ((collapsed.match(/[^A-Za-z0-9\s]/g) || []).length) / Math.max(1, collapsed.length);
+          if (nonAlnumRatio > 0.25) return false;
+          if (/[~™©®]/.test(collapsed)) return false;
+
+          const words = collapsed.split(/\s+/).filter(Boolean);
+          const headingFromTitle = findHeadingKeyword(collapsed);
+          if (words.length <= 2 && !headingFromTitle) return false;
+          if (words.length === 1) {
+            const token = words[0];
+            const nonAlnum = (token.match(/[^A-Za-z0-9]/g) || []).length;
+            if (token.length > 0 && nonAlnum / token.length > 0.4) return false;
+          }
+
+          const stripped = stripBrands(collapsed, headingFromTitle);
+          if (!stripped) return false;
+          const strippedAlpha = (stripped.match(/[A-Za-z]/g) || []).length;
+          if (strippedAlpha === 0) return false;
+
+          return true;
+        };
+
+        const slideTitle = typeof input.slide_title === "string" ? input.slide_title.trim() : "";
+        const titleConf = typeof input.slide_title_confidence === "number" ? input.slide_title_confidence : null;
+        const headingFromTitle = findHeadingKeyword(slideTitle);
+        const evidenceSnippetRaw = Array.isArray(input.evidence_snippets)
+          ? input.evidence_snippets.find((s) => typeof s === "string" && s.trim().length > 0)
+          : null;
+
+        const classificationText = (() => {
+          const usableTitle = slideTitle && titleConf !== null && titleConf >= TITLE_MIN_CONF && isTitleUsable(slideTitle);
+          if (usableTitle && !isBrandish(slideTitle)) return slideTitle;
+
+          if (evidenceSnippetRaw && !isBrandish(evidenceSnippetRaw)) return evidenceSnippetRaw;
+
+          if (input.ocr_snippet) return input.ocr_snippet;
+          if (input.ocr_text) return input.ocr_text;
+          return "";
+        })();
+
+        const rawText = normalized(classificationText) ?? "";
+
+        const evidenceSnippet = Array.isArray(input.evidence_snippets)
+          ? normalized(input.evidence_snippets.find((s) => typeof s === "string" && s.trim().length > 0))
+          : null;
+
+        const textParts: string[] = [];
+        if (rawText) textParts.push(rawText);
+        if (evidenceSnippet) textParts.push(evidenceSnippet);
+        if (input.structured_summary != null) textParts.push(normalized(String(input.structured_summary)) || "");
+
+        let text = textParts.join(" \n ").slice(0, 1400);
+        text = stripBrands(text, headingFromTitle);
+
+        const includes = (needle: string) => text.includes(needle);
+        const matches = (needles: string[], weight = 1): number => needles.reduce((acc, n) => (includes(n) ? acc + weight : acc), 0);
+
+        const scores: Record<Exclude<AnalystSegment, "overview" | "unknown">, number> = {
+          problem: 0,
+          solution: 0,
+          market: 0,
+          traction: 0,
+          business_model: 0,
+          distribution: 0,
+          team: 0,
+          competition: 0,
+          risks: 0,
+          financials: 0,
+          raise_terms: 0,
+          exit: 0,
+        };
+
+        const headingSets: Record<AnalystSegment, string[]> = {
+          overview: ["overview", "summary", "executive summary"],
+          problem: ["problem", "pain", "challenge", "issue", "gap", "why this matters"],
+          solution: ["solution", "product", "how it works", "platform", "capabilities"],
+          market: ["market", "tam", "sam", "som", "opportunity", "segment", "sizing", "cagr"],
+          traction: ["traction", "growth", "users", "customers", "mrr", "arr", "revenue", "retention", "pipeline", "gmv", "kpi", "conversion", "demo-to-close", "demo to close", "lift"],
+          business_model: ["business model", "pricing", "revenue model", "unit economics", "how we make money", "saas", "platform", "add-ons", "addons", "subscription"],
+          distribution: ["distribution", "go-to-market", "go to market", "gtm", "channels", "sales", "partnerships", "marketing", "reseller", "partners", "channel"],
+          team: ["team", "founder", "ceo", "cto", "cfo", "bio", "leadership", "advisors", "founders", "meet our team"],
+          competition: ["competition", "competitor", "alternative", "compare", "landscape", "moat"],
+          risks: ["risk", "challenge", "threat", "mitigation", "compliance", "regulation", "limitation"],
+          financials: ["financial", "financial strategy", "profit", "loss", "p&l", "balance", "cash", "projection", "forecast", "projections", "ebitda", "budget", "expenses", "gross margin", "revenue", "margin", "unit economics"],
+          raise_terms: ["raise", "funding", "round", "terms", "cap table", "valuation", "use of funds", "investment"],
+          exit: ["exit", "exit strategy", "acquisition", "m&a", "strategic options", "acquirer", "acquirers", "strategic buyers"],
+          unknown: [],
+        };
+
+        let hardHeadingSegment = (() => {
+          const trimmed = text.trim();
+          if (!trimmed) return null;
+          const lower = trimmed.toLowerCase();
+          for (const [seg, phrases] of Object.entries(headingSets) as Array<[AnalystSegment, string[]]>) {
+            for (const phrase of phrases) {
+              const p = phrase.toLowerCase();
+              if (!p) continue;
+              const anchored = new RegExp(`^(?:${escapeRegExp(p)})(?:\\b|:)`, "i");
+              if (anchored.test(lower)) return seg;
+            }
+          }
+          return null;
+        })();
+
+        if (hardHeadingSegment === "problem" && text.includes("why this matters")) {
+          const solutionHints = matches(["solution", "product", "value", "impact", "approach", "benefit", "solve", "solving"], 1);
+          if (solutionHints > 0) hardHeadingSegment = "solution";
+        }
+
+        scores.problem += matches(["problem", "pain", "challenge", "issue", "gap"], 1);
+        if (text.includes("why this matters")) scores.problem += 0.9;
+
+        const strongSolutionNeedles = ["how it works", "architecture", "demo", "features", "capabilities", "integrates", "api", "product"];
+        const genericSolutionNeedles = ["platform", "solution", "service", "workflow", "system"];
+        const strongSolutionHits = matches(strongSolutionNeedles, 1);
+        const genericSolutionHits = matches(genericSolutionNeedles, 0);
+        if (strongSolutionHits > 0) scores.solution += strongSolutionHits;
+        if (strongSolutionHits > 0 && matches(genericSolutionNeedles, 1) > 0) {
+          scores.solution += 0.4;
+        }
+        if (text.includes("why this matters") && matches(["solve", "value", "benefit", "impact"], 1) > 0) {
+          scores.solution += 0.6;
+        }
+
+        const tamHits = matches(["tam", "sam", "som"], 1.4);
+        scores.market += tamHits;
+        scores.market += matches(["market", "opportunity", "segment", "sizing", "cagr"], 0.8);
+
+        scores.traction += matches(["traction", "growth", "users", "customers", "mrr", "arr", "cohort", "retention", "pipeline", "gmv", "revenue", "kpi", "conversion", "demo to close", "demo-to-close", "lift"], 0.9);
+        scores.business_model += matches(["pricing", "revenue model", "model", "plan", "subscription", "contract", "unit economics", "arpu", "take rate", "how we make money", "saas", "platform", "add-ons", "addons", "add ons"], 0.85);
+        scores.distribution += matches(["distribution", "go-to-market", "go to market", "gtm", "channels", "sales", "partnerships", "marketing", "reseller", "partners", "channel"], 1.0);
+        scores.team += matches(["team", "founder", "ceo", "cto", "cfo", "bio", "experience", "leadership", "advisors", "founders", "meet our team"], 1);
+        scores.competition += matches(["competition", "competitor", "alternative", "compare", "landscape", "differentiation", "moat"], 1);
+        scores.risks += matches(["risk", "challenge", "threat", "mitigation", "compliance", "regulation", "limitation"], 1);
+        scores.financials += matches(
+          ["financial", "financial strategy", "profit", "loss", "p&l", "balance", "cash", "projection", "forecast", "projections", "ebitda", "budget", "expenses", "gross margin", "revenue", "margin", "table", "unit economics"],
+          0.9
+        );
+        scores.raise_terms += matches(["raise", "funding", "round", "terms", "cap table", "valuation", "use of funds", "investment"], 1.05);
+        scores.exit += matches(["exit", "exit strategy", "acquisition", "m&a", "strategic options", "acquirer", "acquirers", "strategic buyers"], 1.05);
+
+        // Structured-kind heuristics
+        const structuredSummaryTable = (input.structured_summary as any)?.table;
+        const sk = (input.structured_kind || (structuredSummaryTable ? "table" : "") || "").toLowerCase();
+        const tableDetected = sk === "table" || Boolean(structuredSummaryTable) || (input.asset_type || "").toLowerCase() === "table";
+        const financialHint =
+          includes("revenue") ||
+          includes("arr") ||
+          includes("financial") ||
+          includes("forecast") ||
+          includes("margin") ||
+          includes("income") ||
+          includes("cash") ||
+          includes("profit") ||
+          includes("loss") ||
+          includes("p&l");
+
+        if (sk === "table") {
+          scores.financials += financialHint ? 1.1 : 0.35;
+          if (includes("retention") || includes("cohort") || includes("churn")) scores.traction += 0.6;
+        }
+        if (sk === "bar" || (input.asset_type || "").toLowerCase().includes("chart")) {
+          if (tamHits > 0 || includes("tam") || includes("sam") || includes("som")) scores.market += 1.0;
+          if (includes("revenue") || includes("arr") || includes("growth") || includes("cagr")) {
+            scores.traction += 1.0;
+            scores.market += 0.5;
+          }
+        }
+
+        // Late pages often financials/risks, but avoid early-page solution bias.
+        const p = typeof input.page_index === "number" ? input.page_index : null;
+        if (p !== null) {
+          if (p >= 8) scores.financials += 0.4;
+        }
+
+        const scoredSegments = Object.keys(scores) as Array<Exclude<AnalystSegment, "overview" | "unknown">>;
+        const ranked = scoredSegments
+          .map((seg) => ({ seg, val: scores[seg] }))
+          .sort((a, b) => b.val - a.val);
+
+        const best = ranked[0] ?? { seg: "unknown" as AnalystSegment, val: 0 };
+        const second = ranked[1] ?? { seg: "unknown" as AnalystSegment, val: 0 };
+
+        const bestScore = best.val;
+        const margin = bestScore - second.val;
+
+        const earlyPage = p !== null && p <= 1;
+        const hardHeadingMatch = Boolean(hardHeadingSegment);
+        const debugBase = {
+          classification_text: text,
+          top_scores: ranked,
+          hard_heading_match: hardHeadingMatch,
+          title_confidence: input.slide_title_confidence ?? null,
+        };
+
+        if (tableDetected && financialHint) {
+          const confidence = Math.max(0.5, Math.min(1, (scores.financials + 1.5) / 3));
+          return {
+            segment: "financials",
+            confidence,
+            debug: { ...debugBase, forced: "table_financials" },
+          };
+        }
+
+        if (hardHeadingMatch && hardHeadingSegment) {
+          const confidence = Math.max(0.4, Math.min(1, bestScore > 0 ? bestScore / 3 : 0.6));
+          return {
+            segment: hardHeadingSegment as AnalystSegment,
+            confidence,
+            debug: debugBase,
+          };
+        }
+
+        if (bestScore < 0.35) {
+          return { segment: earlyPage ? "overview" : "unknown", confidence: 0, debug: debugBase };
+        }
+
+        if (bestScore >= MIN_SCORE) {
+          if (margin >= MIN_MARGIN || bestScore >= 0.75) {
+            if (earlyPage && (best.seg === "solution" || best.seg === "problem") && bestScore < MIN_SCORE + 0.2) {
+              return { segment: "overview", confidence: 0, debug: debugBase };
+            }
+
+            const confidence = Math.max(0, Math.min(1, bestScore / 4));
+            return {
+              segment: best.seg as AnalystSegment,
+              confidence: Number.isFinite(confidence) ? confidence : 0.2,
+              debug: debugBase,
+            };
+          }
+
+          return { segment: "overview", confidence: 0, debug: { ...debugBase, tie_break: "low_margin" } };
+        }
+
+        return { segment: "overview", confidence: 0, debug: debugBase };
+      }
+
     let visuals: VisualRow[] = [];
+    const slideTitleDebug = process.env.DDAI_DEV_SLIDE_TITLE_DEBUG === "1";
     try {
+      const hasOcrBlocks = await hasColumn(pool, "visual_extractions", "ocr_blocks");
+      const hasUnits = await hasColumn(pool, "visual_extractions", "units");
+      const hasExtractionConfidence = await hasColumn(pool, "visual_extractions", "extraction_confidence");
+      const hasStructuredKind = await hasColumn(pool, "visual_extractions", "structured_kind");
+      const hasStructuredSummary = await hasColumn(pool, "visual_extractions", "structured_summary");
+      const ocrBlocksSelect = hasOcrBlocks ? "ve.ocr_blocks" : "NULL::jsonb AS ocr_blocks";
+      const structuredSummarySelect = hasStructuredSummary ? "ve.structured_summary" : "NULL::jsonb AS structured_summary";
+
       const { rows } = await pool.query<VisualRow>(
-        `SELECT
+        `WITH latest_extractions AS (
+           SELECT ve.visual_asset_id,
+                  ve.ocr_text,
+                  ${ocrBlocksSelect},
+                  ve.structured_json,
+                  ${structuredSummarySelect},
+                  ${hasUnits ? "ve.units" : "NULL::text AS units"},
+                  ${hasExtractionConfidence ? "ve.extraction_confidence" : "NULL::numeric AS extraction_confidence"},
+                  ${hasStructuredKind ? "ve.structured_kind" : "NULL::text AS structured_kind"},
+                  ROW_NUMBER() OVER (PARTITION BY ve.visual_asset_id ORDER BY ve.created_at DESC) AS rn
+             FROM visual_extractions ve
+        )
+         SELECT
            va.id,
            va.document_id,
            va.page_index,
@@ -587,35 +1295,227 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
            va.confidence,
            va.quality_flags,
            va.created_at,
-           COALESCE(ev.count, 0) AS evidence_count
+           COALESCE(ev.count, 0) AS evidence_count,
+           COALESCE(ev.sample_snippets, ARRAY[]::text[]) AS evidence_sample_snippets,
+           le.ocr_text,
+           le.ocr_blocks,
+           le.structured_json,
+           le.structured_summary,
+           le.units,
+           le.extraction_confidence,
+           le.structured_kind
          FROM visual_assets va
          JOIN documents d ON d.id = va.document_id
          LEFT JOIN LATERAL (
-           SELECT COUNT(*)::int AS count
-           FROM evidence_links el
-           WHERE el.visual_asset_id = va.id
+           SELECT COUNT(*)::int AS count,
+                  ARRAY(
+                  SELECT LEFT(el.snippet, 200)
+                   FROM evidence_links el
+                  WHERE el.visual_asset_id = va.id AND el.snippet IS NOT NULL AND el.snippet <> ''
+                  ORDER BY el.created_at DESC
+                     LIMIT 3
+                  ) AS sample_snippets
+             FROM evidence_links el2
+            WHERE el2.visual_asset_id = va.id
          ) ev ON true
+         LEFT JOIN LATERAL (
+           SELECT ocr_text, ocr_blocks, structured_json, structured_summary, units, extraction_confidence, structured_kind
+             FROM latest_extractions le
+            WHERE le.visual_asset_id = va.id AND le.rn = 1
+         ) le ON true
          WHERE d.deal_id = $1
          ORDER BY va.document_id ASC, va.page_index ASC, va.created_at ASC`,
         [dealId]
       );
       visuals = rows ?? [];
-    } catch {
-      warnings.push("visual asset lookup failed");
+    } catch (err: any) {
+      const msg = typeof err?.message === "string" ? err.message : "unknown error";
+      warnings.push(`visual asset lookup failed: ${msg.slice(0, 160)}`);
+      request.log?.error?.(
+        {
+          deal_id: dealId,
+          err: msg,
+          stack: typeof err?.stack === "string" ? err.stack.split("\n").slice(0, 5).join(" | ") : undefined,
+        },
+        "deal.lineage.visuals_query_failed"
+      );
       visuals = [];
     }
 
-    for (const v of visuals) {
-      const docNodeId = `doc:${v.document_id}`;
-      const vaNodeId = `va:${v.id}`;
-      const evNodeId = `evagg:${v.id}`;
+    const brandModelByDocId = new Map<string, BrandModel>();
+    const brandNameByDocId = new Map<string, { brand: string | null; confidence: number | null }>();
+
+    for (const d of docs) {
+      const pageInputs: PageInput[] = visuals
+        .filter((v) => v.document_id === d.id)
+        .map((v) => ({ ocr_blocks: (v as any).ocr_blocks ?? null, ocr_text: v.ocr_text ?? null }));
+
+      const brandModel = buildBrandModel(pageInputs);
+
+      const brandInfo = inferDocumentBrandName(pageInputs);
+      if (brandInfo.brand_name) {
+        const normBrand = normalizePhrase(brandInfo.brand_name);
+        if (normBrand) brandModel.phrases.add(normBrand);
+      }
+
+      brandModelByDocId.set(d.id, brandModel);
+      brandNameByDocId.set(d.id, { brand: brandInfo.brand_name, confidence: brandInfo.confidence });
+
+      if (hasExtractionMetadata && brandInfo.brand_name) {
+        const metadata = ((d as any).extraction_metadata ?? {}) as Record<string, any>;
+        const existing = metadata.brand_name;
+        if (!existing?.value) {
+          metadata.brand_name = { value: brandInfo.brand_name, confidence: brandInfo.confidence };
+          try {
+            await pool.query(
+              `UPDATE documents SET extraction_metadata = $2, updated_at = now() WHERE id = $1`,
+              [d.id, metadata]
+            );
+          } catch {
+            warnings.push("failed to persist document brand_name");
+          }
+        }
+      }
+    }
+
+    const visualsWithSegments = visuals.map((v) => {
+      const brandModel = brandModelByDocId.get(v.document_id) ?? buildBrandModel([]);
+      const blacklist = brandModel.phrases;
+      const brandInfo = brandNameByDocId.get(v.document_id) ?? { brand: null, confidence: null };
+      const derivedStructure = deriveStructuredSummary((v as any)?.structured_json, (v as any)?.units ?? null);
+      const structured_kind = (v as any)?.structured_kind ?? derivedStructure.structured_kind;
+      const structured_summary = (v as any)?.structured_summary ?? derivedStructure.structured_summary;
+
+      const titleDerived = inferSlideTitleForSlide({
+        blocks: (v as any).ocr_blocks as any[],
+        ocr_text: v.ocr_text,
+        page_width: null,
+        page_height: null,
+        brandModel,
+        enableDebug: slideTitleDebug,
+      });
+
+      const classification = classifySegment({
+        ocr_text: v.ocr_text,
+        ocr_snippet: ocrSnippet(v.ocr_text),
+        structured_kind,
+        structured_summary,
+        asset_type: v.asset_type,
+        page_index: v.page_index,
+        slide_title: titleDerived.slide_title,
+          slide_title_confidence: titleDerived.slide_title_confidence,
+        evidence_snippets: Array.isArray((v as any).evidence_sample_snippets) ? (v as any).evidence_sample_snippets : [],
+        brand_blacklist: blacklist,
+        brand_name: brandInfo.brand,
+      });
+
+      return {
+        ...v,
+        structured_summary,
+        structured_kind,
+        slide_title: titleDerived.slide_title,
+        slide_title_source: titleDerived.slide_title_source,
+        slide_title_confidence: titleDerived.slide_title_confidence,
+        slide_title_warnings: titleDerived.slide_title_warnings,
+        slide_title_debug: titleDerived.slide_title_debug,
+        segment: classification.segment,
+        segment_confidence: classification.confidence,
+        segment_debug: classification.debug,
+      } as VisualRow & { structured_summary?: unknown };
+    });
+
+    let didLogSlideTitle = false;
+
+    // Create canonical segment nodes (system-defined, not user-editable)
+    for (const seg of canonicalSegments) {
+      const segNodeId = `segment:${dealId}:${seg}`;
+      nodes.push({
+        id: segNodeId,
+        node_id: segNodeId,
+        kind: "segment",
+        type: "segment",
+        node_type: "SEGMENT",
+        label: seg.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+        metadata: { segment: seg },
+        data: {
+          label: seg.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+          segment: seg,
+          segment_confidence: null,
+        },
+      });
+      edges.push({
+        id: `e:has_segment:${dealId}:${seg}`,
+        source: dealNodeId,
+        target: segNodeId,
+        edge_type: "HAS_SEGMENT",
+      });
+    }
+
+    for (const v of visualsWithSegments) {
+      const docNodeId = `document:${v.document_id}`;
+      const vaNodeId = `visual_asset:${v.id}`;
+      const evNodeId = `evidence:${v.id}`;
       const conf = Number(v.confidence);
       const confidence = Number.isFinite(conf) ? conf : 0;
       const pageLabel = typeof v.page_index === "number" ? v.page_index + 1 : 0;
 
+      const snippet = ocrSnippet(v.ocr_text);
+      const structured = { structured_kind: v.structured_kind, structured_summary: (v as any)?.structured_summary };
+      const extraction_confidence = deriveBestExtractionConfidence({ structuredJson: v.structured_json, fallback: v.extraction_confidence });
+      const evidence_count = Number.isFinite(v.evidence_count) ? v.evidence_count : 0;
+      let evidence_snippets = Array.isArray(v.evidence_sample_snippets)
+        ? v.evidence_sample_snippets
+        : typeof v.evidence_sample_snippets === "string"
+          ? [v.evidence_sample_snippets]
+          : [];
+
+      // If the evidence link rows exist but were created before snippet text was available
+      // (e.g. OCR enabled later), fall back to the extraction OCR snippet.
+      if (evidence_snippets.length === 0 && evidence_count > 0 && snippet) {
+        evidence_snippets = [snippet];
+      }
+
+      const titleDerived = {
+        slide_title: (v as any)?.slide_title ?? null,
+        slide_title_source: (v as any)?.slide_title_source ?? null,
+        slide_title_confidence: (v as any)?.slide_title_confidence ?? null,
+        slide_title_warnings: (v as any)?.slide_title_warnings,
+        slide_title_debug: (v as any)?.slide_title_debug,
+      };
+
+      if (process.env.DDAI_DEV_SLIDE_TITLE_LOG === "1" && !didLogSlideTitle && titleDerived.slide_title) {
+        didLogSlideTitle = true;
+        try {
+          // eslint-disable-next-line no-console
+          console.log('[DEV slide_title]', {
+            id: v.id,
+            slide_title: titleDerived.slide_title,
+            source: titleDerived.slide_title_source,
+            confidence: titleDerived.slide_title_confidence,
+            ocr_head: typeof snippet === 'string' ? snippet.slice(0, 80) : null,
+            warnings: titleDerived.slide_title_warnings,
+          });
+        } catch {
+          // ignore
+        }
+      }
+
+      const segmentDebug = process.env.NODE_ENV !== "production" ? (v as any)?.segment_debug ?? null : null;
+
       nodes.push({
         id: vaNodeId,
+        node_id: vaNodeId,
+        kind: "visual_asset",
         type: "visual_asset",
+        node_type: "VISUAL_ASSET",
+        label: `Page ${pageLabel} • ${v.asset_type}`,
+        metadata: {
+          visual_asset_id: v.id,
+          document_id: v.document_id,
+          page_index: v.page_index,
+          asset_type: v.asset_type,
+          created_at: v.created_at,
+        },
         data: {
           label: `Page ${pageLabel} • ${v.asset_type}`,
           visual_asset_id: v.id,
@@ -627,19 +1527,51 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           image_hash: v.image_hash,
           confidence,
           extractor_version: v.extractor_version,
+
+          ocr_text_snippet: snippet,
+          slide_title: titleDerived.slide_title,
+          slide_title_source: titleDerived.slide_title_source,
+          slide_title_confidence: titleDerived.slide_title_confidence,
+          ...(titleDerived.slide_title_warnings ? { slide_title_warnings: titleDerived.slide_title_warnings } : {}),
+          ...(titleDerived.slide_title_debug ? { slide_title_debug: titleDerived.slide_title_debug } : {}),
+          structured_kind: structured.structured_kind,
+          structured_summary: structured.structured_summary,
+          evidence_count,
+          evidence_snippets: Array.isArray(evidence_snippets) ? evidence_snippets : [],
+          extraction_confidence,
+          extraction_method: typeof v.extraction_method === "string" ? v.extraction_method : null,
+          segment: v.segment,
+          segment_confidence: v.segment_confidence,
+          ...(segmentDebug ? { segment_debug: segmentDebug } : {}),
         },
       });
 
+      const segNodeId = `segment:${dealId}:${v.segment}`;
       edges.push({
-        id: `e:doc-va:${v.document_id}:${v.id}`,
+        id: `e:has_visual_asset:${segNodeId}:${v.id}`,
+        source: segNodeId,
+        target: vaNodeId,
+        edge_type: "HAS_VISUAL_ASSET",
+      });
+      edges.push({
+        id: `e:has_visual_asset:doc:${v.document_id}:${v.id}`,
         source: docNodeId,
         target: vaNodeId,
+        edge_type: "HAS_VISUAL_ASSET",
       });
 
-      const count = Number.isFinite(v.evidence_count) ? v.evidence_count : 0;
+      const count = evidence_count;
       nodes.push({
         id: evNodeId,
+        node_id: evNodeId,
+        kind: "evidence",
         type: "evidence",
+        node_type: "EVIDENCE",
+        label: `Evidence (${count})`,
+        metadata: {
+          visual_asset_id: v.id,
+          count,
+        },
         data: {
           label: `Evidence (${count})`,
           count,
@@ -647,9 +1579,10 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         },
       });
       edges.push({
-        id: `e:va-evagg:${v.id}`,
+        id: `e:has_evidence:${v.id}`,
         source: vaNodeId,
         target: evNodeId,
+        edge_type: "HAS_EVIDENCE",
       });
     }
 
@@ -718,11 +1651,18 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 
     let docs: AutoProfileDocRow[] = [];
     try {
+      const canJoinOriginalFile = await hasTable(pool, "document_files");
       const res = await pool.query<AutoProfileDocRow>(
-        `SELECT id, title, full_text, structured_data, full_content
-         FROM documents
-         WHERE deal_id = $1
-         ORDER BY uploaded_at DESC`,
+        canJoinOriginalFile
+          ? `SELECT d.id, d.title, f.file_name, d.full_text, d.structured_data, d.full_content
+             FROM documents d
+             LEFT JOIN document_files f ON f.document_id = d.id
+             WHERE d.deal_id = $1
+             ORDER BY d.uploaded_at DESC`
+          : `SELECT id, title, full_text, structured_data, full_content
+             FROM documents
+             WHERE deal_id = $1
+             ORDER BY uploaded_at DESC`,
         [dealId]
       );
       docs = res.rows ?? [];
@@ -737,10 +1677,16 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     const canPersist =
       (await hasColumn(pool, "deals", "proposed_profile")) &&
       (await hasColumn(pool, "deals", "proposed_profile_confidence")) &&
-      (await hasColumn(pool, "deals", "proposed_profile_sources"));
+      (await hasColumn(pool, "deals", "proposed_profile_sources")) &&
+      (await hasColumn(pool, "deals", "proposed_profile_warnings"));
 
     if (canPersist) {
       try {
+        const proposedProfileDb = (computed as any)?.proposed_profile ?? null;
+        const confidenceDb = (computed as any)?.confidence ?? null;
+        const sourcesDb = (computed as any)?.sources ?? null;
+        const warningsDb = normalizeWarningsForPersistence(warnings);
+
         await pool.query(
           `UPDATE deals
            SET proposed_profile = $2,
@@ -749,10 +1695,28 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
                proposed_profile_warnings = $5,
                updated_at = now()
            WHERE id = $1`,
-          [dealId, computed.proposed_profile, computed.confidence, computed.sources, warnings]
+          [dealId, jsonbParam(proposedProfileDb), jsonbParam(confidenceDb), jsonbParam(sourcesDb), jsonbParam(warningsDb)]
         );
-      } catch {
-        warnings.push("failed to persist proposed profile (non-fatal)");
+      } catch (err: any) {
+        const msg = typeof err?.message === "string" ? err.message : "unknown error";
+        const warningsDb = normalizeWarningsForPersistence(warnings);
+        request.log?.warn?.(
+          {
+            err: msg,
+            deal_id: dealId,
+            value_types: {
+              proposed_profile: typeof (computed as any)?.proposed_profile,
+              proposed_profile_isArray: Array.isArray((computed as any)?.proposed_profile),
+              proposed_profile_confidence: typeof (computed as any)?.confidence,
+              proposed_profile_sources: typeof (computed as any)?.sources,
+              proposed_profile_warnings: warningsDb === null ? "null" : typeof warningsDb,
+              proposed_profile_warnings_isArray: Array.isArray(warningsDb),
+              proposed_profile_warnings_len: Array.isArray(warningsDb) ? warningsDb.length : 0,
+            },
+          },
+          "auto-profile.persist_failed"
+        );
+        warnings.push(`failed to persist proposed profile (non-fatal): ${String(msg).slice(0, 240)}`);
       }
     } else {
       warnings.push("proposed profile storage not available (missing columns)");
@@ -1237,6 +2201,25 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     // (This would typically happen in a background worker after job completes)
     // For now, we queue the job and the worker will handle stage progression
 
+    return reply.status(202).send({ job_id: job.job_id, status: job.status });
+  });
+
+  // Enqueue a best-effort visual extraction pass for all documents in the deal.
+  // This does not re-render pages; it only uses already-rendered page images.
+  app.post("/api/v1/deals/:deal_id/extract-visuals", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+
+    const { rows } = await pool.query<DealRow>(
+      `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+      [dealId]
+    );
+
+    if (rows.length === 0) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    // Single job; the worker resolves deal documents + rendered page image URIs.
+    const job = await enqueueJob({ deal_id: dealId, type: "extract_visuals" });
     return reply.status(202).send({ job_id: job.job_id, status: job.status });
   });
 

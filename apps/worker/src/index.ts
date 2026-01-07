@@ -42,6 +42,7 @@ import {
 	getVisionExtractorConfig,
 	hasTable,
 	persistVisionResponse,
+	resolvePageImageUris,
 } from "./lib/visual-extraction";
 import { normalizeToCanonical } from "./lib/normalization";
 import { processDocument } from "./lib/processors";
@@ -643,6 +644,9 @@ async function ingestDocumentProcessor(job: Job) {
 		await updateJob(job, "running", `Decoded file (${buffer.length} bytes)`, 15);
 
 		// Persist original bytes for future true re-extraction
+		let originalBytesPersisted = false;
+		let originalBytesSha256: string | null = null;
+		let originalBytesPersistError: string | null = null;
 		try {
 			const sha256 = createHash("sha256").update(buffer).digest("hex");
 			await upsertDocumentOriginalFile({
@@ -653,11 +657,15 @@ async function ingestDocumentProcessor(job: Job) {
 				fileName,
 				mimeType: null,
 			});
+			originalBytesPersisted = true;
+			originalBytesSha256 = sha256;
 			console.log(`[ingest_document] stored original bytes sha256=${sha256} doc=${documentId}`);
 		} catch (err) {
 			// Do not fail ingestion if original-byte persistence fails; extraction can still proceed.
+			originalBytesPersisted = false;
+			originalBytesPersistError = err instanceof Error ? err.message : "unknown";
 			console.warn(
-				`[ingest_document] failed to store original bytes doc=${documentId}: ${err instanceof Error ? err.message : "unknown"}`
+				`[ingest_document] failed to store original bytes doc=${documentId}: ${originalBytesPersistError}`
 			);
 		}
 
@@ -703,6 +711,11 @@ async function ingestDocumentProcessor(job: Job) {
 			started_at: extractionStartedAt,
 			finished_at: extractionFinishedAt,
 			status: analysis.metadata.extractionSuccess ? "succeeded" : "failed",
+
+			// Original file persistence (enables true re-extraction + visual page rendering)
+			original_bytes_persisted: originalBytesPersisted,
+			original_bytes_sha256: originalBytesSha256,
+			original_bytes_persist_error: originalBytesPersistError,
 
 			// Existing fields kept for compatibility
 			contentType: analysis.contentType,
@@ -1021,18 +1034,54 @@ function baseProcessor(statusOnStart: JobStatus, statusOnComplete: JobStatus) {
 createWorker("ingest_documents", ingestDocumentProcessor);
 
 createWorker("extract_visuals", async (job: Job) => {
-	const documentId = (job.data as { document_id?: string } | undefined)?.document_id;
-	const imageUris = (job.data as { image_uris?: string[] } | undefined)?.image_uris;
-	const extractorVersionOverride = (job.data as { extractor_version?: string } | undefined)?.extractor_version;
+	const data = (job.data ?? {}) as {
+		deal_id?: string;
+		document_id?: string;
+		document_ids?: string[];
+		image_uris?: string[];
+		extractor_version?: string;
+	};
+	const documentId = typeof data.document_id === "string" ? data.document_id : undefined;
+	const dealId = typeof data.deal_id === "string" ? data.deal_id : undefined;
+	const imageUris = Array.isArray(data.image_uris) ? data.image_uris : undefined;
+	const extractorVersionOverride = typeof data.extractor_version === "string" ? data.extractor_version : undefined;
 
-	if (!documentId) {
-		console.warn("[extract_visuals] Missing document_id");
+	const explicitDocumentIds = Array.isArray(data.document_ids)
+		? data.document_ids.filter((id) => typeof id === "string" && id.trim().length > 0)
+		: [];
+
+	let targetDocumentIds: string[] = [];
+	if (documentId) {
+		targetDocumentIds = [documentId];
+	} else if (explicitDocumentIds.length > 0) {
+		targetDocumentIds = explicitDocumentIds;
+	} else if (dealId) {
+		try {
+			const docs = await getDocumentsForDeal(dealId);
+			targetDocumentIds = docs
+				.map((d: any) => d.document_id)
+				.filter((id: any) => typeof id === "string" && id.length > 0);
+		} catch (err) {
+			await updateJob(job, "failed", err instanceof Error ? err.message : "Failed to load deal documents", 100);
+			return { ok: false };
+		}
+	}
+
+	if (targetDocumentIds.length === 0) {
+		console.warn("[extract_visuals] Missing document_id (or deal_id with documents)");
+		await updateJob(job, "failed", "Missing document_id (or deal_id with documents)", 100);
 		return { ok: false };
 	}
 
 	const config = getVisionExtractorConfig();
 	if (!config.enabled) {
-		return { ok: true, skipped: true, reason: "disabled" };
+		await updateJob(
+			job,
+			"failed",
+			"Visual extraction is disabled in the worker (set ENABLE_VISUAL_EXTRACTION=1)",
+			100
+		);
+		return { ok: false, skipped: true, reason: "disabled" };
 	}
 
 	const extractorVersion = typeof extractorVersionOverride === "string" && extractorVersionOverride.trim()
@@ -1047,48 +1096,200 @@ createWorker("extract_visuals", async (job: Job) => {
 
 	if (!tablesOk) {
 		console.warn(
-			`[extract_visuals] Visual tables missing; skipping doc=${documentId} (did you run migrations?)`
+			`[extract_visuals] Visual tables missing; skipping (did you run migrations?)`
 		);
-		return { ok: true, skipped: true, reason: "tables_missing" };
+		await updateJob(
+			job,
+			"failed",
+			"Visual tables missing (run DB migrations before extracting visuals)",
+			100
+		);
+		return { ok: false, skipped: true, reason: "tables_missing" };
 	}
 
-	// If we don't have explicit image URIs, we currently cannot render per-page images.
-	// Keep this stage safe/no-op until a renderer is wired in.
-	const uris: string[] = Array.isArray(imageUris) ? imageUris.filter((u) => typeof u === "string" && u.length > 0) : [];
-	if (uris.length === 0) {
-		console.log(
-			`[extract_visuals] No image_uris provided; skipping doc=${documentId} (renderer not configured)`
-		);
-		return { ok: true, skipped: true, reason: "no_image_uris" };
-	}
+	await updateJob(job, "running", `Starting visual extraction (docs=${targetDocumentIds.length})`, 5);
 
 	let persisted = 0;
-	for (let i = 0; i < uris.length && i < config.maxPages; i += 1) {
-		const image_uri = uris[i];
-		const response = await callVisionWorker(config, {
-			document_id: documentId,
-			page_index: i,
-			image_uri,
-			extractor_version: extractorVersion,
-		});
+	let docsProcessed = 0;
+	let docsSkipped = 0;
+	let docsMissingOriginalBytes = 0;
+	let docsMissingPageImages = 0;
+	let docsHadPageCountMissing = 0;
+	const docsMissingOriginalBytesIds: string[] = [];
+	const docsMissingPageImagesIds: string[] = [];
 
-		if (!response) {
-			console.warn(`[extract_visuals] Vision worker failed for doc=${documentId} page=${i}`);
-			continue;
+	const originalFileTablesOk =
+		(await hasTable(pool, "document_files")) &&
+		(await hasTable(pool, "document_file_blobs"));
+
+	for (let docIndex = 0; docIndex < targetDocumentIds.length; docIndex += 1) {
+		const docId = targetDocumentIds[docIndex];
+		const basePct = Math.min(
+			95,
+			Math.round(((docIndex / Math.max(1, targetDocumentIds.length)) * 90) + 5)
+		);
+		await updateJob(
+			job,
+			"running",
+			`Extracting visuals (doc ${docIndex + 1}/${targetDocumentIds.length})`,
+			basePct
+		);
+
+		// Use explicit image_uris only for single-document jobs; otherwise resolve from rendered pages.
+		let uris: string[] = [];
+		if (targetDocumentIds.length === 1 && Array.isArray(imageUris)) {
+			uris = imageUris.filter((u) => typeof u === "string" && u.length > 0);
+		}
+		if (uris.length === 0) {
+			uris = await resolvePageImageUris(pool, docId, { env: process.env, logger: console });
 		}
 
-		try {
-			persisted += await persistVisionResponse(pool, response);
-		} catch (err) {
-			console.warn(
-				`[extract_visuals] Persist failed doc=${documentId} page=${i}: ${
-					err instanceof Error ? err.message : String(err)
-				}`
-			);
+		if (uris.length === 0) {
+			// Best-effort recovery: for PDF documents, generate rendered page images from the stored original
+			// file and retry resolving images. This aligns behavior across deals where older ingests did not
+			// persist rendered pages.
+			try {
+				try {
+					const { rows } = await pool.query<{ page_count: number | null }>(
+						"SELECT page_count FROM documents WHERE id = $1 LIMIT 1",
+						[docId]
+					);
+					const pc = typeof rows?.[0]?.page_count === "number" && Number.isFinite(rows[0].page_count) ? rows[0].page_count : 0;
+					if (!pc || pc <= 0) docsHadPageCountMissing += 1;
+				} catch {
+					// ignore
+				}
+
+				const original = await getDocumentOriginalFile(docId);
+				const isPdf =
+					(original?.mime_type && original.mime_type.toLowerCase().includes("pdf")) ||
+					(original?.file_name && original.file_name.toLowerCase().endsWith(".pdf"));
+				if (!original?.bytes) {
+					docsMissingOriginalBytes += 1;
+					docsMissingOriginalBytesIds.push(docId);
+				}
+				if (original?.bytes && isPdf) {
+					const persistCfg = getVisualPageImagePersistConfig();
+					const uploadDir = process.env.UPLOAD_DIR
+						? path.resolve(process.env.UPLOAD_DIR)
+						: path.resolve(process.cwd(), "uploads");
+
+					// Pull current page_count (if missing, persistRenderedPageImages can still render and return a detected total).
+					const { rows } = await pool.query<{ page_count: number | null }>(
+						"SELECT page_count FROM documents WHERE id = $1 LIMIT 1",
+						[docId]
+					);
+					const existingPageCount =
+						typeof rows?.[0]?.page_count === "number" && Number.isFinite(rows[0].page_count)
+							? rows[0].page_count
+							: 0;
+
+					const renderRes = await persistRenderedPageImages({
+						buffer: original.bytes,
+						documentId: docId,
+						pageCount: existingPageCount,
+						uploadDir,
+						config: persistCfg,
+						logger: console,
+					});
+
+					if (renderRes?.rendered_pages_dir) {
+						await mergeDocumentExtractionMetadata({
+							documentId: docId,
+							patch: {
+								rendered_pages_dir: renderRes.rendered_pages_dir,
+								rendered_pages_format: renderRes.rendered_pages_format,
+								rendered_pages_count: renderRes.rendered_pages_count,
+								rendered_pages_max_pages: renderRes.rendered_pages_max_pages,
+								rendered_pages_created_at: renderRes.rendered_pages_created_at,
+							},
+						});
+					}
+
+					// Backfill page_count when missing so downstream resolution and UI can show the correct page count.
+					const detected =
+						typeof renderRes?.page_count_detected === "number" && Number.isFinite(renderRes.page_count_detected)
+							? renderRes.page_count_detected
+							: null;
+					if ((!existingPageCount || existingPageCount <= 0) && detected && detected > 0) {
+						await pool.query(
+							"UPDATE documents SET page_count = $2, updated_at = now() WHERE id = $1 AND (page_count IS NULL OR page_count <= 0)",
+							[docId, detected]
+						);
+					}
+
+					uris = await resolvePageImageUris(pool, docId, { env: process.env, logger: console });
+				}
+			} catch (err) {
+				console.warn(
+					`[extract_visuals] Could not generate rendered pages doc=${docId}: ${
+						err instanceof Error ? err.message : String(err)
+					}`
+				);
+			}
+
+			if (uris.length === 0) {
+				docsMissingPageImages += 1;
+				docsMissingPageImagesIds.push(docId);
+				docsSkipped += 1;
+				continue;
+			}
+		}
+
+		docsProcessed += 1;
+		for (let i = 0; i < uris.length && i < config.maxPages; i += 1) {
+			const image_uri = uris[i];
+			const response = await callVisionWorker(config, {
+				document_id: docId,
+				page_index: i,
+				image_uri,
+				extractor_version: extractorVersion,
+			});
+
+			if (!response) {
+				console.warn(`[extract_visuals] Vision worker failed for doc=${docId} page=${i}`);
+				continue;
+			}
+
+			try {
+				persisted += await persistVisionResponse(pool, response, { pageImageUri: image_uri });
+			} catch (err) {
+				console.warn(
+					`[extract_visuals] Persist failed doc=${docId} page=${i}: ${
+						err instanceof Error ? err.message : String(err)
+					}`
+				);
+			}
 		}
 	}
 
-	return { ok: true, persisted };
+	if (docsProcessed === 0) {
+		const diag = {
+			docs_targeted: targetDocumentIds.length,
+			docs_skipped: docsSkipped,
+			page_count_missing: docsHadPageCountMissing,
+			original_bytes_missing: docsMissingOriginalBytes,
+			page_images_missing: docsMissingPageImages,
+			original_file_tables_ok: originalFileTablesOk,
+			missing_original_bytes_doc_ids: docsMissingOriginalBytesIds.slice(0, 5),
+			missing_page_images_doc_ids: docsMissingPageImagesIds.slice(0, 5),
+		};
+		await updateJob(
+			job,
+			"failed",
+			`No page images available for visual extraction. Diagnostics: ${JSON.stringify(diag)}. Fix: if original_file_tables_ok=false, run migration infra/migrations/2025-12-22-002-add-document-original-files.sql and re-ingest. If original_bytes_missing>0, re-upload/re-ingest so document_files is populated. Otherwise ensure rendered pages exist under UPLOAD_DIR (uploads/rendered_pages/<documentId>/page_000.png, etc).`,
+			100
+		);
+		return { ok: false, persisted, docs_processed: docsProcessed, docs_skipped: docsSkipped };
+	}
+
+	await updateJob(
+		job,
+		"succeeded",
+		`Visual extraction complete (persisted=${persisted}, docs_processed=${docsProcessed}, docs_skipped=${docsSkipped})`,
+		100
+	);
+	return { ok: true, persisted, docs_processed: docsProcessed, docs_skipped: docsSkipped };
 });
 createWorker("fetch_evidence", async (job: Job) => {
 	const dealId = (job.data as { deal_id?: string } | undefined)?.deal_id;

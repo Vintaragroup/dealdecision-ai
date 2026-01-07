@@ -1,5 +1,6 @@
 import fastify from "fastify";
 import { registerCors } from "./plugins/cors";
+import { registerUploadsStatic } from "./plugins/uploads-static";
 import multipart from "@fastify/multipart";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
@@ -35,6 +36,7 @@ const host = "0.0.0.0";
 
 async function bootstrap() {
   await registerCors(app);
+  await registerUploadsStatic(app);
   const pool = getPool();
   await app.register(swagger, {
     openapi: {

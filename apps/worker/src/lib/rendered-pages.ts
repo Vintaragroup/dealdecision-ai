@@ -72,6 +72,7 @@ export type PersistRenderedPagesResult = {
 	rendered_pages_count?: number;
 	rendered_pages_max_pages?: number;
 	rendered_pages_created_at?: string;
+	page_count_detected?: number;
 };
 
 function stableRenderedPagesDir(params: { uploadDir: string; documentId: string }): string {
@@ -204,7 +205,8 @@ export async function persistRenderedPageImages(params: {
 
 	if (!params.config.enabled) return { ok: true, reason: "visual_extraction_disabled" };
 	if (!params.config.persist) return { ok: true, reason: "persist_disabled" };
-	if (params.pageCount <= 0) return { ok: true, reason: "no_pages" };
+	// If pageCount is unknown (older ingests), proceed anyway and let PDF rendering determine page count.
+	const pageCountHint = typeof params.pageCount === "number" && Number.isFinite(params.pageCount) ? params.pageCount : 0;
 
 	const safeId = safeDocIdForPath(params.documentId);
 	const outDir = stableRenderedPagesDir({ uploadDir: params.uploadDir, documentId: params.documentId });
@@ -219,7 +221,8 @@ export async function persistRenderedPageImages(params: {
 		return { ok: true, reason: "mkdir_failed" };
 	}
 
-	const maxPages = Math.min(params.config.maxPages, params.pageCount);
+	// If pageCount is known, cap render count; otherwise we will render up to config.maxPages.
+	const maxPages = pageCountHint > 0 ? Math.min(params.config.maxPages, pageCountHint) : params.config.maxPages;
 	let written = 0;
 
 	try {
@@ -237,7 +240,9 @@ export async function persistRenderedPageImages(params: {
 		written = 0;
 	}
 
+	let detectedTotalPages: number | undefined = undefined;
 	if (written === 0) {
+		// Render from PDF directly.
 		written = await renderPdfToPngFiles({
 			buffer: params.buffer,
 			documentId: params.documentId,
@@ -248,6 +253,18 @@ export async function persistRenderedPageImages(params: {
 			format: params.config.format,
 			logger,
 		});
+
+		// Best-effort: detect total pages in the PDF so callers can backfill documents.page_count.
+		try {
+			const data = new Uint8Array(params.buffer.buffer, params.buffer.byteOffset, params.buffer.byteLength);
+			const standardFontDataUrl = path.join(path.dirname(require.resolve("pdfjs-dist/package.json")), "standard_fonts/");
+			const pdf = await (pdfjs as any).getDocument({ data, standardFontDataUrl }).promise;
+			const totalPages = typeof pdf?.numPages === "number" ? pdf.numPages : 0;
+			if (Number.isFinite(totalPages) && totalPages > 0) detectedTotalPages = totalPages;
+			await pdf.destroy?.();
+		} catch {
+			// ignore
+		}
 	}
 
 	const createdAt = now().toISOString();
@@ -258,5 +275,6 @@ export async function persistRenderedPageImages(params: {
 		rendered_pages_count: written,
 		rendered_pages_max_pages: params.config.maxPages,
 		rendered_pages_created_at: createdAt,
+		page_count_detected: detectedTotalPages,
 	};
 }

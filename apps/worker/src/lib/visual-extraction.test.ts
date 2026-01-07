@@ -25,6 +25,39 @@ function makePoolMock() {
 	return { pool, calls };
 }
 
+function makeVisualAssetsStatePoolMock() {
+	const calls: Array<{ sql: string; params: unknown[] }> = [];
+	const rowsByKey = new Map<string, { id: string; image_uri: string | null }>();
+	const pool = {
+		query: async (sql: string, params: unknown[]) => {
+			calls.push({ sql, params });
+			if (!sql.includes("INSERT INTO visual_assets")) {
+				return { rows: [] } as any;
+			}
+
+			const documentId = String(params[0] ?? "");
+			const pageIndex = Number(params[1] ?? 0);
+			const imageUri = (params[4] ?? null) as string | null;
+			const imageHash = (params[5] ?? null) as string | null;
+			const extractorVersion = String(params[6] ?? "");
+
+			const key = `${documentId}::${pageIndex}::${extractorVersion}::${imageHash ?? "__null__"}`;
+			const existing = rowsByKey.get(key);
+			const id = existing?.id ?? "00000000-0000-0000-0000-000000000001";
+
+			// Simulate the intended UPSERT backfill semantics:
+			// image_uri = COALESCE(NULLIF(visual_assets.image_uri,''), EXCLUDED.image_uri)
+			const existingUri = existing?.image_uri ?? null;
+			const backfilled = existingUri && existingUri !== "" ? existingUri : imageUri;
+
+			rowsByKey.set(key, { id, image_uri: backfilled });
+			return { rows: [{ id }] } as any;
+		},
+	} as any;
+
+	return { pool, calls, rowsByKey };
+}
+
 test("getVisionExtractorConfig defaults are safe and disabled", () => {
 	const cfg = getVisionExtractorConfig({} as any);
 	assert.equal(cfg.enabled, false);
@@ -66,6 +99,44 @@ test("upsertVisualAsset uses hash conflict target when image_hash is provided", 
 	});
 
 	assert.ok(calls[0].sql.includes("ON CONFLICT (document_id, page_index, extractor_version, image_hash)"));
+});
+
+test("upsertVisualAsset backfills empty image_uri on conflict", async () => {
+	const { pool, calls, rowsByKey } = makeVisualAssetsStatePoolMock();
+	const documentId = "00000000-0000-0000-0000-000000000000";
+	const extractorVersion = "vision_v1";
+	const key = `${documentId}::0::${extractorVersion}::__null__`;
+
+	await upsertVisualAsset(pool, {
+		documentId,
+		pageIndex: 0,
+		assetType: "image_text",
+		bbox: { x: 0, y: 0, w: 1, h: 1 },
+		imageUri: "",
+		imageHash: null,
+		extractorVersion,
+		confidence: 0.5,
+		qualityFlags: {},
+	});
+
+	assert.equal(rowsByKey.get(key)?.image_uri, "");
+	assert.ok(
+		calls[0].sql.includes("image_uri = COALESCE(NULLIF(visual_assets.image_uri,''), EXCLUDED.image_uri)")
+	);
+
+	await upsertVisualAsset(pool, {
+		documentId,
+		pageIndex: 0,
+		assetType: "image_text",
+		bbox: { x: 0, y: 0, w: 1, h: 1 },
+		imageUri: "/uploads/rendered_pages/doc/page_001.png",
+		imageHash: null,
+		extractorVersion,
+		confidence: 0.5,
+		qualityFlags: {},
+	});
+
+	assert.equal(rowsByKey.get(key)?.image_uri, "/uploads/rendered_pages/doc/page_001.png");
 });
 
 test("persistVisionResponse writes assets + extraction + evidence link", async () => {

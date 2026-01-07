@@ -49,11 +49,16 @@ def run_ocr_lite(image: Image.Image) -> Tuple[VisualExtraction, Dict[str, Any]]:
         return VisualExtraction(ocr_text=None, ocr_blocks=[], confidence=0.0), flags
 
     try:
-        data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+        try:
+            img = image.convert("RGB")
+        except Exception:
+            img = image
+
+        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT, lang="eng")
         text_items: List[str] = []
         blocks: List[OcrBlock] = []
 
-        img_w, img_h = image.size
+        img_w, img_h = img.size
 
         n = len(data.get("text", []))
         for i in range(n):

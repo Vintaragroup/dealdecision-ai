@@ -35,7 +35,7 @@ const documentTypeSchema = z
 
 type DocumentRow = {
   id: string;
-  deal_id: string;
+  deal_id: string | null;
   title: string;
   type: Document["type"] | null;
   status: Document["status"];
@@ -45,12 +45,23 @@ type DocumentRow = {
 function mapDocument(row: DocumentRow): Document {
   return {
     document_id: row.id,
-    deal_id: row.deal_id,
+    deal_id: row.deal_id ?? "",
     title: row.title,
     type: row.type ?? "other",
     status: row.status,
     uploaded_at: new Date(row.uploaded_at).toISOString(),
   } as Document;
+}
+
+async function dealExists(pool: ReturnType<typeof getPool>, dealId: string): Promise<boolean> {
+  const clean = sanitizeText(dealId);
+  if (!clean) return false;
+  try {
+    const { rows } = await pool.query("SELECT 1 FROM deals WHERE id = $1 LIMIT 1", [clean]);
+    return Array.isArray(rows) && rows.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 type ExtractionRecommendedAction = "proceed" | "remediate" | "re_extract" | "wait";
@@ -236,7 +247,16 @@ function buildDealExtractionReport(args: {
   };
 }
 
-export async function registerDocumentRoutes(app: FastifyInstance, pool = getPool()) {
+export async function registerDocumentRoutes(
+  app: FastifyInstance,
+  pool = getPool(),
+  deps?: {
+    enqueueJob?: typeof enqueueJob;
+    autoProgressDealStage?: typeof autoProgressDealStage;
+  }
+) {
+  const enqueue = deps?.enqueueJob ?? enqueueJob;
+  const autoProgress = deps?.autoProgressDealStage ?? autoProgressDealStage;
   app.get(
     "/api/v1/deals/:deal_id/documents/:document_id/visual-assets",
     {
@@ -444,13 +464,21 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
 
   // JSON upload helper for automated tests (accepts base64 payload)
   app.post("/api/v1/deals/:deal_id/documents/upload", async (request, reply) => {
-    const dealId = (request.params as { deal_id: string }).deal_id;
+    const dealId = sanitizeText((request.params as any)?.deal_id);
     const payload = request.body as {
       file_buffer?: string;
       file_name?: string;
       type?: string;
       title?: string;
     };
+
+    if (!dealId) {
+      return reply.status(400).send({ error: "deal_id is required" });
+    }
+
+    if (!(await dealExists(pool, dealId))) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
 
     if (!payload?.file_buffer) {
       return reply.status(400).send({ error: "file_buffer is required" });
@@ -489,9 +517,32 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
         [dealId, titleValue, finalType, "pending"]
       );
 
+      const warnings: string[] = [];
       const documentId = rows[0].id;
 
-      const job = await enqueueJob({
+      // Safety: if the row comes back unlinked, repair best-effort.
+      if (!rows[0]?.deal_id || rows[0].deal_id !== dealId) {
+        try {
+          const repaired = await pool.query<{ deal_id: string | null }>(
+            `UPDATE documents
+                SET deal_id = $1
+              WHERE id = $2
+              RETURNING deal_id`,
+            [dealId, documentId]
+          );
+          const repairedDealId = repaired.rows?.[0]?.deal_id ?? null;
+          if (repairedDealId !== dealId) {
+            warnings.push("uploaded document was not linked to deal; repair attempt did not confirm linkage");
+          } else {
+            rows[0].deal_id = dealId;
+            warnings.push("uploaded document required linkage repair");
+          }
+        } catch (e: any) {
+          warnings.push(`uploaded document linkage repair failed: ${e?.message || "unknown error"}`);
+        }
+      }
+
+      const job = await enqueue({
         deal_id: dealId,
         document_id: documentId,
         type: "ingest_documents",
@@ -504,13 +555,14 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
         },
       });
 
-      const progressionResult = await autoProgressDealStage(pool, dealId);
+      const progressionResult = await autoProgress(pool, dealId);
 
       return reply.status(202).send({
         document_id: documentId,
         document: mapDocument(rows[0]),
         job_status: "queued",
         job_id: job.job_id,
+        warnings,
         stage_progression: progressionResult.progressed
           ? { progressed: true, newStage: progressionResult.newStage }
           : { progressed: false },
@@ -525,11 +577,19 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
   });
 
   app.post("/api/v1/deals/:deal_id/documents", async (request, reply) => {
-    const dealId = (request.params as { deal_id: string }).deal_id;
+    const dealId = sanitizeText((request.params as any)?.deal_id);
     let fileBuffer: Buffer | null = null;
     let fileName = "document";
     let docType: any = "other";
     let titleValue = "document";
+
+    if (!dealId) {
+      return reply.status(400).send({ error: "deal_id is required" });
+    }
+
+    if (!(await dealExists(pool, dealId))) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
 
     try {
       // Parse multipart form data
@@ -558,6 +618,10 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
 
       const fileBufferB64 = fileBuffer.toString("base64");
 
+      if (titleValue === "document" && fileName && fileName !== "document") {
+        titleValue = fileName;
+      }
+
       const { rows } = await pool.query<DocumentRow>(
         `INSERT INTO documents (deal_id, title, type, status)
          VALUES ($1, $2, $3, $4)
@@ -565,10 +629,32 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
         [dealId, titleValue, finalType, "pending"]
       );
 
+      const warnings: string[] = [];
       const documentId = rows[0].id;
 
+      if (!rows[0]?.deal_id || rows[0].deal_id !== dealId) {
+        try {
+          const repaired = await pool.query<{ deal_id: string | null }>(
+            `UPDATE documents
+                SET deal_id = $1
+              WHERE id = $2
+              RETURNING deal_id`,
+            [dealId, documentId]
+          );
+          const repairedDealId = repaired.rows?.[0]?.deal_id ?? null;
+          if (repairedDealId !== dealId) {
+            warnings.push("uploaded document was not linked to deal; repair attempt did not confirm linkage");
+          } else {
+            rows[0].deal_id = dealId;
+            warnings.push("uploaded document required linkage repair");
+          }
+        } catch (e: any) {
+          warnings.push(`uploaded document linkage repair failed: ${e?.message || "unknown error"}`);
+        }
+      }
+
       // Queue document processing job with file buffer
-      const job = await enqueueJob({
+      const job = await enqueue({
         deal_id: dealId,
         document_id: documentId,
         type: "ingest_documents",
@@ -582,12 +668,13 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
       });
 
       // Auto-check if deal should progress based on document count
-      const progressionResult = await autoProgressDealStage(pool, dealId);
+      const progressionResult = await autoProgress(pool, dealId);
 
       return reply.status(202).send({
         document: mapDocument(rows[0]),
         job_status: "queued",
         job_id: job.job_id,
+        warnings,
         stage_progression: progressionResult.progressed
           ? {
               progressed: true,
@@ -724,7 +811,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
     );
 
     // Retry now uses persisted original bytes (stored during initial ingestion).
-    const job = await enqueueJob({
+    const job = await enqueue({
       deal_id,
       document_id,
       type: "reextract_documents",
@@ -747,7 +834,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
       include_warnings?: boolean;
     };
 
-    const job = await enqueueJob({
+    const job = await enqueue({
       deal_id: dealId,
       type: "reextract_documents",
       payload: {
@@ -1049,7 +1136,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
         return reply.status(404).send({ error: "No documents found for this deal" });
       }
 
-      const job = await enqueueJob({
+      const job = await enqueue({
         deal_id: dealId,
         type: "verify_documents",
         payload: { deal_id: dealId, document_ids: documentIds },

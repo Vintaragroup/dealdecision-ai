@@ -57,6 +57,73 @@ export type VisionExtractResponse = {
 	assets: VisionAsset[];
 };
 
+function coerceJsonObject(value: unknown): Record<string, unknown> {
+	if (!value) return {};
+	if (typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+	if (typeof value === "string") {
+		try {
+			const parsed = JSON.parse(value);
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+		} catch {
+			// ignore
+		}
+	}
+	return {};
+}
+
+function coerceJsonArray<T = unknown>(value: unknown): T[] {
+	if (Array.isArray(value)) return value as T[];
+	if (typeof value === "string") {
+		try {
+			const parsed = JSON.parse(value);
+			if (Array.isArray(parsed)) return parsed as T[];
+		} catch {
+			// ignore
+		}
+	}
+	return [];
+}
+
+function coerceBBox(value: unknown): VisionBBox {
+	const obj = coerceJsonObject(value);
+	const x = typeof obj.x === "number" ? obj.x : Number(obj.x);
+	const y = typeof obj.y === "number" ? obj.y : Number(obj.y);
+	const w = typeof obj.w === "number" ? obj.w : Number(obj.w);
+	const h = typeof obj.h === "number" ? obj.h : Number(obj.h);
+
+	return {
+		x: Number.isFinite(x) ? x : 0,
+		y: Number.isFinite(y) ? y : 0,
+		w: Number.isFinite(w) ? w : 1,
+		h: Number.isFinite(h) ? h : 1,
+	};
+}
+
+function normalizeImageUriForApi(imageUri: string | null, env: NodeJS.ProcessEnv = process.env): string | null {
+	if (!imageUri) return null;
+	const trimmed = String(imageUri).trim();
+	if (!trimmed) return null;
+	if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;
+	if (trimmed.startsWith("/uploads/")) return trimmed;
+
+	// Best-effort: map absolute file paths under UPLOAD_DIR to an API-relative URL under /uploads.
+	const uploadDir = env.UPLOAD_DIR ? path.resolve(env.UPLOAD_DIR) : null;
+	if (uploadDir && trimmed.startsWith("/")) {
+		try {
+			const rel = path.relative(uploadDir, trimmed);
+			if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+				return `/uploads/${rel.split(path.sep).join("/")}`;
+			}
+		} catch {
+			// fall through
+		}
+	}
+
+	// If it's an API-relative path, keep it.
+	if (trimmed.startsWith("/")) return trimmed;
+	return null;
+}
+
 function parseBool(input: string | undefined | null): boolean {
 	if (!input) return false;
 	return ["1", "true", "yes", "on"].includes(input.trim().toLowerCase());
@@ -75,7 +142,8 @@ export function getVisionExtractorConfig(env: NodeJS.ProcessEnv = process.env): 
 		visionWorkerUrl: (env.VISION_WORKER_URL || "http://localhost:8000").replace(/\/$/, ""),
 		extractorVersion: env.VISION_EXTRACTOR_VERSION || "vision_v1",
 		timeoutMs: parseIntWithDefault(env.VISION_TIMEOUT_MS, 8000),
-		maxPages: parseIntWithDefault(env.VISION_MAX_PAGES, 10),
+		// Default high enough to cover typical pitch decks while keeping a hard cap via env.
+		maxPages: parseIntWithDefault(env.VISION_MAX_PAGES, 50),
 	};
 }
 
@@ -168,12 +236,6 @@ export async function resolvePageImageUris(
 		);
 		const row = rows?.[0];
 		const pageCount = typeof row?.page_count === "number" && Number.isFinite(row.page_count) ? row.page_count : 0;
-		if (!pageCount || pageCount <= 0) {
-			logger.log(
-				JSON.stringify({ event: "NO_PAGE_IMAGES_AVAILABLE", document_id: documentId, reason: "page_count_missing" })
-			);
-			return [];
-		}
 
 		const dirs = candidateArtifactDirs({ documentId, meta: row?.extraction_metadata, env: options?.env });
 		for (const dir of dirs) {
@@ -191,23 +253,63 @@ export async function resolvePageImageUris(
 				const parsed = parsePageIndexFromFilename(f);
 				if (parsed === null) continue;
 				const pageIndex = hasZero ? parsed : parsed - 1;
-				if (pageIndex < 0 || pageIndex >= pageCount) continue;
+				if (pageIndex < 0) continue;
+				if (pageCount && pageCount > 0 && pageIndex >= pageCount) continue;
 				const full = path.join(dir, f);
 				const list = byIndex.get(pageIndex) ?? [];
 				list.push(full);
 				byIndex.set(pageIndex, list);
 			}
 
+			const inferredPageCount =
+				pageCount && pageCount > 0
+					? pageCount
+					: byIndex.size > 0
+						? Math.max(...Array.from(byIndex.keys())) + 1
+						: 0;
+
 			const ordered: string[] = [];
-			for (let i = 0; i < pageCount; i += 1) {
+			for (let i = 0; i < inferredPageCount; i += 1) {
 				const cands = byIndex.get(i);
 				if (!cands || cands.length === 0) continue;
 				ordered.push(pickBestPerPage(cands));
 			}
 
 			if (ordered.length > 0) {
+				// If the document row never had page_count, infer it from rendered pages so downstream
+				// extraction (and UI) can behave deterministically.
+				if ((!pageCount || pageCount <= 0) && inferredPageCount > 0) {
+					try {
+						await pool.query(
+							"UPDATE documents SET page_count = $2, updated_at = now() WHERE id = $1 AND (page_count IS NULL OR page_count <= 0)",
+							[sanitizeText(documentId), inferredPageCount]
+						);
+						logger.log(
+							JSON.stringify({
+								event: "PAGE_COUNT_INFERRED_FROM_RENDERED_PAGES",
+								document_id: documentId,
+								page_count: inferredPageCount,
+								dir,
+							})
+						);
+					} catch {
+						// ignore
+					}
+				}
 				return ordered;
 			}
+		}
+
+		if (!pageCount || pageCount <= 0) {
+			logger.log(
+				JSON.stringify({
+					event: "NO_PAGE_IMAGES_AVAILABLE",
+					document_id: documentId,
+					reason: "page_count_missing_and_no_images_found",
+					searched_dirs: dirs,
+				})
+			);
+			return [];
 		}
 
 		logger.log(
@@ -287,24 +389,24 @@ export async function upsertVisualAsset(pool: Pool, input: UpsertVisualAssetInpu
 		sanitizeText(input.documentId),
 		input.pageIndex,
 		sanitizeText(input.assetType),
-		sanitizeDeep(input.bbox),
+		JSON.stringify(sanitizeDeep(input.bbox)),
 		input.imageUri,
 		input.imageHash,
 		sanitizeText(input.extractorVersion),
 		input.confidence,
-		sanitizeDeep(input.qualityFlags ?? {}),
+		JSON.stringify(sanitizeDeep(input.qualityFlags ?? {})),
 	];
 
 	if (input.imageHash) {
 		const { rows } = await pool.query<{ id: string }>(
 			`INSERT INTO visual_assets (
 			   document_id, page_index, asset_type, bbox, image_uri, image_hash, extractor_version, confidence, quality_flags
-			 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			 ) VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9::jsonb)
 			 ON CONFLICT (document_id, page_index, extractor_version, image_hash)
 			 DO UPDATE SET
 			   asset_type = EXCLUDED.asset_type,
 			   bbox = EXCLUDED.bbox,
-			   image_uri = COALESCE(EXCLUDED.image_uri, visual_assets.image_uri),
+			   image_uri = COALESCE(NULLIF(visual_assets.image_uri,''), EXCLUDED.image_uri),
 			   confidence = GREATEST(visual_assets.confidence, EXCLUDED.confidence),
 			   quality_flags = visual_assets.quality_flags || EXCLUDED.quality_flags
 			 RETURNING id`,
@@ -316,12 +418,12 @@ export async function upsertVisualAsset(pool: Pool, input: UpsertVisualAssetInpu
 	const { rows } = await pool.query<{ id: string }>(
 		`INSERT INTO visual_assets (
 		   document_id, page_index, asset_type, bbox, image_uri, image_hash, extractor_version, confidence, quality_flags
-		 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		 ) VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9::jsonb)
 		 ON CONFLICT (document_id, page_index, extractor_version) WHERE image_hash IS NULL
 		 DO UPDATE SET
 		   asset_type = EXCLUDED.asset_type,
 		   bbox = EXCLUDED.bbox,
-		   image_uri = COALESCE(EXCLUDED.image_uri, visual_assets.image_uri),
+		   image_uri = COALESCE(NULLIF(visual_assets.image_uri,''), EXCLUDED.image_uri),
 		   confidence = GREATEST(visual_assets.confidence, EXCLUDED.confidence),
 		   quality_flags = visual_assets.quality_flags || EXCLUDED.quality_flags
 		 RETURNING id`,
@@ -347,12 +449,12 @@ export async function upsertVisualExtraction(pool: Pool, input: UpsertVisualExtr
 		`INSERT INTO visual_extractions (
 		   visual_asset_id, ocr_text, ocr_blocks, structured_json, units, labels,
 		   extractor_version, model_version, confidence
-		 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		 ) VALUES ($1,$2,$3::jsonb,$4::jsonb,$5,$6::jsonb,$7,$8,$9)
 		 ON CONFLICT (visual_asset_id, extractor_version)
 		 DO UPDATE SET
 		   ocr_text = COALESCE(EXCLUDED.ocr_text, visual_extractions.ocr_text),
 		   ocr_blocks = CASE
-		     WHEN jsonb_array_length(EXCLUDED.ocr_blocks) > 0 THEN EXCLUDED.ocr_blocks
+		     WHEN jsonb_typeof(EXCLUDED.ocr_blocks) = 'array' AND jsonb_array_length(EXCLUDED.ocr_blocks) > 0 THEN EXCLUDED.ocr_blocks
 		     ELSE visual_extractions.ocr_blocks
 		   END,
 		   structured_json = visual_extractions.structured_json || EXCLUDED.structured_json,
@@ -364,10 +466,18 @@ export async function upsertVisualExtraction(pool: Pool, input: UpsertVisualExtr
 		[
 			sanitizeText(input.visualAssetId),
 			input.ocrText,
-			sanitizeDeep(input.ocrBlocks ?? []),
-			sanitizeDeep(input.structuredJson ?? {}),
+			JSON.stringify(sanitizeDeep(Array.isArray(input.ocrBlocks) ? input.ocrBlocks : [])),
+			JSON.stringify(
+				sanitizeDeep(
+					input.structuredJson && typeof input.structuredJson === "object" && !Array.isArray(input.structuredJson)
+						? input.structuredJson
+						: {}
+				)
+			),
 			input.units,
-			sanitizeDeep(input.labels ?? {}),
+			JSON.stringify(
+				sanitizeDeep(input.labels && typeof input.labels === "object" && !Array.isArray(input.labels) ? input.labels : {})
+			),
 			sanitizeText(input.extractorVersion),
 			input.modelVersion,
 			input.confidence,
@@ -386,7 +496,7 @@ export async function insertEvidenceLinkIfMissing(pool: Pool, input: {
 }) {
 	await pool.query(
 		`INSERT INTO evidence_links (document_id, page_index, evidence_type, visual_asset_id, ref, snippet, confidence)
-		 SELECT $1, $2, $3, $4, $5, $6, $7
+		 SELECT $1, $2, $3, $4, $5::jsonb, $6, $7
 		 WHERE NOT EXISTS (
 		   SELECT 1
 		     FROM evidence_links
@@ -400,42 +510,57 @@ export async function insertEvidenceLinkIfMissing(pool: Pool, input: {
 			input.pageIndex,
 			sanitizeText(input.evidenceType),
 			input.visualAssetId ? sanitizeText(input.visualAssetId) : null,
-			sanitizeDeep(input.ref ?? {}),
+			JSON.stringify(sanitizeDeep(input.ref ?? {})),
 			input.snippet,
 			input.confidence,
 		]
 	);
 }
 
-export async function persistVisionResponse(pool: Pool, response: VisionExtractResponse): Promise<number> {
+export async function persistVisionResponse(
+	pool: Pool,
+	response: VisionExtractResponse,
+	options?: { pageImageUri?: string | null; env?: NodeJS.ProcessEnv }
+): Promise<number> {
 	let persisted = 0;
+	const env = options?.env ?? process.env;
+	const pageImageUri = options?.pageImageUri ?? null;
+	const pageImageUriNormalized = normalizeImageUriForApi(pageImageUri, env);
 
 	for (const asset of response.assets ?? []) {
+		const normalizedAssetImageUri = normalizeImageUriForApi(asset.image_uri ?? null, env) ?? pageImageUriNormalized;
+		const assetBBox = coerceBBox((asset as any)?.bbox);
+		const assetQualityFlags = coerceJsonObject((asset as any)?.quality_flags);
+		const extractionObj = (asset as any)?.extraction;
+		const ocrText = typeof extractionObj?.ocr_text === "string" ? extractionObj.ocr_text : null;
+		const ocrBlocks = coerceJsonArray<VisionOcrBlock>(extractionObj?.ocr_blocks);
+		const structuredJson = coerceJsonObject(extractionObj?.structured_json);
+		const labels = coerceJsonObject(extractionObj?.labels);
 		const visualAssetId = await upsertVisualAsset(pool, {
 			documentId: response.document_id,
 			pageIndex: response.page_index,
 			assetType: asset.asset_type,
-			bbox: asset.bbox,
-			imageUri: asset.image_uri ?? null,
+			bbox: assetBBox,
+			imageUri: normalizedAssetImageUri,
 			imageHash: asset.image_hash ?? null,
 			extractorVersion: response.extractor_version,
 			confidence: asset.confidence ?? 0,
-			qualityFlags: asset.quality_flags ?? {},
+			qualityFlags: assetQualityFlags,
 		});
 
 		await upsertVisualExtraction(pool, {
 			visualAssetId,
 			extractorVersion: response.extractor_version,
-			ocrText: asset.extraction?.ocr_text ?? null,
-			ocrBlocks: asset.extraction?.ocr_blocks ?? [],
-			structuredJson: asset.extraction?.structured_json ?? {},
+			ocrText: ocrText,
+			ocrBlocks: ocrBlocks,
+			structuredJson: structuredJson,
 			units: asset.extraction?.units ?? null,
-			labels: asset.extraction?.labels ?? {},
+			labels: labels,
 			modelVersion: asset.extraction?.model_version ?? null,
 			confidence: asset.extraction?.confidence ?? asset.confidence ?? 0,
 		});
 
-		const snippetRaw = asset.extraction?.ocr_text ?? null;
+		const snippetRaw = ocrText;
 		const snippet = snippetRaw && snippetRaw.length > 500 ? `${snippetRaw.slice(0, 497)}...` : snippetRaw;
 
 		await insertEvidenceLinkIfMissing(pool, {
@@ -445,8 +570,9 @@ export async function persistVisionResponse(pool: Pool, response: VisionExtractR
 			visualAssetId,
 			ref: {
 				asset_type: asset.asset_type,
-				bbox: asset.bbox,
-				image_uri: asset.image_uri ?? null,
+				bbox: assetBBox,
+				image_uri: normalizedAssetImageUri,
+				page_image_uri: pageImageUriNormalized,
 				image_hash: asset.image_hash ?? null,
 				extractor_version: response.extractor_version,
 			},

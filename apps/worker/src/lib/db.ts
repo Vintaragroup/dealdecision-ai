@@ -214,7 +214,7 @@ export type DocumentRow = {
 export async function getDocumentsForDeal(dealId: string): Promise<DocumentRow[]> {
   const currentPool = getPool();
   const { rows } = await currentPool.query<DocumentRow>(
-    `SELECT document_id, deal_id, title, type, status, uploaded_at, updated_at
+    `SELECT id AS document_id, deal_id, title, type, status, uploaded_at, updated_at
        FROM documents
        WHERE deal_id = $1
        ORDER BY uploaded_at DESC

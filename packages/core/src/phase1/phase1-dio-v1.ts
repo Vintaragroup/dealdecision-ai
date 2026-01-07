@@ -37,12 +37,42 @@ export type Phase1ExecutiveSummaryV2 = {
 	missing: string[]; // explicit acknowledgement of missing fields
 	signals: {
 		recommendation: Phase1RecommendationV1;
-		score: number; // 0–100
+		score: number | null; // 0–100 when available; null when unavailable
 		confidence: Phase1ConfidenceBand;
 		blockers_count: number;
 	};
 	generated_at?: string; // derived from overview_v2.generated_at when present
 };
+
+export type ScoreSnapshot = {
+	score: number | null;
+	decision: Phase1RecommendationV1;
+	confidence: Phase1ConfidenceBand;
+	source: "overall" | "phase1" | "fallback";
+};
+
+function selectScoreSnapshot(args: {
+	overall_score?: unknown;
+	phase1_score?: unknown;
+	decision: Phase1RecommendationV1;
+	confidence: Phase1ConfidenceBand;
+}): ScoreSnapshot {
+	const overall = typeof args.overall_score === "number" && Number.isFinite(args.overall_score)
+		? Math.round(args.overall_score)
+		: null;
+	if (overall != null) {
+		return { score: overall, decision: args.decision, confidence: args.confidence, source: "overall" };
+	}
+
+	const phase1 = typeof args.phase1_score === "number" && Number.isFinite(args.phase1_score)
+		? Math.round(args.phase1_score)
+		: null;
+	if (phase1 != null) {
+		return { score: phase1, decision: args.decision, confidence: args.confidence, source: "phase1" };
+	}
+
+	return { score: null, decision: args.decision, confidence: args.confidence, source: "fallback" };
+}
 
 export type Phase1ClaimCategoryV1 =
 	| "product"
@@ -128,7 +158,9 @@ export type Phase1DIOV1 = {
 		product_solution?: string | null;
 		market_icp?: string | null;
 		deal_type?: string;
+		raise_terms?: string | null;
 		raise?: string;
+		go_to_market?: string | null;
 		business_model?: string;
 		traction_signals?: string[];
 		key_risks_detected?: string[];
@@ -222,7 +254,6 @@ function normalizeConfidenceToNumber(confidence: unknown): number | null {
 
 export function isSectionProvided(sectionObj: any): { provided: boolean; why_missing?: Phase1CoverageSectionWhyMissingV1 } {
 	const MIN_TEXT_LEN = 20;
-	const MIN_CONFIDENCE = 0.6;
 	const LOW_CONFIDENCE = 0.4;
 
 	if (sectionObj == null) return { provided: false, why_missing: "empty_text" };
@@ -255,21 +286,19 @@ export function isSectionProvided(sectionObj: any): { provided: boolean; why_mis
 			break;
 		}
 	}
-
 	const conf = normalizeConfidenceToNumber(sectionObj?.confidence) ?? normalizeConfidenceToNumber(sectionObj?.confidence_band);
 
-	// Deterministic: if there is no meaningful content, it is missing due to empty text (regardless of confidence).
-	if (!text.trim()) {
-		return { provided: false, why_missing: "empty_text" };
-	}
+	if (!text.trim()) return { provided: false, why_missing: "empty_text" };
 
 	const lower = text.toLowerCase();
 	if (/(not\s+provided|n\/?a|tbd|unknown|none)/i.test(lower)) return { provided: false, why_missing: "explicit_not_provided" };
+
 	if (text.length < MIN_TEXT_LEN) {
 		if (conf !== null && conf < LOW_CONFIDENCE) return { provided: false, why_missing: "low_confidence" };
 		return { provided: false, why_missing: "empty_text" };
 	}
 
+	if (conf !== null && conf < LOW_CONFIDENCE) return { provided: false, why_missing: "low_confidence" };
 	return { provided: true };
 }
 
@@ -440,25 +469,27 @@ function capsTokenRatio(value: string): number {
 	const s = sanitizeInlineText(value);
 	if (!s) return 0;
 	const tokens = s.split(/\s+/g).filter(Boolean);
-	const letterTokens = tokens.filter((t) => /[A-Za-z]/.test(t));
-	if (letterTokens.length === 0) return 0;
-	const upperTokens = letterTokens.filter((t) => /^[A-Z]{2,}$/.test(t.replace(/[^A-Za-z]/g, "")));
-	return upperTokens.length / letterTokens.length;
+	if (tokens.length === 0) return 0;
+	const capsTokens = tokens.filter((t) => {
+		if (t.length < 2) return false;
+		if (!/[A-Z]/.test(t)) return false;
+		return /^[A-Z0-9]+$/.test(t);
+	}).length;
+	return capsTokens / tokens.length;
 }
-
-function hasBusinessVerb(value: string): boolean {
-	const s = sanitizeInlineText(value);
-	if (!s) return false;
-	return /\b(builds?|build|building|built|operates?|operating|enables?|enabling|monetizes?|monetizing|provides?|providing|runs?|running|helps?|helping|automates?|automating|delivers?|delivering|predicts?|predicting|scores?|scoring|unifies?|unifying|analyzes?|analyzing|detects?|detecting|models?|modeling|identifies?|identifying|recommends?|recommending|optimizes?|optimizing)\b/i.test(s);
-}
-
 
 function hardValidateProductSolution(value: string): string {
 	const s = sanitizeInlineText(value);
 	if (!s) return "";
 	if (hasSpacedLogoOcrArtifact(s)) return "";
-	if (capsTokenRatio(s) > 0.4) return "";
-	if (!hasBusinessVerb(s)) return "";
+	if (/^(unknown|n\/?a|none)$/i.test(s.trim())) return "";
+
+	// Allow ALL CAPS taglines only if they look verb-like (not a logo/name artifact).
+	if (capsTokenRatio(s) > 0.6) {
+		const verbLike = /\b(HELPS|ENABLES|BUILT\s+FOR|PROVIDES|DELIVERS|AUTOMATES|CONNECTS|PLATFORM\s+FOR)\b/i.test(s);
+		if (!verbLike) return "";
+	}
+
 	return s;
 }
 
@@ -470,8 +501,9 @@ function hardValidateMarketICP(value: string): string {
 	if (/^(unknown|n\/?a|none)$/i.test(s.trim())) return "";
 
 	// ICP lines are often noun phrases; allow "for/target/built for" without requiring a business verb.
-	const hasIcpSignal = hasBusinessVerb(s)
-		|| /\b(for|target|targets|targeting|built\s+for|designed\s+for|used\s+by|serves?|customers?|buyers?|operators?)\b/i.test(s);
+	const hasIcpSignal =
+		/\b(icp|ideal\s+customer|target\s+customer|target\s+market|who\s+we\s+serve|customers?|buyers?)\b/i.test(s)
+		|| /\b(for|target|targets|targeting|built\s+for|designed\s+for|used\s+by|serves?|operators?)\b/i.test(s);
 	if (!hasIcpSignal && s.split(/\s+/g).filter(Boolean).length < 3) return "";
 	return s;
 }
@@ -1169,6 +1201,217 @@ function detectMarketSnippet(text: string): string | null {
 	return null;
 }
 
+type Phase1OverviewExtractorField = "product_solution" | "market_icp" | "raise_terms" | "go_to_market" | "key_risks_detected";
+
+type Phase1OverviewExtractorEvidence = {
+	field: Phase1OverviewExtractorField;
+	document_id: string;
+	snippet: string;
+	confidence: number; // 0..1
+};
+
+type Phase1OverviewExtractorOutput = {
+	fields: {
+		product_solution: string | null;
+		market_icp: string | null;
+		raise_terms: string | null;
+		go_to_market: string | null;
+		key_risks_detected: string[] | null;
+	};
+	evidence: Phase1OverviewExtractorEvidence[];
+	warnings: string[];
+};
+
+function capSnippet(value: string, maxChars: number): string {
+	const s = sanitizeInlineText(value);
+	if (s.length <= maxChars) return s;
+	return s.slice(0, maxChars - 1).trimEnd() + "…";
+}
+
+function takeSentenceish(value: string, maxChars: number): string {
+	const s = sanitizeInlineText(value);
+	if (!s.trim()) return "";
+	const cut = s.slice(0, Math.min(s.length, maxChars + 80));
+	const m = cut.match(/^(.{30,}?[.!?])\s+/);
+	if (m?.[1]) return capOneLiner(m[1], maxChars);
+	return capOneLiner(s, maxChars);
+}
+
+function extractAfterHeading(text: string, heading: RegExp, maxChars: number): string {
+	const m = text.match(heading);
+	if (!m || m.index == null) return "";
+	const start = m.index;
+	const window = text.slice(start, start + 2200);
+	const lines = window
+		.split(/\r\n|\n|\r/g)
+		.map((l) => sanitizeInlineText(l))
+		.filter((l) => l.trim().length > 0);
+	if (lines.length <= 1) return "";
+	// Drop the heading line.
+	const contentLines = lines.slice(1);
+	// Stop early if we hit another obvious heading.
+	const outLines: string[] = [];
+	for (const l of contentLines) {
+		if (outLines.length >= 3) break;
+		if (/^(?:product|solution|market|icp|target|customer|raising|fundraising|terms|use of funds|go\s*-?to\s*-?market|gtm|risks?|challenges?|competition)\b[:\-\s]*$/i.test(l)) {
+			break;
+		}
+		outLines.push(l);
+	}
+	const joined = outLines.join(" ").trim();
+	return takeSentenceish(joined, maxChars);
+}
+
+function extractWindow(text: string, re: RegExp, maxChars: number): { snippet: string; confidence: number } | null {
+	const m = text.match(re);
+	if (!m || m.index == null) return null;
+	const idx = m.index;
+	const start = Math.max(0, idx - 90);
+	const window = text.slice(start, start + 340);
+	const snippet = takeSentenceish(window, maxChars);
+	if (!snippet.trim()) return null;
+	const strong = /\$\s?\d|\b(raising|seeking|funding|round|terms)\b/i.test(snippet)
+		|| /\b(ICP|target\s+customer|go\s*-?to\s*-?market|\bGTM\b)\b/i.test(snippet);
+	return { snippet, confidence: strong ? 0.75 : 0.6 };
+}
+
+export function extractPhase1OverviewFromDocuments(
+	docs: Array<{ document_id: string; title?: string | null; full_text?: string | null }>
+): Phase1OverviewExtractorOutput {
+	const warnings: string[] = [];
+	const evidence: Phase1OverviewExtractorEvidence[] = [];
+
+	type Candidate = { value: string; document_id: string; confidence: number; rawSnippet: string };
+	const productCands: Candidate[] = [];
+	const marketCands: Candidate[] = [];
+	const raiseCands: Candidate[] = [];
+	const gtmCands: Candidate[] = [];
+	const riskCands: Array<{ items: string[]; document_id: string; confidence: number; rawSnippet: string }> = [];
+
+	for (const d of docs) {
+		const docId = safeString(d.document_id).trim();
+		if (!docId) continue;
+		const text = safeString(d.full_text).slice(0, 120_000);
+		if (!text.trim()) continue;
+
+		// Product / solution
+		const productHeading = /^(?:\s*)(Product|Solution|What\s+we\s+do|Platform|Overview)\s*[:\-]?\s*$/im;
+		const productAfter = extractAfterHeading(text, productHeading, 220);
+		if (productAfter) {
+			productCands.push({ value: productAfter, document_id: docId, confidence: 0.85, rawSnippet: productAfter });
+		} else {
+			const win = extractWindow(text, /\b(what\s+we\s+do|we\s+(?:are|re)\s+building|our\s+platform|our\s+product|our\s+solution)\b/i, 220);
+			if (win) productCands.push({ value: win.snippet, document_id: docId, confidence: win.confidence, rawSnippet: win.snippet });
+		}
+
+		// Market / ICP
+		const marketHeading = /^(?:\s*)(Target\s+Customer|Target\s+Market|ICP|Ideal\s+Customer|Who\s+we\s+serve|Customer)\s*[:\-]?\s*$/im;
+		const marketAfter = extractAfterHeading(text, marketHeading, 220);
+		if (marketAfter) {
+			marketCands.push({ value: marketAfter, document_id: docId, confidence: 0.85, rawSnippet: marketAfter });
+		} else {
+			const win = extractWindow(text, /\b(ICP|ideal\s+customer|target\s+customer|target\s+market|who\s+we\s+serve|buyers?)\b/i, 220);
+			if (win) marketCands.push({ value: win.snippet, document_id: docId, confidence: win.confidence, rawSnippet: win.snippet });
+		}
+
+		// Raise / terms
+		const raiseHeading = /^(?:\s*)(Raising|Fundraising|Round|Terms|The\s+Ask|Seeking)\s*[:\-]?\s*$/im;
+		const raiseAfter = extractAfterHeading(text, raiseHeading, 220);
+		const raiseWin = extractWindow(text, /\b(raising|seeking|funding|fundraise|fundraising|the\s+ask|round|terms)\b[^\n\r]{0,90}(\$\s?\d|\b\d+(?:\.\d+)?\s*(?:m|mm|million|k)\b)?/i, 220);
+		const useOfFunds = extractWindow(text, /\b(use\s+of\s+funds|proceeds|allocation)\b[^\n\r]{0,160}/i, 220);
+		const raiseCandidate = (() => {
+			const parts: string[] = [];
+			if (raiseAfter) parts.push(raiseAfter);
+			else if (raiseWin?.snippet) parts.push(raiseWin.snippet);
+			if (useOfFunds?.snippet && !parts.join(" ").toLowerCase().includes("use of funds")) parts.push(useOfFunds.snippet);
+			const joined = parts.join(" ").trim();
+			return joined ? capOneLiner(joined, 220) : "";
+		})();
+		if (raiseCandidate) {
+			const strongAmt = /\$\s?\d|\b\d+(?:\.\d+)?\s*(?:m|mm|million|k)\b/i.test(raiseCandidate);
+			raiseCands.push({ value: raiseCandidate, document_id: docId, confidence: strongAmt ? 0.85 : 0.65, rawSnippet: raiseCandidate });
+		}
+
+		// GTM
+		const gtmHeading = /^(?:\s*)(Go\s*-?to\s*-?Market|GTM|Sales|Distribution|Channels|Marketing)\s*[:\-]?\s*$/im;
+		const gtmAfter = extractAfterHeading(text, gtmHeading, 220);
+		if (gtmAfter) {
+			gtmCands.push({ value: gtmAfter, document_id: docId, confidence: 0.85, rawSnippet: gtmAfter });
+		} else {
+			const win = extractWindow(text, /\b(go\s*-?to\s*-?market|\bgtm\b|sales\s+motion|distribution|channels?|pricing|marketing)\b/i, 220);
+			if (win) gtmCands.push({ value: win.snippet, document_id: docId, confidence: win.confidence, rawSnippet: win.snippet });
+		}
+
+		// Risks (prefer explicit headings; pull a few bullet-ish items)
+		const risksHeading = /^(?:\s*)(Risks?|Challenges?|Competition|Regulatory|Security)\s*[:\-]?\s*$/im;
+		const risksAfter = extractAfterHeading(text, risksHeading, 260);
+		if (risksAfter) {
+			const items = risksAfter
+				.split(/(?:\u2022|\u00B7|•|\n)/g)
+				.map((x) => sanitizeInlineText(x).trim())
+				.filter((x) => x.length >= 6)
+				.slice(0, 4);
+			if (items.length > 0) riskCands.push({ items, document_id: docId, confidence: 0.8, rawSnippet: risksAfter });
+		} else {
+			const win = extractWindow(text, /\b(risks?|challenges?|competition|regulatory|security|dependenc(?:e|y))\b[^\n\r]{0,170}/i, 200);
+			if (win) riskCands.push({ items: [win.snippet], document_id: docId, confidence: 0.6, rawSnippet: win.snippet });
+		}
+	}
+
+	const pickBest = <T extends { confidence: number }>(items: T[]): T | null => {
+		if (items.length === 0) return null;
+		const ranked = [...items].sort((a, b) => b.confidence - a.confidence);
+		return ranked[0] ?? null;
+	};
+
+	const bestProduct = pickBest(productCands);
+	const bestMarket = pickBest(marketCands);
+	const bestRaise = pickBest(raiseCands);
+	const bestGtm = pickBest(gtmCands);
+	const bestRisks = pickBest(riskCands);
+
+	const addEvidence = (field: Phase1OverviewExtractorField, cand: Candidate | null) => {
+		if (!cand) return;
+		evidence.push({
+			field,
+			document_id: cand.document_id,
+			snippet: capSnippet(cand.rawSnippet, 200),
+			confidence: Math.max(0, Math.min(1, cand.confidence)),
+		});
+	};
+
+	addEvidence("product_solution", bestProduct);
+	addEvidence("market_icp", bestMarket);
+	addEvidence("raise_terms", bestRaise);
+	addEvidence("go_to_market", bestGtm);
+	if (bestRisks) {
+		evidence.push({
+			field: "key_risks_detected",
+			document_id: bestRisks.document_id,
+			snippet: capSnippet(bestRisks.rawSnippet, 200),
+			confidence: Math.max(0, Math.min(1, bestRisks.confidence)),
+		});
+	}
+
+	if (!bestProduct) warnings.push("product_solution not found in document text");
+	if (!bestMarket) warnings.push("market_icp not found in document text");
+	if (!bestRaise) warnings.push("raise/terms not found in document text");
+	if (!bestGtm) warnings.push("go_to_market not found in document text");
+	if (!bestRisks) warnings.push("risks not found in document text");
+
+	return {
+		fields: {
+			product_solution: bestProduct ? normalizeOverviewSentence(bestProduct.value, 220) : null,
+			market_icp: bestMarket ? normalizeOverviewSentence(bestMarket.value, 220) : null,
+			raise_terms: bestRaise ? sanitizeInlineText(bestRaise.value) : null,
+			go_to_market: bestGtm ? normalizeOverviewSentence(bestGtm.value, 220) : null,
+			key_risks_detected: bestRisks ? uniqStrings(bestRisks.items).slice(0, 6) : null,
+		},
+		evidence,
+		warnings,
+	};
+}
+
 function detectTractionMetrics(text: string): string[] {
 	const out: string[] = [];
 	const patterns: Array<{ re: RegExp; label: (m: RegExpMatchArray) => string }> = [
@@ -1697,6 +1940,11 @@ function normalizePhase1OverviewV2(input: unknown): any {
 	const existingProduct = typeof obj.product_solution === "string" ? sanitizeInlineText(obj.product_solution) : "";
 	const existingMarket = typeof obj.market_icp === "string" ? sanitizeInlineText(obj.market_icp) : "";
 	const existingRaiseTerms = typeof obj.raise_terms === "string" ? sanitizeInlineText(obj.raise_terms) : "";
+	const existingGtm = typeof (obj as any).go_to_market === "string"
+		? sanitizeInlineText((obj as any).go_to_market)
+		: typeof (obj as any).gtm === "string"
+			? sanitizeInlineText((obj as any).gtm)
+			: "";
 
 	if (existingProduct.trim()) {
 		out.product_solution = toNullOrNormalizedSentence(existingProduct, 220);
@@ -1751,6 +1999,21 @@ function normalizePhase1OverviewV2(input: unknown): any {
 		out.raise_terms = toNullOrInline(candidate);
 	}
 
+	if (existingGtm.trim()) {
+		out.go_to_market = toNullOrNormalizedSentence(existingGtm, 220);
+	} else {
+		const candidate = pick([
+			"go_to_market",
+			"goToMarket",
+			"gtm",
+			"sales",
+			"distribution",
+			"channels",
+			"marketing",
+		]);
+		out.go_to_market = toNullOrNormalizedSentence(candidate, 220);
+	}
+
 	// Convenience: if raise is missing but raise_terms exists, set raise (do not overwrite non-empty).
 	const existingRaise = typeof obj.raise === "string" ? sanitizeInlineText(obj.raise) : "";
 	if (!existingRaise.trim() && typeof out.raise_terms === "string" && out.raise_terms.trim()) {
@@ -1797,6 +2060,7 @@ export function composeExecutiveSummaryV2(params: {
 	overview_v2: unknown;
 	coverage: Phase1CoverageV1;
 	decision_summary_v1: Phase1DecisionSummaryV1;
+	overall_score?: number | null;
 }): Phase1ExecutiveSummaryV2 {
 	const overview = (params.overview_v2 && typeof params.overview_v2 === "object") ? (params.overview_v2 as any) : null;
 
@@ -1868,9 +2132,18 @@ export function composeExecutiveSummaryV2(params: {
 	if (gaps.missing.length > 0) missing.push("coverage_missing_sections");
 
 	const rec = params.decision_summary_v1.recommendation;
-	const score = params.decision_summary_v1.score;
 	const confidence = params.decision_summary_v1.confidence;
 	const blockersCount = Array.isArray(params.decision_summary_v1.blockers) ? params.decision_summary_v1.blockers.length : 0;
+
+	const scoreSnapshot = selectScoreSnapshot({
+		overall_score: params.overall_score,
+		phase1_score: (params.decision_summary_v1 as any)?.score,
+		decision: rec,
+		confidence,
+	});
+	const scoreText = scoreSnapshot.score == null
+		? "Score unavailable (insufficient data)"
+		: `${scoreSnapshot.score}/100`;
 
 	const p1Parts: string[] = [];
 	if (product) {
@@ -1884,7 +2157,7 @@ export function composeExecutiveSummaryV2(params: {
 	const p1 = capOneLiner(normalizeOverviewSentence(p1Parts.join(" "), 340), 340);
 
 	const p2Bits: string[] = [];
-	p2Bits.push(`Phase 1 signal: ${rec} (${score}/100, confidence ${confidence}).`);
+	p2Bits.push(`Phase 1 signal: ${rec} (${scoreText}, confidence ${confidence}).`);
 	if (blockersCount > 0) p2Bits.push(`Blockers flagged: ${blockersCount}.`);
 	if (gaps.missing.length > 0 || gaps.partial.length > 0) {
 		const gapTextParts: string[] = [];
@@ -1895,7 +2168,7 @@ export function composeExecutiveSummaryV2(params: {
 	const p2 = capOneLiner(normalizeOverviewSentence(p2Bits.join(" "), 340), 340);
 
 	const highlights: string[] = [];
-	highlights.push(`Recommendation: ${rec} (${score}/100, confidence ${confidence}).`);
+	highlights.push(`Recommendation: ${rec} (${scoreText}, confidence ${confidence}).`);
 	highlights.push(product ? `Product: ${capOneLiner(product, 220)}` : "Product: not provided in Phase 1 overview.");
 	highlights.push(market ? `ICP: ${capOneLiner(market, 220)}` : "ICP: not provided in Phase 1 overview.");
 	highlights.push(raise ? `Raise/terms: ${capOneLiner(raise, 140)}` : "Raise/terms: not provided.");
@@ -1923,7 +2196,7 @@ export function composeExecutiveSummaryV2(params: {
 		missing: uniqStrings(missing),
 		signals: {
 			recommendation: rec,
-			score,
+			score: scoreSnapshot.score,
 			confidence,
 			blockers_count: blockersCount,
 		},
@@ -2008,6 +2281,37 @@ export function generatePhase1DIOV1(params: {
 		? overviewV2Normalized.key_risks_detected.filter((x: any) => typeof x === "string").map((x: string) => sanitizeInlineText(x)).filter(Boolean)
 		: [];
 
+	const overviewExtract = extractPhase1OverviewFromDocuments(
+		docs.map((d) => ({
+			document_id: d.document_id,
+			title: d.title,
+			full_text: pickBestText(d),
+		}))
+	);
+	const extractEv = (field: Phase1OverviewExtractorField): Phase1OverviewExtractorEvidence | null =>
+		overviewExtract.evidence.find((e) => e.field === field) ?? null;
+	const extractedWithMinConfidence = (field: Phase1OverviewExtractorField, minConfidence: number): string => {
+		const value = safeNonEmpty((overviewExtract.fields as any)?.[field]);
+		const ev = extractEv(field);
+		if (!value) return "";
+		if (!ev) return "";
+		if (typeof ev.confidence !== "number" || !Number.isFinite(ev.confidence)) return "";
+		if (ev.confidence < minConfidence) return "";
+		return value;
+	};
+	const extractedProduct = extractedWithMinConfidence("product_solution", 0.7);
+	const extractedMarket = extractedWithMinConfidence("market_icp", 0.7);
+	const extractedRaiseTerms = extractedWithMinConfidence("raise_terms", 0.65);
+	const extractedGtm = extractedWithMinConfidence("go_to_market", 0.65);
+	const extractedRisksList = Array.isArray(overviewExtract.fields.key_risks_detected)
+		? overviewExtract.fields.key_risks_detected.map((x) => sanitizeInlineText(String(x))).filter(Boolean)
+		: [];
+	const extractedRisks = (() => {
+		const ev = extractEv("key_risks_detected");
+		if (!ev || typeof ev.confidence !== "number" || !Number.isFinite(ev.confidence) || ev.confidence < 0.65) return [];
+		return uniqStrings(extractedRisksList).slice(0, 8);
+	})();
+
 	const baseLooksRE = looksLikeRealEstateOffering(combinedText) || archetypeLooksRE;
 
 	let deal_type = (baseLooksRE && /\bstartup_raise\b/i.test(v2DealType)) ? overview.deal_type : (v2DealType || overview.deal_type);
@@ -2016,7 +2320,11 @@ export function generatePhase1DIOV1(params: {
 		? overview.business_model
 		: (v2BusinessModel || overview.business_model);
 	const traction_signals = v2Traction.length > 0 ? uniqStrings(v2Traction) : overview.traction_signals;
-	const key_risks_detected = v2Risks.length > 0 ? uniqStrings(v2Risks) : overview.key_risks_detected;
+	const key_risks_detected = v2Risks.length > 0
+		? uniqStrings(v2Risks)
+		: extractedRisks.length > 0
+			? extractedRisks
+			: overview.key_risks_detected;
 	const raiseDetected = raise !== "Unknown" ? raise : null;
 
 	const title = params.deal.name?.trim() ? `${params.deal.name} — Executive Summary` : "Executive Summary";
@@ -2026,8 +2334,12 @@ export function generatePhase1DIOV1(params: {
 	const tractionMetrics = overview.traction_metrics;
 	const oneLinerParts: string[] = [];
 	const dealName = overview.deal_name?.trim() ? overview.deal_name.trim() : "";
-	let productSentence = v2Product || (overview.product_solution?.trim() ? overview.product_solution.trim() : "");
-	let marketSentence = v2Market || (overview.market_icp?.trim() ? overview.market_icp.trim() : "");
+	let productSentence = v2Product
+		|| extractedProduct
+		|| (overview.product_solution?.trim() ? overview.product_solution.trim() : "");
+	let marketSentence = v2Market
+		|| extractedMarket
+		|| (overview.market_icp?.trim() ? overview.market_icp.trim() : "");
 
 	const arbitration = arbitrateDealTruth({
 		domainText,
@@ -2148,7 +2460,12 @@ export function generatePhase1DIOV1(params: {
 	if (!finalTruth.product_solution.trim()) unknowns.push("product_solution");
 	if (!finalTruth.market_icp.trim()) unknowns.push("market_icp");
 
-	const termsStatus: "present" | "partial" | "missing" = finalTruth.raise === "Unknown" ? "missing" : "present";
+	const termsEv = extractEv("raise_terms");
+	const termsStatus: "present" | "partial" | "missing" = finalTruth.raise === "Unknown"
+		? (extractedRaiseTerms
+			? ((termsEv && typeof termsEv.confidence === "number" && termsEv.confidence >= 0.75) ? "present" : "partial")
+			: "missing")
+		: "present";
 	const productStatus: "present" | "partial" | "missing" = finalTruth.product_solution.trim() ? "present" : "missing";
 	const marketStatus: "present" | "partial" | "missing" = finalTruth.market_icp.trim() ? "present" : "missing";
 	const tractionStatus: "present" | "partial" | "missing" = sectionStatus(
@@ -2161,6 +2478,17 @@ export function generatePhase1DIOV1(params: {
 		docs.some((d) => safeString(d.type).trim() === "financials") ? "partial" : "missing"
 	);
 	const risksStatus: "present" | "partial" | "missing" = sectionStatus("", finalTruth.key_risks_detected);
+	const gtmEv = extractEv("go_to_market");
+	const gtmStatusBase: "present" | "partial" | "missing" = looksRE
+		? coverageStatusFromText(
+			combinedText,
+			[/(leasing|lease-?up|tenant|occupanc|rent\s+growth|broker|marketing\s+plan|absorption|value-?add|renovation)\b/i],
+			"missing"
+		)
+		: coverageStatusFromText(combinedText, [/(go\s*-?to\s*-?market|\bgtm\b|pricing|sales\s+motion|distribution|channel)\b/i], "missing");
+	const gtmStatus: "present" | "partial" | "missing" = extractedGtm
+		? ((gtmEv && typeof gtmEv.confidence === "number" && gtmEv.confidence >= 0.75) ? "present" : "partial")
+		: gtmStatusBase;
 
 	const coverage: Phase1CoverageV1 = {
 		sections: {
@@ -2172,13 +2500,7 @@ export function generatePhase1DIOV1(params: {
 			product: productStatus,
 			market_icp: marketStatus,
 			market: marketStatus,
-			gtm: looksRE
-				? coverageStatusFromText(
-					combinedText,
-					[/(leasing|lease-?up|tenant|occupanc|rent\s+growth|broker|marketing\s+plan|absorption|value-?add|renovation)\b/i],
-					"missing"
-				)
-				: coverageStatusFromText(combinedText, [/(go\s*-?to\s*-?market|\bgtm\b|pricing|sales\s+motion|distribution|channel)\b/i], "missing"),
+			gtm: gtmStatus,
 			team: coverageStatusFromText(combinedText, [/(founder|team|ceo|cto|co-founder|background|experience)\b/i], "missing"),
 			traction: tractionStatus,
 			financials: financialsStatus,
@@ -2224,35 +2546,74 @@ export function generatePhase1DIOV1(params: {
 		if (decision_summary_v1.recommendation === "GO") decision_summary_v1.recommendation = "CONSIDER";
 	}
 
-	const mergedOverviewForV2 = overviewV2Normalized && typeof overviewV2Normalized === "object"
-		? {
-			...overviewV2Normalized,
-			deal_name: safeNonEmpty((overviewV2Normalized as any).deal_name) || overview.deal_name,
-			product_solution: finalTruth.product_solution.trim() ? finalTruth.product_solution : null,
-			market_icp: finalTruth.market_icp.trim() ? finalTruth.market_icp : null,
-			deal_type: finalTruth.deal_type,
-			business_model: (() => {
-				if (finalTruth.business_model !== "Unknown") return finalTruth.business_model;
-				const candidate = safeNonEmpty((overviewV2Normalized as any).business_model) || safeNonEmpty(overview.business_model);
-				if (!candidate) return "Unknown";
-				const sourceDealType = safeNonEmpty((overviewV2Normalized as any).deal_type) || safeNonEmpty(overview.deal_type);
-				const sourceLooksRealEstate = /^real_estate/i.test(sourceDealType);
-				// If worker labeled the deal as real-estate, do not carry forward business_model that arbitration rejected.
-				if (sourceLooksRealEstate) return "Unknown";
-				return candidate;
-			})(),
-			raise: safeNonEmpty((overviewV2Normalized as any).raise) || finalTruth.raise,
-			raise_terms: safeNonEmpty((overviewV2Normalized as any).raise_terms) || (finalTruth.raise !== "Unknown" ? finalTruth.raise : null),
-			traction_signals: finalTruth.traction_signals,
-			key_risks_detected: finalTruth.key_risks_detected,
+	const overviewSourcesFromExtractor = overviewExtract.evidence
+		.map((e) => ({
+			document_id: e.document_id,
+			note: capSnippet(`${e.field} (conf ${Math.round(e.confidence * 100)}%): ${e.snippet}`, 220),
+		}))
+		.slice(0, 8);
+	const mergedSources = (() => {
+		const existing = Array.isArray((overviewV2Normalized as any)?.sources) ? (overviewV2Normalized as any).sources : [];
+		const cleanedExisting = existing
+			.filter((s: any) => s && typeof s === "object" && typeof s.document_id === "string")
+			.map((s: any) => ({ document_id: String(s.document_id), note: typeof s.note === "string" ? capSnippet(s.note, 220) : undefined }));
+		const combined = [...cleanedExisting, ...overviewSourcesFromExtractor];
+		const out: Array<{ document_id: string; note?: string }> = [];
+		const seen = new Set<string>();
+		for (const s of combined) {
+			const key = `${s.document_id}|${s.note ?? ""}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			out.push(s);
+			if (out.length >= 12) break;
 		}
-		: null;
+		return out.length > 0 ? out : undefined;
+	})();
+
+	const mergedOverviewCandidate: any = {
+		...(overviewV2Normalized && typeof overviewV2Normalized === "object" ? overviewV2Normalized : {}),
+		deal_name: safeNonEmpty((overviewV2Normalized as any)?.deal_name) || overview.deal_name,
+		product_solution: finalTruth.product_solution.trim() ? finalTruth.product_solution : null,
+		market_icp: finalTruth.market_icp.trim() ? finalTruth.market_icp : null,
+		deal_type: finalTruth.deal_type,
+		business_model: (() => {
+			if (finalTruth.business_model !== "Unknown") return finalTruth.business_model;
+			const candidate = safeNonEmpty((overviewV2Normalized as any)?.business_model) || safeNonEmpty(overview.business_model);
+			if (!candidate) return "Unknown";
+			const sourceDealType = safeNonEmpty((overviewV2Normalized as any)?.deal_type) || safeNonEmpty(overview.deal_type);
+			const sourceLooksRealEstate = /^real_estate/i.test(sourceDealType);
+			if (sourceLooksRealEstate) return "Unknown";
+			return candidate;
+		})(),
+		raise: safeNonEmpty((overviewV2Normalized as any)?.raise) || finalTruth.raise,
+		raise_terms: safeNonEmpty((overviewV2Normalized as any)?.raise_terms)
+			|| extractedRaiseTerms
+			|| (finalTruth.raise !== "Unknown" ? finalTruth.raise : null),
+		go_to_market: safeNonEmpty((overviewV2Normalized as any)?.go_to_market) || extractedGtm || null,
+		traction_signals: finalTruth.traction_signals,
+		key_risks_detected: finalTruth.key_risks_detected,
+		...(mergedSources ? { sources: mergedSources } : {}),
+	};
+	const mergedOverviewForV2 = (() => {
+		const any = mergedOverviewCandidate as any;
+		const hasAnyField =
+			Boolean(safeNonEmpty(any?.product_solution))
+			|| Boolean(safeNonEmpty(any?.market_icp))
+			|| Boolean(safeNonEmpty(any?.raise_terms))
+			|| Boolean(safeNonEmpty(any?.go_to_market))
+			|| (Array.isArray(any?.traction_signals) && any.traction_signals.length > 0)
+			|| (Array.isArray(any?.key_risks_detected) && any.key_risks_detected.length > 0)
+			|| Boolean(safeNonEmpty(any?.raise))
+			|| Boolean(safeNonEmpty(any?.business_model));
+		return hasAnyField ? any : null;
+	})();
 
 	const executive_summary_v2 = composeExecutiveSummaryV2({
 		deal: params.deal,
 		overview_v2: mergedOverviewForV2 ?? overviewV2Normalized ?? overviewV2,
 		coverage,
 		decision_summary_v1,
+		overall_score: (params.dio && typeof params.dio === "object") ? (params.dio as any)?.overall_score : null,
 	});
 
 	const claims: Phase1ClaimV1[] = [];
@@ -2373,7 +2734,10 @@ export function generatePhase1DIOV1(params: {
 			confidence_band: sectionConfidence.team,
 		},
 		gtm: {
-			text: coverage.sections.gtm === "present" ? "Go-to-market / plan is referenced in the documents." : "",
+			text: safeNonEmpty((mergedOverviewForV2 as any)?.go_to_market)
+				|| (coverage.sections.gtm === "present" || coverage.sections.gtm === "partial"
+					? "Go-to-market / plan is referenced in the documents."
+					: ""),
 			evidence_ids: [],
 			confidence_band: sectionConfidence.gtm,
 		},

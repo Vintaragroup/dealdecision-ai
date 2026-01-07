@@ -136,7 +136,7 @@ services:
       - sh
       - -lc
       - |
-        if [ ! -f /app/apps/web/node_modules/reactflow/dist/style.css ]; then
+        if [ ! -f /app/node_modules/@xyflow/react/dist/style.css ] || [ ! -d /app/node_modules/@dagrejs/dagre ]; then
           pnpm install --frozen-lockfile=false
         fi
         pnpm --filter web dev -- --host 0.0.0.0 --port 5173

@@ -104,6 +104,45 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		expect(text).not.toMatch(/THEBESTPARTOFHOCKEY|@@@@|%%%%%|\uFFFD/i);
 	});
 
+	it("fills Phase 1 overview v2 from document text (headings) and reduces 'not provided' gaps", () => {
+		const out = generatePhase1DIOV1({
+			deal: { deal_id: "deal-v2-text-first", name: "TextFirstCo", stage: "intake" },
+			inputDocuments: [
+				{
+					document_id: "doc-text-1",
+					title: "TextFirstCo Deck",
+					type: "pitch_deck",
+					full_text:
+						"Product\n" +
+						"TextFirstCo helps independent retail brands automate inventory forecasting.\n\n" +
+						"Target Customer\n" +
+						"Independent retail brands and DTC operators.\n\n" +
+						"Raising\n" +
+						"Raising $2M seed via SAFE to scale go-to-market.\n\n" +
+						"GTM\n" +
+						"Outbound sales to mid-market operators; channel partners in year 2.\n\n" +
+						"Risks\n" +
+						"• Competition from incumbents\n" +
+						"• Execution risk scaling sales\n",
+				},
+			],
+		});
+
+		expect(out.deal_overview_v2).toBeTruthy();
+		expect(out.deal_overview_v2?.product_solution).toMatch(/helps independent retail brands automate inventory forecasting/i);
+		expect(out.deal_overview_v2?.market_icp).toMatch(/independent retail brands/i);
+		expect(out.deal_overview_v2?.raise_terms).toMatch(/\$2m/i);
+		expect(out.deal_overview_v2?.go_to_market).toMatch(/outbound sales/i);
+
+		const bullets = (out.executive_summary_v2?.highlights ?? []).join("\n");
+		expect(bullets).not.toMatch(/Product:\s*not provided/i);
+		expect(bullets).not.toMatch(/ICP:\s*not provided/i);
+		expect(bullets).not.toMatch(/Raise\/terms:\s*not provided/i);
+
+		expect(out.coverage.sections.raise_terms).not.toBe("missing");
+		expect(out.coverage.sections.gtm).not.toBe("missing");
+	});
+
 	it("executive_summary_v2 fails closed and acknowledges missing overview fields", () => {
 		const out = generatePhase1DIOV1({
 			deal: { deal_id: "deal-v2-missing", name: "MissingCo", stage: "intake" },
@@ -112,7 +151,8 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 					document_id: "doc-memo",
 					title: "Some memo",
 					type: "memo",
-					full_text: "We are building a platform for operators.",
+					// Intentionally no-signal text: ensure we do NOT infer product/ICP.
+					full_text: "Confidential memo. Placeholder document with no substantive deal content.",
 				},
 			],
 			// Intentionally no deal_overview_v2 provided
@@ -269,12 +309,12 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 
 		expect(out.executive_summary_v2).toBeTruthy();
 		const bullets = (out.executive_summary_v2?.highlights ?? []).join("\n");
-		// Hard validation now fails closed: do not manufacture product/ICP from boilerplate.
-		expect(bullets).toMatch(/Product:\s*not provided/i);
-		expect(bullets).toMatch(/ICP:\s*not provided/i);
+		// Text-first extraction should surface product/ICP from clean memo text.
+		expect(bullets).toMatch(/Product:\s*preferred equity investment/i);
+		expect(bullets).toMatch(/ICP:\s*market:\s*austin/i);
 		// Coverage should treat leasing/occupancy strategy as GTM-equivalent for real estate
 		expect(out.coverage.sections.gtm).not.toBe("missing");
-		expect(out.decision_summary_v1.confidence).toBe("low");
+		expect(out.decision_summary_v1.confidence).not.toBe("low");
 		expect(out.decision_summary_v1.recommendation).not.toBe("GO");
 	});
 
@@ -735,6 +775,50 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		expect(out.highlights.join("\n")).toMatch(/ICP:\s+Mid-market logistics teams/i);
 		expect(out.highlights.join("\n")).toMatch(/Raise\/terms:\s+\$2M seed/i);
 		expect(out.highlights.join("\n")).not.toMatch(/not provided in Phase 1 overview/i);
+	});
+
+	it("ExecutiveSummaryV2 score uses overall_score when present (prevents fake 0/100)", () => {
+		const { composeExecutiveSummaryV2 } = require("../phase1-dio-v1");
+		const out = composeExecutiveSummaryV2({
+			deal: { name: "TestCo" },
+			overview_v2: { deal_name: "TestCo", product_solution: "X", market_icp: "Y" },
+			coverage: { sections: { documents: "present" } },
+			decision_summary_v1: {
+				// Simulate the problematic case where Phase 1 score fell back to 0
+				score: 0,
+				recommendation: "PASS",
+				reasons: [],
+				blockers: [],
+				next_requests: [],
+				confidence: "med",
+			},
+			overall_score: 46,
+		});
+
+		const text = [...(out.paragraphs ?? []), ...(out.highlights ?? [])].join("\n");
+		expect(text).toMatch(/\b46\/100\b/);
+		expect(text).not.toMatch(/\b0\/100\b/);
+	});
+
+	it("ExecutiveSummaryV2 prints 0/100 only when phase1 score is truly 0 and no overall_score", () => {
+		const { composeExecutiveSummaryV2 } = require("../phase1-dio-v1");
+		const out = composeExecutiveSummaryV2({
+			deal: { name: "TestCo" },
+			overview_v2: { deal_name: "TestCo", product_solution: "X", market_icp: "Y" },
+			coverage: { sections: { documents: "present" } },
+			decision_summary_v1: {
+				score: 0,
+				recommendation: "PASS",
+				reasons: [],
+				blockers: [],
+				next_requests: [],
+				confidence: "low",
+			},
+			overall_score: null,
+		});
+
+		const text = [...(out.paragraphs ?? []), ...(out.highlights ?? [])].join("\n");
+		expect(text).toMatch(/\b0\/100\b/);
 	});
 
     it("mergePhase1IntoDIO preserves extra dio.phase1 fields (deal_overview_v2/update_report_v1)", () => {

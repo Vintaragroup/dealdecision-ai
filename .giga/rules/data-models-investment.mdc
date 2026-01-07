@@ -1,5 +1,5 @@
 ---
-description: Specification for investment data models including Deal, Evidence, Document, Analysis entities and their relationships.
+description: Defines data models and entities for investment deal analysis, evidence tracking, and document management
 ---
 
 # === USER INSTRUCTIONS ===
@@ -117,68 +117,85 @@ Collected -> Verified -> Scored -> Integrated
 
 # data-models-investment
 
-Core Data Model Components:
+Core investment domain data models:
 
 1. Deal Intelligence Object (DIO)
-Path: apps/core/src/models/DIO.ts
-- Central data model for investment analysis
-- Properties:
-  - deal_id: Unique identifier
-  - deal_stage: intake -> review -> diligence -> decision
-  - confidence_score: 0-100 analysis confidence rating
-  - evidence_map: Links to supporting documentation
-  - analysis_cycles: Array of analysis iterations
-- Analysis state transitions with validation rules
-Importance Score: 95/100
+`apps/web/src/types/dio.ts`
+```typescript
+interface DealIntelligenceObject {
+  id: string
+  dealId: string
+  stage: DealStage
+  confidence: number
+  evidence: Evidence[]
+  analysis: Analysis[]  
+  documents: Document[]
+  version: number
+}
+```
+Importance: 95/100
+- Central data model representing investment deal intelligence
+- Tracks confidence scores, evidence collection, and analysis state
+- Manages versioned deal information with full audit trail
 
 2. Evidence Model
-Path: apps/core/src/models/Evidence.ts
-- Structured evidence collection for deal analysis
-- Categories: 
-  - Metrics (financial, operational)
-  - Facts (market, team, product)
-  - Claims (from documents)
-  - Citations (source references)
-- Confidence scoring per evidence item
-Importance Score: 90/100
+`apps/web/src/types/evidence.ts`
+```typescript
+interface Evidence {
+  id: string
+  type: EvidenceType
+  source: DocumentReference
+  confidence: number
+  claims: Claim[]
+  context: string
+  verified: boolean
+}
+```
+Importance: 90/100
+- Structured representation of deal evidence
+- Links claims to source documents
+- Tracks verification status and confidence
 
-3. Document Model
-Path: apps/core/src/models/Document.ts
-- Investment document classification system
-- Types:
-  - pitch_deck
-  - financials 
-  - legal
-  - market_research
-  - team_profiles
-- Document quality scoring
-- Version tracking
-Importance Score: 85/100
+3. Analysis Model
+`apps/web/src/types/analysis.ts`
+```typescript
+interface Analysis {
+  id: string
+  type: AnalysisType  
+  metrics: Metric[]
+  risks: Risk[]
+  score: number
+  recommendations: Recommendation[]
+  cycle: AnalysisCycle
+}
+```
+Importance: 85/100
+- Represents complete deal analysis results
+- Contains scored metrics and identified risks
+- Tracks analysis cycle progression
 
-4. Analysis Entities
-Path: apps/core/src/models/Analysis.ts
-- Multi-dimensional analysis scoring
-- Components:
-  - market_score
-  - team_score
-  - financial_health
-  - risk_assessment
-  - competitive_position
-- Category-specific scoring algorithms
-Importance Score: 85/100
+4. Document Model
+`apps/web/src/types/documents.ts`
+```typescript
+interface Document {
+  id: string
+  type: DocumentType
+  status: ProcessingStatus
+  confidence: number
+  extractedData: ExtractedData
+  version: number
+}
+```
+Importance: 80/100
+- Manages investment document metadata
+- Tracks document processing status
+- Contains extracted structured data
 
-Key Relationships:
-- DIO contains multiple Evidence references
-- Evidence links to source Documents
-- Analysis aggregates Evidence scoring
-- Documents maintain version history
-- Evidence tracks confidence levels
-
-Domain-Specific Rules:
-- Stage progression requires minimum confidence thresholds
-- Evidence requires source document citations
-- Analysis scores influence deal recommendations
-- Document versions affect evidence validity
+State Transitions:
+- Deal stages: intake -> under_review -> in_diligence -> ready_decision
+- Document processing: uploaded -> processing -> analyzed -> verified
+- Evidence status: extracted -> validated -> verified
+- Analysis cycles: broad_scan -> deep_dive -> synthesis
 
 $END$
 

@@ -1,5 +1,5 @@
 ---
-description: Documentation of data flow through deal analysis system including processing pipelines, AI analysis and report generation
+description: Analyzes data flow through investment deal analysis system including document processing, evidence extraction, and AI analysis pipelines
 ---
 
 # === USER INSTRUCTIONS ===
@@ -105,52 +105,65 @@ Data flows through specialized processors:
 - Quality control framework
 # === END USER INSTRUCTIONS ===
 
-# dataflow-analysis 
+# dataflow-analysis
 
-Core Data Flow Components:
+## Document Processing Pipeline
 
-1. Document Processing Pipeline
-- Document intake through extraction
-- Classification and grouping based on deal context 
-- Verification and confidence scoring
-- Evidence extraction and validation
-- File paths: apps/api/src/services/documents.ts
+Primary document flow through system:
+1. Upload → Initial Classification → Content Extraction → Evidence Tagging → Analysis Pipeline
+2. Document metadata and extracted content flows into Deal Intelligence Object (DIO)
+3. Evidence items flow to validation system with confidence scoring
+4. Verified evidence feeds into analysis cycles
 
-2. Deal Analysis Workflow
-- Multi-stage analysis cycles
-- Progressive confidence scoring
-- Evidence collection and validation
-- Stage progression based on completion criteria
-- File paths: packages/core/src/services/cycle-analyzer.ts
+File: packages/core/src/orchestration/pipeline.ts
+- Three-phase analysis cycles: Broad Scan → Deep Dive → Synthesis
+- Evidence collection triggers progression between cycles
+- Confidence thresholds gate movement to next phase
+Importance Score: 90
 
-3. AI Analysis Integration Points
-- LLM-based document analysis 
-- Contextual routing for specialized analysis tasks
-- Domain-specific prompt generation and response parsing
-- Confidence scoring and validation
-- File paths: apps/worker/src/lib/llm/model-router.ts
+## Evidence Extraction Flow
 
-4. Report Generation Pipeline
-- Evidence aggregation and scoring
-- Section-specific content generation
-- Dynamic template population
-- Quality validation and scoring
-- File paths: apps/web/src/components/reports/ProfessionalReportGenerator.tsx
+Document evidence flows through specialized extractors:
+1. Visual Asset Extractor
+   - Table detection with grid analysis
+   - Chart data extraction with axis mapping
+   - Business metric pattern matching
+2. Text Content Extractor
+   - Financial metric identification 
+   - Team/market claim extraction
+   - Risk factor detection
 
-Data Flow Stages:
-1. Document Intake -> Classification -> Extraction
-2. Analysis Cycles with Evidence Collection
-3. AI-Assisted Analysis and Validation  
-4. Report Generation and Review
-5. Export and Distribution
+File: packages/core/src/services/evidence/service.ts
+- Evidence categorization by type and confidence
+- Cross-reference validation between sources
+- Evidence-to-claim mapping system
+Importance Score: 85
 
-Key Integration Points:
-- Document processor -> Analysis pipeline
-- Analysis results -> Report generator
-- AI analysis -> Evidence collection
-- Evidence validation -> Confidence scoring
+## AI Analysis Integration
 
-The system implements a comprehensive data flow for investment document analysis with sophisticated validation, scoring and report generation capabilities.
+Analysis request flow:
+1. Document → Classification → Task Router → Model Selection → Analysis
+2. Results flow through validation before entering DIO
+3. Confidence scores determine reanalysis needs
+
+File: packages/core/src/services/llm/service.ts
+- Purpose-specific routing logic
+- Domain-optimized model selection
+- Investment-specific prompt engineering
+Importance Score: 80
+
+## Report Generation Workflow
+
+Data aggregation flow:
+1. DIO → Evidence Selection → Section Generation → Report Assembly
+2. Evidence confidence scores influence section inclusion
+3. Risk factors flow into recommendation generation
+
+File: packages/core/src/services/report/generator.ts
+- Section-specific evidence thresholds
+- Risk-adjusted recommendation logic
+- Deal stage-specific report templates
+Importance Score: 75
 
 $END$
 

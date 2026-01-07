@@ -1,5 +1,5 @@
 ---
-description: Document and analyze business rules, validation logic, and domain-specific calculations for investment deal analysis and evaluation
+description: Defines business rules for investment deal evaluation, scoring, due diligence workflows, and risk assessment
 ---
 
 # === USER INSTRUCTIONS ===
@@ -111,56 +111,61 @@ INVESTMENT DEAL ANALYSIS FRAMEWORK
 
 # business-rules
 
-Deal Analysis Scoring Framework:
-- Multi-dimensional scoring across 5 key categories:
-  1. Market Analysis (25%)
-  2. Financial Projections (25%) 
-  3. Team Assessment (20%)
-  4. Document Completeness (15%)
-  5. Risk Assessment (15%)
-- Custom confidence scoring with thresholds per category
-- Red/yellow/green flag generation based on domain rules
+Core Business Rule Components:
 
-Risk Assessment Matrix:
-- 6 core risk domains with weighted impact:
-  1. Market Risk (0.25)
-  2. Execution Risk (0.20) 
-  3. Financial Risk (0.20)
-  4. Technology Risk (0.15)
-  5. Team Risk (0.10)
-  6. Timeline Risk (0.10)
-- Risk severity levels: Low (0-33), Medium (34-66), High (67-100)
-- Mitigation requirement thresholds based on severity
+1. Deal Assessment Framework
+- Confidence scoring system across 5 dimensions (market, team, financial, traction, risk)
+- Scoring thresholds:
+  * 90-100: Very High confidence
+  * 80-89: High confidence 
+  * 70-79: Medium confidence
+  * Below 70: Low confidence
+- Multi-factor deal evaluation incorporating:
+  * Market opportunity size
+  * Team capability assessment
+  * Financial metrics validation
+  * Customer traction evidence
+  * Risk severity mapping
 
-Due Diligence Validation Rules:
-- Critical document requirements by deal stage
-- Completion percentage calculations with weighted sections
-- Three-state verification (missing, partial, complete)
-- Blocking rules for critical validation failures
+2. Due Diligence Requirements
+- Stage-based progression rules:
+  * Intake → Under Review: Requires initial AI analysis
+  * Under Review → In Diligence: Minimum 2 documents + analysis
+  * In Diligence → Ready Decision: 70% confidence + 2 evidence items
+- Document validation checklist with critical item flagging
+- Evidence collection requirements per category
+- Verification status tracking with confidence scoring
 
-Deal Stage Progression Logic:
-- Automated stage transitions based on validation rules:
-  1. Intake -> Under Review: Initial doc requirements met
-  2. Under Review -> In Diligence: Analysis score > 65
-  3. In Diligence -> Ready Decision: Risk assessment complete
-- Manual override controls with approval workflow
+3. Risk Assessment Matrix
+- 5x5 impact/probability matrix for risk classification
+- Risk categories: Market, Team, Financial, Execution, Legal
+- Severity levels: Low, Medium, High, Critical
+- Required risk mitigation strategies per severity level
+- Risk trend tracking with directional indicators
 
-Financial Metric Thresholds:
-- Industry-specific benchmarks for key metrics:
-  - SaaS: MRR, CAC, LTV, Churn
-  - Marketplace: GMV, Take Rate
-  - Hardware: Margins, BOM Costs
-- Stage-appropriate target ranges
-- Red flag triggers for out-of-range values
+4. Investment Decision Criteria
+- Multi-cycle analysis with progression thresholds:
+  * Cycle 1 (Broad Scan): Basic validation
+  * Cycle 2 (Deep Dive): Detailed analysis
+  * Cycle 3 (Synthesis): Final recommendation
+- ROI calculation methodology:
+  * Deal type multipliers (seed: 1.0, series-a: 1.3)
+  * Stage multipliers (idea: 1.5, mvp: 1.2)
+- Industry-specific benchmark requirements
+- Evidence-based validation rules
 
-Deal Classification Rules:
-- Multi-signal classifier using:
-  - Document contents 
-  - Financial metrics
-  - Team composition
-  - Market signals
-- Confidence scoring for classification accuracy
-- Industry-specific validation criteria
+5. Deal Classification System
+- Multi-tier classification for deal types:
+  * Real estate
+  * Fund vehicles
+  * Credit facilities
+  * Startup investments
+- Weighted scoring across categories:
+  * Deal score (0-40 points)
+  * Document completeness (0-25 points)
+  * Stage position (0-20 points)
+  * Evidence quality (0-15 points)
+- Priority classification thresholds (high/medium/low)
 
 $END$
 

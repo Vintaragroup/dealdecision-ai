@@ -8,6 +8,9 @@ interface DocumentBatchUploadProps {
 }
 
 export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUploadProps) {
+  const ACCEPTED_EXTENSIONS = ['.pdf', '.xlsx', '.xls', '.pptx', '.ppt', '.docx', '.doc', '.png', '.jpg', '.jpeg'];
+  const MAX_FILE_SIZE_MB = 25;
+
   const [step, setStep] = useState<'select' | 'review' | 'confirm'>('select');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [analysisResult, setAnalysisResult] = useState<any>(null);
@@ -19,8 +22,19 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
       const files = Array.from(e.target.files);
-      setSelectedFiles(files);
-      analyzeFiles(files);
+      const invalid: string[] = [];
+      const filtered = files.filter((file) => {
+        const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
+        const sizeMb = file.size / (1024 * 1024);
+        const ok = ACCEPTED_EXTENSIONS.includes(ext) && sizeMb <= MAX_FILE_SIZE_MB;
+        if (!ok) invalid.push(`${file.name} (${ext || 'unknown'}, ${Math.round(sizeMb)}MB)`);
+        return ok;
+      });
+      if (invalid.length) {
+        alert(`Skipped ${invalid.length} file(s) due to type/size limits (max ${MAX_FILE_SIZE_MB}MB). First few: ${invalid.slice(0, 5).join('; ')}`);
+      }
+      setSelectedFiles(filtered);
+      if (filtered.length) analyzeFiles(filtered);
     }
   };
 
@@ -111,6 +125,9 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
       const fileByName = new Map<string, File>();
       for (const f of selectedFiles) fileByName.set(f.name, f);
 
+      const failures: string[] = [];
+      let successCount = 0;
+
       // Upload every file in each group to its resolved deal
       for (const group of analysisResult.groups) {
         const action = userConfirmation[group.company];
@@ -121,14 +138,33 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
           : createdDealIdsByName.get(group.company);
 
         if (!targetDealId) {
-          throw new Error(`Could not resolve deal id for group "${group.company}"`);
+          failures.push(`Group ${group.company}: no deal id resolved`);
+          continue;
         }
 
         for (const filename of group.files || []) {
           const file = fileByName.get(filename);
           if (!file) continue;
-          await uploadDocumentToDeal(file, targetDealId, group.documentType);
+          try {
+            const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
+            const sizeMb = file.size / (1024 * 1024);
+            if (!ACCEPTED_EXTENSIONS.includes(ext) || sizeMb > MAX_FILE_SIZE_MB) {
+              failures.push(`${filename}: type/size rejected`);
+              continue;
+            }
+            await uploadDocumentToDeal(file, targetDealId, group.documentType);
+            successCount += 1;
+          } catch (err) {
+            failures.push(`${filename}: ${err instanceof Error ? err.message : 'upload failed'}`);
+          }
         }
+      }
+
+      const summary = `Uploaded ${successCount} file(s). Failures: ${failures.length}.`;
+      if (failures.length) {
+        alert(`${summary}\nFirst few failures: ${failures.slice(0, 5).join('; ')}`);
+      } else {
+        alert(summary);
       }
 
       onSuccess?.(result);

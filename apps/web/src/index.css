@@ -5987,3 +5987,13 @@ html {
     transform: translate3d(var(--tw-enter-translate-x, 0), var(--tw-enter-translate-y, 0), 0) scale3d(var(--tw-enter-scale, 1), var(--tw-enter-scale, 1), var(--tw-enter-scale, 1)) rotate(var(--tw-enter-rotate, 0));
   }
 }
+
+/* DDAI graph hover styling */
+.ddai-dim {
+  opacity: 0.2;
+}
+
+.ddai-focus {
+  opacity: 1;
+  filter: brightness(1.05);
+}

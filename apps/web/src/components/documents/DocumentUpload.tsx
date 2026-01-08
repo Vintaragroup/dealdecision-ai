@@ -36,6 +36,8 @@ interface UploadedFile {
   category?: string;
   uploadedAt: Date;
   status: 'uploading' | 'processing' | 'complete' | 'error';
+  error?: string;
+  originalFile?: File;
   aiExtracted?: boolean;
   extractedData?: any;
 }
@@ -47,13 +49,16 @@ export function DocumentUpload({
   onUploadComplete,
   onError,
   acceptedFileTypes = ['.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.jpg', '.png', '.csv'],
-  maxFileSize = 10,
+  maxFileSize = 25,
   enableAIExtraction = true
 }: DocumentUploadProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const requiresDealSelection = isLiveBackend() && !dealId;
+  const liveMode = isLiveBackend();
+  const hasDeal = !!dealId && dealId !== 'demo' && dealId !== 'deal-fallback';
+  const requiresDealSelection = liveMode && !hasDeal;
 
   const getFileIcon = (fileName: string) => {
     const ext = fileName.split('.').pop()?.toLowerCase();
@@ -133,12 +138,13 @@ export function DocumentUpload({
       size: file.size,
       url: URL.createObjectURL(file),
       uploadedAt: new Date(),
-      status: 'uploading'
+      status: 'uploading',
+      originalFile: file,
     };
 
     setUploadedFiles(prev => [...prev, uploadedFile]);
 
-    const useLive = isLiveBackend() && dealId;
+    const useLive = liveMode && hasDeal;
 
     if (useLive) {
       try {
@@ -148,9 +154,10 @@ export function DocumentUpload({
         setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'complete' } : f));
         return { ...uploadedFile, status: 'complete' };
       } catch (err) {
-        onError?.(err instanceof Error ? err.message : 'Upload failed');
-        setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'error' } : f));
-        return { ...uploadedFile, status: 'error' };
+        const message = err instanceof Error ? err.message : 'Upload failed';
+        onError?.(message);
+        setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'error', error: message } : f));
+        return { ...uploadedFile, status: 'error', error: message };
       }
     }
 
@@ -183,17 +190,43 @@ export function DocumentUpload({
   const handleFiles = async (files: FileList | null) => {
     if (!files) return;
 
-    if (isLiveBackend() && !dealId) {
-      onError?.('Select a deal (or create a new one) before uploading.');
+      if (liveMode && !hasDeal) {
+        const message = 'Select a real deal before uploading (demo deals cannot receive uploads).';
+        setErrorMessage(message);
+        onError?.(message);
       return;
     }
 
+    setErrorMessage(null);
     const fileArray = Array.from(files);
+    const invalidReasons: string[] = [];
     const validFiles = fileArray.filter(file => {
       const ext = '.' + file.name.split('.').pop()?.toLowerCase();
       const sizeInMB = file.size / (1024 * 1024);
-      return acceptedFileTypes.includes(ext) && sizeInMB <= maxFileSize;
+      const valid = acceptedFileTypes.includes(ext) && sizeInMB <= maxFileSize;
+      if (!valid) {
+        const reason = !acceptedFileTypes.includes(ext)
+          ? `Unsupported type ${ext || 'unknown'}`
+          : `Too large (${Math.round(sizeInMB)}MB > ${maxFileSize}MB limit)`;
+        invalidReasons.push(`${file.name}: ${reason}`);
+      }
+      return valid;
     });
+
+    if (!validFiles.length) {
+      const message = invalidReasons.length
+        ? `No files uploaded. Skipped ${invalidReasons.length} file(s): ${invalidReasons.slice(0, 3).join('; ')}`
+        : 'No files selected.';
+      setErrorMessage(message);
+      onError?.(message);
+      return;
+    }
+
+    if (invalidReasons.length) {
+      const message = `Skipped ${invalidReasons.length} file(s) due to type/size limits. Max size ${maxFileSize}MB.`;
+      setErrorMessage(message);
+      onError?.(message);
+    }
 
     const processed: UploadedFile[] = [];
     for (const file of validFiles) {
@@ -223,6 +256,13 @@ export function DocumentUpload({
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     handleFiles(e.target.files);
+  };
+
+  const retryFile = async (fileId: string) => {
+    const file = uploadedFiles.find((f) => f.id === fileId)?.originalFile;
+    if (!file) return;
+    setUploadedFiles((prev) => prev.filter((f) => f.id !== fileId));
+    await processFile(file);
   };
 
   const removeFile = (fileId: string) => {
@@ -370,6 +410,33 @@ export function DocumentUpload({
                     <X className="w-4 h-4" />
                   </button>
                 )}
+
+                {file.status === 'error' && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        retryFile(file.id);
+                      }}
+                      className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors ${
+                        darkMode ? 'bg-red-500/20 text-red-200 hover:bg-red-500/30' : 'bg-red-50 text-red-600 hover:bg-red-100'
+                      }`}
+                    >
+                      Retry upload
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeFile(file.id);
+                      }}
+                      className={`p-1.5 rounded-lg transition-colors ${
+                        darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
+                      }`}
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
               </div>
 
               {/* AI Extracted Data Preview */}
@@ -394,6 +461,14 @@ export function DocumentUpload({
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {errorMessage && (
+        <div className={`text-sm mt-2 rounded-md border p-3 ${
+          darkMode ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : 'border-amber-200 bg-amber-50 text-amber-800'
+        }`}>
+          {errorMessage}
         </div>
       )}
     </div>

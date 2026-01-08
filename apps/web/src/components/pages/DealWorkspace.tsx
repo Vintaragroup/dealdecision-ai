@@ -106,6 +106,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [dealFromApi, setDealFromApi] = useState<any>(null);
   const [reportFromApi, setReportFromApi] = useState<DealReport | null>(null);
   const [analystReloadKey, setAnalystReloadKey] = useState(0);
+  const [documentsReloadKey, setDocumentsReloadKey] = useState(0);
 
   const [autoProfileLoading, setAutoProfileLoading] = useState(false);
   const [autoProfileResult, setAutoProfileResult] = useState<AutoProfileResponse | null>(null);
@@ -682,6 +683,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             loadEvidence();
             if (job.type === 'extract_visuals') {
               setAnalystReloadKey((v) => v + 1);
+              setDocumentsReloadKey((v) => v + 1);
             }
           }
         }
@@ -753,6 +755,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             }
             if (job.type === 'extract_visuals') {
               setAnalystReloadKey((v) => v + 1);
+              setDocumentsReloadKey((v) => v + 1);
             }
           }
         }
@@ -1927,7 +1930,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
             {/* Documents Tab */}
             {activeTab === 'documents' && (
-              <DocumentsTab dealId={dealId || 'demo'} darkMode={darkMode} />
+              <DocumentsTab dealId={dealId || 'demo'} darkMode={darkMode} reloadKey={documentsReloadKey} />
             )}
 
             {/* Evidence Tab */}

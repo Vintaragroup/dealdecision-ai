@@ -10,9 +10,10 @@ import { ExtractionReportModal } from './ExtractionReportModal';
 interface DocumentsTabProps {
   dealId: string;
   darkMode?: boolean;
+  reloadKey?: number;
 }
 
-export function DocumentsTab({ dealId, darkMode = true }: DocumentsTabProps) {
+export function DocumentsTab({ dealId, darkMode = true, reloadKey = 0 }: DocumentsTabProps) {
   const [showUpload, setShowUpload] = useState(false);
   const [showExtractionReport, setShowExtractionReport] = useState(false);
   const [documents, setDocuments] = useState<Document[]>([]);
@@ -38,7 +39,7 @@ export function DocumentsTab({ dealId, darkMode = true }: DocumentsTabProps) {
 
   useEffect(() => {
     loadDocuments();
-  }, [dealId]);
+  }, [dealId, reloadKey]);
 
   const handleRetry = async (documentId: string) => {
     if (!dealId || !isLiveBackend()) return;

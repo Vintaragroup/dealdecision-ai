@@ -99,64 +99,44 @@ The platform implements a comprehensive investment analysis system with sophisti
 - Explain your OBSERVATIONS clearly, then provide REASONING to identify the exact issue. Add console logs when needed to gather more information.
 
 
-Investment Analysis Platform Architecture
+The project implements a sophisticated investment deal analysis platform with several key business domains:
 
-Core Business Domains:
+Investment Analysis Core
+- Deal Intelligence Object (DIO) system coordinates multi-stage analysis pipelines
+- Three-cycle analysis workflow: Broad Scan → Deep Dive → Synthesis
+- Confidence scoring (0-100) with 70% threshold for deal advancement
+- Domain-specific analyzers for real estate, SaaS, and consumer deals
 
-1. Deal Evaluation Engine
-- Multi-dimensional scoring system across market, financial, team metrics
-- Custom confidence metrics with category-specific methodologies
-- Risk assessment matrices with weighted factor analysis
-- Investment terms modeling and cap table calculations
-- Competitive positioning algorithms
+Document Processing Engine
+- Multi-dimensional AI confidence scoring across 5 metrics:
+  - Market Analysis: Market size validation, growth metrics
+  - Financial Projections: Revenue modeling, burn analysis
+  - Team Assessment: Background verification, network analysis
+  - Document Completeness: Compliance verification
+  - Risk Assessment: Probability modeling, exposure calculation
+- Document type classification with industry-specific rules
+- Automated extraction of financial metrics, team data, market signals
 
-2. Due Diligence Framework
-- Structured verification checklist system
-- Critical document prioritization algorithm
-- Multi-stage progression tracking
-- Risk-based categorization of requirements
-- Completion percentage calculations with weighted categories
+Deal Terms Analysis System
+- Cap table modeling with multiple security types
+- Liquidation preference waterfall calculations
+- Ownership dilution projections
+- Board composition rule verification
+- Exit scenario modeling
 
-3. Financial Analysis System
-- Revenue projection modeling
-- Unit economics calculations (LTV, CAC, margins)
-- Burn rate and runway projections
-- Custom ROI calculation methodologies
-- Industry-specific metric adaptations
+Risk Assessment Framework
+- 6-category risk scoring: Market, Financial, Team, Product, Competition, Legal
+- Weighted aggregation for overall risk profiles
+- Category-specific thresholds and triggers
+- Mitigation strategy mapping and tracking
 
-4. Document Intelligence
-- Company matching algorithms
-- Smart document classification
-- Duplicate detection system
-- Document extraction quality scoring
-- Confidence band calculations
+Critical Implementation Paths:
+/apps/worker/src/lib/phase1/businessArchetypeV1.ts - Business model classification
+/apps/api/src/routes/orchestration.ts - Deal analysis pipeline
+/packages/core/src/analyzers/metric-benchmark.ts - Industry benchmarking
+/packages/core/src/classification/deal-classifier.ts - Deal type detection
 
-5. Professional Development
-- Investment expertise progression system
-- Multi-tier achievement framework
-- Skill tree advancement logic
-- Performance-based ranking algorithms
-- Domain-specific rewards system
-
-Key Integration Points:
-
-1. Deal Analysis Pipeline
-- Document processing → Company matching → Deal scoring → Risk assessment
-- Automated recommendations based on composite scoring
-- Industry-specific validation rules
-- Evidence-based verification system
-
-2. Report Generation
-- Template registry with business categorization
-- Dynamic section rendering based on deal type
-- Confidentiality handling
-- Investment-specific metadata management
-
-3. Collaboration Framework
-- Role-based workflows (investor/founder)
-- Domain-specific comment types
-- Business-oriented prioritization
-- Deal-specific activity tracking
+The system's core value lies in its sophisticated deal analysis capabilities, industry-specific classification logic, and evidence-based decision support framework.
 
 $END$
 

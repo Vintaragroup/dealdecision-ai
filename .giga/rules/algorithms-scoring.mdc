@@ -1,5 +1,5 @@
 ---
-description: Specification for analyzing and documenting core scoring algorithms and evaluation frameworks in investment analysis systems
+description: Defines the core scoring algorithms and formulas used for deal evaluation, risk assessment, and financial analysis.
 ---
 
 # === USER INSTRUCTIONS ===
@@ -76,53 +76,60 @@ Path: apps/web/src/lib/scoring/dealTerms.ts
 
 # algorithms-scoring
 
-Core Scoring Algorithm Components:
+Deal Confidence Scoring System
+- Multi-dimensional confidence calculation across 5 key metrics:
+  - Market Analysis: Market size validation, growth metrics, competitive positioning
+  - Financial Health: Revenue modeling, burn rate assessment, runway calculations
+  - Team Assessment: Background verification scores, network strength analysis
+  - Document Coverage: Completeness validation, critical document scoring
+  - Risk Assessment: Probability-weighted risk factor aggregation
 
-1. Investment Confidence Scoring
-Path: apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx
-- Multi-dimensional weighted scoring across market, financial, and team factors 
-- Custom confidence metrics with category-specific methodology
-- Data verification indicators and validation scoring
-Importance Score: 85/100
+Core Scoring Formulas:
+```
+Market Score = (TAM_confidence * 0.3) + (growth_metrics * 0.4) + (competitive_position * 0.3)
+Financial Score = (revenue_model * 0.35) + (burn_rate * 0.35) + (runway * 0.3)
+Team Score = (background_check * 0.4) + (network_strength * 0.3) + (domain_exp * 0.3)
+Document Score = (completeness * 0.6) + (quality * 0.4)
+Risk Score = 100 - (sum(risk_factors * probability))
+```
 
-2. Risk Assessment Algorithm
-Path: apps/web/src/components/report-templates/sections/RiskAssessment.tsx
-- Multi-factor risk scoring combining probability and impact
-- Risk category weighting system
-- Composite risk profile generation
-- Mitigation effectiveness scoring
-Importance Score: 88/100
+Weighted Risk Aggregation
+- Six risk categories with dynamic weightings:
+  - Market Risk: 25%
+  - Financial Risk: 25% 
+  - Team Risk: 20%
+  - Product Risk: 15%
+  - Legal Risk: 10%
+  - Competitive Risk: 5%
 
-3. Financial Analysis Engine
-Path: apps/web/src/components/report-templates/sections/FinancialAnalysis.tsx
-- Revenue projection modeling algorithms
-- Unit economics calculations (LTV, CAC, margins)
-- Financial health scoring system
-- Burn rate and runway projections
-Importance Score: 95/100
+ROI Projection Engine
+- Time-based savings calculations
+- Service cost comparison matrices
+- Value generation tracking
+- Custom multipliers by industry:
+  - SaaS: 1.2x
+  - Consumer: 0.9x
+  - Enterprise: 1.4x
+  - Hardware: 0.8x
 
-4. Deal Terms Analysis
-Path: apps/web/src/components/report-templates/sections/DealTermsSummary.tsx
-- Investment terms scoring engine
-- Liquidation preference calculations
-- Cap table modeling algorithms
-- Voting rights impact analysis
-Importance Score: 90/100
+Deal Terms Analysis
+- Liquidation preference waterfall calculations
+- Cap table modeling with security type factors
+- Ownership dilution projections
+- Protective provision impact scoring
+- Board composition analysis
 
-5. Market Competition Scoring
-Path: apps/web/src/components/report-templates/sections/CompetitiveLandscape.tsx
-- Market share distribution analysis
-- Competitive positioning matrix calculations
-- Feature comparison scoring
-- Weighted competitive advantage metrics
-Importance Score: 80/100
-
-Core Scoring Patterns:
-- Weighted evaluation systems for investment criteria
-- Multi-factor risk assessment frameworks
-- Financial projection modeling
-- Market analysis methodologies
-- Due diligence verification scoring
+Investment Recommendation Engine
+Importance Score: 95
+- Multi-factor decision matrix:
+  - Strong Buy: Combined score > 85
+  - Buy: Combined score 70-84
+  - Hold: Combined score 50-69
+  - Pass: Combined score < 50
+- Confidence thresholds:
+  - High: >80% evidence coverage
+  - Medium: 60-80% evidence coverage
+  - Low: <60% evidence coverage
 
 $END$
 

@@ -393,6 +393,16 @@ function branchKeyFromData(data: any, colorMode: ColorMode): string | null {
   return segId ?? docId ?? null;
 }
 
+function hoverMatchKey(nodeType: string, data: any, colorMode: ColorMode): string | null {
+  if (colorMode === 'off') return null;
+  const t = String(nodeType || '').toLowerCase();
+  if (t === 'deal') return 'deal';
+  // Match keys must align with ColorMode semantics.
+  // - document mode => docId
+  // - segment mode  => segmentId (fallback docId)
+  return branchKeyFromData(data, colorMode);
+}
+
 function getBranchKeyFromNodeData(nodeType: string, data: any): string {
   const fromData = typeof data?.__branchKey === 'string' && data.__branchKey.trim().length > 0 ? data.__branchKey.trim() : null;
   if (fromData) return fromData;
@@ -430,7 +440,177 @@ function getLineageNodeId(raw: any): string {
 let didLogVisualAssetNodeTypes = false;
 const minimapLoggedTypes = new Set<string>();
 
-function buildFullGraphFromLineage(lineage: DealLineageResponse): { nodes: Node[]; edges: Edge[] } {
+type RawLineageEdge = { id: string; source: string; target: string };
+
+function nodeTypeOf(n: Node): string {
+  return String((n as any)?.type ?? (n as any)?.data?.__node_type ?? '').toLowerCase();
+}
+
+function addEdgeUnique(out: Edge[], seen: Set<string>, source: string, target: string, idHint: string) {
+  if (!source || !target || source === target) return;
+  const key = `${source}→${target}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+  out.push({
+    id: `canon:${idHint}:${source}:${target}`,
+    source,
+    target,
+    data: {
+      __docId: undefined,
+      __segmentId: undefined,
+    },
+  } as Edge);
+}
+
+function buildCanonicalEdges(args: { nodes: Node[]; rawEdges: RawLineageEdge[]; dealId: string }): Edge[] {
+  const { nodes, rawEdges, dealId } = args;
+
+  const byId = new Map<string, Node>();
+  const typeById = new Map<string, string>();
+  for (const n of nodes) {
+    byId.set(n.id, n);
+    typeById.set(n.id, nodeTypeOf(n));
+  }
+
+  const dealNodeId = findDealRootId(nodes, dealId);
+
+  const docNodeIds: string[] = [];
+  const segNodeIds: string[] = [];
+  for (const n of nodes) {
+    const t = nodeTypeOf(n);
+    if (t === 'document') docNodeIds.push(n.id);
+    if (t === 'segment') segNodeIds.push(n.id);
+  }
+
+  // Undirected parent candidates from raw edges.
+  const parentsByChild = new Map<string, Set<string>>();
+  const addParent = (child: string, parent: string) => {
+    if (!child || !parent) return;
+    if (!parentsByChild.has(child)) parentsByChild.set(child, new Set());
+    parentsByChild.get(child)!.add(parent);
+  };
+  for (const e of rawEdges) {
+    if (!e?.source || !e?.target) continue;
+    if (!typeById.has(e.source) || !typeById.has(e.target)) continue;
+    addParent(e.target, e.source);
+    addParent(e.source, e.target);
+  }
+
+  const pickParentOfType = (childId: string, wantType: string): string | null => {
+    const set = parentsByChild.get(childId);
+    if (!set) return null;
+    for (const pid of set) {
+      if (typeById.get(pid) === wantType) return pid;
+    }
+    return null;
+  };
+
+  const pickDocParent = (nodeId: string): string | null => {
+    const n = byId.get(nodeId);
+    const d = ((n as any)?.data ?? {}) as any;
+    const docId = d.__docId ?? getDocIdFromData(d);
+    if (typeof docId === 'string' && docId.trim()) {
+      const asNodeId = `document:${docId.trim()}`;
+      if (byId.has(asNodeId)) return asNodeId;
+      // sometimes document nodes don't use the prefix; search by __docId
+      const found = nodes.find((x) => nodeTypeOf(x) === 'document' && ((x.data as any)?.__docId ?? getDocIdFromData(x.data as any)) === docId.trim());
+      if (found) return found.id;
+    }
+    return pickParentOfType(nodeId, 'document');
+  };
+
+  const pickSegParent = (nodeId: string): string | null => {
+    const n = byId.get(nodeId);
+    const d = ((n as any)?.data ?? {}) as any;
+    const segId = d.__segmentId ?? getSegmentIdFromData(d);
+    if (typeof segId === 'string' && segId.trim()) {
+      const asNodeId = `segment:${segId.trim()}`;
+      if (byId.has(asNodeId)) return asNodeId;
+      const found = nodes.find((x) => nodeTypeOf(x) === 'segment' && ((x.data as any)?.__segmentId ?? getSegmentIdFromData(x.data as any)) === segId.trim());
+      if (found) return found.id;
+    }
+    return pickParentOfType(nodeId, 'segment');
+  };
+
+  const out: Edge[] = [];
+  const seen = new Set<string>();
+
+  // 1) Deal → Document
+  for (const docId of docNodeIds) addEdgeUnique(out, seen, dealNodeId, docId, 'deal-doc');
+
+  // 2) Document → Segment
+  // IMPORTANT: do not connect segments directly to the deal if there is at least one document.
+  // If we cannot infer a specific document parent, attach to the first document node as a safe fallback.
+  for (const segId of segNodeIds) {
+    const docParent = pickDocParent(segId);
+    if (docParent) {
+      addEdgeUnique(out, seen, docParent, segId, 'doc-seg');
+      continue;
+    }
+
+    if (docNodeIds.length > 0) {
+      addEdgeUnique(out, seen, docNodeIds[0], segId, 'doc-seg:fallback');
+      continue;
+    }
+
+    // Only if there are truly no documents in the graph, keep the segment reachable under the deal.
+    addEdgeUnique(out, seen, dealNodeId, segId, 'deal-seg:only-when-no-docs');
+  }
+
+  // 3) Segment → Visual (fallback doc→visual if seg unknown)
+  for (const n of nodes) {
+    const t = nodeTypeOf(n);
+    if (t !== 'visual_asset' && t !== 'visual_group') continue;
+    const segParent = pickSegParent(n.id) ?? pickParentOfType(n.id, 'segment');
+    if (segParent) {
+      addEdgeUnique(out, seen, segParent, n.id, 'seg-vis');
+      continue;
+    }
+    const docParent = pickDocParent(n.id);
+    if (docParent) addEdgeUnique(out, seen, docParent, n.id, 'doc-vis');
+    else addEdgeUnique(out, seen, dealNodeId, n.id, 'deal-vis');
+  }
+
+  // 4) Visual → Evidence (best-effort: prefer raw visual parent)
+  for (const n of nodes) {
+    const t = nodeTypeOf(n);
+    if (t !== 'evidence' && t !== 'evidence_group') continue;
+    const visParent = pickParentOfType(n.id, 'visual_asset') ?? pickParentOfType(n.id, 'visual_group');
+    if (visParent) {
+      addEdgeUnique(out, seen, visParent, n.id, 'vis-evid');
+      continue;
+    }
+    // fallback: keep evidence reachable under its segment/doc/deal (but do not connect segment→deal etc)
+    const segParent = pickSegParent(n.id) ?? pickParentOfType(n.id, 'segment');
+    if (segParent) {
+      addEdgeUnique(out, seen, segParent, n.id, 'seg-evid');
+      continue;
+    }
+    const docParent = pickDocParent(n.id);
+    if (docParent) addEdgeUnique(out, seen, docParent, n.id, 'doc-evid');
+    else addEdgeUnique(out, seen, dealNodeId, n.id, 'deal-evid');
+  }
+
+  if (import.meta.env.DEV && getDevtoolsConsoleLoggingEnabled()) {
+    try {
+      const counts = out.reduce((m, e) => {
+        const st = typeById.get(e.source) ?? 'unknown';
+        const tt = typeById.get(e.target) ?? 'unknown';
+        const k = `${st}→${tt}`;
+        (m as any)[k] = ((m as any)[k] ?? 0) + 1;
+        return m;
+      }, {} as Record<string, number>);
+      // eslint-disable-next-line no-console
+      console.log('[canonical edges] countsByType', counts);
+    } catch {
+      // ignore
+    }
+  }
+
+  return out;
+}
+
+function buildFullGraphFromLineage(lineage: DealLineageResponse, dealId: string): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
 
@@ -524,19 +704,17 @@ function buildFullGraphFromLineage(lineage: DealLineageResponse): { nodes: Node[
     if (firstThree.length > 0) console.log('[DealAnalystTab] visual_asset node types', firstThree);
   }
 
-  for (const rawEdge of lineage.edges || []) {
-    edges.push({
-      id: rawEdge.id,
-      source: rawEdge.source,
-      target: rawEdge.target,
-      data: {
-        __docId: undefined,
-        __segmentId: undefined,
-      },
-    } as Edge);
+  const rawEdges: RawLineageEdge[] = [];
+  for (const re of lineage.edges || []) {
+    const id = typeof (re as any)?.id === 'string' ? String((re as any).id) : '';
+    const source = typeof (re as any)?.source === 'string' ? String((re as any).source) : '';
+    const target = typeof (re as any)?.target === 'string' ? String((re as any).target) : '';
+    if (!source || !target) continue;
+    rawEdges.push({ id: id || `${source}->${target}`, source, target });
   }
 
-  return inferBranchMetadata(nodes, edges);
+  const canonicalEdges = buildCanonicalEdges({ nodes, rawEdges, dealId });
+  return inferBranchMetadata(nodes, canonicalEdges);
 }
 
 function inferBranchMetadata(nodes: Node[], edges: Edge[]): { nodes: Node[]; edges: Edge[] } {
@@ -670,6 +848,8 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
 
   const [hoverBranchKey, setHoverBranchKey] = useState<string | null>(null);
   const [hoverNodeId, setHoverNodeId] = useState<string | null>(null);
+  const [hoverScopeNodeIds, setHoverScopeNodeIds] = useState<Set<string> | null>(null);
+  const [hoverScopeEdgeIds, setHoverScopeEdgeIds] = useState<Set<string> | null>(null);
 
   const [minimapScale, setMinimapScale] = useState<number>(() => {
     if (typeof window === 'undefined') return 1;
@@ -804,13 +984,13 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
       return;
     }
 
-    const g = buildFullGraphFromLineage(lineage);
+    const g = buildFullGraphFromLineage(lineage, dealId);
     setFullGraph(g);
 
     const initExpanded: ExpandedById = {};
     for (const n of g.nodes) initExpanded[n.id] = defaultExpandedForNode(n);
     setExpandedById(initExpanded);
-  }, [lineage]);
+  }, [lineage, dealId]);
 
   useEffect(() => {
     clusterLogOnceRef.current = null;
@@ -918,7 +1098,8 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
       const baseNode = fullGraph?.nodes.find((bn) => bn.id === n.id) ?? n;
       const stableType = String((baseNode as any)?.type ?? (n as any)?.type ?? 'default').trim().toLowerCase();
       const expanded = expandedById[n.id] ?? defaultExpandedForNode(n);
-      const descendantCount = clustered.descendantCountsById[n.id] ?? 0;
+      // Use full-graph descendant counts so the toggle stays visible even when children are hidden in the current projection.
+      const descendantCount = visible.descendantCountsById[n.id] ?? clustered.descendantCountsById[n.id] ?? 0;
       const baseData = (baseNode as any)?.data ?? {};
       const colorKey = (() => {
         if (colorMode === 'off') return null;
@@ -953,13 +1134,37 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
       } as Node;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clustered.nodes, clustered.descendantCountsById, expandedById, darkMode, fullGraph, colorMode]);
+  }, [clustered.nodes, clustered.descendantCountsById, visible.descendantCountsById, expandedById, darkMode, fullGraph, colorMode]);
 
   const renderedNodes = useMemo(() => {
     // Re-run layout when lineage loads, when expansion changes, or on explicit re-layout.
     void layoutNonce;
     return layoutGraph(renderedNodesUnlaid, renderedEdges, { direction: 'TB' });
   }, [renderedNodesUnlaid, renderedEdges, layoutNonce]);
+
+  const nodeById = useMemo(() => {
+    const m = new Map<string, Node>();
+    for (const n of renderedNodes) m.set(n.id, n);
+    return m;
+  }, [renderedNodes]);
+
+  const edgesBySource = useMemo(() => {
+    const m = new Map<string, Edge[]>();
+    for (const e of renderedEdges) {
+      if (!m.has(e.source)) m.set(e.source, []);
+      m.get(e.source)!.push(e);
+    }
+    return m;
+  }, [renderedEdges]);
+
+  const edgesByTarget = useMemo(() => {
+    const m = new Map<string, Edge[]>();
+    for (const e of renderedEdges) {
+      if (!m.has(e.target)) m.set(e.target, []);
+      m.get(e.target)!.push(e);
+    }
+    return m;
+  }, [renderedEdges]);
 
   useEffect(() => {
     if (!import.meta.env.DEV || !getDevtoolsConsoleLoggingEnabled()) return;
@@ -975,25 +1180,25 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     const map = new Map<string, string>();
     for (const n of renderedNodes) {
       const nodeType = String((n as any)?.type ?? '').toLowerCase();
-      const key = getBranchKeyFromNodeData(nodeType, (n as any)?.data ?? {});
+      const key = hoverMatchKey(nodeType, (n as any)?.data ?? {}, colorMode);
       if (key) map.set(n.id, key);
     }
     return map;
-  }, [renderedNodes]);
+  }, [renderedNodes, colorMode]);
 
   const branchKeyByEdgeId = useMemo(() => {
     const map = new Map<string, string>();
     for (const e of renderedEdges) {
+      const fromEndpoints = branchKeyByNodeId.get(e.source) ?? branchKeyByNodeId.get(e.target) ?? null;
+      if (fromEndpoints) {
+        map.set(e.id, fromEndpoints);
+        continue;
+      }
+
       const data = ((e as any)?.data ?? {}) as any;
-      const key = typeof data.__branchKey === 'string' && data.__branchKey.trim()
-        ? data.__branchKey.trim()
-        : branchKeyFromData(data, colorMode) ?? null;
-      if (key) map.set(e.id, key);
-      else {
-        const fromSource = branchKeyByNodeId.get(e.source);
-        const fromTarget = branchKeyByNodeId.get(e.target);
-        const fallback = fromSource ?? fromTarget;
-        if (fallback) map.set(e.id, fallback);
+      const fromData = branchKeyFromData(data, colorMode);
+      if (fromData) {
+        map.set(e.id, fromData);
       }
     }
     return map;
@@ -1002,7 +1207,7 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
   const displayNodes = useMemo(() => {
     if (hoverBranchKey == null || colorMode === 'off') return renderedNodes;
     return renderedNodes.map((n) => {
-      const key = branchKeyByNodeId.get(n.id) ?? getBranchKeyFromNodeData(String((n as any)?.type ?? '').toLowerCase(), (n as any)?.data ?? {});
+      const key = branchKeyByNodeId.get(n.id) ?? null;
       if (key === hoverBranchKey) return n;
       const baseStyle = { ...(((n as any).style as any) ?? {}) } as any;
       const nextOpacity = 0.2;
@@ -1020,12 +1225,14 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
   const displayEdges = useMemo(() => {
     if (hoverBranchKey == null || colorMode === 'off') return renderedEdges;
     return renderedEdges.map((e) => {
-      const key = branchKeyByEdgeId.get(e.id) ?? null;
+      const key = branchKeyByNodeId.get(e.source) ?? branchKeyByNodeId.get(e.target) ?? branchKeyByEdgeId.get(e.id) ?? null;
       if (key === hoverBranchKey) return e;
+
       const baseStyle = { ...(((e as any).style as any) ?? {}) } as any;
       const nextOpacity = 0.2;
       const baseStrokeWidth = typeof baseStyle.strokeWidth === 'number' ? baseStyle.strokeWidth : undefined;
       if (baseStyle.opacity === nextOpacity) return e;
+
       return {
         ...e,
         style: {
@@ -1035,7 +1242,7 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
         },
       } as Edge;
     });
-  }, [renderedEdges, hoverBranchKey, branchKeyByEdgeId, colorMode]);
+  }, [renderedEdges, hoverBranchKey, branchKeyByEdgeId, branchKeyByNodeId, colorMode]);
 
   useEffect(() => {
     if (!clusterEnabled) return;
@@ -1201,11 +1408,99 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     if (devtoolsEnabled) logEdgesChange(changes as any);
   };
 
+  const computeHoverScope = (node: Node): { nodeIds: Set<string>; edgeIds: Set<string> } => {
+    const nodeIds = new Set<string>();
+    const edgeIds = new Set<string>();
+
+    const addNode = (id: string) => { if (id) nodeIds.add(id); };
+    const addEdge = (e: Edge) => {
+      if (!e) return;
+      edgeIds.add(e.id);
+      addNode(e.source);
+      addNode(e.target);
+    };
+
+    const typeOfId = (id: string): string => {
+      const n = nodeById.get(id);
+      return n ? nodeTypeOf(n) : '';
+    };
+
+    const outgoing = (id: string) => edgesBySource.get(id) ?? [];
+    const incoming = (id: string) => edgesByTarget.get(id) ?? [];
+
+    const rootId = node.id;
+    const t = nodeTypeOf(node);
+
+    addNode(rootId);
+
+    if (t === 'deal') {
+      for (const e of outgoing(rootId)) {
+        if (typeOfId(e.target) === 'document') addEdge(e);
+      }
+      return { nodeIds, edgeIds };
+    }
+
+    if (t === 'document') {
+      for (const e of incoming(rootId)) {
+        if (typeOfId(e.source) === 'deal') addEdge(e);
+      }
+      for (const e of outgoing(rootId)) {
+        if (typeOfId(e.target) === 'segment') addEdge(e);
+      }
+      return { nodeIds, edgeIds };
+    }
+
+    if (t === 'segment') {
+      for (const e of incoming(rootId)) {
+        if (typeOfId(e.source) === 'document') addEdge(e);
+      }
+
+      const visIds: string[] = [];
+      for (const e of outgoing(rootId)) {
+        const tt = typeOfId(e.target);
+        if (tt === 'visual_asset' || tt === 'visual_group') {
+          addEdge(e);
+          visIds.push(e.target);
+        }
+      }
+
+      for (const vid of visIds) {
+        for (const e2 of outgoing(vid)) {
+          const tt2 = typeOfId(e2.target);
+          if (tt2 === 'evidence' || tt2 === 'evidence_group') addEdge(e2);
+        }
+      }
+
+      return { nodeIds, edgeIds };
+    }
+
+    if (t === 'visual_asset' || t === 'visual_group') {
+      for (const e of incoming(rootId)) {
+        if (typeOfId(e.source) === 'segment') addEdge(e);
+      }
+      for (const e of outgoing(rootId)) {
+        const tt = typeOfId(e.target);
+        if (tt === 'evidence' || tt === 'evidence_group') addEdge(e);
+      }
+      return { nodeIds, edgeIds };
+    }
+
+    if (t === 'evidence' || t === 'evidence_group') {
+      for (const e of incoming(rootId)) {
+        const st = typeOfId(e.source);
+        if (st === 'visual_asset' || st === 'visual_group') addEdge(e);
+      }
+      return { nodeIds, edgeIds };
+    }
+
+    return { nodeIds, edgeIds };
+  };
+
   const handleNodeMouseEnter = (_event: any, node: Node) => {
     const data = ((node as any)?.data ?? {}) as any;
     const nodeType = String((node as any)?.type ?? '').toLowerCase();
     const nodeId = String((node as any)?.id ?? '');
-    const key = getBranchKeyFromNodeData(nodeType, data);
+    const key = hoverMatchKey(nodeType, data, colorMode);
 
     if (isHoverDebugEnabled()) {
       // eslint-disable-next-line no-console
@@ -1480,7 +1775,12 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
               nodeClickDistance={18}
               paneClickDistance={6}
               className="[&_.react-flow__container]:cursor-grab [&_.react-flow__viewport]:cursor-grab [&_.react-flow__pane]:cursor-grab [&_.react-flow__pane]:active:cursor-grabbing [&_.react-flow__node]:cursor-grab [&_.react-flow__nodes]:pointer-events-auto"
-              onInit={(instance: ReactFlowInstance) => setRfInstance(instance)}
+              onInit={(instance: ReactFlowInstance) => {
+                setRfInstance(instance);
+                if (typeof window !== 'undefined') {
+                  (window as any).__rf = instance;
+                }
+              }}
               fitView
               onNodesChange={handleNodesChange}
               onEdgesChange={handleEdgesChange}

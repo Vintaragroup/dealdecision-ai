@@ -1,5 +1,5 @@
 ---
-description: Specifies data models and relationships for investment deal analysis and due diligence tracking
+description: Data models and schemas for investment deal analysis, evidence tracking, and document management
 ---
 
 # === USER INSTRUCTIONS ===
@@ -117,53 +117,65 @@ Collected -> Verified -> Scored -> Integrated
 
 # data-models-investment
 
-Core Data Model Components:
+Core Data Models:
 
-1. Deal Entity Structure
-- Multi-stage investment pipeline tracking with state transitions
-- Document relationship mapping and evidence linkages 
-- Deal evaluation metrics and scoring framework
-- Industry classification and categorization system
-- Investment terms and conditions modeling
-Importance Score: 95/100
+1. Deal Intelligence Object (DIO)
+Path: packages/core/src/models/DealIntelligenceObject.ts
+- Central data model for investment analysis
+- Properties:
+  - dealId: Unique identifier
+  - stage: Current analysis stage (intake/review/diligence/decision)
+  - confidence: Overall deal confidence score (0-100)
+  - evidence: Array of linked evidence items
+  - analysis: Structured analysis results
+  - recommendations: Investment recommendations
+  - financialMetrics: Key financial indicators
+Importance Score: 95
 
 2. Evidence Model
-- Structured validation framework for deal claims
-- Source document relationship tracking
-- Confidence scoring system for extracted evidence
-- Evidence categorization by business domain
-- Multi-source evidence aggregation model
-Importance Score: 85/100
+Path: packages/core/src/models/Evidence.ts
+- Represents supporting data for investment decisions
+- Properties:
+  - type: Category (fact/metric/quote/document)
+  - confidence: Evidence quality score (0-100)
+  - source: Document reference and location
+  - citations: Cross-references to other evidence
+  - metadata: Domain-specific attributes
+Importance Score: 90
 
-3. Document Analysis Model
-- Document type classification system
-- Relationship mapping to deals and evidence
-- Version control and document lineage tracking
-- Extraction quality assessment framework
-- Business context classification
-Importance Score: 80/100
+3. Document Model
+Path: packages/core/src/models/Document.ts
+- Business document representation
+- Properties:
+  - role: Document type classification
+  - extractionStatus: Processing state
+  - extractionConfidence: Quality score
+  - sections: Structured content mapping
+  - metrics: Extracted financial metrics
+Importance Score: 85
 
-4. Investment Analysis Framework
-- Multi-dimensional scoring matrices
-- Risk assessment categorization model
-- Financial metrics evaluation structure
-- Market analysis classification system
-- Team assessment scoring model 
-Importance Score: 90/100
+4. Analysis Model
+Path: packages/core/src/models/Analysis.ts
+- Investment analysis data structure
+- Properties:
+  - dimensions: Market/Team/Financial/Risk scores
+  - findings: Key discoveries with evidence links
+  - recommendations: Structured decision guidance
+  - riskFactors: Identified risks with severity
+  - benchmarks: Industry comparison metrics
+Importance Score: 90
 
-Key Domain Relationships:
-- Deals contain multiple evidence items
-- Evidence links to source documents
-- Documents map to multiple evidence points
-- Analysis components reference evidence
-- Scoring systems integrate across models
+Relationships:
+- DIO contains multiple Evidence items
+- Evidence links to Documents
+- Analysis references Evidence for findings
+- Documents generate multiple Evidence items
 
-Domain-Specific Validations:
-- Deal stage transition requirements
-- Evidence confidence thresholds
-- Document completeness scoring
-- Analysis validation rules
-- Risk assessment matrices
+Key Features:
+- Version tracking for all models
+- Strict data validation rules
+- Complex relationship mapping
+- Industry-specific extensions
 
 $END$
 

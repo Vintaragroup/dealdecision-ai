@@ -1,5 +1,5 @@
 ---
-description: Applies to components and logic involving investment analysis, deal evaluation, and risk assessment rules
+description: Documents business rules governing investment deal evaluation, risk assessment, due diligence requirements, and decision criteria
 ---
 
 # === USER INSTRUCTIONS ===
@@ -111,49 +111,61 @@ INVESTMENT DEAL ANALYSIS FRAMEWORK
 
 # business-rules
 
-Investment Analysis Framework:
+Investment Deal Assessment Framework:
 
-1. Deal Evaluation Rules
-- Multi-stage evaluation process with weighted scoring across market, team, financial dimensions 
-- Validation thresholds for each deal stage progression
-- Automatic red/yellow/green flag identification system
-- Custom confidence scoring algorithm combining AI and human inputs
-Importance Score: 95
+1. Deal Stage Progression Rules
+- Stages: Intake → Under Review → In Diligence → Ready Decision
+- Progression requirements:
+  * Under Review: Initial AI analysis complete
+  * In Diligence: 60% document coverage, key gaps identified
+  * Ready Decision: 70% confidence score, evidence validated
 
 2. Risk Assessment Matrix
-- Risk categorization across 6 dimensions (market, team, financial, competitive, execution, legal)
-- 4-level severity classification system (low, medium, high, critical)
-- Risk mitigation tracking with effectiveness scoring
-- Composite risk profile generation with weighted factors
-Importance Score: 90
+- Six risk categories: Market, Team, Financial, Product, Competition, Legal
+- Risk levels: Low (0-2), Medium (3-5), High (6-8), Critical (9-10)
+- Weighted category scoring based on deal stage
+- Mandatory risk mitigation for High/Critical items
 
 3. Due Diligence Requirements
-- Stage-specific document checklist system
-- Critical document prioritization algorithm
-- Weighted completion percentage calculations
-- Document verification status tracking (complete/partial/missing)
-Importance Score: 85
+- Document coverage thresholds:
+  * Pitch/Executive: 100% required
+  * Financial: 80% minimum
+  * Legal: 90% minimum
+  * Market: 70% minimum
+- Evidence validation rules:
+  * Claims require 2+ supporting documents
+  * Financial metrics need source validation
+  * Team claims require background verification
 
 4. Investment Decision Criteria
-- Deal readiness scoring system with tier classifications (A/B/C/D)
-- Investment thesis validation framework
-- Custom ROI calculation methodology
-- Deal comparability scoring for portfolio fit
-Importance Score: 85
+- GO recommendation requires:
+  * Overall score ≥ 75/100
+  * No Critical risks
+  * Maximum 2 High risks with mitigation
+  * 70% minimum confidence score
+- HOLD status triggered by:
+  * Score 60-74/100
+  * Any unmitigated High risks
+  * Missing key documents
+- NO-GO conditions:
+  * Score < 60/100
+  * Any Critical unmitigated risks
+  * Major document gaps
+  * Evidence validation failures
 
-5. Validation Rules
-- Deal data completeness requirements
-- Minimum confidence thresholds for AI analysis
-- Document quality validation criteria
-- Team background verification requirements
-Importance Score: 80
-
-Core Business Patterns:
-- Investment readiness scoring system
-- Risk-weighted evaluation framework
-- Multi-stage deal progression rules
-- Document verification workflow
-- Portfolio fit analysis methodology
+5. ROI Calculation Rules
+- Industry-specific multipliers:
+  * SaaS: 1.0x base
+  * Hardware: 1.2x base
+  * Biotech: 1.5x base
+- Stage adjustments:
+  * Seed: +20% 
+  * Series A: +10%
+  * Series B+: Base rate
+- Risk-adjusted returns:
+  * Low risk: Base ROI
+  * Medium risk: -10%
+  * High risk: -25%
 
 $END$
 

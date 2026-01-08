@@ -1,5 +1,5 @@
 ---
-description: Specifications for analyzing and documenting data flow through document processing, evidence extraction, and report generation systems
+description: Documents data flows through deal analysis system including document processing, AI analysis, evidence extraction and report generation
 ---
 
 # === USER INSTRUCTIONS ===
@@ -107,53 +107,46 @@ Data flows through specialized processors:
 
 # dataflow-analysis
 
-The system implements a multi-stage document processing and analysis pipeline:
+The deal analysis system implements several key data flows:
 
-1. Document Ingestion Flow
-- Intelligent document grouping and company matching logic
-- Document type classification system (pitch decks, financials, etc.)
-- Duplicate detection and version control
-- Multi-document batch processing with deal matching
-Importance Score: 85
+Document Processing Pipeline
+- Input: Raw deal documents (PDF, PPT, etc.)
+- Document classification and metadata extraction
+- AI-powered content analysis and evidence extraction 
+- Output: Structured document data with evidence mapping
+- Confidence scoring (0-100) per extracted data point
+- Path: apps/web/src/lib/documentGrouping.ts
 
-2. Evidence Extraction Pipeline
-- Document section classification and extraction
-- Evidence confidence scoring system (0-100)
-- Business metric identification and validation
-- Relationship mapping between evidence pieces
-- Source document reference tracking
-Importance Score: 90
+AI Analysis Integration
+- Parallel processing of documents through specialized analyzers:
+  - Financial metrics extraction (85% confidence threshold)
+  - Team background verification 
+  - Market sizing validation
+  - Risk factor identification
+- Analysis results feed into central evidence store
+- Path: apps/worker/src/lib/analyzers/*
 
-3. AI Analysis Integration
-- Context-aware content generation for reports
-- Role-specific (investor/founder) insights generation 
-- Evidence-based recommendation engine
-- Custom investment criteria scoring
-- Red/yellow/green flag detection system
-Importance Score: 85
+Evidence Collection Flow
+- Evidence items tagged with:
+  - Source document and location
+  - Confidence score (0-100)
+  - Category (financial, market, team, etc.)
+  - Validation status
+- Hierarchical evidence relationships tracked
+- Path: packages/core/src/services/evidence/service.ts
 
-4. Report Generation Workflow
-- Multi-stage report assembly process
-- Section-specific scoring algorithms
-- Evidence validation and citation system
-- Industry-specific template adaptation
-- Role-based content customization
-Importance Score: 80
+Report Generation Pipeline
+- Aggregates evidence across categories
+- Applies business-specific scoring algorithms
+- Generates section recommendations based on confidence
+- Produces final report with evidence citations
+- Path: packages/core/src/reports/score-explanation.ts
 
-Core Data Flows:
-```
-Documents → Classification → Evidence Extraction → AI Analysis → Report Generation
-                ↓                     ↓                 ↓              ↓
-            Validation         Confidence Scoring    Recommendations   Templates
-```
-
-Key Integration Points:
-- Document processor to evidence extractor
-- Evidence system to AI analyzer
-- AI insights to report generator
-- Template system to final output
-
-The system maintains data lineage throughout the pipeline, tracking confidence scores, evidence relationships, and validation status at each stage.
+The system maintains data lineage throughout:
+- Document → Evidence → Analysis → Report
+- Each transition includes confidence scoring
+- Evidence relationships preserved end-to-end
+- Full audit trail of analysis decisions
 
 $END$
 

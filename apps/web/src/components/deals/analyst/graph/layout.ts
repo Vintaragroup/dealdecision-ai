@@ -1,10 +1,26 @@
-import dagre from '@dagrejs/dagre';
 import { Position, type Edge, type Node } from '@xyflow/react';
 
-const LANE_WIDTH = 650;
-const LANE_GUTTER = 120;
-const NODE_VERTICAL_GAP = 40;
-const LANE_PADDING_LEFT = LANE_GUTTER;
+const ROW_Y: Record<string, number> = {
+  deal: 0,
+  document: 280,
+  segment: 560,
+  visual: 900,
+  evidence: 1250,
+};
+
+const ROW_GAP = 320;
+const X_GAP = 80;
+
+const NODE_SIZE_BY_TYPE: Record<string, { w: number; h: number }> = {
+  deal: { w: 260, h: 90 },
+  document: { w: 320, h: 90 },
+  segment: { w: 240, h: 80 },
+  visual_asset: { w: 340, h: 120 },
+  visual_group: { w: 360, h: 110 },
+  evidence: { w: 260, h: 80 },
+  evidence_group: { w: 280, h: 80 },
+  default: { w: 300, h: 100 },
+};
 
 export type LayoutDirection = 'TB' | 'BT' | 'LR' | 'RL';
 
@@ -14,35 +30,32 @@ export type LayoutOptions = {
   nodesep?: number;
 };
 
-function estimateNodeSize(node: Node): { width: number; height: number } {
-  const measured = (node as any).measured as { width?: number; height?: number } | undefined;
+function getNodeW(node: Node): number {
+  const measured = (node as any).measured as { width?: number } | undefined;
   const measuredWidth = typeof measured?.width === 'number' ? measured.width : undefined;
-  const measuredHeight = typeof measured?.height === 'number' ? measured.height : undefined;
-  if (measuredWidth && measuredHeight) return { width: measuredWidth, height: measuredHeight };
+  if (measuredWidth && Number.isFinite(measuredWidth)) return measuredWidth;
+
+  const widthProp = (node as any).width;
+  if (typeof widthProp === 'number' && Number.isFinite(widthProp)) return widthProp;
 
   const t = String((node as any).type ?? '').toLowerCase();
-  if (t === 'deal') return { width: 260, height: 120 };
-  if (t === 'document') return { width: 260, height: 120 };
-  if (t === 'segment') return { width: 240, height: 100 };
-  if (t === 'visual_asset') {
-    const expanded = Boolean((node as any)?.data?.expanded);
-    return { width: 300, height: expanded ? 220 : 160 };
-  }
-  if (t === 'evidence') return { width: 260, height: 110 };
-  return { width: 220, height: 100 };
+  return NODE_SIZE_BY_TYPE[t]?.w ?? NODE_SIZE_BY_TYPE.default.w;
 }
 
-function getLayer(node: Node): number {
-  const explicit = (node as any)?.data?.__layer;
-  if (typeof explicit === 'number' && Number.isFinite(explicit)) return explicit;
+function getNodeH(node: Node): number {
+  const measured = (node as any).measured as { height?: number } | undefined;
+  const measuredHeight = typeof measured?.height === 'number' ? measured.height : undefined;
+  if (measuredHeight && Number.isFinite(measuredHeight)) return measuredHeight;
+
+  const heightProp = (node as any).height;
+  if (typeof heightProp === 'number' && Number.isFinite(heightProp)) return heightProp;
 
   const t = String((node as any).type ?? '').toLowerCase();
-  if (t === 'deal') return 0;
-  if (t === 'document') return 1;
-  if (t === 'segment') return 2;
-  if (t === 'visual_asset') return 3;
-  if (t === 'evidence') return 4;
-  return 3;
+  return NODE_SIZE_BY_TYPE[t]?.h ?? NODE_SIZE_BY_TYPE.default.h;
+}
+
+function estimateNodeSize(node: Node): { width: number; height: number } {
+  return { width: getNodeW(node), height: getNodeH(node) };
 }
 
 function getPortPositions(direction: LayoutDirection): { sourcePosition: Position; targetPosition: Position } {
@@ -59,113 +72,153 @@ function getPortPositions(direction: LayoutDirection): { sourcePosition: Positio
   }
 }
 
-export function layoutGraph(nodes: Node[], edges: Edge[], options: LayoutOptions = {}): Node[] {
+export function layoutGraph(nodes: Node[], _edges: Edge[], options: LayoutOptions = {}): Node[] {
   const direction = options.direction ?? 'TB';
-  const ranksep = typeof options.ranksep === 'number' ? options.ranksep : 120;
-  const nodesep = typeof options.nodesep === 'number' ? options.nodesep : 80;
+  const { sourcePosition, targetPosition } = getPortPositions(direction);
 
-  const g = new dagre.graphlib.Graph();
-  g.setDefaultEdgeLabel(() => ({}));
-  g.setGraph({
-    rankdir: direction,
-    ranksep,
-    nodesep,
-    edgesep: 40,
-    marginx: 40,
-    marginy: 40,
-  });
+  const rows: Record<'deal' | 'document' | 'segment' | 'visual' | 'evidence', Node[]> = {
+    deal: [],
+    document: [],
+    segment: [],
+    visual: [],
+    evidence: [],
+  };
 
-  const byId = new Map(nodes.map((n) => [n.id, n] as const));
+  const normalizeType = (node: Node): string => {
+    const t = String((node as any)?.type ?? '').toLowerCase();
+    if (t === 'visual_asset' || t === 'visual_group') return 'visual';
+    if (t === 'evidence_group') return 'evidence';
+    return t;
+  };
 
   for (const node of nodes) {
-    const { width, height } = estimateNodeSize(node);
-    g.setNode(node.id, { width, height });
+    const t = normalizeType(node);
+    if (t === 'deal') rows.deal.push(node);
+    else if (t === 'document') rows.document.push(node);
+    else if (t === 'segment') rows.segment.push(node);
+    else if (t === 'visual') rows.visual.push(node);
+    else if (t === 'evidence') rows.evidence.push(node);
   }
 
-  for (const edge of edges) {
-    if (!byId.has(edge.source) || !byId.has(edge.target)) continue;
-    g.setEdge(edge.source, edge.target);
+  const safeLower = (v: unknown): string => (typeof v === 'string' ? v.toLowerCase() : '');
+
+  rows.document.sort((a, b) => {
+    const ad = (a.data ?? {}) as any;
+    const bd = (b.data ?? {}) as any;
+    const an = safeLower(ad.title ?? ad.label ?? '');
+    const bn = safeLower(bd.title ?? bd.label ?? '');
+    if (an !== bn) return an.localeCompare(bn);
+    return String(a.id).localeCompare(String(b.id));
+  });
+
+  rows.segment.sort((a, b) => {
+    const ad = (a.data ?? {}) as any;
+    const bd = (b.data ?? {}) as any;
+    const an = safeLower(ad.label ?? ad.segment ?? ad.segment_id ?? ad.__segmentId ?? '');
+    const bn = safeLower(bd.label ?? bd.segment ?? bd.segment_id ?? bd.__segmentId ?? '');
+    if (an !== bn) return an.localeCompare(bn);
+    return String(a.id).localeCompare(String(b.id));
+  });
+
+  rows.visual.sort((a, b) => {
+    const ad = (a.data ?? {}) as any;
+    const bd = (b.data ?? {}) as any;
+    const adoc = safeLower(ad.__docId ?? ad.document_id ?? ad.doc_id ?? '');
+    const bdoc = safeLower(bd.__docId ?? bd.document_id ?? bd.doc_id ?? '');
+    if (adoc !== bdoc) return adoc.localeCompare(bdoc);
+    const aseg = safeLower(ad.__segmentId ?? ad.segment_id ?? '');
+    const bseg = safeLower(bd.__segmentId ?? bd.segment_id ?? '');
+    if (aseg !== bseg) return aseg.localeCompare(bseg);
+    const apage = typeof ad.page_index === 'number' && Number.isFinite(ad.page_index) ? ad.page_index : -1;
+    const bpage = typeof bd.page_index === 'number' && Number.isFinite(bd.page_index) ? bd.page_index : -1;
+    if (apage !== bpage) return apage - bpage;
+    return String(a.id).localeCompare(String(b.id));
+  });
+
+  rows.evidence.sort((a, b) => {
+    const ad = (a.data ?? {}) as any;
+    const bd = (b.data ?? {}) as any;
+    const avis = safeLower(ad.visual_asset_id ?? ad.visual_id ?? ad.__visualId ?? '');
+    const bvis = safeLower(bd.visual_asset_id ?? bd.visual_id ?? bd.__visualId ?? '');
+    if (avis !== bvis) return avis.localeCompare(bvis);
+    const atype = safeLower(ad.evidence_type ?? '');
+    const btype = safeLower(bd.evidence_type ?? '');
+    if (atype !== btype) return atype.localeCompare(btype);
+    return String(a.id).localeCompare(String(b.id));
+  });
+
+  const order: Array<'deal' | 'document' | 'segment' | 'visual' | 'evidence'> = [
+    'deal',
+    'document',
+    'segment',
+    'visual',
+    'evidence',
+  ];
+
+  const rowWidths = new Map<string, number>();
+  for (const rowKey of order) {
+    const list = rows[rowKey];
+    if (!list.length) {
+      rowWidths.set(rowKey, 0);
+      continue;
+    }
+    const widths = list.map((n) => estimateNodeSize(n).width);
+    const widthSum = widths.reduce((acc, w) => acc + w, 0);
+    const totalWidth = widthSum + X_GAP * (list.length - 1);
+    rowWidths.set(rowKey, totalWidth);
   }
 
-  dagre.layout(g);
+  const globalWidth = order.reduce((acc, key) => Math.max(acc, rowWidths.get(key) ?? 0), 0);
+  const startXByRow = new Map<string, number>();
 
-  const { sourcePosition, targetPosition } = getPortPositions(direction);
-  const laneCounts = new Map<number, number>();
+  const laidOut: Node[] = [];
+  for (const rowKey of order) {
+    const list = rows[rowKey];
+    if (!list.length) {
+      startXByRow.set(rowKey, 0);
+      continue;
+    }
 
-  const laidOut = nodes.map((node) => {
-    const layer = getLayer(node);
-    laneCounts.set(layer, (laneCounts.get(layer) ?? 0) + 1);
+    const rowIndex = order.indexOf(rowKey);
+    const baseY = typeof ROW_Y[rowKey] === 'number' ? ROW_Y[rowKey] : rowIndex * ROW_GAP;
+    const rowWidth = rowWidths.get(rowKey) ?? 0;
+    const startX = -globalWidth / 2 + (globalWidth - rowWidth) / 2;
+    startXByRow.set(rowKey, startX);
 
-    const { width, height } = estimateNodeSize(node);
-    const computed = g.node(node.id) as { x: number; y: number } | undefined;
+    let cursorX = startX;
 
-    if (!computed || !Number.isFinite(computed.x) || !Number.isFinite(computed.y)) {
-      return {
+    for (const node of list) {
+      const { width, height } = estimateNodeSize(node);
+      laidOut.push({
         ...node,
         sourcePosition,
         targetPosition,
-        data: { ...(node.data ?? {}), __layer: layer },
-      };
-    }
+        data: { ...(node.data ?? {}), __layer: rowIndex },
+        position: {
+          x: cursorX,
+          y: baseY,
+        },
+        measured: { width, height },
+      } as Node);
 
-    const laneSpan = LANE_WIDTH + LANE_GUTTER;
-    const laneBase = LANE_PADDING_LEFT + layer * laneSpan;
-    const rawX = computed.x - width / 2;
-    const localOffsetX = rawX - laneBase;
-    const clampedLocalX = Math.max(0, Math.min(localOffsetX, Math.max(0, LANE_WIDTH - width)));
-
-    return {
-      ...node,
-      sourcePosition,
-      targetPosition,
-      data: { ...(node.data ?? {}), __layer: layer },
-      position: {
-        x: laneBase + clampedLocalX,
-        y: computed.y - height / 2,
-      },
-    } as Node;
-  });
-
-  // Per-layer collision resolution with vertical breathing room.
-  const byLayer = new Map<number, Node[]>();
-  for (const n of laidOut) {
-    const layer = getLayer(n);
-    if (!byLayer.has(layer)) byLayer.set(layer, []);
-    byLayer.get(layer)!.push(n);
-  }
-
-  for (const [layer, layerNodes] of byLayer.entries()) {
-    const sorted = layerNodes
-      .filter((n) => n.position)
-      .sort((a, b) => {
-        const ay = a.position?.y ?? 0;
-        const by = b.position?.y ?? 0;
-        if (ay === by) return (a.position?.x ?? 0) - (b.position?.x ?? 0);
-        return ay - by;
-      });
-
-    let lastBottom = Number.NEGATIVE_INFINITY;
-    for (const n of sorted) {
-      if (!n.position) continue;
-      const { height } = estimateNodeSize(n);
-      if (lastBottom === Number.NEGATIVE_INFINITY) {
-        lastBottom = n.position.y + height;
-        continue;
-      }
-      const overlap = lastBottom - n.position.y;
-      if (overlap >= 0) {
-        n.position = { ...n.position, y: n.position.y + overlap + NODE_VERTICAL_GAP };
-      }
-      lastBottom = n.position.y + height;
+      cursorX += width + X_GAP;
     }
   }
 
-  if (import.meta.env.DEV && typeof window !== 'undefined') {
+  const debugEnabled =
+    import.meta.env.DEV &&
+    typeof window !== 'undefined' &&
+    window?.localStorage?.getItem('ddai:layout-debug') === '1';
+
+  if (debugEnabled) {
+    const rowWidthsObj = Object.fromEntries(order.map((k) => [k, Math.round(rowWidths.get(k) ?? 0)]));
+    const startXObj = Object.fromEntries(order.map((k) => [k, Math.round(startXByRow.get(k) ?? 0)]));
     // eslint-disable-next-line no-console
-    console.log('[layout] lanes', {
-      laneWidth: LANE_WIDTH,
-      laneGutter: LANE_GUTTER,
-      countsByLayer: Object.fromEntries(Array.from(laneCounts.entries()).sort((a, b) => a[0] - b[0])),
+    console.log('[layout swimlane]', {
+      rowWidths: rowWidthsObj,
+      globalWidth: Math.round(globalWidth),
+      startX: startXObj,
+      nodeCount: nodes.length,
     });
   }
 

@@ -29,12 +29,15 @@ import {
   defaultExpandedForNode,
   type ExpandedById,
 } from '../analyst/graph/visibility';
+import { projectClusteredGraph } from '../analyst/graph/cluster';
 import {
   DealNode,
   DefaultNode,
   DocumentNode,
   EvidenceNode,
+  EvidenceGroupNode,
   SegmentNode,
+  VisualGroupNode,
   VisualAssetNode as AnalystVisualAssetNode,
 } from '../analyst/graph/nodes';
 
@@ -57,6 +60,8 @@ type InspectorSelection =
   | { kind: 'deal'; deal_id: string; name?: string | null }
   | { kind: 'document'; document_id: string; title?: string; type?: string; page_count?: number }
   | { kind: 'visual_asset'; document_id: string; visual_asset_id: string }
+  | { kind: 'visual_group'; label?: string; segment_label?: string; count_slides?: number; evidence_count_total?: number; avg_confidence?: number | null; sample_summaries?: string[] }
+  | { kind: 'evidence_group'; label?: string; evidence_count_total?: number; avg_confidence?: number | null; sample_summaries?: string[]; sample_snippet?: string | null; count?: number }
   | { kind: 'evidence'; visual_asset_id: string; count?: number };
 
 type StructuredViewMode = 'preview' | 'raw';
@@ -68,6 +73,8 @@ const MINIMAP_SCALE_MIN = 0.75;
 const MINIMAP_SCALE_MAX = 2.5;
 const MINIMAP_BASE_WIDTH = 180;
 const MINIMAP_BASE_HEIGHT = 120;
+const CLUSTER_SLIDES_STORAGE_KEY = 'analystClusterSlides';
+const CLUSTER_MIN_VISUALS = 12;
 
 export type TablePreviewModel = {
   rows: string[][];
@@ -315,13 +322,23 @@ function safeJson(value: unknown): string {
   }
 }
 
-function normalizeLineageNodeType(raw: any): 'deal' | 'document' | 'segment' | 'visual_asset' | 'evidence' | 'default' {
+function normalizeLineageNodeType(raw: any):
+  | 'deal'
+  | 'document'
+  | 'segment'
+  | 'visual_group'
+  | 'visual_asset'
+  | 'evidence_group'
+  | 'evidence'
+  | 'default' {
   const t0 = String(raw?.type ?? raw?.node_type ?? '').trim();
   const t = t0.toLowerCase();
   if (t === 'deal') return 'deal';
   if (t === 'document') return 'document';
   if (t === 'segment') return 'segment';
+  if (t === 'visual_group' || t === 'visual group') return 'visual_group';
   if (t === 'visual_asset' || t === 'visual asset') return 'visual_asset';
+  if (t === 'evidence_group' || t === 'evidence group') return 'evidence_group';
   if (t === 'evidence') return 'evidence';
   return 'default';
 }
@@ -330,7 +347,9 @@ function layerForType(nodeType: ReturnType<typeof normalizeLineageNodeType>): nu
   if (nodeType === 'deal') return 0;
   if (nodeType === 'document') return 1;
   if (nodeType === 'segment') return 2;
+  if (nodeType === 'visual_group') return 3;
   if (nodeType === 'visual_asset') return 3;
+  if (nodeType === 'evidence_group') return 4;
   if (nodeType === 'evidence') return 4;
   return 3;
 }
@@ -372,6 +391,35 @@ function branchKeyFromData(data: any, colorMode: ColorMode): string | null {
   const segId = data?.__segmentId ?? getSegmentIdFromData(data);
   if (colorMode === 'document') return docId ?? null;
   return segId ?? docId ?? null;
+}
+
+function getBranchKeyFromNodeData(nodeType: string, data: any): string {
+  const fromData = typeof data?.__branchKey === 'string' && data.__branchKey.trim().length > 0 ? data.__branchKey.trim() : null;
+  if (fromData) return fromData;
+
+  const docId = (() => {
+    const doc = data?.__docId ?? data?.document_id ?? data?.doc_id ?? data?.documentId;
+    return typeof doc === 'string' && doc.trim() ? doc.trim() : null;
+  })();
+  const segId = (() => {
+    const seg = data?.__segmentId ?? data?.segment_id ?? data?.segmentId;
+    return typeof seg === 'string' && seg.trim() ? seg.trim() : null;
+  })();
+
+  if (docId || segId) {
+    const docPart = docId ?? 'none';
+    const segPart = segId ?? 'none';
+    return `${docPart}:${segPart}`;
+  }
+
+  if (nodeType === 'deal') return 'deal';
+
+  return `type:${nodeType || 'unknown'}`;
+}
+
+function isHoverDebugEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  return window.localStorage.getItem('ddai:hover-debug') === '1';
 }
 
 function getLineageNodeId(raw: any): string {
@@ -425,6 +473,12 @@ function buildFullGraphFromLineage(lineage: DealLineageResponse): { nodes: Node[
         __layer: layer,
         __docId: inferredDocId ?? undefined,
         __segmentId: inferredSegmentId ?? undefined,
+        __branchKey: getBranchKeyFromNodeData(nodeType, {
+          ...(raw?.data ?? {}),
+          __docId: inferredDocId ?? undefined,
+          __segmentId: inferredSegmentId ?? undefined,
+          __branchKey: (raw?.data as any)?.__branchKey,
+        }),
       },
       selectable: true,
     } as Node;
@@ -530,12 +584,17 @@ function inferBranchMetadata(nodes: Node[], edges: Edge[]): { nodes: Node[]; edg
     const data = { ...(n.data ?? {}) } as any;
     const docId = docById.get(n.id) ?? data.__docId;
     const segId = segById.get(n.id) ?? data.__segmentId;
+    const nodeType = String((n as any)?.type ?? '').toLowerCase();
+    const mergedData = {
+      ...data,
+      __docId: docId,
+      __segmentId: segId,
+    };
     return {
       ...n,
       data: {
-        ...data,
-        __docId: docId,
-        __segmentId: segId,
+        ...mergedData,
+        __branchKey: getBranchKeyFromNodeData(nodeType, mergedData),
       },
     } as Node;
   });
@@ -543,12 +602,14 @@ function inferBranchMetadata(nodes: Node[], edges: Edge[]): { nodes: Node[]; edg
   const updatedEdges = edges.map((e) => {
     const docId = docById.get(e.target) ?? docById.get(e.source);
     const segId = segById.get(e.target) ?? segById.get(e.source) ?? docId;
+    const branchKey = `${docId ?? 'none'}:${segId ?? 'none'}`;
     return {
       ...e,
       data: {
         ...(e as any).data,
         __docId: docId,
         __segmentId: segId,
+        __branchKey: branchKey,
       },
     } as Edge;
   });
@@ -599,7 +660,15 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     return stored === 'document' || stored === 'segment' ? stored : 'off';
   });
 
-  const [hoverKey, setHoverKey] = useState<string | null>(null);
+  const [clusterSlides, setClusterSlides] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    const stored = window.localStorage.getItem(CLUSTER_SLIDES_STORAGE_KEY);
+    if (stored === 'false') return false;
+    if (stored === 'true') return true;
+    return true;
+  });
+
+  const [hoverBranchKey, setHoverBranchKey] = useState<string | null>(null);
   const [hoverNodeId, setHoverNodeId] = useState<string | null>(null);
 
   const [minimapScale, setMinimapScale] = useState<number>(() => {
@@ -618,6 +687,7 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
   const relayoutScheduledRef = useRef(false);
   const hasMeasuredDimensionsRef = useRef(false);
   const lastFitCountsRef = useRef({ nodes: 0, edges: 0 });
+  const clusterLogOnceRef = useRef<string | null>(null);
 
   const [selection, setSelection] = useState<InspectorSelection>({ kind: 'none' });
   const [selectedRfNodeId, setSelectedRfNodeId] = useState<string | null>(null);
@@ -711,8 +781,13 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
   }, [colorMode]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(CLUSTER_SLIDES_STORAGE_KEY, String(clusterSlides));
+  }, [clusterSlides]);
+
+  useEffect(() => {
     if (colorMode === 'off') {
-      setHoverKey(null);
+      setHoverBranchKey(null);
       setHoverNodeId(null);
     }
   }, [colorMode]);
@@ -737,6 +812,10 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     setExpandedById(initExpanded);
   }, [lineage]);
 
+  useEffect(() => {
+    clusterLogOnceRef.current = null;
+  }, [lineage]);
+
   const dealRootId = useMemo(() => {
     if (!fullGraph) return `deal:${dealId}`;
     return findDealRootId(fullGraph.nodes, dealId);
@@ -759,8 +838,52 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     });
   }, [fullGraph, dealRootId, expandedById]);
 
+  const clusterVisualStats = useMemo(() => {
+    if (!fullGraph) return { visualCount: 0, distinctDocs: 0 };
+    let visualCount = 0;
+    const docs = new Set<string>();
+    for (const n of fullGraph.nodes) {
+      const t = String((n as any)?.type ?? '').toLowerCase();
+      if (t !== 'visual_asset') continue;
+      visualCount += 1;
+      const docId = getDocIdFromData((n.data ?? {}) as any);
+      if (docId) docs.add(docId);
+    }
+    return { visualCount, distinctDocs: docs.size };
+  }, [fullGraph]);
+
+  const clusterEligible = useMemo(() => {
+    const { visualCount, distinctDocs } = clusterVisualStats;
+    if (visualCount >= CLUSTER_MIN_VISUALS) return true;
+    if (visualCount >= 8 && distinctDocs >= 2) return true;
+    return false;
+  }, [clusterVisualStats]);
+
+  const clusterEnabled = clusterSlides && clusterEligible;
+
+  const clustered = useMemo(() => {
+    return projectClusteredGraph({
+      nodes: visible.visibleNodes,
+      edges: visible.visibleEdges,
+      expandedById,
+      clusterEnabled,
+      clusterEligible,
+    });
+  }, [visible.visibleNodes, visible.visibleEdges, expandedById, clusterEnabled, clusterEligible]);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV || !getDevtoolsConsoleLoggingEnabled()) return;
+    if (clusterLogOnceRef.current !== null) return;
+    const expandedGroupId = clustered.expandedGroupIds[0] ?? null;
+    // eslint-disable-next-line no-console
+    console.log(`[cluster] eligible=${clusterEligible} enabled=${clusterEnabled} expandedGroupId=${expandedGroupId ?? 'null'}`);
+    // eslint-disable-next-line no-console
+    console.log('[cluster] nodes out: visual_group=%d evidence_group=%d visual_asset=%d evidence=%d', clustered.stats.visual_group, clustered.stats.evidence_group, clustered.stats.visual_asset, clustered.stats.evidence);
+    clusterLogOnceRef.current = 'logged';
+  }, [clustered, clusterEligible, clusterEnabled]);
+
   const renderedEdges = useMemo(() => {
-    return visible.visibleEdges.map((e) => {
+    return clustered.edges.map((e) => {
       const data = (e as any).data ?? {};
       const docId = data.__docId ?? getDocIdFromData(data);
       const segId = data.__segmentId ?? getSegmentIdFromData(data);
@@ -780,22 +903,22 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
         data,
       } as Edge;
     });
-  }, [visible.visibleEdges, darkMode, colorMode]);
+  }, [clustered.edges, darkMode, colorMode]);
 
   const renderedNodesUnlaid = useMemo(() => {
     const toggle = (id: string) => {
       setExpandedById((prev) => {
-        const node = fullGraph?.nodes.find((n) => n.id === id);
-        const cur = prev[id] ?? (node ? defaultExpandedForNode(node) : true);
+        const node = fullGraph?.nodes.find((n) => n.id === id) ?? clustered.nodes.find((n) => n.id === id);
+        const cur = prev[id] ?? (node ? defaultExpandedForNode(node) : false);
         return { ...prev, [id]: !cur };
       });
     };
 
-    return visible.visibleNodes.map((n) => {
-      const baseNode = fullGraph?.nodes.find((bn) => bn.id === n.id);
+    return clustered.nodes.map((n) => {
+      const baseNode = fullGraph?.nodes.find((bn) => bn.id === n.id) ?? n;
       const stableType = String((baseNode as any)?.type ?? (n as any)?.type ?? 'default').trim().toLowerCase();
       const expanded = expandedById[n.id] ?? defaultExpandedForNode(n);
-      const descendantCount = visible.descendantCountsById[n.id] ?? 0;
+      const descendantCount = clustered.descendantCountsById[n.id] ?? 0;
       const baseData = (baseNode as any)?.data ?? {};
       const colorKey = (() => {
         if (colorMode === 'off') return null;
@@ -830,83 +953,137 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
       } as Node;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible.visibleNodes, visible.descendantCountsById, expandedById, darkMode, fullGraph, colorMode]);
+  }, [clustered.nodes, clustered.descendantCountsById, expandedById, darkMode, fullGraph, colorMode]);
 
   const renderedNodes = useMemo(() => {
     // Re-run layout when lineage loads, when expansion changes, or on explicit re-layout.
     void layoutNonce;
-    return layoutGraph(renderedNodesUnlaid, renderedEdges, { direction: 'LR' });
+    return layoutGraph(renderedNodesUnlaid, renderedEdges, { direction: 'TB' });
   }, [renderedNodesUnlaid, renderedEdges, layoutNonce]);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV || !getDevtoolsConsoleLoggingEnabled()) return;
+    // Warn if layout recomputes while hover is active (should not happen).
+    if (hoverBranchKey != null) {
+      // eslint-disable-next-line no-console
+      console.warn('[hover/layout warning] layout recomputed while hover active', { layoutNonce, hoverBranchKey });
+    }
+  }, [layoutNonce, hoverBranchKey]);
+
 
   const branchKeyByNodeId = useMemo(() => {
     const map = new Map<string, string>();
-    if (colorMode === 'off') return map;
     for (const n of renderedNodes) {
-      const key = branchKeyFromData((n as any)?.data ?? {}, colorMode);
+      const nodeType = String((n as any)?.type ?? '').toLowerCase();
+      const key = getBranchKeyFromNodeData(nodeType, (n as any)?.data ?? {});
       if (key) map.set(n.id, key);
     }
     return map;
-  }, [renderedNodes, colorMode]);
+  }, [renderedNodes]);
 
-  const styledNodes = useMemo(() => {
-    if (colorMode === 'off') return renderedNodes;
-    if (!hoverKey && !hoverNodeId) return renderedNodes;
+  const branchKeyByEdgeId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const e of renderedEdges) {
+      const data = ((e as any)?.data ?? {}) as any;
+      const key = typeof data.__branchKey === 'string' && data.__branchKey.trim()
+        ? data.__branchKey.trim()
+        : branchKeyFromData(data, colorMode) ?? null;
+      if (key) map.set(e.id, key);
+      else {
+        const fromSource = branchKeyByNodeId.get(e.source);
+        const fromTarget = branchKeyByNodeId.get(e.target);
+        const fallback = fromSource ?? fromTarget;
+        if (fallback) map.set(e.id, fallback);
+      }
+    }
+    return map;
+  }, [renderedEdges, colorMode, branchKeyByNodeId]);
 
-    const branchMatches = hoverKey ? renderedNodes.filter((n) => branchKeyByNodeId.get(n.id) === hoverKey) : [];
-    if (hoverKey && branchMatches.length === 0) return renderedNodes;
-
-    const hoveringWithoutKey = !hoverKey && hoverNodeId;
-
+  const displayNodes = useMemo(() => {
+    if (hoverBranchKey == null || colorMode === 'off') return renderedNodes;
     return renderedNodes.map((n) => {
+      const key = branchKeyByNodeId.get(n.id) ?? getBranchKeyFromNodeData(String((n as any)?.type ?? '').toLowerCase(), (n as any)?.data ?? {});
+      if (key === hoverBranchKey) return n;
       const baseStyle = { ...(((n as any).style as any) ?? {}) } as any;
-      const key = branchKeyByNodeId.get(n.id);
-      const matchesBranch = Boolean(hoverKey && key && key === hoverKey);
-      const matchesHover = n.id === hoverNodeId;
-      const matches = matchesBranch || matchesHover;
-      const filter = matches
-        ? `${baseStyle.filter ? `${baseStyle.filter} ` : ''}brightness(1.08)`
-        : baseStyle.filter;
-
-      const fadedOpacity = hoveringWithoutKey ? 0.8 : 0.65;
-
+      const nextOpacity = 0.2;
+      if (baseStyle.opacity === nextOpacity) return n;
       return {
         ...n,
         style: {
           ...baseStyle,
-          opacity: matches ? 1 : fadedOpacity,
-          filter,
+          opacity: nextOpacity,
         },
       } as Node;
     });
-  }, [renderedNodes, hoverKey, hoverNodeId, colorMode, branchKeyByNodeId]);
+  }, [renderedNodes, hoverBranchKey, branchKeyByNodeId, colorMode]);
 
-  const styledEdges = useMemo(() => {
-    if (colorMode === 'off') return renderedEdges;
-    if (!hoverKey && !hoverNodeId) return renderedEdges;
-
-    const branchMatches = hoverKey
-      ? renderedEdges.filter((e) => branchKeyForEdge(e, colorMode, branchKeyByNodeId) === hoverKey)
-      : [];
-    if (hoverKey && branchMatches.length === 0) return renderedEdges;
-
-    const hoveringWithoutKey = !hoverKey && hoverNodeId;
-
+  const displayEdges = useMemo(() => {
+    if (hoverBranchKey == null || colorMode === 'off') return renderedEdges;
     return renderedEdges.map((e) => {
+      const key = branchKeyByEdgeId.get(e.id) ?? null;
+      if (key === hoverBranchKey) return e;
       const baseStyle = { ...(((e as any).style as any) ?? {}) } as any;
-      const branchKey = branchKeyForEdge(e, colorMode, branchKeyByNodeId);
-      const matchesBranch = Boolean(hoverKey && branchKey && branchKey === hoverKey);
+      const nextOpacity = 0.2;
       const baseStrokeWidth = typeof baseStyle.strokeWidth === 'number' ? baseStyle.strokeWidth : undefined;
-      const fadedOpacity = hoveringWithoutKey ? 0.8 : 0.6;
+      if (baseStyle.opacity === nextOpacity) return e;
       return {
         ...e,
         style: {
           ...baseStyle,
-          opacity: matchesBranch ? 0.98 : fadedOpacity,
-          strokeWidth: matchesBranch ? (baseStrokeWidth ?? 2) + 1 : baseStrokeWidth,
+          opacity: nextOpacity,
+          strokeWidth: baseStrokeWidth,
         },
       } as Edge;
     });
-  }, [renderedEdges, hoverKey, hoverNodeId, colorMode, branchKeyByNodeId]);
+  }, [renderedEdges, hoverBranchKey, branchKeyByEdgeId, colorMode]);
+
+  useEffect(() => {
+    if (!clusterEnabled) return;
+    if (selection.kind === 'visual_group' || selection.kind === 'evidence_group') return;
+    if (!clustered.hiddenSelectionMap.size) return;
+
+    const findReplacement = (ids: string[]): string | undefined => {
+      for (const id of ids) {
+        if (!id) continue;
+        const replacement = clustered.hiddenSelectionMap.get(id);
+        if (replacement) return replacement;
+      }
+      return undefined;
+    };
+
+    if (selection.kind === 'visual_asset') {
+      const candidateIds = [selectedRfNodeId ?? '', `visual_asset:${selection.visual_asset_id}`];
+      const replacement = findReplacement(candidateIds);
+      if (!replacement) return;
+      const meta = clustered.groupMeta[replacement];
+      setSelection({
+        kind: 'visual_group',
+        label: meta?.segmentLabel ?? meta?.segmentId ?? selection.visual_asset_id,
+        segment_label: meta?.segmentLabel,
+        count_slides: meta?.countSlides,
+        evidence_count_total: meta?.evidenceCountTotal,
+        avg_confidence: meta?.avgConfidence ?? null,
+        sample_summaries: meta?.sampleSummaries,
+      });
+      setSelectedRfNodeId(replacement);
+      return;
+    }
+
+    if (selection.kind === 'evidence') {
+      const candidateIds = [selectedRfNodeId ?? '', `evidence:${selection.visual_asset_id}`];
+      const replacement = findReplacement(candidateIds);
+      if (!replacement) return;
+      const meta = clustered.groupMeta[replacement];
+      setSelection({
+        kind: 'evidence_group',
+        label: meta?.segmentLabel ? `${meta.segmentLabel} evidence` : undefined,
+        evidence_count_total: meta?.evidenceCountTotal,
+        avg_confidence: meta?.avgConfidence ?? null,
+        sample_summaries: meta?.evidenceSamples,
+      });
+      setSelectedRfNodeId(replacement);
+    }
+  }, [clusterEnabled, clustered.hiddenSelectionMap, clustered.groupMeta, selection, selectedRfNodeId]);
 
   const minimapSize = useMemo(() => {
     return {
@@ -951,35 +1128,35 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
       }
     }
 
-    setNodes(styledNodes);
-    setEdges(styledEdges);
-  }, [renderedNodes, styledNodes, styledEdges, setNodes, setEdges]);
+    setNodes(renderedNodes);
+    setEdges(renderedEdges);
+  }, [renderedNodes, renderedEdges, setNodes, setEdges]);
 
   useEffect(() => {
     if (!import.meta.env.DEV || !getDevtoolsConsoleLoggingEnabled()) return;
-    const branchMatches = hoverKey
-      ? renderedNodes.filter((n) => branchKeyByNodeId.get(n.id) === hoverKey).map((n) => n.id)
+    const branchMatches = hoverBranchKey
+      ? renderedNodes.filter((n) => branchKeyByNodeId.get(n.id) === hoverBranchKey).map((n) => n.id)
       : [];
     const anyBranch = branchMatches.length > 0;
     // eslint-disable-next-line no-console
     console.log('[hover debug]', {
       colorMode,
-      hoverKey,
+      hoverBranchKey,
       hoverNodeId,
       branchMatchCount: branchMatches.length,
       branchMatchIds: branchMatches.slice(0, 8),
-      branchKeyMissing: hoverKey != null && !anyBranch,
+      branchKeyMissing: hoverBranchKey != null && !anyBranch,
     });
-  }, [hoverKey, hoverNodeId, colorMode, renderedNodes, branchKeyByNodeId]);
+  }, [hoverBranchKey, hoverNodeId, colorMode, renderedNodes, branchKeyByNodeId]);
 
   useEffect(() => {
     if (!rfInstance) return;
-    if (visible.visibleNodes.length === 0) return;
+    if (clustered.nodes.length === 0) return;
 
     const shouldFit = !didInitialFitRef.current || lastFitViewNonceRef.current !== layoutNonce;
     if (!shouldFit) return;
 
-    lastFitCountsRef.current = { nodes: visible.visibleNodes.length, edges: visible.visibleEdges.length };
+    lastFitCountsRef.current = { nodes: clustered.nodes.length, edges: clustered.edges.length };
 
     const raf = requestAnimationFrame(() => {
       try {
@@ -989,8 +1166,8 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
         if (import.meta.env.DEV && getDevtoolsConsoleLoggingEnabled()) {
           // eslint-disable-next-line no-console
           console.log('[viewport] initial fitView', {
-            nodeCount: visible.visibleNodes.length,
-            edgeCount: visible.visibleEdges.length,
+            nodeCount: clustered.nodes.length,
+            edgeCount: clustered.edges.length,
             layoutNonce,
           });
         }
@@ -999,7 +1176,7 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
       }
     });
     return () => cancelAnimationFrame(raf);
-  }, [rfInstance, visible.visibleNodes.length, visible.visibleEdges.length, layoutNonce]);
+  }, [rfInstance, clustered.nodes.length, clustered.edges.length, layoutNonce]);
 
   const handleNodesChange = (changes: any) => {
     onNodesChange(changes);
@@ -1025,15 +1202,38 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
   };
 
   const handleNodeMouseEnter = (_event: any, node: Node) => {
+    const data = ((node as any)?.data ?? {}) as any;
+    const nodeType = String((node as any)?.type ?? '').toLowerCase();
+    const nodeId = String((node as any)?.id ?? '');
+    const key = getBranchKeyFromNodeData(nodeType, data);
+
+    if (isHoverDebugEnabled()) {
+      // eslint-disable-next-line no-console
+      console.log('[hover enter]', {
+        nodeId,
+        nodeType,
+        key,
+        hasDoc: Boolean(data?.__docId ?? data?.document_id ?? data?.doc_id ?? data?.documentId),
+        hasSeg: Boolean(data?.__segmentId ?? data?.segment_id ?? data?.segmentId),
+      });
+      if (!key) {
+        // eslint-disable-next-line no-console
+        console.log('[hover enter] branchKey null for node', nodeId);
+      }
+    }
+
     if (colorMode === 'off') return;
-    const key = branchKeyFromData(((node as any)?.data ?? {}) as any, colorMode);
-    setHoverNodeId(String((node as any)?.id ?? null));
-    setHoverKey(key ?? null);
+    setHoverNodeId(nodeId || null);
+    setHoverBranchKey(key);
   };
 
   const handleNodeMouseLeave = () => {
-    setHoverKey(null);
+    if (isHoverDebugEnabled()) {
+      // eslint-disable-next-line no-console
+      console.log('[hover leave] clear hover');
+    }
     setHoverNodeId(null);
+    setHoverBranchKey(null);
   };
 
   const selectedNodeIdForDevtools = useMemo(() => {
@@ -1073,7 +1273,9 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
       deal: DealNode,
       document: DocumentNode,
       segment: SegmentNode,
+      visual_group: VisualGroupNode,
       visual_asset: AnalystVisualAssetNode,
+      evidence_group: EvidenceGroupNode,
       evidence: EvidenceNode,
       default: DefaultNode,
     }),
@@ -1082,8 +1284,14 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
 
   const edgeTypes = useMemo(() => ({ floating: FloatingEdge }), []);
 
+
   const hasVisuals = useMemo(() => {
-    return Boolean(lineage?.nodes?.some((n) => n.type === 'visual_asset'));
+    return Boolean(
+      lineage?.nodes?.some((n: any) => {
+        const t = String(n?.type ?? '').toLowerCase();
+        return t === 'visual_asset' || t === 'visual group' || t === 'visual_group';
+      })
+    );
   }, [lineage]);
 
   const summarizeVisualAsset = (asset: DocumentVisualAsset): string | null => {
@@ -1253,8 +1461,8 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
         <div className={`rounded-lg border overflow-hidden ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
           <div className="h-[600px]">
             <ReactFlow
-              nodes={nodes}
-              edges={edges}
+              nodes={displayNodes}
+              edges={displayEdges}
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
               defaultEdgeOptions={{ type: 'floating' }}
@@ -1326,6 +1534,66 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                   }
                   setSelection({ kind: 'visual_asset', document_id, visual_asset_id });
                   loadVisualDetails(document_id, visual_asset_id);
+                  return;
+                }
+
+                if (t === 'visual_group') {
+                  const summaries = Array.isArray(data.sample_summaries)
+                    ? data.sample_summaries.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
+                    : undefined;
+                  const avgConfidence =
+                    typeof data.avg_confidence === 'number' && Number.isFinite(data.avg_confidence)
+                      ? data.avg_confidence
+                      : null;
+                  const evidenceCountTotal =
+                    typeof data.evidence_count_total === 'number' && Number.isFinite(data.evidence_count_total)
+                      ? data.evidence_count_total
+                      : undefined;
+                  const slideCount =
+                    typeof data.count_slides === 'number' && Number.isFinite(data.count_slides)
+                      ? data.count_slides
+                      : undefined;
+
+                  setSelection({
+                    kind: 'visual_group',
+                    label: typeof data.label === 'string' ? data.label : undefined,
+                    segment_label: typeof data.segment_label === 'string' ? data.segment_label : undefined,
+                    count_slides: slideCount,
+                    evidence_count_total: evidenceCountTotal,
+                    avg_confidence: avgConfidence,
+                    sample_summaries: summaries,
+                  });
+                  setSelectedVisual(null);
+                  setVisualDetailError(null);
+                  return;
+                }
+
+                if (t === 'evidence_group') {
+                  const summaries = Array.isArray(data.sample_summaries)
+                    ? data.sample_summaries.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
+                    : undefined;
+                  const avgConfidence =
+                    typeof data.avg_confidence === 'number' && Number.isFinite(data.avg_confidence)
+                      ? data.avg_confidence
+                      : null;
+                  const evidenceCountTotal =
+                    typeof data.evidence_count_total === 'number' && Number.isFinite(data.evidence_count_total)
+                      ? data.evidence_count_total
+                      : typeof data.count === 'number'
+                        ? data.count
+                        : undefined;
+
+                  setSelection({
+                    kind: 'evidence_group',
+                    label: typeof data.label === 'string' ? data.label : undefined,
+                    evidence_count_total: evidenceCountTotal,
+                    avg_confidence: avgConfidence,
+                    sample_summaries: summaries,
+                    sample_snippet: typeof data.sample_snippet === 'string' ? data.sample_snippet : null,
+                    count: typeof data.count === 'number' ? data.count : undefined,
+                  });
+                  setSelectedVisual(null);
+                  setVisualDetailError(null);
                   return;
                 }
 
@@ -1422,6 +1690,35 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                     </div>
                   </div>
                   <div className={`inline-flex items-center gap-2 text-xs ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
+                    <span>Cluster</span>
+                    <button
+                      type="button"
+                      className={`px-2 py-1 rounded-md border text-xs ${
+                        darkMode
+                          ? clusterEnabled
+                            ? 'border-white/10 bg-white/10 text-white'
+                            : 'border-white/10 bg-transparent text-gray-400'
+                          : clusterEnabled
+                            ? 'border-gray-200 bg-gray-100 text-gray-900'
+                            : 'border-gray-200 bg-white text-gray-600'
+                      } ${!clusterEligible ? 'opacity-60 cursor-not-allowed' : 'hover:opacity-90'}`}
+                      disabled={!clusterEligible}
+                      onClick={() => {
+                        if (!clusterEligible) return;
+                        setClusterSlides((v) => !v);
+                        setLayoutNonce((v) => v + 1);
+                      }}
+                      aria-pressed={clusterEnabled}
+                    >
+                      {clusterEnabled ? 'On' : 'Off'}
+                    </button>
+                    {!clusterEligible ? (
+                      <span className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        Needs ≥ {CLUSTER_MIN_VISUALS} visuals or 2 docs with 8+
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className={`inline-flex items-center gap-2 text-xs ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
                     <span>MiniMap</span>
                     <input
                       type="range"
@@ -1444,7 +1741,7 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                 pannable
                 zoomable
                 nodeColor={(n) => {
-                  const t = String((n as any)?.type ?? '');
+                  const t = String((n as any)?.type ?? '').toLowerCase();
                   if (import.meta.env.DEV && getDevtoolsConsoleLoggingEnabled() && !minimapLoggedTypes.has(t)) {
                     minimapLoggedTypes.add(t);
                     // eslint-disable-next-line no-console
@@ -1454,32 +1751,32 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                     if (t === 'deal') return '#ffffff';
                     if (t === 'document') return '#00e5ff';
                     if (t === 'segment') return '#d946ef';
-                    if (t === 'visual_asset') return '#22c55e';
-                    if (t === 'evidence') return '#ff8a00';
+                    if (t === 'visual_group' || t === 'visual_asset') return '#22c55e';
+                    if (t === 'evidence_group' || t === 'evidence') return '#ff8a00';
                     return '#a5b4fc';
                   }
                   if (t === 'deal') return '#000000';
                   if (t === 'document') return '#00bcd4';
                   if (t === 'segment') return '#a855f7';
-                  if (t === 'visual_asset') return '#16a34a';
-                  if (t === 'evidence') return '#ea580c';
+                  if (t === 'visual_group' || t === 'visual_asset') return '#16a34a';
+                  if (t === 'evidence_group' || t === 'evidence') return '#ea580c';
                   return '#1f2937';
                 }}
                 nodeStrokeColor={(n) => {
-                  const t = String((n as any)?.type ?? '');
+                  const t = String((n as any)?.type ?? '').toLowerCase();
                   if (darkMode) {
                     if (t === 'deal') return '#ffffff';
                     if (t === 'document') return '#8ae5ff';
                     if (t === 'segment') return '#f3b8ff';
-                    if (t === 'visual_asset') return '#7ce7a8';
-                    if (t === 'evidence') return '#ffc78a';
+                    if (t === 'visual_group' || t === 'visual_asset') return '#7ce7a8';
+                    if (t === 'evidence_group' || t === 'evidence') return '#ffc78a';
                     return '#d8e0ff';
                   }
                   if (t === 'deal') return '#111827';
                   if (t === 'document') return '#0284c7';
                   if (t === 'segment') return '#7e22ce';
-                  if (t === 'visual_asset') return '#15803d';
-                  if (t === 'evidence') return '#9a3412';
+                  if (t === 'visual_group' || t === 'visual_asset') return '#15803d';
+                  if (t === 'evidence_group' || t === 'evidence') return '#9a3412';
                   return '#111827';
                 }}
                 nodeStrokeWidth={2}
@@ -1572,6 +1869,70 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                   <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                     Select a visual asset node to view OCR, structured JSON, and evidence.
                   </div>
+                </div>
+              ) : null}
+
+              {selection.kind === 'visual_group' ? (
+                <div className="space-y-2">
+                  <div className="text-xs opacity-70">Visual group</div>
+                  <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                    {selection.label || selection.segment_label || 'Visual group'}
+                  </div>
+                  <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    Slides: {typeof selection.count_slides === 'number' ? selection.count_slides : '—'} · Evidence: {typeof selection.evidence_count_total === 'number' ? selection.evidence_count_total : '—'} · Avg conf:{' '}
+                    {(() => {
+                      const v = selection.avg_confidence;
+                      if (typeof v !== 'number' || !Number.isFinite(v)) return '—';
+                      const pct = v <= 1 ? v * 100 : v;
+                      return `${Math.round(pct)}%`;
+                    })()}
+                  </div>
+                  {Array.isArray(selection.sample_summaries) && selection.sample_summaries.length > 0 ? (
+                    <div className="space-y-1">
+                      <div className={`text-xs font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Sample summaries</div>
+                      <ul className={`list-disc pl-5 text-xs space-y-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        {selection.sample_summaries.slice(0, 4).map((s, idx) => (
+                          <li key={`vg-s-${idx}`}>{s}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {selection.kind === 'evidence_group' ? (
+                <div className="space-y-2">
+                  <div className="text-xs opacity-70">Evidence group</div>
+                  <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                    {selection.label || 'Evidence group'}
+                  </div>
+                  <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    Items: {typeof selection.evidence_count_total === 'number' ? selection.evidence_count_total : typeof selection.count === 'number' ? selection.count : '—'} · Avg conf:{' '}
+                    {(() => {
+                      const v = selection.avg_confidence;
+                      if (typeof v !== 'number' || !Number.isFinite(v)) return '—';
+                      const pct = v <= 1 ? v * 100 : v;
+                      return `${Math.round(pct)}%`;
+                    })()}
+                  </div>
+                  {(() => {
+                    const snippets = Array.isArray(selection.sample_summaries)
+                      ? selection.sample_summaries
+                      : selection.sample_snippet
+                        ? [selection.sample_snippet]
+                        : [];
+                    if (snippets.length === 0) return null;
+                    return (
+                      <div className="space-y-1">
+                        <div className={`text-xs font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Sample snippets</div>
+                        <ul className={`list-disc pl-5 text-xs space-y-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          {snippets.slice(0, 4).map((s, idx) => (
+                            <li key={`eg-s-${idx}`}>{s}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    );
+                  })()}
                 </div>
               ) : null}
 

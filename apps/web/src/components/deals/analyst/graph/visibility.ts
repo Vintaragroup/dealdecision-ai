@@ -9,7 +9,7 @@ export type VisibleGraphResult = {
   connectedNodeIds: Set<string>;
 };
 
-function nodeType(node: Node): string {
+export function nodeType(node: Node): string {
   return String((node as any).type ?? (node as any).data?.__node_type ?? '').toLowerCase();
 }
 
@@ -19,6 +19,8 @@ export function defaultExpandedForNode(node: Node): boolean {
   if (t === 'document') return true;
   if (t === 'segment') return true;
   if (t === 'visual_asset') return false;
+  if (t === 'visual_group') return false;
+  if (t === 'evidence_group') return false;
   return true;
 }
 

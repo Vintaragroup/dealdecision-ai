@@ -63,6 +63,13 @@ type BaseNodeData = {
     }>;
   } | null;
 
+  // Visual group enrichment
+  count_slides?: number;
+  evidence_count_total?: number;
+  avg_confidence?: number | null;
+  sample_summaries?: string[];
+  segment_label?: string;
+
   // Analyst segment enrichment
   segment?: string;
   segment_confidence?: number;
@@ -72,6 +79,12 @@ type BaseNodeData = {
   slide_title_warnings?: string[];
   slide_title_debug?: any;
 };
+
+function formatConfidencePercent(value: unknown): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+  const pct = value <= 1 ? value * 100 : value;
+  return `${Math.round(pct)}%`;
+}
 
 function NodeShell(props: {
   darkMode: boolean;
@@ -258,6 +271,60 @@ export function SegmentNode({ data, selected }: NodeProps) {
   );
 }
 
+export function VisualGroupNode({ data, selected }: NodeProps) {
+  const d = (data ?? {}) as BaseNodeData;
+  const darkMode = Boolean(d.__darkMode);
+  const label = typeof d.segment_label === 'string' && d.segment_label.trim().length > 0
+    ? d.segment_label
+    : typeof d.label === 'string'
+      ? d.label
+      : 'Visual group';
+
+  const slideCount = Number.isFinite(d.count_slides) ? Math.max(0, Math.round(d.count_slides ?? 0)) : null;
+  const evidenceTotal = Number.isFinite(d.evidence_count_total)
+    ? Math.max(0, Math.round(d.evidence_count_total ?? 0))
+    : null;
+  const avgConfDisplay = formatConfidencePercent(d.avg_confidence);
+
+  const summaries = Array.isArray(d.sample_summaries)
+    ? d.sample_summaries.filter((s) => typeof s === 'string' && s.trim().length > 0).slice(0, 3)
+    : [];
+
+  return (
+    <NodeShell
+      darkMode={darkMode}
+      selected={selected}
+      isIntersecting={Boolean(d.isIntersecting)}
+      accentColor={d.__accentColor}
+      accentTint={d.__accentTint}
+    >
+      <div className="px-3 py-2" style={{ minWidth: 300 }}>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="text-xs uppercase tracking-wide opacity-70">Visual group</div>
+            <div className="text-sm font-medium leading-snug line-clamp-2">{label}</div>
+            <div className="text-xs opacity-70 mt-1">
+              Slides: {slideCount != null ? slideCount : '—'} · Evidence: {evidenceTotal != null ? evidenceTotal : '—'} · Avg conf: {avgConfDisplay}
+            </div>
+          </div>
+          <ExpandToggle data={d} darkMode={darkMode} />
+        </div>
+
+        {summaries.length > 0 ? (
+          <div className="mt-2 space-y-1">
+            <div className="text-xs font-medium opacity-80">Sample summaries</div>
+            <ul className="list-disc pl-4 text-xs space-y-0.5 opacity-80">
+              {summaries.map((s, idx) => (
+                <li key={`vg-s-${idx}`}>{s}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </div>
+    </NodeShell>
+  );
+}
+
 export function VisualAssetNode({ id, data, selected }: NodeProps) {
   const d = (data ?? {}) as BaseNodeData;
   const darkMode = Boolean(d.__darkMode);
@@ -406,6 +473,55 @@ export function EvidenceNode({ data, selected }: NodeProps) {
   );
 }
 
+export function EvidenceGroupNode({ data, selected }: NodeProps) {
+  const d = (data ?? {}) as BaseNodeData;
+  const darkMode = Boolean(d.__darkMode);
+  const label = typeof d.label === 'string' && d.label.trim().length > 0 ? d.label : 'Evidence group';
+
+  const evidenceTotal = Number.isFinite(d.evidence_count_total)
+    ? Math.max(0, Math.round(d.evidence_count_total ?? 0))
+    : typeof d.count === 'number'
+      ? d.count
+      : null;
+  const avgConfDisplay = formatConfidencePercent(d.avg_confidence ?? d.confidence);
+
+  const snippets = (() => {
+    if (Array.isArray(d.sample_summaries)) return d.sample_summaries.filter((s) => typeof s === 'string' && s.trim().length > 0);
+    if (typeof d.sample_snippet === 'string' && d.sample_snippet.trim().length > 0) return [d.sample_snippet];
+    return [];
+  })().slice(0, 3);
+
+  return (
+    <NodeShell
+      darkMode={darkMode}
+      selected={selected}
+      isIntersecting={Boolean(d.isIntersecting)}
+      accentColor={d.__accentColor}
+      accentTint={d.__accentTint}
+    >
+      <div className="px-3 py-2" style={{ minWidth: 260 }}>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="text-xs uppercase tracking-wide opacity-70">Evidence group</div>
+            <div className="text-sm font-medium leading-snug line-clamp-2">{label}</div>
+            <div className="text-xs opacity-70 mt-1">Items: {evidenceTotal != null ? evidenceTotal : '—'} · Avg conf: {avgConfDisplay}</div>
+          </div>
+          <ExpandToggle data={d} darkMode={darkMode} />
+        </div>
+        {snippets.length > 0 ? (
+          <div className="mt-2 text-xs opacity-80 space-y-1">
+            {snippets.map((s, idx) => (
+              <div key={`eg-s-${idx}`} className="line-clamp-2">
+                “{s}”
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </NodeShell>
+  );
+}
+
 export function DefaultNode({ data, selected }: NodeProps) {
   const d = (data ?? {}) as BaseNodeData;
   const darkMode = Boolean(d.__darkMode);
@@ -437,11 +553,17 @@ export const analystNodeTypes = {
   VISUAL_ASSET: VisualAssetNode,
   visual_asset: VisualAssetNode,
 
+  VISUAL_GROUP: VisualGroupNode,
+  visual_group: VisualGroupNode,
+
   SEGMENT: SegmentNode,
   segment: SegmentNode,
 
   EVIDENCE: EvidenceNode,
   evidence: EvidenceNode,
+
+  EVIDENCE_GROUP: EvidenceGroupNode,
+  evidence_group: EvidenceGroupNode,
 
   default: DefaultNode,
 } as const;

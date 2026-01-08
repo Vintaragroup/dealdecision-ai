@@ -257,6 +257,12 @@ test('GET /api/deals/:dealId/lineage returns visuals + evidence aggregate nodes'
   // Prefer structured_json.table.confidence over ve.confidence
   assert.equal(visualNode.data.extraction_confidence, 0.9);
   assert.equal(visualNode.data.extraction_method, 'vision_v1');
+  assert.ok(visualNode.data.page_understanding);
+  assert.ok(typeof visualNode.data.page_understanding.summary === 'string');
+  assert.ok(visualNode.data.page_understanding.summary.length > 0);
+  assert.ok(Array.isArray(visualNode.data.page_understanding.key_points));
+  assert.ok(Array.isArray(visualNode.data.page_understanding.extracted_signals));
+  assert.ok(Array.isArray(visualNode.data.page_understanding.score_contributions));
 
   assert.ok(body.nodes.find((n: any) => n.id === `evidence:va-1` && n.type === 'evidence' && n.node_type === 'EVIDENCE'));
 

@@ -1,5 +1,5 @@
 ---
-description: Defines business rules for investment deal evaluation, scoring, due diligence workflows, and risk assessment
+description: Applies to components and logic involving investment analysis, deal evaluation, and risk assessment rules
 ---
 
 # === USER INSTRUCTIONS ===
@@ -111,61 +111,49 @@ INVESTMENT DEAL ANALYSIS FRAMEWORK
 
 # business-rules
 
-Core Business Rule Components:
+Investment Analysis Framework:
 
-1. Deal Assessment Framework
-- Confidence scoring system across 5 dimensions (market, team, financial, traction, risk)
-- Scoring thresholds:
-  * 90-100: Very High confidence
-  * 80-89: High confidence 
-  * 70-79: Medium confidence
-  * Below 70: Low confidence
-- Multi-factor deal evaluation incorporating:
-  * Market opportunity size
-  * Team capability assessment
-  * Financial metrics validation
-  * Customer traction evidence
-  * Risk severity mapping
+1. Deal Evaluation Rules
+- Multi-stage evaluation process with weighted scoring across market, team, financial dimensions 
+- Validation thresholds for each deal stage progression
+- Automatic red/yellow/green flag identification system
+- Custom confidence scoring algorithm combining AI and human inputs
+Importance Score: 95
 
-2. Due Diligence Requirements
-- Stage-based progression rules:
-  * Intake → Under Review: Requires initial AI analysis
-  * Under Review → In Diligence: Minimum 2 documents + analysis
-  * In Diligence → Ready Decision: 70% confidence + 2 evidence items
-- Document validation checklist with critical item flagging
-- Evidence collection requirements per category
-- Verification status tracking with confidence scoring
+2. Risk Assessment Matrix
+- Risk categorization across 6 dimensions (market, team, financial, competitive, execution, legal)
+- 4-level severity classification system (low, medium, high, critical)
+- Risk mitigation tracking with effectiveness scoring
+- Composite risk profile generation with weighted factors
+Importance Score: 90
 
-3. Risk Assessment Matrix
-- 5x5 impact/probability matrix for risk classification
-- Risk categories: Market, Team, Financial, Execution, Legal
-- Severity levels: Low, Medium, High, Critical
-- Required risk mitigation strategies per severity level
-- Risk trend tracking with directional indicators
+3. Due Diligence Requirements
+- Stage-specific document checklist system
+- Critical document prioritization algorithm
+- Weighted completion percentage calculations
+- Document verification status tracking (complete/partial/missing)
+Importance Score: 85
 
 4. Investment Decision Criteria
-- Multi-cycle analysis with progression thresholds:
-  * Cycle 1 (Broad Scan): Basic validation
-  * Cycle 2 (Deep Dive): Detailed analysis
-  * Cycle 3 (Synthesis): Final recommendation
-- ROI calculation methodology:
-  * Deal type multipliers (seed: 1.0, series-a: 1.3)
-  * Stage multipliers (idea: 1.5, mvp: 1.2)
-- Industry-specific benchmark requirements
-- Evidence-based validation rules
+- Deal readiness scoring system with tier classifications (A/B/C/D)
+- Investment thesis validation framework
+- Custom ROI calculation methodology
+- Deal comparability scoring for portfolio fit
+Importance Score: 85
 
-5. Deal Classification System
-- Multi-tier classification for deal types:
-  * Real estate
-  * Fund vehicles
-  * Credit facilities
-  * Startup investments
-- Weighted scoring across categories:
-  * Deal score (0-40 points)
-  * Document completeness (0-25 points)
-  * Stage position (0-20 points)
-  * Evidence quality (0-15 points)
-- Priority classification thresholds (high/medium/low)
+5. Validation Rules
+- Deal data completeness requirements
+- Minimum confidence thresholds for AI analysis
+- Document quality validation criteria
+- Team background verification requirements
+Importance Score: 80
+
+Core Business Patterns:
+- Investment readiness scoring system
+- Risk-weighted evaluation framework
+- Multi-stage deal progression rules
+- Document verification workflow
+- Portfolio fit analysis methodology
 
 $END$
 

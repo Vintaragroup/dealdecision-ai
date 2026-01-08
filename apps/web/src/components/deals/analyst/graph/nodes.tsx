@@ -17,6 +17,8 @@ type BaseNodeData = {
   label?: string;
   __darkMode?: boolean;
   __node_type?: string;
+  __accentColor?: string;
+  __accentTint?: string;
 
   expanded?: boolean;
   descendantCount?: number;
@@ -48,6 +50,19 @@ type BaseNodeData = {
   evidence_snippets?: string[];
   extraction_confidence?: number;
 
+  // Page understanding enrichment
+  page_understanding?: {
+    summary?: string | null;
+    key_points?: string[];
+    extracted_signals?: Array<{ type: string; value: string; unit?: string | null; confidence?: number | null }>;
+    score_contributions?: Array<{
+      driver: string;
+      delta: number;
+      rationale: string;
+      evidence_ref_ids: string[];
+    }>;
+  } | null;
+
   // Analyst segment enrichment
   segment?: string;
   segment_confidence?: number;
@@ -62,9 +77,11 @@ function NodeShell(props: {
   darkMode: boolean;
   selected: boolean;
   isIntersecting: boolean;
+  accentColor?: string;
+  accentTint?: string;
   children: React.ReactNode;
 }) {
-  const { darkMode, selected, isIntersecting, children } = props;
+  const { darkMode, selected, isIntersecting, accentColor, accentTint, children } = props;
 
   const base = darkMode
     ? 'bg-white/5 border-white/10 text-gray-200'
@@ -73,8 +90,27 @@ function NodeShell(props: {
   const selectedCls = selected ? (darkMode ? 'border-white/30' : 'border-gray-400') : '';
   const intersectCls = isIntersecting ? 'ring-2 ring-red-500/70 border-red-500/60' : '';
 
+  const accentBorderStyle = accentColor ? { borderColor: accentColor } : undefined;
+
   return (
-    <div className={`rounded-lg border shadow-sm ${base} ${selectedCls} ${intersectCls}`}>
+    <div
+      className={`relative rounded-lg border shadow-sm overflow-hidden ${base} ${selectedCls} ${intersectCls}`}
+      style={accentBorderStyle}
+    >
+      {accentColor ? (
+        <div
+          className="absolute inset-y-0 left-0 w-1.5"
+          style={{ backgroundColor: accentTint ?? accentColor }}
+          aria-hidden
+        />
+      ) : null}
+      {accentColor ? (
+        <div
+          className="absolute top-1.5 left-2 h-2 w-2 rounded-full"
+          style={{ backgroundColor: accentColor }}
+          aria-hidden
+        />
+      ) : null}
       {children}
       {/* Hidden handles so React Flow can attach edges deterministically */}
       <Handle type="target" position={Position.Top} style={{ opacity: 0, pointerEvents: 'none' }} />
@@ -136,7 +172,13 @@ export function DealNode({ data, selected }: NodeProps) {
   const score = typeof d.score === 'number' && Number.isFinite(d.score) ? d.score : null;
 
   return (
-    <NodeShell darkMode={darkMode} selected={selected} isIntersecting={Boolean(d.isIntersecting)}>
+    <NodeShell
+      darkMode={darkMode}
+      selected={selected}
+      isIntersecting={Boolean(d.isIntersecting)}
+      accentColor={d.__accentColor}
+      accentTint={d.__accentTint}
+    >
       <div className="px-3 py-2" style={{ minWidth: 240 }}>
         <div className="flex items-start justify-between gap-2">
           <div>
@@ -162,7 +204,13 @@ export function DocumentNode({ data, selected }: NodeProps) {
   const status = typeof d.status === 'string' ? String(d.status) : null;
 
   return (
-    <NodeShell darkMode={darkMode} selected={selected} isIntersecting={Boolean(d.isIntersecting)}>
+    <NodeShell
+      darkMode={darkMode}
+      selected={selected}
+      isIntersecting={Boolean(d.isIntersecting)}
+      accentColor={d.__accentColor}
+      accentTint={d.__accentTint}
+    >
       <div className="px-3 py-2" style={{ minWidth: 260 }}>
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
@@ -189,7 +237,13 @@ export function SegmentNode({ data, selected }: NodeProps) {
     : '—';
 
   return (
-    <NodeShell darkMode={darkMode} selected={selected} isIntersecting={Boolean(d.isIntersecting)}>
+    <NodeShell
+      darkMode={darkMode}
+      selected={selected}
+      isIntersecting={Boolean(d.isIntersecting)}
+      accentColor={d.__accentColor}
+      accentTint={d.__accentTint}
+    >
       <div className="px-3 py-2" style={{ minWidth: 220 }}>
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
@@ -258,47 +312,33 @@ export function VisualAssetNode({ id, data, selected }: NodeProps) {
         : confValueRaw;
   const confDisplay = confPercent != null ? `${Math.round(confPercent)}%` : '—';
 
-  const structuredKind = typeof d.structured_kind === 'string' ? d.structured_kind : null;
-  const structuredLine = (() => {
-    if (structuredKind === 'table') {
-      const table = d.structured_summary?.table;
-      const rows = typeof table?.rows === 'number' && Number.isFinite(table.rows) ? table.rows : null;
-      const cols = typeof table?.cols === 'number' && Number.isFinite(table.cols) ? table.cols : null;
-      return `Table • ${rows != null ? rows : '—'}×${cols != null ? cols : '—'}`;
-    }
-    if (structuredKind === 'bar') {
-      // Backend may serialize bar summary under different keys; support both.
-      const bar = (d.structured_summary as any)?.bar;
-      const chart = (d.structured_summary as any)?.chart;
-      const barsRaw = bar?.bars ?? chart?.bars;
-      const bars = typeof barsRaw === 'number' && Number.isFinite(barsRaw) ? barsRaw : null;
-      return `Bar chart • ${bars != null ? bars : '—'} bars`;
-    }
-    return null;
+  const slideTitle = cleanSnippet((d as any)?.slide_title, 160);
+  const pageUnderstanding = (d as any)?.page_understanding;
+  const firstEvidence = (() => {
+    const evidenceSnippets = (d as any)?.evidence_snippets;
+    if (!Array.isArray(evidenceSnippets)) return null;
+    return cleanSnippet(evidenceSnippets.find((s) => typeof s === 'string' && s.trim().length > 0), 160);
   })();
 
-  const slideTitle = cleanSnippet((d as any)?.slide_title, 160);
-
-  const pickSummary = (): string => {
-    const evidenceSnippets = (d as any)?.evidence_snippets;
-    if (Array.isArray(evidenceSnippets)) {
-      const cleaned0 = cleanSnippet(evidenceSnippets.find((s) => typeof s === 'string' && s.trim().length > 0));
-      if (cleaned0) return cleaned0;
-    }
-
-    if (structuredLine) return structuredLine;
-
-    const ocr = cleanSnippet((d as any)?.ocr_text_snippet, 160);
+  const summaryLine = (() => {
+    const summary = cleanSnippet(pageUnderstanding?.summary, 200);
+    if (summary) return summary;
+    if (firstEvidence) return firstEvidence;
+    const ocr = cleanSnippet((d as any)?.ocr_text_snippet, 200);
     if (ocr) return ocr;
-
-    return 'No evidence extracted yet';
-  };
+    return 'No summary available yet';
+  })();
 
   const title = slideTitle || titleFallback;
-  const snippetText = pickSummary();
 
   return (
-    <NodeShell darkMode={darkMode} selected={selected} isIntersecting={Boolean(d.isIntersecting)}>
+    <NodeShell
+      darkMode={darkMode}
+      selected={selected}
+      isIntersecting={Boolean(d.isIntersecting)}
+      accentColor={d.__accentColor}
+      accentTint={d.__accentTint}
+    >
       <div className="px-3 py-2" style={{ width: 280, maxWidth: 280 }}>
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
@@ -321,8 +361,9 @@ export function VisualAssetNode({ id, data, selected }: NodeProps) {
 
           <div className="min-w-0 flex-1">
             <div className="space-y-1">
-              {structuredLine ? <div className="text-xs opacity-80 line-clamp-1 whitespace-pre-line">{structuredLine}</div> : null}
-              <div className="text-xs opacity-80 line-clamp-2 whitespace-pre-line">{snippetText}</div>
+              <div className="text-xs opacity-90 line-clamp-1 whitespace-pre-line">
+                {summaryLine ? summaryLine.slice(0, 120) : ''}
+              </div>
             </div>
             <div className="mt-2 flex items-center gap-3 text-xs opacity-70">
               <div>Evidence: {evidenceCount}</div>
@@ -343,7 +384,13 @@ export function EvidenceNode({ data, selected }: NodeProps) {
   const snippet = typeof d.sample_snippet === 'string' ? d.sample_snippet : null;
 
   return (
-    <NodeShell darkMode={darkMode} selected={selected} isIntersecting={Boolean(d.isIntersecting)}>
+    <NodeShell
+      darkMode={darkMode}
+      selected={selected}
+      isIntersecting={Boolean(d.isIntersecting)}
+      accentColor={d.__accentColor}
+      accentTint={d.__accentTint}
+    >
       <div className="px-3 py-2" style={{ minWidth: 220 }}>
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">

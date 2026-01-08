@@ -871,7 +871,45 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       setJobStatus(res.status);
       addToast('info', 'Job queued', `Job ${res.job_id}`);
     } catch (err) {
-      addToast('error', 'Visual extraction failed to start', err instanceof Error ? err.message : 'Unknown error');
+      const message = err instanceof Error ? err.message : 'Unknown error';
+
+      // Surface backend diagnostics for missing originals/rendered pages.
+      // Example: "No page images available... Diagnostics: {"docs_targeted":1,...}".
+      const diagMatch = typeof message === 'string' ? message.match(/Diagnostics:\s*(\{.*\})/) : null;
+      const diagnostics = (() => {
+        if (!diagMatch) return null;
+        try {
+          return JSON.parse(diagMatch[1]);
+        } catch {
+          return null;
+        }
+      })();
+
+      if (diagnostics) {
+        const missingOriginals = diagnostics.original_bytes_missing ?? 0;
+        const missingRendered = diagnostics.page_images_missing ?? 0;
+        const missingDocIds = diagnostics.missing_page_images_doc_ids ?? diagnostics.missing_original_bytes_doc_ids;
+        const docList = Array.isArray(missingDocIds) && missingDocIds.length > 0 ? missingDocIds.join(', ') : '—';
+
+        addToast(
+          'error',
+          'Visual extraction blocked (missing source files)',
+          `Docs targeted=${diagnostics.docs_targeted ?? '?'} · missing originals=${missingOriginals} · missing renders=${missingRendered} · docIds=${docList}`
+        );
+
+        // Provide remediation guidance inline so users can self-serve.
+        addToast(
+          'info',
+          'Fix extraction inputs',
+          diagnostics.original_file_tables_ok === false
+            ? 'Run migration infra/migrations/2025-12-22-002-add-document-original-files.sql then re-ingest documents.'
+            : missingOriginals > 0
+              ? 'Re-upload/re-ingest the document so document_files.original_bytes is populated; then rerun extraction.'
+              : 'Ensure rendered page images exist under uploads/rendered_pages/<docId>/page_000.png and rerun extraction.'
+        );
+      } else {
+        addToast('error', 'Visual extraction failed to start', message);
+      }
       setAnalyzing(false);
       return;
     }

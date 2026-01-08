@@ -1,5 +1,5 @@
 ---
-description: Defines data models and entities for investment deal analysis, evidence tracking, and document management
+description: Specifies data models and relationships for investment deal analysis and due diligence tracking
 ---
 
 # === USER INSTRUCTIONS ===
@@ -117,85 +117,53 @@ Collected -> Verified -> Scored -> Integrated
 
 # data-models-investment
 
-Core investment domain data models:
+Core Data Model Components:
 
-1. Deal Intelligence Object (DIO)
-`apps/web/src/types/dio.ts`
-```typescript
-interface DealIntelligenceObject {
-  id: string
-  dealId: string
-  stage: DealStage
-  confidence: number
-  evidence: Evidence[]
-  analysis: Analysis[]  
-  documents: Document[]
-  version: number
-}
-```
-Importance: 95/100
-- Central data model representing investment deal intelligence
-- Tracks confidence scores, evidence collection, and analysis state
-- Manages versioned deal information with full audit trail
+1. Deal Entity Structure
+- Multi-stage investment pipeline tracking with state transitions
+- Document relationship mapping and evidence linkages 
+- Deal evaluation metrics and scoring framework
+- Industry classification and categorization system
+- Investment terms and conditions modeling
+Importance Score: 95/100
 
 2. Evidence Model
-`apps/web/src/types/evidence.ts`
-```typescript
-interface Evidence {
-  id: string
-  type: EvidenceType
-  source: DocumentReference
-  confidence: number
-  claims: Claim[]
-  context: string
-  verified: boolean
-}
-```
-Importance: 90/100
-- Structured representation of deal evidence
-- Links claims to source documents
-- Tracks verification status and confidence
+- Structured validation framework for deal claims
+- Source document relationship tracking
+- Confidence scoring system for extracted evidence
+- Evidence categorization by business domain
+- Multi-source evidence aggregation model
+Importance Score: 85/100
 
-3. Analysis Model
-`apps/web/src/types/analysis.ts`
-```typescript
-interface Analysis {
-  id: string
-  type: AnalysisType  
-  metrics: Metric[]
-  risks: Risk[]
-  score: number
-  recommendations: Recommendation[]
-  cycle: AnalysisCycle
-}
-```
-Importance: 85/100
-- Represents complete deal analysis results
-- Contains scored metrics and identified risks
-- Tracks analysis cycle progression
+3. Document Analysis Model
+- Document type classification system
+- Relationship mapping to deals and evidence
+- Version control and document lineage tracking
+- Extraction quality assessment framework
+- Business context classification
+Importance Score: 80/100
 
-4. Document Model
-`apps/web/src/types/documents.ts`
-```typescript
-interface Document {
-  id: string
-  type: DocumentType
-  status: ProcessingStatus
-  confidence: number
-  extractedData: ExtractedData
-  version: number
-}
-```
-Importance: 80/100
-- Manages investment document metadata
-- Tracks document processing status
-- Contains extracted structured data
+4. Investment Analysis Framework
+- Multi-dimensional scoring matrices
+- Risk assessment categorization model
+- Financial metrics evaluation structure
+- Market analysis classification system
+- Team assessment scoring model 
+Importance Score: 90/100
 
-State Transitions:
-- Deal stages: intake -> under_review -> in_diligence -> ready_decision
-- Document processing: uploaded -> processing -> analyzed -> verified
-- Evidence status: extracted -> validated -> verified
-- Analysis cycles: broad_scan -> deep_dive -> synthesis
+Key Domain Relationships:
+- Deals contain multiple evidence items
+- Evidence links to source documents
+- Documents map to multiple evidence points
+- Analysis components reference evidence
+- Scoring systems integrate across models
+
+Domain-Specific Validations:
+- Deal stage transition requirements
+- Evidence confidence thresholds
+- Document completeness scoring
+- Analysis validation rules
+- Risk assessment matrices
 
 $END$
 

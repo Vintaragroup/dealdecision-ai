@@ -884,6 +884,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 
       segment?: string | null;
       segment_confidence?: number | null;
+      page_understanding?: PageUnderstanding | null;
     };
 
     type AnalystSegment =
@@ -901,6 +902,18 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       | "exit"
       | "overview"
       | "unknown";
+
+    type PageUnderstanding = {
+      summary: string | null;
+      key_points: string[];
+      extracted_signals: Array<{ type: string; value: string; unit?: string | null; confidence?: number | null }>;
+      score_contributions: Array<{
+        driver: string;
+        delta: number;
+        rationale: string;
+        evidence_ref_ids: string[];
+      }>;
+    };
 
     const canonicalSegments: AnalystSegment[] = [
       "overview",
@@ -971,6 +984,8 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           "financial",
           "financials",
           "financial strategy",
+          "automation",
+          "ai",
           "exit",
           "acquisition",
           "acquirer",
@@ -1134,7 +1149,20 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         scores.problem += matches(["problem", "pain", "challenge", "issue", "gap"], 1);
         if (text.includes("why this matters")) scores.problem += 0.9;
 
-        const strongSolutionNeedles = ["how it works", "architecture", "demo", "features", "capabilities", "integrates", "api", "product"];
+        const strongSolutionNeedles = [
+          "how it works",
+          "architecture",
+          "demo",
+          "features",
+          "capabilities",
+          "integrates",
+          "api",
+          "product",
+          "automation",
+          "ai",
+          "intelligence",
+          "predictive",
+        ];
         const genericSolutionNeedles = ["platform", "solution", "service", "workflow", "system"];
         const strongSolutionHits = matches(strongSolutionNeedles, 1);
         const genericSolutionHits = matches(genericSolutionNeedles, 0);
@@ -1152,7 +1180,10 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 
         scores.traction += matches(["traction", "growth", "users", "customers", "mrr", "arr", "cohort", "retention", "pipeline", "gmv", "revenue", "kpi", "conversion", "demo to close", "demo-to-close", "lift"], 0.9);
         scores.business_model += matches(["pricing", "revenue model", "model", "plan", "subscription", "contract", "unit economics", "arpu", "take rate", "how we make money", "saas", "platform", "add-ons", "addons", "add ons"], 0.85);
-        scores.distribution += matches(["distribution", "go-to-market", "go to market", "gtm", "channels", "sales", "partnerships", "marketing", "reseller", "partners", "channel"], 1.0);
+        scores.distribution += matches(
+          ["distribution", "go-to-market", "go to market", "gtm", "channels", "sales", "partnerships", "marketing", "reseller", "partners", "channel", "lender", "lenders", "borrower", "borrowers", "realtor", "realtors"],
+          1.0
+        );
         scores.team += matches(["team", "founder", "ceo", "cto", "cfo", "bio", "experience", "leadership", "advisors", "founders", "meet our team"], 1);
         scores.competition += matches(["competition", "competitor", "alternative", "compare", "landscape", "differentiation", "moat"], 1);
         scores.risks += matches(["risk", "challenge", "threat", "mitigation", "compliance", "regulation", "limitation"], 1);
@@ -1258,6 +1289,147 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 
         return { segment: "overview", confidence: 0, debug: debugBase };
       }
+
+      const buildEmptyPageUnderstanding = (): PageUnderstanding => ({
+        summary: null,
+        key_points: [],
+        extracted_signals: [],
+        score_contributions: [],
+      });
+
+      const normalizePageUnderstanding = (value: unknown): PageUnderstanding => {
+        if (!value || typeof value !== "object") return buildEmptyPageUnderstanding();
+        const candidate = value as any;
+        return {
+          summary: typeof candidate.summary === "string" ? candidate.summary : null,
+          key_points: Array.isArray(candidate.key_points)
+            ? candidate.key_points.filter((k: unknown): k is string => typeof k === "string" && k.trim().length > 0)
+            : [],
+          extracted_signals: Array.isArray(candidate.extracted_signals)
+            ? candidate.extracted_signals.filter(
+                (s: unknown): s is { type: string; value: string; unit?: string | null; confidence?: number | null } =>
+                  Boolean(s && typeof s === "object")
+              )
+            : [],
+          score_contributions: Array.isArray(candidate.score_contributions)
+            ? candidate.score_contributions.filter(
+                (s: unknown): s is {
+                  driver: string;
+                  delta: number;
+                  rationale: string;
+                  evidence_ref_ids: string[];
+                } => Boolean(s && typeof s === "object")
+              )
+            : [],
+        };
+      };
+
+      const derivePageSummary = (input: {
+        slide_title?: string | null;
+        evidence_snippets?: string[] | null;
+        ocr_text?: string | null;
+      }): string | null => {
+        const parts: string[] = [];
+        const title = typeof input.slide_title === "string" ? input.slide_title.trim() : "";
+        if (title) parts.push(title);
+
+        const firstEvidence = Array.isArray(input.evidence_snippets)
+          ? input.evidence_snippets.find((s) => typeof s === "string" && s.trim().length > 0)
+          : null;
+        if (firstEvidence) parts.push(firstEvidence.trim());
+
+        if (!firstEvidence) {
+          const snippet = ocrSnippet(input.ocr_text);
+          if (snippet) parts.push(snippet);
+        }
+
+        const summary = parts.join(" — ").trim();
+        if (!summary) return null;
+        return summary.length > 240 ? summary.slice(0, 240) : summary;
+      };
+
+      const deriveKeyPointsFromOcr = (ocrText: unknown): string[] => {
+        if (typeof ocrText !== "string") return [];
+        const lines = ocrText
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0 && l.length <= 240);
+
+        const bullets = lines
+          .map((line) => {
+            const bulletStripped = line
+              .replace(/^[-•*]\s+/, "")
+              .replace(/^\d+[.)]\s+/, "")
+              .trim();
+            const isBullet = /^[-•*]/.test(line) || /^\d+[.)]/.test(line);
+            if (!isBullet) return null;
+            if (bulletStripped.length < 3) return null;
+            return bulletStripped.slice(0, 200);
+          })
+          .filter((v): v is string => typeof v === "string" && v.length > 0);
+
+        const unique: string[] = [];
+        for (const b of bullets) {
+          if (unique.length >= 5) break;
+          if (!unique.some((u) => u.toLowerCase() === b.toLowerCase())) unique.push(b);
+        }
+        return unique;
+      };
+
+      const deriveExtractedSignals = (input: {
+        structured_kind?: string | null;
+        structured_summary?: any;
+      }): PageUnderstanding["extracted_signals"] => {
+        const signals: PageUnderstanding["extracted_signals"] = [];
+        const kind = typeof input.structured_kind === "string" ? input.structured_kind.toLowerCase() : null;
+        const summary = input.structured_summary;
+
+        if (kind === "table" && summary?.table) {
+          const rows = Number(summary.table.rows);
+          const cols = Number(summary.table.cols);
+          if (Number.isFinite(rows)) signals.push({ type: "table_rows", value: String(rows) });
+          if (Number.isFinite(cols)) signals.push({ type: "table_cols", value: String(cols) });
+        }
+
+        if (kind === "bar" && summary?.bar) {
+          const bars = Number(summary.bar.bars);
+          if (Number.isFinite(bars)) signals.push({ type: "bar_count", value: String(bars), unit: summary?.bar?.unit ?? undefined });
+          const title = typeof summary.bar.title === "string" ? summary.bar.title.trim() : "";
+          if (title) signals.push({ type: "bar_title", value: title });
+          if (typeof summary.bar.normalized === "boolean") {
+            signals.push({ type: "bar_normalized", value: summary.bar.normalized ? "true" : "false" });
+          }
+        }
+
+        return signals;
+      };
+
+      const buildPageUnderstanding = (input: {
+        slide_title?: string | null;
+        evidence_snippets?: string[] | null;
+        ocr_text?: string | null;
+        structured_kind?: string | null;
+        structured_summary?: any;
+      }): PageUnderstanding => {
+        const summary = derivePageSummary({
+          slide_title: input.slide_title,
+          evidence_snippets: input.evidence_snippets,
+          ocr_text: input.ocr_text,
+        });
+
+        const key_points = deriveKeyPointsFromOcr(input.ocr_text).slice(0, 5);
+        const extracted_signals = deriveExtractedSignals({
+          structured_kind: input.structured_kind,
+          structured_summary: input.structured_summary,
+        });
+
+        return normalizePageUnderstanding({
+          summary,
+          key_points,
+          extracted_signals,
+          score_contributions: [],
+        });
+      };
 
     let visuals: VisualRow[] = [];
     const slideTitleDebug = process.env.DDAI_DEV_SLIDE_TITLE_DEBUG === "1";
@@ -1395,6 +1567,8 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         enableDebug: slideTitleDebug,
       });
 
+      const page_understanding = normalizePageUnderstanding((v as any)?.page_understanding);
+
       const classification = classifySegment({
         ocr_text: v.ocr_text,
         ocr_snippet: ocrSnippet(v.ocr_text),
@@ -1483,6 +1657,14 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         slide_title_debug: (v as any)?.slide_title_debug,
       };
 
+      const page_understanding = buildPageUnderstanding({
+        slide_title: titleDerived.slide_title,
+        evidence_snippets,
+        ocr_text: v.ocr_text,
+        structured_kind: structured.structured_kind,
+        structured_summary: structured.structured_summary,
+      });
+
       if (process.env.DDAI_DEV_SLIDE_TITLE_LOG === "1" && !didLogSlideTitle && titleDerived.slide_title) {
         didLogSlideTitle = true;
         try {
@@ -1536,6 +1718,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           ...(titleDerived.slide_title_debug ? { slide_title_debug: titleDerived.slide_title_debug } : {}),
           structured_kind: structured.structured_kind,
           structured_summary: structured.structured_summary,
+          page_understanding,
           evidence_count,
           evidence_snippets: Array.isArray(evidence_snippets) ? evidence_snippets : [],
           extraction_confidence,

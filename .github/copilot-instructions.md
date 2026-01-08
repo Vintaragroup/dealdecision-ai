@@ -99,51 +99,64 @@ The platform implements a comprehensive investment analysis system with sophisti
 - Explain your OBSERVATIONS clearly, then provide REASONING to identify the exact issue. Add console logs when needed to gather more information.
 
 
-Investment Due Diligence Platform Architecture
+Investment Analysis Platform Architecture
 
-Core Business Logic Components:
+Core Business Domains:
 
-1. Deal Assessment Framework (85/100)
-`apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx`
-- Multi-dimensional scoring system across 5 key investment criteria
-- Custom confidence scoring with verification thresholds
-- Weighted assessment model incorporating data quality metrics
+1. Deal Evaluation Engine
+- Multi-dimensional scoring system across market, financial, team metrics
+- Custom confidence metrics with category-specific methodologies
+- Risk assessment matrices with weighted factor analysis
+- Investment terms modeling and cap table calculations
+- Competitive positioning algorithms
 
-2. Risk Analysis Engine (90/100)
-`packages/core/src/analyzers/risk-assessment.ts`
-- 6-category risk evaluation system (market, team, financial, execution, legal, tech)
-- Risk severity mapping with custom classification rules
-- Mitigation strategy scoring and effectiveness tracking
+2. Due Diligence Framework
+- Structured verification checklist system
+- Critical document prioritization algorithm
+- Multi-stage progression tracking
+- Risk-based categorization of requirements
+- Completion percentage calculations with weighted categories
 
-3. Financial Analysis Pipeline (85/100) 
-`packages/core/src/analyzers/financial-health.ts`
-- Industry-specific financial health thresholds
-- Custom metrics framework for different business models
-- ROI calculation engine with role-specific views
+3. Financial Analysis System
+- Revenue projection modeling
+- Unit economics calculations (LTV, CAC, margins)
+- Burn rate and runway projections
+- Custom ROI calculation methodologies
+- Industry-specific metric adaptations
 
-4. Due Diligence Orchestration (90/100)
-`packages/core/src/orchestration/pipeline.ts`
-- Three-cycle analysis workflow: Broad Scan → Deep Dive → Synthesis
-- Evidence-based progression rules between cycles
-- Confidence threshold management for stage advancement
+4. Document Intelligence
+- Company matching algorithms
+- Smart document classification
+- Duplicate detection system
+- Document extraction quality scoring
+- Confidence band calculations
 
-5. Document Intelligence System (85/100)
-`packages/core/src/orchestration/dio-context.ts`
-- Domain-specific document classification
-- Multi-factor scoring for deal type categorization
-- Investment vertical detection using weighted analysis
+5. Professional Development
+- Investment expertise progression system
+- Multi-tier achievement framework
+- Skill tree advancement logic
+- Performance-based ranking algorithms
+- Domain-specific rewards system
 
-Integration Architecture:
-- Deal Intelligence Objects (DIOs) coordinate analysis state
-- Evidence collection system links documents to findings
-- Stage progression controlled by confidence thresholds
-- Role-based views filter analysis results
+Key Integration Points:
 
-Business Rules Engine:
-- Industry-specific benchmark thresholds
-- Custom validation rules per deal stage
-- Risk severity classification framework
-- Document categorization heuristics
+1. Deal Analysis Pipeline
+- Document processing → Company matching → Deal scoring → Risk assessment
+- Automated recommendations based on composite scoring
+- Industry-specific validation rules
+- Evidence-based verification system
+
+2. Report Generation
+- Template registry with business categorization
+- Dynamic section rendering based on deal type
+- Confidentiality handling
+- Investment-specific metadata management
+
+3. Collaboration Framework
+- Role-based workflows (investor/founder)
+- Domain-specific comment types
+- Business-oriented prioritization
+- Deal-specific activity tracking
 
 $END$
 

@@ -1,5 +1,5 @@
 ---
-description: Used for documenting core scoring algorithms and business logic for investment analysis, deal evaluation, and risk assessment calculations.
+description: Specification for analyzing and documenting core scoring algorithms and evaluation frameworks in investment analysis systems
 ---
 
 # === USER INSTRUCTIONS ===
@@ -76,62 +76,53 @@ Path: apps/web/src/lib/scoring/dealTerms.ts
 
 # algorithms-scoring
 
-Core Scoring Algorithms:
+Core Scoring Algorithm Components:
 
-1. Deal Confidence Scoring
+1. Investment Confidence Scoring
 Path: apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx
-- Sophisticated confidence calculation across 5 dimensions:
-  * Market Fit (0-100): TAM alignment, growth potential, competitive position
-  * Team Capability (0-100): Experience match, domain expertise, past exits
-  * Financial Health (0-100): Unit economics, margins, burn rate, runway
-  * Execution Risk (0-100): Technical feasibility, regulatory exposure, operational complexity
-  * Investment Terms (0-100): Structure fairness, protection mechanisms, exit alignment
-- Weighted scoring formula combining dimensional scores with industry-specific weights
-- Confidence thresholds:
-  * 90-100: Very High Confidence
-  * 80-89: High Confidence
-  * 70-79: Moderate Confidence
-  * 60-69: Low Confidence
-  * <60: Very Low Confidence
-Importance Score: 95
+- Multi-dimensional weighted scoring across market, financial, and team factors 
+- Custom confidence metrics with category-specific methodology
+- Data verification indicators and validation scoring
+Importance Score: 85/100
 
-2. Risk Assessment Framework
+2. Risk Assessment Algorithm
 Path: apps/web/src/components/report-templates/sections/RiskAssessment.tsx
-- Multi-dimensional risk evaluation across 6 categories:
-  * Market Risk: Competition, timing, adoption barriers
-  * Technical Risk: Development complexity, scalability challenges
-  * Financial Risk: Capital needs, revenue uncertainty
-  * Team Risk: Key person dependencies, skill gaps
-  * Legal/Regulatory Risk: Compliance requirements, IP protection
-  * Operational Risk: Supply chain, infrastructure needs
-- Risk severity calculation using probability x impact matrix
-- Custom mitigation strategy mapping with effectiveness scoring
-Importance Score: 90
+- Multi-factor risk scoring combining probability and impact
+- Risk category weighting system
+- Composite risk profile generation
+- Mitigation effectiveness scoring
+Importance Score: 88/100
 
-3. ROI Projection Engine
-Path: apps/web/src/components/report-templates/sections/ROISummary.tsx
-- Investment return calculations using:
-  * Stage-specific multiplier tables
-  * Industry vertical adjustment factors
-  * Geographic market modifiers
-  * Exit timing probability curves
-- Scenario modeling with weighted outcomes:
-  * Base Case (40% weight)
-  * Upside Case (30% weight)
-  * Downside Case (30% weight)
-Importance Score: 85
+3. Financial Analysis Engine
+Path: apps/web/src/components/report-templates/sections/FinancialAnalysis.tsx
+- Revenue projection modeling algorithms
+- Unit economics calculations (LTV, CAC, margins)
+- Financial health scoring system
+- Burn rate and runway projections
+Importance Score: 95/100
 
-4. Market Analysis Algorithm  
-Path: apps/web/src/components/report-templates/sections/MarketAnalysis.tsx
-- TAM/SAM/SOM calculation methodology:
-  * Bottom-up customer segment analysis
-  * Top-down market size validation
-  * Penetration rate modeling
-- Growth rate analysis using:
-  * Historical CAGR benchmarks
-  * Industry-specific growth factors
-  * Regional market dynamics
-Importance Score: 80
+4. Deal Terms Analysis
+Path: apps/web/src/components/report-templates/sections/DealTermsSummary.tsx
+- Investment terms scoring engine
+- Liquidation preference calculations
+- Cap table modeling algorithms
+- Voting rights impact analysis
+Importance Score: 90/100
+
+5. Market Competition Scoring
+Path: apps/web/src/components/report-templates/sections/CompetitiveLandscape.tsx
+- Market share distribution analysis
+- Competitive positioning matrix calculations
+- Feature comparison scoring
+- Weighted competitive advantage metrics
+Importance Score: 80/100
+
+Core Scoring Patterns:
+- Weighted evaluation systems for investment criteria
+- Multi-factor risk assessment frameworks
+- Financial projection modeling
+- Market analysis methodologies
+- Due diligence verification scoring
 
 $END$
 

@@ -1,5 +1,5 @@
 ---
-description: Analyzes data flow through investment deal analysis system including document processing, evidence extraction, and AI analysis pipelines
+description: Specifications for analyzing and documenting data flow through document processing, evidence extraction, and report generation systems
 ---
 
 # === USER INSTRUCTIONS ===
@@ -107,63 +107,53 @@ Data flows through specialized processors:
 
 # dataflow-analysis
 
-## Document Processing Pipeline
+The system implements a multi-stage document processing and analysis pipeline:
 
-Primary document flow through system:
-1. Upload → Initial Classification → Content Extraction → Evidence Tagging → Analysis Pipeline
-2. Document metadata and extracted content flows into Deal Intelligence Object (DIO)
-3. Evidence items flow to validation system with confidence scoring
-4. Verified evidence feeds into analysis cycles
-
-File: packages/core/src/orchestration/pipeline.ts
-- Three-phase analysis cycles: Broad Scan → Deep Dive → Synthesis
-- Evidence collection triggers progression between cycles
-- Confidence thresholds gate movement to next phase
-Importance Score: 90
-
-## Evidence Extraction Flow
-
-Document evidence flows through specialized extractors:
-1. Visual Asset Extractor
-   - Table detection with grid analysis
-   - Chart data extraction with axis mapping
-   - Business metric pattern matching
-2. Text Content Extractor
-   - Financial metric identification 
-   - Team/market claim extraction
-   - Risk factor detection
-
-File: packages/core/src/services/evidence/service.ts
-- Evidence categorization by type and confidence
-- Cross-reference validation between sources
-- Evidence-to-claim mapping system
+1. Document Ingestion Flow
+- Intelligent document grouping and company matching logic
+- Document type classification system (pitch decks, financials, etc.)
+- Duplicate detection and version control
+- Multi-document batch processing with deal matching
 Importance Score: 85
 
-## AI Analysis Integration
+2. Evidence Extraction Pipeline
+- Document section classification and extraction
+- Evidence confidence scoring system (0-100)
+- Business metric identification and validation
+- Relationship mapping between evidence pieces
+- Source document reference tracking
+Importance Score: 90
 
-Analysis request flow:
-1. Document → Classification → Task Router → Model Selection → Analysis
-2. Results flow through validation before entering DIO
-3. Confidence scores determine reanalysis needs
+3. AI Analysis Integration
+- Context-aware content generation for reports
+- Role-specific (investor/founder) insights generation 
+- Evidence-based recommendation engine
+- Custom investment criteria scoring
+- Red/yellow/green flag detection system
+Importance Score: 85
 
-File: packages/core/src/services/llm/service.ts
-- Purpose-specific routing logic
-- Domain-optimized model selection
-- Investment-specific prompt engineering
+4. Report Generation Workflow
+- Multi-stage report assembly process
+- Section-specific scoring algorithms
+- Evidence validation and citation system
+- Industry-specific template adaptation
+- Role-based content customization
 Importance Score: 80
 
-## Report Generation Workflow
+Core Data Flows:
+```
+Documents → Classification → Evidence Extraction → AI Analysis → Report Generation
+                ↓                     ↓                 ↓              ↓
+            Validation         Confidence Scoring    Recommendations   Templates
+```
 
-Data aggregation flow:
-1. DIO → Evidence Selection → Section Generation → Report Assembly
-2. Evidence confidence scores influence section inclusion
-3. Risk factors flow into recommendation generation
+Key Integration Points:
+- Document processor to evidence extractor
+- Evidence system to AI analyzer
+- AI insights to report generator
+- Template system to final output
 
-File: packages/core/src/services/report/generator.ts
-- Section-specific evidence thresholds
-- Risk-adjusted recommendation logic
-- Deal stage-specific report templates
-Importance Score: 75
+The system maintains data lineage throughout the pipeline, tracking confidence scores, evidence relationships, and validation status at each stage.
 
 $END$
 

@@ -67,6 +67,7 @@ docs/trace_audit/**
 # Optional: keep cleanup control docs tracked (uncomment if desired)
 # Cleanup control docs (tracked)
 !docs/DOCS_CLEANUP_MANIFEST.md
+!docs/DOCS_WEB_SRC_MD_MANIFEST.md
 # !docs/docs_triage_table_ultra.md
 
 # editor/os

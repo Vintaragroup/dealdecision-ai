@@ -1,3 +1,5 @@
+> NOTE: This doc intentionally lives in `apps/web/src` because it is a component-scoped README used by the onboarding UI and should stay adjacent to the implementation for accurate maintenance.
+
 # 🎯 DealDecision AI - Onboarding Flow
 
 ## Overview

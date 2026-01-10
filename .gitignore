@@ -26,8 +26,12 @@ scripts/experimental/
 
 # internal documentation
 # Keep the bulk of docs ignored (trace runs can be large), but allow committing
-# the human-readable trace audit rollup.
-docs/
+# the curated human-readable docs and the trace audit rollup.
+docs/**
+
+!docs/scoring-and-evidence.md
+!docs/runbook-debugging.md
+
 !docs/trace_audit/
 docs/trace_audit/**
 !docs/trace_audit/ROLLUP.md
@@ -49,3 +53,6 @@ coverage/
 
 *.traineddata
 DEALWORKSPACE_API_MAP.md
+
+# package-internal docs (not curated)
+packages/**/docs/

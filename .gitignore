@@ -26,15 +26,48 @@ scripts/experimental/
 
 # internal documentation
 # Keep the bulk of docs ignored (trace runs can be large), but allow committing
-# the curated human-readable docs and the trace audit rollup.
+# curated human-readable docs.
 docs/**
 
+# Curated top-level docs
 !docs/scoring-and-evidence.md
 !docs/runbook-debugging.md
 
+# Curated Active docs (human-readable only)
+!docs/Active/
+
+# Keep Active ignored by default; allowlist only text docs
+docs/Active/**
+!docs/Active/**/*.md
+!docs/Active/**/*.mdc
+!docs/Active/**/*.mdx
+!docs/Active/**/*.txt
+
+# Never track binaries even if they land in Active
+docs/Active/**/*.pdf
+docs/Active/**/*.ppt
+docs/Active/**/*.pptx
+docs/Active/**/*.xls
+docs/Active/**/*.xlsx
+docs/Active/**/*.doc
+docs/Active/**/*.docx
+docs/Active/**/*.png
+docs/Active/**/*.jpg
+docs/Active/**/*.jpeg
+docs/Active/**/*.gif
+docs/Active/**/*.webp
+docs/Active/**/*.zip
+docs/Active/**/*.7z
+
+# Trace audit rollup
 !docs/trace_audit/
 docs/trace_audit/**
 !docs/trace_audit/ROLLUP.md
+
+# Optional: keep cleanup control docs tracked (uncomment if desired)
+# Cleanup control docs (tracked)
+!docs/DOCS_CLEANUP_MANIFEST.md
+# !docs/docs_triage_table_ultra.md
 
 # editor/os
 .DS_Store

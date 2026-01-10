@@ -56,3 +56,66 @@ test('linked evidence clears mismatch and improves audit status', () => {
   const auditStatus = res!.trace_audit_v1!.status;
   assert.ok(auditStatus === 'partial' || auditStatus === 'ok');
 });
+
+test('trace audit ignores coverage:missing sections and returns ok when others are traced', () => {
+  const res = buildScoreBreakdownV1({
+    coverage: {
+      sections: {
+        market_icp: 'missing',
+        product_solution: 'present',
+        traction: 'present',
+        business_model: 'missing',
+        risks: 'missing',
+        team: 'missing',
+      },
+    },
+    claims: [
+      { category: 'product', claim_id: 'p1', text: 'Product claim', evidence: [{ evidence_id: 'e1' }] },
+      { category: 'traction', claim_id: 't1', text: 'Traction claim', evidence: [{ evidence_id: 'e2' }] },
+    ],
+  });
+
+  assert.ok(res, 'score breakdown should be built');
+  const audit = res!.trace_audit_v1;
+  assert.ok(audit, 'trace audit should exist');
+  assert.equal(audit!.status, 'ok');
+  assert.equal(audit!.sections_missing_trace, 0);
+});
+
+test('coverage missing but linked evidence downgrades to weak without mismatch', () => {
+  const res = buildScoreBreakdownV1({
+    coverage: {
+      sections: {
+        business_model: 'missing',
+      },
+    },
+    claims: [
+      { category: 'business_model', claim_id: 'bm1', text: 'BM claim', evidence: [{ evidence_id: 'e1', snippet: 'pricing' }] },
+    ],
+  });
+
+  assert.ok(res, 'score breakdown should be built');
+  const bm = res!.sections.find((s) => s.key === 'business_model');
+  assert.ok(bm, 'business model section should exist');
+  assert.equal(bm!.support_status, 'weak');
+  assert.equal(bm!.mismatch, false);
+  assert.equal(bm!.evidence_count_linked, 1);
+  assert.ok(bm!.missing_reasons?.some((r) => r.includes('treated as weak')));
+  assert.ok(res!.trace_audit_v1);
+});
+
+test('trace audit grouping does not double-count market/icp coverage gaps', () => {
+  const res = buildScoreBreakdownV1({
+    coverage: {
+      sections: {
+        market_icp: 'missing',
+      },
+    },
+  });
+
+  assert.ok(res, 'score breakdown should be built');
+  const audit = res!.trace_audit_v1;
+  assert.ok(audit, 'trace audit should exist');
+  assert.equal(audit!.sections_total, 1);
+  assert.equal(audit!.sections_missing_trace, 1);
+});

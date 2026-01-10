@@ -500,6 +500,30 @@ export function apiGetEvidence(dealId: string) {
   });
 }
 
+export type EvidenceResolveResult = {
+  id: string;
+  ok: boolean;
+  resolvable?: boolean;
+  document_id?: string;
+  document_title?: string;
+  page?: number;
+  snippet?: string;
+};
+
+export function apiResolveEvidence(ids: string[]) {
+  const safeIds = Array.from(
+    new Set((ids ?? []).filter((id): id is string => typeof id === 'string' && id.trim().length > 0).map((id) => id.trim()))
+  ).slice(0, 100);
+
+  if (safeIds.length === 0) {
+    return Promise.resolve<{ results: EvidenceResolveResult[] }>({ results: [] });
+  }
+
+  // Comma-separated to match API.
+  const qs = encodeURIComponent(safeIds.join(','));
+  return request<{ results: EvidenceResolveResult[] }>(`/api/v1/evidence/resolve?ids=${qs}`);
+}
+
 export type DealReport = {
   dealId: string;
   generatedAt: string;

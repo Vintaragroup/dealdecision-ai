@@ -461,7 +461,7 @@ function parseNullableNumber(value: unknown): number | null {
   return null;
 }
 
-type Phase1ScoreEvidenceSectionKey = "product" | "market" | "icp" | "business_model" | "traction" | "risks";
+type Phase1ScoreEvidenceSectionKey = "product" | "market" | "icp" | "business_model" | "traction" | "risks" | "terms" | "team";
 
 type Phase1ScoreEvidencePayload = {
   sections: Array<{
@@ -489,7 +489,7 @@ type Phase1ScoreEvidencePayload = {
   totals: { claims: number; evidence: number };
 };
 
-type ScoreBreakdownSectionKey = "market" | "product" | "business_model" | "traction" | "risks" | "team";
+type ScoreBreakdownSectionKey = "market" | "product" | "business_model" | "traction" | "risks" | "team" | "terms" | "icp";
 
 type ScoreBreakdownSupport = "supported" | "weak" | "missing" | "unknown";
 
@@ -505,6 +505,7 @@ type ScoreTraceAuditV1 = {
 type ScoreBreakdownSection = {
   key: ScoreBreakdownSectionKey;
   section_key?: ScoreBreakdownSectionKey;
+  coverage_group_key?: string;
   support_status: ScoreBreakdownSupport;
   evidence_count: number;
   evidence_ids?: string[];
@@ -549,6 +550,42 @@ type EvidenceRow = {
 
 type DocumentIndex = Record<string, { title?: string | null; page_count?: number | null }>;
 
+const SCORE_BREAKDOWN_SECTION_ORDER: ScoreBreakdownSectionKey[] = [
+  "market",
+  "product",
+  "business_model",
+  "traction",
+  "risks",
+  "team",
+  "terms",
+  "icp",
+];
+
+const CLAIM_CATEGORY_SECTION_MAP: Record<ScoreBreakdownSectionKey, string[]> = {
+  market: ["market", "market_icp"],
+  product: ["product"],
+  business_model: ["product", "business_model", "pricing"],
+  traction: ["traction"],
+  risks: ["risk", "risks"],
+  team: ["team"],
+  terms: ["terms", "raise_terms", "deal_terms", "terms_raise"],
+  icp: ["icp"],
+};
+
+function normalizeCategory(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const s = value.trim().toLowerCase();
+  return s || null;
+}
+
+function sectionForCategory(category: string | null): ScoreBreakdownSectionKey | null {
+  if (!category) return null;
+  for (const [section, cats] of Object.entries(CLAIM_CATEGORY_SECTION_MAP)) {
+    if (cats.includes(category)) return section as ScoreBreakdownSectionKey;
+  }
+  return null;
+}
+
 export function buildScoreBreakdownV1(params: {
   accountability?: any;
   scoreAudit?: any;
@@ -563,7 +600,7 @@ export function buildScoreBreakdownV1(params: {
   const hasInputs = Boolean(accountability) || Boolean(coverage) || claims.length > 0;
   if (!hasInputs) return null;
 
-  const sectionOrder: ScoreBreakdownSectionKey[] = ["market", "product", "business_model", "traction", "risks", "team"];
+  const sectionOrder = SCORE_BREAKDOWN_SECTION_ORDER;
 
   const coverageKeyMap: Record<ScoreBreakdownSectionKey, string> = {
     market: "market_icp",
@@ -572,15 +609,8 @@ export function buildScoreBreakdownV1(params: {
     traction: "traction",
     risks: "risks",
     team: "team",
-  };
-
-  const claimCategoryMap: Record<ScoreBreakdownSectionKey, string[]> = {
-    market: ["market"],
-    product: ["product"],
-    business_model: ["product"],
-    traction: ["traction"],
-    risks: ["risk"],
-    team: ["team"],
+    terms: "terms",
+    icp: "market_icp",
   };
 
   const labelMap: Record<ScoreBreakdownSectionKey, string> = {
@@ -590,6 +620,8 @@ export function buildScoreBreakdownV1(params: {
     traction: "Traction",
     risks: "Risks",
     team: "Team",
+    terms: "Terms",
+    icp: "ICP",
   };
 
   const hints: Record<ScoreBreakdownSectionKey, string> = {
@@ -599,15 +631,16 @@ export function buildScoreBreakdownV1(params: {
     traction: "Add traction metrics or customer proof to support traction claims.",
     risks: "Document key risks with mitigations to tighten this section.",
     team: "Include founder bios or key hires to bolster team assessment.",
+    terms: "Attach term sheet or raise terms to validate deal structure.",
+    icp: "Add ICP or customer definition evidence to strengthen this section.",
   };
 
   const claimIdsForSection = (key: ScoreBreakdownSectionKey): string[] => {
-    const categories = claimCategoryMap[key];
     const ids: string[] = [];
     for (const claim of claims) {
       if (!claim || typeof claim !== "object") continue;
-      const cat = (claim as any).category;
-      if (!categories.includes(cat)) continue;
+      const section = deriveSectionKeyFromClaim(claim);
+      if (section !== key) continue;
       const claimId = typeof (claim as any).claim_id === "string" ? (claim as any).claim_id : typeof (claim as any).id === "string" ? (claim as any).id : null;
       if (claimId && claimId.trim()) ids.push(claimId.trim());
     }
@@ -615,12 +648,11 @@ export function buildScoreBreakdownV1(params: {
   };
 
   const docIdsFromClaims = (key: ScoreBreakdownSectionKey): string[] => {
-    const categories = claimCategoryMap[key];
     const ids: string[] = [];
     for (const claim of claims) {
       if (!claim || typeof claim !== "object") continue;
-      const cat = (claim as any).category;
-      if (!categories.includes(cat)) continue;
+      const section = deriveSectionKeyFromClaim(claim);
+      if (section !== key) continue;
       const evList = Array.isArray((claim as any).evidence) ? (claim as any).evidence : [];
       for (const ev of evList) {
         const docId = typeof ev?.document_id === "string" ? ev.document_id : typeof ev?.doc_id === "string" ? ev.doc_id : null;
@@ -690,23 +722,21 @@ export function buildScoreBreakdownV1(params: {
   };
 
   const evidenceCountFor = (key: ScoreBreakdownSectionKey): number => {
-    const categories = claimCategoryMap[key];
     return claims.reduce((acc, claim) => {
       if (!claim || typeof claim !== "object") return acc;
-      const cat = (claim as any).category;
-      if (!categories.includes(cat)) return acc;
+      const section = deriveSectionKeyFromClaim(claim);
+      if (section !== key) return acc;
       const evCount = Array.isArray((claim as any).evidence) ? (claim as any).evidence.length : 0;
       return acc + evCount;
     }, 0);
   };
 
   const evidenceIdsFromClaims = (key: ScoreBreakdownSectionKey): string[] => {
-    const categories = claimCategoryMap[key];
     const ids: string[] = [];
     for (const claim of claims) {
       if (!claim || typeof claim !== "object") continue;
-      const cat = (claim as any).category;
-      if (!categories.includes(cat)) continue;
+      const section = deriveSectionKeyFromClaim(claim);
+      if (section !== key) continue;
       const evidenceList = Array.isArray((claim as any).evidence) ? (claim as any).evidence : [];
       for (const ev of evidenceList) {
         const evId = typeof ev?.evidence_id === "string" ? ev.evidence_id : typeof ev?.id === "string" ? ev.id : null;
@@ -760,17 +790,28 @@ export function buildScoreBreakdownV1(params: {
     return Array.from(new Set(reasons)).filter((r) => typeof r === "string" && r.trim().length > 0);
   };
 
-  const sections = sectionOrder.map((key) => {
+  const sections: ScoreBreakdownSection[] = [];
+
+  for (const key of sectionOrder) {
     const supportMeta = supportMetaFor(key);
-    const support = supportMeta.support ?? "unknown";
+    const coverageKey = coverageKeyMap[key];
+    const coverageStatusRaw = coverage && typeof coverage === "object" ? (coverage as any).sections?.[coverageKey] : undefined;
+    let support = supportMeta.support ?? "unknown";
+    let rule_key = supportMeta.ruleKey;
     const claimEvidenceIds = evidenceIdsFromClaims(key);
     const claimIds = claimIdsForSection(key);
     const docIds = docIdsFromClaims(key);
     const fallbackSample = (params.sectionEvidenceSamples?.[key] ?? []).filter((id) => typeof id === "string" && id.trim().length > 0);
-    const evidenceIdsSource = claimEvidenceIds.length > 0 ? claimEvidenceIds : fallbackSample;
-    const evidence_ids = Array.from(new Set(evidenceIdsSource));
-    const evidence_ids_sample = evidence_ids.slice(0, 5);
-    const evidence_ids_linked = evidence_ids.slice(0, 25);
+    const evidence_ids_linked = claimEvidenceIds.slice(0, 25);
+    const evidence_ids_sample = fallbackSample.slice(0, 3);
+    const evidence_ids = Array.from(new Set([...claimEvidenceIds, ...fallbackSample]));
+
+    const hasAnyInput =
+      typeof coverageStatusRaw === "string"
+      || claimIds.length > 0
+      || evidence_ids.length > 0
+      || fallbackSample.length > 0;
+    if (!hasAnyInput) continue;
     const evidence_source: ScoreBreakdownSection["evidence_source"] = claimEvidenceIds.length > 0
       ? "claims"
       : fallbackSample.length > 0
@@ -778,19 +819,29 @@ export function buildScoreBreakdownV1(params: {
         : "unknown";
 
     const evidence_count_from_claims = evidenceCountFor(key);
-    const evidence_count_total_raw = Math.max(evidence_count_from_claims, evidenceIdsSource.length);
+    const evidence_count_total_raw = Math.max(evidence_count_from_claims, evidence_ids.length);
     const evidence_count_total = Number.isFinite(evidence_count_total_raw) && evidence_count_total_raw > 0 ? evidence_count_total_raw : 0;
-    const evidence_count_linked_raw = evidence_ids.length;
+    const evidence_count_linked_raw = evidence_ids_linked.length;
     const evidence_count_linked = Number.isFinite(evidence_count_linked_raw) && evidence_count_linked_raw > 0 ? evidence_count_linked_raw : 0;
     const trace_coverage_pct = evidence_count_total > 0 ? Math.min(1, evidence_count_linked / evidence_count_total) : 0;
     const coverage_pct = evidence_count_total > 0 ? Math.min(100, Math.max(0, Math.round(trace_coverage_pct * 100))) : 0;
+
+    const coverageMarkedMissingButHasEvidence = coverageStatusRaw === "missing" && evidence_count_linked > 0;
+    if (coverageMarkedMissingButHasEvidence) {
+      support = "weak";
+      rule_key = `${supportMeta.ruleKey};coverage_missing_overridden_with_evidence`;
+    }
+
     const coverageGap = support === "supported" && evidence_count_total >= 3 && trace_coverage_pct < 0.4;
     const mismatch = (support === "supported" && evidence_count_linked === 0) || coverageGap || (support === "missing" && evidence_count_total > 0);
 
     const support_reason = (() => {
       const base = supportMeta.reason;
-      if (evidence_count_total === 0) return `${base} No evidence counted for this section.`;
-      return `${base} Trace coverage ${evidence_count_linked}/${evidence_count_total} (${coverage_pct}%).`;
+      const override = coverageMarkedMissingButHasEvidence
+        ? " Support overridden to weak because coverage was marked missing but linked evidence exists."
+        : "";
+      if (evidence_count_total === 0) return `${base}${override} No evidence counted for this section.`;
+      return `${base}${override} Trace coverage ${evidence_count_linked}/${evidence_count_total} (${coverage_pct}%).`;
     })();
 
     const inputs_used_candidate: ScoreBreakdownSection["inputs_used"] = {
@@ -809,9 +860,18 @@ export function buildScoreBreakdownV1(params: {
     if (coverageGap) missing_link_reasons.push("Linked evidence coverage below threshold");
     if (support === "missing" && evidence_count_total > 0) missing_link_reasons.push("Section marked missing but evidence exists");
 
-    return {
+    const missingReasonsBase = missingReasonsFor(key, support);
+    const missing_reasons = coverageMarkedMissingButHasEvidence
+      ? [
+          "Coverage marked missing but evidence exists; treated as weak until structured coverage is extracted.",
+          ...missingReasonsBase,
+        ]
+      : missingReasonsBase;
+
+    sections.push({
       key,
       section_key: key,
+      coverage_group_key: coverageKey,
       support_status: support,
       evidence_count: evidence_count_total,
       evidence_ids,
@@ -821,24 +881,63 @@ export function buildScoreBreakdownV1(params: {
       evidence_count_linked,
       trace_coverage_pct,
       coverage_pct,
-      rule_key: supportMeta.ruleKey,
+      rule_key,
       inputs_used,
       support_reason,
       evidence_source,
-      missing_reasons: missingReasonsFor(key, support),
+      missing_reasons,
       missing_link_reasons,
       hint: hints[key],
       mismatch,
-    } satisfies ScoreBreakdownSection;
-  });
+    });
+  }
 
   const evidence_total = sections.reduce((acc, s) => acc + (Number.isFinite(s.evidence_count_total) ? (s.evidence_count_total as number) : Number.isFinite(s.evidence_count) ? (s.evidence_count as number) : 0), 0);
 
   const traceAudit: ScoreTraceAuditV1 = (() => {
-    const sections_total = sections.length;
-    const sections_with_trace = sections.filter((s) => (s.evidence_count_linked ?? 0) > 0).length;
-    const sections_missing_trace = sections.filter((s) => (s.evidence_count_linked ?? 0) === 0).length;
-    const mismatch_sections = sections.filter((s) => s.mismatch).length;
+    const intentionalMissing = (s: ScoreBreakdownSection) =>
+      s.support_status === "missing" && typeof s.rule_key === "string" && s.rule_key.startsWith("coverage:missing");
+
+    const autoExcluded = (s: ScoreBreakdownSection) => {
+      const total = s.evidence_count_total ?? (s as any).evidence_count ?? 0;
+      const hasClaims = Array.isArray(s.inputs_used?.claim_ids) && s.inputs_used.claim_ids.length > 0;
+      const hasEvIds = Array.isArray(s.evidence_ids) && s.evidence_ids.length > 0;
+      const fromCoverage = typeof s.rule_key === "string" && s.rule_key.startsWith("coverage:");
+      return !fromCoverage && (s.support_status === "missing" || s.support_status === "weak") && total === 0 && !hasClaims && !hasEvIds;
+    };
+
+    const usedSections = sections.filter((s) => !autoExcluded(s));
+
+    const groupKeyFor = (s: ScoreBreakdownSection) => {
+      const key = (s as any).coverage_group_key ?? (s.section_key ?? s.key);
+      if (typeof key === "string" && key.trim()) return key;
+      const fallback = (s.section_key ?? s.key) as ScoreBreakdownSectionKey | undefined;
+      return fallback ? coverageKeyMap[fallback] ?? fallback : "unknown";
+    };
+
+    const grouped = new Map<string, ScoreBreakdownSection[]>();
+    for (const s of usedSections) {
+      const gk = groupKeyFor(s);
+      const list = grouped.get(gk) ?? [];
+      list.push(s);
+      grouped.set(gk, list);
+    }
+
+    const groupStats = Array.from(grouped.entries()).map(([groupKey, list]) => {
+      const hasIntentionalMissing = list.every((s) => intentionalMissing(s));
+      const linked = list.reduce((acc, s) => acc + (s.evidence_count_linked ?? 0), 0);
+      const total = list.reduce((acc, s) => acc + (s.evidence_count_total ?? (s as any).evidence_count ?? 0), 0);
+      const hasMismatch = list.some((s) => s.mismatch);
+      return { groupKey, hasIntentionalMissing, linked, total, hasMismatch };
+    });
+
+    const eligibleGroups = groupStats.filter((g) => !g.hasIntentionalMissing);
+    const groupsUsed = eligibleGroups.length > 0 ? eligibleGroups : groupStats;
+
+    const sections_total = groupsUsed.length;
+    const sections_with_trace = groupsUsed.filter((g) => g.linked > 0).length;
+    const sections_missing_trace = groupsUsed.filter((g) => g.linked === 0).length;
+    const mismatch_sections = groupsUsed.filter((g) => g.hasMismatch).length;
     const coverageRatio = sections_total > 0 ? sections_with_trace / sections_total : 0;
 
     let status: ScoreTraceAuditV1["status"] = "partial";
@@ -974,10 +1073,12 @@ async function fetchEvidenceSamplesBySection(params: {
 
     const hasDioId = await hasColumn(pool, "evidence", "dio_id");
     const hasSectionKey = await hasColumn(pool, "evidence", "section_key");
+    const hasExcerpt = await hasColumn(pool, "evidence", "excerpt");
+    const hasText = await hasColumn(pool, "evidence", "text");
     const effectiveLimit = Math.max(5, Math.min(200, limit));
     const samples: Partial<Record<ScoreBreakdownSectionKey, string[]>> = {};
 
-    const sectionKeys: ScoreBreakdownSectionKey[] = ["market", "product", "business_model", "traction", "risks", "team"];
+    const sectionKeys: ScoreBreakdownSectionKey[] = ["market", "product", "business_model", "traction", "risks", "team", "terms", "icp"];
 
     for (const key of sectionKeys) {
       const where: string[] = ["deal_id = $1"];
@@ -996,22 +1097,29 @@ async function fetchEvidenceSamplesBySection(params: {
         paramIdx += 1;
       }
 
+      const snippetExpr = hasExcerpt ? "excerpt" : hasText ? "text" : "NULL::text";
+
       const query = hasSectionKey
-        ? `SELECT id
+        ? `SELECT id, document_id${key === "business_model" ? `, ${snippetExpr} AS snippet` : ""}
              FROM evidence
             WHERE ${where.join(" AND ")}
-            ORDER BY created_at DESC NULLS LAST, id DESC
+            ORDER BY (document_id IS NULL), created_at DESC NULLS LAST, id DESC
             LIMIT ${effectiveLimit}`
-        : `SELECT id, source, kind, text
-             FROM evidence
-            WHERE ${where.join(" AND ")}
-            ORDER BY created_at DESC NULLS LAST, id DESC
-            LIMIT ${effectiveLimit}`;
+        : `SELECT id, source, kind, text, document_id
+           FROM evidence
+          WHERE ${where.join(" AND ")}
+          ORDER BY (document_id IS NULL), created_at DESC NULLS LAST, id DESC
+          LIMIT ${effectiveLimit}`;
 
       const { rows } = await pool.query<any>(query, paramsArr);
 
       if (hasSectionKey) {
-        const ids = (rows ?? [])
+        const businessModelRegex = /(marketplace|pricing|take rate|take-rate|take\s*rate|fee|commission|subscription|revenue model|royalties|licensing)/i;
+        const filtered = key === "business_model"
+          ? (rows ?? []).filter((r: any) => typeof r?.snippet === "string" && businessModelRegex.test(r.snippet))
+          : rows ?? [];
+
+        const ids = filtered
           .map((r: any) => (typeof r?.id === "string" ? r.id.trim() : null))
           .filter((v: string | null): v is string => Boolean(v))
           .slice(0, 5);
@@ -1026,6 +1134,8 @@ async function fetchEvidenceSamplesBySection(params: {
         traction: ["traction", "revenue", "arr", "mrr", "customers", "users", "growth", "kpi"],
         risks: ["risk", "compliance", "threat", "mitigation", "issue"],
         team: ["team", "founder", "ceo", "cto", "leadership", "hiring", "talent"],
+        terms: ["terms", "term sheet", "raise", "valuation", "ownership", "liquidation"],
+        icp: ["icp", "customer", "ideal customer", "buyer", "persona"],
       };
 
       const haystack = (row: any): string => `${row?.source ?? ""} ${row?.kind ?? ""} ${row?.text ?? ""}`.toLowerCase();
@@ -1045,6 +1155,247 @@ async function fetchEvidenceSamplesBySection(params: {
   } catch {
     return {};
   }
+}
+
+function normalizeEvidenceSnippet(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const cleaned = sanitizeText(raw).replace(/\s+/g, " ").trim();
+  if (!cleaned) return null;
+  return cleaned.length > 500 ? cleaned.slice(0, 500) : cleaned;
+}
+
+const BUSINESS_MODEL_STRONG_REGEX = /\b(marketplace|subscription|recurring|saas|pricing|price|revenue model|rev model|take\s*rate|take-rate|commission|fee|arpu|ltv|cac|gross margin|unit economics|licensing|royalties|usage-based|consumption|per[- ]seat|per[- ]user|per[- ]transaction|transaction fee|rake|payment fee|processing fee)\b/i;
+
+function deriveSectionKeyFromClaim(claim: any): ScoreBreakdownSectionKey | null {
+  if (!claim || typeof claim !== "object") return null;
+  const rawCategory = (claim as any)?.category ?? (claim as any)?.section_key ?? (claim as any)?.topic ?? (claim as any)?.source ?? null;
+  const category = normalizeCategory(rawCategory);
+  const text = typeof (claim as any)?.text === "string" ? (claim as any).text.toLowerCase() : "";
+
+  const preferIcp = category === "market_icp" || category === "icp" || text.includes(" icp") || text.includes("ideal customer") || text.includes("customer profile");
+
+  if (preferIcp && CLAIM_CATEGORY_SECTION_MAP.icp.includes("icp")) return "icp";
+
+  const sectionFromCategory = sectionForCategory(category);
+  if (sectionFromCategory) return sectionFromCategory;
+
+  const sectionKey = normalizeCategory((claim as any)?.section_key ?? (claim as any)?.source);
+  if (sectionKey && (SCORE_BREAKDOWN_SECTION_ORDER as string[]).includes(sectionKey)) {
+    return sectionKey as ScoreBreakdownSectionKey;
+  }
+
+  if (preferIcp) return "icp";
+  return null;
+}
+
+async function ensureEvidenceLinksForClaims(params: {
+  pool: DealRoutesPool;
+  dealId: string;
+  dioId?: string | null;
+  claims: any[];
+}): Promise<any[]> {
+  const claims = Array.isArray(params.claims)
+    ? params.claims.map((c) => (c && typeof c === "object" ? { ...c } : c))
+    : [];
+  if (claims.length === 0) return claims;
+
+  const stats = {
+    totalClaims: claims.length,
+    skippedMissingSnippet: 0,
+    skippedNoSection: 0,
+    skippedNoDoc: 0,
+    matchedExisting: 0,
+    insertedNew: 0,
+    perSection: new Map<ScoreBreakdownSectionKey, number>(),
+  };
+
+  const evidenceTableExists = await hasTable(params.pool, "evidence");
+  if (!evidenceTableExists) return claims;
+
+  const [hasDealId, hasDocumentId, hasSource, hasKind, hasConfidence, hasPage, hasPageNumber, hasExcerpt, hasText, hasDioId, hasSectionKey] =
+    await Promise.all([
+      hasColumn(params.pool, "evidence", "deal_id"),
+      hasColumn(params.pool, "evidence", "document_id"),
+      hasColumn(params.pool, "evidence", "source"),
+      hasColumn(params.pool, "evidence", "kind"),
+      hasColumn(params.pool, "evidence", "confidence"),
+      hasColumn(params.pool, "evidence", "page"),
+      hasColumn(params.pool, "evidence", "page_number"),
+      hasColumn(params.pool, "evidence", "excerpt"),
+      hasColumn(params.pool, "evidence", "text"),
+      hasColumn(params.pool, "evidence", "dio_id"),
+      hasColumn(params.pool, "evidence", "section_key"),
+    ]);
+
+  const textColumn = hasExcerpt ? "excerpt" : hasText ? "text" : null;
+  if (!hasDealId || !textColumn) return claims;
+
+  const existingCache = new Map<string, string>();
+
+  const findExistingEvidenceId = async (docId: string | null, snippet: string): Promise<string | null> => {
+    const key = `${docId ?? "null"}:${snippet}`;
+    if (existingCache.has(key)) return existingCache.get(key) ?? null;
+
+    const where: string[] = ["deal_id = $1", `${textColumn} = $2`];
+    const paramsArr: Array<string | null> = [params.dealId, snippet];
+    let idx = 3;
+    if (hasDocumentId) {
+      where.push(`document_id IS NOT DISTINCT FROM $${idx}`);
+      paramsArr.push(docId);
+      idx += 1;
+    }
+
+    const { rows } = await params.pool.query<{ id: string }>(
+      `SELECT id
+         FROM evidence
+        WHERE ${where.join(" AND ")}
+        ORDER BY created_at DESC NULLS LAST
+        LIMIT 1`,
+      paramsArr
+    );
+
+    const found = rows?.[0]?.id ?? null;
+    if (found) existingCache.set(key, found);
+    return found;
+  };
+
+  for (const claim of claims) {
+    if (!claim || typeof claim !== "object") continue;
+    const sectionKey = deriveSectionKeyFromClaim(claim);
+    if (!sectionKey) {
+      stats.skippedNoSection += 1;
+      continue;
+    }
+    const evidenceList = Array.isArray((claim as any).evidence) ? (claim as any).evidence : [];
+    const normalizedEvidence: any[] = [];
+    const existingEvidenceIds = new Set<string>(
+      Array.isArray((claim as any).evidence_ids)
+        ? (claim as any).evidence_ids.filter((v: unknown): v is string => typeof v === "string" && v.trim().length > 0)
+        : []
+    );
+
+    for (const ev of evidenceList) {
+      if (!ev || typeof ev !== "object") continue;
+      const cloned = { ...ev } as any;
+
+      const explicitId = typeof ev?.evidence_id === "string" ? ev.evidence_id : typeof ev?.id === "string" ? ev.id : null;
+      if (explicitId && explicitId.trim()) {
+        const id = explicitId.trim();
+        cloned.evidence_id = id;
+        cloned.id = id;
+        existingEvidenceIds.add(id);
+        normalizedEvidence.push(cloned);
+        stats.matchedExisting += 1;
+        continue;
+      }
+
+      const snippet = normalizeEvidenceSnippet((ev as any)?.snippet ?? (ev as any)?.text);
+      if (!snippet) {
+        stats.skippedMissingSnippet += 1;
+        normalizedEvidence.push(cloned);
+        continue;
+      }
+
+      const isBusinessModel = sectionKey === "business_model";
+      const passesBusinessModelGate = !isBusinessModel || BUSINESS_MODEL_STRONG_REGEX.test(snippet);
+      if (!passesBusinessModelGate) {
+        stats.skippedNoSection += 1;
+        continue;
+      }
+
+      const docIdRaw = (ev as any)?.document_id ?? (ev as any)?.doc_id;
+      const docId = typeof docIdRaw === "string" && docIdRaw.trim() ? sanitizeText(docIdRaw) : null;
+      if (docId) {
+        cloned.document_id = docId;
+        cloned.doc_id = docId;
+      }
+      if (!docId) stats.skippedNoDoc += 1;
+
+      const confidenceRaw = (ev as any)?.confidence ?? (claim as any)?.confidence;
+      const confidence = Number.isFinite(confidenceRaw) ? Number(confidenceRaw) : null;
+      const sourceRaw = typeof (ev as any)?.source === "string" && (ev as any).source.trim() ? (ev as any).source.trim() : null;
+      const kindRaw = typeof (ev as any)?.kind === "string" && (ev as any).kind.trim()
+        ? (ev as any).kind.trim()
+        : typeof (claim as any)?.category === "string"
+          ? (claim as any).category
+          : sectionKey ?? "claim";
+      const pageRaw = (ev as any)?.page ?? (ev as any)?.page_number;
+      const page = typeof pageRaw === "number" && Number.isFinite(pageRaw) ? pageRaw : null;
+
+      const existingId = await findExistingEvidenceId(docId, snippet);
+      const evidenceId = existingId ?? randomUUID();
+
+      if (!existingId) {
+        const cols: string[] = ["id", "deal_id", textColumn];
+        const values: Array<string | number | null> = [evidenceId, params.dealId, snippet];
+
+        if (hasDocumentId) {
+          cols.push("document_id");
+          values.push(docId);
+        }
+        if (hasSource) {
+          cols.push("source");
+          values.push(sourceRaw ?? "phase1_claim");
+        }
+        if (hasKind) {
+          cols.push("kind");
+          values.push(kindRaw ?? "claim");
+        }
+        if (hasConfidence) {
+          cols.push("confidence");
+          values.push(confidence);
+        }
+        if (hasPage || hasPageNumber) {
+          cols.push(hasPage ? "page" : "page_number");
+          values.push(page);
+        }
+        if (hasDioId && params.dioId) {
+          cols.push("dio_id");
+          values.push(params.dioId);
+        }
+        if (hasSectionKey && sectionKey) {
+          cols.push("section_key");
+          values.push(sectionKey);
+        }
+
+        const placeholders = cols.map((_, idx) => `$${idx + 1}`);
+        await params.pool.query(
+          `INSERT INTO evidence (${cols.join(", ")}) VALUES (${placeholders.join(", ")}) ON CONFLICT (id) DO NOTHING`,
+          values
+        );
+        stats.insertedNew += 1;
+      } else {
+        stats.matchedExisting += 1;
+      }
+
+      cloned.evidence_id = evidenceId;
+      cloned.id = evidenceId;
+      existingEvidenceIds.add(evidenceId);
+      normalizedEvidence.push(cloned);
+      stats.perSection.set(sectionKey, (stats.perSection.get(sectionKey) ?? 0) + 1);
+    }
+
+    if (normalizedEvidence.length > 0) {
+      (claim as any).evidence = normalizedEvidence;
+    }
+    if (existingEvidenceIds.size > 0) {
+      const combined = Array.from(new Set([...(claim as any).evidence_ids ?? [], ...Array.from(existingEvidenceIds)]));
+      (claim as any).evidence_ids = combined;
+    }
+  }
+
+  if (process.env.NODE_ENV !== "production") {
+    console.info({
+      deal_id: params.dealId,
+      dio_id: params.dioId ?? undefined,
+      stats: {
+        ...stats,
+        perSection: Object.fromEntries(stats.perSection.entries()),
+      },
+    }, "phase1.evidence_linker.stats");
+  }
+
+  return claims;
 }
 
 function buildPhase1ScoreEvidence(params: {
@@ -1182,6 +1533,81 @@ function buildPhase1ScoreEvidence(params: {
   };
 }
 
+function buildScoreEvidenceFromBreakdown(params: {
+  sections: ScoreBreakdownSection[];
+  evidenceById: Map<string, EvidenceRow>;
+  docIndex: DocumentIndex;
+}): Phase1ScoreEvidencePayload {
+  const sectionKeyMap: Partial<Record<ScoreBreakdownSectionKey, Phase1ScoreEvidenceSectionKey>> = {
+    market: "market",
+    icp: "icp",
+    product: "product",
+    business_model: "business_model",
+    traction: "traction",
+    risks: "risks",
+    team: "team",
+    terms: "terms",
+  };
+
+  const normalizeEvidenceItem = (id: string): Phase1ScoreEvidencePayload["sections"][number]["claims"][number]["evidence"][number] => {
+    const row = params.evidenceById.get(id);
+    const pageRaw = row?.page ?? (row as any)?.page_number;
+    const page = typeof pageRaw === "number" && Number.isFinite(pageRaw) ? pageRaw : null;
+    const docId = typeof row?.document_id === "string" ? row.document_id : undefined;
+    const docMeta = docId ? params.docIndex[docId] : undefined;
+    const snippet = typeof row?.text === "string" ? row.text : undefined;
+    return {
+      id,
+      kind: row?.kind ?? undefined,
+      value: (row as any)?.value ?? undefined,
+      doc_id: docId,
+      document_title: docMeta?.title ?? undefined,
+      page,
+      snippet,
+      source: row?.source ?? undefined,
+      created_at: row?.created_at ?? undefined,
+    };
+  };
+
+  const supportMap: Record<ScoreBreakdownSupport, "evidence" | "inferred" | "missing"> = {
+    supported: "evidence",
+    weak: "inferred",
+    missing: "missing",
+    unknown: "inferred",
+  };
+
+  const outSections: Phase1ScoreEvidencePayload["sections"] = [];
+  let evidenceTotal = 0;
+
+  for (const section of params.sections) {
+    const mapped = sectionKeyMap[section.section_key ?? section.key];
+    if (!mapped) continue;
+    const idsPrimary = Array.isArray(section.evidence_ids_linked)
+      ? section.evidence_ids_linked.filter((v) => typeof v === "string" && v.trim().length > 0)
+      : [];
+    const idsSamples = Array.isArray(section.evidence_ids_sample)
+      ? section.evidence_ids_sample.filter((v) => typeof v === "string" && v.trim().length > 0)
+      : [];
+    const ids = Array.from(new Set([...idsPrimary, ...idsSamples]));
+    const evidenceItems = ids.map(normalizeEvidenceItem);
+    evidenceTotal += evidenceItems.length;
+
+    outSections.push({
+      key: mapped,
+      support: supportMap[section.support_status] ?? "inferred",
+      missingReason: Array.isArray(section.missing_reasons) ? section.missing_reasons[0] : undefined,
+      claims: evidenceItems.length > 0
+        ? [{ id: `${mapped}-evidence`, text: `${mapped} evidence`, confidence: null, evidence: evidenceItems }]
+        : [],
+    });
+  }
+
+  return {
+    sections: outSections,
+    totals: { claims: outSections.reduce((acc, s) => acc + s.claims.length, 0), evidence: evidenceTotal },
+  };
+}
+
 function mapDeal(
   row: DealRow,
   dio: DIOAggregateRow | null | undefined,
@@ -1209,9 +1635,12 @@ function mapDeal(
     claims: (dio as any)?.phase1_claims,
     sectionEvidenceSamples: opts?.sectionEvidenceSamples,
   });
-  if (execV2 && scoreBreakdownV1) {
-    (execV2 as any).score_breakdown_v1 = scoreBreakdownV1;
-    if (scoreBreakdownV1.trace_audit_v1) (execV2 as any).score_trace_audit_v1 = scoreBreakdownV1.trace_audit_v1;
+  const scoreBreakdownFromDio = (dio as any)?.computed_score_breakdown_v1 ?? (execV2Raw as any)?.score_breakdown_v1;
+  const effectiveScoreBreakdown = scoreBreakdownFromDio ?? scoreBreakdownV1;
+
+  if (execV2 && effectiveScoreBreakdown) {
+    (execV2 as any).score_breakdown_v1 = effectiveScoreBreakdown;
+    if (effectiveScoreBreakdown.trace_audit_v1) (execV2 as any).score_trace_audit_v1 = effectiveScoreBreakdown.trace_audit_v1;
   }
 
   const out: any = {
@@ -3147,9 +3576,27 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     if (dioRows[0]) {
       try {
         const execV2 = (dioRows[0] as any).executive_summary_v2;
-        const claims = Array.isArray((dioRows[0] as any).phase1_claims) ? (dioRows[0] as any).phase1_claims : [];
+        let claims = Array.isArray((dioRows[0] as any).phase1_claims) ? (dioRows[0] as any).phase1_claims : [];
+
+        claims = await ensureEvidenceLinksForClaims({ pool, dealId, dioId: (dioRows[0] as any)?.dio_id ?? null, claims });
+        (dioRows[0] as any).phase1_claims = claims;
+        try {
+          sectionEvidenceSamples = await fetchEvidenceSamplesBySection({ pool, dealId, dioId: dioRows[0]?.dio_id ?? null, limit: 60 });
+        } catch (err) {
+          request.log?.info?.({
+            deal_id: dealId,
+            error: err instanceof Error ? err.message : String(err),
+          }, "deal.score_breakdown_samples.fail_open");
+          sectionEvidenceSamples = {};
+        }
+
+        const sampleIds = Object.values(sectionEvidenceSamples ?? {})
+          .flatMap((arr) => (Array.isArray(arr) ? arr : []))
+          .filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+
         const evidenceIds = collectEvidenceIdsFromClaims(claims);
-        const evidenceRows = evidenceIds.length > 0 ? await getEvidenceByIds(pool, evidenceIds) : [];
+        const allEvidenceIds = Array.from(new Set([...evidenceIds, ...sampleIds]));
+        const evidenceRows = allEvidenceIds.length > 0 ? await getEvidenceByIds(pool, allEvidenceIds) : [];
         const docIds = Array.from(
           new Set(
             evidenceRows
@@ -3164,21 +3611,30 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           evidenceById.set(ev.id, ev);
         }
 
-        const scoreEvidence = buildPhase1ScoreEvidence({
-          executiveSummaryV2: execV2,
+        const precomputedBreakdown = buildScoreBreakdownV1({
+          accountability: (execV2 as any)?.accountability_v1,
+          scoreAudit: (execV2 as any)?.score_audit_v1,
+          coverage: (dioRows[0] as any)?.phase1_coverage,
           claims,
-          evidenceById,
-          docIndex,
+          sectionEvidenceSamples,
         });
-        if (scoreEvidence) (dioRows[0] as any).phase1_score_evidence = scoreEvidence;
 
-        try {
-          sectionEvidenceSamples = await fetchEvidenceSamplesBySection({ pool, dealId, dioId: dioRows[0]?.dio_id ?? null, limit: 60 });
-        } catch (err) {
-          request.log?.info?.({
-            deal_id: dealId,
-            error: err instanceof Error ? err.message : String(err),
-          }, "deal.score_breakdown_samples.fail_open");
+        if (precomputedBreakdown) {
+          (dioRows[0] as any).computed_score_breakdown_v1 = precomputedBreakdown;
+          const scoreEvidenceCanonical = buildScoreEvidenceFromBreakdown({
+            sections: precomputedBreakdown.sections,
+            evidenceById,
+            docIndex,
+          });
+          (dioRows[0] as any).phase1_score_evidence = scoreEvidenceCanonical;
+        } else {
+          const scoreEvidence = buildPhase1ScoreEvidence({
+            executiveSummaryV2: execV2,
+            claims,
+            evidenceById,
+            docIndex,
+          });
+          if (scoreEvidence) (dioRows[0] as any).phase1_score_evidence = scoreEvidence;
         }
       } catch (err) {
         request.log?.info?.({

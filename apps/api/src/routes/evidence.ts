@@ -3,9 +3,38 @@ import { z } from "zod";
 import { getPool } from "../lib/db";
 import { enqueueJob } from "../services/jobs";
 
+type PoolLike = {
+  query: <T = any>(sql: string, params?: unknown[]) => Promise<{ rows: T[] }>;
+};
+
+async function hasTable(pool: PoolLike, table: string): Promise<boolean> {
+  try {
+    const { rows } = await pool.query<{ oid: string | null }>("SELECT to_regclass($1) as oid", [table]);
+    return rows?.[0]?.oid !== null;
+  } catch {
+    return false;
+  }
+}
+
+async function hasColumn(pool: PoolLike, table: string, column: string): Promise<boolean> {
+  try {
+    const { rows } = await pool.query<{ ok: number }>(
+      `SELECT 1 as ok FROM information_schema.columns WHERE table_name = $1 AND column_name = $2 LIMIT 1`,
+      [table, column]
+    );
+    return Array.isArray(rows) && rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 const fetchSchema = z.object({
   deal_id: z.string().min(1),
   filter: z.string().optional(),
+});
+
+const resolveSchema = z.object({
+  ids: z.string().min(1),
 });
 
 const dealIdSchema = z.string().min(1);
@@ -30,6 +59,102 @@ export async function registerEvidenceRoutes(app: FastifyInstance, pool = getPoo
       const message = err instanceof Error ? err.message : "Failed to queue evidence job";
       return reply.status(500).send({ error: message });
     }
+  });
+
+  // Resolve evidence IDs to citations for UI trace mode.
+  // Accepts comma-separated IDs: /api/v1/evidence/resolve?ids=a,b,c
+  app.get("/api/v1/evidence/resolve", async (request, reply) => {
+    const parsed = resolveSchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "Invalid input", details: parsed.error.flatten() });
+    }
+
+    const ids = parsed.data.ids
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+
+    const uniqueIds = Array.from(new Set(ids)).slice(0, 100);
+    if (uniqueIds.length === 0) {
+      return reply.status(400).send({ error: "No ids provided" });
+    }
+
+    const evidenceTableExists = await hasTable(pool as unknown as PoolLike, "evidence");
+    if (!evidenceTableExists) {
+      return reply.status(200).send({ results: uniqueIds.map((id) => ({ id, ok: false })) });
+    }
+
+    const [hasDocumentId, hasPage, hasPageNumber, hasText, hasExcerpt] = await Promise.all([
+      hasColumn(pool as unknown as PoolLike, "evidence", "document_id"),
+      hasColumn(pool as unknown as PoolLike, "evidence", "page"),
+      hasColumn(pool as unknown as PoolLike, "evidence", "page_number"),
+      hasColumn(pool as unknown as PoolLike, "evidence", "text"),
+      hasColumn(pool as unknown as PoolLike, "evidence", "excerpt"),
+    ]);
+
+    const documentsTableExists = await hasTable(pool as unknown as PoolLike, "documents");
+    const hasDocumentTitle = documentsTableExists
+      ? await hasColumn(pool as unknown as PoolLike, "documents", "title")
+      : false;
+
+    const evidenceIdExpr = "e.id";
+    const documentIdExpr = hasDocumentId ? "e.document_id" : "NULL::text AS document_id";
+    const pageExpr = hasPage ? "e.page" : hasPageNumber ? "e.page_number" : "NULL::int AS page";
+    const snippetExpr = hasExcerpt
+      ? "e.excerpt"
+      : hasText
+        ? "e.text"
+        : "NULL::text AS snippet";
+    const documentTitleExpr = documentsTableExists && hasDocumentTitle ? "d.title" : "NULL::text AS document_title";
+    const joinDocuments = documentsTableExists && hasDocumentId ? "LEFT JOIN documents d ON d.id = e.document_id" : "";
+
+    type Row = {
+      id: string;
+      document_id: string | null;
+      page: number | null;
+      snippet: string | null;
+      document_title: string | null;
+    };
+
+    const { rows } = await pool.query<Row>(
+      `SELECT ${evidenceIdExpr} as id,
+              ${documentIdExpr},
+              ${pageExpr},
+              ${snippetExpr} as snippet,
+              ${documentTitleExpr}
+         FROM evidence e
+         ${joinDocuments}
+        WHERE e.id = ANY($1::text[])`,
+      [uniqueIds]
+    );
+
+    const byId = new Map<string, Row>();
+    for (const row of rows ?? []) {
+      if (row?.id) byId.set(row.id, row);
+    }
+
+    const results = uniqueIds.map((id) => {
+      const row = byId.get(id);
+      if (!row) return { id, ok: false };
+
+      const document_id = row.document_id ?? undefined;
+      const document_title = row.document_title ?? undefined;
+      const page = typeof row.page === "number" && Number.isFinite(row.page) ? row.page : row.page ?? undefined;
+      const snippet = typeof row.snippet === "string" && row.snippet.trim().length > 0 ? row.snippet : undefined;
+      const resolvable = Boolean(document_id);
+
+      return {
+        id,
+        ok: true,
+        resolvable,
+        document_id,
+        document_title,
+        page,
+        snippet,
+      };
+    });
+
+    return reply.status(200).send({ results });
   });
 
   app.get("/api/v1/deals/:deal_id/evidence", async (request) => {

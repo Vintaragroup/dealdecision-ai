@@ -15,8 +15,8 @@ import { DealAnalystTab } from '../deals/tabs/DealAnalystTab';
 import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
-import { EvidencePanel, type ScoreSectionKey } from '../evidence/EvidencePanel';
-import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiPostAnalyze, apiPostExtractVisuals, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, isLiveBackend, subscribeToEvents, type AutoProfileResponse, type DealReport, type JobUpdatedEvent, type ProposedDealProfile } from '../../lib/apiClient';
+import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
+import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiPostAnalyze, apiPostExtractVisuals, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, apiResolveEvidence, isLiveBackend, subscribeToEvents, type AutoProfileResponse, type DealReport, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile } from '../../lib/apiClient';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
 import { derivePhaseBInsights } from '../../lib/phaseb-findings';
@@ -116,6 +116,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [documentsReloadKey, setDocumentsReloadKey] = useState(0);
   const [selectedScoreSectionKey, setSelectedScoreSectionKey] = useState<ScoreSectionKey | null>(null);
   const [highlightedEvidenceIds, setHighlightedEvidenceIds] = useState<string[]>([]);
+  const [resolvedEvidence, setResolvedEvidence] = useState<Record<string, EvidenceResolveResult>>({});
   const [selectedScoreSectionMismatch, setSelectedScoreSectionMismatch] = useState<boolean>(false);
   const [scoreTraceModeOverride, setScoreTraceModeOverride] = useState<'all' | 'trace' | null>(null);
 
@@ -197,9 +198,39 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   useEffect(() => {
     setSelectedScoreSectionKey(null);
     setHighlightedEvidenceIds([]);
+    setResolvedEvidence({});
     setSelectedScoreSectionMismatch(false);
     setScoreTraceModeOverride(null);
   }, [dealId]);
+
+  useEffect(() => {
+    if (!isLiveBackend()) {
+      setResolvedEvidence({});
+      return;
+    }
+    const ids = Array.from(new Set((highlightedEvidenceIds ?? []).filter((v) => typeof v === 'string' && v.trim().length > 0))).slice(0, 100);
+    if (ids.length === 0) {
+      setResolvedEvidence({});
+      return;
+    }
+    let active = true;
+    apiResolveEvidence(ids)
+      .then((res) => {
+        if (!active) return;
+        const next: Record<string, EvidenceResolveResult> = {};
+        for (const r of res?.results ?? []) {
+          if (r && typeof r.id === 'string' && r.id.trim().length > 0) next[r.id] = r;
+        }
+        setResolvedEvidence(next);
+      })
+      .catch(() => {
+        if (!active) return;
+        setResolvedEvidence({});
+      });
+    return () => {
+      active = false;
+    };
+  }, [highlightedEvidenceIds]);
 
   const getConfidenceLabel = (v: unknown): 'High' | 'Med' | 'Low' => {
     const n = typeof v === 'number' && Number.isFinite(v) ? v : 0;
@@ -309,13 +340,157 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const executiveSummaryV1 = (dealFromApi as any)?.ui?.executiveSummary as any;
 	const dealSummaryV2 = (dealFromApi as any)?.ui?.dealSummaryV2 as any;
 
-  const phase1Signals = (executiveSummaryV2 && typeof executiveSummaryV2 === 'object' ? executiveSummaryV2.signals : null) as any;
-  const recommendationRaw = typeof phase1Signals?.recommendation === 'string' ? phase1Signals.recommendation : null;
-  const normalizedRecommendation = recommendationRaw ? recommendationRaw.toLowerCase().trim() : null;
+  // Canonical Phase 1 signals source
+  const phase1Signals = ((dealFromApi as any)?.phase1?.executive_summary_v2?.signals
+    ?? (dealFromApi as any)?.executive_summary_v2?.signals
+    ?? null) as any;
+  const hasPhase1Signals = Boolean(
+    phase1Signals &&
+    typeof phase1Signals === 'object' &&
+    (typeof (phase1Signals as any)?.score === 'number' || typeof (phase1Signals as any)?.recommendation === 'string')
+  );
+
   const phase1ScoreEvidence = (dealFromApi as any)?.phase1_score_evidence ?? (dealFromApi as any)?.phase1?.score_evidence ?? null;
-  const scoreBreakdownV1 = (executiveSummaryV2 as any)?.score_breakdown_v1;
+  const scoreBreakdownV1 = ((dealFromApi as any)?.phase1?.executive_summary_v2 as any)?.score_breakdown_v1
+    ?? (dealFromApi as any)?.executive_summary_v2?.score_breakdown_v1;
   const scoreBreakdownSections = Array.isArray(scoreBreakdownV1?.sections) ? scoreBreakdownV1.sections : [];
-  const scoreTraceAudit = (executiveSummaryV2 as any)?.score_trace_audit_v1 ?? null;
+  const scoreTraceAudit = ((dealFromApi as any)?.phase1?.executive_summary_v2 as any)?.score_trace_audit_v1
+    ?? (dealFromApi as any)?.executive_summary_v2?.score_trace_audit_v1
+    ?? null;
+
+  const buildScoreEvidenceFromBreakdown = (
+    sections: typeof scoreBreakdownSections
+  ): ScoreEvidencePayload | null => {
+    if (!Array.isArray(sections) || sections.length === 0) return null;
+
+    const toLabel = (key: ScoreSectionKey): string => {
+      switch (key) {
+        case 'product':
+          return 'Product';
+        case 'market':
+          return 'Market';
+        case 'icp':
+          return 'ICP';
+        case 'business_model':
+          return 'Business model';
+        case 'traction':
+          return 'Traction';
+        case 'risks':
+          return 'Risks';
+        case 'team':
+          return 'Team';
+        default:
+          return key;
+      }
+    };
+
+    let claimCount = 0;
+    let evidenceCount = 0;
+
+    const normalizedSections = sections
+      .map((section, idx) => {
+        const key = (section?.key ?? (section as any)?.section_key) as ScoreSectionKey | undefined;
+        if (!key) return null;
+
+        const preferredIds = Array.isArray(section?.evidence_ids_linked)
+          ? section.evidence_ids_linked
+          : Array.isArray((section as any)?.evidence_ids)
+            ? (section as any).evidence_ids
+            : [];
+        const fallbackIds = Array.isArray(section?.evidence_ids_sample) ? section.evidence_ids_sample : [];
+        const ids = preferredIds.length > 0 ? preferredIds : fallbackIds;
+
+        const uniqueIds: string[] = [];
+        const seenIds = new Set<string>();
+        for (const id of ids) {
+          if (typeof id !== 'string') continue;
+          const trimmed = id.trim();
+          if (!trimmed || seenIds.has(trimmed)) continue;
+          seenIds.add(trimmed);
+          uniqueIds.push(trimmed);
+        }
+
+        const evidenceItems = uniqueIds.map((id, evIdx) => {
+          evidenceCount += 1;
+          return {
+            id,
+            label: `Evidence ${evIdx + 1}`,
+            kind: 'trace',
+            source: 'score_breakdown_v1',
+          };
+        });
+
+        const supportStatus = (section as any)?.support_status;
+        const support: 'evidence' | 'inferred' | 'missing' = (() => {
+          if (supportStatus === 'missing') return 'missing';
+          if (supportStatus === 'weak') return evidenceItems.length > 0 ? 'inferred' : 'missing';
+          if (supportStatus === 'supported') return evidenceItems.length > 0 ? 'evidence' : 'missing';
+          return evidenceItems.length > 0 ? 'evidence' : 'missing';
+        })();
+
+        const missingReason = (() => {
+          const reason = typeof (section as any)?.support_reason === 'string'
+            ? (section as any).support_reason.trim()
+            : '';
+          if (reason.length > 0) return reason;
+          const fromList = Array.isArray((section as any)?.missing_reasons)
+            ? (section as any).missing_reasons.find((r: unknown) => typeof r === 'string' && r.trim().length > 0)
+            : null;
+          return fromList ? (fromList as string).trim() : undefined;
+        })();
+
+        const claimId = `${key}-trace-${idx + 1}`;
+        const claimText = `${toLabel(key)} trace evidence`;
+        claimCount += 1;
+
+        return {
+          key: key as any,
+          support,
+          missingReason,
+          claims: [
+            {
+              id: claimId,
+              text: claimText,
+              evidence: evidenceItems,
+            },
+          ],
+        };
+      })
+      .filter(Boolean) as ScoreEvidencePayload['sections'];
+
+    if (normalizedSections.length === 0) return null;
+
+    return {
+      sections: normalizedSections,
+      totals: {
+        claims: claimCount,
+        evidence: evidenceCount,
+      },
+    };
+  };
+
+  const derivedScoreEvidenceFromBreakdown = buildScoreEvidenceFromBreakdown(scoreBreakdownSections);
+  const phase1ScoreEvidenceForPanel = (() => {
+    const sections = Array.isArray((phase1ScoreEvidence as any)?.sections) ? (phase1ScoreEvidence as any).sections : [];
+    if (sections.length > 0) return phase1ScoreEvidence;
+    return derivedScoreEvidenceFromBreakdown;
+  })();
+
+  if (import.meta.env.DEV) {
+    // eslint-disable-next-line no-console
+    console.debug('Evidence tab score evidence source', {
+      providedSections: Array.isArray((phase1ScoreEvidence as any)?.sections)
+        ? (phase1ScoreEvidence as any).sections.length
+        : null,
+      breakdownSections: scoreBreakdownSections.length,
+      derivedSections: derivedScoreEvidenceFromBreakdown?.sections?.length ?? 0,
+      source: phase1ScoreEvidenceForPanel === phase1ScoreEvidence
+        ? 'phase1_score_evidence'
+        : derivedScoreEvidenceFromBreakdown
+          ? 'score_breakdown_v1'
+          : 'none',
+    });
+  }
 
   const scoreToWorkspaceDecision = (score: number): 'PASS' | 'CONSIDER' | 'FUND' => {
     // Keep this aligned with backend report recommendation thresholds.
@@ -324,20 +499,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return 'PASS';
   };
 
-  const overallScoreForDecision: number | null =
-    typeof (dealFromApi as any)?.score === 'number' && Number.isFinite((dealFromApi as any).score)
-      ? Math.round((dealFromApi as any).score)
-      : (typeof investorScore === 'number' && Number.isFinite(investorScore) ? Math.round(investorScore) : null);
-
-  const decisionLabel = overallScoreForDecision != null
-    ? scoreToWorkspaceDecision(overallScoreForDecision)
-    : (normalizedRecommendation
-      ? (normalizedRecommendation.includes('pass') || normalizedRecommendation.includes('reject')
-        ? 'PASS'
-        : normalizedRecommendation.includes('go') || normalizedRecommendation.includes('invest') || normalizedRecommendation.includes('proceed')
-          ? 'FUND'
-          : 'CONSIDER')
-      : '—');
+  const recommendationRaw = typeof phase1Signals?.recommendation === 'string' ? phase1Signals.recommendation : null;
+  const normalizedRecommendation = recommendationRaw ? recommendationRaw.toLowerCase().trim() : null;
   const phase1Score = typeof phase1Signals?.score === 'number' && Number.isFinite(phase1Signals.score)
     ? Math.round(phase1Signals.score)
     : null;
@@ -347,9 +510,28 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     : null;
   const blockersCount = typeof phase1Signals?.blockers_count === 'number'
     ? phase1Signals.blockers_count
-    : Array.isArray((executiveSummaryV2 as any)?.blockers)
-      ? (executiveSummaryV2 as any).blockers.length
-      : null;
+    : null;
+
+  const legacyOverallScore = typeof (dealFromApi as any)?.score === 'number' && Number.isFinite((dealFromApi as any).score)
+    ? Math.round((dealFromApi as any).score)
+    : null;
+  const legacyOverallStatus = (dealFromApi as any)?.dioStatus ?? undefined;
+
+  const decisionScoreSource: 'phase1_signals' | 'legacy_overall' = hasPhase1Signals ? 'phase1_signals' : 'legacy_overall';
+
+  const decisionScore: number | null = hasPhase1Signals
+    ? phase1Score
+    : (legacyOverallScore ?? (typeof investorScore === 'number' && Number.isFinite(investorScore) ? Math.round(investorScore) : null));
+
+  const decisionLabel = hasPhase1Signals
+    ? (normalizedRecommendation
+      ? (normalizedRecommendation.includes('pass') || normalizedRecommendation.includes('reject')
+        ? 'PASS'
+        : normalizedRecommendation.includes('go') || normalizedRecommendation.includes('invest') || normalizedRecommendation.includes('proceed')
+          ? 'FUND'
+          : 'CONSIDER')
+      : (phase1Score != null ? scoreToWorkspaceDecision(phase1Score) : '—'))
+    : (legacyOverallScore != null ? scoreToWorkspaceDecision(legacyOverallScore) : '—');
 
   const sectionConfidence =
     (executiveSummaryV2 && typeof executiveSummaryV2 === 'object' ? (executiveSummaryV2 as any)?.confidence?.sections : null)
@@ -429,7 +611,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           ? section.evidence_ids_sample
           : [];
     const filteredIds = primaryIds.filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0);
-    const ids = Array.from(new Set<string>(filteredIds));
+    const ids: string[] = Array.from(new Set<string>(filteredIds));
     setSelectedScoreSectionKey(key);
     setHighlightedEvidenceIds(ids);
     setSelectedScoreSectionMismatch(mismatch);
@@ -455,7 +637,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         : Array.isArray(section?.evidence_ids_sample)
           ? section.evidence_ids_sample
           : [];
-    const ids = Array.from(new Set(primaryIds.filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0))).slice(0, 25);
+    const ids: string[] = Array.from(new Set<string>(primaryIds.filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0))).slice(0, 25);
     setSelectedScoreSectionKey(key);
     setHighlightedEvidenceIds(ids);
     setSelectedScoreSectionMismatch(mismatch);
@@ -471,7 +653,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         ? 'bg-red-500/10 border-red-500/40 text-red-200'
         : (darkMode ? 'bg-white/5 border-white/10 text-gray-300' : 'bg-white/60 border-gray-200 text-gray-700');
 
-  const missingFromV2 = Array.isArray(executiveSummaryV2?.missing) ? executiveSummaryV2.missing : [];
+  const missingFromV2 = Array.isArray((dealFromApi as any)?.phase1?.executive_summary_v2?.missing)
+    ? (dealFromApi as any).phase1.executive_summary_v2.missing
+    : Array.isArray((dealFromApi as any)?.executive_summary_v2?.missing)
+      ? (dealFromApi as any).executive_summary_v2.missing
+      : [];
   const missingFromSignals = Array.isArray(phase1Signals?.coverage_missing_sections) ? phase1Signals.coverage_missing_sections : [];
   const missingFromV1 = Array.isArray(executiveSummaryV1?.unknowns) ? executiveSummaryV1.unknowns : [];
   const missingChips = [...missingFromV2, ...missingFromSignals, ...missingFromV1]
@@ -480,14 +666,18 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     .filter((x, i, arr) => arr.indexOf(x) === i)
     .slice(0, 10);
 
-  const decisionHighlights = Array.isArray(executiveSummaryV2?.highlights)
-    ? executiveSummaryV2.highlights
-        .filter((h: any) => typeof h === 'string')
-        .map((h: string) => h.trim())
-        .filter((h: string) => h.length > 0)
-        .filter((h: string) => !/^Recommendation:/i.test(h))
-        .slice(0, 3)
-    : [];
+  const decisionHighlightsSource = Array.isArray((dealFromApi as any)?.phase1?.executive_summary_v2?.highlights)
+    ? (dealFromApi as any).phase1.executive_summary_v2.highlights
+    : Array.isArray((dealFromApi as any)?.executive_summary_v2?.highlights)
+      ? (dealFromApi as any).executive_summary_v2.highlights
+      : [];
+
+  const decisionHighlights = decisionHighlightsSource
+    .filter((h: any) => typeof h === 'string')
+    .map((h: string) => h.trim())
+    .filter((h: string) => h.length > 0)
+    .filter((h: string) => !/^Recommendation:/i.test(h))
+    .slice(0, 3);
 
   const decisionMissing = missingChips.slice(0, 4);
 
@@ -766,10 +956,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   // Use dealInfo if available, otherwise fall back to dealData
   const displayName = dealInfo?.name || dealData?.name || 'Unnamed Deal';
   const displayType = dealInfo?.type || dealData?.type || 'series-a';
-  const displayScore: number | null =
-    typeof dealInfo?.score === 'number' && Number.isFinite(dealInfo.score)
-      ? dealInfo.score
-      : (typeof investorScore === 'number' && Number.isFinite(investorScore) ? investorScore : null);
+  const displayScore: number | null = decisionScore;
 
   const safeText = (value: unknown): string => {
     if (typeof value !== 'string') return '';
@@ -1611,18 +1798,26 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   <div className={`mt-2 text-3xl sm:text-4xl font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{decisionLabel}</div>
                   <div className={`mt-2 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                     {displayScore != null
-                      ? `${Math.round(displayScore)}/100`
-                      : (phase1Score != null
-                        ? `${phase1Score}/100${phase1ConfidenceLabel ? ` · ${phase1ConfidenceLabel}` : ''}`
-                        : '—')}
+                      ? `${Math.round(displayScore)}/100${hasPhase1Signals && phase1ConfidenceLabel ? ` · ${phase1ConfidenceLabel}` : ''}`
+                      : '—'}
                   </div>
+                  {import.meta.env.DEV && (
+                    <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                      Source: {decisionScoreSource}
+                    </div>
+                  )}
+                  {import.meta.env.DEV && hasPhase1Signals && legacyOverallScore != null && legacyOverallScore !== displayScore && (
+                    <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                      Legacy overall: {legacyOverallScore}{legacyOverallStatus ? ` (${legacyOverallStatus})` : ''}
+                    </div>
+                  )}
                   {blockersCount != null && (
                     <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                       {blockersCount} blocker{blockersCount === 1 ? '' : 's'}
                     </div>
                   )}
                   <p className={`mt-3 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    Overall score when available; falls back to Phase 1 signals.
+                    Phase 1 signals shown when available; legacy overall only when Phase 1 is missing.
                   </p>
                 </div>
                 <span className={`px-3 py-1 rounded-full border text-xs font-medium ${decisionAccent}`}>
@@ -2889,11 +3084,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 onFetchEvidence={handleFetchEvidence}
                 reportSections={Array.isArray(reportFromApi?.sections) ? reportFromApi!.sections!.map((s) => ({ title: s.title, evidence_ids: s.evidence_ids })) : []}
                 documentTitles={documentTitles}
-                scoreEvidence={phase1ScoreEvidence}
+                scoreEvidence={phase1ScoreEvidenceForPanel}
                 selectedScoreSectionKey={selectedScoreSectionKey}
                 scoreBreakdownSections={scoreBreakdownSections}
                 highlightedEvidenceIds={highlightedEvidenceIds}
-                  selectedScoreSectionMismatch={selectedScoreSectionMismatch}
+                selectedScoreSectionMismatch={selectedScoreSectionMismatch}
+                resolvedEvidence={resolvedEvidence}
                 externalTraceMode={scoreTraceModeOverride}
                 scoreTraceAudit={scoreTraceAudit}
               />

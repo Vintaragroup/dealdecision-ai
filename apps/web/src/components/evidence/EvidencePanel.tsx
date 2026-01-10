@@ -94,6 +94,7 @@ interface EvidencePanelProps {
       evidence_ids?: string[];
     };
     mismatch?: boolean;
+    coverage_group_key?: string;
   }>;
   highlightedEvidenceIds?: string[];
   selectedScoreSectionMismatch?: boolean | null;
@@ -106,9 +107,46 @@ interface EvidencePanelProps {
     mismatch_sections?: number;
     notes?: string[];
   } | null;
+
+  resolvedEvidence?: Record<
+    string,
+    {
+      id: string;
+      ok: boolean;
+      resolvable?: boolean;
+      document_id?: string;
+      document_title?: string;
+      page?: number;
+      snippet?: string;
+    }
+  >;
 }
 
 type ScoreFilter = 'all' | 'missing' | 'weak';
+
+const SCORE_SECTION_KEYS: ScoreSectionKey[] = ['market', 'product', 'business_model', 'traction', 'risks', 'team', 'icp'];
+const COVERAGE_GROUP_MAP: Record<ScoreSectionKey, string> = {
+  market: 'market_icp',
+  product: 'product_solution',
+  business_model: 'business_model',
+  traction: 'traction',
+  risks: 'risks',
+  team: 'team',
+  icp: 'market_icp',
+};
+const isScoreSectionKeyValue = (value: unknown): value is ScoreSectionKey =>
+  typeof value === 'string' && SCORE_SECTION_KEYS.includes(value as ScoreSectionKey);
+
+// DEV CHECKLIST (manual verification):
+// - Coverage-missing sections render as missing (no UI-inferred mismatch).
+// - Market + ICP group into a single row when coverage_group_key is market_icp.
+// - Linked evidence count decreases when only samples exist (no doc-backed UUIDs).
+// - Mismatch badge shows only when backend sets mismatch=true.
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const isUuid = (value: unknown): value is string => typeof value === 'string' && UUID_REGEX.test(value.trim());
+// Synthetic IDs are UI placeholders; they must never count toward coverage or linking metrics.
+const isSyntheticId = (value: string): boolean => value.startsWith('missing-') || value.startsWith('claim-') || value.startsWith('ev-');
 
 const sectionLabel = (key: ScoreSectionKey) => {
   switch (key) {
@@ -171,6 +209,7 @@ export function EvidencePanel({
   selectedScoreSectionMismatch = null,
   externalTraceMode = null,
   scoreTraceAudit = null,
+  resolvedEvidence = {},
 }: EvidencePanelProps) {
   const [activeTab, setActiveTab] = useState<'score' | 'legacy'>(scoreEvidence ? 'score' : 'legacy');
   const [scoreFilter, setScoreFilter] = useState<ScoreFilter>('all');
@@ -224,13 +263,13 @@ export function EvidencePanel({
   }, [reportSections]);
 
   const activeMismatch = useMemo(() => {
-    if (selectedScoreSectionMismatch != null) return Boolean(selectedScoreSectionMismatch);
     if (!selectedScoreSectionKey) return false;
     const match = scoreBreakdownSections.find(
       (s) => s?.key === selectedScoreSectionKey || (s as any)?.section_key === selectedScoreSectionKey
     );
-    return Boolean(match?.mismatch);
-  }, [selectedScoreSectionKey, selectedScoreSectionMismatch, scoreBreakdownSections]);
+    // Mismatch is authoritative from backend audit; the UI must not infer it from counts.
+    return match?.mismatch === true;
+  }, [selectedScoreSectionKey, scoreBreakdownSections]);
 
   const activeTraceSection = useMemo(() => {
     if (!selectedScoreSectionKey) return null;
@@ -244,37 +283,38 @@ export function EvidencePanel({
   const activeTraceStats = useMemo(() => {
     if (!activeTraceSection) return { linked: null as number | null, total: null as number | null, pct: null as number | null };
 
-    const total = typeof activeTraceSection.evidence_count_total === 'number'
-      ? activeTraceSection.evidence_count_total
-      : typeof (activeTraceSection as any)?.evidence_count === 'number'
-        ? (activeTraceSection as any).evidence_count
-        : null;
+    const supportStatusRaw = typeof (activeTraceSection as any)?.support_status === 'string' ? (activeTraceSection as any).support_status.trim() : '';
+    const supportStatusFallback = typeof (activeTraceSection as any)?.support === 'string' ? (activeTraceSection as any).support.trim() : '';
+    const supportStatus = supportStatusRaw || supportStatusFallback;
 
-    const linked = typeof activeTraceSection.evidence_count_linked === 'number'
-      ? activeTraceSection.evidence_count_linked
-      : Array.isArray((activeTraceSection as any)?.evidence_ids_linked)
-        ? (activeTraceSection as any).evidence_ids_linked.length
-        : Array.isArray(activeTraceSection.evidence_ids)
-          ? activeTraceSection.evidence_ids.length
-          : Array.isArray(activeTraceSection.evidence_ids_sample)
-            ? activeTraceSection.evidence_ids_sample.length
-            : null;
+    const toUuidSet = (values: unknown): Set<string> => {
+      const set = new Set<string>();
+      if (!Array.isArray(values)) return set;
+      for (const v of values) {
+        if (typeof v !== 'string') continue;
+        const id = v.trim();
+        if (!id || isSyntheticId(id) || !isUuid(id)) continue;
+        set.add(id);
+      }
+      return set;
+    };
 
-    const pctFromField = typeof (activeTraceSection as any)?.coverage_pct === 'number'
-      ? (activeTraceSection as any).coverage_pct
-      : null;
-    const pctFromTrace = typeof activeTraceSection.trace_coverage_pct === 'number'
-      ? activeTraceSection.trace_coverage_pct * 100
-      : null;
+    const totalIds = toUuidSet((activeTraceSection as any)?.evidence_ids);
+    const sampleIds = toUuidSet((activeTraceSection as any)?.evidence_ids_sample);
+    const linkedIds = toUuidSet((activeTraceSection as any)?.evidence_ids_linked);
 
-    const pct = (() => {
-      if (pctFromField != null && Number.isFinite(pctFromField)) return Math.min(100, Math.max(0, Math.round(pctFromField)));
-      if (pctFromTrace != null && Number.isFinite(pctFromTrace)) return Math.min(100, Math.max(0, Math.round(pctFromTrace)));
-      if (total && total > 0 && linked != null) return Math.min(100, Math.max(0, Math.round((linked / total) * 100)));
-      return null;
-    })();
+    const totalIdsCombined = new Set<string>([...totalIds, ...sampleIds, ...linkedIds]);
 
-    return { linked, total, pct };
+    const linkedCount = linkedIds.size;
+    const totalCount = totalIdsCombined.size;
+
+    if (supportStatus === 'missing') {
+      return { linked: 0, total: 0, pct: null };
+    }
+
+    const pct = totalCount > 0 ? Math.min(100, Math.max(0, Math.round((linkedCount / totalCount) * 100))) : null;
+
+    return { linked: linkedCount, total: totalCount, pct };
   }, [activeTraceSection]);
 
   const activeSupportReason = useMemo(() => {
@@ -410,6 +450,78 @@ export function EvidencePanel({
     return items;
   }, [scoreEvidence, sectionLabel]);
 
+  const linkedEvidenceCount = useMemo(() => {
+    if (!scoreEvidence || !Array.isArray(scoreEvidence.sections)) return null;
+
+    const ids = new Set<string>();
+    const hasResolver = resolvedEvidence && Object.keys(resolvedEvidence).length > 0;
+
+    for (const section of scoreEvidence.sections) {
+      for (const claim of section.claims ?? []) {
+        for (const ev of claim.evidence ?? []) {
+          const idRaw = ev?.id;
+          if (!idRaw || typeof idRaw !== 'string') continue;
+          const id = idRaw.trim();
+          if (!id || isSyntheticId(id) || !isUuid(id)) continue;
+
+          if (hasResolver) {
+            const resolved = resolvedEvidence?.[id];
+            if (!resolved || !resolved.document_id) continue;
+          } else {
+            const hasDoc = typeof ev?.doc_id === 'string' ? ev.doc_id.trim().length > 0 : false;
+            if (!hasDoc) continue;
+          }
+
+          ids.add(id);
+        }
+      }
+    }
+
+    return ids.size;
+  }, [resolvedEvidence, scoreEvidence]);
+
+  const missingSections = useMemo(() => {
+    if (!Array.isArray(scoreBreakdownSections)) return [] as Array<{ key: string; label: string; sectionKey: ScoreSectionKey | null }>;
+
+    const seen = new Set<string>();
+    const results: Array<{ key: string; label: string; sectionKey: ScoreSectionKey | null }> = [];
+
+    const labelForGroup = (groupKey: string, sectionKey: ScoreSectionKey | null) => {
+      if (sectionKey) return sectionLabel(sectionKey);
+      if (isScoreSectionKeyValue(groupKey)) return sectionLabel(groupKey);
+      if (groupKey === 'market_icp') return 'Market / ICP';
+      if (groupKey === 'product_solution') return 'Product';
+      return groupKey.replace(/_/g, ' ');
+    };
+
+    for (const section of scoreBreakdownSections) {
+      const supportStatusRaw = typeof (section as any)?.support_status === 'string' ? (section as any).support_status.trim() : '';
+      const supportFallback = typeof (section as any)?.support === 'string' ? (section as any).support.trim() : '';
+      const supportStatus = supportStatusRaw || supportFallback;
+      if (supportStatus !== 'missing') continue;
+
+      const sectionKeyRaw = typeof section.section_key === 'string' ? section.section_key.trim() : typeof section.key === 'string' ? section.key.trim() : '';
+      const sectionKey = isScoreSectionKeyValue(sectionKeyRaw) ? sectionKeyRaw : null;
+      const coverageGroupKey = typeof (section as any)?.coverage_group_key === 'string' ? (section as any).coverage_group_key.trim() : '';
+      const groupKey = coverageGroupKey || sectionKeyRaw;
+
+      if (!groupKey || seen.has(groupKey)) continue;
+      seen.add(groupKey);
+
+      results.push({ key: groupKey, label: labelForGroup(groupKey, sectionKey), sectionKey });
+    }
+
+    return results;
+  }, [scoreBreakdownSections]);
+
+  const missingSectionsForView = useMemo(() => {
+    if (sectionFilter === 'all') return missingSections;
+    const coverageKey = COVERAGE_GROUP_MAP[sectionFilter];
+    return missingSections.filter(
+      (m) => m.sectionKey === sectionFilter || m.key === sectionFilter || (coverageKey && m.key === coverageKey)
+    );
+  }, [missingSections, sectionFilter]);
+
   const filteredScoreItems = useMemo(() => {
     let items = scoreItems;
 
@@ -497,6 +609,7 @@ export function EvidencePanel({
           const conf = confidencePct(item.confidence);
           const label = labelForEvidence(item);
           const metric = item.kind === 'metric' ? formatMetricText(item.text) : null;
+          const showUsed = usedInSections.length > 0 && Boolean(docLabel);
           return (
           <div
             key={item.evidence_id}
@@ -514,8 +627,8 @@ export function EvidencePanel({
                     Confidence {conf}
                   </span>
                 )}
-                <span className={`text-[10px] px-2 py-1 rounded-full border ${darkMode ? 'border-gray-600 text-gray-300' : 'border-gray-300 text-gray-700'}`}>
-                  NOT USED
+                <span className={`text-[10px] px-2 py-1 rounded-full border ${showUsed ? (darkMode ? 'border-emerald-500/40 text-emerald-200' : 'border-emerald-200 text-emerald-700') : (darkMode ? 'border-gray-600 text-gray-300' : 'border-gray-300 text-gray-700')}`}>
+                  {showUsed ? 'USED IN SCORE' : 'NOT USED'}
                 </span>
                 {docLabel && (
                   <span className={`text-[11px] px-2 py-1 rounded-full border max-w-[220px] truncate ${darkMode ? 'border-white/10 text-gray-300' : 'border-gray-200 text-gray-700'}`}>
@@ -554,7 +667,6 @@ export function EvidencePanel({
   );
 
   const renderScoreEvidence = () => {
-    const missingItems = filteredScoreItems.filter((i) => i.support === 'missing' && i.category === 'coverage');
     const totals = scoreEvidence?.totals;
     const traceModeEmpty = traceMode === 'trace' && highlightedSet.size === 0;
     const auditStatus = scoreTraceAudit?.status;
@@ -608,16 +720,16 @@ export function EvidencePanel({
             </div>
             <div>
               <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Linked evidence</div>
-              <div className="text-sm font-semibold">{totals?.evidence ?? '—'}</div>
+              <div className="text-sm font-semibold">{linkedEvidenceCount ?? '—'}</div>
             </div>
             <div>
               <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Last updated</div>
               <div className="text-sm font-semibold">{lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : '—'}</div>
             </div>
           </div>
-          {missingItems.length > 0 && (
+          {missingSectionsForView.length > 0 && (
             <div className={`text-[12px] mt-3 flex items-center gap-2 ${darkMode ? 'text-amber-200' : 'text-amber-700'}`}>
-              Missing sections: {missingItems.map((m) => m.label).join(', ')}
+              Missing sections: {missingSectionsForView.map((m) => m.label).join(', ')}
             </div>
           )}
         </div>
@@ -744,10 +856,18 @@ export function EvidencePanel({
         {!traceModeEmpty && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {filteredScoreItems.map((item) => {
-              const docLabel = item.documentTitle || (item.documentId ? documentTitles[item.documentId] || item.documentId : null);
-              const metaParts = [docLabel, item.page != null ? `Page ${item.page}` : null].filter(Boolean).join(' • ');
+              const resolved = item.evidenceId ? resolvedEvidence[item.evidenceId] : undefined;
+              const resolvedDocId = resolved?.document_id;
+              const resolvedDocTitle = resolved?.document_title;
+              const citationDocId = item.documentId ?? resolvedDocId;
+              const citationPage = item.page ?? resolved?.page;
+              const citationSnippet = item.snippet ?? resolved?.snippet;
+
+              const docLabel = item.documentTitle || resolvedDocTitle || (citationDocId ? documentTitles[citationDocId] || citationDocId : null);
+              const metaParts = [docLabel, citationPage != null ? `Page ${citationPage}` : null].filter(Boolean).join(' • ');
               const conf = confidencePct(item.confidence);
               const isHighlighted = item.evidenceId ? highlightedSet.has(item.evidenceId) || flashHighlightIds.has(item.evidenceId) : false;
+              const showUsedInScore = Boolean(item.evidenceId) && Boolean(citationDocId);
               return (
                 <div
                   key={item.id}
@@ -759,17 +879,19 @@ export function EvidencePanel({
                   <div className="flex items-start justify-between gap-2">
                     <div className="space-y-1">
                       <div className="text-sm font-semibold leading-5">{item.label}</div>
-                      {item.snippet && (
-                        <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{item.snippet}</div>
+                      {citationSnippet && (
+                        <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{citationSnippet}</div>
                       )}
                     </div>
                     <div className="flex flex-col items-end gap-1">
                       <span className={`text-[11px] px-2 py-1 rounded-full border ${scoreSupportBadgeClass(item.support)}`}>
                         {scoreSupportLabel(item.support)}
                       </span>
-                      <span className={`text-[10px] px-2 py-1 rounded-full border ${darkMode ? 'border-emerald-500/40 text-emerald-200' : 'border-emerald-200 text-emerald-700'}`}>
-                        USED IN SCORE
-                      </span>
+                      {showUsedInScore && (
+                        <span className={`text-[10px] px-2 py-1 rounded-full border ${darkMode ? 'border-emerald-500/40 text-emerald-200' : 'border-emerald-200 text-emerald-700'}`}>
+                          USED IN SCORE
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center flex-wrap gap-2 text-[11px]">

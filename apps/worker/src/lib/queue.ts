@@ -1,7 +1,7 @@
 import { Worker, Queue, type Job, type Processor } from "bullmq";
 import IORedis from "ioredis";
 
-const redisUrl = process.env.REDIS_URL;
+const redisUrl = process.env.REDIS_URL ?? "";
 
 if (!redisUrl) {
   throw new Error("REDIS_URL is required for worker queues");
@@ -83,5 +83,27 @@ export function getQueue(
     | "generate_ingestion_report"
     | "orchestration"
 ) {
-	return new Queue(name, { connection });
+  return new Queue(name, { connection });
+}
+
+export function logWorkerQueueConfig(kind: "worker", workers: string[]) {
+  if (process.env.NODE_ENV === "production") return;
+  try {
+    const parsed = new URL(redisUrl);
+    const host = parsed.hostname;
+    const port = parsed.port || "6379";
+    const user = parsed.username ? `${parsed.username}@` : "";
+    const safeUrl = `${parsed.protocol}//${user}${host}:${port}${parsed.pathname}`;
+
+    console.log(
+      JSON.stringify({
+        event: "queue_config",
+        kind,
+        redis: { host, port, url: safeUrl, prefix: "bull" },
+        workers,
+      })
+    );
+  } catch (err) {
+    console.warn("[queue] Failed to log worker queue config", err);
+  }
 }

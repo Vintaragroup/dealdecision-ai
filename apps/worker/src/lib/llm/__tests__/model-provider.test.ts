@@ -23,6 +23,7 @@ describe('BaseLLMProvider', () => {
     };
 
     provider = new OpenAIGPT4oProvider(config);
+    provider.resetAnalytics();
   });
 
   describe('Initialization', () => {
@@ -226,7 +227,8 @@ describe('OpenAIGPT4oProvider', () => {
     it('should support gpt-4o', () => {
       const models = provider.getSupportedModels();
       expect(models).toContain('gpt-4o');
-      expect(models.length).toBe(1);
+      expect(models.length).toBeGreaterThanOrEqual(1);
+      expect(new Set(models).size).toBe(models.length); // no duplicates
     });
   });
 

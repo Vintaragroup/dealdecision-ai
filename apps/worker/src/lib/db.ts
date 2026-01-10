@@ -418,3 +418,71 @@ export async function insertDocumentExtractionAudit(params: {
     throw err;
   }
 }
+
+export type PhaseBRunRow = {
+  id: string;
+  deal_id: string;
+  version: number;
+  phase_b_result: unknown;
+  phase_b_features: unknown;
+  source_run_id: string | null;
+  created_at: string;
+};
+
+export async function insertPhaseBRun(params: {
+  dealId: string;
+  phaseBResult: unknown;
+  phaseBFeatures: unknown;
+  sourceRunId?: string | null;
+  versionOverride?: number | null;
+}): Promise<PhaseBRunRow | null> {
+  const currentPool = getPool();
+  const sanitizedResult = sanitizeDeep(params.phaseBResult ?? null);
+  const sanitizedFeatures = sanitizeDeep(params.phaseBFeatures ?? null);
+
+  const { rows } = await currentPool.query<PhaseBRunRow>(
+    `WITH next_version AS (
+        SELECT COALESCE(MAX(version) + 1, 1) AS version
+          FROM deal_phase_b_runs
+         WHERE deal_id = $1
+      )
+      INSERT INTO deal_phase_b_runs (
+        deal_id,
+        version,
+        phase_b_result,
+        phase_b_features,
+        source_run_id
+      )
+      SELECT
+        $1,
+        COALESCE($5, nv.version),
+        $2::jsonb,
+        $3::jsonb,
+        $4
+      FROM next_version nv
+      RETURNING id, deal_id, version, phase_b_result, phase_b_features, source_run_id, created_at`,
+    [
+      sanitizeText(params.dealId),
+      sanitizedResult,
+      sanitizedFeatures,
+      params.sourceRunId ? sanitizeText(params.sourceRunId) : null,
+      params.versionOverride ?? null,
+    ]
+  );
+
+  return rows[0] ?? null;
+}
+
+export async function getLatestPhaseBRun(dealId: string): Promise<PhaseBRunRow | null> {
+  const currentPool = getPool();
+  const { rows } = await currentPool.query<PhaseBRunRow>(
+    `SELECT id, deal_id, version, phase_b_result, phase_b_features, source_run_id, created_at
+       FROM deal_phase_b_runs
+      WHERE deal_id = $1
+      ORDER BY version DESC, created_at DESC
+      LIMIT 1`,
+    [sanitizeText(dealId)]
+  );
+
+  return rows[0] ?? null;
+}

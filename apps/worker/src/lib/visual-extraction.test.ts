@@ -1,5 +1,4 @@
-import { test } from "node:test";
-import assert from "node:assert/strict";
+import { expect, test } from "vitest";
 
 import {
 	enqueueExtractVisualsIfPossible,
@@ -60,11 +59,12 @@ function makeVisualAssetsStatePoolMock() {
 
 test("getVisionExtractorConfig defaults are safe and disabled", () => {
 	const cfg = getVisionExtractorConfig({} as any);
-	assert.equal(cfg.enabled, false);
-	assert.equal(cfg.visionWorkerUrl, "http://localhost:8000");
-	assert.equal(cfg.extractorVersion, "vision_v1");
-	assert.equal(cfg.timeoutMs, 8000);
-	assert.equal(cfg.maxPages, 10);
+	expect(cfg.enabled).toBe(false);
+	expect(cfg.visionWorkerUrl).toBe("http://localhost:8000");
+	expect(cfg.extractorVersion).toBe("vision_v1");
+	expect(cfg.timeoutMs).toBe(8000);
+	// Default aligns with rendered-pages config to cover large decks while allowing env override.
+	expect(cfg.maxPages).toBe(50);
 });
 
 test("upsertVisualAsset uses null-hash conflict target when image_hash is null", async () => {
@@ -81,7 +81,7 @@ test("upsertVisualAsset uses null-hash conflict target when image_hash is null",
 		qualityFlags: {},
 	});
 
-	assert.ok(calls[0].sql.includes("ON CONFLICT (document_id, page_index, extractor_version) WHERE image_hash IS NULL"));
+	expect(calls[0].sql.includes("ON CONFLICT (document_id, page_index, extractor_version) WHERE image_hash IS NULL")).toBe(true);
 });
 
 test("upsertVisualAsset uses hash conflict target when image_hash is provided", async () => {
@@ -98,7 +98,7 @@ test("upsertVisualAsset uses hash conflict target when image_hash is provided", 
 		qualityFlags: {},
 	});
 
-	assert.ok(calls[0].sql.includes("ON CONFLICT (document_id, page_index, extractor_version, image_hash)"));
+	expect(calls[0].sql.includes("ON CONFLICT (document_id, page_index, extractor_version, image_hash)")).toBe(true);
 });
 
 test("upsertVisualAsset backfills empty image_uri on conflict", async () => {
@@ -119,10 +119,10 @@ test("upsertVisualAsset backfills empty image_uri on conflict", async () => {
 		qualityFlags: {},
 	});
 
-	assert.equal(rowsByKey.get(key)?.image_uri, "");
-	assert.ok(
+	expect(rowsByKey.get(key)?.image_uri).toBe("");
+	expect(
 		calls[0].sql.includes("image_uri = COALESCE(NULLIF(visual_assets.image_uri,''), EXCLUDED.image_uri)")
-	);
+	).toBe(true);
 
 	await upsertVisualAsset(pool, {
 		documentId,
@@ -136,7 +136,7 @@ test("upsertVisualAsset backfills empty image_uri on conflict", async () => {
 		qualityFlags: {},
 	});
 
-	assert.equal(rowsByKey.get(key)?.image_uri, "/uploads/rendered_pages/doc/page_001.png");
+	expect(rowsByKey.get(key)?.image_uri).toBe("/uploads/rendered_pages/doc/page_001.png");
 });
 
 test("persistVisionResponse writes assets + extraction + evidence link", async () => {
@@ -167,10 +167,10 @@ test("persistVisionResponse writes assets + extraction + evidence link", async (
 		],
 	});
 
-	assert.equal(persisted, 1);
-	assert.ok(calls.some((c) => c.sql.includes("INSERT INTO visual_assets")));
-	assert.ok(calls.some((c) => c.sql.includes("INSERT INTO visual_extractions")));
-	assert.ok(calls.some((c) => c.sql.includes("INSERT INTO evidence_links")));
+	expect(persisted).toBe(1);
+	expect(calls.some((c) => c.sql.includes("INSERT INTO visual_assets"))).toBe(true);
+	expect(calls.some((c) => c.sql.includes("INSERT INTO visual_extractions"))).toBe(true);
+	expect(calls.some((c) => c.sql.includes("INSERT INTO evidence_links"))).toBe(true);
 });
 
 test("resolvePageImageUris returns [] and logs NO_PAGE_IMAGES_AVAILABLE when dirs missing", async () => {
@@ -193,8 +193,8 @@ test("resolvePageImageUris returns [] and logs NO_PAGE_IMAGES_AVAILABLE when dir
 	} as any;
 
 	const uris = await resolvePageImageUris(pool, "00000000-0000-0000-0000-000000000000", { logger, fsImpl });
-	assert.deepEqual(uris, []);
-	assert.ok(logs.some((l) => l.includes("NO_PAGE_IMAGES_AVAILABLE")));
+	expect(uris).toEqual([]);
+	expect(logs.some((l) => l.includes("NO_PAGE_IMAGES_AVAILABLE"))).toBe(true);
 });
 
 test("enqueueExtractVisualsIfPossible does not enqueue when resolver finds no images", async () => {
@@ -230,12 +230,12 @@ test("enqueueExtractVisualsIfPossible does not enqueue when resolver finds no im
 	});
 
 	// If enqueue helper returns false, it skipped. Also verify queue.add not called.
-	assert.equal(ok, false);
-	assert.equal(added, 0);
+	expect(ok).toBe(false);
+	expect(added).toBe(0);
 
 	// sanity: ensure our resolve stub indeed returns none
 	const uris = await resolvePageImageUris(pool as any, "00000000-0000-0000-0000-000000000000", { fsImpl });
-	assert.equal(uris.length, 0);
+	expect(uris).toHaveLength(0);
 });
 
 test("enqueueExtractVisualsIfPossible enqueues with extractor_version and image_uris when images exist", async () => {
@@ -269,16 +269,16 @@ test("enqueueExtractVisualsIfPossible enqueues with extractor_version and image_
 		resolveOptions: { fsImpl },
 	});
 
-	assert.equal(ok, true);
-	assert.ok(captured);
-	assert.equal(captured.document_id, "doc-123");
-	assert.equal(captured.deal_id, "deal-456");
-	assert.equal(captured.extractor_version, "vision_v1");
-	assert.ok(Array.isArray(captured.image_uris));
-	assert.equal(captured.image_uris.length, 2);
+	expect(ok).toBe(true);
+	expect(captured).toBeTruthy();
+	expect(captured.document_id).toBe("doc-123");
+	expect(captured.deal_id).toBe("deal-456");
+	expect(captured.extractor_version).toBe("vision_v1");
+	expect(Array.isArray(captured.image_uris)).toBe(true);
+	expect(captured.image_uris).toHaveLength(2);
 
 	// Also validate resolver ordering produces absolute paths containing the expected filenames.
 	const uris = await resolvePageImageUris(pool as any, "doc-123", { fsImpl, logger: { log: () => {}, warn: () => {} } as any });
-	assert.ok(uris[0].endsWith("page_001_raw.png"));
-	assert.ok(uris[1].endsWith("page_002_raw.png"));
+	expect(uris[0].endsWith("page_001_raw.png")).toBe(true);
+	expect(uris[1].endsWith("page_002_raw.png")).toBe(true);
 });

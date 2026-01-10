@@ -24,6 +24,35 @@ export const verifyDocumentsQueue = new Queue("verify_documents", { connection }
 export const remediateExtractionQueue = new Queue("remediate_extraction", { connection });
 export const reextractDocumentsQueue = new Queue("reextract_documents", { connection });
 
+if (process.env.NODE_ENV !== "production") {
+  try {
+    const parsed = new URL(redisUrl);
+    const host = parsed.hostname;
+    const port = parsed.port || "6379";
+    const user = parsed.username ? `${parsed.username}@` : "";
+    const safeUrl = `${parsed.protocol}//${user}${host}:${port}${parsed.pathname}`;
+    const queues = [
+      "ingest_documents",
+      "extract_visuals",
+      "fetch_evidence",
+      "analyze_deal",
+      "verify_documents",
+      "remediate_extraction",
+      "reextract_documents",
+    ];
+    console.log(
+      JSON.stringify({
+        event: "queue_config",
+        kind: "api",
+        redis: { host, port, url: safeUrl, prefix: "bull" },
+        queues,
+      })
+    );
+  } catch (err) {
+    console.warn("[queue] Failed to log queue config", err);
+  }
+}
+
 export async function closeQueues() {
   await Promise.allSettled([
     ingestQueue.close(),

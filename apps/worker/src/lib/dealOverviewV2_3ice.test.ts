@@ -1,9 +1,6 @@
-import { test } from "node:test";
-import assert from "node:assert/strict";
+import { expect, test } from "vitest";
 
-// Worker tests run with `type: commonjs` + `ts-node/register`.
-// Use require() to avoid TS/ESM interop issues.
-const { buildPhase1DealOverviewV2 } = require("./phase1/dealOverviewV2");
+import { buildPhase1DealOverviewV2 } from "./phase1/dealOverviewV2";
 
 test("3ICE regression: prefer explicit definition over cover tagline", () => {
 	const docs: any[] = [
@@ -24,12 +21,12 @@ test("3ICE regression: prefer explicit definition over cover tagline", () => {
 
 	const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: "2025-01-01T00:00:00.000Z" });
 
-	assert.ok(out.product_solution);
-	assert.match(String(out.product_solution), /3ICE\s+is\s+a\s+'new\s+media'\s+company/i);
-	assert.match(String(out.product_solution), /3-on-3\s+professional\s+ice\s+hockey\s+league/i);
-	assert.doesNotMatch(String(out.product_solution), /best\s+part\s+of\s+hockey/i);
+	expect(out.product_solution).toBeTruthy();
+	expect(String(out.product_solution)).toMatch(/3ICE\s+is\s+a\s+'new\s+media'\s+company/i);
+	expect(String(out.product_solution)).toMatch(/3-on-3\s+professional\s+ice\s+hockey\s+league/i);
+	expect(String(out.product_solution)).not.toMatch(/best\s+part\s+of\s+hockey/i);
 
-	assert.ok(out.raise);
-	assert.match(String(out.raise), /approximately\s*\$?\s*10\s*m/i);
-	assert.equal(out.deal_type, "startup_raise");
+	expect(out.raise).toBeTruthy();
+	expect(String(out.raise)).toMatch(/approximately\s*\$?\s*10\s*m/i);
+	expect(out.deal_type).toEqual("startup_raise");
 });

@@ -234,7 +234,13 @@ export function buildPhase1BusinessArchetypeV1(input: {
 
 	// Fail-closed: if there is no text, return unknown.
 	const combinedText = docs
-		.map((d) => (typeof d.full_text === 'string' ? d.full_text : ''))
+		.flatMap((d) => {
+			const chunks: string[] = [];
+			if (typeof d.full_text === 'string') chunks.push(d.full_text);
+			const pages = extractPagesFromFullContent(d.full_content ?? null, d.type).map((p) => p.text);
+			if (pages.length) chunks.push(pages.join('\n'));
+			return chunks;
+		})
 		.filter(Boolean)
 		.join('\n\n')
 		.slice(0, 60_000);

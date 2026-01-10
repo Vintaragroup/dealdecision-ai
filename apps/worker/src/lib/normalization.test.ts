@@ -1,5 +1,4 @@
-import { test } from "node:test";
-import assert from "node:assert/strict";
+import { expect, test } from "vitest";
 import { normalizeToCanonical } from "./normalization";
 import * as XLSX from "xlsx";
 import { extractExcelContent } from "./processors/excel";
@@ -16,14 +15,14 @@ test("normalizeToCanonical always includes canonical keys", () => {
 		},
 	});
 
-	assert.ok(out.structuredData.canonical);
-	assert.ok(out.structuredData.canonical.company);
-	assert.ok(out.structuredData.canonical.deal);
-	assert.ok(out.structuredData.canonical.traction);
-	assert.ok(out.structuredData.canonical.financials);
-	assert.ok(out.structuredData.canonical.financials.canonical_metrics);
-	assert.ok(Object.prototype.hasOwnProperty.call(out.structuredData.canonical.financials.canonical_metrics, "revenue"));
-	assert.equal(out.structuredData.canonical.financials.canonical_metrics.revenue, null);
+	expect(out.structuredData.canonical).toBeTruthy();
+	expect(out.structuredData.canonical.company).toBeTruthy();
+	expect(out.structuredData.canonical.deal).toBeTruthy();
+	expect(out.structuredData.canonical.traction).toBeTruthy();
+	expect(out.structuredData.canonical.financials).toBeTruthy();
+	expect(out.structuredData.canonical.financials.canonical_metrics).toBeTruthy();
+	expect(Object.prototype.hasOwnProperty.call(out.structuredData.canonical.financials.canonical_metrics, "revenue")).toBe(true);
+	expect(out.structuredData.canonical.financials.canonical_metrics.revenue).toBeNull();
 });
 
 test("normalizeToCanonical maps Excel revenue/expenses/cash and derives burn+runway deterministically", () => {
@@ -54,15 +53,15 @@ test("normalizeToCanonical maps Excel revenue/expenses/cash and derives burn+run
 	});
 
 	const m = out.structuredData.canonical.financials.canonical_metrics;
-	assert.equal(m.revenue, 100);
-	assert.equal(m.expenses, 130);
-	assert.equal(m.cash_balance, 520);
-	assert.equal(m.burn_rate, 30);
-	assert.ok(m.runway_months != null);
-	assert.equal(Number((m.runway_months as number).toFixed(4)), Number((520 / 30).toFixed(4)));
+	expect(m.revenue).toBe(100);
+	expect(m.expenses).toBe(130);
+	expect(m.cash_balance).toBe(520);
+	expect(m.burn_rate).toBe(30);
+	expect(m.runway_months).not.toBeNull();
+	expect(Number((m.runway_months as number).toFixed(4))).toBe(Number((520 / 30).toFixed(4)));
 
 	// Evidence pointers include sheet/row/column
-	assert.ok(out.canonicalEvidence.some((e) => e.metric_key === "revenue" && e.source_pointer.includes("sheet=P&L")));
+	expect(out.canonicalEvidence.some((e) => e.metric_key === "revenue" && e.source_pointer.includes("sheet=P&L"))).toBe(true);
 });
 
 test("normalizeToCanonical maps canonical financial metrics from a minimal synthetic workbook (xlsx)", () => {
@@ -95,18 +94,18 @@ test("normalizeToCanonical maps canonical financial metrics from a minimal synth
 	});
 
 	const m = out.structuredData.canonical.financials.canonical_metrics;
-	assert.equal(m.revenue, 100);
-	assert.equal(m.cogs, 50);
-	assert.equal(m.expenses, 130);
-	assert.equal(m.cash_balance, 520);
-	assert.equal(m.gross_margin, 50);
-	assert.equal(m.burn_rate, 30);
-	assert.ok(m.runway_months != null);
+	expect(m.revenue).toBe(100);
+	expect(m.cogs).toBe(50);
+	expect(m.expenses).toBe(130);
+	expect(m.cash_balance).toBe(520);
+	expect(m.gross_margin).toBe(50);
+	expect(m.burn_rate).toBe(30);
+	expect(m.runway_months).not.toBeNull();
 
 	const revenueEv = out.canonicalEvidence.find((e) => e.metric_key === "revenue");
-	assert.ok(revenueEv);
-	assert.ok(revenueEv!.source_pointer.includes("sheet=P&L"));
-	assert.ok(revenueEv!.source_pointer.includes("row_idx="));
-	assert.ok(revenueEv!.source_pointer.includes("col="));
-	assert.ok(revenueEv!.source_pointer.includes("snippet="));
+	expect(revenueEv).toBeTruthy();
+	expect(revenueEv!.source_pointer).toContain("sheet=P&L");
+	expect(revenueEv!.source_pointer).toContain("row_idx=");
+	expect(revenueEv!.source_pointer).toContain("col=");
+	expect(revenueEv!.source_pointer).toContain("snippet=");
 });

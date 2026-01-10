@@ -15,10 +15,11 @@ import { DealAnalystTab } from '../deals/tabs/DealAnalystTab';
 import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
-import { EvidencePanel } from '../evidence/EvidencePanel';
+import { EvidencePanel, type ScoreSectionKey } from '../evidence/EvidencePanel';
 import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiPostAnalyze, apiPostExtractVisuals, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, isLiveBackend, subscribeToEvents, type AutoProfileResponse, type DealReport, type JobUpdatedEvent, type ProposedDealProfile } from '../../lib/apiClient';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
+import { derivePhaseBInsights } from '../../lib/phaseb-findings';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { 
   FileText, 
@@ -41,6 +42,9 @@ import {
   ArrowUpRight,
   Eye,
   FileCode,
+  Clipboard,
+  ChevronDown,
+  ChevronUp,
   MessageSquare,
   Send,
   Presentation,
@@ -90,6 +94,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [showCommentsPanel, setShowCommentsPanel] = useState(false);
   const [comments, setComments] = useState<Array<{ id: string; user: string; message: string; timestamp: Date }>>([]);
   const [showMoreActions, setShowMoreActions] = useState(false);
+  const [showDevPhaseBDiagnostics, setShowDevPhaseBDiagnostics] = useState(false);
+  const [showScoreBreakdown, setShowScoreBreakdown] = useState(false);
+  const [showScoreTraceDebug, setShowScoreTraceDebug] = useState(false);
   const [showAIAssistant, setShowAIAssistant] = useState(false);
   const [dioMeta, setDioMeta] = useState<{ dioVersionId?: string; dioStatus?: string; lastAnalyzedAt?: string; dioRunCount?: number; dioAnalysisVersion?: number } | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -107,6 +114,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [reportFromApi, setReportFromApi] = useState<DealReport | null>(null);
   const [analystReloadKey, setAnalystReloadKey] = useState(0);
   const [documentsReloadKey, setDocumentsReloadKey] = useState(0);
+  const [selectedScoreSectionKey, setSelectedScoreSectionKey] = useState<ScoreSectionKey | null>(null);
+  const [highlightedEvidenceIds, setHighlightedEvidenceIds] = useState<string[]>([]);
+  const [selectedScoreSectionMismatch, setSelectedScoreSectionMismatch] = useState<boolean>(false);
+  const [scoreTraceModeOverride, setScoreTraceModeOverride] = useState<'all' | 'trace' | null>(null);
 
   const [autoProfileLoading, setAutoProfileLoading] = useState(false);
   const [autoProfileResult, setAutoProfileResult] = useState<AutoProfileResponse | null>(null);
@@ -181,6 +192,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return () => {
       active = false;
     };
+  }, [dealId]);
+
+  useEffect(() => {
+    setSelectedScoreSectionKey(null);
+    setHighlightedEvidenceIds([]);
+    setSelectedScoreSectionMismatch(false);
+    setScoreTraceModeOverride(null);
   }, [dealId]);
 
   const getConfidenceLabel = (v: unknown): 'High' | 'Med' | 'Low' => {
@@ -294,6 +312,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const phase1Signals = (executiveSummaryV2 && typeof executiveSummaryV2 === 'object' ? executiveSummaryV2.signals : null) as any;
   const recommendationRaw = typeof phase1Signals?.recommendation === 'string' ? phase1Signals.recommendation : null;
   const normalizedRecommendation = recommendationRaw ? recommendationRaw.toLowerCase().trim() : null;
+  const phase1ScoreEvidence = (dealFromApi as any)?.phase1_score_evidence ?? (dealFromApi as any)?.phase1?.score_evidence ?? null;
+  const scoreBreakdownV1 = (executiveSummaryV2 as any)?.score_breakdown_v1;
+  const scoreBreakdownSections = Array.isArray(scoreBreakdownV1?.sections) ? scoreBreakdownV1.sections : [];
+  const scoreTraceAudit = (executiveSummaryV2 as any)?.score_trace_audit_v1 ?? null;
 
   const scoreToWorkspaceDecision = (score: number): 'PASS' | 'CONSIDER' | 'FUND' => {
     // Keep this aligned with backend report recommendation thresholds.
@@ -375,6 +397,72 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     if (band === 'low') return 'bg-red-500/20';
     return darkMode ? 'bg-white/10' : 'bg-gray-200/60';
   };
+
+  const normalizeScoreSectionKey = (value: unknown): ScoreSectionKey | null => {
+    const valid: ScoreSectionKey[] = ['market', 'product', 'business_model', 'traction', 'risks', 'team', 'icp'];
+    return valid.includes(value as ScoreSectionKey) ? (value as ScoreSectionKey) : null;
+  };
+
+  const handleScoreBreakdownClick = (section: any, fallbackKey?: string | null) => {
+    const mismatch = Boolean(section?.mismatch);
+    const rawKey = typeof section?.key === 'string'
+      ? section.key
+      : typeof section?.section_key === 'string'
+        ? section.section_key
+        : typeof fallbackKey === 'string'
+          ? fallbackKey
+          : null;
+    const key = normalizeScoreSectionKey(rawKey);
+    if (!key) {
+      setSelectedScoreSectionKey(null);
+      setHighlightedEvidenceIds([]);
+      setSelectedScoreSectionMismatch(false);
+      setActiveTab('evidence');
+      setShowScoreBreakdown(true);
+      return;
+    }
+    const primaryIds = Array.isArray(section?.evidence_ids_linked)
+      ? section.evidence_ids_linked
+      : Array.isArray(section?.evidence_ids)
+        ? section.evidence_ids
+        : Array.isArray(section?.evidence_ids_sample)
+          ? section.evidence_ids_sample
+          : [];
+    const filteredIds = primaryIds.filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0);
+    const ids = Array.from(new Set<string>(filteredIds));
+    setSelectedScoreSectionKey(key);
+    setHighlightedEvidenceIds(ids);
+    setSelectedScoreSectionMismatch(mismatch);
+    setScoreTraceModeOverride(null);
+    setActiveTab('evidence');
+    setShowScoreBreakdown(true);
+  };
+
+  const handleScoreTraceDebugTrace = (section: any, fallbackKey?: string | null) => {
+    const mismatch = Boolean(section?.mismatch);
+    const rawKey = typeof section?.section_key === 'string'
+      ? section.section_key
+      : typeof section?.key === 'string'
+        ? section.key
+        : typeof fallbackKey === 'string'
+          ? fallbackKey
+          : null;
+    const key = normalizeScoreSectionKey(rawKey);
+    const primaryIds = Array.isArray(section?.evidence_ids_linked)
+      ? section.evidence_ids_linked
+      : Array.isArray(section?.evidence_ids)
+        ? section.evidence_ids
+        : Array.isArray(section?.evidence_ids_sample)
+          ? section.evidence_ids_sample
+          : [];
+    const ids = Array.from(new Set(primaryIds.filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0))).slice(0, 25);
+    setSelectedScoreSectionKey(key);
+    setHighlightedEvidenceIds(ids);
+    setSelectedScoreSectionMismatch(mismatch);
+    setScoreTraceModeOverride('trace');
+    setActiveTab('evidence');
+    setShowScoreBreakdown(true);
+  };
   const decisionAccent = decisionLabel === 'FUND'
     ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
     : decisionLabel === 'CONSIDER'
@@ -402,6 +490,278 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     : [];
 
   const decisionMissing = missingChips.slice(0, 4);
+
+  const toFiniteNumber = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+  const toRatioPct = (value: unknown): number | null => {
+    const num = toFiniteNumber(value);
+    if (num === null) return null;
+    return Math.round(num * 100);
+  };
+
+  type PhaseBRunNormalized = {
+    key: string;
+    timestamp: string | null;
+    timestampDisplay: string | null;
+    version: number | null;
+    metrics: {
+      visualsCount: number | null;
+      evidenceCount: number | null;
+      evidencePerVisual: number | null;
+      pctVisualsWithOcr: number | null;
+      pctVisualsWithStructured: number | null;
+      pctSegmentsWithVisuals: number | null;
+    };
+  };
+
+  const phaseBLatestRunRaw = (dealFromApi as any)?.phase_b?.latest_run ?? (dealFromApi as any)?.phase1?.phase_b_latest_run ?? null;
+  const phaseBHistoryRaw = (dealFromApi as any)?.phase_b?.history ?? (dealFromApi as any)?.phase1?.phase_b_history ?? null;
+  const phaseBHistory = Array.isArray(phaseBHistoryRaw)
+    ? phaseBHistoryRaw.filter((run) => run && typeof run === 'object')
+    : [];
+
+  const phaseBRunsOrdered = (() => {
+    const runs: Array<{ run: any; timestamp: string | null; tsMs: number; version: number | null; key: string }>
+      = [];
+    const seen = new Set<string>();
+    const makeKey = (run: any) => {
+      const computedAt = typeof (run as any)?.phase_b_features?.computed_at === 'string' ? (run as any).phase_b_features.computed_at : null;
+      const createdAt = typeof (run as any)?.created_at === 'string' ? (run as any).created_at : null;
+      const version = toFiniteNumber((run as any)?.version);
+      return typeof (run as any)?.id === 'string'
+        ? (run as any).id
+        : `${computedAt || createdAt || 'no-ts'}-${version ?? 'no-version'}`;
+    };
+    const addRun = (run: any) => {
+      if (!run || typeof run !== 'object') return;
+      const key = makeKey(run);
+      if (seen.has(key)) return;
+      seen.add(key);
+      const features = (run as any)?.phase_b_features ?? null;
+      const computedAt = typeof features?.computed_at === 'string' ? features.computed_at : null;
+      const createdAt = typeof (run as any)?.created_at === 'string' ? (run as any).created_at : null;
+      const timestamp = computedAt || createdAt || null;
+      const tsMsRaw = timestamp ? Date.parse(timestamp) : NaN;
+      const tsMs = Number.isFinite(tsMsRaw) ? tsMsRaw : -Infinity;
+      runs.push({
+        run,
+        timestamp,
+        tsMs,
+        version: toFiniteNumber((run as any)?.version),
+        key,
+      });
+    };
+    addRun(phaseBLatestRunRaw);
+    phaseBHistory.forEach(addRun);
+    return runs.sort((a, b) => {
+      if (a.tsMs !== b.tsMs) return b.tsMs - a.tsMs;
+      const av = a.version ?? -Infinity;
+      const bv = b.version ?? -Infinity;
+      if (av !== bv) return bv - av;
+      return a.key.localeCompare(b.key);
+    });
+  })();
+
+  const phaseBLatestRun = phaseBRunsOrdered[0]?.run ?? null;
+  const priorPhaseBRun = phaseBRunsOrdered[1]?.run ?? null;
+  const phaseBFeatures = phaseBLatestRun && typeof phaseBLatestRun === 'object' ? (phaseBLatestRun as any).phase_b_features : null;
+  const priorPhaseBFeatures = priorPhaseBRun && typeof priorPhaseBRun === 'object' ? (priorPhaseBRun as any).phase_b_features : null;
+  const phaseBVersion = toFiniteNumber((phaseBLatestRun as any)?.version);
+  const phaseBComputedAt = typeof (phaseBFeatures as any)?.computed_at === 'string' ? (phaseBFeatures as any).computed_at : null;
+  const phaseBCreatedAt = typeof (phaseBLatestRun as any)?.created_at === 'string' ? (phaseBLatestRun as any).created_at : null;
+  const phaseBRunTimestamp = (phaseBRunsOrdered[0]?.timestamp ?? phaseBComputedAt ?? phaseBCreatedAt) ?? null;
+  const phaseBRunTimestampDisplay = (() => {
+    if (!phaseBRunTimestamp) return null;
+    const parsed = new Date(phaseBRunTimestamp);
+    return Number.isNaN(parsed.getTime()) ? null : parsed.toLocaleString();
+  })();
+
+  const phaseBCoverage = phaseBFeatures && typeof (phaseBFeatures as any).coverage === 'object' ? (phaseBFeatures as any).coverage : null;
+  const phaseBStructure = phaseBFeatures && typeof (phaseBFeatures as any).structure === 'object' ? (phaseBFeatures as any).structure : null;
+  const phaseBContentDensity = phaseBFeatures && typeof (phaseBFeatures as any).content_density === 'object' ? (phaseBFeatures as any).content_density : null;
+
+  const phaseBDocCount = toFiniteNumber(phaseBCoverage?.documents_count) ?? null;
+  const phaseBPageCount = toFiniteNumber(phaseBCoverage?.segments_count) ?? null;
+  const phaseBVisualsCount = toFiniteNumber(phaseBCoverage?.visuals_count) ?? null;
+  const phaseBEvidenceCount = toFiniteNumber(phaseBCoverage?.evidence_count) ?? null;
+  const phaseBEvidencePerVisual = toFiniteNumber(phaseBCoverage?.evidence_per_visual) ?? null;
+
+  const phaseBSourceCoverageRatio = toFiniteNumber(phaseBStructure?.pct_documents_with_segments);
+  const phaseBStructureParts = [
+    toFiniteNumber(phaseBStructure?.pct_segments_with_visuals),
+    toFiniteNumber(phaseBStructure?.pct_documents_with_segments),
+    toFiniteNumber(phaseBStructure?.pct_documents_with_visuals),
+  ].filter((v): v is number => typeof v === 'number');
+  const phaseBSectionStructureScore = phaseBStructureParts.length
+    ? Math.round((phaseBStructureParts.reduce((a, b) => a + b, 0) / phaseBStructureParts.length) * 100)
+    : null;
+
+  const phaseBContentDensityFlag = (() => {
+    const flag = typeof (phaseBContentDensity as any)?.content_density_flag === 'string' ? (phaseBContentDensity as any).content_density_flag : null;
+    if (flag && typeof flag === 'string') return flag;
+    const fallback = toFiniteNumber((phaseBContentDensity as any)?.content_density_flag);
+    if (fallback != null) return fallback >= 0.2 ? 'rich' : 'thin';
+    return null;
+  })();
+
+  const phaseBSourceCoveragePct = phaseBSourceCoverageRatio != null ? Math.round(phaseBSourceCoverageRatio * 100) : null;
+
+  const phaseBFlags = (phaseBFeatures as any)?.flags ?? {};
+  const phaseBActiveFlags = Object.keys(phaseBFlags).filter((k) => phaseBFlags[k]).slice(0, 6);
+
+  const phaseBCoverageGaps = Array.isArray((phaseBFeatures as any)?.coverage_gaps)
+    ? (phaseBFeatures as any).coverage_gaps.filter((g: unknown) => typeof g === 'string' && g.trim().length > 0).slice(0, 8)
+    : [];
+
+  const {
+    findings: phaseBFindings,
+    actions: phaseBActions,
+    badges: phaseBBadges,
+  } = derivePhaseBInsights({ latest: phaseBFeatures, prior: priorPhaseBFeatures });
+
+  const phaseBFindingClass = (severity: 'low' | 'med' | 'high') => {
+    if (severity === 'high') {
+      return darkMode
+        ? 'bg-red-500/10 border-red-500/40 text-red-200'
+        : 'bg-red-50 border-red-200 text-red-700';
+    }
+    if (severity === 'med') {
+      return darkMode
+        ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
+        : 'bg-amber-50 border-amber-200 text-amber-800';
+    }
+    return darkMode
+      ? 'bg-blue-500/10 border-blue-500/40 text-blue-200'
+      : 'bg-blue-50 border-blue-200 text-blue-800';
+  };
+
+  const normalizePhaseBRun = (run: any): PhaseBRunNormalized | null => {
+    if (!run || typeof run !== 'object') return null;
+    const version = toFiniteNumber((run as any)?.version);
+    const features = (run as any)?.phase_b_features && typeof (run as any).phase_b_features === 'object' ? (run as any).phase_b_features : null;
+    const coverage = features && typeof (features as any).coverage === 'object' ? (features as any).coverage : null;
+    const structure = features && typeof (features as any).structure === 'object' ? (features as any).structure : null;
+    const contentDensity = features && typeof (features as any).content_density === 'object' ? (features as any).content_density : null;
+    const computedAt = typeof (features as any)?.computed_at === 'string' ? (features as any).computed_at : null;
+    const createdAt = typeof (run as any)?.created_at === 'string' ? (run as any).created_at : null;
+    const timestamp = computedAt || createdAt || null;
+    const timestampDisplay = (() => {
+      if (!timestamp) return null;
+      const parsed = new Date(timestamp);
+      return Number.isNaN(parsed.getTime()) ? null : parsed.toLocaleString();
+    })();
+    const fallbackKey = `${timestamp ?? 'no-ts'}-${version ?? 'no-version'}`;
+    return {
+      key: typeof (run as any)?.id === 'string' ? (run as any).id : fallbackKey,
+      timestamp,
+      timestampDisplay,
+      version,
+      metrics: {
+        visualsCount: toFiniteNumber((coverage as any)?.visuals_count),
+        evidenceCount: toFiniteNumber((coverage as any)?.evidence_count),
+        evidencePerVisual: toFiniteNumber((coverage as any)?.evidence_per_visual),
+        pctVisualsWithOcr: toRatioPct((contentDensity as any)?.pct_visuals_with_ocr),
+        pctVisualsWithStructured: toRatioPct((contentDensity as any)?.pct_visuals_with_structured),
+        pctSegmentsWithVisuals: toRatioPct((structure as any)?.pct_segments_with_visuals),
+      },
+    };
+  };
+
+  const phaseBRunHistory: PhaseBRunNormalized[] = (() => {
+    const runs: PhaseBRunNormalized[] = [];
+    const seen = new Set<string>();
+    const addRun = (run: PhaseBRunNormalized | null) => {
+      if (!run) return;
+      if (seen.has(run.key)) return;
+      seen.add(run.key);
+      runs.push(run);
+    };
+    phaseBRunsOrdered.map((entry) => normalizePhaseBRun(entry.run)).forEach((run) => addRun(run));
+    return runs.slice(0, 3);
+  })();
+
+  const devPhaseBDiagnostics = import.meta.env.DEV
+    ? {
+        routeDealId: dealId ?? null,
+        apiDealId: typeof (dealFromApi as any)?.id === 'string' ? (dealFromApi as any).id : null,
+        dioVersionId: dioMeta?.dioVersionId ?? null,
+        phaseB: {
+          hasLatest: Boolean(phaseBLatestRun),
+          version: phaseBVersion ?? null,
+          timestamp: phaseBRunTimestamp ?? null,
+          timestampDisplay: phaseBRunTimestampDisplay ?? null,
+          coverage: {
+            documents: phaseBDocCount,
+            segments: phaseBPageCount,
+            visuals: phaseBVisualsCount,
+            evidence: phaseBEvidenceCount,
+            evidencePerVisual: phaseBEvidencePerVisual,
+            sourceCoveragePct: phaseBSourceCoveragePct,
+          },
+          flags: phaseBActiveFlags,
+          history: phaseBRunHistory.map((run) => ({
+            key: run.key,
+            version: run.version,
+            timestamp: run.timestamp,
+            metrics: run.metrics,
+          })),
+        },
+      }
+    : null;
+
+  if (import.meta.env.DEV && devPhaseBDiagnostics) {
+    // Dev-only inspection to verify latest Phase B wiring
+    // eslint-disable-next-line no-console
+    console.debug('Phase B diagnostics', devPhaseBDiagnostics);
+  }
+
+  const copyScoreTraceDebug = async () => {
+    if (!import.meta.env.DEV) return;
+    const payload = (executiveSummaryV2 as any)?.score_breakdown_v1 ?? (scoreBreakdownSections.length > 0 ? { sections: scoreBreakdownSections } : null);
+    if (!payload) {
+      addToast('info', 'No score trace', 'Run analysis to populate score breakdown');
+      return;
+    }
+    if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
+      addToast('error', 'Copy unavailable', 'Clipboard API not supported');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
+      addToast('info', 'Dev data copied', 'Score trace JSON copied');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error copying debug payload';
+      addToast('error', 'Copy failed', message);
+    }
+  };
+
+  const copyDevPhaseBDiagnostics = async () => {
+    if (!import.meta.env.DEV || !devPhaseBDiagnostics) return;
+    if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
+      addToast('error', 'Copy unavailable', 'Clipboard API not supported');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(devPhaseBDiagnostics, null, 2));
+      addToast('info', 'Dev data copied', 'Phase B diagnostics JSON copied');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error copying diagnostics';
+      addToast('error', 'Copy failed', message);
+    }
+  };
+
+  const formatDelta = (
+    current: number | null,
+    previous: number | null,
+    opts?: { isPercent?: boolean; decimals?: number }
+  ): string | null => {
+    if (current === null || previous === null) return null;
+    const diff = current - previous;
+    if (Math.abs(diff) < 0.0001) return '0';
+    const decimals = opts?.decimals ?? (opts?.isPercent ? 0 : 1);
+    const rounded = opts?.isPercent ? Math.round(diff) : Number(diff.toFixed(decimals));
+    const prefix = diff > 0 ? '+' : '';
+    return `${prefix}${rounded}${opts?.isPercent ? '%' : ''}`;
+  };
 
   // Use dealInfo if available, otherwise fall back to dealData
   const displayName = dealInfo?.name || dealData?.name || 'Unnamed Deal';
@@ -726,8 +1086,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         setJobMessage(job.message ?? null);
         setJobUpdatedAt(job.updated_at ?? null);
         if (job.type === 'fetch_evidence' && job.status === 'succeeded') {
+          const terminalKey = `job-terminal:${job.job_id}:${job.status}`;
+          if (handledTerminalJobKeysRef.current.has(terminalKey)) return;
+          handledTerminalJobKeysRef.current.add(terminalKey);
           loadEvidence();
-          addToast('success', 'Evidence updated', job.message || 'Fetch completed');
+          addToastOnce(terminalKey, 'success', 'Evidence updated', job.message || 'Fetch completed');
           return;
         }
         if (["succeeded", "failed", "cancelled"].includes(job.status)) {
@@ -1178,6 +1541,66 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             </div>
           </div>
 
+          {import.meta.env.DEV && (
+            <div className={`border rounded-xl p-4 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}>
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                  <div>
+                    <div className={`text-xs uppercase tracking-wide ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      Dev only · Phase B debug
+                    </div>
+                    <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                      Route dealId: {dealId ?? '—'} · API: {typeof (dealFromApi as any)?.id === 'string' ? (dealFromApi as any).id : '—'} · History runs: {phaseBRunHistory.length}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant="secondary"
+                      darkMode={darkMode}
+                      icon={<Clipboard className="w-4 h-4" />}
+                      onClick={copyDevPhaseBDiagnostics}
+                    >
+                      Copy debug JSON
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      darkMode={darkMode}
+                      icon={showDevPhaseBDiagnostics ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                      onClick={() => setShowDevPhaseBDiagnostics((prev) => !prev)}
+                    >
+                      {showDevPhaseBDiagnostics ? 'Hide details' : 'Show details'}
+                    </Button>
+                  </div>
+                </div>
+
+                {showDevPhaseBDiagnostics && (
+                  <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 text-xs ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
+                    <div className={`${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'} p-3 rounded-lg border`}>
+                      <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Latest run</div>
+                      <div className="mt-1 text-sm">{phaseBRunTimestampDisplay ?? 'Timestamp unavailable'}</div>
+                      <div className="text-[11px]">{phaseBVersion != null ? `v${phaseBVersion}` : 'Version missing'}</div>
+                    </div>
+                    <div className={`${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'} p-3 rounded-lg border`}>
+                      <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Coverage</div>
+                      <div className="mt-1 text-sm">Docs {phaseBDocCount ?? '—'} · Segments {phaseBPageCount ?? '—'}</div>
+                      <div className="text-[11px]">Source coverage: {phaseBSourceCoveragePct != null ? `${phaseBSourceCoveragePct}%` : '—'}</div>
+                    </div>
+                    <div className={`${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'} p-3 rounded-lg border`}>
+                      <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Visuals & evidence</div>
+                      <div className="mt-1 text-sm">Visuals {phaseBVisualsCount ?? '—'} · Evidence {phaseBEvidenceCount ?? '—'}</div>
+                      <div className="text-[11px]">Evidence/visual: {phaseBEvidencePerVisual != null ? phaseBEvidencePerVisual.toFixed(2) : '—'}</div>
+                    </div>
+                    <div className={`${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'} p-3 rounded-lg border`}>
+                      <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Flags</div>
+                      <div className="mt-1 text-sm">{phaseBActiveFlags.length > 0 ? phaseBActiveFlags.join(', ') : 'No active flags'}</div>
+                      <div className="text-[11px]">History keys: {phaseBRunHistory.length > 0 ? phaseBRunHistory.map((run) => `${run.version ?? '—'}@${run.timestampDisplay ?? 'ts'}`).join(' | ') : 'none'}</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Score Cards */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
             {/* Decision Tile */}
@@ -1299,6 +1722,280 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                       <div className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No missing sections flagged.</div>
                     )}
                   </div>
+
+                  {scoreBreakdownSections.length > 0 && (
+                    <>
+                      <div className="mt-6">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            Score breakdown
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowScoreBreakdown((prev) => !prev)}
+                            className={`flex items-center gap-1 text-xs font-medium ${darkMode ? 'text-gray-300 hover:text-white' : 'text-gray-700 hover:text-gray-900'}`}
+                          >
+                            {showScoreBreakdown ? 'Hide' : 'Show'}
+                            {showScoreBreakdown ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                          </button>
+                        </div>
+
+                        {showScoreBreakdown && (
+                          <div className={`mt-3 rounded-lg border ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
+                            <ul className={`divide-y ${darkMode ? 'divide-white/10' : 'divide-gray-200'}`}>
+                              {scoreBreakdownSections.map((section: any, idx: number) => {
+                                const sectionKey = typeof section?.key === 'string'
+                                  ? section.key
+                                  : typeof section?.section_key === 'string'
+                                    ? section.section_key
+                                    : null;
+                                const displayKey = sectionKey ?? `section-${idx}`;
+                                const status = (section?.support_status as string) ?? 'weak';
+                                const evidenceCount = typeof section?.evidence_count === 'number' ? section.evidence_count : 0;
+                                const evidenceCountTotal = typeof section?.evidence_count_total === 'number' ? section.evidence_count_total : evidenceCount;
+                                const evidenceCountLinked = typeof section?.evidence_count_linked === 'number'
+                                  ? section.evidence_count_linked
+                                  : Array.isArray(section?.evidence_ids)
+                                    ? section.evidence_ids.length
+                                    : evidenceCount;
+                                const supportReason = typeof section?.support_reason === 'string' ? section.support_reason : null;
+                                const truncatedSupportReason = supportReason
+                                  ? (supportReason.length > 140 ? `${supportReason.slice(0, 137)}...` : supportReason)
+                                  : null;
+                                const coveragePct = evidenceCountTotal > 0
+                                  ? Math.round(
+                                      Math.min(
+                                        1,
+                                        typeof section?.coverage_pct === 'number'
+                                          ? section.coverage_pct / 100
+                                          : typeof section?.trace_coverage_pct === 'number'
+                                            ? section.trace_coverage_pct
+                                            : evidenceCountLinked / evidenceCountTotal
+                                      ) * 100
+                                    )
+                                  : null;
+                                const missingReasons = Array.isArray(section?.missing_reasons) ? section.missing_reasons : [];
+                                const hint = typeof section?.hint === 'string' ? section.hint : null;
+                                const labelMap: Record<string, string> = {
+                                  market: 'Market',
+                                  product: 'Product',
+                                  business_model: 'Business model',
+                                  traction: 'Traction',
+                                  risks: 'Risks',
+                                  team: 'Team',
+                                };
+                                const badgeClass = (() => {
+                                  if (status === 'supported') return darkMode ? 'bg-emerald-500/10 text-emerald-200 border-emerald-400/40' : 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                                  if (status === 'weak') return darkMode ? 'bg-amber-500/10 text-amber-200 border-amber-400/40' : 'bg-amber-50 text-amber-800 border-amber-200';
+                                  return darkMode ? 'bg-red-500/10 text-red-200 border-red-400/40' : 'bg-red-50 text-red-700 border-red-200';
+                                })();
+                                return (
+                                  <li
+                                    key={`score-breakdown-${displayKey}`}
+                                    className={`px-3 py-3 cursor-pointer ${darkMode ? 'hover:bg-white/5' : 'hover:bg-gray-50'}`}
+                                    onClick={() => handleScoreBreakdownClick(section, sectionKey)}
+                                  >
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div>
+                                            <div className="flex items-center gap-2">
+                                              <div className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                                                {labelMap[displayKey] ?? displayKey}
+                                              </div>
+                                              {truncatedSupportReason && (
+                                                <span
+                                                  className={`text-[10px] px-2 py-0.5 rounded-full border ${darkMode ? 'border-white/10 text-gray-300' : 'border-gray-200 text-gray-700'}`}
+                                                  title={truncatedSupportReason}
+                                                >
+                                                  Why
+                                                </span>
+                                              )}
+                                            </div>
+                                        <div className={`text-xs mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                          Trace coverage: {evidenceCountLinked}/{evidenceCountTotal ?? '—'}{coveragePct != null ? ` (${coveragePct}%)` : ''}
+                                        </div>
+                                        {missingReasons.length > 0 && (
+                                          <div className={`text-xs mt-1 ${darkMode ? 'text-red-200' : 'text-red-700'}`}>
+                                            Missing: {missingReasons.join(' · ')}
+                                          </div>
+                                        )}
+                                        {hint && (
+                                          <div className={`text-xs mt-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                            {hint}
+                                          </div>
+                                        )}
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        {section?.mismatch && (
+                                          <span className={`px-2 py-1 rounded-full border text-[10px] font-medium ${darkMode ? 'border-amber-400/60 text-amber-200' : 'border-amber-300 text-amber-700'}`}>
+                                            Mismatch
+                                          </span>
+                                        )}
+                                        <span className={`px-2 py-1 rounded-full border text-[11px] font-medium ${badgeClass}`}>
+                                          {status === 'supported' ? 'Supported' : status === 'weak' ? 'Weak' : 'Missing'}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+
+                      {import.meta.env.DEV && (
+                        <div className={`mt-4 rounded-lg border ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
+                          <div className="flex items-center justify-between gap-3 p-3">
+                            <div>
+                              <div className={`text-[11px] uppercase tracking-wide ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                Dev only · Score trace debug
+                              </div>
+                              <div className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                Sections: {scoreBreakdownSections.length}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <Button
+                                variant="secondary"
+                                darkMode={darkMode}
+                                size="sm"
+                                icon={<Clipboard className="w-4 h-4" />}
+                                onClick={copyScoreTraceDebug}
+                              >
+                                Copy JSON
+                              </Button>
+                              <Button
+                                variant="secondary"
+                                darkMode={darkMode}
+                                size="sm"
+                                icon={showScoreTraceDebug ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                onClick={() => setShowScoreTraceDebug((prev) => !prev)}
+                              >
+                                {showScoreTraceDebug ? 'Hide debug' : 'Show debug'}
+                              </Button>
+                            </div>
+                          </div>
+                          {showScoreTraceDebug && (
+                            <div className={`border-t ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
+                              <div className={`grid grid-cols-[1.2fr_1fr_0.9fr_1fr_0.9fr_1.6fr_0.8fr] gap-2 px-3 py-2 text-[11px] font-semibold ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                <div>Section</div>
+                                <div>Status</div>
+                                <div>Mismatch</div>
+                                <div>Linked / Total</div>
+                                <div>Coverage</div>
+                                <div>Missing reasons</div>
+                                <div>Actions</div>
+                              </div>
+                              <div className={darkMode ? 'divide-white/10 divide-y' : 'divide-gray-200 divide-y'}>
+                                {scoreBreakdownSections.map((section: any, idx: number) => {
+                                  const sectionKey = typeof section?.section_key === 'string'
+                                    ? section.section_key
+                                    : typeof section?.key === 'string'
+                                      ? section.key
+                                      : `section-${idx}`;
+                                  const statusRaw = typeof section?.support_status === 'string' ? section.support_status : 'unknown';
+                                  const status = ['supported', 'weak', 'missing', 'unknown'].includes(statusRaw) ? statusRaw : 'unknown';
+                                  const mismatch = Boolean(section?.mismatch);
+                                  const linked = typeof section?.evidence_count_linked === 'number'
+                                    ? section.evidence_count_linked
+                                    : Array.isArray(section?.evidence_ids_linked)
+                                      ? section.evidence_ids_linked.length
+                                      : Array.isArray(section?.evidence_ids)
+                                        ? section.evidence_ids.length
+                                        : Array.isArray(section?.evidence_ids_sample)
+                                          ? section.evidence_ids_sample.length
+                                          : 0;
+                                  const totalRaw = typeof section?.evidence_count_total === 'number'
+                                    ? section.evidence_count_total
+                                    : typeof section?.evidence_count === 'number'
+                                      ? section.evidence_count
+                                      : linked;
+                                  const total = Number.isFinite(totalRaw) ? Math.max(0, totalRaw) : 0;
+                                  const coveragePctRaw = typeof section?.coverage_pct === 'number'
+                                    ? section.coverage_pct
+                                    : typeof section?.trace_coverage_pct === 'number'
+                                      ? section.trace_coverage_pct * 100
+                                      : total > 0
+                                        ? (linked / total) * 100
+                                        : 0;
+                                  const coveragePct = Math.min(100, Math.max(0, Math.round(coveragePctRaw)));
+                                  const missingReasons = Array.isArray(section?.missing_link_reasons)
+                                    ? section.missing_link_reasons
+                                    : Array.isArray(section?.missing_reasons)
+                                      ? section.missing_reasons
+                                      : [];
+                                  const missingDisplay = missingReasons
+                                    .filter((r: unknown): r is string => typeof r === 'string' && r.trim().length > 0)
+                                    .map((r: string) => r.trim())
+                                    .filter((r: string, i: number, arr: string[]) => arr.indexOf(r) === i)
+                                    .slice(0, 3)
+                                    .join(' · ');
+                                  const truncatedMissing = missingDisplay.length > 120 ? `${missingDisplay.slice(0, 117)}...` : missingDisplay;
+                                  const idsPreview = (section?.evidence_ids_linked ?? section?.evidence_ids ?? section?.evidence_ids_sample ?? [])
+                                    .filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0)
+                                    .slice(0, 3)
+                                    .join(', ');
+                                  const idsLabel = idsPreview || '—';
+                                  const badgeClass = (() => {
+                                    if (status === 'supported') return darkMode ? 'bg-emerald-500/10 text-emerald-200 border-emerald-400/40' : 'bg-emerald-50 text-emerald-700 border-emerald-200';
+                                    if (status === 'weak') return darkMode ? 'bg-amber-500/10 text-amber-200 border-amber-400/40' : 'bg-amber-50 text-amber-800 border-amber-200';
+                                    if (status === 'missing') return darkMode ? 'bg-red-500/10 text-red-200 border-red-400/40' : 'bg-red-50 text-red-700 border-red-200';
+                                    return darkMode ? 'bg-gray-500/10 text-gray-200 border-gray-400/40' : 'bg-gray-50 text-gray-700 border-gray-200';
+                                  })();
+
+                                  return (
+                                    <div
+                                      key={`score-trace-debug-${sectionKey}-${idx}`}
+                                      className={`grid grid-cols-[1.2fr_1fr_0.9fr_1fr_0.9fr_1.6fr_0.8fr] gap-2 px-3 py-2 text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}
+                                    >
+                                      <div className="flex flex-col gap-1 min-w-0">
+                                        <div className="font-semibold truncate">{sectionKey}</div>
+                                        <div className={`text-[11px] truncate ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                          IDs: {idsLabel}
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center">
+                                        <span className={`px-2 py-1 rounded-full border text-[11px] font-medium ${badgeClass}`}>
+                                          {status === 'supported' ? 'Supported' : status === 'weak' ? 'Weak' : status === 'missing' ? 'Missing' : 'Unknown'}
+                                        </span>
+                                      </div>
+                                      <div className="flex items-center">
+                                        {mismatch ? (
+                                          <span className={`px-2 py-1 rounded-full border text-[11px] font-medium ${darkMode ? 'border-amber-400/60 text-amber-200' : 'border-amber-300 text-amber-700'}`}>
+                                            Mismatch
+                                          </span>
+                                        ) : (
+                                          <span className={`text-[11px] ${darkMode ? 'text-emerald-200' : 'text-emerald-700'}`}>Aligned</span>
+                                        )}
+                                      </div>
+                                      <div className="flex flex-col text-sm">
+                                        <span className="font-semibold">{linked}/{total}</span>
+                                        <span className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>linked / counted</span>
+                                      </div>
+                                      <div className="text-sm font-semibold">{coveragePct}%</div>
+                                      <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                        {truncatedMissing || '—'}
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          darkMode={darkMode}
+                                          onClick={() => handleScoreTraceDebugTrace(section, sectionKey)}
+                                        >
+                                          Trace
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
                 </>
               ) : (
                 <div className={`mt-4 p-4 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10 text-gray-400' : 'bg-gray-50 border-gray-200 text-gray-600'}`}>
@@ -1879,6 +2576,254 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
                 <div>
                   <h3 className={`text-sm mb-3 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    Phase B Diagnostics
+                  </h3>
+                  <div className={`p-4 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
+                    {phaseBLatestRun ? (
+                      phaseBFeatures ? (
+                        <>
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                                Latest features-only run
+                              </div>
+                              <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                {phaseBRunTimestampDisplay ?? 'Timestamp unavailable'} · v{phaseBVersion != null ? phaseBVersion : '—'}
+                              </div>
+                            </div>
+                            <div className="flex flex-wrap gap-2 justify-end">
+                              {phaseBContentDensityFlag && (
+                                <span className={`px-2 py-1 rounded-full text-[11px] border ${darkMode ? 'bg-white/5 border-white/10 text-gray-200' : 'bg-white border-gray-200 text-gray-700'}`}>
+                                  Content density: {phaseBContentDensityFlag}
+                                </span>
+                              )}
+                              {phaseBSectionStructureScore != null && (
+                                <span className={`px-2 py-1 rounded-full text-[11px] border ${darkMode ? 'bg-white/5 border-white/10 text-gray-200' : 'bg-white border-gray-200 text-gray-700'}`}>
+                                  Structure: {phaseBSectionStructureScore}/100
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {phaseBBadges.length > 0 && (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {phaseBBadges.map((badge) => (
+                                <span
+                                  key={badge}
+                                  className={`px-2 py-1 rounded-full text-[11px] border ${darkMode ? 'bg-white/5 border-white/10 text-gray-200' : 'bg-white border-gray-200 text-gray-700'}`}
+                                >
+                                  {badge}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-4">
+                            <div className={`${darkMode ? 'bg-white/5' : 'bg-white'} rounded-lg border ${darkMode ? 'border-white/10' : 'border-gray-200'} p-3`}>
+                              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Docs</div>
+                              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>{phaseBDocCount ?? '—'}</div>
+                              <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>documents detected</div>
+                            </div>
+                            <div className={`${darkMode ? 'bg-white/5' : 'bg-white'} rounded-lg border ${darkMode ? 'border-white/10' : 'border-gray-200'} p-3`}>
+                              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Pages / segments</div>
+                              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>{phaseBPageCount ?? '—'}</div>
+                              <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>for coverage</div>
+                            </div>
+                            <div className={`${darkMode ? 'bg-white/5' : 'bg-white'} rounded-lg border ${darkMode ? 'border-white/10' : 'border-gray-200'} p-3`}>
+                              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Source coverage</div>
+                              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                                {phaseBSourceCoveragePct != null ? `${phaseBSourceCoveragePct}%` : '—'}
+                              </div>
+                              <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                                docs with segments
+                              </div>
+                            </div>
+                            <div className={`${darkMode ? 'bg-white/5' : 'bg-white'} rounded-lg border ${darkMode ? 'border-white/10' : 'border-gray-200'} p-3`}>
+                              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Evidence density</div>
+                              <div className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                                {phaseBEvidencePerVisual != null ? phaseBEvidencePerVisual.toFixed(1) : '—'}
+                              </div>
+                              <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                                evidence per visual
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            {phaseBActiveFlags.length > 0 ? phaseBActiveFlags.map((flag) => (
+                              <span
+                                key={flag}
+                                className={`px-2 py-1 rounded-full text-[11px] border ${darkMode ? 'bg-red-500/10 border-red-500/30 text-red-200' : 'bg-red-50 border-red-200 text-red-700'}`}
+                              >
+                                {flag}
+                              </span>
+                            )) : (
+                              <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                                No flags from latest run.
+                              </span>
+                            )}
+                            {phaseBVisualsCount != null && (
+                              <span className={`px-2 py-1 rounded-full text-[11px] border ${darkMode ? 'bg-white/5 border-white/10 text-gray-200' : 'bg-white border-gray-200 text-gray-700'}`}>
+                                Visuals: {phaseBVisualsCount}
+                              </span>
+                            )}
+                            {phaseBEvidenceCount != null && (
+                              <span className={`px-2 py-1 rounded-full text-[11px] border ${darkMode ? 'bg-white/5 border-white/10 text-gray-200' : 'bg-white border-gray-200 text-gray-700'}`}>
+                                Evidence: {phaseBEvidenceCount}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="mt-4">
+                            <div className={`text-xs mb-2 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                              Findings
+                            </div>
+                            {phaseBFindings.length > 0 ? (
+                              <div className="flex flex-wrap gap-2">
+                                {phaseBFindings.map((finding) => (
+                                  <span
+                                    key={finding.code}
+                                    className={`px-2 py-1 rounded-full text-[11px] border ${phaseBFindingClass(finding.severity)}`}
+                                    title={finding.detail || undefined}
+                                  >
+                                    {finding.title}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                                No findings flagged by deterministic rules.
+                              </div>
+                            )}
+                          </div>
+
+                          {phaseBActions.length > 0 && (
+                            <div className="mt-4">
+                              <div className={`text-xs mb-2 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                                Suggested actions
+                              </div>
+                              <div className="space-y-2">
+                                {phaseBActions.map((action) => (
+                                  <div
+                                    key={action.code}
+                                    className={`${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'} rounded-lg border p-3`}
+                                  >
+                                    <div className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                                      {action.title}
+                                    </div>
+                                    <div className={`text-xs mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                      {action.why}
+                                    </div>
+                                    <ul className={`text-xs mt-2 list-disc pl-4 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                      {action.steps.map((step, idx) => (
+                                        <li key={`${action.code}-step-${idx}`}>{step}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                <div className="mt-5">
+                  <div className={`text-xs mb-2 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                    Run history (last 3) · deltas vs prior run
+                  </div>
+                  {phaseBRunHistory.length > 0 ? (
+                    <div className="space-y-2">
+                      {phaseBRunHistory.map((run, idx) => {
+                        const prev = phaseBRunHistory[idx + 1] ?? null;
+                        const metrics = run.metrics;
+                        const deltas = {
+                          visuals: formatDelta(metrics.visualsCount, prev?.metrics.visualsCount, { decimals: 0 }),
+                          evidence: formatDelta(metrics.evidenceCount, prev?.metrics.evidenceCount, { decimals: 0 }),
+                          evidencePerVisual: formatDelta(metrics.evidencePerVisual, prev?.metrics.evidencePerVisual, { decimals: 1 }),
+                          ocr: formatDelta(metrics.pctVisualsWithOcr, prev?.metrics.pctVisualsWithOcr, { isPercent: true }),
+                          structured: formatDelta(metrics.pctVisualsWithStructured, prev?.metrics.pctVisualsWithStructured, { isPercent: true }),
+                          segmentsWithVisuals: formatDelta(metrics.pctSegmentsWithVisuals, prev?.metrics.pctSegmentsWithVisuals, { isPercent: true }),
+                        };
+                        const deltaColor = (delta: string | null) => {
+                          if (!delta || delta === '0') return darkMode ? 'text-gray-500' : 'text-gray-600';
+                          return delta.startsWith('-') ? (darkMode ? 'text-red-300' : 'text-red-600') : (darkMode ? 'text-emerald-300' : 'text-emerald-700');
+                        };
+                        const renderMetric = (
+                          label: string,
+                          value: string,
+                          delta: string | null,
+                          alt: string
+                        ) => (
+                          <div className={`${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'} rounded-md border p-2`}>
+                            <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>{label}</div>
+                            <div className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>{value}</div>
+                            <div className={`text-[11px] ${deltaColor(delta)}`}>
+                              {prev ? (delta ? `Δ ${delta}` : 'Δ —') : alt}
+                            </div>
+                          </div>
+                        );
+                        return (
+                          <div key={`phase-b-run-${run.key}`} className={`${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'} rounded-lg border p-3`}>
+                            <div className="flex items-start justify-between gap-2 text-xs">
+                              <div className={darkMode ? 'text-gray-300' : 'text-gray-800'}>
+                                {run.timestampDisplay ?? 'Timestamp unavailable'}
+                              </div>
+                              <div className={darkMode ? 'text-gray-400' : 'text-gray-600'}>v{run.version ?? '—'}</div>
+                            </div>
+                            <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                              {renderMetric('Visuals', metrics.visualsCount != null ? String(metrics.visualsCount) : '—', deltas.visuals, 'Baseline')}
+                              {renderMetric('Evidence', metrics.evidenceCount != null ? String(metrics.evidenceCount) : '—', deltas.evidence, 'Baseline')}
+                              {renderMetric('Evidence/visual', metrics.evidencePerVisual != null ? metrics.evidencePerVisual.toFixed(1) : '—', deltas.evidencePerVisual, 'Baseline')}
+                              {renderMetric('Visuals with OCR', metrics.pctVisualsWithOcr != null ? `${metrics.pctVisualsWithOcr}%` : '—', deltas.ocr, 'Baseline')}
+                              {renderMetric('Visuals with structure', metrics.pctVisualsWithStructured != null ? `${metrics.pctVisualsWithStructured}%` : '—', deltas.structured, 'Baseline')}
+                              {renderMetric('Segments with visuals', metrics.pctSegmentsWithVisuals != null ? `${metrics.pctSegmentsWithVisuals}%` : '—', deltas.segmentsWithVisuals, 'Baseline')}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      Run history unavailable. Trigger another Phase B run to compare drift.
+                    </div>
+                  )}
+                </div>
+
+                          <div className="mt-4">
+                            <div className={`text-xs mb-2 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                              Coverage gaps / notes
+                            </div>
+                            {phaseBCoverageGaps.length > 0 ? (
+                              <div className="flex flex-wrap gap-2">
+                                {phaseBCoverageGaps.map((gap: string) => (
+                                  <span
+                                    key={gap}
+                                    className={`px-2 py-1 rounded-full border text-xs ${darkMode ? 'bg-amber-500/10 border-amber-500/30 text-amber-200' : 'bg-amber-50 border-amber-200 text-amber-800'}`}
+                                  >
+                                    {gap}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                                No gaps flagged. Run Phase B in backend to refresh if inputs change.
+                              </div>
+                            )}
+                          </div>
+                        </>
+                      ) : (
+                        <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          Phase B run found{phaseBVersion != null ? ` (v${phaseBVersion})` : ''}, but diagnostics were not stored. Re-run Phase B in backend to regenerate features.
+                        </div>
+                      )
+                    ) : (
+                      <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        No Phase B diagnostics yet. Run Phase B in backend.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className={`text-sm mb-3 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                     Update Report
                   </h3>
                   <div className={`p-4 rounded-lg ${darkMode ? 'bg-white/5' : 'bg-gray-100/50'}`}>
@@ -1944,6 +2889,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 onFetchEvidence={handleFetchEvidence}
                 reportSections={Array.isArray(reportFromApi?.sections) ? reportFromApi!.sections!.map((s) => ({ title: s.title, evidence_ids: s.evidence_ids })) : []}
                 documentTitles={documentTitles}
+                scoreEvidence={phase1ScoreEvidence}
+                selectedScoreSectionKey={selectedScoreSectionKey}
+                scoreBreakdownSections={scoreBreakdownSections}
+                highlightedEvidenceIds={highlightedEvidenceIds}
+                  selectedScoreSectionMismatch={selectedScoreSectionMismatch}
+                externalTraceMode={scoreTraceModeOverride}
+                scoreTraceAudit={scoreTraceAudit}
               />
             )}
 

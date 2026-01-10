@@ -14,7 +14,7 @@ import {
 	FinancialHealthCalculator,
 	RiskAssessmentEngine,
 } from "@dealdecision/core";
-import { createWorker, getQueue } from "./lib/queue";
+import { createWorker, getQueue, logWorkerQueueConfig } from "./lib/queue";
 import {
 	getPool,
 	closePool,
@@ -34,6 +34,8 @@ import {
 	insertDocumentExtractionAudit,
 	getDocumentOriginalFile,
 	upsertDocumentOriginalFile,
+	insertPhaseBRun,
+	getLatestPhaseBRun,
 } from "./lib/db";
 import { deriveEvidenceDrafts } from "./lib/evidence";
 import {
@@ -55,6 +57,7 @@ import type { DocumentAnalysis, ExtractedContent } from "./lib/processors";
 import type { VerificationResult } from "./lib/verification";
 import { OpenAIGPT4oProvider } from "./lib/llm/providers/openai-provider";
 import type { ProviderConfig } from "./lib/llm/types";
+import { extractPhaseBFeaturesV1, fetchPhaseBVisualsFromDb } from "./lib/phaseb/extract";
 
 // Deterministic startup log for Docker verification.
 // Do not log secrets; only the explicit flag value.
@@ -1031,9 +1034,18 @@ function baseProcessor(statusOnStart: JobStatus, statusOnComplete: JobStatus) {
 	};
 }
 
-createWorker("ingest_documents", ingestDocumentProcessor);
+const registeredWorkers: Array<Parameters<typeof createWorker>[0]> = [];
+const registerWorker = (
+	name: Parameters<typeof createWorker>[0],
+	processor: Parameters<typeof createWorker>[1]
+) => {
+	registeredWorkers.push(name);
+	return createWorker(name, processor);
+};
 
-createWorker("extract_visuals", async (job: Job) => {
+registerWorker("ingest_documents", ingestDocumentProcessor);
+
+registerWorker("extract_visuals", async (job: Job) => {
 	const data = (job.data ?? {}) as {
 		deal_id?: string;
 		document_id?: string;
@@ -1291,7 +1303,7 @@ createWorker("extract_visuals", async (job: Job) => {
 	);
 	return { ok: true, persisted, docs_processed: docsProcessed, docs_skipped: docsSkipped };
 });
-createWorker("fetch_evidence", async (job: Job) => {
+registerWorker("fetch_evidence", async (job: Job) => {
 	const dealId = (job.data as { deal_id?: string } | undefined)?.deal_id;
 	const filter = (job.data as { filter?: string } | undefined)?.filter;
 	if (!dealId) {
@@ -1421,7 +1433,7 @@ createWorker("fetch_evidence", async (job: Job) => {
 		throw err;
 	}
 });
-createWorker("analyze_deal", async (job: Job) => {
+registerWorker("analyze_deal", async (job: Job) => {
 	const dealId =
 		(job.data as { deal_id?: string } | undefined)?.deal_id ??
 		(await getDealIdForJob(job));
@@ -1607,6 +1619,81 @@ createWorker("analyze_deal", async (job: Job) => {
 			deal_overview_v2: phase1_deal_overview_v2,
 			business_archetype_v1: phase1_business_archetype_v1,
 		});
+
+		// Phase B diagnostic-only persistence (fail-open)
+		try {
+			let phaseBVisualsSummary = null as Awaited<ReturnType<typeof fetchPhaseBVisualsFromDb>>;
+			try {
+				phaseBVisualsSummary = await fetchPhaseBVisualsFromDb(getPool(), dealId);
+			} catch (summaryErr) {
+				console.warn(
+					JSON.stringify({
+						event: "phase_b_visuals_summary_failed",
+						deal_id: dealId,
+						reason: summaryErr instanceof Error ? summaryErr.message : String(summaryErr),
+					})
+				);
+			}
+
+			const phaseB_features = extractPhaseBFeaturesV1({
+				dealId,
+				phase1: currentPhase1,
+				docs: documentsForAnalyzers,
+				visualsFromDb: phaseBVisualsSummary,
+			});
+
+			let versionOverride: number | null = null;
+			try {
+				const latest = await getLatestPhaseBRun(dealId);
+				versionOverride = (latest?.version ?? 0) + 1;
+			} catch (versionErr) {
+				console.warn(
+					JSON.stringify({
+						event: "phase_b_version_lookup_failed",
+						deal_id: dealId,
+						reason: versionErr instanceof Error ? versionErr.message : String(versionErr),
+					})
+				);
+			}
+
+			try {
+				await insertPhaseBRun({
+					dealId,
+					phaseBResult: { status: "features_only", schema_version: 1 },
+					phaseBFeatures: phaseB_features,
+					sourceRunId: job.id ? String(job.id) : null,
+					versionOverride: versionOverride ?? undefined,
+				});
+			} catch (persistErr) {
+				console.warn(
+					JSON.stringify({
+						event: "phase_b_persist_failed",
+						deal_id: dealId,
+						reason: persistErr instanceof Error ? persistErr.message : String(persistErr),
+					})
+				);
+			}
+
+			if (process.env.DDAI_DEBUG_PHASE_B === "1") {
+				console.log(
+					JSON.stringify({
+						event: "phase_b_features_only",
+						deal_id: dealId,
+						coverage: phaseB_features.coverage,
+					})
+				);
+			}
+		} catch (err) {
+			if (process.env.DDAI_DEBUG_PHASE_B === "1") {
+				console.warn(
+					JSON.stringify({
+						event: "phase_b_features_failed",
+						deal_id: dealId,
+						reason: err instanceof Error ? err.message : String(err),
+					})
+				);
+			}
+		}
 		if (process.env.DEBUG_PHASE1_OVERVIEW_V2 === "1") {
 			console.log(
 				JSON.stringify({
@@ -1777,10 +1864,79 @@ createWorker("analyze_deal", async (job: Job) => {
 	}
 });
 
+registerWorker("orchestration", async (job: Job) => {
+	const data = (job.data ?? {}) as Record<string, unknown>;
+	const dealId = typeof data.deal_id === "string" ? data.deal_id : undefined;
+	const leafQueues: Array<Parameters<typeof getQueue>[0]> = [
+		"ingest_documents",
+		"extract_visuals",
+		"fetch_evidence",
+		"analyze_deal",
+		"verify_documents",
+		"remediate_extraction",
+		"reextract_documents",
+	];
+
+	const resolveTargetQueue = (): Parameters<typeof getQueue>[0] | null => {
+		switch (job.name) {
+			case "analyze-deal":
+			case "run-pipeline":
+				return "analyze_deal";
+			default: {
+				const explicit = typeof (data as any).target_queue === "string" ? (data as any).target_queue : null;
+				return leafQueues.includes(explicit as any) ? (explicit as Parameters<typeof getQueue>[0]) : null;
+			}
+		}
+	};
+
+	const targetQueue = resolveTargetQueue();
+	if (!targetQueue) {
+		console.warn(
+			JSON.stringify({
+				event: "orchestration_unhandled_job",
+				job_id: job.id,
+				job_name: job.name,
+				deal_id: dealId ?? null,
+				reason: "unsupported_job_name",
+			})
+		);
+		return { ok: false, reason: "unsupported_job_name" };
+	}
+
+	const queue = getQueue(targetQueue);
+	console.log(
+		JSON.stringify({
+			event: "orchestration_dispatch",
+			job_id: job.id,
+			job_name: job.name,
+			deal_id: dealId ?? null,
+			target_queue: targetQueue,
+		})
+	);
+
+	const forwarded = await queue.add(targetQueue, { ...data }, {
+		removeOnComplete: true,
+		removeOnFail: false,
+	});
+
+	console.log(
+		JSON.stringify({
+			event: "orchestration_forwarded",
+			job_id: job.id,
+			job_name: job.name,
+			forwarded_job_id: forwarded.id,
+			forwarded_queue: targetQueue,
+			deal_id: dealId ?? null,
+		})
+	);
+
+	return { ok: true, forwarded_job_id: forwarded.id, forwarded_queue: targetQueue };
+});
+
 /**
  * Verification job: Runs after extraction to verify data quality and readiness
  */
-createWorker("verify_documents", async (job: Job) => {
+registerWorker("verify_documents", async (job: Job) => {
 	const dealId = (job.data as { deal_id?: string } | undefined)?.deal_id;
 	const documentIds = (job.data as { document_ids?: string[] } | undefined)?.document_ids;
 
@@ -1908,7 +2064,7 @@ createWorker("verify_documents", async (job: Job) => {
  * Important constraint: we cannot re-extract from the original binary unless the
  * original file bytes are available (they are only present at upload time).
  */
-createWorker("remediate_extraction", async (job: Job) => {
+registerWorker("remediate_extraction", async (job: Job) => {
 	const dealId = (job.data as { deal_id?: string } | undefined)?.deal_id;
 	const includeWarnings = Boolean((job.data as { include_warnings?: boolean } | undefined)?.include_warnings);
 
@@ -2077,7 +2233,7 @@ createWorker("remediate_extraction", async (job: Job) => {
  * - If document_ids provided: re-extract those documents.
  * - Else: re-extract documents that are failed OR have overall_score < threshold_low.
  */
-createWorker("reextract_documents", async (job: Job) => {
+registerWorker("reextract_documents", async (job: Job) => {
 	const dealId = (job.data as { deal_id?: string } | undefined)?.deal_id;
 	const documentIds = (job.data as { document_ids?: string[] } | undefined)?.document_ids;
 	const thresholdLow = Number((job.data as { threshold_low?: number } | undefined)?.threshold_low ?? 0.75);
@@ -2276,7 +2432,7 @@ createWorker("reextract_documents", async (job: Job) => {
 /**
  * Ingestion report job: Generates summary report after all docs are extracted and verified
  */
-createWorker("generate_ingestion_report", async (job: Job) => {
+registerWorker("generate_ingestion_report", async (job: Job) => {
 	const dealId = (job.data as { deal_id?: string } | undefined)?.deal_id;
 	const documentIds = (job.data as { document_ids?: string[] } | undefined)?.document_ids;
 
@@ -2394,6 +2550,9 @@ createWorker("generate_ingestion_report", async (job: Job) => {
 		throw err;
 	}
 });
+
+
+logWorkerQueueConfig("worker", Array.from(new Set(registeredWorkers)));
 
 const shutdown = async () => {
 	await closePool();

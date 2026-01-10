@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { randomUUID } from "crypto";
+import { fetchPhaseBVisualsFromDb } from "../lib/phaseb-visuals";
 import { getPool } from "../lib/db";
 import type { Deal } from "@dealdecision/contracts";
 import { enqueueJob } from "../services/jobs";
@@ -10,7 +11,7 @@ import { normalizeDealName } from "../lib/normalize-deal-name";
 import { purgeDealCascade, isPurgeDealNotFoundError, sanitizeText } from "@dealdecision/core";
 import { BrandModel, PageInput, buildBrandModel, inferDocumentBrandName, inferSlideTitleForSlide, normalizePhrase } from "../lib/slide-title";
 
-type QueryResult<T> = { rows: T[]; rowCount?: number };
+export type QueryResult<T> = { rows: T[]; rowCount?: number };
 type DealRoutesClient = {
   query: <T = any>(sql: string, params?: unknown[]) => Promise<QueryResult<T>>;
   release: () => void;
@@ -446,6 +447,9 @@ type DIOAggregateRow = {
   phase1_deal_overview_v2?: any;
   phase1_update_report_v1?: any;
 	phase1_deal_summary_v2?: any;
+  phase1_score_evidence?: any;
+  phase_b_latest_run?: any | null;
+  phase_b_history?: any | null;
 };
 
 function parseNullableNumber(value: unknown): number | null {
@@ -457,16 +461,758 @@ function parseNullableNumber(value: unknown): number | null {
   return null;
 }
 
-function mapDeal(row: DealRow, dio: DIOAggregateRow | null | undefined, mode: DealApiMode): Deal {
+type Phase1ScoreEvidenceSectionKey = "product" | "market" | "icp" | "business_model" | "traction" | "risks";
+
+type Phase1ScoreEvidencePayload = {
+  sections: Array<{
+    key: Phase1ScoreEvidenceSectionKey;
+    support: "evidence" | "inferred" | "missing";
+    missingReason?: string;
+    claims: Array<{
+      id: string;
+      text: string;
+      confidence?: number | null;
+      evidence: Array<{
+        id: string;
+        kind?: string;
+        label?: string;
+        value?: any;
+        doc_id?: string;
+        document_title?: string;
+        page?: number | null;
+        snippet?: string;
+        source?: string;
+        created_at?: string;
+      }>;
+    }>;
+  }>;
+  totals: { claims: number; evidence: number };
+};
+
+type ScoreBreakdownSectionKey = "market" | "product" | "business_model" | "traction" | "risks" | "team";
+
+type ScoreBreakdownSupport = "supported" | "weak" | "missing" | "unknown";
+
+type ScoreTraceAuditV1 = {
+  status: "ok" | "partial" | "poor";
+  sections_total: number;
+  sections_with_trace: number;
+  sections_missing_trace: number;
+  mismatch_sections: number;
+  notes: string[];
+};
+
+type ScoreBreakdownSection = {
+  key: ScoreBreakdownSectionKey;
+  section_key?: ScoreBreakdownSectionKey;
+  support_status: ScoreBreakdownSupport;
+  evidence_count: number;
+  evidence_ids?: string[];
+  evidence_ids_sample?: string[];
+  evidence_count_total?: number;
+  evidence_count_linked?: number;
+  evidence_ids_linked?: string[];
+  trace_coverage_pct?: number;
+  coverage_pct?: number;
+  rule_key?: string;
+  inputs_used?: {
+    coverage_keys?: string[];
+    claim_ids?: string[];
+    doc_ids?: string[];
+    evidence_ids?: string[];
+  };
+  support_reason?: string;
+  evidence_source?: "claims" | "evidence_table" | "unknown";
+  missing_reasons?: string[];
+  missing_link_reasons?: string[];
+  hint?: string;
+  mismatch?: boolean;
+};
+
+type ScoreBreakdownV1 = {
+  sections: ScoreBreakdownSection[];
+  evidence_total?: number;
+  trace_audit_v1?: ScoreTraceAuditV1;
+};
+
+type EvidenceRow = {
+  id: string;
+  document_id?: string | null;
+  page?: number | null;
+  kind?: string | null;
+  source?: string | null;
+  text?: string | null;
+  value?: unknown;
+  confidence?: number | null;
+  created_at?: string | null;
+};
+
+type DocumentIndex = Record<string, { title?: string | null; page_count?: number | null }>;
+
+export function buildScoreBreakdownV1(params: {
+  accountability?: any;
+  scoreAudit?: any;
+  coverage?: any;
+  claims?: any;
+  sectionEvidenceSamples?: Partial<Record<ScoreBreakdownSectionKey, string[]>>;
+}): ScoreBreakdownV1 | null {
+  const accountability = params.accountability && typeof params.accountability === "object" ? params.accountability : null;
+  const coverage = params.coverage && typeof params.coverage === "object" ? params.coverage : null;
+  const claims = Array.isArray(params.claims) ? params.claims : [];
+
+  const hasInputs = Boolean(accountability) || Boolean(coverage) || claims.length > 0;
+  if (!hasInputs) return null;
+
+  const sectionOrder: ScoreBreakdownSectionKey[] = ["market", "product", "business_model", "traction", "risks", "team"];
+
+  const coverageKeyMap: Record<ScoreBreakdownSectionKey, string> = {
+    market: "market_icp",
+    product: "product_solution",
+    business_model: "business_model",
+    traction: "traction",
+    risks: "risks",
+    team: "team",
+  };
+
+  const claimCategoryMap: Record<ScoreBreakdownSectionKey, string[]> = {
+    market: ["market"],
+    product: ["product"],
+    business_model: ["product"],
+    traction: ["traction"],
+    risks: ["risk"],
+    team: ["team"],
+  };
+
+  const labelMap: Record<ScoreBreakdownSectionKey, string> = {
+    market: "Market",
+    product: "Product",
+    business_model: "Business model",
+    traction: "Traction",
+    risks: "Risks",
+    team: "Team",
+  };
+
+  const hints: Record<ScoreBreakdownSectionKey, string> = {
+    market: "Add market sizing and ICP evidence to strengthen this section.",
+    product: "Attach product definition and capability proof points.",
+    business_model: "Provide pricing or revenue model evidence for business model clarity.",
+    traction: "Add traction metrics or customer proof to support traction claims.",
+    risks: "Document key risks with mitigations to tighten this section.",
+    team: "Include founder bios or key hires to bolster team assessment.",
+  };
+
+  const claimIdsForSection = (key: ScoreBreakdownSectionKey): string[] => {
+    const categories = claimCategoryMap[key];
+    const ids: string[] = [];
+    for (const claim of claims) {
+      if (!claim || typeof claim !== "object") continue;
+      const cat = (claim as any).category;
+      if (!categories.includes(cat)) continue;
+      const claimId = typeof (claim as any).claim_id === "string" ? (claim as any).claim_id : typeof (claim as any).id === "string" ? (claim as any).id : null;
+      if (claimId && claimId.trim()) ids.push(claimId.trim());
+    }
+    return Array.from(new Set(ids));
+  };
+
+  const docIdsFromClaims = (key: ScoreBreakdownSectionKey): string[] => {
+    const categories = claimCategoryMap[key];
+    const ids: string[] = [];
+    for (const claim of claims) {
+      if (!claim || typeof claim !== "object") continue;
+      const cat = (claim as any).category;
+      if (!categories.includes(cat)) continue;
+      const evList = Array.isArray((claim as any).evidence) ? (claim as any).evidence : [];
+      for (const ev of evList) {
+        const docId = typeof ev?.document_id === "string" ? ev.document_id : typeof ev?.doc_id === "string" ? ev.doc_id : null;
+        if (docId && docId.trim()) ids.push(docId.trim());
+      }
+    }
+    return Array.from(new Set(ids));
+  };
+
+  const normalizeSupport = (value: string | undefined | null): ScoreBreakdownSupport | undefined => {
+    if (value === "evidence") return "supported";
+    if (value === "inferred") return "weak";
+    if (value === "missing") return "missing";
+    return undefined;
+  };
+
+  const supportFromAccountability = (key: ScoreBreakdownSectionKey): ScoreBreakdownSupport | undefined => {
+    const support = (accountability as any)?.support || (accountability as any)?.coverage_support;
+    if (!support || typeof support !== "object") return undefined;
+    return normalizeSupport((support as any)[key]);
+  };
+
+  const supportFromCoverage = (key: ScoreBreakdownSectionKey): ScoreBreakdownSupport | undefined => {
+    const coverageKey = coverageKeyMap[key];
+    const status = coverage && typeof coverage === "object" ? (coverage as any).sections?.[coverageKey] : undefined;
+    if (status === "missing") return "missing";
+    if (status === "partial") return "weak";
+    if (status === "present") return "supported";
+    return undefined;
+  };
+
+  const supportMetaFor = (
+    key: ScoreBreakdownSectionKey
+  ): { support: ScoreBreakdownSupport; ruleKey: string; reason: string; coverageKeysUsed: string[] } => {
+    const coverageKey = coverageKeyMap[key];
+    const coverageKeysUsed = coverageKey ? [coverageKey] : [];
+    const accountabilityRaw = (accountability as any)?.support?.[key] ?? (accountability as any)?.coverage_support?.[key];
+    if (accountabilityRaw) coverageKeysUsed.push(`accountability:${key}`);
+
+    const normalizedAccountability = normalizeSupport(accountabilityRaw);
+    if (normalizedAccountability) {
+      return {
+        support: normalizedAccountability,
+        ruleKey: `accountability:${accountabilityRaw}`,
+        reason: `Support set to ${normalizedAccountability} via accountability support value '${accountabilityRaw}'.`,
+        coverageKeysUsed,
+      };
+    }
+
+    const coverageSupport = supportFromCoverage(key);
+    const coverageStatusRaw = coverage && typeof coverage === "object" ? (coverage as any).sections?.[coverageKey] : undefined;
+    if (coverageSupport) {
+      return {
+        support: coverageSupport,
+        ruleKey: `coverage:${coverageStatusRaw ?? coverageSupport}`,
+        reason: `Support set to ${coverageSupport} because coverage.sections.${coverageKey}=${coverageStatusRaw ?? coverageSupport}.`,
+        coverageKeysUsed,
+      };
+    }
+
+    return {
+      support: "weak",
+      ruleKey: "default:weak",
+      reason: `Support defaulted to weak; no accountability or coverage inputs provided for ${labelMap[key]}.`,
+      coverageKeysUsed,
+    };
+  };
+
+  const evidenceCountFor = (key: ScoreBreakdownSectionKey): number => {
+    const categories = claimCategoryMap[key];
+    return claims.reduce((acc, claim) => {
+      if (!claim || typeof claim !== "object") return acc;
+      const cat = (claim as any).category;
+      if (!categories.includes(cat)) return acc;
+      const evCount = Array.isArray((claim as any).evidence) ? (claim as any).evidence.length : 0;
+      return acc + evCount;
+    }, 0);
+  };
+
+  const evidenceIdsFromClaims = (key: ScoreBreakdownSectionKey): string[] => {
+    const categories = claimCategoryMap[key];
+    const ids: string[] = [];
+    for (const claim of claims) {
+      if (!claim || typeof claim !== "object") continue;
+      const cat = (claim as any).category;
+      if (!categories.includes(cat)) continue;
+      const evidenceList = Array.isArray((claim as any).evidence) ? (claim as any).evidence : [];
+      for (const ev of evidenceList) {
+        const evId = typeof ev?.evidence_id === "string" ? ev.evidence_id : typeof ev?.id === "string" ? ev.id : null;
+        if (evId && evId.trim().length > 0) ids.push(evId.trim());
+      }
+    }
+    return Array.from(new Set(ids));
+  };
+
+  const reasonLabel = (value: string | null | undefined): string | null => {
+    if (!value) return null;
+    const map: Record<string, string> = {
+      empty_text: "Evidence text missing",
+      explicit_not_provided: "Explicitly not provided",
+      no_evidence: "No evidence provided",
+      low_confidence: "Low confidence evidence",
+    };
+    return map[value] || value;
+  };
+
+  const missingReasonsFor = (key: ScoreBreakdownSectionKey, support: ScoreBreakdownSupport): string[] => {
+    const reasons: string[] = [];
+    const label = labelMap[key].toLowerCase();
+    const coverageKey = coverageKeyMap[key];
+
+    const missingSections = Array.isArray((accountability as any)?.coverage_missing_sections)
+      ? (accountability as any).coverage_missing_sections
+      : [];
+    for (const entry of missingSections) {
+      if (typeof entry !== "string") continue;
+      const lower = entry.toLowerCase();
+      if (lower.includes(label) || lower.includes(coverageKey.replace(/_/g, " "))) {
+        reasons.push(entry.trim());
+      }
+    }
+
+    const detail = (coverage as any)?.section_details?.[coverageKey];
+    if (detail?.why_missing) {
+      const friendly = reasonLabel(detail.why_missing);
+      if (friendly) reasons.push(friendly);
+    }
+
+    if ((coverage as any)?.sections?.[coverageKey] === "partial") {
+      reasons.push("Partial coverage");
+    }
+
+    if (support === "missing" && reasons.length === 0) {
+      reasons.push("No supporting evidence provided");
+    }
+
+    return Array.from(new Set(reasons)).filter((r) => typeof r === "string" && r.trim().length > 0);
+  };
+
+  const sections = sectionOrder.map((key) => {
+    const supportMeta = supportMetaFor(key);
+    const support = supportMeta.support ?? "unknown";
+    const claimEvidenceIds = evidenceIdsFromClaims(key);
+    const claimIds = claimIdsForSection(key);
+    const docIds = docIdsFromClaims(key);
+    const fallbackSample = (params.sectionEvidenceSamples?.[key] ?? []).filter((id) => typeof id === "string" && id.trim().length > 0);
+    const evidenceIdsSource = claimEvidenceIds.length > 0 ? claimEvidenceIds : fallbackSample;
+    const evidence_ids = Array.from(new Set(evidenceIdsSource));
+    const evidence_ids_sample = evidence_ids.slice(0, 5);
+    const evidence_ids_linked = evidence_ids.slice(0, 25);
+    const evidence_source: ScoreBreakdownSection["evidence_source"] = claimEvidenceIds.length > 0
+      ? "claims"
+      : fallbackSample.length > 0
+        ? "evidence_table"
+        : "unknown";
+
+    const evidence_count_from_claims = evidenceCountFor(key);
+    const evidence_count_total_raw = Math.max(evidence_count_from_claims, evidenceIdsSource.length);
+    const evidence_count_total = Number.isFinite(evidence_count_total_raw) && evidence_count_total_raw > 0 ? evidence_count_total_raw : 0;
+    const evidence_count_linked_raw = evidence_ids.length;
+    const evidence_count_linked = Number.isFinite(evidence_count_linked_raw) && evidence_count_linked_raw > 0 ? evidence_count_linked_raw : 0;
+    const trace_coverage_pct = evidence_count_total > 0 ? Math.min(1, evidence_count_linked / evidence_count_total) : 0;
+    const coverage_pct = evidence_count_total > 0 ? Math.min(100, Math.max(0, Math.round(trace_coverage_pct * 100))) : 0;
+    const coverageGap = support === "supported" && evidence_count_total >= 3 && trace_coverage_pct < 0.4;
+    const mismatch = (support === "supported" && evidence_count_linked === 0) || coverageGap || (support === "missing" && evidence_count_total > 0);
+
+    const support_reason = (() => {
+      const base = supportMeta.reason;
+      if (evidence_count_total === 0) return `${base} No evidence counted for this section.`;
+      return `${base} Trace coverage ${evidence_count_linked}/${evidence_count_total} (${coverage_pct}%).`;
+    })();
+
+    const inputs_used_candidate: ScoreBreakdownSection["inputs_used"] = {
+      coverage_keys: supportMeta.coverageKeysUsed.filter((v) => typeof v === "string" && v.trim().length > 0),
+      claim_ids: claimIds,
+      doc_ids: docIds,
+      evidence_ids,
+    };
+    const inputs_used = Object.values(inputs_used_candidate).some((arr) => Array.isArray(arr) && arr.length > 0)
+      ? inputs_used_candidate
+      : undefined;
+
+    const missing_link_reasons: string[] = [];
+    if (evidence_count_total === 0) missing_link_reasons.push("No evidence counted for this section");
+    if (evidence_count_total > 0 && evidence_count_linked === 0) missing_link_reasons.push("Evidence not linked to this section");
+    if (coverageGap) missing_link_reasons.push("Linked evidence coverage below threshold");
+    if (support === "missing" && evidence_count_total > 0) missing_link_reasons.push("Section marked missing but evidence exists");
+
+    return {
+      key,
+      section_key: key,
+      support_status: support,
+      evidence_count: evidence_count_total,
+      evidence_ids,
+      evidence_ids_linked,
+      evidence_ids_sample,
+      evidence_count_total,
+      evidence_count_linked,
+      trace_coverage_pct,
+      coverage_pct,
+      rule_key: supportMeta.ruleKey,
+      inputs_used,
+      support_reason,
+      evidence_source,
+      missing_reasons: missingReasonsFor(key, support),
+      missing_link_reasons,
+      hint: hints[key],
+      mismatch,
+    } satisfies ScoreBreakdownSection;
+  });
+
+  const evidence_total = sections.reduce((acc, s) => acc + (Number.isFinite(s.evidence_count_total) ? (s.evidence_count_total as number) : Number.isFinite(s.evidence_count) ? (s.evidence_count as number) : 0), 0);
+
+  const traceAudit: ScoreTraceAuditV1 = (() => {
+    const sections_total = sections.length;
+    const sections_with_trace = sections.filter((s) => (s.evidence_count_linked ?? 0) > 0).length;
+    const sections_missing_trace = sections.filter((s) => (s.evidence_count_linked ?? 0) === 0).length;
+    const mismatch_sections = sections.filter((s) => s.mismatch).length;
+    const coverageRatio = sections_total > 0 ? sections_with_trace / sections_total : 0;
+
+    let status: ScoreTraceAuditV1["status"] = "partial";
+    if (coverageRatio >= 0.75 && mismatch_sections === 0) status = "ok";
+    else if (coverageRatio < 0.4) status = "poor";
+
+    const notes: string[] = [];
+    if (mismatch_sections > 0) {
+      notes.push(`${mismatch_sections} section${mismatch_sections === 1 ? "" : "s"} flagged as mismatch`);
+    }
+    if (sections_missing_trace > 0) {
+      notes.push(`${sections_missing_trace} section${sections_missing_trace === 1 ? "" : "s"} missing linked evidence`);
+    }
+    if (coverageRatio < 0.75 && coverageRatio >= 0.4) {
+      notes.push("Trace coverage below 75% across sections");
+    }
+    if (coverageRatio < 0.4) {
+      notes.push("Trace coverage is poor; link evidence to score sections");
+    }
+
+    return {
+      status,
+      sections_total,
+      sections_with_trace,
+      sections_missing_trace,
+      mismatch_sections,
+      notes,
+    } satisfies ScoreTraceAuditV1;
+  })();
+
+  return {
+    sections,
+    evidence_total,
+    trace_audit_v1: traceAudit,
+  };
+}
+
+function collectEvidenceIdsFromClaims(claims: any[]): string[] {
+  const ids = new Set<string>();
+  for (const claim of claims) {
+    const directIds = Array.isArray(claim?.evidence_ids)
+      ? claim.evidence_ids.filter((v: unknown): v is string => typeof v === "string" && v.trim().length > 0)
+      : [];
+    directIds.forEach((id: string) => ids.add(id));
+
+    const claimEvidence = Array.isArray(claim?.evidence) ? claim.evidence : [];
+    for (const ev of claimEvidence) {
+      const maybeId = typeof ev?.evidence_id === "string" ? ev.evidence_id : typeof ev?.id === "string" ? ev.id : null;
+      if (maybeId) ids.add(maybeId);
+    }
+  }
+  return Array.from(ids);
+}
+
+async function getEvidenceByIds(pool: DealRoutesPool, ids: string[]): Promise<EvidenceRow[]> {
+  if (!ids || ids.length === 0) return [];
+  const hasEvidenceTable = await hasTable(pool, "evidence");
+  if (!hasEvidenceTable) return [];
+
+  const [hasDocumentId, hasPage, hasPageNumber, hasValue] = await Promise.all([
+    hasColumn(pool, "evidence", "document_id"),
+    hasColumn(pool, "evidence", "page"),
+    hasColumn(pool, "evidence", "page_number"),
+    hasColumn(pool, "evidence", "value"),
+  ]);
+
+  const documentIdExpr = hasDocumentId ? "document_id" : "NULL::text AS document_id";
+  const pageExpr = hasPage ? "page" : hasPageNumber ? "page_number" : "NULL::int AS page";
+  const valueExpr = hasValue ? "value" : "NULL::jsonb AS value";
+
+  const { rows } = await pool.query<EvidenceRow & { page_number?: number | null }>(
+    `SELECT id,
+      ${documentIdExpr},
+      source,
+      kind,
+      text,
+      ${valueExpr},
+      confidence::float8 AS confidence,
+      created_at,
+      ${pageExpr}
+     FROM evidence
+    WHERE id = ANY($1::text[])`,
+    [ids]
+  );
+
+  return rows ?? [];
+}
+
+async function getDocumentIndex(pool: DealRoutesPool, docIds: string[]): Promise<DocumentIndex> {
+  if (!docIds || docIds.length === 0) return {};
+  const hasDocs = await hasTable(pool, "documents");
+  if (!hasDocs) return {};
+
+  const [hasTitle, hasPageCount] = await Promise.all([
+    hasColumn(pool, "documents", "title"),
+    hasColumn(pool, "documents", "page_count"),
+  ]);
+
+  const selectCols = ["id"]
+    .concat(hasTitle ? ["title"] : [])
+    .concat(hasPageCount ? ["page_count"] : []);
+
+  const { rows } = await pool.query<any>(
+    `SELECT ${selectCols.join(", ")}
+      FROM documents
+     WHERE id = ANY($1::text[])`,
+    [docIds]
+  );
+
+  const index: DocumentIndex = {};
+  for (const row of rows ?? []) {
+    if (!row?.id) continue;
+    index[row.id] = {
+      title: hasTitle ? row.title : undefined,
+      page_count: hasPageCount ? row.page_count : undefined,
+    };
+  }
+  return index;
+}
+
+async function fetchEvidenceSamplesBySection(params: {
+  pool: DealRoutesPool;
+  dealId: string;
+  dioId?: string | null;
+  limit?: number;
+}): Promise<Partial<Record<ScoreBreakdownSectionKey, string[]>>> {
+  try {
+    const { pool, dealId, dioId } = params;
+    const limit = params.limit ?? 50;
+    const hasEvidenceTable = await hasTable(pool, "evidence");
+    const hasDealId = hasEvidenceTable ? await hasColumn(pool, "evidence", "deal_id") : false;
+    if (!hasEvidenceTable || !hasDealId) return {};
+
+    const hasDioId = await hasColumn(pool, "evidence", "dio_id");
+    const hasSectionKey = await hasColumn(pool, "evidence", "section_key");
+    const effectiveLimit = Math.max(5, Math.min(200, limit));
+    const samples: Partial<Record<ScoreBreakdownSectionKey, string[]>> = {};
+
+    const sectionKeys: ScoreBreakdownSectionKey[] = ["market", "product", "business_model", "traction", "risks", "team"];
+
+    for (const key of sectionKeys) {
+      const where: string[] = ["deal_id = $1"];
+      const paramsArr: Array<string> = [dealId];
+      let paramIdx = 2;
+
+      if (hasDioId && dioId) {
+        where.push(`dio_id = $${paramIdx}`);
+        paramsArr.push(dioId);
+        paramIdx += 1;
+      }
+
+      if (hasSectionKey) {
+        where.push(`section_key = $${paramIdx}`);
+        paramsArr.push(key);
+        paramIdx += 1;
+      }
+
+      const query = hasSectionKey
+        ? `SELECT id
+             FROM evidence
+            WHERE ${where.join(" AND ")}
+            ORDER BY created_at DESC NULLS LAST, id DESC
+            LIMIT ${effectiveLimit}`
+        : `SELECT id, source, kind, text
+             FROM evidence
+            WHERE ${where.join(" AND ")}
+            ORDER BY created_at DESC NULLS LAST, id DESC
+            LIMIT ${effectiveLimit}`;
+
+      const { rows } = await pool.query<any>(query, paramsArr);
+
+      if (hasSectionKey) {
+        const ids = (rows ?? [])
+          .map((r: any) => (typeof r?.id === "string" ? r.id.trim() : null))
+          .filter((v: string | null): v is string => Boolean(v))
+          .slice(0, 5);
+        if (ids.length > 0) samples[key] = ids;
+        continue;
+      }
+
+      const keywords: Record<ScoreBreakdownSectionKey, string[]> = {
+        market: ["market", "tam", "sam", "som", "segment", "icp"],
+        product: ["product", "solution", "feature", "platform"],
+        business_model: ["business model", "pricing", "revenue", "unit economics", "model"],
+        traction: ["traction", "revenue", "arr", "mrr", "customers", "users", "growth", "kpi"],
+        risks: ["risk", "compliance", "threat", "mitigation", "issue"],
+        team: ["team", "founder", "ceo", "cto", "leadership", "hiring", "talent"],
+      };
+
+      const haystack = (row: any): string => `${row?.source ?? ""} ${row?.kind ?? ""} ${row?.text ?? ""}`.toLowerCase();
+      const ids: string[] = [];
+      for (const row of rows ?? []) {
+        const h = haystack(row);
+        if (keywords[key].some((kw) => h.includes(kw))) {
+          const id = typeof row?.id === "string" ? row.id : null;
+          if (id && id.trim()) ids.push(id.trim());
+        }
+        if (ids.length >= 5) break;
+      }
+      if (ids.length > 0) samples[key] = Array.from(new Set(ids)).slice(0, 5);
+    }
+
+    return samples;
+  } catch {
+    return {};
+  }
+}
+
+function buildPhase1ScoreEvidence(params: {
+  executiveSummaryV2?: any;
+  claims?: any;
+  evidenceById: Map<string, EvidenceRow>;
+  docIndex: DocumentIndex;
+}): Phase1ScoreEvidencePayload | null {
+  const sectionsOrder: Phase1ScoreEvidenceSectionKey[] = ["product", "market", "icp", "business_model", "traction", "risks"];
+  const claims = Array.isArray(params.claims) ? params.claims : [];
+  if (claims.length === 0) return null;
+
+  const accountability = params.executiveSummaryV2?.accountability_v1;
+  const supportRaw = (accountability && typeof accountability === "object" ? accountability.support : null) || {};
+  const missingListRaw = Array.isArray(accountability?.coverage_missing_sections) ? accountability.coverage_missing_sections : [];
+  const missingBySection = new Map<Phase1ScoreEvidenceSectionKey, string>();
+  for (const entry of missingListRaw) {
+    if (typeof entry !== "string") continue;
+    const lower = entry.toLowerCase();
+    if (lower.includes("product")) missingBySection.set("product", entry);
+    if (lower.includes("market")) {
+      missingBySection.set("market", entry);
+      missingBySection.set("icp", entry);
+    }
+    if (lower.includes("icp")) missingBySection.set("icp", entry);
+    if (lower.includes("business")) missingBySection.set("business_model", entry);
+    if (lower.includes("traction")) missingBySection.set("traction", entry);
+    if (lower.includes("risk")) missingBySection.set("risks", entry);
+  }
+
+  const supportFor = (key: Phase1ScoreEvidenceSectionKey): "evidence" | "inferred" | "missing" => {
+    const raw = (supportRaw as any)?.[key];
+    if (raw === "evidence" || raw === "inferred" || raw === "missing") return raw;
+    return "inferred";
+  };
+
+  const sectionMap: Record<string, Phase1ScoreEvidenceSectionKey[]> = {
+    product: ["product", "business_model"],
+    business_model: ["business_model", "product"],
+    market: ["market", "icp"],
+    market_icp: ["market", "icp"],
+    icp: ["icp", "market"],
+    traction: ["traction"],
+    risk: ["risks"],
+    risks: ["risks"],
+    terms: ["business_model"],
+  };
+
+  const normalizedClaims = claims
+    .map((claim) => {
+      const id = typeof claim?.claim_id === "string" ? claim.claim_id : typeof claim?.id === "string" ? claim.id : null;
+      const text = typeof claim?.text === "string" ? claim.text.trim() : null;
+      if (!id || !text) return null;
+      const categoryRaw = typeof claim?.category === "string" ? claim.category : typeof claim?.section_key === "string" ? claim.section_key : typeof claim?.topic === "string" ? claim.topic : "";
+      const category = categoryRaw.toLowerCase();
+      const sectionKeys = sectionMap[category] ?? [];
+      const evidenceIds = Array.isArray(claim?.evidence_ids)
+        ? claim.evidence_ids.filter((v: unknown): v is string => typeof v === "string" && v.trim().length > 0)
+        : [];
+      if (Array.isArray(claim?.evidence)) {
+        for (const ev of claim.evidence) {
+          const evId = typeof ev?.evidence_id === "string" ? ev.evidence_id : typeof ev?.id === "string" ? ev.id : null;
+          if (evId) evidenceIds.push(evId);
+        }
+      }
+      const confidence = typeof claim?.confidence === "number" ? claim.confidence : null;
+      return { id, text, sectionKeys, evidenceIds: Array.from(new Set(evidenceIds)), confidence };
+    })
+    .filter((c): c is { id: string; text: string; sectionKeys: Phase1ScoreEvidenceSectionKey[]; evidenceIds: string[]; confidence: number | null } => Boolean(c));
+
+  const evidenceUsed = new Set<string>();
+  const claimsUsed = new Set<string>();
+
+  const normalizeEvidenceItem = (row: EvidenceRow | undefined, fallbackId: string): {
+    id: string;
+    kind?: string;
+    label?: string;
+    value?: any;
+    doc_id?: string;
+    document_title?: string;
+    page?: number | null;
+    snippet?: string;
+    source?: string;
+    created_at?: string;
+  } => {
+    const pageRaw = row?.page ?? (row as any)?.page_number;
+    const page = typeof pageRaw === "number" && Number.isFinite(pageRaw) ? pageRaw : null;
+    const docId = typeof row?.document_id === "string" ? row.document_id : undefined;
+    const docMeta = docId ? params.docIndex[docId] : undefined;
+    const snippet = typeof row?.text === "string" ? row.text : undefined;
+    return {
+      id: row?.id ?? fallbackId,
+      kind: row?.kind ?? undefined,
+      label: (row as any)?.label ?? undefined,
+      value: (row as any)?.value ?? undefined,
+      doc_id: docId,
+      document_title: docMeta?.title ?? undefined,
+      page,
+      snippet,
+      source: row?.source ?? undefined,
+      created_at: row?.created_at ?? undefined,
+    };
+  };
+
+  const sectionPayloads = sectionsOrder.map((key) => {
+    const claimsForSection = normalizedClaims.filter((c) => c.sectionKeys.includes(key));
+    const claimsWithEvidence = claimsForSection.map((claim) => {
+      claimsUsed.add(claim.id);
+      const evItems = claim.evidenceIds
+        .map((evId) => {
+          const row = params.evidenceById.get(evId);
+          if (row) evidenceUsed.add(evId);
+          return normalizeEvidenceItem(row, evId);
+        })
+        .filter((ev) => Boolean(ev));
+      return {
+        id: claim.id,
+        text: claim.text,
+        confidence: claim.confidence,
+        evidence: evItems,
+      };
+    });
+
+    return {
+      key,
+      support: supportFor(key),
+      missingReason: supportFor(key) === "missing" ? missingBySection.get(key) ?? undefined : undefined,
+      claims: claimsWithEvidence,
+    };
+  });
+
+  return {
+    sections: sectionPayloads,
+    totals: { claims: claimsUsed.size, evidence: evidenceUsed.size },
+  };
+}
+
+function mapDeal(
+  row: DealRow,
+  dio: DIOAggregateRow | null | undefined,
+  mode: DealApiMode,
+  opts?: { sectionEvidenceSamples?: Partial<Record<ScoreBreakdownSectionKey, string[]>> }
+): Deal {
   const safeExec = stripEvidenceFromExecutiveSummary((dio as any)?.executive_summary_v1);
-  const execV2 = (dio as any)?.executive_summary_v2;
+  const execV2Raw = (dio as any)?.executive_summary_v2;
   const decision = (dio as any)?.decision_summary_v1;
   const coverage = (dio as any)?.phase1_coverage;
+	const scoreEvidence = (dio as any)?.phase1_score_evidence;
+	const phaseBLatest = (dio as any)?.phase_b_latest_run;
+  const phaseBHistory = (dio as any)?.phase_b_history;
 	const businessArchetypeV1 = (dio as any)?.phase1_business_archetype_v1;
   const dealOverviewV2 = (dio as any)?.phase1_deal_overview_v2;
   const updateReportV1 = (dio as any)?.phase1_update_report_v1;
 	const dealSummaryV2 = (dio as any)?.phase1_deal_summary_v2;
   const topClaims = stripEvidenceFromClaims((dio as any)?.phase1_claims).slice(0, 8);
+
+  const execV2 = execV2Raw && typeof execV2Raw === "object" ? { ...execV2Raw } : null;
+  const scoreBreakdownV1 = buildScoreBreakdownV1({
+    accountability: (execV2Raw as any)?.accountability_v1,
+    scoreAudit: (execV2Raw as any)?.score_audit_v1,
+    coverage,
+    claims: (dio as any)?.phase1_claims,
+    sectionEvidenceSamples: opts?.sectionEvidenceSamples,
+  });
+  if (execV2 && scoreBreakdownV1) {
+    (execV2 as any).score_breakdown_v1 = scoreBreakdownV1;
+    if (scoreBreakdownV1.trace_audit_v1) (execV2 as any).score_trace_audit_v1 = scoreBreakdownV1.trace_audit_v1;
+  }
 
   const out: any = {
     id: row.id,
@@ -488,11 +1234,18 @@ function mapDeal(row: DealRow, dio: DIOAggregateRow | null | undefined, mode: De
       : undefined;
     out.score = (row.score ?? fallbackScore) ?? undefined;
 		out.dioStatus = dio?.recommendation ?? undefined;
+    if (phaseBLatest && typeof phaseBLatest === "object") {
+      out.phase_b = { latest_run: phaseBLatest };
+    }
+		if (Array.isArray(phaseBHistory) && phaseBHistory.length > 0) {
+			out.phase_b = { ...(out.phase_b ?? {}), history: phaseBHistory };
+		}
 	}
 
 	// Additive field: UI can render summary without extra calls.
 	if (safeExec) out.executive_summary_v1 = safeExec;
   if (execV2 && typeof execV2 === "object") out.executive_summary_v2 = execV2;
+	if (scoreEvidence && typeof scoreEvidence === "object") (out as any).phase1_score_evidence = scoreEvidence;
 	if (businessArchetypeV1 && typeof businessArchetypeV1 === "object") out.business_archetype_v1 = businessArchetypeV1;
   if (dealOverviewV2 && typeof dealOverviewV2 === "object") out.deal_overview_v2 = dealOverviewV2;
   if (updateReportV1 && typeof updateReportV1 === "object") out.update_report_v1 = updateReportV1;
@@ -503,7 +1256,7 @@ function mapDeal(row: DealRow, dio: DIOAggregateRow | null | undefined, mode: De
     out.phase1 = { ...(out.phase1 ?? {}), executive_summary_v2: execV2 };
   }
 
-	if (mode === "phase1") {
+  if (mode === "phase1") {
 		out.phase1 = {
 			executive_summary_v1: safeExec,
       executive_summary_v2: execV2 && typeof execV2 === "object" ? execV2 : undefined,
@@ -513,15 +1266,23 @@ function mapDeal(row: DealRow, dio: DIOAggregateRow | null | undefined, mode: De
       deal_overview_v2: dealOverviewV2 && typeof dealOverviewV2 === "object" ? dealOverviewV2 : undefined,
       update_report_v1: updateReportV1 && typeof updateReportV1 === "object" ? updateReportV1 : undefined,
       deal_summary_v2: dealSummaryV2 && typeof dealSummaryV2 === "object" ? dealSummaryV2 : undefined,
+                     score_evidence: scoreEvidence && typeof scoreEvidence === "object" ? scoreEvidence : undefined,
 			unknowns: Array.isArray(safeExec?.unknowns) ? safeExec.unknowns : [],
 			top_claims: topClaims,
 		};
+    if (phaseBLatest && typeof phaseBLatest === "object") {
+      out.phase1 = { ...(out.phase1 ?? {}), phase_b_latest_run: phaseBLatest };
+    }
+    if (Array.isArray(phaseBHistory) && phaseBHistory.length > 0) {
+      out.phase1 = { ...(out.phase1 ?? {}), phase_b_history: phaseBHistory };
+    }
 	}
 	return out as Deal;
 }
 
 export async function registerDealRoutes(app: FastifyInstance, poolOverride?: any) {
   const pool = (poolOverride ?? getPool()) as DealRoutesPool;
+  const debugRoutesEnabled = process.env.DEBUG_ROUTES === "1" || process.env.NODE_ENV !== "production";
 
   function safeJsonValue(input: unknown): any {
     try {
@@ -2147,6 +2908,8 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 		phase1_business_archetype_v1: any | null;
 		phase1_deal_overview_v2: any | null;
 		phase1_update_report_v1: any | null;
+		phase_b_latest_run: any | null;
+    phase_b_history: any | null;
     }>(
       `SELECT d.*,
               latest.dio_id,
@@ -2161,6 +2924,8 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 				  latest.deal_overview_v2 as phase1_deal_overview_v2,
 				  latest.update_report_v1 as phase1_update_report_v1,
 				  latest.phase1_coverage,
+              phaseb.phase_b_latest_run,
+    					phaseb.phase_b_history,
               stats.run_count
          FROM deals d
          LEFT JOIN LATERAL (
@@ -2188,6 +2953,51 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
             LIMIT 1
          ) latest ON TRUE
          LEFT JOIN LATERAL (
+           SELECT jsonb_build_object(
+                    'id', id,
+                    'deal_id', deal_id,
+                    'version', version,
+                    'phase_b_result', phase_b_result,
+                    'phase_b_features', phase_b_features,
+                    'source_run_id', source_run_id,
+               'created_at', created_at
+             ) AS phase_b_latest_run,
+             (
+             	SELECT jsonb_agg(run ORDER BY (run ->> 'created_at')::timestamptz DESC NULLS LAST)
+             	FROM (
+             		SELECT jsonb_build_object(
+             			'id', id,
+             			'deal_id', deal_id,
+             			'version', version,
+             			'phase_b_result', phase_b_result,
+             			'phase_b_features', phase_b_features,
+             			'source_run_id', source_run_id,
+             			'created_at', created_at
+             		) AS run
+             		FROM deal_phase_b_runs
+             		WHERE deal_id = d.id
+             		ORDER BY COALESCE(
+             			created_at,
+             			NULLIF((phase_b_features ->> 'computed_at'), '')::timestamptz,
+             			'1970-01-01'::timestamptz
+             		) DESC,
+             		version DESC,
+             		id DESC
+             		LIMIT 3
+             	) t(run)
+             ) AS phase_b_history
+             FROM deal_phase_b_runs
+            WHERE deal_id = d.id
+            ORDER BY COALESCE(
+              created_at,
+              NULLIF((phase_b_features ->> 'computed_at'), '')::timestamptz,
+              '1970-01-01'::timestamptz
+            ) DESC,
+            version DESC,
+            id DESC
+            LIMIT 1
+         ) phaseb ON TRUE
+         LEFT JOIN LATERAL (
            SELECT COUNT(*)::int AS run_count
              FROM deal_intelligence_objects
             WHERE deal_id = d.id
@@ -2210,7 +3020,9 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     phase1_deal_overview_v2: row.phase1_deal_overview_v2,
     phase1_update_report_v1: row.phase1_update_report_v1,
 		phase1_deal_summary_v2: (row as any).deal_summary_v2,
-		phase1_claims: null,
+    phase1_claims: null,
+    phase_b_latest_run: (row as any).phase_b_latest_run,
+		phase_b_history: (row as any).phase_b_history,
     }, mode));
   });
 
@@ -2248,6 +3060,8 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     			  latest.phase1_deal_summary_v2,
               latest.phase1_coverage,
               latest.phase1_claims,
+                  phaseb.phase_b_latest_run,
+        						phaseb.phase_b_history,
               stats.last_analyzed_at,
               stats.run_count
          FROM stats
@@ -2274,7 +3088,52 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
             WHERE deal_id = $1
             ORDER BY analysis_version DESC
             LIMIT 1
-         ) latest ON TRUE`,
+          ) latest ON TRUE
+          LEFT JOIN LATERAL (
+            SELECT jsonb_build_object(
+                  'id', id,
+                  'deal_id', deal_id,
+                  'version', version,
+                  'phase_b_result', phase_b_result,
+                  'phase_b_features', phase_b_features,
+                  'source_run_id', source_run_id,
+                  'created_at', created_at
+                ) AS phase_b_latest_run,
+					(
+						SELECT jsonb_agg(run ORDER BY (run ->> 'created_at')::timestamptz DESC NULLS LAST)
+						FROM (
+							SELECT jsonb_build_object(
+								'id', id,
+								'deal_id', deal_id,
+								'version', version,
+								'phase_b_result', phase_b_result,
+								'phase_b_features', phase_b_features,
+								'source_run_id', source_run_id,
+								'created_at', created_at
+							) AS run
+							FROM deal_phase_b_runs
+              WHERE deal_id = $1
+              ORDER BY COALESCE(
+                created_at,
+                NULLIF((phase_b_features ->> 'computed_at'), '')::timestamptz,
+                '1970-01-01'::timestamptz
+              ) DESC,
+              version DESC,
+              id DESC
+							LIMIT 3
+						) t(run)
+					) AS phase_b_history
+             FROM deal_phase_b_runs
+            WHERE deal_id = $1
+            ORDER BY COALESCE(
+          created_at,
+          NULLIF((phase_b_features ->> 'computed_at'), '')::timestamptz,
+          '1970-01-01'::timestamptz
+        ) DESC,
+        version DESC,
+        id DESC
+            LIMIT 1
+          ) phaseb ON TRUE` ,
       [dealId]
     );
 
@@ -2283,7 +3142,53 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         parseNullableNumber((dioRows[0] as any).overall_score_resolved) ?? (dioRows[0] as any).overall_score;
     }
 
-    return mapDeal(rows[0], dioRows[0] ?? null, mode);
+    let sectionEvidenceSamples: Partial<Record<ScoreBreakdownSectionKey, string[]>> | undefined;
+
+    if (dioRows[0]) {
+      try {
+        const execV2 = (dioRows[0] as any).executive_summary_v2;
+        const claims = Array.isArray((dioRows[0] as any).phase1_claims) ? (dioRows[0] as any).phase1_claims : [];
+        const evidenceIds = collectEvidenceIdsFromClaims(claims);
+        const evidenceRows = evidenceIds.length > 0 ? await getEvidenceByIds(pool, evidenceIds) : [];
+        const docIds = Array.from(
+          new Set(
+            evidenceRows
+              .map((ev) => ev?.document_id)
+              .filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+          )
+        );
+        const docIndex = docIds.length > 0 ? await getDocumentIndex(pool, docIds) : {};
+        const evidenceById = new Map<string, EvidenceRow>();
+        for (const ev of evidenceRows) {
+          if (!ev?.id) continue;
+          evidenceById.set(ev.id, ev);
+        }
+
+        const scoreEvidence = buildPhase1ScoreEvidence({
+          executiveSummaryV2: execV2,
+          claims,
+          evidenceById,
+          docIndex,
+        });
+        if (scoreEvidence) (dioRows[0] as any).phase1_score_evidence = scoreEvidence;
+
+        try {
+          sectionEvidenceSamples = await fetchEvidenceSamplesBySection({ pool, dealId, dioId: dioRows[0]?.dio_id ?? null, limit: 60 });
+        } catch (err) {
+          request.log?.info?.({
+            deal_id: dealId,
+            error: err instanceof Error ? err.message : String(err),
+          }, "deal.score_breakdown_samples.fail_open");
+        }
+      } catch (err) {
+        request.log?.info?.({
+          deal_id: dealId,
+          error: err instanceof Error ? err.message : String(err),
+        }, "deal.score_evidence.fail_open");
+      }
+    }
+
+    return mapDeal(rows[0], dioRows[0] ?? null, mode, { sectionEvidenceSamples });
   });
 
   app.put("/api/v1/deals/:deal_id", async (request, reply) => {
@@ -2518,4 +3423,142 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       return reply.status(500).send({ error: "Failed to recalculate priorities" });
     }
   });
+
+  if (debugRoutesEnabled) {
+    app.get<{ Params: { dealId: string } }>(
+      "/api/v1/debug/deals/:dealId/phaseb",
+      {
+        schema: {
+          tags: ["debug"],
+          params: {
+            type: "object",
+            properties: { dealId: { type: "string" } },
+            required: ["dealId"],
+          },
+        } as any,
+      },
+      async (request, reply) => {
+        const parsed = z.string().uuid().safeParse(request.params.dealId);
+        if (!parsed.success) {
+          return reply.status(400).send({ error: "dealId must be a valid UUID" });
+        }
+
+        const dealId = parsed.data;
+
+        let dealRow: { id: string; name: string } | null = null;
+        let dealExists = false;
+
+        try {
+          const { rows } = await pool.query<{ id: string; name: string }>(
+            `SELECT id, name FROM deals WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
+            [dealId]
+          );
+          if (rows?.[0]) {
+            dealRow = rows[0];
+            dealExists = true;
+          }
+        } catch {
+          // keep dealRow null
+        }
+
+        let latestRun: any = null;
+        let runHistory: any[] = [];
+        const hasPhaseBTable = await hasTable(pool, "public.deal_phase_b_runs");
+        if (hasPhaseBTable) {
+          try {
+            const { rows } = await pool.query(
+              `SELECT id, deal_id, version, created_at, source_run_id, phase_b_features, phase_b_result
+                 FROM deal_phase_b_runs
+                WHERE deal_id = $1
+                ORDER BY created_at DESC NULLS LAST, version DESC, id DESC
+                LIMIT 3`,
+              [dealId]
+            );
+            runHistory = rows ?? [];
+            latestRun = runHistory[0] ?? null;
+          } catch {
+            latestRun = null;
+            runHistory = [];
+          }
+        }
+
+        let db_identity = {
+          current_database: null as string | null,
+          inet_server_addr: null as string | null,
+          inet_server_port: null as number | null,
+          current_user: null as string | null,
+        };
+        try {
+          const dbIdentityResult = await pool.query<{
+            current_database: string | null;
+            inet_server_addr: string | null;
+            inet_server_port: number | null;
+            current_user: string | null;
+          }>(
+            `SELECT current_database(), inet_server_addr(), inet_server_port(), current_user`
+          );
+          db_identity = dbIdentityResult?.rows?.[0] ?? db_identity;
+        } catch {
+          // keep nulls
+        }
+
+        let visuals_sanity: {
+          visuals_count: number | null;
+          evidence_count: number | null;
+          visuals_count_db?: number | null;
+          visuals_with_structured?: number | null;
+          visuals_with_ocr?: number | null;
+          ocr_chars_total?: number | null;
+          visuals_source?: string | null;
+          ocr_hint?: string | null;
+        } | null = null;
+
+        try {
+          const summary = await fetchPhaseBVisualsFromDb(pool as any, dealId);
+          if (summary) {
+            const ocrHint = !summary.ocr_text_available
+              ? "OCR text not stored; install/enable OCR to populate"
+              : summary.ocr_quality_counts && summary.ocr_quality_counts.pytesseract_missing > 0
+                ? "OCR missing for some visuals (pytesseract_missing flagged)"
+                : null;
+
+            visuals_sanity = {
+              visuals_count: summary.visuals_count,
+              evidence_count: summary.evidence_count,
+              visuals_count_db: summary.visuals_count,
+              visuals_with_structured: summary.visuals_with_structured,
+              visuals_with_ocr: summary.visuals_with_ocr,
+              ocr_chars_total: summary.ocr_chars_total,
+              visuals_source: summary.source,
+              ocr_hint: ocrHint,
+            };
+          }
+        } catch {
+          visuals_sanity = null;
+        }
+
+        app.log.info(
+          {
+            event: "debug_phaseb",
+            deal_id: dealId,
+            deal_exists: dealExists,
+            has_latest_run: Boolean(latestRun),
+          },
+          "debug phaseb endpoint"
+        );
+
+        return reply.send({
+          requested_deal_id: dealId,
+          deal_exists: dealExists,
+          deal: dealRow,
+          db_identity,
+          phase_b: {
+            latest_run: latestRun,
+            history: runHistory,
+          },
+          visuals_sanity,
+        });
+      }
+    );
+  }
 }

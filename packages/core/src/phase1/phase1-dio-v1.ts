@@ -121,6 +121,31 @@ export type Phase1CoverageSectionContractV1 = {
 	why_missing?: Phase1CoverageSectionWhyMissingV1;
 };
 
+export type Phase1ExecutiveAccountabilityV1 = {
+	support: {
+		product: "evidence" | "inferred" | "missing";
+		icp: "evidence" | "inferred" | "missing";
+		market: "evidence" | "inferred" | "missing";
+		business_model: "evidence" | "inferred" | "missing";
+		traction: "evidence" | "inferred" | "missing";
+		risks: "evidence" | "inferred" | "missing";
+	};
+	coverage_missing_sections: string[];
+	evidence_counts: {
+		claims_total: number;
+		evidence_total: number;
+	};
+};
+
+export type Phase1ExecutiveScoreAuditV1 = {
+	score_reported: number | null;
+	confidence_reported: Phase1ConfidenceBand;
+	rubric_score: number;
+	rubric_band: "high" | "med" | "low";
+	mismatch: boolean;
+	reasons: string[];
+};
+
 export type Phase1DecisionSummaryV1 = {
 	score: number; // 0-100
 	recommendation: Phase1RecommendationV1;
@@ -2055,6 +2080,95 @@ function coverageGapsSummary(coverage: Phase1CoverageV1): { missing: string[]; p
 	return { missing, partial };
 }
 
+const clampScore = (value: number): number => {
+	if (!Number.isFinite(value)) return 0;
+	return Math.min(100, Math.max(0, value));
+};
+
+const toFinite = (value: unknown): number | null => {
+	if (value === null || value === undefined) return null;
+	const n = typeof value === "number" ? value : Number(value);
+	return Number.isFinite(n) ? n : null;
+};
+
+export function buildPhase1ExecutiveAccountability(params: {
+	coverage?: Phase1CoverageV1 | null;
+	claims?: Phase1ClaimV1[] | null;
+}): Phase1ExecutiveAccountabilityV1 | null {
+	const coverage = params.coverage && typeof params.coverage === "object" ? params.coverage : null;
+	const claims = Array.isArray(params.claims) ? params.claims : [];
+	if (!coverage || !coverage.sections || typeof coverage.sections !== "object") return null;
+
+	const sections = coverage.sections;
+	const hasEvidenceFor = (cats: Phase1ClaimCategoryV1[]): boolean =>
+		claims.some((c) => cats.includes(c.category) && Array.isArray(c.evidence) && c.evidence.length > 0);
+	const statusFor = (sectionKey: string, cats: Phase1ClaimCategoryV1[]): "evidence" | "inferred" | "missing" => {
+		if ((sections as any)[sectionKey] === "missing") return "missing";
+		return hasEvidenceFor(cats) ? "evidence" : "inferred";
+	};
+
+	const coverageMissing = Array.isArray(coverage.sections_missing_list)
+		? coverage.sections_missing_list.filter((x) => typeof x === "string" && x.trim().length > 0)
+		: coverageGapsSummary(coverage).missing;
+
+	const evidence_total = claims.reduce((acc, c) => acc + (Array.isArray(c.evidence) ? c.evidence.length : 0), 0);
+
+	return {
+		support: {
+			product: statusFor("product_solution", ["product"]),
+			icp: statusFor("market_icp", ["market"]),
+			market: statusFor("market_icp", ["market"]),
+			business_model: statusFor("business_model", ["product"]),
+			traction: statusFor("traction", ["traction"]),
+			risks: statusFor("risks", ["risk"]),
+		},
+		coverage_missing_sections: uniqStrings(coverageMissing),
+		evidence_counts: {
+			claims_total: claims.length,
+			evidence_total,
+		},
+	};
+}
+
+export function buildPhase1ScoreAudit(params: {
+	coverage?: Phase1CoverageV1 | null;
+	signals?: { score?: number | null; confidence?: Phase1ConfidenceBand | null } | null;
+}): Phase1ExecutiveScoreAuditV1 | null {
+	const coverage = params.coverage && typeof params.coverage === "object" ? params.coverage : null;
+	if (!coverage || !coverage.sections || typeof coverage.sections !== "object") return null;
+
+	const sections = coverage.sections;
+	const missingMarketIcp = (sections as any).market_icp === "missing";
+	const missingTraction = (sections as any).traction === "missing";
+	const missingBusinessModel = (sections as any).business_model === "missing";
+	const missingRisks = (sections as any).risks === "missing";
+
+	const rawScore = 100
+		- (missingMarketIcp ? 10 : 0)
+		- (missingMarketIcp ? 10 : 0) // market + icp treated independently
+		- (missingTraction ? 10 : 0)
+		- (missingBusinessModel ? 5 : 0)
+		- (missingRisks ? 5 : 0);
+	const rubric_score = clampScore(rawScore);
+	const rubric_band = rubric_score >= 75 ? "high" : rubric_score >= 50 ? "med" : "low";
+
+	const score_reported = toFinite(params.signals?.score);
+	const confidence_reported = (params.signals?.confidence as Phase1ConfidenceBand) ?? "low";
+	const delta = score_reported == null ? 0 : Math.abs(score_reported - rubric_score);
+	const mismatch = score_reported != null && delta >= 15;
+	const reasons: string[] = [];
+	if (mismatch) reasons.push(`Reported score deviates from rubric by ${Math.round(delta)} points`);
+
+	return {
+		score_reported,
+		confidence_reported,
+		rubric_score,
+		rubric_band,
+		mismatch,
+		reasons,
+	};
+}
+
 export function composeExecutiveSummaryV2(params: {
 	deal: Phase1GeneratorDealInfo;
 	overview_v2: unknown;
@@ -2777,6 +2891,13 @@ export function generatePhase1DIOV1(params: {
 		provided: Math.max(0, required.length - sections_missing_list.length),
 	};
 	coverage.section_labels = labelMap;
+
+	const accountability_v1 = buildPhase1ExecutiveAccountability({ coverage, claims: uniqueClaims });
+	const score_audit_v1 = buildPhase1ScoreAudit({ coverage, signals: (executive_summary_v2 as any)?.signals });
+	if (executive_summary_v2 && typeof executive_summary_v2 === "object") {
+		if (accountability_v1) (executive_summary_v2 as any).accountability_v1 = accountability_v1;
+		if (score_audit_v1) (executive_summary_v2 as any).score_audit_v1 = score_audit_v1;
+	}
 
 	// Executive summary evidence: include claim pointers + snippet if available
 	const executiveEvidence: Phase1ExecutiveSummaryEvidenceRefV1[] = uniqueClaims

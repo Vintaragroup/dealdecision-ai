@@ -85,7 +85,7 @@ coverage/
 
 
 *.traineddata
-DEALWORKSPACE_API_MAP.md
+
 
 # package-internal docs (not curated)
 packages/**/docs/

@@ -8,6 +8,7 @@ import { insertEvidence } from "../services/evidence";
 import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
 import { normalizeDealName } from "../lib/normalize-deal-name";
+import { reconcileIngest } from "../lib/ingest-reconcile";
 
 async function hasTable(pool: ReturnType<typeof getPool>, table: string) {
   try {
@@ -470,6 +471,7 @@ export async function registerDocumentRoutes(
       file_name?: string;
       type?: string;
       title?: string;
+      mime_type?: string;
     };
 
     if (!dealId) {
@@ -489,6 +491,14 @@ export async function registerDocumentRoutes(
       const fileName = payload.file_name ?? "document";
       const docType = payload.type ?? "other";
       const titleValue = payload.title ?? fileName;
+      request.log.info({
+        event: "upload_json_start",
+        deal_id: dealId,
+        file_name: fileName,
+        mime_type: payload.mime_type ?? null,
+        buffer_b64_len: fileBufferB64.length,
+        doc_type: docType,
+      });
 
       const parsedType = documentTypeSchema.safeParse(docType);
       const finalType = parsedType.success ? parsedType.data : "other";
@@ -519,6 +529,13 @@ export async function registerDocumentRoutes(
 
       const warnings: string[] = [];
       const documentId = rows[0].id;
+      request.log.info({
+        event: "upload_json_document_inserted",
+        deal_id: dealId,
+        document_id: documentId,
+        title: titleValue,
+        type: finalType,
+      });
 
       // Safety: if the row comes back unlinked, repair best-effort.
       if (!rows[0]?.deal_id || rows[0].deal_id !== dealId) {
@@ -554,6 +571,12 @@ export async function registerDocumentRoutes(
           attempt: 1,
         },
       });
+      request.log.info({
+        event: "upload_json_enqueued",
+        deal_id: dealId,
+        document_id: documentId,
+        job_id: job.job_id,
+      });
 
       const progressionResult = await autoProgress(pool, dealId);
 
@@ -568,7 +591,7 @@ export async function registerDocumentRoutes(
           : { progressed: false },
       });
     } catch (error: any) {
-      console.error("Document upload error:", error);
+      request.log.error({ event: "upload_json_error", deal_id: dealId, err: error }, "Document upload error");
       return reply.status(500).send({
         error: "Failed to upload document",
         message: error?.message || "Unknown error",
@@ -580,6 +603,7 @@ export async function registerDocumentRoutes(
     const dealId = sanitizeText((request.params as any)?.deal_id);
     let fileBuffer: Buffer | null = null;
     let fileName = "document";
+    let mimeType: string | null = null;
     let docType: any = "other";
     let titleValue = "document";
 
@@ -598,6 +622,7 @@ export async function registerDocumentRoutes(
         if (part.type === "file") {
           fileBuffer = await part.toBuffer();
           fileName = part.filename || "document";
+          mimeType = typeof part.mimetype === "string" ? part.mimetype : null;
         } else if (part.type === "field") {
           const fieldValue = typeof part.value === "string" ? part.value : String(part.value ?? "");
           if (part.fieldname === "type") {
@@ -622,6 +647,16 @@ export async function registerDocumentRoutes(
         titleValue = fileName;
       }
 
+      request.log.info({
+        event: "upload_multipart_parsed",
+        deal_id: dealId,
+        file_name: fileName,
+        mime_type: mimeType,
+        buffer_len: fileBuffer.length,
+        doc_type: docType,
+        title: titleValue,
+      });
+
       const { rows } = await pool.query<DocumentRow>(
         `INSERT INTO documents (deal_id, title, type, status)
          VALUES ($1, $2, $3, $4)
@@ -631,6 +666,13 @@ export async function registerDocumentRoutes(
 
       const warnings: string[] = [];
       const documentId = rows[0].id;
+      request.log.info({
+        event: "upload_multipart_document_inserted",
+        deal_id: dealId,
+        document_id: documentId,
+        title: titleValue,
+        type: finalType,
+      });
 
       if (!rows[0]?.deal_id || rows[0].deal_id !== dealId) {
         try {
@@ -666,6 +708,13 @@ export async function registerDocumentRoutes(
           attempt: 1,
         },
       });
+      request.log.info({
+        event: "upload_multipart_enqueued",
+        deal_id: dealId,
+        document_id: documentId,
+        job_id: job.job_id,
+        buffer_b64_len: fileBufferB64.length,
+      });
 
       // Auto-check if deal should progress based on document count
       const progressionResult = await autoProgress(pool, dealId);
@@ -685,7 +734,7 @@ export async function registerDocumentRoutes(
             },
       });
     } catch (error: any) {
-      console.error("Document upload error:", error);
+      request.log.error({ event: "upload_multipart_error", deal_id: dealId, err: error }, "Document upload error");
       return reply.status(500).send({
         error: "Failed to upload document",
         message: error?.message || "Unknown error",
@@ -694,7 +743,9 @@ export async function registerDocumentRoutes(
   });
 
   app.get("/api/v1/deals/:deal_id/documents", async (request, reply) => {
+    const startTs = Date.now();
     const dealId = (request.params as { deal_id: string }).deal_id;
+    request.log.info({ msg: "deal.documents.start", deal_id: dealId, start_ts: new Date(startTs).toISOString() });
     const { rows } = await pool.query<DocumentRow>(
       `SELECT id, deal_id, title, type, status, uploaded_at
        FROM documents
@@ -702,6 +753,16 @@ export async function registerDocumentRoutes(
        ORDER BY uploaded_at DESC`,
       [dealId]
     );
+
+    const endTs = Date.now();
+    request.log.info({
+      msg: "deal.documents.done",
+      deal_id: dealId,
+      count: rows.length,
+      start_ts: new Date(startTs).toISOString(),
+      end_ts: new Date(endTs).toISOString(),
+      duration_ms: endTs - startTs,
+    });
 
     return reply.send({ documents: rows.map(mapDocument) });
   });
@@ -821,6 +882,22 @@ export async function registerDocumentRoutes(
     return reply.status(202).send({ ok: true, job_id: job.job_id });
   });
 
+  // Enqueue a best-effort visual extraction pass for a single document.
+  // Optional: force_resegment recomputes segment_key for existing structured synthetic assets.
+  app.post("/api/v1/deals/:deal_id/documents/:document_id/extract-visuals", async (request, reply) => {
+    const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
+    const forceResegment = Boolean((request.body as any)?.force_resegment);
+
+    const job = await enqueue({
+      deal_id,
+      document_id,
+      type: "extract_visuals",
+      payload: { force_resegment: forceResegment },
+    });
+
+    return reply.status(202).send({ ok: true, job_id: job.job_id });
+  });
+
   /**
    * True re-extraction from persisted original bytes.
    *
@@ -846,6 +923,33 @@ export async function registerDocumentRoutes(
     });
 
     return reply.status(202).send({ ok: true, job_id: job.job_id });
+  });
+
+  app.post("/api/v1/deals/:deal_id/documents/reconcile-ingest", async (request, reply) => {
+    const dealId = sanitizeText((request.params as { deal_id: string }).deal_id);
+    const limitRaw = (request.query as { limit?: string | number } | undefined)?.limit;
+    const limit = limitRaw !== undefined ? Number(limitRaw) : undefined;
+
+    const reconcileEnabled = process.env.NODE_ENV !== "production" || process.env.ENABLE_INGEST_RECONCILE === "true";
+    if (!reconcileEnabled) {
+      return reply.status(403).send({ error: "reconcile ingest endpoint is disabled" });
+    }
+
+    if (!dealId) {
+      return reply.status(400).send({ error: "deal_id is required" });
+    }
+
+    if (!(await dealExists(pool, dealId))) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    try {
+      const summary = await reconcileIngest({ dealId, limit, pool, enqueue });
+      return reply.status(202).send(summary);
+    } catch (err: any) {
+      request.log.error({ err, deal_id: dealId }, "reconcile_ingest.failed");
+      return reply.status(500).send({ error: "Failed to reconcile ingest", message: err?.message || "unknown" });
+    }
   });
 
   /**

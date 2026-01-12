@@ -158,12 +158,15 @@ export async function registerEvidenceRoutes(app: FastifyInstance, pool = getPoo
   });
 
   app.get("/api/v1/deals/:deal_id/evidence", async (request) => {
+    const startTs = Date.now();
     const dealParam = (request.params as { deal_id: string }).deal_id;
     const parsedDeal = dealIdSchema.safeParse(dealParam);
     if (!parsedDeal.success) {
       return { evidence: [] };
     }
     const dealId = parsedDeal.data;
+
+    request.log.info({ msg: "deal.evidence.start", deal_id: dealId, start_ts: new Date(startTs).toISOString() });
 
     const { rows: deals } = await pool.query(`SELECT id FROM deals WHERE id = $1 AND deleted_at IS NULL`, [dealId]);
     if (deals.length === 0) {
@@ -177,6 +180,16 @@ export async function registerEvidenceRoutes(app: FastifyInstance, pool = getPoo
        LIMIT 50`,
       [dealId]
     );
+
+    const endTs = Date.now();
+    request.log.info({
+      msg: "deal.evidence.done",
+      deal_id: dealId,
+      count: rows.length,
+      start_ts: new Date(startTs).toISOString(),
+      end_ts: new Date(endTs).toISOString(),
+      duration_ms: endTs - startTs,
+    });
 
     return { evidence: rows.map((row) => ({
       id: row.id,

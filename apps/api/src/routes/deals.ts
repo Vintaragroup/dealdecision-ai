@@ -8,6 +8,8 @@ import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
 import { updateDealPriority, updateAllDealPriorities } from "../services/priorityClassification";
 import { normalizeDealName } from "../lib/normalize-deal-name";
+import { buildDocumentsDigest } from "../lib/documents-digest";
+import type { DocumentsDigestV1 } from "../lib/documents-digest";
 import { purgeDealCascade, isPurgeDealNotFoundError, sanitizeText } from "@dealdecision/core";
 import { BrandModel, PageInput, buildBrandModel, inferDocumentBrandName, inferSlideTitleForSlide, normalizePhrase } from "../lib/slide-title";
 
@@ -428,6 +430,7 @@ type DealRow = {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  documents_digest_v1?: DocumentsDigestV1 | null;
 };
 
 type DIOAggregateRow = {
@@ -1896,9 +1899,12 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       },
     },
     async (request, reply) => {
+    const startTs = Date.now();
     const dealIdRaw = (request.params as any)?.deal_id;
     const dealId = sanitizeText(typeof dealIdRaw === "string" ? dealIdRaw : String(dealIdRaw ?? ""));
     const warnings: string[] = [];
+
+    request.log.info({ msg: "deal.lineage.start", deal_id: dealId, start_ts: new Date(startTs).toISOString() });
 
     if (!dealId) {
       return reply.status(400).send({ error: "deal_id is required" });
@@ -2030,6 +2036,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 
     if (!visualsOk) {
       warnings.push("visual extraction tables not installed");
+      const endTs = Date.now();
       request.log.info(
         {
           request_id: (request as any).id,
@@ -2040,6 +2047,9 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
             evidence_nodes: 0,
           },
           warnings_count: warnings.length,
+          start_ts: new Date(startTs).toISOString(),
+          end_ts: new Date(endTs).toISOString(),
+          duration_ms: endTs - startTs,
         },
         "deal.lineage"
       );
@@ -2959,6 +2969,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       });
     }
 
+    const endTs = Date.now();
     request.log.info(
       {
         request_id: (request as any).id,
@@ -2969,6 +2980,9 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           evidence_nodes: visuals.length,
         },
         warnings_count: warnings.length,
+        start_ts: new Date(startTs).toISOString(),
+        end_ts: new Date(endTs).toISOString(),
+        duration_ms: endTs - startTs,
       },
       "deal.lineage"
     );
@@ -3319,6 +3333,121 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     }
   });
 
+  app.get("/api/v1/deals/:deal_id/visual-assets", async (request, reply) => {
+    const dealId = sanitizeText((request.params as { deal_id: string }).deal_id);
+    if (!dealId) return reply.status(400).send({ error: "deal_id is required" });
+
+    const logCtx = { route: "deal_visual_assets", deal_id: dealId };
+
+    try {
+      const dealExistsRes = await pool.query("SELECT id FROM deals WHERE id = $1 LIMIT 1", [dealId]);
+      const dealExists = Array.isArray(dealExistsRes?.rows) && dealExistsRes.rows.length > 0;
+      if (!dealExists) {
+        request.log?.warn?.({ ...logCtx }, "deal_visual_assets.not_found");
+        return reply.status(404).send({ error: "deal_not_found", deal_id: dealId });
+      }
+
+      const assetsOk = await hasTable(pool, "public.visual_assets");
+      const extractionsOk = await hasTable(pool, "public.visual_extractions");
+      const documentsOk = await hasTable(pool, "public.documents");
+
+      if (!assetsOk || !extractionsOk || !documentsOk) {
+        request.log?.warn?.({ ...logCtx, assets_table: assetsOk, extractions_table: extractionsOk, documents_table: documentsOk }, "deal_visual_assets.schema_missing");
+        return reply.send({ deal_id: dealId, visual_assets: [] });
+      }
+
+      const hasStructuredSummary = await hasColumn(pool, "visual_extractions", "structured_summary");
+      const hasStructuredKind = await hasColumn(pool, "visual_extractions", "structured_kind");
+      const structuredSummarySelect = hasStructuredSummary
+        ? "ve.structured_summary AS structured_summary"
+        : "NULL::jsonb AS structured_summary";
+
+      request.log?.info?.({ ...logCtx, has_structured_summary: hasStructuredSummary, has_structured_kind: hasStructuredKind }, "deal_visual_assets.schema_ready");
+
+      const { rows } = await pool.query(
+        `WITH latest_extraction AS (
+           SELECT ve.visual_asset_id,
+                  ${hasStructuredKind ? "ve.structured_kind AS structured_kind" : "NULL::text AS structured_kind"},
+                  ${structuredSummarySelect},
+                  ve.ocr_text,
+                  ve.structured_json,
+                  ROW_NUMBER() OVER (PARTITION BY ve.visual_asset_id ORDER BY ve.created_at DESC) AS rn
+             FROM visual_extractions ve
+        )
+         SELECT
+           va.id AS visual_asset_id,
+           va.id,
+           va.document_id,
+           d.deal_id,
+           va.page_index,
+           va.bbox,
+           va.image_uri,
+           va.image_hash,
+           va.created_at,
+           va.asset_type,
+           va.confidence,
+           va.quality_flags,
+           va.extractor_version,
+           d.title AS document_title,
+           d.type AS document_type,
+           d.status AS document_status,
+           d.page_count AS document_page_count,
+           COALESCE(ev.count, 0) AS evidence_count,
+           COALESCE(ev.sample_snippets, ARRAY[]::text[]) AS evidence_sample_snippets,
+           (SELECT EXISTS (SELECT 1 FROM visual_extractions ve WHERE ve.visual_asset_id = va.id)) AS has_extraction,
+           le.structured_kind,
+           le.structured_summary,
+           le.ocr_text,
+           le.structured_json
+         FROM visual_assets va
+         JOIN documents d ON d.id = va.document_id
+         LEFT JOIN LATERAL (
+           SELECT COUNT(*)::int AS count,
+                  ARRAY(
+                  SELECT LEFT(el.snippet, 200)
+                   FROM evidence_links el
+                  WHERE el.visual_asset_id = va.id AND el.snippet IS NOT NULL AND el.snippet <> ''
+                  ORDER BY el.created_at DESC
+                     LIMIT 3
+                  ) AS sample_snippets
+             FROM evidence_links el2
+            WHERE el2.visual_asset_id = va.id
+         ) ev ON true
+         LEFT JOIN latest_extraction le ON le.visual_asset_id = va.id AND le.rn = 1
+        WHERE d.deal_id = $1
+        ORDER BY va.document_id ASC, va.page_index ASC, va.created_at ASC
+        LIMIT 5000`,
+        [dealId]
+      );
+
+      const visualAssets = (rows ?? []).map((r: any) => {
+        const visual_asset_id = r?.visual_asset_id ?? r?.id ?? null;
+        return {
+          ...r,
+          visual_asset_id,
+          document: {
+            id: r?.document_id ?? null,
+            title: r?.document_title ?? null,
+            type: r?.document_type ?? null,
+            status: r?.document_status ?? null,
+            page_count: r?.document_page_count ?? null,
+          },
+        };
+      });
+
+      return reply.send({ deal_id: dealId, visual_assets: visualAssets });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to load visual assets";
+      const payload = { error: "internal_error", message, deal_id: dealId };
+      const stack = err instanceof Error ? err.stack : undefined;
+      request.log?.error?.(
+        { ...logCtx, err: process.env.NODE_ENV !== "production" ? err : undefined, stack: process.env.NODE_ENV !== "production" ? stack : undefined },
+        "deal_visual_assets.error"
+      );
+      return reply.status(500).send(payload);
+    }
+  });
+
   app.get("/api/v1/deals", async (request) => {
     const mode = parseDealApiMode(request);
     // Accept optional filters but ignore for now (TODO)
@@ -3456,8 +3585,10 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
   });
 
   app.get("/api/v1/deals/:deal_id", async (request, reply) => {
-    const mode = parseDealApiMode(request);
+    const startTs = Date.now();
     const dealId = (request.params as { deal_id: string }).deal_id;
+    request.log.info({ msg: "deal.detail.start", deal_id: dealId, start_ts: new Date(startTs).toISOString() });
+    const mode = parseDealApiMode(request);
     const { rows } = await pool.query<DealRow>(
       `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
       [dealId]
@@ -3466,109 +3597,111 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       return reply.status(404).send({ error: "Deal not found" });
     }
 
-    const { rows: dioRows } = await pool.query<(DIOAggregateRow & { overall_score_resolved?: any })>(
-      `WITH stats AS (
-         SELECT deal_id,
-                COUNT(*)::int AS run_count,
-                MAX(updated_at) AS last_analyzed_at
-           FROM deal_intelligence_objects
-          WHERE deal_id = $1
-          GROUP BY deal_id
-       )
-       SELECT latest.dio_id,
-              latest.analysis_version,
-              latest.recommendation,
-              latest.overall_score,
-              latest.overall_score_resolved,
-              latest.executive_summary_v1,
-              latest.executive_summary_v2,
-              latest.decision_summary_v1,
-        latest.phase1_business_archetype_v1,
-              latest.phase1_deal_overview_v2,
-              latest.phase1_update_report_v1,
-    			  latest.phase1_deal_summary_v2,
-              latest.phase1_coverage,
-              latest.phase1_claims,
-                  phaseb.phase_b_latest_run,
-        						phaseb.phase_b_history,
-              stats.last_analyzed_at,
-              stats.run_count
-         FROM stats
-         JOIN LATERAL (
-           SELECT dio_id,
-                  analysis_version,
-                  recommendation,
-                  overall_score,
-                  COALESCE(
-                    overall_score,
-                    NULLIF((dio_data #>> '{overall_score}'), '')::double precision,
-                    NULLIF((dio_data #>> '{score_explanation,totals,overall_score}'), '')::double precision
-                  ) AS overall_score_resolved,
-                  (dio_data #> '{dio,phase1,executive_summary_v1}') AS executive_summary_v1,
-				  (dio_data #> '{dio,phase1,executive_summary_v2}') AS executive_summary_v2,
-    				  (dio_data #> '{dio,phase1,decision_summary_v1}') AS decision_summary_v1,
-                  (dio_data #> '{dio,phase1,coverage}') AS phase1_coverage,
-      				  (dio_data #> '{dio,phase1,business_archetype_v1}') AS phase1_business_archetype_v1,
-                  (dio_data #> '{dio,phase1,deal_overview_v2}') AS phase1_deal_overview_v2,
-                  (dio_data #> '{dio,phase1,update_report_v1}') AS phase1_update_report_v1,
-      				  (dio_data #> '{dio,phase1,deal_summary_v2}') AS phase1_deal_summary_v2,
-                  (dio_data #> '{dio,phase1,claims}') AS phase1_claims
-             FROM deal_intelligence_objects
-            WHERE deal_id = $1
-            ORDER BY analysis_version DESC
-            LIMIT 1
-          ) latest ON TRUE
-          LEFT JOIN LATERAL (
-            SELECT jsonb_build_object(
-                  'id', id,
-                  'deal_id', deal_id,
-                  'version', version,
-                  'phase_b_result', phase_b_result,
-                  'phase_b_features', phase_b_features,
-                  'source_run_id', source_run_id,
-                  'created_at', created_at
-                ) AS phase_b_latest_run,
-					(
-						SELECT jsonb_agg(run ORDER BY (run ->> 'created_at')::timestamptz DESC NULLS LAST)
-						FROM (
-							SELECT jsonb_build_object(
-								'id', id,
-								'deal_id', deal_id,
-								'version', version,
-								'phase_b_result', phase_b_result,
-								'phase_b_features', phase_b_features,
-								'source_run_id', source_run_id,
-								'created_at', created_at
-							) AS run
-							FROM deal_phase_b_runs
-              WHERE deal_id = $1
-              ORDER BY COALESCE(
-                created_at,
-                NULLIF((phase_b_features ->> 'computed_at'), '')::timestamptz,
-                '1970-01-01'::timestamptz
-              ) DESC,
-              version DESC,
-              id DESC
-							LIMIT 3
-						) t(run)
-					) AS phase_b_history
-             FROM deal_phase_b_runs
-            WHERE deal_id = $1
-            ORDER BY COALESCE(
+    const deal = rows[0];
+
+        try {
+          deal.documents_digest_v1 = await buildDocumentsDigest({ dealId, pool });
+        } catch (err: any) {
+          request.log.warn({ err, deal_id: dealId }, "documents_digest_v1.failed");
+        }
+
+    const { rows: latestDioRows } = await pool.query<{
+      dio_id: string;
+      analysis_version: number | null;
+      recommendation: string | null;
+      overall_score: number | null;
+      dio_data: any;
+      updated_at: string | null;
+    }>(
+      `SELECT dio_id, analysis_version, recommendation, overall_score, dio_data, updated_at
+         FROM deal_intelligence_objects
+        WHERE deal_id = $1
+        ORDER BY analysis_version DESC
+        LIMIT 1`,
+      [dealId]
+    );
+
+    const { rows: dioStatsRows } = await pool.query<{ run_count: number | null; last_analyzed_at: string | null }>(
+      `SELECT COUNT(*)::int AS run_count, MAX(updated_at) AS last_analyzed_at
+         FROM deal_intelligence_objects
+        WHERE deal_id = $1`,
+      [dealId]
+    );
+
+    const { rows: phaseBRows } = await pool.query<{
+      id: string;
+      deal_id: string;
+      version: number | null;
+      phase_b_result: any;
+      phase_b_features: any;
+      source_run_id: string | null;
+      created_at: string | null;
+    }>(
+      `SELECT id, deal_id, version, phase_b_result, phase_b_features, source_run_id, created_at
+         FROM deal_phase_b_runs
+        WHERE deal_id = $1
+        ORDER BY COALESCE(
           created_at,
           NULLIF((phase_b_features ->> 'computed_at'), '')::timestamptz,
           '1970-01-01'::timestamptz
         ) DESC,
         version DESC,
         id DESC
-            LIMIT 1
-          ) phaseb ON TRUE` ,
+        LIMIT 3`,
       [dealId]
     );
 
-    if (dioRows[0]) {
-      (dioRows[0] as any).overall_score =
-        parseNullableNumber((dioRows[0] as any).overall_score_resolved) ?? (dioRows[0] as any).overall_score;
+    const dioRows: Array<DIOAggregateRow & { overall_score_resolved?: any }> = [];
+    if (latestDioRows[0]) {
+      const latest = latestDioRows[0];
+      const dioData = (latest as any).dio_data ?? {};
+      const overallScoreResolved =
+        parseNullableNumber(latest.overall_score) ??
+        parseNullableNumber((dioData as any)?.overall_score) ??
+        parseNullableNumber((dioData as any)?.score_explanation?.totals?.overall_score);
+
+      const phaseBLatest = phaseBRows[0]
+        ? {
+          id: phaseBRows[0].id,
+          deal_id: phaseBRows[0].deal_id,
+          version: phaseBRows[0].version,
+          phase_b_result: phaseBRows[0].phase_b_result,
+          phase_b_features: phaseBRows[0].phase_b_features,
+          source_run_id: phaseBRows[0].source_run_id,
+          created_at: phaseBRows[0].created_at,
+        }
+        : null;
+
+      const phaseBHistory = phaseBRows.map((r) => ({
+        id: r.id,
+        deal_id: r.deal_id,
+        version: r.version,
+        phase_b_result: r.phase_b_result,
+        phase_b_features: r.phase_b_features,
+        source_run_id: r.source_run_id,
+        created_at: r.created_at,
+      }));
+
+      dioRows.push({
+        dio_id: (latest as any).dio_id,
+        analysis_version: latest.analysis_version,
+        recommendation: latest.recommendation,
+        overall_score: latest.overall_score,
+        overall_score_resolved: overallScoreResolved,
+        executive_summary_v1: (dioData as any)?.dio?.phase1?.executive_summary_v1 ?? null,
+        executive_summary_v2: (dioData as any)?.dio?.phase1?.executive_summary_v2 ?? null,
+        decision_summary_v1: (dioData as any)?.dio?.phase1?.decision_summary_v1 ?? null,
+        phase1_coverage: (dioData as any)?.dio?.phase1?.coverage ?? null,
+        phase1_business_archetype_v1: (dioData as any)?.dio?.phase1?.business_archetype_v1 ?? null,
+        phase1_deal_overview_v2: (dioData as any)?.dio?.phase1?.deal_overview_v2 ?? null,
+        phase1_update_report_v1: (dioData as any)?.dio?.phase1?.update_report_v1 ?? null,
+        phase1_deal_summary_v2: (dioData as any)?.dio?.phase1?.deal_summary_v2 ?? null,
+        phase1_claims: (dioData as any)?.dio?.phase1?.claims ?? null,
+        phase_b_latest_run: phaseBLatest,
+        phase_b_history: phaseBHistory,
+        last_analyzed_at: dioStatsRows[0]?.last_analyzed_at ?? null,
+        run_count: dioStatsRows[0]?.run_count ?? 0,
+      });
     }
 
     let sectionEvidenceSamples: Partial<Record<ScoreBreakdownSectionKey, string[]>> | undefined;
@@ -3752,6 +3885,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
   // This does not re-render pages; it only uses already-rendered page images.
   app.post("/api/v1/deals/:deal_id/extract-visuals", async (request, reply) => {
     const dealId = (request.params as { deal_id: string }).deal_id;
+    const forceResegment = Boolean((request.body as any)?.force_resegment);
 
     const { rows } = await pool.query<DealRow>(
       `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
@@ -3763,7 +3897,13 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     }
 
     // Single job; the worker resolves deal documents + rendered page image URIs.
-    const job = await enqueueJob({ deal_id: dealId, type: "extract_visuals" });
+    // force_resegment updates segment_key for existing structured synthetic assets (pptx/docx/xlsx)
+    // before extracting visuals.
+    const job = await enqueueJob({
+      deal_id: dealId,
+      type: "extract_visuals",
+      payload: { force_resegment: forceResegment },
+    });
     return reply.status(202).send({ job_id: job.job_id, status: job.status });
   });
 

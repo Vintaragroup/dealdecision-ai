@@ -10,6 +10,9 @@ type JobRow = {
   deal_id: string | null;
   updated_at: string;
   type: string | null;
+  created_at: string;
+  started_at: string | null;
+  status_detail: unknown;
 };
 
 const EventsQuerySchema = z.object({
@@ -61,6 +64,8 @@ export async function registerEventRoutes(app: FastifyInstance, pool = getPool()
   });
 
   app.get("/api/v1/events", async (request, reply) => {
+    const startTs = Date.now();
+    const connId = (request as any).id ?? `${startTs}-${Math.random().toString(36).slice(2, 8)}`;
     const parsed = EventsQuerySchema.safeParse(request.query ?? {});
     if (!parsed.success) {
       return reply.status(400).send({
@@ -68,6 +73,8 @@ export async function registerEventRoutes(app: FastifyInstance, pool = getPool()
         details: parsed.error.flatten(),
       });
     }
+
+    reply.hijack();
 
     const { deal_id, cursor } = parsed.data;
     const lastEventIdHeader = request.headers["last-event-id"] as string | undefined;
@@ -80,42 +87,81 @@ export async function registerEventRoutes(app: FastifyInstance, pool = getPool()
     reply.raw.setHeader("Connection", "keep-alive");
     reply.raw.flushHeaders?.();
 
-    const send = (event: string, data: unknown, id?: string) => {
-      if (id) {
-        reply.raw.write(`id: ${id}\n`);
+    let closed = false;
+
+    const safeWrite = (chunk: string) => {
+      if (closed || reply.raw.destroyed || reply.raw.writableEnded || reply.raw.closed === true || !reply.raw.writable) {
+        return;
       }
-      reply.raw.write(`event: ${event}\n`);
-      reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+      try {
+        reply.raw.write(chunk);
+      } catch (err) {
+        request.log.error({ err, deal_id }, "events.sse.write_failed");
+        cleanup();
+      }
     };
 
-    let closed = false;
+    const send = (event: string, data: unknown, id?: string) => {
+      if (closed) return;
+      if (id) {
+        safeWrite(`id: ${id}\n`);
+      }
+      safeWrite(`event: ${event}\n`);
+      safeWrite(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
     const cleanup = () => {
       if (closed) return;
       closed = true;
       clearInterval(pollInterval);
       clearInterval(heartbeat);
-      reply.raw.end();
+      if (reply.raw.writable) {
+        try {
+          reply.raw.end();
+        } catch {
+          // ignore
+        }
+      }
+      const endTs = Date.now();
+      request.log.info({
+        msg: "events.sse.closed",
+        deal_id,
+        conn_id: connId,
+        start_ts: new Date(startTs).toISOString(),
+        end_ts: new Date(endTs).toISOString(),
+        duration_ms: endTs - startTs,
+      });
+      if (process.env.NODE_ENV === "development") {
+        request.log.info({ deal_id, conn_id: connId, cleaned_up: true }, "events.sse.cleanup.dev");
+      }
     };
 
     reply.raw.on("close", cleanup);
     reply.raw.on("error", cleanup);
 
+    request.log.info({
+      msg: "events.sse.open",
+      deal_id,
+      conn_id: connId,
+      start_ts: new Date(startTs).toISOString(),
+    });
+
     send("ready", { ok: true });
 
     const initialCursor = lastEventIdHeader || cursor;
-    // Start from provided cursor or "now" to avoid replaying historical jobs on first connect.
-    let lastJobUpdatedAt = initialCursor ?? new Date().toISOString();
+    const defaultCursorWindow = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    let lastJobUpdatedAt = initialCursor ?? defaultCursorWindow;
 
     const heartbeat = setInterval(() => {
       if (closed) return;
-      reply.raw.write(":keep-alive\n\n");
+      safeWrite(":keep-alive\n\n");
     }, 15000);
 
     const pollIntervalMs = testMode ? 10 : 2000;
     const pollInterval = setInterval(async () => {
       try {
         const { rows } = await pool.query<JobRow>(
-          `SELECT job_id, status, progress_pct, message, deal_id, updated_at, type
+          `SELECT job_id, status, progress_pct, message, deal_id, updated_at, created_at, started_at, status_detail, type
            FROM jobs
            WHERE ($1::uuid IS NULL OR deal_id = $1::uuid)
              AND updated_at > $2::timestamptz
@@ -127,6 +173,11 @@ export async function registerEventRoutes(app: FastifyInstance, pool = getPool()
         if (rows.length > 0) {
           lastJobUpdatedAt = rows[rows.length - 1].updated_at;
           for (const row of rows) {
+            const statusDetail = (row as any).status_detail ?? null;
+            const progress = statusDetail && typeof statusDetail === "object" && (statusDetail as any).progress ? (statusDetail as any).progress : null;
+            const updatedIso = new Date(row.updated_at).toISOString();
+            const createdIso = row.created_at ? new Date(row.created_at).toISOString() : undefined;
+            const startedIso = row.started_at ? new Date(row.started_at).toISOString() : undefined;
             send(
               "job.updated",
               {
@@ -136,15 +187,41 @@ export async function registerEventRoutes(app: FastifyInstance, pool = getPool()
                 message: row.message ?? undefined,
                 deal_id: row.deal_id ?? undefined,
                 type: row.type ?? undefined,
-                updated_at: new Date(row.updated_at).toISOString(),
+                updated_at: updatedIso,
+                created_at: createdIso,
+                started_at: startedIso,
+                status_detail: statusDetail ?? undefined,
               },
               row.updated_at
             );
+
+            if (progress && typeof progress === "object") {
+              const progressPayload = {
+                version: "job.progress.v1",
+                job_id: row.job_id,
+                deal_id: row.deal_id ?? undefined,
+                document_id: (progress as any).document_id ?? undefined,
+                type: row.type ?? undefined,
+                status: row.status,
+                stage: (progress as any).stage,
+                percent: (progress as any).percent ?? progress.percent ?? row.progress_pct ?? undefined,
+                completed: (progress as any).completed ?? undefined,
+                total: (progress as any).total ?? undefined,
+                message: (progress as any).message ?? row.message ?? undefined,
+                reason: (progress as any).reason ?? undefined,
+                meta: (progress as any).meta ?? undefined,
+                created_at: createdIso ?? undefined,
+                updated_at: updatedIso,
+                at: (progress as any).at ?? updatedIso,
+                status_detail: statusDetail ?? undefined,
+              };
+              send("job.progress", progressPayload, row.updated_at);
+            }
           }
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Unknown error";
-        send("error", { message });
+        request.log.error({ err, deal_id }, "events.sse.poll_failed");
+        cleanup();
       }
     }, pollIntervalMs);
 
@@ -156,7 +233,6 @@ export async function registerEventRoutes(app: FastifyInstance, pool = getPool()
       }, 30);
     }
 
-    // Keep the connection open
     return reply;
   });
 }

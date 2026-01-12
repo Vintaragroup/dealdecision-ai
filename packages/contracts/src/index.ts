@@ -78,10 +78,47 @@ export type JobType =
 	| 'sync_crm'
 	| 'classify_document';
 
+export type JobProgressStage =
+	| 'queued'
+	| 'fetch_original_bytes'
+	| 'extract_text'
+	| 'persist_document'
+	| 'render_pages'
+	| 'collect_image_uris'
+	| 'extract_visual_assets'
+	| 'ocr'
+	| 'classify_visuals'
+	| 'persist_visual_assets'
+	| 'persist_visual_extractions'
+	| 'finalize'
+	| 'blocked'
+	| 'error';
+
+export interface JobProgressEventV1 {
+	job_id: string;
+	deal_id?: string;
+	document_id?: string;
+	stage: JobProgressStage;
+	percent?: number;
+	completed?: number;
+	total?: number;
+	message?: string;
+	reason?: string;
+	meta?: Record<string, unknown>;
+	at?: string;
+	status?: JobStatus;
+	type?: JobType;
+}
+
+export interface JobStatusDetail {
+	progress?: JobProgressEventV1;
+}
+
 export type JobStatus =
 	| 'queued'
 	| 'running'
 	| 'succeeded'
+	| 'succeeded_with_warnings'
 	| 'failed'
 	| 'cancelled'
 	| 'retrying';
@@ -94,6 +131,8 @@ export interface Job {
 	document_id?: string;
 	created_at?: string;
 	updated_at?: string;
+	started_at?: string | null;
+	status_detail?: JobStatusDetail | null;
 	evidence_ids?: string[];
 }
 

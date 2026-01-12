@@ -32,6 +32,8 @@ export function createWorker(
     | "remediate_extraction"
     | "reextract_documents"
     | "generate_ingestion_report"
+    | "generate_ingestion_report"
+    | "reconcile_ingest"
     | "orchestration",
   processor: Processor<any, any, string>
 ) {
@@ -81,6 +83,8 @@ export function getQueue(
     | "remediate_extraction"
     | "reextract_documents"
     | "generate_ingestion_report"
+    | "generate_ingestion_report"
+    | "reconcile_ingest"
     | "orchestration"
 ) {
   return new Queue(name, { connection });

@@ -26,8 +26,10 @@ export async function registerReportRoutes(
   app.get<{ Params: ReportParams }>(
     "/api/v1/deals/:deal_id/report",
     async (request: FastifyRequest<{ Params: ReportParams }>, reply: FastifyReply) => {
+      const startTs = Date.now();
       try {
         const { deal_id } = request.params;
+        request.log.info({ msg: "deal.report.start", deal_id, start_ts: new Date(startTs).toISOString() });
         
         // Get latest DIO from storage
         const storage = new DIOStorageImpl(process.env.DATABASE_URL || '');
@@ -42,6 +44,15 @@ export async function registerReportRoutes(
         // Compile DIO into ReportDTO
         const report = compileDIOToReport(dio);
         
+        const endTs = Date.now();
+        request.log.info({
+          msg: "deal.report.done",
+          deal_id,
+          start_ts: new Date(startTs).toISOString(),
+          end_ts: new Date(endTs).toISOString(),
+          duration_ms: endTs - startTs,
+        });
+
         return reply.status(200).send(report);
         
       } catch (error) {
@@ -60,8 +71,10 @@ export async function registerReportRoutes(
   app.get<{ Params: ReportParams & { version: string } }>(
     "/api/v1/deals/:deal_id/report/:version",
     async (request: FastifyRequest<{ Params: ReportParams & { version: string } }>, reply: FastifyReply) => {
+      const startTs = Date.now();
       try {
         const { deal_id, version } = request.params;
+        request.log.info({ msg: "deal.report.version.start", deal_id, version, start_ts: new Date(startTs).toISOString() });
         const versionNum = parseInt(version);
         
         if (isNaN(versionNum) || versionNum < 1) {
@@ -83,6 +96,16 @@ export async function registerReportRoutes(
         // Compile DIO into ReportDTO
         const report = compileDIOToReport(dio);
         
+        const endTs = Date.now();
+        request.log.info({
+          msg: "deal.report.version.done",
+          deal_id,
+          version: versionNum,
+          start_ts: new Date(startTs).toISOString(),
+          end_ts: new Date(endTs).toISOString(),
+          duration_ms: endTs - startTs,
+        });
+
         return reply.status(200).send(report);
         
       } catch (error) {

@@ -17,6 +17,7 @@ import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
 import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiPostAnalyze, apiPostExtractVisuals, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, apiResolveEvidence, isLiveBackend, subscribeToEvents, type AutoProfileResponse, type DealReport, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile } from '../../lib/apiClient';
+import type { JobProgressEventV1 } from '@dealdecision/contracts';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
 import { derivePhaseBInsights } from '../../lib/phaseb-findings';
@@ -104,6 +105,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [jobProgress, setJobProgress] = useState<number | null>(null);
   const [jobMessage, setJobMessage] = useState<string | null>(null);
   const [jobUpdatedAt, setJobUpdatedAt] = useState<string | null>(null);
+  const [jobCreatedAt, setJobCreatedAt] = useState<string | null>(null);
+  const [jobStartedAt, setJobStartedAt] = useState<string | null>(null);
+  const [jobReason, setJobReason] = useState<string | null>(null);
+  const [jobProgressSnapshot, setJobProgressSnapshot] = useState<JobProgressEventV1 | null>(null);
+  const [jobType, setJobType] = useState<string | null>(null);
   const [jobQueuedSeconds, setJobQueuedSeconds] = useState<number>(0);
   const [sseReady, setSseReady] = useState(false);
   const [evidence, setEvidence] = useState<Array<{ evidence_id: string; deal_id: string; document_id?: string; source: string; kind: string; text: string; confidence?: number; created_at?: string }>>([]);
@@ -112,6 +118,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [documentTitles, setDocumentTitles] = useState<Record<string, string>>({});
   const [dealFromApi, setDealFromApi] = useState<any>(null);
   const [reportFromApi, setReportFromApi] = useState<DealReport | null>(null);
+  const [reportMissing, setReportMissing] = useState<boolean>(false);
   const [analystReloadKey, setAnalystReloadKey] = useState(0);
   const [documentsReloadKey, setDocumentsReloadKey] = useState(0);
   const [selectedScoreSectionKey, setSelectedScoreSectionKey] = useState<ScoreSectionKey | null>(null);
@@ -133,6 +140,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const lastEventIdRef = useRef<string | undefined>(undefined);
   const handledTerminalJobKeysRef = useRef<Set<string>>(new Set());
   const shownToastKeysRef = useRef<Set<string>>(new Set());
+  const lastProgressKeyRef = useRef<string | null>(null);
+  const reportMissingRef = useRef<boolean>(false);
+  const lastReportAttemptAtRef = useRef<number>(0);
 
   const [debugApiEntries, setDebugApiEntries] = useState<DebugApiEntry[]>(() => (debugApiIsEnabled() ? debugApiGetEntries() : []));
 
@@ -144,19 +154,74 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     });
   }, []);
 
-  const loadReport = async () => {
+  const normalizeProgressSnapshot = (progress: unknown, jobMeta?: Partial<JobUpdatedEvent>): JobProgressEventV1 | null => {
+    if (!progress || typeof progress !== 'object') return null;
+    const p = progress as any;
+    const stage = typeof p.stage === 'string' ? p.stage : null;
+    const percent = typeof p.percent === 'number'
+      ? p.percent
+      : typeof (jobMeta as any)?.progress_pct === 'number'
+        ? (jobMeta as any).progress_pct
+        : undefined;
+    const at = typeof p.at === 'string' ? p.at : (jobMeta as any)?.updated_at ?? null;
+    const jobMetaDocumentId = (jobMeta as any)?.document_id;
+
+    if (!stage && percent == null) return null;
+
+    return {
+      ...(p as Record<string, unknown>),
+      job_id: typeof p.job_id === 'string' && p.job_id ? p.job_id : jobMeta?.job_id ?? jobId ?? '',
+      deal_id: typeof p.deal_id === 'string' && p.deal_id ? p.deal_id : jobMeta?.deal_id ?? dealId ?? undefined,
+      document_id: typeof p.document_id === 'string' ? p.document_id : jobMetaDocumentId ?? undefined,
+      type: typeof p.type === 'string' ? p.type : jobMeta?.type ?? undefined,
+      status: typeof p.status === 'string' ? p.status : jobMeta?.status,
+      stage: stage ?? 'running',
+      percent,
+      completed: typeof p.completed === 'number' ? p.completed : undefined,
+      total: typeof p.total === 'number' ? p.total : undefined,
+      message: typeof p.message === 'string' ? p.message : (jobMeta as any)?.message ?? undefined,
+      reason: typeof p.reason === 'string' ? p.reason : undefined,
+      meta: p.meta ?? undefined,
+      at: at ?? undefined,
+    } as JobProgressEventV1;
+  };
+
+  const applyProgressSnapshot = (progress: unknown, jobMeta?: Partial<JobUpdatedEvent>): boolean => {
+    const normalized = normalizeProgressSnapshot(progress, jobMeta);
+    if (!normalized) return false;
+    const key = `${normalized.job_id ?? ''}|${normalized.stage ?? 'n/a'}|${normalized.percent ?? 'na'}|${normalized.at ?? normalized.status ?? ''}`;
+    if (lastProgressKeyRef.current === key) return true;
+    lastProgressKeyRef.current = key;
+    setJobProgressSnapshot(normalized);
+    setJobProgress(typeof normalized.percent === 'number' ? normalized.percent : null);
+    if (normalized.message) setJobMessage(normalized.message);
+    if (normalized.at) setJobUpdatedAt(normalized.at);
+    return true;
+  };
+
+  const loadReport = async (opts?: { force?: boolean }) => {
     if (!dealId || !isLiveBackend()) {
       setReportFromApi(null);
       return;
     }
+    const now = Date.now();
+    if (!opts?.force && reportMissingRef.current) return;
+    if (!opts?.force && now - lastReportAttemptAtRef.current < 8000) return;
+    lastReportAttemptAtRef.current = now;
     try {
       const report = await apiGetDealReport(dealId);
+      reportMissingRef.current = false;
+      setReportMissing(!report);
       setReportFromApi(report);
       if (typeof report?.overallScore === 'number' && Number.isFinite(report.overallScore)) {
         setInvestorScore(Math.round(report.overallScore));
       }
-    } catch (err) {
-      // Report may not exist yet (no DIO). Keep UI usable.
+    } catch (err: any) {
+      const status = err?.status ?? err?.response?.status;
+      if (status === 404) {
+        reportMissingRef.current = true; // suppress noisy retries until a job succeeds
+        setReportMissing(true);
+      }
       setReportFromApi(null);
     }
   };
@@ -188,7 +253,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         addToast('error', 'Failed to load deal', err instanceof Error ? err.message : 'Unknown error');
       });
 
-    loadReport();
+    loadReport({ force: true });
 
     return () => {
       active = false;
@@ -202,6 +267,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     setSelectedScoreSectionMismatch(false);
     setScoreTraceModeOverride(null);
   }, [dealId]);
+
+  useEffect(() => {
+    lastProgressKeyRef.current = null;
+    setJobProgressSnapshot(null);
+    setJobProgress(null);
+    setJobMessage(null);
+  }, [jobId]);
 
   useEffect(() => {
     if (!isLiveBackend()) {
@@ -1171,6 +1243,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   useEffect(() => {
     if (!jobId) return;
     let cancelled = false;
+    let pollTimer: number | undefined;
+    let consecutiveErrors = 0;
 
     const jobsLogEnabled = (() => {
       if (!import.meta.env.DEV) return false;
@@ -1188,11 +1262,27 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       console.info('[jobs]', ...args);
     };
 
+    const clearPollTimer = () => {
+      if (pollTimer != null) {
+        window.clearTimeout(pollTimer);
+        pollTimer = undefined;
+      }
+    };
+
+    const schedulePoll = (ms: number) => {
+      clearPollTimer();
+      pollTimer = window.setTimeout(() => {
+        void poll();
+      }, ms);
+    };
+
     const poll = async () => {
+      if (cancelled) return;
       try {
         jobsLog('poll:getJob:start', { jobId, sseReady });
         const job = await apiGetJob(jobId);
         if (cancelled) return;
+        consecutiveErrors = 0;
 
         jobsLog('poll:getJob:result', {
           job_id: job.job_id,
@@ -1202,18 +1292,37 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           updated_at: job.updated_at,
         });
 
-        setJobStatus(job.status);
-        setJobProgress(typeof job.progress_pct === 'number' ? job.progress_pct : null);
-        setJobMessage(job.message || null);
-        setJobUpdatedAt(job.updated_at || null);
-        if (job.status === 'queued' || job.status === 'running' || job.status === 'retrying') {
+        setJobType((job as any)?.type ?? null);
+        const normalizedStatus = normalizeJobStatus(job.status as string | null);
+        setJobStatus(normalizedStatus);
+        const progressApplied = (job as any)?.status_detail?.progress
+          ? applyProgressSnapshot((job as any).status_detail.progress, job)
+          : false;
+        if (!progressApplied) {
+          setJobProgress(typeof job.progress_pct === 'number' ? job.progress_pct : null);
+          setJobMessage(job.message || null);
+          setJobUpdatedAt(job.updated_at || null);
+        } else if (job.updated_at) {
+          setJobUpdatedAt(job.updated_at);
+        }
+        setJobCreatedAt((job as any)?.created_at || null);
+        setJobStartedAt((job as any)?.started_at || null);
+        const reason = (job as any)?.result?.reason || (job as any)?.status_detail?.reason || (job as any)?.reason || null;
+        setJobReason(typeof reason === 'string' && reason.trim().length > 0 ? reason.trim() : null);
+        if (normalizedStatus === 'queued' || normalizedStatus === 'running' || normalizedStatus === 'retrying') {
           // SSE is best-effort; keep polling as a safety net.
           // When SSE is connected, back off to reduce load.
-          setTimeout(poll, sseReady ? 10000 : 2000);
+          schedulePoll(sseReady ? 10000 : 2000);
         } else {
+          clearPollTimer();
           setAnalyzing(false);
-          addToastOnce(`analysis-complete:${jobId}:${job.status}`, job.status === 'succeeded' ? 'success' : 'error', 'Analysis completed', job.message || job.status);
-          if (job.status === 'succeeded' && dealId) {
+          addToastOnce(
+            `analysis-complete:${jobId}:${normalizedStatus}`,
+            normalizedStatus === 'succeeded' ? 'success' : normalizedStatus === 'succeeded_with_warnings' ? 'warning' : 'error',
+            'Analysis completed',
+            job.message || normalizedStatus || 'completed'
+          );
+          if ((normalizedStatus === 'succeeded' || normalizedStatus === 'succeeded_with_warnings') && dealId) {
             apiGetDeal(dealId)
               .then((deal) => {
                 setDealFromApi(deal);
@@ -1226,7 +1335,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 });
               })
               .catch(() => {});
-            loadReport();
+            if (job.type === 'analyze_deal') {
+              reportMissingRef.current = false;
+              loadReport({ force: true });
+            }
             loadEvidence();
             if (job.type === 'extract_visuals') {
               setAnalystReloadKey((v) => v + 1);
@@ -1236,14 +1348,23 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         }
       } catch (err) {
         if (cancelled) return;
+        consecutiveErrors += 1;
+        clearPollTimer();
         setAnalyzing(false);
-        addToast('error', 'Job polling failed', err instanceof Error ? err.message : 'Unknown error');
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        setJobStatus('failed');
+        setJobMessage(message);
+        setJobUpdatedAt(new Date().toISOString());
+        addToastOnce(`job-poll-failed:${jobId}`, 'error', 'Job polling failed', message);
+        // Stop further polling to avoid noisy loops; user can re-run the job to restart tracking.
+        cancelled = true;
       }
     };
 
     poll();
     return () => {
       cancelled = true;
+      clearPollTimer();
     };
   }, [jobId, sseReady]);
 
@@ -1268,26 +1389,41 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         if (job.updated_at) {
           lastEventIdRef.current = job.updated_at;
         }
-        setJobStatus(job.status);
-        setJobProgress(typeof job.progress_pct === 'number' ? job.progress_pct : null);
-        setJobMessage(job.message ?? null);
-        setJobUpdatedAt(job.updated_at ?? null);
-        if (job.type === 'fetch_evidence' && job.status === 'succeeded') {
-          const terminalKey = `job-terminal:${job.job_id}:${job.status}`;
+        const normalizedStatus = normalizeJobStatus(job.status as string | null);
+        setJobStatus(normalizedStatus);
+        setJobType(job.type ?? null);
+        const progressPayload = (job as any)?.progress ?? (job as any)?.status_detail?.progress ?? null;
+        const progressApplied = progressPayload ? applyProgressSnapshot(progressPayload, job) : false;
+        if (!progressApplied) {
+          setJobProgress(typeof job.progress_pct === 'number' ? job.progress_pct : null);
+          setJobMessage(job.message ?? null);
+          setJobUpdatedAt(job.updated_at ?? null);
+        } else if (job.updated_at) {
+          setJobUpdatedAt(job.updated_at);
+        }
+        setJobCreatedAt((job as any)?.created_at ?? null);
+        setJobStartedAt((job as any)?.started_at ?? null);
+        const reason = (job as any)?.result?.reason || (job as any)?.status_detail?.reason || (job as any)?.reason || null;
+        setJobReason(typeof reason === 'string' && reason.trim().length > 0 ? reason.trim() : null);
+        if (job.type === 'fetch_evidence' && (normalizedStatus === 'succeeded' || normalizedStatus === 'succeeded_with_warnings')) {
+          const terminalKey = `job-terminal:${job.job_id}:${normalizedStatus}`;
           if (handledTerminalJobKeysRef.current.has(terminalKey)) return;
           handledTerminalJobKeysRef.current.add(terminalKey);
           loadEvidence();
-          addToastOnce(terminalKey, 'success', 'Evidence updated', job.message || 'Fetch completed');
+          addToastOnce(terminalKey, normalizedStatus === 'succeeded_with_warnings' ? 'warning' : 'success', 'Evidence updated', job.message || 'Fetch completed');
           return;
         }
-        if (["succeeded", "failed", "cancelled"].includes(job.status)) {
-          const terminalKey = `job-terminal:${job.job_id}:${job.status}`;
+        if (["succeeded", "succeeded_with_warnings", "failed", "cancelled"].includes(normalizedStatus ?? '')) {
+          const terminalKey = `job-terminal:${job.job_id}:${normalizedStatus}`;
           if (handledTerminalJobKeysRef.current.has(terminalKey)) return;
           handledTerminalJobKeysRef.current.add(terminalKey);
           setAnalyzing(false);
-          addToastOnce(`analysis-complete:${job.job_id}:${job.status}`, job.status === "succeeded" ? "success" : "error", "Analysis completed", job.message || job.status);
-          if (job.status === 'succeeded') {
-            loadReport();
+          addToastOnce(`analysis-complete:${job.job_id}:${normalizedStatus}`, normalizedStatus === "succeeded" ? "success" : normalizedStatus === 'succeeded_with_warnings' ? 'warning' : "error", "Analysis completed", job.message || (normalizedStatus ?? ''));
+          if (normalizedStatus === 'succeeded' || normalizedStatus === 'succeeded_with_warnings') {
+            if (job.type === 'analyze_deal') {
+              reportMissingRef.current = false;
+              loadReport({ force: true });
+            }
             loadEvidence();
             if (dealId) {
               apiGetDeal(dealId)
@@ -1382,6 +1518,84 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     addToast(type, title, message);
   };
 
+  const jobDisplay = deriveJobDisplay({
+    status: jobStatus,
+    updatedAt: jobUpdatedAt,
+    createdAt: jobCreatedAt,
+    startedAt: jobStartedAt,
+    reason: jobReason,
+    message: jobMessage,
+    queuedSeconds: jobQueuedSeconds,
+  });
+
+  const queuedWarningThresholdSec = import.meta.env.DEV ? 20 : 60;
+
+  const runningSeverity: JobSeverity = (() => {
+    if (!jobStatus) return 'muted';
+    if (['running', 'retrying', 'blocked'].includes(jobStatus)) return jobDisplay.severity;
+    if (jobStatus === 'cancelled') return 'warning';
+    if (jobStatus === 'succeeded') return 'success';
+    if (jobStatus === 'succeeded_with_warnings') return 'warning';
+    if (jobStatus === 'failed') return 'danger';
+    return 'muted';
+  })();
+
+  const stageLabelMap: Record<string, string> = {
+    queued: 'Queued',
+    running: 'Processing',
+    fetch_original_bytes: 'Fetching file',
+    persist_document: 'Persisting document',
+    extract_text: 'Extracting text',
+    render_pages: 'Rendering pages',
+    collect_image_uris: 'Collecting page images',
+    extract_visual_assets: 'Extracting visuals',
+    ocr: 'Running OCR',
+    classify_visuals: 'Classifying visuals',
+    persist_visual_assets: 'Saving visual assets',
+    persist_visual_extractions: 'Saving visual extractions',
+    finalize: 'Finalizing',
+    blocked: 'Blocked',
+    error: 'Error',
+  };
+
+  const stageSequences: Record<string, string[]> = {
+    ingest_documents: ['fetch_original_bytes', 'persist_document', 'extract_text', 'render_pages', 'finalize'],
+    extract_visuals: ['collect_image_uris', 'render_pages', 'extract_visual_assets', 'persist_visual_assets', 'persist_visual_extractions', 'finalize'],
+  };
+
+  const stageChips: Array<{ id: string; label: string; severity: JobSeverity }> = (() => {
+    const activeStage = jobProgressSnapshot?.stage ?? null;
+    const seq = stageSequences[jobType ?? ''] ? [...stageSequences[jobType ?? '']] : ['queued', 'running', 'finalize'];
+    if (activeStage && !seq.includes(activeStage)) seq.push(activeStage);
+    if (!activeStage && !seq.includes(jobStatus ?? '')) seq.push(jobStatus ?? '');
+
+    const currentIdx = activeStage ? seq.indexOf(activeStage) : -1;
+    return seq.map((stage) => {
+      const isActive = activeStage === stage;
+      const index = seq.indexOf(stage);
+      let severity: JobSeverity = 'muted';
+      if (isActive) {
+        severity = stage === 'blocked' ? 'warning' : stage === 'error' ? 'danger' : 'info';
+      } else if (currentIdx !== -1 && index !== -1 && index < currentIdx) {
+        severity = 'success';
+      } else if (!activeStage) {
+        severity = runningSeverity;
+      }
+
+      const label = stageLabelMap[stage] ?? (stage ? stage.replace(/_/g, ' ') : '');
+      return {
+        id: stage || 'stage',
+        label: label || 'Processing',
+        severity,
+      };
+    });
+  })();
+
+  const progressPercent = typeof jobProgressSnapshot?.percent === 'number' ? jobProgressSnapshot.percent : jobProgress;
+  const progressMessage = jobProgressSnapshot?.message ?? jobMessage;
+  const progressStageLabel = jobProgressSnapshot?.stage ? (stageLabelMap[jobProgressSnapshot.stage] ?? jobProgressSnapshot.stage) : null;
+  const progressTimestamp = jobProgressSnapshot?.at ?? jobUpdatedAt;
+
   const removeToast = (id: string) => {
     setToasts(prev => prev.filter(toast => toast.id !== id));
   };
@@ -1395,6 +1609,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     setJobProgress(null);
     setJobMessage(null);
     setJobUpdatedAt(null);
+    setJobCreatedAt(null);
+    setJobStartedAt(null);
+    setJobReason(null);
+    reportMissingRef.current = false;
+    lastReportAttemptAtRef.current = 0;
     addToast('info', isFounder ? 'Pitch Analysis Started' : 'Investment Analysis Started', 'Queued analysis job...');
     try {
       const res = await apiPostAnalyze(dealId);
@@ -1417,6 +1636,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     setJobProgress(null);
     setJobMessage(null);
     setJobUpdatedAt(null);
+    setJobCreatedAt(null);
+    setJobStartedAt(null);
+    setJobReason(null);
     addToast('info', 'Visual extraction started', 'Queued extract visuals job...');
     try {
       const res = await apiPostExtractVisuals(dealId);
@@ -1481,38 +1703,160 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     }
   };
 
-  const getJobStatusBadge = (status: string | null) => {
-    switch (status) {
-      case 'queued':
-        return 'bg-amber-500/10 border-amber-500/40 text-amber-200';
-      case 'running':
-      case 'retrying':
-        return 'bg-blue-500/10 border-blue-500/40 text-blue-200';
-      case 'succeeded':
+  type JobSeverity = 'success' | 'info' | 'warning' | 'danger' | 'muted';
+
+  function severityBadgeClass(severity: JobSeverity) {
+    switch (severity) {
+      case 'success':
         return 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200';
-      case 'failed':
+      case 'info':
+        return 'bg-blue-500/10 border-blue-500/40 text-blue-200';
+      case 'warning':
+        return 'bg-amber-500/10 border-amber-500/40 text-amber-200';
+      case 'danger':
         return 'bg-red-500/10 border-red-500/40 text-red-200';
+      case 'muted':
       default:
         return darkMode
           ? 'bg-white/5 border-white/10 text-gray-300'
           : 'bg-white/60 border-gray-200 text-gray-700';
     }
-  };
+  }
 
-  const isStageActive = (stage: 'queued' | 'running' | 'succeeded') => {
-    const order: Record<'queued' | 'running' | 'succeeded', number> = {
-      queued: 1,
-      running: 2,
-      succeeded: 3,
+  function severityTextClass(severity: JobSeverity) {
+    switch (severity) {
+      case 'success':
+        return darkMode ? 'text-emerald-200' : 'text-emerald-700';
+      case 'info':
+        return darkMode ? 'text-blue-200' : 'text-blue-700';
+      case 'warning':
+        return darkMode ? 'text-amber-200' : 'text-amber-700';
+      case 'danger':
+        return darkMode ? 'text-red-200' : 'text-red-700';
+      case 'muted':
+      default:
+        return darkMode ? 'text-gray-400' : 'text-gray-600';
+    }
+  }
+
+  function parseIso(value: string | null | undefined): number | null {
+    if (!value || typeof value !== 'string') return null;
+    const ts = Date.parse(value);
+    return Number.isFinite(ts) ? ts : null;
+  }
+
+  function normalizeJobStatus(rawStatus: string | null | undefined): string | null {
+    if (!rawStatus) return null;
+    const normalized = rawStatus.trim().toLowerCase();
+    const aliasMap: Record<string, string> = {
+      success: 'succeeded',
     };
-    const normalized = jobStatus === 'retrying'
-      ? 'running'
-      : jobStatus === 'failed'
-        ? 'running'
-        : jobStatus as 'queued' | 'running' | 'succeeded' | null;
-    const currentLevel = normalized ? order[normalized] || 0 : 0;
-    return currentLevel >= order[stage];
-  };
+    const mapped = aliasMap[normalized] ?? normalized;
+    const known = new Set([
+      'queued',
+      'running',
+      'retrying',
+      'succeeded',
+      'succeeded_with_warnings',
+      'failed',
+      'cancelled',
+      'blocked',
+    ]);
+    return known.has(mapped) ? mapped : mapped;
+  }
+
+  function deriveJobDisplay(meta: {
+    status: string | null;
+    updatedAt?: string | null;
+    createdAt?: string | null;
+    startedAt?: string | null;
+    reason?: string | null;
+    message?: string | null;
+    queuedSeconds?: number;
+  }) {
+    const status = (meta.status ?? '').toLowerCase();
+    if (!status) {
+      return { label: 'Idle', severity: 'muted' as JobSeverity, sublabel: null, status: null };
+    }
+    const queuedThresholdSec = import.meta.env.DEV ? 20 : 60;
+    const runningThresholdSec = import.meta.env.DEV ? 30 : 90;
+
+    const nowMs = Date.now();
+    const updatedMs = parseIso(meta.updatedAt);
+    const startedMs = parseIso(meta.startedAt);
+    const createdMs = parseIso(meta.createdAt);
+    const ageSeconds = (refMs: number | null) => (refMs == null ? null : Math.max(0, Math.floor((nowMs - refMs) / 1000)));
+
+    const updatedAge = ageSeconds(updatedMs);
+    const createdAge = ageSeconds(createdMs);
+    const startedAge = ageSeconds(startedMs);
+    const bestQueuedAge = updatedAge ?? createdAge ?? startedAge ?? (typeof meta.queuedSeconds === 'number' ? meta.queuedSeconds : null);
+
+    let severity: JobSeverity = 'info';
+    let label = 'Idle';
+    let sublabel: string | null = null;
+
+    const reason = typeof meta.reason === 'string' && meta.reason.trim().length > 0 ? meta.reason.trim() : null;
+    const message = typeof meta.message === 'string' && meta.message.trim().length > 0 ? meta.message.trim() : null;
+
+    const setLabelAndSeverity = (nextLabel: string, nextSeverity: JobSeverity) => {
+      label = nextLabel;
+      severity = nextSeverity;
+    };
+
+    switch (status) {
+      case 'succeeded':
+        setLabelAndSeverity('Completed', 'success');
+        sublabel = message || null;
+        break;
+      case 'succeeded_with_warnings':
+        setLabelAndSeverity('Succeeded (warnings)', 'warning');
+        sublabel = reason || message || null;
+        break;
+      case 'failed':
+        setLabelAndSeverity('Failed', 'danger');
+        sublabel = reason || message || null;
+        break;
+      case 'blocked':
+        setLabelAndSeverity('Blocked', 'warning');
+        sublabel = reason || message || 'Waiting for prerequisite';
+        break;
+      case 'cancelled':
+        setLabelAndSeverity('Cancelled', 'warning');
+        sublabel = reason || message || null;
+        break;
+      case 'running':
+      case 'retrying':
+        setLabelAndSeverity('Processing', 'info');
+        sublabel = message || null;
+        break;
+      case 'queued':
+      default:
+        setLabelAndSeverity('Queued', 'info');
+        sublabel = reason || message || 'Waiting for worker';
+        break;
+    }
+
+    if (['queued', 'running', 'retrying'].includes(status)) {
+      if (status === 'queued' && bestQueuedAge != null && bestQueuedAge >= queuedThresholdSec) {
+        setLabelAndSeverity('Queued (stalled)', 'warning');
+        sublabel = reason || message || `No worker update for ${bestQueuedAge}s`;
+      }
+
+      if (['running', 'retrying'].includes(status) && updatedAge != null && updatedAge >= runningThresholdSec) {
+        setLabelAndSeverity('Running (stalled)', 'warning');
+        sublabel = reason || message || `No progress update for ${updatedAge}s`;
+      }
+    }
+
+    if (reason && severity === 'info' && status !== 'succeeded' && status !== 'succeeded_with_warnings') {
+      severity = 'warning';
+      sublabel = reason;
+    }
+
+    return { label, severity, sublabel, status: status || null };
+  }
+
 
   return (
     <div className="flex-1 overflow-auto">
@@ -2214,10 +2558,20 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                     Track analyze jobs and backend progress. Polling runs while a job is active.
                   </p>
+                  {reportMissing && (
+                    <p className="text-xs text-amber-600 mt-1">Report not generated yet. Run analysis to create it.</p>
+                  )}
                 </div>
-                <span className={`px-3 py-1 rounded-full border text-xs font-medium ${getJobStatusBadge(jobStatus)}`}>
-                  {jobStatus ?? 'idle'}
-                </span>
+                <div className="flex flex-col items-end gap-1">
+                  <span className={`px-3 py-1 rounded-full border text-xs font-medium ${severityBadgeClass(jobDisplay.severity)}`}>
+                    {jobStatus ? jobDisplay.label : 'Idle'}
+                  </span>
+                  {jobDisplay.sublabel && (
+                    <span className={`text-[11px] leading-tight ${severityTextClass(jobDisplay.severity)}`}>
+                      {jobDisplay.sublabel}
+                    </span>
+                  )}
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
@@ -2239,33 +2593,36 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               <div className={`mt-4 p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
                 <div className="flex items-center justify-between mb-2">
                   <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Status detail</div>
-                  {jobUpdatedAt && (
+                  {progressTimestamp && (
                     <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                      Updated {new Date(jobUpdatedAt).toLocaleTimeString()}
+                      Updated {new Date(progressTimestamp).toLocaleTimeString()}
                     </div>
                   )}
                 </div>
-                {typeof jobProgress === 'number' ? (
+                <div className={`text-xs font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                  {progressStageLabel ?? (jobStatus ? jobDisplay.label : 'No active job')}
+                </div>
+                {typeof progressPercent === 'number' ? (
                   <div className="space-y-2">
                     <div className={`h-2 rounded-full overflow-hidden ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`}>
                       <div
                         className="h-full bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] transition-all"
-                        style={{ width: `${Math.min(Math.max(jobProgress, 0), 100)}%` }}
+                        style={{ width: `${Math.min(Math.max(progressPercent, 0), 100)}%` }}
                       />
                     </div>
                     <div className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                      {jobProgress}% complete
+                      {progressPercent}% complete
                     </div>
                   </div>
                 ) : (
                   <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    {jobMessage || 'Waiting for worker update...'}
+                    {progressMessage || jobDisplay.sublabel || 'Waiting for worker update...'}
                   </div>
                 )}
-                {jobMessage && typeof jobProgress === 'number' && (
-                  <div className={`text-xs mt-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{jobMessage}</div>
+                {progressMessage && (
+                  <div className={`text-xs mt-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{progressMessage}</div>
                 )}
-                {jobStatus === 'queued' && jobQueuedSeconds >= 20 && (
+                {jobStatus === 'queued' && jobQueuedSeconds >= queuedWarningThresholdSec && (
                   <div
                     className={`mt-3 rounded-lg border px-3 py-2 text-xs ${
                       darkMode
@@ -2279,26 +2636,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               </div>
 
               <div className="flex flex-wrap gap-2 mt-4">
-                {[{ id: 'queued', label: 'Queued' }, { id: 'running', label: 'Processing' }, { id: 'succeeded', label: 'Completed' }].map(stage => {
-                  const active = isStageActive(stage.id as 'queued' | 'running' | 'succeeded');
-                  const failed = jobStatus === 'failed' && stage.id === 'succeeded';
-                  return (
-                    <span
-                      key={stage.id}
-                      className={`px-3 py-1 rounded-full border text-xs ${
-                        failed
-                          ? 'bg-red-500/10 border-red-500/40 text-red-200'
-                          : active
-                            ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
-                            : darkMode
-                              ? 'border-white/10 text-gray-400'
-                              : 'border-gray-200 text-gray-700'
-                      }`}
-                    >
-                      {stage.label}
-                    </span>
-                  );
-                })}
+                {stageChips.map((stage) => (
+                  <span
+                    key={stage.id}
+                    className={`px-3 py-1 rounded-full border text-xs ${severityBadgeClass(stage.severity)}`}
+                  >
+                    {stage.label}
+                  </span>
+                ))}
               </div>
 
               <div className="flex flex-wrap items-center gap-3 mt-4">

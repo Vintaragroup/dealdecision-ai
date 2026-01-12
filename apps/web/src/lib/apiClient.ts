@@ -1,4 +1,4 @@
-import type { Deal, WorkspaceChatResponse, DealChatResponse } from '@dealdecision/contracts';
+import type { Deal, WorkspaceChatResponse, DealChatResponse, JobProgressEventV1, JobStatusDetail } from '@dealdecision/contracts';
 
 import { debugApiInferDealId, debugApiIsEnabled, debugApiLogCall, debugApiLogSse } from './debugApi';
 
@@ -198,6 +198,12 @@ export type JobUpdatedEvent = {
   deal_id?: string;
   type?: string;
   updated_at?: string;
+  created_at?: string;
+  started_at?: string | null;
+  status_detail?: JobStatusDetail | null;
+  result?: { reason?: string; [key: string]: unknown } | null;
+  reason?: string;
+  progress?: JobProgressEventV1;
 };
 
 export function resolveApiAssetUrl(path: string | null): string | null {
@@ -323,6 +329,9 @@ export function apiGetJob(jobId: string) {
     progress_pct?: number;
     message?: string;
     updated_at?: string;
+    created_at?: string;
+    started_at?: string | null;
+    status_detail?: JobStatusDetail | null;
   }>(`/api/v1/jobs/${jobId}`);
 }
 
@@ -379,38 +388,152 @@ export function apiGetDealLineage(dealId: string) {
 }
 
 export type VisualAssetEvidenceSummary = {
-  evidence_count: number;
-  sample_snippets: string[];
+  count?: number;
+  evidence_count?: number;
+  sample_snippets?: string[];
 };
 
-export type DocumentVisualAsset = {
+export type DealVisualAsset = {
   visual_asset_id: string;
   document_id: string;
-  page_index: number;
-  asset_type: string;
-  bbox: unknown;
-  image_uri: string | null;
-  image_hash: string | null;
-  confidence: number;
-  extractor_version: string;
-  extracted_at: string | null;
-  ocr_text: string | null;
-  structured_json: unknown;
-  quality_flags: unknown;
-  evidence: VisualAssetEvidenceSummary;
+  deal_id?: string;
+  page_index: number | null;
+  asset_type?: string | null;
+  bbox?: unknown;
+  image_uri?: string | null;
+  image_hash?: string | null;
+  confidence?: number | null;
+  extractor_version?: string | null;
+  created_at?: string | null;
+  ocr_text?: string | null;
+  structured_json?: unknown;
+  structured_kind?: string | null;
+  structured_summary?: unknown;
+  quality_flags?: unknown;
+  evidence?: VisualAssetEvidenceSummary;
+  document_title?: string | null;
+  document_type?: string | null;
+  document_status?: string | null;
+  document_page_count?: number | null;
+  document?: {
+    id: string | null;
+    title: string | null;
+    type: string | null;
+    status: string | null;
+    page_count: number | null;
+  };
 };
+
+// Back-compat alias: existing UI imports may reference DocumentVisualAsset
+export type DocumentVisualAsset = DealVisualAsset;
+
+function normalizeVisualAssetRecord(raw: any, dealId?: string): DealVisualAsset | null {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const visual_asset_id =
+    raw.visual_asset_id || raw.visualAssetId || raw.visual_assetid || raw.visual_asset_id || raw.id || raw.visual_asset_uuid;
+  if (typeof visual_asset_id !== 'string' || !visual_asset_id.trim()) return null;
+
+  const doc = raw.document && typeof raw.document === 'object' ? raw.document : null;
+  const docId = doc?.id ?? raw.document_id ?? raw.doc_id ?? raw.documentId ?? raw.documentid ?? raw.document ?? '';
+  const docTitle = doc?.title ?? raw.document_title ?? raw.title ?? null;
+  const docType = doc?.type ?? raw.document_type ?? raw.type ?? null;
+  const docStatus = doc?.status ?? raw.document_status ?? null;
+  const docPageCount = doc?.page_count ?? raw.document_page_count ?? null;
+
+  const structured = raw.latest_extraction || raw.latest || raw;
+  const ocr_text = typeof structured?.ocr_text === 'string' ? structured.ocr_text : typeof raw.ocr_text === 'string' ? raw.ocr_text : null;
+  const structured_json = structured?.structured_json ?? raw.structured_json ?? null;
+  const structured_kind = structured?.structured_kind ?? raw.structured_kind ?? null;
+  const structured_summary = structured?.structured_summary ?? raw.structured_summary ?? null;
+
+  const evidence_count =
+    (raw.evidence && typeof raw.evidence.evidence_count === 'number' ? raw.evidence.evidence_count : undefined) ??
+    (raw.evidence && typeof raw.evidence.count === 'number' ? raw.evidence.count : undefined) ??
+    (typeof raw.evidence_count === 'number' ? raw.evidence_count : undefined);
+  const sample_snippets =
+    (raw.evidence && Array.isArray(raw.evidence.sample_snippets) ? raw.evidence.sample_snippets : undefined) ??
+    (Array.isArray(raw.evidence_sample_snippets) ? raw.evidence_sample_snippets : undefined);
+
+  const parsedConfidence = (() => {
+    const c = raw.confidence;
+    if (typeof c === 'number' && Number.isFinite(c)) return c;
+    if (typeof c === 'string') {
+      const parsed = Number(c);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return null;
+  })();
+
+  return {
+    visual_asset_id,
+    document_id: docId,
+    deal_id: raw.deal_id ?? dealId,
+    page_index: Number.isFinite(raw.page_index) ? Number(raw.page_index) : null,
+    asset_type: raw.asset_type ?? raw.type ?? null,
+    bbox: raw.bbox,
+    image_uri: raw.image_uri ?? raw.image_url ?? null,
+    image_hash: raw.image_hash ?? null,
+    extractor_version: raw.extractor_version ?? null,
+    created_at: raw.created_at ?? null,
+    confidence: parsedConfidence,
+    quality_flags: raw.quality_flags ?? raw.flags ?? null,
+    ocr_text,
+    structured_json,
+    structured_kind,
+    structured_summary,
+    evidence: evidence_count != null || sample_snippets ? { count: evidence_count, evidence_count, sample_snippets } : raw.evidence,
+    document_title: docTitle,
+    document_type: docType,
+    document_status: docStatus,
+    document_page_count: docPageCount,
+    document: doc
+      ? {
+          id: docId,
+          title: docTitle,
+          type: docType,
+          status: docStatus,
+          page_count: docPageCount,
+        }
+      : undefined,
+  };
+}
+
+function normalizeVisualAssetsResponse(list: any[], dealId?: string): DealVisualAsset[] {
+  if (!Array.isArray(list)) return [];
+  const out: DealVisualAsset[] = [];
+  for (const raw of list) {
+    const norm = normalizeVisualAssetRecord(raw, dealId);
+    if (norm) out.push(norm);
+  }
+  return out;
+}
 
 export type DocumentVisualAssetsResponse = {
   deal_id: string;
   document_id: string;
-  visual_assets: DocumentVisualAsset[];
+  visual_assets: DealVisualAsset[];
   warnings: string[];
 };
 
-export function apiGetDocumentVisualAssets(dealId: string, documentId: string) {
-  return request<DocumentVisualAssetsResponse>(
+export async function apiGetDocumentVisualAssets(dealId: string, documentId: string) {
+  const res = await request<{ deal_id: string; document_id: string; assets?: any[]; visual_assets?: any[]; warnings?: string[] }>(
     `/api/v1/deals/${dealId}/documents/${documentId}/visual-assets`
   );
+  const assetsRaw = Array.isArray(res?.visual_assets) ? res.visual_assets : Array.isArray(res?.assets) ? res.assets : [];
+  const visual_assets = normalizeVisualAssetsResponse(assetsRaw, dealId);
+  return {
+    deal_id: res?.deal_id ?? dealId,
+    document_id: res?.document_id ?? documentId,
+    visual_assets,
+    warnings: Array.isArray(res?.warnings) ? res.warnings : [],
+  } satisfies DocumentVisualAssetsResponse;
+}
+
+export async function apiGetDealVisualAssets(dealId: string) {
+  const res = await request<{ deal_id: string; visual_assets?: any[] }>(`/api/v1/deals/${dealId}/visual-assets`);
+  const visual_assets = normalizeVisualAssetsResponse(Array.isArray(res?.visual_assets) ? res.visual_assets : [], dealId);
+  return { deal_id: res?.deal_id ?? dealId, visual_assets };
 }
 
 export type ExtractionConfidenceBand = 'high' | 'medium' | 'low' | 'unknown';
@@ -539,8 +662,44 @@ export type DealReport = {
   metadata?: Record<string, any>;
 };
 
-export function apiGetDealReport(dealId: string) {
-  return request<DealReport>(`/api/v1/deals/${dealId}/report`);
+export async function apiGetDealReport(dealId: string): Promise<DealReport | null> {
+  const path = `/api/v1/deals/${dealId}/report`;
+  const debugEnabled = debugApiIsEnabled();
+  const startedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+  let res: Response | undefined;
+  let responseJson: unknown = undefined;
+  let error: unknown = undefined;
+
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, {
+      method: 'GET',
+    });
+    if (res.status === 404) {
+      return null;
+    }
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || `Request failed with ${res.status}`);
+    }
+    responseJson = await res.json();
+    return responseJson as DealReport;
+  } catch (err) {
+    error = err;
+    throw err;
+  } finally {
+    if (debugEnabled) {
+      const endedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+      debugApiLogCall({
+        method: 'GET',
+        path,
+        dealId,
+        status: typeof res?.status === 'number' ? res.status : 0,
+        duration_ms: endedAt - startedAt,
+        response: responseJson,
+        error,
+      });
+    }
+  }
 }
 
 export function apiFetchEvidence(dealId: string, filter?: string) {
@@ -668,65 +827,141 @@ export function subscribeToEvents(
     return () => {};
   }
 
-  const params = new URLSearchParams({ deal_id: dealId });
-  if (options?.cursor) {
-    params.set('cursor', options.cursor);
-  }
-
-  const url = `${API_BASE_URL}/api/v1/events?${params.toString()}`;
-  
+  const lastEventIdRef = { current: options?.cursor } as { current: string | undefined };
   let source: EventSource | null = null;
-  let hasConnected = false;
+  let stopped = false;
+  let retryDelay = 1000;
 
-  try {
-    source = new EventSource(url);
-
-    const lastEventIdRef = { current: options?.cursor } as { current: string | undefined };
-
-    const handleJobUpdated = (event: MessageEvent) => {
+  const cleanupSource = () => {
+    if (source) {
       try {
-        const data = JSON.parse(event.data) as JobUpdatedEvent;
-        if (debugApiIsEnabled()) {
-          debugApiLogSse({ event: 'job.updated', dealId: data?.deal_id ?? dealId, data });
-        }
-        lastEventIdRef.current = data.updated_at ?? lastEventIdRef.current;
-        handlers.onJobUpdated?.(data);
-      } catch (err) {
-        if (debugApiIsEnabled()) {
-          debugApiLogSse({ event: 'job.updated_parse_error', dealId, error: err });
-        }
-        handlers.onError?.(err);
-      }
-    };
-
-    source.addEventListener('ready', () => {
-      hasConnected = true;
-      if (debugApiIsEnabled()) debugApiLogSse({ event: 'ready', dealId });
-      handlers.onReady?.();
-    });
-    source.addEventListener('job.updated', handleJobUpdated);
-    source.addEventListener('error', (event) => {
-      // Gracefully handle CORS and connection errors
-      // The frontend can continue without SSE if the backend doesn't support it
-      if (source?.readyState === EventSource.CLOSED) {
-        // Connection closed, app will continue with fallback
-      }
-      if (debugApiIsEnabled()) debugApiLogSse({ event: 'error', dealId, error: event });
-      handlers.onError?.(event);
-    });
-
-    return () => {
-      if (source) {
         source.close();
-        source = null;
+      } catch {
+        // ignore
       }
+      source = null;
+    }
+  };
+
+  const normalizeProgress = (payload: any, eventName: string): JobProgressEventV1 | null => {
+    if (!payload || typeof payload !== 'object') return null;
+    const rawProgress = (payload as any).progress && typeof (payload as any).progress === 'object'
+      ? (payload as any).progress
+      : (payload as any).stage
+        ? payload
+        : null;
+    if (!rawProgress || typeof rawProgress !== 'object') return null;
+    const percent = typeof (rawProgress as any).percent === 'number'
+      ? (rawProgress as any).percent
+      : typeof (payload as any).progress_pct === 'number'
+        ? (payload as any).progress_pct
+        : undefined;
+    const normalized: JobProgressEventV1 = {
+      ...(rawProgress as any),
+      version: (rawProgress as any).version ?? (payload as any).version,
+      job_id: (rawProgress as any).job_id ?? (payload as any).job_id ?? '',
+      deal_id: (rawProgress as any).deal_id ?? (payload as any).deal_id ?? dealId,
+      document_id: (rawProgress as any).document_id ?? (payload as any).document_id,
+      type: (rawProgress as any).type ?? (payload as any).type,
+      status: (rawProgress as any).status ?? (payload as any).status ?? (eventName === 'job.progress' ? 'running' : undefined),
+      stage: (rawProgress as any).stage,
+      percent,
+      completed: (rawProgress as any).completed ?? (payload as any).completed,
+      total: (rawProgress as any).total ?? (payload as any).total,
+      message: (rawProgress as any).message ?? (payload as any).message,
+      reason: (rawProgress as any).reason ?? (payload as any).reason,
+      meta: (rawProgress as any).meta ?? (payload as any).meta,
+      at: (rawProgress as any).at ?? (payload as any).updated_at ?? (payload as any).created_at,
     };
-  } catch (err) {
-    // EventSource initialization failed (likely CORS), return no-op cleanup
-    // App continues to work without real-time updates
-    if (debugApiIsEnabled()) debugApiLogSse({ event: 'init_error', dealId, error: err });
-    return () => {};
-  }
+    return normalized;
+  };
+
+  const normalizeJobPayload = (payload: any, eventName: string): JobUpdatedEvent => {
+    const progress = normalizeProgress(payload, eventName);
+    const updatedAt = (payload as any)?.updated_at ?? progress?.at;
+    const normalized: JobUpdatedEvent = {
+      ...(payload as any),
+      job_id: (payload as any)?.job_id ?? progress?.job_id ?? '',
+      deal_id: (payload as any)?.deal_id ?? progress?.deal_id ?? dealId,
+      type: (payload as any)?.type ?? progress?.type,
+      status: (payload as any)?.status ?? progress?.status ?? (eventName === 'job.progress' ? 'running' : undefined),
+      progress_pct: (payload as any)?.progress_pct ?? progress?.percent,
+      message: (payload as any)?.message ?? progress?.message,
+      updated_at: updatedAt,
+      created_at: (payload as any)?.created_at,
+      started_at: (payload as any)?.started_at,
+      status_detail: (payload as any)?.status_detail ?? (progress ? { progress } : undefined),
+      progress,
+    };
+    return normalized;
+  };
+
+  const connect = () => {
+    if (stopped) return;
+
+    const params = new URLSearchParams({ deal_id: dealId });
+    if (lastEventIdRef.current) {
+      params.set('cursor', lastEventIdRef.current);
+    }
+    const url = `${API_BASE_URL}/api/v1/events?${params.toString()}`;
+
+    try {
+      source = new EventSource(url);
+
+      const handleJobEvent = (eventName: string) => (event: MessageEvent) => {
+        try {
+          const data = JSON.parse(event.data);
+          const normalized = normalizeJobPayload(data, eventName);
+          const lastId = (event as any)?.lastEventId || normalized.updated_at;
+          if (lastId) lastEventIdRef.current = lastId;
+          if (debugApiIsEnabled()) {
+            debugApiLogSse({ event: eventName, dealId: normalized?.deal_id ?? dealId, data: normalized });
+          }
+          handlers.onJobUpdated?.(normalized);
+        } catch (err) {
+          if (debugApiIsEnabled()) {
+            debugApiLogSse({ event: `${eventName}_parse_error`, dealId, error: err });
+          }
+          handlers.onError?.(err);
+        }
+      };
+
+      source.addEventListener('open', () => {
+        retryDelay = 1000;
+      });
+
+      source.addEventListener('ready', () => {
+        retryDelay = 1000;
+        if (debugApiIsEnabled()) debugApiLogSse({ event: 'ready', dealId });
+        handlers.onReady?.();
+      });
+      source.addEventListener('job.updated', handleJobEvent('job.updated'));
+      source.addEventListener('job.progress', handleJobEvent('job.progress'));
+      source.addEventListener('error', (event) => {
+        if (debugApiIsEnabled()) debugApiLogSse({ event: 'error', dealId, error: event });
+        handlers.onError?.(event);
+        cleanupSource();
+        if (stopped) return;
+        const delay = retryDelay;
+        retryDelay = Math.min(10000, retryDelay * 2);
+        setTimeout(connect, delay);
+      });
+    } catch (err) {
+      if (debugApiIsEnabled()) debugApiLogSse({ event: 'init_error', dealId, error: err });
+      handlers.onError?.(err);
+      if (stopped) return;
+      const delay = retryDelay;
+      retryDelay = Math.min(10000, retryDelay * 2);
+      setTimeout(connect, delay);
+    }
+  };
+
+  connect();
+
+  return () => {
+    stopped = true;
+    cleanupSource();
+  };
 }
 
 export const apiClient = {

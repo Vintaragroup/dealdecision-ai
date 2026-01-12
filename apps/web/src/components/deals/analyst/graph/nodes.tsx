@@ -224,7 +224,7 @@ export function DocumentNode({ data, selected }: NodeProps) {
       accentColor={d.__accentColor}
       accentTint={d.__accentTint}
     >
-      <div className="px-3 py-2" style={{ minWidth: 260 }}>
+      <div className="px-3 py-2" style={{ width: 320, maxWidth: 320, minWidth: 260 }}>
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <div className="text-xs uppercase tracking-wide opacity-70">Document</div>
@@ -381,6 +381,46 @@ export function VisualAssetNode({ id, data, selected }: NodeProps) {
 
   const slideTitle = cleanSnippet((d as any)?.slide_title, 160);
   const pageUnderstanding = (d as any)?.page_understanding;
+  const structuredJson = (d as any)?.structured_json;
+  const structuredSummary = cleanSnippet((d as any)?.structured_summary ?? structuredJson?.structured_summary ?? structuredJson?.summary, 220);
+  const structuredTitle = cleanSnippet(structuredJson?.title, 160);
+  const structuredTextSnippet = cleanSnippet(structuredJson?.text_snippet, 200);
+  const structuredParagraphs = (() => {
+    const paras = structuredJson?.paragraphs;
+    if (!Array.isArray(paras)) return null;
+    const clean = paras
+      .filter((p) => typeof p === 'string')
+      .map((p) => cleanSnippet(p, 200))
+      .filter(Boolean) as string[];
+    return clean.length ? clean : null;
+  })();
+  const structuredSheetHint = (() => {
+    const kind = typeof structuredJson?.kind === 'string' ? structuredJson.kind : '';
+    if (!kind.toLowerCase().includes('excel')) return null;
+    const sheet = cleanSnippet(structuredJson?.sheet_name, 80);
+    const headers = Array.isArray(structuredJson?.headers)
+      ? (structuredJson.headers as unknown[])
+          .filter((h) => typeof h === 'string')
+          .map((h) => cleanSnippet(h, 40))
+          .filter(Boolean)
+          .slice(0, 4)
+      : [];
+    const headerLine = headers.length ? `Headers: ${headers.join(' · ')}` : null;
+    const parts = [sheet ? `Sheet: ${sheet}` : null, headerLine].filter(Boolean);
+    if (!parts.length) return null;
+    return cleanSnippet(parts.join(' • '), 220);
+  })();
+  const structuredBullets = (() => {
+    const bullets = structuredJson?.bullets;
+    if (!Array.isArray(bullets)) return null;
+    const clean = bullets
+      .filter((b) => typeof b === 'string')
+      .map((b) => cleanSnippet(b, 160))
+      .filter(Boolean) as string[];
+    return clean.length ? clean : null;
+  })();
+
+  const isBadObjectString = (s: string | null) => !!s && /\[object Object\]/i.test(s);
   const firstEvidence = (() => {
     const evidenceSnippets = (d as any)?.evidence_snippets;
     if (!Array.isArray(evidenceSnippets)) return null;
@@ -388,15 +428,46 @@ export function VisualAssetNode({ id, data, selected }: NodeProps) {
   })();
 
   const summaryLine = (() => {
+    // 1) Prefer page understanding
     const summary = cleanSnippet(pageUnderstanding?.summary, 200);
-    if (summary) return summary;
-    if (firstEvidence) return firstEvidence;
-    const ocr = cleanSnippet((d as any)?.ocr_text_snippet, 200);
-    if (ocr) return ocr;
+    if (summary && !isBadObjectString(summary)) return summary;
+
+    // 2) Prefer structured summary when present
+    if (structuredSummary && !isBadObjectString(structuredSummary)) return structuredSummary;
+
+    // 3) Prefer structured JSON title/snippet (this is what Inspector is showing)
+    if (structuredTitle && !isBadObjectString(structuredTitle)) return structuredTitle;
+    if (structuredTextSnippet && !isBadObjectString(structuredTextSnippet)) return structuredTextSnippet;
+
+    // 4) PowerPoint-ish: bullets
+    if (structuredBullets?.length) {
+      const joined = cleanSnippet(structuredBullets.slice(0, 2).join(' • '), 200);
+      if (joined && !isBadObjectString(joined)) return joined;
+    }
+
+    // 5) Word-ish: first 1–2 paragraphs
+    if (structuredParagraphs?.length) {
+      const joined = cleanSnippet(structuredParagraphs.slice(0, 2).join(' '), 200);
+      if (joined && !isBadObjectString(joined)) return joined;
+    }
+
+    // 6) Excel-ish: sheet + headers hint
+    if (structuredSheetHint && !isBadObjectString(structuredSheetHint)) return structuredSheetHint;
+
+    // 7) Fall back to evidence snippets
+    if (firstEvidence && !isBadObjectString(firstEvidence)) return firstEvidence;
+
+    // 8) Fall back to OCR-ish fields
+    const ocr = cleanSnippet(
+      (d as any)?.ocr_text_snippet ?? (d as any)?.ocr_text ?? (d as any)?.image_text ?? (d as any)?.text,
+      200
+    );
+    if (ocr && !isBadObjectString(ocr)) return ocr;
+
     return 'No summary available yet';
   })();
 
-  const title = slideTitle || titleFallback;
+  const title = slideTitle || structuredTitle || titleFallback;
 
   return (
     <NodeShell

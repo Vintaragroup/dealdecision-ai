@@ -15,11 +15,12 @@ import { AlertCircle, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react'
 import { Button } from '../../ui/button';
 import {
   apiGetDealLineage,
+  apiGetDealVisualAssets,
   apiGetDocumentVisualAssets,
   isLiveBackend,
   resolveApiAssetUrl,
   type DealLineageResponse,
-  type DocumentVisualAsset,
+  type DealVisualAsset,
 } from '../../../lib/apiClient';
 
 import { layoutGraph } from '../analyst/graph/layout';
@@ -49,6 +50,19 @@ import {
   useReactFlowChangeLogger,
   type DevtoolsSelection,
 } from './reactflow-devtools';
+
+const ANALYST_NODE_TYPES = {
+  deal: DealNode,
+  document: DocumentNode,
+  segment: SegmentNode,
+  visual_group: VisualGroupNode,
+  visual_asset: AnalystVisualAssetNode,
+  evidence_group: EvidenceGroupNode,
+  evidence: EvidenceNode,
+  default: DefaultNode,
+} as const;
+
+const ANALYST_EDGE_TYPES = { floating: FloatingEdge } as const;
 
 type DealAnalystTabProps = {
   dealId: string;
@@ -462,6 +476,246 @@ function addEdgeUnique(out: Edge[], seen: Set<string>, source: string, target: s
   } as Edge);
 }
 
+function edgeIdForHierarchy(source: string, target: string): string {
+  // Stable, human-readable edge ids for key hierarchy edges.
+  if (source.startsWith('document:') && (target.startsWith('segment:') || target.startsWith('visual_asset:') || target.startsWith('visual_group:'))) {
+    return `${source}-->${target}`;
+  }
+  if (source.startsWith('segment:') && (target.startsWith('visual_asset:') || target.startsWith('visual_group:') || target.startsWith('evidence_group:') || target.startsWith('evidence:'))) {
+    return `${source}-->${target}`;
+  }
+  if (source.startsWith('deal:') && target.startsWith('document:')) {
+    return `${source}-->${target}`;
+  }
+  return `canon:hier:${source}:${target}`;
+}
+
+function isDocumentNodeId(id: string): boolean {
+  return typeof id === 'string' && id.startsWith('document:');
+}
+
+function isSegmentNodeId(id: string): boolean {
+  return typeof id === 'string' && id.startsWith('segment:');
+}
+
+function isVisualNodeId(id: string): boolean {
+  return typeof id === 'string' && (id.startsWith('visual_asset:') || id.startsWith('visual_group:'));
+}
+
+function buildDocumentsById(nodes: Node[]): Map<string, string> {
+  const docs = new Map<string, string>();
+  for (const n of nodes) {
+    if (nodeTypeOf(n) !== 'document') continue;
+    const data = (n.data ?? {}) as any;
+    const docId = (data.__docId ?? getDocIdFromData(data) ?? (String(n.id).startsWith('document:') ? String(n.id).slice('document:'.length) : null)) as string | null;
+    if (typeof docId === 'string' && docId.trim()) docs.set(docId.trim(), n.id);
+  }
+  return docs;
+}
+
+function normalizeSegmentKey(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
+  if (!s) return null;
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 64);
+}
+
+function inferSegmentKeyForVisual(args: {
+  visualNode: Node;
+  visualAsset: DealVisualAsset | null;
+}): string {
+  const { visualNode, visualAsset } = args;
+  const data = (visualNode.data ?? {}) as any;
+
+  // Canonical routing order:
+  // 1) quality_flags.segment_key
+  // 2) structured_json.segment_key
+  // 3) unknown
+  const explicit =
+    normalizeSegmentKey(data?.quality_flags?.segment_key) ??
+    normalizeSegmentKey((visualAsset as any)?.quality_flags?.segment_key) ??
+    normalizeSegmentKey(data?.structured_json?.segment_key) ??
+    normalizeSegmentKey((visualAsset as any)?.structured_json?.segment_key);
+  if (explicit) return explicit;
+
+  return 'unknown';
+}
+
+function applyDocumentScopedSegmentsGraph(args: {
+  nodes: Node[];
+  edges: Edge[];
+  dealId: string;
+  dealVisualAssets: DealVisualAsset[] | null;
+}): { nodes: Node[]; edges: Edge[] } {
+  const { nodes, edges, dealId, dealVisualAssets } = args;
+
+  const nodeById = new Map(nodes.map((n) => [n.id, n] as const));
+  const docsById = buildDocumentsById(nodes);
+  const assetsById = new Map<string, DealVisualAsset>();
+  for (const a of dealVisualAssets ?? []) {
+    if (a?.visual_asset_id) assetsById.set(a.visual_asset_id, a);
+  }
+
+  const segmentNodeIds = new Set<string>();
+  const segmentLabelById = new Map<string, string>();
+  const segmentDocById = new Map<string, string>();
+  const segmentsByDoc = new Map<string, Set<string>>();
+  const visualsWithRouting: Array<{
+    assetId: string;
+    docId: string;
+    segmentKey: string;
+    segmentNodeId: string;
+    docNodeId: string;
+  }> = [];
+
+  for (const n of nodes) {
+    if (nodeTypeOf(n) !== 'visual_asset') continue;
+
+    const assetId = (() => {
+      const id = String(n.id);
+      if (id.startsWith('visual_asset:')) return id.slice('visual_asset:'.length);
+      const fromData = (n.data as any)?.visual_asset_id;
+      return typeof fromData === 'string' && fromData.trim() ? fromData.trim() : null;
+    })();
+    if (!assetId) continue;
+
+    const asset = assetsById.get(assetId) ?? null;
+    const docId = String(((n.data as any)?.__docId ?? getDocIdFromData(n.data as any) ?? asset?.document_id ?? '')).trim();
+    if (!docId) continue;
+
+    const docNodeId = docsById.get(docId) ?? `document:${docId}`;
+    if (!nodeById.has(docNodeId)) continue;
+
+    const segmentKey = inferSegmentKeyForVisual({ visualNode: n, visualAsset: asset });
+    const segmentNodeId = `segment:${docId}:${segmentKey}`;
+
+    segmentNodeIds.add(segmentNodeId);
+    segmentDocById.set(segmentNodeId, docId);
+    segmentLabelById.set(segmentNodeId, segmentKey === 'financials' ? 'Financials' : segmentKey === 'unknown' ? 'Unknown' : segmentKey);
+
+    if (!segmentsByDoc.has(docId)) segmentsByDoc.set(docId, new Set());
+    segmentsByDoc.get(docId)!.add(segmentNodeId);
+
+    visualsWithRouting.push({ assetId, docId, segmentKey, segmentNodeId, docNodeId });
+  }
+
+  // Create segment nodes only for documents with visuals.
+  const addedSegmentNodes: Node[] = [];
+  for (const segNodeId of segmentNodeIds) {
+    if (nodeById.has(segNodeId)) continue;
+    const docId = segmentDocById.get(segNodeId) ?? null;
+    const label = segmentLabelById.get(segNodeId) ?? 'Unknown';
+    const segmentKey = segNodeId.split(':').slice(2).join(':');
+    addedSegmentNodes.push({
+      id: segNodeId,
+      type: 'segment',
+      position: { x: 0, y: 0 },
+      data: {
+        label,
+        segment_label: label,
+        segment_key: segmentKey,
+        __node_type: 'segment',
+        __layer: layerForType('segment'),
+        __docId: docId ?? undefined,
+        __segmentId: segmentKey,
+        __branchKey: docId ? `${docId}:${segmentKey}` : undefined,
+      },
+      selectable: true,
+    } as Node);
+  }
+
+  const nextNodes = nodes.concat(addedSegmentNodes);
+  const nextNodeById = new Map(nextNodes.map((n) => [n.id, n] as const));
+
+  const seen = new Set<string>();
+  const nextEdges: Edge[] = [];
+  const add = (source: string, target: string, data?: Record<string, unknown>) => {
+    if (!source || !target || source === target) return;
+    if (!nextNodeById.has(source) || !nextNodeById.has(target)) return;
+    const key = `${source}→${target}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    nextEdges.push({
+      id: edgeIdForHierarchy(source, target),
+      source,
+      target,
+      data: { ...((data ?? {}) as any) },
+    } as Edge);
+  };
+
+  // Keep existing edges but remove any direct deal→segment and any document→visual (we enforce segment routing).
+  const dealNodeId = `deal:${dealId}`;
+  for (const e of edges) {
+    if (String(e.source).startsWith('deal:') && isSegmentNodeId(String(e.target))) continue;
+    if (isDocumentNodeId(String(e.source)) && isVisualNodeId(String(e.target))) continue;
+    if (isSegmentNodeId(String(e.source)) && isVisualNodeId(String(e.target))) continue;
+    if (isDocumentNodeId(String(e.source)) && isSegmentNodeId(String(e.target))) continue;
+    add(e.source, e.target, (e as any).data ?? {});
+  }
+
+  // Ensure Deal→Document edges exist.
+  for (const [docId, docNodeId] of docsById.entries()) {
+    add(dealNodeId, docNodeId, { __docId: docId, __segmentId: docId, __branchKey: `${docId}:${docId}` });
+  }
+
+  // Document→Segment edges.
+  for (const [docId, segIds] of segmentsByDoc.entries()) {
+    const docNodeId = docsById.get(docId);
+    if (!docNodeId) continue;
+    for (const segNodeId of segIds.values()) {
+      const segmentKey = segNodeId.split(':').slice(2).join(':');
+      add(docNodeId, segNodeId, {
+        __docId: docId,
+        __segmentId: segmentKey,
+        __branchKey: `${docId}:${segmentKey}`,
+      });
+    }
+  }
+
+  // Segment→Visual edges.
+  for (const r of visualsWithRouting) {
+    const visNodeId = `visual_asset:${r.assetId}`;
+    add(r.segmentNodeId, visNodeId, {
+      __docId: r.docId,
+      __segmentId: r.segmentKey,
+      __branchKey: `${r.docId}:${r.segmentKey}`,
+    });
+  }
+
+  // DEV logging: 10 random assets with invariant checks.
+  if (import.meta.env.DEV && getDevtoolsConsoleLoggingEnabled() && visualsWithRouting.length > 0) {
+    try {
+      const shuffled = [...visualsWithRouting].sort(() => Math.random() - 0.5);
+      const sample = shuffled.slice(0, 10);
+      const rows = sample.map((s) => ({
+        assetId: s.assetId,
+        docId: s.docId,
+        segmentKey: s.segmentKey,
+        segmentNodeId: s.segmentNodeId,
+        docNodeId: s.docNodeId,
+        segmentIdOk: s.segmentNodeId.startsWith(`segment:${s.docId}:`),
+      }));
+      // eslint-disable-next-line no-console
+      console.log('[Analyst graph] sample segment routing', rows);
+      const bad = rows.find((r) => r.segmentIdOk !== true);
+      if (bad) {
+        // eslint-disable-next-line no-console
+        console.warn('[Analyst graph] segmentNodeId invariant failed', bad);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  // Final safety: absolutely no deal→segment edges.
+  const finalEdges = nextEdges.filter((e) => !(String(e.source).startsWith('deal:') && isSegmentNodeId(String(e.target))));
+  return { nodes: nextNodes, edges: finalEdges };
+}
+
 function buildCanonicalEdges(args: { nodes: Node[]; rawEdges: RawLineageEdge[]; dealId: string }): Edge[] {
   const { nodes, rawEdges, dealId } = args;
 
@@ -540,7 +794,7 @@ function buildCanonicalEdges(args: { nodes: Node[]; rawEdges: RawLineageEdge[]; 
 
   // 2) Document → Segment
   // IMPORTANT: do not connect segments directly to the deal if there is at least one document.
-  // If we cannot infer a specific document parent, attach to the first document node as a safe fallback.
+  // If we cannot infer a specific document parent, keep the segment under the deal.
   for (const segId of segNodeIds) {
     const docParent = pickDocParent(segId);
     if (docParent) {
@@ -548,13 +802,8 @@ function buildCanonicalEdges(args: { nodes: Node[]; rawEdges: RawLineageEdge[]; 
       continue;
     }
 
-    if (docNodeIds.length > 0) {
-      addEdgeUnique(out, seen, docNodeIds[0], segId, 'doc-seg:fallback');
-      continue;
-    }
-
-    // Only if there are truly no documents in the graph, keep the segment reachable under the deal.
-    addEdgeUnique(out, seen, dealNodeId, segId, 'deal-seg:only-when-no-docs');
+    // If the segment can't be attributed to a specific document, keep it reachable under the deal.
+    addEdgeUnique(out, seen, dealNodeId, segId, docNodeIds.length > 0 ? 'deal-seg:unknown-doc' : 'deal-seg:only-when-no-docs');
   }
 
   // 3) Segment → Visual (fallback doc→visual if seg unknown)
@@ -610,9 +859,18 @@ function buildCanonicalEdges(args: { nodes: Node[]; rawEdges: RawLineageEdge[]; 
   return out;
 }
 
-function buildFullGraphFromLineage(lineage: DealLineageResponse, dealId: string): { nodes: Node[]; edges: Edge[] } {
+function buildFullGraphFromLineage(
+  lineage: DealLineageResponse,
+  dealId: string,
+  dealVisualAssets: DealVisualAsset[] | null
+): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
+
+  const visualAssetsById = new Map<string, DealVisualAsset>();
+  for (const a of dealVisualAssets ?? []) {
+    if (a?.visual_asset_id) visualAssetsById.set(a.visual_asset_id, a);
+  }
 
   // DEV-only: verify lineage-enriched visual_asset fields survive mapping into React Flow nodes.
   let didLogLineageVisualAssetMapping = false;
@@ -620,12 +878,30 @@ function buildFullGraphFromLineage(lineage: DealLineageResponse, dealId: string)
   for (let idx = 0; idx < (lineage.nodes || []).length; idx++) {
     const raw = (lineage.nodes || [])[idx] as any;
     const nodeType = normalizeLineageNodeType(raw);
+
+    // UI invariant: segments are document-scoped; we synthesize them from visuals.
+    if (nodeType === 'segment') continue;
+
     const id = getLineageNodeId(raw) || `unknown:${nodeType}:${idx}`;
     const layer = layerForType(nodeType);
+
+    const visualAssetIdFromNodeId = (() => {
+      const s = String(id);
+      if (s.startsWith('visual_asset:')) return s.slice('visual_asset:'.length);
+      return null;
+    })();
+
     const inferredDocId = (() => {
       const fromData = getDocIdFromData(raw?.data ?? {});
       if (fromData) return fromData;
       if (String(id).startsWith('document:')) return id.slice('document:'.length);
+
+      // If the lineage node is a visual_asset, prefer the doc id from the deal visual assets endpoint.
+      if (nodeType === 'visual_asset' && visualAssetIdFromNodeId) {
+        const a = visualAssetsById.get(visualAssetIdFromNodeId);
+        if (a?.document_id) return a.document_id;
+      }
+
       return null;
     })();
     const inferredSegmentId = (() => {
@@ -641,12 +917,21 @@ function buildFullGraphFromLineage(lineage: DealLineageResponse, dealId: string)
       raw?.metadata?.title ??
       id;
 
+    const rawData = { ...(raw?.data ?? {}) } as any;
+    if (nodeType === 'visual_asset' && inferredDocId) {
+      // Ensure downstream helpers can always discover doc id.
+      if (rawData.document_id == null && rawData.doc_id == null && rawData.documentId == null) {
+        rawData.document_id = inferredDocId;
+      }
+      if (visualAssetIdFromNodeId && rawData.visual_asset_id == null) rawData.visual_asset_id = visualAssetIdFromNodeId;
+    }
+
     const mapped: Node = {
       id,
       type: nodeType,
       position: { x: 0, y: 0 },
       data: {
-        ...(raw?.data ?? {}),
+        ...rawData,
         ...(raw?.metadata ? { __metadata: raw.metadata } : {}),
         label,
         __node_type: nodeType,
@@ -714,7 +999,13 @@ function buildFullGraphFromLineage(lineage: DealLineageResponse, dealId: string)
   }
 
   const canonicalEdges = buildCanonicalEdges({ nodes, rawEdges, dealId });
-  return inferBranchMetadata(nodes, canonicalEdges);
+  const inferred = inferBranchMetadata(nodes, canonicalEdges);
+  // Enforce Deal→Document→Segment→Visual→Evidence with document-scoped segment ids.
+  return applyDocumentScopedSegmentsGraph({
+    ...inferred,
+    dealId,
+    dealVisualAssets,
+  });
 }
 
 function inferBranchMetadata(nodes: Node[], edges: Edge[]): { nodes: Node[]; edges: Edge[] } {
@@ -850,6 +1141,8 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
   const [hoverNodeId, setHoverNodeId] = useState<string | null>(null);
   const [hoverScopeNodeIds, setHoverScopeNodeIds] = useState<Set<string> | null>(null);
   const [hoverScopeEdgeIds, setHoverScopeEdgeIds] = useState<Set<string> | null>(null);
+  const hoverClearTimerRef = useRef<number | null>(null);
+  const hoverEpochRef = useRef(0);
 
   const [minimapScale, setMinimapScale] = useState<number>(() => {
     if (typeof window === 'undefined') return 1;
@@ -874,7 +1167,8 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [visualDetailLoading, setVisualDetailLoading] = useState(false);
   const [visualDetailError, setVisualDetailError] = useState<string | null>(null);
-  const [selectedVisual, setSelectedVisual] = useState<DocumentVisualAsset | null>(null);
+  const [selectedVisual, setSelectedVisual] = useState<DealVisualAsset | null>(null);
+  const [dealVisualAssets, setDealVisualAssets] = useState<DealVisualAsset[] | null>(null);
 
   const [imageLoadError, setImageLoadError] = useState(false);
   const [showBboxOverlay, setShowBboxOverlay] = useState(false);
@@ -905,7 +1199,8 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     if (selection.kind !== 'none' && !inspectorOpen) setInspectorOpen(true);
   }, [selection.kind, inspectorOpen]);
 
-  const docAssetCacheRef = useRef(new Map<string, DocumentVisualAsset[]>());
+  const visualAssetCacheRef = useRef(new Map<string, DealVisualAsset>());
+  const dealAssetsFetchedRef = useRef(false);
 
   const refresh = async () => {
     if (!dealId || !isLiveBackend()) return;
@@ -914,9 +1209,44 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     setError(null);
     setVisualDetailError(null);
     setSelectedVisual(null);
+    setDealVisualAssets(null);
+    visualAssetCacheRef.current.clear();
+    dealAssetsFetchedRef.current = false;
 
     try {
-      const res = await apiGetDealLineage(dealId);
+      const lineagePromise = apiGetDealLineage(dealId);
+      const assetsPromise = apiGetDealVisualAssets(dealId);
+
+      const [lineageRes, assetsRes] = await Promise.allSettled([lineagePromise, assetsPromise]);
+
+      if (lineageRes.status !== 'fulfilled') throw lineageRes.reason;
+      const res = lineageRes.value;
+
+      if (assetsRes.status === 'fulfilled') {
+        const assets = Array.isArray(assetsRes.value?.visual_assets) ? assetsRes.value.visual_assets : [];
+        setDealVisualAssets(assets);
+        upsertAssetsIntoCache(assets);
+        dealAssetsFetchedRef.current = true;
+
+        if (import.meta.env.DEV && getDevtoolsConsoleLoggingEnabled()) {
+          try {
+            const byType = assets.reduce((m, a) => {
+              const k = String(a?.document_type ?? a?.document?.type ?? 'unknown').toUpperCase();
+              (m as any)[k] = ((m as any)[k] ?? 0) + 1;
+              return m;
+            }, {} as Record<string, number>);
+            // eslint-disable-next-line no-console
+            console.log('[DealAnalystTab] deal visual assets by document_type', byType);
+          } catch {
+            // ignore
+          }
+        }
+      } else {
+        setDealVisualAssets(null);
+        // Keep false so selection can try again.
+        dealAssetsFetchedRef.current = false;
+      }
+
       // DEV: expose lineage for quick inspection in the browser console.
       // Usage: window.__lineage?.nodes?.find(n => String(n.id).startsWith('visual_asset:'))
       if (typeof window !== 'undefined') {
@@ -935,11 +1265,12 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
       setWarnings(Array.isArray(res?.warnings) ? res.warnings : []);
       setSelection({ kind: 'none' });
       setSelectedRfNodeId(null);
-      docAssetCacheRef.current.clear();
+      // Note: dealVisualAssets + cache are populated by the assets fetch above.
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load analyst graph');
       setLineage(null);
       setWarnings([]);
+      setDealVisualAssets(null);
     } finally {
       setLoading(false);
     }
@@ -984,13 +1315,17 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
       return;
     }
 
-    const g = buildFullGraphFromLineage(lineage, dealId);
+    const g = buildFullGraphFromLineage(lineage, dealId, dealVisualAssets);
     setFullGraph(g);
 
-    const initExpanded: ExpandedById = {};
-    for (const n of g.nodes) initExpanded[n.id] = defaultExpandedForNode(n);
-    setExpandedById(initExpanded);
-  }, [lineage, dealId]);
+    setExpandedById((prev) => {
+      const next: ExpandedById = { ...(prev ?? {}) };
+      for (const n of g.nodes) {
+        if (next[n.id] === undefined) next[n.id] = defaultExpandedForNode(n);
+      }
+      return next;
+    });
+  }, [lineage, dealId, dealVisualAssets]);
 
   useEffect(() => {
     clusterLogOnceRef.current = null;
@@ -1497,6 +1832,13 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
   };
 
   const handleNodeMouseEnter = (_event: any, node: Node) => {
+    // Cancel any pending hover clear to prevent flicker when moving between nodes/inspector.
+    if (hoverClearTimerRef.current != null) {
+      window.clearTimeout(hoverClearTimerRef.current);
+      hoverClearTimerRef.current = null;
+    }
+    hoverEpochRef.current += 1;
+
     const data = ((node as any)?.data ?? {}) as any;
     const nodeType = String((node as any)?.type ?? '').toLowerCase();
     const nodeId = String((node as any)?.id ?? '');
@@ -1527,8 +1869,20 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
       // eslint-disable-next-line no-console
       console.log('[hover leave] clear hover');
     }
-    setHoverNodeId(null);
-    setHoverBranchKey(null);
+
+    if (hoverClearTimerRef.current != null) {
+      window.clearTimeout(hoverClearTimerRef.current);
+      hoverClearTimerRef.current = null;
+    }
+
+    const epoch = hoverEpochRef.current;
+    hoverClearTimerRef.current = window.setTimeout(() => {
+      // If another hover entered since scheduling, do nothing.
+      if (hoverEpochRef.current !== epoch) return;
+      setHoverNodeId(null);
+      setHoverBranchKey(null);
+      hoverClearTimerRef.current = null;
+    }, 200);
   };
 
   const selectedNodeIdForDevtools = useMemo(() => {
@@ -1563,21 +1917,9 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     [devtoolsEnabled, selectedNodeIdForDevtools, selection.kind]
   );
 
-  const nodeTypes = useMemo(
-    () => ({
-      deal: DealNode,
-      document: DocumentNode,
-      segment: SegmentNode,
-      visual_group: VisualGroupNode,
-      visual_asset: AnalystVisualAssetNode,
-      evidence_group: EvidenceGroupNode,
-      evidence: EvidenceNode,
-      default: DefaultNode,
-    }),
-    []
-  );
+  const nodeTypes = ANALYST_NODE_TYPES;
 
-  const edgeTypes = useMemo(() => ({ floating: FloatingEdge }), []);
+  const edgeTypes = ANALYST_EDGE_TYPES;
 
 
   const hasVisuals = useMemo(() => {
@@ -1589,9 +1931,10 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     );
   }, [lineage]);
 
-  const summarizeVisualAsset = (asset: DocumentVisualAsset): string | null => {
+  const summarizeVisualAsset = (asset: DealVisualAsset): string | null => {
     const t = asset.asset_type ? String(asset.asset_type) : '';
-    const page = Number.isFinite(asset.page_index) ? asset.page_index + 1 : null;
+    const pageIndex = typeof asset.page_index === 'number' && Number.isFinite(asset.page_index) ? asset.page_index : null;
+    const page = pageIndex != null ? pageIndex + 1 : null;
 
     const table = getTablePreviewModel(asset.structured_json, { maxRows: 6, maxCols: 6 });
     if (table) return `Table detected${page != null ? ` (p${page})` : ''}${t ? ` · ${t}` : ''}`;
@@ -1604,32 +1947,20 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     return t || null;
   };
 
-  const loadVisualDetails = async (documentId: string, visualAssetId: string) => {
-    if (!dealId || !documentId || !visualAssetId) return;
+  const upsertAssetsIntoCache = (assets: DealVisualAsset[]) => {
+    let didChange = false;
+    const cache = visualAssetCacheRef.current;
+    for (const a of assets) {
+      if (!a?.visual_asset_id) continue;
+      cache.set(a.visual_asset_id, a);
+      didChange = true;
+    }
 
-    setVisualDetailLoading(true);
-    setVisualDetailError(null);
-    setSelectedVisual(null);
-
-    try {
-      const cached = docAssetCacheRef.current.get(documentId);
-      let assets: DocumentVisualAsset[] = [];
-
-      if (cached) {
-        assets = cached;
-      } else {
-        const resp: any = await apiGetDocumentVisualAssets(dealId, documentId);
-        const fromVisualAssets = Array.isArray(resp?.visual_assets) ? resp.visual_assets : null;
-        const fromAssets = Array.isArray(resp?.assets) ? resp.assets : null;
-        assets = (fromVisualAssets ?? fromAssets ?? []) as DocumentVisualAsset[];
-        docAssetCacheRef.current.set(documentId, assets);
-      }
-      if (!Array.isArray(assets)) assets = [];
-
-      // Enrich graph nodes so Visual/Evidence nodes can show thumbnails and summaries.
+    if (didChange) {
+      const allAssets = Array.from(cache.values());
       setFullGraph((prev) => {
         if (!prev) return prev;
-        const byVaId = new Map(assets.map((a) => [a.visual_asset_id, a] as const));
+        const byVaId = new Map(allAssets.map((a) => [a.visual_asset_id, a] as const));
         const updatedNodes = prev.nodes.map((n) => {
           const id = n.id;
           if (id.startsWith('visual_asset:')) {
@@ -1650,6 +1981,14 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                 ? `Bar chart • ${chart.totalBars} bars`
                 : undefined;
 
+            const evidenceCount =
+              existing.evidence_count ??
+              existing.count ??
+              (a.evidence?.count != null ? a.evidence.count : a.evidence?.evidence_count);
+            const sampleSnippet = Array.isArray(a.evidence?.sample_snippets)
+              ? a.evidence?.sample_snippets?.find((s) => typeof s === 'string' && s.trim().length > 0)
+              : undefined;
+
             return {
               ...n,
               data: {
@@ -1658,10 +1997,17 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                 confidence: (n.data as any)?.confidence ?? a.confidence,
                 asset_type: (n.data as any)?.asset_type ?? a.asset_type,
                 page_index: (n.data as any)?.page_index ?? a.page_index,
-                evidence_count: existing.evidence_count ?? a.evidence?.evidence_count,
+                segment_key:
+                  (n.data as any)?.segment_key ??
+                  (a as any)?.segment_key ??
+                  (a as any)?.quality_flags?.segment_key ??
+                  (a as any)?.structured_json?.segment_key,
+                quality_flags: (n.data as any)?.quality_flags ?? (a as any)?.quality_flags,
+                structured_json: (n.data as any)?.structured_json ?? (a as any)?.structured_json,
+                evidence_count: evidenceCount,
                 ocr_text_snippet: existing.ocr_text_snippet ?? derivedOcrSnippet,
                 structured_kind: existing.structured_kind ?? derivedStructuredKind,
-                structured_summary: existing.structured_summary ?? derivedStructuredSummary,
+                structured_summary: existing.structured_summary ?? (a as any)?.structured_summary ?? derivedStructuredSummary,
               },
             } as Node;
           }
@@ -1669,12 +2015,20 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
             const vaId = id.slice('evidence:'.length);
             const a = byVaId.get(vaId);
             if (!a) return n;
-            const snippet = a.evidence?.sample_snippets?.[0];
+            const snippet = Array.isArray(a.evidence?.sample_snippets)
+              ? a.evidence.sample_snippets.find((s) => typeof s === 'string' && s.trim().length > 0)
+              : undefined;
+            const evidenceCount =
+              a.evidence?.count != null
+                ? a.evidence.count
+                : a.evidence?.evidence_count != null
+                  ? a.evidence.evidence_count
+                  : undefined;
             return {
               ...n,
               data: {
                 ...(n.data ?? {}),
-                count: a.evidence?.evidence_count ?? (n.data as any)?.count,
+                count: evidenceCount ?? (n.data as any)?.count,
                 sample_snippet: typeof snippet === 'string' && snippet.trim().length > 0 ? snippet.trim() : undefined,
               },
             } as Node;
@@ -1683,10 +2037,41 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
         });
         return { ...prev, nodes: updatedNodes };
       });
+    }
+  };
 
-      const match = assets.find((a) => a.visual_asset_id === visualAssetId) ?? null;
-      setSelectedVisual(match);
-      if (!match) setVisualDetailError('Visual asset details not found (document list did not include it).');
+  const loadVisualDetails = async (documentId: string, visualAssetId: string) => {
+    if (!dealId || !visualAssetId) return;
+
+    setVisualDetailLoading(true);
+    setVisualDetailError(null);
+    setSelectedVisual(null);
+
+    try {
+      if (!dealAssetsFetchedRef.current) {
+        try {
+          const res = await apiGetDealVisualAssets(dealId);
+          upsertAssetsIntoCache(Array.isArray(res?.visual_assets) ? res.visual_assets : []);
+          dealAssetsFetchedRef.current = true;
+        } catch (err) {
+          // Defer to document-level fetch fallback
+          dealAssetsFetchedRef.current = true;
+          if (err instanceof Error) {
+            setVisualDetailError(`Failed to load deal visual assets: ${err.message}`);
+          }
+        }
+      }
+
+      let match = visualAssetCacheRef.current.get(visualAssetId) ?? null;
+
+      if (!match && documentId) {
+        const resp = await apiGetDocumentVisualAssets(dealId, documentId);
+        upsertAssetsIntoCache(resp.visual_assets ?? []);
+        match = visualAssetCacheRef.current.get(visualAssetId) ?? null;
+      }
+
+      setSelectedVisual(match ?? null);
+      if (!match) setVisualDetailError('Visual asset details not found for this selection.');
     } catch (e) {
       setVisualDetailError(e instanceof Error ? e.message : 'Failed to load visual asset details');
     } finally {
@@ -2433,7 +2818,7 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                         <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Evidence</div>
 
                         {(() => {
-            							const imgSrc = resolveApiAssetUrl(selectedVisual.image_uri);
+                          const imgSrc = resolveApiAssetUrl(selectedVisual.image_uri ?? null);
                           const bbox = parseNormalizedBbox(selectedVisual.bbox);
                           const bboxLabel = formatBboxLabel(selectedVisual.bbox);
                           const flags = getQualityFlagChips(selectedVisual.quality_flags, { maxChips: 8 });
@@ -2484,13 +2869,13 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                               )}
 
                               <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-700'}`}>
-                                Page {selectedVisual.page_index + 1} • {selectedVisual.asset_type}
-                                {Number.isFinite(selectedVisual.confidence) ? ` • confidence ${selectedVisual.confidence.toFixed(2)}` : ''}
+                                Page {selectedVisual.page_index != null ? selectedVisual.page_index + 1 : '—'} • {selectedVisual.asset_type ?? 'visual'}
+                                {Number.isFinite(selectedVisual.confidence ?? null) ? ` • confidence ${Number(selectedVisual.confidence).toFixed(2)}` : ''}
                               </div>
 
                               <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                                 Extractor: {selectedVisual.extractor_version || '—'}
-                                {selectedVisual.extracted_at ? ` • extracted ${selectedVisual.extracted_at}` : ''}
+                                {selectedVisual.created_at ? ` • extracted ${selectedVisual.created_at}` : ''}
                               </div>
 
                               {bboxLabel ? (
@@ -2524,7 +2909,7 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                       </div>
 
                       <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                        Evidence: {selectedVisual.evidence?.evidence_count ?? 0}
+                        Evidence: {selectedVisual.evidence?.evidence_count ?? selectedVisual.evidence?.count ?? 0}
                       </div>
 
                       {Array.isArray(selectedVisual.evidence?.sample_snippets) && selectedVisual.evidence.sample_snippets.length > 0 ? (

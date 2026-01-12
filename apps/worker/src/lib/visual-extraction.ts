@@ -2,6 +2,7 @@ import { sanitizeDeep, sanitizeText } from "@dealdecision/core";
 import type { Pool } from "pg";
 import path from "path";
 import fs from "fs/promises";
+import { createHash } from "crypto";
 
 export type VisionExtractorConfig = {
 	enabled: boolean;
@@ -332,6 +333,40 @@ export async function resolvePageImageUris(
 	}
 }
 
+export async function backfillVisualAssetImageUris(params: {
+	pool: Pool;
+	documentId: string;
+	pageImageUris: string[];
+	env?: NodeJS.ProcessEnv;
+}): Promise<{ updated: number }> {
+	const env = params.env ?? process.env;
+	let updated = 0;
+
+	for (let i = 0; i < params.pageImageUris.length; i += 1) {
+		const normalized = normalizeImageUriForApi(params.pageImageUris[i], env);
+		if (!normalized) continue;
+		try {
+			const res = await params.pool.query<{ rowCount?: number }>(
+				`UPDATE visual_assets
+					 SET image_uri = $3
+				 WHERE document_id = $1
+				   AND page_index = $2
+				   AND (image_uri IS NULL OR image_uri = '')`,
+				[sanitizeText(params.documentId), i, normalized]
+			);
+			updated += res.rowCount ?? 0;
+		} catch (err) {
+			console.warn(
+				`[visual_extraction] backfill image_uri failed doc=${params.documentId} page=${i}: ${
+					err instanceof Error ? err.message : String(err)
+				}`
+			);
+		}
+	}
+
+	return { updated };
+}
+
 export async function hasTable(pool: Pool, table: string): Promise<boolean> {
 	try {
 		const { rows } = await pool.query<{ oid: string | null }>("SELECT to_regclass($1) as oid", [table]);
@@ -521,8 +556,9 @@ export async function persistVisionResponse(
 	pool: Pool,
 	response: VisionExtractResponse,
 	options?: { pageImageUri?: string | null; env?: NodeJS.ProcessEnv }
-): Promise<number> {
+): Promise<{ persisted: number; withImageUri: number }> {
 	let persisted = 0;
+	let withImageUri = 0;
 	const env = options?.env ?? process.env;
 	const pageImageUri = options?.pageImageUri ?? null;
 	const pageImageUriNormalized = normalizeImageUriForApi(pageImageUri, env);
@@ -547,6 +583,8 @@ export async function persistVisionResponse(
 			confidence: asset.confidence ?? 0,
 			qualityFlags: assetQualityFlags,
 		});
+
+		if (normalizedAssetImageUri) withImageUri += 1;
 
 		await upsertVisualExtraction(pool, {
 			visualAssetId,
@@ -581,6 +619,394 @@ export async function persistVisionResponse(
 		});
 
 		persisted += 1;
+	}
+
+	return { persisted, withImageUri };
+}
+
+export function deduceDocKind(meta: { extraction_metadata?: any; type?: string | null }): string {
+	const fromMeta = meta.extraction_metadata && typeof meta.extraction_metadata === "object"
+		? ((meta.extraction_metadata as any).doc_kind ?? (meta.extraction_metadata as any).contentType ?? null)
+		: null;
+	const kindRaw = (fromMeta || meta.type || "").toString().toLowerCase();
+	if (kindRaw.includes("excel") || kindRaw.endsWith("xlsx") || kindRaw === "xls") return "excel";
+	if (kindRaw.includes("powerpoint") || kindRaw.includes("ppt")) return "powerpoint";
+	if (kindRaw.includes("word") || kindRaw.includes("doc")) return "word";
+	if (kindRaw.includes("image")) return "image";
+	return kindRaw || "unknown";
+}
+
+type SyntheticAssetBuild = {
+	pageIndex: number;
+	asset: VisionAsset;
+};
+
+type SegmentKey =
+	| "overview"
+	| "problem"
+	| "solution"
+	| "market"
+	| "traction"
+	| "business_model"
+	| "competition"
+	| "team"
+	| "distribution"
+	| "raise_terms"
+	| "risks"
+	| "financials"
+	| "unknown";
+
+function hashKey(parts: Array<string | number>): string {
+	return createHash("sha256").update(parts.map((p) => String(p)).join("|"), "utf8").digest("hex");
+}
+
+function cleanTextForClassification(input: unknown): string {
+	if (input == null) return "";
+	if (typeof input === "string") return input;
+	if (typeof input === "number" || typeof input === "boolean") return String(input);
+	if (Array.isArray(input)) return input.map((v) => cleanTextForClassification(v)).join("\n");
+	if (typeof input === "object") {
+		const obj = input as any;
+		if (typeof obj.text === "string") return obj.text;
+		if (typeof obj.value === "string") return obj.value;
+		if (typeof obj.content === "string") return obj.content;
+		if (Array.isArray(obj.runs)) return obj.runs.map((r: any) => (typeof r?.text === "string" ? r.text : "")).join("");
+		return "";
+	}
+	return "";
+}
+
+function normalizeTextList(value: unknown, maxItems: number): string[] {
+	const arr = Array.isArray(value) ? value : [];
+	const out: string[] = [];
+	for (const item of arr) {
+		const t = cleanTextForClassification(item).trim();
+		if (!t) continue;
+		out.push(t);
+		if (out.length >= maxItems) break;
+	}
+	return out;
+}
+
+function classifySegmentKeyFromText(textRaw: string, defaultKey: SegmentKey = "unknown"): SegmentKey {
+	const text = String(textRaw || "")
+		.toLowerCase()
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!text) return defaultKey;
+
+	const rules: Array<{ key: SegmentKey; weight: number; patterns: RegExp[] }> = [
+		{ key: "financials", weight: 5, patterns: [/\b(financials?|income statement|balance sheet|cash flow|p\&l|runway|burn|arr|mrr|revenue|gross margin|ebitda|unit economics|cap table)\b/g] },
+		{ key: "raise_terms", weight: 5, patterns: [/\b(raise|round|terms?|valuation|pre-?money|post-?money|cap table|allocation|use of funds|proceeds)\b/g] },
+		{ key: "team", weight: 4, patterns: [/\b(team|founder|co-?founder|leadership|hiring|advisors?)\b/g] },
+		{ key: "market", weight: 4, patterns: [/\b(market|tam|sam|som|icp|gtm|go-?to-?market|customers?|segments?|pricing)\b/g] },
+		{ key: "traction", weight: 4, patterns: [/\b(traction|growth|kpi|kpis|pipeline|retention|churn|ltv|cac|conversion|users?|bookings|gmv)\b/g] },
+		{ key: "distribution", weight: 4, patterns: [/\b(distribution|go-?to-?market|gtm|channels?|partnerships?|sales motion|sales funnel|marketing|demand gen|paid|organic)\b/g] },
+		{ key: "competition", weight: 3, patterns: [/\b(competition|competitors?|competitive|alternatives?|moat)\b/g] },
+		{ key: "business_model", weight: 3, patterns: [/\b(business model|model|revenue model|pricing|unit economics|subscriptions?)\b/g] },
+		{ key: "problem", weight: 4, patterns: [/\b(problem|pain( point)?s?|challenge|why now)\b/g] },
+		{ key: "solution", weight: 4, patterns: [/\b(solution|product|technology|platform|how it works|approach)\b/g] },
+		{ key: "risks", weight: 3, patterns: [/\b(risks?|risk factors?|mitigation|issues?|concerns?)\b/g] },
+		{ key: "overview", weight: 2, patterns: [/\b(overview|summary|company|introduction|mission|vision)\b/g] },
+	];
+
+	const scoreByKey = new Map<SegmentKey, number>();
+	for (const rule of rules) {
+		let hits = 0;
+		for (const rx of rule.patterns) {
+			const m = text.match(rx);
+			if (m && m.length) hits += m.length;
+		}
+		if (hits > 0) {
+			scoreByKey.set(rule.key, (scoreByKey.get(rule.key) ?? 0) + hits * rule.weight);
+		}
+	}
+
+	let best: SegmentKey = defaultKey;
+	let bestScore = 0;
+	let secondScore = 0;
+	for (const [k, s] of scoreByKey.entries()) {
+		if (s > bestScore) {
+			secondScore = bestScore;
+			bestScore = s;
+			best = k;
+		} else if (s > secondScore) {
+			secondScore = s;
+		}
+	}
+
+	// Confidence gating: require a minimum score and avoid near-ties.
+	const MIN_SCORE = 4;
+	const MIN_MARGIN = 2;
+	if (bestScore < MIN_SCORE) return defaultKey;
+	if (secondScore > 0 && bestScore < secondScore + MIN_MARGIN) return defaultKey;
+	return best;
+}
+
+export function inferSegmentKeyFromStructured(params: {
+	structuredJson: unknown;
+	source: string;
+	documentTitle?: string | null;
+}): SegmentKey {
+	const sj = (params.structuredJson ?? {}) as any;
+	const docTitle = typeof params.documentTitle === "string" ? params.documentTitle : "";
+	const title = cleanTextForClassification(sj?.title);
+	const textSnippet = cleanTextForClassification(sj?.text_snippet);
+	const heading = cleanTextForClassification(sj?.heading);
+	const bullets = normalizeTextList(sj?.bullets, 20).join("\n");
+	const paragraphs = normalizeTextList(sj?.paragraphs, 20).join("\n");
+	const sheetName = cleanTextForClassification(sj?.sheet_name);
+	const headers = normalizeTextList(sj?.headers, 20).join("\n");
+
+	const combined = [
+		docTitle,
+		title,
+		heading,
+		textSnippet,
+		bullets,
+		paragraphs,
+		sheetName ? `sheet: ${sheetName}` : "",
+		headers ? `headers: ${headers}` : "",
+	]
+		.filter(Boolean)
+		.join("\n");
+
+	// Excel defaults to financials unless there's a stronger signal.
+	if (params.source === "structured_excel") {
+		const inferred = classifySegmentKeyFromText(combined, "financials");
+		return inferred || "financials";
+	}
+
+	return classifySegmentKeyFromText(combined, "unknown");
+}
+
+export async function resegmentStructuredSyntheticAssets(params: {
+	pool: Pool;
+	documentId: string;
+	documentTitle?: string | null;
+}): Promise<{ updated_assets: number; updated_extractions: number }> {
+	const sources = ["structured_word", "structured_powerpoint", "structured_excel"];
+	const { rows } = await params.pool.query<{
+		id: string;
+		quality_flags: any;
+		structured_json: any;
+	}> (
+		`SELECT va.id,
+		        va.quality_flags,
+		        ve.structured_json
+		   FROM visual_assets va
+		   LEFT JOIN visual_extractions ve
+		     ON ve.visual_asset_id = va.id
+		    AND ve.extractor_version = va.extractor_version
+		  WHERE va.document_id = $1
+		    AND (va.quality_flags->>'source') = ANY($2)`,
+		[sanitizeText(params.documentId), sources]
+	);
+
+	let updatedAssets = 0;
+	let updatedExtractions = 0;
+	for (const row of rows) {
+		const source = typeof row?.quality_flags?.source === "string" ? row.quality_flags.source : "";
+		if (!source) continue;
+		const inferred = inferSegmentKeyFromStructured({
+			structuredJson: row.structured_json,
+			source,
+			documentTitle: params.documentTitle ?? null,
+		});
+		if (!inferred) continue;
+
+		const seg = String(inferred);
+		// Update visual_assets.quality_flags.segment_key
+		const res1 = await params.pool.query(
+			`UPDATE visual_assets
+			    SET quality_flags = jsonb_set(COALESCE(quality_flags, '{}'::jsonb), '{segment_key}', to_jsonb($2::text), true)
+			  WHERE id = $1`,
+			[sanitizeText(row.id), seg]
+		);
+		updatedAssets += (res1 as any)?.rowCount ?? 0;
+
+		// Update visual_extractions.structured_json.segment_key (debug/secondary)
+		const res2 = await params.pool.query(
+			`UPDATE visual_extractions
+			    SET structured_json = jsonb_set(COALESCE(structured_json, '{}'::jsonb), '{segment_key}', to_jsonb($2::text), true)
+			  WHERE visual_asset_id = $1`,
+			[sanitizeText(row.id), seg]
+		);
+		updatedExtractions += (res2 as any)?.rowCount ?? 0;
+	}
+
+	return { updated_assets: updatedAssets, updated_extractions: updatedExtractions };
+}
+
+function buildSyntheticAssets(params: {
+	docKind: string;
+	structuredData: any;
+	fullContent: any;
+}): SyntheticAssetBuild[] {
+	const out: SyntheticAssetBuild[] = [];
+	const kind = params.docKind;
+
+	if (kind === "excel") {
+		const sheets = Array.isArray(params.fullContent?.sheets) ? params.fullContent.sheets : [];
+		sheets.forEach((sheet: any, idx: number) => {
+			const headers = Array.isArray(sheet?.headers) ? sheet.headers.slice(0, 50) : [];
+			const rows = Array.isArray(sheet?.rows) ? sheet.rows.slice(0, 5) : [];
+			const rowCount = typeof sheet?.summary?.totalRows === "number" ? sheet.summary.totalRows : rows.length;
+			const numericColumns = Array.isArray(sheet?.summary?.numericColumns) ? sheet.summary.numericColumns.slice(0, 25) : [];
+			const segmentKey: SegmentKey = "financials";
+			const structuredJson = {
+				kind: "excel_sheet",
+				segment_key: segmentKey,
+				sheet_name: sheet?.name ?? `Sheet ${idx + 1}`,
+				headers,
+				row_count: rowCount,
+				sample_rows: rows,
+				numeric_columns: numericColumns,
+				summary: sheet?.summary ?? {},
+			};
+			out.push({
+				pageIndex: idx,
+				asset: {
+					asset_type: "table",
+					bbox: { x: 0, y: 0, w: 1, h: 1 },
+					confidence: 0.9,
+					quality_flags: { source: "structured_excel", segment_key: segmentKey },
+					image_uri: null,
+					image_hash: hashKey([params.docKind, structuredJson.sheet_name ?? idx]),
+					extraction: {
+						ocr_text: null,
+						ocr_blocks: [],
+						structured_json: structuredJson,
+						units: null,
+						labels: { source: "structured_excel" },
+						model_version: null,
+						confidence: 0.9,
+					},
+				},
+			});
+		});
+		return out;
+	}
+
+	if (kind === "word") {
+		const sections = Array.isArray(params.fullContent?.sections) ? params.fullContent.sections : [];
+		sections.slice(0, 25).forEach((section: any, idx: number) => {
+			const heading = typeof section?.heading === "string" ? section.heading : null;
+			const paragraphsRaw = Array.isArray(section?.paragraphs) ? section.paragraphs.slice(0, 5) : [];
+			const paragraphs = normalizeTextList(paragraphsRaw, 6);
+			const tableRows = Array.isArray(section?.tables?.[0]?.rows) ? section.tables[0].rows.slice(0, 5) : [];
+			const textSnippetBase = typeof section?.text === "string" ? section.text : paragraphs.join(" ");
+			const textSnippet = textSnippetBase ? textSnippetBase.slice(0, 500) : "";
+			const classifyText = [heading ?? "", textSnippet, paragraphs.join("\n")].filter(Boolean).join("\n");
+			const segmentKey = classifySegmentKeyFromText(classifyText, "unknown");
+			const structuredJson = {
+				kind: "word_section",
+				segment_key: segmentKey,
+				heading,
+				level: typeof section?.level === "number" ? section.level : null,
+				text_snippet: textSnippet,
+				paragraphs,
+				table_rows: tableRows,
+			};
+			out.push({
+				pageIndex: idx,
+				asset: {
+					asset_type: tableRows.length > 0 ? "table" : "image_text",
+					bbox: { x: 0, y: 0, w: 1, h: 1 },
+					confidence: 0.85,
+					quality_flags: { source: "structured_word", segment_key: segmentKey },
+					image_uri: null,
+					image_hash: hashKey([params.docKind, heading ?? idx, tableRows.length > 0 ? "table" : "text"]),
+					extraction: {
+						ocr_text: null,
+						ocr_blocks: [],
+						structured_json: structuredJson,
+						units: null,
+						labels: { source: "structured_word" },
+						model_version: null,
+						confidence: 0.85,
+					},
+				},
+			});
+		});
+		return out;
+	}
+
+	if (kind === "powerpoint") {
+		const slides = Array.isArray(params.fullContent?.slides) ? params.fullContent.slides : [];
+		slides.slice(0, 50).forEach((slide: any, idx: number) => {
+			const bullets = normalizeTextList(slide?.bullets, 15);
+			const title = typeof slide?.title === "string" ? slide.title : null;
+			const textSnippet = typeof slide?.text === "string" ? slide.text.slice(0, 500) : "";
+			const classifyText = [title ?? "", textSnippet, bullets.join("\n")].filter(Boolean).join("\n");
+			const segmentKey = classifySegmentKeyFromText(classifyText, "unknown");
+			const structuredJson = {
+				kind: "powerpoint_slide",
+				segment_key: segmentKey,
+				slide_number: typeof slide?.slideNumber === "number" ? slide.slideNumber : idx + 1,
+				title,
+				bullets,
+				text_snippet: textSnippet,
+				notes: typeof slide?.notes === "string" ? slide.notes.slice(0, 500) : null,
+				images: Array.isArray(slide?.images) ? slide.images : [],
+			};
+			out.push({
+				pageIndex: idx,
+				asset: {
+					asset_type: "image_text",
+					bbox: { x: 0, y: 0, w: 1, h: 1 },
+					confidence: 0.85,
+					quality_flags: { source: "structured_powerpoint", segment_key: segmentKey },
+					image_uri: null,
+					image_hash: hashKey([params.docKind, structuredJson.slide_number ?? idx]),
+					extraction: {
+						ocr_text: null,
+						ocr_blocks: [],
+						structured_json: structuredJson,
+						units: null,
+						labels: { source: "structured_powerpoint" },
+						model_version: null,
+						confidence: 0.85,
+					},
+				},
+			});
+		});
+	}
+
+	return out;
+}
+
+export async function persistSyntheticVisualAssets(params: {
+	pool: Pool;
+	documentId: string;
+	docKind: string;
+	structuredData: any;
+	fullContent: any;
+	extractorVersion?: string;
+	env?: NodeJS.ProcessEnv;
+}): Promise<number> {
+	const env = params.env ?? process.env;
+	const extractorVersion = params.extractorVersion ?? "structured_native_v1";
+	const assets = buildSyntheticAssets({ docKind: params.docKind, structuredData: params.structuredData, fullContent: params.fullContent });
+	if (assets.length === 0) return 0;
+
+	let persisted = 0;
+	const grouped = new Map<number, VisionAsset[]>();
+	for (const entry of assets) {
+		const list = grouped.get(entry.pageIndex) ?? [];
+		list.push(entry.asset);
+		grouped.set(entry.pageIndex, list);
+	}
+
+	for (const [pageIndex, assetList] of grouped.entries()) {
+		const response: VisionExtractResponse = {
+			document_id: params.documentId,
+			page_index: pageIndex,
+			extractor_version: extractorVersion,
+			assets: assetList,
+		};
+		const { persisted: pCount } = await persistVisionResponse(params.pool, response, { pageImageUri: null, env });
+		persisted += pCount;
 	}
 
 	return persisted;

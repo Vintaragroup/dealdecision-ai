@@ -1,7 +1,7 @@
 import type { Job } from "bullmq";
 import { randomUUID, createHash } from "crypto";
 import path from "path";
-import type { JobStatus } from "@dealdecision/contracts";
+import type { JobProgressEventV1, JobStatus, JobStatusDetail } from "@dealdecision/contracts";
 import {
 	sanitizeText,
 	generatePhase1DIOV1,
@@ -15,6 +15,7 @@ import {
 	RiskAssessmentEngine,
 } from "@dealdecision/core";
 import { createWorker, getQueue, logWorkerQueueConfig } from "./lib/queue";
+import { evaluateVisualDocReadiness } from "./lib/visual-readiness";
 import {
 	getPool,
 	closePool,
@@ -45,14 +46,19 @@ import {
 	hasTable,
 	persistVisionResponse,
 	resolvePageImageUris,
+	backfillVisualAssetImageUris,
+	persistSyntheticVisualAssets,
+	deduceDocKind,
+	resegmentStructuredSyntheticAssets,
 } from "./lib/visual-extraction";
 import { normalizeToCanonical } from "./lib/normalization";
 import { processDocument } from "./lib/processors";
 import { verifyDocumentExtraction } from "./lib/verification";
 import { remediateStructuredData } from "./lib/remediation";
+import { parseIngestDocumentsJobData, validateIngestDocumentsPayload } from "./lib/ingest/ingest-payload";
 import { buildPhase1DealOverviewV2, buildPhase1DealUnderstandingV1, buildPhase1UpdateReportV1 } from "./lib/phase1/dealOverviewV2";
 import { buildPhase1BusinessArchetypeV1 } from "./lib/phase1/businessArchetypeV1";
-import { getVisualPageImagePersistConfig, persistRenderedPageImages } from "./lib/rendered-pages";
+import { getVisualPageImagePersistConfig, persistRenderedPageImages, persistImagePage, renderNonPdfToPageImages } from "./lib/rendered-pages";
 import type { DocumentAnalysis, ExtractedContent } from "./lib/processors";
 import type { VerificationResult } from "./lib/verification";
 import { OpenAIGPT4oProvider } from "./lib/llm/providers/openai-provider";
@@ -77,6 +83,16 @@ if (typeof (Promise as any).withResolvers !== "function") {
 		return { promise, resolve, reject };
 	};
 }
+
+const devLogEnabled = process.env.NODE_ENV !== "production" || process.env.DEBUG_WORKER_LOGS === "1";
+const devLog = (event: string, payload: Record<string, unknown>) => {
+	if (!devLogEnabled) return;
+	try {
+		console.log(JSON.stringify({ event, ...payload }));
+	} catch (err) {
+		console.warn(`[devLog] failed to stringify event=${event}: ${err instanceof Error ? err.message : String(err)}`);
+	}
+};
 
 /**
  * Extract full text from extracted content for full-text search indexing
@@ -582,18 +598,145 @@ async function generateDealSummaryV2FromPhase1(input: {
 	);
 	return { summary: coerced, llm_call: baseCallLog };
 }
+const progressEmitCache = new Map<string, { ts: number; stage?: string }>();
+
+type HeartbeatHandle = { stop: () => void };
+
+function startHeartbeat(
+	job: Job,
+	options: {
+		stage: JobProgressEventV1["stage"];
+		dealId?: string;
+		documentId?: string;
+		startPercent?: number;
+		maxPercent?: number;
+		intervalMs?: number;
+		message: string;
+	}
+): HeartbeatHandle {
+	const intervalMs = options.intervalMs ?? 20000;
+	const maxPercent = options.maxPercent ?? 45;
+	let percent = options.startPercent ?? 20;
+	let stopped = false;
+
+	const tick = async () => {
+		if (stopped) return;
+		percent = Math.min(maxPercent, percent + 2);
+		const msg = options.message;
+		try {
+			await updateJob(job, "running", msg, percent);
+			await emitJobProgress(job, {
+				job_id: job.id ? String(job.id) : "",
+				deal_id: options.dealId,
+				document_id: options.documentId,
+				stage: options.stage,
+				percent,
+				message: msg,
+				meta: { heartbeat: true },
+			});
+		} catch (err) {
+			console.warn(
+				`[heartbeat] progress emit failed job=${job.id ?? job.name}: ${err instanceof Error ? err.message : String(err)}`
+			);
+		}
+	};
+
+	const timer = setInterval(() => {
+		void tick();
+	}, intervalMs);
+
+	return {
+		stop: () => {
+			stopped = true;
+			clearInterval(timer);
+		},
+	};
+}
 
 async function updateJob(job: Job, status: JobStatus, message?: string, progressPct?: number | null) {
 	const pool = getPool();
+	const jobId = sanitizeText((job.id ?? job.name).toString());
+	const startedAt = status === "running" ? new Date().toISOString() : null;
 	await pool.query(
 		`UPDATE jobs
 		 SET status = $2,
 		     updated_at = now(),
 		     message = COALESCE($3, message),
-		     progress_pct = COALESCE($4, progress_pct)
+		     progress_pct = COALESCE($4, progress_pct),
+		     started_at = COALESCE($5, started_at)
 		 WHERE job_id = $1`,
-		[sanitizeText((job.id ?? job.name).toString()), sanitizeText(status), message ? sanitizeText(message) : null, progressPct ?? null]
+		[jobId, sanitizeText(status), message ? sanitizeText(message) : null, progressPct ?? null, startedAt]
 	);
+}
+
+async function emitJobProgress(job: Job, progress: JobProgressEventV1) {
+	const jobId = (job.id ?? job.name)?.toString();
+	if (!jobId) return;
+	const now = Date.now();
+	const prev = progressEmitCache.get(jobId);
+	if (prev && prev.stage === progress.stage && now - prev.ts < 1000) return;
+	progressEmitCache.set(jobId, { ts: now, stage: progress.stage });
+
+	try {
+		const pool = getPool();
+		const at = progress.at ?? new Date().toISOString();
+		const detail: JobStatusDetail = {
+			progress: {
+				...progress,
+				at,
+				job_id: progress.job_id ?? jobId,
+			},
+		};
+		await pool.query(
+			`UPDATE jobs
+			 SET progress_pct = COALESCE($2, progress_pct),
+			     message = COALESCE($3, message),
+			     status_detail = $4::jsonb,
+			     updated_at = now()
+			 WHERE job_id = $1`,
+			[
+				sanitizeText(jobId),
+				progress.percent ?? null,
+				progress.message ?? null,
+				JSON.stringify(detail),
+			]
+		);
+	} catch (err) {
+		console.warn(
+			`[emitJobProgress] failed job=${jobId} stage=${progress.stage}: ${err instanceof Error ? err.message : String(err)}`
+		);
+	}
+}
+
+async function failLatestIngestJob(documentId: string) {
+	const pool = getPool();
+	try {
+		const { rows } = await pool.query<{ job_id: string }>(
+			`SELECT job_id
+			   FROM jobs
+			  WHERE status <> 'succeeded'
+			    AND (status_detail->'progress'->>'document_id') = $1
+			  ORDER BY updated_at DESC
+			  LIMIT 1`,
+			[sanitizeText(documentId)]
+		);
+		const jobId = rows?.[0]?.job_id;
+		if (!jobId) return;
+		await pool.query(
+			`UPDATE jobs
+				SET status = 'failed',
+				    message = 'reconciled_pdf_ingest_restart',
+				    updated_at = now()
+			 WHERE job_id = $1`,
+			[sanitizeText(jobId)]
+		);
+	} catch (err) {
+		console.warn(
+			`[reconcile_ingest] failLatestIngestJob skipped doc=${documentId}: ${
+				err instanceof Error ? err.message : String(err)
+			}`
+		);
+	}
 }
 
 async function getDealIdForJob(job: Job): Promise<string | null> {
@@ -609,42 +752,137 @@ async function getDealIdForJob(job: Job): Promise<string | null> {
 }
 
 async function ingestDocumentProcessor(job: Job) {
-	const documentId = (job.data as { document_id?: string; file_buffer?: string } | undefined)?.document_id;
-	const fileBufferB64 = (job.data as { document_id?: string; file_buffer?: string } | undefined)?.file_buffer;
-	const fileName = (job.data as { document_id?: string; file_name?: string } | undefined)?.file_name;
-	const dealId = (job.data as { document_id?: string; deal_id?: string } | undefined)?.deal_id;
-	const attempt = Number((job.data as { attempt?: number } | undefined)?.attempt ?? 1);
+	const parsed = parseIngestDocumentsJobData(job.data);
+	const documentId = parsed.documentId;
+	const dealId = parsed.dealId;
+	const mode = parsed.mode;
+	let fileBufferB64 = parsed.fileBufferB64;
+	let fileName = parsed.fileName;
+	const attempt = parsed.attempt;
+	let storedMimeType: string | null = null;
 
 	console.log(
-		`[ingest_document] start job=${job.id} doc=${documentId ?? ""} deal=${dealId ?? ""} attempt=${attempt} payloadSize=${fileBufferB64?.length ?? 0}`
+		`[ingest_document] start job=${job.id} doc=${documentId ?? ""} deal=${dealId ?? ""} attempt=${attempt} payloadSize=${fileBufferB64?.length ?? 0} mode=${mode ?? "upload"}`
 	);
 
-	if (!documentId || !fileBufferB64 || !dealId || !fileName) {
-		console.error(`[ingest_document] Missing required fields:`, { documentId, fileBufferB64: !!fileBufferB64, dealId, fileName });
-		await updateJob(job, "failed", "Missing required fields: documentId, fileBufferB64, dealId, or fileName");
+	const isFromStorage = mode === "from_storage";
+
+	function inferFileNameForStorageFallback(docId: string, mimeType: string | null): string {
+		const mt = (mimeType ?? "").toLowerCase();
+		if (mt.includes("pdf")) return `${docId}.pdf`;
+		if (mt.includes("powerpoint") || mt.includes("presentation")) return `${docId}.pptx`;
+		if (mt.includes("word")) return `${docId}.docx`;
+		if (mt.includes("excel") || mt.includes("spreadsheet")) return `${docId}.xlsx`;
+		if (mt.includes("png")) return `${docId}.png`;
+		if (mt.includes("jpeg") || mt.includes("jpg")) return `${docId}.jpg`;
+		return `${docId}.bin`;
+	}
+
+	// from_storage mode: load bytes from DB if buffer not provided
+	if ((!fileBufferB64 || fileBufferB64.length === 0) && isFromStorage && documentId) {
+		try {
+			const original = await getDocumentOriginalFile(documentId);
+			storedMimeType = original?.mime_type ?? null;
+			if (original?.bytes?.length) {
+				fileBufferB64 = original.bytes.toString("base64");
+				if (!fileName) {
+					fileName = original.file_name ?? inferFileNameForStorageFallback(documentId, storedMimeType);
+				}
+				console.log(
+					`[ingest_document] loaded original bytes from storage sha256=${original.sha256} size=${original.bytes.length} doc=${documentId}`
+				);
+				await emitJobProgress(job, {
+					job_id: job.id ? String(job.id) : "",
+					deal_id: dealId ?? undefined,
+					document_id: documentId ?? undefined,
+					stage: "fetch_original_bytes",
+					percent: 8,
+					message: "Loaded original bytes from storage",
+				});
+			} else {
+				console.error(`[ingest_document] storage fetch missing bytes doc=${documentId}`);
+			}
+		} catch (err) {
+			console.error(
+				`[ingest_document] storage fetch failed doc=${documentId}: ${err instanceof Error ? err.message : String(err)}`
+			);
+		}
+	}
+
+	// If from_storage was requested but we still don't have bytes, fail clearly.
+	if (isFromStorage && (!fileBufferB64 || fileBufferB64.length === 0)) {
+		console.error(`[ingest_document] from_storage missing blob bytes doc=${documentId ?? ""} deal=${dealId ?? ""}`);
+		await updateJob(job, "failed", "from_storage missing blob bytes");
+		if (documentId) await updateDocumentStatus(documentId, "failed");
 		return { ok: false };
 	}
+
+	// In from_storage mode, fileName is optional; infer if still absent.
+	if (isFromStorage && documentId && !fileName) {
+		fileName = inferFileNameForStorageFallback(documentId, storedMimeType);
+	}
+
+	const validation = validateIngestDocumentsPayload({
+		documentId,
+		dealId,
+		fileName,
+		fileBufferB64,
+		mode,
+		attempt,
+	});
+	if (!validation.ok) {
+		console.error(`[ingest_document] ${validation.errorMessage}`, {
+			documentId,
+			dealId,
+			fileName,
+			fileBufferB64: !!fileBufferB64,
+			mode,
+		});
+		await updateJob(job, "failed", validation.errorMessage ?? "Missing required fields");
+		return { ok: false };
+	}
+
+	// Validation guarantees these are present in the supported modes.
+	const docId = documentId as string;
+	const dealIdSafe = dealId as string;
+	const fileNameSafe = fileName as string;
+	const fileBufferB64Safe = fileBufferB64 as string;
 
 	try {
 		const extractionStartedAt = new Date().toISOString();
 		await updateJob(job, "running", `Starting document extraction (attempt ${attempt})`, 5);
-		if (documentId) {
-			await updateDocumentStatus(documentId, "processing");
-		}
+		await emitJobProgress(job, {
+			job_id: job.id ? String(job.id) : "",
+			deal_id: dealIdSafe,
+			document_id: docId,
+			stage: "fetch_original_bytes",
+			percent: 5,
+			message: `Starting document extraction (attempt ${attempt})`,
+			at: extractionStartedAt,
+		});
+		await updateDocumentStatus(docId, "processing");
 
 		// Decode base64 buffer
-		const buffer = Buffer.from(fileBufferB64, "base64");
+		const buffer = Buffer.from(fileBufferB64Safe, "base64");
 		const decodedBytes = buffer.length;
 		console.log(
-			`[ingest_document] decoded bytes=${decodedBytes} doc=${documentId} deal=${dealId} attempt=${attempt}`
+			`[ingest_document] decoded bytes=${decodedBytes} doc=${docId} deal=${dealIdSafe} attempt=${attempt}`
 		);
 		if (decodedBytes === 0) {
 			await updateJob(job, "failed", "Decoded file buffer is empty", 100);
-			await updateDocumentStatus(documentId, "failed");
-			console.error(`[ingest_document] decoded empty buffer doc=${documentId} deal=${dealId} attempt=${attempt}`);
+			await updateDocumentStatus(docId, "failed");
+			console.error(`[ingest_document] decoded empty buffer doc=${docId} deal=${dealIdSafe} attempt=${attempt}`);
 			return { ok: false };
 		}
 		await updateJob(job, "running", `Decoded file (${buffer.length} bytes)`, 15);
+		await emitJobProgress(job, {
+			job_id: job.id ? String(job.id) : "",
+			deal_id: dealIdSafe,
+			document_id: docId,
+			stage: "persist_document",
+			percent: 15,
+			message: `Decoded file (${buffer.length} bytes)`,
+		});
 
 		// Persist original bytes for future true re-extraction
 		let originalBytesPersisted = false;
@@ -653,16 +891,24 @@ async function ingestDocumentProcessor(job: Job) {
 		try {
 			const sha256 = createHash("sha256").update(buffer).digest("hex");
 			await upsertDocumentOriginalFile({
-				documentId,
+				documentId: docId,
 				sha256,
 				bytes: buffer,
 				sizeBytes: decodedBytes,
-				fileName,
-				mimeType: null,
+				fileName: fileNameSafe,
+				mimeType: storedMimeType,
 			});
 			originalBytesPersisted = true;
 			originalBytesSha256 = sha256;
 			console.log(`[ingest_document] stored original bytes sha256=${sha256} doc=${documentId}`);
+			await emitJobProgress(job, {
+				job_id: job.id ? String(job.id) : "",
+				deal_id: dealIdSafe,
+				document_id: docId,
+				stage: "persist_document",
+				percent: 20,
+				message: "Persisted original bytes",
+			});
 		} catch (err) {
 			// Do not fail ingestion if original-byte persistence fails; extraction can still proceed.
 			originalBytesPersisted = false;
@@ -672,13 +918,38 @@ async function ingestDocumentProcessor(job: Job) {
 			);
 		}
 
+
+		const heartbeat = startHeartbeat(job, {
+			stage: fileNameSafe.toLowerCase().endsWith(".pdf") ? "render_pages" : "extract_text",
+			dealId: dealIdSafe,
+			documentId: docId,
+			startPercent: 18,
+			maxPercent: 45,
+			message: "Processing document (heartbeat)",
+			intervalMs: 20000,
+		});
+
 		// Process document
-		const analysis: DocumentAnalysis = await processDocument(
-			buffer,
-			fileName,
-			documentId,
-			dealId
-		);
+		let analysis: DocumentAnalysis;
+		try {
+			analysis = await processDocument(
+				buffer,
+				fileNameSafe,
+				docId,
+				dealIdSafe
+			);
+		} finally {
+			heartbeat.stop();
+		}
+
+		await emitJobProgress(job, {
+			job_id: job.id ? String(job.id) : "",
+			deal_id: dealId ?? undefined,
+			document_id: documentId ?? undefined,
+			stage: "extract_text",
+			percent: 48,
+			message: `Processed ${analysis.contentType} bytes`,
+		});
 
 		// Normalization (always runs): ensure structured_data.canonical.* exists.
 		const normalized = normalizeToCanonical({
@@ -694,6 +965,14 @@ async function ingestDocumentProcessor(job: Job) {
 			`Extracted ${analysis.contentType} (${Math.round(analysis.metadata.processingTimeMs)}ms)` ,
 			50
 		);
+		await emitJobProgress(job, {
+			job_id: job.id ? String(job.id) : "",
+			deal_id: dealId ?? undefined,
+			document_id: documentId ?? undefined,
+			stage: "extract_text",
+			percent: 50,
+			message: `Extracted ${analysis.contentType} (${Math.round(analysis.metadata.processingTimeMs)}ms)`,
+		});
 
 		const completeness = computeCompleteness(analysis);
 		const extractorNameByKind: Record<string, string> = {
@@ -749,7 +1028,7 @@ async function ingestDocumentProcessor(job: Job) {
 					? "no_text_extracted_needs_ocr"
 					: "no_text_extracted";
 			await updateDocumentAnalysis({
-				documentId,
+				documentId: docId,
 				structuredData: analysis.structuredData,
 				extractionMetadata,
 				fullContent: analysis.content,
@@ -762,15 +1041,15 @@ async function ingestDocumentProcessor(job: Job) {
 			// Only emit when we have concrete detected values.
 			for (const ev of normalized.canonicalEvidence) {
 				await insertEvidence({
-					deal_id: dealId,
-					document_id: documentId,
+					deal_id: dealIdSafe,
+					document_id: docId,
 					source: "extraction",
 					kind: "canonical_metric",
 					text: `${ev.metric_key}: ${ev.value} • ${ev.source_pointer}`,
 					confidence: 0.9,
 				});
 			}
-			await updateDocumentStatus(documentId, needsOcr ? "needs_ocr" : "failed");
+			await updateDocumentStatus(docId, needsOcr ? "needs_ocr" : "failed");
 			await updateJob(job, "failed", message);
 			return { ok: false, analysis };
 		}
@@ -793,8 +1072,8 @@ async function ingestDocumentProcessor(job: Job) {
 			const textParts = [`${label}${value ? `: ${value}` : ""}`];
 			if (context) textParts.push(`source: ${context}`);
 			await insertEvidence({
-				deal_id: dealId,
-				document_id: documentId,
+				deal_id: dealIdSafe,
+				document_id: docId,
 				source: "extraction",
 				kind: "metric",
 				text: textParts.join(" • "),
@@ -806,8 +1085,8 @@ async function ingestDocumentProcessor(job: Job) {
 		let headingsInserted = 0;
 		for (const heading of analysis.structuredData.mainHeadings) {
 			await insertEvidence({
-				deal_id: dealId,
-				document_id: documentId,
+				deal_id: dealIdSafe,
+				document_id: docId,
 				source: "extraction",
 				kind: "section",
 				text: heading,
@@ -819,8 +1098,8 @@ async function ingestDocumentProcessor(job: Job) {
 		// Store summary
 		if (analysis.structuredData.textSummary) {
 			await insertEvidence({
-				deal_id: dealId,
-				document_id: documentId,
+				deal_id: dealIdSafe,
+				document_id: docId,
 				source: "extraction",
 				kind: "summary",
 				text: analysis.structuredData.textSummary,
@@ -834,8 +1113,8 @@ async function ingestDocumentProcessor(job: Job) {
 		let canonicalInserted = 0;
 		for (const ev of normalized.canonicalEvidence) {
 			await insertEvidence({
-				deal_id: dealId,
-				document_id: documentId,
+				deal_id: dealIdSafe,
+				document_id: docId,
 				source: "extraction",
 				kind: "canonical_metric",
 				text: `${ev.metric_key}: ${ev.value} • ${ev.source_pointer}`,
@@ -871,7 +1150,7 @@ async function ingestDocumentProcessor(job: Job) {
 			const message = `Low-content extraction (${completeness.reason}); retrying`;
 			extractionMetadata.errorMessage = message;
 			await updateDocumentAnalysis({
-				documentId,
+				documentId: docId,
 				structuredData: analysis.structuredData,
 				extractionMetadata,
 				fullContent: analysis.content,
@@ -879,7 +1158,7 @@ async function ingestDocumentProcessor(job: Job) {
 				fullTextAbsentReason: fullTextAbsentReason ?? undefined,
 				pageCount: pageCount || undefined,
 			});
-			await updateDocumentStatus(documentId, "pending");
+			await updateDocumentStatus(docId, "pending");
 			await updateJob(job, "failed", message, 100);
 			console.warn(`[ingest_document] low content, requeuing attempt ${attempt + 1}`);
 			const ingestQueue = getQueue("ingest_documents");
@@ -889,7 +1168,7 @@ async function ingestDocumentProcessor(job: Job) {
 			const message = `Low-content extraction after retries (${completeness.reason})`;
 			extractionMetadata.errorMessage = message;
 			await updateDocumentAnalysis({
-				documentId,
+				documentId: docId,
 				structuredData: analysis.structuredData,
 				extractionMetadata,
 				fullContent: analysis.content,
@@ -897,13 +1176,13 @@ async function ingestDocumentProcessor(job: Job) {
 				fullTextAbsentReason: fullTextAbsentReason ?? undefined,
 				pageCount: pageCount || undefined,
 			});
-			await updateDocumentStatus(documentId, "failed");
+			await updateDocumentStatus(docId, "failed");
 			await updateJob(job, "failed", message, 100);
-			console.warn(`[ingest_document] low content after retries documentId=${documentId}`);
+			console.warn(`[ingest_document] low content after retries documentId=${docId}`);
 			return { ok: false, analysis, completeness };
 		} else {
 			await updateDocumentAnalysis({
-				documentId,
+				documentId: docId,
 				status: "completed",
 				structuredData: analysis.structuredData,
 				extractionMetadata,
@@ -918,28 +1197,49 @@ async function ingestDocumentProcessor(job: Job) {
 				`Extracted ${analysis.structuredData.keyMetrics.length} metrics, ${analysis.structuredData.mainHeadings.length} headings (score=${completeness.score.toFixed(2)})`,
 				100
 			);
+			await emitJobProgress(job, {
+				job_id: job.id ? String(job.id) : "",
+				deal_id: dealIdSafe,
+				document_id: docId,
+				stage: "finalize",
+				percent: 100,
+				message: `Extracted ${analysis.structuredData.keyMetrics.length} metrics, ${analysis.structuredData.mainHeadings.length} headings (score=${completeness.score.toFixed(2)})`,
+			});
 
 			console.log(
-				`[ingest_document] documentId=${documentId} dealId=${dealId} type=${analysis.contentType} success=true metrics=${metricsInserted} headings=${headingsInserted} score=${completeness.score.toFixed(2)}`
+				`[ingest_document] documentId=${docId} dealId=${dealIdSafe} type=${analysis.contentType} success=true metrics=${metricsInserted} headings=${headingsInserted} score=${completeness.score.toFixed(2)}`
 			);
 
 			// Step 6: persist rendered page images to a stable artifacts directory (best-effort)
 			if (analysis.contentType === "pdf") {
 				try {
-					const persistCfg = getVisualPageImagePersistConfig();
+					const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
 					if (persistCfg.enabled && persistCfg.persist) {
+						const renderStarted = Date.now();
 						// re-use resolved uploadDir
 						const res = await persistRenderedPageImages({
 							buffer,
-							documentId,
+							documentId: docId,
 							pageCount: pageCount || 0,
 							uploadDir,
 							config: persistCfg,
 							logger: console,
 						});
+						console.log(
+							JSON.stringify({
+								event: "PDF_RENDERED_PAGES",
+								document_id: documentId,
+								page_count_input: pageCount || 0,
+								rendered_pages_dir: res.rendered_pages_dir ?? null,
+								rendered_pages_count: res.rendered_pages_count ?? 0,
+								page_count_detected: res.page_count_detected ?? null,
+								reason: res.reason ?? null,
+								duration_ms: Date.now() - renderStarted,
+							})
+						);
 						if (res.rendered_pages_dir) {
 							await mergeDocumentExtractionMetadata({
-								documentId,
+									documentId: docId,
 								patch: {
 									rendered_pages_dir: res.rendered_pages_dir,
 									rendered_pages_format: res.rendered_pages_format,
@@ -948,24 +1248,66 @@ async function ingestDocumentProcessor(job: Job) {
 									rendered_pages_created_at: res.rendered_pages_created_at,
 								},
 							});
+							if (res.page_count_detected && res.page_count_detected > 0) {
+								await updateDocumentAnalysis({
+										documentId: docId,
+									pageCount: res.page_count_detected,
+								});
+							}
 						}
+						await emitJobProgress(job, {
+							job_id: job.id ? String(job.id) : "",
+								deal_id: dealIdSafe,
+								document_id: docId,
+							stage: "render_pages",
+							percent: 90,
+							message: `Rendered PDF pages (${res.rendered_pages_count ?? 0})`,
+						});
 					}
 				} catch (err) {
 					console.warn(
-						`[ingest_document] rendered page persistence failed doc=${documentId}: ${
+							`[ingest_document] rendered page persistence failed doc=${docId}: ${
 							err instanceof Error ? err.message : String(err)
 						}`
 					);
 				}
 			}
 
+				// Ensure PDFs end with a concrete page_count before queuing downstream steps.
+				if (analysis.contentType === "pdf") {
+					try {
+						const { rows } = await getPool().query<{ page_count: number | null }>(
+							"SELECT page_count FROM documents WHERE id = $1 LIMIT 1",
+							[sanitizeText(docId)]
+						);
+						const storedPageCount = typeof rows?.[0]?.page_count === "number" ? rows[0].page_count : null;
+						const extractedPages = getPageCount(analysis.content, analysis.contentType) || 0;
+						const finalPageCount = Math.max(storedPageCount ?? 0, extractedPages);
+						if (finalPageCount > 0 && finalPageCount !== storedPageCount) {
+							await updateDocumentAnalysis({ documentId: docId, pageCount: finalPageCount });
+						}
+						if (!finalPageCount || finalPageCount <= 0) {
+							await updateDocumentStatus(docId, "failed");
+							await updateJob(job, "failed", "PDF ingest produced no pages", 100);
+							console.error(`[ingest_document] pdf page_count missing doc=${docId}`);
+							return { ok: false, analysis, completeness };
+						}
+					} catch (err) {
+						console.warn(
+							`[ingest_document] page_count guard failed doc=${docId}: ${
+								err instanceof Error ? err.message : String(err)
+							}`
+						);
+					}
+				}
+
 			// Queue verification job for this document
 			const verifyQueue = getQueue("verify_documents");
 			await verifyQueue.add(
 				"verify_documents",
 				{
-					deal_id: dealId,
-					document_ids: [documentId],
+					deal_id: dealIdSafe,
+					document_ids: [docId],
 				},
 				{ removeOnComplete: true, removeOnFail: false, delay: 500 } // Small delay to ensure extraction is fully written
 			);
@@ -979,17 +1321,17 @@ async function ingestDocumentProcessor(job: Job) {
 						pool: getPool(),
 						queue: visualsQueue,
 						config: visionCfg,
-						documentId,
-						dealId,
+						documentId: docId,
+						dealId: dealIdSafe,
 					});
 					if (!enqueued) {
 						console.log(
-							`[ingest_document] visual extraction skipped doc=${documentId} (NO_PAGE_IMAGES_AVAILABLE)`
+							`[ingest_document] visual extraction skipped doc=${docId} (NO_PAGE_IMAGES_AVAILABLE)`
 						);
 					}
 				} catch (err) {
 					console.warn(
-						`[ingest_document] visual extraction enqueue failed doc=${documentId}: ${
+						`[ingest_document] visual extraction enqueue failed doc=${docId}: ${
 							err instanceof Error ? err.message : String(err)
 						}`
 					);
@@ -1043,6 +1385,126 @@ const registerWorker = (
 	return createWorker(name, processor);
 };
 
+registerWorker("reconcile_ingest", async (job: Job) => {
+	const data = (job.data ?? {}) as { deal_id?: string; document_ids?: string[] };
+	const dealId = typeof data.deal_id === "string" ? data.deal_id : undefined;
+	const limitToDocs = Array.isArray(data.document_ids)
+		? data.document_ids.filter((d) => typeof d === "string" && d.trim().length > 0)
+		: [];
+
+	if (!dealId) {
+		await updateJob(job, "failed", "Missing deal_id");
+		return { ok: false, reason: "missing_deal_id" };
+	}
+
+	await updateJob(job, "running", "Reconciling PDF ingest", 5);
+
+	const pool = getPool();
+	const candidates: Array<{
+		id: string;
+		deal_id: string;
+		title: string | null;
+		type: string | null;
+		status: string | null;
+		page_count: number | null;
+		extraction_metadata: unknown | null;
+		file_name: string | null;
+		mime_type: string | null;
+		has_bytes: boolean;
+	}> = [];
+
+	try {
+		const { rows } = await pool.query(
+			`SELECT d.id,
+			        d.deal_id,
+			        d.title,
+			        d.type,
+			        d.status,
+			        d.page_count,
+			        d.extraction_metadata,
+			        df.file_name,
+			        df.mime_type,
+			        (b.bytes IS NOT NULL AND octet_length(b.bytes) > 0) AS has_bytes
+			   FROM documents d
+			   LEFT JOIN document_files df ON df.document_id = d.id
+			   LEFT JOIN document_file_blobs b ON b.sha256 = df.sha256
+			  WHERE d.deal_id = $1
+			    AND (
+			      lower(coalesce(d.type, '')) LIKE '%pdf%'
+			      OR lower(coalesce(df.mime_type, '')) LIKE '%pdf%'
+			      OR lower(coalesce(df.file_name, '')) LIKE '%.pdf'
+			    )
+			    AND (
+			      d.status IN ('pending','processing')
+			      OR COALESCE(d.page_count, 0) <= 0
+			      OR d.extraction_metadata IS NULL
+			    )
+			    AND ($2::uuid[] = '{}'::uuid[] OR d.id = ANY($2::uuid[]))`,
+			[dealId, limitToDocs.length > 0 ? limitToDocs : []]
+		);
+		for (const row of rows ?? []) candidates.push(row as any);
+	} catch (err) {
+		await updateJob(job, "failed", err instanceof Error ? err.message : "reconcile query failed", 100);
+		return { ok: false, error: err instanceof Error ? err.message : String(err) };
+	}
+
+	if (candidates.length === 0) {
+		await updateJob(job, "succeeded", "No PDF documents to reconcile", 100);
+		return { ok: true, reconciled: 0, skipped_no_bytes: 0 };
+	}
+
+	const ingestQueue = getQueue("ingest_documents");
+	let reconciled = 0;
+	let skippedNoBytes = 0;
+
+	for (const doc of candidates) {
+		const hasBytes = !!doc.has_bytes;
+		if (!hasBytes) {
+			skippedNoBytes += 1;
+			console.warn(
+				`[reconcile_ingest] missing original bytes doc=${doc.id} status=${doc.status ?? ""}`
+			);
+			continue;
+		}
+
+		try {
+			await insertDocumentExtractionAudit({
+				documentId: doc.id,
+				dealId: doc.deal_id,
+				structuredData: null,
+				extractionMetadata: doc.extraction_metadata,
+				fullContent: null,
+				fullText: null,
+				verificationStatus: null,
+				verificationResult: null,
+				reason: "reconcile_pdf_ingest",
+				triggeredByJobId: job.id ? String(job.id) : undefined,
+			});
+		} catch {
+			// audit is best-effort
+		}
+
+		await failLatestIngestJob(doc.id);
+		await updateDocumentStatus(doc.id, "pending");
+		const name = typeof doc.file_name === "string" && doc.file_name.trim() ? doc.file_name : `${doc.id}.pdf`;
+		await ingestQueue.add(
+			"ingest_documents",
+			{ document_id: doc.id, deal_id: doc.deal_id, file_name: name, mode: "from_storage", attempt: 1 },
+			{ removeOnComplete: true, removeOnFail: false }
+		);
+		reconciled += 1;
+	}
+
+	await updateJob(
+		job,
+		"succeeded",
+		`Requeued ${reconciled} pdf(s); skipped_no_bytes=${skippedNoBytes}`,
+		100
+	);
+
+	return { ok: true, reconciled, skipped_no_bytes: skippedNoBytes };
+});
+
 registerWorker("ingest_documents", ingestDocumentProcessor);
 
 registerWorker("extract_visuals", async (job: Job) => {
@@ -1052,11 +1514,13 @@ registerWorker("extract_visuals", async (job: Job) => {
 		document_ids?: string[];
 		image_uris?: string[];
 		extractor_version?: string;
+		force_resegment?: boolean;
 	};
 	const documentId = typeof data.document_id === "string" ? data.document_id : undefined;
 	const dealId = typeof data.deal_id === "string" ? data.deal_id : undefined;
 	const imageUris = Array.isArray(data.image_uris) ? data.image_uris : undefined;
 	const extractorVersionOverride = typeof data.extractor_version === "string" ? data.extractor_version : undefined;
+	const forceResegment = Boolean((data as any).force_resegment);
 
 	const explicitDocumentIds = Array.isArray(data.document_ids)
 		? data.document_ids.filter((id) => typeof id === "string" && id.trim().length > 0)
@@ -1099,8 +1563,25 @@ registerWorker("extract_visuals", async (job: Job) => {
 	const extractorVersion = typeof extractorVersionOverride === "string" && extractorVersionOverride.trim()
 		? extractorVersionOverride.trim()
 		: config.extractorVersion;
+	const structuredExtractorVersion = process.env.STRUCTURED_VISION_EXTRACTOR_VERSION || "structured_native_v1";
+	const nonPdfRenderEnabled = (() => {
+		const raw = process.env.ENABLE_NONPDF_RENDER_PAGES;
+		if (raw == null) return true; // default ON to ensure Office docs render
+		return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+	})();
+	if (!nonPdfRenderEnabled) {
+		console.warn(
+			JSON.stringify({ event: "nonpdf_render_disabled", reason: "ENABLE_NONPDF_RENDER_PAGES=0" })
+		);
+	}
 
 	const pool = getPool();
+	const docsTotal = targetDocumentIds.length;
+	devLog("worker_extract_visuals_start", {
+		job_id: job.id ? String(job.id) : null,
+		deal_id: dealId ?? null,
+		docs_total: docsTotal,
+	});
 	const tablesOk =
 		(await hasTable(pool, "visual_assets")) &&
 		(await hasTable(pool, "visual_extractions")) &&
@@ -1119,20 +1600,169 @@ registerWorker("extract_visuals", async (job: Job) => {
 		return { ok: false, skipped: true, reason: "tables_missing" };
 	}
 
-	await updateJob(job, "running", `Starting visual extraction (docs=${targetDocumentIds.length})`, 5);
-
-	let persisted = 0;
-	let docsProcessed = 0;
-	let docsSkipped = 0;
-	let docsMissingOriginalBytes = 0;
-	let docsMissingPageImages = 0;
-	let docsHadPageCountMissing = 0;
-	const docsMissingOriginalBytesIds: string[] = [];
-	const docsMissingPageImagesIds: string[] = [];
-
 	const originalFileTablesOk =
 		(await hasTable(pool, "document_files")) &&
 		(await hasTable(pool, "document_file_blobs"));
+
+	let docsBlockedPending = 0;
+	const blockedDocs: {
+		document_id: string;
+		title: string | null;
+		type: string | null;
+		status: string | null;
+		page_count: number | null;
+		has_extraction_metadata: boolean;
+		has_original_bytes: boolean;
+		has_rendered_pages: boolean;
+		reason?: string | null;
+	}[] = [];
+
+	try {
+		const { rows: metaRows } = await pool.query(
+			"SELECT id, title, type, status, page_count, extraction_metadata FROM documents WHERE id = ANY($1)",
+			[targetDocumentIds]
+		);
+		const metaMap = new Map<string, any>();
+		for (const row of metaRows ?? []) metaMap.set(row.id, row);
+
+		for (const docId of targetDocumentIds) {
+			const meta = metaMap.get(docId) ?? {};
+			const status = typeof meta.status === "string" ? meta.status : null;
+			const hasExtractionMetadata = !!meta.extraction_metadata;
+			const pageCountRaw = meta.page_count;
+			const pageCount = typeof pageCountRaw === "number" && Number.isFinite(pageCountRaw) ? pageCountRaw : null;
+			let hasRenderedPages = false;
+			try {
+				const previewUris = await resolvePageImageUris(pool, docId, { env: process.env, logger: console });
+				hasRenderedPages = Array.isArray(previewUris) && previewUris.length > 0;
+			} catch (err) {
+				console.warn(
+					`[extract_visuals] preview resolve failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+				);
+			}
+
+			let hasOriginalBytes = false;
+			if (originalFileTablesOk) {
+				try {
+					const original = await getDocumentOriginalFile(docId);
+					hasOriginalBytes = !!(original?.bytes && original.bytes.length > 0);
+				} catch {
+					hasOriginalBytes = false;
+				}
+			}
+
+			const readiness = evaluateVisualDocReadiness({
+				id: docId,
+				status,
+				hasExtractionMetadata,
+				pageCount,
+				hasRenderedPages,
+				hasOriginalBytes,
+			});
+			if (readiness.blocked) {
+				docsBlockedPending += 1;
+				blockedDocs.push({
+					document_id: docId,
+					title: typeof meta.title === "string" ? meta.title : null,
+					type: typeof meta.type === "string" ? meta.type : null,
+					status,
+					page_count: pageCount,
+					has_extraction_metadata: hasExtractionMetadata,
+					has_original_bytes: hasOriginalBytes,
+					has_rendered_pages: hasRenderedPages,
+					reason: readiness.reason,
+				});
+			}
+		}
+	} catch (err) {
+		console.warn(
+			`[extract_visuals] guard precheck failed: ${err instanceof Error ? err.message : String(err)}`
+		);
+	}
+
+	const blockedDocIds = new Set(blockedDocs.map((d) => d.document_id));
+	const readyDocumentIds = targetDocumentIds.filter((id) => !blockedDocIds.has(id));
+	const docsReady = readyDocumentIds.length;
+	const docsBlocked = blockedDocs.length;
+	docsBlockedPending = docsBlocked;
+	targetDocumentIds = readyDocumentIds;
+
+	if (docsReady === 0) {
+		const guardPayload = {
+			reason: "INGEST_NOT_COMPLETE",
+			blocked_docs: blockedDocs,
+			blocked_document_ids: blockedDocs.map((d) => d.document_id),
+			docs_total: docsTotal,
+			docs_ready: docsReady,
+			docs_blocked: docsBlocked,
+			suggested_action:
+				"run reconcile-ingest or wait for ingest_documents to complete, then re-run extract_visuals",
+			diagnostics: {
+				docs_total: docsTotal,
+				docs_blocked_pending: docsBlockedPending,
+				document_file_tables_present: originalFileTablesOk,
+			},
+		};
+		await updateJob(
+			job,
+			"failed",
+			`Visual extraction blocked (ingest not complete) docs_blocked=${blockedDocs.length}`,
+			100
+		);
+		devLog("worker_extract_visuals_finish", {
+			job_id: job.id ? String(job.id) : null,
+			deal_id: dealId ?? null,
+			docs_total: docsTotal,
+			docs_blocked_pending: docsBlockedPending,
+			guard_triggered: true,
+		});
+		return { ok: false, ...guardPayload };
+	}
+
+	if (docsBlocked > 0) {
+		await updateJob(
+			job,
+			"running",
+			`Proceeding with ready docs (ready=${docsReady}/${docsTotal}, blocked=${docsBlocked})`,
+			5
+		);
+		await emitJobProgress(job, {
+			job_id: job.id ? String(job.id) : "",
+			deal_id: dealId ?? undefined,
+			stage: "blocked",
+			percent: 5,
+			message: `Proceeding with ready docs (ready=${docsReady}/${docsTotal}, blocked=${docsBlocked})`,
+			reason: "INGEST_NOT_COMPLETE",
+			meta: {
+				docs_total: docsTotal,
+				docs_ready: docsReady,
+				docs_blocked: docsBlocked,
+				blocked_document_ids: blockedDocs.map((d) => d.document_id),
+			},
+		});
+	} else {
+		await updateJob(job, "running", `Starting visual extraction (docs=${targetDocumentIds.length})`, 5);
+		await emitJobProgress(job, {
+			job_id: job.id ? String(job.id) : "",
+			deal_id: dealId ?? undefined,
+			stage: "collect_image_uris",
+			percent: 5,
+			message: `Starting visual extraction (docs=${targetDocumentIds.length})`,
+		});
+	}
+
+	let persisted = 0;
+	let docsProcessed = 0;
+	let docsSkipped = docsBlocked;
+	let docsMissingOriginalBytes = 0;
+	let docsMissingPageImages = 0;
+	let docsHadPageCountMissing = 0;
+	let docsRenderedViaPdf = 0;
+	let docsRenderedViaLibreoffice = 0;
+	let docsSyntheticAssetsUsed = 0;
+	let imageUrisBackfilled = 0;
+	const docsMissingOriginalBytesIds: string[] = [];
+	const docsMissingPageImagesIds: string[] = [];
 
 	for (let docIndex = 0; docIndex < targetDocumentIds.length; docIndex += 1) {
 		const docId = targetDocumentIds[docIndex];
@@ -1140,12 +1770,62 @@ registerWorker("extract_visuals", async (job: Job) => {
 			95,
 			Math.round(((docIndex / Math.max(1, targetDocumentIds.length)) * 90) + 5)
 		);
+
+
+		let docMeta: {
+			type?: string | null;
+			extraction_metadata?: unknown;
+			structured_data?: unknown;
+			full_content?: unknown;
+			page_count?: number | null;
+			title?: string | null;
+		} | null = null;
+		try {
+			const { rows } = await pool.query(
+				"SELECT type, title, extraction_metadata, structured_data, full_content, page_count FROM documents WHERE id = $1 LIMIT 1",
+				[sanitizeText(docId)]
+			);
+			docMeta = rows?.[0] ?? null;
+		} catch {
+			// best-effort metadata fetch
+		}
+
+		// Optional maintenance: recompute segment_key for existing structured synthetic assets.
+		if (forceResegment) {
+			try {
+				const title = typeof docMeta?.title === "string" ? docMeta.title : null;
+				const res = await resegmentStructuredSyntheticAssets({ pool, documentId: docId, documentTitle: title });
+				console.log(
+					JSON.stringify({
+						event: "resegment_structured_synthetic_assets",
+						document_id: docId,
+						updated_assets: res.updated_assets,
+						updated_extractions: res.updated_extractions,
+					})
+				);
+			} catch (err) {
+				console.warn(
+					`[extract_visuals] force_resegment failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+				);
+			}
+		}
+
+		const docKind = deduceDocKind({ extraction_metadata: docMeta?.extraction_metadata, type: docMeta?.type ?? null });
+		const docPageCount = typeof docMeta?.page_count === "number" && Number.isFinite(docMeta.page_count) ? docMeta.page_count : null;
 		await updateJob(
 			job,
 			"running",
 			`Extracting visuals (doc ${docIndex + 1}/${targetDocumentIds.length})`,
 			basePct
 		);
+		await emitJobProgress(job, {
+			job_id: job.id ? String(job.id) : "",
+			deal_id: dealId ?? undefined,
+			document_id: docId,
+			stage: "extract_visual_assets",
+			percent: basePct,
+			message: `Extracting visuals (doc ${docIndex + 1}/${targetDocumentIds.length})`,
+		});
 
 		// Use explicit image_uris only for single-document jobs; otherwise resolve from rendered pages.
 		let uris: string[] = [];
@@ -1171,7 +1851,6 @@ registerWorker("extract_visuals", async (job: Job) => {
 				} catch {
 					// ignore
 				}
-
 				const original = await getDocumentOriginalFile(docId);
 				const isPdf =
 					(original?.mime_type && original.mime_type.toLowerCase().includes("pdf")) ||
@@ -1180,13 +1859,14 @@ registerWorker("extract_visuals", async (job: Job) => {
 					docsMissingOriginalBytes += 1;
 					docsMissingOriginalBytesIds.push(docId);
 				}
-				if (original?.bytes && isPdf) {
-					const persistCfg = getVisualPageImagePersistConfig();
-					const uploadDir = process.env.UPLOAD_DIR
-						? path.resolve(process.env.UPLOAD_DIR)
-						: path.resolve(process.cwd(), "uploads");
 
-					// Pull current page_count (if missing, persistRenderedPageImages can still render and return a detected total).
+				const uploadDir = process.env.UPLOAD_DIR
+					? path.resolve(process.env.UPLOAD_DIR)
+					: path.resolve(process.cwd(), "uploads");
+				const persistCfg = getVisualPageImagePersistConfig();
+
+				// PDF rendering fallback
+				if (original?.bytes && isPdf) {
 					const { rows } = await pool.query<{ page_count: number | null }>(
 						"SELECT page_count FROM documents WHERE id = $1 LIMIT 1",
 						[docId]
@@ -1199,13 +1879,67 @@ registerWorker("extract_visuals", async (job: Job) => {
 					const renderRes = await persistRenderedPageImages({
 						buffer: original.bytes,
 						documentId: docId,
-						pageCount: existingPageCount,
+						pageCount: existingPageCount || 0,
 						uploadDir,
 						config: persistCfg,
 						logger: console,
 					});
 
-					if (renderRes?.rendered_pages_dir) {
+					if (!existingPageCount && renderRes.page_count_detected && renderRes.page_count_detected > 0) {
+						await pool.query(
+							"UPDATE documents SET page_count = $2, updated_at = now() WHERE id = $1 AND (page_count IS NULL OR page_count <= 0)",
+							[docId, renderRes.page_count_detected]
+						);
+					}
+
+					uris = await resolvePageImageUris(pool, docId, { env: process.env, logger: console });
+				}
+
+				// Non-PDF rendering (LibreOffice -> PDF -> pages) when enabled
+				if (original?.bytes && nonPdfRenderEnabled && ["powerpoint", "word", "excel"].includes(docKind)) {
+					const fileExt = typeof original.file_name === "string"
+						? original.file_name.split(".").pop() ?? docKind
+						: docKind;
+					const { rows } = await pool.query<{ page_count: number | null }>(
+						"SELECT page_count FROM documents WHERE id = $1 LIMIT 1",
+						[docId]
+					);
+					const existingPageCount =
+						typeof rows?.[0]?.page_count === "number" && Number.isFinite(rows[0].page_count)
+							? rows[0].page_count
+							: 0;
+
+					const renderRes = await renderNonPdfToPageImages({
+						buffer: original.bytes,
+						fileExt,
+						documentId: docId,
+						uploadDir,
+						pageCount: existingPageCount || 0,
+						config: persistCfg,
+						logger: console,
+					});
+
+					console.log(
+						JSON.stringify({
+							event: "NONPDF_RENDERED_PAGES",
+							document_id: docId,
+							doc_kind: docKind,
+							file_ext: fileExt,
+							page_count_input: existingPageCount || 0,
+							rendered_pages_dir: renderRes.rendered_pages_dir ?? null,
+							rendered_pages_count: renderRes.rendered_pages_count ?? 0,
+							reason: renderRes.reason ?? null,
+						})
+					);
+
+					if (!existingPageCount && renderRes.page_count_detected && renderRes.page_count_detected > 0) {
+						await pool.query(
+							"UPDATE documents SET page_count = $2, updated_at = now() WHERE id = $1 AND (page_count IS NULL OR page_count <= 0)",
+							[docId, renderRes.page_count_detected]
+						);
+					}
+
+					if (renderRes.rendered_pages_dir) {
 						await mergeDocumentExtractionMetadata({
 							documentId: docId,
 							patch: {
@@ -1218,16 +1952,38 @@ registerWorker("extract_visuals", async (job: Job) => {
 						});
 					}
 
-					// Backfill page_count when missing so downstream resolution and UI can show the correct page count.
-					const detected =
-						typeof renderRes?.page_count_detected === "number" && Number.isFinite(renderRes.page_count_detected)
-							? renderRes.page_count_detected
-							: null;
-					if ((!existingPageCount || existingPageCount <= 0) && detected && detected > 0) {
-						await pool.query(
-							"UPDATE documents SET page_count = $2, updated_at = now() WHERE id = $1 AND (page_count IS NULL OR page_count <= 0)",
-							[docId, detected]
-						);
+					uris = await resolvePageImageUris(pool, docId, { env: process.env, logger: console });
+				}
+
+				// Image docs: normalize into rendered_pages/page_000.png
+				if (original?.bytes && docKind === "image") {
+					const res = await persistImagePage({
+						buffer: original.bytes,
+						documentId: docId,
+						uploadDir,
+						config: persistCfg,
+						logger: console,
+					});
+					console.log(
+						JSON.stringify({
+							event: "IMAGE_RENDERED_PAGE",
+							document_id: docId,
+							rendered_pages_dir: res.rendered_pages_dir ?? null,
+							rendered_pages_count: res.rendered_pages_count ?? 0,
+							reason: res.reason ?? null,
+						})
+					);
+					if (res.rendered_pages_dir) {
+						await mergeDocumentExtractionMetadata({
+							documentId: docId,
+							patch: {
+								rendered_pages_dir: res.rendered_pages_dir,
+								rendered_pages_format: res.rendered_pages_format,
+								rendered_pages_count: res.rendered_pages_count,
+								rendered_pages_max_pages: res.rendered_pages_max_pages,
+								rendered_pages_created_at: res.rendered_pages_created_at,
+							},
+						});
 					}
 
 					uris = await resolvePageImageUris(pool, docId, { env: process.env, logger: console });
@@ -1241,6 +1997,21 @@ registerWorker("extract_visuals", async (job: Job) => {
 			}
 
 			if (uris.length === 0) {
+				const syntheticPersisted = await persistSyntheticVisualAssets({
+					pool,
+					documentId: docId,
+					docKind,
+					structuredData: docMeta?.structured_data ?? {},
+					fullContent: docMeta?.full_content ?? {},
+					extractorVersion: structuredExtractorVersion,
+					env: process.env,
+				});
+				if (syntheticPersisted > 0) {
+					persisted += syntheticPersisted;
+					docsProcessed += 1;
+					continue;
+				}
+
 				docsMissingPageImages += 1;
 				docsMissingPageImagesIds.push(docId);
 				docsSkipped += 1;
@@ -1249,22 +2020,67 @@ registerWorker("extract_visuals", async (job: Job) => {
 		}
 
 		docsProcessed += 1;
+		let docPersisted = 0;
+		let docPersistedWithImageUri = 0;
+		let docBackfilled = 0;
+
+		try {
+			const backfillRes = await backfillVisualAssetImageUris({
+				pool,
+				documentId: docId,
+				pageImageUris: uris,
+				env: process.env,
+			});
+			docBackfilled = backfillRes.updated;
+			imageUrisBackfilled += docBackfilled;
+		} catch (err) {
+			console.warn(
+				`[extract_visuals] backfill image_uri failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+			);
+		}
+
 		for (let i = 0; i < uris.length && i < config.maxPages; i += 1) {
 			const image_uri = uris[i];
-			const response = await callVisionWorker(config, {
+			let response = await callVisionWorker(config, {
 				document_id: docId,
 				page_index: i,
 				image_uri,
 				extractor_version: extractorVersion,
 			});
 
-			if (!response) {
-				console.warn(`[extract_visuals] Vision worker failed for doc=${docId} page=${i}`);
-				continue;
+			if (!response || !Array.isArray(response.assets) || response.assets.length === 0) {
+				console.warn(`[extract_visuals] Vision worker returned no assets for doc=${docId} page=${i}, persisting fallback`);
+				response = {
+					document_id: docId,
+					page_index: i,
+					extractor_version: extractorVersion,
+					assets: [
+						{
+							asset_type: "image_text",
+							bbox: { x: 0, y: 0, w: 1, h: 1 },
+							confidence: 0,
+							quality_flags: { source: "page_image_fallback" },
+							image_uri,
+							image_hash: null,
+							extraction: {
+								ocr_text: null,
+								ocr_blocks: [],
+								structured_json: {},
+								units: null,
+								labels: {},
+								model_version: null,
+								confidence: 0,
+							},
+						},
+					],
+				};
 			}
 
 			try {
-				persisted += await persistVisionResponse(pool, response, { pageImageUri: image_uri });
+				const { persisted: pCount, withImageUri } = await persistVisionResponse(pool, response, { pageImageUri: image_uri });
+				persisted += pCount;
+				docPersisted += pCount;
+				docPersistedWithImageUri += withImageUri;
 			} catch (err) {
 				console.warn(
 					`[extract_visuals] Persist failed doc=${docId} page=${i}: ${
@@ -1273,18 +2089,46 @@ registerWorker("extract_visuals", async (job: Job) => {
 				);
 			}
 		}
+
+		console.log(
+			JSON.stringify({
+				event: "VISUAL_IMAGE_URI_DIAG",
+				document_id: docId,
+				doc_kind: docKind,
+				page_count: docPageCount,
+				rendered_pages_found: uris.length,
+				persisted_assets: docPersisted,
+				persisted_with_image_uri: docPersistedWithImageUri,
+				backfilled_image_uri: docBackfilled,
+			})
+		);
 	}
+
+	const jobCounters = {
+		docs_total: docsTotal,
+		docs_ready: targetDocumentIds.length,
+		docs_processed: docsProcessed,
+		docs_blocked_pending: docsBlockedPending,
+		docs_missing_original_bytes: docsMissingOriginalBytes,
+		docs_missing_page_images: docsMissingPageImages,
+		docs_rendered_via_pdf: docsRenderedViaPdf,
+		docs_rendered_via_libreoffice: docsRenderedViaLibreoffice,
+		docs_synthetic_assets_used: docsSyntheticAssetsUsed,
+		image_uri_backfilled: imageUrisBackfilled,
+	};
 
 	if (docsProcessed === 0) {
 		const diag = {
 			docs_targeted: targetDocumentIds.length,
 			docs_skipped: docsSkipped,
+			docs_blocked: docsBlocked,
 			page_count_missing: docsHadPageCountMissing,
 			original_bytes_missing: docsMissingOriginalBytes,
 			page_images_missing: docsMissingPageImages,
 			original_file_tables_ok: originalFileTablesOk,
 			missing_original_bytes_doc_ids: docsMissingOriginalBytesIds.slice(0, 5),
 			missing_page_images_doc_ids: docsMissingPageImagesIds.slice(0, 5),
+			job_counters: jobCounters,
 		};
 		await updateJob(
 			job,
@@ -1292,16 +2136,57 @@ registerWorker("extract_visuals", async (job: Job) => {
 			`No page images available for visual extraction. Diagnostics: ${JSON.stringify(diag)}. Fix: if original_file_tables_ok=false, run migration infra/migrations/2025-12-22-002-add-document-original-files.sql and re-ingest. If original_bytes_missing>0, re-upload/re-ingest so document_files is populated. Otherwise ensure rendered pages exist under UPLOAD_DIR (uploads/rendered_pages/<documentId>/page_000.png, etc).`,
 			100
 		);
-		return { ok: false, persisted, docs_processed: docsProcessed, docs_skipped: docsSkipped };
+		devLog("worker_extract_visuals_finish", {
+			job_id: job.id ? String(job.id) : null,
+			deal_id: dealId ?? null,
+			guard_triggered: false,
+			status: "failed",
+			...jobCounters,
+		});
+		return { ok: false, persisted, docs_processed: docsProcessed, docs_skipped: docsSkipped, job_counters: jobCounters };
 	}
 
-	await updateJob(
-		job,
-		"succeeded",
-		`Visual extraction complete (persisted=${persisted}, docs_processed=${docsProcessed}, docs_skipped=${docsSkipped})`,
-		100
-	);
-	return { ok: true, persisted, docs_processed: docsProcessed, docs_skipped: docsSkipped };
+	const finalStatus = docsBlocked > 0 ? "succeeded_with_warnings" : "succeeded";
+	const finalMessage =
+		docsBlocked > 0
+			? `Visual extraction succeeded with warnings (blocked=${docsBlocked}, processed=${docsProcessed}, skipped=${docsSkipped}) counters=${JSON.stringify(jobCounters)}`
+			: `Visual extraction complete (persisted=${persisted}, docs_processed=${docsProcessed}, docs_skipped=${docsSkipped}) counters=${JSON.stringify(jobCounters)}`;
+
+	await updateJob(job, finalStatus, finalMessage, 100);
+	await emitJobProgress(job, {
+		job_id: job.id ? String(job.id) : "",
+		deal_id: dealId ?? undefined,
+		stage: "finalize",
+		percent: 100,
+		message: docsBlocked > 0
+			? `Visual extraction succeeded with warnings (blocked=${docsBlocked}, processed=${docsProcessed})`
+			: `Visual extraction complete (persisted=${persisted}, docs_processed=${docsProcessed}, docs_skipped=${docsSkipped})`,
+		reason: docsBlocked > 0 ? "INGEST_NOT_COMPLETE" : undefined,
+		meta: {
+			...jobCounters,
+			docs_blocked: docsBlocked,
+			blocked_document_ids: blockedDocs.map((d) => d.document_id),
+		},
+	});
+	devLog("worker_extract_visuals_finish", {
+		job_id: job.id ? String(job.id) : null,
+		deal_id: dealId ?? null,
+		guard_triggered: false,
+		status: finalStatus,
+		...jobCounters,
+	});
+	return {
+		ok: true,
+		persisted,
+		docs_processed: docsProcessed,
+		docs_skipped: docsSkipped,
+		job_counters: jobCounters,
+		status: finalStatus,
+		docs_blocked: docsBlocked,
+		blocked_document_ids: blockedDocs.map((d) => d.document_id),
+		docs_ready: targetDocumentIds.length,
+		docs_total: docsTotal,
+	};
 });
 registerWorker("fetch_evidence", async (job: Job) => {
 	const dealId = (job.data as { deal_id?: string } | undefined)?.deal_id;

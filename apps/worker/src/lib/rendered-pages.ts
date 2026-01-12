@@ -1,8 +1,13 @@
 import path from "path";
 import fs from "fs/promises";
+import os from "os";
+import { execFile } from "child_process";
+import { promisify } from "util";
 
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.js";
-import { createCanvas, ImageData } from "@napi-rs/canvas";
+import { createCanvas, ImageData, loadImage } from "@napi-rs/canvas";
+
+const execFileAsync = promisify(execFile);
 
 // pdf.js render needs ImageData in the Node runtime
 (pdfjs as any).GlobalWorkerOptions.disableWorker = true;
@@ -44,10 +49,15 @@ async function dirExists(fsImpl: Pick<FsLike, "stat">, dir: string): Promise<boo
 	}
 }
 
-export function getVisualPageImagePersistConfig(env: NodeJS.ProcessEnv = process.env): VisualPageImagePersistConfig {
-	const enabled = parseBool(env.ENABLE_VISUAL_EXTRACTION);
-	const persist =
-		env.VISUAL_PAGE_IMAGE_PERSIST != null
+export function getVisualPageImagePersistConfig(env: NodeJS.ProcessEnv = process.env, opts?: { forceEnable?: boolean }): VisualPageImagePersistConfig {
+	// Default ON so rendered pages are produced even if ENABLE_VISUAL_EXTRACTION is unset.
+	const enabledRaw = env.ENABLE_VISUAL_EXTRACTION == null
+		? true
+		: parseBool(env.ENABLE_VISUAL_EXTRACTION);
+	const enabled = opts?.forceEnable ? true : enabledRaw;
+	const persist = opts?.forceEnable
+		? true
+		: env.VISUAL_PAGE_IMAGE_PERSIST != null
 			? parseBool(env.VISUAL_PAGE_IMAGE_PERSIST)
 			: enabled;
 
@@ -82,6 +92,21 @@ function stableRenderedPagesDir(params: { uploadDir: string; documentId: string 
 
 function stableRenderedPageFilename(pageIndex: number, format: "png"): string {
 	return `page_${String(pageIndex).padStart(3, "0")}.${format}`;
+}
+
+async function bufferToPng(params: { buffer: Buffer; logger: LogLike }): Promise<Buffer | null> {
+	try {
+		const img = await loadImage(params.buffer);
+		const canvas = createCanvas(img.width || 1, img.height || 1);
+		const ctx = canvas.getContext("2d");
+		ctx.drawImage(img as any, 0, 0);
+		return canvas.toBuffer("image/png");
+	} catch (err) {
+		params.logger.warn(
+			`[rendered_pages] failed to decode image buffer to png: ${err instanceof Error ? err.message : String(err)}`
+		);
+		return null;
+	}
 }
 
 async function copyFromDebugDir(params: {
@@ -276,5 +301,139 @@ export async function persistRenderedPageImages(params: {
 		rendered_pages_max_pages: params.config.maxPages,
 		rendered_pages_created_at: createdAt,
 		page_count_detected: detectedTotalPages,
+	};
+}
+
+async function convertOfficeToPdfBuffer(params: {
+	buffer: Buffer;
+	ext: "pptx" | "ppt" | "docx" | "doc" | "xlsx" | "xls";
+	logger?: LogLike;
+}): Promise<Buffer | null> {
+	const logger = params.logger ?? console;
+	let tmpDir: string | null = null;
+	try {
+		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ddai-office-render-"));
+		const inputPath = path.join(tmpDir, `input.${params.ext}`);
+		const outputPath = path.join(tmpDir, "input.pdf");
+		await fs.writeFile(inputPath, params.buffer);
+		try {
+			await execFileAsync("soffice", ["--headless", "--convert-to", "pdf", "--outdir", tmpDir, inputPath], {
+				timeout: 20000,
+			});
+		} catch (err) {
+			logger.warn(
+				`[rendered_pages] soffice conversion failed ext=${params.ext}: ${
+					err instanceof Error ? err.message : String(err)
+				}`
+			);
+			return null;
+		}
+
+		try {
+			const pdf = await fs.readFile(outputPath);
+			if (pdf && pdf.length > 0) return pdf;
+		} catch (err) {
+			logger.warn(
+				`[rendered_pages] soffice produced no pdf ext=${params.ext}: ${
+					err instanceof Error ? err.message : String(err)
+				}`
+			);
+			return null;
+		}
+	} catch (err) {
+		logger.warn(
+			`[rendered_pages] office conversion setup failed: ${err instanceof Error ? err.message : String(err)}`
+		);
+		return null;
+	} finally {
+		if (tmpDir) {
+			try {
+				await fs.rm(tmpDir, { recursive: true, force: true });
+			} catch {
+				// ignore cleanup errors
+			}
+		}
+	}
+
+	return null;
+}
+
+export async function renderNonPdfToPageImages(params: {
+	buffer: Buffer;
+	fileExt: string;
+	documentId: string;
+	uploadDir: string;
+	pageCount: number;
+	config: VisualPageImagePersistConfig;
+	logger?: LogLike;
+	fsImpl?: FsLike;
+}): Promise<PersistRenderedPagesResult> {
+	const ext = params.fileExt.toLowerCase();
+	if (!params.config.enabled || !params.config.persist) return { ok: true, reason: "persist_disabled" };
+	if (!["ppt", "pptx", "doc", "docx", "xls", "xlsx"].includes(ext)) {
+		return { ok: true, reason: "unsupported_extension" };
+	}
+
+	const pdfBuffer = await convertOfficeToPdfBuffer({ buffer: params.buffer, ext: ext as any, logger: params.logger });
+	if (!pdfBuffer) return { ok: true, reason: "conversion_failed" };
+
+	return persistRenderedPageImages({
+		buffer: pdfBuffer,
+		documentId: params.documentId,
+		pageCount: params.pageCount,
+		uploadDir: params.uploadDir,
+		config: params.config,
+		logger: params.logger,
+		fsImpl: params.fsImpl,
+	});
+}
+
+export async function persistImagePage(params: {
+	buffer: Buffer;
+	documentId: string;
+	uploadDir: string;
+	config: VisualPageImagePersistConfig;
+	logger?: LogLike;
+	fsImpl?: FsLike;
+}): Promise<PersistRenderedPagesResult> {
+	const logger = params.logger ?? console;
+	const fsImpl = params.fsImpl ?? fs;
+	if (!params.config.enabled || !params.config.persist) return { ok: true, reason: "persist_disabled" };
+
+	const outDir = stableRenderedPagesDir({ uploadDir: params.uploadDir, documentId: params.documentId });
+	try {
+		await fsImpl.mkdir(outDir, { recursive: true } as any);
+	} catch (err) {
+		logger.warn(
+			`[rendered_pages] mkdir failed doc=${params.documentId} dir=${outDir}: ${
+				err instanceof Error ? err.message : String(err)
+			}`
+		);
+		return { ok: true, reason: "mkdir_failed" };
+	}
+
+	const png = await bufferToPng({ buffer: params.buffer, logger });
+	if (!png) return { ok: true, reason: "image_decode_failed" };
+	const outPath = path.join(outDir, stableRenderedPageFilename(0, params.config.format));
+	try {
+		await fsImpl.writeFile(outPath, png);
+	} catch (err) {
+		logger.warn(
+			`[rendered_pages] write failed doc=${params.documentId} path=${outPath}: ${
+				err instanceof Error ? err.message : String(err)
+			}`
+		);
+		return { ok: true, reason: "write_failed" };
+	}
+
+	const createdAt = new Date().toISOString();
+	return {
+		ok: true,
+		rendered_pages_dir: outDir,
+		rendered_pages_format: params.config.format,
+		rendered_pages_count: 1,
+		rendered_pages_max_pages: 1,
+		rendered_pages_created_at: createdAt,
+		page_count_detected: 1,
 	};
 }

@@ -6,6 +6,7 @@ import {
 	resolvePageImageUris,
 	upsertVisualAsset,
 	persistVisionResponse,
+	backfillVisualAssetImageUris,
 } from "./visual-extraction";
 
 function makePoolMock() {
@@ -142,7 +143,7 @@ test("upsertVisualAsset backfills empty image_uri on conflict", async () => {
 test("persistVisionResponse writes assets + extraction + evidence link", async () => {
 	const { pool, calls } = makePoolMock();
 
-	const persisted = await persistVisionResponse(pool, {
+	const { persisted } = await persistVisionResponse(pool, {
 		document_id: "00000000-0000-0000-0000-000000000000",
 		page_index: 2,
 		extractor_version: "vision_v1",
@@ -281,4 +282,28 @@ test("enqueueExtractVisualsIfPossible enqueues with extractor_version and image_
 	const uris = await resolvePageImageUris(pool as any, "doc-123", { fsImpl, logger: { log: () => {}, warn: () => {} } as any });
 	expect(uris[0].endsWith("page_001_raw.png")).toBe(true);
 	expect(uris[1].endsWith("page_002_raw.png")).toBe(true);
+});
+
+test("backfillVisualAssetImageUris updates missing image_uri when page image exists", async () => {
+	const calls: any[] = [];
+	const pool = {
+		query: async (sql: string, params: any[]) => {
+			calls.push({ sql, params });
+			return { rowCount: 1 } as any;
+		},
+	} as any;
+
+	const env = { UPLOAD_DIR: "/app/uploads" } as any;
+	const res = await backfillVisualAssetImageUris({
+		pool,
+		documentId: "doc-1",
+		pageImageUris: ["/app/uploads/rendered_pages/doc-1/page_000.png", "/tmp/unknown.png"],
+		env,
+	});
+
+	expect(res.updated).toBe(1);
+	expect(calls[0].params[0]).toBe("doc-1");
+	expect(calls[0].params[1]).toBe(0);
+	expect(calls[0].params[2]).toBe("/uploads/rendered_pages/doc-1/page_000.png");
+	expect(calls.length).toBe(2);
 });

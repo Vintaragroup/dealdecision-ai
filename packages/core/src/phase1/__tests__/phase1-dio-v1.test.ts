@@ -871,71 +871,6 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 				},
 			},
 		};
-
-
-	describe("buildPhase1ExecutiveAccountability", () => {
-		it("marks support using coverage missing status and evidence-backed claims", () => {
-			const coverage = {
-				sections: {
-					product_solution: "missing",
-					market_icp: "present",
-					business_model: "present",
-					traction: "present",
-					risks: "present",
-				},
-			};
-
-			const claims = [
-				{
-					claim_id: "c-market",
-					category: "market",
-					text: "Market coverage",
-					evidence: [{ document_id: "d1", snippet: "market", page: 1 }],
-				},
-				{
-					claim_id: "c-traction",
-					category: "traction",
-					text: "Traction claim",
-					evidence: [],
-				},
-			];
-
-			const out = buildPhase1ExecutiveAccountability({ coverage, claims });
-			expect(out).toBeTruthy();
-			expect(out?.support.product).toBe("missing");
-			expect(out?.support.market).toBe("evidence");
-			expect(out?.support.icp).toBe("evidence");
-			expect(out?.support.traction).toBe("inferred");
-			expect(out?.coverage_missing_sections).toContain("product");
-			expect(out?.evidence_counts).toEqual({ claims_total: 2, evidence_total: 1 });
-		});
-	});
-
-	describe("buildPhase1ScoreAudit", () => {
-		it("computes rubric and flags mismatch when delta is large", () => {
-			const coverage = {
-				sections: {
-					product_solution: "present",
-					market_icp: "missing",
-					business_model: "missing",
-					traction: "missing",
-					risks: "present",
-				},
-			};
-
-			const out = buildPhase1ScoreAudit({ coverage, signals: { score: 40, confidence: "med" } });
-			expect(out).toBeTruthy();
-			expect(out?.rubric_score).toBe(65);
-			expect(out?.rubric_band).toBe("med");
-			expect(out?.mismatch).toBe(true);
-			expect(out?.reasons.join(" ")).toMatch(/deviates/i);
-		});
-
-		it("fails open when coverage missing by returning null", () => {
-			const out = buildPhase1ScoreAudit({ coverage: null, signals: { score: 80, confidence: "high" } });
-			expect(out).toBeNull();
-		});
-	});
 		const phase1 = generatePhase1DIOV1({
 			deal: { deal_id: "deal-merge-report", name: "MergeReportCo", stage: "intake" },
 			inputDocuments: [
@@ -959,6 +894,70 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		expect(out.dio.phase1.update_report_v1.summary).toEqual("No changes detected.");
 		expect(out.dio.phase1.update_report_v1.changes).toEqual([]);
 	});
+
+describe("buildPhase1ExecutiveAccountability", () => {
+	it("marks support using coverage missing status and evidence-backed claims", () => {
+		const coverage = {
+			sections: {
+				product_solution: "missing",
+				market_icp: "present",
+				business_model: "present",
+				traction: "present",
+				risks: "present",
+			},
+		};
+
+		const claims = [
+			{
+				claim_id: "c-market",
+				category: "market",
+				text: "Market coverage",
+				evidence: [{ document_id: "d1", snippet: "market", page: 1 }],
+			},
+			{
+				claim_id: "c-traction",
+				category: "traction",
+				text: "Traction claim",
+				evidence: [],
+			},
+		];
+
+		const out = buildPhase1ExecutiveAccountability({ coverage, claims });
+		expect(out).toBeTruthy();
+		expect(out?.support.product).toBe("missing");
+		expect(out?.support.market).toBe("evidence");
+		expect(out?.support.icp).toBe("evidence");
+		expect(out?.support.traction).toBe("inferred");
+		expect(out?.coverage_missing_sections).toContain("product");
+		expect(out?.evidence_counts).toEqual({ claims_total: 2, evidence_total: 1 });
+	});
+});
+
+describe("buildPhase1ScoreAudit", () => {
+	it("computes rubric and flags mismatch when delta is large", () => {
+		const coverage = {
+			sections: {
+				product_solution: "present",
+				market_icp: "missing",
+				business_model: "missing",
+				traction: "missing",
+				risks: "present",
+			},
+		};
+
+		const out = buildPhase1ScoreAudit({ coverage, signals: { score: 40, confidence: "med" } });
+		expect(out).toBeTruthy();
+		expect(out?.rubric_score).toBe(65);
+		expect(out?.rubric_band).toBe("med");
+		expect(out?.mismatch).toBe(true);
+		expect(out?.reasons.join(" ")).toMatch(/deviates/i);
+	});
+
+	it("fails open when coverage missing by returning null", () => {
+		const out = buildPhase1ScoreAudit({ coverage: null, signals: { score: 80, confidence: "high" } });
+		expect(out).toBeNull();
+	});
+});
 
 	it("can fall back to update_report_v1.after values when deal_overview_v2 omits product/ICP", () => {
 		const { generatePhase1DIOV1 } = require("../phase1-dio-v1");

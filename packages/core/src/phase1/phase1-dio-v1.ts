@@ -2080,11 +2080,6 @@ function coverageGapsSummary(coverage: Phase1CoverageV1): { missing: string[]; p
 	return { missing, partial };
 }
 
-const clampScore = (value: number): number => {
-	if (!Number.isFinite(value)) return 0;
-	return Math.min(100, Math.max(0, value));
-};
-
 const toFinite = (value: unknown): number | null => {
 	if (value === null || value === undefined) return null;
 	const n = typeof value === "number" ? value : Number(value);

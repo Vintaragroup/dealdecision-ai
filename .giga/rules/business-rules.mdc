@@ -1,5 +1,5 @@
 ---
-description: Documents business rules governing investment deal evaluation, risk assessment, due diligence requirements, and decision criteria
+description: Investment deal analysis platform with AI-powered due diligence and scoring system
 ---
 
 # === USER INSTRUCTIONS ===
@@ -107,26 +107,20 @@ INVESTMENT DEAL ANALYSIS FRAMEWORK
   - Source verification
   - Analysis depth
   - Evidence quality
-# === END USER INSTRUCTIONS ===
 
-# business-rules
-
+description: Documents business rules governing investment deal evaluation, risk assessment, due diligence requirements, and decision criteria
 Investment Deal Assessment Framework:
-
 1. Deal Stage Progression Rules
 - Stages: Intake → Under Review → In Diligence → Ready Decision
 - Progression requirements:
   * Under Review: Initial AI analysis complete
   * In Diligence: 60% document coverage, key gaps identified
   * Ready Decision: 70% confidence score, evidence validated
-
 2. Risk Assessment Matrix
 - Six risk categories: Market, Team, Financial, Product, Competition, Legal
 - Risk levels: Low (0-2), Medium (3-5), High (6-8), Critical (9-10)
 - Weighted category scoring based on deal stage
 - Mandatory risk mitigation for High/Critical items
-
-3. Due Diligence Requirements
 - Document coverage thresholds:
   * Pitch/Executive: 100% required
   * Financial: 80% minimum
@@ -136,8 +130,6 @@ Investment Deal Assessment Framework:
   * Claims require 2+ supporting documents
   * Financial metrics need source validation
   * Team claims require background verification
-
-4. Investment Decision Criteria
 - GO recommendation requires:
   * Overall score ≥ 75/100
   * No Critical risks
@@ -152,7 +144,6 @@ Investment Deal Assessment Framework:
   * Any Critical unmitigated risks
   * Major document gaps
   * Evidence validation failures
-
 5. ROI Calculation Rules
 - Industry-specific multipliers:
   * SaaS: 1.0x base
@@ -166,6 +157,75 @@ Investment Deal Assessment Framework:
   * Low risk: Base ROI
   * Medium risk: -10%
   * High risk: -25%
+# === END USER INSTRUCTIONS ===
+
+# business-rules
+
+DEAL EVALUATION & SCORING
+
+1. Deal Stage Progression Rules
+- Initial Review: Requires pitch deck and company profile
+- Due Diligence: Min 70% confidence across market, team, financial dimensions
+- Investment Committee: Min 85% overall score and no critical risks
+
+2. Risk Assessment Framework
+Risk Severity Levels:
+- Critical (90-100): Deal-breaker requiring immediate attention
+- High (70-89): Major concern needing mitigation plan
+- Medium (40-69): Notable issue requiring monitoring
+- Low (0-39): Minor concern with minimal impact
+
+3. Due Diligence Requirements
+Market Analysis:
+- TAM validation with 3rd party sources
+- Competitive landscape mapping
+- Growth rate verification
+
+Financial Validation:
+- Min 18 months runway for Series A+
+- Burn multiple < 2.0 for sustainability
+- Unit economics validation
+
+Team Assessment:
+- Domain expertise scoring
+- Prior startup experience weighting
+- Reference check requirements
+
+4. Document Validation Rules
+Required Documents:
+- Pitch deck (mandatory)
+- Financial model (mandatory for $1M+)
+- Cap table (mandatory for priced rounds)
+- Legal documents (stage-dependent)
+
+5. Investment Decision Thresholds
+GO Decision:
+- Overall score > 85%
+- No critical risks
+- Full document compliance
+- Min 3 reference checks
+
+NO-GO Decision:
+- Any critical risks
+- Overall score < 60%
+- Missing mandatory documents
+- Major compliance issues
+
+CONDITIONAL:
+- Score 60-85%
+- Addressable risks identified
+- Clear mitigation path
+
+6. AI Confidence Thresholds
+Document Analysis:
+- High: >90% confidence
+- Medium: 70-90% confidence
+- Low: <70% confidence (requires manual review)
+
+Market Analysis:
+- Min 80% confidence for market size
+- Min 75% for competitive analysis
+- Min 85% for growth projections
 
 $END$
 

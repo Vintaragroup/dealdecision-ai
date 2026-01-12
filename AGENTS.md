@@ -82,6 +82,39 @@ Integration Architecture:
 - Deal Intelligence Object (DIO) versioning system
 - Multi-dimensional scoring aggregation
 The platform implements a comprehensive investment analysis system with sophisticated scoring algorithms, risk assessment methodologies, and evidence-based decision frameworks specifically designed for deal evaluation and due diligence processes.
+
+The project implements a sophisticated investment deal analysis platform with several key business domains:
+Investment Analysis Core
+- Deal Intelligence Object (DIO) system coordinates multi-stage analysis pipelines
+- Three-cycle analysis workflow: Broad Scan → Deep Dive → Synthesis
+- Confidence scoring (0-100) with 70% threshold for deal advancement
+- Domain-specific analyzers for real estate, SaaS, and consumer deals
+Document Processing Engine
+- Multi-dimensional AI confidence scoring across 5 metrics:
+  - Market Analysis: Market size validation, growth metrics
+  - Financial Projections: Revenue modeling, burn analysis
+  - Team Assessment: Background verification, network analysis
+  - Document Completeness: Compliance verification
+  - Risk Assessment: Probability modeling, exposure calculation
+- Document type classification with industry-specific rules
+- Automated extraction of financial metrics, team data, market signals
+Deal Terms Analysis System
+- Cap table modeling with multiple security types
+- Liquidation preference waterfall calculations
+- Ownership dilution projections
+- Board composition rule verification
+- Exit scenario modeling
+Risk Assessment Framework
+- 6-category risk scoring: Market, Financial, Team, Product, Competition, Legal
+- Weighted aggregation for overall risk profiles
+- Category-specific thresholds and triggers
+- Mitigation strategy mapping and tracking
+Critical Implementation Paths:
+/apps/worker/src/lib/phase1/businessArchetypeV1.ts - Business model classification
+/apps/api/src/routes/orchestration.ts - Deal analysis pipeline
+/packages/core/src/analyzers/metric-benchmark.ts - Industry benchmarking
+/packages/core/src/classification/deal-classifier.ts - Deal type detection
+The system's core value lies in its sophisticated deal analysis capabilities, industry-specific classification logic, and evidence-based decision support framework.
 # === END USER INSTRUCTIONS ===
 
 
@@ -99,44 +132,54 @@ The platform implements a comprehensive investment analysis system with sophisti
 - Explain your OBSERVATIONS clearly, then provide REASONING to identify the exact issue. Add console logs when needed to gather more information.
 
 
-The project implements a sophisticated investment deal analysis platform with several key business domains:
+Investment Analysis Platform Core Architecture
 
-Investment Analysis Core
-- Deal Intelligence Object (DIO) system coordinates multi-stage analysis pipelines
-- Three-cycle analysis workflow: Broad Scan → Deep Dive → Synthesis
-- Confidence scoring (0-100) with 70% threshold for deal advancement
-- Domain-specific analyzers for real estate, SaaS, and consumer deals
+## Analysis Engine Components
+1. Due Diligence Report System (apps/web/src/components/report-templates/sections/)
+- AI confidence scoring across market, financial, team dimensions
+- Risk assessment engine covering 6 core categories 
+- ROI comparison calculator for AI vs traditional methods
+- Deal terms analysis and ownership calculations
 
-Document Processing Engine
-- Multi-dimensional AI confidence scoring across 5 metrics:
-  - Market Analysis: Market size validation, growth metrics
-  - Financial Projections: Revenue modeling, burn analysis
-  - Team Assessment: Background verification, network analysis
-  - Document Completeness: Compliance verification
-  - Risk Assessment: Probability modeling, exposure calculation
-- Document type classification with industry-specific rules
-- Automated extraction of financial metrics, team data, market signals
+2. Deal Intelligence Objects (DIO) Pipeline
+- Three-cycle analysis workflow progressing from broad scan to final synthesis
+- Confidence-based stage progression rules
+- Industry-specific document classification
+- Investment recommendation generation with weighted scoring
 
-Deal Terms Analysis System
-- Cap table modeling with multiple security types
-- Liquidation preference waterfall calculations
-- Ownership dilution projections
-- Board composition rule verification
-- Exit scenario modeling
+3. Financial Health Analysis Framework
+- Custom runway and burn rate algorithms
+- Industry-specific benchmark validation
+- Stage-appropriate metric thresholds
+- Health scoring incorporating growth metrics
 
-Risk Assessment Framework
-- 6-category risk scoring: Market, Financial, Team, Product, Competition, Legal
-- Weighted aggregation for overall risk profiles
-- Category-specific thresholds and triggers
-- Mitigation strategy mapping and tracking
+## Risk Assessment Infrastructure
+1. Multi-Category Evaluation
+- Market risk scoring with competitive positioning
+- Team risk assessment including experience metrics
+- Financial risk calculations including runway analysis
+- Technology stack evaluation with dependency scoring
 
-Critical Implementation Paths:
-/apps/worker/src/lib/phase1/businessArchetypeV1.ts - Business model classification
-/apps/api/src/routes/orchestration.ts - Deal analysis pipeline
-/packages/core/src/analyzers/metric-benchmark.ts - Industry benchmarking
-/packages/core/src/classification/deal-classifier.ts - Deal type detection
+2. Risk Categorization System  
+- Severity level mapping (low/medium/high/critical)
+- Impact probability calculations
+- Weighted category scoring
+- Mitigation requirement tracking
 
-The system's core value lies in its sophisticated deal analysis capabilities, industry-specific classification logic, and evidence-based decision support framework.
+## Document Analysis Pipeline
+1. Visual Asset Processing
+- Table structure detection algorithms
+- Chart value extraction system
+- Multi-stage OCR optimization
+- Quality confidence scoring
+
+2. Document Intelligence  
+- Role-based classification system
+- Evidence linking framework
+- Version control tracking
+- Fact extraction validation
+
+The platform implements sophisticated investment analysis workflows with deep domain expertise encoded in scoring algorithms, risk assessment frameworks, and document processing pipelines optimized for due diligence processes.
 
 $END$
 

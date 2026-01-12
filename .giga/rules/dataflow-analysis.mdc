@@ -1,5 +1,5 @@
 ---
-description: Documents data flows through deal analysis system including document processing, AI analysis, evidence extraction and report generation
+description: Specification for analyzing data flow through deal analysis systems, document processing pipelines, and report generation workflows
 ---
 
 # === USER INSTRUCTIONS ===
@@ -103,12 +103,9 @@ Data flows through specialized processors:
 - Analysis orchestration service
 - Report compilation engine
 - Quality control framework
-# === END USER INSTRUCTIONS ===
 
-# dataflow-analysis
-
+description: Documents data flows through deal analysis system including document processing, AI analysis, evidence extraction and report generation
 The deal analysis system implements several key data flows:
-
 Document Processing Pipeline
 - Input: Raw deal documents (PDF, PPT, etc.)
 - Document classification and metadata extraction
@@ -116,7 +113,6 @@ Document Processing Pipeline
 - Output: Structured document data with evidence mapping
 - Confidence scoring (0-100) per extracted data point
 - Path: apps/web/src/lib/documentGrouping.ts
-
 AI Analysis Integration
 - Parallel processing of documents through specialized analyzers:
   - Financial metrics extraction (85% confidence threshold)
@@ -125,7 +121,6 @@ AI Analysis Integration
   - Risk factor identification
 - Analysis results feed into central evidence store
 - Path: apps/worker/src/lib/analyzers/*
-
 Evidence Collection Flow
 - Evidence items tagged with:
   - Source document and location
@@ -134,19 +129,65 @@ Evidence Collection Flow
   - Validation status
 - Hierarchical evidence relationships tracked
 - Path: packages/core/src/services/evidence/service.ts
-
 Report Generation Pipeline
 - Aggregates evidence across categories
 - Applies business-specific scoring algorithms
 - Generates section recommendations based on confidence
 - Produces final report with evidence citations
 - Path: packages/core/src/reports/score-explanation.ts
-
 The system maintains data lineage throughout:
 - Document → Evidence → Analysis → Report
 - Each transition includes confidence scoring
 - Evidence relationships preserved end-to-end
 - Full audit trail of analysis decisions
+# === END USER INSTRUCTIONS ===
+
+# dataflow-analysis
+
+Data Flow Pipeline Architecture
+
+1. Document Processing Pipeline
+Location: apps/worker/src/lib/processors/
+- Multi-stage document extraction workflow
+- Intelligent document classification and routing
+- Evidence extraction and materialization pipeline
+- Confidence scoring and quality validation
+Importance Score: 90/100
+
+2. Analysis Orchestration Layer
+Location: packages/core/src/orchestration/
+- Three-cycle deal analysis workflow 
+- Confidence-based progression between cycles
+- Evidence collection and verification flows
+- Investment recommendation generation
+Importance Score: 85/100
+
+3. Evidence Management System
+Location: apps/web/src/components/evidence/
+- Evidence tracing and scoring logic
+- Category-based evidence collection
+- Coverage calculations and audit trails
+- Confidence scoring algorithms
+Importance Score: 80/100
+
+4. Report Generation Pipeline
+Location: apps/web/src/components/report-templates/
+- Multi-section report assembly
+- Dynamic content organization
+- Evidence integration workflow
+- Export format handling
+Importance Score: 75/100
+
+Core Data Flow Patterns:
+1. Document → Classification → Evidence Extraction → Analysis
+2. Evidence → Verification → Scoring → Recommendations
+3. Analysis Results → Report Assembly → Export Generation
+
+Integration Points:
+- Document processor output feeds evidence system
+- Evidence flows into analysis cycles
+- Analysis results drive report generation
+- Report data feeds back into deal tracking
 
 $END$
 

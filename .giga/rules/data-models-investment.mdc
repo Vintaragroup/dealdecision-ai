@@ -1,5 +1,5 @@
 ---
-description: Data models and schemas for investment deal analysis, evidence tracking, and document management
+description: Specification for investment domain data models including Deal, Evidence, Document, and Analysis entities
 ---
 
 # === USER INSTRUCTIONS ===
@@ -113,12 +113,8 @@ Collected -> Verified -> Scored -> Integrated
 - Document extraction quality gates
 - Evidence source verification requirements
 - Analysis cycle completion criteria
-# === END USER INSTRUCTIONS ===
 
-# data-models-investment
-
-Core Data Models:
-
+description: Data models and schemas for investment deal analysis, evidence tracking, and document management
 1. Deal Intelligence Object (DIO)
 Path: packages/core/src/models/DealIntelligenceObject.ts
 - Central data model for investment analysis
@@ -131,7 +127,6 @@ Path: packages/core/src/models/DealIntelligenceObject.ts
   - recommendations: Investment recommendations
   - financialMetrics: Key financial indicators
 Importance Score: 95
-
 2. Evidence Model
 Path: packages/core/src/models/Evidence.ts
 - Represents supporting data for investment decisions
@@ -142,7 +137,6 @@ Path: packages/core/src/models/Evidence.ts
   - citations: Cross-references to other evidence
   - metadata: Domain-specific attributes
 Importance Score: 90
-
 3. Document Model
 Path: packages/core/src/models/Document.ts
 - Business document representation
@@ -153,7 +147,6 @@ Path: packages/core/src/models/Document.ts
   - sections: Structured content mapping
   - metrics: Extracted financial metrics
 Importance Score: 85
-
 4. Analysis Model
 Path: packages/core/src/models/Analysis.ts
 - Investment analysis data structure
@@ -164,18 +157,82 @@ Path: packages/core/src/models/Analysis.ts
   - riskFactors: Identified risks with severity
   - benchmarks: Industry comparison metrics
 Importance Score: 90
-
 Relationships:
 - DIO contains multiple Evidence items
 - Evidence links to Documents
 - Analysis references Evidence for findings
 - Documents generate multiple Evidence items
-
 Key Features:
 - Version tracking for all models
 - Strict data validation rules
 - Complex relationship mapping
 - Industry-specific extensions
+# === END USER INSTRUCTIONS ===
+
+# data-models-investment
+
+Core Domain Models:
+
+1. Deal Model
+- Central entity tracking investment opportunities 
+- Key properties:
+  * Stage progression (intake -> review -> due diligence -> decision)
+  * Confidence scoring system (0-100%) for deal readiness
+  * Evidence requirements matrix by stage
+  * Deal type classification (startup, real estate, fund)
+Importance Score: 95/100
+
+2. Evidence Model
+- Structured fact collection and verification system
+- Properties:
+  * Multi-dimensional evidence types (market, financial, team)
+  * Source document linkage
+  * Confidence scoring (0-100%)
+  * Verification status tracking
+  * Evidence chain relationships
+Importance Score: 90/100
+
+3. Document Model
+- Investment document classification and analysis tracking
+- Properties:
+  * Document role (primary, supporting, reference)
+  * Processing status workflow
+  * Analysis coverage metrics
+  * Extraction confidence scoring
+  * Page-level intelligence mapping
+Importance Score: 85/100
+
+4. Analysis Model
+- Investment analysis workflow and results tracking
+- Properties:
+  * Multi-cycle analysis state machine
+  * Component scores across dimensions
+  * Recommendation generation
+  * Evidence materialization tracking
+  * Analysis depth metrics
+Importance Score: 90/100
+
+5. DIO (Deal Intelligence Object) Model
+- Comprehensive investment intelligence container
+- Properties:
+  * Version-controlled analysis results
+  * Evidence aggregation
+  * Confidence matrices
+  * Decision support data
+  * Recommendation synthesis
+Importance Score: 95/100
+
+Key Relationships:
+- Deal -> Documents (1:many)
+- Documents -> Evidence (1:many) 
+- Evidence -> Analysis (many:many)
+- Analysis -> DIO (many:1)
+
+State Transitions:
+- Deal stage progression based on evidence thresholds
+- Document processing lifecycle (uploaded -> analyzed -> verified)
+- Evidence verification states (collected -> validated -> materialized)
+- Analysis cycles (broad scan -> deep dive -> synthesis)
 
 $END$
 

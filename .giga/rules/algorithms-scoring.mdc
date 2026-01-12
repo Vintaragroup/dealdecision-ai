@@ -1,5 +1,5 @@
 ---
-description: Defines the core scoring algorithms and formulas used for deal evaluation, risk assessment, and financial analysis.
+description: Handles deal analysis, investment metrics calculation, risk assessment, and overall confidence scoring algorithms
 ---
 
 # === USER INSTRUCTIONS ===
@@ -72,10 +72,8 @@ Path: apps/web/src/lib/scoring/dealTerms.ts
 - Liquidation preference analysis engine
 - Board composition recommendation system
 - Investment terms validation framework
-# === END USER INSTRUCTIONS ===
 
-# algorithms-scoring
-
+description: Defines the core scoring algorithms and formulas used for deal evaluation, risk assessment, and financial analysis.
 Deal Confidence Scoring System
 - Multi-dimensional confidence calculation across 5 key metrics:
   - Market Analysis: Market size validation, growth metrics, competitive positioning
@@ -83,7 +81,6 @@ Deal Confidence Scoring System
   - Team Assessment: Background verification scores, network strength analysis
   - Document Coverage: Completeness validation, critical document scoring
   - Risk Assessment: Probability-weighted risk factor aggregation
-
 Core Scoring Formulas:
 ```
 Market Score = (TAM_confidence * 0.3) + (growth_metrics * 0.4) + (competitive_position * 0.3)
@@ -92,7 +89,6 @@ Team Score = (background_check * 0.4) + (network_strength * 0.3) + (domain_exp *
 Document Score = (completeness * 0.6) + (quality * 0.4)
 Risk Score = 100 - (sum(risk_factors * probability))
 ```
-
 Weighted Risk Aggregation
 - Six risk categories with dynamic weightings:
   - Market Risk: 25%
@@ -101,7 +97,6 @@ Weighted Risk Aggregation
   - Product Risk: 15%
   - Legal Risk: 10%
   - Competitive Risk: 5%
-
 ROI Projection Engine
 - Time-based savings calculations
 - Service cost comparison matrices
@@ -111,14 +106,12 @@ ROI Projection Engine
   - Consumer: 0.9x
   - Enterprise: 1.4x
   - Hardware: 0.8x
-
 Deal Terms Analysis
 - Liquidation preference waterfall calculations
 - Cap table modeling with security type factors
 - Ownership dilution projections
 - Protective provision impact scoring
 - Board composition analysis
-
 Investment Recommendation Engine
 Importance Score: 95
 - Multi-factor decision matrix:
@@ -130,6 +123,60 @@ Importance Score: 95
   - High: >80% evidence coverage
   - Medium: 60-80% evidence coverage
   - Low: <60% evidence coverage
+# === END USER INSTRUCTIONS ===
+
+# algorithms-scoring
+
+Core Scoring Components:
+
+1. AI Confidence Scoring System
+- Multi-dimensional scoring across market analysis, financial projections, team assessment
+- Weighted calculations based on analyzed data points
+- Confidence thresholds with color-coded mapping
+Importance Score: 85/100
+
+2. Risk Assessment Engine 
+- Risk scoring across 6 categories (Market, Execution, Financial, Technology, Team, Timeline)
+- Weighted average algorithm for overall risk calculation
+- Risk thresholds with mitigation strategies
+Importance Score: 90/100
+
+3. ROI Calculator
+- Comparative ROI between AI-powered vs traditional analysis
+- Cost/time savings breakdown by analysis category
+- Specific metrics for traditional vs AI methods
+Importance Score: 85/100
+
+4. Deal Terms Analysis
+- Investment terms evaluation including liquidation preferences and board rights
+- Post-money ownership calculations
+- Protective provisions analysis
+Importance Score: 80/100
+
+5. Deal Verification Framework
+- Document validation workflow with hierarchical categories
+- Completion tracking with status progression
+- Critical item flagging system
+Importance Score: 80/100
+
+6. Financial Health Analysis
+- Runway calculation algorithms
+- Industry-specific health metrics (burn multiple, gross margin)
+- Multi-factor health scoring incorporating growth metrics
+Importance Score: 85/100
+
+7. Investment Recommendation Engine
+- Multi-factor analysis for market positioning, team evaluation, risk assessment
+- Structured investment thesis generation
+- Deal comparison and ranking logic
+Importance Score: 90/100
+
+Key Domain Features:
+- Deal-specific confidence scoring
+- Industry-benchmarked risk assessment
+- Investment-focused ROI calculations
+- Financial health indicators
+- Document validation frameworks
 
 $END$
 

@@ -1,6 +1,6 @@
-> NOTE: This doc intentionally lives in `apps/web/src` because it is a component-scoped README used by the onboarding UI and should stay adjacent to the implementation for accurate maintenance.
-
 # 🎯 DealDecision AI - Onboarding Flow
+
+> NOTE: This doc intentionally lives in `apps/web/src` because it is a component-scoped README used by the onboarding UI and should stay adjacent to the implementation for accurate maintenance.
 
 ## Overview
 
@@ -19,6 +19,7 @@ The onboarding flow provides a comprehensive welcome experience for new users, g
   5. Celebration Modal
 
 ### 2. **WelcomeModal**
+
 - **Location**: `/components/onboarding/WelcomeModal.tsx`
 - **Features**:
   - Animated gradient background
@@ -27,6 +28,7 @@ The onboarding flow provides a comprehensive welcome experience for new users, g
   - Glassmorphism design
 
 ### 3. **FeatureTour**
+
 - **Location**: `/components/onboarding/FeatureTour.tsx`
 - **Features**:
   - 6-step interactive walkthrough
@@ -36,6 +38,7 @@ The onboarding flow provides a comprehensive welcome experience for new users, g
   - Skip option available
 
 **Tour Steps**:
+
 1. Mission Control (Dashboard overview)
 2. Active Deals (Deal tracking)
 3. AI-Powered Insights
@@ -44,6 +47,7 @@ The onboarding flow provides a comprehensive welcome experience for new users, g
 6. Document Management
 
 ### 4. **ProfileSetup**
+
 - **Location**: `/components/onboarding/ProfileSetup.tsx`
 - **Features**:
   - Name & Email inputs
@@ -52,6 +56,7 @@ The onboarding flow provides a comprehensive welcome experience for new users, g
   - Form validation
 
 ### 5. **FirstDealGuide**
+
 - **Location**: `/components/onboarding/FirstDealGuide.tsx`
 - **Features**:
   - Company name input
@@ -63,6 +68,7 @@ The onboarding flow provides a comprehensive welcome experience for new users, g
   - "I'll do this later" option
 
 ### 6. **CelebrationModal**
+
 - **Location**: `/components/onboarding/CelebrationModal.tsx`
 - **Features**:
   - Confetti animation (50 particles, 3 seconds)
@@ -122,8 +128,8 @@ const handleRestartOnboarding = () => {
 
 // In JSX:
 {showOnboarding && (
-  <OnboardingFlow 
-    darkMode={darkMode} 
+  <OnboardingFlow
+    darkMode={darkMode}
     onComplete={handleOnboardingComplete}
   />
 )}
@@ -139,7 +145,7 @@ Users can restart the onboarding tour via:
 
 - **Key**: `onboardingCompleted`
 - **Values**: `'true'` | `null`
-- **Behavior**: 
+- **Behavior**:
   - First visit: Shows onboarding
   - After completion: Saved as 'true', won't show again
   - After restart: Removed, shows onboarding
@@ -181,7 +187,7 @@ interface DealData {
 
 - **Theme**: Matches app dark/light mode
 - **Colors**: Brand gradient (#6366f1 → #8b5cf6)
-- **Effects**: 
+- **Effects**:
   - Glassmorphism
   - Backdrop blur
   - Shadow glows

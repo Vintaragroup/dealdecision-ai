@@ -1,5 +1,3 @@
-
-
 # Analysis Pipeline Reality (Current Contract)
 
 This document is the **canonical source of truth** for how the DealDecisionAI pipeline behaves today.
@@ -35,17 +33,17 @@ Covers:
 
 ## 1. Upload → Ingest enqueue (per-document)
 
-**Current behavior**
+### Current behavior
 
 - Each upload creates exactly one `documents` row.
 - Each upload enqueues exactly one `ingest_documents` job for that document.
 
-**Important constraint**
+### Important constraint
 
 - The multipart upload route overwrites the file buffer on each file part.
 - Only the *last file* in a multipart request is retained unless the client loops.
 
-**Implication**
+### Implication
 
 - Multi-document correctness depends on the client completing a loop of single-file uploads.
 - There is no server-side reconciliation unless explicitly implemented.
@@ -94,13 +92,16 @@ These are **persisted artifacts**, not runtime-only values.
 ## 4. Multi-document iteration behavior
 
 ### Ingest
+
 - One job processes one document.
 
 ### Phase 1 analyze
+
 - Loads all eligible extracted documents for the deal.
 - Eligibility is determined by status and extraction metadata presence.
 
 ### Phase B visual extraction
+
 - Can iterate across all documents in a deal when invoked with `deal_id`.
 
 ---

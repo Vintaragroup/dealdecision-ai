@@ -4368,6 +4368,8 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 
       const hasStructuredSummary = await hasColumn(pool, "visual_extractions", "structured_summary");
       const hasStructuredKind = await hasColumn(pool, "visual_extractions", "structured_kind");
+      const hasOcrBlocks = await hasColumn(pool, "visual_extractions", "ocr_blocks");
+      const hasUnits = await hasColumn(pool, "visual_extractions", "units");
       const structuredSummarySelect = hasStructuredSummary
         ? "ve.structured_summary AS structured_summary"
         : "NULL::jsonb AS structured_summary";
@@ -4380,6 +4382,8 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
                   ${hasStructuredKind ? "ve.structured_kind AS structured_kind" : "NULL::text AS structured_kind"},
                   ${structuredSummarySelect},
                   ve.ocr_text,
+                  ${hasOcrBlocks ? "ve.ocr_blocks AS ocr_blocks" : "NULL::jsonb AS ocr_blocks"},
+                  ${hasUnits ? "ve.units AS units" : "NULL::jsonb AS units"},
                   ve.structured_json,
                   ROW_NUMBER() OVER (PARTITION BY ve.visual_asset_id ORDER BY ve.created_at DESC) AS rn
              FROM visual_extractions ve
@@ -4408,6 +4412,8 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
            le.structured_kind,
            le.structured_summary,
            le.ocr_text,
+           le.ocr_blocks,
+           le.units,
            le.structured_json
          FROM visual_assets va
          JOIN documents d ON d.id = va.document_id
@@ -4430,11 +4436,150 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         [dealId]
       );
 
-      const visualAssets = (rows ?? []).map((r: any) => {
+      const rawAssets = rows ?? [];
+
+      const brandModelByDocId = new Map<string, BrandModel>();
+      const brandNameByDocId = new Map<string, { brand: string | null; confidence: number | null }>();
+
+      const docIds = Array.from(
+        new Set(
+          rawAssets
+            .map((r: any) => (typeof r?.document_id === "string" ? r.document_id : null))
+            .filter((x: any): x is string => Boolean(x))
+        )
+      );
+
+      for (const docId of docIds) {
+        const pageInputs: PageInput[] = rawAssets
+          .filter((r: any) => r?.document_id === docId)
+          .map((r: any) => ({ ocr_blocks: (r as any).ocr_blocks ?? null, ocr_text: r?.ocr_text ?? null }));
+
+        const brandModel = buildBrandModel(pageInputs);
+
+        const brandInfo = inferDocumentBrandName(pageInputs);
+        if (brandInfo.brand_name) {
+          const normBrand = normalizePhrase(brandInfo.brand_name);
+          if (normBrand) brandModel.phrases.add(normBrand);
+        }
+
+        brandModelByDocId.set(docId, brandModel);
+        brandNameByDocId.set(docId, { brand: brandInfo.brand_name, confidence: brandInfo.confidence });
+      }
+
+      const visualAssets = rawAssets.map((r: any) => {
         const visual_asset_id = r?.visual_asset_id ?? r?.id ?? null;
+        const brandModel = brandModelByDocId.get(r?.document_id) ?? buildBrandModel([]);
+        const blacklist = brandModel.phrases;
+        const brandInfo = brandNameByDocId.get(r?.document_id) ?? { brand: null, confidence: null };
+
+        const derivedStructure = deriveStructuredSummary((r as any)?.structured_json, (r as any)?.units ?? null);
+        const structured_kind = (r as any)?.structured_kind ?? derivedStructure.structured_kind;
+        const structured_summary = (r as any)?.structured_summary ?? derivedStructure.structured_summary;
+
+        const titleDerived = inferSlideTitleForSlide({
+          blocks: (r as any).ocr_blocks as any[],
+          ocr_text: r?.ocr_text,
+          page_width: null,
+          page_height: null,
+          brandModel,
+          enableDebug: false,
+        });
+
+        // Segment resolution order (effective truth, non-destructive):
+        // 1) human_override (quality_flags.segment_source === 'human_override' or 'human_override_*')
+        // 2) promoted/persisted (quality_flags.segment_key)
+        // 3) computed (API classifier)
+        // 4) unknown
+        // NOTE: structured_json.segment_key is treated as an input/persisted hint but does not override computed.
+        const persistedFromQuality = normalizeAnalystSegment((r as any)?.quality_flags?.segment_key);
+        const persistedFromStructured = normalizeAnalystSegment((r as any)?.structured_json?.segment_key);
+        const persistedSegmentKey = persistedFromQuality ?? persistedFromStructured;
+        const persistedSourceKey = persistedFromQuality
+          ? "quality_flags.segment_key"
+          : persistedFromStructured
+            ? "structured_json.segment_key"
+            : null;
+
+        const qualitySegmentSourceRaw =
+          typeof (r as any)?.quality_flags?.segment_source === "string"
+            ? String((r as any).quality_flags.segment_source)
+            : typeof (r as any)?.quality_flags?.source === "string"
+              ? String((r as any).quality_flags.source)
+              : null;
+
+        const isHumanOverride = Boolean(
+          persistedFromQuality &&
+            (qualitySegmentSourceRaw === "human_override" ||
+              qualitySegmentSourceRaw === "human_override_v1" ||
+              Boolean(qualitySegmentSourceRaw?.startsWith("human_override_")))
+        );
+
+        const computed = classifySegment({
+          ocr_text: r?.ocr_text,
+          ocr_snippet: ocrSnippet(r?.ocr_text),
+          structured_kind,
+          structured_summary,
+          structured_json: (r as any)?.structured_json,
+          asset_type: r?.asset_type,
+          page_index: r?.page_index,
+          slide_title: titleDerived.slide_title,
+          slide_title_confidence: titleDerived.slide_title_confidence,
+          evidence_snippets: Array.isArray((r as any).evidence_sample_snippets) ? (r as any).evidence_sample_snippets : [],
+          brand_blacklist: blacklist,
+          brand_name: brandInfo.brand,
+          extractor_version: (r as any)?.extractor_version,
+          quality_source: (r as any)?.quality_flags?.source,
+          enable_debug: false,
+          include_debug_text_snippet: false,
+          // Make computed_v1 deterministic and independent of worker-provided segment_key.
+          disable_structured_segment_key_signal: true,
+          disable_structured_segment_key_fallback: true,
+        });
+
+        const effectiveSegment = isHumanOverride
+          ? (persistedFromQuality ?? computed.segment)
+          : persistedFromQuality
+            ? persistedFromQuality
+            : computed.segment;
+
+        const persistedConfidenceRaw = (r as any)?.quality_flags?.segment_confidence;
+        const persistedConfidence =
+          typeof persistedConfidenceRaw === "number" && Number.isFinite(persistedConfidenceRaw)
+            ? persistedConfidenceRaw
+            : 1;
+        const effectiveConfidence = persistedFromQuality ? persistedConfidence : computed.confidence;
+
+        const effectiveSource = (() => {
+          if (persistedFromQuality) {
+            if (isHumanOverride) return qualitySegmentSourceRaw || "human_override_v1";
+            return qualitySegmentSourceRaw || "persisted_v0";
+          }
+          return "computed_v1";
+        })();
+
+        const qf = ((r as any)?.quality_flags ?? {}) as Record<string, any>;
+
         return {
           ...r,
           visual_asset_id,
+          structured_summary,
+          structured_kind,
+          slide_title: titleDerived.slide_title,
+          slide_title_source: titleDerived.slide_title_source,
+          slide_title_confidence: titleDerived.slide_title_confidence,
+          slide_title_warnings: titleDerived.slide_title_warnings,
+          // Backwards-compatible if any consumers use "segment" from this endpoint.
+          segment: effectiveSegment,
+          effective_segment: effectiveSegment,
+          segment_source: effectiveSource,
+          segment_confidence: effectiveConfidence,
+          computed_segment: computed.segment,
+          computed_confidence: computed.confidence,
+          persisted_segment_key: persistedSegmentKey,
+          persisted_segment_source: persistedSourceKey,
+          segment_promoted_at: typeof qf.segment_promoted_at === "string" ? qf.segment_promoted_at : null,
+          segment_overridden_at: typeof qf.segment_overridden_at === "string" ? qf.segment_overridden_at : null,
+          segment_override_note: typeof qf.segment_override_note === "string" ? qf.segment_override_note : null,
           document: {
             id: r?.document_id ?? null,
             title: r?.document_title ?? null,

@@ -15,6 +15,8 @@ export type AnalystSegment =
   | "overview"
   | "unknown";
 
+export type UnknownReasonCode = "NO_TEXT" | "LOW_SIGNAL" | "AMBIGUOUS_TIE";
+
 export const canonicalSegments: AnalystSegment[] = [
   "overview",
   "problem",
@@ -51,6 +53,16 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 const normalizeWhitespace = (value: string): string => value.replace(/\s+/g, " ").trim();
 
 export type SegmentFeatures = {
+  // Canonical feature fields (stable across all doc types)
+  title_text: string;
+  title_source: string;
+  body_text: string;
+  evidence_text: string;
+  doc_kind: "vision" | "pptx" | "docx" | "xlsx" | "image";
+  page_index: number | null;
+  slide_number: number | null;
+
+  // Backward-compatible fields
   title: string;
   headings: string[];
   body: string;
@@ -158,6 +170,7 @@ export function buildSegmentFeatures(asset: {
   brand_name?: string | null;
   enable_debug?: boolean;
 }): SegmentFeatures {
+  const pageIndex = typeof asset.page_index === "number" && Number.isFinite(asset.page_index) ? asset.page_index : null;
   const pageNumber = typeof asset.page_index === "number" && Number.isFinite(asset.page_index) ? asset.page_index + 1 : null;
   const docTitle = typeof asset.document_title === "string" && asset.document_title.trim().length > 0 ? asset.document_title.trim() : null;
   const sourceKind = detectSourceKind({
@@ -185,10 +198,16 @@ export function buildSegmentFeatures(asset: {
   const sjObj = isPlainObject(asset.structured_json) ? (asset.structured_json as Record<string, unknown>) : null;
   const headings: string[] = [];
   let title = "";
+  let titleSource = "missing";
   let body = "";
+  let slideNumber: number | null = null;
 
   if (sourceKind === "pptx") {
     title = cleanText((sjObj as any)?.title, 160);
+    titleSource = title ? "structured_json.title" : "missing";
+    slideNumber = typeof (sjObj as any)?.slide_number === "number" && Number.isFinite((sjObj as any).slide_number)
+      ? Number((sjObj as any).slide_number)
+      : null;
     const bullets = collectStringList((sjObj as any)?.bullets, 40, 180);
     const notes = cleanText((sjObj as any)?.notes, 600);
     const snippet = cleanText((sjObj as any)?.text_snippet, 900);
@@ -196,6 +215,7 @@ export function buildSegmentFeatures(asset: {
   } else if (sourceKind === "docx") {
     const heading = cleanText((sjObj as any)?.heading, 200);
     title = heading;
+    titleSource = title ? "structured_json.heading" : "missing";
     const paragraphs = collectStringList((sjObj as any)?.paragraphs, 60, 220);
     const snippet = cleanText((sjObj as any)?.text_snippet, 900);
     const tableRows = Array.isArray((sjObj as any)?.table_rows) ? ((sjObj as any).table_rows as any[]) : [];
@@ -214,6 +234,7 @@ export function buildSegmentFeatures(asset: {
       .trim();
   } else if (sourceKind === "xlsx") {
     title = cleanText((sjObj as any)?.sheet_name, 120);
+    titleSource = title ? "structured_json.sheet_name" : "missing";
     const headers = collectStringList((sjObj as any)?.headers, 60, 80);
     headings.push(...headers.slice(0, 20));
     const sampleRows = Array.isArray((sjObj as any)?.sample_rows) ? ((sjObj as any).sample_rows as any[]) : [];
@@ -243,10 +264,16 @@ export function buildSegmentFeatures(asset: {
         enableDebug: asset.enable_debug === true,
       });
       title = cleanText(titleDerived?.slide_title, 180);
+      titleSource = typeof titleDerived?.slide_title_source === "string" && titleDerived.slide_title_source.trim().length > 0
+        ? titleDerived.slide_title_source
+        : title
+          ? "ocr_fallback"
+          : "missing";
     } catch {
       // Fallback if slide-title module isn't available for some reason.
       const lines = typeof asset.ocr_text === "string" ? asset.ocr_text.split(/\r?\n/).map((l) => normalizeWhitespace(l)).filter(Boolean) : [];
       title = lines[0] ? lines[0].slice(0, 180) : "";
+      titleSource = title ? "ocr_top_line" : "missing";
     }
 
     const ocrText = typeof asset.ocr_text === "string" ? asset.ocr_text : "";
@@ -269,7 +296,16 @@ export function buildSegmentFeatures(asset: {
   const hasTitle = Boolean(title && title.trim().length > 0);
   const headingsDeduped = Array.from(new Set(headings.map((h) => normalizeWhitespace(h)).filter(Boolean))).slice(0, 24);
 
+  const evidenceText = evidenceSnippets.join("\n").trim();
+
   return {
+    title_text: title,
+    title_source: titleSource,
+    body_text: body,
+    evidence_text: evidenceText,
+    doc_kind: sourceKind,
+    page_index: pageIndex,
+    slide_number: slideNumber,
     title,
     headings: headingsDeduped,
     body,
@@ -480,9 +516,9 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
   const TITLE_MATCH_CONFIDENCE = 0.95;
   const TITLE_INTENT_CONFIDENCE = 0.8;
   const BODY_SCORE_THRESHOLD = 0.5;
-  const EVIDENCE_BUMP_DELTA = 0.1;
   const TIE_DELTA_EPS = 0.1;
   const NORMALIZE_SCALE = 5;
+  const MIN_CAPTURED_TEXT_LEN = 18;
 
   const enableDebug = input.enable_debug === true;
   const includeDebugTextSnippet = enableDebug && input.include_debug_text_snippet === true;
@@ -691,6 +727,8 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       { term: "products", re: /^(?:our\s+)?products$/i, segment: "product" },
       { term: "product", re: /^(?:our\s+)?product$/i, segment: "product" },
       { term: "product overview", re: /^(?:our\s+)?product\s+overview$/i, segment: "product" },
+      { term: "platform", re: /^(?:our\s+)?platform$/i, segment: "product" },
+      { term: "how it works", re: /\bhow\s+it\s+works\b/i, segment: "product" },
       { term: "solution", re: /^(?:our\s+)?solution$/i, segment: "solution" },
       { term: "solutions", re: /^(?:our\s+)?solutions$/i, segment: "solution" },
       { term: "solution overview", re: /^(?:our\s+)?solution\s+overview$/i, segment: "solution" },
@@ -721,13 +759,6 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
 
   const titleIntent = hasAny(titleMatchText, ["why this matters", "value", "impact"]);
 
-  const evidenceStrongTerms: Partial<Record<AnalystSegment, string[]>> = {
-    distribution: ["reseller", "resellers", "partner", "partners", "partnership", "partnerships", "channel", "channels"],
-    traction: ["pipeline", "arr", "mrr", "revenue", "customers", "users"],
-    business_model: ["pricing", "unit economics", "subscription", "take rate"],
-    financials: ["forecast", "projection", "projections", "income statement", "balance sheet"],
-  };
-
   // Rule 3 keyword lists (BODY + HEADINGS).
   const segmentTerms: Record<Exclude<AnalystSegment, "overview" | "unknown">, Array<{ term: string; weight?: number }>> = {
     problem: [
@@ -746,6 +777,9 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       { term: "value proposition" },
       { term: "impact" },
       { term: "benefit" },
+      { term: "benefits" },
+      { term: "outcome" },
+      { term: "outcomes" },
       { term: "solve" },
       { term: "solving" },
       { term: "seamlessly integrates" },
@@ -753,12 +787,13 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
     product: [
       { term: "product" },
       { term: "products" },
+      { term: "feature" },
+      { term: "features" },
+      { term: "module" },
+      { term: "modules" },
       { term: "platform", weight: 0.5 },
       { term: "engine", weight: 0.5 },
       { term: "workflow", weight: 0.5 },
-      { term: "automates" },
-      { term: "predicts" },
-      { term: "integrates" },
       { term: "capability" },
       { term: "capabilities" },
       { term: "how it works" },
@@ -812,6 +847,11 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       { term: "go to market" },
       { term: "gtm" },
       { term: "channels" },
+      { term: "channel" },
+      { term: "partner", weight: 2 },
+      { term: "partners", weight: 2 },
+      { term: "reseller", weight: 2 },
+      { term: "resellers", weight: 2 },
       { term: "sales" },
       { term: "marketing" },
       { term: "partnerships" },
@@ -876,29 +916,103 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
     ],
     exit: [
       { term: "exit" },
-      { term: "exit strategy" },
-      { term: "acquisition" },
-      { term: "m&a" },
-      { term: "strategic buyers" },
-      { term: "acquirer" },
-      { term: "acquirers" },
+      { term: "exit strategy", weight: 2 },
+      { term: "acquisition", weight: 2 },
+      { term: "m&a", weight: 2 },
+      { term: "strategic buyers", weight: 3 },
+      { term: "acquirer", weight: 2 },
+      { term: "acquirers", weight: 2 },
     ],
   };
 
-  const scoreRows: Array<{ segment: AnalystSegment; score: number; matched: string[] }> = [];
-  for (const seg of Object.keys(segmentTerms) as Array<Exclude<AnalystSegment, "overview" | "unknown">>) {
-    const { raw, matched } = scoreByTerms(scoringStripped, segmentTerms[seg]);
-    if ((seg === "solution" || seg === "product") && raw > 0 && !hasFunctionalVerb) {
-      scoreRows.push({ segment: seg, score: 0, matched: [] });
-      continue;
-    }
-    const rawWithTable = seg === "financials" && features.has_table ? raw + 1 : raw;
-    scoreRows.push({ segment: seg, score: normalizeScore(rawWithTable), matched });
+  const solutionBenefitTerms = [
+    "value proposition",
+    "value prop",
+    "benefit",
+    "benefits",
+    "impact",
+    "outcome",
+    "outcomes",
+    "results",
+    "roi",
+    "saves",
+    "save time",
+    "reduces",
+    "reduce cost",
+    "improves",
+    "increase",
+  ];
+
+  const productFeatureTerms = [
+    "feature",
+    "features",
+    "module",
+    "modules",
+    "how it works",
+    "architecture",
+    "workflow",
+    "platform",
+    "integrates",
+    "integration",
+    "demo",
+  ];
+
+  const evidenceWeight = 1.0;
+  const scoreRows: Array<{ segment: AnalystSegment; score: number; matched_body: string[]; matched_evidence: string[] }> = [];
+
+  const keywordHits: Record<string, { title: string[]; body: string[]; evidence: string[] }> = {};
+
+  const titleTermsBySegment: Partial<Record<AnalystSegment, string[]>> = {
+    problem: ["market problem", "problem"],
+    market: ["market", "tam", "sam", "som"],
+    traction: ["traction"],
+    product: ["product", "products", "platform", "how it works"],
+    solution: ["solution", "solutions"],
+    financials: ["financials", "forecast", "projection"],
+    raise_terms: ["use of funds", "term sheet", "valuation", "cap table", "round"],
+    distribution: ["go to market", "go-to-market", "gtm", "distribution"],
+    team: ["team"],
+    competition: ["competition", "competitors"],
+    risks: ["risks", "risk"],
+    business_model: ["business model", "pricing"],
+    exit: ["exit"],
+    overview: ["overview", "company overview"],
+  };
+
+  for (const seg of canonicalSegments) {
+    if (seg === "unknown") continue;
+    const titleHit = hasAny(titleMatchText, titleTermsBySegment[seg] ?? []);
+    keywordHits[seg] = { title: titleHit.matched, body: [], evidence: [] };
   }
 
-  const ranked = scoreRows.sort((a, b) => b.score - a.score);
-  const best = ranked[0] ?? { segment: "unknown" as AnalystSegment, score: 0, matched: [] as string[] };
-  const second = ranked[1] ?? { segment: "unknown" as AnalystSegment, score: 0, matched: [] as string[] };
+  for (const seg of Object.keys(segmentTerms) as Array<Exclude<AnalystSegment, "overview" | "unknown">>) {
+    const body = scoreByTerms(scoringStripped, segmentTerms[seg]);
+    const ev = scoreByTerms(evidenceRaw, segmentTerms[seg]);
+    keywordHits[seg] = keywordHits[seg] ?? { title: [], body: [], evidence: [] };
+    keywordHits[seg].body = body.matched;
+    keywordHits[seg].evidence = ev.matched;
+
+    const rawWithTable = seg === "financials" && features.has_table ? body.raw + 1 : body.raw;
+    const combinedRaw = rawWithTable + ev.raw * evidenceWeight;
+    scoreRows.push({ segment: seg, score: normalizeScore(combinedRaw), matched_body: body.matched, matched_evidence: ev.matched });
+  }
+
+  // Product vs solution shaping.
+  const benefitHits = scoreByTerms(`${scoringStripped}\n${evidenceRaw}`, solutionBenefitTerms.map((t) => ({ term: t, weight: 1 }))).raw;
+  const featureHits = scoreByTerms(`${scoringStripped}\n${evidenceRaw}`, productFeatureTerms.map((t) => ({ term: t, weight: 1 }))).raw;
+
+  let ranked = scoreRows.sort((a, b) => b.score - a.score);
+
+  const adjustScore = (segment: AnalystSegment, delta: number) => {
+    ranked = ranked.map((r) => (r.segment === segment ? { ...r, score: Math.max(0, Math.min(1, r.score + delta)) } : r));
+    ranked.sort((a, b) => b.score - a.score);
+  };
+
+  if (featureHits > benefitHits + 1) adjustScore("product", 0.08);
+  if (benefitHits > featureHits + 1) adjustScore("solution", 0.08);
+
+  const best = ranked[0] ?? { segment: "unknown" as AnalystSegment, score: 0, matched_body: [] as string[], matched_evidence: [] as string[] };
+  const second = ranked[1] ?? { segment: "unknown" as AnalystSegment, score: 0, matched_body: [] as string[], matched_evidence: [] as string[] };
   const tieDelta = best.score - second.score;
 
   type RankedEntry = { segment: string; score: number };
@@ -959,6 +1073,9 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
         captured_text: classificationText.slice(0, 800),
         ...(includeDebugTextSnippet ? { classification_text_snippet: classificationText.slice(0, 250) } : {}),
         segment_features: features,
+        title_text_snippet: features.title_text ? features.title_text.slice(0, 200) : null,
+        title_source: features.title_source,
+        keyword_hits: keywordHits,
         top_scores: ranked.map((r: { segment: AnalystSegment; score: number }) => ({ segment: r.segment, score: r.score })),
         best_score: best.score,
         runner_up_score: second.score,
@@ -1022,137 +1139,76 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
     };
   }
 
-  // Rule 3: Body keyword scoring.
+  // Deterministic table routing: if the extractor detected a table-like asset,
+  // route to financials before falling back to low-signal body scoring.
+  if (features.has_table) {
+    const outDebug = enableDebug
+      ? {
+          ...debugBase,
+          rule_id: "TABLE_TO_FINANCIALS",
+          matched_terms: ["table"],
+          threshold: BODY_SCORE_THRESHOLD,
+          tie_delta: tieDelta,
+        }
+      : undefined;
+    return {
+      segment: "financials",
+      confidence: 0.85,
+      debug: ensureDebugConsistency(outDebug, "financials", {
+        rule_id: "TABLE_TO_FINANCIALS",
+        explanation: "Detected table structure; routing to financials",
+      }),
+    };
+  }
+
+  // Rule 3: Body+evidence keyword scoring.
   const bestScore = best.score;
   const chosenFromBody = best.segment;
   const baseDebug = enableDebug
     ? {
         ...debugBase,
         rule_id: "BODY_SCORE",
-        matched_terms: best.matched,
+        matched_terms: Array.from(new Set([...(best.matched_body ?? []), ...(best.matched_evidence ?? [])])),
         threshold: BODY_SCORE_THRESHOLD,
         tie_delta: tieDelta,
       }
     : undefined;
 
-  // Rule 4: Evidence tie-break.
-  if (bestScore < BODY_SCORE_THRESHOLD) {
-    const evidenceMatch = matchHardTitleLabel(evidenceText);
-    if (evidenceMatch) {
-      const bumped = Math.max(0, Math.min(1, bestScore + EVIDENCE_BUMP_DELTA));
-      const outDebug = enableDebug
-        ? {
-            ...(baseDebug ?? {}),
-            rule_id: "EVIDENCE_BUMP",
-            matched_terms: [evidenceMatch.term],
-            tie_delta: tieDelta,
-          }
-        : undefined;
-      return {
-        segment: evidenceMatch.segment,
-        confidence: bumped,
-        debug: ensureDebugConsistency(outDebug, evidenceMatch.segment, {
-          rule_id: "EVIDENCE_BUMP",
-          explanation: "Evidence snippet contains strong segment label keyword",
-        }),
-      };
-    }
+  const titleReallyEmpty = typeof features.title_text === "string" ? features.title_text.trim().length === 0 : true;
+  const capturedLen =
+    (typeof titleMatchText === "string" ? titleMatchText.length : 0) +
+    (typeof scoringText === "string" ? scoringText.length : 0) +
+    (typeof evidenceText === "string" ? evidenceText.length : 0);
 
-    // Evidence keywords can break ties when OCR is noisy or titles are unusable.
-    // Deterministically choose the segment with the most evidence-term hits.
-    const evidenceCandidates: Array<{ segment: AnalystSegment; matched: string[] }> = [];
-    for (const [segment, terms] of Object.entries(evidenceStrongTerms) as Array<[AnalystSegment, string[]]>) {
-      const hit = hasAny(evidenceText, terms);
-      if (hit.hit) evidenceCandidates.push({ segment, matched: hit.matched });
-    }
-    evidenceCandidates.sort((a, b) => b.matched.length - a.matched.length);
-    const evidenceBest = evidenceCandidates[0] ?? null;
-    if (evidenceBest) {
-      const bumped = Math.max(0.3, Math.min(1, bestScore + EVIDENCE_BUMP_DELTA));
-      const outDebug = enableDebug
-        ? {
-            ...(baseDebug ?? {}),
-            rule_id: "EVIDENCE_BUMP",
-            matched_terms: evidenceBest.matched,
-            tie_delta: tieDelta,
-          }
-        : undefined;
-      return {
-        segment: evidenceBest.segment,
-        confidence: bumped,
-        debug: ensureDebugConsistency(outDebug, evidenceBest.segment, {
-          rule_id: "EVIDENCE_BUMP",
-          explanation: "Evidence snippets contain strong segment keywords",
-        }),
-      };
-    }
-
-    // Rule 5: Unknown only when the title is truly empty (not merely unusable/noisy),
-    // the body is below threshold, and evidence has no usable signal.
-    const originalTitle = typeof features.title === "string" ? features.title.trim() : "";
-    const titleReallyEmpty = originalTitle.length === 0;
-    if (titleReallyEmpty && !evidenceText) {
-      const bodyHasText = Boolean(scoringText);
-      const reasonCode = bodyHasText ? "BELOW_THRESHOLD" : "EMPTY_TEXT";
-      const outDebug = enableDebug
-        ? {
-            ...(baseDebug ?? {}),
-            rule_id: "UNKNOWN",
-            unknown_reason_code: reasonCode,
-            matched_terms: [],
-            tie_delta: tieDelta,
-          }
-        : undefined;
-      return {
-        segment: "unknown",
-        confidence: 0,
-        debug: ensureDebugConsistency(outDebug, "unknown", {
+  const finalizeUnknown = (reason: UnknownReasonCode): SegmentClassifierOutput => {
+    const outDebug = enableDebug
+      ? {
+          ...(baseDebug ?? {}),
           rule_id: "UNKNOWN",
-          explanation: `Title empty and best_score below threshold (${reasonCode})`,
-        }),
-      };
-    }
+          unknown_reason_code: reason,
+          matched_terms: [],
+        }
+      : undefined;
+    return {
+      segment: "unknown",
+      confidence: 0,
+      debug: ensureDebugConsistency(outDebug, "unknown", {
+        rule_id: "UNKNOWN",
+        explanation: `Classified as unknown (${reason})`,
+      }),
+    };
+  };
 
-    // Low-signal fallback: when BODY+HEADINGS contain no usable text, prefer overview
-    // over returning an arbitrary segment from a 0-score tie.
-    if (!scoringText) {
-      const outDebug = enableDebug
-        ? {
-            ...(baseDebug ?? {}),
-            rule_id: "BODY_SCORE",
-            matched_terms: [],
-            tie_delta: tieDelta,
-          }
-        : undefined;
-      return {
-        segment: "overview",
-        confidence: Math.min(0.35, bestScore),
-        debug: ensureDebugConsistency(outDebug, "overview", {
-          rule_id: "BODY_SCORE",
-          explanation: "No body/headings signal; defaulting to overview",
-        }),
-      };
-    }
+  if (capturedLen < MIN_CAPTURED_TEXT_LEN && titleReallyEmpty) {
+    return finalizeUnknown("NO_TEXT");
+  }
 
-    // If no terms match at all, return overview instead of an arbitrary 0-score tie.
-    if (bestScore === 0) {
-      const outDebug = enableDebug
-        ? {
-            ...(baseDebug ?? {}),
-            rule_id: "BODY_SCORE",
-            matched_terms: [],
-            tie_delta: tieDelta,
-          }
-        : undefined;
-      return {
-        segment: "overview",
-        confidence: 0.35,
-        debug: ensureDebugConsistency(outDebug, "overview", {
-          rule_id: "BODY_SCORE",
-          explanation: "No keyword matches; defaulting to overview",
-        }),
-      };
-    }
+  if (bestScore < BODY_SCORE_THRESHOLD) {
+    return finalizeUnknown("LOW_SIGNAL");
+  }
+
+  if (second.score >= BODY_SCORE_THRESHOLD && Math.abs(best.score - second.score) <= TIE_DELTA_EPS) {
+    return finalizeUnknown("AMBIGUOUS_TIE");
   }
 
   return {

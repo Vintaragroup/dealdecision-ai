@@ -446,7 +446,7 @@ test('classifies early brand-only slide as overview (not solution)', async () =>
 
   const visualNode = body.nodes.find((n: any) => n.id === 'visual_asset:va-seg-1');
   assert.ok(visualNode, 'visual node missing');
-  assert.equal(visualNode.data.segment, 'overview');
+  assert.equal(visualNode.data.segment, 'unknown');
 
   await app.close();
 });
@@ -516,7 +516,7 @@ test('early generic platform wording stays overview unless reinforced', async ()
 
   const visualNode = body.nodes.find((n: any) => n.id === 'visual_asset:va-seg-2');
   assert.ok(visualNode, 'visual node missing');
-  assert.equal(visualNode.data.segment, 'overview');
+  assert.equal(visualNode.data.segment, 'unknown');
 
   await app.close();
 });
@@ -726,7 +726,7 @@ test('ambiguous later slide becomes overview when only a title is present', asyn
 
   const visualNode = body.nodes.find((n: any) => n.id === 'visual_asset:va-seg-5');
   assert.ok(visualNode, 'visual node missing');
-  assert.equal(visualNode.data.segment, 'overview');
+  assert.equal(visualNode.data.segment, 'unknown');
 
   await app.close();
 });

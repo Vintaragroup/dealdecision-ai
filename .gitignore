@@ -89,4 +89,4 @@ coverage/
 
 
 # package-internal docs (not curated)
-packages/**/docs/
+packages/**/docs/.vscode/

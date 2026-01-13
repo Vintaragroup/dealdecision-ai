@@ -171,27 +171,27 @@ test('GET /api/v1/deals/:dealId/lineage returns segment_audit_report when reques
   }
 
   const unknownItems = doc.items.filter((it: any) => it.segment === 'unknown');
-  assert.ok(unknownItems.length >= 1);
   for (const it of unknownItems) {
     assert.ok(it.reason.unknown_reason_code, 'unknown_reason_code must be set for unknown segment');
+    assert.ok(
+      ['NO_TEXT', 'LOW_SIGNAL', 'AMBIGUOUS_TIE'].includes(it.reason.unknown_reason_code),
+      `unexpected unknown_reason_code: ${String(it.reason.unknown_reason_code)}`
+    );
   }
 
-  // Persisted unknown should yield the deterministic code.
+  // Persisted segment_key='unknown' is treated as missing.
   const persistedUnknown = doc.items.find((it: any) => it.visual_asset_id === 'va-persisted-unknown');
   assert.ok(persistedUnknown);
-  assert.equal(persistedUnknown.segment, 'unknown');
-  assert.equal(persistedUnknown.segment_source, 'persisted');
-  assert.equal(persistedUnknown.reason.unknown_reason_code, 'PERSISTED_UNKNOWN');
+  assert.equal(persistedUnknown.segment, 'team');
+  assert.equal(persistedUnknown.segment_source, 'structured');
+  assert.equal(persistedUnknown.reason.unknown_reason_code, null);
 
   assert.ok(persistedUnknown.content_preview.structured_json_present);
   assert.ok(persistedUnknown.content_preview.structured_json_snippet);
   assert.ok(String(persistedUnknown.content_preview.structured_json_snippet).includes('"title":"Team"'));
 
-      // When segment_rescore=1, persisted items should include computed fields.
-      const persistedItems = doc.items.filter((it: any) => it.segment_source === 'persisted');
-      assert.ok(persistedItems.length >= 1);
-      for (const it of persistedItems) {
-        assert.equal(it.persisted_segment_key, it.segment);
+      // When segment_rescore=1, items should include computed fields.
+      for (const it of doc.items) {
         assert.equal(typeof it.captured_text, 'string');
         assert.ok(String(it.captured_text).length <= 800);
         assert.equal(typeof it.computed_segment, 'string');
@@ -230,8 +230,8 @@ test('GET /api/v1/deals/:dealId/lineage returns segment_audit_report when reques
 
       const productSlide = doc.items.find((it: any) => it.visual_asset_id === 'va-persisted-unknown-product');
       assert.ok(productSlide);
-      assert.equal(productSlide.segment_source, 'persisted');
-      assert.equal(productSlide.segment, 'unknown');
+      assert.equal(productSlide.segment_source, 'structured');
+      assert.equal(productSlide.segment, 'product');
       assert.equal(productSlide.computed_segment, 'product');
   await app.close();
 });

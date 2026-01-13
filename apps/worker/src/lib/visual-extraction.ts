@@ -82,7 +82,6 @@ function coerceSegmentKey(value: unknown): SegmentKey | null {
 	if (typeof value !== "string") return null;
 	const trimmed = value.trim();
 	if (!trimmed) return null;
-	// @ts-expect-error - runtime includes check.
 	return (SEGMENT_KEYS as readonly string[]).includes(trimmed) ? (trimmed as SegmentKey) : null;
 }
 

@@ -66,7 +66,8 @@ describe('DealWorkspace Job Center (live mode)', () => {
     });
 
     expect(screen.getByText(/Job Center/i)).toBeInTheDocument();
-    expect(screen.getByText(/Active job/i)).toBeInTheDocument();
+    // Avoid matching both "Active job" and "No active job".
+    expect(screen.getByText(/^Active job$/i)).toBeInTheDocument();
     expect(screen.getByText(/None yet/i)).toBeInTheDocument();
     expect(screen.getByText(/idle/i)).toBeInTheDocument();
     expect(screen.getByText(/Waiting for worker update/i)).toBeInTheDocument();
@@ -187,7 +188,8 @@ describe('DealWorkspace Job Center (live mode)', () => {
     await waitFor(() => {
       expect(apiGetJob).toHaveBeenCalled();
       expect(screen.getByText(/42% complete/i)).toBeInTheDocument();
-      expect(screen.getByText(/Crunching signals/i)).toBeInTheDocument();
+      // Message can appear in multiple UI locations.
+      expect(screen.getAllByText(/^Crunching signals$/i).length).toBeGreaterThan(0);
     });
   });
 });

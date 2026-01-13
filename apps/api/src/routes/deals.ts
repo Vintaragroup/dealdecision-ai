@@ -2563,8 +2563,10 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       // 3) computed (API classifier)
       // 4) unknown
       // NOTE: structured_json.segment_key is treated as an input/persisted hint but does not override computed.
-      const persistedFromQuality = normalizeAnalystSegment((v as any)?.quality_flags?.segment_key);
-      const persistedFromStructured = normalizeAnalystSegment((v as any)?.structured_json?.segment_key);
+      const persistedFromQualityRaw = normalizeAnalystSegment((v as any)?.quality_flags?.segment_key);
+      const persistedFromStructuredRaw = normalizeAnalystSegment((v as any)?.structured_json?.segment_key);
+      const persistedFromQuality = persistedFromQualityRaw && persistedFromQualityRaw !== "unknown" ? persistedFromQualityRaw : null;
+      const persistedFromStructured = persistedFromStructuredRaw && persistedFromStructuredRaw !== "unknown" ? persistedFromStructuredRaw : null;
       const persistedSegmentKey = persistedFromQuality ?? persistedFromStructured;
       const persistedSourceKey = persistedFromQuality
         ? "quality_flags.segment_key"
@@ -3137,33 +3139,11 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
                 }
               };
 
-              const computeUnknownReasonCode = (input: {
-                segment: string;
-                segment_source: SegmentSource;
-                persisted_unknown: boolean;
-                structured_json_present: boolean;
-                ocr_text_present: boolean;
-                classification_text_len: number;
-                sources_used: string[];
-                best_score: number | null;
-                runner_up_score: number | null;
-                threshold: number;
-              }): string | null => {
-                if (input.segment !== "unknown") return null;
-                if (input.segment_source === "persisted" && input.persisted_unknown) return "PERSISTED_UNKNOWN";
-                if (input.segment_source === "structured" && !input.structured_json_present) return "MISSING_STRUCTURED_JSON";
-                if (input.segment_source === "vision" && !input.ocr_text_present) return "MISSING_OCR_TEXT";
-                if (input.classification_text_len <= 0 || input.sources_used.length === 0) return "NO_CLASSIFICATION_TEXT";
-                if (
-                  input.best_score != null &&
-                  input.runner_up_score != null &&
-                  Math.abs(input.best_score - input.runner_up_score) < tieDelta &&
-                  input.best_score < input.threshold + tieScoreDelta
-                ) {
-                  return "TIE_LOW_CONFIDENCE";
-                }
-                if (input.best_score != null && input.best_score < input.threshold) return "LOW_BEST_SCORE";
-                return "LOW_BEST_SCORE";
+              const normalizeUnknownReasonCode = (value: unknown): "NO_TEXT" | "LOW_SIGNAL" | "AMBIGUOUS_TIE" | null => {
+                if (typeof value !== "string") return null;
+                const v = value.trim();
+                if (v === "NO_TEXT" || v === "LOW_SIGNAL" || v === "AMBIGUOUS_TIE") return v;
+                return null;
               };
 
               const docById = new Map(docs.map((d) => [d.id, d] as const));
@@ -3291,30 +3271,34 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
                       return `Item ${pageN != null ? pageN : "—"}`;
                     })();
 
-                    const persistedUnknown = segment_source === "persisted" && segment === "unknown";
-                    const unknown_reason_code = computeUnknownReasonCode({
-                      segment,
-                      segment_source,
-                      persisted_unknown: persistedUnknown,
-                      structured_json_present: structuredJsonPresent,
-                      ocr_text_present: ocrTextPresent,
-                      classification_text_len: classificationTextLen,
-                      sources_used: sourcesUsed,
-                      best_score,
-                      runner_up_score,
-                      threshold,
-                    });
+                    const title_text_snippet = normalizeSnippet(debug?.title_text_snippet, 200);
+                    const title_source = typeof debug?.title_source === "string" && debug.title_source.trim().length > 0
+                      ? debug.title_source.trim()
+                      : null;
 
-                    const computedSegment = segmentRescoreRequested && typeof v?.segment_rescore_segment === "string"
+                    const unknown_reason_code = segment === "unknown" ? normalizeUnknownReasonCode(debug?.unknown_reason_code) : null;
+
+                    const computedSegmentRaw = segmentRescoreRequested && typeof v?.segment_rescore_segment === "string"
                       ? String(v.segment_rescore_segment)
                       : null;
 
-                    const computedDebug = segmentRescoreRequested ? v?.segment_rescore_debug : null;
-                    const computedCapturedText =
-                      typeof computedDebug?.captured_text === "string" ? computedDebug.captured_text : null;
+                    const computedDebugRaw = segmentRescoreRequested ? v?.segment_rescore_debug : null;
+                    const computedReasonDebug =
+                      computedDebugRaw && typeof computedDebugRaw === "object" ? computedDebugRaw : debug && typeof debug === "object" ? debug : null;
 
-                    const computedTopScores = Array.isArray(computedDebug?.top_scores)
-                      ? computedDebug.top_scores
+                    const computedSegment = segmentRescoreRequested
+                      ? computedSegmentRaw
+                        ? computedSegmentRaw
+                        : typeof (v as any)?.computed_segment === "string"
+                          ? String((v as any).computed_segment)
+                          : null
+                      : null;
+
+                    const computedCapturedText =
+                      typeof (computedReasonDebug as any)?.captured_text === "string" ? String((computedReasonDebug as any).captured_text) : "";
+
+                    const computedTopScores = Array.isArray((computedReasonDebug as any)?.top_scores)
+                      ? (computedReasonDebug as any).top_scores
                           .filter((s: any) => s && typeof s === "object")
                           .slice(0, 12)
                           .map((s: any) => ({ segment: String(s.segment), score: Number(s.score) }))
@@ -3322,35 +3306,9 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
                           .sort((a: any, b: any) => b.score - a.score)
                       : [];
 
-                    const computedUnknownReasonCode =
-                      computedSegment === "unknown"
-                        ? computeUnknownReasonCode({
-                            segment: "unknown",
-                            segment_source: "vision",
-                            persisted_unknown: false,
-                            classification_text_len:
-                              typeof computedDebug?.classification_text_len === "number" && Number.isFinite(computedDebug.classification_text_len)
-                                ? computedDebug.classification_text_len
-                                : 0,
-                            sources_used: Array.isArray(computedDebug?.classification_text_sources_used)
-                              ? computedDebug.classification_text_sources_used.filter((s: any) => typeof s === "string" && s.trim().length > 0)
-                              : [],
-                            best_score:
-                              typeof computedDebug?.best_score === "number" && Number.isFinite(computedDebug.best_score)
-                                ? computedDebug.best_score
-                                : null,
-                            runner_up_score:
-                              typeof computedDebug?.runner_up_score === "number" && Number.isFinite(computedDebug.runner_up_score)
-                                ? computedDebug.runner_up_score
-                                : null,
-                            threshold:
-                              typeof computedDebug?.threshold === "number" && Number.isFinite(computedDebug.threshold)
-                                ? computedDebug.threshold
-                                : 0.35,
-                            structured_json_present: structuredJsonPresent,
-                            ocr_text_present: ocrTextPresent,
-                          })
-                        : null;
+                    const computedUnknownReasonCode = computedSegment === "unknown"
+                      ? normalizeUnknownReasonCode((computedReasonDebug as any)?.unknown_reason_code)
+                      : null;
 
                     return {
                       visual_asset_id: v.id,
@@ -3367,43 +3325,50 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
                       snippet,
                       ...(segmentRescoreRequested
                         ? {
-                            persisted_segment_key: typeof segment === "string" ? segment : null,
+                            persisted_segment_key: persistedKey,
                             captured_text: computedCapturedText,
                             computed_segment: computedSegment,
                             computed_reason: computedSegment
                               ? {
+                                  title_text_snippet: normalizeSnippet((computedReasonDebug as any)?.title_text_snippet, 200),
+                                  title_source:
+                                    typeof (computedReasonDebug as any)?.title_source === "string" && String((computedReasonDebug as any).title_source).trim().length > 0
+                                      ? String((computedReasonDebug as any).title_source).trim()
+                                      : null,
                                   classification_text_len:
-                                    typeof computedDebug?.classification_text_len === "number" && Number.isFinite(computedDebug.classification_text_len)
-                                      ? computedDebug.classification_text_len
+                                    typeof (computedReasonDebug as any)?.classification_text_len === "number" && Number.isFinite((computedReasonDebug as any).classification_text_len)
+                                      ? (computedReasonDebug as any).classification_text_len
                                       : 0,
-                                  classification_text_sources_used: Array.isArray(computedDebug?.classification_text_sources_used)
-                                    ? computedDebug.classification_text_sources_used.filter((s: any) => typeof s === "string" && s.trim().length > 0)
+                                  classification_text_sources_used: Array.isArray((computedReasonDebug as any)?.classification_text_sources_used)
+                                    ? (computedReasonDebug as any).classification_text_sources_used.filter((s: any) => typeof s === "string" && s.trim().length > 0)
                                     : [],
-                                  ...(computedDebug?.keyword_hits && typeof computedDebug.keyword_hits === "object" ? { keyword_hits: computedDebug.keyword_hits } : {}),
+                                  ...((computedReasonDebug as any)?.keyword_hits && typeof (computedReasonDebug as any).keyword_hits === "object"
+                                    ? { keyword_hits: (computedReasonDebug as any).keyword_hits }
+                                    : {}),
                                   top_scores: computedTopScores,
                                   best_score:
-                                    typeof computedDebug?.best_score === "number" && Number.isFinite(computedDebug.best_score)
-                                      ? computedDebug.best_score
+                                    typeof (computedReasonDebug as any)?.best_score === "number" && Number.isFinite((computedReasonDebug as any).best_score)
+                                      ? (computedReasonDebug as any).best_score
                                       : null,
                                   runner_up_score:
-                                    typeof computedDebug?.runner_up_score === "number" && Number.isFinite(computedDebug.runner_up_score)
-                                      ? computedDebug.runner_up_score
+                                    typeof (computedReasonDebug as any)?.runner_up_score === "number" && Number.isFinite((computedReasonDebug as any).runner_up_score)
+                                      ? (computedReasonDebug as any).runner_up_score
                                       : null,
                                   threshold:
-                                    typeof computedDebug?.threshold === "number" && Number.isFinite(computedDebug.threshold)
-                                      ? computedDebug.threshold
+                                    typeof (computedReasonDebug as any)?.threshold === "number" && Number.isFinite((computedReasonDebug as any).threshold)
+                                      ? (computedReasonDebug as any).threshold
                                       : undefined,
                                   tie_delta:
-                                    typeof computedDebug?.tie_delta === "number" && Number.isFinite(computedDebug.tie_delta)
-                                      ? computedDebug.tie_delta
+                                    typeof (computedReasonDebug as any)?.tie_delta === "number" && Number.isFinite((computedReasonDebug as any).tie_delta)
+                                      ? (computedReasonDebug as any).tie_delta
                                       : undefined,
-                                  override_applied: computedDebug?.override_applied === true ? true : undefined,
+                                  override_applied: (computedReasonDebug as any)?.override_applied === true ? true : undefined,
                                   override_rule_id:
-                                    typeof computedDebug?.override_rule_id === "string" ? computedDebug.override_rule_id : undefined,
+                                    typeof (computedReasonDebug as any)?.override_rule_id === "string" ? (computedReasonDebug as any).override_rule_id : undefined,
                                   override_explanation:
-                                    typeof computedDebug?.override_explanation === "string" ? computedDebug.override_explanation : undefined,
-                                  top_scores_pre_override: Array.isArray(computedDebug?.top_scores_pre_override)
-                                    ? computedDebug.top_scores_pre_override
+                                    typeof (computedReasonDebug as any)?.override_explanation === "string" ? (computedReasonDebug as any).override_explanation : undefined,
+                                  top_scores_pre_override: Array.isArray((computedReasonDebug as any)?.top_scores_pre_override)
+                                    ? (computedReasonDebug as any).top_scores_pre_override
                                         .filter((s: any) => s && typeof s === "object")
                                         .slice(0, 12)
                                         .map((s: any) => ({ segment: String(s.segment), score: Number(s.score) }))
@@ -3423,6 +3388,8 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
                         structured_json_snippet,
                       },
                       reason: {
+                        title_text_snippet,
+                        title_source,
                         classification_text_len: classificationTextLen,
                         classification_text_sources_used: sourcesUsed,
                         ...(debug?.keyword_hits && typeof debug.keyword_hits === "object" ? { keyword_hits: debug.keyword_hits } : {}),
@@ -3753,8 +3720,10 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           enableDebug: false,
         });
 
-        const persistedFromQuality = normalizeAnalystSegment((v as any)?.quality_flags?.segment_key);
-        const persistedFromStructured = normalizeAnalystSegment((v as any)?.structured_json?.segment_key);
+        const persistedFromQualityRaw = normalizeAnalystSegment((v as any)?.quality_flags?.segment_key);
+        const persistedFromStructuredRaw = normalizeAnalystSegment((v as any)?.structured_json?.segment_key);
+        const persistedFromQuality = persistedFromQualityRaw && persistedFromQualityRaw !== "unknown" ? persistedFromQualityRaw : null;
+        const persistedFromStructured = persistedFromStructuredRaw && persistedFromStructuredRaw !== "unknown" ? persistedFromStructuredRaw : null;
         const persistedSegment = persistedFromQuality ?? persistedFromStructured;
         const persistedSource = persistedFromQuality
           ? "quality_flags.segment_key"
@@ -4491,8 +4460,10 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         // 3) computed (API classifier)
         // 4) unknown
         // NOTE: structured_json.segment_key is treated as an input/persisted hint but does not override computed.
-        const persistedFromQuality = normalizeAnalystSegment((r as any)?.quality_flags?.segment_key);
-        const persistedFromStructured = normalizeAnalystSegment((r as any)?.structured_json?.segment_key);
+        const persistedFromQualityRaw = normalizeAnalystSegment((r as any)?.quality_flags?.segment_key);
+        const persistedFromStructuredRaw = normalizeAnalystSegment((r as any)?.structured_json?.segment_key);
+        const persistedFromQuality = persistedFromQualityRaw && persistedFromQualityRaw !== "unknown" ? persistedFromQualityRaw : null;
+        const persistedFromStructured = persistedFromStructuredRaw && persistedFromStructuredRaw !== "unknown" ? persistedFromStructuredRaw : null;
         const persistedSegmentKey = persistedFromQuality ?? persistedFromStructured;
         const persistedSourceKey = persistedFromQuality
           ? "quality_flags.segment_key"

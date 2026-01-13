@@ -11,6 +11,8 @@ export type PhaseBFeaturesV1 = {
     visuals_count: number;
     evidence_count: number;
     evidence_per_visual: number;
+    coverage_confident?: number;
+    coverage_weak?: number;
   };
 
   content_density: {

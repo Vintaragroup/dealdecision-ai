@@ -41,6 +41,7 @@ type BaseNodeData = {
   // Visual asset enrichment fields (from lineage endpoint)
   page_index?: number;
   asset_type?: string;
+  extractor_version?: string;
   structured_kind?: string;
   structured_summary?: any;
   ocr_text_snippet?: string;
@@ -49,6 +50,10 @@ type BaseNodeData = {
   evidence_count?: number;
   evidence_snippets?: string[];
   extraction_confidence?: number;
+
+  // Raw fields sometimes present in lineage payloads
+  quality_flags?: any;
+  structured_json?: any;
 
   // Page understanding enrichment
   page_understanding?: {
@@ -73,6 +78,10 @@ type BaseNodeData = {
   // Analyst segment enrichment
   segment?: string;
   segment_confidence?: number;
+
+  // Segment rescore audit enrichment (present only in debug lineage mode)
+  persisted_segment_key?: string;
+  computed_segment?: string;
 
   // Slide title enrichment
   slide_title_confidence?: number | null;
@@ -330,6 +339,26 @@ export function VisualAssetNode({ id, data, selected }: NodeProps) {
   const darkMode = Boolean(d.__darkMode);
   const thumb = resolveApiAssetUrl(typeof d.image_uri === 'string' ? d.image_uri : null);
 
+  const persistedSegment = typeof (d as any)?.persisted_segment_key === 'string' ? String((d as any).persisted_segment_key) : null;
+  const computedSegment = typeof (d as any)?.computed_segment === 'string' ? String((d as any).computed_segment) : null;
+  const computedSegmentsModeEnabled =
+    typeof window !== 'undefined' && window.localStorage.getItem('analystUseComputedSegmentsDebug') === '1';
+  const computedSegmentsToggleVisibleOverride =
+    typeof window !== 'undefined' && window.localStorage.getItem('ddai:showComputedSegmentsToggle') === '1';
+  const showSegmentDiff =
+    (import.meta.env.DEV || computedSegmentsToggleVisibleOverride) &&
+    computedSegmentsModeEnabled &&
+    Boolean(persistedSegment && computedSegment && persistedSegment !== computedSegment);
+
+  const extractorVersion =
+    typeof d.extractor_version === 'string'
+      ? d.extractor_version
+      : typeof (d as any)?.extractor_version === 'string'
+        ? String((d as any).extractor_version)
+        : null;
+  const qualityFlags = (d as any)?.quality_flags ?? d.quality_flags;
+  const qfSource = typeof qualityFlags?.source === 'string' ? qualityFlags.source : null;
+
   if (import.meta.env.DEV && getDevtoolsConsoleLoggingEnabled()) {
     const nodeId = typeof id === 'string' ? id : String(id ?? '');
     if (nodeId && !didLogVisualAssetNodeData.has(nodeId)) {
@@ -381,7 +410,15 @@ export function VisualAssetNode({ id, data, selected }: NodeProps) {
 
   const slideTitle = cleanSnippet((d as any)?.slide_title, 160);
   const pageUnderstanding = (d as any)?.page_understanding;
-  const structuredJson = (d as any)?.structured_json;
+  const structuredJson = (d as any)?.structured_json ?? d.structured_json;
+
+  const isStructuredNative = (() => {
+    if (extractorVersion && extractorVersion.toLowerCase() === 'structured_native_v1') return true;
+    if (qfSource && qfSource.toLowerCase().startsWith('structured_')) return true;
+    // Heuristic fallback: if we have structured payload but no image crop, present as structured.
+    if (!thumb && structuredJson != null) return true;
+    return false;
+  })();
   const structuredSummary = cleanSnippet((d as any)?.structured_summary ?? structuredJson?.structured_summary ?? structuredJson?.summary, 220);
   const structuredTitle = cleanSnippet(structuredJson?.title, 160);
   const structuredTextSnippet = cleanSnippet(structuredJson?.text_snippet, 200);
@@ -428,46 +465,43 @@ export function VisualAssetNode({ id, data, selected }: NodeProps) {
   })();
 
   const summaryLine = (() => {
-    // 1) Prefer page understanding
+    if (isStructuredNative) {
+      // Structured items: avoid implying a page image exists.
+      if (structuredTitle && !isBadObjectString(structuredTitle)) return structuredTitle;
+      if (structuredTextSnippet && !isBadObjectString(structuredTextSnippet)) return structuredTextSnippet;
+      if (structuredBullets?.length) {
+        const joined = cleanSnippet(structuredBullets.slice(0, 2).join(' • '), 200);
+        if (joined && !isBadObjectString(joined)) return joined;
+      }
+      if (structuredParagraphs?.length) {
+        const joined = cleanSnippet(structuredParagraphs.slice(0, 2).join(' '), 200);
+        if (joined && !isBadObjectString(joined)) return joined;
+      }
+      if (structuredSheetHint && !isBadObjectString(structuredSheetHint)) return structuredSheetHint;
+      if (structuredSummary && !isBadObjectString(structuredSummary)) return structuredSummary;
+      if (firstEvidence && !isBadObjectString(firstEvidence)) return firstEvidence;
+      return 'No structured snippet available yet';
+    }
+
+    // Page visuals: lead with OCR/understanding.
     const summary = cleanSnippet(pageUnderstanding?.summary, 200);
     if (summary && !isBadObjectString(summary)) return summary;
 
-    // 2) Prefer structured summary when present
-    if (structuredSummary && !isBadObjectString(structuredSummary)) return structuredSummary;
-
-    // 3) Prefer structured JSON title/snippet (this is what Inspector is showing)
-    if (structuredTitle && !isBadObjectString(structuredTitle)) return structuredTitle;
-    if (structuredTextSnippet && !isBadObjectString(structuredTextSnippet)) return structuredTextSnippet;
-
-    // 4) PowerPoint-ish: bullets
-    if (structuredBullets?.length) {
-      const joined = cleanSnippet(structuredBullets.slice(0, 2).join(' • '), 200);
-      if (joined && !isBadObjectString(joined)) return joined;
-    }
-
-    // 5) Word-ish: first 1–2 paragraphs
-    if (structuredParagraphs?.length) {
-      const joined = cleanSnippet(structuredParagraphs.slice(0, 2).join(' '), 200);
-      if (joined && !isBadObjectString(joined)) return joined;
-    }
-
-    // 6) Excel-ish: sheet + headers hint
-    if (structuredSheetHint && !isBadObjectString(structuredSheetHint)) return structuredSheetHint;
-
-    // 7) Fall back to evidence snippets
-    if (firstEvidence && !isBadObjectString(firstEvidence)) return firstEvidence;
-
-    // 8) Fall back to OCR-ish fields
     const ocr = cleanSnippet(
       (d as any)?.ocr_text_snippet ?? (d as any)?.ocr_text ?? (d as any)?.image_text ?? (d as any)?.text,
       200
     );
     if (ocr && !isBadObjectString(ocr)) return ocr;
 
+    if (firstEvidence && !isBadObjectString(firstEvidence)) return firstEvidence;
+
+    // If it’s actually structured but we failed the earlier detection, fall back gracefully.
+    if (structuredSummary && !isBadObjectString(structuredSummary)) return structuredSummary;
+
     return 'No summary available yet';
   })();
 
-  const title = slideTitle || structuredTitle || titleFallback;
+  const title = isStructuredNative ? structuredTitle || slideTitle || titleFallback : slideTitle || titleFallback;
 
   return (
     <NodeShell
@@ -480,14 +514,19 @@ export function VisualAssetNode({ id, data, selected }: NodeProps) {
       <div className="px-3 py-2" style={{ width: 280, maxWidth: 280 }}>
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <div className="text-xs uppercase tracking-wide opacity-70">Visual</div>
+            <div className="text-xs uppercase tracking-wide opacity-70">{isStructuredNative ? 'Structured item' : 'Page visual'}</div>
             <div className="text-sm font-medium leading-snug line-clamp-1">{title}</div>
+            {showSegmentDiff ? (
+              <div className="mt-1 text-[11px] opacity-70">
+                    Persisted: {persistedSegment} ➔ Computed: {computedSegment}
+              </div>
+            ) : null}
           </div>
           <ExpandToggle data={d} darkMode={darkMode} />
         </div>
 
         <div className="mt-2 flex gap-2">
-          {thumb ? (
+          {thumb && !isStructuredNative ? (
             <div
               className={`h-14 w-14 rounded border overflow-hidden ${
                 darkMode ? 'border-white/10 bg-black/20' : 'border-gray-200 bg-gray-50'

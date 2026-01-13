@@ -16,6 +16,7 @@ import { registerChatRoutes } from "./routes/chat";
 import { registerEvidenceRoutes } from "./routes/evidence";
 import { registerAnalyticsRoutes } from "./routes/analytics";
 import { registerAdminRoutes } from "./routes/admin";
+import { registerVisualAssetRoutes } from "./routes/visual-assets";
 import { initializeLLM } from "./lib/llm";
 import { getPool } from "./lib/db";
 import "./lib/queue";
@@ -73,6 +74,7 @@ async function bootstrap() {
   await registerEvidenceRoutes(app);
   await registerAnalyticsRoutes(app);
   await registerAdminRoutes(app);
+  await registerVisualAssetRoutes(app);
 }
 
 async function start() {

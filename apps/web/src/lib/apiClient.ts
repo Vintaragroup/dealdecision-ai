@@ -381,10 +381,60 @@ export type DealLineageResponse = {
   nodes: DealLineageNode[];
   edges: DealLineageEdge[];
   warnings: string[];
+  // Optional debug payloads (DEV-only on backend).
+  segment_audit_report?: SegmentAuditReport;
 };
 
-export function apiGetDealLineage(dealId: string) {
-  return request<DealLineageResponse>(`/api/v1/deals/${dealId}/lineage`);
+export type SegmentAuditReport = {
+  deal_id?: string;
+  documents: Array<{
+    document_id: string;
+    title?: string | null;
+    type?: string | null;
+    items: SegmentAuditItem[];
+  }>;
+};
+
+export type SegmentAuditItem = {
+  visual_asset_id?: string;
+  document_id?: string;
+  page_index?: number | null;
+  page_label?: string;
+
+  // Persisted segment (from DB/quality flags)
+  persisted_segment_key?: string;
+  segment?: string;
+  segment_source?: string;
+  segment_confidence?: number | null;
+
+  // Computed segment (discovery-only rescore)
+  computed_segment?: string;
+  captured_text?: string;
+  computed_reason?: {
+    best_score?: number | null;
+    runner_up_score?: number | null;
+    threshold?: number | null;
+    tie_delta?: number | null;
+    keyword_hits?: Record<string, unknown>;
+    classification_text_len?: number | null;
+    classification_text_sources_used?: string[];
+  };
+};
+
+export function apiGetDealLineage(
+  dealId: string,
+  opts?: {
+    debugSegments?: boolean;
+    segmentAudit?: boolean;
+    segmentRescore?: boolean;
+  }
+) {
+  const params = new URLSearchParams();
+  if (opts?.debugSegments) params.set('debug_segments', '1');
+  if (opts?.segmentAudit) params.set('segment_audit', '1');
+  if (opts?.segmentRescore) params.set('segment_rescore', '1');
+  const qs = params.toString();
+  return request<DealLineageResponse>(`/api/v1/deals/${dealId}/lineage${qs ? `?${qs}` : ''}`);
 }
 
 export type VisualAssetEvidenceSummary = {
@@ -534,6 +584,20 @@ export async function apiGetDealVisualAssets(dealId: string) {
   const res = await request<{ deal_id: string; visual_assets?: any[] }>(`/api/v1/deals/${dealId}/visual-assets`);
   const visual_assets = normalizeVisualAssetsResponse(Array.isArray(res?.visual_assets) ? res.visual_assets : [], dealId);
   return { deal_id: res?.deal_id ?? dealId, visual_assets };
+}
+
+export async function apiPostVisualAssetSegmentOverride(input: { visualAssetId: string; segment_key: string; note?: string }) {
+  const { visualAssetId, segment_key, note } = input;
+  return request<{ ok: boolean; visual_asset_id: string; quality_flags?: any }>(`/visual-assets/${visualAssetId}/segment-override`, {
+    method: 'POST',
+    body: JSON.stringify({ segment_key, note }),
+  });
+}
+
+export async function apiDeleteVisualAssetSegmentOverride(visualAssetId: string) {
+  return request<{ ok: boolean; visual_asset_id: string; quality_flags?: any }>(`/visual-assets/${visualAssetId}/segment-override`, {
+    method: 'DELETE',
+  });
 }
 
 export type ExtractionConfidenceBand = 'high' | 'medium' | 'low' | 'unknown';

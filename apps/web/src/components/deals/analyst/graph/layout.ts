@@ -130,6 +130,16 @@ export function layoutGraph(nodes: Node[], _edges: Edge[], options: LayoutOption
         const ta = na ? normalizeType(na) : 'default';
         const tb = nb ? normalizeType(nb) : 'default';
         if (ta !== tb) return ta.localeCompare(tb);
+
+        // Keep segment children ordered by canonical segment order if provided.
+        if (ta === 'segment') {
+          const da = (na?.data ?? {}) as any;
+          const db = (nb?.data ?? {}) as any;
+          const oa = typeof da.__segmentOrder === 'number' && Number.isFinite(da.__segmentOrder) ? da.__segmentOrder : 999;
+          const ob = typeof db.__segmentOrder === 'number' && Number.isFinite(db.__segmentOrder) ? db.__segmentOrder : 999;
+          if (oa !== ob) return oa - ob;
+        }
+
         const da = (na?.data ?? {}) as any;
         const db = (nb?.data ?? {}) as any;
         const la = safeLower(da.title ?? da.label ?? '');

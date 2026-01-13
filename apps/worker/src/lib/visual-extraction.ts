@@ -58,6 +58,34 @@ export type VisionExtractResponse = {
 	assets: VisionAsset[];
 };
 
+const SEGMENT_KEYS = [
+	"overview",
+	"problem",
+	"solution",
+	"product",
+	"market",
+	"traction",
+	"business_model",
+	"competition",
+	"team",
+	"distribution",
+	"raise_terms",
+	"exit",
+	"risks",
+	"financials",
+	"unknown",
+] as const;
+
+type SegmentKey = (typeof SEGMENT_KEYS)[number];
+
+function coerceSegmentKey(value: unknown): SegmentKey | null {
+	if (typeof value !== "string") return null;
+	const trimmed = value.trim();
+	if (!trimmed) return null;
+	// @ts-expect-error - runtime includes check.
+	return (SEGMENT_KEYS as readonly string[]).includes(trimmed) ? (trimmed as SegmentKey) : null;
+}
+
 function coerceJsonObject(value: unknown): Record<string, unknown> {
 	if (!value) return {};
 	if (typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
@@ -120,8 +148,7 @@ function normalizeImageUriForApi(imageUri: string | null, env: NodeJS.ProcessEnv
 		}
 	}
 
-	// If it's an API-relative path, keep it.
-	if (trimmed.startsWith("/")) return trimmed;
+	// Anything else (e.g. /tmp/*) is not web-served.
 	return null;
 }
 
@@ -572,6 +599,26 @@ export async function persistVisionResponse(
 		const ocrBlocks = coerceJsonArray<VisionOcrBlock>(extractionObj?.ocr_blocks);
 		const structuredJson = coerceJsonObject(extractionObj?.structured_json);
 		const labels = coerceJsonObject(extractionObj?.labels);
+
+		// Persist a stable segment assignment for vision assets (PDF/images).
+		// Resolution order: quality_flags.segment_key -> structured_json.segment_key -> infer from OCR/labels.
+		const existingFromQuality = coerceSegmentKey((assetQualityFlags as any)?.segment_key);
+		const existingFromStructured = coerceSegmentKey((structuredJson as any)?.segment_key);
+		let segmentKey: SegmentKey | null = existingFromQuality ?? existingFromStructured;
+		if (!segmentKey) {
+			const titleFromLabels = typeof (labels as any)?.title === "string" ? String((labels as any).title) : "";
+			const titleFromStructured = typeof (structuredJson as any)?.title === "string" ? String((structuredJson as any).title) : "";
+			const combined = [titleFromLabels, titleFromStructured, ocrText].filter(Boolean).join("\n");
+			segmentKey = classifySegmentKeyFromText(combined, "unknown");
+		}
+
+		const qualityFlagsWithSeg = segmentKey && !existingFromQuality
+			? { ...assetQualityFlags, segment_key: segmentKey }
+			: assetQualityFlags;
+		const structuredJsonWithSeg = segmentKey && !existingFromStructured
+			? { ...structuredJson, segment_key: segmentKey }
+			: structuredJson;
+
 		const visualAssetId = await upsertVisualAsset(pool, {
 			documentId: response.document_id,
 			pageIndex: response.page_index,
@@ -581,7 +628,7 @@ export async function persistVisionResponse(
 			imageHash: asset.image_hash ?? null,
 			extractorVersion: response.extractor_version,
 			confidence: asset.confidence ?? 0,
-			qualityFlags: assetQualityFlags,
+			qualityFlags: qualityFlagsWithSeg,
 		});
 
 		if (normalizedAssetImageUri) withImageUri += 1;
@@ -591,7 +638,7 @@ export async function persistVisionResponse(
 			extractorVersion: response.extractor_version,
 			ocrText: ocrText,
 			ocrBlocks: ocrBlocks,
-			structuredJson: structuredJson,
+			structuredJson: structuredJsonWithSeg,
 			units: asset.extraction?.units ?? null,
 			labels: labels,
 			modelVersion: asset.extraction?.model_version ?? null,
@@ -641,21 +688,6 @@ type SyntheticAssetBuild = {
 	asset: VisionAsset;
 };
 
-type SegmentKey =
-	| "overview"
-	| "problem"
-	| "solution"
-	| "market"
-	| "traction"
-	| "business_model"
-	| "competition"
-	| "team"
-	| "distribution"
-	| "raise_terms"
-	| "risks"
-	| "financials"
-	| "unknown";
-
 function hashKey(parts: Array<string | number>): string {
 	return createHash("sha256").update(parts.map((p) => String(p)).join("|"), "utf8").digest("hex");
 }
@@ -695,31 +727,109 @@ function classifySegmentKeyFromText(textRaw: string, defaultKey: SegmentKey = "u
 		.trim();
 	if (!text) return defaultKey;
 
-	const rules: Array<{ key: SegmentKey; weight: number; patterns: RegExp[] }> = [
-		{ key: "financials", weight: 5, patterns: [/\b(financials?|income statement|balance sheet|cash flow|p\&l|runway|burn|arr|mrr|revenue|gross margin|ebitda|unit economics|cap table)\b/g] },
-		{ key: "raise_terms", weight: 5, patterns: [/\b(raise|round|terms?|valuation|pre-?money|post-?money|cap table|allocation|use of funds|proceeds)\b/g] },
-		{ key: "team", weight: 4, patterns: [/\b(team|founder|co-?founder|leadership|hiring|advisors?)\b/g] },
-		{ key: "market", weight: 4, patterns: [/\b(market|tam|sam|som|icp|gtm|go-?to-?market|customers?|segments?|pricing)\b/g] },
-		{ key: "traction", weight: 4, patterns: [/\b(traction|growth|kpi|kpis|pipeline|retention|churn|ltv|cac|conversion|users?|bookings|gmv)\b/g] },
-		{ key: "distribution", weight: 4, patterns: [/\b(distribution|go-?to-?market|gtm|channels?|partnerships?|sales motion|sales funnel|marketing|demand gen|paid|organic)\b/g] },
-		{ key: "competition", weight: 3, patterns: [/\b(competition|competitors?|competitive|alternatives?|moat)\b/g] },
-		{ key: "business_model", weight: 3, patterns: [/\b(business model|model|revenue model|pricing|unit economics|subscriptions?)\b/g] },
-		{ key: "problem", weight: 4, patterns: [/\b(problem|pain( point)?s?|challenge|why now)\b/g] },
-		{ key: "solution", weight: 4, patterns: [/\b(solution|product|technology|platform|how it works|approach)\b/g] },
-		{ key: "risks", weight: 3, patterns: [/\b(risks?|risk factors?|mitigation|issues?|concerns?)\b/g] },
-		{ key: "overview", weight: 2, patterns: [/\b(overview|summary|company|introduction|mission|vision)\b/g] },
-	];
+	// API-aligned keyword sets (keep in sync with apps/api classifySegment headingSets).
+	const keywordSets: Record<SegmentKey, string[]> = {
+		overview: ["overview", "summary", "executive summary"],
+		problem: ["problem", "pain", "challenge", "issue", "gap", "why this matters"],
+		solution: ["solution", "approach", "value proposition", "why us"],
+		product: ["product", "products", "technology", "features", "feature", "demo", "roadmap", "how it works"],
+		market: ["market", "tam", "sam", "som", "opportunity", "segment", "sizing", "cagr"],
+		traction: [
+			"traction",
+			"growth",
+			"users",
+			"customers",
+			"mrr",
+			"arr",
+			"revenue",
+			"retention",
+			"pipeline",
+			"gmv",
+			"kpi",
+			"conversion",
+			"demo-to-close",
+			"demo to close",
+			"lift",
+		],
+		business_model: [
+			"business model",
+			"pricing",
+			"revenue model",
+			"unit economics",
+			"how we make money",
+			"saas",
+			"platform",
+			"add-ons",
+			"addons",
+			"subscription",
+		],
+		distribution: [
+			"distribution",
+			"go-to-market",
+			"go to market",
+			"gtm",
+			"channels",
+			"sales",
+			"partnerships",
+			"marketing",
+			"reseller",
+			"partners",
+			"channel",
+		],
+		team: ["team", "founder", "ceo", "cto", "cfo", "bio", "leadership", "advisors", "founders", "meet our team"],
+		competition: ["competition", "competitor", "alternative", "compare", "landscape", "moat"],
+		risks: ["risk", "challenge", "threat", "mitigation", "compliance", "regulation", "limitation"],
+		financials: [
+			"financial",
+			"financial strategy",
+			"profit",
+			"loss",
+			"p&l",
+			"balance",
+			"cash",
+			"projection",
+			"forecast",
+			"projections",
+			"ebitda",
+			"budget",
+			"expenses",
+			"gross margin",
+			"revenue",
+			"margin",
+			"unit economics",
+		],
+		raise_terms: ["raise", "funding", "round", "terms", "cap table", "valuation", "use of funds", "investment"],
+		exit: ["exit", "exit strategy", "acquisition", "m&a", "strategic options", "acquirer", "acquirers", "strategic buyers"],
+		unknown: [],
+	};
+
+	const weights: Record<SegmentKey, number> = {
+		overview: 1,
+		problem: 3,
+		solution: 3,
+		product: 3,
+		market: 3,
+		traction: 3,
+		business_model: 2,
+		distribution: 2,
+		team: 2,
+		competition: 2,
+		risks: 2,
+		financials: 3,
+		raise_terms: 3,
+		exit: 2,
+		unknown: 0,
+	};
 
 	const scoreByKey = new Map<SegmentKey, number>();
-	for (const rule of rules) {
-		let hits = 0;
-		for (const rx of rule.patterns) {
-			const m = text.match(rx);
-			if (m && m.length) hits += m.length;
+	for (const [key, phrases] of Object.entries(keywordSets) as Array<[SegmentKey, string[]]>) {
+		if (key === "unknown") continue;
+		let score = 0;
+		for (const phrase of phrases) {
+			if (!phrase) continue;
+			if (text.includes(phrase.toLowerCase())) score += weights[key];
 		}
-		if (hits > 0) {
-			scoreByKey.set(rule.key, (scoreByKey.get(rule.key) ?? 0) + hits * rule.weight);
-		}
+		if (score > 0) scoreByKey.set(key, score);
 	}
 
 	let best: SegmentKey = defaultKey;
@@ -735,9 +845,9 @@ function classifySegmentKeyFromText(textRaw: string, defaultKey: SegmentKey = "u
 		}
 	}
 
-	// Confidence gating: require a minimum score and avoid near-ties.
-	const MIN_SCORE = 4;
-	const MIN_MARGIN = 2;
+	// Confidence gating: keep deterministic, but avoid over-assigning from weak signal.
+	const MIN_SCORE = 2;
+	const MIN_MARGIN = 1;
 	if (bestScore < MIN_SCORE) return defaultKey;
 	if (secondScore > 0 && bestScore < secondScore + MIN_MARGIN) return defaultKey;
 	return best;
@@ -757,6 +867,11 @@ export function inferSegmentKeyFromStructured(params: {
 	const paragraphs = normalizeTextList(sj?.paragraphs, 20).join("\n");
 	const sheetName = cleanTextForClassification(sj?.sheet_name);
 	const headers = normalizeTextList(sj?.headers, 20).join("\n");
+	const numericColumns = normalizeTextList(sj?.numeric_columns, 20).join("\n");
+	const sampleRows = Array.isArray(sj?.sample_rows) ? sj.sample_rows : [];
+	const firstRowPreview = Array.isArray(sampleRows?.[0])
+		? sampleRows[0].slice(0, 20).map((v: any) => cleanTextForClassification(v)).filter(Boolean).join(" ")
+		: "";
 
 	const combined = [
 		docTitle,
@@ -767,6 +882,8 @@ export function inferSegmentKeyFromStructured(params: {
 		paragraphs,
 		sheetName ? `sheet: ${sheetName}` : "",
 		headers ? `headers: ${headers}` : "",
+		numericColumns ? `numeric: ${numericColumns}` : "",
+		firstRowPreview ? `row0: ${firstRowPreview}` : "",
 	]
 		.filter(Boolean)
 		.join("\n");
@@ -853,11 +970,21 @@ function buildSyntheticAssets(params: {
 			const rows = Array.isArray(sheet?.rows) ? sheet.rows.slice(0, 5) : [];
 			const rowCount = typeof sheet?.summary?.totalRows === "number" ? sheet.summary.totalRows : rows.length;
 			const numericColumns = Array.isArray(sheet?.summary?.numericColumns) ? sheet.summary.numericColumns.slice(0, 25) : [];
-			const segmentKey: SegmentKey = "financials";
+			const sheetName = sheet?.name ?? `Sheet ${idx + 1}`;
+			const firstRowPreview = Array.isArray(rows?.[0]) ? rows[0].slice(0, 20).map((v: any) => cleanTextForClassification(v)).filter(Boolean).join(" ") : "";
+			const classifyText = [
+				sheetName ? `sheet: ${sheetName}` : "",
+				headers?.length ? `headers: ${headers.join(" ")}` : "",
+				numericColumns?.length ? `numeric: ${numericColumns.join(" ")}` : "",
+				firstRowPreview ? `row0: ${firstRowPreview}` : "",
+			]
+				.filter(Boolean)
+				.join("\n");
+			const segmentKey = classifySegmentKeyFromText(classifyText, "financials");
 			const structuredJson = {
 				kind: "excel_sheet",
 				segment_key: segmentKey,
-				sheet_name: sheet?.name ?? `Sheet ${idx + 1}`,
+				sheet_name: sheetName,
 				headers,
 				row_count: rowCount,
 				sample_rows: rows,

@@ -15,6 +15,70 @@ test.after(async () => {
 test('GET /api/v1/deals/:deal_id?mode=phase1 returns phase1 payload and omits score/dioStatus', async () => {
   const dealId = 'deal-1';
 
+  const dioPhase1 = {
+    executive_summary_v1: {
+      title: 'Demo Deal — Executive Summary',
+      one_liner: 'Demo Deal: We are building a product for customers. Documents present: 1.',
+      deal_type: 'Unknown',
+      raise: 'Unknown',
+      business_model: 'Unknown',
+      traction_signals: [],
+      key_risks_detected: [],
+      unknowns: ['deal_type'],
+      confidence: { overall: 'low' },
+      evidence: [{ claim_id: 'c1', document_id: 'doc-1', snippet: 'x' }],
+    },
+    executive_summary_v2: {
+      title: 'Executive Summary',
+      paragraphs: ['Demo Deal is a company. Product and market details are limited in the provided documents.'],
+      highlights: ['Documents: present', 'Financials: missing'],
+      missing: ['product_solution', 'market_icp'],
+      signals: {
+        recommendation: 'CONSIDER',
+        overall_score: 12,
+        confidence: 'low',
+        blockers_count: 1,
+      },
+    },
+    decision_summary_v1: {
+      score: 42,
+      recommendation: 'CONSIDER',
+      reasons: [
+        'Financial readiness data is missing (burn, runway, cash, margins).',
+        'Traction metrics are not disclosed (revenue/users/customers/growth/retention).',
+      ],
+      blockers: ['Financial readiness data is missing (burn, runway, cash, margins).'],
+      next_requests: ['Add burn, runway, cash balance, and margin profile (or a simple P&L).'],
+      confidence: 'low',
+    },
+    business_archetype_v1: {
+      value: 'saas',
+      confidence: 0.72,
+      generated_at: '2024-01-03T00:00:00.000Z',
+      evidence: [{ document_id: 'doc-1', snippet: 'SaaS platform', rule: 'saas:saas' }],
+    },
+    coverage: {
+      sections: {
+        documents: 'present',
+        product: 'missing',
+        market: 'missing',
+        business_model: 'missing',
+        traction: 'missing',
+        terms: 'missing',
+        financials: 'missing',
+        risks: 'missing',
+      },
+    },
+    claims: [
+      {
+        claim_id: 'p1_other_1',
+        category: 'other',
+        text: 'Documents provided for analysis (1 total).',
+        evidence: [{ document_id: 'doc-1', snippet: 'x' }],
+      },
+    ],
+  };
+
   const mockPool = {
     query: async (sql: string, params?: unknown[]) => {
       const q = String(sql);
@@ -41,8 +105,12 @@ test('GET /api/v1/deals/:deal_id?mode=phase1 returns phase1 payload and omits sc
         };
       }
 
-      // DIO aggregate fetch
-      if (q.includes('FROM deal_intelligence_objects') && q.includes("dio_data #> '{dio,phase1,executive_summary_v1}'")) {
+      // Latest DIO row fetch
+      if (
+        q.includes('SELECT dio_id, analysis_version, recommendation, overall_score, dio_data, updated_at') &&
+        q.includes('FROM deal_intelligence_objects') &&
+        q.includes('WHERE deal_id = $1')
+      ) {
         assert.equal(p0, dealId);
         return {
           rows: [
@@ -51,76 +119,23 @@ test('GET /api/v1/deals/:deal_id?mode=phase1 returns phase1 payload and omits sc
               analysis_version: 1,
               recommendation: 'SCREEN_WATCH',
               overall_score: 12,
-              last_analyzed_at: '2024-01-03T00:00:00.000Z',
-              run_count: 1,
-              executive_summary_v1: {
-                title: 'Demo Deal — Executive Summary',
-                one_liner: 'Demo Deal: We are building a product for customers. Documents present: 1.',
-                deal_type: 'Unknown',
-                raise: 'Unknown',
-                business_model: 'Unknown',
-                traction_signals: [],
-                key_risks_detected: [],
-                unknowns: ['deal_type'],
-                confidence: { overall: 'low' },
-                evidence: [
-                  { claim_id: 'c1', document_id: 'doc-1', snippet: 'x' },
-                ],
-              },
-              executive_summary_v2: {
-                title: 'Executive Summary',
-                paragraphs: [
-                  'Demo Deal is a company. Product and market details are limited in the provided documents.',
-                ],
-                highlights: ['Documents: present', 'Financials: missing'],
-                missing: ['product_solution', 'market_icp'],
-                signals: {
-                  recommendation: 'CONSIDER',
-                  overall_score: 12,
-                  confidence: 'low',
-                  blockers_count: 1,
-                },
-              },
-              decision_summary_v1: {
-                score: 42,
-                recommendation: 'CONSIDER',
-                reasons: [
-                  'Financial readiness data is missing (burn, runway, cash, margins).',
-                  'Traction metrics are not disclosed (revenue/users/customers/growth/retention).',
-                ],
-                blockers: ['Financial readiness data is missing (burn, runway, cash, margins).'],
-                next_requests: ['Add burn, runway, cash balance, and margin profile (or a simple P&L).'],
-                confidence: 'low',
-              },
-                phase1_business_archetype_v1: {
-                  value: 'saas',
-                  confidence: 0.72,
-                  generated_at: '2024-01-03T00:00:00.000Z',
-                  evidence: [{ document_id: 'doc-1', snippet: 'SaaS platform', rule: 'saas:saas' }],
-                },
-                phase1_coverage: {
-                sections: {
-                  documents: 'present',
-                  product: 'missing',
-                  market: 'missing',
-                  business_model: 'missing',
-                  traction: 'missing',
-                  terms: 'missing',
-                  financials: 'missing',
-                  risks: 'missing',
-                },
-              },
-              phase1_claims: [
-                {
-                  claim_id: 'p1_other_1',
-                  category: 'other',
-                  text: 'Documents provided for analysis (1 total).',
-                  evidence: [{ document_id: 'doc-1', snippet: 'x' }],
-                },
-              ],
+              dio_data: { dio: { phase1: dioPhase1 } },
+              updated_at: '2024-01-03T00:00:00.000Z',
             },
           ],
         };
+      }
+
+      // DIO stats fetch
+      if (q.includes('SELECT COUNT(*)::int AS run_count') && q.includes('FROM deal_intelligence_objects') && q.includes('MAX(updated_at)')) {
+        assert.equal(p0, dealId);
+        return { rows: [{ run_count: 1, last_analyzed_at: '2024-01-03T00:00:00.000Z' }] };
+      }
+
+      // Phase B runs are optional (empty for this test)
+      if (q.includes('FROM deal_phase_b_runs') && q.includes('WHERE deal_id = $1')) {
+        assert.equal(p0, dealId);
+        return { rows: [] };
       }
 
       throw new Error(`Unexpected SQL in test: ${q}`);
@@ -186,6 +201,17 @@ test('GET /api/v1/deals/:deal_id?mode=phase1 returns phase1 payload and omits sc
 test('GET /api/v1/deals/:deal_id (default mode) includes executive_summary_v2 when present', async () => {
   const dealId = 'deal-2';
 
+  const dioPhase1 = {
+    executive_summary_v2: {
+      title: 'Executive Summary',
+      paragraphs: ['Demo Deal 2 summary.'],
+      highlights: ['Documents: present'],
+      missing: [],
+      signals: { recommendation: 'CONSIDER', overall_score: 55, confidence: 'low', blockers_count: 0 },
+    },
+    claims: [],
+  };
+
   const mockPool = {
     query: async (sql: string, params?: unknown[]) => {
       const q = String(sql);
@@ -211,7 +237,11 @@ test('GET /api/v1/deals/:deal_id (default mode) includes executive_summary_v2 wh
         };
       }
 
-      if (q.includes('FROM deal_intelligence_objects') && q.includes("dio_data #> '{dio,phase1,executive_summary_v2}'")) {
+      if (
+        q.includes('SELECT dio_id, analysis_version, recommendation, overall_score, dio_data, updated_at') &&
+        q.includes('FROM deal_intelligence_objects') &&
+        q.includes('WHERE deal_id = $1')
+      ) {
         assert.equal(p0, dealId);
         return {
           rows: [
@@ -220,24 +250,21 @@ test('GET /api/v1/deals/:deal_id (default mode) includes executive_summary_v2 wh
               analysis_version: 2,
               recommendation: 'SCREEN_WATCH',
               overall_score: 55,
-              last_analyzed_at: '2024-01-03T00:00:00.000Z',
-              run_count: 2,
-              executive_summary_v1: null,
-              executive_summary_v2: {
-                title: 'Executive Summary',
-                paragraphs: ['Demo Deal 2 summary.'],
-                highlights: ['Documents: present'],
-                missing: [],
-                signals: { recommendation: 'CONSIDER', overall_score: 55, confidence: 'low', blockers_count: 0 },
-              },
-              decision_summary_v1: null,
-              phase1_coverage: null,
-              phase1_deal_overview_v2: null,
-              phase1_update_report_v1: null,
-              phase1_claims: [],
+              dio_data: { dio: { phase1: dioPhase1 } },
+              updated_at: '2024-01-03T00:00:00.000Z',
             },
           ],
         };
+      }
+
+      if (q.includes('SELECT COUNT(*)::int AS run_count') && q.includes('FROM deal_intelligence_objects') && q.includes('MAX(updated_at)')) {
+        assert.equal(p0, dealId);
+        return { rows: [{ run_count: 2, last_analyzed_at: '2024-01-03T00:00:00.000Z' }] };
+      }
+
+      if (q.includes('FROM deal_phase_b_runs') && q.includes('WHERE deal_id = $1')) {
+        assert.equal(p0, dealId);
+        return { rows: [] };
       }
 
       throw new Error(`Unexpected SQL in test: ${q}`);

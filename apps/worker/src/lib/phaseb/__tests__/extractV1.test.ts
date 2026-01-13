@@ -7,8 +7,8 @@ describe('extractPhaseBFeaturesV1', () => {
       nodes: [
         { id: 'deal:1', node_type: 'DEAL' },
         { id: 'doc:1', node_type: 'DOCUMENT' },
-        { id: 'seg:1', node_type: 'SEGMENT' },
-        { id: 'seg:2', node_type: 'SEGMENT' },
+        { id: 'seg:1', node_type: 'SEGMENT', data: { segment_key: 'market' } },
+        { id: 'seg:2', node_type: 'SEGMENT', data: { segment_key: 'team' } },
         { id: 'visual:1', node_type: 'VISUAL', data: { ocr_text: 'abc' } },
         { id: 'visual:2', node_type: 'VISUAL', data: { ocr_text: 'hello', structured_kind: 'table' } },
         { id: 'visual:3', node_type: 'VISUAL', data: { structured_kind: 'bar' } },

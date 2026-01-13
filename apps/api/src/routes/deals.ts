@@ -1,6 +1,8 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { randomUUID } from "crypto";
+import fs from "fs";
+import path from "path";
 import { fetchPhaseBVisualsFromDb } from "../lib/phaseb-visuals";
 import { getPool } from "../lib/db";
 import type { Deal } from "@dealdecision/contracts";
@@ -11,7 +13,9 @@ import { normalizeDealName } from "../lib/normalize-deal-name";
 import { buildDocumentsDigest } from "../lib/documents-digest";
 import type { DocumentsDigestV1 } from "../lib/documents-digest";
 import { purgeDealCascade, isPurgeDealNotFoundError, sanitizeText } from "@dealdecision/core";
+import { getSegmentConfidenceThresholds } from "@dealdecision/core/dist/config/segment-thresholds";
 import { BrandModel, PageInput, buildBrandModel, inferDocumentBrandName, inferSlideTitleForSlide, normalizePhrase } from "../lib/slide-title";
+import { buildClassificationText, buildSegmentFeatures, classifySegment, normalizeAnalystSegment, type AnalystSegment } from "../lib/analyst-segment";
 
 export type QueryResult<T> = { rows: T[]; rowCount?: number };
 type DealRoutesClient = {
@@ -1716,6 +1720,162 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
   const pool = (poolOverride ?? getPool()) as DealRoutesPool;
   const debugRoutesEnabled = process.env.DEBUG_ROUTES === "1" || process.env.NODE_ENV !== "production";
 
+  if (debugRoutesEnabled) {
+    // DEV-only: dump standardized segment features for sample assets.
+    // Helps verify PPTX/DOCX/XLSX structured_json normalization and vision OCR title extraction.
+    app.get(
+      "/api/v1/deals/:deal_id/segments/features",
+      {
+        schema: {
+          description: "DEV-only: return buildSegmentFeatures() output for representative assets across document types.",
+          tags: ["deals"],
+          params: {
+            type: "object",
+            properties: { deal_id: { type: "string" } },
+            required: ["deal_id"],
+          },
+          querystring: {
+            type: "object",
+            additionalProperties: true,
+            properties: {
+              limit_per_kind: { type: "number" },
+            },
+          },
+        },
+      },
+      async (request, reply) => {
+        if (process.env.NODE_ENV === "production") {
+          return reply.status(403).send({ error: "segments/features is disabled in production" });
+        }
+
+        const dealIdRaw = (request.params as any)?.deal_id;
+        const dealId = sanitizeText(typeof dealIdRaw === "string" ? dealIdRaw : String(dealIdRaw ?? ""));
+        if (!dealId) return reply.status(400).send({ error: "deal_id is required" });
+
+        const limitPerKindRaw = Number(((request.query as any) ?? {})?.limit_per_kind ?? 1);
+        const limitPerKind =
+          Number.isFinite(limitPerKindRaw) && limitPerKindRaw > 0 ? Math.min(5, Math.floor(limitPerKindRaw)) : 1;
+
+        const hasMimeType = await hasColumn(pool as any, "documents", "mime_type");
+        const hasFilename = await hasColumn(pool as any, "documents", "filename");
+        const hasOcrBlocks = await hasColumn(pool as any, "visual_extractions", "ocr_blocks");
+        const hasStructuredSummary = await hasColumn(pool as any, "visual_extractions", "structured_summary");
+        const hasStructuredKind = await hasColumn(pool as any, "visual_extractions", "structured_kind");
+        const hasLabels = await hasColumn(pool as any, "visual_extractions", "labels");
+
+        type DocRow = {
+          id: string;
+          title: string | null;
+          type: string | null;
+          mime_type?: string | null;
+          filename?: string | null;
+        };
+
+        const { rows: docs } = await pool.query<DocRow>(
+          `SELECT id,
+                  title,
+                  type
+                  ${hasMimeType ? ", mime_type" : ", NULL::text AS mime_type"}
+                  ${hasFilename ? ", filename" : ", NULL::text AS filename"}
+             FROM documents
+            WHERE deal_id = $1
+            ORDER BY uploaded_at ASC NULLS LAST, created_at ASC NULLS LAST`,
+          [dealId]
+        );
+
+        const docIds = docs.map((d) => d.id).filter(Boolean);
+        if (docIds.length === 0) {
+          return reply.send({ deal_id: dealId, generated_at: new Date().toISOString(), samples: [] });
+        }
+
+        type VisualRow = {
+          id: string;
+          document_id: string;
+          page_index: number | null;
+          asset_type: string | null;
+          extractor_version: string | null;
+          quality_flags: any;
+          ocr_text: string | null;
+          ocr_blocks?: any;
+          structured_json: any;
+          structured_summary?: any;
+          structured_kind?: string | null;
+          labels?: any;
+        };
+
+        const { rows: visuals } = await pool.query<VisualRow>(
+          `SELECT va.id,
+                  va.document_id,
+                  va.page_index,
+                  va.asset_type,
+                  va.extractor_version,
+                  va.quality_flags,
+                  ve.ocr_text,
+                  ${hasOcrBlocks ? "ve.ocr_blocks" : "NULL::jsonb AS ocr_blocks"},
+                  ve.structured_json
+                  ${hasStructuredSummary ? ", ve.structured_summary" : ", NULL::jsonb AS structured_summary"}
+                  ${hasStructuredKind ? ", ve.structured_kind" : ", NULL::text AS structured_kind"}
+                  ${hasLabels ? ", ve.labels" : ", NULL::jsonb AS labels"}
+             FROM visual_assets va
+             LEFT JOIN visual_extractions ve
+               ON ve.visual_asset_id = va.id
+              AND ve.extractor_version = va.extractor_version
+            WHERE va.document_id = ANY($1)
+            ORDER BY va.document_id ASC, va.page_index ASC NULLS LAST, va.created_at ASC`,
+          [docIds]
+        );
+
+        const docById = new Map<string, DocRow>();
+        for (const d of docs) docById.set(d.id, d);
+
+        const picked: Record<string, number> = {};
+        const samples: any[] = [];
+
+        for (const v of visuals) {
+          const d = docById.get(v.document_id);
+          const features = buildSegmentFeatures({
+            ocr_text: v.ocr_text,
+            ocr_blocks: (v as any).ocr_blocks ?? null,
+            structured_kind: (v as any).structured_kind ?? null,
+            structured_summary: (v as any).structured_summary ?? null,
+            structured_json: (v as any).structured_json ?? null,
+            labels: (v as any).labels ?? null,
+            asset_type: v.asset_type,
+            page_index: typeof v.page_index === "number" ? v.page_index : null,
+            evidence_snippets: [],
+            extractor_version: v.extractor_version,
+            quality_source:
+              typeof (v as any)?.quality_flags?.source === "string" ? (v as any).quality_flags.source : null,
+            document_title: typeof d?.title === "string" ? d.title : null,
+            document_mime_type: typeof (d as any)?.mime_type === "string" ? String((d as any).mime_type) : null,
+            document_filename: typeof (d as any)?.filename === "string" ? String((d as any).filename) : null,
+            brand_blacklist: new Set<string>(),
+            brand_name: null,
+          });
+
+          const k = features.source_kind;
+          picked[k] = picked[k] ?? 0;
+          if (picked[k] >= limitPerKind) continue;
+          picked[k] += 1;
+
+          samples.push({
+            source_kind: k,
+            document_id: v.document_id,
+            visual_asset_id: v.id,
+            page_index: v.page_index,
+            features,
+            classification_text: buildClassificationText(features),
+          });
+
+          const done = (kind: string) => (picked[kind] ?? 0) >= limitPerKind;
+          if (done("vision") && done("image") && done("pptx") && done("docx") && done("xlsx")) break;
+        }
+
+        return reply.send({ deal_id: dealId, generated_at: new Date().toISOString(), samples });
+      }
+    );
+  }
+
   function safeJsonValue(input: unknown): any {
     try {
       if (input == null) return null;
@@ -1884,6 +2044,16 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           },
           required: ["deal_id"],
         },
+        querystring: {
+          type: "object",
+          properties: {
+            debug_segments: { type: "string" },
+            dump_unknown: { type: "string" },
+            segment_audit: { type: "string" },
+            segment_rescore: { type: "string" },
+          },
+          additionalProperties: true,
+        },
         response: {
           200: {
             type: "object",
@@ -1892,6 +2062,8 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
               nodes: { type: "array", items: { type: "object", additionalProperties: true } },
               edges: { type: "array", items: { type: "object", additionalProperties: true } },
               warnings: { type: "array", items: { type: "string" } },
+              unknown_structured_report: { type: "object", additionalProperties: true },
+              segment_audit_report: { type: "object", additionalProperties: true },
             },
             required: ["deal_id", "nodes", "edges", "warnings"],
           },
@@ -2024,6 +2196,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         id: `e:has_document:${dealId}:${d.id}`,
         source: dealNodeId,
         target: docNodeId,
+        type: "HAS_DOCUMENT",
         edge_type: "HAS_DOCUMENT",
       });
     }
@@ -2087,22 +2260,6 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       page_understanding?: PageUnderstanding | null;
     };
 
-    type AnalystSegment =
-      | "problem"
-      | "solution"
-      | "market"
-      | "traction"
-      | "business_model"
-      | "distribution"
-      | "team"
-      | "competition"
-      | "risks"
-      | "financials"
-      | "raise_terms"
-      | "exit"
-      | "overview"
-      | "unknown";
-
     type PageUnderstanding = {
       summary: string | null;
       key_points: string[];
@@ -2114,381 +2271,6 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         evidence_ref_ids: string[];
       }>;
     };
-
-    const canonicalSegments: AnalystSegment[] = [
-      "overview",
-      "problem",
-      "solution",
-      "market",
-      "traction",
-      "business_model",
-      "distribution",
-      "team",
-      "competition",
-      "risks",
-      "financials",
-      "raise_terms",
-      "exit",
-      "unknown",
-    ];
-
-    const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-      function classifySegment(input: {
-        ocr_text?: string | null;
-        ocr_snippet?: string | null;
-        structured_kind?: string | null;
-        structured_summary?: unknown;
-        asset_type?: string | null;
-        page_index?: number | null;
-        slide_title?: string | null;
-        slide_title_confidence?: number | null;
-        evidence_snippets?: string[] | null;
-        brand_blacklist?: Set<string> | string[] | null;
-        brand_name?: string | null;
-      }): { segment: AnalystSegment; confidence: number; debug?: Record<string, unknown> } {
-        const MIN_SCORE = 0.55;
-        const MIN_MARGIN = 0.1;
-        const TITLE_MIN_CONF = 0.6;
-
-        const normalized = (value: unknown): string | null => {
-          if (typeof value !== "string") return null;
-          const trimmed = value.trim();
-          return trimmed ? trimmed.toLowerCase() : null;
-        };
-
-        const brandTokens: string[] = [];
-        if (input.brand_blacklist instanceof Set) {
-          brandTokens.push(...Array.from(input.brand_blacklist));
-        } else if (Array.isArray(input.brand_blacklist)) {
-          brandTokens.push(...input.brand_blacklist);
-        }
-        const bn = normalized(input.brand_name);
-        if (bn) brandTokens.push(bn);
-
-        const normalizedBrandTokens = Array.from(
-          new Set(brandTokens.map(normalized).filter((t): t is string => typeof t === "string" && t.length >= 3))
-        );
-
-        const headingKeywords = [
-          "traction",
-          "business model",
-          "pricing",
-          "go-to-market",
-          "go to market",
-          "distribution",
-          "market",
-          "competition",
-          "team",
-          "meet our team",
-          "financial",
-          "financials",
-          "financial strategy",
-          "automation",
-          "ai",
-          "exit",
-          "acquisition",
-          "acquirer",
-          "acquirers",
-          "strategic buyers",
-          "use of funds",
-          "raise",
-          "gtm",
-        ];
-
-        const findHeadingKeyword = (value: string | null): string | null => {
-          if (!value) return null;
-          const lower = value.toLowerCase();
-          for (const kw of headingKeywords) {
-            const idx = lower.indexOf(kw);
-            if (idx >= 0) return value.slice(idx, idx + kw.length);
-          }
-          return null;
-        };
-
-        const stripBrands = (value: string, preserveHeading?: string | null): string => {
-          let cleaned = value;
-          for (const token of normalizedBrandTokens) {
-            const pattern = new RegExp(`\\b${escapeRegExp(token.toLowerCase())}\\b`, "gi");
-            cleaned = cleaned.replace(pattern, " ");
-          }
-          cleaned = cleaned.replace(/\s+/g, " ").trim();
-
-          if (preserveHeading) {
-            const lowerHeading = preserveHeading.toLowerCase();
-            if (!cleaned.toLowerCase().includes(lowerHeading)) {
-              cleaned = cleaned ? `${preserveHeading} ${cleaned}`.trim() : preserveHeading;
-            }
-          }
-
-          return cleaned;
-        };
-
-        const isBrandish = (value: string | null): boolean => {
-          if (!value) return false;
-          const lower = value.toLowerCase();
-          return normalizedBrandTokens.some((t) => lower.includes(t));
-        };
-
-        const isTitleUsable = (title: string | null): boolean => {
-          if (typeof title !== "string") return false;
-          const collapsed = title.trim().replace(/\s+/g, " ");
-            if (!collapsed || collapsed.length < 3) return false;
-
-          const alphaCount = (collapsed.match(/[A-Za-z]/g) || []).length;
-          if (alphaCount / collapsed.length < 0.45) return false;
-
-          const nonAlnumRatio = ((collapsed.match(/[^A-Za-z0-9\s]/g) || []).length) / Math.max(1, collapsed.length);
-          if (nonAlnumRatio > 0.25) return false;
-          if (/[~™©®]/.test(collapsed)) return false;
-
-          const words = collapsed.split(/\s+/).filter(Boolean);
-          const headingFromTitle = findHeadingKeyword(collapsed);
-          if (words.length <= 2 && !headingFromTitle) return false;
-          if (words.length === 1) {
-            const token = words[0];
-            const nonAlnum = (token.match(/[^A-Za-z0-9]/g) || []).length;
-            if (token.length > 0 && nonAlnum / token.length > 0.4) return false;
-          }
-
-          const stripped = stripBrands(collapsed, headingFromTitle);
-          if (!stripped) return false;
-          const strippedAlpha = (stripped.match(/[A-Za-z]/g) || []).length;
-          if (strippedAlpha === 0) return false;
-
-          return true;
-        };
-
-        const slideTitle = typeof input.slide_title === "string" ? input.slide_title.trim() : "";
-        const titleConf = typeof input.slide_title_confidence === "number" ? input.slide_title_confidence : null;
-        const headingFromTitle = findHeadingKeyword(slideTitle);
-        const evidenceSnippetRaw = Array.isArray(input.evidence_snippets)
-          ? input.evidence_snippets.find((s) => typeof s === "string" && s.trim().length > 0)
-          : null;
-
-        const classificationText = (() => {
-          const usableTitle = slideTitle && titleConf !== null && titleConf >= TITLE_MIN_CONF && isTitleUsable(slideTitle);
-          if (usableTitle && !isBrandish(slideTitle)) return slideTitle;
-
-          if (evidenceSnippetRaw && !isBrandish(evidenceSnippetRaw)) return evidenceSnippetRaw;
-
-          if (input.ocr_snippet) return input.ocr_snippet;
-          if (input.ocr_text) return input.ocr_text;
-          return "";
-        })();
-
-        const rawText = normalized(classificationText) ?? "";
-
-        const evidenceSnippet = Array.isArray(input.evidence_snippets)
-          ? normalized(input.evidence_snippets.find((s) => typeof s === "string" && s.trim().length > 0))
-          : null;
-
-        const textParts: string[] = [];
-        if (rawText) textParts.push(rawText);
-        if (evidenceSnippet) textParts.push(evidenceSnippet);
-        if (input.structured_summary != null) textParts.push(normalized(String(input.structured_summary)) || "");
-
-        let text = textParts.join(" \n ").slice(0, 1400);
-        text = stripBrands(text, headingFromTitle);
-
-        const includes = (needle: string) => text.includes(needle);
-        const matches = (needles: string[], weight = 1): number => needles.reduce((acc, n) => (includes(n) ? acc + weight : acc), 0);
-
-        const scores: Record<Exclude<AnalystSegment, "overview" | "unknown">, number> = {
-          problem: 0,
-          solution: 0,
-          market: 0,
-          traction: 0,
-          business_model: 0,
-          distribution: 0,
-          team: 0,
-          competition: 0,
-          risks: 0,
-          financials: 0,
-          raise_terms: 0,
-          exit: 0,
-        };
-
-        const headingSets: Record<AnalystSegment, string[]> = {
-          overview: ["overview", "summary", "executive summary"],
-          problem: ["problem", "pain", "challenge", "issue", "gap", "why this matters"],
-          solution: ["solution", "product", "how it works", "platform", "capabilities"],
-          market: ["market", "tam", "sam", "som", "opportunity", "segment", "sizing", "cagr"],
-          traction: ["traction", "growth", "users", "customers", "mrr", "arr", "revenue", "retention", "pipeline", "gmv", "kpi", "conversion", "demo-to-close", "demo to close", "lift"],
-          business_model: ["business model", "pricing", "revenue model", "unit economics", "how we make money", "saas", "platform", "add-ons", "addons", "subscription"],
-          distribution: ["distribution", "go-to-market", "go to market", "gtm", "channels", "sales", "partnerships", "marketing", "reseller", "partners", "channel"],
-          team: ["team", "founder", "ceo", "cto", "cfo", "bio", "leadership", "advisors", "founders", "meet our team"],
-          competition: ["competition", "competitor", "alternative", "compare", "landscape", "moat"],
-          risks: ["risk", "challenge", "threat", "mitigation", "compliance", "regulation", "limitation"],
-          financials: ["financial", "financial strategy", "profit", "loss", "p&l", "balance", "cash", "projection", "forecast", "projections", "ebitda", "budget", "expenses", "gross margin", "revenue", "margin", "unit economics"],
-          raise_terms: ["raise", "funding", "round", "terms", "cap table", "valuation", "use of funds", "investment"],
-          exit: ["exit", "exit strategy", "acquisition", "m&a", "strategic options", "acquirer", "acquirers", "strategic buyers"],
-          unknown: [],
-        };
-
-        let hardHeadingSegment = (() => {
-          const trimmed = text.trim();
-          if (!trimmed) return null;
-          const lower = trimmed.toLowerCase();
-          for (const [seg, phrases] of Object.entries(headingSets) as Array<[AnalystSegment, string[]]>) {
-            for (const phrase of phrases) {
-              const p = phrase.toLowerCase();
-              if (!p) continue;
-              const anchored = new RegExp(`^(?:${escapeRegExp(p)})(?:\\b|:)`, "i");
-              if (anchored.test(lower)) return seg;
-            }
-          }
-          return null;
-        })();
-
-        if (hardHeadingSegment === "problem" && text.includes("why this matters")) {
-          const solutionHints = matches(["solution", "product", "value", "impact", "approach", "benefit", "solve", "solving"], 1);
-          if (solutionHints > 0) hardHeadingSegment = "solution";
-        }
-
-        scores.problem += matches(["problem", "pain", "challenge", "issue", "gap"], 1);
-        if (text.includes("why this matters")) scores.problem += 0.9;
-
-        const strongSolutionNeedles = [
-          "how it works",
-          "architecture",
-          "demo",
-          "features",
-          "capabilities",
-          "integrates",
-          "api",
-          "product",
-          "automation",
-          "ai",
-          "intelligence",
-          "predictive",
-        ];
-        const genericSolutionNeedles = ["platform", "solution", "service", "workflow", "system"];
-        const strongSolutionHits = matches(strongSolutionNeedles, 1);
-        const genericSolutionHits = matches(genericSolutionNeedles, 0);
-        if (strongSolutionHits > 0) scores.solution += strongSolutionHits;
-        if (strongSolutionHits > 0 && matches(genericSolutionNeedles, 1) > 0) {
-          scores.solution += 0.4;
-        }
-        if (text.includes("why this matters") && matches(["solve", "value", "benefit", "impact"], 1) > 0) {
-          scores.solution += 0.6;
-        }
-
-        const tamHits = matches(["tam", "sam", "som"], 1.4);
-        scores.market += tamHits;
-        scores.market += matches(["market", "opportunity", "segment", "sizing", "cagr"], 0.8);
-
-        scores.traction += matches(["traction", "growth", "users", "customers", "mrr", "arr", "cohort", "retention", "pipeline", "gmv", "revenue", "kpi", "conversion", "demo to close", "demo-to-close", "lift"], 0.9);
-        scores.business_model += matches(["pricing", "revenue model", "model", "plan", "subscription", "contract", "unit economics", "arpu", "take rate", "how we make money", "saas", "platform", "add-ons", "addons", "add ons"], 0.85);
-        scores.distribution += matches(
-          ["distribution", "go-to-market", "go to market", "gtm", "channels", "sales", "partnerships", "marketing", "reseller", "partners", "channel", "lender", "lenders", "borrower", "borrowers", "realtor", "realtors"],
-          1.0
-        );
-        scores.team += matches(["team", "founder", "ceo", "cto", "cfo", "bio", "experience", "leadership", "advisors", "founders", "meet our team"], 1);
-        scores.competition += matches(["competition", "competitor", "alternative", "compare", "landscape", "differentiation", "moat"], 1);
-        scores.risks += matches(["risk", "challenge", "threat", "mitigation", "compliance", "regulation", "limitation"], 1);
-        scores.financials += matches(
-          ["financial", "financial strategy", "profit", "loss", "p&l", "balance", "cash", "projection", "forecast", "projections", "ebitda", "budget", "expenses", "gross margin", "revenue", "margin", "table", "unit economics"],
-          0.9
-        );
-        scores.raise_terms += matches(["raise", "funding", "round", "terms", "cap table", "valuation", "use of funds", "investment"], 1.05);
-        scores.exit += matches(["exit", "exit strategy", "acquisition", "m&a", "strategic options", "acquirer", "acquirers", "strategic buyers"], 1.05);
-
-        // Structured-kind heuristics
-        const structuredSummaryTable = (input.structured_summary as any)?.table;
-        const sk = (input.structured_kind || (structuredSummaryTable ? "table" : "") || "").toLowerCase();
-        const tableDetected = sk === "table" || Boolean(structuredSummaryTable) || (input.asset_type || "").toLowerCase() === "table";
-        const financialHint =
-          includes("revenue") ||
-          includes("arr") ||
-          includes("financial") ||
-          includes("forecast") ||
-          includes("margin") ||
-          includes("income") ||
-          includes("cash") ||
-          includes("profit") ||
-          includes("loss") ||
-          includes("p&l");
-
-        if (sk === "table") {
-          scores.financials += financialHint ? 1.1 : 0.35;
-          if (includes("retention") || includes("cohort") || includes("churn")) scores.traction += 0.6;
-        }
-        if (sk === "bar" || (input.asset_type || "").toLowerCase().includes("chart")) {
-          if (tamHits > 0 || includes("tam") || includes("sam") || includes("som")) scores.market += 1.0;
-          if (includes("revenue") || includes("arr") || includes("growth") || includes("cagr")) {
-            scores.traction += 1.0;
-            scores.market += 0.5;
-          }
-        }
-
-        // Late pages often financials/risks, but avoid early-page solution bias.
-        const p = typeof input.page_index === "number" ? input.page_index : null;
-        if (p !== null) {
-          if (p >= 8) scores.financials += 0.4;
-        }
-
-        const scoredSegments = Object.keys(scores) as Array<Exclude<AnalystSegment, "overview" | "unknown">>;
-        const ranked = scoredSegments
-          .map((seg) => ({ seg, val: scores[seg] }))
-          .sort((a, b) => b.val - a.val);
-
-        const best = ranked[0] ?? { seg: "unknown" as AnalystSegment, val: 0 };
-        const second = ranked[1] ?? { seg: "unknown" as AnalystSegment, val: 0 };
-
-        const bestScore = best.val;
-        const margin = bestScore - second.val;
-
-        const earlyPage = p !== null && p <= 1;
-        const hardHeadingMatch = Boolean(hardHeadingSegment);
-        const debugBase = {
-          classification_text: text,
-          top_scores: ranked,
-          hard_heading_match: hardHeadingMatch,
-          title_confidence: input.slide_title_confidence ?? null,
-        };
-
-        if (tableDetected && financialHint) {
-          const confidence = Math.max(0.5, Math.min(1, (scores.financials + 1.5) / 3));
-          return {
-            segment: "financials",
-            confidence,
-            debug: { ...debugBase, forced: "table_financials" },
-          };
-        }
-
-        if (hardHeadingMatch && hardHeadingSegment) {
-          const confidence = Math.max(0.4, Math.min(1, bestScore > 0 ? bestScore / 3 : 0.6));
-          return {
-            segment: hardHeadingSegment as AnalystSegment,
-            confidence,
-            debug: debugBase,
-          };
-        }
-
-        if (bestScore < 0.35) {
-          return { segment: earlyPage ? "overview" : "unknown", confidence: 0, debug: debugBase };
-        }
-
-        if (bestScore >= MIN_SCORE) {
-          if (margin >= MIN_MARGIN || bestScore >= 0.75) {
-            if (earlyPage && (best.seg === "solution" || best.seg === "problem") && bestScore < MIN_SCORE + 0.2) {
-              return { segment: "overview", confidence: 0, debug: debugBase };
-            }
-
-            const confidence = Math.max(0, Math.min(1, bestScore / 4));
-            return {
-              segment: best.seg as AnalystSegment,
-              confidence: Number.isFinite(confidence) ? confidence : 0.2,
-              debug: debugBase,
-            };
-          }
-
-          return { segment: "overview", confidence: 0, debug: { ...debugBase, tie_break: "low_margin" } };
-        }
-
-        return { segment: "overview", confidence: 0, debug: debugBase };
-      }
 
       const buildEmptyPageUnderstanding = (): PageUnderstanding => ({
         summary: null,
@@ -2633,6 +2415,12 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 
     let visuals: VisualRow[] = [];
     const slideTitleDebug = process.env.DDAI_DEV_SLIDE_TITLE_DEBUG === "1";
+    const debugSegments =
+      process.env.NODE_ENV !== "production" && String(((request.query as any) ?? {})?.debug_segments ?? "") === "1";
+    const dumpUnknown = debugSegments && String(((request.query as any) ?? {})?.dump_unknown ?? "") === "1";
+    const segmentAuditRequested = String(((request.query as any) ?? {})?.segment_audit ?? "") === "1";
+    const segmentAuditEnabled = debugSegments && segmentAuditRequested;
+    const segmentRescoreRequested = segmentAuditEnabled && String(((request.query as any) ?? {})?.segment_rescore ?? "") === "1";
     try {
       const hasOcrBlocks = await hasColumn(pool, "visual_extractions", "ocr_blocks");
       const hasUnits = await hasColumn(pool, "visual_extractions", "units");
@@ -2769,19 +2557,99 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 
       const page_understanding = normalizePageUnderstanding((v as any)?.page_understanding);
 
-      const classification = classifySegment({
+      // Segment resolution order (effective truth, non-destructive):
+      // 1) human_override (quality_flags.segment_source === 'human_override' or 'human_override_*')
+      // 2) promoted/persisted (quality_flags.segment_key)
+      // 3) computed (API classifier)
+      // 4) unknown
+      // NOTE: structured_json.segment_key is treated as an input/persisted hint but does not override computed.
+      const persistedFromQuality = normalizeAnalystSegment((v as any)?.quality_flags?.segment_key);
+      const persistedFromStructured = normalizeAnalystSegment((v as any)?.structured_json?.segment_key);
+      const persistedSegmentKey = persistedFromQuality ?? persistedFromStructured;
+      const persistedSourceKey = persistedFromQuality
+        ? "quality_flags.segment_key"
+        : persistedFromStructured
+          ? "structured_json.segment_key"
+          : null;
+
+      const qualitySegmentSourceRaw =
+        typeof (v as any)?.quality_flags?.segment_source === "string"
+          ? String((v as any).quality_flags.segment_source)
+          : typeof (v as any)?.quality_flags?.source === "string"
+            ? String((v as any).quality_flags.source)
+            : null;
+
+      const isHumanOverride = Boolean(
+        persistedFromQuality &&
+          (qualitySegmentSourceRaw === "human_override" ||
+            qualitySegmentSourceRaw === "human_override_v1" ||
+            Boolean(qualitySegmentSourceRaw?.startsWith("human_override_")))
+      );
+
+      const computed = classifySegment({
         ocr_text: v.ocr_text,
         ocr_snippet: ocrSnippet(v.ocr_text),
         structured_kind,
         structured_summary,
+        structured_json: (v as any)?.structured_json,
         asset_type: v.asset_type,
         page_index: v.page_index,
         slide_title: titleDerived.slide_title,
-          slide_title_confidence: titleDerived.slide_title_confidence,
+        slide_title_confidence: titleDerived.slide_title_confidence,
         evidence_snippets: Array.isArray((v as any).evidence_sample_snippets) ? (v as any).evidence_sample_snippets : [],
         brand_blacklist: blacklist,
         brand_name: brandInfo.brand,
+        extractor_version: (v as any)?.extractor_version,
+        quality_source: (v as any)?.quality_flags?.source,
+        enable_debug: debugSegments,
+        include_debug_text_snippet: dumpUnknown || segmentAuditEnabled,
+        // Make computed_v1 deterministic and independent of worker-provided segment_key.
+        disable_structured_segment_key_signal: true,
+        disable_structured_segment_key_fallback: true,
       });
+
+      const effectiveSegment = isHumanOverride
+        ? (persistedFromQuality ?? computed.segment)
+        : persistedFromQuality
+          ? persistedFromQuality
+          : computed.segment;
+
+      const persistedConfidenceRaw = (v as any)?.quality_flags?.segment_confidence;
+      const persistedConfidence = typeof persistedConfidenceRaw === "number" && Number.isFinite(persistedConfidenceRaw) ? persistedConfidenceRaw : 1;
+      const effectiveConfidence = persistedFromQuality ? persistedConfidence : computed.confidence;
+
+      const effectiveSource = (() => {
+        if (persistedFromQuality) {
+          if (isHumanOverride) return qualitySegmentSourceRaw || "human_override_v1";
+          return qualitySegmentSourceRaw || "persisted_v0";
+        }
+        return "computed_v1";
+      })();
+
+      const rescore = persistedSegmentKey && segmentRescoreRequested
+        ? classifySegment({
+            ocr_text: v.ocr_text,
+            ocr_snippet: ocrSnippet(v.ocr_text),
+            structured_kind,
+            structured_summary,
+            structured_json: (v as any)?.structured_json,
+            asset_type: v.asset_type,
+            page_index: v.page_index,
+            slide_title: titleDerived.slide_title,
+            slide_title_confidence: titleDerived.slide_title_confidence,
+            evidence_snippets: Array.isArray((v as any).evidence_sample_snippets) ? (v as any).evidence_sample_snippets : [],
+            brand_blacklist: blacklist,
+            brand_name: brandInfo.brand,
+            extractor_version: (v as any)?.extractor_version,
+            quality_source: (v as any)?.quality_flags?.source,
+            enable_debug: true,
+            include_debug_text_snippet: true,
+            disable_structured_segment_key_signal: true,
+            disable_structured_segment_key_fallback: true,
+          })
+        : null;
+
+      const computedDebug = debugSegments ? computed.debug : undefined;
 
       return {
         ...v,
@@ -2792,41 +2660,115 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         slide_title_confidence: titleDerived.slide_title_confidence,
         slide_title_warnings: titleDerived.slide_title_warnings,
         slide_title_debug: titleDerived.slide_title_debug,
-        segment: classification.segment,
-        segment_confidence: classification.confidence,
-        segment_debug: classification.debug,
+        // Backwards-compatible, but now explicitly the effective segment.
+        segment: effectiveSegment,
+        effective_segment: effectiveSegment,
+        segment_source: effectiveSource,
+        segment_confidence: effectiveConfidence,
+        // Always expose computed + persisted fields for provenance.
+        computed_segment: computed.segment,
+        computed_confidence: computed.confidence,
+        persisted_segment_key: persistedSegmentKey,
+        persisted_segment_source: persistedSourceKey,
+        segment_debug: computedDebug,
+        ...(rescore
+          ? {
+              segment_rescore_segment: rescore.segment,
+              segment_rescore_confidence: rescore.confidence,
+              segment_rescore_debug: rescore.debug,
+            }
+          : {}),
       } as VisualRow & { structured_summary?: unknown };
     });
 
+    const unknownStructuredReport = (() => {
+      if (!dumpUnknown) return null;
+
+      const bucketBestScore = (bestScore: number): string => {
+        if (!Number.isFinite(bestScore)) return "<0.15";
+        if (bestScore < 0.15) return "<0.15";
+        if (bestScore < 0.25) return "0.15-0.25";
+        if (bestScore < 0.35) return "0.25-0.35";
+        return ">=0.35";
+      };
+
+      const items = visualsWithSegments
+        .filter((v: any) => {
+          const seg = typeof v?.segment === "string" ? v.segment : "";
+          const src = typeof v?.segment_debug?.classification_source === "string" ? v.segment_debug.classification_source : null;
+          // Under computed-first, we still want to understand unknowns driven by structured/vision sources.
+          return (src === "structured" || src === "vision" || src === "persisted") && seg === "unknown";
+        })
+        .map((v: any) => {
+          const qSource = typeof v?.quality_flags?.source === "string" ? v.quality_flags.source : null;
+          const debug = v?.segment_debug ?? null;
+          const top = Array.isArray(debug?.top_scores) ? debug.top_scores : [];
+          const best = top[0] ?? null;
+          const runnerUp = top[1] ?? null;
+          const bestScore = typeof best?.score === "number" ? best.score : 0;
+          const sourcesUsed = Array.isArray(debug?.classification_text_sources_used)
+            ? debug.classification_text_sources_used
+            : [];
+
+          return {
+            visual_asset_id: v.id,
+            document_id: v.document_id,
+            extractor_version: v.extractor_version ?? null,
+            quality_source: qSource,
+            classification_text_len: typeof debug?.classification_text_len === "number" ? debug.classification_text_len : null,
+            classification_text_snippet: typeof debug?.classification_text_snippet === "string" ? debug.classification_text_snippet : null,
+            classification_text_sources_used: sourcesUsed,
+            top_scores: top,
+            best_segment: typeof best?.segment === "string" ? best.segment : null,
+            best_score: typeof best?.score === "number" ? best.score : null,
+            runner_up_segment: typeof runnerUp?.segment === "string" ? runnerUp.segment : null,
+            runner_up_score: typeof runnerUp?.score === "number" ? runnerUp.score : null,
+            best_score_bucket: bucketBestScore(bestScore),
+            sources_used_present: sourcesUsed.length > 0,
+          };
+        });
+
+      const countBy = (rows: any[], keyFn: (r: any) => string): Array<{ key: string; n: number }> => {
+        const map = new Map<string, number>();
+        for (const r of rows) {
+          const k = keyFn(r);
+          map.set(k, (map.get(k) ?? 0) + 1);
+        }
+        return Array.from(map.entries())
+          .map(([key, n]) => ({ key, n }))
+          .sort((a, b) => b.n - a.n);
+      };
+
+      const summary = {
+        total_unknown_structured: items.length,
+        unknown_by_quality_source: countBy(items, (r) => (typeof r.quality_source === "string" ? r.quality_source : "missing")),
+        unknown_by_sources_used_presence: countBy(items, (r) => (r.sources_used_present ? "populated" : "empty")),
+        unknown_by_best_score_bucket: countBy(items, (r) => (typeof r.best_score_bucket === "string" ? r.best_score_bucket : "<0.15")),
+      };
+
+      try {
+        // eslint-disable-next-line no-console
+        console.log("[DEV dump_unknown structured]", { deal_id: dealId, summary });
+      } catch {
+        // ignore
+      }
+
+      return { summary, items };
+    })();
+
     let didLogSlideTitle = false;
 
-    // Create canonical segment nodes (system-defined, not user-editable)
-    for (const seg of canonicalSegments) {
-      const segNodeId = `segment:${dealId}:${seg}`;
-      nodes.push({
-        id: segNodeId,
-        node_id: segNodeId,
-        kind: "segment",
-        type: "segment",
-        node_type: "SEGMENT",
-        label: seg.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
-        metadata: { segment: seg },
-        data: {
-          label: seg.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
-          segment: seg,
-          segment_confidence: null,
-        },
-      });
-      edges.push({
-        id: `e:has_segment:${dealId}:${seg}`,
-        source: dealNodeId,
-        target: segNodeId,
-        edge_type: "HAS_SEGMENT",
-      });
-    }
+    // Segment nodes are document-scoped: Deal -> Document -> Segment -> Visual -> Evidence.
+    const segmentNodeIds = new Set<string>();
+    const documentSegmentEdgeIds = new Set<string>();
+    let didWarnMissingDocumentId = false;
+
+    const formatSegmentLabel = (seg: string) =>
+      seg.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
     for (const v of visualsWithSegments) {
-      const docNodeId = `document:${v.document_id}`;
+      const hasDocumentId = typeof v.document_id === "string" && v.document_id.length > 0;
+      const docNodeId = hasDocumentId ? `document:${v.document_id}` : null;
       const vaNodeId = `visual_asset:${v.id}`;
       const evNodeId = `evidence:${v.id}`;
       const conf = Number(v.confidence);
@@ -2882,7 +2824,119 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         }
       }
 
-      const segmentDebug = process.env.NODE_ENV !== "production" ? (v as any)?.segment_debug ?? null : null;
+      const segmentDebugRaw = debugSegments ? (v as any)?.segment_debug ?? null : null;
+      const segmentDebug = debugSegments
+        ? (() => {
+            const top = Array.isArray(segmentDebugRaw?.top_scores) ? segmentDebugRaw.top_scores : [];
+            const best = top[0];
+            const runnerUp = top[1];
+            return {
+              ...segmentDebugRaw,
+              text_len:
+                typeof segmentDebugRaw?.classification_text_len === "number" ? segmentDebugRaw.classification_text_len : null,
+              best_score: typeof best?.score === "number" ? best.score : null,
+              best_segment: typeof best?.segment === "string" ? best.segment : null,
+              runner_up_score: typeof runnerUp?.score === "number" ? runnerUp.score : null,
+              runner_up_segment: typeof runnerUp?.segment === "string" ? runnerUp.segment : null,
+            };
+          })()
+        : null;
+
+      const classifiedSegment =
+        typeof (v as any)?.effective_segment === "string" && String((v as any).effective_segment).length > 0
+          ? String((v as any).effective_segment)
+          : typeof (v as any)?.segment === "string" && String((v as any).segment).length > 0
+            ? String((v as any).segment)
+            : "unknown";
+      const effectiveSegment = hasDocumentId ? classifiedSegment : "unknown";
+      const effectiveSegmentConfidence = hasDocumentId ? v.segment_confidence : null;
+      const effectiveSegmentSource =
+        typeof (v as any)?.segment_source === "string" && String((v as any).segment_source).trim().length > 0
+          ? String((v as any).segment_source)
+          : null;
+
+      const persistedSegmentKey =
+        typeof (v as any)?.persisted_segment_key === "string" && String((v as any).persisted_segment_key).trim().length > 0
+          ? String((v as any).persisted_segment_key)
+          : null;
+      const computedSegmentKey =
+        typeof (v as any)?.computed_segment === "string" && String((v as any).computed_segment).trim().length > 0
+          ? String((v as any).computed_segment)
+          : null;
+      const computedSegmentConfidence =
+        typeof (v as any)?.computed_confidence === "number" && Number.isFinite((v as any).computed_confidence)
+          ? (v as any).computed_confidence
+          : null;
+
+      if (!hasDocumentId && process.env.NODE_ENV !== "production" && !didWarnMissingDocumentId) {
+        didWarnMissingDocumentId = true;
+        try {
+          request.log?.warn?.(
+            {
+              deal_id: dealId,
+              visual_asset_id: v.id,
+              msg: "visual asset missing document_id; attaching under deal->unknown segment",
+            },
+            "deal.lineage.visual_missing_document_id"
+          );
+        } catch {
+          // ignore
+        }
+      }
+
+      const segNodeId = hasDocumentId
+        ? `segment:${dealId}:${v.document_id}:${effectiveSegment}`
+        : `segment:${dealId}:unknown_document:${effectiveSegment}`;
+
+      if (!segmentNodeIds.has(segNodeId)) {
+        segmentNodeIds.add(segNodeId);
+        nodes.push({
+          id: segNodeId,
+          node_id: segNodeId,
+          kind: "segment",
+          type: "segment",
+          node_type: "SEGMENT",
+          label: formatSegmentLabel(effectiveSegment),
+          metadata: {
+            deal_id: dealId,
+            document_id: hasDocumentId ? v.document_id : null,
+            segment: effectiveSegment,
+          },
+          data: {
+            label: formatSegmentLabel(effectiveSegment),
+            segment: effectiveSegment,
+            segment_key: effectiveSegment,
+            segment_confidence: effectiveSegmentConfidence,
+            ...(hasDocumentId ? { document_id: v.document_id } : {}),
+          },
+        });
+      }
+
+      if (hasDocumentId && docNodeId) {
+        const docSegEdgeId = `e:has_segment:doc:${v.document_id}:${effectiveSegment}`;
+        if (!documentSegmentEdgeIds.has(docSegEdgeId)) {
+          documentSegmentEdgeIds.add(docSegEdgeId);
+          edges.push({
+            id: docSegEdgeId,
+            source: docNodeId,
+            target: segNodeId,
+            type: "HAS_SEGMENT",
+            edge_type: "HAS_SEGMENT",
+          });
+        }
+      } else {
+        const dealSegEdgeId = `e:has_segment:deal:${dealId}:${effectiveSegment}`;
+        if (!documentSegmentEdgeIds.has(dealSegEdgeId)) {
+          documentSegmentEdgeIds.add(dealSegEdgeId);
+          edges.push({
+            id: dealSegEdgeId,
+            source: dealNodeId,
+            target: segNodeId,
+            type: "HAS_SEGMENT",
+            edge_type: "HAS_SEGMENT",
+          });
+        }
+      }
 
       nodes.push({
         id: vaNodeId,
@@ -2923,23 +2977,22 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           evidence_snippets: Array.isArray(evidence_snippets) ? evidence_snippets : [],
           extraction_confidence,
           extraction_method: typeof v.extraction_method === "string" ? v.extraction_method : null,
-          segment: v.segment,
-          segment_confidence: v.segment_confidence,
-          ...(segmentDebug ? { segment_debug: segmentDebug } : {}),
+          segment: effectiveSegment,
+          effective_segment: effectiveSegment,
+          segment_confidence: effectiveSegmentConfidence,
+          segment_source: effectiveSegmentSource,
+          persisted_segment_key: persistedSegmentKey,
+          computed_segment: computedSegmentKey,
+          computed_confidence: computedSegmentConfidence,
+          ...(debugSegments ? { segment_debug: segmentDebug } : {}),
         },
       });
 
-      const segNodeId = `segment:${dealId}:${v.segment}`;
       edges.push({
         id: `e:has_visual_asset:${segNodeId}:${v.id}`,
         source: segNodeId,
         target: vaNodeId,
-        edge_type: "HAS_VISUAL_ASSET",
-      });
-      edges.push({
-        id: `e:has_visual_asset:doc:${v.document_id}:${v.id}`,
-        source: docNodeId,
-        target: vaNodeId,
+        type: "HAS_VISUAL_ASSET",
         edge_type: "HAS_VISUAL_ASSET",
       });
 
@@ -2965,8 +3018,24 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         id: `e:has_evidence:${v.id}`,
         source: vaNodeId,
         target: evNodeId,
+        type: "HAS_EVIDENCE",
         edge_type: "HAS_EVIDENCE",
       });
+    }
+
+    if (debugSegments) {
+      const missingType = edges.filter((e) => typeof e?.type !== "string" || e.type.trim().length === 0);
+      if (missingType.length > 0) {
+        request.log?.error?.(
+          {
+            deal_id: dealId,
+            missing_edge_type_count: missingType.length,
+            sample: missingType.slice(0, 5).map((e) => ({ id: e?.id, edge_type: e?.edge_type, source: e?.source, target: e?.target })),
+          },
+          "deal.lineage.edge_type_missing"
+        );
+        throw new Error(`Lineage edges missing type (count=${missingType.length})`);
+      }
     }
 
     const endTs = Date.now();
@@ -2987,8 +3056,949 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       "deal.lineage"
     );
 
-    return reply.send({ deal_id: dealId, nodes, edges, warnings });
+    return reply.send({
+      deal_id: dealId,
+      nodes,
+      edges,
+      warnings,
+      ...(unknownStructuredReport ? { unknown_structured_report: unknownStructuredReport } : {}),
+      ...(segmentAuditRequested
+        ? {
+            segment_audit_report: (() => {
+              if (!segmentAuditEnabled) {
+                const reason =
+                  process.env.NODE_ENV === "production"
+                    ? "segment_audit is disabled in production"
+                    : "segment_audit requires debug_segments=1 (dev-only)";
+                return {
+                  deal_id: dealId,
+                  generated_at: new Date().toISOString(),
+                  documents: [],
+                  error: {
+                    code: "SEGMENT_AUDIT_DISABLED",
+                    message: reason,
+                  },
+                };
+              }
+
+              type SegmentSource = "persisted" | "structured" | "vision" | "missing";
+              const tieDelta = 0.1;
+              const tieScoreDelta = 0.05;
+
+              const normalizeSnippet = (value: unknown, maxLen: number): string | null => {
+                if (typeof value !== "string") return null;
+                const s = value.replace(/\s+/g, " ").trim();
+                if (!s) return null;
+                return s.length > maxLen ? `${s.slice(0, maxLen).trimEnd()}…` : s;
+              };
+
+              const stableJsonPreview = (value: unknown, maxLen: number): string | null => {
+                if (value == null) return null;
+                if (typeof value !== "object") {
+                  try {
+                    return normalizeSnippet(String(value), maxLen);
+                  } catch {
+                    return null;
+                  }
+                }
+
+                const seen = new WeakSet<object>();
+                const simplify = (input: any, depth: number): any => {
+                  if (input == null) return null;
+                  const t = typeof input;
+                  if (t === "string" || t === "number" || t === "boolean") return input;
+                  if (t !== "object") return String(input);
+
+                  if (seen.has(input)) return "[Circular]";
+                  seen.add(input);
+
+                  if (Array.isArray(input)) {
+                    const head = input.slice(0, 8).map((v) => simplify(v, depth - 1));
+                    if (input.length > 8) head.push(`…(+${input.length - 8} more)`);
+                    return head;
+                  }
+
+                  if (depth <= 0) return "[Object]";
+                  const keys = Object.keys(input).sort((a, b) => a.localeCompare(b));
+                  const out: Record<string, any> = {};
+                  const take = keys.slice(0, 20);
+                  for (const k of take) out[k] = simplify(input[k], depth - 1);
+                  if (keys.length > take.length) out.__more_keys__ = keys.length - take.length;
+                  return out;
+                };
+
+                try {
+                  const json = JSON.stringify(simplify(value as any, 2));
+                  if (typeof json !== "string") return null;
+                  if (json.length <= maxLen) return json;
+                  return `${json.slice(0, maxLen).trimEnd()}…`;
+                } catch {
+                  return null;
+                }
+              };
+
+              const computeUnknownReasonCode = (input: {
+                segment: string;
+                segment_source: SegmentSource;
+                persisted_unknown: boolean;
+                structured_json_present: boolean;
+                ocr_text_present: boolean;
+                classification_text_len: number;
+                sources_used: string[];
+                best_score: number | null;
+                runner_up_score: number | null;
+                threshold: number;
+              }): string | null => {
+                if (input.segment !== "unknown") return null;
+                if (input.segment_source === "persisted" && input.persisted_unknown) return "PERSISTED_UNKNOWN";
+                if (input.segment_source === "structured" && !input.structured_json_present) return "MISSING_STRUCTURED_JSON";
+                if (input.segment_source === "vision" && !input.ocr_text_present) return "MISSING_OCR_TEXT";
+                if (input.classification_text_len <= 0 || input.sources_used.length === 0) return "NO_CLASSIFICATION_TEXT";
+                if (
+                  input.best_score != null &&
+                  input.runner_up_score != null &&
+                  Math.abs(input.best_score - input.runner_up_score) < tieDelta &&
+                  input.best_score < input.threshold + tieScoreDelta
+                ) {
+                  return "TIE_LOW_CONFIDENCE";
+                }
+                if (input.best_score != null && input.best_score < input.threshold) return "LOW_BEST_SCORE";
+                return "LOW_BEST_SCORE";
+              };
+
+              const docById = new Map(docs.map((d) => [d.id, d] as const));
+              const visualsByDoc = new Map<string, Array<VisualRow & any>>();
+              for (const v of visualsWithSegments as any[]) {
+                const docId = typeof v?.document_id === "string" && v.document_id ? v.document_id : "unknown_document";
+                const arr = visualsByDoc.get(docId) ?? [];
+                arr.push(v);
+                visualsByDoc.set(docId, arr);
+              }
+
+              const documentEntries = Array.from(visualsByDoc.entries())
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([document_id, rows]) => {
+                  const doc = docById.get(document_id) ?? null;
+                  const title = doc ? doc.title : null;
+                  const type = doc ? doc.type : null;
+                  const status = null;
+                  const page_count = doc && typeof doc.page_count === "number" ? doc.page_count : null;
+
+                  const sorted = rows.slice().sort((x, y) => {
+                    const px = typeof x.page_index === "number" ? x.page_index : Number.MAX_SAFE_INTEGER;
+                    const py = typeof y.page_index === "number" ? y.page_index : Number.MAX_SAFE_INTEGER;
+                    if (px !== py) return px - py;
+                    const tx = typeof x.created_at === "string" ? Date.parse(x.created_at) : 0;
+                    const ty = typeof y.created_at === "string" ? Date.parse(y.created_at) : 0;
+                    return tx - ty;
+                  });
+
+                  const items = sorted.map((v: any) => {
+                    const debug = (v as any)?.segment_debug ?? null;
+                    const persistedKey = typeof v?.persisted_segment_key === "string" && v.persisted_segment_key.trim()
+                      ? v.persisted_segment_key.trim()
+                      : null;
+                    const effectiveSource = typeof v?.segment_source === "string" && v.segment_source.trim() ? v.segment_source.trim() : null;
+                    const isPersistedEffective = Boolean(persistedKey && typeof v?.segment === "string" && v.segment.trim() === persistedKey && effectiveSource !== "computed_v1");
+
+                    const rawSource = isPersistedEffective
+                      ? "persisted"
+                      : typeof debug?.classification_source === "string"
+                        ? debug.classification_source
+                        : null;
+                    const segment_source: SegmentSource =
+                      rawSource === "persisted" || rawSource === "structured" || rawSource === "vision" ? rawSource : "missing";
+                    const quality_source = typeof v?.quality_flags?.source === "string" ? v.quality_flags.source : null;
+
+                    const segment = typeof v?.segment === "string" && v.segment.trim() ? v.segment.trim() : "unknown";
+                    const segment_confidence =
+                      typeof v?.segment_confidence === "number" && Number.isFinite(v.segment_confidence)
+                        ? v.segment_confidence
+                        : null;
+
+                    const top = Array.isArray(debug?.top_scores) ? debug.top_scores : [];
+                    const best = top[0] ?? null;
+                    const runnerUp = top[1] ?? null;
+                    const best_score = typeof best?.score === "number" && Number.isFinite(best.score) ? best.score : null;
+                    const runner_up_score = typeof runnerUp?.score === "number" && Number.isFinite(runnerUp.score) ? runnerUp.score : null;
+
+                    const threshold =
+                      typeof debug?.threshold === "number" && Number.isFinite(debug.threshold)
+                        ? debug.threshold
+                        : segment_source === "structured"
+                          ? 0.2
+                          : segment_source === "vision"
+                            ? 0.35
+                            : 0;
+
+                    const sourcesUsed = Array.isArray(debug?.classification_text_sources_used)
+                      ? debug.classification_text_sources_used.filter((s: any) => typeof s === "string" && s.trim().length > 0)
+                      : [];
+
+                    const classificationTextLen =
+                      typeof debug?.classification_text_len === "number" && Number.isFinite(debug.classification_text_len)
+                        ? debug.classification_text_len
+                        : 0;
+
+                    const snippet = normalizeSnippet(debug?.classification_text_snippet, 200);
+
+                    const ocrTextRaw = typeof v?.ocr_text === "string" ? v.ocr_text : null;
+                    const ocr_text_len = ocrTextRaw ? ocrTextRaw.length : 0;
+                    const ocr_text_snippet = ocrTextRaw ? normalizeSnippet(ocrTextRaw, 260) : null;
+
+                    const structuredJson = v?.structured_json;
+                    const structured_json_present = Boolean(structuredJson);
+                    const structured_json_keys = structured_json_present && typeof structuredJson === "object" && !Array.isArray(structuredJson)
+                      ? Object.keys(structuredJson as any)
+                          .filter((k) => typeof k === "string" && k.trim().length > 0)
+                          .sort((a, b) => a.localeCompare(b))
+                          .slice(0, 24)
+                      : [];
+                    const structured_json_snippet = structuredJson ? stableJsonPreview(structuredJson, 260) : null;
+
+                    const structuredJsonPresent = Boolean(v?.structured_json);
+                    const ocrTextPresent = typeof v?.ocr_text === "string" ? v.ocr_text.trim().length > 0 : false;
+
+                    const evidence_count =
+                      typeof v?.evidence_count === "number" && Number.isFinite(v.evidence_count)
+                        ? v.evidence_count
+                        : 0;
+
+                    const page_index = typeof v?.page_index === "number" && Number.isFinite(v.page_index) ? v.page_index : null;
+                    const pageN = page_index != null ? page_index + 1 : null;
+
+                    const sj = v?.structured_json;
+                    const sheetName = typeof sj?.sheet_name === "string" ? sj.sheet_name : null;
+                    const slideNumber = typeof sj?.slide_number === "number" && Number.isFinite(sj.slide_number) ? sj.slide_number : null;
+
+                    const isStructuredPpt = quality_source === "structured_powerpoint";
+                    const isStructuredWord = quality_source === "structured_word";
+                    const isStructuredExcel = quality_source === "structured_excel";
+
+                    const page_label = (() => {
+                      if (segment_source === "vision" || !quality_source || (!quality_source.startsWith("structured_") && segment_source !== "structured")) {
+                        return `Page ${pageN != null ? pageN : "—"}`;
+                      }
+                      if (isStructuredPpt) {
+                        if (slideNumber != null) return `Slide ${slideNumber}`;
+                        return `Slide ${pageN != null ? pageN : "—"}`;
+                      }
+                      if (isStructuredWord) return `Block ${pageN != null ? pageN : "—"}`;
+                      if (isStructuredExcel) {
+                        if (sheetName) return `Sheet ${sheetName} • item ${pageN != null ? pageN : "—"}`;
+                        return `Item ${pageN != null ? pageN : "—"}`;
+                      }
+                      return `Item ${pageN != null ? pageN : "—"}`;
+                    })();
+
+                    const persistedUnknown = segment_source === "persisted" && segment === "unknown";
+                    const unknown_reason_code = computeUnknownReasonCode({
+                      segment,
+                      segment_source,
+                      persisted_unknown: persistedUnknown,
+                      structured_json_present: structuredJsonPresent,
+                      ocr_text_present: ocrTextPresent,
+                      classification_text_len: classificationTextLen,
+                      sources_used: sourcesUsed,
+                      best_score,
+                      runner_up_score,
+                      threshold,
+                    });
+
+                    const computedSegment = segmentRescoreRequested && typeof v?.segment_rescore_segment === "string"
+                      ? String(v.segment_rescore_segment)
+                      : null;
+
+                    const computedDebug = segmentRescoreRequested ? v?.segment_rescore_debug : null;
+                    const computedCapturedText =
+                      typeof computedDebug?.captured_text === "string" ? computedDebug.captured_text : null;
+
+                    const computedTopScores = Array.isArray(computedDebug?.top_scores)
+                      ? computedDebug.top_scores
+                          .filter((s: any) => s && typeof s === "object")
+                          .slice(0, 12)
+                          .map((s: any) => ({ segment: String(s.segment), score: Number(s.score) }))
+                          .filter((s: any) => Number.isFinite(s.score))
+                          .sort((a: any, b: any) => b.score - a.score)
+                      : [];
+
+                    const computedUnknownReasonCode =
+                      computedSegment === "unknown"
+                        ? computeUnknownReasonCode({
+                            segment: "unknown",
+                            segment_source: "vision",
+                            persisted_unknown: false,
+                            classification_text_len:
+                              typeof computedDebug?.classification_text_len === "number" && Number.isFinite(computedDebug.classification_text_len)
+                                ? computedDebug.classification_text_len
+                                : 0,
+                            sources_used: Array.isArray(computedDebug?.classification_text_sources_used)
+                              ? computedDebug.classification_text_sources_used.filter((s: any) => typeof s === "string" && s.trim().length > 0)
+                              : [],
+                            best_score:
+                              typeof computedDebug?.best_score === "number" && Number.isFinite(computedDebug.best_score)
+                                ? computedDebug.best_score
+                                : null,
+                            runner_up_score:
+                              typeof computedDebug?.runner_up_score === "number" && Number.isFinite(computedDebug.runner_up_score)
+                                ? computedDebug.runner_up_score
+                                : null,
+                            threshold:
+                              typeof computedDebug?.threshold === "number" && Number.isFinite(computedDebug.threshold)
+                                ? computedDebug.threshold
+                                : 0.35,
+                            structured_json_present: structuredJsonPresent,
+                            ocr_text_present: ocrTextPresent,
+                          })
+                        : null;
+
+                    return {
+                      visual_asset_id: v.id,
+                      document_id: typeof v?.document_id === "string" ? v.document_id : document_id,
+                      extractor_version: typeof v?.extractor_version === "string" ? v.extractor_version : null,
+                      quality_source,
+                      segment,
+                      segment_source,
+                      segment_confidence,
+                      page_index,
+                      page_label,
+                      image_uri: typeof v?.image_uri === "string" ? v.image_uri : null,
+                      evidence_count,
+                      snippet,
+                      ...(segmentRescoreRequested
+                        ? {
+                            persisted_segment_key: typeof segment === "string" ? segment : null,
+                            captured_text: computedCapturedText,
+                            computed_segment: computedSegment,
+                            computed_reason: computedSegment
+                              ? {
+                                  classification_text_len:
+                                    typeof computedDebug?.classification_text_len === "number" && Number.isFinite(computedDebug.classification_text_len)
+                                      ? computedDebug.classification_text_len
+                                      : 0,
+                                  classification_text_sources_used: Array.isArray(computedDebug?.classification_text_sources_used)
+                                    ? computedDebug.classification_text_sources_used.filter((s: any) => typeof s === "string" && s.trim().length > 0)
+                                    : [],
+                                  ...(computedDebug?.keyword_hits && typeof computedDebug.keyword_hits === "object" ? { keyword_hits: computedDebug.keyword_hits } : {}),
+                                  top_scores: computedTopScores,
+                                  best_score:
+                                    typeof computedDebug?.best_score === "number" && Number.isFinite(computedDebug.best_score)
+                                      ? computedDebug.best_score
+                                      : null,
+                                  runner_up_score:
+                                    typeof computedDebug?.runner_up_score === "number" && Number.isFinite(computedDebug.runner_up_score)
+                                      ? computedDebug.runner_up_score
+                                      : null,
+                                  threshold:
+                                    typeof computedDebug?.threshold === "number" && Number.isFinite(computedDebug.threshold)
+                                      ? computedDebug.threshold
+                                      : undefined,
+                                  tie_delta:
+                                    typeof computedDebug?.tie_delta === "number" && Number.isFinite(computedDebug.tie_delta)
+                                      ? computedDebug.tie_delta
+                                      : undefined,
+                                  override_applied: computedDebug?.override_applied === true ? true : undefined,
+                                  override_rule_id:
+                                    typeof computedDebug?.override_rule_id === "string" ? computedDebug.override_rule_id : undefined,
+                                  override_explanation:
+                                    typeof computedDebug?.override_explanation === "string" ? computedDebug.override_explanation : undefined,
+                                  top_scores_pre_override: Array.isArray(computedDebug?.top_scores_pre_override)
+                                    ? computedDebug.top_scores_pre_override
+                                        .filter((s: any) => s && typeof s === "object")
+                                        .slice(0, 12)
+                                        .map((s: any) => ({ segment: String(s.segment), score: Number(s.score) }))
+                                        .filter((s: any) => Number.isFinite(s.score))
+                                        .sort((a: any, b: any) => b.score - a.score)
+                                    : undefined,
+                                  ...(computedUnknownReasonCode ? { unknown_reason_code: computedUnknownReasonCode } : {}),
+                                }
+                              : null,
+                          }
+                        : {}),
+                      content_preview: {
+                        ocr_text_len,
+                        ocr_text_snippet,
+                        structured_json_present,
+                        structured_json_keys,
+                        structured_json_snippet,
+                      },
+                      reason: {
+                        classification_text_len: classificationTextLen,
+                        classification_text_sources_used: sourcesUsed,
+                        ...(debug?.keyword_hits && typeof debug.keyword_hits === "object" ? { keyword_hits: debug.keyword_hits } : {}),
+                        top_scores: Array.isArray(top)
+                          ? top
+                              .filter((s: any) => s && typeof s === "object")
+                              .slice(0, 8)
+                              .map((s: any) => ({ segment: String(s.segment), score: Number(s.score) }))
+                          : [],
+                        best_score,
+                        runner_up_score,
+                        threshold,
+                        unknown_reason_code,
+                      },
+                    };
+                  });
+
+                  const bySegment: Record<string, number> = {};
+                  for (const it of items) {
+                    const seg = typeof it.segment === "string" ? it.segment : "unknown";
+                    bySegment[seg] = (bySegment[seg] ?? 0) + 1;
+                  }
+
+                  return {
+                    document_id,
+                    title,
+                    type,
+                    status,
+                    page_count,
+                    items,
+                    summary: {
+                      total_items: items.length,
+                      by_segment: bySegment,
+                    },
+                  };
+                });
+
+              return {
+                deal_id: dealId,
+                generated_at: new Date().toISOString(),
+                documents: documentEntries,
+              };
+            })(),
+          }
+        : {}),
+    });
   });
+
+  // DEV-only: promote computed segments into persisted segment_key.
+  // This is explicit, safe to rerun, and does not change production scoring behavior unless the persisted value changes.
+  app.post(
+    "/api/v1/deals/:deal_id/segments/promote",
+    {
+      schema: {
+        description: "DEV-only: compute segment classifications and persist high-confidence promotions to visual_assets.quality_flags.segment_key.",
+        tags: ["deals"],
+        params: {
+          type: "object",
+          properties: { deal_id: { type: "string" } },
+          required: ["deal_id"],
+        },
+        body: {
+          type: "object",
+          additionalProperties: true,
+          properties: {
+            document_ids: { type: "array", items: { type: "string" } },
+            visual_asset_ids: { type: "array", items: { type: "string" } },
+            extractor_versions: { type: "array", items: { type: "string" } },
+            dry_run: { type: "boolean" },
+            force: { type: "boolean" },
+            idempotency_key: { type: "string" },
+            persist_artifact: { type: "boolean" },
+            auto_accept_threshold: { type: "number" },
+            review_threshold: { type: "number" },
+            reject_threshold: { type: "number" },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (process.env.NODE_ENV === "production") {
+        return reply.status(403).send({ error: "segments/promote is disabled in production" });
+      }
+
+      const dealIdRaw = (request.params as any)?.deal_id;
+      const dealId = sanitizeText(typeof dealIdRaw === "string" ? dealIdRaw : String(dealIdRaw ?? ""));
+      if (!dealId) return reply.status(400).send({ error: "deal_id is required" });
+
+      const bodySchema = z
+        .object({
+          document_ids: z.array(z.string()).optional(),
+          visual_asset_ids: z.array(z.string()).optional(),
+          extractor_versions: z.array(z.string()).optional(),
+          dry_run: z.boolean().optional(),
+          force: z.boolean().optional(),
+          idempotency_key: z.string().optional(),
+          persist_artifact: z.boolean().optional(),
+          auto_accept_threshold: z.number().min(0).max(1).optional(),
+          review_threshold: z.number().min(0).max(1).optional(),
+          reject_threshold: z.number().min(0).max(1).optional(),
+        })
+        .passthrough();
+
+      const parsed = bodySchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({ error: "Invalid input", details: parsed.error.flatten() });
+      }
+
+      const params = parsed.data;
+      const dryRun = params.dry_run === true;
+      const force = params.force === true;
+      const persistArtifact = params.persist_artifact !== false;
+      const requestedAutoAccept = typeof params.auto_accept_threshold === "number" ? params.auto_accept_threshold : null;
+      const requestedReview = typeof params.review_threshold === "number" ? params.review_threshold : null;
+      const requestedReject = typeof params.reject_threshold === "number" ? params.reject_threshold : null;
+
+      // Threshold policy (default):
+      // - auto_accept >= 0.85: safe to auto-persist
+      // - review >= 0.65: plausible, needs review (no auto persist)
+      // - reject < 0.65: keep unknown/keep existing persisted, but flag
+      const defaults = getSegmentConfidenceThresholds();
+      const AUTO_ACCEPT = requestedAutoAccept ?? defaults.auto_accept;
+      const REVIEW = requestedReview ?? defaults.review;
+      // Keep reject configurable for existing callers; default ties to review per policy.
+      const REJECT = requestedReject ?? defaults.reject;
+
+      if (!(REJECT <= REVIEW && REVIEW <= AUTO_ACCEPT)) {
+        return reply.status(400).send({
+          error: "Invalid thresholds: require reject_threshold <= review_threshold <= auto_accept_threshold",
+        });
+      }
+
+      const safeKey = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
+      const idempotencyKey = typeof params.idempotency_key === "string" && params.idempotency_key.trim() ? safeKey(params.idempotency_key.trim()) : null;
+      const runId = idempotencyKey ?? randomUUID();
+
+      const artifactDir = path.resolve(process.cwd(), "artifacts", "segment-promotion", dealId);
+      const artifactPath = path.join(artifactDir, `${runId}.json`);
+
+      if (idempotencyKey && fs.existsSync(artifactPath)) {
+        try {
+          const existing = JSON.parse(fs.readFileSync(artifactPath, "utf8"));
+          return reply.send({ ...existing, idempotent_replay: true });
+        } catch {
+          // fall through: re-run if artifact is unreadable
+        }
+      }
+
+      const documentIds = Array.isArray(params.document_ids) ? params.document_ids.filter((d) => typeof d === "string" && d.trim()) : [];
+      const visualAssetIds = Array.isArray(params.visual_asset_ids)
+        ? params.visual_asset_ids.filter((v) => typeof v === "string" && v.trim())
+        : [];
+      const extractorVersions = Array.isArray(params.extractor_versions)
+        ? params.extractor_versions.filter((v) => typeof v === "string" && v.trim())
+        : [];
+
+      const startTs = Date.now();
+      const warnings: string[] = [];
+
+      const visualsOk =
+        (await hasTable(pool as any, "public.visual_assets")) &&
+        (await hasTable(pool as any, "public.visual_extractions")) &&
+        (await hasTable(pool as any, "public.evidence_links"));
+
+      if (!visualsOk) {
+        return reply.status(409).send({
+          error: "visual extraction tables not installed",
+          deal_id: dealId,
+          run_id: runId,
+        });
+      }
+
+      // Documents (for brand model + filtering)
+      type DocRow = {
+        id: string;
+        title: string;
+        type: string | null;
+        page_count: number | null;
+        uploaded_at: string;
+      };
+      let docs: DocRow[] = [];
+      try {
+        const { rows } = await pool.query<DocRow>(
+          `SELECT id, title, type, page_count, uploaded_at
+             FROM documents
+            WHERE deal_id = $1
+            ORDER BY uploaded_at DESC, id ASC`,
+          [dealId]
+        );
+        docs = rows ?? [];
+      } catch {
+        warnings.push("document lookup failed");
+        docs = [];
+      }
+
+      const docAllow = documentIds.length ? new Set(documentIds) : null;
+      const docsFiltered = docAllow ? docs.filter((d) => docAllow.has(d.id)) : docs;
+
+      // Visual assets + latest extraction + small evidence sample
+      type VisualRow = {
+        id: string;
+        document_id: string;
+        page_index: number;
+        asset_type: string;
+        extractor_version: string;
+        quality_flags: any;
+        ocr_text: string | null;
+        ocr_blocks: any;
+        structured_json: any;
+        structured_summary: any;
+        units: string | null;
+        extraction_confidence: number | string | null;
+        structured_kind?: string | null;
+        evidence_sample_snippets?: string[] | null;
+      };
+
+      let visuals: VisualRow[] = [];
+      try {
+        const whereParts: string[] = ["d.deal_id = $1"];
+        const paramsSql: any[] = [dealId];
+        if (docAllow) {
+          paramsSql.push(Array.from(docAllow));
+          whereParts.push(`va.document_id = ANY($${paramsSql.length}::uuid[])`);
+        }
+        if (visualAssetIds.length) {
+          paramsSql.push(visualAssetIds);
+          whereParts.push(`va.id = ANY($${paramsSql.length}::uuid[])`);
+        }
+        if (extractorVersions.length) {
+          paramsSql.push(extractorVersions);
+          whereParts.push(`va.extractor_version = ANY($${paramsSql.length}::text[])`);
+        }
+
+        const { rows } = await pool.query<any>(
+          `SELECT va.id,
+                  va.document_id,
+                  va.page_index,
+                  va.asset_type,
+                  va.extractor_version,
+                  va.quality_flags,
+                  le.ocr_text,
+                  le.ocr_blocks,
+                  le.structured_json,
+                  le.structured_summary,
+                  le.units,
+                  le.extraction_confidence,
+                  le.structured_kind,
+                  ev.sample_snippets AS evidence_sample_snippets
+             FROM documents d
+             JOIN visual_assets va ON va.document_id = d.id
+             LEFT JOIN LATERAL (
+               SELECT ocr_text, ocr_blocks, structured_json, structured_summary, units, extraction_confidence, structured_kind
+                 FROM (
+                   SELECT ve.*, row_number() OVER (PARTITION BY ve.visual_asset_id ORDER BY ve.created_at DESC) rn
+                     FROM visual_extractions ve
+                    WHERE ve.visual_asset_id = va.id
+                 ) latest_extractions
+                WHERE latest_extractions.rn = 1
+             ) le ON true
+             LEFT JOIN LATERAL (
+               SELECT array(
+                 SELECT el.snippet
+                   FROM evidence_links el
+                  WHERE el.visual_asset_id = va.id AND el.snippet IS NOT NULL AND el.snippet <> ''
+                  ORDER BY el.created_at DESC
+                     LIMIT 3
+               ) AS sample_snippets
+             ) ev ON true
+            WHERE ${whereParts.join(" AND ")}
+            ORDER BY va.document_id ASC, va.page_index ASC, va.created_at ASC`,
+          paramsSql
+        );
+        visuals = (rows ?? []) as VisualRow[];
+      } catch (err: any) {
+        const msg = typeof err?.message === "string" ? err.message : "unknown error";
+        return reply.status(500).send({ error: `visual asset lookup failed: ${msg.slice(0, 200)}` });
+      }
+
+      // Brand model per doc (same idea as lineage)
+      const brandModelByDocId = new Map<string, BrandModel>();
+      const brandNameByDocId = new Map<string, { brand: string | null; confidence: number | null }>();
+
+      for (const d of docsFiltered) {
+        const pageInputs: PageInput[] = visuals
+          .filter((v) => v.document_id === d.id)
+          .map((v) => ({ ocr_blocks: (v as any).ocr_blocks ?? null, ocr_text: v.ocr_text ?? null }));
+
+        const brandModel = buildBrandModel(pageInputs);
+        const brandInfo = inferDocumentBrandName(pageInputs);
+        if (brandInfo.brand_name) {
+          const normBrand = normalizePhrase(brandInfo.brand_name);
+          if (normBrand) brandModel.phrases.add(normBrand);
+        }
+
+        brandModelByDocId.set(d.id, brandModel);
+        brandNameByDocId.set(d.id, { brand: brandInfo.brand_name, confidence: brandInfo.confidence });
+      }
+
+      const results: any[] = [];
+      let promoted = 0;
+      let unchanged = 0;
+      let needsReview = 0;
+      let rejected = 0;
+
+      const byDocument: Record<string, { scanned: number; promoted: number; unchanged: number; needs_review: number; rejected: number }> = {};
+      const transitions: Record<string, number> = {};
+
+      const bumpDoc = (docId: string, key: keyof (typeof byDocument)[string]) => {
+        byDocument[docId] = byDocument[docId] ?? { scanned: 0, promoted: 0, unchanged: 0, needs_review: 0, rejected: 0 };
+        byDocument[docId][key] += 1;
+      };
+
+      for (const v of visuals) {
+        const brandModel = brandModelByDocId.get(v.document_id) ?? buildBrandModel([]);
+        const blacklist = brandModel.phrases;
+        const brandInfo = brandNameByDocId.get(v.document_id) ?? { brand: null, confidence: null };
+
+        const derivedStructure = deriveStructuredSummary((v as any)?.structured_json, (v as any)?.units ?? null);
+        const structured_kind = (v as any)?.structured_kind ?? derivedStructure.structured_kind;
+        const structured_summary = (v as any)?.structured_summary ?? derivedStructure.structured_summary;
+
+        const titleDerived = inferSlideTitleForSlide({
+          blocks: (v as any).ocr_blocks as any[],
+          ocr_text: v.ocr_text,
+          page_width: null,
+          page_height: null,
+          brandModel,
+          enableDebug: false,
+        });
+
+        const persistedFromQuality = normalizeAnalystSegment((v as any)?.quality_flags?.segment_key);
+        const persistedFromStructured = normalizeAnalystSegment((v as any)?.structured_json?.segment_key);
+        const persistedSegment = persistedFromQuality ?? persistedFromStructured;
+        const persistedSource = persistedFromQuality
+          ? "quality_flags.segment_key"
+          : persistedFromStructured
+            ? "structured_json.segment_key"
+            : null;
+
+        const computed = classifySegment({
+          ocr_text: v.ocr_text,
+          ocr_snippet: ocrSnippet(v.ocr_text),
+          structured_kind,
+          structured_summary,
+          structured_json: (v as any)?.structured_json,
+          asset_type: v.asset_type,
+          page_index: v.page_index,
+          slide_title: titleDerived.slide_title,
+          slide_title_confidence: titleDerived.slide_title_confidence,
+          evidence_snippets: Array.isArray((v as any).evidence_sample_snippets) ? (v as any).evidence_sample_snippets : [],
+          brand_blacklist: blacklist,
+          brand_name: brandInfo.brand,
+          extractor_version: (v as any)?.extractor_version,
+          quality_source: (v as any)?.quality_flags?.source,
+          enable_debug: true,
+          include_debug_text_snippet: true,
+          disable_structured_segment_key_signal: true,
+          disable_structured_segment_key_fallback: true,
+        });
+
+        const delta = persistedSegment ? computed.segment !== persistedSegment : computed.segment !== "unknown";
+
+        const transitionKey = `${persistedSegment ?? "(none)"}→${computed.segment}`;
+        if (delta) transitions[transitionKey] = (transitions[transitionKey] ?? 0) + 1;
+
+        let action: "promoted" | "unchanged" | "needs_review" = "unchanged";
+        let review_band: "review" | "review_low" | "reject" | null = null;
+        let updated = false;
+        let decision_reason: string | null = null;
+
+        // Reject unknown promotions by default: they add noise and don't help the UI.
+        if (delta && computed.segment === "unknown" && !force) {
+          action = "needs_review";
+          review_band = "reject";
+          decision_reason = "computed_unknown";
+          rejected += 1;
+          bumpDoc(v.document_id, "rejected");
+          bumpDoc(v.document_id, "scanned");
+          results.push({
+            visual_asset_id: v.id,
+            document_id: v.document_id,
+            page_index: v.page_index,
+            persisted_segment: persistedSegment,
+            persisted_source: persistedSource,
+            computed_segment: computed.segment,
+            computed_confidence: computed.confidence,
+            computed_reason: computed.debug,
+            thresholds: { auto_accept: AUTO_ACCEPT, review: REVIEW, reject: REJECT },
+            action,
+            review_band,
+            did_update: false,
+            decision_reason,
+            debug: computed.debug,
+          });
+          continue;
+        }
+
+        // If this asset was previously promoted, do not override a different promoted value unless forced.
+        const priorPromotionSource = typeof (v as any)?.quality_flags?.segment_source === "string"
+          ? String((v as any).quality_flags.segment_source)
+          : typeof (v as any)?.quality_flags?.source === "string"
+            ? String((v as any).quality_flags.source)
+            : null;
+        const priorPromotionComputed = (v as any)?.quality_flags?.segment_promotion?.computed_segment;
+        const wasPromotedBefore = priorPromotionSource === "promoted_rescore_v1" || priorPromotionSource === "api_segment_promotion_v1";
+        if (delta && wasPromotedBefore && persistedSource === "quality_flags.segment_key" && !force) {
+          const alreadyMatchesComputed = typeof priorPromotionComputed === "string" && priorPromotionComputed === computed.segment;
+          if (!alreadyMatchesComputed) {
+            action = "needs_review";
+            review_band = "review";
+            decision_reason = "conflict_prior_promotion";
+            needsReview += 1;
+            bumpDoc(v.document_id, "needs_review");
+            bumpDoc(v.document_id, "scanned");
+            results.push({
+              visual_asset_id: v.id,
+              document_id: v.document_id,
+              page_index: v.page_index,
+              persisted_segment: persistedSegment,
+              persisted_source: persistedSource,
+              computed_segment: computed.segment,
+              computed_confidence: computed.confidence,
+              computed_reason: computed.debug,
+              thresholds: { auto_accept: AUTO_ACCEPT, review: REVIEW, reject: REJECT },
+              action,
+              review_band,
+              did_update: false,
+              decision_reason,
+              debug: computed.debug,
+            });
+            continue;
+          }
+        }
+
+        if (delta) {
+          if (computed.confidence >= AUTO_ACCEPT) {
+            action = "promoted";
+            if (!dryRun) {
+              const promotionMeta = {
+                run_id: runId,
+                promoted_at: new Date().toISOString(),
+                prior_segment: persistedSegment,
+                prior_source: persistedSource,
+                computed_segment: computed.segment,
+                computed_confidence: computed.confidence,
+                auto_accept_threshold: AUTO_ACCEPT,
+              };
+
+              const promotedAt = new Date().toISOString();
+
+              const { rowCount } = await pool.query(
+                `UPDATE visual_assets
+                    SET quality_flags =
+                      jsonb_set(
+                        jsonb_set(
+                          jsonb_set(
+                            jsonb_set(
+                              jsonb_set(
+                                jsonb_set(coalesce(quality_flags, '{}'::jsonb), '{segment_key}', to_jsonb($2::text), true),
+                                '{segment_source}', to_jsonb($3::text), true
+                              ),
+                              '{segment_confidence}', to_jsonb($4::double precision), true
+                            ),
+                            '{segment_promoted_at}', to_jsonb($5::text), true
+                          ),
+                          '{source}', to_jsonb($3::text), true
+                        ),
+                        '{segment_promotion}', $6::jsonb, true
+                      )
+                  WHERE id = $1
+                    AND (quality_flags->>'segment_key') IS DISTINCT FROM $2`,
+                [v.id, computed.segment, "promoted_rescore_v1", computed.confidence, promotedAt, JSON.stringify(promotionMeta)]
+              );
+              updated = (rowCount ?? 0) > 0;
+            }
+            promoted += 1;
+            bumpDoc(v.document_id, "promoted");
+          } else {
+            action = "needs_review";
+            if (computed.confidence >= REVIEW) {
+              review_band = "review";
+              needsReview += 1;
+              bumpDoc(v.document_id, "needs_review");
+            } else if (computed.confidence >= REJECT) {
+              review_band = "review_low";
+              needsReview += 1;
+              bumpDoc(v.document_id, "needs_review");
+            } else {
+              review_band = "reject";
+              rejected += 1;
+              bumpDoc(v.document_id, "rejected");
+            }
+          }
+        } else {
+          unchanged += 1;
+          bumpDoc(v.document_id, "unchanged");
+        }
+
+        bumpDoc(v.document_id, "scanned");
+
+        results.push({
+          visual_asset_id: v.id,
+          document_id: v.document_id,
+          page_index: v.page_index,
+          persisted_segment: persistedSegment,
+          persisted_source: persistedSource,
+          computed_segment: computed.segment,
+          computed_confidence: computed.confidence,
+          computed_reason: computed.debug,
+          thresholds: { auto_accept: AUTO_ACCEPT, review: REVIEW, reject: REJECT },
+          action,
+          review_band,
+          did_update: updated,
+          decision_reason,
+          debug: computed.debug,
+        });
+      }
+
+      const endTs = Date.now();
+      const EXAMPLE_LIMIT = 8;
+      const examples = {
+        would_promote: results.filter((r) => r.action === "promoted").slice(0, EXAMPLE_LIMIT),
+        review: results.filter((r) => r.action === "needs_review" && r.review_band === "review").slice(0, EXAMPLE_LIMIT),
+        review_low: results.filter((r) => r.action === "needs_review" && r.review_band === "review_low").slice(0, EXAMPLE_LIMIT),
+        reject: results.filter((r) => r.action === "needs_review" && r.review_band === "reject").slice(0, EXAMPLE_LIMIT),
+        noop: results.filter((r) => r.action === "unchanged").slice(0, EXAMPLE_LIMIT),
+      };
+
+      const summary = {
+        deal_id: dealId,
+        run_id: runId,
+        started_at: new Date(startTs).toISOString(),
+        finished_at: new Date(endTs).toISOString(),
+        duration_ms: endTs - startTs,
+        dry_run: dryRun,
+        thresholds: { auto_accept: AUTO_ACCEPT, review: REVIEW, reject: REJECT },
+        filters: {
+          document_ids: documentIds,
+          visual_asset_ids: visualAssetIds,
+          extractor_versions: extractorVersions,
+          force,
+        },
+        counts: {
+          scanned: results.length,
+          promoted,
+          unchanged,
+          needs_review: needsReview,
+          rejected,
+        },
+        totals: {
+          considered: results.length,
+          would_promote: promoted,
+          review: needsReview,
+          reject: rejected,
+          noop: unchanged,
+        },
+        by_document: byDocument,
+        transitions,
+        examples,
+        warnings,
+      };
+
+      const payload = { ...summary, items: results };
+
+      if (persistArtifact) {
+        try {
+          fs.mkdirSync(artifactDir, { recursive: true });
+          fs.writeFileSync(artifactPath, JSON.stringify(payload, null, 2));
+        } catch (err: any) {
+          warnings.push(`failed to write artifact: ${typeof err?.message === "string" ? err.message : "unknown error"}`);
+        }
+      }
+
+      return reply.send({ ...payload, artifact_path: persistArtifact ? artifactPath : null });
+    }
+  );
 
   // Create a minimal deal record suitable for an upload-first flow.
   // Returns only {deal_id} so the client can immediately attach documents.

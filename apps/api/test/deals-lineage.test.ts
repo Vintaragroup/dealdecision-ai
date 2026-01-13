@@ -62,7 +62,7 @@ test('GET /api/deals/:dealId/lineage returns deal+docs and warnings when visual 
   const app = Fastify();
   await registerDealRoutes(app, mockPool);
 
-  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage` });
+  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage?debug_segments=1` });
   assert.equal(res.statusCode, 200);
   const body = res.json() as any;
 
@@ -132,7 +132,7 @@ test('GET /api/deals/:dealId/lineage returns deal+docs when visuals tables exist
   const app = Fastify();
   await registerDealRoutes(app, mockPool);
 
-  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage` });
+  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage?debug_segments=1` });
   assert.equal(res.statusCode, 200);
   const body = res.json() as any;
 
@@ -235,7 +235,7 @@ test('GET /api/deals/:dealId/lineage returns visuals + evidence aggregate nodes'
   const app = Fastify();
   await registerDealRoutes(app, mockPool);
 
-  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage` });
+  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage?debug_segments=1` });
   assert.equal(res.statusCode, 200);
   const body = res.json() as any;
 
@@ -258,6 +258,13 @@ test('GET /api/deals/:dealId/lineage returns visuals + evidence aggregate nodes'
   assert.equal(visualNode.data.extraction_confidence, 0.9);
   assert.equal(visualNode.data.extraction_method, 'vision_v1');
   assert.ok(visualNode.data.page_understanding);
+
+  // Segment provenance is always present (debug-only details remain gated).
+  assert.equal(visualNode.data.segment, visualNode.data.effective_segment);
+  assert.ok(typeof visualNode.data.computed_segment === 'string');
+  assert.equal(visualNode.data.computed_segment, visualNode.data.segment);
+  assert.ok(typeof visualNode.data.segment_source === 'string');
+  assert.equal(visualNode.data.persisted_segment_key ?? null, null);
   assert.ok(typeof visualNode.data.page_understanding.summary === 'string');
   assert.ok(visualNode.data.page_understanding.summary.length > 0);
   assert.ok(Array.isArray(visualNode.data.page_understanding.key_points));
@@ -266,7 +273,11 @@ test('GET /api/deals/:dealId/lineage returns visuals + evidence aggregate nodes'
 
   assert.ok(body.nodes.find((n: any) => n.id === `evidence:va-1` && n.type === 'evidence' && n.node_type === 'EVIDENCE'));
 
-  assert.ok(body.edges.find((e: any) => e.source === `document:doc-3` && e.target === `visual_asset:va-1` && e.edge_type === 'HAS_VISUAL_ASSET'));
+  const segKey = visualNode.data.segment;
+  const segNodeId = `segment:${dealId}:doc-3:${segKey}`;
+  assert.ok(body.nodes.find((n: any) => n.id === segNodeId && n.type === 'segment' && n.node_type === 'SEGMENT'));
+  assert.ok(body.edges.find((e: any) => e.source === `document:doc-3` && e.target === segNodeId && e.edge_type === 'HAS_SEGMENT'));
+  assert.ok(body.edges.find((e: any) => e.source === segNodeId && e.target === `visual_asset:va-1` && e.edge_type === 'HAS_VISUAL_ASSET'));
   assert.ok(body.edges.find((e: any) => e.source === `visual_asset:va-1` && e.target === `evidence:va-1` && e.edge_type === 'HAS_EVIDENCE'));
 
   await app.close();
@@ -356,7 +367,7 @@ test('GET /api/deals/:dealId/lineage derives slide_title from OCR blocks and avo
   const app = Fastify();
   await registerDealRoutes(app, mockPool);
 
-  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage` });
+  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage?debug_segments=1` });
   assert.equal(res.statusCode, 200);
   const body = res.json() as any;
 
@@ -429,7 +440,7 @@ test('classifies early brand-only slide as overview (not solution)', async () =>
   const app = Fastify();
   await registerDealRoutes(app, mockPool);
 
-  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage` });
+  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage?debug_segments=1` });
   assert.equal(res.statusCode, 200);
   const body = res.json() as any;
 
@@ -499,13 +510,13 @@ test('early generic platform wording stays overview unless reinforced', async ()
   const app = Fastify();
   await registerDealRoutes(app, mockPool);
 
-  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage` });
+  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage?debug_segments=1` });
   assert.equal(res.statusCode, 200);
   const body = res.json() as any;
 
   const visualNode = body.nodes.find((n: any) => n.id === 'visual_asset:va-seg-2');
   assert.ok(visualNode, 'visual node missing');
-  assert.equal(visualNode.data.segment, 'business_model');
+  assert.equal(visualNode.data.segment, 'overview');
 
   await app.close();
 });
@@ -650,7 +661,7 @@ test('table slides map to financials even with solution words', async () => {
   await app.close();
 });
 
-test('ambiguous later slide becomes unknown', async () => {
+test('ambiguous later slide becomes overview when only a title is present', async () => {
   const dealId = 'deal-seg-5';
 
   const mockPool = {
@@ -715,7 +726,7 @@ test('ambiguous later slide becomes unknown', async () => {
 
   const visualNode = body.nodes.find((n: any) => n.id === 'visual_asset:va-seg-5');
   assert.ok(visualNode, 'visual node missing');
-  assert.equal(visualNode.data.segment, 'unknown');
+  assert.equal(visualNode.data.segment, 'overview');
 
   await app.close();
 });
@@ -1323,6 +1334,7 @@ test('segment classifier promotes well-labeled headings and limits unknown', asy
   const app = Fastify();
   await registerDealRoutes(app, mockPool);
 
+  // By default, segment_debug is omitted (even in dev) to keep payloads small.
   const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage` });
   assert.equal(res.statusCode, 200);
   const body = res.json() as any;
@@ -1342,8 +1354,25 @@ test('segment classifier promotes well-labeled headings and limits unknown', asy
 
   assert.equal(getSeg('va-table'), 'financials');
 
-  const debugField = body.nodes.find((n: any) => n.id === 'visual_asset:va-dist')?.data?.segment_debug;
-  assert.ok(debugField, 'segment_debug should be present in non-production mode');
+  // Even without debug flags, computed/effective/provenance fields should exist.
+  const sampleNode = body.nodes.find((n: any) => n.id === 'visual_asset:va-dist')?.data;
+  assert.ok(sampleNode);
+  assert.equal(sampleNode.segment, sampleNode.effective_segment);
+  assert.ok(typeof sampleNode.computed_segment === 'string');
+  assert.ok(typeof sampleNode.segment_source === 'string');
+
+  const debugFieldDefault = body.nodes.find((n: any) => n.id === 'visual_asset:va-dist')?.data?.segment_debug;
+  assert.equal(debugFieldDefault, undefined);
+
+  // When explicitly requested, include minimal debug fields.
+  const resDebug = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage?debug_segments=1` });
+  assert.equal(resDebug.statusCode, 200);
+  const bodyDebug = resDebug.json() as any;
+  const debugField = bodyDebug.nodes.find((n: any) => n.id === 'visual_asset:va-dist')?.data?.segment_debug;
+  assert.ok(debugField);
+  assert.ok(['vision', 'structured'].includes(debugField.classification_source));
+  assert.ok(typeof debugField.classification_text_len === 'number');
+  assert.ok(Array.isArray(debugField.top_scores));
 
   await app.close();
 });
@@ -1547,7 +1576,7 @@ test('segment classifier handles noisy titles, heading preservation, and hard sy
   const app = Fastify();
   await registerDealRoutes(app, mockPool);
 
-  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage` });
+  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage?debug_segments=1` });
   assert.equal(res.statusCode, 200);
   const body = res.json() as any;
 
@@ -1558,16 +1587,143 @@ test('segment classifier handles noisy titles, heading preservation, and hard sy
 
   assert.equal(getSeg('va-gibberish'), 'distribution');
   const gibberishDebug = body.nodes.find((n: any) => n.id === 'visual_asset:va-gibberish')?.data?.segment_debug;
-  assert.ok(gibberishDebug?.classification_text?.includes('reseller partnerships'));
+  assert.ok(gibberishDebug);
+  assert.equal(gibberishDebug.classification_source, 'vision');
+  assert.ok(typeof gibberishDebug.classification_text_len === 'number');
 
   assert.equal(getSeg('va-traction'), 'traction');
   const tractionDebug = body.nodes.find((n: any) => n.id === 'visual_asset:va-traction')?.data?.segment_debug;
-  assert.ok(String(tractionDebug?.classification_text || '').includes('traction'));
+  assert.ok(tractionDebug);
+  assert.equal(tractionDebug.classification_source, 'vision');
+  assert.ok(typeof tractionDebug.classification_text_len === 'number');
 
   assert.equal(getSeg('va-saas'), 'business_model');
   assert.equal(getSeg('va-fin'), 'financials');
   assert.equal(getSeg('va-exit'), 'exit');
   assert.equal(getSeg('va-team'), 'team');
+
+  await app.close();
+});
+
+test('structured_native_v1 assets ignore page_index heuristics and classify from structured_json text', async () => {
+  const dealId = 'deal-structured-seg';
+
+  const mockPool = {
+    query: async (sql: string, params?: unknown[]) => {
+      const q = String(sql);
+      const p0 = Array.isArray(params) ? params[0] : undefined;
+
+      if (q.includes('to_regclass')) {
+        return { rows: [{ oid: 'ok' }] };
+      }
+
+      if (q.includes('information_schema.columns')) {
+        return { rows: [{ ok: 1 }] };
+      }
+
+      if (q.includes('SELECT id, name FROM deals WHERE id = $1')) {
+        assert.equal(p0, dealId);
+        return { rows: [{ id: dealId, name: 'Structured Deal' }] };
+      }
+
+      if (q.includes('FROM documents') && q.includes('WHERE deal_id = $1')) {
+        assert.equal(p0, dealId);
+        return {
+          rows: [
+            {
+              id: 'doc-structured-1',
+              title: 'PPTX',
+              type: 'pitch_deck',
+              page_count: 2,
+              uploaded_at: '2026-01-01T00:00:00.000Z',
+            },
+          ],
+        };
+      }
+
+      if (q.includes('FROM visual_assets')) {
+        assert.equal(p0, dealId);
+        return {
+          rows: [
+            {
+              id: 'va-structured-pptx',
+              document_id: 'doc-structured-1',
+              // IMPORTANT: this is an element index for structured_native_v1, not a real page number.
+              page_index: 25,
+              asset_type: 'image_text',
+              bbox: {},
+              image_uri: null,
+              image_hash: null,
+              extractor_version: 'structured_native_v1',
+              confidence: '0.85',
+              quality_flags: { source: 'structured_powerpoint' },
+              created_at: '2026-01-01T00:00:00.000Z',
+              ocr_text: null,
+              ocr_blocks: null,
+              structured_json: {
+                kind: 'powerpoint_slide',
+                title: 'Traction',
+                bullets: ['ARR growth', 'Customers: 120', 'Retention 95%'],
+                text_snippet: 'Traction and growth metrics',
+                notes: null,
+              },
+              units: null,
+              extraction_confidence: '0.85',
+              structured_kind: null,
+              structured_summary: null,
+              extraction_method: 'structured_native_v1',
+              evidence_count: 0,
+              evidence_sample_snippets: [],
+            },
+            {
+              id: 'va-structured-empty',
+              document_id: 'doc-structured-1',
+              page_index: 99,
+              asset_type: 'image_text',
+              bbox: {},
+              image_uri: null,
+              image_hash: null,
+              extractor_version: 'structured_native_v1',
+              confidence: '0.85',
+              quality_flags: { source: 'structured_word' },
+              created_at: '2026-01-01T00:00:00.000Z',
+              ocr_text: null,
+              ocr_blocks: null,
+              structured_json: {
+                kind: 'word_section',
+                heading: null,
+                text_snippet: '',
+                paragraphs: [],
+                table_rows: [],
+              },
+              units: null,
+              extraction_confidence: '0.85',
+              structured_kind: null,
+              structured_summary: null,
+              extraction_method: 'structured_native_v1',
+              evidence_count: 0,
+              evidence_sample_snippets: [],
+            },
+          ],
+        };
+      }
+
+      throw new Error(`Unexpected query: ${q}`);
+    },
+  } as any;
+
+  const app = Fastify();
+  await registerDealRoutes(app, mockPool);
+
+  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage` });
+  assert.equal(res.statusCode, 200);
+  const body = res.json() as any;
+
+  const segPptx = body.nodes.find((n: any) => n.id === 'visual_asset:va-structured-pptx')?.data?.segment;
+  assert.equal(segPptx, 'traction');
+
+  const segEmpty = body.nodes.find((n: any) => n.id === 'visual_asset:va-structured-empty')?.data?.segment;
+  assert.equal(segEmpty, 'unknown');
 
   await app.close();
 });

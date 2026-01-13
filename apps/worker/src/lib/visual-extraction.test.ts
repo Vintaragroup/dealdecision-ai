@@ -305,5 +305,5 @@ test("backfillVisualAssetImageUris updates missing image_uri when page image exi
 	expect(calls[0].params[0]).toBe("doc-1");
 	expect(calls[0].params[1]).toBe(0);
 	expect(calls[0].params[2]).toBe("/uploads/rendered_pages/doc-1/page_000.png");
-	expect(calls.length).toBe(2);
+	expect(calls.length).toBe(1);
 });

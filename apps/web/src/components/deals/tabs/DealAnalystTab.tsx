@@ -17,6 +17,7 @@ import {
   apiGetDealLineage,
   apiGetDealVisualAssets,
   apiGetDocumentVisualAssets,
+  apiDeleteVisualAssetSegmentOverride,
   isLiveBackend,
   resolveApiAssetUrl,
   type DealLineageResponse,
@@ -80,6 +81,7 @@ type InspectorSelection =
 
 type StructuredViewMode = 'preview' | 'raw';
 type ColorMode = 'off' | 'document' | 'segment';
+type SegmentViewMode = 'effective' | 'computed' | 'persisted';
 
 const COLOR_MODE_STORAGE_KEY = 'analystColorMode';
 const MINIMAP_SCALE_STORAGE_KEY = 'analystMiniMapScale';
@@ -89,6 +91,7 @@ const MINIMAP_BASE_WIDTH = 180;
 const MINIMAP_BASE_HEIGHT = 120;
 const CLUSTER_SLIDES_STORAGE_KEY = 'analystClusterSlides';
 const CLUSTER_MIN_VISUALS = 12;
+const SEGMENT_VIEW_MODE_STORAGE_KEY = 'analystSegmentViewMode';
 
 export type TablePreviewModel = {
   rows: string[][];
@@ -456,6 +459,93 @@ const minimapLoggedTypes = new Set<string>();
 
 type RawLineageEdge = { id: string; source: string; target: string };
 
+function stableJsonForCompare(value: unknown): string {
+  try {
+    return JSON.stringify(value, (_k, v) => {
+      if (typeof v === 'function') return '[fn]';
+      if (v === undefined) return null;
+      return v;
+    });
+  } catch {
+    return '';
+  }
+}
+
+function reconcileNodesById(prev: Node[], next: Node[]): Node[] {
+  const prevById = new Map<string, Node>();
+  for (const n of prev) prevById.set(n.id, n);
+
+  const out: Node[] = [];
+  for (const n of next) {
+    const p = prevById.get(n.id);
+    if (!p) {
+      out.push(n);
+      continue;
+    }
+
+    const same =
+      String((p as any)?.type ?? '') === String((n as any)?.type ?? '') &&
+      (p.position?.x ?? 0) === (n.position?.x ?? 0) &&
+      (p.position?.y ?? 0) === (n.position?.y ?? 0) &&
+      stableJsonForCompare((p as any).data) === stableJsonForCompare((n as any).data) &&
+      stableJsonForCompare((p as any).style) === stableJsonForCompare((n as any).style) &&
+      Boolean((p as any).hidden) === Boolean((n as any).hidden);
+
+    if (same) {
+      out.push(p);
+      continue;
+    }
+
+    // Preserve React Flow internal measurements/fields by merging onto the previous node.
+    out.push({
+      ...p,
+      ...n,
+      position: n.position,
+      data: (n as any).data,
+      style: (n as any).style,
+    } as Node);
+  }
+
+  if (out.length === prev.length && out.every((n, idx) => n === prev[idx])) return prev;
+  return out;
+}
+
+function reconcileEdgesById(prev: Edge[], next: Edge[]): Edge[] {
+  const prevById = new Map<string, Edge>();
+  for (const e of prev) prevById.set(e.id, e);
+
+  const out: Edge[] = [];
+  for (const e of next) {
+    const p = prevById.get(e.id);
+    if (!p) {
+      out.push(e);
+      continue;
+    }
+
+    const same =
+      p.source === e.source &&
+      p.target === e.target &&
+      String((p as any)?.type ?? '') === String((e as any)?.type ?? '') &&
+      stableJsonForCompare((p as any).data) === stableJsonForCompare((e as any).data) &&
+      stableJsonForCompare((p as any).style) === stableJsonForCompare((e as any).style);
+
+    if (same) {
+      out.push(p);
+      continue;
+    }
+
+    out.push({
+      ...p,
+      ...e,
+      data: (e as any).data,
+      style: (e as any).style,
+    } as Edge);
+  }
+
+  if (out.length === prev.length && out.every((e, idx) => e === prev[idx])) return prev;
+  return out;
+}
+
 function nodeTypeOf(n: Node): string {
   return String((n as any)?.type ?? (n as any)?.data?.__node_type ?? '').toLowerCase();
 }
@@ -524,23 +614,77 @@ function normalizeSegmentKey(raw: unknown): string | null {
     .slice(0, 64);
 }
 
+
+// Must match the API lineage segment taxonomy.
+const CANONICAL_SEGMENTS = [
+  'overview',
+  'problem',
+  'solution',
+  'market',
+  'traction',
+  'business_model',
+  'distribution',
+  'team',
+  'competition',
+  'risks',
+  'financials',
+  'raise_terms',
+  'exit',
+  'unknown',
+] as const;
+
+type CanonicalSegmentKey = (typeof CANONICAL_SEGMENTS)[number];
+
+const CANONICAL_SEGMENT_SET: ReadonlySet<string> = new Set(CANONICAL_SEGMENTS);
+const CANONICAL_SEGMENT_ORDER: ReadonlyMap<string, number> = new Map(
+  CANONICAL_SEGMENTS.map((k, i) => [k, i] as const)
+);
+
+function coerceCanonicalSegmentKey(raw: unknown): CanonicalSegmentKey {
+  const normalized = normalizeSegmentKey(raw);
+  if (!normalized) return 'unknown';
+  if (CANONICAL_SEGMENT_SET.has(normalized)) return normalized as CanonicalSegmentKey;
+  return 'unknown';
+}
+
 function inferSegmentKeyForVisual(args: {
   visualNode: Node;
   visualAsset: DealVisualAsset | null;
+  segmentViewMode: SegmentViewMode;
 }): string {
-  const { visualNode, visualAsset } = args;
+  const { visualNode, visualAsset, segmentViewMode } = args;
   const data = (visualNode.data ?? {}) as any;
 
-  // Canonical routing order:
-  // 1) quality_flags.segment_key
-  // 2) structured_json.segment_key
-  // 3) unknown
-  const explicit =
-    normalizeSegmentKey(data?.quality_flags?.segment_key) ??
-    normalizeSegmentKey((visualAsset as any)?.quality_flags?.segment_key) ??
-    normalizeSegmentKey(data?.structured_json?.segment_key) ??
-    normalizeSegmentKey((visualAsset as any)?.structured_json?.segment_key);
-  if (explicit) return explicit;
+  if (segmentViewMode === 'computed') {
+    const computed = coerceCanonicalSegmentKey(data?.computed_segment);
+    if (computed !== 'unknown') return computed;
+    const fallback = coerceCanonicalSegmentKey(data?.effective_segment ?? data?.segment);
+    return fallback;
+  }
+
+  if (segmentViewMode === 'persisted') {
+    const persisted = coerceCanonicalSegmentKey(
+      data?.persisted_segment_key ?? data?.quality_flags?.segment_key ?? (visualAsset as any)?.quality_flags?.segment_key
+    );
+    if (persisted !== 'unknown') return persisted;
+    const fallback = coerceCanonicalSegmentKey(data?.effective_segment ?? data?.segment);
+    return fallback;
+  }
+
+  // Effective (default):
+  // Prefer API-provided effective segment, then fall back to legacy fields.
+  const effective = coerceCanonicalSegmentKey(data?.effective_segment ?? data?.segment);
+  if (effective !== 'unknown') return effective;
+
+  const fromQualityFlags = coerceCanonicalSegmentKey(
+    data?.quality_flags?.segment_key ?? (visualAsset as any)?.quality_flags?.segment_key
+  );
+  if (fromQualityFlags !== 'unknown') return fromQualityFlags;
+
+  const fromStructuredJson = coerceCanonicalSegmentKey(
+    data?.structured_json?.segment_key ?? (visualAsset as any)?.structured_json?.segment_key
+  );
+  if (fromStructuredJson !== 'unknown') return fromStructuredJson;
 
   return 'unknown';
 }
@@ -550,8 +694,9 @@ function applyDocumentScopedSegmentsGraph(args: {
   edges: Edge[];
   dealId: string;
   dealVisualAssets: DealVisualAsset[] | null;
+  segmentViewMode: SegmentViewMode;
 }): { nodes: Node[]; edges: Edge[] } {
-  const { nodes, edges, dealId, dealVisualAssets } = args;
+  const { nodes, edges, dealId, dealVisualAssets, segmentViewMode } = args;
 
   const nodeById = new Map(nodes.map((n) => [n.id, n] as const));
   const docsById = buildDocumentsById(nodes);
@@ -563,6 +708,7 @@ function applyDocumentScopedSegmentsGraph(args: {
   const segmentNodeIds = new Set<string>();
   const segmentLabelById = new Map<string, string>();
   const segmentDocById = new Map<string, string>();
+  const segmentKeyById = new Map<string, string>();
   const segmentsByDoc = new Map<string, Set<string>>();
   const visualsWithRouting: Array<{
     assetId: string;
@@ -590,12 +736,24 @@ function applyDocumentScopedSegmentsGraph(args: {
     const docNodeId = docsById.get(docId) ?? `document:${docId}`;
     if (!nodeById.has(docNodeId)) continue;
 
-    const segmentKey = inferSegmentKeyForVisual({ visualNode: n, visualAsset: asset });
-    const segmentNodeId = `segment:${docId}:${segmentKey}`;
+    const segmentKey = inferSegmentKeyForVisual({ visualNode: n, visualAsset: asset, segmentViewMode });
+    const segmentNodeId = `segment:${dealId}:${docId}:${segmentKey}`;
 
     segmentNodeIds.add(segmentNodeId);
     segmentDocById.set(segmentNodeId, docId);
-    segmentLabelById.set(segmentNodeId, segmentKey === 'financials' ? 'Financials' : segmentKey === 'unknown' ? 'Unknown' : segmentKey);
+    segmentKeyById.set(segmentNodeId, segmentKey);
+    segmentLabelById.set(
+      segmentNodeId,
+      segmentKey === 'financials'
+        ? 'Financials'
+        : segmentKey === 'business_model'
+          ? 'Business model'
+          : segmentKey === 'raise_terms'
+            ? 'Raise terms'
+            : segmentKey === 'unknown'
+              ? 'Unknown'
+              : segmentKey
+    );
 
     if (!segmentsByDoc.has(docId)) segmentsByDoc.set(docId, new Set());
     segmentsByDoc.get(docId)!.add(segmentNodeId);
@@ -609,7 +767,8 @@ function applyDocumentScopedSegmentsGraph(args: {
     if (nodeById.has(segNodeId)) continue;
     const docId = segmentDocById.get(segNodeId) ?? null;
     const label = segmentLabelById.get(segNodeId) ?? 'Unknown';
-    const segmentKey = segNodeId.split(':').slice(2).join(':');
+    const segmentKey = segmentKeyById.get(segNodeId) ?? 'unknown';
+    const segmentOrder = CANONICAL_SEGMENT_ORDER.get(segmentKey) ?? CANONICAL_SEGMENT_ORDER.get('unknown') ?? 999;
     addedSegmentNodes.push({
       id: segNodeId,
       type: 'segment',
@@ -618,6 +777,7 @@ function applyDocumentScopedSegmentsGraph(args: {
         label,
         segment_label: label,
         segment_key: segmentKey,
+        __segmentOrder: segmentOrder,
         __node_type: 'segment',
         __layer: layerForType('segment'),
         __docId: docId ?? undefined,
@@ -651,6 +811,7 @@ function applyDocumentScopedSegmentsGraph(args: {
   const dealNodeId = `deal:${dealId}`;
   for (const e of edges) {
     if (String(e.source).startsWith('deal:') && isSegmentNodeId(String(e.target))) continue;
+    if (String(e.source).startsWith('deal:') && isVisualNodeId(String(e.target))) continue;
     if (isDocumentNodeId(String(e.source)) && isVisualNodeId(String(e.target))) continue;
     if (isSegmentNodeId(String(e.source)) && isVisualNodeId(String(e.target))) continue;
     if (isDocumentNodeId(String(e.source)) && isSegmentNodeId(String(e.target))) continue;
@@ -667,7 +828,7 @@ function applyDocumentScopedSegmentsGraph(args: {
     const docNodeId = docsById.get(docId);
     if (!docNodeId) continue;
     for (const segNodeId of segIds.values()) {
-      const segmentKey = segNodeId.split(':').slice(2).join(':');
+      const segmentKey = segmentKeyById.get(segNodeId) ?? 'unknown';
       add(docNodeId, segNodeId, {
         __docId: docId,
         __segmentId: segmentKey,
@@ -862,7 +1023,10 @@ function buildCanonicalEdges(args: { nodes: Node[]; rawEdges: RawLineageEdge[]; 
 function buildFullGraphFromLineage(
   lineage: DealLineageResponse,
   dealId: string,
-  dealVisualAssets: DealVisualAsset[] | null
+  dealVisualAssets: DealVisualAsset[] | null,
+  opts?: {
+    segmentViewMode?: SegmentViewMode;
+  }
 ): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
@@ -925,6 +1089,8 @@ function buildFullGraphFromLineage(
       }
       if (visualAssetIdFromNodeId && rawData.visual_asset_id == null) rawData.visual_asset_id = visualAssetIdFromNodeId;
     }
+
+    // Segment routing is controlled by Segment View Mode via inferSegmentKeyForVisual().
 
     const mapped: Node = {
       id,
@@ -1000,11 +1166,12 @@ function buildFullGraphFromLineage(
 
   const canonicalEdges = buildCanonicalEdges({ nodes, rawEdges, dealId });
   const inferred = inferBranchMetadata(nodes, canonicalEdges);
-  // Enforce Deal→Document→Segment→Visual→Evidence with document-scoped segment ids.
+  // Enforce Deal→Document→Segment→Visual→Evidence with deal+document-scoped segment ids.
   return applyDocumentScopedSegmentsGraph({
     ...inferred,
     dealId,
     dealVisualAssets,
+    segmentViewMode: opts?.segmentViewMode ?? 'effective',
   });
 }
 
@@ -1137,6 +1304,12 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     return true;
   });
 
+  const [segmentViewMode, setSegmentViewMode] = useState<SegmentViewMode>(() => {
+    if (typeof window === 'undefined') return 'effective';
+    const stored = window.localStorage.getItem(SEGMENT_VIEW_MODE_STORAGE_KEY);
+    return stored === 'computed' || stored === 'persisted' || stored === 'effective' ? stored : 'effective';
+  });
+
   const [hoverBranchKey, setHoverBranchKey] = useState<string | null>(null);
   const [hoverNodeId, setHoverNodeId] = useState<string | null>(null);
   const [hoverScopeNodeIds, setHoverScopeNodeIds] = useState<Set<string> | null>(null);
@@ -1154,6 +1327,12 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
 
   const [nodes, setNodes, onNodesChange] = useNodesState([] as Node[]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([] as Edge[]);
+
+  // Keep stable per-node expand toggles so node.data does not churn every render.
+  const toggleExpandByIdRef = useRef(new Map<string, () => void>());
+  const fullGraphRef = useRef<typeof fullGraph>(null);
+  const clusteredRef = useRef<typeof clustered | null>(null);
+  const toggleExpandImplRef = useRef<(id: string) => void>(() => {});
 
   const { logNodesChange, logEdgesChange } = useReactFlowChangeLogger(devtoolsEnabled);
 
@@ -1297,6 +1476,11 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
   }, [clusterSlides]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(SEGMENT_VIEW_MODE_STORAGE_KEY, segmentViewMode);
+  }, [segmentViewMode]);
+
+  useEffect(() => {
     if (colorMode === 'off') {
       setHoverBranchKey(null);
       setHoverNodeId(null);
@@ -1314,8 +1498,9 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
       setExpandedById({});
       return;
     }
-
-    const g = buildFullGraphFromLineage(lineage, dealId, dealVisualAssets);
+    const g = buildFullGraphFromLineage(lineage, dealId, dealVisualAssets, {
+      segmentViewMode,
+    });
     setFullGraph(g);
 
     setExpandedById((prev) => {
@@ -1325,7 +1510,11 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
       }
       return next;
     });
-  }, [lineage, dealId, dealVisualAssets]);
+  }, [lineage, dealId, dealVisualAssets, segmentViewMode]);
+
+  useEffect(() => {
+    fullGraphRef.current = fullGraph;
+  }, [fullGraph]);
 
   useEffect(() => {
     clusterLogOnceRef.current = null;
@@ -1387,6 +1576,10 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
   }, [visible.visibleNodes, visible.visibleEdges, expandedById, clusterEnabled, clusterEligible]);
 
   useEffect(() => {
+    clusteredRef.current = clustered;
+  }, [clustered]);
+
+  useEffect(() => {
     if (!import.meta.env.DEV || !getDevtoolsConsoleLoggingEnabled()) return;
     if (clusterLogOnceRef.current !== null) return;
     const expandedGroupId = clustered.expandedGroupIds[0] ?? null;
@@ -1420,15 +1613,27 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     });
   }, [clustered.edges, darkMode, colorMode]);
 
-  const renderedNodesUnlaid = useMemo(() => {
-    const toggle = (id: string) => {
-      setExpandedById((prev) => {
-        const node = fullGraph?.nodes.find((n) => n.id === id) ?? clustered.nodes.find((n) => n.id === id);
-        const cur = prev[id] ?? (node ? defaultExpandedForNode(node) : false);
-        return { ...prev, [id]: !cur };
-      });
-    };
+  // Toggle impl uses refs so per-node handlers can remain stable across renders.
+  toggleExpandImplRef.current = (id: string) => {
+    setExpandedById((prev) => {
+      const fg = fullGraphRef.current;
+      const cl = clusteredRef.current;
+      const node = fg?.nodes.find((n) => n.id === id) ?? cl?.nodes.find((n) => n.id === id);
+      const cur = prev[id] ?? (node ? defaultExpandedForNode(node) : false);
+      return { ...prev, [id]: !cur };
+    });
+  };
 
+  useEffect(() => {
+    // Prune handlers for nodes that no longer exist.
+    const keep = new Set(clustered.nodes.map((n) => n.id));
+    const map = toggleExpandByIdRef.current;
+    for (const key of map.keys()) {
+      if (!keep.has(key)) map.delete(key);
+    }
+  }, [clustered.nodes]);
+
+  const renderedNodesUnlaid = useMemo(() => {
     return clustered.nodes.map((n) => {
       const baseNode = fullGraph?.nodes.find((bn) => bn.id === n.id) ?? n;
       const stableType = String((baseNode as any)?.type ?? (n as any)?.type ?? 'default').trim().toLowerCase();
@@ -1445,6 +1650,14 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
         return docId ?? null;
       })();
       const accent = colorKey ? colorFromKey(colorKey, darkMode) : null;
+
+      const handlers = toggleExpandByIdRef.current;
+      let onToggleExpand = handlers.get(n.id);
+      if (!onToggleExpand) {
+        onToggleExpand = () => toggleExpandImplRef.current(n.id);
+        handlers.set(n.id, onToggleExpand);
+      }
+
       return {
         ...n,
         type: stableType,
@@ -1462,7 +1675,7 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
           __node_type: stableType,
           expanded,
           descendantCount,
-          onToggleExpand: () => toggle(n.id),
+          onToggleExpand,
           __accentColor: accent?.stroke,
           __accentTint: accent?.tint,
         },
@@ -1479,27 +1692,27 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
 
   const nodeById = useMemo(() => {
     const m = new Map<string, Node>();
-    for (const n of renderedNodes) m.set(n.id, n);
+    for (const n of nodes) m.set(n.id, n);
     return m;
-  }, [renderedNodes]);
+  }, [nodes]);
 
   const edgesBySource = useMemo(() => {
     const m = new Map<string, Edge[]>();
-    for (const e of renderedEdges) {
+    for (const e of edges) {
       if (!m.has(e.source)) m.set(e.source, []);
       m.get(e.source)!.push(e);
     }
     return m;
-  }, [renderedEdges]);
+  }, [edges]);
 
   const edgesByTarget = useMemo(() => {
     const m = new Map<string, Edge[]>();
-    for (const e of renderedEdges) {
+    for (const e of edges) {
       if (!m.has(e.target)) m.set(e.target, []);
       m.get(e.target)!.push(e);
     }
     return m;
-  }, [renderedEdges]);
+  }, [edges]);
 
   useEffect(() => {
     if (!import.meta.env.DEV || !getDevtoolsConsoleLoggingEnabled()) return;
@@ -1513,17 +1726,17 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
 
   const branchKeyByNodeId = useMemo(() => {
     const map = new Map<string, string>();
-    for (const n of renderedNodes) {
+    for (const n of nodes) {
       const nodeType = String((n as any)?.type ?? '').toLowerCase();
       const key = hoverMatchKey(nodeType, (n as any)?.data ?? {}, colorMode);
       if (key) map.set(n.id, key);
     }
     return map;
-  }, [renderedNodes, colorMode]);
+  }, [nodes, colorMode]);
 
   const branchKeyByEdgeId = useMemo(() => {
     const map = new Map<string, string>();
-    for (const e of renderedEdges) {
+    for (const e of edges) {
       const fromEndpoints = branchKeyByNodeId.get(e.source) ?? branchKeyByNodeId.get(e.target) ?? null;
       if (fromEndpoints) {
         map.set(e.id, fromEndpoints);
@@ -1537,11 +1750,11 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
       }
     }
     return map;
-  }, [renderedEdges, colorMode, branchKeyByNodeId]);
+  }, [edges, colorMode, branchKeyByNodeId]);
 
   const displayNodes = useMemo(() => {
-    if (hoverBranchKey == null || colorMode === 'off') return renderedNodes;
-    return renderedNodes.map((n) => {
+    if (hoverBranchKey == null || colorMode === 'off') return nodes;
+    return nodes.map((n) => {
       const key = branchKeyByNodeId.get(n.id) ?? null;
       if (key === hoverBranchKey) return n;
       const baseStyle = { ...(((n as any).style as any) ?? {}) } as any;
@@ -1555,11 +1768,11 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
         },
       } as Node;
     });
-  }, [renderedNodes, hoverBranchKey, branchKeyByNodeId, colorMode]);
+  }, [nodes, hoverBranchKey, branchKeyByNodeId, colorMode]);
 
   const displayEdges = useMemo(() => {
-    if (hoverBranchKey == null || colorMode === 'off') return renderedEdges;
-    return renderedEdges.map((e) => {
+    if (hoverBranchKey == null || colorMode === 'off') return edges;
+    return edges.map((e) => {
       const key = branchKeyByNodeId.get(e.source) ?? branchKeyByNodeId.get(e.target) ?? branchKeyByEdgeId.get(e.id) ?? null;
       if (key === hoverBranchKey) return e;
 
@@ -1577,7 +1790,7 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
         },
       } as Edge;
     });
-  }, [renderedEdges, hoverBranchKey, branchKeyByEdgeId, branchKeyByNodeId, colorMode]);
+  }, [edges, hoverBranchKey, branchKeyByEdgeId, branchKeyByNodeId, colorMode]);
 
   useEffect(() => {
     if (!clusterEnabled) return;
@@ -1670,8 +1883,9 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
       }
     }
 
-    setNodes(renderedNodes);
-    setEdges(renderedEdges);
+    // Reconcile by id so unchanged nodes/edges keep object identity.
+    setNodes((prev) => reconcileNodesById(prev as Node[], renderedNodes));
+    setEdges((prev) => reconcileEdgesById(prev as Edge[], renderedEdges));
   }, [renderedNodes, renderedEdges, setNodes, setEdges]);
 
   useEffect(() => {
@@ -1689,7 +1903,7 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
       branchMatchIds: branchMatches.slice(0, 8),
       branchKeyMissing: hoverBranchKey != null && !anyBranch,
     });
-  }, [hoverBranchKey, hoverNodeId, colorMode, renderedNodes, branchKeyByNodeId]);
+  }, [hoverBranchKey, hoverNodeId, colorMode, nodes, branchKeyByNodeId]);
 
   useEffect(() => {
     if (!rfInstance) return;
@@ -2312,6 +2526,26 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
 
               <Panel position="top-right">
                 <div className="flex items-center gap-2">
+                  <div className={`inline-flex items-center gap-2 text-xs ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
+                    <label className="inline-flex items-center gap-2 select-none">
+                      <span>Segments</span>
+                      <select
+                        value={segmentViewMode}
+                        onChange={(e) => {
+                          const next = e.target.value as SegmentViewMode;
+                          setSegmentViewMode(next);
+                          didInitialFitRef.current = false;
+                          lastFitViewNonceRef.current = null;
+                          setLayoutNonce((v) => v + 1);
+                        }}
+                        className={`h-7 rounded border px-2 ${darkMode ? 'bg-gray-900 border-gray-700 text-gray-100' : 'bg-white border-gray-300 text-gray-800'}`}
+                      >
+                        <option value="effective">Effective</option>
+                        <option value="computed">Computed</option>
+                        <option value="persisted">Persisted</option>
+                      </select>
+                    </label>
+                  </div>
                   <Button
                     variant="secondary"
                     darkMode={darkMode}
@@ -2645,6 +2879,103 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
 
                   {(() => {
                     const rfData = ((selectedRfNode as any)?.data ?? {}) as any;
+                    const persisted = typeof rfData.persisted_segment_key === 'string' ? rfData.persisted_segment_key : null;
+                    const computed = typeof rfData.computed_segment === 'string' ? rfData.computed_segment : null;
+                    const effective = typeof rfData.effective_segment === 'string' ? rfData.effective_segment : typeof rfData.segment === 'string' ? rfData.segment : null;
+                    const source = typeof rfData.segment_source === 'string' ? rfData.segment_source : null;
+                    const reason = rfData.computed_reason as any;
+                    if (!persisted && !computed && !effective) return null;
+
+                    const isHumanOverride = typeof source === 'string' && source.toLowerCase().includes('human_override');
+
+                    const formatScore = (v: unknown): string | null => {
+                      if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+                      const pct = v <= 1 ? v * 100 : v;
+                      return `${Math.round(pct)}%`;
+                    };
+
+                    const bestScore = formatScore(reason?.best_score);
+                    const threshold = formatScore(reason?.threshold);
+
+                    const topScores = (() => {
+                      const raw = reason?.top_scores;
+                      if (!Array.isArray(raw)) return [];
+                      const cleaned = raw
+                        .map((row: any) => {
+                          const seg = typeof row?.segment === 'string' ? row.segment : typeof row?.key === 'string' ? row.key : null;
+                          const score = formatScore(row?.score);
+                          if (!seg || !score) return null;
+                          return { seg, score };
+                        })
+                        .filter(Boolean) as Array<{ seg: string; score: string }>;
+                      return cleaned.slice(0, 3);
+                    })();
+
+                    const unknownReasonCode =
+                      computed === 'unknown' && typeof reason?.unknown_reason_code === 'string' ? reason.unknown_reason_code : null;
+
+                    const diffLine =
+                      persisted && computed && persisted !== computed ? `Persisted: ${persisted} ➜ Computed: ${computed}` : null;
+
+                    return (
+                      <div className={`rounded-md border p-2 ${darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'}`}>
+                        <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Segment provenance</div>
+
+                        <div className={`mt-1 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                          {effective ? <div className="font-medium">Effective: {effective}</div> : null}
+                          {isHumanOverride ? (
+                            <div className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ${darkMode ? 'bg-emerald-500/15 text-emerald-200' : 'bg-emerald-50 text-emerald-700'}`}>
+                              Human override
+                            </div>
+                          ) : null}
+                          {source ? <div>Source: {source}</div> : null}
+                          {persisted ? <div>Persisted: {persisted}</div> : null}
+                          {computed ? <div>Computed: {computed}</div> : null}
+                          {diffLine ? <div className="mt-1">{diffLine}</div> : null}
+                        </div>
+
+                        {isHumanOverride && isLiveBackend() ? (
+                          <div className="mt-2">
+                            <Button
+                              size="sm"
+                              variant={darkMode ? 'secondary' : 'outline'}
+                              disabled={visualDetailLoading}
+                              onClick={async () => {
+                                try {
+                                  setVisualDetailLoading(true);
+                                  setVisualDetailError(null);
+                                  await apiDeleteVisualAssetSegmentOverride(selection.visual_asset_id);
+                                  await refresh();
+                                } catch (e) {
+                                  setVisualDetailError(e instanceof Error ? e.message : 'Failed to revert override');
+                                } finally {
+                                  setVisualDetailLoading(false);
+                                }
+                              }}
+                            >
+                              Revert to computed
+                            </Button>
+                          </div>
+                        ) : null}
+
+                        {(bestScore || threshold || topScores.length > 0 || unknownReasonCode) ? (
+                          <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            {bestScore ? <div>Best score: {bestScore}</div> : null}
+                            {threshold ? <div>Threshold: {threshold}</div> : null}
+                            {topScores.length > 0 ? (
+                              <div>
+                                Top scores: {topScores.map((t) => `${t.seg} ${t.score}`).join(' · ')}
+                              </div>
+                            ) : null}
+                            {unknownReasonCode ? <div>Unknown reason: {unknownReasonCode}</div> : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })()}
+
+                  {(() => {
+                    const rfData = ((selectedRfNode as any)?.data ?? {}) as any;
                     const rfImgSrc = resolveApiAssetUrl(typeof rfData.image_uri === 'string' ? rfData.image_uri : null);
                     const rfEvidence = Array.isArray(rfData.evidence_snippets) ? (rfData.evidence_snippets as unknown[]) : [];
                     const rfEvidenceSnips = rfEvidence
@@ -2863,9 +3194,42 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                               ) : imgSrc && imageLoadError ? (
                                 <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Failed to load image</div>
                               ) : (
-                                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                                  No image crop available for this asset yet.
-                                </div>
+                                (() => {
+                                  const extractorVersion = typeof selectedVisual.extractor_version === 'string' ? selectedVisual.extractor_version : '';
+                                  const qfSource =
+                                    typeof (selectedVisual as any)?.quality_flags?.source === 'string'
+                                      ? String((selectedVisual as any).quality_flags.source)
+                                      : '';
+                                  const isStructuredNative =
+                                    extractorVersion.toLowerCase() === 'structured_native_v1' ||
+                                    qfSource.toLowerCase().startsWith('structured_') ||
+                                    (selectedVisual.structured_json != null && !selectedVisual.image_uri);
+
+                                  if (!isStructuredNative) {
+                                    return (
+                                      <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                                        No image crop available for this asset yet.
+                                      </div>
+                                    );
+                                  }
+
+                                  return (
+                                    <div
+                                      className={`rounded-md border px-3 py-2 text-xs ${
+                                        darkMode
+                                          ? 'border-white/10 bg-white/5 text-gray-300'
+                                          : 'border-gray-200 bg-gray-50 text-gray-700'
+                                      }`}
+                                    >
+                                      <div className={`font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                        Structured item (no page crop)
+                                      </div>
+                                      <div className="mt-0.5 opacity-80">
+                                        This asset was extracted from structured document content (e.g., Office tables/text), so it may not have an image crop.
+                                      </div>
+                                    </div>
+                                  );
+                                })()
                               )}
 
                               <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-700'}`}>

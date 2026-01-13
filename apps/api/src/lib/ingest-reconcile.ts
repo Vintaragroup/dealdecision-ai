@@ -1,6 +1,6 @@
 import { sanitizeText } from "@dealdecision/core";
-import { getPool } from "./db.js";
-import type { EnqueueJobInput } from "../services/jobs.js";
+import { getPool } from "./db";
+import type { EnqueueJobInput } from "../services/jobs";
 
 export type ReconcileSummary = {
   deal_id: string;
@@ -51,7 +51,9 @@ type CandidateRow = {
 
 export async function reconcileIngest(params: ReconcileParams): Promise<ReconcileSummary> {
   const pool = params.pool ?? getPool();
-  const enqueue = params.enqueue ?? (await import("../services/jobs.js")).enqueueJob;
+  const enqueue =
+    params.enqueue ??
+    (require("../services/jobs") as { enqueueJob: (input: EnqueueJobInput) => Promise<any> }).enqueueJob;
   const dealId = sanitizeText(params.dealId);
   const limitRaw = params.limit ?? DEFAULT_LIMIT;
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, Number(limitRaw)), MAX_LIMIT) : DEFAULT_LIMIT;

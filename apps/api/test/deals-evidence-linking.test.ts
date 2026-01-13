@@ -15,6 +15,41 @@ test('phase1 claim snippets are persisted as evidence and resolvable', async () 
   const docId = 'doc-123';
   const now = '2024-01-01T00:00:00.000Z';
 
+  const dioPhase1 = {
+    executive_summary_v2: {
+      title: 'ES',
+      paragraphs: ['p1'],
+      accountability_v1: { support: { product: 'evidence' } },
+    },
+    coverage: { sections: { product: 'present' } },
+    claims: [
+      {
+        claim_id: 'c1',
+        category: 'product',
+        text: 'Product claim',
+        evidence: [{ document_id: docId, snippet: 'Product proof' }],
+      },
+      {
+        claim_id: 'c2',
+        category: 'traction',
+        text: 'Traction claim',
+        evidence: [{ document_id: docId, snippet: 'Traction proof' }],
+      },
+      {
+        claim_id: 'c3',
+        category: 'terms',
+        text: 'Terms claim',
+        evidence: [{ document_id: docId, snippet: 'Terms proof' }],
+      },
+      {
+        claim_id: 'c4',
+        category: 'risks',
+        text: 'Risk claim',
+        evidence: [{ document_id: docId, snippet: 'Risk proof' }],
+      },
+    ],
+  };
+
   const evidenceStore: any[] = [];
   const documentStore: Array<{ id: string; title: string; page_count?: number | null }> = [
     { id: docId, title: 'Demo Doc', page_count: 2 },
@@ -77,7 +112,11 @@ test('phase1 claim snippets are persisted as evidence and resolvable', async () 
         };
       }
 
-      if (q.includes('WITH stats AS') && q.includes('deal_intelligence_objects')) {
+      if (
+        q.includes('SELECT dio_id, analysis_version, recommendation, overall_score, dio_data, updated_at') &&
+        q.includes('FROM deal_intelligence_objects') &&
+        q.includes('WHERE deal_id = $1')
+      ) {
         return {
           rows: [
             {
@@ -85,52 +124,19 @@ test('phase1 claim snippets are persisted as evidence and resolvable', async () 
               analysis_version: 1,
               recommendation: 'SCREEN',
               overall_score: null,
-              overall_score_resolved: null,
-              executive_summary_v1: null,
-              executive_summary_v2: {
-                title: 'ES',
-                paragraphs: ['p1'],
-                accountability_v1: { support: { product: 'evidence' } },
-              },
-              decision_summary_v1: null,
-              phase1_coverage: { sections: { product: 'present' } },
-              phase1_business_archetype_v1: null,
-              phase1_deal_overview_v2: null,
-              phase1_update_report_v1: null,
-              phase1_deal_summary_v2: null,
-              phase1_claims: [
-                {
-                  claim_id: 'c1',
-                  category: 'product',
-                  text: 'Product claim',
-                  evidence: [{ document_id: docId, snippet: 'Product proof' }],
-                },
-                {
-                  claim_id: 'c2',
-                  category: 'traction',
-                  text: 'Traction claim',
-                  evidence: [{ document_id: docId, snippet: 'Traction proof' }],
-                },
-                {
-                  claim_id: 'c3',
-                  category: 'terms',
-                  text: 'Terms claim',
-                  evidence: [{ document_id: docId, snippet: 'Terms proof' }],
-                },
-                {
-                  claim_id: 'c4',
-                  category: 'risks',
-                  text: 'Risk claim',
-                  evidence: [{ document_id: docId, snippet: 'Risk proof' }],
-                },
-              ],
-              phase_b_latest_run: null,
-              phase_b_history: null,
-              last_analyzed_at: now,
-              run_count: 1,
+              dio_data: { dio: { phase1: dioPhase1 } },
+              updated_at: now,
             },
           ],
         };
+      }
+
+      if (q.includes('SELECT COUNT(*)::int AS run_count') && q.includes('FROM deal_intelligence_objects') && q.includes('MAX(updated_at)')) {
+        return { rows: [{ run_count: 1, last_analyzed_at: now }] };
+      }
+
+      if (q.includes('FROM deal_phase_b_runs') && q.includes('WHERE deal_id = $1')) {
+        return { rows: [] };
       }
 
       if (q.includes('SELECT id') && q.includes('FROM evidence') && q.includes('IS NOT DISTINCT FROM')) {

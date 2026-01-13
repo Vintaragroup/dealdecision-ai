@@ -1,5 +1,7 @@
 import { PhaseBFeatures, PhaseBFeatureSegment, PhaseBFeaturesV1 } from './types';
 import type { Pool } from 'pg';
+import { getSegmentConfidenceThresholds } from '@dealdecision/core/dist/config/segment-thresholds';
+import { computeSegmentCoverageSummary } from '@dealdecision/core/dist/scoring/segment-coverage';
 
 type DealLineageResponse = {
   nodes?: any[];
@@ -86,7 +88,6 @@ export async function fetchPhaseBVisualsFromDb(pool: Pool, dealId: string): Prom
     evidenceJoin = 'LEFT JOIN evidence_links el ON el.visual_asset_id = va.id';
     evidenceCountExpr = 'SUM(CASE WHEN el.id IS NOT NULL THEN 1 ELSE 0 END)::int';
   }
-
   const qualityCountsExpr = hasQualityFlags
     ? `SUM(CASE WHEN COALESCE((va.quality_flags->>'pytesseract_missing')::boolean,false) THEN 1 ELSE 0 END)::int AS pytesseract_missing_count,\n       SUM(CASE WHEN COALESCE((va.quality_flags->>'ocr_error')::boolean,false) THEN 1 ELSE 0 END)::int AS ocr_error_count`
     : '0::int AS pytesseract_missing_count, 0::int AS ocr_error_count';
@@ -183,6 +184,7 @@ export function extractPhaseBFeaturesV1(args: {
   let ocrCharsTotal = visualsFromDb ? visualsFromDb.ocr_chars_total : 0;
 
   const nodes = Array.isArray(lineage?.nodes) ? lineage!.nodes : [];
+  const segmentKeys = new Set<string>();
 
   if (nodes.length > 0 && !visualsFromDb) {
     for (const node of nodes) {
@@ -190,7 +192,15 @@ export function extractPhaseBFeaturesV1(args: {
       const data = (node as any)?.data ?? node;
 
       if (type.includes('document')) documentsCount += 1;
-      if (type.includes('segment') || type === 'page') segmentsCount += 1;
+      if (type.includes('segment') || type === 'page') {
+        const segKey =
+          (typeof (data as any)?.segment_key === 'string' && (data as any).segment_key.trim().length > 0)
+            ? String((data as any).segment_key).trim()
+            : (typeof (data as any)?.segment === 'string' && (data as any).segment.trim().length > 0)
+              ? String((data as any).segment).trim()
+              : null;
+        if (segKey) segmentKeys.add(segKey);
+      }
 
       const looksVisual = type.includes('visual') || data?.ocr_text || data?.ocr_snippet || data?.structured_json || data?.structured_kind;
       if (looksVisual) {
@@ -212,6 +222,10 @@ export function extractPhaseBFeaturesV1(args: {
   // Fallbacks when lineage is absent or sparse.
   if (documentsCount === 0 && docs.length > 0) {
     documentsCount = docs.length;
+  }
+
+  if (segmentKeys.size > 0) {
+    segmentsCount = segmentKeys.size;
   }
 
   if (segmentsCount === 0) {
@@ -242,6 +256,20 @@ export function extractPhaseBFeaturesV1(args: {
     low_coverage: documentsCount < 1 || segmentsCount < 3,
   };
 
+  const thresholds = getSegmentConfidenceThresholds();
+  const { coverage_confident, coverage_weak } = computeSegmentCoverageSummary(
+    nodes.map((node: any) => {
+      const kind = String(node?.kind ?? node?.node_type ?? '').toLowerCase();
+      const data = node?.data ?? node;
+      return {
+        kind: kind === 'visual_asset' ? 'visual_asset' : kind,
+        effective_segment: data?.effective_segment ?? node?.effective_segment ?? null,
+        segment_confidence: data?.segment_confidence ?? node?.segment_confidence ?? null,
+      };
+    }),
+    thresholds
+  );
+
   const notes: string[] = [];
   if (visualsFromDb?.source) notes.push(`source=${visualsFromDb.source}`);
   if (visualsFromDb?.notes) notes.push(...visualsFromDb.notes);
@@ -259,6 +287,8 @@ export function extractPhaseBFeaturesV1(args: {
       visuals_count: visualsCount,
       evidence_count: evidenceCount,
       evidence_per_visual: evidencePerVisual,
+      coverage_confident,
+      coverage_weak,
     },
     content_density: {
       avg_ocr_chars_per_visual: avgOcrCharsPerVisual,

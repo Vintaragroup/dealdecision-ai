@@ -592,7 +592,7 @@ export async function persistVisionResponse(
 	for (const asset of response.assets ?? []) {
 		const normalizedAssetImageUri = normalizeImageUriForApi(asset.image_uri ?? null, env) ?? pageImageUriNormalized;
 		const assetBBox = coerceBBox((asset as any)?.bbox);
-		const assetQualityFlags = coerceJsonObject((asset as any)?.quality_flags);
+		const assetQualityFlags = coerceJsonObject((asset as any)?.quality_flags) ?? {};
 		const extractionObj = (asset as any)?.extraction;
 		const ocrText = typeof extractionObj?.ocr_text === "string" ? extractionObj.ocr_text : null;
 		const ocrBlocks = coerceJsonArray<VisionOcrBlock>(extractionObj?.ocr_blocks);
@@ -604,16 +604,25 @@ export async function persistVisionResponse(
 		const existingFromQuality = coerceSegmentKey((assetQualityFlags as any)?.segment_key);
 		const existingFromStructured = coerceSegmentKey((structuredJson as any)?.segment_key);
 		let segmentKey: SegmentKey | null = existingFromQuality ?? existingFromStructured;
+		let segmentWasInferred = false;
 		if (!segmentKey) {
 			const titleFromLabels = typeof (labels as any)?.title === "string" ? String((labels as any).title) : "";
 			const titleFromStructured = typeof (structuredJson as any)?.title === "string" ? String((structuredJson as any).title) : "";
 			const combined = [titleFromLabels, titleFromStructured, ocrText].filter(Boolean).join("\n");
 			segmentKey = classifySegmentKeyFromText(combined, "unknown");
+			segmentWasInferred = true;
 		}
 
-		const qualityFlagsWithSeg = segmentKey && !existingFromQuality
-			? { ...assetQualityFlags, segment_key: segmentKey }
-			: assetQualityFlags;
+		const qualityFlagsWithSeg: any = { ...(assetQualityFlags ?? {}) };
+		if (typeof qualityFlagsWithSeg.source !== "string" || !qualityFlagsWithSeg.source.trim()) {
+			qualityFlagsWithSeg.source = response.extractor_version;
+		}
+		if (segmentKey && !existingFromQuality) {
+			qualityFlagsWithSeg.segment_key = segmentKey;
+			if (segmentWasInferred && (typeof qualityFlagsWithSeg.segment_source !== "string" || !qualityFlagsWithSeg.segment_source.trim())) {
+				qualityFlagsWithSeg.segment_source = "inferred_ocr_v1";
+			}
+		}
 		const structuredJsonWithSeg = segmentKey && !existingFromStructured
 			? { ...structuredJson, segment_key: segmentKey }
 			: structuredJson;
@@ -691,20 +700,62 @@ function hashKey(parts: Array<string | number>): string {
 	return createHash("sha256").update(parts.map((p) => String(p)).join("|"), "utf8").digest("hex");
 }
 
+export function toTextLoose(node: unknown): string {
+	const seen = new WeakSet<object>();
+
+	const stripPoison = (s: string) => {
+		// Never allow implicit object stringification markers to leak into classifier text.
+		const cleaned = s.replace(/\[object Object\]/g, " ");
+		return cleaned.replace(/\s+/g, " ").trim();
+	};
+
+	const walk = (value: unknown, depth: number): string => {
+		if (value == null) return "";
+		if (typeof value === "string") return stripPoison(value);
+		if (typeof value === "number" || typeof value === "boolean") return String(value);
+		if (Array.isArray(value)) {
+			const parts = value.map((v) => walk(v, depth - 1)).filter(Boolean);
+			return stripPoison(parts.join("\n"));
+		}
+		if (typeof value !== "object") return "";
+		if (depth <= 0) return "";
+
+		const obj = value as any;
+		if (seen.has(obj)) return "";
+		seen.add(obj);
+
+		const parts: string[] = [];
+
+		// Common direct keys.
+		for (const k of ["text", "value", "content"]) {
+			const v = obj?.[k];
+			const t = walk(v, depth - 1);
+			if (t) parts.push(t);
+		}
+
+		// Common rich-text container keys.
+		if (Array.isArray(obj?.runs)) {
+			const runText = obj.runs.map((r: any) => walk(r, depth - 1)).filter(Boolean).join("");
+			if (runText) parts.push(stripPoison(runText));
+		}
+
+		for (const k of ["children", "items", "elements"]) {
+			if (!Array.isArray(obj?.[k])) continue;
+			const t = (obj[k] as any[]).map((c) => walk(c, depth - 1)).filter(Boolean).join("\n");
+			if (t) parts.push(stripPoison(t));
+		}
+
+		return stripPoison(parts.join("\n"));
+	};
+
+	return walk(node, 8);
+}
+
 function cleanTextForClassification(input: unknown): string {
-	if (input == null) return "";
-	if (typeof input === "string") return input;
-	if (typeof input === "number" || typeof input === "boolean") return String(input);
-	if (Array.isArray(input)) return input.map((v) => cleanTextForClassification(v)).join("\n");
-	if (typeof input === "object") {
-		const obj = input as any;
-		if (typeof obj.text === "string") return obj.text;
-		if (typeof obj.value === "string") return obj.value;
-		if (typeof obj.content === "string") return obj.content;
-		if (Array.isArray(obj.runs)) return obj.runs.map((r: any) => (typeof r?.text === "string" ? r.text : "")).join("");
-		return "";
-	}
-	return "";
+	const raw = toTextLoose(input);
+	if (!raw) return "";
+	// Guard: strip any remaining poisoning artifacts (defensive in case upstream already persisted it).
+	return raw.replace(/\[object Object\]/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function normalizeTextList(value: unknown, maxItems: number): string[] {
@@ -962,6 +1013,176 @@ function buildSyntheticAssets(params: {
 	const out: SyntheticAssetBuild[] = [];
 	const kind = params.docKind;
 
+	const coalesceWordSections = (sectionsIn: any[]): any[] => {
+		// Goal: preserve text fidelity while producing a bounded number of nodes suitable for
+		// per-segment scoring. We bucket paragraph-level text into segment-specific chunks.
+		const MAX_SECTIONS_SCANNED = 200;
+		const MAX_CHUNKS_EMITTED = 25;
+		const MAX_PARAGRAPHS_PER_CHUNK = 18;
+		const MAX_CLASSIFY_TEXT_CHARS = 2400;
+		const MAX_TEXT_SNIPPET_CHARS = 900;
+
+		type NormSection = {
+			heading: string | null;
+			level: number | null;
+			paragraphs: string[];
+			tableRows: unknown[];
+			textSnippet: string;
+			segmentKey: SegmentKey;
+		};
+
+		const normalizeSection = (section: any): NormSection | null => {
+			const heading = cleanTextForClassification(section?.heading) || null;
+			const paragraphsRawUnknown = Array.isArray(section?.paragraphs) ? section.paragraphs : [];
+			const paragraphsRaw = paragraphsRawUnknown
+				.map((p: unknown) => toTextLoose(p))
+				.map((p: string) => p.trim())
+				.filter(Boolean);
+			const paragraphs = normalizeTextList(paragraphsRaw, 30);
+			const tableRows = Array.isArray(section?.tables?.[0]?.rows) ? section.tables[0].rows.slice(0, 5) : [];
+			const sectionText = cleanTextForClassification(section?.text);
+			const textSnippetBase = sectionText || paragraphs.join(" ");
+			const textSnippet = textSnippetBase ? textSnippetBase.slice(0, MAX_TEXT_SNIPPET_CHARS) : "";
+
+			if (isEmptyWordSection({ heading, textSnippet, paragraphs, tableRows })) return null;
+
+			const classifyText = [heading ?? "", textSnippet, paragraphs.join("\n")].filter(Boolean).join("\n");
+			const segmentKey = classifySegmentKeyFromText(classifyText, "unknown");
+			return {
+				heading,
+				level: typeof section?.level === "number" ? section.level : null,
+				paragraphs,
+				tableRows,
+				textSnippet,
+				segmentKey,
+			};
+		};
+
+		type SegmentBucket = {
+			headings: string[];
+			paragraphs: string[];
+			unit_count: number;
+		};
+
+		const tableItems: any[] = [];
+		const buckets = new Map<SegmentKey, SegmentBucket>();
+		const getBucket = (k: SegmentKey): SegmentBucket => {
+			const existing = buckets.get(k);
+			if (existing) return existing;
+			const created: SegmentBucket = { headings: [], paragraphs: [], unit_count: 0 };
+			buckets.set(k, created);
+			return created;
+		};
+
+		const sections = sectionsIn.slice(0, MAX_SECTIONS_SCANNED).map(normalizeSection).filter(Boolean) as NormSection[];
+		for (const s of sections) {
+			// Emit tables as their own items (high signal, often financials/traction).
+			if (Array.isArray(s.tableRows) && s.tableRows.length > 0) {
+				const cellTexts: string[] = [];
+				for (const row of s.tableRows.slice(0, 6) as any[]) {
+					if (!Array.isArray(row)) continue;
+					for (const cell of row.slice(0, 10)) {
+						const t = cleanTextForClassification(cell);
+						if (t) cellTexts.push(t);
+						if (cellTexts.length >= 60) break;
+					}
+					if (cellTexts.length >= 60) break;
+				}
+				const classifyText = [s.heading ?? "", cellTexts.join(" "), s.textSnippet].filter(Boolean).join("\n").slice(0, MAX_CLASSIFY_TEXT_CHARS);
+				const segmentKey = classifySegmentKeyFromText(classifyText, "unknown");
+				tableItems.push({
+					kind: "word_section",
+					segment_key: segmentKey,
+					heading: s.heading,
+					level: s.level,
+					text_snippet: s.textSnippet,
+					paragraphs: [],
+					table_rows: s.tableRows,
+					member_count: 1,
+					member_segment_keys: [segmentKey],
+				});
+			}
+
+			const headingKey = s.heading ? classifySegmentKeyFromText(s.heading, "unknown") : "unknown";
+			const unitTexts = s.paragraphs.length > 0 ? s.paragraphs : s.textSnippet ? [s.textSnippet] : [];
+			for (const unit of unitTexts) {
+				const combined = [s.heading ?? "", unit].filter(Boolean).join("\n");
+				let seg = classifySegmentKeyFromText(combined, "unknown");
+				if (seg === "unknown" && headingKey !== "unknown") seg = headingKey;
+				const bucket = getBucket(seg);
+				if (s.heading) bucket.headings.push(s.heading);
+				bucket.paragraphs.push(unit);
+				bucket.unit_count += 1;
+			}
+		}
+
+		const outItems: any[] = [];
+		// Prefer deterministic segment order; emit unknown last.
+		const orderedSegments: SegmentKey[] = [...SEGMENT_KEYS];
+		for (const seg of orderedSegments) {
+			const bucket = buckets.get(seg);
+			if (!bucket) continue;
+			const headings = normalizeTextList(bucket.headings, 12);
+			// Split into multiple chunks if needed.
+			let chunkIndex = 0;
+			let cursor = 0;
+			while (cursor < bucket.paragraphs.length && outItems.length < MAX_CHUNKS_EMITTED) {
+				chunkIndex += 1;
+				const paras = bucket.paragraphs.slice(cursor, cursor + MAX_PARAGRAPHS_PER_CHUNK);
+				cursor += MAX_PARAGRAPHS_PER_CHUNK;
+				const paragraphs = normalizeTextList(paras, MAX_PARAGRAPHS_PER_CHUNK);
+				const heading = seg !== "unknown" ? seg : headings[0] ?? null;
+				const textSnippet = cleanTextForClassification(paragraphs.join("\n")).slice(0, MAX_TEXT_SNIPPET_CHARS);
+				const classifyText = [headings.join("\n"), textSnippet, paragraphs.join("\n")]
+					.filter(Boolean)
+					.join("\n")
+					.slice(0, MAX_CLASSIFY_TEXT_CHARS);
+				const stableSeg = seg !== "unknown" ? seg : classifySegmentKeyFromText(classifyText, "unknown");
+
+				outItems.push({
+					kind: "word_section",
+					segment_key: stableSeg,
+					heading,
+					headings,
+					level: null,
+					text_snippet: textSnippet,
+					paragraphs,
+					table_rows: [],
+					member_count: paragraphs.length,
+					member_segment_keys: Array.from({ length: paragraphs.length }).map(() => stableSeg),
+					chunk_index: chunkIndex,
+				});
+			}
+		}
+
+		return [...tableItems, ...outItems].slice(0, MAX_CHUNKS_EMITTED);
+	};
+
+	const hasAnyTableContent = (rows: unknown): boolean => {
+		if (!Array.isArray(rows) || rows.length === 0) return false;
+		for (const row of rows) {
+			if (!Array.isArray(row)) continue;
+			for (const cell of row) {
+				const t = cleanTextForClassification(cell);
+				if (t) return true;
+			}
+		}
+		return false;
+	};
+
+	const isEmptyWordSection = (section: {
+		heading: string | null;
+		textSnippet: string;
+		paragraphs: string[];
+		tableRows: unknown[];
+	}): boolean => {
+		const hasHeading = typeof section.heading === "string" && section.heading.trim().length > 0;
+		const hasSnippet = typeof section.textSnippet === "string" && section.textSnippet.trim().length > 0;
+		const hasParagraphs = Array.isArray(section.paragraphs) && section.paragraphs.some((p) => typeof p === "string" && p.trim().length > 0);
+		const hasTable = hasAnyTableContent(section.tableRows);
+		return !hasHeading && !hasSnippet && !hasParagraphs && !hasTable;
+	};
+
 	if (kind === "excel") {
 		const sheets = Array.isArray(params.fullContent?.sheets) ? params.fullContent.sheets : [];
 		sheets.forEach((sheet: any, idx: number) => {
@@ -1016,24 +1237,11 @@ function buildSyntheticAssets(params: {
 
 	if (kind === "word") {
 		const sections = Array.isArray(params.fullContent?.sections) ? params.fullContent.sections : [];
-		sections.slice(0, 25).forEach((section: any, idx: number) => {
-			const heading = typeof section?.heading === "string" ? section.heading : null;
-			const paragraphsRaw = Array.isArray(section?.paragraphs) ? section.paragraphs.slice(0, 5) : [];
-			const paragraphs = normalizeTextList(paragraphsRaw, 6);
-			const tableRows = Array.isArray(section?.tables?.[0]?.rows) ? section.tables[0].rows.slice(0, 5) : [];
-			const textSnippetBase = typeof section?.text === "string" ? section.text : paragraphs.join(" ");
-			const textSnippet = textSnippetBase ? textSnippetBase.slice(0, 500) : "";
-			const classifyText = [heading ?? "", textSnippet, paragraphs.join("\n")].filter(Boolean).join("\n");
-			const segmentKey = classifySegmentKeyFromText(classifyText, "unknown");
-			const structuredJson = {
-				kind: "word_section",
-				segment_key: segmentKey,
-				heading,
-				level: typeof section?.level === "number" ? section.level : null,
-				text_snippet: textSnippet,
-				paragraphs,
-				table_rows: tableRows,
-			};
+		const coalesced = coalesceWordSections(sections);
+		coalesced.forEach((structuredJson: any, idx: number) => {
+			const segmentKey = coerceSegmentKey(structuredJson?.segment_key) ?? "unknown";
+			const heading = cleanTextForClassification(structuredJson?.heading) || null;
+			const tableRows = Array.isArray(structuredJson?.table_rows) ? structuredJson.table_rows : [];
 			out.push({
 				pageIndex: idx,
 				asset: {

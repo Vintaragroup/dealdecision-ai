@@ -283,6 +283,111 @@ test('GET /api/deals/:dealId/lineage returns visuals + evidence aggregate nodes'
   await app.close();
 });
 
+test('GET /api/deals/:dealId/lineage builds page_understanding from PPTX structured_json when OCR is missing', async () => {
+  const dealId = 'deal-pptx-understanding';
+
+  const mockPool = {
+    query: async (sql: string, params?: unknown[]) => {
+      const q = String(sql);
+      const p0 = Array.isArray(params) ? params[0] : undefined;
+
+      if (q.includes('to_regclass')) {
+        return { rows: [{ oid: 'ok' }] };
+      }
+
+      if (q.includes('information_schema.columns')) {
+        const tableName = Array.isArray(params) ? params[0] : undefined;
+        const columnName = Array.isArray(params) ? params[1] : undefined;
+        if (tableName === 'visual_extractions' && columnName === 'ocr_blocks') return { rows: [{ ok: 1 }] };
+        return { rows: [] };
+      }
+
+      if (q.includes('FROM deals') && q.includes('WHERE id = $1')) {
+        assert.equal(p0, dealId);
+        return { rows: [{ id: dealId, name: 'Deck Co' }] };
+      }
+
+      if (q.includes('FROM documents') && q.includes('WHERE deal_id = $1')) {
+        assert.equal(p0, dealId);
+        return {
+          rows: [
+            {
+              id: 'doc-pptx-1',
+              title: 'Pitch Deck',
+              type: 'pitch_deck',
+              page_count: 3,
+              uploaded_at: '2026-01-05T00:00:00.000Z',
+            },
+          ],
+        };
+      }
+
+      if (q.includes('FROM visual_assets') && q.includes('JOIN documents')) {
+        assert.equal(p0, dealId);
+        return {
+          rows: [
+            {
+              id: 'va-pptx-1',
+              document_id: 'doc-pptx-1',
+              page_index: 0,
+              asset_type: 'image_text',
+              bbox: { x: 0, y: 0, w: 1, h: 1 },
+              image_uri: null,
+              image_hash: null,
+              extractor_version: 'structured_native_v1',
+              confidence: '0.85',
+              quality_flags: { source: 'structured_powerpoint', segment_key: 'overview' },
+              created_at: '2026-01-05T00:00:00.000Z',
+              ocr_text: null,
+              ocr_blocks: [],
+              structured_json: {
+                kind: 'powerpoint_slide',
+                segment_key: 'overview',
+                slide_number: 1,
+                title: 'What We Do',
+                bullets: ['Fast onboarding', 'High retention'],
+                text_snippet: 'We help teams ship faster with fewer bugs.',
+                notes: 'Speaker notes: highlight churn reduction.',
+              },
+              units: null,
+              extraction_confidence: null,
+              extraction_method: 'structured_native_v1',
+              evidence_count: 0,
+              evidence_sample_snippets: [],
+            },
+          ],
+        };
+      }
+
+      throw new Error(`Unexpected query: ${q}`);
+    },
+  } as any;
+
+  const app = Fastify();
+  await registerDealRoutes(app, mockPool);
+
+  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage?group_pptx=0` });
+  assert.equal(res.statusCode, 200);
+  const body = res.json() as any;
+
+  const visualNode = body.nodes.find(
+    (n: any) => n.id === `visual_asset:va-pptx-1` && n.type === 'visual_asset' && n.node_type === 'VISUAL_ASSET'
+  );
+  assert.ok(visualNode);
+
+  // PPTX: slide_title should come from structured_json.title.
+  assert.equal(visualNode.data.slide_title, 'What We Do');
+  assert.equal(visualNode.data.slide_title_source, 'structured_json.title');
+
+  // Understanding should not be empty even without OCR.
+  assert.ok(visualNode.data.page_understanding);
+  assert.ok(typeof visualNode.data.page_understanding.summary === 'string');
+  assert.ok(visualNode.data.page_understanding.summary.includes('What We Do'));
+  assert.ok(Array.isArray(visualNode.data.page_understanding.key_points));
+
+  await app.close();
+});
+
 test('GET /api/deals/:dealId/lineage derives slide_title from OCR blocks and avoids brand lines', async () => {
   const dealId = 'deal-3-title';
 

@@ -12,10 +12,11 @@ import { updateDealPriority, updateAllDealPriorities } from "../services/priorit
 import { normalizeDealName } from "../lib/normalize-deal-name";
 import { buildDocumentsDigest } from "../lib/documents-digest";
 import type { DocumentsDigestV1 } from "../lib/documents-digest";
-import { purgeDealCascade, isPurgeDealNotFoundError, sanitizeText } from "@dealdecision/core";
+import { purgeDealCascade, isPurgeDealNotFoundError, sanitizeText, buildDealScoringInputV0FromLineage } from "@dealdecision/core";
 import { getSegmentConfidenceThresholds } from "@dealdecision/core/dist/config/segment-thresholds";
 import { BrandModel, PageInput, buildBrandModel, inferDocumentBrandName, inferSlideTitleForSlide, normalizePhrase } from "../lib/slide-title";
-import { buildClassificationText, buildSegmentFeatures, classifySegment, normalizeAnalystSegment, type AnalystSegment } from "../lib/analyst-segment";
+import { buildClassificationText, buildSegmentFeatures, classifySegment, normalizeAnalystSegment, type AnalystSegment, type SegmentClassifierInput } from "../lib/analyst-segment";
+import { groupWordVisualAssetsByDocument, groupWordVisualAssetsByDocumentWithStats, type WordGroupingStats } from "../lib/word-visual-grouping";
 
 export type QueryResult<T> = { rows: T[]; rowCount?: number };
 type DealRoutesClient = {
@@ -71,6 +72,235 @@ function stripEvidenceFromClaims(claims: any): any[] {
 function parseDealApiMode(request: FastifyRequest | any): DealApiMode {
   const modeRaw = (request?.query as any)?.mode ?? (request as any)?.mode;
   return typeof modeRaw === "string" && modeRaw.toLowerCase() === "phase1" ? "phase1" : "full";
+}
+
+function parseBoolQ(value: unknown, defaultValue = false): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value !== 0;
+  if (typeof value !== "string") return defaultValue;
+
+  const v = value.trim().toLowerCase();
+  if (!v) return defaultValue;
+  if (v === "1" || v === "true" || v === "on" || v === "yes") return true;
+  if (v === "0" || v === "false" || v === "off" || v === "no") return false;
+  return defaultValue;
+}
+
+function pickNonUnknownSegment(value: unknown): AnalystSegment | null {
+  const seg = normalizeAnalystSegment(value);
+  return seg && seg !== "unknown" ? seg : null;
+}
+
+function majorityNonUnknownSegment(values: unknown[]): AnalystSegment | null {
+  const counts = new Map<AnalystSegment, number>();
+  const order: AnalystSegment[] = [];
+  for (const v of values) {
+    const seg = pickNonUnknownSegment(v);
+    if (!seg) continue;
+    counts.set(seg, (counts.get(seg) ?? 0) + 1);
+    if (!order.includes(seg)) order.push(seg);
+  }
+  if (order.length === 0) return null;
+
+  let best = order[0];
+  let bestCount = -1;
+  for (const seg of order) {
+    const c = counts.get(seg) ?? 0;
+    if (c > bestCount) {
+      best = seg;
+      bestCount = c;
+    }
+  }
+  return best;
+}
+
+function isStructuredWordSectionAsset(v: any): boolean {
+  const extractorVersion = typeof v?.extractor_version === "string" ? String(v.extractor_version) : "";
+  const qSource = typeof v?.quality_flags?.source === "string" ? String(v.quality_flags.source) : "";
+  const kind = typeof v?.structured_json?.kind === "string" ? String(v.structured_json.kind) : "";
+  if (extractorVersion === "structured_native_v1" && qSource.startsWith("structured_word")) return true;
+  if (qSource.startsWith("structured_word")) return true;
+  if (kind === "word_section") return true;
+  return false;
+}
+
+function structuredWordContentStats(v: any): { headingLen: number; textSnippetLen: number; paragraphsLen: number } {
+  const sj = (v?.structured_json ?? {}) as any;
+  const heading = typeof sj?.heading === "string" ? sj.heading.trim() : "";
+  const snippet = typeof sj?.text_snippet === "string" ? sj.text_snippet.trim() : "";
+  const paragraphsRaw = Array.isArray(sj?.paragraphs) ? sj.paragraphs : [];
+
+  const paraText = (p: any): string => {
+    if (typeof p === "string") return p.trim();
+    if (!p || typeof p !== "object") return "";
+    const direct =
+      (typeof (p as any).text === "string" ? (p as any).text : "") ||
+      (typeof (p as any).content === "string" ? (p as any).content : "") ||
+      (typeof (p as any).value === "string" ? (p as any).value : "");
+    return typeof direct === "string" ? direct.trim() : "";
+  };
+
+  let paragraphsLen = 0;
+  for (const p of paragraphsRaw) {
+    if (paragraphsLen >= 60) break;
+    const s = paraText(p);
+    if (s) paragraphsLen += 1;
+  }
+
+  return { headingLen: heading.length, textSnippetLen: snippet.length, paragraphsLen };
+}
+
+function isEmptyStructuredWordSectionAsset(v: any): boolean {
+  if (!isStructuredWordSectionAsset(v)) return false;
+  const stats = structuredWordContentStats(v);
+  const ocr = typeof v?.ocr_text === "string" ? v.ocr_text.replace(/\s+/g, " ").trim() : "";
+  const sj = (v?.structured_json ?? {}) as any;
+  const tableRows = Array.isArray(sj?.table_rows) ? sj.table_rows : [];
+  let hasTable = false;
+  for (const row of tableRows.slice(0, 4)) {
+    if (!Array.isArray(row)) continue;
+    for (const cell of row.slice(0, 6)) {
+      const s = typeof cell === "string" ? cell.replace(/\s+/g, " ").trim() : cell != null ? String(cell).trim() : "";
+      if (s) {
+        hasTable = true;
+        break;
+      }
+    }
+    if (hasTable) break;
+  }
+
+  return stats.headingLen === 0 && stats.textSnippetLen === 0 && stats.paragraphsLen === 0 && !hasTable && !ocr;
+}
+
+function computeDocHintSegmentByDocId(assets: any[], opts?: { minMajorityPct?: number }): Map<string, AnalystSegment> {
+  const minMajorityPct = typeof opts?.minMajorityPct === "number" && Number.isFinite(opts.minMajorityPct) ? opts.minMajorityPct : 0.6;
+
+  const nonEmptyCountByDoc = new Map<string, number>();
+  const countsByDoc = new Map<string, Map<AnalystSegment, number>>();
+
+  for (const a of assets) {
+    if (!isStructuredWordSectionAsset(a)) continue;
+    const docId = typeof a?.document_id === "string" ? a.document_id : typeof a?.documentId === "string" ? a.documentId : null;
+    if (!docId) continue;
+    if (isEmptyStructuredWordSectionAsset(a)) continue;
+
+    nonEmptyCountByDoc.set(docId, (nonEmptyCountByDoc.get(docId) ?? 0) + 1);
+
+    const persisted = pickNonUnknownSegment((a as any)?.persisted_segment_key);
+    const computed = pickNonUnknownSegment((a as any)?.computed_segment);
+    const candidate = persisted ?? computed;
+    if (!candidate) continue;
+
+    const map = countsByDoc.get(docId) ?? new Map<AnalystSegment, number>();
+    map.set(candidate, (map.get(candidate) ?? 0) + 1);
+    countsByDoc.set(docId, map);
+  }
+
+  const out = new Map<string, AnalystSegment>();
+  for (const [docId, totalNonEmpty] of nonEmptyCountByDoc.entries()) {
+    const counts = countsByDoc.get(docId);
+    if (!counts || totalNonEmpty <= 0) continue;
+    let bestSeg: AnalystSegment | null = null;
+    let bestCount = -1;
+    for (const [seg, n] of counts.entries()) {
+      if (n > bestCount) {
+        bestSeg = seg;
+        bestCount = n;
+      }
+    }
+    if (!bestSeg || bestSeg === "unknown" || bestCount <= 0) continue;
+    const pct = bestCount / totalNonEmpty;
+    if (pct >= minMajorityPct) out.set(docId, bestSeg);
+  }
+  return out;
+}
+
+function buildDeterministicGroupCapturedText(members: any[], maxChars = 1500): string {
+  const parts: string[] = [];
+  const seen = new Set<string>();
+
+  const localSnippet = (text: unknown): string => {
+    if (typeof text !== "string") return "";
+    const s = text.replace(/\s+/g, " ").trim();
+    if (!s) return "";
+    return s.length > 140 ? s.slice(0, 140) : s;
+  };
+
+  for (const m of members) {
+    if (!m || typeof m !== "object") continue;
+
+    const captured = typeof (m as any).captured_text === "string" ? String((m as any).captured_text) : "";
+    const sj = (m as any).structured_json;
+    const textSnippet = typeof sj?.text_snippet === "string" ? String(sj.text_snippet) : "";
+    const snippet = localSnippet((m as any).ocr_text);
+
+    const chosen = (captured || textSnippet || snippet).replace(/\s+/g, " ").trim();
+    if (!chosen) continue;
+
+    const key = chosen.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    parts.push(chosen);
+
+    const joinedLen = parts.reduce((acc, s) => acc + s.length, 0) + Math.max(0, parts.length - 1) * 2;
+    if (joinedLen >= maxChars) break;
+  }
+
+  const joined = parts.join("\n\n").trim();
+  if (!joined) return "";
+  if (joined.length <= maxChars) return joined;
+  return `${joined.slice(0, maxChars).trimEnd()}…`;
+}
+
+function extractStructuredWordTextForCue(v: any, maxChars = 1200): string {
+  const sj = (v?.structured_json ?? {}) as any;
+  const heading = typeof sj?.heading === "string" ? sj.heading.trim() : "";
+  const snippet = typeof sj?.text_snippet === "string" ? sj.text_snippet.trim() : "";
+
+  const parasRaw = Array.isArray(sj?.paragraphs) ? sj.paragraphs : [];
+  const paras: string[] = [];
+  for (const p of parasRaw.slice(0, 40)) {
+    if (typeof p === "string") {
+      const s = p.trim();
+      if (s) paras.push(s);
+      continue;
+    }
+    if (!p || typeof p !== "object") continue;
+    const direct =
+      (typeof (p as any).text === "string" ? (p as any).text : "") ||
+      (typeof (p as any).content === "string" ? (p as any).content : "") ||
+      (typeof (p as any).value === "string" ? (p as any).value : "");
+    const s = typeof direct === "string" ? direct.trim() : "";
+    if (s) paras.push(s);
+  }
+
+  const raw = [heading, ...paras, snippet].filter(Boolean).join("\n");
+  return raw.replace(/\s+/g, " ").trim().slice(0, maxChars);
+}
+
+function inferStructuredWordCueSegment(v: any): { segment: AnalystSegment; confidence: number; matched: string } | null {
+  if (!isStructuredWordSectionAsset(v)) return null;
+  if (isEmptyStructuredWordSectionAsset(v)) return null;
+
+  const text = extractStructuredWordTextForCue(v, 1600);
+  if (!text) return null;
+
+  const t = text.toLowerCase();
+  const cue = (re: RegExp, matched: string, segment: AnalystSegment, confidence: number) =>
+    re.test(t) ? ({ segment, confidence, matched } as const) : null;
+
+  // Keep this conservative and only used for computed=unknown.
+  return (
+    cue(/\bwhat\s+we\s+do\b/, "what we do", "overview", 0.65) ||
+    cue(/\bwho\s+we\s+are\b/, "who we are", "overview", 0.6) ||
+    cue(/\bkey\s+strategic\s+advantages\b/, "key strategic advantages", "overview", 0.6) ||
+    cue(/\bcompany\s*:\b/, "company:", "overview", 0.55) ||
+    cue(/\bbusiness\s+model\b/, "business model", "business_model", 0.65) ||
+    cue(/\bhow\s+we\s+make\s+money\b/, "how we make money", "business_model", 0.65) ||
+    cue(/\brevenue\s+model\b/, "revenue model", "business_model", 0.6) ||
+    cue(/\bpricing\b/, "pricing", "business_model", 0.55) ||
+    null
+  );
 }
 
 function requireDestructiveAuth(request: FastifyRequest | any): { ok: true } | { ok: false; status: number; error: string } {
@@ -2062,6 +2292,14 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
               nodes: { type: "array", items: { type: "object", additionalProperties: true } },
               edges: { type: "array", items: { type: "object", additionalProperties: true } },
               warnings: { type: "array", items: { type: "string" } },
+              warnings_counters: {
+                type: "object",
+                properties: {
+                  word_members_skipped_empty: { type: "number" },
+                  word_groups_skipped_empty: { type: "number" },
+                },
+                additionalProperties: true,
+              },
               unknown_structured_report: { type: "object", additionalProperties: true },
               segment_audit_report: { type: "object", additionalProperties: true },
             },
@@ -2306,28 +2544,129 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         };
       };
 
+      const extractTextForUnderstanding = (input: {
+        ocr_text?: string | null;
+        structured_json?: any;
+        structured_kind?: string | null;
+        structured_summary?: any;
+        evidence_snippets?: string[] | null;
+      }): string | null => {
+        const firstEvidence = Array.isArray(input.evidence_snippets)
+          ? input.evidence_snippets.find((s) => typeof s === "string" && s.trim().length > 0)
+          : null;
+        if (firstEvidence) return firstEvidence.trim();
+
+        const ocr = typeof input.ocr_text === "string" ? input.ocr_text : null;
+        const snippet = ocrSnippet(ocr);
+        if (snippet) return snippet;
+
+        const kind = typeof input.structured_kind === "string" ? input.structured_kind.toLowerCase() : "";
+        const ss = input.structured_summary;
+        if (kind === "word_group" && typeof ss === "string") {
+          const t = ss.trim();
+          if (!t) return null;
+          return t.length > 600 ? t.slice(0, 600) : t;
+        }
+
+        const extractStructuredJsonText = (structuredJson: unknown, maxChars: number): string | null => {
+          const parsed = safeJsonValue(structuredJson);
+          const sj = parsed && typeof parsed === "object" ? (parsed as any) : null;
+          if (!sj) return null;
+          const sjKind = typeof sj.kind === "string" ? sj.kind.trim().toLowerCase() : "";
+
+          const parts: string[] = [];
+          const push = (v: unknown) => {
+            if (typeof v !== "string") return;
+            const t = v.replace(/\s+/g, " ").trim();
+            if (!t) return;
+            parts.push(t);
+          };
+
+          if (sjKind === "powerpoint_slide") {
+            push(sj.title);
+            if (Array.isArray(sj.bullets)) {
+              for (const b of sj.bullets.slice(0, 12)) {
+                if (typeof b !== "string") continue;
+                const t = b.replace(/\s+/g, " ").trim();
+                if (!t) continue;
+                parts.push(`- ${t}`);
+              }
+            }
+            push(sj.text_snippet);
+            push(sj.notes);
+          } else if (sjKind === "word_section") {
+            push(sj.heading);
+            push(sj.text_snippet);
+            if (Array.isArray(sj.paragraphs)) {
+              for (const p of sj.paragraphs.slice(0, 6)) push(p);
+            }
+          } else if (typeof sj.text_snippet === "string") {
+            push(sj.text_snippet);
+          }
+
+          const joined = parts.join("\n").trim();
+          if (!joined) return null;
+          return joined.length > maxChars ? joined.slice(0, maxChars) : joined;
+        };
+
+        const sjText = extractStructuredJsonText(input.structured_json, 600);
+        if (sjText) return sjText;
+
+        return null;
+      };
+
       const derivePageSummary = (input: {
         slide_title?: string | null;
         evidence_snippets?: string[] | null;
         ocr_text?: string | null;
+        structured_json?: any;
+        structured_kind?: string | null;
+        structured_summary?: any;
       }): string | null => {
         const parts: string[] = [];
         const title = typeof input.slide_title === "string" ? input.slide_title.trim() : "";
         if (title) parts.push(title);
 
-        const firstEvidence = Array.isArray(input.evidence_snippets)
-          ? input.evidence_snippets.find((s) => typeof s === "string" && s.trim().length > 0)
-          : null;
-        if (firstEvidence) parts.push(firstEvidence.trim());
-
-        if (!firstEvidence) {
-          const snippet = ocrSnippet(input.ocr_text);
-          if (snippet) parts.push(snippet);
-        }
+        const coreText = extractTextForUnderstanding({
+          ocr_text: input.ocr_text,
+          structured_json: input.structured_json,
+          structured_kind: input.structured_kind,
+          structured_summary: input.structured_summary,
+          evidence_snippets: input.evidence_snippets,
+        });
+        if (coreText) parts.push(coreText);
 
         const summary = parts.join(" — ").trim();
         if (!summary) return null;
         return summary.length > 240 ? summary.slice(0, 240) : summary;
+      };
+
+      const deriveKeyPointsFromText = (text: unknown): string[] => {
+        if (typeof text !== "string") return [];
+        const lines = text
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0 && l.length <= 260);
+
+        const bullets = lines
+          .map((line) => {
+            const isBullet = /^[-•*@]\s+/.test(line) || /^\d+[.)]\s+/.test(line);
+            if (!isBullet) return null;
+            const bulletStripped = line
+              .replace(/^[-•*@]\s+/, "")
+              .replace(/^\d+[.)]\s+/, "")
+              .trim();
+            if (bulletStripped.length < 3) return null;
+            return bulletStripped.slice(0, 220);
+          })
+          .filter((v): v is string => typeof v === "string" && v.length > 0);
+
+        const unique: string[] = [];
+        for (const b of bullets) {
+          if (unique.length >= 6) break;
+          if (!unique.some((u) => u.toLowerCase() === b.toLowerCase())) unique.push(b);
+        }
+        return unique;
       };
 
       const deriveKeyPointsFromOcr = (ocrText: unknown): string[] => {
@@ -2359,6 +2698,8 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       };
 
       const deriveExtractedSignals = (input: {
+        segment_key?: string | null;
+        raw_text?: string | null;
         structured_kind?: string | null;
         structured_summary?: any;
       }): PageUnderstanding["extracted_signals"] => {
@@ -2383,13 +2724,87 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           }
         }
 
+        if (kind === "word_group" && typeof input.raw_text === "string") {
+          const t = input.raw_text;
+          const add = (s: { type: string; value: string; unit?: string | null; confidence?: number | null }) => {
+            if (signals.length >= 10) return;
+            signals.push(s);
+          };
+
+          const currencyRe = /\$\s?\d+(?:[\d,]*\d)?(?:\.\d+)?\s?(?:[kKmMbB])?/g;
+          const pctRe = /\b\d+(?:\.\d+)?%\b/g;
+          const countPlusRe = /\b\d+\+\b/g;
+          const marketsRe = /\b(?:AZ|FL|NV|PA|CA|NY|TX|WA|IL)\b/g;
+
+          const currency = Array.from(t.matchAll(currencyRe)).map((m) => m[0].replace(/\s+/g, "").trim());
+          for (const c of currency.slice(0, 4)) add({ type: "currency_amount", value: c });
+
+          const pcts = Array.from(t.matchAll(pctRe)).map((m) => m[0].trim());
+          for (const p of pcts.slice(0, 4)) add({ type: "percent", value: p });
+
+          const counts = Array.from(t.matchAll(countPlusRe)).map((m) => m[0].trim());
+          for (const c of counts.slice(0, 4)) add({ type: "count_hint", value: c });
+
+          const markets = Array.from(t.matchAll(marketsRe)).map((m) => m[0].trim());
+          const uniqMarkets = Array.from(new Set(markets));
+          if (uniqMarkets.length > 0) add({ type: "geo_markets", value: uniqMarkets.slice(0, 6).join(",") });
+
+          const seg = typeof input.segment_key === "string" ? input.segment_key : null;
+          if (seg && seg !== "unknown") add({ type: "segment", value: seg });
+        }
+
         return signals;
+      };
+
+      const deriveScoreContributions = (input: {
+        segment_key?: string | null;
+        raw_text?: string | null;
+      }): PageUnderstanding["score_contributions"] => {
+        const seg = typeof input.segment_key === "string" ? input.segment_key : null;
+        const text = typeof input.raw_text === "string" ? input.raw_text.toLowerCase() : "";
+        if (!seg || seg === "unknown") return [];
+
+        const driverBySeg: Record<string, string> = {
+          market: "market_strength",
+          traction: "traction",
+          distribution: "go_to_market",
+          business_model: "business_model",
+          team: "team_strength",
+          financials: "financial_health",
+          risks: "risk_profile",
+          competition: "competitive_moat",
+        };
+
+        const driver = driverBySeg[seg] ?? `segment_${seg}`;
+
+        const posHits = ["strong", "proven", "growth", "partnership", "advantage", "automation", "launch", "achieve", "reorders"].filter((k) => text.includes(k)).length;
+        const negHits = ["risk", "lack", "challenge", "uncertain", "legal", "compliance", "burn", "loss"].filter((k) => text.includes(k)).length;
+        const delta = Math.max(-1, Math.min(1, (posHits - negHits) * 0.15));
+
+        const rationale =
+          delta > 0
+            ? `Positive signals detected in ${seg} section.`
+            : delta < 0
+              ? `Risk signals detected in ${seg} section.`
+              : `No clear directional signal detected for ${seg} section.`;
+
+        // These are heuristic placeholders until score linking is implemented.
+        return [
+          {
+            driver,
+            delta,
+            rationale,
+            evidence_ref_ids: [],
+          },
+        ];
       };
 
       const buildPageUnderstanding = (input: {
         slide_title?: string | null;
         evidence_snippets?: string[] | null;
         ocr_text?: string | null;
+        segment_key?: string | null;
+        structured_json?: any;
         structured_kind?: string | null;
         structured_summary?: any;
       }): PageUnderstanding => {
@@ -2397,19 +2812,36 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           slide_title: input.slide_title,
           evidence_snippets: input.evidence_snippets,
           ocr_text: input.ocr_text,
-        });
-
-        const key_points = deriveKeyPointsFromOcr(input.ocr_text).slice(0, 5);
-        const extracted_signals = deriveExtractedSignals({
+          structured_json: input.structured_json,
           structured_kind: input.structured_kind,
           structured_summary: input.structured_summary,
         });
+
+        const rawText = extractTextForUnderstanding({
+          ocr_text: input.ocr_text,
+          structured_json: input.structured_json,
+          structured_kind: input.structured_kind,
+          structured_summary: input.structured_summary,
+          evidence_snippets: input.evidence_snippets,
+        });
+
+        const key_points = (
+          (deriveKeyPointsFromText(rawText).length > 0 ? deriveKeyPointsFromText(rawText) : deriveKeyPointsFromOcr(input.ocr_text))
+        ).slice(0, 6);
+        const extracted_signals = deriveExtractedSignals({
+          segment_key: input.segment_key,
+          raw_text: rawText,
+          structured_kind: input.structured_kind,
+          structured_summary: input.structured_summary,
+        });
+
+        const score_contributions = deriveScoreContributions({ segment_key: input.segment_key, raw_text: rawText });
 
         return normalizePageUnderstanding({
           summary,
           key_points,
           extracted_signals,
-          score_contributions: [],
+          score_contributions,
         });
       };
 
@@ -2421,6 +2853,10 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     const segmentAuditRequested = String(((request.query as any) ?? {})?.segment_audit ?? "") === "1";
     const segmentAuditEnabled = debugSegments && segmentAuditRequested;
     const segmentRescoreRequested = segmentAuditEnabled && String(((request.query as any) ?? {})?.segment_rescore ?? "") === "1";
+    const groupWordEnabled = parseBoolQ(((request.query as any) ?? {})?.group_word, false);
+    const debugWordRaw = parseBoolQ(((request.query as any) ?? {})?.debug_word_raw, false);
+    const groupPptxEnabled = parseBoolQ(((request.query as any) ?? {})?.group_pptx, true);
+    const debugPptxRaw = parseBoolQ(((request.query as any) ?? {})?.debug_pptx_raw, false);
     try {
       const hasOcrBlocks = await hasColumn(pool, "visual_extractions", "ocr_blocks");
       const hasUnits = await hasColumn(pool, "visual_extractions", "units");
@@ -2538,12 +2974,26 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       }
     }
 
-    const visualsWithSegments = visuals.map((v) => {
+    const segmentInputByVisualId = new Map<string, SegmentClassifierInput>();
+
+    const visualsWithSegmentsPass1 = visuals.map((v) => {
       const brandModel = brandModelByDocId.get(v.document_id) ?? buildBrandModel([]);
       const blacklist = brandModel.phrases;
       const brandInfo = brandNameByDocId.get(v.document_id) ?? { brand: null, confidence: null };
       const derivedStructure = deriveStructuredSummary((v as any)?.structured_json, (v as any)?.units ?? null);
-      const structured_kind = (v as any)?.structured_kind ?? derivedStructure.structured_kind;
+      const structuredKindFromJson = (() => {
+        const sj = (v as any)?.structured_json;
+        const sjObj = safeJsonValue(sj);
+        const kindRaw = sjObj && typeof sjObj === "object" ? (sjObj as any).kind : null;
+        const kind = typeof kindRaw === "string" ? kindRaw.trim().toLowerCase() : "";
+        if (!kind) return null;
+        if (kind === "word_section") return "word_section";
+        if (kind === "powerpoint_slide") return "powerpoint_slide";
+        if (kind === "excel_sheet") return "excel_sheet";
+        return null;
+      })();
+
+      const structured_kind = (v as any)?.structured_kind ?? derivedStructure.structured_kind ?? structuredKindFromJson;
       const structured_summary = (v as any)?.structured_summary ?? derivedStructure.structured_summary;
 
       const titleDerived = inferSlideTitleForSlide({
@@ -2555,6 +3005,27 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         enableDebug: slideTitleDebug,
       });
 
+      const structuredSlideTitle = (() => {
+        const sjObj = safeJsonValue((v as any)?.structured_json);
+        if (!sjObj || typeof sjObj !== "object") return null;
+        const kind = typeof (sjObj as any).kind === "string" ? String((sjObj as any).kind).toLowerCase() : "";
+        if (kind !== "powerpoint_slide") return null;
+        const title = typeof (sjObj as any).title === "string" ? String((sjObj as any).title).trim() : "";
+        return title.length > 0 ? title.slice(0, 180) : null;
+      })();
+
+      const slide_title = titleDerived.slide_title ?? structuredSlideTitle;
+      const slide_title_source = titleDerived.slide_title
+        ? titleDerived.slide_title_source
+        : structuredSlideTitle
+          ? "structured_json.title"
+          : null;
+      const slide_title_confidence = titleDerived.slide_title
+        ? titleDerived.slide_title_confidence
+        : structuredSlideTitle
+          ? 0.9
+          : null;
+
       const page_understanding = normalizePageUnderstanding((v as any)?.page_understanding);
 
       // Segment resolution order (effective truth, non-destructive):
@@ -2565,7 +3036,22 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       // NOTE: structured_json.segment_key is treated as an input/persisted hint but does not override computed.
       const persistedFromQualityRaw = normalizeAnalystSegment((v as any)?.quality_flags?.segment_key);
       const persistedFromStructuredRaw = normalizeAnalystSegment((v as any)?.structured_json?.segment_key);
-      const persistedFromQuality = persistedFromQualityRaw && persistedFromQualityRaw !== "unknown" ? persistedFromQualityRaw : null;
+      const qualitySourceRaw =
+        typeof (v as any)?.quality_flags?.source === "string" ? String((v as any).quality_flags.source) : null;
+      const qualitySegmentSourceRawDirect =
+        typeof (v as any)?.quality_flags?.segment_source === "string" ? String((v as any).quality_flags.segment_source) : null;
+      const qualityPersistMarker = qualitySegmentSourceRawDirect ?? qualitySourceRaw;
+      const allowQualityPersist = (() => {
+        const s = typeof qualityPersistMarker === "string" ? qualityPersistMarker.trim() : "";
+        if (!s) return false;
+        if (s === "human_override" || s === "human_override_v1" || s.startsWith("human_override_")) return true;
+        if (s.startsWith("promoted") || s.startsWith("promoted_")) return true;
+        if (s.startsWith("structured_")) return true;
+        return false;
+      })();
+
+      const persistedFromQuality =
+        allowQualityPersist && persistedFromQualityRaw && persistedFromQualityRaw !== "unknown" ? persistedFromQualityRaw : null;
       const persistedFromStructured = persistedFromStructuredRaw && persistedFromStructuredRaw !== "unknown" ? persistedFromStructuredRaw : null;
       const persistedSegmentKey = persistedFromQuality ?? persistedFromStructured;
       const persistedSourceKey = persistedFromQuality
@@ -2574,12 +3060,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           ? "structured_json.segment_key"
           : null;
 
-      const qualitySegmentSourceRaw =
-        typeof (v as any)?.quality_flags?.segment_source === "string"
-          ? String((v as any).quality_flags.segment_source)
-          : typeof (v as any)?.quality_flags?.source === "string"
-            ? String((v as any).quality_flags.source)
-            : null;
+      const qualitySegmentSourceRaw = qualityPersistMarker;
 
       const isHumanOverride = Boolean(
         persistedFromQuality &&
@@ -2588,7 +3069,16 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
             Boolean(qualitySegmentSourceRaw?.startsWith("human_override_")))
       );
 
-      const computed = classifySegment({
+      const isStructuredAsset =
+        String((v as any)?.extractor_version ?? "") === "structured_native_v1" ||
+        (typeof (v as any)?.quality_flags?.source === "string" && String((v as any).quality_flags.source).startsWith("structured_")) ||
+        (typeof (v as any)?.structured_json?.kind === "string" && ["word_section", "powerpoint_slide", "excel_sheet"].includes(String((v as any).structured_json.kind)));
+
+      // Prefer worker-provided structured_json.segment_key when present; otherwise fall back to persisted/promoted key.
+      // Only pass hints for structured assets (vision should be hint-free).
+      const hintSegment = isStructuredAsset ? (persistedFromStructured ?? persistedFromQuality) : null;
+
+      const baseInput: SegmentClassifierInput = {
         ocr_text: v.ocr_text,
         ocr_snippet: ocrSnippet(v.ocr_text),
         structured_kind,
@@ -2608,7 +3098,11 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         // Make computed_v1 deterministic and independent of worker-provided segment_key.
         disable_structured_segment_key_signal: true,
         disable_structured_segment_key_fallback: true,
-      });
+      };
+
+      if (typeof (v as any)?.id === "string") segmentInputByVisualId.set(String((v as any).id), baseInput);
+
+      const computed = classifySegment({ ...baseInput, hint_segment: hintSegment });
 
       const effectiveSegment = isHumanOverride
         ? (persistedFromQuality ?? computed.segment)
@@ -2644,6 +3138,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
             brand_name: brandInfo.brand,
             extractor_version: (v as any)?.extractor_version,
             quality_source: (v as any)?.quality_flags?.source,
+            hint_segment: hintSegment,
             enable_debug: true,
             include_debug_text_snippet: true,
             disable_structured_segment_key_signal: true,
@@ -2657,9 +3152,9 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         ...v,
         structured_summary,
         structured_kind,
-        slide_title: titleDerived.slide_title,
-        slide_title_source: titleDerived.slide_title_source,
-        slide_title_confidence: titleDerived.slide_title_confidence,
+        slide_title,
+        slide_title_source,
+        slide_title_confidence,
         slide_title_warnings: titleDerived.slide_title_warnings,
         slide_title_debug: titleDerived.slide_title_debug,
         // Backwards-compatible, but now explicitly the effective segment.
@@ -2681,6 +3176,71 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
             }
           : {}),
       } as VisualRow & { structured_summary?: unknown };
+    });
+
+    // Option A: DOCX doc-level hint propagation for low-signal structured_word blocks.
+    const docHintByDocId = computeDocHintSegmentByDocId(visualsWithSegmentsPass1 as any, { minMajorityPct: 0.6 });
+
+    const visualsWithSegments = visualsWithSegmentsPass1.map((v: any) => {
+      if (!isStructuredWordSectionAsset(v)) return v;
+      if (isEmptyStructuredWordSectionAsset(v)) return v;
+
+      const persisted = pickNonUnknownSegment(v?.persisted_segment_key);
+      if (persisted) return v;
+
+      const computedSeg = normalizeAnalystSegment(v?.computed_segment);
+
+      // First: doc-level hint propagation for structured_word blocks that are still unknown.
+      let out: any = v;
+      if (!computedSeg || computedSeg === "unknown") {
+        const docId = typeof v?.document_id === "string" ? v.document_id : null;
+        const hint = docId ? (docHintByDocId.get(docId) ?? null) : null;
+        if (hint) {
+          const base = segmentInputByVisualId.get(String(v?.id ?? ""));
+          if (base) {
+            const recomputed = classifySegment({ ...base, hint_segment: hint });
+            const seg = normalizeAnalystSegment(recomputed.segment) ?? "unknown";
+            if (seg !== "unknown") {
+              out = {
+                ...v,
+                segment: seg,
+                effective_segment: seg,
+                segment_source: "doc_hint_v1",
+                segment_confidence: recomputed.confidence,
+                computed_segment: seg,
+                computed_confidence: recomputed.confidence,
+                computed_reason: {
+                  rule_id: "DOCX_DOC_HINT_FALLBACK",
+                  doc_hint_segment: hint,
+                },
+              };
+            }
+          }
+        }
+      }
+
+      // Second: cue-based rescue for structured_word blocks that are still unknown.
+      const outComputed = normalizeAnalystSegment(out?.computed_segment);
+      if (!outComputed || outComputed === "unknown") {
+        const inferred = inferStructuredWordCueSegment(out);
+        if (inferred) {
+          out = {
+            ...out,
+            segment: inferred.segment,
+            effective_segment: inferred.segment,
+            segment_source: "docx_cue_v1",
+            segment_confidence: inferred.confidence,
+            computed_segment: inferred.segment,
+            computed_confidence: inferred.confidence,
+            computed_reason: {
+              rule_id: "DOCX_CUE_RULE_V1",
+              matched: inferred.matched,
+            },
+          };
+        }
+      }
+
+      return out;
     });
 
     const unknownStructuredReport = (() => {
@@ -2768,24 +3328,603 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     const formatSegmentLabel = (seg: string) =>
       seg.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 
-    for (const v of visualsWithSegments) {
+    type PptxGroup = {
+      __pptx_group: true;
+      visual_asset_group_id: string;
+      document_id: string;
+      page_index: number;
+      page_label: string;
+      heading: string | null;
+      member_visual_asset_ids: string[];
+      captured_text: string;
+      evidence_count_total: number;
+      evidence_snippets: string[];
+      structured_json: any;
+      persisted_segment_key: string | null;
+      persisted_segment_source: string | null;
+      computed_segment: string;
+      computed_confidence: number;
+      computed_reason: any;
+      effective_segment: string;
+      segment_source: string;
+      segment_confidence: number;
+      segment_promoted_at: null;
+      segment_overridden_at: null;
+      segment_override_note: null;
+    };
+
+    const pptxGroups: PptxGroup[] = (() => {
+      if (!groupPptxEnabled) return [];
+
+      const structuredByDocPage = new Map<string, any>();
+      const visionByDocPage = new Map<string, any>();
+      const structuredDocIds = new Set<string>();
+
+      const asDocPageKey = (docId: string, pageIndex: number) => `${docId}::${pageIndex}`;
+
+      const isStructuredPptxSlide = (v: any): boolean => {
+        const extractorVersion = typeof v?.extractor_version === "string" ? String(v.extractor_version) : "";
+        if (extractorVersion !== "structured_native_v1") return false;
+        const qSource = typeof v?.quality_flags?.source === "string" ? String(v.quality_flags.source) : "";
+        const kind = typeof v?.structured_json?.kind === "string" ? String(v.structured_json.kind) : "";
+        if (qSource.includes("structured_powerpoint")) return true;
+        if (kind === "powerpoint_slide") return true;
+        return false;
+      };
+
+      for (const v of visualsWithSegments as any[]) {
+        const docId = typeof v?.document_id === "string" ? v.document_id : null;
+        const pageIndex = typeof v?.page_index === "number" ? v.page_index : null;
+        const id = typeof v?.id === "string" ? v.id : null;
+        if (!docId || pageIndex == null || !id) continue;
+        if (!isStructuredPptxSlide(v)) continue;
+        structuredDocIds.add(docId);
+        structuredByDocPage.set(asDocPageKey(docId, pageIndex), v);
+      }
+
+      for (const v of visualsWithSegments as any[]) {
+        const docId = typeof v?.document_id === "string" ? v.document_id : null;
+        const pageIndex = typeof v?.page_index === "number" ? v.page_index : null;
+        const id = typeof v?.id === "string" ? v.id : null;
+        if (!docId || pageIndex == null || !id) continue;
+        if (!structuredDocIds.has(docId)) continue;
+        const extractorVersion = typeof v?.extractor_version === "string" ? String(v.extractor_version) : "";
+        if (extractorVersion !== "vision_v1") continue;
+        visionByDocPage.set(asDocPageKey(docId, pageIndex), v);
+      }
+
+      const buildCapturedText = (structuredSlideJson: any, ocrText: string | null): string => {
+        const sjObj = safeJsonValue(structuredSlideJson);
+        const sj = sjObj && typeof sjObj === "object" ? (sjObj as any) : null;
+        const title = typeof sj?.title === "string" ? sj.title.trim() : "";
+        const bullets = Array.isArray(sj?.bullets) ? sj.bullets : [];
+        const notes = typeof sj?.notes === "string" ? sj.notes.trim() : "";
+        const textSnippet = typeof sj?.text_snippet === "string" ? sj.text_snippet.trim() : "";
+        const ocr = typeof ocrText === "string" ? ocrText.trim() : "";
+
+        const parts: string[] = [];
+        if (title) parts.push(title);
+        if (bullets.length > 0) {
+          for (const b of bullets.slice(0, 12)) {
+            if (typeof b !== "string") continue;
+            const t = b.replace(/\s+/g, " ").trim();
+            if (!t) continue;
+            parts.push(`- ${t}`);
+          }
+        }
+        if (textSnippet) parts.push(textSnippet);
+        if (notes) parts.push(`Notes: ${notes}`);
+        if (ocr) parts.push(`OCR: ${ocrSnippet(ocr) ?? ""}`.trim());
+
+        const joined = parts.join("\n").trim();
+        if (!joined) return "";
+        return joined.length > 1500 ? joined.slice(0, 1500) : joined;
+      };
+
+      const groups: PptxGroup[] = [];
+      for (const [k, structuredSlide] of structuredByDocPage.entries()) {
+        const visionSlide = visionByDocPage.get(k);
+        if (!visionSlide) continue; // only group when both exist
+
+        const docId = typeof structuredSlide?.document_id === "string" ? structuredSlide.document_id : null;
+        const pageIndex = typeof structuredSlide?.page_index === "number" ? structuredSlide.page_index : null;
+        if (!docId || pageIndex == null) continue;
+
+        const groupId = `pptx_slide_${docId}_${pageIndex}`;
+        const memberIds = [String(structuredSlide.id), String(visionSlide.id)];
+
+        const structuredJson = safeJsonValue(structuredSlide.structured_json);
+        const title = typeof (structuredJson as any)?.title === "string" ? String((structuredJson as any).title).trim() : "";
+        const pageLabel = title ? `Slide ${pageIndex + 1} • ${title}` : `Slide ${pageIndex + 1}`;
+
+        const capturedText = buildCapturedText(structuredJson, typeof visionSlide?.ocr_text === "string" ? visionSlide.ocr_text : null);
+
+        const evidenceSnippetsRaw: string[] = [];
+        const addSnips = (snips: unknown) => {
+          if (!Array.isArray(snips)) return;
+          for (const s of snips) {
+            if (typeof s !== "string") continue;
+            const t = s.trim();
+            if (!t) continue;
+            evidenceSnippetsRaw.push(t);
+          }
+        };
+
+        addSnips(structuredSlide.evidence_sample_snippets);
+        addSnips(visionSlide.evidence_sample_snippets);
+
+        const uniqEvidence: string[] = [];
+        for (const s of evidenceSnippetsRaw) {
+          if (uniqEvidence.length >= 6) break;
+          if (!uniqEvidence.some((u) => u.toLowerCase() === s.toLowerCase())) uniqEvidence.push(s);
+        }
+
+        const hintSegment =
+          majorityNonUnknownSegment([
+            structuredSlide?.persisted_segment_key,
+            structuredSlide?.effective_segment,
+            (structuredSlide?.structured_json as any)?.segment_key,
+            visionSlide?.persisted_segment_key,
+            visionSlide?.effective_segment,
+            (visionSlide?.structured_json as any)?.segment_key,
+          ]) ?? null;
+
+        const persistedSegmentKey =
+          majorityNonUnknownSegment([structuredSlide?.persisted_segment_key, visionSlide?.persisted_segment_key]) ?? null;
+
+        const computed = classifySegment({
+          ocr_text: typeof visionSlide?.ocr_text === "string" ? visionSlide.ocr_text : null,
+          ocr_snippet: capturedText ? capturedText.slice(0, 140) : null,
+          structured_kind: "powerpoint_slide",
+          structured_summary: null,
+          structured_json: structuredJson,
+          asset_type: "pptx_slide_group",
+          page_index: pageIndex,
+          slide_title: title || null,
+          slide_title_confidence: title ? 0.9 : null,
+          evidence_snippets: uniqEvidence,
+          brand_blacklist: new Set<string>(),
+          brand_name: null,
+          extractor_version: "structured_native_v1",
+          quality_source: "structured_powerpoint",
+          hint_segment: hintSegment,
+          enable_debug: false,
+          include_debug_text_snippet: false,
+          disable_structured_segment_key_signal: true,
+          disable_structured_segment_key_fallback: true,
+        });
+
+        const hasHumanOverride = (() => {
+          const srcs = [structuredSlide?.segment_source, visionSlide?.segment_source].map((s: any) => (typeof s === "string" ? s : ""));
+          if (!persistedSegmentKey) return false;
+          return srcs.some((s) => s === "human_override" || s === "human_override_v1" || s.startsWith("human_override_"));
+        })();
+
+        const effectiveSegment = hasHumanOverride
+          ? (persistedSegmentKey ?? computed.segment)
+          : persistedSegmentKey
+            ? persistedSegmentKey
+            : computed.segment;
+
+        const segmentSource = (() => {
+          if (hasHumanOverride && persistedSegmentKey) return "human_override_v1";
+          if (persistedSegmentKey) return "persisted_v0";
+          return "computed_v1";
+        })();
+
+        const segmentConfidence = persistedSegmentKey ? 1 : computed.confidence;
+
+        groups.push({
+          __pptx_group: true,
+          visual_asset_group_id: groupId,
+          document_id: docId,
+          page_index: pageIndex,
+          page_label: pageLabel,
+          heading: title || null,
+          member_visual_asset_ids: memberIds,
+          captured_text: capturedText,
+          evidence_count_total:
+            (Number.isFinite(structuredSlide?.evidence_count) ? Number(structuredSlide.evidence_count) : 0) +
+            (Number.isFinite(visionSlide?.evidence_count) ? Number(visionSlide.evidence_count) : 0),
+          evidence_snippets: uniqEvidence,
+          structured_json: {
+            kind: "powerpoint_group",
+            slide: structuredJson,
+            vision_visual_asset_id: String(visionSlide.id),
+            structured_visual_asset_id: String(structuredSlide.id),
+            member_visual_asset_ids: memberIds,
+            page_index: pageIndex,
+            slide_number: typeof (structuredJson as any)?.slide_number === "number" ? (structuredJson as any).slide_number : pageIndex + 1,
+            title: title || null,
+            segment_key: effectiveSegment,
+            effective_segment: effectiveSegment,
+          },
+          persisted_segment_key: persistedSegmentKey,
+          persisted_segment_source: persistedSegmentKey ? "group_majority" : null,
+          computed_segment: computed.segment,
+          computed_confidence: computed.confidence,
+          computed_reason: computed.debug ?? null,
+          effective_segment: effectiveSegment,
+          segment_source: segmentSource,
+          segment_confidence: segmentConfidence,
+          segment_promoted_at: null,
+          segment_overridden_at: null,
+          segment_override_note: null,
+        });
+      }
+
+      // Stable ordering
+      groups.sort((a, b) => {
+        if (a.document_id !== b.document_id) return a.document_id.localeCompare(b.document_id);
+        if (a.page_index !== b.page_index) return a.page_index - b.page_index;
+        return a.visual_asset_group_id.localeCompare(b.visual_asset_group_id);
+      });
+
+      return groups;
+    })();
+
+    let wordGroupingStatsForLineage: WordGroupingStats | null = null;
+
+    const wordGroups = (() => {
+      // Captured for response warning counters.
+      // Initialized here to keep grouping deterministic and easy to test.
+      if (!groupWordEnabled) return [] as any[];
+      const { groups: rawGroups, stats } = groupWordVisualAssetsByDocumentWithStats(visualsWithSegments as any, { maxBlocksPerGroup: 8, maxCapturedChars: 1500 });
+      wordGroupingStatsForLineage = stats;
+
+      const byId = new Map<string, any>();
+      for (const v of visualsWithSegments as any[]) {
+        const id = typeof v?.id === "string" ? v.id : null;
+        if (id) byId.set(id, v);
+      }
+
+      return rawGroups.map((g: any) => {
+        const visualAssetGroupId =
+          typeof g?.visual_asset_group_id === "string" && g.visual_asset_group_id.trim().length > 0
+            ? g.visual_asset_group_id
+            : typeof g?.group_id === "string" && g.group_id.trim().length > 0
+              ? g.group_id
+              : null;
+        const docId = typeof g?.document_id === "string" ? g.document_id : null;
+        const membersRaw = Array.isArray(g?.member_visual_asset_ids) ? g.member_visual_asset_ids : [];
+        const members = membersRaw
+          .map((id: any) => (typeof id === "string" ? byId.get(id) : null))
+          .filter((v: any) => v && typeof v === "object");
+
+        members.sort((a: any, b: any) => {
+          const pa = typeof a?.page_index === "number" ? a.page_index : 1e9;
+          const pb = typeof b?.page_index === "number" ? b.page_index : 1e9;
+          if (pa !== pb) return pa - pb;
+          const ca = typeof a?.created_at === "string" ? a.created_at : "";
+          const cb = typeof b?.created_at === "string" ? b.created_at : "";
+          if (ca !== cb) return ca.localeCompare(cb);
+          return String(a?.id ?? "").localeCompare(String(b?.id ?? ""));
+        });
+
+        const groupText = buildDeterministicGroupCapturedText(members, 1500);
+
+        const hintSegment =
+          majorityNonUnknownSegment([
+            ...members.map((m: any) => m?.persisted_segment_key),
+            ...members.map((m: any) => m?.effective_segment),
+            ...members.map((m: any) => (m?.structured_json as any)?.segment_key),
+          ]) ?? null;
+
+        // Persisted must ONLY come from persisted member segments; never from computed/effective hints.
+        const persistedSegmentKey = majorityNonUnknownSegment(members.map((m: any) => m?.persisted_segment_key)) ?? null;
+
+        const brandModel = docId ? brandModelByDocId.get(docId) ?? buildBrandModel([]) : buildBrandModel([]);
+        const blacklist = brandModel.phrases;
+        const brandInfo = docId ? brandNameByDocId.get(docId) ?? { brand: null, confidence: null } : { brand: null, confidence: null };
+
+        const computed = classifySegment({
+          ocr_text: null,
+          ocr_snippet: groupText ? groupText.slice(0, 140) : null,
+          structured_kind: "word_section",
+          structured_summary: null,
+          structured_json: {
+            kind: "word_section",
+            heading: typeof g?.heading === "string" ? g.heading : null,
+            paragraphs: groupText ? [groupText] : [],
+            text_snippet: groupText,
+            segment_key: hintSegment,
+          },
+          asset_type: "structured_word_group",
+          page_index: typeof g?.page_index === "number" ? g.page_index : null,
+          slide_title: null,
+          slide_title_confidence: null,
+          evidence_snippets: Array.isArray(g?.evidence_snippets) ? g.evidence_snippets : [],
+          brand_blacklist: blacklist,
+          brand_name: brandInfo.brand,
+          extractor_version: "structured_native_v1",
+          quality_source: "structured_word",
+          hint_segment: hintSegment,
+          enable_debug: false,
+          include_debug_text_snippet: false,
+          disable_structured_segment_key_signal: true,
+          disable_structured_segment_key_fallback: true,
+        });
+
+        const computedReasonRaw = computed.debug && typeof computed.debug === "object" ? computed.debug : null;
+        const unknownReasonCode = typeof (computedReasonRaw as any)?.unknown_reason_code === "string" ? String((computedReasonRaw as any).unknown_reason_code) : null;
+
+        const computedSegment =
+          computed.segment === "unknown" && hintSegment && (unknownReasonCode === "NO_TEXT" || unknownReasonCode === "LOW_SIGNAL")
+            ? hintSegment
+            : computed.segment;
+
+        const computedConfidence =
+          computed.segment === "unknown" && hintSegment && (unknownReasonCode === "NO_TEXT" || unknownReasonCode === "LOW_SIGNAL")
+            ? Math.max(0.2, computed.confidence)
+            : computed.confidence;
+
+        const computedReason =
+          computed.segment === "unknown" && hintSegment && (unknownReasonCode === "NO_TEXT" || unknownReasonCode === "LOW_SIGNAL")
+            ? {
+                ...(computedReasonRaw ?? {}),
+                rule_id: "STRUCTURED_HINT_FALLBACK",
+                unknown_reason_code: null,
+              }
+            : computedReasonRaw;
+
+        const hasHumanOverride = members.some((m: any) => {
+          const seg = pickNonUnknownSegment(m?.persisted_segment_key);
+          const src = typeof m?.segment_source === "string" ? String(m.segment_source) : "";
+          if (!seg || !persistedSegmentKey) return false;
+          return seg === persistedSegmentKey && (src === "human_override" || src === "human_override_v1" || src.startsWith("human_override_"));
+        });
+
+        const effectiveSegment = hasHumanOverride
+          ? (persistedSegmentKey ?? computedSegment)
+          : persistedSegmentKey
+            ? persistedSegmentKey
+            : computedSegment;
+
+        const segmentSource = (() => {
+          if (hasHumanOverride && persistedSegmentKey) return "human_override_v1";
+          if (persistedSegmentKey) return "persisted_v0";
+          return "computed_v1";
+        })();
+
+        const segmentConfidence = persistedSegmentKey ? 1 : computedConfidence;
+
+        return {
+          ...g,
+          visual_asset_group_id: visualAssetGroupId,
+          captured_text: groupText,
+          persisted_segment_key: persistedSegmentKey,
+          persisted_segment_source: persistedSegmentKey ? "group_majority" : null,
+          computed_segment: computedSegment,
+          computed_confidence: computedConfidence,
+          computed_reason: computedReason,
+          effective_segment: effectiveSegment,
+          segment_source: segmentSource,
+          segment_confidence: segmentConfidence,
+          segment_promoted_at: null,
+          segment_overridden_at: null,
+          segment_override_note: null,
+        };
+      });
+    })();
+
+    const wordGroupingStatsFinal: WordGroupingStats = wordGroupingStatsForLineage ?? { word_members_skipped_empty: 0, word_groups_skipped_empty: 0 };
+    if (groupWordEnabled) {
+      if (wordGroupingStatsFinal.word_members_skipped_empty > 0) {
+        warnings.push(`skipped ${wordGroupingStatsFinal.word_members_skipped_empty} empty word blocks during grouping`);
+      }
+      if (wordGroupingStatsFinal.word_groups_skipped_empty > 0) {
+        warnings.push(`skipped ${wordGroupingStatsFinal.word_groups_skipped_empty} empty word groups during grouping`);
+      }
+    }
+
+    const wordGroupByDocId = (() => {
+      const m = new Map<string, typeof wordGroups>();
+      for (const g of wordGroups) {
+        const list = m.get(g.document_id) ?? [];
+        list.push(g);
+        m.set(g.document_id, list);
+      }
+      return m;
+    })();
+
+    const wordMemberIdsByDocId = (() => {
+      const m = new Map<string, Set<string>>();
+      for (const g of wordGroups) {
+        const set = m.get(g.document_id) ?? new Set<string>();
+        for (const id of g.member_visual_asset_ids) set.add(id);
+        m.set(g.document_id, set);
+      }
+      return m;
+    })();
+
+    const pptxGroupByDocId = (() => {
+      const m = new Map<string, PptxGroup[]>();
+      for (const g of pptxGroups) {
+        const list = m.get(g.document_id) ?? [];
+        list.push(g);
+        m.set(g.document_id, list);
+      }
+      return m;
+    })();
+
+    const pptxMemberIdsByDocId = (() => {
+      const m = new Map<string, Set<string>>();
+      for (const g of pptxGroups) {
+        const set = m.get(g.document_id) ?? new Set<string>();
+        for (const id of g.member_visual_asset_ids) set.add(id);
+        m.set(g.document_id, set);
+      }
+      return m;
+    })();
+
+    const visualsToRender = (() => {
+      if (!groupWordEnabled && !groupPptxEnabled) return visualsWithSegments;
+
+      // Suppress grouped raw blocks unless debug flags are set.
+      const out: any[] = [];
+      const seenWordDoc = new Set<string>();
+      const seenPptxDocPage = new Set<string>();
+
+      const isStructuredWord = (v: any): boolean => {
+        const extractorVersion = typeof v?.extractor_version === "string" ? v.extractor_version : "";
+        const qSource = typeof v?.quality_flags?.source === "string" ? String(v.quality_flags.source) : "";
+        const kind = typeof v?.structured_json?.kind === "string" ? String(v.structured_json.kind) : "";
+        if (extractorVersion === "structured_native_v1" && qSource.startsWith("structured_word")) return true;
+        if (qSource.startsWith("structured_word")) return true;
+        if (kind === "word_section") return true;
+        return false;
+      };
+
+      const clean = (value: unknown): string => {
+        if (typeof value !== "string") return "";
+        return value.replace(/\s+/g, " ").trim();
+      };
+
+      const toTextLooseLocal = (value: unknown, depth = 4): string => {
+        if (value == null) return "";
+        if (typeof value === "string") return value;
+        if (typeof value === "number" || typeof value === "boolean") return String(value);
+        if (depth <= 0) return "";
+        if (Array.isArray(value)) return value.map((x) => toTextLooseLocal(x, depth - 1)).filter(Boolean).join(" ");
+        if (typeof value === "object") {
+          const v: any = value as any;
+          const direct =
+            (typeof v?.text === "string" ? v.text : null) ??
+            (typeof v?.content === "string" ? v.content : null) ??
+            (typeof v?.value === "string" ? v.value : null);
+          if (direct) return direct;
+          const children = v?.children ?? v?.runs ?? v?.items ?? v?.paragraphs;
+          if (children) return toTextLooseLocal(children, depth - 1);
+        }
+        return "";
+      };
+
+      const hasAnyTableContent = (rows: unknown): boolean => {
+        if (!Array.isArray(rows) || rows.length === 0) return false;
+        for (const row of rows) {
+          if (!Array.isArray(row)) continue;
+          for (const cell of row) {
+            const t = clean(toTextLooseLocal(cell));
+            if (t) return true;
+          }
+        }
+        return false;
+      };
+
+      const isEmptyStructuredWord = (v: any): boolean => {
+        const sj = v?.structured_json;
+        if (!sj || typeof sj !== "object") return false;
+        const heading = clean((sj as any).heading);
+        const snippet = clean((sj as any).text_snippet);
+        const paragraphsRaw = (sj as any).paragraphs;
+        const paragraphsText = Array.isArray(paragraphsRaw)
+          ? paragraphsRaw.map((p: any) => clean(toTextLooseLocal(p))).filter(Boolean).join(" ")
+          : "";
+        const tableRows = (sj as any).table_rows;
+        const hasTable = hasAnyTableContent(tableRows);
+        const ocr = clean(v?.ocr_text);
+        return !heading && !snippet && !paragraphsText && !hasTable && !ocr;
+      };
+      for (const v of visualsWithSegments) {
+        const docId = typeof (v as any)?.document_id === "string" ? (v as any).document_id : "";
+        const wordMembers = docId ? wordMemberIdsByDocId.get(docId) : null;
+        const isWordMember = Boolean(wordMembers && wordMembers.has(String((v as any)?.id ?? "")));
+
+        const pptxMembers = docId ? pptxMemberIdsByDocId.get(docId) : null;
+        const pageIndex = typeof (v as any)?.page_index === "number" ? (v as any).page_index : null;
+        const docPageKey = pageIndex == null ? null : `${docId}::${pageIndex}`;
+        const isPptxMember = Boolean(pptxMembers && pptxMembers.has(String((v as any)?.id ?? "")));
+
+        if (groupPptxEnabled && isPptxMember) {
+          if (debugPptxRaw) out.push(v);
+          if (docPageKey && !seenPptxDocPage.has(docPageKey)) {
+            const gs = (pptxGroupByDocId.get(docId) ?? []).filter((g) => g.page_index === pageIndex);
+            for (const g of gs) out.push(g);
+            seenPptxDocPage.add(docPageKey);
+          }
+          continue;
+        }
+
+        if (isWordMember) {
+          if (debugWordRaw) out.push(v);
+          if (!seenWordDoc.has(docId)) {
+            const gs = wordGroupByDocId.get(docId) ?? [];
+            for (const g of gs) out.push({ __word_group: true, ...g });
+            seenWordDoc.add(docId);
+          }
+          continue;
+        }
+
+        if (groupWordEnabled && !debugWordRaw && isStructuredWord(v) && isEmptyStructuredWord(v)) {
+          continue;
+        }
+
+        out.push(v);
+      }
+
+      // If a doc has only word blocks (so we never encountered a non-word row), ensure groups are still emitted.
+      for (const [docId, gs] of wordGroupByDocId.entries()) {
+        if (seenWordDoc.has(docId)) continue;
+        for (const g of gs) out.push({ __word_group: true, ...g });
+      }
+
+      // If a doc/page has only PPTX member rows, ensure groups are still emitted.
+      for (const [docId, gs] of pptxGroupByDocId.entries()) {
+        for (const g of gs) {
+          const key = `${docId}::${g.page_index}`;
+          if (seenPptxDocPage.has(key)) continue;
+          out.push(g);
+          seenPptxDocPage.add(key);
+        }
+      }
+
+      return out;
+    })();
+
+    for (const v of visualsToRender as any[]) {
+      const isWordGroup = Boolean((v as any)?.__word_group);
+      const isPptxGroup = Boolean((v as any)?.__pptx_group);
+      const isAnyGroup = isWordGroup || isPptxGroup;
       const hasDocumentId = typeof v.document_id === "string" && v.document_id.length > 0;
       const docNodeId = hasDocumentId ? `document:${v.document_id}` : null;
-      const vaNodeId = `visual_asset:${v.id}`;
-      const evNodeId = `evidence:${v.id}`;
-      const conf = Number(v.confidence);
+      const visualId = isAnyGroup
+        ? String((v as any).visual_asset_group_id ?? "")
+        : String((v as any).id ?? "");
+      if (isAnyGroup && !visualId) {
+        warnings.push("skipped visual asset group with missing visual_asset_group_id");
+        continue;
+      }
+      if (!visualId) {
+        warnings.push("skipped visual asset with missing id");
+        continue;
+      }
+      const vaNodeId = isAnyGroup ? `visual_asset_group:${visualId}` : `visual_asset:${visualId}`;
+      const evNodeId = `evidence:${visualId}`;
+      const conf = Number((v as any).confidence);
       const confidence = Number.isFinite(conf) ? conf : 0;
-      const pageLabel = typeof v.page_index === "number" ? v.page_index + 1 : 0;
+      const pageLabel = typeof (v as any).page_index === "number" ? (v as any).page_index + 1 : 0;
 
-      const snippet = ocrSnippet(v.ocr_text);
-      const structured = { structured_kind: v.structured_kind, structured_summary: (v as any)?.structured_summary };
-      const extraction_confidence = deriveBestExtractionConfidence({ structuredJson: v.structured_json, fallback: v.extraction_confidence });
-      const evidence_count = Number.isFinite(v.evidence_count) ? v.evidence_count : 0;
-      let evidence_snippets = Array.isArray(v.evidence_sample_snippets)
-        ? v.evidence_sample_snippets
-        : typeof v.evidence_sample_snippets === "string"
-          ? [v.evidence_sample_snippets]
-          : [];
+      const snippet = isWordGroup ? null : ocrSnippet((v as any).ocr_text);
+      const structured = isAnyGroup
+        ? { structured_kind: isWordGroup ? "word_group" : "pptx_group", structured_summary: (v as any).captured_text }
+        : { structured_kind: (v as any).structured_kind, structured_summary: (v as any)?.structured_summary };
+      const extraction_confidence = isWordGroup
+        ? null
+        : deriveBestExtractionConfidence({ structuredJson: (v as any).structured_json, fallback: (v as any).extraction_confidence });
+      const evidence_count = isWordGroup
+        ? Number.isFinite((v as any).evidence_count_total)
+          ? (v as any).evidence_count_total
+          : 0
+        : Number.isFinite((v as any).evidence_count)
+          ? (v as any).evidence_count
+          : 0;
+      let evidence_snippets = isWordGroup
+        ? (Array.isArray((v as any).evidence_snippets) ? (v as any).evidence_snippets : [])
+        : Array.isArray((v as any).evidence_sample_snippets)
+          ? (v as any).evidence_sample_snippets
+          : typeof (v as any).evidence_sample_snippets === "string"
+            ? [(v as any).evidence_sample_snippets]
+            : [];
 
       // If the evidence link rows exist but were created before snippet text was available
       // (e.g. OCR enabled later), fall back to the extraction OCR snippet.
@@ -2793,18 +3932,42 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         evidence_snippets = [snippet];
       }
 
-      const titleDerived = {
-        slide_title: (v as any)?.slide_title ?? null,
-        slide_title_source: (v as any)?.slide_title_source ?? null,
-        slide_title_confidence: (v as any)?.slide_title_confidence ?? null,
-        slide_title_warnings: (v as any)?.slide_title_warnings,
-        slide_title_debug: (v as any)?.slide_title_debug,
-      };
+      const titleDerived = isWordGroup
+        ? {
+            slide_title: null,
+            slide_title_source: null,
+            slide_title_confidence: null,
+            slide_title_warnings: undefined,
+            slide_title_debug: undefined,
+          }
+        : {
+            slide_title: (v as any)?.slide_title ?? null,
+            slide_title_source: (v as any)?.slide_title_source ?? null,
+            slide_title_confidence: (v as any)?.slide_title_confidence ?? null,
+            slide_title_warnings: (v as any)?.slide_title_warnings,
+            slide_title_debug: (v as any)?.slide_title_debug,
+          };
+
+      const segmentKeyForUnderstandingRaw = isWordGroup
+        ? (typeof (v as any).effective_segment === "string" && String((v as any).effective_segment).trim().length > 0
+            ? String((v as any).effective_segment)
+            : typeof (v as any).segment_key === "string"
+              ? String((v as any).segment_key)
+              : null)
+        : (typeof (v as any)?.effective_segment === "string" && String((v as any).effective_segment).trim().length > 0
+            ? String((v as any).effective_segment)
+            : typeof (v as any)?.segment === "string" && String((v as any).segment).trim().length > 0
+              ? String((v as any).segment)
+              : null);
+
+      const segmentKeyForUnderstanding = hasDocumentId ? segmentKeyForUnderstandingRaw : "unknown";
 
       const page_understanding = buildPageUnderstanding({
         slide_title: titleDerived.slide_title,
         evidence_snippets,
-        ocr_text: v.ocr_text,
+        ocr_text: isWordGroup ? null : (v as any).ocr_text,
+        segment_key: segmentKeyForUnderstanding,
+        structured_json: isWordGroup ? (v as any).structured_json ?? null : (v as any).structured_json,
         structured_kind: structured.structured_kind,
         structured_summary: structured.structured_summary,
       });
@@ -2826,7 +3989,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         }
       }
 
-      const segmentDebugRaw = debugSegments ? (v as any)?.segment_debug ?? null : null;
+      const segmentDebugRaw = !isWordGroup && debugSegments ? (v as any)?.segment_debug ?? null : null;
       const segmentDebug = debugSegments
         ? (() => {
             const top = Array.isArray(segmentDebugRaw?.top_scores) ? segmentDebugRaw.top_scores : [];
@@ -2845,13 +4008,19 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         : null;
 
       const classifiedSegment =
-        typeof (v as any)?.effective_segment === "string" && String((v as any).effective_segment).length > 0
-          ? String((v as any).effective_segment)
-          : typeof (v as any)?.segment === "string" && String((v as any).segment).length > 0
-            ? String((v as any).segment)
-            : "unknown";
+        isWordGroup
+          ? (typeof (v as any).effective_segment === "string" && String((v as any).effective_segment).trim().length > 0
+              ? String((v as any).effective_segment)
+              : String((v as any).segment_key ?? "unknown"))
+          : typeof (v as any)?.effective_segment === "string" && String((v as any).effective_segment).length > 0
+            ? String((v as any).effective_segment)
+            : typeof (v as any)?.segment === "string" && String((v as any).segment).length > 0
+              ? String((v as any).segment)
+              : "unknown";
       const effectiveSegment = hasDocumentId ? classifiedSegment : "unknown";
-      const effectiveSegmentConfidence = hasDocumentId ? v.segment_confidence : null;
+      const effectiveSegmentConfidence = hasDocumentId
+        ? (typeof (v as any).segment_confidence === "number" && Number.isFinite((v as any).segment_confidence) ? (v as any).segment_confidence : null)
+        : null;
       const effectiveSegmentSource =
         typeof (v as any)?.segment_source === "string" && String((v as any).segment_source).trim().length > 0
           ? String((v as any).segment_source)
@@ -2895,6 +4064,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         nodes.push({
           id: segNodeId,
           node_id: segNodeId,
+          document_id: hasDocumentId ? v.document_id : null,
           kind: "segment",
           type: "segment",
           node_type: "SEGMENT",
@@ -2940,89 +4110,189 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         }
       }
 
+      const nodeLabel = isWordGroup
+        ? String((v as any).page_label ?? `Section (${visualId})`)
+        : isPptxGroup
+          ? String((v as any).page_label ?? `Slide ${pageLabel}`)
+          : `Page ${pageLabel} • ${(v as any).asset_type}`;
+
       nodes.push({
         id: vaNodeId,
         node_id: vaNodeId,
-        kind: "visual_asset",
-        type: "visual_asset",
-        node_type: "VISUAL_ASSET",
-        label: `Page ${pageLabel} • ${v.asset_type}`,
-        metadata: {
-          visual_asset_id: v.id,
-          document_id: v.document_id,
-          page_index: v.page_index,
-          asset_type: v.asset_type,
-          created_at: v.created_at,
-        },
+        document_id: typeof (v as any).document_id === "string" ? (v as any).document_id : null,
+        kind: isAnyGroup ? "visual_asset_group" : "visual_asset",
+        type: isAnyGroup ? "visual_asset_group" : "visual_asset",
+        node_type: isAnyGroup ? "VISUAL_ASSET_GROUP" : "VISUAL_ASSET",
+        label: nodeLabel,
+        metadata: isAnyGroup
+          ? {
+              visual_asset_group_id: visualId,
+              document_id: (v as any).document_id,
+              member_visual_asset_ids: (v as any).member_visual_asset_ids,
+            }
+          : {
+              visual_asset_id: (v as any).id,
+              document_id: (v as any).document_id,
+              page_index: (v as any).page_index,
+              asset_type: (v as any).asset_type,
+              created_at: (v as any).created_at,
+            },
         data: {
-          label: `Page ${pageLabel} • ${v.asset_type}`,
-          visual_asset_id: v.id,
-          document_id: v.document_id,
-          page_index: v.page_index,
-          asset_type: v.asset_type,
-          bbox: v.bbox ?? {},
-          image_uri: v.image_uri,
-          image_hash: v.image_hash,
-          confidence,
-          extractor_version: v.extractor_version,
-
-          ocr_text_snippet: snippet,
-          slide_title: titleDerived.slide_title,
-          slide_title_source: titleDerived.slide_title_source,
-          slide_title_confidence: titleDerived.slide_title_confidence,
-          ...(titleDerived.slide_title_warnings ? { slide_title_warnings: titleDerived.slide_title_warnings } : {}),
-          ...(titleDerived.slide_title_debug ? { slide_title_debug: titleDerived.slide_title_debug } : {}),
-          structured_kind: structured.structured_kind,
-          structured_summary: structured.structured_summary,
+          label: nodeLabel,
+          ...(isWordGroup
+            ? {
+                visual_asset_group_id: visualId,
+                document_id: (v as any).document_id,
+                member_visual_asset_ids: (v as any).member_visual_asset_ids,
+                count_members: Array.isArray((v as any).member_visual_asset_ids) ? (v as any).member_visual_asset_ids.length : 0,
+                asset_type: "structured_word_group",
+                page_index: typeof (v as any).page_index === "number" ? (v as any).page_index : null,
+                page_label: nodeLabel,
+                structured_kind: "word_group",
+                structured_summary: (v as any).captured_text,
+                structured_json: {
+                  kind: "word_group",
+                  heading: (v as any).heading ?? null,
+                  text_snippet: (v as any).captured_text,
+                  member_visual_asset_ids: (v as any).member_visual_asset_ids,
+                  page_label: nodeLabel,
+                  segment_key: (v as any).effective_segment ?? "unknown",
+                  effective_segment: (v as any).effective_segment ?? "unknown",
+                },
+              }
+            : isPptxGroup
+              ? {
+                  visual_asset_group_id: visualId,
+                  document_id: (v as any).document_id,
+                  member_visual_asset_ids: (v as any).member_visual_asset_ids,
+                  count_members: Array.isArray((v as any).member_visual_asset_ids) ? (v as any).member_visual_asset_ids.length : 0,
+                  asset_type: "pptx_slide_group",
+                  page_index: typeof (v as any).page_index === "number" ? (v as any).page_index : null,
+                  page_label: nodeLabel,
+                  structured_kind: "pptx_group",
+                  structured_summary: (v as any).captured_text,
+                  structured_json: (v as any).structured_json,
+                }
+            : {
+                visual_asset_id: (v as any).id,
+                document_id: (v as any).document_id,
+                page_index: (v as any).page_index,
+                asset_type: (v as any).asset_type,
+                bbox: (v as any).bbox ?? {},
+                image_uri: (v as any).image_uri,
+                image_hash: (v as any).image_hash,
+                confidence,
+                extractor_version: (v as any).extractor_version,
+                ocr_text_snippet: snippet,
+                slide_title: titleDerived.slide_title,
+                slide_title_source: titleDerived.slide_title_source,
+                slide_title_confidence: titleDerived.slide_title_confidence,
+                ...(titleDerived.slide_title_warnings ? { slide_title_warnings: titleDerived.slide_title_warnings } : {}),
+                ...(titleDerived.slide_title_debug ? { slide_title_debug: titleDerived.slide_title_debug } : {}),
+                structured_kind: structured.structured_kind,
+                structured_summary: structured.structured_summary,
+                structured_json: (v as any).structured_json,
+              }),
           page_understanding,
           evidence_count,
           evidence_snippets: Array.isArray(evidence_snippets) ? evidence_snippets : [],
           extraction_confidence,
-          extraction_method: typeof v.extraction_method === "string" ? v.extraction_method : null,
-          segment: effectiveSegment,
-          effective_segment: effectiveSegment,
-          segment_confidence: effectiveSegmentConfidence,
-          segment_source: effectiveSegmentSource,
-          persisted_segment_key: persistedSegmentKey,
-          computed_segment: computedSegmentKey,
-          computed_confidence: computedSegmentConfidence,
-          ...(debugSegments ? { segment_debug: segmentDebug } : {}),
+          extraction_method: !isWordGroup && typeof (v as any).extraction_method === "string" ? (v as any).extraction_method : null,
+          ...(isWordGroup
+            ? {
+                segment: (v as any).effective_segment,
+                effective_segment: (v as any).effective_segment,
+                computed_segment: (v as any).computed_segment ?? null,
+                persisted_segment_key: (v as any).persisted_segment_key ?? null,
+                segment_source: (v as any).segment_source ?? null,
+                segment_confidence:
+                  typeof (v as any).segment_confidence === "number" && Number.isFinite((v as any).segment_confidence)
+                    ? (v as any).segment_confidence
+                    : null,
+              }
+            : {
+                segment: effectiveSegment,
+                effective_segment: effectiveSegment,
+                segment_confidence: effectiveSegmentConfidence,
+                segment_source: effectiveSegmentSource,
+                persisted_segment_key: persistedSegmentKey,
+                computed_segment: computedSegmentKey,
+                computed_confidence: computedSegmentConfidence,
+              }),
+          ...(typeof (v as any)?.computed_reason === "object" && (v as any).computed_reason ? { computed_reason: (v as any).computed_reason } : {}),
+          ...(debugSegments && !isWordGroup ? { segment_debug: segmentDebug } : {}),
         },
       });
 
       edges.push({
-        id: `e:has_visual_asset:${segNodeId}:${v.id}`,
+        id: `e:has_visual_asset:${segNodeId}:${visualId}`,
         source: segNodeId,
         target: vaNodeId,
         type: "HAS_VISUAL_ASSET",
         edge_type: "HAS_VISUAL_ASSET",
       });
 
-      const count = evidence_count;
-      nodes.push({
-        id: evNodeId,
-        node_id: evNodeId,
-        kind: "evidence",
-        type: "evidence",
-        node_type: "EVIDENCE",
-        label: `Evidence (${count})`,
-        metadata: {
-          visual_asset_id: v.id,
-          count,
-        },
-        data: {
+      if (!isWordGroup) {
+        const count = evidence_count;
+        nodes.push({
+          id: evNodeId,
+          node_id: evNodeId,
+          kind: "evidence",
+          type: "evidence",
+          node_type: "EVIDENCE",
           label: `Evidence (${count})`,
-          count,
-          visual_asset_id: v.id,
-        },
-      });
-      edges.push({
-        id: `e:has_evidence:${v.id}`,
-        source: vaNodeId,
-        target: evNodeId,
-        type: "HAS_EVIDENCE",
-        edge_type: "HAS_EVIDENCE",
-      });
+          metadata: {
+            visual_asset_id: visualId,
+            count,
+          },
+          data: {
+            label: `Evidence (${count})`,
+            count,
+            visual_asset_id: visualId,
+          },
+        });
+        edges.push({
+          id: `e:has_evidence:${visualId}`,
+          source: vaNodeId,
+          target: evNodeId,
+          type: "HAS_EVIDENCE",
+          edge_type: "HAS_EVIDENCE",
+        });
+      }
+    }
+
+    if (groupWordEnabled && !debugWordRaw && wordGroups.length > 0) {
+      // Remap any edges that still reference suppressed word member nodes.
+      const memberNodeIdToGroupNodeId = new Map<string, string>();
+      for (const g of wordGroups as any[]) {
+        const groupVisualId = String(g.visual_asset_group_id ?? g.group_id ?? "");
+        if (!groupVisualId) continue;
+        const groupNodeId = `visual_asset_group:${groupVisualId}`;
+        const members = Array.isArray(g.member_visual_asset_ids) ? g.member_visual_asset_ids : [];
+        for (const memberId of members) {
+          if (typeof memberId !== "string" || !memberId) continue;
+          memberNodeIdToGroupNodeId.set(`visual_asset:${memberId}`, groupNodeId);
+        }
+      }
+
+      for (const e of edges as any[]) {
+        const src = typeof e?.source === "string" ? e.source : "";
+        const tgt = typeof e?.target === "string" ? e.target : "";
+        const srcRemap = memberNodeIdToGroupNodeId.get(src);
+        const tgtRemap = memberNodeIdToGroupNodeId.get(tgt);
+        if (srcRemap) e.source = srcRemap;
+        if (tgtRemap) e.target = tgtRemap;
+      }
+
+      const nodeIds = new Set(nodes.map((n: any) => String(n?.id ?? n?.node_id ?? "")).filter(Boolean));
+      const before = edges.length;
+      const filtered = edges.filter((e: any) => nodeIds.has(String(e?.source ?? "")) && nodeIds.has(String(e?.target ?? "")));
+      const removed = before - filtered.length;
+      if (removed > 0) {
+        warnings.push(`removed ${removed} dangling edges after word grouping remap`);
+        edges.length = 0;
+        edges.push(...filtered);
+      }
     }
 
     if (debugSegments) {
@@ -3063,6 +4333,14 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       nodes,
       edges,
       warnings,
+      ...(groupWordEnabled
+        ? {
+          warnings_counters: {
+            word_members_skipped_empty: wordGroupingStatsFinal.word_members_skipped_empty,
+            word_groups_skipped_empty: wordGroupingStatsFinal.word_groups_skipped_empty,
+          },
+        }
+        : {}),
       ...(unknownStructuredReport ? { unknown_structured_report: unknownStructuredReport } : {}),
       ...(segmentAuditRequested
         ? {
@@ -3330,6 +4608,13 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
                             computed_segment: computedSegment,
                             computed_reason: computedSegment
                               ? {
+                                  rule_id:
+                                    typeof (computedReasonDebug as any)?.rule_id === "string" && String((computedReasonDebug as any).rule_id).trim().length > 0
+                                      ? String((computedReasonDebug as any).rule_id).trim()
+                                      : null,
+                                  matched_terms: Array.isArray((computedReasonDebug as any)?.matched_terms)
+                                    ? (computedReasonDebug as any).matched_terms.filter((s: any) => typeof s === "string" && s.trim().length > 0)
+                                    : [],
                                   title_text_snippet: normalizeSnippet((computedReasonDebug as any)?.title_text_snippet, 200),
                                   title_source:
                                     typeof (computedReasonDebug as any)?.title_source === "string" && String((computedReasonDebug as any).title_source).trim().length > 0
@@ -3440,6 +4725,66 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 
   // DEV-only: promote computed segments into persisted segment_key.
   // This is explicit, safe to rerun, and does not change production scoring behavior unless the persisted value changes.
+
+  app.get(
+    "/api/v1/deals/:deal_id/scoring-input",
+    {
+      schema: {
+        description:
+          "Return a normalized scoring input payload (v0) derived from the deal lineage graph (document-type agnostic, evidence-linked).",
+        tags: ["deals"],
+        params: {
+          type: "object",
+          properties: {
+            deal_id: { type: "string" },
+          },
+          required: ["deal_id"],
+        },
+        // Pass-through: any query params accepted by lineage can be forwarded (debug flags, grouping toggles, etc).
+        querystring: {
+          type: "object",
+          additionalProperties: true,
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              deal_id: { type: "string" },
+              generated_at: { type: "string" },
+              items: { type: "array", items: { type: "object", additionalProperties: true } },
+              warnings: { type: "array", items: { type: "string" } },
+            },
+            required: ["deal_id", "generated_at", "items"],
+            additionalProperties: true,
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const dealIdRaw = (request.params as any)?.deal_id;
+      const dealId = sanitizeText(typeof dealIdRaw === "string" ? dealIdRaw : String(dealIdRaw ?? ""));
+      if (!dealId) return reply.status(400).send({ error: "deal_id is required" });
+
+      // Reuse the lineage implementation (single source of truth) and map to scoring-input v0.
+      const rawUrl = (request as any)?.raw?.url ?? (request as any)?.url ?? "";
+      const qs = typeof rawUrl === "string" && rawUrl.includes("?") ? rawUrl.split("?").slice(1).join("?") : "";
+      const lineageUrl = `/api/v1/deals/${dealId}/lineage${qs ? `?${qs}` : ""}`;
+
+      const injected = await app.inject({ method: "GET", url: lineageUrl });
+      if (injected.statusCode !== 200) {
+        try {
+          return reply.status(injected.statusCode).send(injected.json());
+        } catch {
+          return reply.status(injected.statusCode).send({ error: "failed_to_build_scoring_input", message: injected.body });
+        }
+      }
+
+      const lineage = injected.json() as any;
+      const scoring = buildDealScoringInputV0FromLineage(lineage);
+      return reply.send(scoring);
+    }
+  );
+
   app.post(
     "/api/v1/deals/:deal_id/segments/promote",
     {
@@ -3722,7 +5067,21 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 
         const persistedFromQualityRaw = normalizeAnalystSegment((v as any)?.quality_flags?.segment_key);
         const persistedFromStructuredRaw = normalizeAnalystSegment((v as any)?.structured_json?.segment_key);
-        const persistedFromQuality = persistedFromQualityRaw && persistedFromQualityRaw !== "unknown" ? persistedFromQualityRaw : null;
+        const qualitySourceRaw =
+          typeof (v as any)?.quality_flags?.source === "string" ? String((v as any).quality_flags.source) : null;
+        const qualitySegmentSourceRawDirect =
+          typeof (v as any)?.quality_flags?.segment_source === "string" ? String((v as any).quality_flags.segment_source) : null;
+        const qualityPersistMarker = qualitySegmentSourceRawDirect ?? qualitySourceRaw;
+        const allowQualityPersist = (() => {
+          const s = typeof qualityPersistMarker === "string" ? qualityPersistMarker.trim() : "";
+          if (!s) return false;
+          if (s === "human_override" || s === "human_override_v1" || s.startsWith("human_override_")) return true;
+          if (s.startsWith("promoted") || s.startsWith("promoted_")) return true;
+          if (s.startsWith("structured_")) return true;
+          return false;
+        })();
+        const persistedFromQuality =
+          allowQualityPersist && persistedFromQualityRaw && persistedFromQualityRaw !== "unknown" ? persistedFromQualityRaw : null;
         const persistedFromStructured = persistedFromStructuredRaw && persistedFromStructuredRaw !== "unknown" ? persistedFromStructuredRaw : null;
         const persistedSegment = persistedFromQuality ?? persistedFromStructured;
         const persistedSource = persistedFromQuality
@@ -4316,6 +5675,9 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     const dealId = sanitizeText((request.params as { deal_id: string }).deal_id);
     if (!dealId) return reply.status(400).send({ error: "deal_id is required" });
 
+    const groupWordRequested = parseBoolQ(((request.query as any) ?? {})?.group_word, false);
+    const docHintRequested = parseBoolQ(((request.query as any) ?? {})?.doc_hint, false);
+
     const logCtx = { route: "deal_visual_assets", deal_id: dealId };
 
     try {
@@ -4435,7 +5797,9 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         brandNameByDocId.set(docId, { brand: brandInfo.brand_name, confidence: brandInfo.confidence });
       }
 
-      const visualAssets = rawAssets.map((r: any) => {
+      const segmentInputByVisualId = new Map<string, SegmentClassifierInput>();
+
+      const visualAssetsPass1 = rawAssets.map((r: any) => {
         const visual_asset_id = r?.visual_asset_id ?? r?.id ?? null;
         const brandModel = brandModelByDocId.get(r?.document_id) ?? buildBrandModel([]);
         const blacklist = brandModel.phrases;
@@ -4462,7 +5826,21 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         // NOTE: structured_json.segment_key is treated as an input/persisted hint but does not override computed.
         const persistedFromQualityRaw = normalizeAnalystSegment((r as any)?.quality_flags?.segment_key);
         const persistedFromStructuredRaw = normalizeAnalystSegment((r as any)?.structured_json?.segment_key);
-        const persistedFromQuality = persistedFromQualityRaw && persistedFromQualityRaw !== "unknown" ? persistedFromQualityRaw : null;
+        const qualitySourceRaw =
+          typeof (r as any)?.quality_flags?.source === "string" ? String((r as any).quality_flags.source) : null;
+        const qualitySegmentSourceRawDirect =
+          typeof (r as any)?.quality_flags?.segment_source === "string" ? String((r as any).quality_flags.segment_source) : null;
+        const qualityPersistMarker = qualitySegmentSourceRawDirect ?? qualitySourceRaw;
+        const allowQualityPersist = (() => {
+          const s = typeof qualityPersistMarker === "string" ? qualityPersistMarker.trim() : "";
+          if (!s) return false;
+          if (s === "human_override" || s === "human_override_v1" || s.startsWith("human_override_")) return true;
+          if (s.startsWith("promoted") || s.startsWith("promoted_")) return true;
+          if (s.startsWith("structured_")) return true;
+          return false;
+        })();
+        const persistedFromQuality =
+          allowQualityPersist && persistedFromQualityRaw && persistedFromQualityRaw !== "unknown" ? persistedFromQualityRaw : null;
         const persistedFromStructured = persistedFromStructuredRaw && persistedFromStructuredRaw !== "unknown" ? persistedFromStructuredRaw : null;
         const persistedSegmentKey = persistedFromQuality ?? persistedFromStructured;
         const persistedSourceKey = persistedFromQuality
@@ -4471,12 +5849,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
             ? "structured_json.segment_key"
             : null;
 
-        const qualitySegmentSourceRaw =
-          typeof (r as any)?.quality_flags?.segment_source === "string"
-            ? String((r as any).quality_flags.segment_source)
-            : typeof (r as any)?.quality_flags?.source === "string"
-              ? String((r as any).quality_flags.source)
-              : null;
+        const qualitySegmentSourceRaw = qualityPersistMarker;
 
         const isHumanOverride = Boolean(
           persistedFromQuality &&
@@ -4485,7 +5858,17 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
               Boolean(qualitySegmentSourceRaw?.startsWith("human_override_")))
         );
 
-        const computed = classifySegment({
+        const isStructuredAsset =
+          String((r as any)?.extractor_version ?? "") === "structured_native_v1" ||
+          (typeof (r as any)?.quality_flags?.source === "string" && String((r as any).quality_flags.source).startsWith("structured_")) ||
+          (typeof (r as any)?.structured_json?.kind === "string" &&
+            ["word_section", "powerpoint_slide", "excel_sheet"].includes(String((r as any).structured_json.kind)));
+
+        // Prefer worker-provided structured_json.segment_key when present; otherwise fall back to promoted key.
+        // Only pass hints for structured assets (vision should be hint-free).
+        const hintSegment = isStructuredAsset ? (persistedFromStructured ?? persistedFromQuality) : null;
+
+        const baseInput: SegmentClassifierInput = {
           ocr_text: r?.ocr_text,
           ocr_snippet: ocrSnippet(r?.ocr_text),
           structured_kind,
@@ -4505,7 +5888,13 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           // Make computed_v1 deterministic and independent of worker-provided segment_key.
           disable_structured_segment_key_signal: true,
           disable_structured_segment_key_fallback: true,
-        });
+        };
+
+        if (typeof visual_asset_id === "string" && visual_asset_id.trim().length > 0) {
+          segmentInputByVisualId.set(visual_asset_id.trim(), baseInput);
+        }
+
+        const computed = classifySegment({ ...baseInput, hint_segment: hintSegment });
 
         const effectiveSegment = isHumanOverride
           ? (persistedFromQuality ?? computed.segment)
@@ -4561,7 +5950,330 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         };
       });
 
-      return reply.send({ deal_id: dealId, visual_assets: visualAssets });
+      // Option A: DOCX doc-level hint propagation for low-signal structured_word blocks.
+      const docHintByDocId = computeDocHintSegmentByDocId(visualAssetsPass1 as any, { minMajorityPct: 0.6 });
+
+      let visualAssets = visualAssetsPass1.map((v: any) => {
+        if (!isStructuredWordSectionAsset(v)) return v;
+        if (isEmptyStructuredWordSectionAsset(v)) return v;
+        const docId = typeof v?.document_id === "string" ? v.document_id : null;
+        if (!docId) return v;
+        const hint = docHintByDocId.get(docId) ?? null;
+        if (!hint) return v;
+
+        const persisted = pickNonUnknownSegment(v?.persisted_segment_key);
+        if (persisted) return v;
+
+        const computedSeg = normalizeAnalystSegment(v?.computed_segment);
+        if (computedSeg && computedSeg !== "unknown") return v;
+
+        const src = typeof v?.segment_source === "string" ? String(v.segment_source) : "";
+        if (src === "human_override" || src === "human_override_v1" || src.startsWith("human_override_")) return v;
+
+        const id = typeof v?.visual_asset_id === "string" ? v.visual_asset_id : typeof v?.id === "string" ? v.id : null;
+        if (!id) return v;
+        const base = segmentInputByVisualId.get(id);
+        if (!base) return v;
+
+        const recomputed = classifySegment({ ...base, hint_segment: hint });
+        const seg = normalizeAnalystSegment(recomputed.segment) ?? "unknown";
+        if (seg === "unknown") return v;
+
+        return {
+          ...v,
+          segment: seg,
+          effective_segment: seg,
+          segment_source: "doc_hint_v1",
+          segment_confidence: recomputed.confidence,
+          computed_segment: seg,
+          computed_confidence: recomputed.confidence,
+          ...(docHintRequested ? { doc_hint_segment: hint } : {}),
+          computed_reason: {
+            rule_id: "DOCX_DOC_HINT_FALLBACK",
+            doc_hint_segment: hint,
+          },
+        };
+      });
+
+      // Option B: cue-based rescue for structured_word blocks that are still unknown.
+      // Conservative: only runs when there is no persisted override and computed remains unknown.
+      visualAssets = visualAssets.map((v: any) => {
+        if (!isStructuredWordSectionAsset(v)) return v;
+        if (isEmptyStructuredWordSectionAsset(v)) return v;
+
+        const persisted = pickNonUnknownSegment(v?.persisted_segment_key);
+        if (persisted) return v;
+
+        const computedSeg = normalizeAnalystSegment(v?.computed_segment);
+        if (computedSeg && computedSeg !== "unknown") return v;
+
+        const inferred = inferStructuredWordCueSegment(v);
+        if (!inferred) return v;
+
+        return {
+          ...v,
+          segment: inferred.segment,
+          effective_segment: inferred.segment,
+          segment_source: "docx_cue_v1",
+          segment_confidence: inferred.confidence,
+          computed_segment: inferred.segment,
+          computed_confidence: inferred.confidence,
+          computed_reason: {
+            rule_id: "DOCX_CUE_RULE_V1",
+            matched: inferred.matched,
+          },
+        };
+      });
+
+      let wordGroupingStatsForVisualAssets: WordGroupingStats | null = null;
+
+      const groupedVisualAssets = (() => {
+        if (!groupWordRequested) return undefined;
+        const { groups: rawGroups, stats } = groupWordVisualAssetsByDocumentWithStats(visualAssets as any, { maxBlocksPerGroup: 8, maxCapturedChars: 1500 });
+        wordGroupingStatsForVisualAssets = stats;
+
+        const byId = new Map<string, any>();
+        for (const v of visualAssets as any[]) {
+          const id = typeof v?.id === "string" ? v.id : typeof v?.visual_asset_id === "string" ? v.visual_asset_id : null;
+          if (id) byId.set(id, v);
+        }
+
+        return rawGroups.map((g: any) => {
+          const docId = typeof g?.document_id === "string" ? g.document_id : null;
+          const membersRaw = Array.isArray(g?.member_visual_asset_ids) ? g.member_visual_asset_ids : [];
+          const members = membersRaw
+            .map((id: any) => (typeof id === "string" ? byId.get(id) : null))
+            .filter((v: any) => v && typeof v === "object");
+
+          members.sort((a: any, b: any) => {
+            const pa = typeof a?.page_index === "number" ? a.page_index : 1e9;
+            const pb = typeof b?.page_index === "number" ? b.page_index : 1e9;
+            if (pa !== pb) return pa - pb;
+            const ca = typeof a?.created_at === "string" ? a.created_at : "";
+            const cb = typeof b?.created_at === "string" ? b.created_at : "";
+            if (ca !== cb) return ca.localeCompare(cb);
+            return String(a?.id ?? "").localeCompare(String(b?.id ?? ""));
+          });
+
+          const groupText = buildDeterministicGroupCapturedText(members, 1500);
+
+          const hintSegment =
+            majorityNonUnknownSegment([
+              ...members.map((m: any) => m?.persisted_segment_key),
+              ...members.map((m: any) => m?.effective_segment),
+              ...members.map((m: any) => (m?.structured_json as any)?.segment_key),
+              // Segment-bucketed grouping: even if members are low-signal, the group already has a segment_key.
+              g?.segment_key,
+            ]) ?? null;
+
+          // Persisted must ONLY come from persisted member segments; never from computed/effective hints.
+          const persistedSegmentKey = majorityNonUnknownSegment(members.map((m: any) => m?.persisted_segment_key)) ?? null;
+
+          const brandModel = docId ? brandModelByDocId.get(docId) ?? buildBrandModel([]) : buildBrandModel([]);
+          const blacklist = brandModel.phrases;
+          const brandInfo = docId ? brandNameByDocId.get(docId) ?? { brand: null, confidence: null } : { brand: null, confidence: null };
+
+          const computed = classifySegment({
+            ocr_text: null,
+            ocr_snippet: groupText ? groupText.slice(0, 140) : null,
+            structured_kind: "word_section",
+            structured_summary: null,
+            structured_json: {
+              kind: "word_section",
+              heading: typeof g?.heading === "string" ? g.heading : null,
+              paragraphs: groupText ? [groupText] : [],
+              text_snippet: groupText,
+              segment_key: hintSegment,
+            },
+            asset_type: "structured_word_group",
+            page_index: typeof g?.page_index === "number" ? g.page_index : null,
+            slide_title: null,
+            slide_title_confidence: null,
+            evidence_snippets: Array.isArray(g?.evidence_snippets) ? g.evidence_snippets : [],
+            brand_blacklist: blacklist,
+            brand_name: brandInfo.brand,
+            extractor_version: "structured_native_v1",
+            quality_source: "structured_word",
+            hint_segment: hintSegment,
+            enable_debug: false,
+            include_debug_text_snippet: false,
+            disable_structured_segment_key_signal: true,
+            disable_structured_segment_key_fallback: true,
+          });
+
+          const computedReasonRaw = computed.debug && typeof computed.debug === "object" ? computed.debug : null;
+          const unknownReasonCode = typeof (computedReasonRaw as any)?.unknown_reason_code === "string" ? String((computedReasonRaw as any).unknown_reason_code) : null;
+
+          const computedSegment =
+            computed.segment === "unknown" && hintSegment && (unknownReasonCode === "NO_TEXT" || unknownReasonCode === "LOW_SIGNAL")
+              ? hintSegment
+              : computed.segment;
+
+          const computedConfidence =
+            computed.segment === "unknown" && hintSegment && (unknownReasonCode === "NO_TEXT" || unknownReasonCode === "LOW_SIGNAL")
+              ? Math.max(0.2, computed.confidence)
+              : computed.confidence;
+
+          const computedReason =
+            computed.segment === "unknown" && hintSegment && (unknownReasonCode === "NO_TEXT" || unknownReasonCode === "LOW_SIGNAL")
+              ? {
+                  ...(computedReasonRaw ?? {}),
+                  rule_id: "STRUCTURED_HINT_FALLBACK",
+                  unknown_reason_code: null,
+                }
+              : computedReasonRaw;
+
+          const hasHumanOverride = members.some((m: any) => {
+            const seg = pickNonUnknownSegment(m?.persisted_segment_key);
+            const src = typeof m?.segment_source === "string" ? String(m.segment_source) : "";
+            if (!seg || !persistedSegmentKey) return false;
+            return seg === persistedSegmentKey && (src === "human_override" || src === "human_override_v1" || src.startsWith("human_override_"));
+          });
+
+          const effectiveSegment = hasHumanOverride
+            ? (persistedSegmentKey ?? computedSegment)
+            : persistedSegmentKey
+              ? persistedSegmentKey
+              : computedSegment;
+
+          const segmentSource = (() => {
+            if (hasHumanOverride && persistedSegmentKey) return "human_override_v1";
+            if (persistedSegmentKey) return "persisted_v0";
+            return "computed_v1";
+          })();
+
+          const segmentConfidence = persistedSegmentKey ? 1 : computedConfidence;
+
+          return {
+            ...g,
+            captured_text: groupText,
+            persisted_segment_key: persistedSegmentKey,
+            persisted_segment_source: persistedSegmentKey ? "group_majority" : null,
+            computed_segment: computedSegment,
+            computed_confidence: computedConfidence,
+            computed_reason: computedReason,
+            effective_segment: effectiveSegment,
+            segment_source: segmentSource,
+            segment_confidence: segmentConfidence,
+            segment_promoted_at: null,
+            segment_overridden_at: null,
+            segment_override_note: null,
+          };
+        });
+      })();
+
+      // Option B: if grouping requested, inherit group segment to any remaining unknown raw members (non-destructive).
+      if (groupWordRequested && Array.isArray(groupedVisualAssets)) {
+        const memberToGroupMeta = new Map<string, { segment: AnalystSegment; visual_asset_group_id: string | null }>();
+        for (const g of groupedVisualAssets as any[]) {
+          const seg = pickNonUnknownSegment(g?.effective_segment);
+          if (!seg) continue;
+          const groupIdRaw = typeof g?.visual_asset_group_id === "string" ? g.visual_asset_group_id : typeof g?.group_id === "string" ? g.group_id : "";
+          const groupId = groupIdRaw && groupIdRaw.trim().length > 0 ? groupIdRaw.trim() : null;
+          const members = Array.isArray(g?.member_visual_asset_ids) ? g.member_visual_asset_ids : [];
+          for (const mid of members) {
+            if (typeof mid !== "string" || !mid.trim()) continue;
+            if (!memberToGroupMeta.has(mid)) memberToGroupMeta.set(mid, { segment: seg, visual_asset_group_id: groupId });
+          }
+        }
+
+        for (let i = 0; i < visualAssets.length; i++) {
+          const v = visualAssets[i] as any;
+          if (!isStructuredWordSectionAsset(v)) continue;
+          const id = typeof v?.visual_asset_id === "string" ? v.visual_asset_id : typeof v?.id === "string" ? v.id : null;
+          if (!id) continue;
+          const meta = memberToGroupMeta.get(id) ?? null;
+          if (!meta) continue;
+          const groupSeg = meta.segment;
+          const persisted = pickNonUnknownSegment(v?.persisted_segment_key);
+          if (persisted) continue;
+          const effective = normalizeAnalystSegment(v?.effective_segment);
+          if (effective && effective !== "unknown") continue;
+          const src = typeof v?.segment_source === "string" ? String(v.segment_source) : "";
+          if (src === "human_override" || src === "human_override_v1" || src.startsWith("human_override_")) continue;
+          if (isEmptyStructuredWordSectionAsset(v)) continue;
+
+          visualAssets[i] = {
+            ...v,
+            segment: groupSeg,
+            effective_segment: groupSeg,
+            segment_source: "group_inherit_v1",
+            segment_confidence: Math.max(typeof v?.segment_confidence === "number" ? v.segment_confidence : 0, 0.2),
+            computed_segment: groupSeg,
+            computed_confidence: Math.max(typeof v?.computed_confidence === "number" ? v.computed_confidence : 0, 0.2),
+            computed_reason: {
+              rule_id: "GROUP_MEMBER_INHERIT",
+              inherited_from_visual_asset_group_id: meta.visual_asset_group_id,
+            },
+          };
+        }
+      }
+
+      // Optional inspector UX: expose doc-level hint segment on structured_word blocks.
+      if (docHintRequested) {
+        for (let i = 0; i < visualAssets.length; i++) {
+          const v = visualAssets[i] as any;
+          if (!isStructuredWordSectionAsset(v)) continue;
+          const docId = typeof v?.document_id === "string" ? v.document_id : null;
+          if (!docId) continue;
+          const hint = docHintByDocId.get(docId) ?? null;
+          if (!hint) continue;
+          if (typeof v?.doc_hint_segment === "string" && v.doc_hint_segment.trim().length > 0) continue;
+          visualAssets[i] = { ...v, doc_hint_segment: hint };
+        }
+      }
+
+      // DEV-only logging: remaining true-unknown structured_word blocks should correlate with empty blocks.
+      const devLogUnknown = process.env.NODE_ENV !== "production" && process.env.DDAI_DEV_LOG_DOCX_UNKNOWN === "1";
+      if (devLogUnknown) {
+        try {
+          const unknowns = (visualAssets as any[])
+            .filter((v: any) => isStructuredWordSectionAsset(v))
+            .filter((v: any) => {
+              const eff = normalizeAnalystSegment(v?.effective_segment) ?? "unknown";
+              return eff === "unknown";
+            })
+            .slice(0, 50)
+            .map((v: any) => {
+              const id = typeof v?.visual_asset_id === "string" ? v.visual_asset_id : typeof v?.id === "string" ? v.id : null;
+              const docId = typeof v?.document_id === "string" ? v.document_id : null;
+              const stats = structuredWordContentStats(v);
+              const hint = docId ? docHintByDocId.get(docId) ?? null : null;
+              const base = id ? segmentInputByVisualId.get(id) : null;
+              const debug = base ? classifySegment({ ...base, hint_segment: hint, enable_debug: true, include_debug_text_snippet: false }).debug : undefined;
+              return {
+                id,
+                document_id: docId,
+                page_index: typeof v?.page_index === "number" ? v.page_index : null,
+                text_snippet_len: stats.textSnippetLen,
+                paragraphs_len: stats.paragraphsLen,
+                unknown_reason_code: typeof (debug as any)?.unknown_reason_code === "string" ? (debug as any).unknown_reason_code : null,
+                rule_id: typeof (debug as any)?.rule_id === "string" ? (debug as any).rule_id : null,
+                doc_hint_segment: hint,
+              };
+            });
+          // eslint-disable-next-line no-console
+          console.log("[DEV docx_unknown structured_word]", { deal_id: dealId, n: unknowns.length, unknowns });
+        } catch {
+          // ignore
+        }
+      }
+
+      const wordGroupingStatsFinal: WordGroupingStats = wordGroupingStatsForVisualAssets ?? { word_members_skipped_empty: 0, word_groups_skipped_empty: 0 };
+
+      return reply.send({
+        deal_id: dealId,
+        visual_assets: visualAssets,
+			...(groupWordRequested
+				? {
+					grouped_visual_assets: groupedVisualAssets,
+					warnings_counters: {
+						word_members_skipped_empty: wordGroupingStatsFinal.word_members_skipped_empty,
+						word_groups_skipped_empty: wordGroupingStatsFinal.word_groups_skipped_empty,
+					},
+				}
+				: {}),
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load visual assets";
       const payload = { error: "internal_error", message, deal_id: dealId };

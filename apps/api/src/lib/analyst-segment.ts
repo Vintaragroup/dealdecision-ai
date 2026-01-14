@@ -58,6 +58,7 @@ export type SegmentFeatures = {
   title_source: string;
   body_text: string;
   evidence_text: string;
+  structured_segment_hint: AnalystSegment | null;
   doc_kind: "vision" | "pptx" | "docx" | "xlsx" | "image";
   page_index: number | null;
   slide_number: number | null;
@@ -196,6 +197,7 @@ export function buildSegmentFeatures(asset: {
   const labels = flattenLabelStrings(asset.labels, 12);
 
   const sjObj = isPlainObject(asset.structured_json) ? (asset.structured_json as Record<string, unknown>) : null;
+  const structuredSegmentHint = sjObj ? normalizeAnalystSegment((sjObj as any)?.segment_key) : null;
   const headings: string[] = [];
   let title = "";
   let titleSource = "missing";
@@ -303,6 +305,7 @@ export function buildSegmentFeatures(asset: {
     title_source: titleSource,
     body_text: body,
     evidence_text: evidenceText,
+    structured_segment_hint: structuredSegmentHint,
     doc_kind: sourceKind,
     page_index: pageIndex,
     slide_number: slideNumber,
@@ -501,6 +504,9 @@ export type SegmentClassifierInput = {
   document_filename?: string | null;
   enable_debug?: boolean;
   include_debug_text_snippet?: boolean;
+  // Optional hint to stabilize structured assets when text is low-signal.
+  // Caller should pass persisted_segment_key (or structured_json.segment_key) for structured_* sources.
+  hint_segment?: AnalystSegment | string | null;
   // Rescore/audit controls
   disable_structured_segment_key_signal?: boolean;
   disable_structured_segment_key_fallback?: boolean;
@@ -519,6 +525,12 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
   const TIE_DELTA_EPS = 0.1;
   const NORMALIZE_SCALE = 5;
   const MIN_CAPTURED_TEXT_LEN = 18;
+
+  const HINT_BOOST = 0.5;
+  const PRODUCT_PLACEHOLDER_BOOST = 0.2;
+
+  // unknown must never accumulate meaningful score.
+  const UNKNOWN_EPS = 0.00001;
 
   const enableDebug = input.enable_debug === true;
   const includeDebugTextSnippet = enableDebug && input.include_debug_text_snippet === true;
@@ -693,6 +705,10 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
     brand_name: input.brand_name,
     enable_debug: enableDebug,
   });
+
+  const hintFromCaller = normalizeAnalystSegment((input as any)?.hint_segment);
+  const hintFromStructured = input.disable_structured_segment_key_signal === true ? null : features.structured_segment_hint;
+  const hintSegment: AnalystSegment | null = hintFromCaller ?? hintFromStructured;
 
   const classificationText = buildClassificationText(features);
   const headingFromTitle = findHeadingKeyword(features.title || null);
@@ -1004,12 +1020,42 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
   let ranked = scoreRows.sort((a, b) => b.score - a.score);
 
   const adjustScore = (segment: AnalystSegment, delta: number) => {
+    if (segment === "unknown") return;
+    if (!ranked.some((r) => r.segment === segment)) {
+      ranked.push({ segment, score: 0, matched_body: [], matched_evidence: [] } as any);
+    }
     ranked = ranked.map((r) => (r.segment === segment ? { ...r, score: Math.max(0, Math.min(1, r.score + delta)) } : r));
     ranked.sort((a, b) => b.score - a.score);
   };
 
   if (featureHits > benefitHits + 1) adjustScore("product", 0.08);
   if (benefitHits > featureHits + 1) adjustScore("solution", 0.08);
+
+  const scoringAdjustments: Array<{ rule_id: string; segment: AnalystSegment; delta: number; matched_terms: string[] }> = [];
+
+  if (hintSegment && hintSegment !== "unknown") {
+    adjustScore(hintSegment, HINT_BOOST);
+    scoringAdjustments.push({
+      rule_id: "STRUCTURED_HINT_BOOST",
+      segment: hintSegment,
+      delta: HINT_BOOST,
+      matched_terms: [`structured_hint:${hintSegment}`],
+    });
+  }
+
+  const allowProductPlaceholder = input.quality_source === "structured_word" || (hintSegment != null && hintSegment !== "unknown");
+  if (allowProductPlaceholder) {
+    const combined = `${titleStripped}\n${scoringStripped}`;
+    if (/\bproduct\s+name\b/i.test(combined)) {
+      adjustScore("product", PRODUCT_PLACEHOLDER_BOOST);
+      scoringAdjustments.push({
+        rule_id: "PRODUCT_PLACEHOLDER",
+        segment: "product",
+        delta: PRODUCT_PLACEHOLDER_BOOST,
+        matched_terms: ["product name"],
+      });
+    }
+  }
 
   const best = ranked[0] ?? { segment: "unknown" as AnalystSegment, score: 0, matched_body: [] as string[], matched_evidence: [] as string[] };
   const second = ranked[1] ?? { segment: "unknown" as AnalystSegment, score: 0, matched_body: [] as string[], matched_evidence: [] as string[] };
@@ -1037,6 +1083,23 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
         ? Number((debug as any).tie_delta)
         : TIE_DELTA_EPS;
     const chosen = String(chosenSegment);
+
+    // Never boost unknown; it is a true fallback.
+    if (chosenSegment === "unknown") {
+      const out: any = {
+        ...debug,
+        top_scores: preSorted,
+        best_score: typeof preSorted[0]?.score === "number" ? preSorted[0].score : null,
+        runner_up_score: typeof preSorted[1]?.score === "number" ? preSorted[1].score : null,
+      };
+      if (override) {
+        out.override_applied = true;
+        out.override_rule_id = override.rule_id;
+        out.override_explanation = override.explanation;
+        out.top_scores_pre_override = preSorted;
+      }
+      return out;
+    }
 
     if (!override && preSorted[0]?.segment === chosen) {
       const out = { ...debug, top_scores: preSorted } as any;
@@ -1076,6 +1139,7 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
         title_text_snippet: features.title_text ? features.title_text.slice(0, 200) : null,
         title_source: features.title_source,
         keyword_hits: keywordHits,
+        scoring_adjustments: scoringAdjustments,
         top_scores: ranked.map((r: { segment: AnalystSegment; score: number }) => ({ segment: r.segment, score: r.score })),
         best_score: best.score,
         runner_up_score: second.score,
@@ -1189,13 +1253,49 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
           matched_terms: [],
         }
       : undefined;
+
+    if (hintSegment && hintSegment !== "unknown") {
+      const matchedTerms = [
+        ...(hintFromCaller ? ["persisted_segment_key"] : []),
+        ...(hintFromCaller ? [] : ["structured_json.segment_key"]),
+        `structured_hint:${hintSegment}`,
+      ];
+
+      const forcedDebug = enableDebug
+        ? {
+            ...(outDebug ?? {}),
+            rule_id: "STRUCTURED_HINT_FALLBACK",
+            matched_terms: matchedTerms,
+            unknown_reason_code: null,
+            // Ensure unknown remains epsilon-ish if someone inspects scores.
+            unknown_score: UNKNOWN_EPS,
+          }
+        : undefined;
+
+      return {
+        segment: hintSegment,
+        confidence: Math.max(BODY_SCORE_THRESHOLD, 0.5),
+        debug: ensureDebugConsistency(forcedDebug, hintSegment, {
+          rule_id: "STRUCTURED_HINT_FALLBACK",
+          explanation: `Forced to hint segment (${hintSegment}) because classifier returned unknown (${reason})`,
+        }),
+      };
+    }
+
     return {
       segment: "unknown",
       confidence: 0,
-      debug: ensureDebugConsistency(outDebug, "unknown", {
-        rule_id: "UNKNOWN",
-        explanation: `Classified as unknown (${reason})`,
-      }),
+      debug: ensureDebugConsistency(
+        {
+          ...(outDebug ?? {}),
+          unknown_score: UNKNOWN_EPS,
+        },
+        "unknown",
+        {
+          rule_id: "UNKNOWN",
+          explanation: `Classified as unknown (${reason})`,
+        }
+      ),
     };
   };
 

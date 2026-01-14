@@ -1,5 +1,5 @@
 ---
-description: Specification for analyzing data flow through deal analysis systems, document processing pipelines, and report generation workflows
+description: Documents the flow of data through deal analysis systems including document processing, evidence extraction, and report generation
 ---
 
 # === USER INSTRUCTIONS ===
@@ -144,50 +144,54 @@ The system maintains data lineage throughout:
 
 # dataflow-analysis
 
-Data Flow Pipeline Architecture
+Document Processing Pipeline:
+1. Initial Ingestion
+- Batch document uploader processes incoming files (apps/web/src/components/documents/DocumentBatchUploadModal.tsx)
+- Documents classified by type (pitch deck, financials, legal, etc.)
+- Metadata extraction for company name, document type
+- Initial quality assessment scoring
 
-1. Document Processing Pipeline
-Location: apps/worker/src/lib/processors/
-- Multi-stage document extraction workflow
-- Intelligent document classification and routing
-- Evidence extraction and materialization pipeline
-- Confidence scoring and quality validation
-Importance Score: 90/100
+2. Visual Asset Extraction (services/vision_worker/app/main.py)
+- Table detection and data extraction
+- Chart recognition and data point extraction 
+- OCR processing for structured content
+- Confidence scoring for extracted elements
 
-2. Analysis Orchestration Layer
-Location: packages/core/src/orchestration/
-- Three-cycle deal analysis workflow 
-- Confidence-based progression between cycles
-- Evidence collection and verification flows
-- Investment recommendation generation
-Importance Score: 85/100
+3. Evidence Collection
+- Document segmentation into distinct claims
+- Evidence grouping by business category
+- Citation tracking back to source documents
+- Confidence scoring for extracted evidence
 
-3. Evidence Management System
-Location: apps/web/src/components/evidence/
-- Evidence tracing and scoring logic
-- Category-based evidence collection
-- Coverage calculations and audit trails
-- Confidence scoring algorithms
-Importance Score: 80/100
+4. Analysis Integration
+- Deal Intelligence Object (DIO) generation from evidence
+- Multi-cycle analysis with progressive refinement
+- Integration of LLM-assisted analysis results
+- Cross-document relationship mapping
 
-4. Report Generation Pipeline
-Location: apps/web/src/components/report-templates/
-- Multi-section report assembly
-- Dynamic content organization
-- Evidence integration workflow
-- Export format handling
-Importance Score: 75/100
+5. Report Generation
+- Template selection based on deal type
+- Evidence mapping to report sections
+- Dynamic section inclusion based on available data
+- Export with configurable detail levels
 
-Core Data Flow Patterns:
-1. Document → Classification → Evidence Extraction → Analysis
-2. Evidence → Verification → Scoring → Recommendations
-3. Analysis Results → Report Assembly → Export Generation
+Core Data Flows:
+1. Documents → Visual Assets → Structured Data
+2. Structured Data → Evidence → Analysis Results
+3. Analysis Results → Report Templates → Final Reports
 
-Integration Points:
-- Document processor output feeds evidence system
-- Evidence flows into analysis cycles
-- Analysis results drive report generation
-- Report data feeds back into deal tracking
+Key Components:
+- Document Processor (apps/web/src/components/documents/*)
+- Vision Worker (services/vision_worker/*)
+- Analysis Pipeline (packages/core/src/orchestration/*)
+- Report Generator (apps/web/src/components/reports/*)
+
+Importance Scores:
+- Document Processing: 90/100 (core business data intake)
+- Visual Extraction: 85/100 (specialized business document analysis)
+- Evidence Collection: 80/100 (domain-specific data organization)
+- Analysis Pipeline: 95/100 (critical business intelligence)
+- Report Generation: 75/100 (business output formatting)
 
 $END$
 

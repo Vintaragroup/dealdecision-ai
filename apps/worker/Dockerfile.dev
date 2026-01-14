@@ -4,6 +4,12 @@ ENV PNPM_HOME=/root/.local/share/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable
 
+# Needed for Office document rendering (pptx/docx/xlsx -> pdf) via `soffice`.
+# Without this, `extract_visuals` will skip Office docs that lack pre-rendered page images.
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends libreoffice \
+	&& rm -rf /var/lib/apt/lists/*
+
 COPY pnpm-lock.yaml package.json pnpm-workspace.yaml tsconfig.base.json ./
 # Include workspace package manifests needed for worker install
 COPY apps/worker/package.json apps/worker/package.json

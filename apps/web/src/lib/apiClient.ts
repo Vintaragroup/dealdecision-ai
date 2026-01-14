@@ -427,9 +427,13 @@ export function apiGetDealLineage(
     debugSegments?: boolean;
     segmentAudit?: boolean;
     segmentRescore?: boolean;
+    groupWord?: boolean;
   }
 ) {
   const params = new URLSearchParams();
+  // Default to grouping structured DOCX blocks to keep the lineage graph usable.
+  // Raw blocks remain available via API debug flags.
+  if (opts?.groupWord !== false) params.set('group_word', '1');
   if (opts?.debugSegments) params.set('debug_segments', '1');
   if (opts?.segmentAudit) params.set('segment_audit', '1');
   if (opts?.segmentRescore) params.set('segment_rescore', '1');

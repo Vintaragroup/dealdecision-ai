@@ -18,6 +18,7 @@ export * from "./services/prompt-generator";
 export * from "./lib/sanitize";
 export * from './config/segment-thresholds';
 export * from './scoring/segment-coverage';
+export * from './scoring/scoring-input-v0';
 
 // ============================================================================
 // DIO / Orchestration (Phase 4)

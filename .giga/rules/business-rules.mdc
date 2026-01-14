@@ -1,5 +1,5 @@
 ---
-description: Investment deal analysis platform with AI-powered due diligence and scoring system
+description: Defines business rules and validation logic for investment deal evaluation and due diligence processes
 ---
 
 # === USER INSTRUCTIONS ===
@@ -161,71 +161,57 @@ Investment Deal Assessment Framework:
 
 # business-rules
 
-DEAL EVALUATION & SCORING
+Deal Evaluation Framework:
+1. Confidence Scoring System
+- Custom AI-driven confidence metrics across market, financial, team dimensions
+- Weighted validation scoring using data points, sources, methodology
+- Thresholds: 90-100 (Very High), 80-89 (High), 70-79 (Medium), <70 (Low)
 
-1. Deal Stage Progression Rules
-- Initial Review: Requires pitch deck and company profile
-- Due Diligence: Min 70% confidence across market, team, financial dimensions
-- Investment Committee: Min 85% overall score and no critical risks
-
-2. Risk Assessment Framework
-Risk Severity Levels:
-- Critical (90-100): Deal-breaker requiring immediate attention
-- High (70-89): Major concern needing mitigation plan
-- Medium (40-69): Notable issue requiring monitoring
-- Low (0-39): Minor concern with minimal impact
+2. Risk Assessment Matrix
+- Multi-factor risk scoring across 6 categories 
+- Impact/probability calculations with severity classification
+- Risk mitigation recommendation engine
+- Risk trend analysis (improving/stable/worsening)
 
 3. Due Diligence Requirements
-Market Analysis:
-- TAM validation with 3rd party sources
-- Competitive landscape mapping
-- Growth rate verification
+- Stage-specific document verification checklists
+- Critical path identification and prioritization
+- Completion percentage tracking by category
+- Document relationship mapping system
 
-Financial Validation:
-- Min 18 months runway for Series A+
-- Burn multiple < 2.0 for sustainability
-- Unit economics validation
+4. Investment Decision Criteria
+- Four-tier classification system (GO/NO-GO/HOLD/INSUFFICIENT)
+- Deal type-specific evaluation metrics
+  - Tech: ARR, burn rate, tech assessment
+  - Consumer: distribution, inventory, brand metrics
+- Industry-specific benchmark validation
+- Evidence quality requirements by decision type
 
-Team Assessment:
-- Domain expertise scoring
-- Prior startup experience weighting
-- Reference check requirements
+5. Validation Rules
+- Financial data normalization standards
+- Required evidence thresholds by claim type
+- Document classification confidence minimums
+- Deal stage progression criteria
 
-4. Document Validation Rules
-Required Documents:
-- Pitch deck (mandatory)
-- Financial model (mandatory for $1M+)
-- Cap table (mandatory for priced rounds)
-- Legal documents (stage-dependent)
+Key Business Rule Sets:
 
-5. Investment Decision Thresholds
-GO Decision:
-- Overall score > 85%
-- No critical risks
-- Full document compliance
-- Min 3 reference checks
+1. Deal Stage Rules
+- Intake validation requirements
+- Review cycle progression criteria
+- Due diligence completion thresholds
+- Decision readiness requirements
 
-NO-GO Decision:
-- Any critical risks
-- Overall score < 60%
-- Missing mandatory documents
-- Major compliance issues
+2. Evidence Quality Rules
+- Source validation requirements
+- Confidence scoring thresholds
+- Cross-reference minimums
+- Age/relevance criteria
 
-CONDITIONAL:
-- Score 60-85%
-- Addressable risks identified
-- Clear mitigation path
-
-6. AI Confidence Thresholds
-Document Analysis:
-- High: >90% confidence
-- Medium: 70-90% confidence
-- Low: <70% confidence (requires manual review)
-
-Market Analysis:
-- Min 80% confidence for market size
-- Min 75% for competitive analysis
-- Min 85% for growth projections
+3. Risk Assessment Rules
+- Category-specific scoring criteria
+- Mitigation requirement thresholds
+- Escalation triggers
+- Monitoring frequency rules
 
 $END$
 

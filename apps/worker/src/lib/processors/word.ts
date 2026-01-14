@@ -30,6 +30,18 @@ export async function extractWordContent(buffer: Buffer): Promise<WordContent> {
   const headings: string[] = [];
   let tableCount = 0;
 
+  const textFromXmlNode = (node: any): string => {
+    if (node == null) return "";
+    if (typeof node === "string") return node;
+    if (typeof node === "number" || typeof node === "boolean") return String(node);
+    if (typeof node === "object") {
+      // xml2js can represent nodes like: { _: 'Text', $: { 'xml:space': 'preserve' } }
+      if (typeof node._ === "string") return node._;
+      if (typeof (node as any)["#text"] === "string") return (node as any)["#text"];
+    }
+    return "";
+  };
+
   try {
     const directory = await unzipper.Open.buffer(buffer);
 
@@ -60,10 +72,9 @@ export async function extractWordContent(buffer: Buffer): Promise<WordContent> {
       let paraText = "";
 
       for (const run of runs) {
-        const text = run["w:t"]?.[0];
-        if (text) {
-          paraText += text;
-        }
+        const textNode = run["w:t"]?.[0];
+        const text = textFromXmlNode(textNode);
+        if (text) paraText += text;
       }
 
       if (paraText) {
@@ -102,7 +113,7 @@ export async function extractWordContent(buffer: Buffer): Promise<WordContent> {
           const cellText = paras
             .map((p: any) => {
               const runs = p["w:r"] || [];
-              return runs.map((r: any) => r["w:t"]?.[0] || "").join("");
+              return runs.map((r: any) => textFromXmlNode(r["w:t"]?.[0]) || "").join("");
             })
             .join(" ");
           rowData.push(cellText);

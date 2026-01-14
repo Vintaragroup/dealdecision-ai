@@ -13,6 +13,7 @@ import {
 } from '@xyflow/react';
 import { AlertCircle, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react';
 import { Button } from '../../ui/button';
+import { Modal } from '../../ui/Modal';
 import {
   apiGetDealLineage,
   apiGetDealVisualAssets,
@@ -58,6 +59,7 @@ const ANALYST_NODE_TYPES = {
   segment: SegmentNode,
   visual_group: VisualGroupNode,
   visual_asset: AnalystVisualAssetNode,
+  visual_asset_group: AnalystVisualAssetNode,
   evidence_group: EvidenceGroupNode,
   evidence: EvidenceNode,
   default: DefaultNode,
@@ -75,6 +77,14 @@ type InspectorSelection =
   | { kind: 'deal'; deal_id: string; name?: string | null }
   | { kind: 'document'; document_id: string; title?: string; type?: string; page_count?: number }
   | { kind: 'visual_asset'; document_id: string; visual_asset_id: string }
+  | {
+      kind: 'visual_asset_group';
+      document_id: string;
+      visual_asset_group_id: string;
+      page_label?: string;
+      count_members?: number;
+      member_visual_asset_ids?: string[];
+    }
   | { kind: 'visual_group'; label?: string; segment_label?: string; count_slides?: number; evidence_count_total?: number; avg_confidence?: number | null; sample_summaries?: string[] }
   | { kind: 'evidence_group'; label?: string; evidence_count_total?: number; avg_confidence?: number | null; sample_summaries?: string[]; sample_snippet?: string | null; count?: number }
   | { kind: 'evidence'; visual_asset_id: string; count?: number };
@@ -345,6 +355,7 @@ function normalizeLineageNodeType(raw: any):
   | 'segment'
   | 'visual_group'
   | 'visual_asset'
+  | 'visual_asset_group'
   | 'evidence_group'
   | 'evidence'
   | 'default' {
@@ -355,6 +366,7 @@ function normalizeLineageNodeType(raw: any):
   if (t === 'segment') return 'segment';
   if (t === 'visual_group' || t === 'visual group') return 'visual_group';
   if (t === 'visual_asset' || t === 'visual asset') return 'visual_asset';
+  if (t === 'visual_asset_group' || t === 'visual asset group' || t === 'visual-asset-group') return 'visual_asset_group';
   if (t === 'evidence_group' || t === 'evidence group') return 'evidence_group';
   if (t === 'evidence') return 'evidence';
   return 'default';
@@ -366,6 +378,7 @@ function layerForType(nodeType: ReturnType<typeof normalizeLineageNodeType>): nu
   if (nodeType === 'segment') return 2;
   if (nodeType === 'visual_group') return 3;
   if (nodeType === 'visual_asset') return 3;
+  if (nodeType === 'visual_asset_group') return 3;
   if (nodeType === 'evidence_group') return 4;
   if (nodeType === 'evidence') return 4;
   return 3;
@@ -568,10 +581,20 @@ function addEdgeUnique(out: Edge[], seen: Set<string>, source: string, target: s
 
 function edgeIdForHierarchy(source: string, target: string): string {
   // Stable, human-readable edge ids for key hierarchy edges.
-  if (source.startsWith('document:') && (target.startsWith('segment:') || target.startsWith('visual_asset:') || target.startsWith('visual_group:'))) {
+  if (
+    source.startsWith('document:') &&
+    (target.startsWith('segment:') || target.startsWith('visual_asset:') || target.startsWith('visual_asset_group:') || target.startsWith('visual_group:'))
+  ) {
     return `${source}-->${target}`;
   }
-  if (source.startsWith('segment:') && (target.startsWith('visual_asset:') || target.startsWith('visual_group:') || target.startsWith('evidence_group:') || target.startsWith('evidence:'))) {
+  if (
+    source.startsWith('segment:') &&
+    (target.startsWith('visual_asset:') ||
+      target.startsWith('visual_asset_group:') ||
+      target.startsWith('visual_group:') ||
+      target.startsWith('evidence_group:') ||
+      target.startsWith('evidence:'))
+  ) {
     return `${source}-->${target}`;
   }
   if (source.startsWith('deal:') && target.startsWith('document:')) {
@@ -589,7 +612,10 @@ function isSegmentNodeId(id: string): boolean {
 }
 
 function isVisualNodeId(id: string): boolean {
-  return typeof id === 'string' && (id.startsWith('visual_asset:') || id.startsWith('visual_group:'));
+  return (
+    typeof id === 'string' &&
+    (id.startsWith('visual_asset:') || id.startsWith('visual_asset_group:') || id.startsWith('visual_group:'))
+  );
 }
 
 function buildDocumentsById(nodes: Node[]): Map<string, string> {
@@ -655,38 +681,64 @@ function inferSegmentKeyForVisual(args: {
   const { visualNode, visualAsset, segmentViewMode } = args;
   const data = (visualNode.data ?? {}) as any;
 
+  const segmentSource = (() => {
+    if (typeof data?.segment_source === 'string' && data.segment_source.trim().length > 0) return String(data.segment_source);
+    if (typeof data?.quality_flags?.segment_source === 'string' && data.quality_flags.segment_source.trim().length > 0)
+      return String(data.quality_flags.segment_source);
+    if (typeof (visualAsset as any)?.segment_source === 'string' && String((visualAsset as any).segment_source).trim().length > 0)
+      return String((visualAsset as any).segment_source);
+    return null;
+  })();
+
+  // Guardrail: OCR-inferred segment hints should not be treated as "effective" or "persisted" segmentation.
+  // They are low-trust hints for triage/debugging, not a promoted/validated segment assignment.
+  const isOcrInferredSegment = typeof segmentSource === 'string' && segmentSource.toLowerCase().startsWith('inferred_ocr');
+
+  const pick = (...candidates: unknown[]): CanonicalSegmentKey => {
+    for (const c of candidates) {
+      const v = coerceCanonicalSegmentKey(c);
+      if (v !== 'unknown') return v;
+    }
+    return 'unknown';
+  };
+
   if (segmentViewMode === 'computed') {
-    const computed = coerceCanonicalSegmentKey(data?.computed_segment);
-    if (computed !== 'unknown') return computed;
-    const fallback = coerceCanonicalSegmentKey(data?.effective_segment ?? data?.segment);
-    return fallback;
+    return pick(
+      data?.computed_segment,
+      data?.effective_segment,
+      data?.segment,
+      data?.persisted_segment_key,
+      (visualAsset as any)?.persisted_segment_key
+    );
   }
 
   if (segmentViewMode === 'persisted') {
-    const persisted = coerceCanonicalSegmentKey(
-      data?.persisted_segment_key ?? data?.quality_flags?.segment_key ?? (visualAsset as any)?.quality_flags?.segment_key
+    if (isOcrInferredSegment) {
+      return pick(data?.computed_segment, (visualAsset as any)?.computed_segment);
+    }
+    return pick(
+      data?.persisted_segment_key,
+      (visualAsset as any)?.persisted_segment_key,
+      data?.effective_segment,
+      data?.segment,
+      data?.computed_segment,
+      (visualAsset as any)?.computed_segment
     );
-    if (persisted !== 'unknown') return persisted;
-    const fallback = coerceCanonicalSegmentKey(data?.effective_segment ?? data?.segment);
-    return fallback;
   }
 
   // Effective (default):
-  // Prefer API-provided effective segment, then fall back to legacy fields.
-  const effective = coerceCanonicalSegmentKey(data?.effective_segment ?? data?.segment);
-  if (effective !== 'unknown') return effective;
-
-  const fromQualityFlags = coerceCanonicalSegmentKey(
-    data?.quality_flags?.segment_key ?? (visualAsset as any)?.quality_flags?.segment_key
+  // Contract: effective_segment → segment → persisted_segment_key → computed_segment (never structured_json.segment_key).
+  if (isOcrInferredSegment) {
+    return pick(data?.computed_segment, (visualAsset as any)?.computed_segment);
+  }
+  return pick(
+    data?.effective_segment,
+    data?.segment,
+    data?.persisted_segment_key,
+    (visualAsset as any)?.persisted_segment_key,
+    data?.computed_segment,
+    (visualAsset as any)?.computed_segment
   );
-  if (fromQualityFlags !== 'unknown') return fromQualityFlags;
-
-  const fromStructuredJson = coerceCanonicalSegmentKey(
-    data?.structured_json?.segment_key ?? (visualAsset as any)?.structured_json?.segment_key
-  );
-  if (fromStructuredJson !== 'unknown') return fromStructuredJson;
-
-  return 'unknown';
 }
 
 function applyDocumentScopedSegmentsGraph(args: {
@@ -711,7 +763,7 @@ function applyDocumentScopedSegmentsGraph(args: {
   const segmentKeyById = new Map<string, string>();
   const segmentsByDoc = new Map<string, Set<string>>();
   const visualsWithRouting: Array<{
-    assetId: string;
+    visualNodeId: string;
     docId: string;
     segmentKey: string;
     segmentNodeId: string;
@@ -719,7 +771,11 @@ function applyDocumentScopedSegmentsGraph(args: {
   }> = [];
 
   for (const n of nodes) {
-    if (nodeTypeOf(n) !== 'visual_asset') continue;
+    const nodeType = nodeTypeOf(n);
+    if (nodeType !== 'visual_asset' && nodeType !== 'visual_asset_group') continue;
+
+    const visualNodeId = String(n.id || '').trim();
+    if (!visualNodeId) continue;
 
     const assetId = (() => {
       const id = String(n.id);
@@ -727,9 +783,8 @@ function applyDocumentScopedSegmentsGraph(args: {
       const fromData = (n.data as any)?.visual_asset_id;
       return typeof fromData === 'string' && fromData.trim() ? fromData.trim() : null;
     })();
-    if (!assetId) continue;
 
-    const asset = assetsById.get(assetId) ?? null;
+    const asset = assetId ? (assetsById.get(assetId) ?? null) : null;
     const docId = String(((n.data as any)?.__docId ?? getDocIdFromData(n.data as any) ?? asset?.document_id ?? '')).trim();
     if (!docId) continue;
 
@@ -758,7 +813,7 @@ function applyDocumentScopedSegmentsGraph(args: {
     if (!segmentsByDoc.has(docId)) segmentsByDoc.set(docId, new Set());
     segmentsByDoc.get(docId)!.add(segmentNodeId);
 
-    visualsWithRouting.push({ assetId, docId, segmentKey, segmentNodeId, docNodeId });
+    visualsWithRouting.push({ visualNodeId, docId, segmentKey, segmentNodeId, docNodeId });
   }
 
   // Create segment nodes only for documents with visuals.
@@ -839,8 +894,7 @@ function applyDocumentScopedSegmentsGraph(args: {
 
   // Segment→Visual edges.
   for (const r of visualsWithRouting) {
-    const visNodeId = `visual_asset:${r.assetId}`;
-    add(r.segmentNodeId, visNodeId, {
+    add(r.segmentNodeId, r.visualNodeId, {
       __docId: r.docId,
       __segmentId: r.segmentKey,
       __branchKey: `${r.docId}:${r.segmentKey}`,
@@ -853,7 +907,7 @@ function applyDocumentScopedSegmentsGraph(args: {
       const shuffled = [...visualsWithRouting].sort(() => Math.random() - 0.5);
       const sample = shuffled.slice(0, 10);
       const rows = sample.map((s) => ({
-        assetId: s.assetId,
+        visualNodeId: s.visualNodeId,
         docId: s.docId,
         segmentKey: s.segmentKey,
         segmentNodeId: s.segmentNodeId,
@@ -970,7 +1024,7 @@ function buildCanonicalEdges(args: { nodes: Node[]; rawEdges: RawLineageEdge[]; 
   // 3) Segment → Visual (fallback doc→visual if seg unknown)
   for (const n of nodes) {
     const t = nodeTypeOf(n);
-    if (t !== 'visual_asset' && t !== 'visual_group') continue;
+    if (t !== 'visual_asset' && t !== 'visual_asset_group' && t !== 'visual_group') continue;
     const segParent = pickSegParent(n.id) ?? pickParentOfType(n.id, 'segment');
     if (segParent) {
       addEdgeUnique(out, seen, segParent, n.id, 'seg-vis');
@@ -985,7 +1039,10 @@ function buildCanonicalEdges(args: { nodes: Node[]; rawEdges: RawLineageEdge[]; 
   for (const n of nodes) {
     const t = nodeTypeOf(n);
     if (t !== 'evidence' && t !== 'evidence_group') continue;
-    const visParent = pickParentOfType(n.id, 'visual_asset') ?? pickParentOfType(n.id, 'visual_group');
+    const visParent =
+      pickParentOfType(n.id, 'visual_asset') ??
+      pickParentOfType(n.id, 'visual_asset_group') ??
+      pickParentOfType(n.id, 'visual_group');
     if (visParent) {
       addEdgeUnique(out, seen, visParent, n.id, 'vis-evid');
       continue;
@@ -1349,6 +1406,8 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
   const [selectedVisual, setSelectedVisual] = useState<DealVisualAsset | null>(null);
   const [dealVisualAssets, setDealVisualAssets] = useState<DealVisualAsset[] | null>(null);
 
+  const [inspectorImageModal, setInspectorImageModal] = useState<{ src: string; title?: string } | null>(null);
+
   const [imageLoadError, setImageLoadError] = useState(false);
   const [showBboxOverlay, setShowBboxOverlay] = useState(false);
 
@@ -1373,6 +1432,10 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
     setImageLoadError(false);
     setShowBboxOverlay(false);
   }, [selectedVisual?.visual_asset_id]);
+
+  useEffect(() => {
+    setInspectorImageModal(null);
+  }, [selection.kind, (selection as any)?.visual_asset_id, (selection as any)?.visual_asset_group_id, selectedRfNodeId]);
 
   useEffect(() => {
     if (selection.kind !== 'none' && !inspectorOpen) setInspectorOpen(true);
@@ -2213,9 +2276,15 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                 page_index: (n.data as any)?.page_index ?? a.page_index,
                 segment_key:
                   (n.data as any)?.segment_key ??
-                  (a as any)?.segment_key ??
-                  (a as any)?.quality_flags?.segment_key ??
-                  (a as any)?.structured_json?.segment_key,
+                  (n.data as any)?.effective_segment ??
+                  (n.data as any)?.segment ??
+                  (n.data as any)?.persisted_segment_key ??
+                  (n.data as any)?.computed_segment ??
+                  (a as any)?.effective_segment ??
+                  (a as any)?.segment ??
+                  (a as any)?.persisted_segment_key ??
+                  (a as any)?.computed_segment ??
+                  (a as any)?.segment_key,
                 quality_flags: (n.data as any)?.quality_flags ?? (a as any)?.quality_flags,
                 structured_json: (n.data as any)?.structured_json ?? (a as any)?.structured_json,
                 evidence_count: evidenceCount,
@@ -2433,6 +2502,33 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                   }
                   setSelection({ kind: 'visual_asset', document_id, visual_asset_id });
                   loadVisualDetails(document_id, visual_asset_id);
+                  return;
+                }
+
+                if (t === 'visual_asset_group') {
+                  const fromPrefixGroup = (prefix: string) => (nodeId.startsWith(prefix) ? nodeId.slice(prefix.length) : '');
+                  const groupIdFromNode = fromPrefixGroup('visual_asset_group:') || String((data as any).visual_asset_group_id ?? '');
+                  const document_id = String(data.document_id ?? documentIdFromNode ?? (data as any).doc_id ?? '');
+                  const memberIds = Array.isArray((data as any).member_visual_asset_ids)
+                    ? ((data as any).member_visual_asset_ids as unknown[]).filter((x) => typeof x === 'string') as string[]
+                    : undefined;
+                  const countMembers =
+                    typeof (data as any).count_members === 'number'
+                      ? (data as any).count_members
+                      : memberIds
+                        ? memberIds.length
+                        : undefined;
+
+                  setSelection({
+                    kind: 'visual_asset_group',
+                    document_id,
+                    visual_asset_group_id: groupIdFromNode,
+                    page_label: typeof data.label === 'string' ? data.label : typeof (data as any).page_label === 'string' ? (data as any).page_label : undefined,
+                    count_members: countMembers,
+                    member_visual_asset_ids: memberIds,
+                  });
+                  setSelectedVisual(null);
+                  setVisualDetailError(null);
                   return;
                 }
 
@@ -3022,11 +3118,20 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                         <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Lineage (enriched)</div>
 
                         {rfImgSrc ? (
-                          <img
-                            src={rfImgSrc}
-                            alt="Visual asset"
-                            className={`w-full max-h-[220px] object-contain rounded-md border ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
-                          />
+                          <button
+                            type="button"
+                            className="block"
+                            onClick={() => setInspectorImageModal({ src: rfImgSrc, title: 'Lineage image' })}
+                            aria-label="Open image"
+                          >
+                            <div className="w-[240px] max-w-full">
+                              <img
+                                src={rfImgSrc}
+                                alt="Visual asset"
+                                className={`w-full max-h-[160px] object-contain rounded-md border cursor-zoom-in ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
+                              />
+                            </div>
+                          </button>
                         ) : null}
 
                         {structuredLine ? (
@@ -3171,13 +3276,20 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                                     ) : null}
                                   </div>
 
-                                  <div className="relative">
-                                    <img
-                                      src={imgSrc}
-                                      alt="Visual asset crop"
-                                      className={`w-full max-h-[260px] object-contain rounded-md border ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
-                                      onError={() => setImageLoadError(true)}
-                                    />
+                                  <div className="relative w-[240px] max-w-full">
+                                    <button
+                                      type="button"
+                                      className="block w-full"
+                                      onClick={() => setInspectorImageModal({ src: imgSrc, title: 'Evidence image' })}
+                                      aria-label="Open image"
+                                    >
+                                      <img
+                                        src={imgSrc}
+                                        alt="Visual asset crop"
+                                        className={`w-full max-h-[180px] object-contain rounded-md border cursor-zoom-in ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
+                                        onError={() => setImageLoadError(true)}
+                                      />
+                                    </button>
                                     {showBboxOverlay && bbox ? (
                                       <div
                                         className={`pointer-events-none absolute border-2 ${darkMode ? 'border-red-300/70' : 'border-red-500/70'}`}
@@ -3506,10 +3618,232 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                   ) : null}
                 </div>
               ) : null}
+
+              {selection.kind === 'visual_asset_group' ? (
+                <div className="space-y-2">
+                  <div className="text-xs opacity-70">Visual asset group</div>
+                  <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    Group ID: <span className="font-mono">{selection.visual_asset_group_id}</span>
+                  </div>
+                  {selection.page_label ? (
+                    <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{selection.page_label}</div>
+                  ) : null}
+                  <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    Members: {typeof selection.count_members === 'number' ? selection.count_members : '—'}
+                  </div>
+
+                  {(() => {
+                    const rfData = ((selectedRfNode as any)?.data ?? {}) as any;
+                    const persisted = typeof rfData.persisted_segment_key === 'string' ? rfData.persisted_segment_key : null;
+                    const computed = typeof rfData.computed_segment === 'string' ? rfData.computed_segment : null;
+                    const effective =
+                      typeof rfData.effective_segment === 'string'
+                        ? rfData.effective_segment
+                        : typeof rfData.segment === 'string'
+                          ? rfData.segment
+                          : null;
+                    const source =
+                      typeof rfData.segment_source === 'string'
+                        ? rfData.segment_source
+                        : typeof rfData?.quality_flags?.segment_source === 'string'
+                          ? rfData.quality_flags.segment_source
+                          : null;
+                    const reason = rfData.computed_reason as any;
+
+                    const formatScore = (v: unknown): string | null => {
+                      if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+                      const pct = v <= 1 ? v * 100 : v;
+                      return `${Math.round(pct)}%`;
+                    };
+
+                    const topScores = (() => {
+                      const raw = reason?.top_scores;
+                      if (!Array.isArray(raw)) return [];
+                      const cleaned = raw
+                        .map((row: any) => {
+                          const seg = typeof row?.segment === 'string' ? row.segment : typeof row?.key === 'string' ? row.key : null;
+                          const score = formatScore(row?.score);
+                          if (!seg || !score) return null;
+                          return { seg, score };
+                        })
+                        .filter(Boolean) as Array<{ seg: string; score: string }>;
+                      return cleaned.slice(0, 3);
+                    })();
+
+                    const isOcrInferred = typeof source === 'string' && source.toLowerCase().startsWith('inferred_ocr');
+
+                    const summary = typeof rfData.structured_summary === 'string' ? rfData.structured_summary : null;
+                    const evidenceSnippets = Array.isArray(rfData.evidence_snippets)
+                      ? (rfData.evidence_snippets as unknown[]).filter((s) => typeof s === 'string' && s.trim().length > 0) as string[]
+                      : [];
+                    const rfUnderstanding = rfData.page_understanding as any;
+
+                    if (!persisted && !computed && !effective && !summary && evidenceSnippets.length === 0 && rfData.structured_json == null) return null;
+
+                    return (
+                      <>
+                        <div className="space-y-2">
+                          <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Node Understanding</div>
+
+                          {typeof rfUnderstanding?.summary === 'string' && rfUnderstanding.summary.trim() ? (
+                            <div className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{rfUnderstanding.summary}</div>
+                          ) : (
+                            <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No summary available</div>
+                          )}
+
+                          {Array.isArray(rfUnderstanding?.key_points) && rfUnderstanding.key_points.length > 0 ? (
+                            <div className="space-y-1">
+                              <div className={`text-xs font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Key points</div>
+                              <ul className={`list-disc pl-5 text-xs space-y-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                {rfUnderstanding.key_points.slice(0, 8).map((kp: any, idx: number) => (
+                                  <li key={`g-kp-${idx}`}>{String(kp)}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          ) : null}
+
+                          {Array.isArray(rfUnderstanding?.extracted_signals) && rfUnderstanding.extracted_signals.length > 0 ? (
+                            <div className="space-y-1">
+                              <div className={`text-xs font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Extracted signals</div>
+                              <div className={`overflow-auto rounded-md border text-xs ${darkMode ? 'border-white/10 bg-black/10 text-gray-200' : 'border-gray-200 bg-white text-gray-800'}`}>
+                                <table className="min-w-full text-left">
+                                  <thead className={darkMode ? 'bg-white/5' : 'bg-gray-50'}>
+                                    <tr>
+                                      <th className="px-2 py-1 font-medium">Type</th>
+                                      <th className="px-2 py-1 font-medium">Value</th>
+                                      <th className="px-2 py-1 font-medium">Unit</th>
+                                      <th className="px-2 py-1 font-medium">Conf</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {rfUnderstanding.extracted_signals.slice(0, 12).map((sig: any, idx: number) => (
+                                      <tr key={`g-sig-${idx}`} className={darkMode ? 'border-t border-white/5' : 'border-t border-gray-100'}>
+                                        <td className="px-2 py-1 align-top whitespace-pre-wrap">{String(sig?.type ?? '—')}</td>
+                                        <td className="px-2 py-1 align-top whitespace-pre-wrap">{String(sig?.value ?? '—')}</td>
+                                        <td className="px-2 py-1 align-top whitespace-pre-wrap">{sig?.unit ? String(sig.unit) : '—'}</td>
+                                        <td className="px-2 py-1 align-top whitespace-pre-wrap">
+                                          {typeof sig?.confidence === 'number' && Number.isFinite(sig.confidence)
+                                            ? `${Math.round(sig.confidence * (sig.confidence <= 1 ? 100 : 1))}%`
+                                            : '—'}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          ) : null}
+
+                          <div className="space-y-1">
+                            <div className={`text-xs font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Scoring contribution</div>
+                            {Array.isArray(rfUnderstanding?.score_contributions) && rfUnderstanding.score_contributions.length > 0 ? (
+                              <ul className={`list-disc pl-5 text-xs space-y-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                {rfUnderstanding.score_contributions.slice(0, 8).map((sc: any, idx: number) => (
+                                  <li key={`g-sc-${idx}`}>
+                                    <span className="font-medium">{String(sc?.driver ?? 'Driver')}</span>
+                                    {typeof sc?.delta === 'number' ? ` · Δ ${sc.delta}` : ''}
+                                    {sc?.rationale ? ` — ${String(sc.rationale)}` : ''}
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No scoring contribution yet</div>
+                            )}
+                          </div>
+                        </div>
+
+                        {persisted || computed || effective ? (
+                          <div className={`rounded-md border p-2 ${darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'}`}>
+                            <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Segment provenance</div>
+                            <div className={`mt-1 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                              {effective ? <div className="font-medium">Effective: {effective}</div> : null}
+                              {isOcrInferred ? (
+                                <div className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ${darkMode ? 'bg-amber-500/15 text-amber-200' : 'bg-amber-50 text-amber-700'}`}>
+                                  OCR-inferred hint (not trusted)
+                                </div>
+                              ) : null}
+                              {source ? <div>Source: {source}</div> : null}
+                              {persisted ? <div>Persisted: {persisted}</div> : null}
+                              {computed ? <div>Computed: {computed}</div> : null}
+                              {(() => {
+                                const best = formatScore(reason?.best_score);
+                                const threshold = formatScore(reason?.threshold);
+                                if (!best && !threshold) return null;
+                                return <div className="mt-1">Best: {best ?? '—'} · Threshold: {threshold ?? '—'}</div>;
+                              })()}
+                              {topScores.length > 0 ? (
+                                <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                  Top: {topScores.map((t) => `${t.seg} ${t.score}`).join(' · ')}
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {summary ? (
+                          <details>
+                            <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Captured text</summary>
+                            <pre className={`mt-2 whitespace-pre-wrap text-xs rounded-md p-2 border ${darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'}`}>
+                              {summary}
+                            </pre>
+                          </details>
+                        ) : null}
+
+                        {evidenceSnippets.length > 0 ? (
+                          <details>
+                            <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Evidence snippets</summary>
+                            <ul className={`mt-2 list-disc pl-5 text-sm space-y-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                              {evidenceSnippets.slice(0, 8).map((s, idx) => (
+                                <li key={`g-snip-${idx}`}>{s}</li>
+                              ))}
+                            </ul>
+                          </details>
+                        ) : null}
+
+                        {rfData.structured_json != null ? (
+                          <details>
+                            <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Structured JSON</summary>
+                            <pre className={`mt-2 whitespace-pre-wrap text-xs rounded-md p-2 border ${darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'}`}>
+                              {safeJson(rfData.structured_json)}
+                            </pre>
+                          </details>
+                        ) : null}
+
+                        {rfData.quality_flags != null ? (
+                          <details>
+                            <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Quality flags</summary>
+                            <pre className={`mt-2 whitespace-pre-wrap text-xs rounded-md p-2 border ${darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'}`}>
+                              {safeJson(rfData.quality_flags)}
+                            </pre>
+                          </details>
+                        ) : null}
+                      </>
+                    );
+                  })()}
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>
       </div>
+
+      <Modal
+        isOpen={inspectorImageModal != null}
+        onClose={() => setInspectorImageModal(null)}
+        title={inspectorImageModal?.title ?? 'Image'}
+        size="xl"
+        darkMode={darkMode}
+      >
+        {inspectorImageModal?.src ? (
+          <div className="flex justify-center">
+            <img
+              src={inspectorImageModal.src}
+              alt={inspectorImageModal.title ?? 'Image'}
+              className="max-h-[80vh] max-w-full object-contain rounded-md"
+            />
+          </div>
+        ) : null}
+      </Modal>
     </div>
   );
 }

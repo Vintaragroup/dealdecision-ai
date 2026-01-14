@@ -332,6 +332,9 @@ importers:
 
   packages/core:
     dependencies:
+      '@dealdecision/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       pg:
         specifier: ^8.16.3
         version: 8.16.3

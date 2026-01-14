@@ -7,6 +7,9 @@ import {
 	upsertVisualAsset,
 	persistVisionResponse,
 	backfillVisualAssetImageUris,
+	toTextLoose,
+	inferSegmentKeyFromStructured,
+	persistSyntheticVisualAssets,
 } from "./visual-extraction";
 
 function makePoolMock() {
@@ -282,6 +285,93 @@ test("enqueueExtractVisualsIfPossible enqueues with extractor_version and image_
 	const uris = await resolvePageImageUris(pool as any, "doc-123", { fsImpl, logger: { log: () => {}, warn: () => {} } as any });
 	expect(uris[0].endsWith("page_001_raw.png")).toBe(true);
 	expect(uris[1].endsWith("page_002_raw.png")).toBe(true);
+});
+
+test("structured_word text canonicalization never leaks [object Object]", () => {
+	const paragraphNode = {
+		children: [
+			{ text: "Hello" },
+			{ runs: [{ text: " " }, { text: "world" }] },
+			{ items: [{ content: " from" }, { value: " Word" }] },
+		],
+	};
+
+	const out = toTextLoose([paragraphNode, "[object Object]", { text: "Solution" }]);
+	expect(out).toContain("Hello");
+	expect(out).toContain("world");
+	expect(out).toContain("Solution");
+	expect(out).not.toContain("[object Object]");
+
+	const structuredJson = {
+		kind: "word_section",
+		heading: "Solution value proposition why us",
+		paragraphs: [
+			paragraphNode,
+			{ text: "Our solution helps customers." },
+			"[object Object]",
+		],
+	};
+
+	const seg = inferSegmentKeyFromStructured({
+		structuredJson,
+		source: "structured_word",
+		documentTitle: "Test Doc",
+	});
+
+	// Stable keyword-based classification (should not be derailed by poisoning artifacts).
+	expect(seg).toBe("solution");
+});
+
+test("persistSyntheticVisualAssets skips empty word_section sections", async () => {
+	const { pool, calls } = makePoolMock();
+
+	const persisted = await persistSyntheticVisualAssets({
+		pool,
+		documentId: "00000000-0000-0000-0000-000000000000",
+		docKind: "word",
+		structuredData: {},
+		fullContent: {
+			sections: [
+				{ heading: null, paragraphs: [], text: "", tables: [] },
+				{ heading: "Product", paragraphs: ["This is a real section."], text: "", tables: [] },
+			],
+		},
+		extractorVersion: "structured_native_v1",
+		env: { UPLOAD_DIR: "/tmp" } as any,
+	});
+
+	expect(persisted).toBe(1);
+
+	const inserts = calls.filter((c) => c.sql.includes("INSERT INTO visual_assets"));
+	expect(inserts).toHaveLength(1);
+});
+
+test("persistSyntheticVisualAssets coalesces many small word sections", async () => {
+	const { pool, calls } = makePoolMock();
+
+	const sections = Array.from({ length: 40 }).map((_, i) => ({
+		heading: null,
+		paragraphs: [`Section ${i + 1}: short.`],
+		text: "",
+		tables: [],
+	}));
+
+	const persisted = await persistSyntheticVisualAssets({
+		pool,
+		documentId: "00000000-0000-0000-0000-000000000000",
+		docKind: "word",
+		structuredData: {},
+		fullContent: { sections },
+		extractorVersion: "structured_native_v1",
+		env: { UPLOAD_DIR: "/tmp" } as any,
+	});
+
+	// With coalescing, we should emit far fewer assets than the raw section count.
+	expect(persisted).toBeGreaterThan(0);
+	expect(persisted).toBeLessThan(40);
+
+	const inserts = calls.filter((c) => c.sql.includes("INSERT INTO visual_assets"));
+	expect(inserts.length).toBe(persisted);
 });
 
 test("backfillVisualAssetImageUris updates missing image_uri when page image exists", async () => {

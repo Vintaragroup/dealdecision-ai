@@ -130,6 +130,59 @@ test('GET /api/v1/deals/:dealId/lineage returns segment_audit_report when reques
               evidence_count: 0,
               evidence_sample_snippets: [],
             },
+            {
+              id: 'va-word-product-hint',
+              document_id: 'doc-a',
+              page_index: 3,
+              asset_type: 'structured',
+              bbox: null,
+              image_uri: null,
+              image_hash: null,
+              extractor_version: 'structured_native_v1',
+              confidence: '1',
+              quality_flags: { source: 'structured_word', segment_key: 'product' },
+              created_at: '2026-01-07T00:00:00.000Z',
+              ocr_text: null,
+              ocr_blocks: null,
+              structured_json: {
+                kind: 'word_section',
+                segment_key: 'product',
+                heading: null,
+                text_snippet: 'Product Name\'s Co-Pilot helps teams ship faster.',
+                paragraphs: ["Product Name's Co-Pilot helps teams ship faster."],
+              },
+              structured_summary: null,
+              units: null,
+              extraction_confidence: null,
+              structured_kind: null,
+              extraction_method: null,
+              evidence_count: 0,
+              evidence_sample_snippets: [],
+            },
+            {
+              id: 'va-word-hint-no-text',
+              document_id: 'doc-a',
+              page_index: 4,
+              asset_type: 'structured',
+              bbox: null,
+              image_uri: null,
+              image_hash: null,
+              extractor_version: 'structured_native_v1',
+              confidence: '1',
+              quality_flags: { source: 'structured_word', segment_key: 'product' },
+              created_at: '2026-01-07T00:00:00.000Z',
+              ocr_text: null,
+              ocr_blocks: null,
+              // Intentionally no usable text; should fall back to persisted hint.
+              structured_json: { kind: 'word_section', segment_key: 'product', heading: null, text_snippet: '', paragraphs: [] },
+              structured_summary: null,
+              units: null,
+              extraction_confidence: null,
+              structured_kind: null,
+              extraction_method: null,
+              evidence_count: 0,
+              evidence_sample_snippets: [],
+            },
           ],
         };
       }
@@ -158,7 +211,7 @@ test('GET /api/v1/deals/:dealId/lineage returns segment_audit_report when reques
   const doc = body.segment_audit_report.documents.find((d: any) => d.document_id === 'doc-a');
   assert.ok(doc);
   assert.ok(Array.isArray(doc.items));
-  assert.equal(doc.items.length, 3);
+  assert.equal(doc.items.length, 5);
 
   for (const it of doc.items) {
     assert.equal(it.document_id, 'doc-a');
@@ -233,5 +286,33 @@ test('GET /api/v1/deals/:dealId/lineage returns segment_audit_report when reques
       assert.equal(productSlide.segment_source, 'structured');
       assert.equal(productSlide.segment, 'product');
       assert.equal(productSlide.computed_segment, 'product');
+
+      const wordProduct = doc.items.find((it: any) => it.visual_asset_id === 'va-word-product-hint');
+      assert.ok(wordProduct);
+      assert.equal(wordProduct.segment_source, 'persisted');
+      assert.equal(wordProduct.persisted_segment_key, 'product');
+      assert.equal(wordProduct.segment, 'product');
+      assert.equal(wordProduct.computed_segment, 'product');
+      assert.ok(wordProduct.computed_reason);
+      assert.equal(typeof wordProduct.computed_reason.rule_id, 'string');
+      assert.ok(wordProduct.computed_reason.rule_id.length > 0);
+
+      const wordHintNoText = doc.items.find((it: any) => it.visual_asset_id === 'va-word-hint-no-text');
+      assert.ok(wordHintNoText);
+      assert.equal(wordHintNoText.segment_source, 'persisted');
+      assert.equal(wordHintNoText.persisted_segment_key, 'product');
+      assert.equal(wordHintNoText.computed_segment, 'product');
+      assert.ok(wordHintNoText.computed_reason);
+      assert.equal(wordHintNoText.computed_reason.rule_id, 'STRUCTURED_HINT_FALLBACK');
+      assert.ok(Array.isArray(wordHintNoText.computed_reason.matched_terms));
+      assert.ok(wordHintNoText.computed_reason.matched_terms.includes('persisted_segment_key'));
+
+      // unknown must never be boosted into a meaningful score.
+      // If unknown appears in top_scores at all, it should be epsilon-ish.
+      for (const it of doc.items) {
+        if (!it.computed_reason || !Array.isArray(it.computed_reason.top_scores)) continue;
+        const unknownRow = it.computed_reason.top_scores.find((s: any) => s && s.segment === 'unknown');
+        if (unknownRow) assert.ok(typeof unknownRow.score === 'number' && unknownRow.score < 0.1);
+      }
   await app.close();
 });

@@ -132,54 +132,62 @@ The system's core value lies in its sophisticated deal analysis capabilities, in
 - Explain your OBSERVATIONS clearly, then provide REASONING to identify the exact issue. Add console logs when needed to gather more information.
 
 
-Investment Analysis Platform Core Architecture
+Investment Deal Analysis & Due Diligence Platform implements sophisticated business logic across several key domains:
 
-## Analysis Engine Components
-1. Due Diligence Report System (apps/web/src/components/report-templates/sections/)
-- AI confidence scoring across market, financial, team dimensions
-- Risk assessment engine covering 6 core categories 
-- ROI comparison calculator for AI vs traditional methods
-- Deal terms analysis and ownership calculations
+## Core Analysis Components
 
-2. Deal Intelligence Objects (DIO) Pipeline
-- Three-cycle analysis workflow progressing from broad scan to final synthesis
-- Confidence-based stage progression rules
-- Industry-specific document classification
-- Investment recommendation generation with weighted scoring
+1. Due Diligence Intelligence Pipeline
+- Multi-cycle analysis workflow with progressive confidence thresholds
+- Specialized analyzers for financial health, market position, team assessment
+- Evidence collection and verification system with source tracking
+- Deal stage progression logic with automated advancement rules
+- Custom scoring algorithms for investment recommendations
 
-3. Financial Health Analysis Framework
-- Custom runway and burn rate algorithms
+2. Document Processing System
+- Intelligent document classification with industry-specific categories
+- Advanced table and chart data extraction
+- Financial metric normalization and validation
+- Evidence quality assessment with confidence bands
+- Multi-dimensional verification scoring
+
+3. Financial Analysis Framework
+- Industry-specific KPI benchmarks and thresholds
+- Financial health scoring with runway calculations
+- Unit economics analysis (LTV, CAC, margins)
+- Cash flow modeling and projection system
+- Risk-adjusted valuation metrics
+
+## Domain-Specific Intelligence
+
+1. Deal Classification System
+- Multi-signal pattern matching for deal types
+- Industry-specific scoring matrices
+- Custom validation rules per vertical
+- Confidence-based classification routing
+
+2. Investment Decision Support
+- Four-tier recommendation engine
+- Multi-factor risk assessment framework
+- Evidence-based decision matrices
+- Investment thesis generation system
+
+## Critical Implementations
+
+apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx
+- Core confidence scoring system
+- Multi-dimensional validation framework
+
+packages/core/src/analyzers/financial-health.ts
+- Financial health scoring algorithms
 - Industry-specific benchmark validation
-- Stage-appropriate metric thresholds
-- Health scoring incorporating growth metrics
 
-## Risk Assessment Infrastructure
-1. Multi-Category Evaluation
-- Market risk scoring with competitive positioning
-- Team risk assessment including experience metrics
-- Financial risk calculations including runway analysis
-- Technology stack evaluation with dependency scoring
+packages/core/src/classification/deal-classifier.ts
+- Deal type classification engine
+- Multi-signal pattern matching system
 
-2. Risk Categorization System  
-- Severity level mapping (low/medium/high/critical)
-- Impact probability calculations
-- Weighted category scoring
-- Mitigation requirement tracking
-
-## Document Analysis Pipeline
-1. Visual Asset Processing
-- Table structure detection algorithms
-- Chart value extraction system
-- Multi-stage OCR optimization
-- Quality confidence scoring
-
-2. Document Intelligence  
-- Role-based classification system
-- Evidence linking framework
-- Version control tracking
-- Fact extraction validation
-
-The platform implements sophisticated investment analysis workflows with deep domain expertise encoded in scoring algorithms, risk assessment frameworks, and document processing pipelines optimized for due diligence processes.
+apps/worker/src/jobs/orchestration.ts
+- Analysis pipeline orchestration
+- Multi-cycle progression logic
 
 $END$
 

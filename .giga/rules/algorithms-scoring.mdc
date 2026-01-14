@@ -1,5 +1,5 @@
 ---
-description: Handles deal analysis, investment metrics calculation, risk assessment, and overall confidence scoring algorithms
+description: Used for analyzing and documenting core business algorithms, scoring systems, and calculation logic specific to investment analysis and deal evaluation.
 ---
 
 # === USER INSTRUCTIONS ===
@@ -127,56 +127,42 @@ Importance Score: 95
 
 # algorithms-scoring
 
-Core Scoring Components:
+Core Scoring Algorithms:
 
-1. AI Confidence Scoring System
-- Multi-dimensional scoring across market analysis, financial projections, team assessment
-- Weighted calculations based on analyzed data points
-- Confidence thresholds with color-coded mapping
-Importance Score: 85/100
+1. Deal Confidence Score
+Path: apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx
+- Multi-dimensional weighted scoring across market (30%), financial (30%), team (20%), product (20%)
+- Custom thresholds: Very High (90-100), High (80-89), Medium (70-79), Low (<70)
+- Source validation tracking with confidence multipliers
+- Methodology tracking for score transparency
 
-2. Risk Assessment Engine 
-- Risk scoring across 6 categories (Market, Execution, Financial, Technology, Team, Timeline)
-- Weighted average algorithm for overall risk calculation
-- Risk thresholds with mitigation strategies
-Importance Score: 90/100
+2. Risk Assessment Matrix
+Path: apps/web/src/components/report-templates/sections/RiskAssessment.tsx
+- 6-category risk scoring: market, financial, team, product, legal, competitive
+- Impact x probability calculation with custom weighting
+- Severity classification with red/yellow/green indicators
+- Automated mitigation recommendation engine
 
-3. ROI Calculator
-- Comparative ROI between AI-powered vs traditional analysis
-- Cost/time savings breakdown by analysis category
-- Specific metrics for traditional vs AI methods
-Importance Score: 85/100
+3. ROI Projection System
+Path: apps/web/src/components/report-templates/sections/FinancialAnalysis.tsx
+- Unit economics analysis (LTV, CAC, margins)
+- Cash runway projections with burn rate analysis
+- Revenue milestone probability modeling
+- Growth rate calculations with industry benchmarks
 
-4. Deal Terms Analysis
-- Investment terms evaluation including liquidation preferences and board rights
-- Post-money ownership calculations
-- Protective provisions analysis
-Importance Score: 80/100
+4. Market Analysis Formula
+Path: apps/web/src/components/report-templates/sections/CompetitiveLandscape.tsx
+- Market share distribution calculation
+- Feature comparison weighted scoring
+- Competitive advantage quantification
+- Market position strength indicators
 
-5. Deal Verification Framework
-- Document validation workflow with hierarchical categories
-- Completion tracking with status progression
-- Critical item flagging system
-Importance Score: 80/100
-
-6. Financial Health Analysis
-- Runway calculation algorithms
-- Industry-specific health metrics (burn multiple, gross margin)
-- Multi-factor health scoring incorporating growth metrics
-Importance Score: 85/100
-
-7. Investment Recommendation Engine
-- Multi-factor analysis for market positioning, team evaluation, risk assessment
-- Structured investment thesis generation
-- Deal comparison and ranking logic
-Importance Score: 90/100
-
-Key Domain Features:
-- Deal-specific confidence scoring
-- Industry-benchmarked risk assessment
-- Investment-focused ROI calculations
-- Financial health indicators
-- Document validation frameworks
+5. Evidence Quality Score
+Path: apps/web/src/lib/evidence-scoring.ts
+- Multi-factor evidence validation scoring
+- Source credibility weighting
+- Confidence band calculations (high/medium/low)
+- Evidence density scoring per claim
 
 $END$
 

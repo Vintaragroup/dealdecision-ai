@@ -1812,6 +1812,30 @@ registerWorker("extract_visuals", async (job: Job) => {
 
 		const docKind = deduceDocKind({ extraction_metadata: docMeta?.extraction_metadata, type: docMeta?.type ?? null });
 		const docPageCount = typeof docMeta?.page_count === "number" && Number.isFinite(docMeta.page_count) ? docMeta.page_count : null;
+		let syntheticPersisted = 0;
+		// Always persist structured synthetic assets for Office docs when available.
+		// These are complementary to vision/OCR page assets and keep lineage/scoring grounded in text.
+		if (["word", "powerpoint", "excel"].includes(docKind)) {
+			try {
+				syntheticPersisted = await persistSyntheticVisualAssets({
+					pool,
+					documentId: docId,
+					docKind,
+					structuredData: docMeta?.structured_data ?? {},
+					fullContent: docMeta?.full_content ?? {},
+					extractorVersion: structuredExtractorVersion,
+					env: process.env,
+				});
+				if (syntheticPersisted > 0) {
+					docsSyntheticAssetsUsed += 1;
+					persisted += syntheticPersisted;
+				}
+			} catch (err) {
+				console.warn(
+					`[extract_visuals] persistSyntheticVisualAssets failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+				);
+			}
+		}
 		await updateJob(
 			job,
 			"running",
@@ -1885,6 +1909,10 @@ registerWorker("extract_visuals", async (job: Job) => {
 						logger: console,
 					});
 
+					if ((renderRes.rendered_pages_count ?? 0) > 0) {
+						docsRenderedViaPdf += 1;
+					}
+
 					if (!existingPageCount && renderRes.page_count_detected && renderRes.page_count_detected > 0) {
 						await pool.query(
 							"UPDATE documents SET page_count = $2, updated_at = now() WHERE id = $1 AND (page_count IS NULL OR page_count <= 0)",
@@ -1918,6 +1946,10 @@ registerWorker("extract_visuals", async (job: Job) => {
 						config: persistCfg,
 						logger: console,
 					});
+
+					if ((renderRes.rendered_pages_count ?? 0) > 0) {
+						docsRenderedViaLibreoffice += 1;
+					}
 
 					console.log(
 						JSON.stringify({
@@ -1997,17 +2029,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 			}
 
 			if (uris.length === 0) {
-				const syntheticPersisted = await persistSyntheticVisualAssets({
-					pool,
-					documentId: docId,
-					docKind,
-					structuredData: docMeta?.structured_data ?? {},
-					fullContent: docMeta?.full_content ?? {},
-					extractorVersion: structuredExtractorVersion,
-					env: process.env,
-				});
 				if (syntheticPersisted > 0) {
-					persisted += syntheticPersisted;
 					docsProcessed += 1;
 					continue;
 				}
@@ -2166,6 +2188,12 @@ registerWorker("extract_visuals", async (job: Job) => {
 			...jobCounters,
 			docs_blocked: docsBlocked,
 			blocked_document_ids: blockedDocs.map((d) => d.document_id),
+			...(docsMissingPageImagesIds.length > 0
+				? { docs_missing_page_images_doc_ids: docsMissingPageImagesIds.slice(0, 50) }
+				: {}),
+			...(docsMissingOriginalBytesIds.length > 0
+				? { docs_missing_original_bytes_doc_ids: docsMissingOriginalBytesIds.slice(0, 50) }
+				: {}),
 		},
 	});
 	devLog("worker_extract_visuals_finish", {
@@ -3135,9 +3163,13 @@ registerWorker("reextract_documents", async (job: Job) => {
 		const sourceDocs = Array.isArray(documentIds) && documentIds.length > 0
 			? await getDocumentsByIds(documentIds)
 			: await getDocumentsForDealWithVerification(dealId);
+		const explicitDocIds = Array.isArray(documentIds) && documentIds.length > 0;
 
 		const candidates = sourceDocs.filter((d) => {
 			if (d.deal_id !== dealId) return false;
+			// If specific document_ids were requested, always attempt re-extraction
+			// (regardless of current status/verification gating).
+			if (explicitDocIds) return true;
 			if (d.status !== "completed" && d.status !== "ready_for_analysis") return false;
 			if (d.verification_status === "failed") return true;
 			if (includeWarnings && d.verification_status === "warnings") return true;

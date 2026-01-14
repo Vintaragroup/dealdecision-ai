@@ -1,5 +1,5 @@
 ---
-description: Specification for investment domain data models including Deal, Evidence, Document, and Analysis entities
+description: Defines investment domain data models including Deal, Evidence, Document, and Analysis entities with relationships and state transitions.
 ---
 
 # === USER INSTRUCTIONS ===
@@ -171,68 +171,69 @@ Key Features:
 
 # data-models-investment
 
-Core Domain Models:
+## Core Data Models
 
-1. Deal Model
-- Central entity tracking investment opportunities 
-- Key properties:
-  * Stage progression (intake -> review -> due diligence -> decision)
-  * Confidence scoring system (0-100%) for deal readiness
-  * Evidence requirements matrix by stage
-  * Deal type classification (startup, real estate, fund)
-Importance Score: 95/100
+### Deal Entity (Importance: 95)
+- Investment deal lifecycle tracking 
+- Stage progression: intake -> under_review -> in_diligence -> ready_decision -> pitched
+- Required confidence thresholds per stage
+- Deal intelligence versioning through DIO objects
+- Parent-child relationship tracking for deal evolution
 
-2. Evidence Model
-- Structured fact collection and verification system
-- Properties:
-  * Multi-dimensional evidence types (market, financial, team)
-  * Source document linkage
-  * Confidence scoring (0-100%)
-  * Verification status tracking
-  * Evidence chain relationships
-Importance Score: 90/100
+### Evidence Entity (Importance: 90)
+- Structured evidence collection for investment decisions
+- Types: fact, metric, quote, document
+- Classification: market, team, financial, risk, competition, product
+- Confidence scoring system
+- Source document linking and traceability
 
-3. Document Model
-- Investment document classification and analysis tracking
-- Properties:
-  * Document role (primary, supporting, reference)
-  * Processing status workflow
-  * Analysis coverage metrics
-  * Extraction confidence scoring
-  * Page-level intelligence mapping
-Importance Score: 85/100
+### Document Entity (Importance: 85)
+- Investment document classification system
+- Categories: pitch_deck, financials, product, legal, team, market
+- Processing status tracking
+- Document relationship mapping
+- Version control and lineage tracking
 
-4. Analysis Model
-- Investment analysis workflow and results tracking
-- Properties:
-  * Multi-cycle analysis state machine
-  * Component scores across dimensions
-  * Recommendation generation
-  * Evidence materialization tracking
-  * Analysis depth metrics
-Importance Score: 90/100
+### Analysis Entity (Importance: 90)
+- Multi-cycle analysis framework
+- Decision recommendations (GO/NO-GO/CONDITIONAL)  
+- Confidence scoring per analysis dimension
+- Evidence aggregation and validation
+- Risk assessment tracking
 
-5. DIO (Deal Intelligence Object) Model
-- Comprehensive investment intelligence container
-- Properties:
-  * Version-controlled analysis results
-  * Evidence aggregation
-  * Confidence matrices
-  * Decision support data
-  * Recommendation synthesis
-Importance Score: 95/100
+### Report Entity (Importance: 80)
+- Due diligence report generation
+- Section organization and requirements
+- Evidence coverage tracking
+- Recommendation synthesis
+- Multi-format export support
 
-Key Relationships:
-- Deal -> Documents (1:many)
-- Documents -> Evidence (1:many) 
-- Evidence -> Analysis (many:many)
-- Analysis -> DIO (many:1)
+## Relationships
 
-State Transitions:
-- Deal stage progression based on evidence thresholds
-- Document processing lifecycle (uploaded -> analyzed -> verified)
-- Evidence verification states (collected -> validated -> materialized)
-- Analysis cycles (broad scan -> deep dive -> synthesis)
+Deal <-> Evidence: Many-to-many tracking of supporting evidence
+Deal <-> Document: Many-to-many document associations
+Deal <-> Analysis: One-to-many analysis cycles
+Analysis <-> Evidence: Many-to-many evidence validation
+
+## State Transitions
+
+1. Deal Stage Progression
+- Intake: Initial document collection
+- Under Review: Basic analysis complete
+- In Diligence: Detailed analysis ongoing
+- Ready Decision: Analysis complete, meets confidence threshold
+- Pitched: Final decision made
+
+2. Document Processing
+- Uploaded -> Processing -> Analyzed -> Verified
+- Failed states handled with error tracking
+- Reprocessing triggers for quality issues
+
+3. Analysis Cycles  
+- Phase 1: Initial scoring
+- Phase 2: Detailed analysis with evidence
+- Phase 3: Final recommendation
+- Each phase requires confidence threshold
 
 $END$
 

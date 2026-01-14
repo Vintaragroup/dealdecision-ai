@@ -199,6 +199,73 @@ export interface ReportDTO {
 
 export type ChatRole = 'user' | 'assistant' | 'system';
 
+// ============================================================================
+// Scoring Input Contract (V0)
+// ============================================================================
+
+// V0 goal: provide a stable, auditable input surface for scoring regardless of
+// document type (PDF/DOCX/PPTX/images/etc). Higher-level analyzers can derive
+// domain-specific signals from these items, while retaining citations.
+
+export type ScoringSourceKindV0 = 'structured_native' | 'ocr' | 'hybrid' | 'unknown';
+
+export type ScoringItemKindV0 =
+	| 'deal'
+	| 'document'
+	| 'page'
+	| 'slide'
+	| 'table'
+	| 'chart'
+	| 'text_block'
+	| 'image'
+	| 'unknown';
+
+export interface ScoringEvidenceLocatorV0 {
+	document_id: string;
+	page_index?: number | null;
+	page_label?: string;
+	visual_asset_id?: string;
+	bbox?: unknown;
+	image_uri?: string | null;
+}
+
+export interface ScoringSegmentProvenanceV0 {
+	effective?: string;
+	computed?: string;
+	persisted?: string;
+	is_ocr_hint?: boolean;
+}
+
+export interface ScoringContentItemV0 {
+	// Stable id (prefer lineage node_id if available)
+	id: string;
+	kind: ScoringItemKindV0;
+	source: ScoringSourceKindV0;
+
+	document_id?: string;
+	page_index?: number | null;
+	title?: string;
+
+	// Canonical extracted representation for scoring (best-effort).
+	text?: string;
+	structured_json?: unknown;
+	confidence?: number | null;
+
+	segment?: ScoringSegmentProvenanceV0;
+	evidence_snippets?: string[];
+	locators: ScoringEvidenceLocatorV0[];
+
+	// Optional metadata passthrough (safe for forward evolution).
+	meta?: Record<string, unknown>;
+}
+
+export interface DealScoringInputV0 {
+	deal_id: string;
+	generated_at: string;
+	items: ScoringContentItemV0[];
+	warnings?: string[];
+}
+
 export interface ChatMessage {
 	id: string;
 	role: ChatRole;

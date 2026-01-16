@@ -115,10 +115,52 @@ function extractExcelCanonical(params: {
 	const out: Partial<CanonicalMetrics> = {};
 	const evidence: CanonicalEvidenceDraft[] = [];
 
+	const consider = (args: {
+		sheetName: string;
+		label: string;
+		value: number;
+		source_pointer: string;
+	}) => {
+		const key = labelToMetricKey(args.label);
+		if (!key) return;
+		if ((out as any)[key] != null) return;
+		(out as any)[key] = args.value;
+		evidence.push({ metric_key: key, value: args.value, source_pointer: args.source_pointer });
+	};
+
 	for (const sheet of sheets) {
 		const sheetName = typeof sheet?.name === "string" ? sheet.name : "Sheet";
 		const rows: any[] = Array.isArray(sheet?.rows) ? sheet.rows : [];
 		const headers: string[] = Array.isArray(sheet?.headers) ? sheet.headers : [];
+		const tables: any[] = Array.isArray(sheet?.tables) ? sheet.tables : [];
+
+		// 1) Prefer time-series tables when present (common in real financial models).
+		for (const t of tables) {
+			if (!t || t.kind !== "time_series") continue;
+			const tRows: any[] = Array.isArray(t.rows) ? t.rows : [];
+			const valueCols: any[] = Array.isArray(t.value_cols) ? t.value_cols : [];
+			if (valueCols.length === 0 || tRows.length === 0) continue;
+
+			// Pick the last column header as "latest".
+			const lastHeader = String(valueCols[valueCols.length - 1]?.header ?? "").trim();
+			if (!lastHeader) continue;
+
+			for (let i = 0; i < tRows.length; i++) {
+				const tr = tRows[i];
+				const label = typeof tr?.label === "string" ? tr.label : "";
+				if (!label.trim()) continue;
+				const cell = tr?.values?.[lastHeader];
+				const raw = cell?.value ?? null;
+				const n = toNumberLoose(raw);
+				if (n == null) continue;
+				consider({
+					sheetName,
+					label,
+					value: n,
+					source_pointer: `sheet=${sheetName} table=${JSON.stringify(t?.name ?? "time_series")} row_label=${JSON.stringify(label)} latest_col=${JSON.stringify(lastHeader)} value_raw=${JSON.stringify(raw)}`,
+				});
+			}
+		}
 		for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
 			const row = rows[rowIdx];
 			if (!row || typeof row !== "object") continue;

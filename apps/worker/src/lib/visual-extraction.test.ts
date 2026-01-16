@@ -374,6 +374,313 @@ test("persistSyntheticVisualAssets coalesces many small word sections", async ()
 	expect(inserts.length).toBe(persisted);
 });
 
+test("persistSyntheticVisualAssets adds investor/analyst summaries for excel sheets", async () => {
+	const { pool, calls } = makePoolMock();
+
+	const persisted = await persistSyntheticVisualAssets({
+		pool,
+		documentId: "00000000-0000-0000-0000-000000000000",
+		docKind: "excel",
+		structuredData: {},
+		fullContent: {
+			sheets: [
+				{
+					name: "Revenue",
+					headers: ["col_A", "Month 1", "Month 2", "Month 3"],
+					summary: { totalRows: 12, numericColumns: ["Month 1", "Month 2", "Month 3"], columnTypes: { col_A: "text" } },
+					gridPreview: {
+						maxRows: 10,
+						maxCols: 6,
+						cells: [
+							{ a: "A1", w: "Metric" },
+							{ a: "A2", w: "Revenue" },
+							{ a: "A3", w: "COGS" },
+							{ a: "B2", v: 1000 },
+							{ a: "C2", v: 1200 },
+						],
+					},
+				},
+			],
+		},
+		extractorVersion: "structured_native_v1",
+		env: { UPLOAD_DIR: "/tmp" } as any,
+	});
+
+	expect(persisted).toBeGreaterThan(0);
+
+	const extractionInserts = calls.filter((c) => c.sql.includes("INSERT INTO visual_extractions"));
+	expect(extractionInserts.length).toBeGreaterThan(0);
+
+	// upsertVisualExtraction params: [visualAssetId, ocrText, ocrBlocks, structuredJson, units, labels, extractorVersion, modelVersion, confidence]
+	const structuredJsonRaw = extractionInserts[0].params[3] as string;
+	const sj = JSON.parse(structuredJsonRaw);
+
+	expect(sj.kind).toBe("excel_sheet");
+	expect(typeof sj.summary_text_investor).toBe("string");
+	expect(typeof sj.summary_text_analyst).toBe("string");
+	expect(sj.summary_text_investor.length).toBeGreaterThan(10);
+	expect(sj.summary_text_analyst.length).toBeGreaterThan(10);
+	expect(sj.understanding_v1?.schema_version).toBe("excel_sheet_understanding_v1");
+	expect(sj.understanding_v1?.sheet_name).toBe("Revenue");
+	expect(sj.understanding_v1?.metrics_v1?.schema_version).toBe("excel_sheet_metrics_v1");
+	expect(["grid_preview", "time_series_table", "sheet_rows", "none"]).toContain(sj.understanding_v1?.metrics_v1?.source);
+	// For this fixture, we should be able to compute a key series from the grid preview.
+	expect(sj.understanding_v1?.metrics_v1?.key_series?.label).toBe("Revenue");
+	expect(typeof sj.understanding_v1?.metrics_v1?.key_series?.end_value).toBe("number");
+});
+
+test("persistSyntheticVisualAssets computes use_of_funds distribution metrics for excel sheets", async () => {
+	const { pool, calls } = makePoolMock();
+
+	const persisted = await persistSyntheticVisualAssets({
+		pool,
+		documentId: "00000000-0000-0000-0000-000000000000",
+		docKind: "excel",
+		structuredData: {},
+		fullContent: {
+			sheets: [
+				{
+					name: "Allocation of funds",
+					headers: ["Category", "Amount", "Percent"],
+					rows: [
+						{ Category: "Product", Amount: 400000, Percent: "40%" },
+						{ Category: "Sales & Marketing", Amount: 350000, Percent: "35%" },
+						{ Category: "Operations", Amount: 250000, Percent: "25%" },
+					],
+					summary: { totalRows: 3, numericColumns: ["Amount", "Percent"], columnTypes: { Category: "text" } },
+					gridPreview: { maxRows: 10, maxCols: 6, cells: [{ a: "A1", w: "Category" }, { a: "B1", w: "Amount" }] },
+				},
+			],
+		},
+		extractorVersion: "structured_native_v1",
+		env: { UPLOAD_DIR: "/tmp" } as any,
+	});
+
+	expect(persisted).toBeGreaterThan(0);
+
+	const extractionInserts = calls.filter((c) => c.sql.includes("INSERT INTO visual_extractions"));
+	expect(extractionInserts.length).toBeGreaterThan(0);
+
+	const structuredJsonRaw = extractionInserts[0].params[3] as string;
+	const sj = JSON.parse(structuredJsonRaw);
+
+	expect(sj.kind).toBe("excel_sheet");
+	expect(sj.understanding_v1?.schema_version).toBe("excel_sheet_understanding_v1");
+	expect(sj.understanding_v1?.detected_type).toBe("use_of_funds");
+	expect(sj.understanding_v1?.metrics_v1?.schema_version).toBe("excel_sheet_metrics_v1");
+	expect(sj.understanding_v1?.metrics_v1?.distribution?.total_value).toBe(1000000);
+	expect(Array.isArray(sj.understanding_v1?.metrics_v1?.distribution?.top_categories)).toBe(true);
+	expect(sj.understanding_v1?.metrics_v1?.distribution?.top_categories?.[0]?.label).toBe("Product");
+	expect(sj.understanding_v1?.metrics_v1?.distribution?.percent_column_sum?.within_tolerance).toBe(true);
+	expect(typeof sj.summary_text_investor).toBe("string");
+	expect(sj.summary_text_investor.length).toBeGreaterThan(10);
+});
+
+test("persistSyntheticVisualAssets computes use_of_funds distribution from grid preview when rows missing", async () => {
+	const { pool, calls } = makePoolMock();
+
+	const persisted = await persistSyntheticVisualAssets({
+		pool,
+		documentId: "00000000-0000-0000-0000-000000000000",
+		docKind: "excel",
+		structuredData: {},
+		fullContent: {
+			sheets: [
+				{
+					name: "Allocation of funds",
+					headers: ["Category", "Amount", "Percent"],
+					// Intentionally omit rows to force gridPreview path.
+					summary: { totalRows: 10, numericColumns: ["Amount", "Percent"], columnTypes: { Category: "text" } },
+					gridPreview: {
+						maxRows: 10,
+						maxCols: 6,
+						cells: [
+							{ a: "A1", w: "Category" },
+							{ a: "B1", w: "Amount" },
+							{ a: "C1", w: "Percent" },
+							{ a: "A2", w: "Product" },
+							{ a: "B2", v: 400000 },
+							{ a: "C2", w: "40%" },
+							{ a: "A3", w: "Sales & Marketing" },
+							{ a: "B3", v: 350000 },
+							{ a: "C3", w: "35%" },
+							{ a: "A4", w: "Operations" },
+							{ a: "B4", v: 250000 },
+							{ a: "C4", w: "25%" },
+						],
+					},
+				},
+			],
+		},
+		extractorVersion: "structured_native_v1",
+		env: { UPLOAD_DIR: "/tmp" } as any,
+	});
+
+	expect(persisted).toBeGreaterThan(0);
+	const extractionInserts = calls.filter((c) => c.sql.includes("INSERT INTO visual_extractions"));
+	expect(extractionInserts.length).toBeGreaterThan(0);
+
+	const sj = JSON.parse(extractionInserts[0].params[3] as string);
+	expect(sj.understanding_v1?.detected_type).toBe("use_of_funds");
+	expect(sj.understanding_v1?.metrics_v1?.schema_version).toBe("excel_sheet_metrics_v1");
+	expect(sj.understanding_v1?.metrics_v1?.distribution?.total_value).toBe(1000000);
+	expect(sj.understanding_v1?.metrics_v1?.distribution?.top_categories?.[0]?.label).toBe("Product");
+	expect(sj.understanding_v1?.metrics_v1?.distribution?.percent_column_sum?.within_tolerance).toBe(true);
+	// Investor summary should now lead with a grounded total.
+	expect(String(sj.summary_text_investor)).toMatch(/Use of funds totals/i);
+});
+
+test("persistSyntheticVisualAssets computes time_series_table metrics when values keyed by header", async () => {
+	const { pool, calls } = makePoolMock();
+
+	const persisted = await persistSyntheticVisualAssets({
+		pool,
+		documentId: "00000000-0000-0000-0000-000000000000",
+		docKind: "excel",
+		structuredData: {},
+		fullContent: {
+			sheets: [
+				{
+					name: "Revenue",
+					headers: ["Metric", "Month 1", "Month 2", "Month 3", "Month 4", "Month 5", "Month 6"],
+					tables: [
+						{
+							kind: "time_series",
+							name: "Revenue table",
+							label_col: "A",
+							value_cols: [
+								{ col: "B", header: "Month 1" },
+								{ col: "C", header: "Month 2" },
+								{ col: "D", header: "Month 3" },
+								{ col: "E", header: "Month 4" },
+								{ col: "F", header: "Month 5" },
+								{ col: "G", header: "Month 6" },
+							],
+							rows: [
+								{
+									label: "Revenue",
+									values: {
+										"Month 1": { value: 1000 },
+										"Month 2": { value: 1200 },
+										"Month 3": { value: 1500 },
+										"Month 4": { value: 1700 },
+										"Month 5": { value: 1800 },
+										"Month 6": { value: 2000 },
+									},
+								},
+							],
+						},
+					],
+					summary: { totalRows: 10, numericColumns: ["Month 1", "Month 2"], columnTypes: { Metric: "text" } },
+					gridPreview: { maxRows: 10, maxCols: 6, cells: [{ a: "A1", w: "Metric" }, { a: "A2", w: "Revenue" }] },
+				},
+			],
+		},
+		extractorVersion: "structured_native_v1",
+		env: { UPLOAD_DIR: "/tmp" } as any,
+	});
+
+	expect(persisted).toBeGreaterThan(0);
+	const extractionInserts = calls.filter((c) => c.sql.includes("INSERT INTO visual_extractions"));
+	expect(extractionInserts.length).toBeGreaterThan(0);
+
+	const sj = JSON.parse(extractionInserts[0].params[3] as string);
+	const m = sj.understanding_v1?.metrics_v1;
+	expect(m?.schema_version).toBe("excel_sheet_metrics_v1");
+	expect(m?.source).toBe("time_series_table");
+	expect(m?.quality?.numeric_cells).toBeGreaterThan(0);
+	expect(m?.key_series?.label).toBe("Revenue");
+	expect(m?.key_series?.start_value).toBe(1000);
+	expect(m?.key_series?.end_value).toBe(2000);
+});
+
+test("persistSyntheticVisualAssets derives a revenue key series when the Revenue row is empty", async () => {
+	const { pool, calls } = makePoolMock();
+
+	const persisted = await persistSyntheticVisualAssets({
+		pool,
+		documentId: "00000000-0000-0000-0000-000000000000",
+		docKind: "excel",
+		structuredData: {},
+		fullContent: {
+			sheets: [
+				{
+					name: "Revenue",
+					headers: ["Metric", "Month 1", "Month 2", "Month 3", "Month 4", "Month 5", "Month 6"],
+					tables: [
+						{
+							kind: "time_series",
+							name: "Revenue table",
+							label_col: "A",
+							value_cols: [
+								{ col: "B", header: "Month 1" },
+								{ col: "C", header: "Month 2" },
+								{ col: "D", header: "Month 3" },
+								{ col: "E", header: "Month 4" },
+								{ col: "F", header: "Month 5" },
+								{ col: "G", header: "Month 6" },
+							],
+							rows: [
+								{
+									label: "Revenue",
+									values: {
+										"Month 1": {},
+										"Month 2": {},
+										"Month 3": {},
+										"Month 4": {},
+										"Month 5": {},
+										"Month 6": {},
+									},
+								},
+								{
+									label: "Small MW deals",
+									values: {
+										"Month 1": { value: 10 },
+										"Month 2": { value: 20 },
+										"Month 3": { value: 30 },
+										"Month 4": { value: 40 },
+										"Month 5": { value: 50 },
+										"Month 6": { value: 60 },
+									},
+								},
+								{
+									label: "Custom MW deals",
+									values: {
+										"Month 1": { value: 5 },
+										"Month 2": { value: 5 },
+										"Month 3": { value: 10 },
+										"Month 4": { value: 10 },
+										"Month 5": { value: 15 },
+										"Month 6": { value: 15 },
+									},
+								},
+							],
+						},
+					],
+					summary: { totalRows: 10, numericColumns: ["Month 1", "Month 2"], columnTypes: { Metric: "text" } },
+					gridPreview: { maxRows: 10, maxCols: 6, cells: [{ a: "A1", w: "Metric" }, { a: "A2", w: "Revenue" }] },
+				},
+			],
+		},
+		extractorVersion: "structured_native_v1",
+		env: { UPLOAD_DIR: "/tmp" } as any,
+	});
+
+	expect(persisted).toBeGreaterThan(0);
+	const extractionInserts = calls.filter((c) => c.sql.includes("INSERT INTO visual_extractions"));
+	expect(extractionInserts.length).toBeGreaterThan(0);
+
+	const sj = JSON.parse(extractionInserts[0].params[3] as string);
+	const m = sj.understanding_v1?.metrics_v1;
+	expect(m?.schema_version).toBe("excel_sheet_metrics_v1");
+	expect(m?.source).toBe("time_series_table");
+	expect(String(m?.key_series?.label)).toMatch(/Estimated total/i);
+	expect(m?.key_series?.start_value).toBe(15);
+	expect(m?.key_series?.end_value).toBe(75);
+	// Investor summary should lead with evidence instead of structure-only text.
+	expect(String(sj.summary_text_investor)).toMatch(/changes from/i);
+});
+
 test("backfillVisualAssetImageUris updates missing image_uri when page image exists", async () => {
 	const calls: any[] = [];
 	const pool = {

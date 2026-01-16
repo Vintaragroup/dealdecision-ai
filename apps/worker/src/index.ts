@@ -64,6 +64,7 @@ import type { VerificationResult } from "./lib/verification";
 import { OpenAIGPT4oProvider } from "./lib/llm/providers/openai-provider";
 import type { ProviderConfig } from "./lib/llm/types";
 import { extractPhaseBFeaturesV1, fetchPhaseBVisualsFromDb } from "./lib/phaseb/extract";
+import { materializePhaseBVisualEvidenceForDeal } from "./lib/phaseb/materialize-evidence";
 
 // Deterministic startup log for Docker verification.
 // Do not log secrets; only the explicit flag value.
@@ -2308,6 +2309,29 @@ registerWorker("fetch_evidence", async (job: Job) => {
 
 		await updateJob(job, "running", `Rebuilt extraction evidence (docs=${rebuilt})`, 40);
 
+		// Optionally materialize Phase B visual evidence into the canonical evidence table
+		// so it appears on the Evidence tab (and becomes resolvable via /evidence/resolve).
+		try {
+			const phaseB = await materializePhaseBVisualEvidenceForDeal(getPool(), dealId);
+			if (process.env.DDAI_DEBUG_PHASE_B === "1") {
+				console.log(
+					JSON.stringify({
+						event: "phaseb_visual_evidence_materialized",
+						deal_id: dealId,
+						...phaseB,
+					})
+				);
+			}
+		} catch (err) {
+			console.warn(
+				JSON.stringify({
+					event: "phaseb_visual_evidence_materialization_failed",
+					deal_id: dealId,
+					reason: err instanceof Error ? err.message : String(err),
+				})
+			);
+		}
+
 		const documents = docsForAnalysis.map((d) => ({
 			document_id: d.id,
 			deal_id: d.deal_id,
@@ -2601,6 +2625,31 @@ registerWorker("analyze_deal", async (job: Job) => {
 				console.warn(
 					JSON.stringify({
 						event: "phase_b_features_failed",
+						deal_id: dealId,
+						reason: err instanceof Error ? err.message : String(err),
+					})
+				);
+			}
+		}
+
+		// Optional v1 integration: materialize Phase B visuals into evidence rows.
+		// This is fail-open and guarded by env flag to keep analysis stable.
+		try {
+			const phaseB = await materializePhaseBVisualEvidenceForDeal(getPool(), dealId);
+			if (process.env.DDAI_DEBUG_PHASE_B === "1") {
+				console.log(
+					JSON.stringify({
+						event: "phaseb_visual_evidence_materialized",
+						deal_id: dealId,
+						...phaseB,
+					})
+				);
+			}
+		} catch (err) {
+			if (process.env.DDAI_DEBUG_PHASE_B === "1") {
+				console.warn(
+					JSON.stringify({
+						event: "phaseb_visual_evidence_materialization_failed",
 						deal_id: dealId,
 						reason: err instanceof Error ? err.message : String(err),
 					})

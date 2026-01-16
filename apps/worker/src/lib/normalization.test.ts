@@ -109,3 +109,72 @@ test("normalizeToCanonical maps canonical financial metrics from a minimal synth
 	expect(revenueEv!.source_pointer).toContain("col=");
 	expect(revenueEv!.source_pointer).toContain("snippet=");
 });
+
+test("extractExcelContent detects month time-series tables and normalization can derive expenses", () => {
+	// This shape mirrors common financial models: first row has Month headers, first column has line items.
+	const aoa = [
+		["", "", "Month 1", "Month 2", "Month 3", "Month 4", "Month 5", "Month 6"],
+		["Expenses", "", 100, 110, 120, 130, 140, 150],
+		["Revenue", "", 60, 70, 80, 90, 100, 110],
+		["Cash Balance", "", 500, 480, 460, 440, 420, 400],
+	];
+
+	const wb = XLSX.utils.book_new();
+	const ws = XLSX.utils.aoa_to_sheet(aoa);
+	XLSX.utils.book_append_sheet(wb, ws, "Model");
+	const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+
+	const extracted = extractExcelContent(buffer);
+	const modelSheet: any = extracted.sheets.find((s: any) => s.name === "Model");
+	expect(modelSheet).toBeTruthy();
+	expect(Array.isArray(modelSheet.tables)).toBe(true);
+	expect(modelSheet.tables.length).toBeGreaterThan(0);
+
+	const out = normalizeToCanonical({
+		contentType: "excel",
+		content: extracted as any,
+		structuredData: {
+			keyFinancialMetrics: {},
+			keyMetrics: [],
+			mainHeadings: [],
+			textSummary: "",
+			entities: [],
+		},
+	});
+
+	const m = out.structuredData.canonical.financials.canonical_metrics;
+	expect(m.expenses).toBe(150);
+	expect(m.revenue).toBe(110);
+	expect(m.cash_balance).toBe(400);
+	expect(out.canonicalEvidence.some((e) => e.source_pointer.includes("table="))).toBe(true);
+});
+
+test("extractExcelContent normalizes multi-row merged headers (no __EMPTY headers)", () => {
+	const aoa = [
+		["", "Revenue", null, "Expenses", null],
+		["Line Item", "Jan", "Feb", "Jan", "Feb"],
+		["Product A", 10, 12, 5, 6],
+		["Product B", 15, 18, 7, 9],
+	];
+
+	const wb = XLSX.utils.book_new();
+	const ws: any = XLSX.utils.aoa_to_sheet(aoa);
+	ws["!merges"] = [
+		{ s: { r: 0, c: 1 }, e: { r: 0, c: 2 } },
+		{ s: { r: 0, c: 3 }, e: { r: 0, c: 4 } },
+	];
+	XLSX.utils.book_append_sheet(wb, ws, "Model");
+	const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+
+	const extracted = extractExcelContent(buffer);
+	const modelSheet: any = extracted.sheets.find((s: any) => s.name === "Model");
+	expect(modelSheet).toBeTruthy();
+	expect(Array.isArray(modelSheet.headers)).toBe(true);
+	expect(modelSheet.headers.some((h: string) => /__empty/i.test(h))).toBe(false);
+
+	// Combined headers should be present for merged groups.
+	expect(modelSheet.headers).toContain("Revenue / Jan");
+	expect(modelSheet.headers).toContain("Revenue / Feb");
+	expect(modelSheet.headers).toContain("Expenses / Jan");
+	expect(modelSheet.headers).toContain("Expenses / Feb");
+});

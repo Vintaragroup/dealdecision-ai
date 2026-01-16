@@ -35,6 +35,8 @@ import { getSelectedPolicyIdFromAny } from '../classification/get-selected-polic
 import { getStableDocumentId, selectDocumentRoles } from './document-roles';
 import { generatePhase1DIOV1, mergePhase1IntoDIO } from '../phase1/phase1-dio-v1.js';
 import { buildRealAssetFactArtifacts, detectRealEstatePreferredEquity } from './real-asset-facts';
+import { analysis_foundation_spec_version, isFundabilityShadowModeEnabled } from '../config/analysis-foundation.js';
+import { inferCompanyPhaseV1, evaluateFundabilityGatesV1 } from '../fundability/v1/index.js';
 
 // ==================== Configuration ====================
 
@@ -1253,6 +1255,30 @@ export class DealOrchestrator {
         ...dio.decision,
         confidence: Math.min(dio.decision.confidence ?? 0.5, 0.2),
       };
+    }
+
+    // Analysis Foundation (Fundability System) — v1 shadow mode (additive; does not affect scoring).
+    try {
+      if (isFundabilityShadowModeEnabled()) {
+        const phase_inference_v1 = inferCompanyPhaseV1(dio);
+        const fundability_assessment_v1 = evaluateFundabilityGatesV1({
+          dio,
+          phase_inference: phase_inference_v1,
+        });
+
+        (dio as any).dio = {
+          ...((dio as any).dio ?? {}),
+          spec_versions: {
+            ...(((dio as any).dio ?? {}).spec_versions ?? {}),
+            analysis_foundation: analysis_foundation_spec_version,
+          },
+          phase_inference_v1,
+          fundability_assessment_v1,
+        };
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log('Fundability shadow-mode failed (ignored)', { deal_id: input.deal_id, error: message });
     }
     
     return dio;

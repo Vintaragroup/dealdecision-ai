@@ -87,6 +87,43 @@
 
 .text-brand { color: var(--color-primary-500); }
 
+/* Shared surfaces (prefer these over repeating “glass” strings) */
+.dd-surface {
+  background-color: var(--card);
+  color: var(--card-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.dd-surface-muted {
+  background-color: var(--muted);
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.dd-surface-popover {
+  background-color: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.dd-surface-glass {
+  background-color: color-mix(in oklab, var(--card) 72%, transparent);
+  color: var(--card-foreground);
+  border: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+  border-radius: var(--radius);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.dd-divider {
+  height: 1px;
+  width: 100%;
+  background-color: var(--border);
+}
+
 /* Button system aligned to DESIGN_SYSTEM.md */
 .dd-btn-base {
   display: inline-flex;

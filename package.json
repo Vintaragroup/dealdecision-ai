@@ -7,6 +7,8 @@
     "dev": "pnpm --filter api dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
+    "style:drift": "tsx scripts/check-style-drift.ts",
+    "style:drift:update": "tsx scripts/check-style-drift.ts --update",
     "infra:up": "docker compose -f infra/docker-compose.yml up -d",
     "infra:down": "docker compose -f infra/docker-compose.yml down",
     "db:migrate": "pnpm --filter api db:migrate",

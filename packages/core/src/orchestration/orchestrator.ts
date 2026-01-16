@@ -39,8 +39,9 @@ import {
   analysis_foundation_spec_version,
   isFundabilityShadowModeEnabled,
   isFundabilitySoftCapsEnabled,
+  isFundabilityHardGatesEnabled,
 } from '../config/analysis-foundation.js';
-import { inferCompanyPhaseV1, evaluateFundabilityGatesV1 } from '../fundability/v1/index.js';
+import { inferCompanyPhaseV1, evaluateFundabilityGatesV1, buildFundabilityDecisionV1 } from '../fundability/v1/index.js';
 
 // ==================== Configuration ====================
 
@@ -1294,6 +1295,13 @@ export class DealOrchestrator {
             : {}),
         };
 
+        const fundability_decision_v1 = isFundabilityHardGatesEnabled()
+          ? buildFundabilityDecisionV1({
+              phase_inference: phase_inference_v1,
+              assessment: fundability_assessment_v1,
+            })
+          : undefined;
+
         (dio as any).dio = {
           ...((dio as any).dio ?? {}),
           spec_versions: {
@@ -1302,6 +1310,7 @@ export class DealOrchestrator {
           },
           phase_inference_v1,
           fundability_assessment_v1,
+          ...(fundability_decision_v1 ? { fundability_decision_v1 } : {}),
         };
       }
     } catch (err) {

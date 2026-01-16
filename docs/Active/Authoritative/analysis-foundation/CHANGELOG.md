@@ -4,6 +4,8 @@ All notable changes to the authoritative analysis-foundation specification set w
 
 This changelog tracks the **spec** version (SemVer). Implementation code may ship behind feature flags before becoming the default, but the spec version should reflect the authoritative intended behavior.
 
+Implementation status (non-normative) is tracked in `IMPLEMENTATION_PROGRESS.md`.
+
 ## [1.0.0] — 2026-01-16
 
 ### Added

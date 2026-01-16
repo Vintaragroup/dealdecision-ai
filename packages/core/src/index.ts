@@ -81,6 +81,7 @@ export {
 	analysis_foundation_spec_version,
 	isFundabilityShadowModeEnabled,
 	isFundabilitySoftCapsEnabled,
+	isFundabilityHardGatesEnabled,
 } from "./config/analysis-foundation";
 export type { AnalyzerRegistry as DealAnalyzerRegistry } from "./analyzers/registry";
 export * from "./analyzers/slide-sequence";

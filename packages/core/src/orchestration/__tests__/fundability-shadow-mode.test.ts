@@ -77,6 +77,7 @@ describe("orchestrator: fundability shadow mode", () => {
   afterEach(() => {
     delete process.env.FUNDABILITY_SHADOW_MODE;
     delete process.env.FUNDABILITY_SOFT_CAPS;
+    delete process.env.FUNDABILITY_HARD_GATES;
   });
 
   it("keeps legacy overall_score unchanged when shadow mode enabled", async () => {
@@ -105,6 +106,7 @@ describe("orchestrator: fundability shadow mode", () => {
 
     expect((on.dio as any)?.dio?.phase_inference_v1).toBeDefined();
     expect((on.dio as any)?.dio?.fundability_assessment_v1).toBeDefined();
+    expect((on.dio as any)?.dio?.fundability_decision_v1).toBeUndefined();
 
     // Phase 2 soft caps are gated separately; absent by default.
     expect((on.dio as any)?.dio?.fundability_assessment_v1?.fundability_score_0_100).toBeUndefined();
@@ -156,5 +158,49 @@ describe("orchestrator: fundability shadow mode", () => {
     // With no docs/evidence, phase confidence is low => CONDITIONAL + cap=60.
     expect(assessment.caps?.max_fundability_score_0_100).toBe(60);
     expect(assessment.fundability_score_0_100).toBe(60);
+  });
+
+  it("emits fundability_decision_v1 when FUNDABILITY_HARD_GATES enabled", async () => {
+    process.env.FUNDABILITY_SHADOW_MODE = "1";
+    process.env.FUNDABILITY_HARD_GATES = "1";
+
+    const orchestrator = new DealOrchestrator(mkRegistry(), mkStorage(), { debug: false });
+
+    const input = {
+      deal_id: "00000000-0000-4000-8000-000000000222",
+      analysis_cycle: 1,
+      input_data: {
+        documents: [
+          {
+            document_id: "00000000-0000-4000-8000-000000000333",
+            title: "Empty Deck",
+            type: "pitch_deck",
+            version_hash: "0".repeat(64),
+            extracted_at: now,
+            page_count: 10,
+            metrics: [{ key: "metric_1", value: 123, unit: null, page: 1, confidence: 0.9 }],
+            headings: ["Introduction", "Overview", "Appendix"],
+            summary: "Minimal content to keep analyzers enabled.",
+          },
+        ],
+        evidence: [],
+        config: { features: { debug_scoring: false } },
+      },
+    } as any;
+
+    const res = await orchestrator.analyze(input);
+    expect(res.success).toBe(true);
+
+    const decision = (res.dio as any)?.dio?.fundability_decision_v1;
+    expect(decision).toBeDefined();
+    expect(decision.outcome).toBe("CONDITIONAL");
+    expect(decision.should_block_investment).toBe(false);
+
+    expect(decision.missing_required_signals).toEqual(
+      expect.arrayContaining(["problem_definition", "customer_persona", "solution_concept"])
+    );
+    expect(decision.next_requests).toEqual(
+      expect.arrayContaining(["provide_evidence:problem_definition", "increase_phase_confidence"])
+    );
   });
 });

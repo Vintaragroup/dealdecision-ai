@@ -1001,6 +1001,16 @@ export const FundabilityAssessmentV1Schema = z.object({
 
 export type FundabilityAssessmentV1 = z.infer<typeof FundabilityAssessmentV1Schema>;
 
+export const FundabilityDecisionV1Schema = z.object({
+  outcome: FundabilityGateOutcomeSchema,
+  // Phase 3 (hard gates): decision-aware output for pipeline integrations.
+  should_block_investment: z.boolean(),
+  missing_required_signals: z.array(z.string()).default([]),
+  next_requests: z.array(z.string()).default([]),
+});
+
+export type FundabilityDecisionV1 = z.infer<typeof FundabilityDecisionV1Schema>;
+
 // ============================================================================
 // Deal Intelligence Object (Top-Level)
 // ============================================================================
@@ -1034,6 +1044,7 @@ export const DealIntelligenceObjectSchema = z.object({
       // Additive: phase inference + fundability gates (shadow-mode in v1).
       phase_inference_v1: PhaseInferenceV1Schema.optional(),
       fundability_assessment_v1: FundabilityAssessmentV1Schema.optional(),
+      fundability_decision_v1: FundabilityDecisionV1Schema.optional(),
     })
     .optional(),
   

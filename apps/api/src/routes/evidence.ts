@@ -28,6 +28,27 @@ async function hasColumn(pool: PoolLike, table: string, column: string): Promise
   }
 }
 
+async function getColumnDataType(pool: PoolLike, table: string, column: string): Promise<string | null> {
+  try {
+    const { rows } = await pool.query<{ data_type: string }>(
+      `SELECT data_type
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1
+          AND column_name = $2
+        LIMIT 1`,
+      [table, column]
+    );
+    return rows?.[0]?.data_type ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function isUuid(value: string): boolean {
+  return z.string().uuid().safeParse(value).success;
+}
+
 const fetchSchema = z.object({
   deal_id: z.string().min(1),
   filter: z.string().optional(),
@@ -84,6 +105,14 @@ export async function registerEvidenceRoutes(app: FastifyInstance, pool = getPoo
       return reply.status(200).send({ results: uniqueIds.map((id) => ({ id, ok: false })) });
     }
 
+    const [hasId, hasEvidenceId] = await Promise.all([
+      hasColumn(pool as unknown as PoolLike, "evidence", "id"),
+      hasColumn(pool as unknown as PoolLike, "evidence", "evidence_id"),
+    ]);
+
+    const evidenceIdColumn = hasId ? "id" : hasEvidenceId ? "evidence_id" : "id";
+    const evidenceIdType = await getColumnDataType(pool as unknown as PoolLike, "evidence", evidenceIdColumn);
+
     const [hasDocumentId, hasPage, hasPageNumber, hasText, hasExcerpt] = await Promise.all([
       hasColumn(pool as unknown as PoolLike, "evidence", "document_id"),
       hasColumn(pool as unknown as PoolLike, "evidence", "page"),
@@ -97,7 +126,14 @@ export async function registerEvidenceRoutes(app: FastifyInstance, pool = getPoo
       ? await hasColumn(pool as unknown as PoolLike, "documents", "title")
       : false;
 
-    const evidenceIdExpr = "e.id";
+    const evidenceDocumentIdType = hasDocumentId
+      ? await getColumnDataType(pool as unknown as PoolLike, "evidence", "document_id")
+      : null;
+    const documentsIdType = documentsTableExists
+      ? await getColumnDataType(pool as unknown as PoolLike, "documents", "id")
+      : null;
+
+    const evidenceIdExpr = `e.${evidenceIdColumn}`;
     const documentIdExpr = hasDocumentId ? "e.document_id" : "NULL::text AS document_id";
     const pageExpr = hasPage ? "e.page" : hasPageNumber ? "e.page_number" : "NULL::int AS page";
     const snippetExpr = hasExcerpt
@@ -106,7 +142,15 @@ export async function registerEvidenceRoutes(app: FastifyInstance, pool = getPoo
         ? "e.text"
         : "NULL::text AS snippet";
     const documentTitleExpr = documentsTableExists && hasDocumentTitle ? "d.title" : "NULL::text AS document_title";
-    const joinDocuments = documentsTableExists && hasDocumentId ? "LEFT JOIN documents d ON d.id = e.document_id" : "";
+
+    const joinDocuments = (() => {
+      if (!(documentsTableExists && hasDocumentId)) return "";
+      if (documentsIdType === "uuid" || evidenceDocumentIdType === "uuid") {
+        // Avoid uuid=text mismatches by joining on text representations.
+        return "LEFT JOIN documents d ON d.id::text = e.document_id::text";
+      }
+      return "LEFT JOIN documents d ON d.id = e.document_id";
+    })();
 
     type Row = {
       id: string;
@@ -116,6 +160,13 @@ export async function registerEvidenceRoutes(app: FastifyInstance, pool = getPoo
       document_title: string | null;
     };
 
+    const useUuidIds = evidenceIdType === "uuid";
+    const queryIds = useUuidIds ? uniqueIds.filter(isUuid) : uniqueIds;
+
+    if (queryIds.length === 0) {
+      return reply.status(200).send({ results: uniqueIds.map((id) => ({ id, ok: false })) });
+    }
+
     const { rows } = await pool.query<Row>(
       `SELECT ${evidenceIdExpr} as id,
               ${documentIdExpr},
@@ -124,8 +175,8 @@ export async function registerEvidenceRoutes(app: FastifyInstance, pool = getPoo
               ${documentTitleExpr}
          FROM evidence e
          ${joinDocuments}
-        WHERE e.id = ANY($1::text[])`,
-      [uniqueIds]
+        WHERE ${evidenceIdExpr} = ANY($1::${useUuidIds ? "uuid" : "text"}[])`,
+      [queryIds]
     );
 
     const byId = new Map<string, Row>();
@@ -172,8 +223,30 @@ export async function registerEvidenceRoutes(app: FastifyInstance, pool = getPoo
     if (deals.length === 0) {
       return { evidence: [] };
     }
+
+    const [hasId, hasEvidenceId, hasDocumentId, hasConfidence, hasVisualAssetId] = await Promise.all([
+      hasColumn(pool as unknown as PoolLike, "evidence", "id"),
+      hasColumn(pool as unknown as PoolLike, "evidence", "evidence_id"),
+      hasColumn(pool as unknown as PoolLike, "evidence", "document_id"),
+      hasColumn(pool as unknown as PoolLike, "evidence", "confidence"),
+      hasColumn(pool as unknown as PoolLike, "evidence", "visual_asset_id"),
+    ]);
+
+    const idExpr = hasId ? "id" : hasEvidenceId ? "evidence_id" : "id";
+    const documentIdExpr = hasDocumentId ? "document_id" : "NULL::text AS document_id";
+    const confidenceExpr = hasConfidence ? "confidence::float8 AS confidence" : "NULL::float8 AS confidence";
+    const visualAssetIdExpr = hasVisualAssetId ? "visual_asset_id" : "NULL::text AS visual_asset_id";
+
     const { rows } = await pool.query(
-      `SELECT id, deal_id, document_id, source, kind, text, confidence::float8 AS confidence, created_at
+      `SELECT ${idExpr} as id,
+              deal_id,
+              ${documentIdExpr},
+              ${visualAssetIdExpr},
+              source,
+              kind,
+              text,
+              ${confidenceExpr},
+              created_at
        FROM evidence
        WHERE deal_id = $1
        ORDER BY created_at DESC
@@ -195,6 +268,7 @@ export async function registerEvidenceRoutes(app: FastifyInstance, pool = getPoo
       id: row.id,
       deal_id: row.deal_id,
       document_id: row.document_id ?? undefined,
+      visual_asset_id: (row as any).visual_asset_id ?? undefined,
       source: row.source,
       kind: row.kind,
       text: row.text,

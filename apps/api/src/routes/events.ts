@@ -28,7 +28,18 @@ const EventsQuerySchema = z.object({
     (v) => {
       if (typeof v !== 'string') return v;
       const s = v.trim();
-      return s.length === 0 ? undefined : s;
+      if (s.length === 0) return undefined;
+      // Accept ISO/RFC3339 and also common JS Date.toString() values (legacy clients).
+      // Normalize to ISO so the downstream zod datetime validator and SQL parameter are consistent.
+      const parsed = Date.parse(s);
+      if (Number.isFinite(parsed)) {
+        try {
+          return new Date(parsed).toISOString();
+        } catch {
+          return s;
+        }
+      }
+      return s;
     },
     z.string().datetime({ offset: true }).optional()
   ),
@@ -171,7 +182,8 @@ export async function registerEventRoutes(app: FastifyInstance, pool = getPool()
         );
 
         if (rows.length > 0) {
-          lastJobUpdatedAt = rows[rows.length - 1].updated_at;
+          // Ensure cursor is always ISO/RFC3339 so browser reconnects pass validation.
+          lastJobUpdatedAt = new Date(rows[rows.length - 1].updated_at).toISOString();
           for (const row of rows) {
             const statusDetail = (row as any).status_detail ?? null;
             const progress = statusDetail && typeof statusDetail === "object" && (statusDetail as any).progress ? (statusDetail as any).progress : null;
@@ -192,7 +204,7 @@ export async function registerEventRoutes(app: FastifyInstance, pool = getPool()
                 started_at: startedIso,
                 status_detail: statusDetail ?? undefined,
               },
-              row.updated_at
+              updatedIso
             );
 
             if (progress && typeof progress === "object") {
@@ -215,7 +227,7 @@ export async function registerEventRoutes(app: FastifyInstance, pool = getPool()
                 at: (progress as any).at ?? updatedIso,
                 status_detail: statusDetail ?? undefined,
               };
-              send("job.progress", progressPayload, row.updated_at);
+              send("job.progress", progressPayload, updatedIso);
             }
           }
         }

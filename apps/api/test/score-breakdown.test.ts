@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildScoreBreakdownV1 } from '../src/routes/deals';
+import { buildScoreBreakdownV1, computeNodeEvidenceGateV1 } from '../src/routes/deals';
 import { closeQueues } from '../src/lib/queue';
 
 test.after(async () => {
@@ -118,4 +118,37 @@ test('trace audit grouping does not double-count market/icp coverage gaps', () =
   assert.ok(audit, 'trace audit should exist');
   assert.equal(audit!.sections_total, 1);
   assert.equal(audit!.sections_missing_trace, 1);
+});
+
+test('node evidence gate is unknown when no linked evidence exists', () => {
+  const gate = computeNodeEvidenceGateV1([
+    { key: 'market', support_status: 'supported', evidence_count: 1, evidence_ids_linked: [] },
+  ] as any);
+  assert.equal(gate.status, 'unknown');
+  assert.equal(gate.node_coverage_pct, 0);
+  assert.equal(gate.evidence_count_linked_total, 0);
+});
+
+test('node evidence gate is ok when >=80% linked evidence is node-backed', () => {
+  const gate = computeNodeEvidenceGateV1([
+    { key: 'market', support_status: 'supported', evidence_count: 5, evidence_ids_linked: ['e1','e2','e3','e4','e5'], node_evidence_count_linked: 4 },
+  ] as any);
+  assert.equal(gate.status, 'ok');
+  assert.equal(gate.node_coverage_pct, 80);
+});
+
+test('node evidence gate is warn when 50-79% linked evidence is node-backed', () => {
+  const gate = computeNodeEvidenceGateV1([
+    { key: 'traction', support_status: 'weak', evidence_count: 4, evidence_ids_linked: ['e1','e2','e3','e4'], node_evidence_count_linked: 2 },
+  ] as any);
+  assert.equal(gate.status, 'warn');
+  assert.equal(gate.node_coverage_pct, 50);
+});
+
+test('node evidence gate is block when <50% linked evidence is node-backed', () => {
+  const gate = computeNodeEvidenceGateV1([
+    { key: 'traction', support_status: 'weak', evidence_count: 4, evidence_ids_linked: ['e1','e2','e3','e4'], node_evidence_count_linked: 1 },
+  ] as any);
+  assert.equal(gate.status, 'block');
+  assert.equal(gate.node_coverage_pct, 25);
 });

@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import type { DealStage } from "@dealdecision/contracts";
 import { updateDealPriority } from "./priorityClassification";
+import { getNodeEvidenceGateForDeal } from "./nodeEvidenceGateForDeal";
 
 interface StageProgressionRule {
   fromStage: DealStage;
@@ -53,7 +54,7 @@ const progressionRules: StageProgressionRule[] = [
 export async function evaluateDealStageProgression(
   pool: Pool,
   dealId: string
-): Promise<{ shouldProgress: boolean; newStage?: DealStage; reason?: string }> {
+): Promise<{ shouldProgress: boolean; newStage?: DealStage; reason?: string; gate?: any }> {
   // Fetch current deal
   const { rows: dealRows } = await pool.query(
     `SELECT id, stage, score, created_at, updated_at FROM deals WHERE id = $1 AND deleted_at IS NULL`,
@@ -108,6 +109,50 @@ export async function evaluateDealStageProgression(
   );
 
   if (applicableRule) {
+    // Path A enforcement: block (optionally) advancing to ready_decision if score-linked evidence is not node-locatable.
+    if (applicableRule.toStage === "ready_decision") {
+      const gateModeRaw = typeof process.env.DDAI_NODE_EVIDENCE_GATE_MODE === "string" ? process.env.DDAI_NODE_EVIDENCE_GATE_MODE : "off";
+      const gateMode = gateModeRaw.toLowerCase();
+      const enforce = gateMode === "enforce" || gateMode === "hard";
+      const warnOnly = gateMode === "warn" || gateMode === "soft";
+
+      try {
+        const { gate } = await getNodeEvidenceGateForDeal(pool, dealId);
+        const gateMsg = `Node-backed scoring gate: ${gate.status.toUpperCase()} (${gate.node_coverage_pct}% node-locatable linked evidence).`;
+
+        if (enforce && gate.status === "block") {
+          return {
+            shouldProgress: false,
+            reason: `Blocked from ready_decision. ${gateMsg}`,
+            gate,
+          };
+        }
+
+        if (warnOnly && gate.status !== "ok") {
+          return {
+            shouldProgress: true,
+            newStage: applicableRule.toStage,
+            reason: `${applicableRule.description}. Warning: ${gateMsg}`,
+            gate,
+          };
+        }
+
+        return {
+          shouldProgress: true,
+          newStage: applicableRule.toStage,
+          reason: applicableRule.description,
+          gate,
+        };
+      } catch (err) {
+        // Fail-open: stage progression is still driven by base metrics if the gate can't be computed.
+        return {
+          shouldProgress: true,
+          newStage: applicableRule.toStage,
+          reason: applicableRule.description,
+        };
+      }
+    }
+
     return {
       shouldProgress: true,
       newStage: applicableRule.toStage,
@@ -124,7 +169,7 @@ export async function evaluateDealStageProgression(
 export async function autoProgressDealStage(
   pool: Pool,
   dealId: string
-): Promise<{ progressed: boolean; oldStage?: DealStage; newStage?: DealStage }> {
+): Promise<{ progressed: boolean; oldStage?: DealStage; newStage?: DealStage; reason?: string; gate?: any }> {
   const { rows: beforeRows } = await pool.query(
     `SELECT stage FROM deals WHERE id = $1 AND deleted_at IS NULL`,
     [dealId]
@@ -138,7 +183,7 @@ export async function autoProgressDealStage(
   const evaluation = await evaluateDealStageProgression(pool, dealId);
 
   if (!evaluation.shouldProgress || !evaluation.newStage) {
-    return { progressed: false };
+    return { progressed: false, oldStage, reason: evaluation.reason, gate: evaluation.gate };
   }
 
   // Update the deal's stage
@@ -157,7 +202,9 @@ export async function autoProgressDealStage(
   return {
     progressed: true,
     oldStage,
-    newStage: rows[0].stage as DealStage
+    newStage: rows[0].stage as DealStage,
+    reason: evaluation.reason,
+    gate: evaluation.gate,
   };
 }
 

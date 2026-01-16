@@ -9,6 +9,8 @@ import type { Deal } from "@dealdecision/contracts";
 import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
 import { updateDealPriority, updateAllDealPriorities } from "../services/priorityClassification";
+import { computeNodeEvidenceGateV1 } from "../services/nodeEvidenceGateV1";
+import { getNodeEvidenceGateForDeal } from "../services/nodeEvidenceGateForDeal";
 import { normalizeDealName } from "../lib/normalize-deal-name";
 import { buildDocumentsDigest } from "../lib/documents-digest";
 import type { DocumentsDigestV1 } from "../lib/documents-digest";
@@ -17,6 +19,8 @@ import { getSegmentConfidenceThresholds } from "@dealdecision/core/dist/config/s
 import { BrandModel, PageInput, buildBrandModel, inferDocumentBrandName, inferSlideTitleForSlide, normalizePhrase } from "../lib/slide-title";
 import { buildClassificationText, buildSegmentFeatures, classifySegment, normalizeAnalystSegment, type AnalystSegment, type SegmentClassifierInput } from "../lib/analyst-segment";
 import { groupWordVisualAssetsByDocument, groupWordVisualAssetsByDocumentWithStats, type WordGroupingStats } from "../lib/word-visual-grouping";
+
+export { computeNodeEvidenceGateV1 };
 
 export type QueryResult<T> = { rows: T[]; rowCount?: number };
 type DealRoutesClient = {
@@ -50,6 +54,27 @@ async function hasColumn(pool: DealRoutesPool, table: string, column: string): P
   } catch {
     return false;
   }
+}
+
+async function getColumnDataType(pool: DealRoutesPool, table: string, column: string): Promise<string | null> {
+  try {
+    const { rows } = await pool.query<{ data_type: string }>(
+      `SELECT data_type
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1
+          AND column_name = $2
+        LIMIT 1`,
+      [table, column]
+    );
+    return rows?.[0]?.data_type ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function isUuid(value: string): boolean {
+  return z.string().uuid().safeParse(value).success;
 }
 
 function stripEvidenceFromExecutiveSummary(exec: any): any {
@@ -752,6 +777,11 @@ type ScoreBreakdownSection = {
   evidence_ids_linked?: string[];
   trace_coverage_pct?: number;
   coverage_pct?: number;
+  // Path A: node-backed evidence defensibility metrics (requires evidence.visual_asset_id)
+  node_evidence_count_linked?: number;
+  node_trace_coverage_pct?: number;
+  node_coverage_pct?: number;
+  node_missing_linked_evidence_ids?: string[];
   rule_key?: string;
   inputs_used?: {
     coverage_keys?: string[];
@@ -776,6 +806,7 @@ type ScoreBreakdownV1 = {
 type EvidenceRow = {
   id: string;
   document_id?: string | null;
+  visual_asset_id?: string | null;
   page?: number | null;
   kind?: string | null;
   source?: string | null;
@@ -1234,20 +1265,29 @@ async function getEvidenceByIds(pool: DealRoutesPool, ids: string[]): Promise<Ev
   const hasEvidenceTable = await hasTable(pool, "evidence");
   if (!hasEvidenceTable) return [];
 
-  const [hasDocumentId, hasPage, hasPageNumber, hasValue] = await Promise.all([
+  const [hasDocumentId, hasPage, hasPageNumber, hasValue, hasVisualAssetId] = await Promise.all([
     hasColumn(pool, "evidence", "document_id"),
     hasColumn(pool, "evidence", "page"),
     hasColumn(pool, "evidence", "page_number"),
     hasColumn(pool, "evidence", "value"),
+    hasColumn(pool, "evidence", "visual_asset_id"),
   ]);
+
+  const idType = await getColumnDataType(pool, "evidence", "id");
+  const useUuidIds = idType === "uuid";
+  const queryIds = useUuidIds ? ids.filter(isUuid) : ids;
+  if (queryIds.length === 0) return [];
+  const anyCast = useUuidIds ? "uuid" : "text";
 
   const documentIdExpr = hasDocumentId ? "document_id" : "NULL::text AS document_id";
   const pageExpr = hasPage ? "page" : hasPageNumber ? "page_number" : "NULL::int AS page";
   const valueExpr = hasValue ? "value" : "NULL::jsonb AS value";
+  const visualAssetIdExpr = hasVisualAssetId ? "visual_asset_id" : "NULL::text AS visual_asset_id";
 
   const { rows } = await pool.query<EvidenceRow & { page_number?: number | null }>(
     `SELECT id,
       ${documentIdExpr},
+      ${visualAssetIdExpr},
       source,
       kind,
       text,
@@ -1256,8 +1296,8 @@ async function getEvidenceByIds(pool: DealRoutesPool, ids: string[]): Promise<Ev
       created_at,
       ${pageExpr}
      FROM evidence
-    WHERE id = ANY($1::text[])`,
-    [ids]
+    WHERE id = ANY($1::${anyCast}[])`,
+    [queryIds]
   );
 
   return rows ?? [];
@@ -1267,6 +1307,12 @@ async function getDocumentIndex(pool: DealRoutesPool, docIds: string[]): Promise
   if (!docIds || docIds.length === 0) return {};
   const hasDocs = await hasTable(pool, "documents");
   if (!hasDocs) return {};
+
+  const idType = await getColumnDataType(pool, "documents", "id");
+  const useUuidIds = idType === "uuid";
+  const queryIds = useUuidIds ? docIds.filter(isUuid) : docIds;
+  if (queryIds.length === 0) return {};
+  const anyCast = useUuidIds ? "uuid" : "text";
 
   const [hasTitle, hasPageCount] = await Promise.all([
     hasColumn(pool, "documents", "title"),
@@ -1280,8 +1326,8 @@ async function getDocumentIndex(pool: DealRoutesPool, docIds: string[]): Promise
   const { rows } = await pool.query<any>(
     `SELECT ${selectCols.join(", ")}
       FROM documents
-     WHERE id = ANY($1::text[])`,
-    [docIds]
+     WHERE id = ANY($1::${anyCast}[])`,
+    [queryIds]
   );
 
   const index: DocumentIndex = {};
@@ -1862,6 +1908,7 @@ function mapDeal(
   const dealOverviewV2 = (dio as any)?.phase1_deal_overview_v2;
   const updateReportV1 = (dio as any)?.phase1_update_report_v1;
 	const dealSummaryV2 = (dio as any)?.phase1_deal_summary_v2;
+  const nodeEvidenceGateV1 = (dio as any)?.phase1_node_evidence_gate_v1;
   const topClaims = stripEvidenceFromClaims((dio as any)?.phase1_claims).slice(0, 8);
 
   const execV2 = execV2Raw && typeof execV2Raw === "object" ? { ...execV2Raw } : null;
@@ -1933,6 +1980,7 @@ function mapDeal(
       update_report_v1: updateReportV1 && typeof updateReportV1 === "object" ? updateReportV1 : undefined,
       deal_summary_v2: dealSummaryV2 && typeof dealSummaryV2 === "object" ? dealSummaryV2 : undefined,
                      score_evidence: scoreEvidence && typeof scoreEvidence === "object" ? scoreEvidence : undefined,
+      node_evidence_gate_v1: nodeEvidenceGateV1 && typeof nodeEvidenceGateV1 === "object" ? nodeEvidenceGateV1 : undefined,
 			unknowns: Array.isArray(safeExec?.unknowns) ? safeExec.unknowns : [],
 			top_claims: topClaims,
 		};
@@ -3104,6 +3152,17 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 
       const computed = classifySegment({ ...baseInput, hint_segment: hintSegment });
 
+    const computedReason = (() => {
+      if (computed.segment !== "unknown") return null;
+      const hasOcr = typeof v.ocr_text === "string" && v.ocr_text.trim().length > 0;
+      const hasTitle = typeof slide_title === "string" && slide_title.trim().length > 0;
+      const reasonCode = hasOcr || hasTitle ? "LOW_SIGNAL" : "NO_TEXT";
+      return {
+        rule_id: "UNKNOWN_CLASSIFICATION_V1",
+        unknown_reason_code: reasonCode,
+      };
+    })();
+
       const effectiveSegment = isHumanOverride
         ? (persistedFromQuality ?? computed.segment)
         : persistedFromQuality
@@ -3165,6 +3224,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         // Always expose computed + persisted fields for provenance.
         computed_segment: computed.segment,
         computed_confidence: computed.confidence,
+        computed_reason: (v as any)?.computed_reason ?? computedReason,
         persisted_segment_key: persistedSegmentKey,
         persisted_segment_source: persistedSourceKey,
         segment_debug: computedDebug,
@@ -5691,9 +5751,13 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       const assetsOk = await hasTable(pool, "public.visual_assets");
       const extractionsOk = await hasTable(pool, "public.visual_extractions");
       const documentsOk = await hasTable(pool, "public.documents");
+      const aiAnalysesOk = await hasTable(pool, "public.visual_asset_ai_analyses");
 
       if (!assetsOk || !extractionsOk || !documentsOk) {
-        request.log?.warn?.({ ...logCtx, assets_table: assetsOk, extractions_table: extractionsOk, documents_table: documentsOk }, "deal_visual_assets.schema_missing");
+        request.log?.warn?.(
+          { ...logCtx, assets_table: assetsOk, extractions_table: extractionsOk, documents_table: documentsOk },
+          "deal_visual_assets.schema_missing"
+        );
         return reply.send({ deal_id: dealId, visual_assets: [] });
       }
 
@@ -5705,7 +5769,24 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         ? "ve.structured_summary AS structured_summary"
         : "NULL::jsonb AS structured_summary";
 
-      request.log?.info?.({ ...logCtx, has_structured_summary: hasStructuredSummary, has_structured_kind: hasStructuredKind }, "deal_visual_assets.schema_ready");
+      request.log?.info?.(
+        {
+          ...logCtx,
+          has_structured_summary: hasStructuredSummary,
+          has_structured_kind: hasStructuredKind,
+          has_ai_analyses: aiAnalysesOk,
+        },
+        "deal_visual_assets.schema_ready"
+      );
+
+      const aiInvestorSelect = aiAnalysesOk ? "aa_inv.last_at AS ai_analysis_investor_last_at" : "NULL::timestamptz AS ai_analysis_investor_last_at";
+      const aiAnalystSelect = aiAnalysesOk ? "aa_an.last_at AS ai_analysis_analyst_last_at" : "NULL::timestamptz AS ai_analysis_analyst_last_at";
+      const aiInvestorJoin = aiAnalysesOk
+        ? "LEFT JOIN LATERAL (SELECT MAX(created_at) AS last_at FROM visual_asset_ai_analyses WHERE visual_asset_id = va.id AND audience = 'investor') aa_inv ON true"
+        : "";
+      const aiAnalystJoin = aiAnalysesOk
+        ? "LEFT JOIN LATERAL (SELECT MAX(created_at) AS last_at FROM visual_asset_ai_analyses WHERE visual_asset_id = va.id AND audience = 'analyst') aa_an ON true"
+        : "";
 
       const { rows } = await pool.query(
         `WITH latest_extraction AS (
@@ -5745,9 +5826,13 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
            le.ocr_text,
            le.ocr_blocks,
            le.units,
-           le.structured_json
+           le.structured_json,
+           ${aiInvestorSelect},
+           ${aiAnalystSelect}
          FROM visual_assets va
          JOIN documents d ON d.id = va.document_id
+         ${aiInvestorJoin}
+         ${aiAnalystJoin}
          LEFT JOIN LATERAL (
            SELECT COUNT(*)::int AS count,
                   ARRAY(
@@ -6591,6 +6676,79 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         });
 
         if (precomputedBreakdown) {
+          // Path A telemetry: quantify how much of the score-linked evidence is actually node-backed.
+          // This does not change the score yet; it makes the defensibility measurable and enables gating.
+          try {
+            for (const section of precomputedBreakdown.sections ?? []) {
+              const linkedIds = Array.isArray(section.evidence_ids_linked)
+                ? section.evidence_ids_linked.filter((v) => typeof v === "string" && v.trim().length > 0)
+                : [];
+              if (linkedIds.length === 0) {
+                section.node_evidence_count_linked = 0;
+                section.node_trace_coverage_pct = 0;
+                section.node_coverage_pct = 0;
+                continue;
+              }
+
+              let nodeBacked = 0;
+              const missing: string[] = [];
+              for (const id of linkedIds) {
+                const row = evidenceById.get(id);
+                const vaId = typeof (row as any)?.visual_asset_id === "string" ? String((row as any).visual_asset_id).trim() : "";
+                if (vaId) nodeBacked += 1;
+                else missing.push(id);
+              }
+
+              section.node_evidence_count_linked = nodeBacked;
+              const pct = Math.min(1, Math.max(0, nodeBacked / linkedIds.length));
+              section.node_trace_coverage_pct = pct;
+              section.node_coverage_pct = Math.round(pct * 100);
+              if (missing.length > 0) section.node_missing_linked_evidence_ids = missing.slice(0, 10);
+            }
+          } catch (err) {
+            request.log?.info?.({
+              deal_id: dealId,
+              error: err instanceof Error ? err.message : String(err),
+            }, "deal.node_evidence_coverage.fail_open");
+          }
+
+          // Path A gate: summarize node-backed coverage into a single readiness signal for UI and future enforcement.
+          const nodeGate = computeNodeEvidenceGateV1(precomputedBreakdown.sections ?? []);
+          (dioRows[0] as any).phase1_node_evidence_gate_v1 = nodeGate;
+          if (execV2 && typeof execV2 === "object") {
+            (execV2 as any).node_evidence_gate_v1 = nodeGate;
+          }
+
+          // Optional enforcement: degrade confidence + add a highlight when node-backed trace is poor.
+          // This only affects the API response (does not persist to the DIO).
+          const gateModeRaw = typeof process.env.DDAI_NODE_EVIDENCE_GATE_MODE === "string" ? process.env.DDAI_NODE_EVIDENCE_GATE_MODE : "off";
+          const gateMode = gateModeRaw.toLowerCase();
+          const enforce = gateMode === "enforce" || gateMode === "hard";
+          const warnOnly = gateMode === "warn" || gateMode === "soft";
+          if ((enforce || warnOnly) && execV2 && typeof execV2 === "object" && nodeGate.status !== "ok") {
+            const signals = (execV2 as any)?.signals;
+            if (signals && typeof signals === "object") {
+              if (enforce && nodeGate.status === "block") {
+                (signals as any).confidence = "low";
+              }
+            }
+            const hl = Array.isArray((execV2 as any).highlights) ? (execV2 as any).highlights : [];
+            const msg = `Node-backed scoring gate: ${nodeGate.status.toUpperCase()} (${nodeGate.node_coverage_pct}% node-locatable linked evidence).`;
+            if (!hl.some((x: any) => typeof x === "string" && x.includes("Node-backed scoring gate"))) {
+              hl.unshift(msg);
+              (execV2 as any).highlights = hl.slice(0, 8);
+            }
+          }
+
+          // Make the enriched breakdown visible to downstream mappers by attaching it to ES2.
+          // (Some clients prefer execV2.score_breakdown_v1 from the persisted DIO payload.)
+          if (execV2 && typeof execV2 === "object") {
+            (execV2 as any).score_breakdown_v1 = precomputedBreakdown;
+            if ((precomputedBreakdown as any).trace_audit_v1) {
+              (execV2 as any).score_trace_audit_v1 = (precomputedBreakdown as any).trace_audit_v1;
+            }
+          }
+
           (dioRows[0] as any).computed_score_breakdown_v1 = precomputedBreakdown;
           const scoreEvidenceCanonical = buildScoreEvidenceFromBreakdown({
             sections: precomputedBreakdown.sections,
@@ -6627,6 +6785,34 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     const updates = parsed.data;
     if (Object.keys(updates).length === 0) {
       return reply.status(400).send({ error: "No fields to update" });
+    }
+
+    // Path A gate: optionally block manual transition to ready_decision when score-linked evidence isn't node-locatable.
+    // This is a hard backstop for stage updates that bypass auto-progress.
+    const nextStage = (updates as any)?.stage;
+    if (nextStage === "ready_decision") {
+      const gateModeRaw = typeof process.env.DDAI_NODE_EVIDENCE_GATE_MODE === "string" ? process.env.DDAI_NODE_EVIDENCE_GATE_MODE : "off";
+      const gateMode = gateModeRaw.toLowerCase();
+      const enforce = gateMode === "enforce" || gateMode === "hard";
+
+      if (enforce) {
+        const { rows: cur } = await pool.query<{ stage: string }>(
+          `SELECT stage FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+          [dealId]
+        );
+        if (cur.length === 0) {
+          return reply.status(404).send({ error: "Deal not found" });
+        }
+
+        // Only gate actual transitions into ready_decision (not idempotent updates).
+        if (cur[0].stage !== "ready_decision") {
+          const { gate } = await getNodeEvidenceGateForDeal(pool as any, dealId);
+          if (gate.status === "block") {
+            const msg = `Blocked from ready_decision. Node-backed scoring gate: ${gate.status.toUpperCase()} (${gate.node_coverage_pct}% node-locatable linked evidence).`;
+            return reply.status(409).send({ error: "Stage transition blocked by node-backed scoring gate", message: msg, gate });
+          }
+        }
+      }
     }
 
     const fields: string[] = [];
@@ -6789,14 +6975,16 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       return reply.status(200).send({
         progressed: true,
         newStage: result.newStage,
-        message: `Deal automatically progressed from ${rows[0].stage} to ${result.newStage}`
+        message: result.reason
+          ? `Deal automatically progressed from ${rows[0].stage} to ${result.newStage}. ${result.reason}`
+          : `Deal automatically progressed from ${rows[0].stage} to ${result.newStage}`
       });
     }
 
     return reply.status(200).send({
       progressed: false,
       currentStage: rows[0].stage,
-      message: "Deal does not meet conditions for stage progression"
+      message: result.reason ?? "Deal does not meet conditions for stage progression"
     });
   });
 

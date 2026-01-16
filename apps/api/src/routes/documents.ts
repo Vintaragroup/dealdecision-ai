@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Document } from "@dealdecision/contracts";
 import { sanitizeText } from "@dealdecision/core";
 import { getPool } from "../lib/db";
+import { inferDocumentTypeFromName } from "../lib/document-type-inference";
 import { insertEvidence } from "../services/evidence";
 import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
@@ -19,6 +20,91 @@ async function hasTable(pool: ReturnType<typeof getPool>, table: string) {
     return rows[0]?.oid !== null;
   } catch {
     return false;
+  }
+}
+
+let hasDocumentsMimeTypeColumn: boolean | null = null;
+let hasDocumentsExtractionMetadataColumn: boolean | null = null;
+
+async function hasColumn(pool: ReturnType<typeof getPool>, table: string, column: string): Promise<boolean> {
+  try {
+    const { rows } = await pool.query<{ ok: number }>(
+      `SELECT 1 AS ok
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1
+          AND column_name = $2
+        LIMIT 1`,
+      [table, column]
+    );
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function inferDocKindFromUpload(args: { fileName?: string | null; mimeType?: string | null; title?: string | null }): string {
+  const nameRaw = `${args.title ?? ""} ${args.fileName ?? ""}`.trim().toLowerCase();
+  const mime = String(args.mimeType ?? "").toLowerCase();
+  if (mime.includes("spreadsheet") || mime.includes("excel") || mime.includes("xlsx") || nameRaw.includes(".xlsx") || nameRaw.endsWith(".xlsx")) return "excel";
+  if (mime.includes("pdf") || nameRaw.includes(".pdf") || nameRaw.endsWith(".pdf")) return "pdf";
+  if (mime.includes("powerpoint") || mime.includes("ppt") || nameRaw.includes(".ppt") || nameRaw.includes(".pptx")) return "powerpoint";
+  if (mime.includes("word") || mime.includes("doc") || nameRaw.includes(".doc") || nameRaw.includes(".docx")) return "word";
+  if (mime.startsWith("image/") || nameRaw.match(/\.(png|jpg|jpeg|gif|webp)$/)) return "image";
+  return "unknown";
+}
+
+async function persistUploadMetadata(pool: ReturnType<typeof getPool>, args: {
+  documentId: string;
+  fileName: string;
+  mimeType: string | null;
+  title: string;
+  warnings: string[];
+}) {
+  const docKind = inferDocKindFromUpload({ fileName: args.fileName, mimeType: args.mimeType, title: args.title });
+
+  if (hasDocumentsMimeTypeColumn === null) {
+    hasDocumentsMimeTypeColumn = await hasColumn(pool, "documents", "mime_type");
+  }
+  if (hasDocumentsExtractionMetadataColumn === null) {
+    hasDocumentsExtractionMetadataColumn = await hasColumn(pool, "documents", "extraction_metadata");
+  }
+
+  if (hasDocumentsMimeTypeColumn && args.mimeType) {
+    try {
+      await pool.query(
+        `UPDATE documents
+            SET mime_type = $2,
+                updated_at = now()
+          WHERE id = $1
+            AND (mime_type IS NULL OR mime_type = '')`,
+        [args.documentId, args.mimeType]
+      );
+    } catch (e: any) {
+      args.warnings.push(`failed to persist mime_type for uploaded document: ${e?.message || "unknown error"}`);
+    }
+  }
+
+  if (hasDocumentsExtractionMetadataColumn) {
+    try {
+      const patch = {
+        doc_kind: docKind,
+        upload: {
+          file_name: args.fileName,
+          mime_type: args.mimeType,
+        },
+      };
+
+      await pool.query(
+        `UPDATE documents
+            SET extraction_metadata = jsonb_strip_nulls(COALESCE(extraction_metadata, '{}'::jsonb) || $2::jsonb),
+                updated_at = now()
+          WHERE id = $1`,
+        [args.documentId, JSON.stringify(patch)]
+      );
+    } catch (e: any) {
+      args.warnings.push(`failed to persist extraction_metadata for uploaded document: ${e?.message || "unknown error"}`);
+    }
   }
 }
 
@@ -489,7 +575,6 @@ export async function registerDocumentRoutes(
     try {
       const fileBufferB64 = payload.file_buffer;
       const fileName = payload.file_name ?? "document";
-      const docType = payload.type ?? "other";
       const titleValue = payload.title ?? fileName;
       request.log.info({
         event: "upload_json_start",
@@ -497,11 +582,18 @@ export async function registerDocumentRoutes(
         file_name: fileName,
         mime_type: payload.mime_type ?? null,
         buffer_b64_len: fileBufferB64.length,
-        doc_type: docType,
+        doc_type: payload.type ?? null,
       });
 
-      const parsedType = documentTypeSchema.safeParse(docType);
-      const finalType = parsedType.success ? parsedType.data : "other";
+      const inferredType = inferDocumentTypeFromName({
+        title: titleValue,
+        fileName,
+        mimeType: payload.mime_type ?? null,
+      });
+
+      const parsedExplicit = documentTypeSchema.safeParse(payload.type);
+      const finalType: Document["type"] =
+        parsedExplicit.success && parsedExplicit.data ? parsedExplicit.data : inferredType;
 
       // Check if document with this title already exists in this deal
       const { rows: existingDocs } = await pool.query<DocumentRow>(
@@ -535,7 +627,16 @@ export async function registerDocumentRoutes(
         document_id: documentId,
         title: titleValue,
         type: finalType,
+        inferred_type: inferredType,
       });
+
+	  await persistUploadMetadata(pool, {
+		  documentId,
+		  fileName,
+		  mimeType: payload.mime_type ?? null,
+		  title: titleValue,
+		  warnings,
+	  });
 
       // Safety: if the row comes back unlinked, repair best-effort.
       if (!rows[0]?.deal_id || rows[0].deal_id !== dealId) {
@@ -637,9 +738,16 @@ export async function registerDocumentRoutes(
         return reply.status(400).send({ error: "file is required" });
       }
 
-      // Validate document type
+      const inferredType = inferDocumentTypeFromName({
+        title: titleValue,
+        fileName,
+        mimeType,
+      });
+
+      // Validate document type (if provided); otherwise infer.
       const parsedType = documentTypeSchema.safeParse(docType);
-      const finalType = parsedType.success ? parsedType.data : "other";
+      const finalType: Document["type"] =
+        parsedType.success && parsedType.data ? parsedType.data : inferredType;
 
       const fileBufferB64 = fileBuffer.toString("base64");
 
@@ -672,7 +780,16 @@ export async function registerDocumentRoutes(
         document_id: documentId,
         title: titleValue,
         type: finalType,
+        inferred_type: inferredType,
       });
+
+	  await persistUploadMetadata(pool, {
+		  documentId,
+		  fileName,
+		  mimeType,
+		  title: titleValue,
+		  warnings,
+	  });
 
       if (!rows[0]?.deal_id || rows[0].deal_id !== dealId) {
         try {

@@ -25,6 +25,21 @@ This document tracks **implementation progress** of the Analysis Foundation (Fun
 - Output addition: `dio.fundability_decision_v1`
 - Contract: additive only; does not change legacy `overall_score` or `decision`
 
+## Consumer Rollout (stability-first)
+
+Goal: allow the frontend UI to review fundability outputs via a **stable DTO** (without exposing raw DIO internals, and without changing legacy score usage).
+
+- Contracts: Implemented — added `FundabilityV1DTO` and `deal.fundability_v1` (optional/additive)
+- API (deal detail): Implemented — `GET /api/v1/deals/:deal_id` now includes `fundability_v1` when present in latest DIO
+- API (deal list): Implemented — `GET /api/v1/deals` includes a compact `fundability_v1` payload (same field, sliced from latest DIO)
+- API tests: Implemented — contract-mapping test ensures presence and preserves legacy `score`
+- Web UI: Implemented — read-only “Fundability (Analysis Foundation)” panel on Deal Workspace overview when `fundability_v1` is present
+	- Web UI (dashboard list): Implemented — Active Deals cards show a one-line fundability summary when available
+
+Notes:
+- `fundability_v1` is currently emitted on deal detail responses only (not required on the deals list).
+- No score-source switching has been introduced yet; legacy score remains the default display.
+
 ## Notes
 
 - All flags are read as truthy when set to `1`, `true`, or `yes`.

@@ -43,6 +43,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
           .map((deal: any) => {
             const dealId = deal?.id ?? deal?.deal_id ?? deal?.dealId ?? deal?.dealID;
             const score = Number(deal?.score ?? deal?.overall_score ?? 0) || 0;
+            const fundabilityV1 = deal?.fundability_v1 && typeof deal.fundability_v1 === 'object' ? deal.fundability_v1 : null;
             return {
               id: String(dealId ?? ''),
               name: deal?.name || 'Unknown Deal',
@@ -52,6 +53,9 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
               stage: deal?.stage || 'intake',
               lastUpdated: 'Recently',
               trend: 'up' as const,
+
+				// Additive: Analysis Foundation fundability summary (if present).
+				fundability_v1: fundabilityV1,
             };
           })
           .filter((d: any) => typeof d.id === 'string' && d.id.length > 0);

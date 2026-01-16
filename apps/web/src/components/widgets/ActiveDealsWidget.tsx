@@ -9,6 +9,9 @@ interface Deal {
   stage: string;
   lastUpdated: string;
   trend: 'up' | 'down' | 'neutral';
+
+	// Additive: Analysis Foundation (Fundability) summary for list cards.
+	fundability_v1?: any;
 }
 
 interface ActiveDealsWidgetProps {
@@ -94,6 +97,22 @@ export function ActiveDealsWidget({ darkMode, deals, onDealClick }: ActiveDealsW
                   <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                     {deal.company} • {deal.stage}
                   </p>
+
+          {deal.fundability_v1 && typeof deal.fundability_v1 === 'object' && (
+            <p className={`text-[11px] mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+              Fundability: {String(
+                (deal.fundability_v1 as any)?.fundability_decision_v1?.outcome ??
+                  (deal.fundability_v1 as any)?.fundability_assessment_v1?.outcome ??
+                  '—'
+              )}
+              {(deal.fundability_v1 as any)?.phase_inference_v1?.company_phase
+                ? ` · ${(deal.fundability_v1 as any).phase_inference_v1.company_phase}`
+                : ''}
+              {typeof (deal.fundability_v1 as any)?.fundability_assessment_v1?.fundability_score_0_100 === 'number'
+                ? ` · ${Math.round((deal.fundability_v1 as any).fundability_assessment_v1.fundability_score_0_100)}/100`
+                : ''}
+            </p>
+          )}
                 </div>
                 <ArrowRight className={`w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity ${
                   darkMode ? 'text-gray-400' : 'text-gray-600'

@@ -712,6 +712,12 @@ type DIOAggregateRow = {
   phase1_score_evidence?: any;
   phase_b_latest_run?: any | null;
   phase_b_history?: any | null;
+
+  // Additive: Analysis Foundation (fundability) slices from dio_data
+  analysis_foundation_spec_version?: string | null;
+  phase_inference_v1?: any;
+  fundability_assessment_v1?: any;
+  fundability_decision_v1?: any;
 };
 
 function parseNullableNumber(value: unknown): number | null {
@@ -1911,6 +1917,11 @@ function mapDeal(
   const nodeEvidenceGateV1 = (dio as any)?.phase1_node_evidence_gate_v1;
   const topClaims = stripEvidenceFromClaims((dio as any)?.phase1_claims).slice(0, 8);
 
+  const analysisFoundationSpecVersion = (dio as any)?.analysis_foundation_spec_version;
+  const phaseInferenceV1 = (dio as any)?.phase_inference_v1;
+  const fundabilityAssessmentV1 = (dio as any)?.fundability_assessment_v1;
+  const fundabilityDecisionV1 = (dio as any)?.fundability_decision_v1;
+
   const execV2 = execV2Raw && typeof execV2Raw === "object" ? { ...execV2Raw } : null;
   const scoreBreakdownV1 = buildScoreBreakdownV1({
     accountability: (execV2Raw as any)?.accountability_v1,
@@ -1940,6 +1951,22 @@ function mapDeal(
     dioRunCount: typeof dio?.run_count === 'number' ? dio.run_count : undefined,
     dioAnalysisVersion: typeof dio?.analysis_version === 'number' ? dio.analysis_version : undefined,
 	};
+
+  const hasFundability =
+    (analysisFoundationSpecVersion && typeof analysisFoundationSpecVersion === "string") ||
+    (phaseInferenceV1 && typeof phaseInferenceV1 === "object") ||
+    (fundabilityAssessmentV1 && typeof fundabilityAssessmentV1 === "object") ||
+    (fundabilityDecisionV1 && typeof fundabilityDecisionV1 === "object");
+  if (hasFundability) {
+    out.fundability_v1 = {
+      spec_version: typeof analysisFoundationSpecVersion === "string" ? analysisFoundationSpecVersion : undefined,
+      phase_inference_v1: phaseInferenceV1 && typeof phaseInferenceV1 === "object" ? phaseInferenceV1 : undefined,
+      fundability_assessment_v1:
+        fundabilityAssessmentV1 && typeof fundabilityAssessmentV1 === "object" ? fundabilityAssessmentV1 : undefined,
+      fundability_decision_v1:
+        fundabilityDecisionV1 && typeof fundabilityDecisionV1 === "object" ? fundabilityDecisionV1 : undefined,
+    };
+  }
 
 	if (mode !== "phase1") {
     const fallbackScore = typeof dio?.overall_score === 'number' && Number.isFinite(dio.overall_score)
@@ -6389,6 +6416,10 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 		phase1_business_archetype_v1: any | null;
 		phase1_deal_overview_v2: any | null;
 		phase1_update_report_v1: any | null;
+		analysis_foundation_spec_version: string | null;
+		phase_inference_v1: any | null;
+		fundability_assessment_v1: any | null;
+		fundability_decision_v1: any | null;
 		phase_b_latest_run: any | null;
     phase_b_history: any | null;
     }>(
@@ -6405,6 +6436,10 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 				  latest.deal_overview_v2 as phase1_deal_overview_v2,
 				  latest.update_report_v1 as phase1_update_report_v1,
 				  latest.phase1_coverage,
+				  latest.analysis_foundation_spec_version,
+				  latest.phase_inference_v1,
+				  latest.fundability_assessment_v1,
+				  latest.fundability_decision_v1,
               phaseb.phase_b_latest_run,
     					phaseb.phase_b_history,
               stats.run_count
@@ -6428,6 +6463,10 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 					, (dio_data #> '{dio,phase1,deal_overview_v2}') AS deal_overview_v2
 					, (dio_data #> '{dio,phase1,update_report_v1}') AS update_report_v1
             , (dio_data #> '{dio,phase1,deal_summary_v2}') AS deal_summary_v2
+					, (dio_data #>> '{dio,spec_versions,analysis_foundation}') AS analysis_foundation_spec_version
+					, (dio_data #> '{dio,phase_inference_v1}') AS phase_inference_v1
+					, (dio_data #> '{dio,fundability_assessment_v1}') AS fundability_assessment_v1
+					, (dio_data #> '{dio,fundability_decision_v1}') AS fundability_decision_v1
              FROM deal_intelligence_objects
             WHERE deal_id = d.id
             ORDER BY analysis_version DESC
@@ -6501,6 +6540,10 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     phase1_deal_overview_v2: row.phase1_deal_overview_v2,
     phase1_update_report_v1: row.phase1_update_report_v1,
 		phase1_deal_summary_v2: (row as any).deal_summary_v2,
+		analysis_foundation_spec_version: row.analysis_foundation_spec_version,
+		phase_inference_v1: row.phase_inference_v1,
+		fundability_assessment_v1: row.fundability_assessment_v1,
+		fundability_decision_v1: row.fundability_decision_v1,
     phase1_claims: null,
     phase_b_latest_run: (row as any).phase_b_latest_run,
 		phase_b_history: (row as any).phase_b_history,
@@ -6611,6 +6654,10 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         recommendation: latest.recommendation,
         overall_score: latest.overall_score,
         overall_score_resolved: overallScoreResolved,
+		analysis_foundation_spec_version: (dioData as any)?.dio?.spec_versions?.analysis_foundation ?? null,
+		phase_inference_v1: (dioData as any)?.dio?.phase_inference_v1 ?? null,
+		fundability_assessment_v1: (dioData as any)?.dio?.fundability_assessment_v1 ?? null,
+		fundability_decision_v1: (dioData as any)?.dio?.fundability_decision_v1 ?? null,
         executive_summary_v1: (dioData as any)?.dio?.phase1?.executive_summary_v1 ?? null,
         executive_summary_v2: (dioData as any)?.dio?.phase1?.executive_summary_v2 ?? null,
         decision_summary_v1: (dioData as any)?.dio?.phase1?.decision_summary_v1 ?? null,

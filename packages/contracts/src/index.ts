@@ -21,6 +21,9 @@ export interface Deal {
 	lastUpdated?: string;
 	evidence_ids?: string[];
 
+	// Additive: Analysis Foundation (Fundability) — stable DTO surface for UI/API.
+	fundability_v1?: FundabilityV1DTO;
+
 	// Latest DIO metadata (derived from versioned DIO history)
 	dioVersionId?: string;
 	// Current DIO status/recommendation (e.g. GO/NO-GO/CONDITIONAL)
@@ -30,6 +33,52 @@ export interface Deal {
 	dioRunCount?: number;
 	// Latest DIO analysis_version
 	dioAnalysisVersion?: number;
+}
+
+// ============================================================================
+// Analysis Foundation: Fundability (V1)
+// ============================================================================
+
+export type FundabilityCompanyPhaseV1 =
+	| 'IDEA'
+	| 'PRE_SEED'
+	| 'SEED'
+	| 'SEED_PLUS'
+	| 'SERIES_A'
+	| 'SERIES_B';
+
+export type FundabilityGateOutcomeV1 = 'PASS' | 'CONDITIONAL' | 'FAIL';
+
+export interface FundabilityPhaseInferenceV1DTO {
+	company_phase: FundabilityCompanyPhaseV1;
+	confidence: number;
+	supporting_evidence?: Array<{ signal: string; source?: string; note?: string }>;
+	missing_evidence?: string[];
+	rationale?: string[];
+}
+
+export interface FundabilityAssessmentV1DTO {
+	outcome: FundabilityGateOutcomeV1;
+	reasons?: string[];
+	legacy_overall_score_0_100?: number | null;
+	fundability_score_0_100?: number | null;
+	caps?: { max_fundability_score_0_100?: number };
+	fundable_at_phase_if_downgraded?: FundabilityCompanyPhaseV1;
+}
+
+export interface FundabilityDecisionV1DTO {
+	outcome: FundabilityGateOutcomeV1;
+	should_block_investment: boolean;
+	missing_required_signals?: string[];
+	next_requests?: string[];
+}
+
+export interface FundabilityV1DTO {
+	// Version string from the authoritative analysis-foundation spec_versions.
+	spec_version?: string;
+	phase_inference_v1?: FundabilityPhaseInferenceV1DTO;
+	fundability_assessment_v1?: FundabilityAssessmentV1DTO;
+	fundability_decision_v1?: FundabilityDecisionV1DTO;
 }
 
 export interface DealListItem extends Deal {

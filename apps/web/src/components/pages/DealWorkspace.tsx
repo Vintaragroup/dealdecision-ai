@@ -415,6 +415,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const executiveSummaryV2 = (dealFromApi as any)?.ui?.executiveSummaryV2 as any;
   const executiveSummaryV1 = (dealFromApi as any)?.ui?.executiveSummary as any;
 	const dealSummaryV2 = (dealFromApi as any)?.ui?.dealSummaryV2 as any;
+  const fundabilityV1 = (dealFromApi as any)?.fundability_v1 as any;
 
   // Canonical Phase 1 signals source
   const phase1Signals = ((dealFromApi as any)?.phase1?.executive_summary_v2?.signals
@@ -3152,6 +3153,67 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 )}
 
                 <div>
+                  {fundabilityV1 && typeof fundabilityV1 === 'object' && (
+                    <>
+                      <h3 className={`text-sm mb-3 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        Fundability (Analysis Foundation)
+                      </h3>
+                      <div className={`p-4 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}>
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                              Outcome: {(fundabilityV1?.fundability_decision_v1?.outcome ?? fundabilityV1?.fundability_assessment_v1?.outcome ?? '—') as any}
+                            </div>
+                            <div className={`text-xs mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                              Phase: {(fundabilityV1?.phase_inference_v1?.company_phase ?? '—') as any}
+                              {typeof fundabilityV1?.spec_version === 'string' && fundabilityV1.spec_version.trim() ? ` · Spec ${fundabilityV1.spec_version}` : ''}
+                            </div>
+                          </div>
+                          <div className={`text-right ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                            <div className="text-xs">Fundability score</div>
+                            <div className="text-2xl font-semibold">
+                              {typeof fundabilityV1?.fundability_assessment_v1?.fundability_score_0_100 === 'number'
+                                ? Math.round(fundabilityV1.fundability_assessment_v1.fundability_score_0_100)
+                                : '—'}
+                            </div>
+                          </div>
+                        </div>
+
+                        {Array.isArray(fundabilityV1?.fundability_assessment_v1?.reasons) && fundabilityV1.fundability_assessment_v1.reasons.length > 0 && (
+                          <div className="mt-3">
+                            <div className={`text-xs mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Reasons</div>
+                            <ul className={`list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                              {fundabilityV1.fundability_assessment_v1.reasons
+                                .filter((r: any) => typeof r === 'string' && r.trim().length > 0)
+                                .slice(0, 6)
+                                .map((r: string, i: number) => (
+                                  <li key={i}>{r}</li>
+                                ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {Array.isArray(fundabilityV1?.fundability_decision_v1?.missing_required_signals) && fundabilityV1.fundability_decision_v1.missing_required_signals.length > 0 && (
+                          <div className="mt-3">
+                            <div className={`text-xs mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Missing required signals</div>
+                            <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                              {fundabilityV1.fundability_decision_v1.missing_required_signals.slice(0, 6).join(' • ')}
+                            </div>
+                          </div>
+                        )}
+
+                        {Array.isArray(fundabilityV1?.fundability_decision_v1?.next_requests) && fundabilityV1.fundability_decision_v1.next_requests.length > 0 && (
+                          <div className="mt-3">
+                            <div className={`text-xs mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Next requests</div>
+                            <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                              {fundabilityV1.fundability_decision_v1.next_requests.slice(0, 6).join(' • ')}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+
                   <h3 className={`text-sm mb-3 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                     Executive Summary
                   </h3>

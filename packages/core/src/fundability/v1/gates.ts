@@ -86,6 +86,13 @@ export function evaluateFundabilityGatesV1(params: {
     caps = { max_fundability_score_0_100: 60 };
   }
 
+  // Phase 2 (soft caps): when missing required evidence yields CONDITIONAL, cap fundability score.
+  // Cap value is intentionally conservative and deterministic; can be tuned via future MINOR spec revisions.
+  if (outcome === "CONDITIONAL" && !caps) {
+    caps = { max_fundability_score_0_100: 75 };
+    reasons.push("score_cap_applied:missing_required_evidence");
+  }
+
   // Optional guidance-only fallback (v1 addendum): if it FAILs at inferred phase, show nearest downgrade that clears.
   if (outcome === "FAIL") {
     const startIdx = phaseIndex(inferred);

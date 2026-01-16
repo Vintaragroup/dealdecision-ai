@@ -10,3 +10,8 @@ export function isFundabilityShadowModeEnabled(env: NodeJS.ProcessEnv = process.
   const raw = env.FUNDABILITY_SHADOW_MODE;
   return raw === "1" || raw === "true" || raw === "yes";
 }
+
+export function isFundabilitySoftCapsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.FUNDABILITY_SOFT_CAPS;
+  return raw === "1" || raw === "true" || raw === "yes";
+}

@@ -987,6 +987,9 @@ export type FundabilityGateOutcome = z.infer<typeof FundabilityGateOutcomeSchema
 export const FundabilityAssessmentV1Schema = z.object({
   outcome: FundabilityGateOutcomeSchema,
   reasons: z.array(z.string()).default([]),
+  // Phase 2 (soft caps): legacy score remains unchanged; fundability score may be capped.
+  legacy_overall_score_0_100: z.number().min(0).max(100).nullable().optional(),
+  fundability_score_0_100: z.number().min(0).max(100).nullable().optional(),
   caps: z
     .object({
       max_fundability_score_0_100: z.number().min(0).max(100).optional(),

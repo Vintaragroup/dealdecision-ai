@@ -35,7 +35,11 @@ import { getSelectedPolicyIdFromAny } from '../classification/get-selected-polic
 import { getStableDocumentId, selectDocumentRoles } from './document-roles';
 import { generatePhase1DIOV1, mergePhase1IntoDIO } from '../phase1/phase1-dio-v1.js';
 import { buildRealAssetFactArtifacts, detectRealEstatePreferredEquity } from './real-asset-facts';
-import { analysis_foundation_spec_version, isFundabilityShadowModeEnabled } from '../config/analysis-foundation.js';
+import {
+  analysis_foundation_spec_version,
+  isFundabilityShadowModeEnabled,
+  isFundabilitySoftCapsEnabled,
+} from '../config/analysis-foundation.js';
 import { inferCompanyPhaseV1, evaluateFundabilityGatesV1 } from '../fundability/v1/index.js';
 
 // ==================== Configuration ====================
@@ -1261,10 +1265,34 @@ export class DealOrchestrator {
     try {
       if (isFundabilityShadowModeEnabled()) {
         const phase_inference_v1 = inferCompanyPhaseV1(dio);
-        const fundability_assessment_v1 = evaluateFundabilityGatesV1({
+        const base_assessment = evaluateFundabilityGatesV1({
           dio,
           phase_inference: phase_inference_v1,
         });
+
+        const legacyOverall = (dio as any)?.overall_score;
+        const legacy_overall_score_0_100 =
+          typeof legacyOverall === 'number' && Number.isFinite(legacyOverall) ? legacyOverall : null;
+
+        const fundability_assessment_v1 = {
+          ...base_assessment,
+          ...(isFundabilitySoftCapsEnabled()
+            ? {
+                legacy_overall_score_0_100,
+                fundability_score_0_100:
+                  base_assessment.outcome === 'FAIL'
+                    ? null
+                    : legacy_overall_score_0_100 == null
+                      ? null
+                      : (() => {
+                          const cap = base_assessment.caps?.max_fundability_score_0_100;
+                          return typeof cap === 'number' && Number.isFinite(cap)
+                            ? Math.min(legacy_overall_score_0_100, cap)
+                            : legacy_overall_score_0_100;
+                        })(),
+              }
+            : {}),
+        };
 
         (dio as any).dio = {
           ...((dio as any).dio ?? {}),

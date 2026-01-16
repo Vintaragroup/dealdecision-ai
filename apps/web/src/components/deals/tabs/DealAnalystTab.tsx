@@ -19,6 +19,8 @@ import {
   apiGetDealVisualAssets,
   apiGetDocumentVisualAssets,
   apiDeleteVisualAssetSegmentOverride,
+  apiPostDealNodeAiAnalyze,
+  apiPostVisualAssetAiAnalyze,
   isLiveBackend,
   resolveApiAssetUrl,
   type DealLineageResponse,
@@ -70,6 +72,7 @@ const ANALYST_EDGE_TYPES = { floating: FloatingEdge } as const;
 type DealAnalystTabProps = {
   dealId: string;
   darkMode: boolean;
+  focusNodeId?: string | null;
 };
 
 type InspectorSelection =
@@ -85,8 +88,32 @@ type InspectorSelection =
       count_members?: number;
       member_visual_asset_ids?: string[];
     }
-  | { kind: 'visual_group'; label?: string; segment_label?: string; count_slides?: number; evidence_count_total?: number; avg_confidence?: number | null; sample_summaries?: string[] }
-  | { kind: 'evidence_group'; label?: string; evidence_count_total?: number; avg_confidence?: number | null; sample_summaries?: string[]; sample_snippet?: string | null; count?: number }
+  | {
+      kind: 'visual_group';
+      group_id?: string;
+      document_id?: string;
+      segment_id?: string;
+      member_visual_asset_ids?: string[];
+      label?: string;
+      segment_label?: string;
+      count_slides?: number;
+      evidence_count_total?: number;
+      avg_confidence?: number | null;
+      sample_summaries?: string[];
+    }
+  | {
+      kind: 'evidence_group';
+      group_id?: string;
+      document_id?: string;
+      segment_id?: string;
+      member_visual_asset_ids?: string[];
+      label?: string;
+      evidence_count_total?: number;
+      avg_confidence?: number | null;
+      sample_summaries?: string[];
+      sample_snippet?: string | null;
+      count?: number;
+    }
   | { kind: 'evidence'; visual_asset_id: string; count?: number };
 
 type StructuredViewMode = 'preview' | 'raw';
@@ -347,6 +374,57 @@ function safeJson(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+type ExcelSheetInspectorModel = {
+  sheetName: string | null;
+  summaryInvestor: string | null;
+  summaryAnalyst: string | null;
+  understandingV1: unknown | null;
+  metricsV1: unknown | null;
+};
+
+function getExcelSheetInspectorModel(structuredJson: unknown): ExcelSheetInspectorModel | null {
+  if (!isRecord(structuredJson)) return null;
+
+  const sheetName = typeof (structuredJson as any).sheet_name === 'string' ? String((structuredJson as any).sheet_name) : null;
+
+  const summaryInvestor =
+    typeof (structuredJson as any).summary_text_investor === 'string' && String((structuredJson as any).summary_text_investor).trim().length > 0
+      ? String((structuredJson as any).summary_text_investor)
+      : null;
+
+  const summaryAnalyst =
+    typeof (structuredJson as any).summary_text_analyst === 'string' && String((structuredJson as any).summary_text_analyst).trim().length > 0
+      ? String((structuredJson as any).summary_text_analyst)
+      : null;
+
+  const understandingV1 = (structuredJson as any).understanding_v1 ?? null;
+  const metricsV1 = (() => {
+    const uv1 = (structuredJson as any).understanding_v1;
+    if (isRecord(uv1) && (uv1 as any).metrics_v1 != null) return (uv1 as any).metrics_v1;
+    if ((structuredJson as any).metrics_v1 != null) return (structuredJson as any).metrics_v1;
+    return null;
+  })();
+
+  const looksLikeExcelSheet =
+    (structuredJson as any).structured_kind === 'excel_sheet' ||
+    (structuredJson as any).kind === 'excel_sheet' ||
+    sheetName != null ||
+    summaryInvestor != null ||
+    summaryAnalyst != null ||
+    understandingV1 != null ||
+    metricsV1 != null;
+
+  if (!looksLikeExcelSheet) return null;
+
+  return {
+    sheetName,
+    summaryInvestor,
+    summaryAnalyst,
+    understandingV1,
+    metricsV1,
+  };
 }
 
 function normalizeLineageNodeType(raw: any):
@@ -1332,7 +1410,7 @@ function findDealRootId(nodes: Node[], dealId: string): string {
   return explicit?.id ?? `deal:${dealId}`;
 }
 
-export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
+export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAnalystTabProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1406,7 +1484,421 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
   const [selectedVisual, setSelectedVisual] = useState<DealVisualAsset | null>(null);
   const [dealVisualAssets, setDealVisualAssets] = useState<DealVisualAsset[] | null>(null);
 
+  useEffect(() => {
+    if (!focusNodeId) return;
+    if (!focusNodeId.trim()) return;
+
+    // Try to focus only after nodes are populated.
+    const node = (nodes as Node[]).find((n) => String(n.id) === focusNodeId);
+    if (!node) return;
+
+    setInspectorOpen(true);
+    setSelectedRfNodeId(focusNodeId);
+
+    const data = ((node as any)?.data ?? {}) as any;
+    const nodeId = String((node as any)?.id ?? '');
+    const fromPrefix = (prefix: string) => (nodeId.startsWith(prefix) ? nodeId.slice(prefix.length) : '');
+
+    const documentIdFromNode = fromPrefix('document:') || fromPrefix('document_id:');
+    const visualIdFromNode = fromPrefix('visual_asset:') || fromPrefix('visual:');
+    const evidenceVisualIdFromNode = fromPrefix('evidence:');
+
+    const t = String(data.__node_type ?? (node as any)?.type ?? '').toLowerCase();
+
+    if (t === 'evidence') {
+      const visual_asset_id = String(data.visual_asset_id ?? evidenceVisualIdFromNode ?? '');
+      const count = typeof data.count === 'number' ? data.count : undefined;
+      setSelection({ kind: 'evidence', visual_asset_id, count });
+      setSelectedVisual(null);
+      setVisualDetailError(null);
+    } else if (t === 'visual_asset') {
+      const document_id = String(data.document_id ?? documentIdFromNode ?? '');
+      const visual_asset_id = String(data.visual_asset_id ?? visualIdFromNode ?? '');
+      if (document_id && visual_asset_id) {
+        setSelection({ kind: 'visual_asset', document_id, visual_asset_id });
+        loadVisualDetails(document_id, visual_asset_id);
+      }
+    } else if (t === 'document') {
+      setSelection({
+        kind: 'document',
+        document_id: String(data.document_id ?? documentIdFromNode ?? ''),
+        title: typeof data.title === 'string' ? data.title : undefined,
+        type: typeof data.type === 'string' ? data.type : undefined,
+        page_count: typeof data.page_count === 'number' ? data.page_count : undefined,
+      });
+      setSelectedVisual(null);
+      setVisualDetailError(null);
+    }
+
+    // Best-effort: keep the node in view.
+    try {
+      rfInstance?.fitView({ padding: 0.35, duration: 300, includeHiddenNodes: true });
+    } catch {
+      // ignore
+    }
+  }, [focusNodeId, nodes, rfInstance, dealId]);
+
   const [inspectorImageModal, setInspectorImageModal] = useState<{ src: string; title?: string } | null>(null);
+
+  const [aiAnalyzeModal, setAiAnalyzeModal] = useState<
+    | null
+    | {
+        audience: 'investor' | 'analyst';
+        visualAssetId: string;
+        loading: boolean;
+        answerMarkdown: string | null;
+        evidence: Array<{ path: string; value?: unknown; note?: string | null }> | null;
+        limitations: string[] | null;
+        followups: string[] | null;
+        model: string | null;
+        llmCalled: boolean | null;
+        cached: boolean | null;
+        durationMs: number | null;
+        analysisCreatedAt: string | null;
+        fetchedAt: number | null;
+        error: string | null;
+      }
+  >(null);
+
+  type AiAnalyzeCachedResult = {
+    audience: 'investor' | 'analyst';
+    visualAssetId: string;
+    answerMarkdown: string | null;
+    evidence: Array<{ path: string; value?: unknown; note?: string | null }> | null;
+    limitations: string[] | null;
+    followups: string[] | null;
+    model: string | null;
+    llmCalled: boolean | null;
+    cached: boolean | null;
+    durationMs: number | null;
+    analysisCreatedAt: string | null;
+    fetchedAt: number;
+  };
+
+  const aiAnalyzeCacheRef = useRef(new Map<string, AiAnalyzeCachedResult>());
+  const [aiAnalyzeCacheVersion, setAiAnalyzeCacheVersion] = useState(0);
+
+  const aiAnalyzeCacheKey = (visualAssetId: string, audience: 'investor' | 'analyst') => `${visualAssetId}:${audience}`;
+
+  const [nodeAiAnalyzeModal, setNodeAiAnalyzeModal] = useState<
+    | null
+    | {
+        audience: 'investor' | 'analyst';
+        nodeKey: string;
+        nodeKind: string;
+        requestNode: any | null;
+        requestSourceJson: any | null;
+        loading: boolean;
+        answerMarkdown: string | null;
+        evidence: Array<{ path: string; value?: unknown; note?: string | null }> | null;
+        limitations: string[] | null;
+        followups: string[] | null;
+        model: string | null;
+        llmCalled: boolean | null;
+        cached: boolean | null;
+        durationMs: number | null;
+        analysisCreatedAt: string | null;
+        fetchedAt: number | null;
+        error: string | null;
+      }
+  >(null);
+
+  type NodeAiAnalyzeCachedResult = {
+    audience: 'investor' | 'analyst';
+    nodeKey: string;
+    nodeKind: string;
+    requestNode: any | null;
+    requestSourceJson: any | null;
+    answerMarkdown: string | null;
+    evidence: Array<{ path: string; value?: unknown; note?: string | null }> | null;
+    limitations: string[] | null;
+    followups: string[] | null;
+    model: string | null;
+    llmCalled: boolean | null;
+    cached: boolean | null;
+    durationMs: number | null;
+    analysisCreatedAt: string | null;
+    fetchedAt: number;
+  };
+
+  const nodeAiAnalyzeCacheRef = useRef(new Map<string, NodeAiAnalyzeCachedResult>());
+  const [nodeAiAnalyzeCacheVersion, setNodeAiAnalyzeCacheVersion] = useState(0);
+
+  const nodeAiAnalyzeCacheKey = (nodeKey: string, audience: 'investor' | 'analyst') => `${nodeKey}:${audience}`;
+
+  const stableNodeKeyForSelection = (sel: InspectorSelection): string | null => {
+    if (sel.kind === 'deal') return `deal:${sel.deal_id || dealId}`;
+    if (sel.kind === 'document') return `document:${sel.document_id}`;
+    if (sel.kind === 'visual_asset') return `visual_asset:${sel.visual_asset_id}`;
+    if (sel.kind === 'evidence') return `evidence:${sel.visual_asset_id}`;
+    if (sel.kind === 'visual_group') {
+      if (typeof sel.group_id === 'string' && sel.group_id.trim()) return sel.group_id.trim();
+      if (sel.document_id && sel.segment_id) return `visual_group:${sel.document_id}:${sel.segment_id}`;
+      return null;
+    }
+    if (sel.kind === 'evidence_group') {
+      if (typeof sel.group_id === 'string' && sel.group_id.trim()) return sel.group_id.trim();
+      if (sel.document_id && sel.segment_id) return `evidence_group:${sel.document_id}:${sel.segment_id}`;
+      return null;
+    }
+    return null;
+  };
+
+  const runNodeAiAnalyze = async (
+    params: { audience: 'investor' | 'analyst'; selection: InspectorSelection },
+    opts?: { force?: boolean }
+  ) => {
+    const { audience, selection: sel } = params;
+    const force = opts?.force === true;
+
+    const nodeKind = sel.kind;
+    const stableNodeKey = stableNodeKeyForSelection(sel);
+
+    if (!force && stableNodeKey) {
+      void nodeAiAnalyzeCacheVersion;
+      const cached = nodeAiAnalyzeCacheRef.current.get(nodeAiAnalyzeCacheKey(stableNodeKey, audience));
+      if (cached) {
+        setNodeAiAnalyzeModal({
+          audience,
+          nodeKey: cached.nodeKey,
+          nodeKind: cached.nodeKind,
+          requestNode: cached.requestNode,
+          requestSourceJson: cached.requestSourceJson,
+          loading: false,
+          answerMarkdown: cached.answerMarkdown,
+          evidence: cached.evidence,
+          limitations: cached.limitations,
+          followups: cached.followups,
+          model: cached.model,
+          llmCalled: cached.llmCalled,
+          cached: cached.cached,
+          durationMs: cached.durationMs,
+          analysisCreatedAt: cached.analysisCreatedAt,
+          fetchedAt: cached.fetchedAt,
+          error: null,
+        });
+        return;
+      }
+    }
+
+    setNodeAiAnalyzeModal({
+      audience,
+      nodeKey: stableNodeKey ?? `selection:${sel.kind}`,
+      nodeKind,
+      requestNode: null,
+      requestSourceJson: null,
+      loading: true,
+      answerMarkdown: null,
+      evidence: null,
+      limitations: null,
+      followups: null,
+      model: null,
+      llmCalled: null,
+      cached: null,
+      durationMs: null,
+      analysisCreatedAt: null,
+      fetchedAt: null,
+      error: null,
+    });
+
+    const payload = (() => {
+      if (sel.kind === 'deal') return { node: { kind: 'deal' }, source_json: undefined };
+      if (sel.kind === 'document') return { node: { kind: 'document', document_id: sel.document_id }, source_json: undefined };
+      if (sel.kind === 'visual_asset') return { node: { kind: 'visual_asset', visual_asset_id: sel.visual_asset_id }, source_json: undefined };
+      if (sel.kind === 'evidence') return { node: { kind: 'evidence', visual_asset_id: sel.visual_asset_id }, source_json: undefined };
+
+      if (sel.kind === 'visual_group' || sel.kind === 'evidence_group') {
+        return {
+          node: {
+            kind: sel.kind,
+            group_id: typeof sel.group_id === 'string' ? sel.group_id : undefined,
+            document_id: typeof sel.document_id === 'string' ? sel.document_id : undefined,
+            segment_id: typeof sel.segment_id === 'string' ? sel.segment_id : undefined,
+            member_visual_asset_ids: Array.isArray(sel.member_visual_asset_ids) ? sel.member_visual_asset_ids : undefined,
+          },
+          source_json: undefined,
+        };
+      }
+
+      if (sel.kind === 'visual_asset_group') {
+        const memberIds = Array.isArray(sel.member_visual_asset_ids) ? sel.member_visual_asset_ids : [];
+        const memberSummaries = memberIds
+          .slice(0, 30)
+          .map((id) => {
+            const a = visualAssetCacheRef.current.get(id);
+            return {
+              visual_asset_id: id,
+              asset_type: a?.asset_type ?? null,
+              page_index: typeof a?.page_index === 'number' ? a.page_index : null,
+              ocr_text_snippet: typeof a?.ocr_text === 'string' ? a.ocr_text.slice(0, 240) : null,
+              structured_kind: typeof (a as any)?.structured_kind === 'string' ? String((a as any).structured_kind) : null,
+            };
+          });
+        return {
+          node: sel,
+          source_json: { selection: sel, member_summaries: memberSummaries },
+        };
+      }
+
+      return { node: sel, source_json: { selection: sel } };
+    })();
+
+    setNodeAiAnalyzeModal((prev) => {
+      if (!prev) return prev;
+      if (prev.audience !== audience) return prev;
+      return {
+        ...prev,
+        requestNode: (payload as any).node ?? null,
+        requestSourceJson: typeof (payload as any).source_json === 'undefined' ? null : (payload as any).source_json,
+      };
+    });
+
+    try {
+      const res = await apiPostDealNodeAiAnalyze({
+        dealId,
+        audience,
+        force,
+        ...(payload as any),
+      });
+
+      const fetchedAt = Date.now();
+      const nodeKey = typeof (res as any)?.node_key === 'string' ? String((res as any).node_key) : stableNodeKey ?? `selection:${sel.kind}`;
+
+      const next: NodeAiAnalyzeCachedResult = {
+        audience,
+        nodeKey,
+        nodeKind,
+        requestNode: (payload as any).node ?? null,
+        requestSourceJson: typeof (payload as any).source_json === 'undefined' ? null : (payload as any).source_json,
+        answerMarkdown: typeof (res as any)?.answer_markdown === 'string' ? (res as any).answer_markdown : null,
+        evidence: Array.isArray((res as any)?.evidence) ? (res as any).evidence : null,
+        limitations: Array.isArray((res as any)?.limitations) ? (res as any).limitations : null,
+        followups: Array.isArray((res as any)?.followups) ? (res as any).followups : null,
+        model: typeof (res as any)?.model === 'string' ? String((res as any).model) : null,
+        llmCalled: typeof (res as any)?.llm_called === 'boolean' ? Boolean((res as any).llm_called) : null,
+        cached: typeof (res as any)?.cached === 'boolean' ? Boolean((res as any).cached) : null,
+        durationMs: typeof (res as any)?.duration_ms === 'number' ? Number((res as any).duration_ms) : null,
+        analysisCreatedAt: typeof (res as any)?.analysis_created_at === 'string' ? String((res as any).analysis_created_at) : null,
+        fetchedAt,
+      };
+
+      nodeAiAnalyzeCacheRef.current.set(nodeAiAnalyzeCacheKey(nodeKey, audience), next);
+      setNodeAiAnalyzeCacheVersion((v) => v + 1);
+
+      setNodeAiAnalyzeModal({
+        audience,
+        nodeKey,
+        nodeKind,
+        requestNode: next.requestNode,
+        requestSourceJson: next.requestSourceJson,
+        loading: false,
+        answerMarkdown: next.answerMarkdown,
+        evidence: next.evidence,
+        limitations: next.limitations,
+        followups: next.followups,
+        model: next.model,
+        llmCalled: next.llmCalled,
+        cached: next.cached,
+        durationMs: next.durationMs,
+        analysisCreatedAt: next.analysisCreatedAt,
+        fetchedAt: next.fetchedAt,
+        error: null,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'AI analyze failed';
+      setNodeAiAnalyzeModal({
+        audience,
+        nodeKey: stableNodeKey ?? `selection:${sel.kind}`,
+        nodeKind,
+        requestNode: (payload as any).node ?? null,
+        requestSourceJson: typeof (payload as any).source_json === 'undefined' ? null : (payload as any).source_json,
+        loading: false,
+        answerMarkdown: null,
+        evidence: null,
+        limitations: null,
+        followups: null,
+        model: null,
+        llmCalled: null,
+        cached: null,
+        durationMs: null,
+        analysisCreatedAt: null,
+        fetchedAt: null,
+        error: msg,
+      });
+    }
+  };
+
+  const rerunNodeAiAnalyzeModal = async () => {
+    const m = nodeAiAnalyzeModal;
+    if (!m) return;
+
+    setNodeAiAnalyzeModal({
+      ...m,
+      loading: true,
+      error: null,
+    });
+
+    try {
+      const res = await apiPostDealNodeAiAnalyze({
+        dealId,
+        audience: m.audience,
+        force: true,
+        ...(m.requestNode ? { node: m.requestNode } : {}),
+        ...(m.requestSourceJson ? { source_json: m.requestSourceJson } : {}),
+      });
+
+      const fetchedAt = Date.now();
+      const nodeKey = typeof (res as any)?.node_key === 'string' ? String((res as any).node_key) : m.nodeKey;
+
+      const next: NodeAiAnalyzeCachedResult = {
+        audience: m.audience,
+        nodeKey,
+        nodeKind: m.nodeKind,
+        requestNode: m.requestNode,
+        requestSourceJson: m.requestSourceJson,
+        answerMarkdown: typeof (res as any)?.answer_markdown === 'string' ? (res as any).answer_markdown : null,
+        evidence: Array.isArray((res as any)?.evidence) ? (res as any).evidence : null,
+        limitations: Array.isArray((res as any)?.limitations) ? (res as any).limitations : null,
+        followups: Array.isArray((res as any)?.followups) ? (res as any).followups : null,
+        model: typeof (res as any)?.model === 'string' ? String((res as any).model) : null,
+        llmCalled: typeof (res as any)?.llm_called === 'boolean' ? Boolean((res as any).llm_called) : null,
+        cached: typeof (res as any)?.cached === 'boolean' ? Boolean((res as any).cached) : null,
+        durationMs: typeof (res as any)?.duration_ms === 'number' ? Number((res as any).duration_ms) : null,
+        analysisCreatedAt: typeof (res as any)?.analysis_created_at === 'string' ? String((res as any).analysis_created_at) : null,
+        fetchedAt,
+      };
+
+      nodeAiAnalyzeCacheRef.current.set(nodeAiAnalyzeCacheKey(nodeKey, m.audience), next);
+      setNodeAiAnalyzeCacheVersion((v) => v + 1);
+
+      setNodeAiAnalyzeModal({
+        audience: next.audience,
+        nodeKey: next.nodeKey,
+        nodeKind: next.nodeKind,
+        requestNode: next.requestNode,
+        requestSourceJson: next.requestSourceJson,
+        loading: false,
+        answerMarkdown: next.answerMarkdown,
+        evidence: next.evidence,
+        limitations: next.limitations,
+        followups: next.followups,
+        model: next.model,
+        llmCalled: next.llmCalled,
+        cached: next.cached,
+        durationMs: next.durationMs,
+        analysisCreatedAt: next.analysisCreatedAt,
+        fetchedAt: next.fetchedAt,
+        error: null,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'AI analyze failed';
+      setNodeAiAnalyzeModal({
+        ...m,
+        loading: false,
+        error: msg,
+      });
+    }
+  };
 
   const [imageLoadError, setImageLoadError] = useState(false);
   const [showBboxOverlay, setShowBboxOverlay] = useState(false);
@@ -1436,6 +1928,100 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
   useEffect(() => {
     setInspectorImageModal(null);
   }, [selection.kind, (selection as any)?.visual_asset_id, (selection as any)?.visual_asset_group_id, selectedRfNodeId]);
+
+  const runAiAnalyze = async (
+    params: { visualAssetId: string; audience: 'investor' | 'analyst' },
+    opts?: { force?: boolean }
+  ) => {
+    const { visualAssetId, audience } = params;
+    const force = opts?.force === true;
+
+    if (!force) {
+      const cached = aiAnalyzeCacheRef.current.get(aiAnalyzeCacheKey(visualAssetId, audience));
+      if (cached) {
+        setAiAnalyzeModal({
+          audience,
+          visualAssetId,
+          loading: false,
+          answerMarkdown: cached.answerMarkdown,
+          evidence: cached.evidence,
+          limitations: cached.limitations,
+          followups: cached.followups,
+          model: cached.model,
+          llmCalled: cached.llmCalled,
+          cached: cached.cached,
+          durationMs: cached.durationMs,
+          analysisCreatedAt: cached.analysisCreatedAt,
+          fetchedAt: cached.fetchedAt,
+          error: null,
+        });
+        return;
+      }
+    }
+
+    setAiAnalyzeModal({
+      audience,
+      visualAssetId,
+      loading: true,
+      answerMarkdown: null,
+      evidence: null,
+      limitations: null,
+      followups: null,
+      model: null,
+      llmCalled: null,
+      cached: null,
+      durationMs: null,
+      analysisCreatedAt: null,
+      fetchedAt: null,
+      error: null,
+    });
+
+    try {
+      const res = await apiPostVisualAssetAiAnalyze({ visualAssetId, audience, force });
+      const fetchedAt = Date.now();
+      const next: AiAnalyzeCachedResult = {
+        audience,
+        visualAssetId,
+        answerMarkdown: typeof res?.answer_markdown === 'string' ? res.answer_markdown : null,
+        evidence: Array.isArray(res?.evidence) ? res.evidence : null,
+        limitations: Array.isArray(res?.limitations) ? res.limitations : null,
+        followups: Array.isArray(res?.followups) ? res.followups : null,
+        model: typeof (res as any)?.model === 'string' ? String((res as any).model) : null,
+        llmCalled: typeof (res as any)?.llm_called === 'boolean' ? Boolean((res as any).llm_called) : null,
+        cached: typeof (res as any)?.cached === 'boolean' ? Boolean((res as any).cached) : null,
+        durationMs: typeof (res as any)?.duration_ms === 'number' ? Number((res as any).duration_ms) : null,
+        analysisCreatedAt: typeof (res as any)?.analysis_created_at === 'string' ? String((res as any).analysis_created_at) : null,
+        fetchedAt,
+      };
+
+      aiAnalyzeCacheRef.current.set(aiAnalyzeCacheKey(visualAssetId, audience), next);
+      setAiAnalyzeCacheVersion((v) => v + 1);
+
+      setAiAnalyzeModal({
+        ...next,
+        loading: false,
+        error: null,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'AI analyze failed';
+      setAiAnalyzeModal({
+        audience,
+        visualAssetId,
+        loading: false,
+        answerMarkdown: null,
+        evidence: null,
+        limitations: null,
+        followups: null,
+        model: null,
+        llmCalled: null,
+        cached: null,
+        durationMs: null,
+        analysisCreatedAt: null,
+        fetchedAt: null,
+        error: msg,
+      });
+    }
+  };
 
   useEffect(() => {
     if (selection.kind !== 'none' && !inspectorOpen) setInspectorOpen(true);
@@ -2533,6 +3119,12 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                 }
 
                 if (t === 'visual_group') {
+                  const groupIdFromNode = typeof (data as any).group_id === 'string' ? String((data as any).group_id) : String(nodeId ?? '');
+                  const docId = String((data as any).document_id ?? (data as any).__docId ?? documentIdFromNode ?? '').trim();
+                  const segId = String((data as any).segment_id ?? (data as any).__segmentId ?? '').trim();
+                  const memberIds = Array.isArray((data as any).member_visual_asset_ids)
+                    ? (((data as any).member_visual_asset_ids as unknown[]).filter((x) => typeof x === 'string') as string[])
+                    : undefined;
                   const summaries = Array.isArray(data.sample_summaries)
                     ? data.sample_summaries.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
                     : undefined;
@@ -2551,6 +3143,10 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
 
                   setSelection({
                     kind: 'visual_group',
+                    group_id: groupIdFromNode && groupIdFromNode.trim().length > 0 ? groupIdFromNode.trim() : undefined,
+                    document_id: docId || undefined,
+                    segment_id: segId || undefined,
+                    member_visual_asset_ids: memberIds,
                     label: typeof data.label === 'string' ? data.label : undefined,
                     segment_label: typeof data.segment_label === 'string' ? data.segment_label : undefined,
                     count_slides: slideCount,
@@ -2564,6 +3160,12 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                 }
 
                 if (t === 'evidence_group') {
+                  const groupIdFromNode = typeof (data as any).group_id === 'string' ? String((data as any).group_id) : String(nodeId ?? '');
+                  const docId = String((data as any).document_id ?? (data as any).__docId ?? documentIdFromNode ?? '').trim();
+                  const segId = String((data as any).segment_id ?? (data as any).__segmentId ?? '').trim();
+                  const memberIds = Array.isArray((data as any).member_visual_asset_ids)
+                    ? (((data as any).member_visual_asset_ids as unknown[]).filter((x) => typeof x === 'string') as string[])
+                    : undefined;
                   const summaries = Array.isArray(data.sample_summaries)
                     ? data.sample_summaries.filter((s: any) => typeof s === 'string' && s.trim().length > 0)
                     : undefined;
@@ -2580,6 +3182,10 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
 
                   setSelection({
                     kind: 'evidence_group',
+                    group_id: groupIdFromNode && groupIdFromNode.trim().length > 0 ? groupIdFromNode.trim() : undefined,
+                    document_id: docId || undefined,
+                    segment_id: segId || undefined,
+                    member_visual_asset_ids: memberIds,
                     label: typeof data.label === 'string' ? data.label : undefined,
                     evidence_count_total: evidenceCountTotal,
                     avg_confidence: avgConfidence,
@@ -2870,6 +3476,24 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                     <div className="text-xs opacity-70">Deal</div>
                     <div className="font-medium">{selection.name || selection.deal_id}</div>
                   </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant={darkMode ? 'secondary' : 'outline'}
+                      darkMode={darkMode}
+                      onClick={() => runNodeAiAnalyze({ audience: 'investor', selection })}
+                    >
+                      AI analyze (Investor)
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={darkMode ? 'secondary' : 'outline'}
+                      darkMode={darkMode}
+                      onClick={() => runNodeAiAnalyze({ audience: 'analyst', selection })}
+                    >
+                      AI analyze (Analyst)
+                    </Button>
+                  </div>
                 </div>
               ) : null}
 
@@ -2881,8 +3505,57 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                     {selection.type ? `Type: ${selection.type}` : 'Type: —'}
                     {typeof selection.page_count === 'number' ? ` · Pages: ${selection.page_count}` : ''}
                   </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant={darkMode ? 'secondary' : 'outline'}
+                      darkMode={darkMode}
+                      onClick={() => runNodeAiAnalyze({ audience: 'investor', selection })}
+                    >
+                      AI analyze (Investor)
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={darkMode ? 'secondary' : 'outline'}
+                      darkMode={darkMode}
+                      onClick={() => runNodeAiAnalyze({ audience: 'analyst', selection })}
+                    >
+                      AI analyze (Analyst)
+                    </Button>
+                  </div>
                   <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                     Select a visual asset node to view OCR, structured JSON, and evidence.
+                  </div>
+                </div>
+              ) : null}
+
+              {selection.kind === 'visual_asset_group' ? (
+                <div className="space-y-2">
+                  <div className="text-xs opacity-70">Visual asset group</div>
+                  <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{selection.page_label || selection.visual_asset_group_id}</div>
+                  <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    Members: {typeof selection.count_members === 'number' ? selection.count_members : Array.isArray(selection.member_visual_asset_ids) ? selection.member_visual_asset_ids.length : '—'}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant={darkMode ? 'secondary' : 'outline'}
+                      darkMode={darkMode}
+                      onClick={() => runNodeAiAnalyze({ audience: 'investor', selection })}
+                    >
+                      AI analyze (Investor)
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={darkMode ? 'secondary' : 'outline'}
+                      darkMode={darkMode}
+                      onClick={() => runNodeAiAnalyze({ audience: 'analyst', selection })}
+                    >
+                      AI analyze (Analyst)
+                    </Button>
+                  </div>
+                  <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                    For deeper grounding, analyze a member visual asset.
                   </div>
                 </div>
               ) : null}
@@ -2901,6 +3574,24 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                       const pct = v <= 1 ? v * 100 : v;
                       return `${Math.round(pct)}%`;
                     })()}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant={darkMode ? 'secondary' : 'outline'}
+                      darkMode={darkMode}
+                      onClick={() => runNodeAiAnalyze({ audience: 'investor', selection })}
+                    >
+                      AI analyze (Investor)
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={darkMode ? 'secondary' : 'outline'}
+                      darkMode={darkMode}
+                      onClick={() => runNodeAiAnalyze({ audience: 'analyst', selection })}
+                    >
+                      AI analyze (Analyst)
+                    </Button>
                   </div>
                   {Array.isArray(selection.sample_summaries) && selection.sample_summaries.length > 0 ? (
                     <div className="space-y-1">
@@ -2929,6 +3620,24 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                       const pct = v <= 1 ? v * 100 : v;
                       return `${Math.round(pct)}%`;
                     })()}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant={darkMode ? 'secondary' : 'outline'}
+                      darkMode={darkMode}
+                      onClick={() => runNodeAiAnalyze({ audience: 'investor', selection })}
+                    >
+                      AI analyze (Investor)
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={darkMode ? 'secondary' : 'outline'}
+                      darkMode={darkMode}
+                      onClick={() => runNodeAiAnalyze({ audience: 'analyst', selection })}
+                    >
+                      AI analyze (Analyst)
+                    </Button>
                   </div>
                   {(() => {
                     const snippets = Array.isArray(selection.sample_summaries)
@@ -2960,6 +3669,24 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                   <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                     Count: {typeof selection.count === 'number' ? selection.count : '—'}
                   </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant={darkMode ? 'secondary' : 'outline'}
+                      darkMode={darkMode}
+                      onClick={() => runNodeAiAnalyze({ audience: 'investor', selection })}
+                    >
+                      AI analyze (Investor)
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={darkMode ? 'secondary' : 'outline'}
+                      darkMode={darkMode}
+                      onClick={() => runNodeAiAnalyze({ audience: 'analyst', selection })}
+                    >
+                      AI analyze (Analyst)
+                    </Button>
+                  </div>
                   <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                     Select the visual asset node to view evidence snippets.
                   </div>
@@ -2971,6 +3698,25 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                   <div className="text-xs opacity-70">Visual asset</div>
                   <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                     Asset ID: <span className="font-mono">{selection.visual_asset_id}</span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant={darkMode ? 'secondary' : 'outline'}
+                      darkMode={darkMode}
+                      onClick={() => runAiAnalyze({ visualAssetId: selection.visual_asset_id, audience: 'investor' })}
+                    >
+                      AI analyze (Investor)
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={darkMode ? 'secondary' : 'outline'}
+                      darkMode={darkMode}
+                      onClick={() => runAiAnalyze({ visualAssetId: selection.visual_asset_id, audience: 'analyst' })}
+                    >
+                      AI analyze (Analyst)
+                    </Button>
                   </div>
 
                   {(() => {
@@ -3410,6 +4156,129 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
                         </details>
                       ) : null}
 
+                      {(() => {
+                        const m = getExcelSheetInspectorModel(selectedVisual.structured_json);
+                        if (!m) return null;
+
+                        const cardClass = `rounded-md border p-3 ${darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'}`;
+                        const titleClass = `text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`;
+                        const subClass = `text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`;
+                        const preClass = `mt-2 whitespace-pre-wrap text-xs rounded-md p-2 border overflow-auto max-h-[240px] ${
+                          darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
+                        }`;
+
+                        if (!m.summaryInvestor && !m.summaryAnalyst && !m.understandingV1 && !m.metricsV1) return null;
+
+                        return (
+                          <div className="mt-3 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className={titleClass}>Excel sheet summaries & metrics</div>
+                              {m.sheetName ? <div className={subClass}>Sheet: {m.sheetName}</div> : null}
+                            </div>
+
+                            {(m.summaryInvestor || m.summaryAnalyst) ? (
+                              <div className="grid grid-cols-1 gap-2">
+                                {m.summaryInvestor ? (
+                                  <div className={cardClass}>
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div className={titleClass}>Investor summary</div>
+                                      {(() => {
+                                        void aiAnalyzeCacheVersion;
+                                        const vid = selectedVisual.visual_asset_id;
+                                        const cachedLocal = aiAnalyzeCacheRef.current.get(aiAnalyzeCacheKey(vid, 'investor'));
+                                        const serverLast = typeof (selectedVisual as any)?.ai_analysis_investor_last_at === 'string'
+                                          ? String((selectedVisual as any).ai_analysis_investor_last_at)
+                                          : null;
+                                        const cached = Boolean(cachedLocal || (serverLast && serverLast.length > 0));
+                                        return (
+                                          <Button
+                                            size="sm"
+                                            variant={darkMode ? 'secondary' : 'outline'}
+                                            darkMode={darkMode}
+                                            onClick={() => runAiAnalyze({ visualAssetId: vid, audience: 'investor' })}
+                                          >
+                                            {cached ? 'View AI analysis' : 'AI analyze'}
+                                          </Button>
+                                        );
+                                      })()}
+                                    </div>
+                                    {(() => {
+                                      void aiAnalyzeCacheVersion;
+                                      const vid = selectedVisual.visual_asset_id;
+                                      const cachedLocal = aiAnalyzeCacheRef.current.get(aiAnalyzeCacheKey(vid, 'investor'));
+                                      const localStamp = cachedLocal?.analysisCreatedAt || (cachedLocal ? new Date(cachedLocal.fetchedAt).toISOString() : null);
+                                      const serverStamp = typeof (selectedVisual as any)?.ai_analysis_investor_last_at === 'string'
+                                        ? String((selectedVisual as any).ai_analysis_investor_last_at)
+                                        : null;
+                                      const stamp = localStamp || serverStamp;
+                                      if (!stamp) return null;
+                                      return <div className={subClass}>Last AI analysis: {new Date(stamp).toLocaleString()}</div>;
+                                    })()}
+                                    <pre className={preClass}>{m.summaryInvestor}</pre>
+                                  </div>
+                                ) : null}
+                                {m.summaryAnalyst ? (
+                                  <div className={cardClass}>
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div className={titleClass}>Analyst summary</div>
+                                      {(() => {
+                                        void aiAnalyzeCacheVersion;
+                                        const vid = selectedVisual.visual_asset_id;
+                                        const cachedLocal = aiAnalyzeCacheRef.current.get(aiAnalyzeCacheKey(vid, 'analyst'));
+                                        const serverLast = typeof (selectedVisual as any)?.ai_analysis_analyst_last_at === 'string'
+                                          ? String((selectedVisual as any).ai_analysis_analyst_last_at)
+                                          : null;
+                                        const cached = Boolean(cachedLocal || (serverLast && serverLast.length > 0));
+                                        return (
+                                          <Button
+                                            size="sm"
+                                            variant={darkMode ? 'secondary' : 'outline'}
+                                            darkMode={darkMode}
+                                            onClick={() => runAiAnalyze({ visualAssetId: vid, audience: 'analyst' })}
+                                          >
+                                            {cached ? 'View AI analysis' : 'AI analyze'}
+                                          </Button>
+                                        );
+                                      })()}
+                                    </div>
+                                    {(() => {
+                                      void aiAnalyzeCacheVersion;
+                                      const vid = selectedVisual.visual_asset_id;
+                                      const cachedLocal = aiAnalyzeCacheRef.current.get(aiAnalyzeCacheKey(vid, 'analyst'));
+                                      const localStamp = cachedLocal?.analysisCreatedAt || (cachedLocal ? new Date(cachedLocal.fetchedAt).toISOString() : null);
+                                      const serverStamp = typeof (selectedVisual as any)?.ai_analysis_analyst_last_at === 'string'
+                                        ? String((selectedVisual as any).ai_analysis_analyst_last_at)
+                                        : null;
+                                      const stamp = localStamp || serverStamp;
+                                      if (!stamp) return null;
+                                      return <div className={subClass}>Last AI analysis: {new Date(stamp).toLocaleString()}</div>;
+                                    })()}
+                                    <pre className={preClass}>{m.summaryAnalyst}</pre>
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : null}
+
+                            {(m.understandingV1 != null || m.metricsV1 != null) ? (
+                              <div className="grid grid-cols-1 gap-2">
+                                {m.understandingV1 != null ? (
+                                  <div className={cardClass}>
+                                    <div className={titleClass}>Understanding (v1)</div>
+                                    <pre className={preClass}>{safeJson(m.understandingV1)}</pre>
+                                  </div>
+                                ) : null}
+                                {m.metricsV1 != null ? (
+                                  <div className={cardClass}>
+                                    <div className={titleClass}>Metrics (v1)</div>
+                                    <pre className={preClass}>{safeJson(m.metricsV1)}</pre>
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })()}
+
                       {selectedVisual.structured_json != null ? (
                         <details>
                           <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Structured JSON</summary>
@@ -3826,6 +4695,218 @@ export function DealAnalystTab({ dealId, darkMode }: DealAnalystTabProps) {
           ) : null}
         </div>
       </div>
+
+      <Modal
+        isOpen={aiAnalyzeModal != null}
+        onClose={() => setAiAnalyzeModal(null)}
+        title={
+          aiAnalyzeModal
+            ? `AI analysis — ${aiAnalyzeModal.audience === 'investor' ? 'Investor' : 'Analyst'}`
+            : 'AI analysis'
+        }
+        size="lg"
+        darkMode={darkMode}
+      >
+        {aiAnalyzeModal ? (
+          <div className="space-y-3">
+            {aiAnalyzeModal.loading ? (
+              <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Analyzing…</div>
+            ) : null}
+
+            {!aiAnalyzeModal.loading && (aiAnalyzeModal.analysisCreatedAt != null || aiAnalyzeModal.fetchedAt != null) ? (
+              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                {(() => {
+                  const stamp =
+                    typeof (aiAnalyzeModal as any).analysisCreatedAt === 'string' && String((aiAnalyzeModal as any).analysisCreatedAt).length > 0
+                      ? String((aiAnalyzeModal as any).analysisCreatedAt)
+                      : aiAnalyzeModal.fetchedAt != null
+                        ? new Date(aiAnalyzeModal.fetchedAt).toISOString()
+                        : null;
+                  if (!stamp) return null;
+                  return <>Last updated: {new Date(stamp).toLocaleString()}</>;
+                })()}
+              </div>
+            ) : null}
+
+            {aiAnalyzeModal.error ? (
+              <div className={`text-sm ${darkMode ? 'text-red-300' : 'text-red-700'}`}>{aiAnalyzeModal.error}</div>
+            ) : null}
+
+            {aiAnalyzeModal.model || aiAnalyzeModal.llmCalled != null || (aiAnalyzeModal as any).cached != null || aiAnalyzeModal.durationMs != null ? (
+              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                {aiAnalyzeModal.model ? `Model: ${aiAnalyzeModal.model}` : 'Model: (unknown)'}
+                {aiAnalyzeModal.llmCalled != null ? ` • LLM called: ${aiAnalyzeModal.llmCalled ? 'yes' : 'no'}` : ''}
+                {(aiAnalyzeModal as any).cached != null ? ` • Cached: ${(aiAnalyzeModal as any).cached ? 'yes' : 'no'}` : ''}
+                {aiAnalyzeModal.durationMs != null ? ` • ${Math.round(aiAnalyzeModal.durationMs)}ms` : ''}
+              </div>
+            ) : null}
+
+            {!aiAnalyzeModal.loading ? (
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant={darkMode ? 'secondary' : 'outline'}
+                  darkMode={darkMode}
+                  onClick={() => runAiAnalyze({ visualAssetId: aiAnalyzeModal.visualAssetId, audience: aiAnalyzeModal.audience }, { force: true })}
+                >
+                  Re-run analysis
+                </Button>
+              </div>
+            ) : null}
+
+            {aiAnalyzeModal.answerMarkdown ? (
+              <pre
+                className={`whitespace-pre-wrap text-xs rounded-md p-3 border overflow-auto max-h-[60vh] ${
+                  darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
+                }`}
+              >
+                {aiAnalyzeModal.answerMarkdown}
+              </pre>
+            ) : null}
+
+            {Array.isArray(aiAnalyzeModal.evidence) && aiAnalyzeModal.evidence.length > 0 ? (
+              <details>
+                <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Evidence</summary>
+                <pre
+                  className={`mt-2 whitespace-pre-wrap text-xs rounded-md p-3 border overflow-auto max-h-[30vh] ${
+                    darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
+                  }`}
+                >
+                  {safeJson(aiAnalyzeModal.evidence)}
+                </pre>
+              </details>
+            ) : null}
+
+            {Array.isArray(aiAnalyzeModal.limitations) && aiAnalyzeModal.limitations.length > 0 ? (
+              <details>
+                <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Limitations</summary>
+                <ul className={`mt-2 list-disc pl-5 text-sm space-y-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  {aiAnalyzeModal.limitations.slice(0, 10).map((s, idx) => (
+                    <li key={`ai-limit-${idx}`}>{s}</li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+
+            {Array.isArray(aiAnalyzeModal.followups) && aiAnalyzeModal.followups.length > 0 ? (
+              <details>
+                <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Suggested follow-ups</summary>
+                <ul className={`mt-2 list-disc pl-5 text-sm space-y-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  {aiAnalyzeModal.followups.slice(0, 10).map((s, idx) => (
+                    <li key={`ai-follow-${idx}`}>{s}</li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        isOpen={nodeAiAnalyzeModal != null}
+        onClose={() => setNodeAiAnalyzeModal(null)}
+        title={
+          nodeAiAnalyzeModal
+            ? `AI analysis — ${nodeAiAnalyzeModal.nodeKind} — ${nodeAiAnalyzeModal.audience === 'investor' ? 'Investor' : 'Analyst'}`
+            : 'AI analysis'
+        }
+        size="lg"
+        darkMode={darkMode}
+      >
+        {nodeAiAnalyzeModal ? (
+          <div className="space-y-3">
+            {nodeAiAnalyzeModal.loading ? (
+              <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Analyzing…</div>
+            ) : null}
+
+            {!nodeAiAnalyzeModal.loading && (nodeAiAnalyzeModal.analysisCreatedAt != null || nodeAiAnalyzeModal.fetchedAt != null) ? (
+              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                {(() => {
+                  const stamp =
+                    typeof nodeAiAnalyzeModal.analysisCreatedAt === 'string' && nodeAiAnalyzeModal.analysisCreatedAt.length > 0
+                      ? nodeAiAnalyzeModal.analysisCreatedAt
+                      : nodeAiAnalyzeModal.fetchedAt != null
+                        ? new Date(nodeAiAnalyzeModal.fetchedAt).toISOString()
+                        : null;
+                  if (!stamp) return null;
+                  return <>Last updated: {new Date(stamp).toLocaleString()}</>;
+                })()}
+              </div>
+            ) : null}
+
+            {nodeAiAnalyzeModal.error ? (
+              <div className={`text-sm ${darkMode ? 'text-red-300' : 'text-red-700'}`}>{nodeAiAnalyzeModal.error}</div>
+            ) : null}
+
+            {nodeAiAnalyzeModal.model || nodeAiAnalyzeModal.llmCalled != null || nodeAiAnalyzeModal.cached != null || nodeAiAnalyzeModal.durationMs != null ? (
+              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                {nodeAiAnalyzeModal.model ? `Model: ${nodeAiAnalyzeModal.model}` : 'Model: (unknown)'}
+                {nodeAiAnalyzeModal.llmCalled != null ? ` • LLM called: ${nodeAiAnalyzeModal.llmCalled ? 'yes' : 'no'}` : ''}
+                {nodeAiAnalyzeModal.cached != null ? ` • Cached: ${nodeAiAnalyzeModal.cached ? 'yes' : 'no'}` : ''}
+                {nodeAiAnalyzeModal.durationMs != null ? ` • ${Math.round(nodeAiAnalyzeModal.durationMs)}ms` : ''}
+              </div>
+            ) : null}
+
+            {!nodeAiAnalyzeModal.loading ? (
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant={darkMode ? 'secondary' : 'outline'}
+                  darkMode={darkMode}
+                  onClick={() => rerunNodeAiAnalyzeModal()}
+                >
+                  Re-run analysis
+                </Button>
+              </div>
+            ) : null}
+
+            {nodeAiAnalyzeModal.answerMarkdown ? (
+              <pre
+                className={`whitespace-pre-wrap text-xs rounded-md p-3 border overflow-auto max-h-[60vh] ${
+                  darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
+                }`}
+              >
+                {nodeAiAnalyzeModal.answerMarkdown}
+              </pre>
+            ) : null}
+
+            {Array.isArray(nodeAiAnalyzeModal.evidence) && nodeAiAnalyzeModal.evidence.length > 0 ? (
+              <details>
+                <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Evidence</summary>
+                <pre
+                  className={`mt-2 whitespace-pre-wrap text-xs rounded-md p-3 border overflow-auto max-h-[30vh] ${
+                    darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
+                  }`}
+                >
+                  {safeJson(nodeAiAnalyzeModal.evidence)}
+                </pre>
+              </details>
+            ) : null}
+
+            {Array.isArray(nodeAiAnalyzeModal.limitations) && nodeAiAnalyzeModal.limitations.length > 0 ? (
+              <details>
+                <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Limitations</summary>
+                <ul className={`mt-2 list-disc pl-5 text-sm space-y-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  {nodeAiAnalyzeModal.limitations.slice(0, 10).map((s, idx) => (
+                    <li key={`node-ai-limit-${idx}`}>{s}</li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+
+            {Array.isArray(nodeAiAnalyzeModal.followups) && nodeAiAnalyzeModal.followups.length > 0 ? (
+              <details>
+                <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Suggested follow-ups</summary>
+                <ul className={`mt-2 list-disc pl-5 text-sm space-y-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  {nodeAiAnalyzeModal.followups.slice(0, 10).map((s, idx) => (
+                    <li key={`node-ai-follow-${idx}`}>{s}</li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+          </div>
+        ) : null}
+      </Modal>
 
       <Modal
         isOpen={inspectorImageModal != null}

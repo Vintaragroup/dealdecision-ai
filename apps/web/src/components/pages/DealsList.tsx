@@ -3,6 +3,13 @@ import type { DealPriority, DealStage, DealTrend, Deal } from '@dealdecision/con
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Select } from '../ui/select';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 import { ExportDealsModal } from '../ExportDealsModal';
 import { apiGetDeals, apiGetDocuments, apiAutoProgressDeal, apiDeleteDeal, isLiveBackend } from '../../lib/apiClient';
 import { Modal } from '../ui/Modal';
@@ -22,6 +29,7 @@ import {
   Edit,
   Trash2,
   MoreVertical,
+  ChevronRight,
   Calendar,
   Users,
   Target,
@@ -355,6 +363,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
     try {
       const result = await apiAutoProgressDeal(dealId);
       if (result.progressed && result.newStage) {
+        setError(null);
         setProgressionNotification({
           dealId,
           oldStage: '',
@@ -365,9 +374,12 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
         setLiveDeals(updatedDeals);
         // Clear notification after 4 seconds
         setTimeout(() => setProgressionNotification(null), 4000);
+      } else {
+        setError(result.message || 'Deal does not meet conditions for stage progression');
       }
     } catch (error) {
       console.error('Failed to check stage progression:', error);
+      setError(error instanceof Error ? error.message : 'Failed to check stage progression');
     }
   };
 
@@ -751,46 +763,67 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                         </span>
                       </td>
                       <td className="p-4" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-1">
-                          <Button 
-                            variant="ghost" 
-                            size="icon" 
-                            aria-label="View" 
-                            className={`!text-gray-400 hover:!text-gray-300`}
-                            onClick={() => onDealClick?.(deal.id)}
-                          >
-                            <Eye className="w-4 h-4" />
-                          </Button>
-                          <Button 
-                            variant="ghost" 
-                            size="icon" 
-                            aria-label="Edit" 
-                            className={`!text-gray-400 hover:!text-gray-300`}
-                            onClick={() => onDealClick?.(deal.id)}
-                          >
-                            <Edit className="w-4 h-4" />
-                          </Button>
-                          <Button 
-                            variant="ghost" 
-                            size="icon" 
-                            aria-label="Check Stage Progression" 
-                            className={`!text-gray-400 hover:!text-amber-400`}
-                            title="Check if deal can advance to next stage"
-                            onClick={() => handleAutoProgressDeal(deal.id)}
-                          >
-                            <ArrowRight className="w-4 h-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            aria-label="Delete"
-                            className={`!text-gray-400 hover:!text-red-400`}
-                            title="Delete deal"
-                            onClick={() => openDeleteModal({ id: deal.id, name: deal.name })}
-                            loading={deletingDealId === deal.id}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
+                        <div className="flex justify-end">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger
+                              aria-label="Actions"
+                              className="dd-btn-base dd-btn-icon-only hover:bg-accent text-muted-foreground hover:text-foreground"
+                              onClick={(e) => e.stopPropagation()}
+                              type="button"
+                            >
+                              <MoreVertical className="w-4 h-4" />
+                            </DropdownMenuTrigger>
+
+                            <DropdownMenuContent
+                              align="end"
+                              sideOffset={6}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <DropdownMenuItem
+                                onSelect={(e) => {
+                                  e.preventDefault();
+                                  onDealClick?.(deal.id);
+                                }}
+                              >
+                                <Eye />
+                                View
+                              </DropdownMenuItem>
+
+                              <DropdownMenuItem
+                                onSelect={(e) => {
+                                  e.preventDefault();
+                                  onDealClick?.(deal.id);
+                                }}
+                              >
+                                <Edit />
+                                Edit
+                              </DropdownMenuItem>
+
+                              <DropdownMenuItem
+                                onSelect={(e) => {
+                                  e.preventDefault();
+                                  handleAutoProgressDeal(deal.id);
+                                }}
+                              >
+                                <ChevronRight />
+                                Check stage progression
+                              </DropdownMenuItem>
+
+                              <DropdownMenuSeparator />
+
+                              <DropdownMenuItem
+                                variant="destructive"
+                                onSelect={(e) => {
+                                  e.preventDefault();
+                                  openDeleteModal({ id: deal.id, name: deal.name });
+                                }}
+                                disabled={deletingDealId === deal.id}
+                              >
+                                <Trash2 />
+                                {deletingDealId === deal.id ? 'Deleting…' : 'Delete'}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
                       </td>
                     </tr>

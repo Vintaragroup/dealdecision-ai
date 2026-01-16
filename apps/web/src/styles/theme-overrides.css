@@ -45,6 +45,14 @@
 .hover\:bg-accent:hover { background-color: color-mix(in srgb, var(--color-accent-500) 80%, transparent); }
 .text-accent-foreground { color: var(--color-accent-foreground); }
 
+/* Radix popovers/menus (used by dropdown-menu.tsx) */
+.bg-popover { background-color: var(--popover); }
+.text-popover-foreground { color: var(--popover-foreground); }
+
+/* Focus variants used in dropdown menu item styles */
+.focus\:bg-accent:focus { background-color: var(--accent); }
+.focus\:text-accent-foreground:focus { color: var(--accent-foreground); }
+
 .bg-muted { background-color: #ececf0; }
 .text-muted-foreground { color: var(--color-muted-foreground); }
 

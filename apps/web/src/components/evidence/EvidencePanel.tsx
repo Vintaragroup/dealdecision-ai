@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, RefreshCw, Sparkles } from 'lucide-react';
 import { EvidenceChip } from './EvidenceChip';
 import { Button } from '../ui/button';
+import { apiGetDealVisualAssets, type DealVisualAsset } from '../../lib/apiClient';
 
 export type EvidenceCard = {
   evidence_id: string;
   deal_id: string;
   document_id?: string;
+  visual_asset_id?: string;
   source: string;
   kind: string;
   text: string;
@@ -68,6 +70,7 @@ interface EvidencePanelProps {
   lastUpdated?: string | null;
   onRefresh: () => void;
   onFetchEvidence: () => void;
+  onLocateVisualEvidenceNode?: (visualAssetId: string) => void;
   reportSections?: ReportSectionRef[];
   documentTitles?: Record<string, string>;
   scoreEvidence?: ScoreEvidencePayload | null;
@@ -122,7 +125,39 @@ interface EvidencePanelProps {
   >;
 }
 
+function humanizeSegmentLabel(raw: string): string {
+  const s = String(raw ?? '').trim();
+  if (!s) return '';
+  const parts = s.split(/[_\s]+/g).filter(Boolean);
+  if (parts.length === 0) return '';
+  return parts
+    .map((p) => (p.length <= 2 ? p.toUpperCase() : p.charAt(0).toUpperCase() + p.slice(1)))
+    .join(' ');
+}
+
+function pickEffectiveSegment(asset: DealVisualAsset | undefined | null): string | null {
+  if (!asset) return null;
+  const pick = (...vals: Array<unknown>) => {
+    for (const v of vals) {
+      if (typeof v !== 'string') continue;
+      const s = v.trim();
+      if (!s || s === 'unknown') continue;
+      return s;
+    }
+    return null;
+  };
+  return pick(asset.effective_segment, asset.segment, asset.persisted_segment_key, asset.computed_segment);
+}
+
+function formatPct01(conf: unknown): string | null {
+  const c = typeof conf === 'number' ? conf : typeof conf === 'string' ? Number(conf) : NaN;
+  if (!Number.isFinite(c)) return null;
+  const clamped = Math.max(0, Math.min(1, c));
+  return `${Math.round(clamped * 100)}%`;
+}
+
 type ScoreFilter = 'all' | 'missing' | 'weak';
+type LegacySourceFilter = 'all' | string;
 
 const SCORE_SECTION_KEYS: ScoreSectionKey[] = ['market', 'product', 'business_model', 'traction', 'risks', 'team', 'icp'];
 const COVERAGE_GROUP_MAP: Record<ScoreSectionKey, string> = {
@@ -172,7 +207,17 @@ function labelForEvidence(item: EvidenceCard) {
   if (item.source === 'extraction' && item.kind === 'metric') return 'Extracted Metric';
   if (item.source === 'extraction' && item.kind === 'section') return 'Extracted Section';
   if (item.source === 'fetch_evidence' && item.kind === 'document') return 'Document';
+  if (item.source === 'phaseb_visual') return 'Visual Evidence';
   return `${item.source} • ${item.kind}`;
+}
+
+function chipLabelForEvidence(item: EvidenceCard): string {
+  if (item.source === 'phaseb_visual') return 'Visual';
+  if (item.source === 'extraction' && item.kind === 'metric') return 'Metric';
+  if (item.source === 'extraction' && item.kind === 'summary') return 'Summary';
+  if (item.source === 'extraction' && item.kind === 'section') return 'Section';
+  if (item.source === 'fetch_evidence') return 'Fetched';
+  return 'Evidence';
 }
 
 function formatMetricText(text: string) {
@@ -200,6 +245,7 @@ export function EvidencePanel({
   lastUpdated,
   onRefresh,
   onFetchEvidence,
+  onLocateVisualEvidenceNode,
   reportSections = [],
   documentTitles = {},
   scoreEvidence = null,
@@ -214,6 +260,7 @@ export function EvidencePanel({
   const [activeTab, setActiveTab] = useState<'score' | 'legacy'>(scoreEvidence ? 'score' : 'legacy');
   const [scoreFilter, setScoreFilter] = useState<ScoreFilter>('all');
   const [traceMode, setTraceMode] = useState<'all' | 'trace'>('all');
+  const [legacySourceFilter, setLegacySourceFilter] = useState<LegacySourceFilter>('all');
   const showLegacyEvidence = activeTab === 'legacy';
   const evidenceRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [flashHighlightIds, setFlashHighlightIds] = useState<Set<string>>(new Set());
@@ -230,6 +277,83 @@ export function EvidencePanel({
   }, [selectedScoreSectionKey]);
 
   const highlightedSet = useMemo(() => new Set((highlightedEvidenceIds || []).filter((id) => typeof id === 'string' && id.trim().length > 0)), [highlightedEvidenceIds]);
+
+  const legacySources = useMemo(() => {
+    const unique = new Set<string>();
+    for (const item of evidence ?? []) {
+      if (typeof item?.source !== 'string') continue;
+      const s = item.source.trim();
+      if (!s) continue;
+      unique.add(s);
+    }
+    return Array.from(unique).sort((a, b) => a.localeCompare(b));
+  }, [evidence]);
+
+  useEffect(() => {
+    if (legacySourceFilter === 'all') return;
+    if (legacySources.includes(legacySourceFilter)) return;
+    setLegacySourceFilter('all');
+  }, [legacySourceFilter, legacySources]);
+
+  const legacyEvidence = useMemo(() => {
+    if (legacySourceFilter === 'all') return evidence;
+    return (evidence ?? []).filter((e) => e.source === legacySourceFilter);
+  }, [evidence, legacySourceFilter]);
+
+  const legacyDealId = useMemo(() => {
+    for (const ev of legacyEvidence ?? []) {
+      if (typeof ev?.deal_id === 'string' && ev.deal_id.trim().length > 0) return ev.deal_id.trim();
+    }
+    return null;
+  }, [legacyEvidence]);
+
+  const legacyVisualAssetIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const ev of legacyEvidence ?? []) {
+      if (typeof ev?.visual_asset_id !== 'string') continue;
+      const id = ev.visual_asset_id.trim();
+      if (id) ids.add(id);
+    }
+    return Array.from(ids);
+  }, [legacyEvidence]);
+
+  const [visualAssetById, setVisualAssetById] = useState<Record<string, DealVisualAsset>>({});
+  const [visualAssetsLoadedForDeal, setVisualAssetsLoadedForDeal] = useState<string | null>(null);
+  const [visualAssetsLoadError, setVisualAssetsLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!showLegacyEvidence) return;
+    if (!legacyDealId) return;
+    if (legacyVisualAssetIds.length === 0) return;
+    if (visualAssetsLoadedForDeal === legacyDealId) return;
+
+    let cancelled = false;
+    setVisualAssetsLoadError(null);
+    (async () => {
+      try {
+        const res = await apiGetDealVisualAssets(legacyDealId);
+        if (cancelled) return;
+        const map: Record<string, DealVisualAsset> = {};
+        for (const a of res.visual_assets ?? []) {
+          if (a && typeof a.visual_asset_id === 'string' && a.visual_asset_id.trim().length > 0) {
+            map[a.visual_asset_id] = a;
+          }
+        }
+        setVisualAssetById(map);
+        setVisualAssetsLoadedForDeal(legacyDealId);
+      } catch (err) {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : 'Failed to load visual assets';
+        setVisualAssetsLoadError(message);
+        setVisualAssetById({});
+        setVisualAssetsLoadedForDeal(legacyDealId);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [showLegacyEvidence, legacyDealId, legacyVisualAssetIds.length, visualAssetsLoadedForDeal]);
 
   const sectionFilter: ScoreSectionKey | 'all' = selectedScoreSectionKey ?? 'all';
 
@@ -261,6 +385,85 @@ export function EvidencePanel({
     }
     return map;
   }, [reportSections]);
+
+  const scoreLinkedByEvidenceId = useMemo(() => {
+    const byId = new Map<string, ScoreSectionKey[]>();
+    for (const sec of scoreBreakdownSections ?? []) {
+      const key = (sec?.section_key ?? sec?.key) as unknown;
+      if (!isScoreSectionKeyValue(key)) continue;
+      const ids = Array.isArray(sec?.evidence_ids_linked)
+        ? sec.evidence_ids_linked
+        : Array.isArray(sec?.evidence_ids)
+          ? sec.evidence_ids
+          : [];
+      for (const id of ids) {
+        if (typeof id !== 'string' || !id.trim()) continue;
+        const list = byId.get(id) ?? [];
+        if (!list.includes(key)) list.push(key);
+        byId.set(id, list);
+      }
+    }
+    return byId;
+  }, [scoreBreakdownSections]);
+
+  const ruleKeyBySectionKey = useMemo(() => {
+    const map = new Map<ScoreSectionKey, string>();
+    for (const sec of scoreBreakdownSections ?? []) {
+      const key = (sec?.section_key ?? sec?.key) as unknown;
+      if (!isScoreSectionKeyValue(key)) continue;
+      if (typeof sec?.rule_key === 'string' && sec.rule_key.trim().length > 0) {
+        map.set(key, sec.rule_key.trim());
+      }
+    }
+    return map;
+  }, [scoreBreakdownSections]);
+
+  type DecisionTrace = { sectionKey: ScoreSectionKey; ruleKey?: string; claimId?: string };
+  const decisionTracesByEvidenceId = useMemo(() => {
+    const out = new Map<string, DecisionTrace[]>();
+    if (!scoreEvidence || !Array.isArray(scoreEvidence.sections)) return out;
+
+    const push = (evidenceId: string, trace: DecisionTrace) => {
+      const list = out.get(evidenceId) ?? [];
+      const dedupeKey = `${trace.sectionKey}|${trace.ruleKey ?? ''}|${trace.claimId ?? ''}`;
+      if (!list.some((t) => `${t.sectionKey}|${t.ruleKey ?? ''}|${t.claimId ?? ''}` === dedupeKey)) {
+        list.push(trace);
+        out.set(evidenceId, list);
+      }
+    };
+
+    for (const sec of scoreEvidence.sections) {
+      const sectionKey = sec?.key as unknown;
+      if (!isScoreSectionKeyValue(sectionKey)) continue;
+      const ruleKey = ruleKeyBySectionKey.get(sectionKey);
+      const claims = Array.isArray(sec?.claims) ? sec.claims : [];
+      for (const claim of claims) {
+        const claimId = typeof claim?.id === 'string' && claim.id.trim().length > 0 ? claim.id.trim() : undefined;
+        const evs = Array.isArray(claim?.evidence) ? claim.evidence : [];
+        for (const ev of evs) {
+          const evidenceId = typeof ev?.id === 'string' ? ev.id.trim() : '';
+          if (!evidenceId) continue;
+          push(evidenceId, { sectionKey, ruleKey, claimId });
+        }
+      }
+    }
+
+    // Prefer stable ordering: by section label, then claim id.
+    for (const [k, list] of out.entries()) {
+      list.sort((a, b) => {
+        const sa = sectionLabel(a.sectionKey);
+        const sb = sectionLabel(b.sectionKey);
+        const s = sa.localeCompare(sb);
+        if (s !== 0) return s;
+        return String(a.claimId ?? '').localeCompare(String(b.claimId ?? ''));
+      });
+      out.set(k, list);
+    }
+
+    return out;
+  }, [scoreEvidence, ruleKeyBySectionKey]);
+
+  const scoreLinkedIdSet = useMemo(() => new Set(Array.from(scoreLinkedByEvidenceId.keys())), [scoreLinkedByEvidenceId]);
 
   const activeMismatch = useMemo(() => {
     if (!selectedScoreSectionKey) return false;
@@ -367,17 +570,17 @@ export function EvidencePanel({
     highlightTimerRef.current = setTimeout(() => setFlashHighlightIds(new Set()), 2000);
   };
 
-  const metrics = useMemo(() => evidence.filter((e) => e.source === 'extraction' && e.kind === 'metric'), [evidence]);
-  const summaries = useMemo(() => evidence.filter((e) => e.source === 'extraction' && e.kind === 'summary'), [evidence]);
+  const metrics = useMemo(() => legacyEvidence.filter((e) => e.source === 'extraction' && e.kind === 'metric'), [legacyEvidence]);
+  const summaries = useMemo(() => legacyEvidence.filter((e) => e.source === 'extraction' && e.kind === 'summary'), [legacyEvidence]);
   const sections = useMemo(
-    () => evidence.filter((e) => e.source === 'extraction' && e.kind === 'section'),
-    [evidence]
+    () => legacyEvidence.filter((e) => e.source === 'extraction' && e.kind === 'section'),
+    [legacyEvidence]
   );
   const other = useMemo(
-    () => evidence.filter((e) => !((e.source === 'extraction') && (e.kind === 'metric' || e.kind === 'summary' || e.kind === 'section'))),
-    [evidence]
+    () => legacyEvidence.filter((e) => !((e.source === 'extraction') && (e.kind === 'metric' || e.kind === 'summary' || e.kind === 'section'))),
+    [legacyEvidence]
   );
-  const referencedCount = useMemo(() => evidence.filter((e) => usedIn.has(e.evidence_id)).length, [evidence, usedIn]);
+  const referencedCount = useMemo(() => legacyEvidence.filter((e) => usedIn.has(e.evidence_id)).length, [legacyEvidence, usedIn]);
 
   const scoreItems = useMemo<ScoreEvidenceItem[]>(() => {
     if (!scoreEvidence || !Array.isArray(scoreEvidence.sections)) return [];
@@ -580,6 +783,41 @@ export function EvidencePanel({
       )}
 
       {evidence.length > 0 && (
+        <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Source:</div>
+            <select
+              value={legacySourceFilter}
+              onChange={(e) => setLegacySourceFilter(e.target.value)}
+              className={`text-xs rounded-md border px-2 py-1 outline-none ${
+                darkMode
+                  ? 'bg-white/5 border-white/10 text-gray-200'
+                  : 'bg-white border-gray-200 text-gray-800'
+              }`}
+            >
+              <option value="all">All sources ({evidence.length})</option>
+              {legacySources.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </div>
+          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+            Showing {legacyEvidence.length} item{legacyEvidence.length === 1 ? '' : 's'}
+          </div>
+        </div>
+      )}
+
+      {visualAssetsLoadError ? (
+        <div
+          className={`mb-3 rounded-xl border p-3 text-xs ${
+            darkMode ? 'bg-amber-500/10 border-amber-400/40 text-amber-100' : 'bg-amber-50 border-amber-200 text-amber-800'
+          }`}
+        >
+          Could not load visual segment labels: {visualAssetsLoadError}
+        </div>
+      ) : null}
+
+      {evidence.length > 0 && (
         <div className={`rounded-xl border p-4 mb-4 ${darkMode ? 'bg-white/5 border-white/10 text-gray-200' : 'bg-white border-gray-200 text-gray-800'}`}>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div>
@@ -596,73 +834,283 @@ export function EvidencePanel({
             </div>
             <div>
               <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Referenced in report</div>
-              <div className="text-sm font-semibold">{referencedCount}/{evidence.length}</div>
+              <div className="text-sm font-semibold">{referencedCount}/{legacyEvidence.length}</div>
             </div>
           </div>
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {[...summaries, ...metrics, ...sections, ...other].map((item) => {
-          const usedInSections = usedIn.get(item.evidence_id) ?? [];
-          const docLabel = item.document_id ? (documentTitles[item.document_id] || item.document_id) : null;
-          const conf = confidencePct(item.confidence);
-          const label = labelForEvidence(item);
-          const metric = item.kind === 'metric' ? formatMetricText(item.text) : null;
-          const showUsed = usedInSections.length > 0 && Boolean(docLabel);
-          return (
-          <div
-            key={item.evidence_id}
-            className={`rounded-xl border p-4 space-y-2 ${
-              darkMode
-                ? 'bg-white/5 border-white/10 text-gray-200'
-                : 'bg-white border-gray-200 text-gray-800'
-            }`}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <EvidenceChip evidenceId={item.evidence_id} darkMode={darkMode} />
-              <div className="flex items-center gap-2">
-                {conf && (
-                  <span className={`text-[11px] px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-300' : 'border-gray-200 text-gray-700'}`}>
-                    Confidence {conf}
-                  </span>
-                )}
-                <span className={`text-[10px] px-2 py-1 rounded-full border ${showUsed ? (darkMode ? 'border-emerald-500/40 text-emerald-200' : 'border-emerald-200 text-emerald-700') : (darkMode ? 'border-gray-600 text-gray-300' : 'border-gray-300 text-gray-700')}`}>
-                  {showUsed ? 'USED IN SCORE' : 'NOT USED'}
-                </span>
-                {docLabel && (
-                  <span className={`text-[11px] px-2 py-1 rounded-full border max-w-[220px] truncate ${darkMode ? 'border-white/10 text-gray-300' : 'border-gray-200 text-gray-700'}`}>
-                    {docLabel}
-                  </span>
-                )}
-              </div>
-            </div>
-            <div className={`text-xs uppercase tracking-wide ${darkMode ? 'text-emerald-300' : 'text-emerald-700'}`}>
-              {label}
-            </div>
-            {metric ? (
-              <>
-                <div className="text-sm font-semibold">{metric.title}</div>
-                <div className={`${darkMode ? 'text-gray-300' : 'text-gray-700'} text-sm`}>{metric.details}</div>
-              </>
-            ) : (
-              <div className="text-sm font-semibold">{item.text}</div>
-            )}
+      {(() => {
+        type NodeGroup = { nodeKey: string; nodeLabel: string; visual_asset_id?: string; items: EvidenceCard[] };
+        type PageGroup = { pageKey: string; pageLabel: string; nodes: Map<string, NodeGroup> };
+        type DocGroup = { document_id: string; document_title: string; pages: Map<string, PageGroup> };
 
-            {usedInSections.length > 0 && (
-              <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} text-[11px]`}>
-                Used in report: {usedInSections.slice(0, 3).join(', ')}{usedInSections.length > 3 ? ` (+${usedInSections.length - 3} more)` : ''}
-              </div>
-            )}
-            {item.created_at && (
-              <div className={`${darkMode ? 'text-gray-500' : 'text-gray-500'} text-[11px]`}>
-                {new Date(item.created_at).toLocaleString()}
-              </div>
-            )}
+        const allItems = [...summaries, ...metrics, ...sections, ...other];
+        if (allItems.length === 0) return null;
+
+        const docs = new Map<string, DocGroup>();
+        for (const item of allItems) {
+          const resolved = resolvedEvidence?.[item.evidence_id];
+
+          const document_id =
+            typeof item.document_id === 'string' && item.document_id.trim().length > 0
+              ? item.document_id
+              : typeof resolved?.document_id === 'string' && resolved.document_id.trim().length > 0
+                ? resolved.document_id
+                : 'unknown';
+
+          const document_title =
+            document_id !== 'unknown' && typeof documentTitles?.[document_id] === 'string'
+              ? documentTitles[document_id]
+              : typeof resolved?.document_title === 'string' && resolved.document_title.trim().length > 0
+                ? resolved.document_title
+                : document_id;
+
+          const page = typeof resolved?.page === 'number' && Number.isFinite(resolved.page) ? resolved.page : null;
+          const pageKey = page != null ? String(page) : 'unknown';
+          const pageLabel = page != null ? `Page ${page}` : 'Page unknown';
+
+          const nodeKey = item.visual_asset_id ? `evidence:${item.visual_asset_id}` : 'document';
+          const nodeLabel = item.visual_asset_id ? `Node evidence:${item.visual_asset_id}` : 'Document-level';
+
+          const doc = docs.get(document_id) ?? { document_id, document_title, pages: new Map() };
+          const pg = doc.pages.get(pageKey) ?? { pageKey, pageLabel, nodes: new Map() };
+          const nd = pg.nodes.get(nodeKey) ?? { nodeKey, nodeLabel, visual_asset_id: item.visual_asset_id, items: [] };
+          nd.items.push(item);
+          pg.nodes.set(nodeKey, nd);
+          doc.pages.set(pageKey, pg);
+          docs.set(document_id, doc);
+        }
+
+        const docsSorted = Array.from(docs.values()).sort((a, b) => a.document_title.localeCompare(b.document_title));
+
+        return (
+          <div className="space-y-3">
+            {docsSorted.map((doc) => {
+              const docItems = Array.from(doc.pages.values()).flatMap((p) => Array.from(p.nodes.values()).flatMap((n) => n.items));
+
+              const counts = {
+                summaries: docItems.filter((x) => x.kind === 'summary').length,
+                metrics: docItems.filter((x) => x.kind === 'metric').length,
+                sections: docItems.filter((x) => x.kind === 'section').length,
+                other: docItems.filter((x) => x.kind !== 'summary' && x.kind !== 'metric' && x.kind !== 'section').length,
+              };
+
+              const pagesSorted = Array.from(doc.pages.values()).sort((a, b) => {
+                const ak = a.pageKey === 'unknown' ? Number.POSITIVE_INFINITY : Number(a.pageKey);
+                const bk = b.pageKey === 'unknown' ? Number.POSITIVE_INFINITY : Number(b.pageKey);
+                return ak - bk;
+              });
+
+              return (
+                <details
+                  key={doc.document_id}
+                  className={`rounded-xl border p-4 ${darkMode ? 'bg-white/5 border-white/10 text-gray-200' : 'bg-white border-gray-200 text-gray-800'}`}
+                  open
+                >
+                  <summary className="cursor-pointer select-none">
+                    <div className="flex items-start justify-between gap-3 flex-wrap">
+                      <div className="min-w-[260px]">
+                        <div className="text-sm font-semibold" title={doc.document_id}>{doc.document_title}</div>
+                        <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          {docItems.length} item(s) · {counts.summaries} summaries · {counts.metrics} metrics · {counts.sections} sections · {counts.other} other
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`text-[11px] px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-300' : 'border-gray-200 text-gray-700'}`}>
+                          Pages: {doc.pages.size}
+                        </span>
+                      </div>
+                    </div>
+                  </summary>
+
+                  <div className="mt-3 space-y-3">
+                    {pagesSorted.map((page) => {
+                      const nodesSorted = Array.from(page.nodes.values()).sort((a, b) => a.nodeKey.localeCompare(b.nodeKey));
+                      const pageItemCount = nodesSorted.reduce((acc, n) => acc + n.items.length, 0);
+                      return (
+                        <div key={page.pageKey} className={`rounded-lg border p-3 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'}`}>
+                          <div className="flex items-center justify-between gap-3 flex-wrap">
+                            <div className={`text-xs font-semibold ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{page.pageLabel}</div>
+                            <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{pageItemCount} item(s)</div>
+                          </div>
+
+                          <div className="mt-2 space-y-2">
+                            {nodesSorted.map((node) => {
+                              const hasVisual = typeof node.visual_asset_id === 'string' && node.visual_asset_id.trim().length > 0;
+                              const visualAsset = hasVisual ? visualAssetById[node.visual_asset_id as string] : undefined;
+                              const segRaw = hasVisual ? pickEffectiveSegment(visualAsset) : null;
+                              const segLabel = segRaw ? humanizeSegmentLabel(segRaw) : null;
+                              const segSource = hasVisual && typeof visualAsset?.segment_source === 'string' ? visualAsset.segment_source.trim() : null;
+                              const segConf = hasVisual ? formatPct01(visualAsset?.segment_confidence) : null;
+                              const itemsSorted = [...node.items].sort((a, b) => String(a.kind).localeCompare(String(b.kind)));
+
+                              return (
+                                <div key={node.nodeKey} className={`rounded-lg border p-3 ${darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'}`}>
+                                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <div
+                                        className={`text-[11px] font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+                                        title={
+                                          hasVisual
+                                            ? `${node.nodeLabel}${segRaw ? ` · segment=${segRaw}` : ''}${segSource ? ` · source=${segSource}` : ''}${segConf ? ` · confidence=${segConf}` : ''}`
+                                            : node.nodeLabel
+                                        }
+                                      >
+                                        {hasVisual ? (segLabel ? `Node: ${segLabel}` : 'Node: Visual evidence') : 'Node: Document-level'}
+                                      </div>
+
+                                      {hasVisual && (segSource || segConf) ? (
+                                        <div className="flex items-center gap-1 flex-wrap">
+                                          {segSource ? (
+                                            <span
+                                              className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                                                darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'
+                                              }`}
+                                              title="Segment source"
+                                            >
+                                              {segSource}
+                                            </span>
+                                          ) : null}
+                                          {segConf ? (
+                                            <span
+                                              className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                                                darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'
+                                              }`}
+                                              title="Segment confidence"
+                                            >
+                                              {segConf}
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                    {hasVisual && onLocateVisualEvidenceNode ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => onLocateVisualEvidenceNode(node.visual_asset_id as string)}
+                                        className={`text-[11px] px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200 hover:bg-white/10' : 'border-gray-200 text-gray-800 hover:bg-gray-100'}`}
+                                        title={node.nodeKey}
+                                      >
+                                        Locate node
+                                      </button>
+                                    ) : null}
+                                  </div>
+
+                                  <div className="mt-2 space-y-2">
+                                    {itemsSorted.map((item) => {
+                                      const usedInSections = usedIn.get(item.evidence_id) ?? [];
+                                      const conf = confidencePct(item.confidence);
+                                      const label = labelForEvidence(item);
+                                      const chipLabel = chipLabelForEvidence(item);
+                                      const metric = item.kind === 'metric' ? formatMetricText(item.text) : null;
+
+                                      const scoreSections = scoreLinkedByEvidenceId.get(item.evidence_id) ?? [];
+                                      const inScore = scoreLinkedIdSet.has(item.evidence_id);
+                                      const inReport = usedInSections.length > 0;
+
+                                      return (
+                                        <div key={item.evidence_id} className={`rounded-md border px-3 py-2 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
+                                          <div className="flex items-start justify-between gap-2 flex-wrap">
+                                            <div className="flex items-center gap-2 flex-wrap">
+                                              <EvidenceChip evidenceId={item.evidence_id} label={chipLabel} darkMode={darkMode} excerpt={metric ? metric.title : undefined} />
+                                              {conf ? (
+                                                <span className={`text-[11px] px-2 py-0.5 rounded-full border ${darkMode ? 'border-white/10 text-gray-300' : 'border-gray-200 text-gray-700'}`}>
+                                                  Confidence {conf}
+                                                </span>
+                                              ) : null}
+                                              <span className={`text-[10px] px-2 py-0.5 rounded-full border ${inScore ? (darkMode ? 'border-indigo-400/50 text-indigo-200' : 'border-indigo-200 text-indigo-700') : (darkMode ? 'border-gray-600 text-gray-300' : 'border-gray-300 text-gray-700')}`}>
+                                                {inScore ? 'SCORE-LINKED' : 'NOT SCORE-LINKED'}
+                                              </span>
+                                              <span className={`text-[10px] px-2 py-0.5 rounded-full border ${inReport ? (darkMode ? 'border-emerald-500/40 text-emerald-200' : 'border-emerald-200 text-emerald-700') : (darkMode ? 'border-gray-600 text-gray-300' : 'border-gray-300 text-gray-700')}`}>
+                                                {inReport ? 'IN REPORT' : 'NOT IN REPORT'}
+                                              </span>
+                                            </div>
+                                            <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'} uppercase tracking-wide`}>
+                                              {label}
+                                            </div>
+                                          </div>
+
+                                          <div className={`mt-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                            {metric ? (
+                                              <>
+                                                <span className="font-semibold">{metric.title}:</span> {metric.details}
+                                              </>
+                                            ) : (
+                                              <span className="font-medium">{item.text}</span>
+                                            )}
+                                          </div>
+
+                                          {inScore && scoreSections.length > 0 ? (
+                                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} text-[11px] mt-1`}>
+                                              Score sections: {scoreSections.map(sectionLabel).join(', ')}
+                                            </div>
+                                          ) : null}
+
+                                          {inScore ? (() => {
+                                            const traces = decisionTracesByEvidenceId.get(item.evidence_id) ?? [];
+                                            if (traces.length > 0) {
+                                              const formatted = traces.slice(0, 3).map((t) => {
+                                                const bits = [sectionLabel(t.sectionKey)];
+                                                if (t.ruleKey) bits.push(`rule ${t.ruleKey}`);
+                                                if (t.claimId) bits.push(`claim ${t.claimId}`);
+                                                return bits.join(' · ');
+                                              });
+                                              return (
+                                                <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} text-[11px] mt-1`}>
+                                                  Used in decision: {formatted.join(' | ')}
+                                                  {traces.length > 3 ? ` (+${traces.length - 3} more)` : ''}
+                                                </div>
+                                              );
+                                            }
+
+                                            // Fallback (explicitly section-level): we know the evidence is score-linked to one or more
+                                            // sections, but we don't have claim-level trace paths for this specific evidence id.
+                                            const sectionsOnly = scoreLinkedByEvidenceId.get(item.evidence_id) ?? [];
+                                            if (sectionsOnly.length === 0) return null;
+                                            const formatted = sectionsOnly.slice(0, 3).map((sectionKey) => {
+                                              const bits = [sectionLabel(sectionKey)];
+                                              const ruleKey = ruleKeyBySectionKey.get(sectionKey);
+                                              if (ruleKey) bits.push(`rule ${ruleKey}`);
+                                              return bits.join(' · ');
+                                            });
+                                            return (
+                                              <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} text-[11px] mt-1`}>
+                                                Potentially used in decision (section-level): {formatted.join(' | ')}
+                                                {sectionsOnly.length > 3 ? ` (+${sectionsOnly.length - 3} more)` : ''}
+                                              </div>
+                                            );
+                                          })() : null}
+
+                                          {inReport && usedInSections.length > 0 ? (
+                                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} text-[11px] mt-1`}>
+                                              Referenced in report: {usedInSections.slice(0, 3).join(', ')}{usedInSections.length > 3 ? ` (+${usedInSections.length - 3} more)` : ''}
+                                            </div>
+                                          ) : null}
+
+                                          {item.created_at ? (
+                                            <div className={`${darkMode ? 'text-gray-500' : 'text-gray-500'} text-[11px] mt-1`}>
+                                              {new Date(item.created_at).toLocaleString()}
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </details>
+              );
+            })}
           </div>
         );
-        })}
-      </div>
+      })()}
     </>
   );
 

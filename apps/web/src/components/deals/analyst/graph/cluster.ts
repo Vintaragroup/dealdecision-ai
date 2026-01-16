@@ -24,6 +24,17 @@ export type GroupMeta = {
   evidenceSamples: string[];
 };
 
+function getVisualAssetId(node: Node): string | null {
+  const data = (node.data ?? {}) as any;
+  const raw = data?.visual_asset_id ?? data?.visualId ?? data?.visual_id;
+  if (typeof raw === 'string' && raw.trim()) return raw.trim();
+  if (typeof node.id === 'string') {
+    if (node.id.startsWith('visual_asset:')) return node.id.slice('visual_asset:'.length);
+    if (node.id.startsWith('visual:')) return node.id.slice('visual:'.length);
+  }
+  return null;
+}
+
 export function nodeType(node: Node): string {
   return nodeTypeInternal(node);
 }
@@ -227,6 +238,12 @@ export function projectClusteredGraph(params: {
         evidence_count_total: evidenceCountTotal,
         avg_confidence: bucket.avgConfidence ?? null,
         sample_summaries: sampleSummaries,
+        group_id: groupId,
+        document_id: docId ?? undefined,
+        segment_id: segmentId ?? undefined,
+        member_visual_asset_ids: bucket.visuals
+          .map((v) => getVisualAssetId(v))
+          .filter((x): x is string => typeof x === 'string' && x.trim().length > 0),
         __docId: docId ?? undefined,
         __segmentId: segmentId ?? undefined,
         __branchKey: branchKey,
@@ -244,6 +261,12 @@ export function projectClusteredGraph(params: {
         evidence_count_total: evidenceCountTotal,
         avg_confidence: bucket.avgConfidence ?? null,
         sample_summaries: evidenceSamples,
+        group_id: evidenceGroupId,
+        document_id: docId ?? undefined,
+        segment_id: segmentId ?? undefined,
+        member_visual_asset_ids: bucket.visuals
+          .map((v) => getVisualAssetId(v))
+          .filter((x): x is string => typeof x === 'string' && x.trim().length > 0),
         __docId: docId ?? undefined,
         __segmentId: segmentId ?? undefined,
         __branchKey: branchKey,

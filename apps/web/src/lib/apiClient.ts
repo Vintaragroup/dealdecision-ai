@@ -299,6 +299,16 @@ export function apiGetDeal(dealId: string) {
   return request<Deal>(`/api/v1/deals/${dealId}`).then((deal) => normalizeDeal(deal));
 }
 
+export function apiUpdateDeal(
+  dealId: string,
+  input: Partial<Pick<Deal, 'name' | 'stage' | 'priority' | 'trend' | 'score' | 'owner'>>
+) {
+  return request<Deal>(`/api/v1/deals/${dealId}`, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  }).then((deal) => normalizeDeal(deal));
+}
+
 export function apiDeleteDeal(dealId: string, opts?: { purge?: boolean }) {
   const purge = opts?.purge !== false;
   const qs = purge ? '?purge=true' : '';
@@ -452,6 +462,13 @@ export type DealVisualAsset = {
   document_id: string;
   deal_id?: string;
   page_index: number | null;
+  // Segment classification (best-effort; present on /api/v1/deals/:deal_id/visual-assets)
+  segment?: string | null;
+  effective_segment?: string | null;
+  segment_source?: string | null;
+  segment_confidence?: number | null;
+  computed_segment?: string | null;
+  persisted_segment_key?: string | null;
   asset_type?: string | null;
   bbox?: unknown;
   image_uri?: string | null;
@@ -469,6 +486,8 @@ export type DealVisualAsset = {
   document_type?: string | null;
   document_status?: string | null;
   document_page_count?: number | null;
+  ai_analysis_investor_last_at?: string | null;
+  ai_analysis_analyst_last_at?: string | null;
   document?: {
     id: string | null;
     title: string | null;
@@ -519,11 +538,43 @@ function normalizeVisualAssetRecord(raw: any, dealId?: string): DealVisualAsset 
     return null;
   })();
 
+  const parsedSegmentConfidence = (() => {
+    const c = raw.segment_confidence ?? raw.segmentConfidence;
+    if (typeof c === 'number' && Number.isFinite(c)) return c;
+    if (typeof c === 'string') {
+      const parsed = Number(c);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return null;
+  })();
+
+  const segment = typeof raw.segment === 'string' ? raw.segment : typeof raw.effective_segment === 'string' ? raw.effective_segment : null;
+  const effective_segment = typeof raw.effective_segment === 'string' ? raw.effective_segment : segment;
+  const computed_segment = typeof raw.computed_segment === 'string' ? raw.computed_segment : null;
+  const persisted_segment_key =
+    typeof raw.persisted_segment_key === 'string'
+      ? raw.persisted_segment_key
+      : typeof raw.quality_flags?.segment_key === 'string'
+        ? raw.quality_flags.segment_key
+        : null;
+  const segment_source =
+    typeof raw.segment_source === 'string'
+      ? raw.segment_source
+      : typeof raw.quality_flags?.segment_source === 'string'
+        ? raw.quality_flags.segment_source
+        : null;
+
   return {
     visual_asset_id,
     document_id: docId,
     deal_id: raw.deal_id ?? dealId,
     page_index: Number.isFinite(raw.page_index) ? Number(raw.page_index) : null,
+    segment,
+    effective_segment,
+    segment_source,
+    segment_confidence: parsedSegmentConfidence,
+    computed_segment,
+    persisted_segment_key,
     asset_type: raw.asset_type ?? raw.type ?? null,
     bbox: raw.bbox,
     image_uri: raw.image_uri ?? raw.image_url ?? null,
@@ -541,6 +592,8 @@ function normalizeVisualAssetRecord(raw: any, dealId?: string): DealVisualAsset 
     document_type: docType,
     document_status: docStatus,
     document_page_count: docPageCount,
+    ai_analysis_investor_last_at: typeof raw.ai_analysis_investor_last_at === 'string' ? raw.ai_analysis_investor_last_at : raw.ai_analysis_investor_last_at ?? null,
+    ai_analysis_analyst_last_at: typeof raw.ai_analysis_analyst_last_at === 'string' ? raw.ai_analysis_analyst_last_at : raw.ai_analysis_analyst_last_at ?? null,
     document: doc
       ? {
           id: docId,
@@ -601,6 +654,77 @@ export async function apiPostVisualAssetSegmentOverride(input: { visualAssetId: 
 export async function apiDeleteVisualAssetSegmentOverride(visualAssetId: string) {
   return request<{ ok: boolean; visual_asset_id: string; quality_flags?: any }>(`/visual-assets/${visualAssetId}/segment-override`, {
     method: 'DELETE',
+  });
+}
+
+export async function apiPostVisualAssetAiAnalyze(input: {
+  visualAssetId: string;
+  audience: 'investor' | 'analyst';
+  question?: string;
+  force?: boolean;
+}) {
+  const { visualAssetId, audience, question, force } = input;
+  return request<{
+    ok: boolean;
+    visual_asset_id: string;
+    deal_id?: string;
+    document_id?: string;
+    audience: 'investor' | 'analyst';
+    title?: string | null;
+    answer_markdown: string;
+    evidence?: Array<{ path: string; value?: unknown; note?: string | null }>;
+    limitations?: string[];
+    followups?: string[];
+    model?: string;
+    usage?: any;
+    llm_called?: boolean;
+    duration_ms?: number;
+    cached?: boolean;
+    analysis_created_at?: string;
+  }>(`/visual-assets/${visualAssetId}/ai-analyze`, {
+    method: 'POST',
+    body: JSON.stringify({
+      audience,
+      ...(typeof question === 'string' && question.trim().length > 0 ? { question: question.trim() } : {}),
+      ...(force === true ? { force: true } : {}),
+    }),
+  });
+}
+
+export async function apiPostDealNodeAiAnalyze(input: {
+  dealId: string;
+  audience: 'investor' | 'analyst';
+  node?: any;
+  source_json?: any;
+  question?: string;
+  force?: boolean;
+}) {
+  const { dealId, audience, node, source_json, question, force } = input;
+  return request<{
+    ok: boolean;
+    deal_id: string;
+    node_key: string;
+    audience: 'investor' | 'analyst';
+    title?: string | null;
+    answer_markdown: string;
+    evidence?: Array<{ path: string; value?: unknown; note?: string | null }>;
+    limitations?: string[];
+    followups?: string[];
+    model?: string;
+    usage?: any;
+    llm_called?: boolean;
+    duration_ms?: number;
+    cached?: boolean;
+    analysis_created_at?: string;
+  }>(`/api/v1/deals/${dealId}/ai-analyze`, {
+    method: 'POST',
+    body: JSON.stringify({
+      audience,
+      ...(typeof question === 'string' && question.trim().length > 0 ? { question: question.trim() } : {}),
+      ...(force === true ? { force: true } : {}),
+      ...(node ? { node } : {}),
+      ...(typeof source_json !== 'undefined' ? { source_json } : {}),
+    }),
   });
 }
 
@@ -679,6 +803,7 @@ export function apiGetEvidence(dealId: string) {
             evidence_id: row?.evidence_id ?? row?.id,
             deal_id: row?.deal_id,
             document_id: row?.document_id ?? undefined,
+            visual_asset_id: row?.visual_asset_id ?? undefined,
             source: row?.source,
             kind: row?.kind,
             text: row?.text,
@@ -969,7 +1094,11 @@ export function subscribeToEvents(
 
     const params = new URLSearchParams({ deal_id: dealId });
     if (lastEventIdRef.current) {
-      params.set('cursor', lastEventIdRef.current);
+      const raw = lastEventIdRef.current;
+      // Backend expects ISO datetime with offset. If we somehow have a JS Date string, normalize it.
+      const parsed = Date.parse(raw);
+      const normalized = Number.isFinite(parsed) ? new Date(parsed).toISOString() : raw;
+      params.set('cursor', normalized);
     }
     const url = `${API_BASE_URL}/api/v1/events?${params.toString()}`;
 

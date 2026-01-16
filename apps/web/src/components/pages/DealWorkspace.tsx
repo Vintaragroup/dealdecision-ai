@@ -16,7 +16,7 @@ import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
-import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiPostAnalyze, apiPostExtractVisuals, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, apiResolveEvidence, isLiveBackend, subscribeToEvents, type AutoProfileResponse, type DealReport, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile } from '../../lib/apiClient';
+import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostExtractVisuals, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, apiResolveEvidence, isLiveBackend, subscribeToEvents, type AutoProfileResponse, type DealReport, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile } from '../../lib/apiClient';
 import type { JobProgressEventV1 } from '@dealdecision/contracts';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
@@ -99,6 +99,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [showScoreBreakdown, setShowScoreBreakdown] = useState(false);
   const [showScoreTraceDebug, setShowScoreTraceDebug] = useState(false);
   const [showAIAssistant, setShowAIAssistant] = useState(false);
+  const [stageActionLoading, setStageActionLoading] = useState(false);
   const [dioMeta, setDioMeta] = useState<{ dioVersionId?: string; dioStatus?: string; lastAnalyzedAt?: string; dioRunCount?: number; dioAnalysisVersion?: number } | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<string | null>(null);
@@ -112,7 +113,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [jobType, setJobType] = useState<string | null>(null);
   const [jobQueuedSeconds, setJobQueuedSeconds] = useState<number>(0);
   const [sseReady, setSseReady] = useState(false);
-  const [evidence, setEvidence] = useState<Array<{ evidence_id: string; deal_id: string; document_id?: string; source: string; kind: string; text: string; confidence?: number; created_at?: string }>>([]);
+  const [evidence, setEvidence] = useState<Array<{ evidence_id: string; deal_id: string; document_id?: string; visual_asset_id?: string; source: string; kind: string; text: string; confidence?: number; created_at?: string }>>([]);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
   const [lastEvidenceRefresh, setLastEvidenceRefresh] = useState<string | null>(null);
   const [documentTitles, setDocumentTitles] = useState<Record<string, string>>({});
@@ -120,6 +121,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [reportFromApi, setReportFromApi] = useState<DealReport | null>(null);
   const [reportMissing, setReportMissing] = useState<boolean>(false);
   const [analystReloadKey, setAnalystReloadKey] = useState(0);
+  const [analystFocusNodeId, setAnalystFocusNodeId] = useState<string | null>(null);
   const [documentsReloadKey, setDocumentsReloadKey] = useState(0);
   const [selectedScoreSectionKey, setSelectedScoreSectionKey] = useState<ScoreSectionKey | null>(null);
   const [highlightedEvidenceIds, setHighlightedEvidenceIds] = useState<string[]>([]);
@@ -280,7 +282,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       setResolvedEvidence({});
       return;
     }
-    const ids = Array.from(new Set((highlightedEvidenceIds ?? []).filter((v) => typeof v === 'string' && v.trim().length > 0))).slice(0, 100);
+    const highlightedIds = (highlightedEvidenceIds ?? []).filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
+    const visibleEvidenceIds = (evidence ?? []).map((e) => e?.evidence_id).filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
+    const ids = Array.from(new Set([...highlightedIds, ...visibleEvidenceIds])).slice(0, 100);
     if (ids.length === 0) {
       setResolvedEvidence({});
       return;
@@ -302,7 +306,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return () => {
       active = false;
     };
-  }, [highlightedEvidenceIds]);
+  }, [highlightedEvidenceIds, evidence]);
 
   const getConfidenceLabel = (v: unknown): 'High' | 'Med' | 'Low' => {
     const n = typeof v === 'number' && Number.isFinite(v) ? v : 0;
@@ -1518,6 +1522,96 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     addToast(type, title, message);
   };
 
+  const dealStageRaw = typeof (dealFromApi as any)?.stage === 'string' ? String((dealFromApi as any).stage) : null;
+  const dealStageLabel = (() => {
+    const s = dealStageRaw ?? '';
+    const map: Record<string, string> = {
+      intake: 'Intake',
+      under_review: 'Under review',
+      in_diligence: 'In diligence',
+      ready_decision: 'Ready decision',
+      pitched: 'Pitched',
+    };
+    return map[s] ?? (s ? s.replace(/_/g, ' ') : '—');
+  })();
+
+  const parseApiErrorMessage = (err: unknown): string => {
+    if (err instanceof Error) {
+      const raw = err.message ?? '';
+      const trimmed = raw.trim();
+      if (!trimmed) return 'Unknown error';
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && typeof parsed === 'object') {
+          const msg = (parsed as any).message;
+          const e = (parsed as any).error;
+          if (typeof msg === 'string' && msg.trim().length > 0) return msg.trim();
+          if (typeof e === 'string' && e.trim().length > 0) return e.trim();
+        }
+      } catch {
+        // ignore
+      }
+      return trimmed;
+    }
+    return typeof err === 'string' ? err : 'Unknown error';
+  };
+
+  const refreshDealFromApi = async () => {
+    if (!dealId || !isLiveBackend()) return;
+    const deal = await apiGetDeal(dealId);
+    setDealFromApi(deal);
+  };
+
+  const handleAutoProgressStage = async () => {
+    if (!dealId || !isLiveBackend()) return;
+    if (stageActionLoading) return;
+    setStageActionLoading(true);
+    try {
+      const res = await apiAutoProgressDeal(dealId);
+      if (res.progressed && res.newStage) {
+        addToast('success', 'Stage progressed', res.message || `Moved to ${res.newStage}`);
+        await refreshDealFromApi();
+      } else {
+        addToast('info', 'Stage not progressed', res.message || 'Deal does not meet conditions for stage progression');
+        await refreshDealFromApi();
+      }
+    } catch (err) {
+      addToast('error', 'Auto progress failed', err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setStageActionLoading(false);
+    }
+  };
+
+  const handleMarkPitched = async () => {
+    if (!dealId || !isLiveBackend()) return;
+    if (stageActionLoading) return;
+    setStageActionLoading(true);
+    try {
+      const updated = await apiUpdateDeal(dealId, { stage: 'pitched' });
+      setDealFromApi(updated);
+      addToast('success', 'Stage updated', 'Deal marked as pitched.');
+    } catch (err: any) {
+      addToast('error', 'Stage update failed', parseApiErrorMessage(err));
+    } finally {
+      setStageActionLoading(false);
+    }
+  };
+
+  const handleMarkDecisionReady = async () => {
+    if (!dealId || !isLiveBackend()) return;
+    if (stageActionLoading) return;
+    setStageActionLoading(true);
+    try {
+      const updated = await apiUpdateDeal(dealId, { stage: 'ready_decision' });
+      setDealFromApi(updated);
+      addToast('success', 'Stage updated', 'Deal marked as ready decision.');
+    } catch (err: any) {
+      addToast('error', 'Stage update blocked', parseApiErrorMessage(err));
+    } finally {
+      setStageActionLoading(false);
+    }
+  };
+
   const jobDisplay = deriveJobDisplay({
     status: jobStatus,
     updatedAt: jobUpdatedAt,
@@ -1912,6 +2006,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   <span className={`px-2 py-1 rounded-full ${darkMode ? 'bg-blue-500/10 text-blue-200' : 'bg-blue-50 text-blue-700'}`}>
                     Status: {dioMeta?.dioStatus ?? 'unknown'}
                   </span>
+                  {dealStageRaw && (
+                    <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
+                      Stage: {dealStageLabel}
+                    </span>
+                  )}
                   {dioMeta?.lastAnalyzedAt && (
                     <span className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                       Last analyzed: {new Date(dioMeta.lastAnalyzedAt).toLocaleString()}
@@ -2049,6 +2148,69 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                           <Upload className="w-4 h-4" />
                           Upload Documents
                         </button>
+
+                        <div className={`h-px my-1 ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
+
+                        <button
+                          disabled={!dealId || stageActionLoading}
+                          onClick={async () => {
+                            setShowMoreActions(false);
+                            if (!dealId || !isLiveBackend()) {
+                              addToast('info', 'Stage controls unavailable', 'Stage progression is only available in live backend mode.');
+                              return;
+                            }
+                            await handleAutoProgressStage();
+                          }}
+                          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                            darkMode
+                              ? 'hover:bg-white/10 text-gray-300'
+                              : 'hover:bg-gray-100 text-gray-700'
+                          }`}
+                        >
+                          <ArrowUpRight className="w-4 h-4" />
+                          {stageActionLoading ? 'Working…' : 'Auto progress stage'}
+                        </button>
+
+                        <button
+                          disabled={!dealId || stageActionLoading}
+                          onClick={async () => {
+                            setShowMoreActions(false);
+                            if (!dealId || !isLiveBackend()) {
+                              addToast('info', 'Stage controls unavailable', 'Stage updates are only available in live backend mode.');
+                              return;
+                            }
+                            await handleMarkDecisionReady();
+                          }}
+                          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                            darkMode
+                              ? 'hover:bg-white/10 text-gray-300'
+                              : 'hover:bg-gray-100 text-gray-700'
+                          }`}
+                        >
+                          <CheckCircle className="w-4 h-4" />
+                          {stageActionLoading ? 'Working…' : 'Mark decision-ready'}
+                        </button>
+
+                        <button
+                          disabled={!dealId || stageActionLoading}
+                          onClick={async () => {
+                            setShowMoreActions(false);
+                            if (!dealId || !isLiveBackend()) {
+                              addToast('info', 'Stage controls unavailable', 'Stage updates are only available in live backend mode.');
+                              return;
+                            }
+                            await handleMarkPitched();
+                          }}
+                          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
+                            darkMode
+                              ? 'hover:bg-white/10 text-gray-300'
+                              : 'hover:bg-gray-100 text-gray-700'
+                          }`}
+                        >
+                          <Presentation className="w-4 h-4" />
+                          {stageActionLoading ? 'Working…' : 'Mark as pitched'}
+                        </button>
+
                         <div className={`h-px my-1 ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
                         <button
                           onClick={() => {
@@ -2215,6 +2377,39 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   </div>
                 </div>
               </div>
+
+              {scoreBreakdownSections.length > 0 ? (() => {
+                const sections = scoreBreakdownSections as any[];
+                let linkedTotal = 0;
+                let linkedNodeBacked = 0;
+                for (const s of sections) {
+                  const linked = Array.isArray(s?.evidence_ids_linked) ? s.evidence_ids_linked.filter((x: any) => typeof x === 'string' && x.trim().length > 0) : [];
+                  if (linked.length === 0) continue;
+                  linkedTotal += linked.length;
+                  const nodeCount = typeof s?.node_evidence_count_linked === 'number' ? Math.max(0, Math.min(linked.length, Math.floor(s.node_evidence_count_linked))) : 0;
+                  linkedNodeBacked += nodeCount;
+                }
+                if (linkedTotal <= 0) return null;
+                const pct = Math.round((linkedNodeBacked / linkedTotal) * 100);
+                const status = pct >= 80 ? 'OK' : pct >= 50 ? 'WARN' : 'BLOCK';
+                const tone = status === 'OK'
+                  ? (darkMode ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-emerald-200 bg-emerald-50 text-emerald-800')
+                  : status === 'WARN'
+                    ? (darkMode ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : 'border-amber-200 bg-amber-50 text-amber-800')
+                    : (darkMode ? 'border-rose-500/30 bg-rose-500/10 text-rose-200' : 'border-rose-200 bg-rose-50 text-rose-800');
+
+                return (
+                  <div className={`mt-4 rounded-lg border px-3 py-2 flex items-start gap-2 ${tone}`}>
+                    <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                    <div className="text-xs leading-relaxed">
+                      <div className="font-medium">Node-backed scoring: {status} ({pct}% of linked score evidence is node-locatable)</div>
+                      <div className={darkMode ? 'text-gray-300' : 'text-gray-700'}>
+                        Path A requires scored claims to trace back to extracted nodes; link remaining score evidence to visual nodes to make decisions defensible.
+                      </div>
+                    </div>
+                  </div>
+                );
+              })() : null}
 
               {(executiveSummaryV2 || executiveSummaryV1) ? (
                 <>
@@ -3427,6 +3622,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 lastUpdated={lastEvidenceRefresh}
                 onRefresh={loadEvidence}
                 onFetchEvidence={handleFetchEvidence}
+                onLocateVisualEvidenceNode={(visualAssetId) => {
+                  const safeId = String(visualAssetId ?? '').trim();
+                  if (!safeId) return;
+                  setAnalystFocusNodeId(`evidence:${safeId}`);
+                  setActiveTab('analyst');
+                }}
                 reportSections={Array.isArray(reportFromApi?.sections) ? reportFromApi!.sections!.map((s) => ({ title: s.title, evidence_ids: s.evidence_ids })) : []}
                 documentTitles={documentTitles}
                 scoreEvidence={phase1ScoreEvidenceForPanel}
@@ -3442,7 +3643,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
             {/* Analyst Mode Tab */}
             {activeTab === 'analyst' && (
-              <DealAnalystTab key={analystReloadKey} dealId={dealId || 'demo'} darkMode={darkMode} />
+              <DealAnalystTab
+                key={analystReloadKey}
+                dealId={dealId || 'demo'}
+                darkMode={darkMode}
+                focusNodeId={analystFocusNodeId}
+              />
             )}
 
             {/* AI Analysis Tab */}

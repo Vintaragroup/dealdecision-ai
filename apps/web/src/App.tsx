@@ -1,6 +1,6 @@
 import { OnboardingFlow, OnboardingData } from './components/onboarding/OnboardingFlow';
 import { NewDealModal, DealFormData } from './components/NewDealModal';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Deal } from '@dealdecision/contracts';
 import { Sidebar, PageView } from './components/Sidebar';
 import { Header } from './components/Header';
@@ -129,6 +129,11 @@ export default function App() {
     // TODO: Save to backend/localStorage when ready
     console.log('Notification preferences saved:', prefs);
   };
+
+  useEffect(() => {
+    // Apply theme at the document root so portals (e.g. dropdown menus) inherit it.
+    document.documentElement.classList.toggle('dark', darkMode);
+  }, [darkMode]);
 
   return (
     <AppSettingsProvider>

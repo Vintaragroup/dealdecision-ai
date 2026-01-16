@@ -75,6 +75,12 @@ export type {
 } from "./analyzers/base";
 
 export { createAnalyzerRegistry } from "./analyzers/registry";
+
+// Fundability system (analysis foundation)
+export {
+	analysis_foundation_spec_version,
+	isFundabilityShadowModeEnabled,
+} from "./config/analysis-foundation";
 export type { AnalyzerRegistry as DealAnalyzerRegistry } from "./analyzers/registry";
 export * from "./analyzers/slide-sequence";
 export * from "./analyzers/metric-benchmark";

@@ -949,6 +949,56 @@ export const ScoringDiagnosticsV1Schema = z.object({
 export type ScoringDiagnosticsV1 = z.infer<typeof ScoringDiagnosticsV1Schema>;
 
 // ============================================================================
+// Fundability System (Analysis Foundation) — Additive Outputs (V1)
+// ============================================================================
+
+export const CompanyPhaseSchema = z.enum([
+  "IDEA",
+  "PRE_SEED",
+  "SEED",
+  "SEED_PLUS",
+  "SERIES_A",
+  "SERIES_B",
+]);
+
+export type CompanyPhase = z.infer<typeof CompanyPhaseSchema>;
+
+export const PhaseInferenceV1Schema = z.object({
+  company_phase: CompanyPhaseSchema,
+  confidence: z.number().min(0).max(1),
+  supporting_evidence: z
+    .array(
+      z.object({
+        signal: z.string().min(1),
+        source: z.string().optional(),
+        note: z.string().optional(),
+      })
+    )
+    .default([]),
+  missing_evidence: z.array(z.string()).default([]),
+  rationale: z.array(z.string()).default([]),
+});
+
+export type PhaseInferenceV1 = z.infer<typeof PhaseInferenceV1Schema>;
+
+export const FundabilityGateOutcomeSchema = z.enum(["PASS", "CONDITIONAL", "FAIL"]);
+export type FundabilityGateOutcome = z.infer<typeof FundabilityGateOutcomeSchema>;
+
+export const FundabilityAssessmentV1Schema = z.object({
+  outcome: FundabilityGateOutcomeSchema,
+  reasons: z.array(z.string()).default([]),
+  caps: z
+    .object({
+      max_fundability_score_0_100: z.number().min(0).max(100).optional(),
+    })
+    .optional(),
+  // Optional guidance-only output (see analysis-foundation addendum).
+  fundable_at_phase_if_downgraded: CompanyPhaseSchema.optional(),
+});
+
+export type FundabilityAssessmentV1 = z.infer<typeof FundabilityAssessmentV1Schema>;
+
+// ============================================================================
 // Deal Intelligence Object (Top-Level)
 // ============================================================================
 
@@ -970,6 +1020,17 @@ export const DealIntelligenceObjectSchema = z.object({
     .object({
       phase1: Phase1DIOV1Schema.optional(),
       deal_classification_v1: DealClassificationResultSchema.optional(),
+
+      // Additive: authoritative spec versions used for decisioning.
+      spec_versions: z
+        .object({
+          analysis_foundation: z.string().regex(/^\d+\.\d+\.\d+$/),
+        })
+        .optional(),
+
+      // Additive: phase inference + fundability gates (shadow-mode in v1).
+      phase_inference_v1: PhaseInferenceV1Schema.optional(),
+      fundability_assessment_v1: FundabilityAssessmentV1Schema.optional(),
     })
     .optional(),
   

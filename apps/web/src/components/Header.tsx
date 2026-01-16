@@ -2,6 +2,8 @@ import { Search, Bell, Grid3x3, Sun, Moon, RotateCcw, Home, ChevronRight, Menu, 
 import { UserProfile } from './ui/UserProfile';
 import { useState } from 'react';
 import { useUserRole } from '../contexts/UserRoleContext';
+import { useScoreSource } from '../contexts/ScoreSourceContext';
+import { Switch } from './ui/switch';
 
 interface HeaderProps {
   darkMode: boolean;
@@ -16,6 +18,8 @@ interface HeaderProps {
 export function Header({ darkMode, setDarkMode, rightSidebarOpen, setRightSidebarOpen, currentPage = 'Dashboard', mobileMenuOpen, setMobileMenuOpen }: HeaderProps) {
   const [searchFocused, setSearchFocused] = useState(false);
   const { isFounder } = useUserRole();
+  const { scoreSource, setScoreSource } = useScoreSource();
+  const prefersFundability = scoreSource === 'fundability_v1';
 
   const getPageTitle = (page: string) => {
     const pageTitles: Record<string, string> = {
@@ -133,6 +137,21 @@ export function Header({ darkMode, setDarkMode, rightSidebarOpen, setRightSideba
             currentXP={2850}
             maxXP={5000}
             darkMode={darkMode}
+          />
+        </div>
+
+        {/* Score source toggle (Phase 4, UI-only) */}
+        <div className={`hidden md:flex items-center gap-2 px-2 py-1 rounded-lg border ${
+          darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-100/60'
+        }`}>
+          <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Score</span>
+          <span className={`text-xs font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+            {prefersFundability ? 'Fundability' : 'Legacy'}
+          </span>
+          <Switch
+            checked={prefersFundability}
+            onCheckedChange={(checked) => setScoreSource(checked ? 'fundability_v1' : 'legacy')}
+            aria-label="Toggle score source"
           />
         </div>
 

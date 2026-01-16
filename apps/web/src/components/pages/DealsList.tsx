@@ -13,6 +13,8 @@ import {
 import { ExportDealsModal } from '../ExportDealsModal';
 import { apiGetDeals, apiGetDocuments, apiAutoProgressDeal, apiDeleteDeal, isLiveBackend } from '../../lib/apiClient';
 import { Modal } from '../ui/Modal';
+import { useScoreSource } from '../../contexts/ScoreSourceContext';
+import { getDisplayScoreForDeal } from '../../lib/dealScore';
 import { 
   Search,
   Plus,
@@ -43,6 +45,7 @@ interface DealData {
   name: string;
   stage: DealStage;
   score: number | null;
+  scoreSourceUsed?: 'legacy' | 'fundability_v1';
   lastUpdated: string;
   documents: number;
   completeness: number | null;
@@ -62,6 +65,7 @@ interface DealsListProps {
 }
 
 export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, createdDeal }: DealsListProps) {
+  const { scoreSource } = useScoreSource();
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [searchQuery, setSearchQuery] = useState('');
   const [stageFilter, setStageFilter] = useState('all');
@@ -214,9 +218,9 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
       return typeof v === 'number' && Number.isFinite(v) ? v : null;
     };
 
-    const normalizeScore = (deal: any): number | null => {
-      const s = deal?.score;
-      return typeof s === 'number' && Number.isFinite(s) ? s : null;
+    const normalizeScore = (deal: any): { score: number | null; sourceUsed: 'legacy' | 'fundability_v1' } => {
+      const { score, sourceUsed } = getDisplayScoreForDeal(deal as any, scoreSource);
+      return { score, sourceUsed };
     };
 
     // Deduplicate deals by name, keeping the most recent one
@@ -228,11 +232,14 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
       }
     }
 
-    return Array.from(deduplicatedDeals.values()).map((deal) => ({
+    return Array.from(deduplicatedDeals.values()).map((deal) => {
+      const normalized = normalizeScore(deal as any);
+      return ({
       id: deal.id,
       name: deal.name,
       stage: deal.stage,
-      score: normalizeScore(deal as any),
+      score: normalized.score,
+      scoreSourceUsed: normalized.sourceUsed,
       lastUpdated: deal.lastUpdated ?? deal.id, // fallback to keep stable display
       documents: (deal as any).documents ?? 0,
       completeness: computeCompleteness(deal as any),
@@ -241,8 +248,9 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
       priority: deal.priority ?? 'medium',
       views: normalizeViews(deal as any),
       owner: deal.owner ?? 'Unassigned'
-    }));
-  }, [liveDeals]);
+      });
+    });
+  }, [liveDeals, scoreSource]);
 
   useEffect(() => {
     if (!isLiveBackend()) return;
@@ -720,6 +728,13 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                           <span className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
 							{formatPercent(deal.score)}
                           </span>
+                          {deal.scoreSourceUsed === 'fundability_v1' && (
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                              darkMode ? 'bg-[#6366f1]/20 text-[#a5b4fc]' : 'bg-[#6366f1]/10 text-[#4f46e5]'
+                            }`} title="Using fundability score (UI-only)">
+                              F
+                            </span>
+                          )}
                           {deal.trend === 'up' && <TrendingUp className="w-3 h-3 text-emerald-400" />}
                           {deal.trend === 'down' && <TrendingDown className="w-3 h-3 text-red-400" />}
                         </div>

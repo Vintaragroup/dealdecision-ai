@@ -22,6 +22,8 @@ import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
 import { derivePhaseBInsights } from '../../lib/phaseb-findings';
 import { useUserRole } from '../../contexts/UserRoleContext';
+import { useScoreSource } from '../../contexts/ScoreSourceContext';
+import { extractFundabilityScore0_100 } from '../../lib/dealScore';
 import { 
   FileText, 
   TrendingUp, 
@@ -84,6 +86,7 @@ type FeedbackItem = {
 
 export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: DealWorkspaceProps) {
   const { isFounder, isInvestor } = useUserRole();
+  const { scoreSource } = useScoreSource();
   const dealDataExt = dealData as DealFormDataExtras | null | undefined;
   const [activeTab, setActiveTab] = useState('overview');
   const [investorScore, setInvestorScore] = useState(0);
@@ -594,6 +597,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     : null;
   const legacyOverallStatus = (dealFromApi as any)?.dioStatus ?? undefined;
 
+  const fundabilityScore0_100 = extractFundabilityScore0_100(dealFromApi as any);
+  const displayScoreSourceV1: 'legacy' | 'fundability_v1' =
+    scoreSource === 'fundability_v1' && fundabilityScore0_100 != null ? 'fundability_v1' : 'legacy';
+
   const decisionScoreSource: 'phase1_signals' | 'legacy_overall' = hasPhase1Signals ? 'phase1_signals' : 'legacy_overall';
 
   const decisionScore: number | null = hasPhase1Signals
@@ -1033,7 +1040,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   // Use dealInfo if available, otherwise fall back to dealData
   const displayName = dealInfo?.name || dealData?.name || 'Unnamed Deal';
   const displayType = dealInfo?.type || dealData?.type || 'series-a';
-  const displayScore: number | null = decisionScore;
+  const displayScore: number | null = displayScoreSourceV1 === 'fundability_v1'
+    ? (fundabilityScore0_100 != null ? Math.round(fundabilityScore0_100) : decisionScore)
+    : decisionScore;
 
   const safeText = (value: unknown): string => {
     if (typeof value !== 'string') return '';
@@ -2310,7 +2319,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   </div>
                   {import.meta.env.DEV && (
                     <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                      Source: {decisionScoreSource}
+                      Decision score source: {decisionScoreSource} · Display score: {displayScoreSourceV1}
                     </div>
                   )}
                   {import.meta.env.DEV && hasPhase1Signals && legacyOverallScore != null && legacyOverallScore !== displayScore && (

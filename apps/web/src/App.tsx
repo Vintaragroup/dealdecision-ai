@@ -24,6 +24,7 @@ import { LogoShowcase } from './components/LogoShowcase';
 import { ComponentShowcase } from './components/ComponentShowcase';
 import { AppSettingsProvider } from './contexts/AppSettingsContext';
 import { UserRoleProvider } from './contexts/UserRoleContext';
+import { ScoreSourceProvider } from './contexts/ScoreSourceContext';
 import { ChatAssistant } from './components/ChatAssistant';
 
 type LogoVariant = 'orbiting' | 'pulse' | 'network' | 'hexagon' | 'morph';
@@ -138,7 +139,8 @@ export default function App() {
   return (
     <AppSettingsProvider>
       <UserRoleProvider>
-        <div className={darkMode ? 'dark' : ''}>
+        <ScoreSourceProvider>
+          <div className={darkMode ? 'dark' : ''}>
           {/* Onboarding Flow */}
           {showOnboarding && (
             <OnboardingFlow 
@@ -288,7 +290,8 @@ export default function App() {
               onClose={() => setShowNewDealModal(false)}
             />
           )}
-        </div>
+          </div>
+        </ScoreSourceProvider>
       </UserRoleProvider>
     </AppSettingsProvider>
   );

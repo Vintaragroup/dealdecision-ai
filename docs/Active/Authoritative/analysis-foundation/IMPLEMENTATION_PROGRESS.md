@@ -25,6 +25,11 @@ This document tracks **implementation progress** of the Analysis Foundation (Fun
 - Output addition: `dio.fundability_decision_v1`
 - Contract: additive only; does not change legacy `overall_score` or `decision`
 
+### Phase 4 — UI-only score source toggle (slow/safe)
+- Status: Implemented (web UI)
+- Contract: legacy remains the default; switching is **display-only** and falls back to legacy when fundability score is missing
+- Behavior: adds a “Score: Legacy/Fundability” toggle in the header; applies to dashboard cards, deal list, and deal workspace score display
+
 ## Consumer Rollout (stability-first)
 
 Goal: allow the frontend UI to review fundability outputs via a **stable DTO** (without exposing raw DIO internals, and without changing legacy score usage).

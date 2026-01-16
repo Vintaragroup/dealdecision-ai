@@ -87,6 +87,7 @@ services:
       REDIS_URL: redis://redis:6379
       UPLOAD_DIR: /app/uploads
       VISION_WORKER_URL: http://vision_worker:8000
+      DDAI_ENABLE_PHASEB_VISUAL_EVIDENCE: "1"
       # Phase 1 DealOverviewV2 debug logs (candidate scoring + selection):
       # - Set to "1" to enable
       # - Set to "0" or remove to disable

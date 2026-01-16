@@ -18,7 +18,9 @@
     "smoke:analyst-evidence": "tsx apps/api/scripts/smoke-test-analyst-evidence.ts",
     "smoke:analyst-evidence:docker": "pnpm smoke:analyst-evidence --api-base-url http://localhost:9000",
     "refresh:extraction:analysis:all": "tsx scripts/refresh-extraction-analysis-all-deals.ts",
-    "segment:audit": "tsx scripts/segment-audit-export.ts"
+    "segment:audit": "tsx scripts/segment-audit-export.ts",
+    "audit:unknown-segments": "tsx scripts/audit-unknown-segments.ts",
+    "backfill:document-metadata": "tsx scripts/backfill-document-metadata.ts"
   },
   "devDependencies": {
     "@jest/globals": "^30.2.0",

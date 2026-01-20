@@ -87,6 +87,11 @@ coverage/
 
 *.traineddata
 
+# python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+
 
 # package-internal docs (not curated)
 packages/**/docs/.vscode/

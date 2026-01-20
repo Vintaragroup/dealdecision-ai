@@ -96,6 +96,7 @@ async function main() {
   const baseUrl = process.env.API_BASE_URL || "http://localhost:9000";
   const concurrency = Math.max(1, envInt("CONCURRENCY", 4));
   const limitDeals = envInt("LIMIT", 0);
+  const dealId = (process.env.DEAL_ID || "").trim();
   const dryRun = envFlag("DRY_RUN", false);
   const wait = envFlag("WAIT", false);
   const pollIntervalMs = Math.max(250, envInt("POLL_INTERVAL_MS", 2000));
@@ -109,9 +110,16 @@ async function main() {
   const dealsUrl = new URL("/api/v1/deals", base);
 
   const deals = await fetchJson<DealListItem[]>(dealsUrl);
-  const selectedDeals = limitDeals > 0 ? deals.slice(0, limitDeals) : deals;
+  const filteredDeals = dealId ? deals.filter((d) => d.id === dealId) : deals;
+  const selectedDeals = limitDeals > 0 ? filteredDeals.slice(0, limitDeals) : filteredDeals;
 
   console.log(`Found ${deals.length} current deals (deleted_at IS NULL).`);
+  if (dealId) {
+    console.log(`DEAL_ID is set; matching deals: ${selectedDeals.length}`);
+    if (selectedDeals.length === 0) {
+      throw new Error(`No deals matched DEAL_ID=${dealId}`);
+    }
+  }
   if (limitDeals > 0) {
     console.log(`LIMIT is set; processing ${selectedDeals.length} deals.`);
   }

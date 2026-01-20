@@ -118,6 +118,7 @@ export interface Document {
 export type JobType =
 	| 'ingest_documents'
 	| 'extract_visuals'
+	| 'deep_scan_visuals'
 	| 'fetch_evidence'
 	| 'analyze_deal'
 	| 'verify_documents'
@@ -135,6 +136,7 @@ export type JobProgressStage =
 	| 'render_pages'
 	| 'collect_image_uris'
 	| 'extract_visual_assets'
+	| 'deep_scan_visuals'
 	| 'ocr'
 	| 'classify_visuals'
 	| 'persist_visual_assets'

@@ -19,6 +19,7 @@ export * from "./lib/sanitize";
 export * from './config/segment-thresholds';
 export * from './scoring/segment-coverage';
 export * from './scoring/scoring-input-v0';
+export * from './classification/content-archetypes';
 
 // ============================================================================
 // DIO / Orchestration (Phase 4)

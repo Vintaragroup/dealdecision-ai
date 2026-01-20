@@ -50,6 +50,8 @@ import {
 	persistSyntheticVisualAssets,
 	deduceDocKind,
 	resegmentStructuredSyntheticAssets,
+	applyVisionHintsToStructuredPowerpointSlides,
+	callXlsxWorker,
 } from "./lib/visual-extraction";
 import { normalizeToCanonical } from "./lib/normalization";
 import { processDocument } from "./lib/processors";
@@ -57,6 +59,7 @@ import { verifyDocumentExtraction } from "./lib/verification";
 import { remediateStructuredData } from "./lib/remediation";
 import { parseIngestDocumentsJobData, validateIngestDocumentsPayload } from "./lib/ingest/ingest-payload";
 import { buildPhase1DealOverviewV2, buildPhase1DealUnderstandingV1, buildPhase1UpdateReportV1 } from "./lib/phase1/dealOverviewV2";
+import { computeVisualQualityAuditForDeal } from "./lib/visual-quality-audit";
 import { buildPhase1BusinessArchetypeV1 } from "./lib/phase1/businessArchetypeV1";
 import { getVisualPageImagePersistConfig, persistRenderedPageImages, persistImagePage, renderNonPdfToPageImages } from "./lib/rendered-pages";
 import type { DocumentAnalysis, ExtractedContent } from "./lib/processors";
@@ -1516,12 +1519,16 @@ registerWorker("extract_visuals", async (job: Job) => {
 		image_uris?: string[];
 		extractor_version?: string;
 		force_resegment?: boolean;
+		force_reextract?: boolean;
+		enqueue_deep_scan?: boolean;
 	};
 	const documentId = typeof data.document_id === "string" ? data.document_id : undefined;
 	const dealId = typeof data.deal_id === "string" ? data.deal_id : undefined;
 	const imageUris = Array.isArray(data.image_uris) ? data.image_uris : undefined;
 	const extractorVersionOverride = typeof data.extractor_version === "string" ? data.extractor_version : undefined;
 	const forceResegment = Boolean((data as any).force_resegment);
+	const forceReextract = Boolean((data as any).force_reextract);
+	const enqueueDeepScan = Boolean((data as any).enqueue_deep_scan);
 
 	const explicitDocumentIds = Array.isArray(data.document_ids)
 		? data.document_ids.filter((id) => typeof id === "string" && id.trim().length > 0)
@@ -1755,12 +1762,15 @@ registerWorker("extract_visuals", async (job: Job) => {
 	let persisted = 0;
 	let docsProcessed = 0;
 	let docsSkipped = docsBlocked;
+	let pagesSkippedExisting = 0;
 	let docsMissingOriginalBytes = 0;
 	let docsMissingPageImages = 0;
 	let docsHadPageCountMissing = 0;
 	let docsRenderedViaPdf = 0;
 	let docsRenderedViaLibreoffice = 0;
 	let docsSyntheticAssetsUsed = 0;
+	let docsExcelSkippedVision = 0;
+	let docsExcelPyAssetsUsed = 0;
 	let imageUrisBackfilled = 0;
 	const docsMissingOriginalBytesIds: string[] = [];
 	const docsMissingPageImagesIds: string[] = [];
@@ -1816,7 +1826,13 @@ registerWorker("extract_visuals", async (job: Job) => {
 		let syntheticPersisted = 0;
 		// Always persist structured synthetic assets for Office docs when available.
 		// These are complementary to vision/OCR page assets and keep lineage/scoring grounded in text.
-		if (["word", "powerpoint", "excel"].includes(docKind)) {
+		const pyExcelEnabled = (() => {
+			const raw = process.env.ENABLE_PY_EXCEL_EXTRACTION;
+			if (raw == null) return true; // default ON
+			return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+		})();
+		const deferExcelSynthetic = docKind === "excel" && pyExcelEnabled;
+		if (["word", "powerpoint"].includes(docKind) || (docKind === "excel" && !deferExcelSynthetic)) {
 			try {
 				syntheticPersisted = await persistSyntheticVisualAssets({
 					pool,
@@ -2062,8 +2078,189 @@ registerWorker("extract_visuals", async (job: Job) => {
 			);
 		}
 
+		// Post-render pass: for structured PowerPoint synthetic slides that have no text and unknown segment,
+		// call the local vision-understanding model and persist segment hints into the structured assets.
+		// Note: some decks are typed as pdf/pitch_deck even if full_content has slides, so we always attempt
+		// this pass (it self-selects candidates in SQL).
+		try {
+			const res = await applyVisionHintsToStructuredPowerpointSlides({
+				pool,
+				documentId: docId,
+				pageImageUris: uris,
+				structuredExtractorVersion: structuredExtractorVersion,
+				visionConfig: config,
+				env: process.env,
+				logger: console,
+			});
+			if (res.attempted > 0 || res.updated > 0 || res.errors > 0) {
+				console.log(
+					JSON.stringify({
+						event: "STRUCTURED_POWERPOINT_VISION_HINTS",
+						document_id: docId,
+						...res,
+					})
+				);
+			}
+		} catch (err) {
+			console.warn(
+				`[extract_visuals] structured PowerPoint vision hints pass failed doc=${docId}: ${
+					err instanceof Error ? err.message : String(err)
+				}`
+			);
+		}
+
+		// Excel: prefer structured, cell-based extraction over OCR/vision.
+		// Default behavior:
+		// - ENABLE_PY_EXCEL_EXTRACTION=1 (default): call vision_worker /extract-xlsx (openpyxl) and persist table/range nodes.
+		// - ENABLE_EXCEL_VISION_EXTRACTION=1: force OCR/vision on rendered sheet images (not recommended).
+		// - If Python extraction fails, fall back to existing structured synthetic extraction.
+		const excelVisionEnabled = (() => {
+			const raw = process.env.ENABLE_EXCEL_VISION_EXTRACTION;
+			if (raw == null) return false;
+			return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
+		})();
+		if (docKind === "excel" && !excelVisionEnabled) {
+			let excelStructuredPersisted = 0;
+			let usedPython = false;
+
+			if (pyExcelEnabled) {
+				try {
+					if (!forceReextract) {
+						const { rows } = await pool.query(
+							`
+									SELECT 1
+									  FROM visual_assets va
+									  JOIN visual_extractions ve ON ve.visual_asset_id = va.id
+									 WHERE va.document_id = $1
+									   AND ve.extractor_version = $2
+									   AND ve.structured_json->>'kind' = 'excel_range'
+									 LIMIT 1
+							`,
+							[sanitizeText(docId), sanitizeText(process.env.EXCEL_PY_EXTRACTOR_VERSION || "excel_py_v1")]
+						);
+						if ((rows?.length ?? 0) > 0) {
+							docsExcelSkippedVision += 1;
+							console.log(
+								JSON.stringify({
+									event: "EXCEL_SKIP_VISION_EXTRACTION",
+									document_id: docId,
+										reason: "excel_py_range_assets_already_present",
+								})
+							);
+							continue;
+						}
+					}
+
+					const original = await getDocumentOriginalFile(docId);
+					if (original?.bytes && original.bytes.length > 0) {
+						const excelPyExtractorVersion = process.env.EXCEL_PY_EXTRACTOR_VERSION || "excel_py_v1";
+						const xlsxResp = await callXlsxWorker(config, {
+							document_id: docId,
+							xlsx_b64: original.bytes.toString("base64"),
+							extractor_version: excelPyExtractorVersion,
+							max_sheets: 50,
+							max_tables_per_sheet: 24,
+						});
+						if (xlsxResp?.pages?.length) {
+							let persistedLocal = 0;
+							for (const page of xlsxResp.pages) {
+								const pageIdx = typeof (page as any)?.page_index === "number" ? (page as any).page_index : 0;
+								const pageImageUri = pageIdx >= 0 && pageIdx < uris.length ? uris[pageIdx] : null;
+								const res = await persistVisionResponse(pool, page as any, { pageImageUri, env: process.env });
+								persistedLocal += res.persisted;
+							}
+							excelStructuredPersisted = persistedLocal;
+							persisted += persistedLocal;
+							if (persistedLocal > 0) {
+								usedPython = true;
+								docsExcelPyAssetsUsed += 1;
+							}
+						}
+					}
+				} catch (err) {
+					console.warn(
+						`[extract_visuals] excel python extraction failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+					);
+				}
+			}
+
+			if (!usedPython) {
+				// Fallback: use existing structured synthetic Excel assets from the JS extractor.
+				if (deferExcelSynthetic) {
+					try {
+						syntheticPersisted = await persistSyntheticVisualAssets({
+							pool,
+							documentId: docId,
+							docKind,
+							structuredData: docMeta?.structured_data ?? {},
+							fullContent: docMeta?.full_content ?? {},
+							extractorVersion: structuredExtractorVersion,
+							env: process.env,
+						});
+						if (syntheticPersisted > 0) {
+							docsSyntheticAssetsUsed += 1;
+							persisted += syntheticPersisted;
+						}
+					} catch (err) {
+						console.warn(
+							`[extract_visuals] excel synthetic fallback failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+						);
+					}
+				}
+			}
+
+			docsExcelSkippedVision += 1;
+			console.log(
+				JSON.stringify({
+					event: "EXCEL_SKIP_VISION_EXTRACTION",
+					document_id: docId,
+					reason: usedPython ? "excel_py_structured" : "structured_synthetic_fallback",
+					excel_py_persisted: excelStructuredPersisted,
+					synthetic_persisted: syntheticPersisted,
+				})
+			);
+			continue;
+		}
+
 		for (let i = 0; i < uris.length && i < config.maxPages; i += 1) {
 			const image_uri = uris[i];
+
+			// If we've already extracted this page for this extractor version, don't re-run.
+			// This prevents repeated OCR/vision-understanding passes on the same slide across extractions.
+			if (!forceReextract) {
+				try {
+					const { rows } = await pool.query(
+						`
+							SELECT 1
+							  FROM visual_assets va
+							  JOIN visual_extractions ve ON ve.visual_asset_id = va.id
+							 WHERE va.document_id = $1
+							   AND va.page_index = $2
+							   AND ve.extractor_version = $3
+							   AND (
+								(va.quality_flags->>'accepted_v1') = 'true'
+								OR (
+									COALESCE(length(btrim(ve.ocr_text)), 0) > 120
+									OR ve.confidence > 0.55
+									OR (ve.structured_json IS NOT NULL AND ve.structured_json <> '{}'::jsonb)
+								)
+							   )
+							 LIMIT 1
+						`,
+						[sanitizeText(docId), i, sanitizeText(extractorVersion)]
+					);
+					if ((rows?.length ?? 0) > 0) {
+						pagesSkippedExisting += 1;
+						continue;
+					}
+				} catch (err) {
+					// Best-effort: if precheck fails, proceed with extraction rather than skipping.
+					console.warn(
+						`[extract_visuals] existing-page precheck failed doc=${docId} page=${i}: ${err instanceof Error ? err.message : String(err)}`
+					);
+				}
+			}
+
 			let response = await callVisionWorker(config, {
 				document_id: docId,
 				page_index: i,
@@ -2131,12 +2328,15 @@ registerWorker("extract_visuals", async (job: Job) => {
 		docs_total: docsTotal,
 		docs_ready: targetDocumentIds.length,
 		docs_processed: docsProcessed,
+		pages_skipped_existing: pagesSkippedExisting,
 		docs_blocked_pending: docsBlockedPending,
 		docs_missing_original_bytes: docsMissingOriginalBytes,
 		docs_missing_page_images: docsMissingPageImages,
 		docs_rendered_via_pdf: docsRenderedViaPdf,
 		docs_rendered_via_libreoffice: docsRenderedViaLibreoffice,
 		docs_synthetic_assets_used: docsSyntheticAssetsUsed,
+		docs_excel_skipped_vision: docsExcelSkippedVision,
+		docs_excel_py_assets_used: docsExcelPyAssetsUsed,
 		image_uri_backfilled: imageUrisBackfilled,
 	};
 
@@ -2172,8 +2372,33 @@ registerWorker("extract_visuals", async (job: Job) => {
 	const finalStatus = docsBlocked > 0 ? "succeeded_with_warnings" : "succeeded";
 	const finalMessage =
 		docsBlocked > 0
-			? `Visual extraction succeeded with warnings (blocked=${docsBlocked}, processed=${docsProcessed}, skipped=${docsSkipped}) counters=${JSON.stringify(jobCounters)}`
-			: `Visual extraction complete (persisted=${persisted}, docs_processed=${docsProcessed}, docs_skipped=${docsSkipped}) counters=${JSON.stringify(jobCounters)}`;
+			? `Visual extraction succeeded with warnings (blocked=${docsBlocked}, processed=${docsProcessed}, skipped=${docsSkipped}, pages_skipped_existing=${pagesSkippedExisting}) counters=${JSON.stringify(jobCounters)}`
+			: `Visual extraction complete (persisted=${persisted}, docs_processed=${docsProcessed}, docs_skipped=${docsSkipped}, pages_skipped_existing=${pagesSkippedExisting}) counters=${JSON.stringify(jobCounters)}`;
+
+	let dealIdForAudit: string | null = dealId ?? null;
+	if (!dealIdForAudit) {
+		try {
+			const { rows } = await pool.query<{ deal_id: string | null }>(
+				"SELECT deal_id FROM documents WHERE id = $1",
+				[targetDocumentIds[0]]
+			);
+			dealIdForAudit = rows?.[0]?.deal_id ?? null;
+		} catch {
+			dealIdForAudit = null;
+		}
+	}
+
+	let visualQualityAudit: any = null;
+	if (dealIdForAudit) {
+		try {
+			visualQualityAudit = await computeVisualQualityAuditForDeal(pool as any, dealIdForAudit);
+		} catch (err) {
+			console.warn(
+				`[extract_visuals] visual quality audit failed deal=${dealIdForAudit}: ${err instanceof Error ? err.message : String(err)}`
+			);
+			visualQualityAudit = null;
+		}
+	}
 
 	await updateJob(job, finalStatus, finalMessage, 100);
 	await emitJobProgress(job, {
@@ -2189,6 +2414,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 			...jobCounters,
 			docs_blocked: docsBlocked,
 			blocked_document_ids: blockedDocs.map((d) => d.document_id),
+			...(visualQualityAudit ? { visual_quality_audit: visualQualityAudit } : {}),
 			...(docsMissingPageImagesIds.length > 0
 				? { docs_missing_page_images_doc_ids: docsMissingPageImagesIds.slice(0, 50) }
 				: {}),
@@ -2197,6 +2423,23 @@ registerWorker("extract_visuals", async (job: Job) => {
 				: {}),
 		},
 	});
+
+	// Optional follow-up: enqueue a deep scan pass to force vision-understanding hints.
+	// This is intentionally best-effort and should never block the quick extraction.
+	if (enqueueDeepScan && dealId && (finalStatus === "succeeded" || finalStatus === "succeeded_with_warnings")) {
+		try {
+			const deepScanQueue = getQueue("deep_scan_visuals");
+			await deepScanQueue.add(
+				"deep_scan_visuals",
+				{ deal_id: dealId, parent_job_id: job.id ? String(job.id) : null },
+				{ removeOnComplete: true, removeOnFail: false, delay: 500 }
+			);
+		} catch (err) {
+			console.warn(
+				`[extract_visuals] deep scan enqueue failed deal=${dealId}: ${err instanceof Error ? err.message : String(err)}`
+			);
+		}
+	}
 	devLog("worker_extract_visuals_finish", {
 		job_id: job.id ? String(job.id) : null,
 		deal_id: dealId ?? null,
@@ -2216,6 +2459,254 @@ registerWorker("extract_visuals", async (job: Job) => {
 		docs_ready: targetDocumentIds.length,
 		docs_total: docsTotal,
 	};
+});
+
+registerWorker("deep_scan_visuals", async (job: Job) => {
+	const data = (job.data ?? {}) as {
+		deal_id?: string;
+		document_ids?: string[];
+		force_refresh?: boolean;
+		parent_job_id?: string | null;
+	};
+	const dealId = typeof data.deal_id === "string" ? data.deal_id : undefined;
+	const explicitDocumentIds = Array.isArray(data.document_ids)
+		? data.document_ids.filter((id) => typeof id === "string" && id.trim().length > 0)
+		: [];
+	const forceRefresh = Boolean((data as any).force_refresh);
+
+	if (!dealId) {
+		await updateJob(job, "failed", "Missing deal_id", 100);
+		return { ok: false, reason: "missing_deal_id" };
+	}
+
+	const config = getVisionExtractorConfig();
+	if (!config.enabled) {
+		await updateJob(
+			job,
+			"failed",
+			"Visual extraction is disabled in the worker (set ENABLE_VISUAL_EXTRACTION=1)",
+			100
+		);
+		return { ok: false, skipped: true, reason: "disabled" };
+	}
+
+	const pool = getPool();
+	const tablesOk = (await hasTable(pool, "visual_assets")) && (await hasTable(pool, "visual_extractions"));
+	if (!tablesOk) {
+		await updateJob(job, "failed", "Visual tables missing (run DB migrations)", 100);
+		return { ok: false, skipped: true, reason: "tables_missing" };
+	}
+
+	await updateJob(job, "running", "Deep scan started", 1);
+	await emitJobProgress(job, {
+		job_id: job.id ? String(job.id) : "",
+		deal_id: dealId,
+		stage: "deep_scan_visuals",
+		percent: 1,
+		message: "Deep scan started",
+		meta: { force_refresh: forceRefresh, parent_job_id: (data as any).parent_job_id ?? null },
+	});
+
+	let targetDocumentIds: string[] = [];
+	if (explicitDocumentIds.length > 0) {
+		targetDocumentIds = explicitDocumentIds;
+	} else {
+		try {
+			const docs = await getDocumentsForDeal(dealId);
+			targetDocumentIds = docs
+				.map((d: any) => d.document_id)
+				.filter((id: any) => typeof id === "string" && id.length > 0);
+		} catch (err) {
+			await updateJob(job, "failed", err instanceof Error ? err.message : "Failed to load deal documents", 100);
+			return { ok: false };
+		}
+	}
+
+	if (targetDocumentIds.length === 0) {
+		await updateJob(job, "failed", "No documents found for deal", 100);
+		return { ok: false, reason: "no_documents" };
+	}
+
+	const baseExtractorVersion = config.extractorVersion;
+	const forceExtractorVersion = `${baseExtractorVersion}_force_vu`;
+
+	const pageHasVisionUnderstanding = async (documentId: string, pageIndex: number): Promise<boolean> => {
+		try {
+			const { rows } = await pool.query(
+				`
+					SELECT 1
+					  FROM visual_assets va
+					  JOIN visual_extractions ve ON ve.visual_asset_id = va.id
+					 WHERE va.document_id = $1
+					   AND va.page_index = $2
+					   AND ve.extractor_version = $3
+					   AND (ve.structured_json->'vision_understanding_v1') IS NOT NULL
+					 LIMIT 1
+				`,
+				[sanitizeText(documentId), pageIndex, sanitizeText(baseExtractorVersion)]
+			);
+			return (rows?.length ?? 0) > 0;
+		} catch {
+			return false;
+		}
+	};
+
+	let docsProcessed = 0;
+	let pagesConsidered = 0;
+	let pagesSkippedExisting = 0;
+	let pagesAttempted = 0;
+	let pagesUpdated = 0;
+	let pagesErrored = 0;
+	let persistedAssets = 0;
+
+	for (let docIndex = 0; docIndex < targetDocumentIds.length; docIndex += 1) {
+		const docId = targetDocumentIds[docIndex];
+		let uris: string[] = [];
+		try {
+			uris = await resolvePageImageUris(pool, docId, { env: process.env, logger: console });
+		} catch {
+			uris = [];
+		}
+
+		if (uris.length === 0) {
+			docsProcessed += 1;
+			continue;
+		}
+
+		for (let pageIndex = 0; pageIndex < uris.length && pageIndex < config.maxPages; pageIndex += 1) {
+			pagesConsidered += 1;
+			const image_uri = uris[pageIndex];
+			if (!forceRefresh) {
+				const hasVu = await pageHasVisionUnderstanding(docId, pageIndex);
+				if (hasVu) {
+					pagesSkippedExisting += 1;
+					continue;
+				}
+			}
+
+			pagesAttempted += 1;
+			const pct = Math.min(
+				98,
+				Math.round(((pagesAttempted / Math.max(1, targetDocumentIds.length * config.maxPages)) * 95) + 3)
+			);
+			if (pagesAttempted % 10 === 1) {
+				await updateJob(job, "running", `Deep scanning visuals (${pagesAttempted} pages)`, pct);
+				await emitJobProgress(job, {
+					job_id: job.id ? String(job.id) : "",
+					deal_id: dealId,
+					document_id: docId,
+					stage: "deep_scan_visuals",
+					percent: pct,
+					message: `Deep scanning visuals (${pagesAttempted} pages)`,
+					meta: {
+						pages_considered: pagesConsidered,
+						pages_attempted: pagesAttempted,
+						pages_updated: pagesUpdated,
+						pages_skipped_existing: pagesSkippedExisting,
+						pages_errored: pagesErrored,
+					},
+				});
+			}
+
+			let response = await callVisionWorker(config, {
+				document_id: docId,
+				page_index: pageIndex,
+				image_uri,
+				extractor_version: forceExtractorVersion,
+			});
+
+			if (!response || !Array.isArray((response as any).assets) || response.assets.length === 0) {
+				pagesErrored += 1;
+				continue;
+			}
+
+			// Persist results into the canonical extractor version so the API/UI sees it.
+			(response as any).extractor_version = baseExtractorVersion;
+
+			try {
+				const { persisted } = await persistVisionResponse(pool, response, { pageImageUri: image_uri });
+				persistedAssets += persisted;
+				pagesUpdated += 1;
+			} catch {
+				pagesErrored += 1;
+			}
+		}
+
+		docsProcessed += 1;
+	}
+
+	// Build summary stats (what a dashboard can display without custom tables).
+	let pagesWithVu = 0;
+	let pagesTotal = 0;
+	let assetTypeCounts: Record<string, number> = {};
+	try {
+		const pagesRes = await pool.query<{
+			pages_total: number;
+			pages_with_vu: number;
+		}>(
+			`
+				SELECT
+					COUNT(DISTINCT (va.document_id, va.page_index))::int AS pages_total,
+					COUNT(DISTINCT (CASE WHEN (ve.structured_json->'vision_understanding_v1') IS NOT NULL THEN (va.document_id, va.page_index) END))::int AS pages_with_vu
+				  FROM visual_assets va
+				  JOIN visual_extractions ve ON ve.visual_asset_id = va.id
+				  JOIN documents d ON d.id = va.document_id
+				 WHERE d.deal_id = $1
+				   AND ve.extractor_version = $2
+			`,
+			[sanitizeText(dealId), sanitizeText(baseExtractorVersion)]
+		);
+		pagesTotal = pagesRes.rows?.[0]?.pages_total ?? 0;
+		pagesWithVu = pagesRes.rows?.[0]?.pages_with_vu ?? 0;
+	} catch {
+		// ignore
+	}
+	try {
+		const byType = await pool.query<{ asset_type: string; count: string }>(
+			`
+				SELECT va.asset_type, COUNT(*)::text AS count
+				  FROM visual_assets va
+				  JOIN documents d ON d.id = va.document_id
+				 WHERE d.deal_id = $1
+				   AND va.extractor_version = $2
+				 GROUP BY va.asset_type
+			`,
+			[sanitizeText(dealId), sanitizeText(baseExtractorVersion)]
+		);
+		assetTypeCounts = Object.fromEntries(
+			(byType.rows ?? []).map((r) => [r.asset_type, Number.parseInt(String(r.count), 10) || 0])
+		);
+	} catch {
+		assetTypeCounts = {};
+	}
+
+	const summary = {
+		deal_id: dealId,
+		extractor_version: baseExtractorVersion,
+		docs_total: targetDocumentIds.length,
+		docs_processed: docsProcessed,
+		pages_total: pagesTotal,
+		pages_with_vision_understanding_v1: pagesWithVu,
+		pages_considered: pagesConsidered,
+		pages_attempted: pagesAttempted,
+		pages_updated: pagesUpdated,
+		pages_skipped_existing: pagesSkippedExisting,
+		pages_errored: pagesErrored,
+		persisted_assets: persistedAssets,
+		asset_type_counts: assetTypeCounts,
+	};
+
+	await updateJob(job, "succeeded", `Deep scan complete (pages_updated=${pagesUpdated}, pages_errored=${pagesErrored})`, 100);
+	await emitJobProgress(job, {
+		job_id: job.id ? String(job.id) : "",
+		deal_id: dealId,
+		stage: "finalize",
+		percent: 100,
+		message: "Deep scan complete",
+		meta: summary,
+	});
+
+	return { ok: true, summary };
 });
 registerWorker("fetch_evidence", async (job: Job) => {
 	const dealId = (job.data as { deal_id?: string } | undefined)?.deal_id;

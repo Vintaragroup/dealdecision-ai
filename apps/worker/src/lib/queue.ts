@@ -26,6 +26,7 @@ export function createWorker(
   name:
     | "ingest_documents"
     | "extract_visuals"
+    | "deep_scan_visuals"
     | "fetch_evidence"
     | "analyze_deal"
     | "verify_documents"
@@ -77,6 +78,7 @@ export function getQueue(
   name:
     | "ingest_documents"
     | "extract_visuals"
+    | "deep_scan_visuals"
     | "fetch_evidence"
     | "analyze_deal"
     | "verify_documents"

@@ -31,6 +31,108 @@ export type VisionOcrBlock = {
 	confidence?: number | null;
 };
 
+function cleanSnippetText(value: string): string {
+	return value.replace(/\s+/g, " ").trim();
+}
+
+function looksLikeJunkLine(line: string): boolean {
+	const s = cleanSnippetText(line);
+	if (!s) return true;
+	// URLs/emails/page numbers are rarely useful for scoring evidence.
+	if (/\bhttps?:\/\//i.test(s) || /\bwww\./i.test(s) || /\b\S+@\S+\b/.test(s)) return true;
+	if (/^\(?\d{1,3}\)?$/.test(s)) return true;
+	if (/^(?:slide|page)\s*\d+\b/i.test(s)) return true;
+	// Excess symbol soup.
+	const noSpace = s.replace(/\s/g, "");
+	const letters = (noSpace.match(/[A-Za-z]/g) ?? []).length;
+	const digits = (noSpace.match(/[0-9]/g) ?? []).length;
+	const other = Math.max(0, noSpace.length - letters - digits);
+	if (noSpace.length >= 10 && other / Math.max(1, noSpace.length) >= 0.35) return true;
+	return false;
+}
+
+function deriveEvidenceSnippetV2(params: {
+	ocrText: string | null;
+	ocrBlocks: VisionOcrBlock[];
+	structuredJson: Record<string, unknown> | null;
+	maxChars?: number;
+}): { snippet: string | null; source: string } {
+	const maxChars = params.maxChars ?? 500;
+	const blocks = Array.isArray(params.ocrBlocks) ? params.ocrBlocks : [];
+
+	const usable = blocks
+		.map((b) => {
+			const text = typeof b?.text === "string" ? b.text.trim() : "";
+			const conf = typeof b?.confidence === "number" && Number.isFinite(b.confidence) ? b.confidence : 0.4;
+			const y = typeof b?.bbox?.y === "number" && Number.isFinite(b.bbox.y) ? b.bbox.y : null;
+			const x = typeof b?.bbox?.x === "number" && Number.isFinite(b.bbox.x) ? b.bbox.x : null;
+			return { text, conf, y, x };
+		})
+		.filter((b) => b.text.length >= 2)
+		// Confidence filter: keep higher-signal words.
+		.filter((b) => b.conf >= 0.55)
+		// Avoid tiny header/footer noise; keep the body region.
+		.filter((b) => b.y == null || (b.y >= 0.06 && b.y <= 0.92))
+		.sort((a, b) => {
+			const dy = (a.y ?? 0) - (b.y ?? 0);
+			if (Math.abs(dy) > 0.01) return dy;
+			return (a.x ?? 0) - (b.x ?? 0);
+		});
+
+	if (usable.length > 0) {
+		// Group into rough lines by y proximity.
+		const lines: Array<{ y: number; confs: number[]; parts: string[] }> = [];
+		for (const b of usable) {
+			const y = b.y ?? 0;
+			const last = lines[lines.length - 1];
+			if (!last || Math.abs(last.y - y) > 0.018) {
+				lines.push({ y, confs: [b.conf], parts: [b.text] });
+				continue;
+			}
+			last.confs.push(b.conf);
+			last.parts.push(b.text);
+		}
+
+		const candidateLines = lines
+			.map((l) => {
+				const text = cleanSnippetText(l.parts.join(" "));
+				const avg = l.confs.reduce((a, c) => a + c, 0) / Math.max(1, l.confs.length);
+				return { y: l.y, avg, text };
+			})
+			.filter((l) => l.text.length >= 6)
+			.filter((l) => !looksLikeJunkLine(l.text));
+
+		if (candidateLines.length > 0) {
+			// Prefer early body lines while skipping the very top-most line if it's short (often a brand/header).
+			const picked: string[] = [];
+			for (const l of candidateLines) {
+				if (picked.length === 0 && l.y <= 0.12 && l.text.length <= 28) continue;
+				picked.push(l.text);
+				if (picked.join(" ").length >= maxChars) break;
+				if (picked.length >= 6) break;
+			}
+			const joined = cleanSnippetText(picked.join(" "));
+			if (joined) return { snippet: joined.length > maxChars ? `${joined.slice(0, maxChars - 3)}...` : joined, source: "ocr_blocks_filtered_v2" };
+		}
+	}
+
+	// Fallbacks
+	const sj = params.structuredJson && typeof params.structuredJson === "object" ? params.structuredJson : null;
+	const structuredTitle = sj && typeof (sj as any).title === "string" ? String((sj as any).title).trim() : "";
+	if (structuredTitle) {
+		const s = structuredTitle.length > maxChars ? `${structuredTitle.slice(0, maxChars - 3)}...` : structuredTitle;
+		return { snippet: s, source: "structured_title_fallback" };
+	}
+
+	const raw = typeof params.ocrText === "string" ? params.ocrText.trim() : "";
+	if (raw) {
+		const s = raw.length > maxChars ? `${raw.slice(0, maxChars - 3)}...` : raw;
+		return { snippet: s, source: "ocr_text_truncate_fallback" };
+	}
+
+	return { snippet: null, source: "none" };
+}
+
 export type VisionExtraction = {
 	ocr_text?: string | null;
 	ocr_blocks: VisionOcrBlock[];
@@ -405,10 +507,23 @@ export async function hasTable(pool: Pool, table: string): Promise<boolean> {
 export async function callVisionWorker(
 	config: VisionExtractorConfig,
 	request: VisionExtractRequest,
-	fetchImpl: typeof fetch = fetch
+	fetchImplOrOptions:
+		| typeof fetch
+		| {
+				fetchImpl?: typeof fetch;
+				timeoutMs?: number;
+		  }
+		| undefined = fetch
 ): Promise<VisionExtractResponse | null> {
+	const options =
+		typeof fetchImplOrOptions === "function"
+			? { fetchImpl: fetchImplOrOptions, timeoutMs: undefined }
+			: (fetchImplOrOptions ?? {});
+	const fetchImpl = options.fetchImpl ?? fetch;
+	const timeoutMs = typeof options.timeoutMs === "number" && Number.isFinite(options.timeoutMs) ? options.timeoutMs : config.timeoutMs;
+
 	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
 
 	try {
 		const res = await fetchImpl(`${config.visionWorkerUrl}/extract-visuals`, {
@@ -425,6 +540,60 @@ export async function callVisionWorker(
 		const json = (await res.json()) as VisionExtractResponse;
 		if (!json || typeof json !== "object") return null;
 		if (!Array.isArray((json as any).assets)) return null;
+		return json;
+	} catch {
+		return null;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+type ExcelXlsxExtractRequest = {
+	document_id: string;
+	xlsx_b64: string;
+	extractor_version?: string;
+	max_sheets?: number;
+	max_tables_per_sheet?: number;
+};
+
+type ExcelXlsxExtractResponse = {
+	document_id: string;
+	extractor_version: string;
+	pages: VisionExtractResponse[];
+};
+
+export async function callXlsxWorker(
+	config: VisionExtractorConfig,
+	request: ExcelXlsxExtractRequest,
+	fetchImplOrOptions:
+		| typeof fetch
+		| {
+				fetchImpl?: typeof fetch;
+				timeoutMs?: number;
+		  }
+		| undefined = fetch
+): Promise<ExcelXlsxExtractResponse | null> {
+	const options =
+		typeof fetchImplOrOptions === "function"
+			? { fetchImpl: fetchImplOrOptions, timeoutMs: undefined }
+			: (fetchImplOrOptions ?? {});
+	const fetchImpl = options.fetchImpl ?? fetch;
+	const timeoutMs = typeof options.timeoutMs === "number" && Number.isFinite(options.timeoutMs) ? options.timeoutMs : Math.max(15000, config.timeoutMs);
+
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+	try {
+		const res = await fetchImpl(`${config.visionWorkerUrl}/extract-xlsx`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(request),
+			signal: controller.signal,
+		});
+		if (!res.ok) return null;
+		const json = (await res.json()) as ExcelXlsxExtractResponse;
+		if (!json || typeof json !== "object") return null;
+		if (!Array.isArray((json as any).pages)) return null;
 		return json;
 	} catch {
 		return null;
@@ -555,26 +724,39 @@ export async function insertEvidenceLinkIfMissing(pool: Pool, input: {
 	snippet: string | null;
 	confidence: number;
 }) {
+	// IMPORTANT: evidence snippets are scoring-critical. When we re-extract visuals with improved OCR/preprocessing,
+	// we must be able to refresh the persisted snippet/ref instead of permanently keeping the first (possibly-garbled)
+	// OCR output.
+	//
+	// The table does not reliably have a unique constraint across these columns, so we do an UPDATE-first pattern.
+	const params = [
+		sanitizeText(input.documentId),
+		input.pageIndex,
+		sanitizeText(input.evidenceType),
+		input.visualAssetId ? sanitizeText(input.visualAssetId) : null,
+		JSON.stringify(sanitizeDeep(input.ref ?? {})),
+		input.snippet,
+		input.confidence,
+	];
+
+	const updateRes = await pool.query(
+		`UPDATE evidence_links
+		   SET ref = $5::jsonb,
+		       snippet = $6,
+		       confidence = $7
+		 WHERE document_id = $1
+		   AND page_index IS NOT DISTINCT FROM $2
+		   AND evidence_type = $3
+		   AND visual_asset_id IS NOT DISTINCT FROM $4`,
+		params
+	);
+	const updated = typeof (updateRes as any)?.rowCount === "number" ? (updateRes as any).rowCount : 0;
+	if (updated > 0) return;
+
 	await pool.query(
 		`INSERT INTO evidence_links (document_id, page_index, evidence_type, visual_asset_id, ref, snippet, confidence)
-		 SELECT $1, $2, $3, $4, $5::jsonb, $6, $7
-		 WHERE NOT EXISTS (
-		   SELECT 1
-		     FROM evidence_links
-		    WHERE document_id = $1
-		      AND page_index IS NOT DISTINCT FROM $2
-		      AND evidence_type = $3
-		      AND visual_asset_id IS NOT DISTINCT FROM $4
-		 )`,
-		[
-			sanitizeText(input.documentId),
-			input.pageIndex,
-			sanitizeText(input.evidenceType),
-			input.visualAssetId ? sanitizeText(input.visualAssetId) : null,
-			JSON.stringify(sanitizeDeep(input.ref ?? {})),
-			input.snippet,
-			input.confidence,
-		]
+		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
+		params
 	);
 }
 
@@ -614,8 +796,18 @@ export async function persistVisionResponse(
 		const ocrBlocks = coerceJsonArray<VisionOcrBlock>(extractionObj?.ocr_blocks);
 		const structuredJson = coerceJsonObject(extractionObj?.structured_json);
 		const labels = coerceJsonObject(extractionObj?.labels);
+		const extractionConfidence =
+			typeof extractionObj?.confidence === "number" && Number.isFinite(extractionObj.confidence)
+				? extractionObj.confidence
+				: typeof (asset as any)?.confidence === "number" && Number.isFinite((asset as any).confidence)
+					? (asset as any).confidence
+					: 0;
 		const titleFromLabels = typeof (labels as any)?.title === "string" ? String((labels as any).title) : "";
 		const titleFromStructured = typeof (structuredJson as any)?.title === "string" ? String((structuredJson as any).title) : "";
+		const vuObj = (structuredJson as any)?.vision_understanding_v1;
+		const titleFromVision = typeof vuObj?.title === "string" ? String(vuObj.title) : "";
+		const visionConfidence =
+			typeof vuObj?.confidence === "number" && Number.isFinite(vuObj.confidence) ? vuObj.confidence : null;
 		const hasAnyTextSignal = Boolean(titleFromLabels.trim() || titleFromStructured.trim() || (ocrText && ocrText.trim()));
 
 		// Persist a stable segment assignment for vision assets (PDF/images).
@@ -663,6 +855,38 @@ export async function persistVisionResponse(
 		if (segmentKey === "unknown" && unknownReasonCode && (typeof qualityFlagsWithSeg.unknown_reason_code !== "string" || !qualityFlagsWithSeg.unknown_reason_code.trim())) {
 			qualityFlagsWithSeg.unknown_reason_code = unknownReasonCode;
 		}
+
+		// Persist an explicit acceptance marker so the pipeline can safely skip re-processing the same page.
+		// Acceptance is conservative: segment must be non-unknown and we need a title/text signal with reasonable confidence.
+		const segmentSource = typeof qualityFlagsWithSeg.segment_source === "string" ? String(qualityFlagsWithSeg.segment_source) : "";
+		const isHumanOverride = segmentSource === "human_override" || segmentSource === "human_override_v1" || segmentSource.startsWith("human_override_");
+		const isPromoted = segmentSource.startsWith("promoted");
+		const titleCandidate = (titleFromLabels || titleFromStructured || titleFromVision).trim();
+		const ocrLen = typeof ocrText === "string" ? ocrText.trim().length : 0;
+		const hasTitle = titleCandidate.length >= 4;
+		const hasOcrText = ocrLen >= 30;
+		const okByVision = hasTitle && (visionConfidence == null ? false : visionConfidence >= 0.55);
+		const okByOcr = hasOcrText && extractionConfidence >= 0.30;
+		const okByStructuredTitle = hasTitle && extractionConfidence >= 0.50;
+		const acceptedV1 = Boolean(
+			segmentKey &&
+			segmentKey !== "unknown" &&
+			(isHumanOverride || isPromoted || okByVision || okByOcr || okByStructuredTitle)
+		);
+		if (typeof qualityFlagsWithSeg.accepted_v1 !== "boolean") {
+			qualityFlagsWithSeg.accepted_v1 = acceptedV1;
+			qualityFlagsWithSeg.accepted_reason_v1 = isHumanOverride
+				? "human_override"
+				: isPromoted
+					? "promoted"
+					: okByVision
+						? "vision_understanding"
+						: okByOcr
+							? "ocr_text"
+							: okByStructuredTitle
+								? "structured_title"
+								: "not_accepted";
+		}
 		const structuredJsonWithSeg = segmentKey && !existingFromStructured
 			? { ...structuredJson, segment_key: segmentKey }
 			: structuredJson;
@@ -693,8 +917,12 @@ export async function persistVisionResponse(
 			confidence: asset.extraction?.confidence ?? asset.confidence ?? 0,
 		});
 
-		const snippetRaw = ocrText;
-		const snippet = snippetRaw && snippetRaw.length > 500 ? `${snippetRaw.slice(0, 497)}...` : snippetRaw;
+		const { snippet, source: snippetSource } = deriveEvidenceSnippetV2({
+			ocrText: ocrText,
+			ocrBlocks,
+			structuredJson: structuredJsonWithSeg as any,
+			maxChars: 500,
+		});
 
 		await insertEvidenceLinkIfMissing(pool, {
 			documentId: response.document_id,
@@ -708,6 +936,7 @@ export async function persistVisionResponse(
 				page_image_uri: pageImageUriNormalized,
 				image_hash: asset.image_hash ?? null,
 				extractor_version: response.extractor_version,
+				snippet_source: snippetSource,
 			},
 			snippet,
 			confidence: asset.confidence ?? 0,
@@ -2295,6 +2524,209 @@ export async function resegmentStructuredSyntheticAssets(params: {
 	return { updated_assets: updatedAssets, updated_extractions: updatedExtractions };
 }
 
+export async function applyVisionHintsToStructuredPowerpointSlides(params: {
+	pool: Pool;
+	documentId: string;
+	pageImageUris: string[];
+	structuredExtractorVersion?: string;
+	visionConfig: VisionExtractorConfig;
+	env?: NodeJS.ProcessEnv;
+	logger?: LogLike;
+}): Promise<{
+	attempted: number;
+	updated: number;
+	skipped_no_uri: number;
+	skipped_has_text: number;
+	skipped_has_segment: number;
+	errors: number;
+}> {
+	const env = params.env ?? process.env;
+	const logger = params.logger ?? console;
+	const structuredExtractorVersion = params.structuredExtractorVersion ?? "structured_native_v1";
+	const persistSegmentMinConf = (() => {
+		const raw = env.STRUCTURED_VISION_HINT_PERSIST_MIN_CONFIDENCE;
+		const parsed = typeof raw === "string" ? Number(raw) : Number.NaN;
+		if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 1) return parsed;
+		return 0.55;
+	})();
+
+	const enableStructuredVisionHints = parseBool(
+		env.ENABLE_STRUCTURED_VISION_HINTS ?? (env.VISION_WORKER_URL && String(env.VISION_WORKER_URL).trim() ? "1" : "0")
+	);
+	if (!enableStructuredVisionHints) {
+		return { attempted: 0, updated: 0, skipped_no_uri: 0, skipped_has_text: 0, skipped_has_segment: 0, errors: 0 };
+	}
+	if (!params.visionConfig?.enabled) {
+		return { attempted: 0, updated: 0, skipped_no_uri: 0, skipped_has_text: 0, skipped_has_segment: 0, errors: 0 };
+	}
+	if (!Array.isArray(params.pageImageUris) || params.pageImageUris.length === 0) {
+		return { attempted: 0, updated: 0, skipped_no_uri: 0, skipped_has_text: 0, skipped_has_segment: 0, errors: 0 };
+	}
+
+	// Candidates: structured_powerpoint synthetic assets with unknown segment and no prior vision_understanding_v1.
+	// We do additional “no-text” gating in JS to avoid over-writing legitimate structured classification.
+	const { rows } = await params.pool.query<{
+		visual_asset_id: string;
+		visual_extraction_id: string;
+		page_index: number;
+		quality_flags: any;
+		structured_json: any;
+	}>(
+		`
+			SELECT va.id AS visual_asset_id,
+			       ve.id AS visual_extraction_id,
+			       va.page_index,
+			       va.quality_flags,
+			       ve.structured_json
+			  FROM visual_assets va
+			  JOIN visual_extractions ve
+			    ON ve.visual_asset_id = va.id
+			   AND ve.extractor_version = va.extractor_version
+			 WHERE va.document_id = $1
+			   AND va.extractor_version = $2
+			   AND (va.quality_flags->>'source') = 'structured_powerpoint'
+			   AND COALESCE(va.quality_flags->>'segment_key','unknown') = 'unknown'
+			   AND COALESCE(ve.structured_json->>'segment_key','unknown') = 'unknown'
+			   AND NOT (ve.structured_json ? 'vision_understanding_v1')
+			 ORDER BY va.page_index ASC
+			 LIMIT 200
+		`,
+		[sanitizeText(params.documentId), sanitizeText(structuredExtractorVersion)]
+	);
+
+	let attempted = 0;
+	let updated = 0;
+	let skippedNoUri = 0;
+	let skippedHasText = 0;
+	let skippedHasSegment = 0;
+	let errors = 0;
+
+	for (const row of rows ?? []) {
+		const pageIndex = typeof row.page_index === "number" ? row.page_index : -1;
+		if (pageIndex < 0) continue;
+		const pageImageUri = pageIndex < params.pageImageUris.length ? params.pageImageUris[pageIndex] : null;
+		if (!pageImageUri) {
+			skippedNoUri += 1;
+			continue;
+		}
+
+		const qf = (row.quality_flags ?? {}) as any;
+		const existingSeg = coerceSegmentKey(qf?.segment_key);
+		if (existingSeg && existingSeg !== "unknown") {
+			skippedHasSegment += 1;
+			continue;
+		}
+
+		const sj = (row.structured_json ?? {}) as any;
+		const kind = typeof sj?.kind === "string" ? sj.kind : "";
+		if (kind !== "powerpoint_slide") continue;
+		// Intentionally do not gate on having title/bullets/text: if deterministic structured classification
+		// still produced segment_key=unknown, try vision-understanding as a rescue signal.
+
+		attempted += 1;
+		try {
+			const visionResp = await callVisionWorker(
+				params.visionConfig,
+				{
+					document_id: params.documentId,
+					page_index: pageIndex,
+					image_uri: pageImageUri,
+					extractor_version: `${params.visionConfig.extractorVersion}_force_vu`,
+				},
+				{ timeoutMs: 20_000 }
+			);
+
+			const bestVu = (() => {
+				const assets = Array.isArray(visionResp?.assets) ? visionResp!.assets : [];
+				let best: any | null = null;
+				let bestConf = -1;
+				for (const va of assets) {
+					const sj2 = (va as any)?.extraction?.structured_json;
+					const vu = sj2 && typeof sj2 === "object" ? (sj2 as any).vision_understanding_v1 : null;
+					if (!vu || typeof vu !== "object") continue;
+					const confRaw = (vu as any).confidence;
+					const conf = typeof confRaw === "number" && Number.isFinite(confRaw) ? confRaw : 0;
+					if (conf > bestConf) {
+						bestConf = conf;
+						best = vu;
+					}
+				}
+				return best;
+			})();
+
+			if (!bestVu || typeof bestVu !== "object") continue;
+
+			const hintSeg = coerceSegmentKey(typeof (bestVu as any).segment_hint === "string" ? (bestVu as any).segment_hint : null);
+			const hintConfRaw = (bestVu as any).confidence;
+			const hintConf = typeof hintConfRaw === "number" && Number.isFinite(hintConfRaw) ? hintConfRaw : null;
+			const persistSegment = Boolean(hintSeg && hintSeg !== "unknown" && hintConf != null && hintConf >= persistSegmentMinConf);
+
+			// Always persist vision_understanding_v1; persist segment_key only if hint is strong.
+			await params.pool.query(
+				`
+					UPDATE visual_extractions
+					   SET structured_json = jsonb_set(COALESCE(structured_json, '{}'::jsonb), '{vision_understanding_v1}', $2::jsonb, true)
+					 WHERE id = $1
+				`,
+				[sanitizeText(row.visual_extraction_id), JSON.stringify(bestVu)]
+			);
+
+			if (persistSegment) {
+				// Write-through a confident segment assignment.
+				await params.pool.query(
+					`UPDATE visual_extractions
+					   SET structured_json = jsonb_set(COALESCE(structured_json, '{}'::jsonb), '{segment_key}', to_jsonb($2::text), true)
+					 WHERE id = $1`,
+					[sanitizeText(row.visual_extraction_id), hintSeg]
+				);
+
+				await params.pool.query(
+					`
+						UPDATE visual_assets
+						   SET quality_flags = jsonb_set(
+								jsonb_set(
+									jsonb_set(
+										jsonb_set(COALESCE(quality_flags, '{}'::jsonb), '{segment_key}', to_jsonb($2::text), true),
+										'{segment_source}', to_jsonb('structured_vision_understanding_v1'::text), true
+									),
+									'{accepted_v1}', 'true'::jsonb, true
+								),
+								'{accepted_reason_v1}', to_jsonb('structured_powerpoint_no_text_vision_hint'::text), true
+							 )
+						 WHERE id = $1
+					`,
+					[sanitizeText(row.visual_asset_id), hintSeg]
+				);
+				if (hintConf != null) {
+					await params.pool.query(
+						`UPDATE visual_assets
+						   SET quality_flags = jsonb_set(COALESCE(quality_flags, '{}'::jsonb), '{segment_confidence}', to_jsonb($2::numeric), true)
+						 WHERE id = $1`,
+						[sanitizeText(row.visual_asset_id), hintConf]
+					);
+				}
+				updated += 1;
+			}
+		} catch (err) {
+			errors += 1;
+			logger.warn(
+				`[extract_visuals] structured PowerPoint vision hint failed doc=${params.documentId} page=${pageIndex}: ${
+					err instanceof Error ? err.message : String(err)
+				}`
+			);
+		}
+	}
+
+	return {
+		attempted,
+		updated,
+		skipped_no_uri: skippedNoUri,
+		skipped_has_text: skippedHasText,
+		skipped_has_segment: skippedHasSegment,
+		errors,
+	};
+}
+
 function buildSyntheticAssets(params: {
 	docKind: string;
 	structuredData: any;
@@ -2702,6 +3134,21 @@ export async function persistSyntheticVisualAssets(params: {
 	const env = params.env ?? process.env;
 	const extractorVersion = params.extractorVersion ?? "structured_native_v1";
 
+	const enableStructuredVisionHints = parseBool(
+		env.ENABLE_STRUCTURED_VISION_HINTS ?? (env.VISION_WORKER_URL && String(env.VISION_WORKER_URL).trim() ? "1" : "0")
+	);
+
+	const pageImageUris = await (async (): Promise<string[]> => {
+		if (!enableStructuredVisionHints) return [];
+		try {
+			return await resolvePageImageUris(params.pool, params.documentId, { env });
+		} catch {
+			return [];
+		}
+	})();
+
+	const visionConfig = enableStructuredVisionHints ? getVisionExtractorConfig(env) : null;
+
 	const cleanupStaleExcelSheetSummaries = async (): Promise<void> => {
 		if (params.docKind !== "excel") return;
 		const sheets = Array.isArray(params.fullContent?.sheets) ? params.fullContent.sheets : [];
@@ -2760,13 +3207,105 @@ export async function persistSyntheticVisualAssets(params: {
 	}
 
 	for (const [pageIndex, assetList] of grouped.entries()) {
+		const pageImageUri = pageIndex >= 0 && pageIndex < pageImageUris.length ? pageImageUris[pageIndex] : null;
+
+		// Lightweight vision-understanding hints for structured PowerPoint slides that have unknown segment_key.
+		// This reduces downstream default fallbacks without changing computed_v1 determinism.
+		if (enableStructuredVisionHints && visionConfig && pageImageUri) {
+			try {
+				const needsVisionHint = assetList.some((a) => {
+					const qf = (a?.quality_flags ?? {}) as any;
+					if (typeof qf?.source !== "string" || qf.source !== "structured_powerpoint") return false;
+					const seg = coerceSegmentKey(qf?.segment_key);
+					if (seg && seg !== "unknown") return false;
+					const sj = (a?.extraction?.structured_json ?? {}) as any;
+					const kind = typeof sj?.kind === "string" ? sj.kind : "";
+					if (kind !== "powerpoint_slide") return false;
+					// If slide text already exists, prefer structured classification; otherwise use vision hint.
+					const title = typeof sj?.title === "string" ? sj.title.trim() : "";
+					const snippet = typeof sj?.text_snippet === "string" ? sj.text_snippet.trim() : "";
+					const bullets = Array.isArray(sj?.bullets) ? sj.bullets.filter((b: any) => typeof b === "string" && b.trim()).length : 0;
+					return !(title || snippet || bullets > 0);
+				});
+
+				if (needsVisionHint) {
+					const visionResp = await callVisionWorker(
+						visionConfig,
+						{
+							document_id: params.documentId,
+							page_index: pageIndex,
+							image_uri: pageImageUri,
+							extractor_version: visionConfig.extractorVersion,
+						},
+					);
+
+					const bestVu = (() => {
+						const assets = Array.isArray(visionResp?.assets) ? visionResp!.assets : [];
+						let best: any | null = null;
+						let bestConf = -1;
+						for (const va of assets) {
+							const sj = (va as any)?.extraction?.structured_json;
+							const vu = sj && typeof sj === "object" ? (sj as any).vision_understanding_v1 : null;
+							if (!vu || typeof vu !== "object") continue;
+							const confRaw = (vu as any).confidence;
+							const conf = typeof confRaw === "number" && Number.isFinite(confRaw) ? confRaw : 0;
+							if (conf > bestConf) {
+								bestConf = conf;
+								best = vu;
+							}
+						}
+						return best;
+					})();
+
+					if (bestVu && typeof bestVu === "object") {
+						const hintSeg = coerceSegmentKey(typeof (bestVu as any).segment_hint === "string" ? (bestVu as any).segment_hint : null);
+						const hintConfRaw = (bestVu as any).confidence;
+						const hintConf = typeof hintConfRaw === "number" && Number.isFinite(hintConfRaw) ? hintConfRaw : null;
+
+						for (let k = 0; k < assetList.length; k++) {
+							const a = assetList[k];
+							const qf = { ...((a?.quality_flags ?? {}) as any) };
+							if (qf.source !== "structured_powerpoint") continue;
+							const existingSeg = coerceSegmentKey(qf.segment_key);
+							if (existingSeg && existingSeg !== "unknown") continue;
+
+							const extraction = (a as any)?.extraction;
+							const sj = { ...(((extraction?.structured_json ?? {}) as any) ?? {}) };
+							if (typeof sj.vision_understanding_v1 !== "object" || sj.vision_understanding_v1 == null) {
+								sj.vision_understanding_v1 = bestVu;
+							}
+
+							if (hintSeg && hintSeg !== "unknown") {
+								qf.segment_key = hintSeg;
+								if (typeof qf.segment_source !== "string" || !qf.segment_source.trim()) qf.segment_source = "vision_understanding_v1";
+								if (hintConf != null) qf.segment_confidence = hintConf;
+								// Also update structured_json.segment_key so API can use persisted segment fallback.
+								if (typeof sj.segment_key !== "string" || sj.segment_key === "unknown") sj.segment_key = hintSeg;
+							}
+
+							assetList[k] = {
+								...a,
+								quality_flags: qf,
+								extraction: {
+									...extraction,
+									structured_json: sj,
+								},
+							};
+						}
+					}
+				}
+			} catch {
+				// best-effort only
+			}
+		}
+
 		const response: VisionExtractResponse = {
 			document_id: params.documentId,
 			page_index: pageIndex,
 			extractor_version: extractorVersion,
 			assets: assetList,
 		};
-		const { persisted: pCount } = await persistVisionResponse(params.pool, response, { pageImageUri: null, env });
+		const { persisted: pCount } = await persistVisionResponse(params.pool, response, { pageImageUri, env });
 		persisted += pCount;
 	}
 

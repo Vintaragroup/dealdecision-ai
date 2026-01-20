@@ -30,6 +30,16 @@ This document tracks **implementation progress** of the Analysis Foundation (Fun
 - Contract: legacy remains the default; switching is **display-only** and falls back to legacy when fundability score is missing
 - Behavior: adds a “Score: Legacy/Fundability” toggle in the header; applies to dashboard cards, deal list, and deal workspace score display
 
+### Phase 5 — Measurement & comparison report (slow/safe)
+- Status: Implemented (script)
+- Contract: no scoring behavior changes; generates a comparison report across deals
+- Usage:
+	- JSON to stdout: `pnpm report:fundability:compare -- --api-base-url http://localhost:9000 --limit 50`
+	- Markdown file: `pnpm report:fundability:compare:md -- --api-base-url http://localhost:9000 --limit 50`
+	- Optional: `--min-abs-delta 10` to focus on large deltas
+	- Optional: `--out artifacts/fundability-compare.json` to write a JSON report file
+	- Default Markdown output path: `docs/Active/audit/analizer-debug/fundability-compare.md`
+
 ## Consumer Rollout (stability-first)
 
 Goal: allow the frontend UI to review fundability outputs via a **stable DTO** (without exposing raw DIO internals, and without changing legacy score usage).
@@ -42,7 +52,7 @@ Goal: allow the frontend UI to review fundability outputs via a **stable DTO** (
 	- Web UI (dashboard list): Implemented — Active Deals cards show a one-line fundability summary when available
 
 Notes:
-- `fundability_v1` is currently emitted on deal detail responses only (not required on the deals list).
+- `fundability_v1` is optional/additive and may be absent on either endpoint.
 - No score-source switching has been introduced yet; legacy score remains the default display.
 
 ## Notes

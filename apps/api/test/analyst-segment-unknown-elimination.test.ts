@@ -80,3 +80,86 @@ test('Unknown reason codes are limited to NO_TEXT | LOW_SIGNAL | AMBIGUOUS_TIE',
     assert.ok(['NO_TEXT', 'LOW_SIGNAL', 'AMBIGUOUS_TIE'].includes(code), `unexpected unknown_reason_code: ${String(code)}`);
   }
 });
+
+test('TIE-BREAK (vision): "Launch Markets" resolves market vs distribution', () => {
+  // Keep distribution terms out of the inferred title/headings (first ~12 OCR lines)
+  // so we exercise the tie-breaker rather than the TITLE_MATCH override.
+  const filler = Array.from({ length: 12 }, (_, i) => `Filler line ${i + 1}`).join('\n');
+  const out = classifySegment({
+    ocr_text: `Market TAM SAM\nInitial Launch Markets\n${filler}\nSales Marketing Partnerships`,
+    quality_source: 'vision_v1',
+    extractor_version: 'vision_v1',
+    enable_debug: true,
+  });
+
+  assert.equal(out.segment, 'market');
+  assert.equal((out.debug as any)?.override_rule_id, 'TIE_BREAK_STRONG_CUE');
+});
+
+test('VISION: Garbled OCR title but intro body routes to overview (early pages)', () => {
+  const out = classifySegment({
+    // First line resembles a bad title OCR; later lines carry the actual intro.
+    ocr_text: [
+      'SiGe eNlelie OW lel Hee iy',
+      '3ICE is a healthy social beverage brand',
+      'Our mission is to help you celebrate responsibly wherever people socialize',
+    ].join('\n'),
+    page_index: 0,
+    quality_source: 'vision_v1',
+    extractor_version: 'vision_v1',
+    enable_debug: true,
+  });
+
+  assert.equal(out.segment, 'overview');
+  assert.ok(out.confidence >= 0.5);
+});
+
+test('VISION: CPG product description without "Product" heading routes to product', () => {
+  const out = classifySegment({
+    ocr_text:
+      'VERSE IS A HEALTHY SOCIAL BEVERAGE THAT HELPS YOU CELEBRATE RESPONSIBLY\n'
+      + 'Functional Ingredients that elevate mood, detoxify the body, and provide everyday vitality\n'
+      + 'Non-Carbonated Fruit Juice Flavors\n'
+      + 'Zero-sugar: Cranberry Orange Pineapple\n'
+      + 'Carbonated Flavor to Expand\n'
+      + 'Sizes: Social Size 1L | Individual Size 375mL',
+    page_index: 3,
+    quality_source: 'vision_v1',
+    extractor_version: 'vision_v1',
+    enable_debug: true,
+  });
+
+  assert.equal(out.segment, 'product');
+  assert.ok(out.confidence >= 0.5);
+});
+
+test('VISION: "Market Overview" should not route to overview', () => {
+  const out = classifySegment({
+    ocr_text: 'Market Overview\nTAM SAM SOM\nCAGR and market sizing',
+    page_index: 2,
+    quality_source: 'vision_v1',
+    extractor_version: 'vision_v1',
+    enable_debug: true,
+  });
+  assert.equal(out.segment, 'market');
+});
+
+test('VISION: Detected header is validated against copy (header mismatch does not force segment)', () => {
+  const out = classifySegment({
+    // OCR-derived "title" would be "Traction" (first line), but body copy is clearly pricing/business model.
+    ocr_text: [
+      'Traction',
+      'Pricing',
+      'Subscription plans and tiers',
+      'Unit economics: ARPU take rate',
+      'How we make money',
+    ].join('\n'),
+    page_index: 4,
+    quality_source: 'vision_v1',
+    extractor_version: 'vision_v1',
+    enable_debug: true,
+  });
+
+  assert.equal(out.segment, 'business_model');
+  assert.equal((out.debug as any)?.applied_header, 'Business Model');
+});

@@ -11,6 +11,18 @@ import { autoProgressDealStage } from "../services/stageProgression";
 import { normalizeDealName } from "../lib/normalize-deal-name";
 import { reconcileIngest } from "../lib/ingest-reconcile";
 
+function parseBoolQ(value: unknown, defaultValue = false): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value !== 0;
+  if (typeof value !== "string") return defaultValue;
+
+  const v = value.trim().toLowerCase();
+  if (!v) return defaultValue;
+  if (v === "1" || v === "true" || v === "on" || v === "yes") return true;
+  if (v === "0" || v === "false" || v === "off" || v === "no") return false;
+  return defaultValue;
+}
+
 async function hasTable(pool: ReturnType<typeof getPool>, table: string) {
   try {
     const { rows } = await pool.query<{ oid: string | null }>(
@@ -358,6 +370,14 @@ export async function registerDocumentRoutes(
           },
           required: ["deal_id", "document_id"],
         },
+        querystring: {
+          type: "object",
+          properties: {
+            include_ocr: { type: "string" },
+            include_images: { type: "string" },
+          },
+          additionalProperties: true,
+        },
         response: {
           200: {
             type: "object",
@@ -375,6 +395,8 @@ export async function registerDocumentRoutes(
     async (request, reply) => {
     const dealId = sanitizeText((request.params as any)?.deal_id);
     const documentId = sanitizeText((request.params as any)?.document_id);
+    const includeOcrRequested = parseBoolQ(((request.query as any) ?? {})?.include_ocr, false);
+    const includeImagesRequested = parseBoolQ(((request.query as any) ?? {})?.include_images, false);
     const warnings: string[] = [];
 
     if (!dealId) {
@@ -385,8 +407,22 @@ export async function registerDocumentRoutes(
     }
 
     // Enforce scoping consistent with other document endpoints.
-    const existing = await pool.query<{ id: string }>(
-      `SELECT id
+    // Also fetch document metadata to apply structured-first XLSX visibility policy.
+    const hasMimeType = await hasColumn(pool, "documents", "mime_type");
+    const hasFilename = await hasColumn(pool, "documents", "filename");
+
+    const existing = await pool.query<{
+      id: string;
+      title: string;
+      type: string | null;
+      mime_type?: string | null;
+      filename?: string | null;
+    }>(
+      `SELECT id,
+              title,
+              type
+              ${hasMimeType ? ", mime_type" : ", NULL::text AS mime_type"}
+              ${hasFilename ? ", filename" : ", NULL::text AS filename"}
          FROM documents
         WHERE deal_id = $1 AND id = $2
         LIMIT 1`,
@@ -395,6 +431,14 @@ export async function registerDocumentRoutes(
     if (!existing.rows.length) {
       return reply.status(404).send({ error: "Document not found" });
     }
+
+    const existingDoc = existing.rows[0];
+    const isExcelDoc =
+      inferDocKindFromUpload({
+        fileName: typeof (existingDoc as any)?.filename === "string" ? (existingDoc as any).filename : null,
+        mimeType: typeof (existingDoc as any)?.mime_type === "string" ? (existingDoc as any).mime_type : null,
+        title: typeof existingDoc?.title === "string" ? existingDoc.title : null,
+      }) === "excel";
 
     // Safety: if the visual lane tables are not installed, this endpoint returns an empty response.
     const assetsOk = await hasTable(pool, "public.visual_assets");
@@ -498,19 +542,35 @@ export async function registerDocumentRoutes(
       [dealId, documentId]
     );
 
+    const hasStructuredExcel = !includeOcrRequested
+      ? rows.some((r) => {
+          const extractorVersion = typeof r?.extractor_version === "string" ? r.extractor_version : "";
+          const kindRaw = typeof (r as any)?.structured_json?.kind === "string" ? String((r as any).structured_json.kind) : "";
+          const kind = kindRaw.toLowerCase();
+          const qfSource = typeof (r as any)?.quality_flags?.source === "string" ? String((r as any).quality_flags.source) : "";
+          return extractorVersion.startsWith("excel_py_") || kind.startsWith("excel_") || qfSource === "structured_excel_py";
+        })
+      : false;
+
     const assets = rows.map((r) => {
       const createdAt = new Date(r.created_at).toISOString();
       const extractionCreatedAt = r.extraction_created_at ? new Date(r.extraction_created_at).toISOString() : null;
       const confidence = Number(r.confidence);
       const extractionConfidence = r.extraction_confidence == null ? null : Number(r.extraction_confidence);
 
+      // XLSX policy:
+      // - Hide OCR by default when we have structured Excel (opt-in via ?include_ocr=true)
+      // - Hide image previews by default for Excel docs (opt-in via ?include_images=true)
+      const suppressOcr = Boolean(isExcelDoc && hasStructuredExcel);
+      const suppressImages = Boolean(isExcelDoc && !includeImagesRequested);
+
       return {
         id: r.id,
         page_index: r.page_index,
         asset_type: r.asset_type,
         bbox: r.bbox ?? {},
-        image_uri: r.image_uri,
-        image_hash: r.image_hash,
+        image_uri: suppressImages ? null : r.image_uri,
+        image_hash: suppressImages ? null : r.image_hash,
         extractor_version: r.extractor_version,
         confidence: Number.isFinite(confidence) ? confidence : 0,
         quality_flags: r.quality_flags ?? {},
@@ -518,14 +578,15 @@ export async function registerDocumentRoutes(
         latest_extraction: r.extraction_id
           ? {
               id: r.extraction_id,
-              ocr_text: r.ocr_text,
-              ocr_blocks: r.ocr_blocks ?? [],
+              ocr_text: suppressOcr ? null : r.ocr_text,
+              ocr_blocks: suppressOcr ? [] : (r.ocr_blocks ?? []),
               structured_json: r.structured_json ?? {},
               units: r.units,
               labels: r.labels ?? {},
               model_version: r.model_version,
               confidence: extractionConfidence != null && Number.isFinite(extractionConfidence) ? extractionConfidence : 0,
               created_at: extractionCreatedAt,
+              ...(suppressOcr ? { ocr_suppressed: true } : {}),
             }
           : null,
         evidence: {

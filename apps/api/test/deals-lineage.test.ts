@@ -1280,15 +1280,8 @@ test('segment classifier promotes well-labeled headings and limits unknown', asy
         return { rows: [{ id: dealId, name: 'Seg Demo' }] };
       }
 
-      if (q.includes('FROM documents') && q.includes('WHERE deal_id = $1')) {
-        return {
-          rows: [
-            { id: 'doc-seg', title: 'Deck', type: 'pitch_deck', page_count: 6, uploaded_at: '2026-01-02T00:00:00.000Z' },
-          ],
-        };
-      }
-
-      if (q.includes('FROM visual_assets')) {
+      // Visual assets query can join documents; match it before the documents query.
+      if (q.toLowerCase().includes('visual_assets')) {
         assert.equal(p0, dealId);
         return {
           rows: [
@@ -1428,6 +1421,14 @@ test('segment classifier promotes well-labeled headings and limits unknown', asy
               evidence_count: 0,
               evidence_sample_snippets: [],
             },
+          ],
+        };
+      }
+
+      if (/from\s+"?documents"?/i.test(q) && /deal_id/i.test(q) && q.includes('$1')) {
+        return {
+          rows: [
+            { id: 'doc-seg', title: 'Deck', type: 'pitch_deck', page_count: 6, uploaded_at: '2026-01-02T00:00:00.000Z' },
           ],
         };
       }

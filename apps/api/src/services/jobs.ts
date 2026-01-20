@@ -5,6 +5,7 @@ import { getPool } from "../lib/db";
 import {
   ingestQueue,
   extractVisualsQueue,
+  deepScanVisualsQueue,
   fetchEvidenceQueue,
   analyzeDealQueue,
   verifyDocumentsQueue,
@@ -15,6 +16,7 @@ import {
 const queueMap: Record<JobType, typeof ingestQueue> = {
   ingest_documents: ingestQueue,
   extract_visuals: extractVisualsQueue,
+  deep_scan_visuals: deepScanVisualsQueue,
   fetch_evidence: fetchEvidenceQueue,
   analyze_deal: analyzeDealQueue,
   verify_documents: verifyDocumentsQueue,

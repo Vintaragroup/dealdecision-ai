@@ -161,6 +161,8 @@ export function buildSegmentFeatures(asset: {
   labels?: unknown;
   asset_type?: string | null;
   page_index?: number | null;
+  slide_title?: string | null;
+  slide_title_confidence?: number | null;
   evidence_snippets?: string[] | null;
   extractor_version?: string | null;
   quality_source?: string | null;
@@ -197,7 +199,13 @@ export function buildSegmentFeatures(asset: {
   const labels = flattenLabelStrings(asset.labels, 12);
 
   const sjObj = isPlainObject(asset.structured_json) ? (asset.structured_json as Record<string, unknown>) : null;
-  const structuredSegmentHint = sjObj ? normalizeAnalystSegment((sjObj as any)?.segment_key) : null;
+  // Only treat segment_key as a structured hint for structured_* sources.
+  // Vision assets may carry a persisted segment_key for other purposes and should not
+  // bias the computed classifier.
+  const structuredSegmentHint =
+    sjObj && (sourceKind === "pptx" || sourceKind === "docx" || sourceKind === "xlsx")
+      ? normalizeAnalystSegment((sjObj as any)?.segment_key)
+      : null;
   const headings: string[] = [];
   let title = "";
   let titleSource = "missing";
@@ -251,7 +259,22 @@ export function buildSegmentFeatures(asset: {
     }
     body = rowLines.join("\n").trim();
   } else {
-    // Vision/image: derive title from OCR candidates when possible.
+    // Vision/image: prefer a caller-provided slide_title when available.
+    // This keeps segment audit/debug aligned with route-level title inference.
+    const providedTitle = cleanText(asset.slide_title, 180);
+    const providedConfidence =
+      typeof asset.slide_title_confidence === "number" && Number.isFinite(asset.slide_title_confidence)
+        ? asset.slide_title_confidence
+        : null;
+    const acceptProvidedTitle = Boolean(
+      providedTitle && (providedConfidence == null || providedConfidence >= 0.45)
+    );
+
+    if (acceptProvidedTitle) {
+      title = normalizeWhitespace(providedTitle);
+      titleSource = "slide_title";
+    } else {
+      // Vision/image: derive title from OCR candidates when possible.
     const blacklistSet = asset.brand_blacklist instanceof Set
       ? asset.brand_blacklist
       : new Set(Array.isArray(asset.brand_blacklist) ? asset.brand_blacklist : []);
@@ -276,6 +299,7 @@ export function buildSegmentFeatures(asset: {
       const lines = typeof asset.ocr_text === "string" ? asset.ocr_text.split(/\r?\n/).map((l) => normalizeWhitespace(l)).filter(Boolean) : [];
       title = lines[0] ? lines[0].slice(0, 180) : "";
       titleSource = title ? "ocr_top_line" : "missing";
+    }
     }
 
     const ocrText = typeof asset.ocr_text === "string" ? asset.ocr_text : "";
@@ -529,6 +553,12 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
   const HINT_BOOST = 0.5;
   const PRODUCT_PLACEHOLDER_BOOST = 0.2;
 
+  // Conservative title-based nudges for structured XLSX: titles (sheet names) are often
+  // the best available signal, but can be terse/abbreviated. Keep the boost small and
+  // gated to low-signal cases to avoid per-deal overfitting.
+  const XLSX_TITLE_BOOST = 0.12;
+  const XLSX_LOW_SIGNAL_LEN = 240;
+
   // unknown must never accumulate meaningful score.
   const UNKNOWN_EPS = 0.00001;
 
@@ -695,6 +725,8 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
     labels: input.labels,
     asset_type: input.asset_type,
     page_index: input.page_index,
+    slide_title: input.slide_title,
+    slide_title_confidence: input.slide_title_confidence,
     evidence_snippets: input.evidence_snippets,
     extractor_version: extractorVersion,
     quality_source: qualitySource,
@@ -717,6 +749,21 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
   const titleStripped = stripBrands(titleRaw, headingFromTitle);
   const titleMatchText = normalizeForMatch(titleStripped);
 
+  // If title extraction fails (common in PDFs), fall back to the first heading line.
+  // This lets us still use deterministic title-label rules for pages that clearly start
+  // with a heading like "Investment Highlights" or "Key Considerations".
+  const headingCandidate = Array.isArray(features.headings) && features.headings.length > 0 ? features.headings[0] : "";
+  // IMPORTANT: do NOT fall back to body prefix as a "title"; it causes false title matches.
+  // Only consider an explicit detected title (or first heading line) as a header.
+  const headerCandidateRaw = isTitleUsable(titleRaw)
+    ? titleRaw
+    : isTitleUsable(headingCandidate)
+      ? normalizeWhitespace(headingCandidate)
+      : "";
+  const headerCandidateHeading = findHeadingKeyword(headerCandidateRaw || null);
+  const headerCandidateStripped = headerCandidateRaw ? stripBrands(headerCandidateRaw, headerCandidateHeading) : "";
+  const headerMatchText = normalizeForMatch(headerCandidateStripped);
+
   const scoringRaw = normalizeWhitespace([...(features.headings ?? []), features.body ?? ""].filter(Boolean).join("\n")).slice(0, 1800);
   const scoringStripped = stripBrands(scoringRaw, headingFromTitle);
   const scoringText = normalizeForMatch(scoringStripped);
@@ -731,10 +778,44 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
     const t = text;
     if (!t) return null;
     const map: Array<{ term: string; re: RegExp; segment: AnalystSegment }> = [
+      // Financial statements / models (common sheet names)
+      { term: "financial summary", re: /\bfinancial\s+summary\b/i, segment: "financials" },
+      { term: "income statement", re: /\bincome\s+statement\b/i, segment: "financials" },
+      { term: "balance sheet", re: /\bbalance\s+sheet\b/i, segment: "financials" },
+      { term: "cash flow", re: /\bcash\s+flow\b/i, segment: "financials" },
+      { term: "cashflow", re: /\bcashflow\b/i, segment: "financials" },
+      { term: "profit and loss", re: /\bprofit\s+and\s+loss\b/i, segment: "financials" },
+      { term: "p&l", re: /\bp\s*&\s*l\b/i, segment: "financials" },
+      { term: "pnl", re: /\bpnl\b/i, segment: "financials" },
+      { term: "unit economics", re: /\bunit\s+economics\b/i, segment: "financials" },
+      { term: "cohort", re: /\bcohort\b/i, segment: "traction" },
+      { term: "cohorts", re: /\bcohorts\b/i, segment: "traction" },
+      { term: "kpi", re: /\bkpi\b/i, segment: "traction" },
+      { term: "kpis", re: /\bkpis\b/i, segment: "traction" },
+      { term: "key metrics", re: /\bkey\s+metrics\b/i, segment: "traction" },
+
+      // Raise / terms
+      { term: "cap table", re: /\bcap\s+table\b/i, segment: "raise_terms" },
+      { term: "cap-table", re: /\bcap[\s-]+table\b/i, segment: "raise_terms" },
+      { term: "capitalization table", re: /\bcapitalization\s+table\b/i, segment: "raise_terms" },
+      { term: "ownership", re: /\bownership\b/i, segment: "raise_terms" },
+      { term: "term sheet", re: /\bterm\s+sheet\b/i, segment: "raise_terms" },
+      { term: "use of proceeds", re: /\buse\s+of\s+proceeds\b/i, segment: "raise_terms" },
+      { term: "use of funds", re: /\buse\s+of\s+funds\b/i, segment: "raise_terms" },
+
+      // Model structure / inputs
+      { term: "assumptions", re: /\bassumptions\b/i, segment: "financials" },
+      { term: "inputs", re: /\binputs\b/i, segment: "financials" },
+      { term: "drivers", re: /\bdrivers\b/i, segment: "financials" },
+
       { term: "company overview", re: /\bcompany\s+overview\b/i, segment: "overview" },
-      { term: "overview", re: /\boverview\b/i, segment: "overview" },
+      // Keep generic overview strict so "Market Overview" routes to market.
+      { term: "overview", re: /^(?:company\s+)?overview$/i, segment: "overview" },
       { term: "introduction", re: /\bintroduction\b/i, segment: "overview" },
-      { term: "summary", re: /\bsummary\b/i, segment: "overview" },
+      // Avoid overly-broad matches like "financial summary" -> overview.
+      { term: "executive summary", re: /\bexecutive\s+summary\b/i, segment: "overview" },
+      { term: "summary", re: /^(?:executive\s+)?summary$/i, segment: "overview" },
+      { term: "investment highlights", re: /\binvestment\s+highlights\b/i, segment: "overview" },
       { term: "agenda", re: /\bagenda\b/i, segment: "overview" },
       { term: "market problem", re: /\bmarket\s+problem\b/i, segment: "problem" },
       { term: "problem", re: /\bproblem\b/i, segment: "problem" },
@@ -749,6 +830,11 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       { term: "solutions", re: /^(?:our\s+)?solutions$/i, segment: "solution" },
       { term: "solution overview", re: /^(?:our\s+)?solution\s+overview$/i, segment: "solution" },
       { term: "traction", re: /\btraction\b/i, segment: "traction" },
+      // Common real-estate / opportunity memo headings.
+      { term: "market overview", re: /\bmarket\s+overview\b/i, segment: "market" },
+      { term: "location overview", re: /\blocation\s+overview\b/i, segment: "market" },
+      { term: "property information", re: /\bproperty\s+information\b/i, segment: "market" },
+      { term: "aerials", re: /\baerials?\b/i, segment: "market" },
       { term: "distribution", re: /\bdistribution\b/i, segment: "distribution" },
       { term: "go-to-market", re: /\bgo\s*(?:-|\s)to\s*(?:-|\s)market\b/i, segment: "distribution" },
       { term: "go to market", re: /\bgo\s+to\s+market\b/i, segment: "distribution" },
@@ -759,12 +845,17 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       { term: "business model", re: /\bbusiness\s+model\b/i, segment: "business_model" },
       { term: "financial strategy", re: /\bfinancial\s+strategy\b/i, segment: "financials" },
       { term: "financials", re: /\bfinancials\b/i, segment: "financials" },
+      { term: "rent schedule", re: /\brent\s+schedule\b/i, segment: "financials" },
       { term: "use of funds", re: /\buse\s+of\s+funds\b/i, segment: "raise_terms" },
       { term: "allocation of funds", re: /\ballocation\s+of\s+funds\b/i, segment: "raise_terms" },
+      // Match normalized variants like "sources uses" (ampersand removed during normalization).
+      { term: "sources & uses", re: /\bsources\s*(?:(?:&|and)\s*)?uses\b/i, segment: "raise_terms" },
       { term: "exit strategy", re: /\bexit\s+strategy\b/i, segment: "exit" },
       { term: "exit", re: /\bexit\b/i, segment: "exit" },
       { term: "meet our team", re: /\bmeet\s+our\s+team\b/i, segment: "team" },
+      { term: "sponsor overview", re: /\bsponsor\s+overview\b/i, segment: "team" },
       { term: "team", re: /\bteam\b/i, segment: "team" },
+      { term: "key considerations", re: /\bkey\s+considerations\b/i, segment: "risks" },
     ];
 
     for (const entry of map) {
@@ -773,12 +864,31 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
     return null;
   };
 
-  const titleIntent = hasAny(titleMatchText, ["why this matters", "value", "impact"]);
+  const titleIntent = hasAny(headerMatchText, ["why this matters", "value", "impact"]);
 
   // Rule 3 keyword lists (BODY + HEADINGS).
-  const segmentTerms: Record<Exclude<AnalystSegment, "overview" | "unknown">, Array<{ term: string; weight?: number }>> = {
+  // Include a conservative BODY-scored "overview" so early pages with unreadable/missing titles
+  // can still route correctly based on context.
+  const segmentTerms: Record<Exclude<AnalystSegment, "unknown">, Array<{ term: string; weight?: number }>> = {
+    overview: [
+      { term: "company overview", weight: 3 },
+      { term: "general overview", weight: 3 },
+      { term: "executive summary", weight: 2.5 },
+      { term: "investment highlights", weight: 2 },
+      { term: "who we are", weight: 2 },
+      { term: "about us", weight: 2 },
+      { term: "our mission", weight: 1.5 },
+      { term: "our vision", weight: 1.25 },
+      { term: "founded", weight: 1 },
+      { term: "headquartered", weight: 1 },
+      { term: "based in", weight: 1 },
+    ],
     problem: [
       { term: "problem" },
+      { term: "symptom", weight: 3 },
+      { term: "symptoms", weight: 3 },
+      { term: "sympton", weight: 3 },
+      { term: "symptons", weight: 3 },
       { term: "pain" },
       { term: "pain point" },
       { term: "challenge" },
@@ -815,6 +925,22 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       { term: "how it works" },
       { term: "demo" },
       { term: "architecture" },
+      // CPG-style product pages often omit explicit "Product" titles but include strong descriptors.
+      { term: "ingredients" },
+      { term: "functional ingredients", weight: 1.2 },
+      { term: "flavor" },
+      { term: "flavors" },
+      { term: "fruit juice", weight: 1 },
+      { term: "zero sugar", weight: 1.2 },
+      { term: "zero-sugar", weight: 1.2 },
+      { term: "non carbonated", weight: 1.1 },
+      { term: "non-carbonated", weight: 1.1 },
+      { term: "carbonated", weight: 1 },
+      { term: "mixer", weight: 0.9 },
+      { term: "on its own", weight: 0.7 },
+      { term: "sizes", weight: 0.8 },
+      { term: "1l", weight: 0.7 },
+      { term: "375ml", weight: 0.7 },
     ],
     market: [
       { term: "market" },
@@ -824,6 +950,13 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       { term: "opportunity" },
       { term: "sizing" },
       { term: "cagr" },
+      // Real-estate/opportunity memo language; keep weights low to avoid overpowering SaaS market sizing.
+      { term: "location", weight: 0.5 },
+      { term: "property", weight: 0.5 },
+      { term: "address", weight: 0.5 },
+      { term: "site plan", weight: 0.5 },
+      { term: "aerial", weight: 0.5 },
+      { term: "demographics", weight: 0.5 },
     ],
     traction: [
       { term: "traction" },
@@ -910,7 +1043,9 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       { term: "cash" },
       { term: "income" },
       { term: "profit" },
-      { term: "loss" },
+      { term: "net loss", weight: 1.5 },
+      { term: "operating loss", weight: 1.5 },
+      { term: "losses", weight: 1.0 },
       { term: "p&l" },
       { term: "ebitda" },
       { term: "budget" },
@@ -984,8 +1119,21 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
     traction: ["traction"],
     product: ["product", "products", "platform", "how it works"],
     solution: ["solution", "solutions"],
-    financials: ["financials", "forecast", "projection"],
-    raise_terms: ["use of funds", "term sheet", "valuation", "cap table", "round"],
+    financials: [
+      "financials",
+      "financial summary",
+      "forecast",
+      "projection",
+      "income statement",
+      "balance sheet",
+      "cash flow",
+      "cashflow",
+      "p&l",
+      "pnl",
+      "assumptions",
+      "inputs",
+    ],
+    raise_terms: ["use of funds", "use of proceeds", "term sheet", "valuation", "cap table", "capitalization table", "round", "ownership"],
     distribution: ["go to market", "go-to-market", "gtm", "distribution"],
     team: ["team"],
     competition: ["competition", "competitors"],
@@ -997,11 +1145,11 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
 
   for (const seg of canonicalSegments) {
     if (seg === "unknown") continue;
-    const titleHit = hasAny(titleMatchText, titleTermsBySegment[seg] ?? []);
+    const titleHit = hasAny(headerMatchText, titleTermsBySegment[seg] ?? []);
     keywordHits[seg] = { title: titleHit.matched, body: [], evidence: [] };
   }
 
-  for (const seg of Object.keys(segmentTerms) as Array<Exclude<AnalystSegment, "overview" | "unknown">>) {
+  for (const seg of Object.keys(segmentTerms) as Array<Exclude<AnalystSegment, "unknown">>) {
     const body = scoreByTerms(scoringStripped, segmentTerms[seg]);
     const ev = scoreByTerms(evidenceRaw, segmentTerms[seg]);
     keywordHits[seg] = keywordHits[seg] ?? { title: [], body: [], evidence: [] };
@@ -1028,10 +1176,33 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
     ranked.sort((a, b) => b.score - a.score);
   };
 
+  const scoringAdjustments: Array<{ rule_id: string; segment: AnalystSegment; delta: number; matched_terms: string[] }> = [];
+
   if (featureHits > benefitHits + 1) adjustScore("product", 0.08);
   if (benefitHits > featureHits + 1) adjustScore("solution", 0.08);
 
-  const scoringAdjustments: Array<{ rule_id: string; segment: AnalystSegment; delta: number; matched_terms: string[] }> = [];
+  // Early-page overview nudge for vision assets: if the deck doesn't label sections (or OCR mangles the title),
+  // page 1-2 often still contains "<Brand> is a ..." / mission / intro language.
+  // Keep this small and avoid overriding very strong signals from other segments.
+  const earlyPage = typeof features.page_index === "number" && features.page_index <= 1;
+  if (earlyPage && (features.source_kind === "vision" || features.source_kind === "image")) {
+    const hasIsA = /\bis\s+a\b/i.test(scoringRaw);
+    const overviewCue = hasAny(scoringText, ["we are", "our mission", "our vision", "founded", "headquartered", "based in"]);
+    const bestNow = ranked[0]?.score ?? 0;
+    if ((hasIsA || overviewCue.hit) && bestNow < 0.8) {
+      const delta = hasIsA ? 0.22 : 0.08;
+      adjustScore("overview", delta);
+      scoringAdjustments.push({
+        rule_id: "EARLY_OVERVIEW_NUDGE",
+        segment: "overview",
+        delta,
+        matched_terms: [
+          ...(hasIsA ? ["is a"] : []),
+          ...(overviewCue.matched ?? []),
+        ],
+      });
+    }
+  }
 
   if (hintSegment && hintSegment !== "unknown") {
     adjustScore(hintSegment, HINT_BOOST);
@@ -1041,6 +1212,37 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       delta: HINT_BOOST,
       matched_terms: [`structured_hint:${hintSegment}`],
     });
+  }
+
+  // Title-based boost for structured XLSX sheets, when body text is low-signal.
+  // This helps with sheets named "P&L", "Cash Flow", "Cap Table", "Assumptions", etc.
+  // without creating a strong override that could regress other doc types.
+  if (features.source_kind === "xlsx") {
+    const lowSignalBody = scoringStripped.trim().length < XLSX_LOW_SIGNAL_LEN;
+    if (lowSignalBody) {
+      const safeTitleSegments: AnalystSegment[] = [
+        "financials",
+        "raise_terms",
+        "traction",
+        "market",
+        "competition",
+        "risks",
+        "team",
+        "business_model",
+        "overview",
+      ];
+      for (const seg of safeTitleSegments) {
+        const titleHit = hasAny(titleMatchText, titleTermsBySegment[seg] ?? []);
+        if (!titleHit.hit) continue;
+        adjustScore(seg, XLSX_TITLE_BOOST);
+        scoringAdjustments.push({
+          rule_id: "XLSX_TITLE_TERM_BOOST",
+          segment: seg,
+          delta: XLSX_TITLE_BOOST,
+          matched_terms: titleHit.matched,
+        });
+      }
+    }
   }
 
   const allowProductPlaceholder = input.quality_source === "structured_word" || (hintSegment != null && hintSegment !== "unknown");
@@ -1128,12 +1330,79 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
     return out;
   };
 
+  const scoreForSegment = (seg: AnalystSegment): number => {
+    const row = ranked.find((r) => r.segment === seg);
+    return row && typeof row.score === "number" ? row.score : 0;
+  };
+
+  const defaultHeaderForSegment = (seg: AnalystSegment): string | null => {
+    const map: Record<AnalystSegment, string | null> = {
+      overview: "Company Overview",
+      problem: "Problem",
+      solution: "Solution",
+      product: "Product",
+      market: "Market",
+      traction: "Traction",
+      business_model: "Business Model",
+      distribution: "Go-To-Market",
+      team: "Team",
+      competition: "Competition",
+      risks: "Risks",
+      financials: "Financials",
+      raise_terms: "Raise / Terms",
+      exit: "Exit",
+      unknown: null,
+    };
+    return map[seg] ?? null;
+  };
+
+  const isVisionLike = features.source_kind === "vision" || features.source_kind === "image";
+  const detectedHeader = headerCandidateRaw ? headerCandidateRaw : null;
+  const hardHeader = headerMatchText ? matchHardTitleLabel(headerMatchText) : null;
+  const hardHeaderSegment = hardHeader?.segment ?? null;
+  const hardHeaderScore = hardHeaderSegment ? scoreForSegment(hardHeaderSegment) : 0;
+
+  // Only allow title-first overrides when the detected header is consistent with copy-based scoring.
+  // For structured sources (pptx/docx/xlsx), trust the header.
+  // For vision/image, reject only when mismatch is strong (common OCR font/background failures).
+  const headerTrustedForRules = (() => {
+    if (!headerMatchText || !detectedHeader) return false;
+    if (!isVisionLike) return true;
+    if (!hardHeaderSegment) return false;
+    if (best.score < BODY_SCORE_THRESHOLD) return true;
+    if (best.segment === hardHeaderSegment) return true;
+    if (best.score >= 0.78 && hardHeaderScore < 0.45) return false;
+    return true;
+  })();
+
+  const withAppliedHeader = (debug: Record<string, unknown> | undefined, seg: AnalystSegment): Record<string, unknown> | undefined => {
+    if (!enableDebug || !debug) return debug;
+    return {
+      ...debug,
+      detected_header: detectedHeader,
+      detected_header_trusted: headerTrustedForRules,
+      detected_header_segment: hardHeaderSegment,
+      applied_header: defaultHeaderForSegment(seg),
+      applied_header_source: defaultHeaderForSegment(seg) ? "generated_segment_header" : "none",
+    };
+  };
+
+  const classificationTextSourcesUsed = (() => {
+    const out: string[] = [];
+    if (features.title_text && features.title_text.trim().length > 0) out.push("title");
+    if (Array.isArray(features.headings) && features.headings.length > 0) out.push("headings");
+    if (features.body_text && features.body_text.trim().length > 0) out.push("body");
+    if (features.evidence_text && features.evidence_text.trim().length > 0) out.push("evidence");
+    return out;
+  })();
+
   const debugBase = enableDebug
     ? {
         classification_source:
           features.source_kind === "vision" || features.source_kind === "image" ? "vision" : "structured",
         classification_text_len: classificationText.length,
         captured_text: classificationText.slice(0, 800),
+        classification_text_sources_used: classificationTextSourcesUsed,
         ...(includeDebugTextSnippet ? { classification_text_snippet: classificationText.slice(0, 250) } : {}),
         segment_features: features,
         title_text_snippet: features.title_text ? features.title_text.slice(0, 200) : null,
@@ -1149,29 +1418,28 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
     : undefined;
 
   // Rule 1: Hard title labels.
-  const hardTitle = matchHardTitleLabel(titleMatchText);
-  if (hardTitle) {
+  if (hardHeader && headerTrustedForRules) {
     const outDebug = enableDebug
       ? {
           ...debugBase,
           rule_id: "TITLE_MATCH",
-          matched_terms: [hardTitle.term],
+          matched_terms: [hardHeader.term],
           threshold: BODY_SCORE_THRESHOLD,
           tie_delta: tieDelta,
         }
       : undefined;
     return {
-      segment: hardTitle.segment,
+      segment: hardHeader.segment,
       confidence: TITLE_MATCH_CONFIDENCE,
-      debug: ensureDebugConsistency(outDebug, hardTitle.segment, {
+      debug: ensureDebugConsistency(withAppliedHeader(outDebug, hardHeader.segment), hardHeader.segment, {
         rule_id: "TITLE_MATCH",
-        explanation: `TITLE contains hard label: ${hardTitle.term}`,
+        explanation: `TITLE contains hard label: ${hardHeader.term}`,
       }),
     };
   }
 
   // Rule 2: Title intent keywords.
-  if (titleIntent.hit) {
+  if (titleIntent.hit && (!isVisionLike || best.score >= BODY_SCORE_THRESHOLD) && headerTrustedForRules) {
     const pos = hasAny(scoringText, [
       "lift",
       "improves",
@@ -1196,7 +1464,7 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
     return {
       segment: chosen,
       confidence: TITLE_INTENT_CONFIDENCE,
-      debug: ensureDebugConsistency(outDebug, chosen, {
+      debug: ensureDebugConsistency(withAppliedHeader(outDebug, chosen), chosen, {
         rule_id: "TITLE_INTENT",
         explanation: "TITLE contains intent phrase; body keywords select problem vs solution",
       }),
@@ -1204,25 +1472,99 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
   }
 
   // Deterministic table routing: if the extractor detected a table-like asset,
-  // route to financials before falling back to low-signal body scoring.
+  // Only hard-route when we have strong evidence that the table is financial/terms.
+  // Many decks/memos include non-financial tables (property info, sponsor stats, checklists).
   if (features.has_table) {
-    const outDebug = enableDebug
-      ? {
-          ...debugBase,
+    const tableContext = `${titleMatchText}\n${scoringText}\n${evidenceText}`;
+    const financeTitleHit = hasAny(titleMatchText, [
+      "financial",
+      "financials",
+      "financial summary",
+      "income statement",
+      "balance sheet",
+      "cash flow",
+      "cashflow",
+      "p&l",
+      "pnl",
+      "rent schedule",
+      "forecast",
+      "projection",
+      "budget",
+      "unit economics",
+    ]).hit;
+    const termsHit = hasAny(tableContext, [
+      "cap table",
+      "capitalization table",
+      "term sheet",
+      "use of funds",
+      "use of proceeds",
+      "sources and uses",
+      "sources & uses",
+      "valuation",
+      "ownership",
+    ]).hit;
+
+    // Structured XLSX: keep the historical behavior; a table almost always corresponds to the sheet content.
+    if (features.source_kind === "xlsx") {
+      const outDebug = enableDebug
+        ? {
+            ...debugBase,
+            rule_id: "TABLE_TO_FINANCIALS_XLSX",
+            matched_terms: ["table", "xlsx"],
+            threshold: BODY_SCORE_THRESHOLD,
+            tie_delta: tieDelta,
+          }
+        : undefined;
+      return {
+        segment: "financials",
+        confidence: 0.85,
+        debug: ensureDebugConsistency(withAppliedHeader(outDebug, "financials"), "financials", {
+          rule_id: "TABLE_TO_FINANCIALS_XLSX",
+          explanation: "Structured XLSX table detected; routing to financials",
+        }),
+      };
+    }
+
+    if (termsHit) {
+      const outDebug = enableDebug
+        ? {
+            ...debugBase,
+            rule_id: "TABLE_TO_RAISE_TERMS",
+            matched_terms: ["table", "terms"],
+            threshold: BODY_SCORE_THRESHOLD,
+            tie_delta: tieDelta,
+          }
+        : undefined;
+      return {
+        segment: "raise_terms",
+        confidence: 0.82,
+        debug: ensureDebugConsistency(withAppliedHeader(outDebug, "raise_terms"), "raise_terms", {
+          rule_id: "TABLE_TO_RAISE_TERMS",
+          explanation: "Table with terms/cap table language detected; routing to raise_terms",
+        }),
+      };
+    }
+
+    if (financeTitleHit || hintSegment === "financials") {
+      const outDebug = enableDebug
+        ? {
+            ...debugBase,
+            rule_id: "TABLE_TO_FINANCIALS",
+            matched_terms: ["table"],
+            threshold: BODY_SCORE_THRESHOLD,
+            tie_delta: tieDelta,
+          }
+        : undefined;
+      return {
+        segment: "financials",
+        confidence: 0.85,
+        debug: ensureDebugConsistency(withAppliedHeader(outDebug, "financials"), "financials", {
           rule_id: "TABLE_TO_FINANCIALS",
-          matched_terms: ["table"],
-          threshold: BODY_SCORE_THRESHOLD,
-          tie_delta: tieDelta,
-        }
-      : undefined;
-    return {
-      segment: "financials",
-      confidence: 0.85,
-      debug: ensureDebugConsistency(outDebug, "financials", {
-        rule_id: "TABLE_TO_FINANCIALS",
-        explanation: "Detected table structure; routing to financials",
-      }),
-    };
+          explanation: "Table detected with financial title/hint; routing to financials",
+        }),
+      };
+    }
+    // Otherwise: do not override body scoring. The table signal is already included as a mild boost.
   }
 
   // Rule 3: Body+evidence keyword scoring.
@@ -1275,7 +1617,7 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       return {
         segment: hintSegment,
         confidence: Math.max(BODY_SCORE_THRESHOLD, 0.5),
-        debug: ensureDebugConsistency(forcedDebug, hintSegment, {
+        debug: ensureDebugConsistency(withAppliedHeader(forcedDebug, hintSegment), hintSegment, {
           rule_id: "STRUCTURED_HINT_FALLBACK",
           explanation: `Forced to hint segment (${hintSegment}) because classifier returned unknown (${reason})`,
         }),
@@ -1286,10 +1628,13 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       segment: "unknown",
       confidence: 0,
       debug: ensureDebugConsistency(
-        {
-          ...(outDebug ?? {}),
-          unknown_score: UNKNOWN_EPS,
-        },
+        withAppliedHeader(
+          {
+            ...(outDebug ?? {}),
+            unknown_score: UNKNOWN_EPS,
+          },
+          "unknown"
+        ),
         "unknown",
         {
           rule_id: "UNKNOWN",
@@ -1307,13 +1652,148 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
     return finalizeUnknown("LOW_SIGNAL");
   }
 
-  if (second.score >= BODY_SCORE_THRESHOLD && Math.abs(best.score - second.score) <= TIE_DELTA_EPS) {
+  // Avoid floating-point artifacts at exact boundaries (e.g. 0.6 - 0.5 => 0.09999999999999998).
+  // We only want ties when the margin is *meaningfully* within epsilon.
+  const tieMargin = Math.abs(best.score - second.score);
+  const tieEps = Math.max(0, TIE_DELTA_EPS - 1e-9);
+
+  if (second.score >= BODY_SCORE_THRESHOLD && tieMargin < tieEps) {
+    // Vision-only: resolve a small subset of ambiguous ties with strong, explicit cues.
+    // Keep this narrow to avoid broad behavior changes.
+    const tryResolveAmbiguousTie = (): { segment: AnalystSegment; matched_terms: string[]; explanation: string } | null => {
+      if (features.source_kind !== "vision" && features.source_kind !== "image") return null;
+      if (hintSegment && hintSegment !== "unknown") return null;
+
+      const a = best.segment as AnalystSegment;
+      const b = second.segment as AnalystSegment;
+      if (a === "unknown" || b === "unknown") return null;
+
+      const tieText = normalizeForMatch(`${titleMatchText}\n${scoringText}\n${evidenceText}`);
+
+      const strongCues: Partial<Record<AnalystSegment, string[]>> = {
+        product: [
+          "feature",
+          "features",
+          "module",
+          "modules",
+          "capability",
+          "capabilities",
+          "how it works",
+          "demo",
+          "architecture",
+        ],
+        market: [
+          "launch markets",
+          "initial launch markets",
+          "target markets",
+          "addressable market",
+          "market sizing",
+          "market size",
+          "tam sam som",
+        ],
+        distribution: [
+          "go-to-market",
+          "go to market",
+          "gtm",
+          "distribution channel",
+          "sales strategy",
+          "channel partners",
+          "partner program",
+          "resellers",
+          "reseller",
+          // Marketing/channel execution language (common in marketing plans).
+          "creator partnerships",
+          "talent-led",
+          "short-form",
+          "short form",
+          "reels",
+          "platform-native",
+        ],
+        traction: ["arr", "mrr", "customers", "users", "retention", "conversion", "kpi", "cac", "ltv"],
+        financials: [
+          "forecast",
+          "projection",
+          "projections",
+          "income statement",
+          "balance sheet",
+          "cash flow",
+          "p&l",
+          "ebitda",
+          "gross margin",
+          "runway",
+          "burn",
+          "budget",
+        ],
+        business_model: [
+          "business model",
+          "revenue model",
+          "pricing model",
+          "unit economics",
+          "how we make money",
+          "subscription",
+          "take rate",
+          "arpu",
+        ],
+        risks: ["risk mitigation", "risk factors", "mitigation", "regulation", "compliance", "risk"],
+        // Exclude bare "acquisition" here: it often appears as "customer acquisition" (traction/distribution),
+        // and we only use these cues to break ties.
+        exit: ["exit strategy", "strategic buyers", "m&a", "acquirer", "ipo"],
+      };
+
+      const cuesA = strongCues[a] ?? [];
+      const cuesB = strongCues[b] ?? [];
+      if (cuesA.length === 0 && cuesB.length === 0) return null;
+
+      const hitA = hasAny(tieText, cuesA).matched;
+      const hitB = hasAny(tieText, cuesB).matched;
+
+      // Only resolve when *exactly one side* has strong cues.
+      if (hitA.length > 0 && hitB.length === 0) {
+        return {
+          segment: a,
+          matched_terms: hitA,
+          explanation: `Resolved AMBIGUOUS_TIE via strong cues for ${a}`,
+        };
+      }
+      if (hitB.length > 0 && hitA.length === 0) {
+        return {
+          segment: b,
+          matched_terms: hitB,
+          explanation: `Resolved AMBIGUOUS_TIE via strong cues for ${b}`,
+        };
+      }
+
+      return null;
+    };
+
+    const resolved = tryResolveAmbiguousTie();
+    if (resolved) {
+      const outDebug = enableDebug
+        ? {
+            ...(baseDebug ?? {}),
+            rule_id: "TIE_BREAK_STRONG_CUE",
+            matched_terms: resolved.matched_terms,
+            threshold: BODY_SCORE_THRESHOLD,
+            tie_delta: tieDelta,
+            unknown_reason_code: null,
+          }
+        : undefined;
+      return {
+        segment: resolved.segment,
+        confidence: bestScore,
+        debug: ensureDebugConsistency(withAppliedHeader(outDebug, resolved.segment), resolved.segment, {
+          rule_id: "TIE_BREAK_STRONG_CUE",
+          explanation: resolved.explanation,
+        }),
+      };
+    }
+
     return finalizeUnknown("AMBIGUOUS_TIE");
   }
 
   return {
     segment: chosenFromBody,
     confidence: bestScore,
-    debug: ensureDebugConsistency(baseDebug, chosenFromBody),
+    debug: ensureDebugConsistency(withAppliedHeader(baseDebug, chosenFromBody), chosenFromBody),
   };
 }

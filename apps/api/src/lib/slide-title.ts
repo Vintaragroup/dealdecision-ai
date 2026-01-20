@@ -49,7 +49,7 @@ export type BrandModel = {
 export type SlideTitleResult = {
   slide_title: string | null;
   slide_title_confidence: number;
-  slide_title_source: "ocr_layout_v1" | "ocr_fallback" | "none";
+  slide_title_source: "ocr_layout_v1" | "ocr_fallback" | "heading_fuzzy_v1" | "brand_fallback" | "none";
   slide_title_warnings?: string[];
   slide_title_debug?: { candidates: Array<{ text: string; score: number; reasons: string[] }> };
 };
@@ -79,23 +79,413 @@ const DEFAULT_BLACKLIST = new Set<string>([
 ]);
 
 const headingKeywords = [
+  "overview",
+  "company overview",
   "problem",
   "market problem",
   "solution",
+  "product",
+  "how it works",
+  // Common non-startup-doc headings (e.g. real estate / project memos)
+  "project breakdown",
+  "key considerations",
+  "development summary",
+  "key market studies",
+  "market",
+  "market opportunity",
   "traction",
   "business model",
+  "pricing",
   "go-to-market",
   "go to market",
   "distribution",
   "team",
+  "competition",
+  "risks",
   "financials",
   "financial",
+  "unit economics",
+  "raise",
+  "terms",
+  "use of funds",
   "exit",
   "exit strategy",
   "acquirers",
   "call to action",
   "investment opportunity",
 ];
+
+function compactLetters(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+    .trim();
+}
+
+function diceCoefficient(a: string, b: string): number {
+  // Sørensen–Dice on bigrams; robust to small OCR typos.
+  const s1 = compactLetters(a);
+  const s2 = compactLetters(b);
+  if (s1.length < 2 || s2.length < 2) return 0;
+  const bigrams = (s: string) => {
+    const out: string[] = [];
+    for (let i = 0; i < s.length - 1; i += 1) out.push(s.slice(i, i + 2));
+    return out;
+  };
+  const b1 = bigrams(s1);
+  const b2 = bigrams(s2);
+  const counts = new Map<string, number>();
+  for (const g of b1) counts.set(g, (counts.get(g) ?? 0) + 1);
+  let intersection = 0;
+  for (const g of b2) {
+    const c = counts.get(g) ?? 0;
+    if (c <= 0) continue;
+    intersection += 1;
+    counts.set(g, c - 1);
+  }
+  return (2 * intersection) / (b1.length + b2.length);
+}
+
+function looksGarbled(normText: string): boolean {
+  const s = normText.replace(/\s+/g, " ").trim();
+  if (!s) return true;
+  const alpha = alphaRatio(s);
+  if (alpha < 0.45) return true;
+  const words = s.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return true;
+  const longWeird = words.some((w) => w.length >= 16 && !/[aeiou]/i.test(w));
+  if (longWeird) return true;
+  const singleCharWords = words.filter((w) => w.length === 1).length;
+  if (singleCharWords >= Math.ceil(words.length * 0.6)) return true;
+  // Extremely low vowel density is a strong OCR-garble signal.
+  const letters = (s.match(/[a-z]/g) ?? []).length;
+  const vowels = (s.match(/[aeiou]/g) ?? []).length;
+  if (letters >= 10 && vowels / Math.max(1, letters) < 0.18) return true;
+  return false;
+}
+
+function looksMixedCaseNoVowelToken(rawWord: string): boolean {
+  const w = String(rawWord ?? "").replace(/[^A-Za-z]/g, "");
+  if (w.length < 4) return false;
+  const hasLower = /[a-z]/.test(w);
+  const hasUpper = /[A-Z]/.test(w);
+  if (!(hasLower && hasUpper)) return false;
+  if (/[aeiou]/i.test(w)) return false;
+  return true;
+}
+
+function countCaseTransitions(rawWord: string): number {
+  const w = String(rawWord ?? "").replace(/[^A-Za-z]/g, "");
+  if (w.length < 2) return 0;
+  let transitions = 0;
+  let prevUpper: boolean | null = null;
+  for (const ch of w) {
+    const isUpper = ch >= "A" && ch <= "Z";
+    if (prevUpper !== null && isUpper !== prevUpper) transitions += 1;
+    prevUpper = isUpper;
+  }
+  return transitions;
+}
+
+function maxConsonantRun(rawWord: string): number {
+  const w = String(rawWord ?? "")
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+  if (!w) return 0;
+  const vowels = new Set(["a", "e", "i", "o", "u", "y"]);
+  let run = 0;
+  let best = 0;
+  for (const ch of w) {
+    if (vowels.has(ch)) {
+      run = 0;
+      continue;
+    }
+    run += 1;
+    if (run > best) best = run;
+  }
+  return best;
+}
+
+function looksRandomMixedCaseToken(rawWord: string): boolean {
+  const w = String(rawWord ?? "").replace(/[^A-Za-z]/g, "");
+  if (w.length < 5) return false;
+  const hasLower = /[a-z]/.test(w);
+  const hasUpper = /[A-Z]/.test(w);
+  if (!(hasLower && hasUpper)) return false;
+
+  // OCR often produces a leading TitleCase pair followed by ALL CAPS (e.g. "PoSOP", "WeBMAX").
+  // This is almost never an intentional token in a slide title.
+  if (/^[A-Z][a-z][A-Z]{2,}$/.test(w)) return true;
+
+  // Allow normal CamelCase brand/style tokens (e.g. "ToxyScreen", "WebMax").
+  if (/^[A-Z][a-z]+(?:[A-Z][a-z]+)+$/.test(w)) return false;
+
+  // Hyphenated Title Case like "Go-to-Market" is common and should not be treated as OCR noise.
+  if (/[\-\u2013\u2014]/.test(String(rawWord ?? ""))) {
+    const parts = String(rawWord)
+      .split(/[\-\u2013\u2014]/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (
+      parts.length >= 2 &&
+      parts.every((p) => {
+        const letters = p.replace(/[^A-Za-z0-9]/g, "");
+        if (!letters) return true;
+        if (isAllCapsShortToken(letters) && isAllowedAcronym(letters)) return true;
+        return /^[A-Z][a-z]+$/.test(letters);
+      })
+    ) {
+      return false;
+    }
+  }
+
+  // TitleCase/CamelCase tokens typically start with an initial cap-to-lower transition.
+  // Treat that first transition as "normal" and only flag additional transitions.
+  const transitions = countCaseTransitions(w);
+  const adjusted = /^[A-Z][a-z]/.test(w) ? Math.max(0, transitions - 1) : transitions;
+  return adjusted >= 2;
+}
+
+export function isLikelyGarbledSlideTitle(title: string | null | undefined): boolean {
+  const raw = typeof title === "string" ? title.replace(/\s+/g, " ").trim() : "";
+  if (!raw) return true;
+  const norm = normalizePhrase(raw);
+  return looksGarbledTitleCandidate(raw, norm);
+}
+
+function looksUnpronounceableToken(rawWord: string): boolean {
+  const w = String(rawWord ?? "").replace(/[^A-Za-z]/g, "");
+  if (w.length < 7) return false;
+  // Long consonant runs are very rare in meaningful English headings, but common in OCR garbage.
+  return maxConsonantRun(w) >= 5;
+}
+
+const ALLOWED_SHORT_ACRONYMS = new Set(
+  [
+    "ai",
+    "api",
+    "saas",
+    "b2b",
+    "b2c",
+    "cac",
+    "ltv",
+    "tam",
+    "sam",
+    "som",
+    "kpi",
+    "kpis",
+    "mrr",
+    "arr",
+    "cogs",
+    "gmv",
+    "gaap",
+    "ebitda",
+    "nps",
+    "seo",
+    "sem",
+    "usa",
+    "uk",
+    "eu",
+    "irr",
+    "moic",
+    "irf",
+    "snf",
+  ].map((s) => s.toLowerCase())
+);
+
+function isAllCapsShortToken(word: string): boolean {
+  const w = String(word ?? "").replace(/[^A-Za-z0-9]/g, "");
+  if (w.length < 2 || w.length > 4) return false;
+  const hasLetter = /[A-Za-z]/.test(w);
+  if (!hasLetter) return false;
+  return /^[A-Z0-9]+$/.test(w);
+}
+
+function isAllowedAcronym(word: string): boolean {
+  const w = String(word ?? "").replace(/[^A-Za-z0-9]/g, "").toLowerCase();
+  if (!w) return false;
+  return ALLOWED_SHORT_ACRONYMS.has(w);
+}
+
+function extractHeadingPrefixFromRaw(rawText: string): string | null {
+  const raw = String(rawText ?? "").replace(/\s+/g, " ").trim();
+  if (!raw) return null;
+
+  // Only strip when the heading appears right at the start.
+  for (const h of headingKeywords) {
+    const parts = h
+      .split(/\s+/)
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    if (parts.length === 0) continue;
+    const re = new RegExp(`^\\s*(${parts.join("[\\s\\-\\u2013\\u2014]+")})(?:\\b|\\s|$)`, "i");
+    const m = raw.match(re);
+    if (!m || !m[1]) continue;
+    const prefix = String(m[1]).trim();
+    if (prefix.length >= 3 && prefix.length <= 120) return prefix;
+  }
+
+  return null;
+}
+
+function looksGarbledTitleCandidate(rawText: string, normText: string): boolean {
+  const raw = String(rawText ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const norm = String(normText ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!raw || !norm) return true;
+
+  if (looksGarbled(norm)) return true;
+
+  const rawNoSpace = raw.replace(/\s/g, "");
+  if (!rawNoSpace) return true;
+  const letters = (rawNoSpace.match(/[A-Za-z]/g) ?? []).length;
+  const digits = (rawNoSpace.match(/[0-9]/g) ?? []).length;
+  const other = Math.max(0, rawNoSpace.length - letters - digits);
+  const otherRatio = other / rawNoSpace.length;
+  const letterRatio = letters / rawNoSpace.length;
+
+  // Symbol soup (common in graphic-heavy slides) should not be used as a title.
+  if (rawNoSpace.length >= 10 && otherRatio >= 0.35) return true;
+  // If there are hardly any letters, it's almost never a meaningful title.
+  if (rawNoSpace.length >= 10 && letterRatio < 0.35) return true;
+  // Long repeated runs are usually OCR noise.
+  if (/(.)\1{6,}/.test(rawNoSpace)) return true;
+
+  // Many 1-character tokens is usually broken OCR columnar output.
+  const words = norm.split(/\s+/).filter(Boolean);
+  const singleCharWords = words.filter((w) => w.length === 1).length;
+  if (words.length >= 5 && singleCharWords >= Math.ceil(words.length * 0.6)) return true;
+
+  // "Vowel soup" / OCR artifacts often produce titles that are mostly 1–2 letter tokens
+  // (e.g. "a oe ia ee"). Allow short titles like "AI" or "IRF" by requiring enough tokens.
+  if (words.length >= 5) {
+    const shortWords = words.filter((w) => w.length <= 2).length;
+    const hasLongWord = words.some((w) => w.length >= 4);
+    if (!hasLongWord && shortWords >= Math.ceil(words.length * 0.7)) return true;
+
+    // Longer junk strings with a single "accidental" longer token should still be treated as garbled.
+    const longWordCount = words.filter((w) => w.length >= 4).length;
+    if (words.length >= 10 && shortWords >= Math.ceil(words.length * 0.7) && longWordCount < 2) return true;
+  }
+
+  // If the entire title is 1–2 character tokens, it is almost always OCR junk.
+  // (This intentionally allows a single short token like "IRF" or "AI".)
+  if (words.length >= 4 && words.every((w) => w.length <= 2)) return true;
+
+  // Mixed-case consonant-only tokens are a common failure mode on graphic-heavy pages
+  // (e.g. "SlCr"), and should not become titles.
+  const rawWords = raw.split(/\s+/).filter(Boolean);
+  if (rawWords.some((w) => looksMixedCaseNoVowelToken(w))) return true;
+
+  // Mixed-case tokens with many case transitions are usually OCR artifacts (e.g. "atewULe").
+  if (rawWords.some((w) => looksRandomMixedCaseToken(w))) return true;
+
+  // Detect unpronounceable "token soup" even when the string is alphabetic.
+  // This catches headings like "PWN stele UW Wale Wale" that otherwise look "fine" by alpha-ratio alone.
+  if (rawWords.length >= 3) {
+    const weirdTokens = rawWords.filter((w) => looksUnpronounceableToken(w) || looksMixedCaseNoVowelToken(w) || looksRandomMixedCaseToken(w));
+    if (weirdTokens.length >= Math.ceil(rawWords.length * 0.4)) return true;
+  }
+
+  // OCR often produces short ALL-CAPS fragments (e.g. "UW", "PWN") that look like acronyms but are not.
+  // If a title is dominated by these, treat it as garbled.
+  const shortCaps = rawWords.filter((w) => isAllCapsShortToken(w) && !isAllowedAcronym(w));
+  const singleChar = rawWords.filter((w) => String(w).trim().length === 1);
+  if (rawWords.length >= 4 && (shortCaps.length >= 2 || singleChar.length >= 1)) return true;
+  if (rawWords.length === 2) {
+    const [a, b] = rawWords;
+    const aAllCaps = /^[A-Z0-9]+$/.test(a.replace(/[^A-Za-z0-9]/g, ""));
+    const bAllCaps = /^[A-Z0-9]+$/.test(b.replace(/[^A-Za-z0-9]/g, ""));
+    const bClean = b.replace(/[^A-Za-z0-9]/g, "");
+    if (aAllCaps && bAllCaps && bClean.length <= 4 && !isAllowedAcronym(bClean)) return true;
+  }
+
+  return false;
+}
+
+function looksReasonableTitleCandidate(rawText: string, normText: string): boolean {
+  const raw = String(rawText ?? "").replace(/\s+/g, " ").trim();
+  const norm = String(normText ?? "").trim();
+  if (!raw || !norm) return false;
+  if (looksGarbledTitleCandidate(raw, norm)) return false;
+
+  // Strong filter for OCR noise that still contains letters.
+  const rawNoSpace = raw.replace(/\s+/g, "");
+  const letters = (rawNoSpace.match(/[A-Za-z]/g) ?? []).length;
+  const alpha = letters / Math.max(1, rawNoSpace.length);
+  if (rawNoSpace.length >= 10 && alpha < 0.6) return false;
+
+  // Reject titles with lots of odd punctuation / box-drawing artifacts.
+  const weirdChars = (raw.match(/[^a-zA-Z0-9\s\-\/:,.()&+%$]/g) ?? []).length;
+  if (raw.length >= 12 && weirdChars >= Math.ceil(raw.length * 0.12)) return false;
+
+  const words = norm.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return false;
+
+  const hasHeadingKeyword = headingKeywords.some((h) => norm.includes(normalizePhrase(h)));
+  if (words.length > 12 && !hasHeadingKeyword) return false;
+
+  const longWordCount = words.filter((w) => w.length >= 4).length;
+  const rawIsAllCapsToken = /^[A-Z0-9]{3,}$/.test(rawNoSpace);
+  if (!hasHeadingKeyword && longWordCount === 0 && !rawIsAllCapsToken) return false;
+
+  return true;
+}
+
+function inferTitleFromFuzzyHeading(params: {
+  lines: LineCandidate[];
+}): { title: string; confidence: number; reason: string } | null {
+  const candidates = params.lines
+    .map((l) => ({ text: l.raw, norm: l.norm, bbox: l.bbox, lineIndex: l.lineIndex }))
+    .filter((l) => l.norm.length >= 3 && l.norm.length <= 80)
+    .filter((l) => !isUrlEmailPhone(l.norm) && !looksLikePageNumber(l.norm));
+
+  if (candidates.length === 0) return null;
+
+  // Canonical headings we are willing to emit as titles.
+  const headings: Array<{ label: string; variants: string[] }> = [
+    { label: "Overview", variants: ["overview", "company overview"] },
+    { label: "Problem", variants: ["problem", "market problem"] },
+    { label: "Solution", variants: ["solution"] },
+    { label: "Product", variants: ["product", "how it works"] },
+    { label: "Market", variants: ["market", "market opportunity"] },
+    { label: "Traction", variants: ["traction"] },
+    { label: "Business Model", variants: ["business model", "pricing"] },
+    { label: "Go-to-Market", variants: ["go-to-market", "go to market", "distribution"] },
+    { label: "Team", variants: ["team"] },
+    { label: "Competition", variants: ["competition"] },
+    { label: "Risks", variants: ["risks"] },
+    { label: "Financials", variants: ["financials", "financial", "unit economics"] },
+    { label: "Raise / Terms", variants: ["raise", "terms", "use of funds"] },
+    { label: "Exit", variants: ["exit", "exit strategy", "acquirers"] },
+    { label: "Key Considerations", variants: ["key considerations"] },
+    { label: "Project Breakdown", variants: ["project breakdown"] },
+    { label: "Development Summary", variants: ["development summary"] },
+  ];
+
+  let best: { label: string; score: number; raw: string; why: string } | null = null;
+  for (const l of candidates) {
+    const topBoost = l.bbox?.y != null ? clamp(0.12 - l.bbox.y * 0.25, 0, 0.12) : l.lineIndex <= 6 ? 0.06 : 0;
+    for (const h of headings) {
+      for (const v of h.variants) {
+        const d = diceCoefficient(l.norm, v);
+        const s = d + topBoost;
+        if (!best || s > best.score) best = { label: h.label, score: s, raw: l.text, why: `dice(${v})=${d.toFixed(3)} topBoost=${topBoost.toFixed(3)}` };
+      }
+    }
+  }
+
+  if (!best) return null;
+
+  // Require a reasonably strong match; avoids forcing a segment-title on random text.
+  if (best.score < 0.78) return null;
+
+  return { title: best.label, confidence: clamp(0.55 + (best.score - 0.78) * 1.2, 0.55, 0.82), reason: `fuzzy_heading:${best.why} raw=${best.raw.slice(0, 60)}` };
+}
 
 export function normalizePhrase(value: string | null | undefined): string {
   if (!value) return "";
@@ -249,6 +639,85 @@ function tokenSet(value: string): Set<string> {
   return new Set(value.split(/\s+/).filter(Boolean));
 }
 
+function findBrandTokenFromText(text: string): string | null {
+  if (!text) return null;
+  // Prefer brand-like tokens that contain digits (e.g., 3ICE, 1Password).
+  const digitToken = text.match(/\b[A-Za-z]*\d+[A-Za-z\d]{1,}\b/);
+  if (digitToken && digitToken[0]) return digitToken[0];
+
+  // Fall back to short-ish ALLCAPS-ish tokens (e.g., ACME, DDAI).
+  const capsToken = text.match(/\b[A-Z]{3,10}\b/);
+  if (capsToken && capsToken[0]) return capsToken[0];
+
+  return null;
+}
+
+function extractBodyCopyFromOcrText(text: string | null | undefined): string {
+  if (typeof text !== "string") return "";
+  const t = text.replace(/\s+/g, " ").trim();
+  if (!t) return "";
+  // Many OCR pipelines use "»" or similar as a bullet delimiter.
+  // If present, treat everything after the first bullet as primary body copy.
+  const parts = t.split(/\s*[»›>•]\s*/g).map((p) => p.trim()).filter(Boolean);
+  if (parts.length >= 2) return parts.slice(1).join(" ");
+  return t;
+}
+
+function stripBrandFromLine(params: { rawLine: string; brandToken: string | null }): string | null {
+  const raw = typeof params.rawLine === "string" ? params.rawLine : "";
+  const brandToken = typeof params.brandToken === "string" && params.brandToken.trim() ? params.brandToken.trim() : null;
+  if (!raw.trim()) return null;
+
+  // Remove URLs/emails which often appear in top lines.
+  let s = raw.replace(/\bhttps?:\/\/\S+\b/gi, " ").replace(/\b\S+@\S+\b/gi, " ");
+
+  if (brandToken) {
+    const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`\\b${escapeRegExp(brandToken)}\\b`, "gi");
+    s = s.replace(re, " ");
+  }
+
+  // Trim stray separators.
+  s = s.replace(/[|•·]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!s) return null;
+
+  const norm = normalizePhrase(s);
+  if (!norm || norm.length < 3) return null;
+  if (DEFAULT_BLACKLIST.has(norm)) return null;
+  if (isUrlEmailPhone(norm) || looksLikePageNumber(norm) || isMostlyNumeric(norm)) return null;
+
+  return s.length > 180 ? s.slice(0, 180) : s;
+}
+
+function inferTitleFromBodyCopy(params: { ocr_text?: string | null; brandModel: BrandModel }): { title: string | null; reason: string | null } {
+  const body = extractBodyCopyFromOcrText(params.ocr_text ?? null);
+  if (!body) return { title: null, reason: null };
+
+  const brandToken = findBrandTokenFromText(body) ?? findBrandTokenFromText(params.ocr_text ?? "");
+  const brandNorm = normalizePhrase(brandToken);
+  const bodyNorm = normalizePhrase(body);
+
+  // Very common "Overview" signal in intro copy.
+  const hasIsA = /\bis\s+a\b/i.test(body);
+  const hasIntroVerb = /\b(we\s+are|we\s+have|our\s+|mission|vision)\b/i.test(body);
+  const hasBrand = Boolean(brandNorm) && bodyNorm.includes(brandNorm);
+
+  if (hasBrand && (hasIsA || hasIntroVerb)) {
+    return { title: `${brandToken} Overview`, reason: "body_copy_brand_is_a" };
+  }
+
+  if (hasIsA && brandToken) {
+    return { title: `${brandToken} Overview`, reason: "body_copy_is_a" };
+  }
+
+  // If body strongly indicates a general overview but we can't reliably identify brand.
+  if (/\boverview\b/i.test(body) || /\bintroduction\b/i.test(body)) {
+    return { title: "Overview", reason: "body_copy_overview" };
+  }
+
+  return { title: null, reason: null };
+}
+
 function overlapRatio(text: string, phrases: Set<string>): number {
   const tokens = Array.from(tokenSet(text));
   if (tokens.length === 0) return 0;
@@ -398,7 +867,165 @@ export function inferSlideTitleForSlide(input: SlideTitleInput): SlideTitleResul
   }
 
   if (!pick) {
+    // System-wide fallback: attempt fuzzy detection of common pitch-deck headings.
+    const fuzzy = inferTitleFromFuzzyHeading({ lines });
+    if (fuzzy) {
+      return {
+        slide_title: fuzzy.title,
+        slide_title_confidence: Number(fuzzy.confidence.toFixed(3)),
+        slide_title_source: "heading_fuzzy_v1",
+        slide_title_warnings: ["derived_from_fuzzy_heading"],
+        ...(input.enableDebug
+          ? {
+              slide_title_debug: {
+                candidates: [{ text: fuzzy.title, score: Number(fuzzy.confidence.toFixed(3)), reasons: [fuzzy.reason] }],
+              },
+            }
+          : {}),
+      };
+    }
+
+    // Last-resort fallback: if the top line looks like "BRAND + tagline", strip brand token and use remaining phrase.
+    const topLine = lines[0]?.raw ?? "";
+    const brandToken = findBrandTokenFromText(input.ocr_text ?? "") ?? findBrandTokenFromText(topLine);
+    const stripped = stripBrandFromLine({ rawLine: topLine, brandToken });
+    if (stripped) {
+      return {
+        slide_title: stripped,
+        slide_title_confidence: 0.4,
+        slide_title_source: "brand_fallback",
+        slide_title_warnings: ["derived_from_brand_stripping"],
+        ...(input.enableDebug
+          ? {
+              slide_title_debug: {
+                candidates: [{ text: stripped, score: 0.4, reasons: ["brand_stripping_fallback", `brandToken=${brandToken ?? "none"}`] }],
+              },
+            }
+          : {}),
+      };
+    }
+
     return { slide_title: null, slide_title_confidence: 0, slide_title_source: "none" };
+  }
+
+  // If the selected top-line title doesn't appear to include any recognizable heading
+  // and body copy is available, try a body-copy contextual fallback.
+  const pickedRaw = pick.rawText || pick.text;
+  const pickedNorm = normalizePhrase(pickedRaw);
+  const bodyFallback = inferTitleFromBodyCopy({ ocr_text: input.ocr_text ?? null, brandModel });
+  const pickedHasHeading = Boolean(pick.heading);
+  const pickedLooksLikeHeadingKeyword = headingKeywords.some((h) => pickedNorm.includes(normalizePhrase(h)));
+  const pickedHasBrandToken = (() => {
+    const brandToken = findBrandTokenFromText(input.ocr_text ?? "");
+    const bn = normalizePhrase(brandToken);
+    return Boolean(bn) && pickedNorm.includes(bn);
+  })();
+
+  const pickedGarbled = looksGarbledTitleCandidate(pickedRaw, pickedNorm);
+
+  // If the OCR line contains a real heading at the start followed by garbled tokens,
+  // emit only the heading prefix. This is common in PDFs where a small OCR artifact
+  // gets co-located with the true heading.
+  const headingPrefix = extractHeadingPrefixFromRaw(pickedRaw);
+  if (headingPrefix) {
+    const headingNorm = normalizePhrase(headingPrefix);
+    if (!looksGarbledTitleCandidate(headingPrefix, headingNorm)) {
+      return {
+        slide_title: headingPrefix,
+        slide_title_confidence: Math.max(0.6, Math.min(0.85, Number((input.enableDebug ? 0.75 : 0.7).toFixed(3)))),
+        slide_title_source: hasLayoutBlocks ? "ocr_layout_v1" : "ocr_fallback",
+        slide_title_warnings: pickedGarbled ? ["picked_title_garbled", "derived_from_heading_prefix"] : ["derived_from_heading_prefix"],
+        ...(input.enableDebug
+          ? {
+              slide_title_debug: {
+                candidates: [{ text: headingPrefix, score: 0.72, reasons: ["heading_prefix_stripping"] }],
+              },
+            }
+          : {}),
+      };
+    }
+  }
+
+  // If the chosen title looks garbled, prefer a high-confidence fuzzy heading title.
+  // This tends to stabilize titles (and downstream segments) for common deck pages.
+  const fuzzyHeading = inferTitleFromFuzzyHeading({ lines });
+  if (fuzzyHeading && pickedGarbled) {
+    return {
+      slide_title: fuzzyHeading.title,
+      slide_title_confidence: Number(fuzzyHeading.confidence.toFixed(3)),
+      slide_title_source: "heading_fuzzy_v1",
+      slide_title_warnings: ["picked_title_garbled", "derived_from_fuzzy_heading"],
+      ...(input.enableDebug
+        ? {
+            slide_title_debug: {
+              candidates: [{ text: fuzzyHeading.title, score: Number(fuzzyHeading.confidence.toFixed(3)), reasons: [fuzzyHeading.reason] }],
+            },
+          }
+        : {}),
+    };
+  }
+
+  if (!pickedHasHeading && !pickedLooksLikeHeadingKeyword && !pickedHasBrandToken && bodyFallback.title) {
+    const bodyNorm = normalizePhrase(bodyFallback.title);
+    // Avoid promoting body copy if it also looks like OCR garbage.
+    if (!looksGarbledTitleCandidate(bodyFallback.title, bodyNorm)) {
+    return {
+      slide_title: bodyFallback.title,
+      slide_title_confidence: 0.55,
+      slide_title_source: "ocr_fallback",
+      slide_title_warnings: pickedGarbled ? ["picked_title_garbled", "derived_from_body_copy"] : ["derived_from_body_copy"],
+      ...(input.enableDebug
+        ? {
+            slide_title_debug: {
+              candidates: [{ text: bodyFallback.title, score: 0.55, reasons: ["body_copy_fallback", bodyFallback.reason ?? "unknown"] }],
+            },
+          }
+        : {}),
+    };
+    }
+  }
+
+  // If we cannot find a non-garbled title, force callers to fall back to structured titles
+  // or stable index-based titles (e.g. "Slide 12") instead of emitting OCR junk.
+  if (pickedGarbled) {
+    // Try the best non-garbled runner-up before giving up.
+    const pool = [...filtered.slice(0, 6), ...altCandidates.slice(0, 6)];
+    for (const c of pool) {
+      const raw = c.rawText || c.text;
+      if (!raw) continue;
+      const prefix = extractHeadingPrefixFromRaw(raw);
+      const candidateText = prefix ?? raw;
+      const candidateNorm = normalizePhrase(candidateText);
+      if (looksGarbledTitleCandidate(candidateText, candidateNorm)) continue;
+      if (!looksReasonableTitleCandidate(candidateText, candidateNorm)) continue;
+      return {
+        slide_title: candidateText,
+        slide_title_confidence: 0.55,
+        slide_title_source: hasLayoutBlocks ? "ocr_layout_v1" : "ocr_fallback",
+        slide_title_warnings: ["picked_title_garbled", "used_runner_up_candidate"],
+        ...(input.enableDebug
+          ? {
+              slide_title_debug: {
+                candidates: [{ text: candidateText, score: Number(c.score.toFixed(3)), reasons: [...c.parts, "runner_up_selected"] }],
+              },
+            }
+          : {}),
+      };
+    }
+
+    return {
+      slide_title: null,
+      slide_title_confidence: 0,
+      slide_title_source: "none",
+      slide_title_warnings: ["picked_title_garbled"],
+      ...(input.enableDebug
+        ? {
+            slide_title_debug: {
+              candidates: [{ text: pickedRaw, score: Number(pick.score.toFixed(3)), reasons: [...pick.parts, "suppressed_garbled_title"] }],
+            },
+          }
+        : {}),
+    };
   }
 
   const runner = filtered[1] ?? null;
@@ -409,7 +1036,7 @@ export function inferSlideTitleForSlide(input: SlideTitleInput): SlideTitleResul
   if (pick.brandOverlap > 0.4) confidence = Math.min(confidence, 0.55);
 
   const result: SlideTitleResult = {
-    slide_title: pick.rawText || pick.text,
+    slide_title: pickedRaw,
     slide_title_confidence: Number(confidence.toFixed(3)),
     slide_title_source: hasLayoutBlocks ? "ocr_layout_v1" : "ocr_fallback",
   };

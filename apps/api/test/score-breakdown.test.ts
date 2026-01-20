@@ -57,6 +57,24 @@ test('linked evidence clears mismatch and improves audit status', () => {
   assert.ok(auditStatus === 'partial' || auditStatus === 'ok');
 });
 
+test('evidence table samples count as section-linked evidence', () => {
+  const res = buildScoreBreakdownV1({
+    accountability: { support: { market: 'evidence' } },
+    claims: [],
+    sectionEvidenceSamples: {
+      market: ['e1', 'e2', 'e3'],
+    },
+  });
+
+  assert.ok(res, 'score breakdown should be built');
+  const market = res!.sections.find((s) => s.key === 'market');
+  assert.ok(market, 'market section should exist');
+  assert.equal(market!.evidence_source, 'evidence_table');
+  assert.equal(market!.evidence_count_total, 3);
+  assert.equal(market!.evidence_count_linked, 3);
+  assert.equal(market!.mismatch, false);
+});
+
 test('trace audit ignores coverage:missing sections and returns ok when others are traced', () => {
   const res = buildScoreBreakdownV1({
     coverage: {

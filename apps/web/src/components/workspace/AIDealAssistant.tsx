@@ -41,7 +41,7 @@ interface ChatMessage {
 }
 
 export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, dioVersionId, onRunAnalysis, onFetchEvidence }: AIDealAssistantProps) {
-  const { isInvestor, isFounder } = useUserRole();
+  const { isInvestor } = useUserRole();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -54,23 +54,14 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
       const greeting: ChatMessage = {
         id: '1',
         sender: 'ai',
-        content: isInvestor
-          ? `Hi! I'm your AI assistant for analyzing **${dealData.companyName}**. I have full context of this deal's data, documents, and scores. How can I help you evaluate this opportunity?`
-          : `Hi! I'm your AI assistant for improving **${dealData.companyName}**. I can help you strengthen your pitch, improve scores, and address investor concerns. What would you like to work on?`,
+        content: `Hi! I'm your AI assistant for evaluating **${dealData.companyName}**. I have context on this deal's data, documents, and scores. How can I help you assess this opportunity?`,
         timestamp: new Date(),
-        suggestions: isInvestor
-          ? [
-            'What are the biggest red flags?',
-            'Compare to typical Series A deals',
-            'Draft an investment memo',
-            'What questions should I ask founders?'
-          ]
-          : [
-            'How do I improve my market score?',
-            'What\'s missing from my pitch?',
-            'Help me strengthen my value proposition',
-            'What documents should I add next?'
-          ]
+        suggestions: [
+          'What are the biggest red flags?',
+          'Compare to typical Series A deals',
+          'Draft an investment memo',
+          'What questions should I ask the team?'
+        ]
       };
       setMessages([greeting]);
     }
@@ -170,9 +161,7 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
     const greeting: ChatMessage = {
       id: Date.now().toString(),
       sender: 'ai',
-      content: isInvestor
-        ? `Chat cleared. How else can I help you evaluate **${dealData.companyName}**?`
-        : `Chat cleared. What would you like to improve about **${dealData.companyName}**?`,
+      content: `Chat cleared. How else can I help you evaluate **${dealData.companyName}**?`,
       timestamp: new Date()
     };
     setMessages([greeting]);
@@ -405,7 +394,7 @@ function generateAIResponse(userInput: string, dealData: DealFormData, isInvesto
       return {
         content: `Based on my analysis of **${dealData.companyName}**, here are the key red flags:\n\n🚩 **Revenue Concerns**: ${dealData.revenue || 'No revenue data provided'} - Consider validating revenue claims\n🚩 **Market Position**: ${dealData.targetMarket || 'Target market not clearly defined'}\n🚩 **Team Size**: ${dealData.teamSize || 'Team composition unclear'} - May need more bandwidth for scaling\n\nI recommend focusing your due diligence on unit economics and customer retention metrics.`,
         suggestions: [
-          'What questions should I ask founders?',
+          'What questions should I ask the team?',
           'Compare to similar deals in my portfolio',
           'Draft investment memo'
         ]
@@ -445,47 +434,13 @@ function generateAIResponse(userInput: string, dealData: DealFormData, isInvesto
     };
   }
 
-  // Founder responses
-  if (input.includes('score') || input.includes('improve')) {
-    return {
-      content: `To improve your overall score for **${dealData.companyName}**, I recommend:\n\n✅ **Market Opportunity** (+15 points): Add TAM/SAM/SOM calculations with data sources\n✅ **Financial Projections** (+12 points): Upload detailed 3-year model with unit economics\n✅ **Traction Metrics** (+10 points): Showcase MoM growth, customer testimonials, and key wins\n\nPrioritize the market opportunity section first - it has the highest impact with moderate effort.`,
-      suggestions: [
-        'Show me market opportunity template',
-        'Help me write financial projections',
-        'What documents am I missing?'
-      ]
-    };
-  }
-
-  if (input.includes('missing') || input.includes('document')) {
-    return {
-      content: `Based on investor expectations for ${dealData.stage || 'your stage'}, you're missing:\n\n📄 **Critical**: Financial Model (3-year projections)\n📄 **Important**: Competitive Analysis Matrix\n📄 **Recommended**: Customer Case Studies\n📄 **Nice-to-have**: Product Roadmap\n\nFocus on the financial model first - it's required for 95% of investor conversations.`,
-      suggestions: [
-        'Generate financial model template',
-        'Create competitive analysis',
-        'Draft customer case study'
-      ]
-    };
-  }
-
-  if (input.includes('value prop') || input.includes('pitch')) {
-    return {
-      content: `Let's strengthen your value proposition for **${dealData.companyName}**:\n\n**Current**: [Based on your data]\n**Improved**: "${dealData.companyName} helps ${dealData.targetMarket || '[target customers]'} ${dealData.type === 'product' ? 'achieve' : 'solve'} [specific outcome] through [unique approach], resulting in [quantifiable benefit]."\n\nWould you like me to refine this further based on your specific metrics?`,
-      suggestions: [
-        'Add market statistics',
-        'Include customer testimonials',
-        'Make it more concise'
-      ]
-    };
-  }
-
   return {
-    content: `I'm here to help you strengthen **${dealData.companyName}**'s pitch. Your company is ${dealData.type || 'focused on'} in the ${dealData.industry || 'technology'} space.\n\nWhat would you like to work on?`,
+    content: `I'm here to help you evaluate **${dealData.companyName}**. The company is in the ${dealData.industry || 'technology'} space, targeting ${dealData.targetMarket || 'a specific market segment'}.\n\nWhat would you like to do next?`,
     suggestions: [
-      'Improve my pitch deck',
-      'Strengthen value proposition',
-      'Address investor concerns',
-      'Generate missing documents'
+      'Summarize key risks',
+      'Generate diligence questions',
+      'Draft an investment memo',
+      'Compare to market benchmarks'
     ]
   };
 }

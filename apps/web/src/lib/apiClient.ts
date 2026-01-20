@@ -477,6 +477,7 @@ export type DealVisualAsset = {
   extractor_version?: string | null;
   created_at?: string | null;
   ocr_text?: string | null;
+  ocr_suppressed?: boolean;
   structured_json?: unknown;
   structured_kind?: string | null;
   structured_summary?: unknown;
@@ -515,7 +516,14 @@ function normalizeVisualAssetRecord(raw: any, dealId?: string): DealVisualAsset 
   const docPageCount = doc?.page_count ?? raw.document_page_count ?? null;
 
   const structured = raw.latest_extraction || raw.latest || raw;
-  const ocr_text = typeof structured?.ocr_text === 'string' ? structured.ocr_text : typeof raw.ocr_text === 'string' ? raw.ocr_text : null;
+  const ocr_suppressed = Boolean(structured?.ocr_suppressed === true || raw.ocr_suppressed === true);
+  const ocr_text = ocr_suppressed
+    ? null
+    : typeof structured?.ocr_text === 'string'
+      ? structured.ocr_text
+      : typeof raw.ocr_text === 'string'
+        ? raw.ocr_text
+        : null;
   const structured_json = structured?.structured_json ?? raw.structured_json ?? null;
   const structured_kind = structured?.structured_kind ?? raw.structured_kind ?? null;
   const structured_summary = structured?.structured_summary ?? raw.structured_summary ?? null;
@@ -584,6 +592,7 @@ function normalizeVisualAssetRecord(raw: any, dealId?: string): DealVisualAsset 
     confidence: parsedConfidence,
     quality_flags: raw.quality_flags ?? raw.flags ?? null,
     ocr_text,
+    ocr_suppressed,
     structured_json,
     structured_kind,
     structured_summary,

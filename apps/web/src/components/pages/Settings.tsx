@@ -54,7 +54,7 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
   const [hasChanges, setHasChanges] = useState(false);
   const [showSavedToast, setShowSavedToast] = useState(false);
   const { settings, toggleGamification } = useAppSettings();
-  const { settings: userRoleSettings, setRole, isInvestor, isFounder } = useUserRole();
+  const { settings: userRoleSettings, setRole, isInvestor, isAnalyst } = useUserRole();
 
   const updateCategory = (category: keyof NotificationPreferences, field: string, value: boolean) => {
     setPrefs(prev => ({
@@ -722,11 +722,11 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
                   )}
                 </button>
 
-                {/* Founder Role */}
+                {/* Analyst Role */}
                 <button
-                  onClick={() => setRole('founder')}
+                  onClick={() => setRole('analyst')}
                   className={`p-5 rounded-xl border-2 transition-all text-left ${
-                    isFounder
+                    isAnalyst
                       ? 'border-[#6366f1] bg-gradient-to-br from-[#6366f1]/10 to-[#8b5cf6]/10'
                       : darkMode
                       ? 'border-white/10 hover:border-white/20 bg-white/5'
@@ -734,29 +734,29 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
                   }`}>
                   <div className="flex items-start justify-between mb-3">
                     <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${
-                      isFounder
+                      isAnalyst
                         ? 'bg-gradient-to-br from-[#6366f1] to-[#8b5cf6]'
                         : darkMode ? 'bg-white/10' : 'bg-gray-200'
                     }`}>
-                      <span className={`text-2xl ${isFounder ? '' : 'grayscale opacity-50'}`}>🚀</span>
+                      <span className={`text-2xl ${isAnalyst ? '' : 'grayscale opacity-50'}`}>🧠</span>
                     </div>
-                    {isFounder && (
+                    {isAnalyst && (
                       <div className="w-6 h-6 bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-full flex items-center justify-center">
                         <Check className="w-4 h-4 text-white" />
                       </div>
                     )}
                   </div>
                   <h4 className={`mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                    Founder
+                    Analyst
                   </h4>
                   <p className={`text-sm mb-3 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    Build pitch materials, track fundraising, and attract investors
+                    Perform due diligence, validate evidence, and generate investment reports
                   </p>
                   <div className={`text-xs space-y-1 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                    <p>• Pitch deck builder</p>
-                    <p>• Fundraising tracker</p>
-                    <p>• Investor CRM</p>
-                    <p>• Financial projections</p>
+                    <p>• Deep-dive diagnostics</p>
+                    <p>• Evidence & document QA</p>
+                    <p>• Scoring traceability</p>
+                    <p>• Report generation</p>
                   </div>
                 </button>
               </div>
@@ -767,13 +767,13 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
               }`}>
                 <p className={`text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                   Current Role: <span className={`font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                    {isInvestor ? 'Investor' : 'Founder'}
+                    {isInvestor ? 'Investor' : 'Analyst'}
                   </span>
                 </p>
                 <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                   {isInvestor 
                     ? 'Your dashboard shows deal pipeline, due diligence tools, and portfolio analytics.'
-                    : 'Your dashboard shows fundraising progress, pitch builder, and investor outreach tools.'
+                    : 'Your dashboard shows analyst tooling, diagnostics, and deeper scoring breakdowns.'
                   }
                 </p>
               </div>

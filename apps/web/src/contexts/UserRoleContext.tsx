@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 
-export type UserRole = 'investor' | 'founder';
+export type UserRole = 'investor' | 'analyst';
 
 interface UserRoleSettings {
   role: UserRole;
@@ -10,7 +10,7 @@ interface UserRoleContextType {
   settings: UserRoleSettings;
   setRole: (role: UserRole) => void;
   isInvestor: boolean;
-  isFounder: boolean;
+  isAnalyst: boolean;
 }
 
 const UserRoleContext = createContext<UserRoleContextType | undefined>(undefined);
@@ -23,7 +23,11 @@ export function UserRoleProvider({ children }: { children: ReactNode }) {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       try {
-        return JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        const roleRaw = (parsed as any)?.role;
+        // Backward compat: migrate legacy 'founder' to 'analyst'
+        const role: UserRole = roleRaw === 'analyst' ? 'analyst' : roleRaw === 'investor' ? 'investor' : roleRaw === 'founder' ? 'analyst' : 'investor';
+        return { role };
       } catch {
         // If parsing fails, use default
       }
@@ -45,7 +49,7 @@ export function UserRoleProvider({ children }: { children: ReactNode }) {
     settings,
     setRole,
     isInvestor: settings.role === 'investor',
-    isFounder: settings.role === 'founder',
+    isAnalyst: settings.role === 'analyst',
   };
 
   return (

@@ -3,10 +3,11 @@ import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { vi } from 'vitest';
 import { DealWorkspace } from '../components/pages/DealWorkspace';
+import { ScoreSourceProvider } from '../contexts/ScoreSourceContext';
 import { apiGetDeal, apiGetJob } from '../lib/apiClient';
 
 vi.mock('../contexts/UserRoleContext', () => ({
-  useUserRole: () => ({ isFounder: true, isInvestor: false }),
+  useUserRole: () => ({ isAnalyst: true, isInvestor: false }),
 }));
 
 vi.mock('../lib/apiClient', () => {
@@ -43,12 +44,14 @@ const baseDeal = {
 describe('DealWorkspace Job Center (live mode)', () => {
   const renderWorkspace = (overrides?: Partial<React.ComponentProps<typeof DealWorkspace>>) => {
     return render(
-      <DealWorkspace
-        darkMode={false}
-        dealId="deal-1"
-        dealData={baseDeal}
-        {...overrides}
-      />
+      <ScoreSourceProvider>
+        <DealWorkspace
+          darkMode={false}
+          dealId="deal-1"
+          dealData={baseDeal}
+          {...overrides}
+        />
+      </ScoreSourceProvider>
     );
   };
 

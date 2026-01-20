@@ -28,7 +28,7 @@ interface DashboardContentProps {
 
 export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal }: DashboardContentProps) {
   const { settings } = useAppSettings();
-  const { isFounder, isInvestor } = useUserRole();
+  const { isAnalyst, isInvestor } = useUserRole();
   const [activeDeals, setActiveDeals] = useState<any[]>([]);
   const [loadingDeals, setLoadingDeals] = useState(true);
 
@@ -68,47 +68,11 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
       }
     };
 
-    if (isInvestor) {
-      loadDeals();
-    } else {
-      // For founders, keep the placeholder data for now
-      setActiveDeals([
-        {
-          id: '1',
-          name: 'TechCorp Series A',
-          company: 'TechCorp Inc.',
-          score: 85,
-          status: 'go' as const,
-          stage: 'Pitch Ready',
-          lastUpdated: '1h ago',
-          trend: 'up' as const
-        },
-        {
-          id: '2',
-          name: 'StartupX Seed Round',
-          company: 'StartupX',
-          score: 68,
-          status: 'hold' as const,
-          stage: 'Refining Pitch',
-          lastUpdated: '3h ago',
-          trend: 'neutral' as const
-        }
-      ]);
-      setLoadingDeals(false);
-    }
-  }, [isInvestor]);
+    // Investor + Analyst share the same deal-evaluation experience
+    loadDeals();
+  }, [isInvestor, isAnalyst]);
   
-  // Role-specific Quick Stats Data
-  const quickStats = isFounder ? [
-    { id: 'stat-my-companies', label: 'My Companies', value: 2, icon: 'deals' as const, trend: { value: 1, direction: 'up' as const } },
-    { id: 'stat-pitch-materials', label: 'Pitch Materials', value: 8, icon: 'documents' as const },
-    ...(settings.gamificationEnabled ? [
-      { id: 'stat-level', label: 'Level', value: 12, icon: 'level' as const, highlight: true },
-      { id: 'stat-weekly-xp', label: 'Weekly XP', value: '+850', icon: 'xp' as const, trend: { value: 24, direction: 'up' as const } },
-      { id: 'stat-streak', label: 'Streak', value: '12d', icon: 'streak' as const, highlight: true },
-    ] : []),
-    { id: 'stat-fundraising', label: 'Fundraising', value: '$2.5M', icon: 'growth' as const, trend: { value: 15, direction: 'up' as const } }
-  ] : [
+  const quickStats = [
     { id: 'stat-active-deals', label: 'Active Deals', value: 3, icon: 'deals' as const, trend: { value: 12, direction: 'up' as const } },
     { id: 'stat-documents', label: 'Documents', value: 12, icon: 'documents' as const },
     ...(settings.gamificationEnabled ? [
@@ -119,45 +83,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
     { id: 'stat-portfolio', label: 'Portfolio', value: '+24%', icon: 'growth' as const, trend: { value: 24, direction: 'up' as const } }
   ];
 
-  // Role-specific Activity Feed Data
-  const activities = isFounder ? [
-    {
-      id: '1',
-      type: 'achievement' as const,
-      title: 'Achievement Unlocked!',
-      description: 'You earned the "Pitch Master" badge',
-      timestamp: '2 hours ago',
-      icon: '🎯'
-    },
-    {
-      id: '2',
-      type: 'deal' as const,
-      title: 'Pitch Deck Updated',
-      description: 'TechCorp Series A pitch deck finalized',
-      timestamp: '3 hours ago'
-    },
-    {
-      id: '3',
-      type: 'document' as const,
-      title: 'Document Created',
-      description: 'Financial Projections for StartupX',
-      timestamp: '5 hours ago'
-    },
-    {
-      id: '4',
-      type: 'milestone' as const,
-      title: 'Investor Meeting',
-      description: 'Scheduled meeting with Sequoia Capital',
-      timestamp: '1 day ago'
-    },
-    {
-      id: '5',
-      type: 'level' as const,
-      title: 'Fundraising Progress',
-      description: 'Reached 50% of seed target ($1.25M)',
-      timestamp: '2 days ago'
-    }
-  ] : [
+  const activities = [
     {
       id: '1',
       type: 'achievement' as const,
@@ -220,37 +146,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
     ]
   };
 
-  // Role-specific AI Insights Data
-  const aiInsights = isFounder ? [
-    {
-      id: '1',
-      type: 'action' as const,
-      title: 'Pitch deck needs refinement',
-      description: 'StartupX pitch deck is missing key financial projections',
-      action: 'Improve Now'
-    },
-    {
-      id: '2',
-      type: 'success' as const,
-      title: 'TechCorp pitch is ready!',
-      description: 'All sections complete and investor-ready',
-      action: 'View Pitch'
-    },
-    {
-      id: '3',
-      type: 'info' as const,
-      title: 'Optimal fundraising timing',
-      description: 'Market conditions favorable for Series A in Q2',
-      action: 'View Insights'
-    },
-    {
-      id: '4',
-      type: 'warning' as const,
-      title: 'Investor outreach pending',
-      description: '5 investor meetings need follow-up',
-      action: 'Send Updates'
-    }
-  ] : [
+  const aiInsights = [
     {
       id: '1',
       type: 'action' as const,
@@ -326,30 +222,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
     }
   ];
 
-  // Role-specific Recent Documents Data
-  const recentDocuments = isFounder ? [
-    {
-      id: '1',
-      title: 'TechCorp Pitch Deck v3',
-      type: 'Pitch Deck',
-      lastModified: '2h ago',
-      status: 'final' as const
-    },
-    {
-      id: '2',
-      title: 'Financial Projections Q1-Q4',
-      type: 'Financial Model',
-      lastModified: '5h ago',
-      status: 'in-review' as const
-    },
-    {
-      id: '3',
-      title: 'StartupX Executive Summary',
-      type: 'Executive Summary',
-      lastModified: '1d ago',
-      status: 'draft' as const
-    }
-  ] : [
+  const recentDocuments = [
     {
       id: '1',
       title: 'CloudScale Due Diligence',
@@ -373,38 +246,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
     }
   ];
 
-  // Role-specific Upcoming Tasks Data
-  const upcomingTasks = isFounder ? [
-    {
-      id: '1',
-      title: 'Finalize pitch deck for Sequoia meeting',
-      dueDate: 'Today, 4:00 PM',
-      priority: 'high' as const,
-      category: 'Pitch'
-    },
-    {
-      id: '2',
-      title: 'Update financial projections',
-      dueDate: 'Tomorrow',
-      priority: 'high' as const,
-      category: 'Finance'
-    },
-    {
-      id: '3',
-      title: 'Send follow-up to Andreessen Horowitz',
-      dueDate: 'Dec 12',
-      priority: 'medium' as const,
-      category: 'Outreach'
-    },
-    {
-      id: '4',
-      title: 'Review cap table with legal team',
-      dueDate: 'Dec 15',
-      priority: 'low' as const,
-      category: 'Legal',
-      completed: true
-    }
-  ] : [
+  const upcomingTasks = [
     {
       id: '1',
       title: 'Complete CloudScale due diligence',
@@ -436,37 +278,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
     }
   ];
 
-  // Role-specific Performance Metrics Data
-  const performanceMetrics = isFounder ? [
-    {
-      id: 'metric-target-raised',
-      label: 'Target Raised',
-      value: '$2.5M',
-      change: 15,
-      trend: 'up' as const,
-      icon: 'dollar' as const
-    },
-    {
-      id: 'metric-target-goal',
-      label: 'Target Goal',
-      value: '$5M',
-      icon: 'target' as const
-    },
-    {
-      id: 'metric-investor-meetings',
-      label: 'Investor Meetings',
-      value: '12',
-      change: 20,
-      trend: 'up' as const,
-      icon: 'users' as const
-    },
-    {
-      id: 'metric-days-active',
-      label: 'Days Active',
-      value: '45',
-      icon: 'calendar' as const
-    }
-  ] : [
+  const performanceMetrics = [
     {
       id: 'metric-portfolio-value',
       label: 'Portfolio Value',
@@ -501,37 +313,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
     }
   ];
 
-  // Role-specific Quick Links Data
-  const quickLinks: QuickLink[] = isFounder ? [
-    {
-      id: '1',
-      title: 'Create Pitch Deck',
-      description: 'Build investor-ready presentation',
-      icon: 'document' as const,
-      action: 'documents'
-    },
-    {
-      id: '2',
-      title: 'Investor CRM',
-      description: 'Track outreach & meetings',
-      icon: 'users' as const,
-      action: 'team'
-    },
-    {
-      id: '3',
-      title: 'Financial Model',
-      description: 'Build projections with AI',
-      icon: 'ai' as const,
-      action: 'aiStudio'
-    },
-    {
-      id: '4',
-      title: 'Fundraising Analytics',
-      description: 'Track progress & metrics',
-      icon: 'analytics' as const,
-      action: 'analytics'
-    }
-  ] : [
+  const quickLinks: QuickLink[] = [
     {
       id: '1',
       title: 'Due Diligence Report',
@@ -573,10 +355,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
             Welcome back, Sarah! 👋
           </h1>
           <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-            {isFounder 
-              ? "Here's your fundraising progress and pitch status" 
-              : "Here's what's happening with your deals today"
-            }
+            Here's what's happening with your deals today
           </p>
         </div>
 
@@ -588,7 +367,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
             onClick={() => onNavigate?.('documents')}
           >
             <FileText className="w-4 h-4" />
-            <span className="hidden sm:inline">{isFounder ? 'Pitch Materials' : 'Documents'}</span>
+            <span className="hidden sm:inline">Documents</span>
           </Button>
           <Button 
             variant="outline"
@@ -603,7 +382,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
             onClick={onNewDeal}
           >
             <Plus className="w-4 h-4" />
-            {isFounder ? 'New Company' : 'New Deal'}
+            New Deal
           </Button>
         </div>
       </div>
@@ -744,7 +523,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
             documents={recentDocuments}
             onDocumentClick={(docId) => onNavigate?.('documents')}
             onViewAll={() => onNavigate?.('documents')}
-            title={isFounder ? 'Recent Pitch Materials' : 'Recent Documents'}
+            title="Recent Documents"
           />
 
           {/* Upcoming Tasks */}
@@ -759,7 +538,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
           <PerformanceMetricsWidget 
             darkMode={darkMode}
             metrics={performanceMetrics}
-            title={isFounder ? 'Fundraising Metrics' : 'Portfolio Metrics'}
+            title="Portfolio Metrics"
           />
 
           {/* XP Progress - Only show if gamification enabled */}

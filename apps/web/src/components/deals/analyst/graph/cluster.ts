@@ -123,12 +123,21 @@ export function projectClusteredGraph(params: {
   const groups = new Map<string, GroupBucket>();
 
   const pushGroup = (visual: Node) => {
+    // If the API already provided a visual_group parent (e.g., XLSX Financials subsegments),
+    // don't re-cluster this visual asset into a single per-segment visual_group.
+    // That would hide the desired subsegment breakdown.
+    const incomingParents = (edgesByTarget.get(visual.id) ?? []).map((e) => e.source);
+    const hasVisualGroupParent = incomingParents
+      .map((pid) => nodeById.get(pid))
+      .some((p) => p && typeOf(p) === 'visual_group');
+    if (hasVisualGroupParent) return;
+
     const data = (visual.data ?? {}) as any;
     const docId = getDocIdFromData(data);
     const segmentId = getSegmentIdFromData(data);
     const key = `${docId ?? 'doc:none'}::${segmentId ?? 'seg:none'}`;
 
-    const parents = (edgesByTarget.get(visual.id) ?? []).map((e) => e.source);
+    const parents = incomingParents;
     const parentSegment = parents
       .map((pid) => nodeById.get(pid))
       .find((p) => p && typeOf(p) === 'segment');

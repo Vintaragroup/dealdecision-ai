@@ -56,7 +56,7 @@ interface SidebarProps {
 
 export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavigate, onRestartOnboarding, onNewDeal, mobileMenuOpen = false, setMobileMenuOpen }: SidebarProps) {
   const { settings } = useAppSettings();
-  const { isInvestor, isFounder } = useUserRole();
+  const { isInvestor, isAnalyst } = useUserRole();
   
   const getNavItemClass = (page: PageView) => {
     const isActive = currentPage === page;
@@ -116,7 +116,7 @@ export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavi
                 className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] text-white shadow-[0_0_20px_rgba(99,102,241,0.3)] hover:shadow-[0_0_30px_rgba(99,102,241,0.5)] transition-all`}
               >
                 <Plus className="w-4 h-4" />
-                <span className="text-sm">{isFounder ? 'New Company' : 'New Deal'}</span>
+                <span className="text-sm">New Deal</span>
               </button>
             )}
 
@@ -138,21 +138,21 @@ export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavi
                   className={getNavItemClass('dealsList')}
                 >
                   <Folder className="w-4 h-4" />
-                  <span className="text-sm">{isFounder ? 'My Companies' : 'Deal Pipeline'}</span>
+                  <span className="text-sm">Deal Pipeline</span>
                 </button>
                 <button 
                   onClick={() => onNavigate('documents')}
                   className={getNavItemClass('documents')}
                 >
                   <FileText className="w-4 h-4" />
-                  <span className="text-sm">{isFounder ? 'Pitch Materials' : 'Documents'}</span>
+                  <span className="text-sm">Documents</span>
                 </button>
                 <button 
                   onClick={() => onNavigate('analytics')}
                   className={getNavItemClass('analytics')}
                 >
                   <BarChart3 className="w-4 h-4" />
-                  <span className="text-sm">{isFounder ? 'Fundraising Analytics' : 'Portfolio Analytics'}</span>
+                  <span className="text-sm">Analytics</span>
                 </button>
                 {/* Deal Comparison - Investor Only */}
                 {isInvestor && (
@@ -173,8 +173,8 @@ export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavi
                 darkMode ? 'text-gray-500' : 'text-gray-400'
               }`}>Tools</h3>
               <div className="space-y-1">
-                {/* Document Studio - Founders Only */}
-                {isFounder && (
+                {/* Document Studio - Analyst Only */}
+                {isAnalyst && (
                   <button 
                     onClick={() => onNavigate('aiStudio')}
                     className={getNavItemClass('aiStudio')}
@@ -227,7 +227,7 @@ export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavi
                   className={getNavItemClass('team')}
                 >
                   <Users className="w-4 h-4" />
-                  <span className="text-sm">{isFounder ? 'Founding Team' : 'Investment Team'}</span>
+                  <span className="text-sm">Team</span>
                 </button>
                 <button 
                   onClick={() => onNavigate('profile')}

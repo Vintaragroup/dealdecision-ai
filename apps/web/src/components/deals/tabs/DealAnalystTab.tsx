@@ -376,6 +376,100 @@ function safeJson(value: unknown): string {
   }
 }
 
+function getExcelRangePreviewText(structuredJson: unknown, opts?: { maxRows?: number; maxCols?: number }): string | null {
+  if (!isRecord(structuredJson)) return null;
+  const kind = typeof (structuredJson as any).kind === 'string' ? String((structuredJson as any).kind) : '';
+  if (kind !== 'excel_range') return null;
+
+  const sheetName = typeof (structuredJson as any).sheet_name === 'string' ? String((structuredJson as any).sheet_name) : 'Sheet';
+  const rangeStart = typeof (structuredJson as any)?.range?.start === 'string' ? String((structuredJson as any).range.start) : null;
+  const rangeEnd = typeof (structuredJson as any)?.range?.end === 'string' ? String((structuredJson as any).range.end) : null;
+  const statsRows = typeof (structuredJson as any)?.stats?.rows === 'number' ? (structuredJson as any).stats.rows : null;
+  const statsCols = typeof (structuredJson as any)?.stats?.cols === 'number' ? (structuredJson as any).stats.cols : null;
+
+  const maxRows = typeof opts?.maxRows === 'number' && Number.isFinite(opts.maxRows) ? Math.max(1, Math.floor(opts.maxRows)) : 18;
+  const maxCols = typeof opts?.maxCols === 'number' && Number.isFinite(opts.maxCols) ? Math.max(1, Math.floor(opts.maxCols)) : 14;
+
+  const headersRaw = Array.isArray((structuredJson as any).headers) ? ((structuredJson as any).headers as unknown[]) : [];
+  const headers = headersRaw
+    .map((h) => (typeof h === 'string' ? h : h == null ? '' : String(h)))
+    .map((h) => h.replace(/\s+/g, ' ').trim());
+
+  const rowsRaw = Array.isArray((structuredJson as any).rows_preview) ? ((structuredJson as any).rows_preview as unknown[]) : [];
+  const rows = rowsRaw.filter((r) => isRecord(r)).slice(0, maxRows) as Array<Record<string, unknown>>;
+
+  const effectiveHeaders = (() => {
+    const cleaned = headers.filter((h) => h.length > 0);
+    if (cleaned.length > 0) return cleaned.slice(0, maxCols);
+    const first = rows[0];
+    if (!first) return [];
+    return Object.keys(first).slice(0, maxCols);
+  })();
+
+  if (effectiveHeaders.length === 0) {
+    return (
+      `=== XLSX PREVIEW (top-left) ===\n\n` +
+      `-- Sheet: ${sheetName}` +
+      `${statsRows != null && statsCols != null ? ` shape=(${statsRows}, ${statsCols})` : ''}` +
+      `${rangeStart && rangeEnd ? ` range=${rangeStart}:${rangeEnd}` : ''}`
+    );
+  }
+
+  const stringifyCell = (v: unknown): string => {
+    if (v == null) return '';
+    if (typeof v === 'string') return v.replace(/\s+/g, ' ').trim();
+    if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+    if (typeof v === 'boolean') return v ? 'true' : 'false';
+    return String(v).replace(/\s+/g, ' ').trim();
+  };
+
+  const grid: string[][] = [];
+  grid.push(effectiveHeaders);
+  for (const row of rows) {
+    grid.push(effectiveHeaders.map((h) => stringifyCell((row as any)[h])));
+  }
+
+  const colWidths = effectiveHeaders.map((_, colIdx) => {
+    let w = 0;
+    for (const r of grid) w = Math.max(w, (r[colIdx] ?? '').length);
+    w = Math.max(w, 3);
+    return Math.min(w, 28);
+  });
+
+  const pad = (s: string, w: number) => {
+    const t = s.length > w ? `${s.slice(0, Math.max(0, w - 1))}…` : s;
+    return t + ' '.repeat(Math.max(0, w - t.length));
+  };
+
+  const lines: string[] = [];
+  lines.push('=== XLSX PREVIEW (top-left) ===');
+  lines.push('');
+  lines.push(
+    `-- Sheet: ${sheetName}` +
+      `${statsRows != null && statsCols != null ? ` shape=(${statsRows}, ${statsCols})` : ''}` +
+      `${rangeStart && rangeEnd ? ` range=${rangeStart}:${rangeEnd}` : ''}`
+  );
+  lines.push(
+    pad(grid[0][0] ?? '', colWidths[0]) +
+      grid[0]
+        .slice(1)
+        .map((cell, idx) => pad(cell ?? '', colWidths[idx + 1]))
+        .join('  ')
+  );
+
+  for (const r of grid.slice(1)) {
+    lines.push(
+      pad(r[0] ?? '', colWidths[0]) +
+        r
+          .slice(1)
+          .map((cell, idx) => pad(cell ?? '', colWidths[idx + 1]))
+          .join('  ')
+    );
+  }
+
+  return lines.join('\n');
+}
+
 type ExcelSheetInspectorModel = {
   sheetName: string | null;
   summaryInvestor: string | null;
@@ -718,6 +812,17 @@ function normalizeSegmentKey(raw: unknown): string | null {
     .slice(0, 64);
 }
 
+function segmentKeyFromSegmentNodeId(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const s = raw.trim();
+  if (!s) return null;
+  // Expected format: segment:<dealId>:<docId>:<segmentKey>
+  if (!s.startsWith('segment:')) return null;
+  const parts = s.split(':').filter(Boolean);
+  const last = parts.length > 0 ? parts[parts.length - 1] : null;
+  return normalizeSegmentKey(last);
+}
+
 
 // Must match the API lineage segment taxonomy.
 const CANONICAL_SEGMENTS = [
@@ -846,21 +951,41 @@ function applyDocumentScopedSegmentsGraph(args: {
     segmentKey: string;
     segmentNodeId: string;
     docNodeId: string;
+    nodeType: 'visual_asset' | 'visual_asset_group' | 'visual_group';
+    hasVisualGroupParent: boolean;
   }> = [];
+
+  const nodeTypeById = new Map(nodes.map((n) => [n.id, nodeTypeOf(n)] as const));
+  const incomingByTarget = new Map<string, string[]>();
+  for (const e of edges) {
+    const list = incomingByTarget.get(e.target) ?? [];
+    list.push(e.source);
+    incomingByTarget.set(e.target, list);
+  }
+  const hasVisualGroupParent = (nodeId: string): boolean => {
+    const parents = incomingByTarget.get(nodeId) ?? [];
+    for (const pid of parents) {
+      if (nodeTypeById.get(pid) === 'visual_group') return true;
+    }
+    return false;
+  };
 
   for (const n of nodes) {
     const nodeType = nodeTypeOf(n);
-    if (nodeType !== 'visual_asset' && nodeType !== 'visual_asset_group') continue;
+    if (nodeType !== 'visual_asset' && nodeType !== 'visual_asset_group' && nodeType !== 'visual_group') continue;
 
     const visualNodeId = String(n.id || '').trim();
     if (!visualNodeId) continue;
 
-    const assetId = (() => {
-      const id = String(n.id);
-      if (id.startsWith('visual_asset:')) return id.slice('visual_asset:'.length);
-      const fromData = (n.data as any)?.visual_asset_id;
-      return typeof fromData === 'string' && fromData.trim() ? fromData.trim() : null;
-    })();
+    const assetId =
+      nodeType === 'visual_asset'
+        ? (() => {
+            const id = String(n.id);
+            if (id.startsWith('visual_asset:')) return id.slice('visual_asset:'.length);
+            const fromData = (n.data as any)?.visual_asset_id;
+            return typeof fromData === 'string' && fromData.trim() ? fromData.trim() : null;
+          })()
+        : null;
 
     const asset = assetId ? (assetsById.get(assetId) ?? null) : null;
     const docId = String(((n.data as any)?.__docId ?? getDocIdFromData(n.data as any) ?? asset?.document_id ?? '')).trim();
@@ -869,7 +994,12 @@ function applyDocumentScopedSegmentsGraph(args: {
     const docNodeId = docsById.get(docId) ?? `document:${docId}`;
     if (!nodeById.has(docNodeId)) continue;
 
-    const segmentKey = inferSegmentKeyForVisual({ visualNode: n, visualAsset: asset, segmentViewMode });
+    const segmentKey =
+      nodeType === 'visual_group'
+        ? (segmentKeyFromSegmentNodeId((n.data as any)?.segment_id ?? (n.data as any)?.__segmentId) ??
+            normalizeSegmentKey((n.data as any)?.segment_key ?? (n.data as any)?.segment ?? (n.data as any)?.segmentId) ??
+            'unknown')
+        : inferSegmentKeyForVisual({ visualNode: n, visualAsset: asset, segmentViewMode });
     const segmentNodeId = `segment:${dealId}:${docId}:${segmentKey}`;
 
     segmentNodeIds.add(segmentNodeId);
@@ -891,7 +1021,15 @@ function applyDocumentScopedSegmentsGraph(args: {
     if (!segmentsByDoc.has(docId)) segmentsByDoc.set(docId, new Set());
     segmentsByDoc.get(docId)!.add(segmentNodeId);
 
-    visualsWithRouting.push({ visualNodeId, docId, segmentKey, segmentNodeId, docNodeId });
+    visualsWithRouting.push({
+      visualNodeId,
+      docId,
+      segmentKey,
+      segmentNodeId,
+      docNodeId,
+      nodeType,
+      hasVisualGroupParent: nodeType !== 'visual_group' && hasVisualGroupParent(visualNodeId),
+    });
   }
 
   // Create segment nodes only for documents with visuals.
@@ -972,6 +1110,20 @@ function applyDocumentScopedSegmentsGraph(args: {
 
   // Segment→Visual edges.
   for (const r of visualsWithRouting) {
+    // Always attach visual_group (subsegment summary) under the segment.
+    if (r.nodeType === 'visual_group') {
+      add(r.segmentNodeId, r.visualNodeId, {
+        __docId: r.docId,
+        __segmentId: r.segmentKey,
+        __branchKey: `${r.docId}:${r.segmentKey}`,
+      });
+      continue;
+    }
+
+    // If a visual asset already has a visual_group parent from the API lineage,
+    // keep it under that summary node and avoid also attaching it directly under the segment.
+    if (r.hasVisualGroupParent) continue;
+
     add(r.segmentNodeId, r.visualNodeId, {
       __docId: r.docId,
       __segmentId: r.segmentKey,
@@ -1103,6 +1255,18 @@ function buildCanonicalEdges(args: { nodes: Node[]; rawEdges: RawLineageEdge[]; 
   for (const n of nodes) {
     const t = nodeTypeOf(n);
     if (t !== 'visual_asset' && t !== 'visual_asset_group' && t !== 'visual_group') continue;
+
+    // If the raw lineage already expresses a grouping parent (visual_group → visual_asset),
+    // preserve it. This is required for the XLSX subsegment flow:
+    // Document → Segment → visual_group → structured visual_asset.
+    if (t === 'visual_asset' || t === 'visual_asset_group') {
+      const vgParent = pickParentOfType(n.id, 'visual_group');
+      if (vgParent) {
+        addEdgeUnique(out, seen, vgParent, n.id, 'visgroup-vis');
+        continue;
+      }
+    }
+
     const segParent = pickSegParent(n.id) ?? pickParentOfType(n.id, 'segment');
     if (segParent) {
       addEdgeUnique(out, seen, segParent, n.id, 'seg-vis');
@@ -1460,6 +1624,9 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
     return 1;
   });
 
+  const [showMiniMap, setShowMiniMap] = useState(true);
+  const [showSegmentsLegend, setShowSegmentsLegend] = useState(true);
+
   const [nodes, setNodes, onNodesChange] = useNodesState([] as Node[]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([] as Edge[]);
 
@@ -1726,11 +1893,12 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
           .slice(0, 30)
           .map((id) => {
             const a = visualAssetCacheRef.current.get(id);
+            const allowOcrSnippet = !Boolean((a as any)?.ocr_suppressed);
             return {
               visual_asset_id: id,
               asset_type: a?.asset_type ?? null,
               page_index: typeof a?.page_index === 'number' ? a.page_index : null,
-              ocr_text_snippet: typeof a?.ocr_text === 'string' ? a.ocr_text.slice(0, 240) : null,
+              ocr_text_snippet: allowOcrSnippet && typeof a?.ocr_text === 'string' ? a.ocr_text.slice(0, 240) : null,
               structured_kind: typeof (a as any)?.structured_kind === 'string' ? String((a as any).structured_kind) : null,
             };
           });
@@ -2152,6 +2320,23 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
     });
     setFullGraph(g);
 
+    // DEV: Expose intermediate graph state for debugging hierarchy issues.
+    // Usage:
+    //   window.__fullGraph?.nodes?.filter(n => String(n.id).startsWith('visual_group:'))
+    if (typeof window !== 'undefined') {
+      (window as any).__fullGraph = g;
+      try {
+        const vg = (g.nodes ?? []).filter((n: any) => String(n?.id ?? '').startsWith('visual_group:')).length;
+        const seg = (g.nodes ?? []).filter((n: any) => String((n as any)?.type ?? '').toLowerCase() === 'segment').length;
+        if (vg > 0 && import.meta.env.DEV) {
+          // eslint-disable-next-line no-console
+          console.log('[Analyst graph] fullGraph counts', { segments: seg, visual_groups: vg, nodes: g.nodes.length, edges: g.edges.length });
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     setExpandedById((prev) => {
       const next: ExpandedById = { ...(prev ?? {}) };
       for (const n of g.nodes) {
@@ -2183,12 +2368,14 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
         connectedNodeIds: new Set<string>(),
       };
     }
-    return computeVisibleGraph({
+    const v = computeVisibleGraph({
       nodes: fullGraph.nodes,
       edges: fullGraph.edges,
       rootId: dealRootId,
       expandedById,
     });
+    if (typeof window !== 'undefined') (window as any).__visibleGraph = v;
+    return v;
   }, [fullGraph, dealRootId, expandedById]);
 
   const clusterVisualStats = useMemo(() => {
@@ -2215,13 +2402,15 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
   const clusterEnabled = clusterSlides && clusterEligible;
 
   const clustered = useMemo(() => {
-    return projectClusteredGraph({
+    const c = projectClusteredGraph({
       nodes: visible.visibleNodes,
       edges: visible.visibleEdges,
       expandedById,
       clusterEnabled,
       clusterEligible,
     });
+    if (typeof window !== 'undefined') (window as any).__clusteredGraph = c;
+    return c;
   }, [visible.visibleNodes, visible.visibleEdges, expandedById, clusterEnabled, clusterEligible]);
 
   useEffect(() => {
@@ -2771,7 +2960,10 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
     const d = ((selectedRfNode as any)?.data ?? {}) as any;
     return Boolean(
       (typeof d.image_uri === 'string' && d.image_uri.trim()) ||
-        (typeof d.ocr_text_snippet === 'string' && d.ocr_text_snippet.trim())
+        (typeof d.ocr_text_snippet === 'string' && d.ocr_text_snippet.trim()) ||
+        (typeof d.structured_kind === 'string' && d.structured_kind.trim()) ||
+        d.structured_json != null ||
+        d.structured_summary != null
     );
   }, [selectedRfNode]);
 
@@ -2799,13 +2991,19 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
     const pageIndex = typeof asset.page_index === 'number' && Number.isFinite(asset.page_index) ? asset.page_index : null;
     const page = pageIndex != null ? pageIndex + 1 : null;
 
+    const kind = typeof (asset as any)?.structured_kind === 'string' ? String((asset as any).structured_kind) : '';
+    const structuredKind = kind || (typeof (asset.structured_json as any)?.kind === 'string' ? String((asset.structured_json as any).kind) : '');
+    const isExcel = structuredKind.toLowerCase().startsWith('excel_') || structuredKind.toLowerCase() === 'excel';
+    if (isExcel) return `Excel detected${page != null ? ` (p${page})` : ''}${t ? ` · ${t}` : ''}`;
+
     const table = getTablePreviewModel(asset.structured_json, { maxRows: 6, maxCols: 6 });
     if (table) return `Table detected${page != null ? ` (p${page})` : ''}${t ? ` · ${t}` : ''}`;
 
     const chart = getBarChartPreviewModel(asset.structured_json, { maxBars: 8 });
     if (chart) return `Bar chart detected${page != null ? ` (p${page})` : ''}${t ? ` · ${t}` : ''}`;
 
-    if (asset.ocr_text && asset.ocr_text.trim().length > 0) return `OCR text available${page != null ? ` (p${page})` : ''}${t ? ` · ${t}` : ''}`;
+    if (!asset.ocr_suppressed && asset.ocr_text && asset.ocr_text.trim().length > 0)
+      return `OCR text available${page != null ? ` (p${page})` : ''}${t ? ` · ${t}` : ''}`;
 
     return t || null;
   };
@@ -2832,7 +3030,8 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
             if (!a) return n;
 
             const existing = (n.data ?? {}) as any;
-            const ocrText = typeof a.ocr_text === 'string' ? a.ocr_text.trim() : '';
+            const allowOcrSnippet = !Boolean((a as any)?.ocr_suppressed);
+            const ocrText = allowOcrSnippet && typeof a.ocr_text === 'string' ? a.ocr_text.trim() : '';
             const derivedOcrSnippet = ocrText.length > 0 ? (ocrText.length > 180 ? `${ocrText.slice(0, 180).trimEnd()}…` : ocrText) : undefined;
 
             const table = getTablePreviewModel(a.structured_json, { maxRows: 6, maxCols: 8 });
@@ -2874,7 +3073,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                 quality_flags: (n.data as any)?.quality_flags ?? (a as any)?.quality_flags,
                 structured_json: (n.data as any)?.structured_json ?? (a as any)?.structured_json,
                 evidence_count: evidenceCount,
-                ocr_text_snippet: existing.ocr_text_snippet ?? derivedOcrSnippet,
+                ocr_text_snippet: allowOcrSnippet ? existing.ocr_text_snippet ?? derivedOcrSnippet : null,
                 structured_kind: existing.structured_kind ?? derivedStructuredKind,
                 structured_summary: existing.structured_summary ?? (a as any)?.structured_summary ?? derivedStructuredSummary,
               },
@@ -3008,7 +3207,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
         }`}
       >
         <div className={`rounded-lg border overflow-hidden ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
-          <div className="h-[600px]">
+         <div style={{ height: 'calc(100vh - 180px)', minHeight: 900 }}>
             <ReactFlow
               nodes={displayNodes}
               edges={displayEdges}
@@ -3358,72 +3557,152 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                   </div>
                 </div>
               </Panel>
-              <MiniMap
-                pannable
-                zoomable
-                nodeColor={(n) => {
-                  const t = String((n as any)?.type ?? '').toLowerCase();
-                  if (import.meta.env.DEV && getDevtoolsConsoleLoggingEnabled() && !minimapLoggedTypes.has(t)) {
-                    minimapLoggedTypes.add(t);
-                    // eslint-disable-next-line no-console
-                    console.log('[minimap] color callback hit', { id: (n as any)?.id, type: t });
-                  }
-                  if (darkMode) {
-                    if (t === 'deal') return '#ffffff';
-                    if (t === 'document') return '#00e5ff';
-                    if (t === 'segment') return '#d946ef';
-                    if (t === 'visual_group' || t === 'visual_asset') return '#22c55e';
-                    if (t === 'evidence_group' || t === 'evidence') return '#ff8a00';
-                    return '#a5b4fc';
-                  }
-                  if (t === 'deal') return '#000000';
-                  if (t === 'document') return '#00bcd4';
-                  if (t === 'segment') return '#a855f7';
-                  if (t === 'visual_group' || t === 'visual_asset') return '#16a34a';
-                  if (t === 'evidence_group' || t === 'evidence') return '#ea580c';
-                  return '#1f2937';
-                }}
-                nodeStrokeColor={(n) => {
-                  const t = String((n as any)?.type ?? '').toLowerCase();
-                  if (darkMode) {
-                    if (t === 'deal') return '#ffffff';
-                    if (t === 'document') return '#8ae5ff';
-                    if (t === 'segment') return '#f3b8ff';
-                    if (t === 'visual_group' || t === 'visual_asset') return '#7ce7a8';
-                    if (t === 'evidence_group' || t === 'evidence') return '#ffc78a';
-                    return '#d8e0ff';
-                  }
-                  if (t === 'deal') return '#111827';
-                  if (t === 'document') return '#0284c7';
-                  if (t === 'segment') return '#7e22ce';
-                  if (t === 'visual_group' || t === 'visual_asset') return '#15803d';
-                  if (t === 'evidence_group' || t === 'evidence') return '#9a3412';
-                  return '#111827';
-                }}
-                nodeStrokeWidth={2}
-                maskColor={darkMode ? 'rgba(10,12,18,0.7)' : 'rgba(255,255,255,0.55)'}
-                style={{
-                  width: minimapSize.width,
-                  height: minimapSize.height,
-                  border: darkMode ? '1px solid rgba(148,163,184,0.5)' : '1px solid rgba(55,65,81,0.35)',
-                  background: darkMode ? 'rgba(24,28,38,0.95)' : 'rgba(234,242,248,0.95)',
-                }}
-              />
-              {colorMode !== 'off' && colorLegend.length > 0 ? (
-                <Panel position="bottom-right">
-                  <div className={`rounded-md border px-3 py-2 text-xs ${darkMode ? 'border-white/10 bg-white/5 text-gray-100' : 'border-gray-200 bg-white text-gray-800'}`}>
-                    <div className="text-[11px] font-semibold mb-1">{colorMode === 'document' ? 'Documents' : 'Segments'}</div>
-                    <div className="space-y-1 max-h-40 overflow-auto">
-                      {colorLegend.map((item) => (
-                        <div key={item.id} className="flex items-center gap-2">
-                          <span className="inline-flex h-3 w-3 rounded-full" style={{ backgroundColor: item.color }} aria-hidden />
-                          <span className="truncate" title={item.label}>{item.label}</span>
+              <Panel position="bottom-right">
+                <div style={{ display: 'flex', gap: 20, alignItems: 'flex-end', padding: 10, marginRight: 6, marginBottom: 6 }}>
+                  {/* Segments / Documents legend (left) */}
+                  {colorMode !== 'off' && colorLegend.length > 0 ? (
+                    showSegmentsLegend ? (
+                      <div
+                        className={`rounded-md border px-3 py-2 text-xs ${
+                          darkMode ? 'border-white/10 bg-white/5 text-gray-100' : 'border-gray-200 bg-white text-gray-800'
+                        }`}
+                        style={{ maxWidth: 280 }}
+                      >
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <div className="text-[11px] font-semibold">
+                            {colorMode === 'document' ? 'Documents' : 'Segments'}
+                          </div>
+                          <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            className="h-6 px-2 text-[11px]"
+                            darkMode={darkMode}
+                            onClick={() => setShowSegmentsLegend(false)}
+                          >
+                            Minimize
+                          </Button>
                         </div>
-                      ))}
+                        <div className="space-y-1 max-h-40 overflow-auto">
+                          {colorLegend.map((item) => (
+                            <div key={item.id} className="flex items-center gap-2">
+                              <span
+                                className="inline-flex h-3 w-3 rounded-full"
+                                style={{ backgroundColor: item.color }}
+                                aria-hidden
+                              />
+                              <span className="truncate" title={item.label}>
+                                {item.label}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className={`rounded-md border ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'} p-1`}>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          className="h-6 px-2 text-[11px]"
+                          darkMode={darkMode}
+                          onClick={() => setShowSegmentsLegend(true)}
+                        >
+                          Show {colorMode === 'document' ? 'Documents' : 'Segments'}
+                        </Button>
+                      </div>
+                    )
+                  ) : null}
+
+                  {/* MiniMap (right) */}
+                  {showMiniMap ? (
+                    <div
+                      className={`rounded-md border ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}
+                      style={{ overflow: 'hidden' }}
+                    >
+                      <div className={`flex items-center justify-between gap-2 px-2 py-1 text-xs ${darkMode ? 'text-gray-100' : 'text-gray-800'}`}>
+                        <div className="text-[11px] font-semibold">MiniMap</div>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          className="h-6 px-2 text-[11px]"
+                          darkMode={darkMode}
+                          onClick={() => setShowMiniMap(false)}
+                        >
+                          Minimize
+                        </Button>
+                      </div>
+                      <div style={{ borderTop: darkMode ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(0,0,0,0.06)' }}>
+                        <MiniMap
+                          pannable
+                          zoomable
+                          nodeColor={(n) => {
+                            const t = String((n as any)?.type ?? '').toLowerCase();
+                            if (import.meta.env.DEV && getDevtoolsConsoleLoggingEnabled() && !minimapLoggedTypes.has(t)) {
+                              minimapLoggedTypes.add(t);
+                              // eslint-disable-next-line no-console
+                              console.log('[minimap] color callback hit', { id: (n as any)?.id, type: t });
+                            }
+                            if (darkMode) {
+                              if (t === 'deal') return '#ffffff';
+                              if (t === 'document') return '#00e5ff';
+                              if (t === 'segment') return '#d946ef';
+                              if (t === 'visual_group' || t === 'visual_asset') return '#22c55e';
+                              if (t === 'evidence_group' || t === 'evidence') return '#ff8a00';
+                              return '#a5b4fc';
+                            }
+                            if (t === 'deal') return '#000000';
+                            if (t === 'document') return '#00bcd4';
+                            if (t === 'segment') return '#a855f7';
+                            if (t === 'visual_group' || t === 'visual_asset') return '#16a34a';
+                            if (t === 'evidence_group' || t === 'evidence') return '#ea580c';
+                            return '#1f2937';
+                          }}
+                          nodeStrokeColor={(n) => {
+                            const t = String((n as any)?.type ?? '').toLowerCase();
+                            if (darkMode) {
+                              if (t === 'deal') return '#ffffff';
+                              if (t === 'document') return '#8ae5ff';
+                              if (t === 'segment') return '#f3b8ff';
+                              if (t === 'visual_group' || t === 'visual_asset') return '#7ce7a8';
+                              if (t === 'evidence_group' || t === 'evidence') return '#ffc78a';
+                              return '#d8e0ff';
+                            }
+                            if (t === 'deal') return '#111827';
+                            if (t === 'document') return '#0284c7';
+                            if (t === 'segment') return '#7e22ce';
+                            if (t === 'visual_group' || t === 'visual_asset') return '#15803d';
+                            if (t === 'evidence_group' || t === 'evidence') return '#9a3412';
+                            return '#111827';
+                          }}
+                          nodeStrokeWidth={2}
+                          maskColor={darkMode ? 'rgba(10,12,18,0.7)' : 'rgba(255,255,255,0.55)'}
+                          style={{
+                            width: minimapSize.width,
+                            height: minimapSize.height,
+                            border: 'none',
+                            background: darkMode ? 'rgba(24,28,38,0.95)' : 'rgba(234,242,248,0.95)',
+                          }}
+                        />
+                      </div>
                     </div>
-                  </div>
-                </Panel>
-              ) : null}
+                  ) : (
+                    <div className={`rounded-md border ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'} p-1`}>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="h-6 px-2 text-[11px]"
+                        darkMode={darkMode}
+                        onClick={() => setShowMiniMap(true)}
+                      >
+                        Show MiniMap
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </Panel>
               <Controls />
               <Background gap={18} size={1} color={darkMode ? 'rgba(255,255,255,0.08)' : 'rgba(17,24,39,0.08)'} />
             </ReactFlow>
@@ -3818,12 +4097,22 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
 
                   {(() => {
                     const rfData = ((selectedRfNode as any)?.data ?? {}) as any;
-                    const rfImgSrc = resolveApiAssetUrl(typeof rfData.image_uri === 'string' ? rfData.image_uri : null);
+                    const rfStructuredJson = rfData.structured_json as unknown;
+                    const rfExcelPreview = getExcelRangePreviewText(rfStructuredJson, { maxRows: 18, maxCols: 14 });
+                    const rfOcrSuppressed = Boolean(rfData.ocr_suppressed === true);
+                    const isStructuredExcelRange =
+                      typeof (rfStructuredJson as any)?.kind === 'string' &&
+                      ['excel_range', 'excel_sheet_overview'].includes(String((rfStructuredJson as any).kind));
+                    const suppressRfImagePreview = rfOcrSuppressed && isStructuredExcelRange;
+
+                    const rfImgSrc = suppressRfImagePreview
+                      ? null
+                      : resolveApiAssetUrl(typeof rfData.image_uri === 'string' ? rfData.image_uri : null);
                     const rfEvidence = Array.isArray(rfData.evidence_snippets) ? (rfData.evidence_snippets as unknown[]) : [];
                     const rfEvidenceSnips = rfEvidence
                       .filter((s) => typeof s === 'string' && s.trim().length > 0)
                       .map((s) => (s as string).trim());
-                    const rfOcr = typeof rfData.ocr_text_snippet === 'string' ? rfData.ocr_text_snippet.trim() : '';
+                    const rfOcr = !rfOcrSuppressed && typeof rfData.ocr_text_snippet === 'string' ? rfData.ocr_text_snippet.trim() : '';
                     const rfSlideTitle = typeof rfData.slide_title === 'string' ? rfData.slide_title.trim() : '';
                     const rfSlideTitleConf =
                       typeof rfData.slide_title_confidence === 'number' && Number.isFinite(rfData.slide_title_confidence)
@@ -3839,7 +4128,8 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                       rfEvidenceSnips.length > 0 ||
                       (rfOcr && rfOcr.length > 0) ||
                       (rfSlideTitle && rfSlideTitle.length > 0) ||
-                      rfStructuredKind
+                      rfStructuredKind ||
+                      rfExcelPreview
                     );
 
                     if (!hasRfEnrichment) return null;
@@ -3856,6 +4146,14 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                         const bars = typeof b?.bars === 'number' && Number.isFinite(b.bars) ? b.bars : null;
                         return `Bar chart • ${bars != null ? bars : '—'} bars`;
                       }
+
+                      const summaryStr = typeof rfData.structured_summary === 'string' ? rfData.structured_summary.trim() : '';
+                      if (summaryStr) return summaryStr;
+
+                      if (typeof rfStructuredKind === 'string' && rfStructuredKind.toLowerCase().startsWith('excel')) {
+                        return `Excel • ${rfStructuredKind}`;
+                      }
+
                       return null;
                     })();
 
@@ -3884,6 +4182,16 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                           <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{structuredLine}</div>
                         ) : null}
 
+                        {rfExcelPreview ? (
+                          <pre
+                            className={`whitespace-pre text-[11px] rounded-md p-2 border overflow-auto max-h-[240px] ${
+                              darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
+                            }`}
+                          >
+                            {rfExcelPreview}
+                          </pre>
+                        ) : null}
+
                         {rfSlideTitle ? (
                           <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                             Slide title: {rfSlideTitle}
@@ -3910,6 +4218,8 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                             <div className={`text-xs font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>OCR snippet</div>
                             <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{rfOcr}</div>
                           </div>
+                        ) : structuredLine ? (
+                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Structured data available</div>
                         ) : (
                           <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No evidence extracted yet</div>
                         )}
@@ -4147,7 +4457,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                         </details>
                       ) : null}
 
-                      {typeof selectedVisual.ocr_text === 'string' && selectedVisual.ocr_text.trim().length > 0 ? (
+                      {(!selectedVisual.ocr_suppressed && typeof selectedVisual.ocr_text === 'string' && selectedVisual.ocr_text.trim().length > 0) ? (
                         <details>
                           <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>OCR text</summary>
                           <pre className={`mt-2 whitespace-pre-wrap text-xs rounded-md p-2 border ${darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'}`}>
@@ -4155,6 +4465,27 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                           </pre>
                         </details>
                       ) : null}
+
+                      {selectedVisual.ocr_suppressed ? (
+                        <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>OCR suppressed for structured Excel</div>
+                      ) : null}
+
+                      {(() => {
+                        const preview = getExcelRangePreviewText(selectedVisual.structured_json, { maxRows: 22, maxCols: 16 });
+                        if (!preview) return null;
+                        return (
+                          <details open>
+                            <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>XLSX preview</summary>
+                            <pre
+                              className={`mt-2 whitespace-pre text-[11px] rounded-md p-2 border overflow-auto max-h-[320px] ${
+                                darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
+                              }`}
+                            >
+                              {preview}
+                            </pre>
+                          </details>
+                        );
+                      })()}
 
                       {(() => {
                         const m = getExcelSheetInspectorModel(selectedVisual.structured_json);

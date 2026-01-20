@@ -85,8 +85,8 @@ type FeedbackItem = {
 };
 
 export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: DealWorkspaceProps) {
-  const { isFounder, isInvestor } = useUserRole();
-  const { scoreSource } = useScoreSource();
+  const { isAnalyst, isInvestor } = useUserRole();
+  const { scoreSource, setScoreSource } = useScoreSource();
   const dealDataExt = dealData as DealFormDataExtras | null | undefined;
   const [activeTab, setActiveTab] = useState('overview');
   const [investorScore, setInvestorScore] = useState(0);
@@ -98,9 +98,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [showCommentsPanel, setShowCommentsPanel] = useState(false);
   const [comments, setComments] = useState<Array<{ id: string; user: string; message: string; timestamp: Date }>>([]);
   const [showMoreActions, setShowMoreActions] = useState(false);
-  const [showDevPhaseBDiagnostics, setShowDevPhaseBDiagnostics] = useState(false);
   const [showScoreBreakdown, setShowScoreBreakdown] = useState(false);
   const [showScoreTraceDebug, setShowScoreTraceDebug] = useState(false);
+  const [showAllMissingChips, setShowAllMissingChips] = useState(false);
   const [showAIAssistant, setShowAIAssistant] = useState(false);
   const [stageActionLoading, setStageActionLoading] = useState(false);
   const [dioMeta, setDioMeta] = useState<{ dioVersionId?: string; dioStatus?: string; lastAnalyzedAt?: string; dioRunCount?: number; dioAnalysisVersion?: number } | null>(null);
@@ -118,6 +118,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [sseReady, setSseReady] = useState(false);
   const [evidence, setEvidence] = useState<Array<{ evidence_id: string; deal_id: string; document_id?: string; visual_asset_id?: string; source: string; kind: string; text: string; confidence?: number; created_at?: string }>>([]);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
+
+  const scoreBreakdownAnchorRef = useRef<HTMLDivElement | null>(null);
   const [lastEvidenceRefresh, setLastEvidenceRefresh] = useState<string | null>(null);
   const [documentTitles, setDocumentTitles] = useState<Record<string, string>>({});
   const [dealFromApi, setDealFromApi] = useState<any>(null);
@@ -230,7 +232,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       setReportFromApi(null);
     }
   };
-
   // Fetch the actual deal from API
   useEffect(() => {
     if (!dealId || !isLiveBackend()) {
@@ -592,20 +593,18 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     ? phase1Signals.blockers_count
     : null;
 
-  const legacyOverallScore = typeof (dealFromApi as any)?.score === 'number' && Number.isFinite((dealFromApi as any).score)
-    ? Math.round((dealFromApi as any).score)
-    : null;
-  const legacyOverallStatus = (dealFromApi as any)?.dioStatus ?? undefined;
+  const fundamentalsScore0_100: number | null = (() => {
+    if (typeof dealFromApi?.score === 'number' && Number.isFinite(dealFromApi.score)) return Math.round(dealFromApi.score);
+    if (typeof investorScore === 'number' && Number.isFinite(investorScore)) return Math.round(investorScore);
+    return null;
+  })();
+  const dioStatus = (dealFromApi as any)?.dioStatus ?? undefined;
 
   const fundabilityScore0_100 = extractFundabilityScore0_100(dealFromApi as any);
-  const displayScoreSourceV1: 'legacy' | 'fundability_v1' =
-    scoreSource === 'fundability_v1' && fundabilityScore0_100 != null ? 'fundability_v1' : 'legacy';
+  const displayScoreSourceV1: 'fundamentals' | 'fundability_v1' =
+    scoreSource === 'fundability_v1' && fundabilityScore0_100 != null ? 'fundability_v1' : 'fundamentals';
 
-  const decisionScoreSource: 'phase1_signals' | 'legacy_overall' = hasPhase1Signals ? 'phase1_signals' : 'legacy_overall';
-
-  const decisionScore: number | null = hasPhase1Signals
-    ? phase1Score
-    : (legacyOverallScore ?? (typeof investorScore === 'number' && Number.isFinite(investorScore) ? Math.round(investorScore) : null));
+  const decisionLabelSource: 'phase1_signals' | 'score_thresholds' = hasPhase1Signals ? 'phase1_signals' : 'score_thresholds';
 
   const decisionLabel = hasPhase1Signals
     ? (normalizedRecommendation
@@ -615,7 +614,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           ? 'FUND'
           : 'CONSIDER')
       : (phase1Score != null ? scoreToWorkspaceDecision(phase1Score) : '—'))
-    : (legacyOverallScore != null ? scoreToWorkspaceDecision(legacyOverallScore) : '—');
+    : (fundamentalsScore0_100 != null ? scoreToWorkspaceDecision(fundamentalsScore0_100) : '—');
 
   const sectionConfidence =
     (executiveSummaryV2 && typeof executiveSummaryV2 === 'object' ? (executiveSummaryV2 as any)?.confidence?.sections : null)
@@ -953,41 +952,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return runs.slice(0, 3);
   })();
 
-  const devPhaseBDiagnostics = import.meta.env.DEV
-    ? {
-        routeDealId: dealId ?? null,
-        apiDealId: typeof (dealFromApi as any)?.id === 'string' ? (dealFromApi as any).id : null,
-        dioVersionId: dioMeta?.dioVersionId ?? null,
-        phaseB: {
-          hasLatest: Boolean(phaseBLatestRun),
-          version: phaseBVersion ?? null,
-          timestamp: phaseBRunTimestamp ?? null,
-          timestampDisplay: phaseBRunTimestampDisplay ?? null,
-          coverage: {
-            documents: phaseBDocCount,
-            segments: phaseBPageCount,
-            visuals: phaseBVisualsCount,
-            evidence: phaseBEvidenceCount,
-            evidencePerVisual: phaseBEvidencePerVisual,
-            sourceCoveragePct: phaseBSourceCoveragePct,
-          },
-          flags: phaseBActiveFlags,
-          history: phaseBRunHistory.map((run) => ({
-            key: run.key,
-            version: run.version,
-            timestamp: run.timestamp,
-            metrics: run.metrics,
-          })),
-        },
-      }
-    : null;
-
-  if (import.meta.env.DEV && devPhaseBDiagnostics) {
-    // Dev-only inspection to verify latest Phase B wiring
-    // eslint-disable-next-line no-console
-    console.debug('Phase B diagnostics', devPhaseBDiagnostics);
-  }
-
   const copyScoreTraceDebug = async () => {
     if (!import.meta.env.DEV) return;
     const payload = (executiveSummaryV2 as any)?.score_breakdown_v1 ?? (scoreBreakdownSections.length > 0 ? { sections: scoreBreakdownSections } : null);
@@ -1004,21 +968,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       addToast('info', 'Dev data copied', 'Score trace JSON copied');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error copying debug payload';
-      addToast('error', 'Copy failed', message);
-    }
-  };
-
-  const copyDevPhaseBDiagnostics = async () => {
-    if (!import.meta.env.DEV || !devPhaseBDiagnostics) return;
-    if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) {
-      addToast('error', 'Copy unavailable', 'Clipboard API not supported');
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(devPhaseBDiagnostics, null, 2));
-      addToast('info', 'Dev data copied', 'Phase B diagnostics JSON copied');
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error copying diagnostics';
       addToast('error', 'Copy failed', message);
     }
   };
@@ -1041,8 +990,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const displayName = dealInfo?.name || dealData?.name || 'Unnamed Deal';
   const displayType = dealInfo?.type || dealData?.type || 'series-a';
   const displayScore: number | null = displayScoreSourceV1 === 'fundability_v1'
-    ? (fundabilityScore0_100 != null ? Math.round(fundabilityScore0_100) : decisionScore)
-    : decisionScore;
+    ? (fundabilityScore0_100 != null ? Math.round(fundabilityScore0_100) : null)
+    : fundamentalsScore0_100;
+  const displayScoreLabel = displayScoreSourceV1 === 'fundability_v1' ? 'Fundability score' : 'Fundamentals score';
 
   const safeText = (value: unknown): string => {
     if (typeof value !== 'string') return '';
@@ -1156,7 +1106,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         },
         { label: 'Business Model', value: safeText(overviewV2?.business_model) || safeText(executiveSummaryV1?.business_model) || '—', change: 'Model' },
         { label: 'Deal Type', value: safeText(overviewV2?.deal_type) || safeText(executiveSummaryV1?.deal_type) || '—', change: 'Classification' },
-        { label: 'Score', value: displayScore != null ? `${Math.round(displayScore)}/100` : (phase1Score != null ? `${phase1Score}/100` : '—'), change: 'Overall score' },
+        { label: displayScoreLabel, value: displayScore != null ? `${Math.round(displayScore)}/100` : '—', change: 'Overall (0–100)' },
         { label: 'Confidence', value: phase1ConfidenceRaw ? phase1ConfidenceRaw.toUpperCase() : '—', change: 'Overall' },
       ];
 
@@ -1474,17 +1424,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     };
   }, [dealId, jobId]);
 
-  // Role-specific tabs
-  const tabs: Tab[] = isFounder ? [
-    { id: 'overview', label: 'Overview', icon: <BarChart3 className="w-4 h-4" /> },
-    { id: 'documents', label: 'Pitch Materials', icon: <Presentation className="w-4 h-4" />, badge: 7 },
-    { id: 'evidence', label: 'Evidence', icon: <Shield className="w-4 h-4" /> },
-    { id: 'analyst', label: 'Analyst', icon: <Eye className="w-4 h-4" /> },
-    { id: 'analysis', label: 'AI Refinement', icon: <Sparkles className="w-4 h-4" /> },
-    { id: 'feedback', label: 'Investor Feedback', icon: <Lightbulb className="w-4 h-4" />, badge: 12 },
-    { id: 'diligence', label: 'Fundraising Progress', icon: <TrendingUp className="w-4 h-4" /> },
-    { id: 'reports', label: 'Reports Generated', icon: <FileText className="w-4 h-4" />, badge: 2 }
-  ] : [
+  const tabs: Tab[] = [
     { id: 'overview', label: 'Overview', icon: <BarChart3 className="w-4 h-4" /> },
     { id: 'documents', label: 'Documents', icon: <FileText className="w-4 h-4" />, badge: 8 },
     { id: 'evidence', label: 'Evidence', icon: <Shield className="w-4 h-4" /> },
@@ -1718,7 +1658,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     setJobReason(null);
     reportMissingRef.current = false;
     lastReportAttemptAtRef.current = 0;
-    addToast('info', isFounder ? 'Pitch Analysis Started' : 'Investment Analysis Started', 'Queued analysis job...');
+    addToast('info', 'Deal Analysis Started', 'Queued analysis job...');
     try {
       const res = await apiPostAnalyze(dealId);
       setJobId(res.job_id);
@@ -1990,15 +1930,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 <span className={`${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>•</span>
                 <span className="flex items-center gap-1.5">
                   <Calendar className="w-3.5 h-3.5" />
-                  {isFounder ? 'Created' : 'Added'} {dealInfo?.createdDate || 'Unknown'}
+                  Created {dealInfo?.createdDate || 'Unknown'}
                 </span>
                 <span className={`${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>•</span>
                 <span className="flex items-center gap-1.5">
                   <Eye className="w-3.5 h-3.5" />
-                  {isFounder 
-                    ? 'Engagement data not available'
-                    : 'Partnership data not available'
-                  }
+                  Data not available
                 </span>
               </div>
 
@@ -2244,68 +2181,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             </div>
           </div>
 
-          {import.meta.env.DEV && (
-            <div className={`border rounded-xl p-4 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}>
-              <div className="flex flex-col gap-3">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-                  <div>
-                    <div className={`text-xs uppercase tracking-wide ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      Dev only · Phase B debug
-                    </div>
-                    <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                      Route dealId: {dealId ?? '—'} · API: {typeof (dealFromApi as any)?.id === 'string' ? (dealFromApi as any).id : '—'} · History runs: {phaseBRunHistory.length}
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                      variant="secondary"
-                      darkMode={darkMode}
-                      icon={<Clipboard className="w-4 h-4" />}
-                      onClick={copyDevPhaseBDiagnostics}
-                    >
-                      Copy debug JSON
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      darkMode={darkMode}
-                      icon={showDevPhaseBDiagnostics ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                      onClick={() => setShowDevPhaseBDiagnostics((prev) => !prev)}
-                    >
-                      {showDevPhaseBDiagnostics ? 'Hide details' : 'Show details'}
-                    </Button>
-                  </div>
-                </div>
-
-                {showDevPhaseBDiagnostics && (
-                  <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 text-xs ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
-                    <div className={`${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'} p-3 rounded-lg border`}>
-                      <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Latest run</div>
-                      <div className="mt-1 text-sm">{phaseBRunTimestampDisplay ?? 'Timestamp unavailable'}</div>
-                      <div className="text-[11px]">{phaseBVersion != null ? `v${phaseBVersion}` : 'Version missing'}</div>
-                    </div>
-                    <div className={`${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'} p-3 rounded-lg border`}>
-                      <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Coverage</div>
-                      <div className="mt-1 text-sm">Docs {phaseBDocCount ?? '—'} · Segments {phaseBPageCount ?? '—'}</div>
-                      <div className="text-[11px]">Source coverage: {phaseBSourceCoveragePct != null ? `${phaseBSourceCoveragePct}%` : '—'}</div>
-                    </div>
-                    <div className={`${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'} p-3 rounded-lg border`}>
-                      <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Visuals & evidence</div>
-                      <div className="mt-1 text-sm">Visuals {phaseBVisualsCount ?? '—'} · Evidence {phaseBEvidenceCount ?? '—'}</div>
-                      <div className="text-[11px]">Evidence/visual: {phaseBEvidencePerVisual != null ? phaseBEvidencePerVisual.toFixed(2) : '—'}</div>
-                    </div>
-                    <div className={`${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'} p-3 rounded-lg border`}>
-                      <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Flags</div>
-                      <div className="mt-1 text-sm">{phaseBActiveFlags.length > 0 ? phaseBActiveFlags.join(', ') : 'No active flags'}</div>
-                      <div className="text-[11px]">History keys: {phaseBRunHistory.length > 0 ? phaseBRunHistory.map((run) => `${run.version ?? '—'}@${run.timestampDisplay ?? 'ts'}`).join(' | ') : 'none'}</div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
           {/* Score Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+          <div className="grid grid-cols-1 gap-6 items-start">
             {/* Decision Tile */}
             <div className={`backdrop-blur-xl border rounded-xl p-6 w-full max-w-md ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
               <div className="flex items-start justify-between gap-3">
@@ -2313,18 +2190,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Decision</div>
                   <div className={`mt-2 text-3xl sm:text-4xl font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{decisionLabel}</div>
                   <div className={`mt-2 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                    {displayScore != null
-                      ? `${Math.round(displayScore)}/100${hasPhase1Signals && phase1ConfidenceLabel ? ` · ${phase1ConfidenceLabel}` : ''}`
-                      : '—'}
+                    {displayScore != null ? `${displayScoreLabel}: ${Math.round(displayScore)}/100` : '—'}
                   </div>
-                  {import.meta.env.DEV && (
-                    <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                      Decision score source: {decisionScoreSource} · Display score: {displayScoreSourceV1}
-                    </div>
-                  )}
-                  {import.meta.env.DEV && hasPhase1Signals && legacyOverallScore != null && legacyOverallScore !== displayScore && (
-                    <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                      Legacy overall: {legacyOverallScore}{legacyOverallStatus ? ` (${legacyOverallStatus})` : ''}
+                  {hasPhase1Signals && (phase1Score != null || phase1ConfidenceLabel) && (
+                    <div className={`mt-1 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      Phase 1: {phase1Score != null ? `${phase1Score}/100` : '—'}{phase1ConfidenceLabel ? ` · ${phase1ConfidenceLabel}` : ''}
                     </div>
                   )}
                   {blockersCount != null && (
@@ -2333,51 +2203,18 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     </div>
                   )}
                   <p className={`mt-3 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    Phase 1 signals shown when available; legacy overall only when Phase 1 is missing.
+                    Decision uses Phase 1 signals when available; score is fundamentals-only (presentation diagnostics do not affect it).
                   </p>
                 </div>
                 <span className={`px-3 py-1 rounded-full border text-xs font-medium ${decisionAccent}`}>
-                  {isFounder ? 'Pitch snapshot' : 'Investment snapshot'}
+                  Deal snapshot
                 </span>
-              </div>
-            </div>
-
-            {/* Why This Decision Tile */}
-            <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
-              <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Why this decision</div>
-              {decisionHighlights.length > 0 ? (
-                <ul className={`mt-3 list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  {decisionHighlights.map((h: string, i: number) => (
-                    <li key={`why-${i}`}>{h}</li>
-                  ))}
-                </ul>
-              ) : (
-                <div className={`mt-3 text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Run analysis to populate decision reasoning.</div>
-              )}
-
-              <div className="mt-5">
-                <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Gaps to fill</div>
-                {decisionMissing.length > 0 ? (
-                  <div className="flex flex-wrap gap-2">
-                    {decisionMissing.map((chip) => (
-                      <span
-                        key={`gap-${chip}`}
-                        className={`px-2 py-1 rounded-full border text-xs ${darkMode ? 'bg-amber-500/10 border-amber-500/30 text-amber-200' : 'bg-amber-50 border-amber-200 text-amber-800'}`}
-                      >
-                        {chip}
-                      </span>
-                    ))}
-                  </div>
-                ) : (
-                  <div className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No gaps flagged.</div>
-                )}
               </div>
             </div>
 
             {/* Score Driver Tile */}
             <div
-              className={`backdrop-blur-xl border rounded-xl p-6 w-full md:col-span-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}
-              style={{ gridColumn: '1 / -1' }}
+              className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -2388,7 +2225,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 </div>
               </div>
 
-              {scoreBreakdownSections.length > 0 ? (() => {
+              {isAnalyst && scoreBreakdownSections.length > 0 ? (() => {
                 const sections = scoreBreakdownSections as any[];
                 let linkedTotal = 0;
                 let linkedNodeBacked = 0;
@@ -2424,44 +2261,133 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               {(executiveSummaryV2 || executiveSummaryV1) ? (
                 <>
                   <div className={`mt-4 rounded-lg border overflow-hidden ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'}`}>
-                    <div className="flex h-3">
-                      {categories.map((c, idx) => {
+                    <div className="overflow-x-auto">
+                      <div
+                        className="grid h-3"
+                        style={{
+                          gridTemplateColumns: `repeat(${categories.length}, minmax(0, 1fr))`,
+                          minWidth: `${categories.length * 110}px`,
+                        }}
+                      >
+                        {categories.map((c, idx) => {
+                          const band = getBandForCategory(c.key);
+                          return (
+                            <div
+                              key={c.key}
+                              className={`h-full w-full ${bandToClasses(band)} ${idx > 0 ? (darkMode ? 'border-l border-white/10' : 'border-l border-gray-200') : ''}`}
+                              title={`${c.label}: ${band}`}
+                            />
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 overflow-x-auto">
+                    <div
+                      className="grid gap-x-2 gap-y-1"
+                      style={{
+                        gridTemplateColumns: `repeat(${categories.length}, minmax(0, 1fr))`,
+                        minWidth: `${categories.length * 110}px`,
+                      }}
+                    >
+                      {categories.map((c) => {
                         const band = getBandForCategory(c.key);
+                        const bandLabel = band === 'low' ? 'Low' : band === 'med' ? 'Med' : band === 'high' ? 'High' : String(band);
                         return (
                           <div
-                            key={c.key}
-                            className={`flex-1 ${bandToClasses(band)} ${idx > 0 ? (darkMode ? 'border-l border-white/10' : 'border-l border-gray-200') : ''}`}
-                            title={`${c.label}: ${band}`}
-                          />
+                            key={`${c.key}-legend`}
+                            className={`${isAnalyst ? 'cursor-pointer' : ''} flex flex-col items-center justify-center gap-0.5 select-none`}
+                            title={`${c.label}: ${bandLabel}`}
+                            onClick={() => {
+                              if (!isAnalyst) return;
+                              setShowScoreBreakdown(true);
+                              setTimeout(() => {
+                                scoreBreakdownAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                              }, 0);
+                            }}
+                            role={isAnalyst ? 'button' : undefined}
+                            tabIndex={isAnalyst ? 0 : undefined}
+                            onKeyDown={(e) => {
+                              if (!isAnalyst) return;
+                              if (e.key !== 'Enter' && e.key !== ' ') return;
+                              e.preventDefault();
+                              setShowScoreBreakdown(true);
+                              setTimeout(() => {
+                                scoreBreakdownAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                              }, 0);
+                            }}
+                          >
+                            <div className="flex items-center justify-center gap-2">
+                              <span className={`inline-block w-2.5 h-2.5 rounded-sm ${bandToClasses(band)}`} />
+                              <span className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>{c.label}</span>
+                            </div>
+                            {isAnalyst && (
+                              <div className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>{bandLabel}</div>
+                            )}
+                          </div>
                         );
                       })}
                     </div>
                   </div>
-                  <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1">
-                    {categories.map((c) => {
-                      const band = getBandForCategory(c.key);
-                      return (
-                        <div key={`${c.key}-legend`} className="flex items-center gap-2">
-                          <span className={`inline-block w-2.5 h-2.5 rounded-sm ${bandToClasses(band)}`} />
-                          <span className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>{c.label}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
+
+                  {scoreBreakdownSections.length > 0 && (() => {
+                    const counts = { supported: 0, weak: 0, missing: 0 };
+                    for (const section of scoreBreakdownSections as any[]) {
+                      const status = typeof section?.support_status === 'string' ? section.support_status : 'weak';
+                      if (status === 'supported') counts.supported += 1;
+                      else if (status === 'missing') counts.missing += 1;
+                      else counts.weak += 1;
+                    }
+                    return (
+                      <div className={`mt-3 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        Supported: {counts.supported} · Weak: {counts.weak} · Missing: {counts.missing}
+                        {isAnalyst ? ' · Click a category to jump to breakdown' : ''}
+                      </div>
+                    );
+                  })()}
 
                   <div className="mt-4">
                     <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Missing</div>
                     {missingChips.length > 0 ? (
-                      <div className="flex flex-wrap gap-2">
-                        {missingChips.map((chip) => (
-                          <span
-                            key={chip}
-                            className={`px-2 py-1 rounded-full border text-xs ${darkMode ? 'bg-amber-500/10 border-amber-500/30 text-amber-200' : 'bg-amber-50 border-amber-200 text-amber-800'}`}
+                      <>
+                        <div className="flex flex-wrap gap-2">
+                          {(isAnalyst ? missingChips : (showAllMissingChips ? missingChips : missingChips.slice(0, 3))).map((chip) => {
+                            const labelMap: Record<string, string> = {
+                              product_solution: 'Product solution',
+                              market_icp: 'Market / ICP',
+                              key_risks_detected: 'Key risks',
+                              coverage_missing_sections: 'Missing sections',
+                              raise: 'Raise',
+                              business_model: 'Business model',
+                              traction: 'Traction',
+                              team: 'Team',
+                              terms: 'Terms',
+                            };
+                            const human = labelMap[chip]
+                              ?? chip
+                                .replace(/_/g, ' ')
+                                .replace(/\b\w/g, (m: string) => m.toUpperCase());
+                            return (
+                              <span
+                                key={chip}
+                                title={chip}
+                                className={`px-2 py-1 rounded-full border text-xs ${darkMode ? 'bg-amber-500/10 border-amber-500/30 text-amber-200' : 'bg-amber-50 border-amber-200 text-amber-800'}`}
+                              >
+                                {human}
+                              </span>
+                            );
+                          })}
+                        </div>
+                        {!isAnalyst && missingChips.length > 3 && (
+                          <button
+                            type="button"
+                            onClick={() => setShowAllMissingChips((prev) => !prev)}
+                            className={`mt-2 text-xs font-medium ${darkMode ? 'text-gray-300 hover:text-white' : 'text-gray-700 hover:text-gray-900'}`}
                           >
-                            {chip}
-                          </span>
-                        ))}
-                      </div>
+                            {showAllMissingChips ? 'Show less' : `+${missingChips.length - 3} more`}
+                          </button>
+                        )}
+                      </>
                     ) : (
                       <div className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No missing sections flagged.</div>
                     )}
@@ -2469,7 +2395,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
                   {scoreBreakdownSections.length > 0 && (
                     <>
-                      <div className="mt-6">
+                      <div className="mt-6" ref={scoreBreakdownAnchorRef}>
                         <div className="flex items-center justify-between gap-3">
                           <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                             Score breakdown
@@ -2587,7 +2513,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         )}
                       </div>
 
-                      {import.meta.env.DEV && (
+                      {import.meta.env.DEV && isAnalyst && (
                         <div className={`mt-4 rounded-lg border ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
                           <div className="flex items-center justify-between gap-3 p-3">
                             <div>
@@ -3064,6 +2990,74 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     )}
                   </div>
                 )}
+
+                <div>
+                  <div className="flex flex-wrap items-end justify-between gap-3">
+                    <div>
+                      <h3 className={`text-sm mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        Decision & Scoring
+                      </h3>
+                      <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                        Decision uses Phase 1 signals when available. Fundamentals score is v2 (presentation diagnostics excluded).
+                      </div>
+                    </div>
+                    {fundabilityScore0_100 != null && (
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant={scoreSource === 'fundability_v1' ? 'outline' : 'secondary'}
+                          size="sm"
+                          darkMode={darkMode}
+                          onClick={() => setScoreSource('legacy')}
+                        >
+                          Fundamentals
+                        </Button>
+                        <Button
+                          variant={scoreSource === 'fundability_v1' ? 'secondary' : 'outline'}
+                          size="sm"
+                          darkMode={darkMode}
+                          onClick={() => setScoreSource('fundability_v1')}
+                        >
+                          Fundability
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <div className={`rounded-xl border p-4 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}>
+                      <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Fundamentals score (v2)</div>
+                      <div className={`mt-1 text-2xl font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                        {fundamentalsScore0_100 != null ? `${fundamentalsScore0_100}/100` : '—'}
+                      </div>
+                      <div className={`mt-1 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                        Source: Deal.score
+                      </div>
+                    </div>
+
+                    <div className={`rounded-xl border p-4 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}>
+                      <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Decision</div>
+                      <div className={`mt-1 text-2xl font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                        {decisionLabel}
+                      </div>
+                      <div className={`mt-1 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                        {decisionLabelSource === 'phase1_signals'
+                          ? `Phase 1: ${phase1Score != null ? `${phase1Score}/100` : '—'}${phase1ConfidenceLabel ? ` · ${phase1ConfidenceLabel}` : ''}`
+                          : 'No Phase 1 signals; derived from fundamentals score thresholds.'}
+                      </div>
+                    </div>
+
+                    <div className={`rounded-xl border p-4 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}>
+                      <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Displayed score</div>
+                      <div className={`mt-1 text-2xl font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                        {displayScore != null ? `${Math.round(displayScore)}/100` : '—'}
+                      </div>
+                      <div className={`mt-1 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                        {displayScoreLabel}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 {/* VALUE CARD - Hero Element */}
                 {dealData?.estimatedSavings && (
                   <div className={`p-6 rounded-2xl border-2 shadow-[0_0_40px_rgba(99,102,241,0.25)] ${

@@ -1050,8 +1050,8 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis }: AnalysisTabPr
         </div>
       )}
 
-      {/* CTA Section - For Founders */}
-      {userRole.isFounder && (
+      {/* CTA Section - For Analysts */}
+      {userRole.isAnalyst && (
         <div className={`p-6 rounded-2xl border bg-gradient-to-r ${
           darkMode
             ? 'from-[#6366f1]/10 to-[#8b5cf6]/10 border-[#6366f1]/30'
@@ -1060,10 +1060,10 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis }: AnalysisTabPr
           <div className="flex items-center justify-between">
             <div>
               <h3 className={`text-lg mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                Ready to improve your pitch?
+                Ready to move toward a decision?
               </h3>
               <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                Address the recommendations above to increase your pitch readiness score
+                Use the recommendations above to increase confidence and tighten evidence coverage
               </p>
             </div>
             <Button
@@ -1071,7 +1071,7 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis }: AnalysisTabPr
               darkMode={darkMode}
               icon={<ChevronRight className="w-4 h-4" />}
             >
-              Start Improving
+              Next Steps
             </Button>
           </div>
         </div>

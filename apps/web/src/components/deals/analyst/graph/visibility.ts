@@ -19,7 +19,9 @@ export function defaultExpandedForNode(node: Node): boolean {
   if (t === 'document') return true;
   if (t === 'segment') return true;
   if (t === 'visual_asset') return false;
-  if (t === 'visual_group') return false;
+  // Prefer showing the new summary layer + its children by default.
+  // This enables: Document -> Segment -> Subsegment (visual_group) -> Structured item.
+  if (t === 'visual_group') return true;
   if (t === 'evidence_group') return false;
   return true;
 }

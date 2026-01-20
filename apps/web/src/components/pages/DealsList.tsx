@@ -731,7 +731,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                           {deal.scoreSourceUsed === 'fundability_v1' && (
                             <span className={`text-[10px] px-1.5 py-0.5 rounded ${
                               darkMode ? 'bg-[#6366f1]/20 text-[#a5b4fc]' : 'bg-[#6366f1]/10 text-[#4f46e5]'
-                            }`} title="Using fundability score (UI-only)">
+                            }`} title="Using fundability score">
                               F
                             </span>
                           )}

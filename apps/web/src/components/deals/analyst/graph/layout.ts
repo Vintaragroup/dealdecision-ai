@@ -4,8 +4,10 @@ const ROW_Y: Record<string, number> = {
   deal: 0,
   document: 280,
   segment: 560,
-  visual: 900,
-  evidence: 1250,
+  visual_group: 840,
+  // More vertical air between summary (visual_group) and structured items.
+  visual: 1180,
+  evidence: 1490,
 };
 
 const ROW_GAP = 320;
@@ -30,12 +32,13 @@ export type LayoutOptions = {
   nodesep?: number;
 };
 
-function normalizeType(node: Node): 'deal' | 'document' | 'segment' | 'visual' | 'evidence' | 'default' {
+function normalizeType(node: Node): 'deal' | 'document' | 'segment' | 'visual_group' | 'visual' | 'evidence' | 'default' {
   const t = String((node as any)?.type ?? '').toLowerCase();
   if (t === 'deal') return 'deal';
   if (t === 'document') return 'document';
   if (t === 'segment') return 'segment';
-  if (t === 'visual_asset' || t === 'visual_group') return 'visual';
+  if (t === 'visual_group') return 'visual_group';
+  if (t === 'visual_asset' || t === 'visual_asset_group') return 'visual';
   if (t === 'evidence' || t === 'evidence_group') return 'evidence';
   return 'default';
 }
@@ -45,6 +48,7 @@ function rowYForNode(node: Node): number {
   if (t === 'deal') return ROW_Y.deal;
   if (t === 'document') return ROW_Y.document;
   if (t === 'segment') return ROW_Y.segment;
+  if (t === 'visual_group') return ROW_Y.visual_group;
   if (t === 'visual') return ROW_Y.visual;
   if (t === 'evidence') return ROW_Y.evidence;
   return ROW_Y.visual;

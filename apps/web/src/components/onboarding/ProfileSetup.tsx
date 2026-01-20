@@ -17,7 +17,7 @@ export interface ProfileData {
 }
 
 export function ProfileSetup({ darkMode, onComplete, onBack }: ProfileSetupProps) {
-  const { isFounder } = useUserRole();
+  const { isAnalyst } = useUserRole();
   const [formData, setFormData] = useState<ProfileData>({
     name: '',
     email: '',
@@ -34,13 +34,13 @@ export function ProfileSetup({ darkMode, onComplete, onBack }: ProfileSetupProps
     { id: 'vp', label: 'VP/Director', icon: '⚡' }
   ];
 
-  const founderRoles = [
-    { id: 'ceo', label: 'CEO/Founder', icon: '👑' },
-    { id: 'cto', label: 'CTO/Co-founder', icon: '💻' },
-    { id: 'cpo', label: 'CPO', icon: '🎨' },
-    { id: 'cmo', label: 'CMO', icon: '📣' },
-    { id: 'cfo', label: 'CFO', icon: '💰' },
-    { id: 'other', label: 'Other Exec', icon: '⚙️' }
+  const analystRoles = [
+    { id: 'lead-analyst', label: 'Lead Analyst', icon: '🧠' },
+    { id: 'analyst', label: 'Analyst', icon: '📈' },
+    { id: 'associate', label: 'Associate', icon: '📊' },
+    { id: 'principal', label: 'Principal', icon: '💼' },
+    { id: 'research', label: 'Research', icon: '🔎' },
+    { id: 'ops', label: 'Ops', icon: '⚙️' }
   ];
 
   const investorFocusAreas = [
@@ -55,20 +55,10 @@ export function ProfileSetup({ darkMode, onComplete, onBack }: ProfileSetupProps
     { id: 'consumer', label: 'Consumer', icon: '🛍️' }
   ];
 
-  const founderFocusAreas = [
-    { id: 'saas', label: 'SaaS', icon: '☁️' },
-    { id: 'fintech', label: 'FinTech', icon: '💳' },
-    { id: 'healthtech', label: 'HealthTech', icon: '🏥' },
-    { id: 'ai-ml', label: 'AI/ML', icon: '🤖' },
-    { id: 'ecommerce', label: 'E-commerce', icon: '🛒' },
-    { id: 'marketplace', label: 'Marketplace', icon: '🏪' },
-    { id: 'b2b', label: 'B2B', icon: '🏢' },
-    { id: 'b2c', label: 'B2C', icon: '👥' },
-    { id: 'hardware', label: 'Hardware', icon: '⚙️' }
-  ];
+  const analystFocusAreas = investorFocusAreas;
 
-  const roles = isFounder ? founderRoles : investorRoles;
-  const focusAreas = isFounder ? founderFocusAreas : investorFocusAreas;
+  const roles = isAnalyst ? analystRoles : investorRoles;
+  const focusAreas = isAnalyst ? analystFocusAreas : investorFocusAreas;
 
   const toggleFocus = (focusId: string) => {
     setFormData(prev => ({
@@ -98,16 +88,13 @@ export function ProfileSetup({ darkMode, onComplete, onBack }: ProfileSetupProps
             {/* Header */}
             <div className="text-center mb-8">
               <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-[#6366f1] to-[#8b5cf6] flex items-center justify-center">
-                {isFounder ? <Rocket className="w-8 h-8 text-white" /> : <User className="w-8 h-8 text-white" />}
+                {isAnalyst ? <Rocket className="w-8 h-8 text-white" /> : <User className="w-8 h-8 text-white" />}
               </div>
               <h2 className={`text-2xl mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                {isFounder ? 'Set up your founder profile' : 'Set up your investor profile'}
+                {isAnalyst ? 'Set up your analyst profile' : 'Set up your investor profile'}
               </h2>
               <p className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                {isFounder 
-                  ? 'Tell us about your company and role'
-                  : 'Help us personalize your deal flow experience'
-                }
+                {isAnalyst ? 'Help us personalize your analysis experience' : 'Help us personalize your deal flow experience'}
               </p>
             </div>
 
@@ -162,9 +149,9 @@ export function ProfileSetup({ darkMode, onComplete, onBack }: ProfileSetupProps
               {/* Role Selection */}
               <div>
                 <label className={`block text-sm mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  {isFounder ? 'Your Role' : 'Investment Role'}
+                  {isAnalyst ? 'Your Role' : 'Investment Role'}
                 </label>
-                <div className={`grid ${isFounder ? 'grid-cols-3' : 'grid-cols-3'} gap-3`}>
+                <div className="grid grid-cols-3 gap-3">
                   {roles.map((role) => (
                     <button
                       key={role.id}
@@ -194,7 +181,7 @@ export function ProfileSetup({ darkMode, onComplete, onBack }: ProfileSetupProps
               {/* Focus Areas */}
               <div>
                 <label className={`block text-sm mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  {isFounder ? 'Industry & Focus' : 'Investment Focus'} <span className="text-xs opacity-60">(Select multiple)</span>
+                  {isAnalyst ? 'Industry & Focus' : 'Investment Focus'} <span className="text-xs opacity-60">(Select multiple)</span>
                 </label>
                 <div className="grid grid-cols-3 gap-3">
                   {focusAreas.map((area) => (

@@ -17,27 +17,27 @@ interface HeaderProps {
 
 export function Header({ darkMode, setDarkMode, rightSidebarOpen, setRightSidebarOpen, currentPage = 'Dashboard', mobileMenuOpen, setMobileMenuOpen }: HeaderProps) {
   const [searchFocused, setSearchFocused] = useState(false);
-  const { isFounder } = useUserRole();
+  const { isAnalyst } = useUserRole();
   const { scoreSource, setScoreSource } = useScoreSource();
   const prefersFundability = scoreSource === 'fundability_v1';
 
   const getPageTitle = (page: string) => {
     const pageTitles: Record<string, string> = {
       dashboard: 'Dashboard',
-      dealsList: isFounder ? 'My Companies' : 'Deal Pipeline',
-      analytics: isFounder ? 'Fundraising Analytics' : 'Portfolio Analytics',
-      documents: isFounder ? 'Pitch Materials' : 'Documents',
-      aiStudio: 'Document Studio',
+      dealsList: 'Deal Pipeline',
+      analytics: 'Analytics',
+      documents: 'Documents',
+      aiStudio: isAnalyst ? 'Document Studio' : 'AI Studio',
       dueDiligence: 'Due Diligence Report',
       dealComparison: 'Deal Comparison',
       gamification: 'Achievements & Progress',
       componentShowcase: 'Component Library',
-      team: isFounder ? 'Founding Team' : 'Investment Team',
+      team: 'Team',
       templates: 'Templates',
       profile: 'Profile',
       roiCalculator: 'ROI Calculator',
       settings: 'Settings',
-      dealWorkspace: isFounder ? 'Pitch Builder' : 'Deal Workspace'
+      dealWorkspace: 'Deal Workspace'
     };
     return pageTitles[page] || 'Dashboard';
   };
@@ -140,13 +140,13 @@ export function Header({ darkMode, setDarkMode, rightSidebarOpen, setRightSideba
           />
         </div>
 
-        {/* Score source toggle (Phase 4, UI-only) */}
+        {/* Score source toggle (UI preference; falls back if unavailable) */}
         <div className={`hidden md:flex items-center gap-2 px-2 py-1 rounded-lg border ${
           darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-100/60'
         }`}>
           <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Score</span>
           <span className={`text-xs font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-            {prefersFundability ? 'Fundability' : 'Legacy'}
+            {prefersFundability ? 'Fundability' : 'Fundamentals'}
           </span>
           <Switch
             checked={prefersFundability}

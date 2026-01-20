@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Button } from '../ui/button';
 import { Select } from '../ui/select';
-import { useUserRole } from '../../contexts/UserRoleContext';
 import {
   LineChart,
   Line,
@@ -40,7 +39,6 @@ interface AnalyticsProps {
 }
 
 export function Analytics({ darkMode }: AnalyticsProps) {
-  const { isFounder } = useUserRole();
   const [dateRange, setDateRange] = useState('30days');
   const [dealFilter, setDealFilter] = useState('all');
   const [sectorFilter, setSectorFilter] = useState('all');
@@ -56,19 +54,12 @@ export function Analytics({ darkMode }: AnalyticsProps) {
     { month: 'Jun', reports: 38, deals: 8 }
   ];
 
-  const dealsByStage = isFounder 
-    ? [
-        { stage: 'Idea', count: 1, percentage: 12.5 },
-        { stage: 'Progress', count: 3, percentage: 37.5 },
-        { stage: 'Ready', count: 3, percentage: 37.5 },
-        { stage: 'Pitched', count: 1, percentage: 12.5 }
-      ]
-    : [
-        { stage: 'Sourced', count: 2, percentage: 25 },
-        { stage: 'Due Diligence', count: 3, percentage: 37.5 },
-        { stage: 'Committee Review', count: 2, percentage: 25 },
-        { stage: 'Closed', count: 1, percentage: 12.5 }
-      ];
+  const dealsByStage = [
+    { stage: 'Sourced', count: 2, percentage: 25 },
+    { stage: 'Due Diligence', count: 3, percentage: 37.5 },
+    { stage: 'Committee Review', count: 2, percentage: 25 },
+    { stage: 'Closed', count: 1, percentage: 12.5 }
+  ];
 
   const sectorData = [
     { name: 'AI/ML', value: 3, color: '#6366f1' },
@@ -125,19 +116,12 @@ export function Analytics({ darkMode }: AnalyticsProps) {
     roiSavings: { value: 12450, change: 28, trend: 'up' as const }
   };
 
-  const insights = isFounder
-    ? [
-        { text: '3 companies are ready to pitch this week', type: 'success' },
-        { text: 'Average pitch score improved 12% this month', type: 'success' },
-        { text: 'You\'ve saved $12,450 in consultant fees', type: 'info' },
-        { text: 'Team has earned 8,500 XP collectively', type: 'info' }
-      ]
-    : [
-        { text: '3 deals advancing to committee review', type: 'success' },
-        { text: 'Average deal quality improved 12% this month', type: 'success' },
-        { text: 'You\'ve saved $12,450 in analyst fees', type: 'info' },
-        { text: 'Team has earned 8,500 XP collectively', type: 'info' }
-      ];
+  const insights = [
+    { text: '3 deals advancing to committee review', type: 'success' },
+    { text: 'Average deal quality improved 12% this month', type: 'success' },
+    { text: 'You\'ve saved $12,450 in analyst fees', type: 'info' },
+    { text: 'Team has earned 8,500 XP collectively', type: 'info' }
+  ];
 
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
@@ -348,7 +332,7 @@ export function Analytics({ darkMode }: AnalyticsProps) {
               {metrics.avgReadiness.value}%
             </div>
             <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              {isFounder ? 'Avg Pitch Readiness' : 'Avg Deal Quality Score'}
+              Avg Deal Quality Score
             </div>
             <div className={`text-xs mt-1 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
               vs last period
@@ -433,7 +417,7 @@ export function Analytics({ darkMode }: AnalyticsProps) {
               : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
           }`}>
             <h3 className={`text-sm mb-4 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              {isFounder ? 'Companies by Readiness Stage' : 'Deals by Pipeline Stage'}
+              Deals by Pipeline Stage
             </h3>
             <ResponsiveContainer width="100%" height={250}>
               <BarChart data={dealsByStage}>
@@ -558,7 +542,7 @@ export function Analytics({ darkMode }: AnalyticsProps) {
                     className={`p-4 text-left text-xs cursor-pointer hover:bg-white/5 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}
                     onClick={() => handleSort('readiness')}
                   >
-                    {isFounder ? 'Pitch Readiness' : 'Deal Quality'} {sortConfig?.key === 'readiness' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    Deal Quality {sortConfig?.key === 'readiness' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                   </th>
                   <th 
                     className={`p-4 text-left text-xs cursor-pointer hover:bg-white/5 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}

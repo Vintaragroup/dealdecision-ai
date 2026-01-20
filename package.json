@@ -4,6 +4,11 @@
   "private": true,
   "packageManager": "pnpm@9.12.0",
   "scripts": {
+      "report:segments:audit:md": "tsx scripts/segment-classification-audit.ts",
+    "report:segments:audit:all": "tsx scripts/segment-classification-audit-all.ts",
+    "report:slide-titles:md": "tsx scripts/export-slide-titles-md.ts",
+    "report:unknowns:hotspots": "tsx scripts/unknown-hotspots.ts",
+    "report:unknowns:kb": "tsx scripts/unknown-knowledgebase.ts",
     "dev": "pnpm --filter api dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
@@ -22,7 +27,9 @@
     "refresh:extraction:analysis:all": "tsx scripts/refresh-extraction-analysis-all-deals.ts",
     "segment:audit": "tsx scripts/segment-audit-export.ts",
     "audit:unknown-segments": "tsx scripts/audit-unknown-segments.ts",
-    "backfill:document-metadata": "tsx scripts/backfill-document-metadata.ts"
+    "backfill:document-metadata": "tsx scripts/backfill-document-metadata.ts",
+    "report:fundability:compare": "tsx scripts/compare-fundability-v1.ts",
+    "report:fundability:compare:md": "tsx scripts/compare-fundability-v1.ts --format md --out-md docs/Active/audit/analizer-debug/fundability-compare.md"
   },
   "devDependencies": {
     "@jest/globals": "^30.2.0",

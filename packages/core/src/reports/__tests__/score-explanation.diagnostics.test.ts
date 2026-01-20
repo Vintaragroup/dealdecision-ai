@@ -349,14 +349,16 @@ describe("scoring_diagnostics_v1", () => {
         evidence_ids: [],
       },
       financial_health: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, runway_months: 18, burn_multiple: 1.2, health_score: 100, metrics: { revenue: 200000, expenses: 150000, cash_balance: 400000, burn_rate: 50000, growth_rate: 0.1 }, risks: [], evidence_ids: [] },
-      // Unacceptable risk: high risk score and explicit high/critical risks in risk_map.
+      // Unacceptable risk: explicit high/critical risks in risk_map.
       risk_assessment: {
         analyzer_version: "1.0.0",
         executed_at: now,
         status: "ok",
         coverage: 1,
         confidence: 0.9,
-        overall_risk_score: 80,
+        // Keep the numeric risk score relatively good so the fundamentals-only v2 score would otherwise exceed 75,
+        // ensuring we hit the ">75 requires acceptable risk" gating/cap path.
+        overall_risk_score: 20,
         risks_by_category: {
           market: [
             {

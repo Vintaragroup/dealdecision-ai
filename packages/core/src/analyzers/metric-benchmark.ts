@@ -15,6 +15,7 @@ import {
   mapMetricNameToPolicyKpi,
   maybeNormalizePolicyKpiValue,
 } from "../scoring/policy-kpi-registry";
+import { stableUuid } from "../lib/stable-uuid";
 
 // ============================================================================
 // Industry Benchmarks
@@ -768,7 +769,14 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
       evidence_id: string;
     }> = [];
     
-    const default_evidence_id = evidence_ids[0] || "00000000-0000-0000-0000-000000000000";
+    const evidenceIdFor = (metric: { metric_name: string; value: number; unit: string; source: string }): string => {
+      // If upstream provided evidence IDs, preserve that linkage behavior.
+      if (typeof evidence_ids?.[0] === "string" && evidence_ids[0]) return evidence_ids[0];
+
+      // Otherwise, generate a deterministic per-metric UUID so we don't collapse everything to the nil UUID.
+      // This improves traceability without inventing analyzer-level evidence_ids that could affect linking.
+      return stableUuid(`metric_benchmark:${metric.source}:${metric.metric_name}:${metric.unit}:${metric.value}`);
+    };
 
     for (const metric of metrics) {
       const benchmark = benchmarks[metric.metric_name];
@@ -781,7 +789,7 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
           benchmark_source: "No benchmark available",
           rating: "Missing",
           deviation_pct: 0,
-          evidence_id: default_evidence_id,
+          evidence_id: evidenceIdFor(metric),
         });
         continue;
       }
@@ -830,7 +838,7 @@ export class MetricBenchmarkValidator extends BaseAnalyzer<MetricBenchmarkInput,
             : "Industry benchmarks (SaaS/E-commerce/Marketplace)",
         rating,
         deviation_pct: Math.round(deviation_pct * 10) / 10,
-        evidence_id: default_evidence_id,
+        evidence_id: evidenceIdFor(metric),
       });
     }
 

@@ -1,3 +1,4 @@
+import { SCORE_COMPONENT_KEYS_V2, type ScoreComponentKeyV2 } from "./scoring-contract.v2.js";
 import type { DealIntelligenceObject, ScoringDiagnosticsV1 } from "../types/dio.js";
 import { getDealPolicy } from "../classification/deal-policy-registry";
 import { getSelectedPolicyIdFromAny } from "../classification/get-selected-policy-id";
@@ -1349,7 +1350,7 @@ const getMeta = (res: any): { status: string | null; coverage: number | null; co
   return { status, coverage, confidence };
 };
 
-type ScoreComponentKey = "slide_sequence" | "metric_benchmark" | "visual_design" | "narrative_arc" | "financial_health" | "risk_assessment";
+type ScoreComponentKey = ScoreComponentKeyV2;
 
 type ComponentDetail = {
   reason: string;
@@ -1762,14 +1763,7 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   };
 
   // Determine which components are included in the aggregate
-  const componentsInOrder = [
-    "slide_sequence",
-    "metric_benchmark",
-    "visual_design",
-    "narrative_arc",
-    "financial_health",
-    "risk_assessment",
-  ] as const;
+  const componentsInOrder = SCORE_COMPONENT_KEYS_V2;
 
   const isPitchDeck = (ctx as any)?.primary_doc_type === "pitch_deck";
   const slidePatternMatch = typeof results?.slide_sequence?.pattern_match === "string" ? results.slide_sequence.pattern_match : "";
@@ -1794,13 +1788,14 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
       }
     : baseWeights;
 
-  // CRITICAL: do not skip components. Always include expected components from getContextWeights().
-  // When missing/non-ok/no-signal, we use neutral baseline (50) plus an explicit deterministic penalty.
+  // v2: presentation/packaging analyzers remain visible as diagnostics,
+  // but do not contribute to the numeric `overall_score` aggregation.
+  // When missing/non-ok/no-signal, we still compute a neutral baseline (50) plus an explicit deterministic penalty.
   const weights: ScoreExplanation["aggregation"]["weights"] = {
-    slide_sequence: adjustedBaseWeights.slide_sequence,
+    slide_sequence: 0,
     metric_benchmark: adjustedBaseWeights.metric_benchmark,
-    visual_design: adjustedBaseWeights.visual_design,
-    narrative_arc: adjustedBaseWeights.narrative_arc,
+    visual_design: 0,
+    narrative_arc: 0,
     financial_health: adjustedBaseWeights.financial_health,
     risk_assessment: adjustedBaseWeights.risk_assessment,
   };

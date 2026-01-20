@@ -78,7 +78,7 @@ describe("score_explanation policy routing", () => {
     // Real estate underwriting policy weight should override pitch_deck legacy (metric_benchmark would be 1.0 under legacy).
     expect(explanation.aggregation.weights.metric_benchmark).toBe(1.5);
     expect(explanation.aggregation.weights.slide_sequence).toBe(0);
-    expect(explanation.aggregation.weights.narrative_arc).toBe(1.1);
+    expect(explanation.aggregation.weights.narrative_arc).toBe(0);
     expect(explanation.aggregation.weights.financial_health).toBe(0);
     expect(explanation.aggregation.policy_id).toBe("real_estate_underwriting");
   });
@@ -89,7 +89,7 @@ describe("score_explanation policy routing", () => {
 
     const explanation = buildScoreExplanationFromDIO(dio);
     expect(explanation.aggregation.weights.metric_benchmark).toBe(1.0);
-    expect(explanation.aggregation.weights.narrative_arc).toBe(1.5);
+    expect(explanation.aggregation.weights.narrative_arc).toBe(0);
     expect(explanation.aggregation.policy_id).toBeNull();
   });
 

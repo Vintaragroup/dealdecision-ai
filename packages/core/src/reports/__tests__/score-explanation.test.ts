@@ -272,15 +272,13 @@ describe("score_explanation", () => {
     expect(explanation.components.metric_benchmark.penalty).toBeGreaterThan(0);
     expect(explanation.components.metric_benchmark.reason).toMatch(/no financial metrics extracted/i);
 
-    // Expected weighted mean (pitch deck base weights total = 6.0):
-    // slide 40 (w=1)
-    // metric_benchmark insufficient_data => neutral 50 - penalty(6) => 44 (w=1)
-    // visual 50 (w=1)
-    // narrative 70 (w=1.5)
-    // financial 80 (w=0.5)
-    // risk inverted 58 -> 42 (w=1)
-    // sum = 40 + 44 + 50 + 1.5*70 + 0.5*80 + 42 = 321; /6 = 53.5 => 54
-    expect(explanation.totals.unadjusted_overall_score).toBe(54);
+    // v2 decision scoring: fundamentals only (metric_benchmark, financial_health, risk_assessment).
+    // totalWeight = 1 + 0.5 + 1 = 2.5
+    // metric_benchmark insufficient_data => neutral 50 - penalty(6) => 44
+    // financial 80
+    // risk inverted 58 -> 42
+    // unadjusted = round((44*1 + 80*0.5 + 42*1)/2.5) = round(50.4) = 50
+    expect(explanation.totals.unadjusted_overall_score).toBe(50);
 
     const expectedAdjusted = Math.round(
       (explanation.totals.unadjusted_overall_score as number) * explanation.totals.adjustment_factor
@@ -328,14 +326,12 @@ describe("score_explanation", () => {
 
     const explanation = buildScoreExplanationFromDIO(dio);
 
-    // Slide sequence is included but low confidence -> blended: effective = 0*0.3 + 50*0.7 = 35
-    // Pitch deck weights total = 6.0 => overall = round((35 + 80 + 80 + 1.5*80 + 0.5*80 + 80) / 6)
-    // = round(435/6) = round(72.5) = 73
+    // v2: slide_sequence remains computed (diagnostic) but does not contribute to overall_score.
     expect(explanation.aggregation.included_components).toEqual(
-      expect.arrayContaining(["slide_sequence", "metric_benchmark", "visual_design", "narrative_arc", "financial_health", "risk_assessment"])
+      expect.arrayContaining(["metric_benchmark", "financial_health", "risk_assessment"])
     );
     expect(explanation.components.slide_sequence.notes.join("\n")).toMatch(/blended toward neutral baseline/i);
-    expect(explanation.totals.unadjusted_overall_score).toBe(73);
+    expect(explanation.totals.unadjusted_overall_score).toBe(80);
 
     const expectedAdjusted = Math.round(
       (explanation.totals.unadjusted_overall_score as number) * explanation.totals.adjustment_factor
@@ -445,7 +441,7 @@ describe("score_explanation", () => {
     const explanation = buildScoreExplanationFromDIO(dio);
 
     expect(explanation.aggregation.included_components).toEqual(
-      expect.arrayContaining(["risk_assessment"])
+      expect.arrayContaining(["metric_benchmark", "financial_health", "risk_assessment"])
     );
     expect(explanation.aggregation.excluded_components).toEqual([]);
 
@@ -456,8 +452,10 @@ describe("score_explanation", () => {
     expect(explanation.components.risk_assessment.inverted_investment_score).toBe(50);
     expect(explanation.components.risk_assessment.notes.join("\n")).toMatch(/no_signal/i);
 
-    // Included 6 components: 40 + 60 + 50 + 70 + 80 + (risk baseline 50 - penalty(6)=44) = 344 => /6 = 57.33 => 57
-    expect(explanation.totals.unadjusted_overall_score).toBe(57);
+    // v2 decision scoring: fundamentals only (metric_benchmark, financial_health, risk_assessment).
+    // risk no-signal => neutral 50 - penalty(6) => 44
+    // unadjusted = round((60*1 + 80*0.5 + 44*1)/2.5) = round(57.6) = 58
+    expect(explanation.totals.unadjusted_overall_score).toBe(58);
 
     const expectedAdjusted = Math.round(
       (explanation.totals.unadjusted_overall_score as number) * explanation.totals.adjustment_factor
@@ -466,7 +464,7 @@ describe("score_explanation", () => {
     expect(explanation.totals.overall_score).toBe(expectedAdjusted);
   });
 
-  it("should adjust pitch deck weights for traction-first patterns", () => {
+  it("traction-first pitch deck patterns do not affect v2 decision weights", () => {
     const now = new Date().toISOString();
 
     const mkDio = (pattern_match: string): any => ({
@@ -568,17 +566,19 @@ describe("score_explanation", () => {
     const normal = buildScoreExplanationFromDIO(mkDio("Standard"));
     const traction = buildScoreExplanationFromDIO(mkDio("Traction-First"));
 
-    expect(normal.aggregation.weights.slide_sequence).toBeCloseTo(1.0);
-    expect(normal.aggregation.weights.narrative_arc).toBeCloseTo(1.5);
+    // v2: presentation weights are hard-zeroed.
+    expect(normal.aggregation.weights.slide_sequence).toBe(0);
+    expect(normal.aggregation.weights.narrative_arc).toBe(0);
+    expect(normal.aggregation.weights.visual_design).toBe(0);
 
-    expect(traction.aggregation.weights.slide_sequence).toBeCloseTo(0.6);
-    expect(traction.aggregation.weights.narrative_arc).toBeCloseTo(1.9);
+    expect(traction.aggregation.weights.slide_sequence).toBe(0);
+    expect(traction.aggregation.weights.narrative_arc).toBe(0);
+    expect(traction.aggregation.weights.visual_design).toBe(0);
 
-    // Unchanged pitch-deck base weights
-    expect(traction.aggregation.weights.visual_design).toBeCloseTo(1.0);
-    expect(traction.aggregation.weights.metric_benchmark).toBeCloseTo(1.0);
-    expect(traction.aggregation.weights.financial_health).toBeCloseTo(0.5);
-    expect(traction.aggregation.weights.risk_assessment).toBeCloseTo(1.0);
+    // Fundamentals weights remain stable.
+    expect(traction.aggregation.weights.metric_benchmark).toBeCloseTo(normal.aggregation.weights.metric_benchmark);
+    expect(traction.aggregation.weights.financial_health).toBeCloseTo(normal.aggregation.weights.financial_health);
+    expect(traction.aggregation.weights.risk_assessment).toBeCloseTo(normal.aggregation.weights.risk_assessment);
   });
 
   it("Vintara: exec_summary weights downweight slide/visual so >15 pages isn't primary penalty", () => {
@@ -616,9 +616,10 @@ describe("score_explanation", () => {
 
     const explanation = buildScoreExplanationFromDIO(dio);
 
-    // Slide/visual are present but should be downweighted relative to narrative/metrics/financial.
-    expect(explanation.aggregation.weights.slide_sequence).toBeLessThan(explanation.aggregation.weights.narrative_arc);
-    expect(explanation.aggregation.weights.visual_design).toBeLessThan(explanation.aggregation.weights.metric_benchmark);
+    // v2: presentation weights are hard-zeroed.
+    expect(explanation.aggregation.weights.slide_sequence).toBe(0);
+    expect(explanation.aggregation.weights.visual_design).toBe(0);
+    expect(explanation.aggregation.weights.narrative_arc).toBe(0);
 
     // Overall score should not be dominated by slide/visual low scores.
     expect(explanation.totals.overall_score).not.toBeNull();

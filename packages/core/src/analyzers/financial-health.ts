@@ -10,6 +10,7 @@
 import { BaseAnalyzer, AnalyzerMetadata, ValidationResult } from "./base";
 import { buildRulesFromBaseAndDeltas } from "./debug-scoring";
 import type { DebugScoringTrace, FinancialHealthInput, FinancialHealthResult } from "../types/dio";
+import { stableUuid } from "../lib/stable-uuid";
 
 // ============================================================================
 // Financial Health Thresholds
@@ -822,7 +823,10 @@ export class FinancialHealthCalculator extends BaseAnalyzer<FinancialHealthInput
       evidence_id: string;
     }> = [];
     
-    const default_evidence_id = evidence_ids[0] || "00000000-0000-0000-0000-000000000000";
+    const evidenceIdFor = (seed: string): string => {
+      if (typeof evidence_ids?.[0] === "string" && evidence_ids[0]) return evidence_ids[0];
+      return stableUuid(`financial_health:${seed}`);
+    };
 
     // Runway risks
     if (runway_months < HEALTH_THRESHOLDS.runway_months.critical) {
@@ -830,14 +834,14 @@ export class FinancialHealthCalculator extends BaseAnalyzer<FinancialHealthInput
         category: "runway",
         severity: "critical",
         description: `Critical runway: only ${runway_months} months of cash remaining`,
-        evidence_id: default_evidence_id,
+        evidence_id: evidenceIdFor(`runway:critical:${runway_months}`),
       });
     } else if (runway_months < HEALTH_THRESHOLDS.runway_months.warning) {
       risks.push({
         category: "runway",
         severity: "high",
         description: `Short runway: ${runway_months} months - should be raising soon`,
-        evidence_id: default_evidence_id,
+        evidence_id: evidenceIdFor(`runway:high:${runway_months}`),
       });
     }
 
@@ -848,14 +852,14 @@ export class FinancialHealthCalculator extends BaseAnalyzer<FinancialHealthInput
           category: "burn",
           severity: "high",
           description: `High burn multiple: $${burn_multiple.toFixed(2)} per $1 new ARR`,
-          evidence_id: default_evidence_id,
+          evidence_id: evidenceIdFor(`burn:high:${burn_multiple.toFixed(2)}`),
         });
       } else if (burn_multiple > HEALTH_THRESHOLDS.burn_multiple.acceptable) {
         risks.push({
           category: "burn",
           severity: "medium",
           description: `Elevated burn multiple: $${burn_multiple.toFixed(2)} per $1 new ARR`,
-          evidence_id: default_evidence_id,
+          evidence_id: evidenceIdFor(`burn:medium:${burn_multiple.toFixed(2)}`),
         });
       }
     }

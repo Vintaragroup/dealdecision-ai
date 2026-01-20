@@ -10,6 +10,7 @@
 import { BaseAnalyzer, AnalyzerMetadata, ValidationResult } from "./base";
 import { buildRulesFromBaseAndDeltas } from "./debug-scoring";
 import type { DebugScoringTrace, RiskAssessmentInput, RiskAssessmentResult, Risk } from "../types/dio";
+import { stableUuid } from "../lib/stable-uuid";
 
 const normalizeKey = (s: string): string =>
   s
@@ -462,7 +463,10 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
    */
   private detectRisks(input: RiskAssessmentInput): Risk[] {
     const risks: Risk[] = [];
-    const default_evidence_id = input.evidence_ids?.[0] || "00000000-0000-0000-0000-000000000000";
+    const evidenceIdFor = (seed: string): string => {
+      if (typeof input.evidence_ids?.[0] === "string" && input.evidence_ids[0]) return input.evidence_ids[0];
+      return stableUuid(`risk_assessment:${seed}`);
+    };
     const text_lower = (input.pitch_text || "").toLowerCase();
 
     // Team risks
@@ -472,7 +476,7 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
         category: "team",
         severity: "medium",
         description: "Small team size - may struggle with execution at scale",
-        evidence_id: default_evidence_id,
+        evidence_id: evidenceIdFor("team:medium:small_team_size"),
       });
     }
 
@@ -482,7 +486,7 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
         category: "team",
         severity: "high",
         description: "Key technical role unfilled - CTO position vacant",
-        evidence_id: default_evidence_id,
+        evidence_id: evidenceIdFor("team:high:cto_unfilled"),
       });
     }
 
@@ -493,7 +497,7 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
         category: "market",
         severity: "medium",
         description: "Competitive market landscape mentioned",
-        evidence_id: default_evidence_id,
+        evidence_id: evidenceIdFor("market:medium:crowded_market"),
       });
     }
 
@@ -503,7 +507,7 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
         category: "market",
         severity: "low",
         description: "Niche market - may limit growth potential",
-        evidence_id: default_evidence_id,
+        evidence_id: evidenceIdFor("market:low:niche_market"),
       });
     }
 
@@ -514,7 +518,7 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
         category: "financial",
         severity: "critical",
         description: `Critical runway - only ${input.metrics.runway} months remaining`,
-        evidence_id: default_evidence_id,
+        evidence_id: evidenceIdFor(`financial:critical:runway_lt_6:${input.metrics.runway}`),
       });
     }
 
@@ -524,7 +528,7 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
         category: "financial",
         severity: "high",
         description: "High burn rate detected",
-        evidence_id: default_evidence_id,
+        evidence_id: evidenceIdFor(`financial:high:burn_rate_gt_100k:${input.metrics.burn_rate}`),
       });
     }
 
@@ -534,7 +538,7 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
         category: "financial",
         severity: "medium",
         description: "Pre-revenue stage - monetization unproven",
-        evidence_id: default_evidence_id,
+        evidence_id: evidenceIdFor("financial:medium:pre_revenue"),
       });
     }
 
@@ -545,7 +549,7 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
         category: "execution",
         severity: "medium",
         description: "Early product stage - significant development ahead",
-        evidence_id: default_evidence_id,
+        evidence_id: evidenceIdFor("execution:medium:early_product_stage"),
       });
     }
 
@@ -555,7 +559,7 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
         category: "execution",
         severity: "high",
         description: "Regulatory requirements - approval timeline uncertain",
-        evidence_id: default_evidence_id,
+        evidence_id: evidenceIdFor("execution:high:regulatory_uncertainty"),
       });
     }
 

@@ -16,6 +16,7 @@ import { financialHealthCalculator } from "../financial-health";
 import { riskAssessmentEngine } from "../risk-assessment";
 
 const EVIDENCE_ID = "11111111-1111-1111-1111-111111111111";
+const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 
 describe("SlideSequenceAnalyzer", () => {
   test("ok path returns non-null score and sequence", async () => {
@@ -211,6 +212,24 @@ describe("MetricBenchmarkValidator", () => {
     expect(result.overall_score).not.toBeNull();
     // At least one benchmarked KPI should yield a non-neutral rating.
     expect(result.metrics_analyzed.some((m) => m.rating !== "Missing")).toBe(true);
+  });
+
+  test("does not emit nil evidence_id when evidence_ids is empty", async () => {
+    const result = await metricBenchmarkValidator.analyze({
+      text: "",
+      extracted_metrics: [
+        { name: "cash_balance", value: "$1.2M", source_doc_id: "doc-1" },
+        { name: "burn_rate", value: "$100k", source_doc_id: "doc-1" },
+      ],
+      evidence_ids: [],
+    } as any);
+
+    expect(result.status).toBe("ok");
+    expect(Array.isArray(result.metrics_analyzed)).toBe(true);
+    expect(result.metrics_analyzed.length).toBeGreaterThan(0);
+    for (const m of result.metrics_analyzed) {
+      expect(m.evidence_id).not.toBe(NIL_UUID);
+    }
   });
 });
 
@@ -409,6 +428,21 @@ describe("FinancialHealthCalculator", () => {
     expect(result.runway_months).toBe(12);
     expect(result.health_score).not.toBeNull();
   });
+
+  test("does not emit nil evidence_id when evidence_ids is empty", async () => {
+    const result = await financialHealthCalculator.analyze({
+      cash_balance: 300_000,
+      burn_rate: 100_000,
+      evidence_ids: [],
+    } as any);
+
+    expect(result.status).toBe("ok");
+    expect(Array.isArray(result.risks)).toBe(true);
+    expect(result.risks.length).toBeGreaterThan(0);
+    for (const r of result.risks) {
+      expect(r.evidence_id).not.toBe(NIL_UUID);
+    }
+  });
 });
 
 describe("RiskAssessmentEngine", () => {
@@ -492,6 +526,32 @@ describe("RiskAssessmentEngine", () => {
     expect(result.status).toBe("ok");
     expect(result.overall_risk_score as number).toBeLessThanOrEqual(30);
     expect(String(result.note || "")).toContain("RE protections detected");
+  });
+
+  test("does not emit nil evidence_id when evidence_ids is empty", async () => {
+    const text = "We are pre-revenue with an MVP. We are looking for a CTO.";
+    const result = await riskAssessmentEngine.analyze({
+      pitch_text: text,
+      documents: [{ full_text: text }],
+      evidence: [],
+      headings: ["Team"],
+      metrics: {},
+      team_size: 2,
+      evidence_ids: [],
+    } as any);
+
+    expect(result.status).toBe("ok");
+    expect(result.total_risks).toBeGreaterThan(0);
+    const allRisks = [
+      ...result.risks_by_category.market,
+      ...result.risks_by_category.team,
+      ...result.risks_by_category.financial,
+      ...result.risks_by_category.execution,
+    ];
+    expect(allRisks.length).toBeGreaterThan(0);
+    for (const r of allRisks) {
+      expect(r.evidence_id).not.toBe(NIL_UUID);
+    }
   });
 });
 

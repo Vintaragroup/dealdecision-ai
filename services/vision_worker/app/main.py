@@ -11,13 +11,16 @@ from typing import Any, Dict, Optional, Tuple
 import requests
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from app.vision_understanding import infer_vision_understanding
 from PIL import Image
 
 from .extractors.layout import detect_layout_assets
 from .extractors.ocr import run_ocr_lite
 from .extractors.chart_bar import detect_bar_chart, extract_bar_chart
 from .extractors.table import detect_table, extract_table
-from .models import BBox, ExtractVisualsRequest, ExtractVisualsResponse, VisualAsset
+from .models import BBox, ExtractVisualsRequest, ExtractVisualsResponse, VisualAsset, ExtractXlsxRequest, ExtractXlsxResponse
+
+from .extractors.xlsx_structured import extract_xlsx_structured_pages
 
 
 logger = logging.getLogger("vision_worker")
@@ -48,6 +51,18 @@ def _sha256_hex(data: bytes) -> str:
 def _read_image_bytes(image_uri: str, *, timeout_s: float = 5.0) -> Tuple[Optional[bytes], Dict[str, Any]]:
     flags: Dict[str, Any] = {}
 
+    def _normalize_local_path(p: str) -> str:
+        # In the Node worker/API we store image URIs like "/uploads/...".
+        # In this container, uploads are mounted at "/app/uploads" by default.
+        # Normalize so local reads succeed without requiring callers to know container paths.
+        try:
+            if p.startswith("/uploads/"):
+                upload_dir = os.environ.get("UPLOAD_DIR", "/app/uploads").rstrip("/") or "/app/uploads"
+                return upload_dir + p[len("/uploads") :]
+        except Exception:
+            pass
+        return p
+
     if image_uri.startswith("http://") or image_uri.startswith("https://"):
         try:
             resp = requests.get(image_uri, timeout=timeout_s)
@@ -60,7 +75,8 @@ def _read_image_bytes(image_uri: str, *, timeout_s: float = 5.0) -> Tuple[Option
 
     # Local path
     try:
-        with open(image_uri, "rb") as f:
+        local_path = _normalize_local_path(image_uri)
+        with open(local_path, "rb") as f:
             return f.read(), flags
     except Exception as e:
         flags["image_load"] = "file_read_failed"
@@ -103,6 +119,51 @@ def health() -> Dict[str, Any]:
         "tesseract_available": bool(tesseract_path),
         "tesseract_path": tesseract_path,
     }
+
+
+@app.post("/extract-xlsx")
+def extract_xlsx(req: ExtractXlsxRequest) -> JSONResponse:
+    started = time.perf_counter()
+    base_log = {
+        "document_id": req.document_id,
+        "extractor_version": req.extractor_version,
+    }
+    try:
+        pages = extract_xlsx_structured_pages(
+            document_id=req.document_id,
+            xlsx_b64=req.xlsx_b64,
+            extractor_version=req.extractor_version,
+            max_sheets=req.max_sheets,
+            max_tables_per_sheet=req.max_tables_per_sheet,
+        )
+        out = ExtractXlsxResponse(document_id=req.document_id, extractor_version=req.extractor_version, pages=pages)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        _log_event(
+            "extract_xlsx",
+            {
+                **base_log,
+                "elapsed_ms": elapsed_ms,
+                "status": "ok",
+                "sheets": len(out.pages),
+                "assets": sum(len(p.assets) for p in out.pages),
+            },
+        )
+        return JSONResponse(status_code=200, content=out.model_dump())
+    except Exception as e:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        _log_event(
+            "extract_xlsx",
+            {
+                **base_log,
+                "elapsed_ms": elapsed_ms,
+                "status": "error",
+                "error": str(e),
+            },
+        )
+        return JSONResponse(
+            status_code=200,
+            content=ExtractXlsxResponse(document_id=req.document_id, extractor_version=req.extractor_version, pages=[]).model_dump(),
+        )
 
 
 @app.post("/extract-visuals")
@@ -254,6 +315,121 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
             "values_normalized": False,
         }
 
+        # Optional vision understanding (CLIP-style) for no-text/low-signal pages.
+        vu_enabled = os.environ.get("ENABLE_VISION_UNDERSTANDING", "0").strip().lower() in ("1", "true", "yes", "on")
+        vu_cache_dir = os.environ.get("VISION_UNDERSTANDING_CACHE_DIR", "/tmp/vision_understanding_cache")
+        try:
+            vu_min_conf = float(os.environ.get("VISION_UNDERSTANDING_MIN_CONFIDENCE", "0.45"))
+        except Exception:
+            vu_min_conf = 0.45
+        try:
+            vu_min_conf_force = float(os.environ.get("VISION_UNDERSTANDING_MIN_CONFIDENCE_FORCE", "0.35"))
+        except Exception:
+            vu_min_conf_force = 0.35
+
+        def _ocr_looks_low_quality(text: Optional[str], conf: float) -> bool:
+            s = (text or "").strip()
+            if not s:
+                return True
+
+            def _letters_only(word: str) -> str:
+                return "".join(ch for ch in (word or "") if ch.isalpha())
+
+            def _case_transitions(word: str) -> int:
+                w = _letters_only(word)
+                if len(w) < 2:
+                    return 0
+                transitions = 0
+                prev_upper = None
+                for ch in w:
+                    is_upper = ch.isupper()
+                    if prev_upper is not None and is_upper != prev_upper:
+                        transitions += 1
+                    prev_upper = is_upper
+                return transitions
+
+            def _max_consonant_run(word: str) -> int:
+                w = _letters_only(word).lower()
+                if not w:
+                    return 0
+                vowels = set("aeiouy")
+                run = 0
+                best = 0
+                for ch in w:
+                    if ch in vowels:
+                        run = 0
+                        continue
+                    run += 1
+                    best = max(best, run)
+                return best
+
+            def _looks_random_mixed_case(word: str) -> bool:
+                w = _letters_only(word)
+                if len(w) < 6:
+                    return False
+                if not any(ch.islower() for ch in w):
+                    return False
+                if not any(ch.isupper() for ch in w):
+                    return False
+                return _case_transitions(w) >= 3
+
+            def _looks_unpronounceable(word: str) -> bool:
+                w = _letters_only(word)
+                if len(w) < 7:
+                    return False
+                return _max_consonant_run(w) >= 5
+
+            try:
+                if float(conf) < 0.25:
+                    return True
+            except Exception:
+                pass
+
+            collapsed = "".join(ch for ch in s if ch not in ("\n", "\r"))
+            if not collapsed:
+                return True
+
+            alpha = sum(1 for ch in collapsed if ch.isalpha())
+            alpha_ratio = alpha / max(1, len(collapsed))
+            if alpha_ratio < 0.45:
+                return True
+
+            non_alnum = sum(1 for ch in collapsed if not (ch.isalnum() or ch.isspace()))
+            non_alnum_ratio = non_alnum / max(1, len(collapsed))
+            if non_alnum_ratio > 0.30:
+                return True
+
+            words = [w for w in s.split() if w]
+            if not words:
+                return True
+            single_char = sum(1 for w in words if len(w) == 1)
+            if single_char >= int(len(words) * 0.6):
+                return True
+
+            # Heuristic: OCR garbage often creates long tokens with no vowels.
+            if len(words) >= 6:
+                vowel_set = set("aeiou")
+                long_no_vowel = 0
+                for w in words:
+                    if len(w) >= 12:
+                        lw = w.lower()
+                        if not any(ch in vowel_set for ch in lw):
+                            long_no_vowel += 1
+                if long_no_vowel >= int(len(words) * 0.2):
+                    return True
+
+            # Heuristic: OCR gibberish can still be alphabetic but contains many unpronounceable or
+            # random-mixed-case tokens (e.g. "atewULe", "PIOWEPUNS").
+            if len(words) >= 6:
+                weird = 0
+                for w in words:
+                    if _looks_unpronounceable(w) or _looks_random_mixed_case(w):
+                        weird += 1
+                if weird >= int(len(words) * 0.25):
+                    return True
+
+            return False
+
         for a in assets:
             ocr_flags: Dict[str, Any] = {}
             if ocr_enabled:
@@ -299,11 +475,10 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
 
             if detect_res.detected:
                 a.asset_type = "table"
-                # Keep OCR output as-is; only add structured_json.table
                 structured, table_flags = extract_table(
                     img,
                     detect=detect_res,
-                    ocr_blocks=extraction.ocr_blocks,
+                    ocr_blocks=a.extraction.ocr_blocks,
                     deadline=table_deadline,
                 )
                 if table_flags:
@@ -328,7 +503,6 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
                     "table_cols": table_cols,
                 }
 
-                # Bump confidences based on table extraction quality
                 a.extraction.confidence = max(a.extraction.confidence, table_conf)
                 a.confidence = max(a.confidence, table_conf)
             else:
@@ -342,11 +516,12 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
                     structured, chart_flags = extract_bar_chart(
                         img,
                         detect=chart_res,
-                        ocr_blocks=extraction.ocr_blocks,
+                        ocr_blocks=a.extraction.ocr_blocks,
                         deadline=chart_deadline,
                     )
                     if chart_flags:
                         a.quality_flags.update(chart_flags)
+
                     a.extraction.structured_json = structured
 
                     chart_conf = float(structured.get("chart", {}).get("confidence", 0.0) or 0.0)
@@ -366,9 +541,50 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
                         "values_normalized": bool(values_norm),
                     }
 
+            # Vision understanding: by default run only when we still have low text signal AND no table/chart structured output.
+            # Override: if extractor_version contains "force_vu", run anyway (best-effort) so callers can request
+            # cheap per-page semantic hints without burning LLM tokens.
+            try:
+                vu_force = "force_vu" in (req.extractor_version or "").strip().lower()
+                ocr_text = a.extraction.ocr_text or ""
+                ocr_len = len(ocr_text)
+                has_structured_payload = bool(a.extraction.structured_json and isinstance(a.extraction.structured_json, dict))
+                ocr_low_quality = _ocr_looks_low_quality(ocr_text, float(a.extraction.confidence or 0.0))
+                allow_understanding = vu_enabled and (
+                    (
+                        vu_force
+                        and a.asset_type in ("unknown", "image_text", "table")
+                    )
+                    or (
+                        (not vu_force)
+                        and a.asset_type in ("unknown", "image_text")
+                        and not has_structured_payload
+                        and (ocr_len < 20 or ocr_low_quality)
+                    )
+                )
+                if allow_understanding:
+                    vu_payload, vu_flags = infer_vision_understanding(
+                        image=img,
+                        image_hash=image_hash,
+                        enable=True,
+                        cache_dir=vu_cache_dir,
+                        min_confidence=(vu_min_conf_force if vu_force else vu_min_conf),
+                    )
+                    if vu_flags:
+                        a.quality_flags.update(vu_flags)
+                    if vu_payload and isinstance(vu_payload, dict):
+                        if not a.extraction.structured_json or not isinstance(a.extraction.structured_json, dict):
+                            a.extraction.structured_json = {}
+                        a.extraction.structured_json.update(vu_payload)
+            except Exception:
+                try:
+                    a.quality_flags["vision_understanding"] = "error"
+                except Exception:
+                    pass
+
             # If OCR text exists, bump confidence a bit
-            if extraction.ocr_text:
-                a.confidence = max(a.confidence, extraction.confidence)
+            if a.extraction.ocr_text:
+                a.confidence = max(a.confidence, a.extraction.confidence)
             else:
                 a.confidence = min(a.confidence, 0.25)
 

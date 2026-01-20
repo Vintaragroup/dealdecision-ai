@@ -59,3 +59,22 @@ class ExtractVisualsResponse(BaseModel):
     page_index: int
     extractor_version: str
     assets: List[VisualAsset] = Field(default_factory=list)
+
+
+class ExtractXlsxRequest(BaseModel):
+    """Extract structured assets from an XLSX workbook.
+
+    We intentionally use base64-encoded bytes so the Node worker can call this without
+    needing a shared filesystem path to the original file.
+    """
+    document_id: str
+    xlsx_b64: str
+    extractor_version: str = "excel_py_v1"
+    max_sheets: int = Field(default=50, ge=1, le=200)
+    max_tables_per_sheet: int = Field(default=24, ge=1, le=200)
+
+
+class ExtractXlsxResponse(BaseModel):
+    document_id: str
+    extractor_version: str
+    pages: List[ExtractVisualsResponse] = Field(default_factory=list)

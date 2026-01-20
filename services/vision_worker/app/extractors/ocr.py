@@ -4,6 +4,7 @@ import shutil
 from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image
+from PIL import ImageFilter, ImageOps
 
 from ..models import BBox, OcrBlock, VisualExtraction
 
@@ -48,13 +49,133 @@ def run_ocr_lite(image: Image.Image) -> Tuple[VisualExtraction, Dict[str, Any]]:
         flags["ocr"] = "tesseract_binary_missing"
         return VisualExtraction(ocr_text=None, ocr_blocks=[], confidence=0.0), flags
 
+    def _preprocess_for_ocr(img_in: Image.Image) -> Tuple[Image.Image, Dict[str, Any]]:
+        meta: Dict[str, Any] = {}
+        img = img_in
+
+        try:
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass
+
+        try:
+            img = img.convert("L")
+            meta["mode"] = "L"
+        except Exception:
+            meta["mode"] = getattr(img, "mode", None)
+
+        # Scale up small renders (common for PPTX/PDF page images) to help OCR.
+        try:
+            w, h = img.size
+            if w > 0 and h > 0:
+                target_min = 1600
+                target_max = 3200
+                min_side = min(w, h)
+                max_side = max(w, h)
+                scale = 1.0
+                if min_side < target_min:
+                    scale = target_min / float(min_side)
+                if max_side * scale > target_max:
+                    scale = target_max / float(max_side)
+                if scale > 1.05:
+                    img = img.resize((int(w * scale), int(h * scale)), resample=Image.Resampling.LANCZOS)
+                    meta["scaled"] = float(scale)
+        except Exception:
+            pass
+
+        # Contrast normalization + mild denoise/sharpen.
+        try:
+            img = ImageOps.autocontrast(img)
+            meta["autocontrast"] = True
+        except Exception:
+            meta["autocontrast"] = False
+
+        try:
+            img = img.filter(ImageFilter.MedianFilter(size=3))
+            meta["median"] = True
+        except Exception:
+            meta["median"] = False
+
+        try:
+            img = img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
+            meta["unsharp"] = True
+        except Exception:
+            meta["unsharp"] = False
+
+        # Optional binarization (Otsu) to reduce background gradients.
+        # If numpy isn't available, fall back to a conservative fixed threshold.
+        try:
+            import numpy as np  # type: ignore
+
+            arr = np.array(img)
+            if arr.size > 0:
+                # Otsu threshold
+                hist = np.bincount(arr.flatten(), minlength=256).astype(np.float64)
+                total = arr.size
+                sum_total = float((np.arange(256) * hist).sum())
+                sum_b = 0.0
+                w_b = 0.0
+                best_var = -1.0
+                best_t = 180
+                for t in range(256):
+                    w_b += float(hist[t])
+                    if w_b == 0.0:
+                        continue
+                    w_f = float(total) - w_b
+                    if w_f == 0.0:
+                        break
+                    sum_b += float(t * hist[t])
+                    m_b = sum_b / w_b
+                    m_f = (sum_total - sum_b) / w_f
+                    var_between = w_b * w_f * (m_b - m_f) * (m_b - m_f)
+                    if var_between > best_var:
+                        best_var = var_between
+                        best_t = t
+
+                bin_arr = (arr > best_t).astype(np.uint8) * 255
+                img = Image.fromarray(bin_arr, mode="L")
+                meta["binarize"] = "otsu"
+                meta["threshold"] = int(best_t)
+        except Exception:
+            try:
+                img = img.point(lambda p: 255 if p > 180 else 0)
+                meta["binarize"] = "fixed"
+                meta["threshold"] = 180
+            except Exception:
+                meta["binarize"] = False
+
+        return img, meta
+
     try:
         try:
-            img = image.convert("RGB")
+            # Preprocess before OCR; keep the result single-channel for Tesseract.
+            img_rgb = image.convert("RGB")
         except Exception:
-            img = image
+            img_rgb = image
 
-        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT, lang="eng")
+        img, prep_meta = _preprocess_for_ocr(img_rgb)
+        flags["ocr_preprocess_v1"] = prep_meta
+
+        # Tesseract config tuned for slide/page-like layouts.
+        # - oem 1: LSTM
+        # - psm 6: assume a uniform block of text (works well for slide body)
+        base_config = "--oem 1 --psm 6 -c preserve_interword_spaces=1"
+        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT, lang="eng", config=base_config)
+
+        # If we got almost nothing, retry with sparse text mode (helps with big headings).
+        try:
+            if len([t for t in data.get("text", []) if str(t).strip()]) < 10:
+                sparse_config = "--oem 1 --psm 11 -c preserve_interword_spaces=1"
+                data2 = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT, lang="eng", config=sparse_config)
+                if len([t for t in data2.get("text", []) if str(t).strip()]) > len([t for t in data.get("text", []) if str(t).strip()]):
+                    data = data2
+                    flags["ocr_psm"] = 11
+                else:
+                    flags["ocr_psm"] = 6
+            else:
+                flags["ocr_psm"] = 6
+        except Exception:
+            flags["ocr_psm"] = 6
         text_items: List[str] = []
         blocks: List[OcrBlock] = []
 

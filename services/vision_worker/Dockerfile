@@ -14,6 +14,11 @@ RUN apt-get update \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Optional: install local vision understanding deps (open_clip + torch)
+ARG ENABLE_VISION_UNDERSTANDING=0
+COPY requirements-vision.txt ./
+RUN if [ "$ENABLE_VISION_UNDERSTANDING" = "1" ]; then pip install --no-cache-dir -r requirements-vision.txt; fi
+
 COPY app ./app
 
 # Fail fast during build if core imports are broken.

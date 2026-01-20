@@ -7,6 +7,40 @@ Internal-only microservice for **visual extraction v1** (layout-lite + OCR-lite)
 - OCR is **optional**: if `pytesseract` or the `tesseract` binary is missing, responses include `quality_flags` and empty OCR fields.
 - Table extraction is supported (heuristic) and populates `extraction.structured_json` while preserving the stable API contract.
 
+## Optional: local vision understanding (no-text pages)
+
+When enabled, the service can run a **local CLIP-style classifier** on very low-text pages (e.g. floor plans, diagrams) and attach:
+
+- `extraction.structured_json.vision_understanding_v1.title`
+- `extraction.structured_json.vision_understanding_v1.segment_hint`
+
+This is designed to reduce "missing title" + "NO_TEXT" cases without burning LLM tokens.
+
+### Enable in Docker Compose (recommended)
+
+1) In your repo `.env`, set:
+
+```bash
+ENABLE_VISUAL_EXTRACTION=1
+ENABLE_VISION_UNDERSTANDING=1
+```
+
+2) Rebuild the vision worker (required once, because torch/open_clip are optional deps installed via build arg):
+
+```bash
+ENABLE_VISION_UNDERSTANDING=1 docker compose -f infra/docker-compose.yml build vision_worker
+```
+
+3) Start the services:
+
+```bash
+docker compose -f infra/docker-compose.yml up -d vision_worker worker
+```
+
+Notes:
+- Cache/model downloads are persisted in the `vision_worker_cache` Docker volume.
+- Use `VISION_UNDERSTANDING_MIN_CONFIDENCE` to tune how aggressively it emits a label/title.
+
 ## Endpoints
 
 - `GET /health` → `{ "status": "ok" }`

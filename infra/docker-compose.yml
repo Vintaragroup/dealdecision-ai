@@ -87,7 +87,15 @@ services:
       REDIS_URL: redis://redis:6379
       UPLOAD_DIR: /app/uploads
       VISION_WORKER_URL: http://vision_worker:8000
+      ENABLE_VISUAL_EXTRACTION: ${ENABLE_VISUAL_EXTRACTION:-1}
       DDAI_ENABLE_PHASEB_VISUAL_EVIDENCE: "1"
+      # Analysis Foundation (Fundability) flags
+      # - Shadow mode is additive (does not change legacy scoring).
+      # - Soft caps computes a UI-friendly `fundability_score_0_100` derived from legacy score + caps.
+      # Override in `.env` or your shell if needed.
+      FUNDABILITY_SHADOW_MODE: ${FUNDABILITY_SHADOW_MODE:-1}
+      FUNDABILITY_SOFT_CAPS: ${FUNDABILITY_SOFT_CAPS:-1}
+      FUNDABILITY_HARD_GATES: ${FUNDABILITY_HARD_GATES:-0}
       # Phase 1 DealOverviewV2 debug logs (candidate scoring + selection):
       # - Set to "1" to enable
       # - Set to "0" or remove to disable
@@ -119,10 +127,18 @@ services:
     build:
       context: ../services/vision_worker
       dockerfile: Dockerfile
+      args:
+        ENABLE_VISION_UNDERSTANDING: ${ENABLE_VISION_UNDERSTANDING:-0}
     environment:
       PYTHONUNBUFFERED: "1"
+      ENABLE_VISION_UNDERSTANDING: ${ENABLE_VISION_UNDERSTANDING:-0}
+      VISION_UNDERSTANDING_CACHE_DIR: /app/.cache/vision_understanding
+      # Cache locations for downloaded model assets (if any)
+      XDG_CACHE_HOME: /app/.cache
+      HF_HOME: /app/.cache/huggingface
     volumes:
       - dealdecision_uploads:/app/uploads
+      - vision_worker_cache:/app/.cache
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
       interval: 5s
@@ -163,3 +179,4 @@ volumes:
   postgres_data:
   redis_data:
   dealdecision_uploads:
+  vision_worker_cache:

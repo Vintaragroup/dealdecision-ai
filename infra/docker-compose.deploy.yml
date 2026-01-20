@@ -72,6 +72,10 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/dealdecision}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      # Analysis Foundation (Fundability) flags (default OFF; set to 1 to enable)
+      FUNDABILITY_SHADOW_MODE: ${FUNDABILITY_SHADOW_MODE:-0}
+      FUNDABILITY_SOFT_CAPS: ${FUNDABILITY_SOFT_CAPS:-0}
+      FUNDABILITY_HARD_GATES: ${FUNDABILITY_HARD_GATES:-0}
     depends_on:
       migrate:
         condition: service_completed_successfully

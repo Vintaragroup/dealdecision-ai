@@ -7,6 +7,7 @@ WORKDIR /app
 ENV PNPM_HOME=/root/.local/share/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable
+RUN corepack prepare pnpm@9.12.0 --activate
 
 # ----------------------
 # deps: install workspace deps
@@ -22,13 +23,18 @@ COPY tsconfig.base.json ./
 COPY packages ./packages
 COPY apps/api ./apps/api
 
-# Install only what the API needs (and its workspace deps)
-RUN pnpm install --filter ./apps/api... --frozen-lockfile=false
+# Install all workspace dependencies deterministically
+RUN pnpm install --frozen-lockfile
 
 # ----------------------
 # build: compile api
 # ----------------------
 FROM deps AS build
+
+# Build workspace deps needed by the API at compile-time (types/exports)
+RUN pnpm -r --filter @dealdecision/contracts build
+RUN pnpm -r --filter @dealdecision/core build
+
 WORKDIR /app/apps/api
 RUN pnpm run build
 
@@ -39,9 +45,6 @@ FROM node:20-alpine AS runner
 WORKDIR /app/apps/api
 
 ENV NODE_ENV=production
-ENV PNPM_HOME=/root/.local/share/pnpm
-ENV PATH=$PNPM_HOME:$PATH
-RUN corepack enable
 
 # Copy built output + package metadata
 COPY --from=build /app/apps/api/dist ./dist
@@ -55,4 +58,4 @@ COPY --from=deps /app/apps/api/node_modules ./node_modules
 COPY --from=deps /app/packages /app/packages
 
 EXPOSE 9000
-CMD ["pnpm", "start"]
+CMD ["node", "dist/src/index.js"]

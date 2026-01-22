@@ -3201,7 +3201,11 @@ registerWorker("analyze_deal", async (job: Job) => {
 
 		await updateJob(job, "running", `Running analysis (${documentsForAnalyzers.length} document(s))`, 40);
 
-		const storage = new DIOStorageImpl(process.env.DATABASE_URL || "");
+		const databaseUrl = process.env.DATABASE_URL;
+		if (!databaseUrl) {
+			throw new Error("DATABASE_URL is required for analyze_deal");
+		}
+		const storage = new DIOStorageImpl(databaseUrl);
 		let previousDio: any | null = null;
 		try {
 			previousDio = await storage.getLatestDIO(dealId);

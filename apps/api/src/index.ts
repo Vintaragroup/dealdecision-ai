@@ -33,7 +33,7 @@ const app = fastify({
   bodyLimit: 50 * 1024 * 1024, // 50MB limit for request body
 });
 
-const port = Number(process.env.API_PORT) || 9000;
+const port = Number(process.env.PORT ?? process.env.API_PORT) || 9000;
 const host = "0.0.0.0";
 
 async function bootstrap() {

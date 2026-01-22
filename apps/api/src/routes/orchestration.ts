@@ -78,9 +78,15 @@ interface DIOQueryRequest {
 // Initialize Services
 // ============================================================================
 
+function requireDatabaseUrl(): string {
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("DATABASE_URL is required for orchestration");
+  return url;
+}
+
 function createOrchestrator(pool: Pool): DealOrchestrator {
   // Initialize storage
-  const storage = new DIOStorageImpl(process.env.DATABASE_URL || '');
+  const storage = new DIOStorageImpl(requireDatabaseUrl());
   
   // Initialize analyzers (using Phase 2 implementations)
   const analyzers = {
@@ -101,7 +107,7 @@ function createOrchestrator(pool: Pool): DealOrchestrator {
 }
 
 function createPipeline(pool: Pool, orchestrator: DealOrchestrator): AnalysisPipeline {
-  const storage = new DIOStorageImpl(process.env.DATABASE_URL || '');
+  const storage = new DIOStorageImpl(requireDatabaseUrl());
   
   // Initialize services (using mocks for now - replace with real implementations)
   const mcpConfig = createDefaultMCPConfig();

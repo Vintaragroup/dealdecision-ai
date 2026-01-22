@@ -68,8 +68,14 @@ interface PipelineJobData {
 // Service Initialization
 // ============================================================================
 
+function requireDatabaseUrl(): string {
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("DATABASE_URL is required for worker orchestration");
+  return url;
+}
+
 function createOrchestrator(): DealOrchestrator {
-  const storage = new DIOStorageImpl(process.env.DATABASE_URL || '');
+  const storage = new DIOStorageImpl(requireDatabaseUrl());
   
   const analyzers = {
     slideSequence: new SlideSequenceAnalyzer(),
@@ -89,7 +95,7 @@ function createOrchestrator(): DealOrchestrator {
 }
 
 function createPipeline(orchestrator: DealOrchestrator): AnalysisPipeline {
-  const storage = new DIOStorageImpl(process.env.DATABASE_URL || '');
+  const storage = new DIOStorageImpl(requireDatabaseUrl());
   
   const mcpConfig = createDefaultMCPConfig();
   const mcpClient = new MockMCPClient(mcpConfig);

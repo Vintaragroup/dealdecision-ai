@@ -8,6 +8,12 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Pool } from 'pg';
 import { DIOStorageImpl, compileDIOToReport } from '@dealdecision/core';
 
+function requireDatabaseUrl(): string {
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("DATABASE_URL is required for report routes");
+  return url;
+}
+
 interface ReportParams {
   deal_id: string;
 }
@@ -32,7 +38,7 @@ export async function registerReportRoutes(
         request.log.info({ msg: "deal.report.start", deal_id, start_ts: new Date(startTs).toISOString() });
         
         // Get latest DIO from storage
-        const storage = new DIOStorageImpl(process.env.DATABASE_URL || '');
+        const storage = new DIOStorageImpl(requireDatabaseUrl());
         const dio = await storage.getLatestDIO(deal_id);
         
         if (!dio) {
@@ -84,7 +90,7 @@ export async function registerReportRoutes(
         }
         
         // Get specific DIO version
-        const storage = new DIOStorageImpl(process.env.DATABASE_URL || '');
+        const storage = new DIOStorageImpl(requireDatabaseUrl());
         const dio = await storage.getDIOVersion(deal_id, versionNum);
         
         if (!dio) {

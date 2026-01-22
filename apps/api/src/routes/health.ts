@@ -21,4 +21,17 @@ export async function registerHealthRoutes(app: FastifyInstance) {
     },
     async () => ({ ok: true })
   );
+
+  // Render-style health check (no auth, lightweight).
+  app.get(
+    "/healthz",
+    {
+      schema: {
+        response: {
+          200: { type: "string" },
+        },
+      },
+    },
+    async (_request, reply) => reply.type("text/plain").send("ok")
+  );
 }

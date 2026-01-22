@@ -331,6 +331,20 @@ export function apiPostExtractVisuals(dealId: string) {
 	});
 }
 
+export function apiPostReextractDocuments(
+  dealId: string,
+  input?: {
+    document_ids?: string[];
+    threshold_low?: number;
+    include_warnings?: boolean;
+  }
+) {
+  return request<{ ok: boolean; job_id: string; status?: string }>(`/api/v1/deals/${dealId}/documents/re-extract`, {
+    method: 'POST',
+    body: JSON.stringify(input ?? {}),
+  });
+}
+
 export function apiGetJob(jobId: string) {
   return request<{
     job_id: string;

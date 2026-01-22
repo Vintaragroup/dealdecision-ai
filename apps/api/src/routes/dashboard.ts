@@ -3237,15 +3237,28 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
     const row = rows[0];
     const dio_data = row.dio_data;
 
-    if (dio_data && !dio_data.score_explanation) {
-      try {
-        dio_data.score_explanation = buildScoreExplanationFromDIO(dio_data);
-      } catch {
-        // Best-effort: don't fail dashboard if explainability can't be computed
+    // Dashboard consistency:
+    // Recompute score_explanation for the RESPONSE when it's missing or stale.
+    // Stale = weights missing OR metric_benchmark effective weight is not zero.
+    // Do NOT write back to DB from this endpoint.
+    let responseDioData = dio_data;
+    if (dio_data) {
+      const expl = dio_data?.score_explanation;
+      const weights = expl?.aggregation?.weights;
+      const metricWeight = typeof weights?.metric_benchmark === "number" ? weights.metric_benchmark : null;
+      const isStale = !weights || metricWeight !== 0;
+
+      if (!expl || isStale) {
+        try {
+          const recomputed = buildScoreExplanationFromDIO(dio_data);
+          responseDioData = { ...dio_data, score_explanation: recomputed };
+        } catch {
+          // Best-effort: don't fail dashboard if explainability can't be computed
+        }
       }
     }
 
-    return { ...row, dio_data };
+    return { ...row, dio_data: responseDioData };
   });
 
   /**

@@ -46,6 +46,9 @@ export interface EnqueueJobOptions {
 }
 
 const DEFAULT_DEDUPE_STATUSES: JobStatus[] = ["queued", "running", "retrying"];
+// Guardrail: if a job row gets stuck in an "active" status (e.g., queued) for too long,
+// dedupe would otherwise keep returning it forever and block new work.
+const DEFAULT_DEDUPE_MAX_AGE_MINUTES = 30;
 
 export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOptions) {
   const pool = getPool();
@@ -56,6 +59,7 @@ export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOption
     const statuses = Array.isArray(opts.dedupe.statuses) && opts.dedupe.statuses.length > 0
       ? opts.dedupe.statuses
       : DEFAULT_DEDUPE_STATUSES;
+    const maxAgeMinutes = DEFAULT_DEDUPE_MAX_AGE_MINUTES;
 
     if (opts.dedupe.by === "deal" && input.deal_id) {
       const existing = await pool.query<{ id: number; job_id: string; status: JobStatus }>(
@@ -64,9 +68,10 @@ export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOption
           WHERE deal_id = $1
             AND type = $2
             AND status = ANY($3::text[])
+            AND created_at >= (now() - ($4::int * interval '1 minute'))
           ORDER BY created_at DESC
           LIMIT 1`,
-        [sanitizeText(input.deal_id), sanitizeText(input.type), statuses]
+        [sanitizeText(input.deal_id), sanitizeText(input.type), statuses, maxAgeMinutes]
       );
       if (existing.rows.length > 0) return existing.rows[0];
     }
@@ -78,9 +83,10 @@ export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOption
           WHERE document_id = $1
             AND type = $2
             AND status = ANY($3::text[])
+            AND created_at >= (now() - ($4::int * interval '1 minute'))
           ORDER BY created_at DESC
           LIMIT 1`,
-        [sanitizeText(input.document_id), sanitizeText(input.type), statuses]
+        [sanitizeText(input.document_id), sanitizeText(input.type), statuses, maxAgeMinutes]
       );
       if (existing.rows.length > 0) return existing.rows[0];
     }

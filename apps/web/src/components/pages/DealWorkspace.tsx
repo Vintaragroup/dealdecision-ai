@@ -16,7 +16,7 @@ import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
-import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostExtractVisuals, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, apiResolveEvidence, isLiveBackend, subscribeToEvents, type AutoProfileResponse, type DealReport, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile } from '../../lib/apiClient';
+import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, apiResolveEvidence, isLiveBackend, subscribeToEvents, type AutoProfileResponse, type DealReport, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile } from '../../lib/apiClient';
 import type { JobProgressEventV1 } from '@dealdecision/contracts';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
@@ -115,6 +115,26 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [jobProgressSnapshot, setJobProgressSnapshot] = useState<JobProgressEventV1 | null>(null);
   const [jobType, setJobType] = useState<string | null>(null);
   const [jobQueuedSeconds, setJobQueuedSeconds] = useState<number>(0);
+  type FullProcessStepKey = 'reextract_documents' | 'extract_visuals' | 'analyze_deal';
+  type FullProcessStepStatus = 'pending' | 'queued' | 'running' | 'succeeded' | 'succeeded_with_warnings' | 'failed' | 'cancelled';
+  type FullProcessStepUi = {
+    key: FullProcessStepKey;
+    label: string;
+    status: FullProcessStepStatus;
+    job_id?: string | null;
+    progress_pct?: number | null;
+    message?: string | null;
+    updated_at?: string | null;
+  };
+  type FullProcessUiState = {
+    started_at: string;
+    current_step: FullProcessStepKey;
+    steps: Record<FullProcessStepKey, FullProcessStepUi>;
+    ok?: boolean;
+    error?: string | null;
+  };
+
+  const [fullProcessUi, setFullProcessUi] = useState<FullProcessUiState | null>(null);
   const [sseReady, setSseReady] = useState(false);
   const [evidence, setEvidence] = useState<Array<{ evidence_id: string; deal_id: string; document_id?: string; visual_asset_id?: string; source: string; kind: string; text: string; confidence?: number; created_at?: string }>>([]);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
@@ -1584,6 +1604,29 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return 'muted';
   })();
 
+  const fullProcessStepSeverity = (status: string | null | undefined): JobSeverity => {
+    const s = String(status ?? '').toLowerCase();
+    if (s === 'succeeded') return 'success';
+    if (s === 'succeeded_with_warnings') return 'warning';
+    if (s === 'failed') return 'danger';
+    if (s === 'cancelled') return 'warning';
+    if (s === 'running' || s === 'retrying') return 'info';
+    if (s === 'queued' || s === 'pending') return 'muted';
+    return 'muted';
+  };
+
+  const fullProcessStepLabel = (status: string | null | undefined): string => {
+    const s = String(status ?? '').toLowerCase();
+    if (s === 'pending') return 'Pending';
+    if (s === 'queued') return 'Queued';
+    if (s === 'running' || s === 'retrying') return 'Running';
+    if (s === 'succeeded') return 'Done';
+    if (s === 'succeeded_with_warnings') return 'Done (warn)';
+    if (s === 'failed') return 'Failed';
+    if (s === 'cancelled') return 'Cancelled';
+    return s ? s.replace(/_/g, ' ') : '—';
+  };
+
   const stageLabelMap: Record<string, string> = {
     queued: 'Queued',
     running: 'Processing',
@@ -1668,6 +1711,241 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       addToast('error', 'Analysis failed to start', err instanceof Error ? err.message : 'Unknown error');
       setAnalyzing(false);
       return;
+    }
+  };
+
+  const waitForJobTerminal = async (
+    jobIdToWait: string,
+    opts?: {
+      timeoutMs?: number;
+      pollMs?: number;
+      onPoll?: (job: Awaited<ReturnType<typeof apiGetJob>>, normalizedStatus: string | null) => void;
+    }
+  ) => {
+    const timeoutMs = typeof opts?.timeoutMs === 'number' ? opts.timeoutMs : 25 * 60_000;
+    const pollMs = typeof opts?.pollMs === 'number' ? opts.pollMs : 2000;
+
+    const started = Date.now();
+    while (true) {
+      const job = await apiGetJob(jobIdToWait);
+      const normalizedStatus = normalizeJobStatus(job.status as string | null);
+      try {
+        opts?.onPoll?.(job, normalizedStatus);
+      } catch {
+        // ignore
+      }
+      if (normalizedStatus && ['succeeded', 'succeeded_with_warnings', 'failed', 'cancelled'].includes(normalizedStatus)) {
+        return { job, normalizedStatus };
+      }
+
+      if (Date.now() - started > timeoutMs) {
+        return {
+          job,
+          normalizedStatus: 'failed' as const,
+          timedOut: true,
+        };
+      }
+
+      await new Promise<void>((resolve) => window.setTimeout(resolve, pollMs));
+    }
+  };
+
+  const runFullProcess = async () => {
+    if (!dealId || !isLiveBackend()) {
+      addToast('info', 'Live mode required', 'Switch to live backend to run the full process');
+      return;
+    }
+
+    setAnalyzing(true);
+    setJobProgress(null);
+    setJobMessage(null);
+    setJobUpdatedAt(null);
+    setJobCreatedAt(null);
+    setJobStartedAt(null);
+    setJobReason(null);
+    reportMissingRef.current = false;
+    lastReportAttemptAtRef.current = 0;
+
+    addToast('info', 'Full process started', 'Re-extract documents → extract visuals → analyze');
+
+    const initFullProcess = (): FullProcessUiState => ({
+      started_at: new Date().toISOString(),
+      current_step: 'reextract_documents',
+      steps: {
+        reextract_documents: { key: 'reextract_documents', label: 'Re-extract documents', status: 'pending', job_id: null, progress_pct: null, message: null, updated_at: null },
+        extract_visuals: { key: 'extract_visuals', label: 'Extract visuals', status: 'pending', job_id: null, progress_pct: null, message: null, updated_at: null },
+        analyze_deal: { key: 'analyze_deal', label: 'Analyze deal', status: 'pending', job_id: null, progress_pct: null, message: null, updated_at: null },
+      },
+      ok: undefined,
+      error: null,
+    });
+
+    const updateFullStep = (step: FullProcessStepKey, patch: Partial<FullProcessStepUi>) => {
+      setFullProcessUi((prev) => {
+        const base = prev ?? initFullProcess();
+        return {
+          ...base,
+          current_step: base.current_step ?? step,
+          steps: {
+            ...base.steps,
+            [step]: {
+              ...base.steps[step],
+              ...patch,
+            },
+          },
+        };
+      });
+    };
+
+    setFullProcessUi(initFullProcess());
+
+    try {
+      // Step 1: reextract_documents
+      setJobType('reextract_documents');
+      setFullProcessUi((prev) => ({ ...(prev ?? initFullProcess()), current_step: 'reextract_documents' }));
+      const reextractRes = await apiPostReextractDocuments(dealId, { include_warnings: true });
+      setJobId(reextractRes.job_id);
+      setJobStatus((reextractRes as any).status ?? 'queued');
+      addToast('info', 'Re-extract documents queued', `Job ${reextractRes.job_id}`);
+
+      updateFullStep('reextract_documents', { status: 'queued', job_id: reextractRes.job_id, updated_at: new Date().toISOString() });
+
+      const reextractDone = await waitForJobTerminal(reextractRes.job_id, {
+        onPoll: (job, normalizedStatus) => {
+          const pct = (job as any)?.status_detail?.progress?.percent;
+          const msg = (job as any)?.status_detail?.progress?.message ?? job.message;
+          const st = (normalizedStatus ?? job.status ?? 'running') as any;
+          updateFullStep('reextract_documents', {
+            status: st,
+            progress_pct: typeof pct === 'number' ? pct : typeof job.progress_pct === 'number' ? job.progress_pct : null,
+            message: typeof msg === 'string' ? msg : null,
+            updated_at: job.updated_at ?? null,
+          });
+        },
+      });
+      if (reextractDone.timedOut) {
+        addToast('error', 'Re-extract documents timed out', 'Stopping full process');
+        updateFullStep('reextract_documents', { status: 'failed', message: 'Timed out' });
+        setFullProcessUi((prev) => (prev ? { ...prev, ok: false, error: 'Re-extract documents timed out' } : prev));
+        setAnalyzing(false);
+        return;
+      }
+      if (reextractDone.normalizedStatus !== 'succeeded' && reextractDone.normalizedStatus !== 'succeeded_with_warnings') {
+        addToast('error', 'Re-extract documents failed', reextractDone.job.message || reextractDone.normalizedStatus);
+        updateFullStep('reextract_documents', { status: reextractDone.normalizedStatus as any, message: reextractDone.job.message ?? null });
+        setFullProcessUi((prev) => (prev ? { ...prev, ok: false, error: 'Re-extract documents failed' } : prev));
+        setAnalyzing(false);
+        return;
+      }
+
+      // Ensure Documents tab refreshes after re-extraction.
+      setDocumentsReloadKey((v) => v + 1);
+
+      // Step 2: extract_visuals
+      setJobType('extract_visuals');
+      setFullProcessUi((prev) => (prev ? { ...prev, current_step: 'extract_visuals' } : prev));
+      const extractRes = await apiPostExtractVisuals(dealId);
+      setJobId(extractRes.job_id);
+      setJobStatus(extractRes.status);
+      addToast('info', 'Extract visuals queued', `Job ${extractRes.job_id}`);
+
+      updateFullStep('extract_visuals', { status: 'queued', job_id: extractRes.job_id, updated_at: new Date().toISOString() });
+
+      const extractDone = await waitForJobTerminal(extractRes.job_id, {
+        onPoll: (job, normalizedStatus) => {
+          const pct = (job as any)?.status_detail?.progress?.percent;
+          const msg = (job as any)?.status_detail?.progress?.message ?? job.message;
+          const st = (normalizedStatus ?? job.status ?? 'running') as any;
+          updateFullStep('extract_visuals', {
+            status: st,
+            progress_pct: typeof pct === 'number' ? pct : typeof job.progress_pct === 'number' ? job.progress_pct : null,
+            message: typeof msg === 'string' ? msg : null,
+            updated_at: job.updated_at ?? null,
+          });
+        },
+      });
+      if (extractDone.timedOut) {
+        addToast('error', 'Extract visuals timed out', 'Stopping full process');
+        updateFullStep('extract_visuals', { status: 'failed', message: 'Timed out' });
+        setFullProcessUi((prev) => (prev ? { ...prev, ok: false, error: 'Extract visuals timed out' } : prev));
+        setAnalyzing(false);
+        return;
+      }
+      if (extractDone.normalizedStatus !== 'succeeded' && extractDone.normalizedStatus !== 'succeeded_with_warnings') {
+        addToast('error', 'Extract visuals failed', extractDone.job.message || extractDone.normalizedStatus);
+        updateFullStep('extract_visuals', { status: extractDone.normalizedStatus as any, message: extractDone.job.message ?? null });
+        setFullProcessUi((prev) => (prev ? { ...prev, ok: false, error: 'Extract visuals failed' } : prev));
+        setAnalyzing(false);
+        return;
+      }
+
+      // Critical: force Analyst tab remount so it refetches lineage + visual assets.
+      setAnalystReloadKey((v) => v + 1);
+      setDocumentsReloadKey((v) => v + 1);
+
+      // Step 3: analyze_deal
+      setJobType('analyze_deal');
+      setFullProcessUi((prev) => (prev ? { ...prev, current_step: 'analyze_deal' } : prev));
+      const analyzeRes = await apiPostAnalyze(dealId);
+      setJobId(analyzeRes.job_id);
+      setJobStatus(analyzeRes.status);
+      addToast('info', 'Analyze deal queued', `Job ${analyzeRes.job_id}`);
+
+      updateFullStep('analyze_deal', { status: 'queued', job_id: analyzeRes.job_id, updated_at: new Date().toISOString() });
+
+      const analyzeDone = await waitForJobTerminal(analyzeRes.job_id, {
+        onPoll: (job, normalizedStatus) => {
+          const pct = (job as any)?.status_detail?.progress?.percent;
+          const msg = (job as any)?.status_detail?.progress?.message ?? job.message;
+          const st = (normalizedStatus ?? job.status ?? 'running') as any;
+          updateFullStep('analyze_deal', {
+            status: st,
+            progress_pct: typeof pct === 'number' ? pct : typeof job.progress_pct === 'number' ? job.progress_pct : null,
+            message: typeof msg === 'string' ? msg : null,
+            updated_at: job.updated_at ?? null,
+          });
+        },
+      });
+      if (analyzeDone.timedOut) {
+        addToast('error', 'Analyze deal timed out', 'Full process may still be running');
+        updateFullStep('analyze_deal', { status: 'failed', message: 'Timed out' });
+        setFullProcessUi((prev) => (prev ? { ...prev, ok: false, error: 'Analyze deal timed out' } : prev));
+        setAnalyzing(false);
+        return;
+      }
+      if (analyzeDone.normalizedStatus !== 'succeeded' && analyzeDone.normalizedStatus !== 'succeeded_with_warnings') {
+        addToast('error', 'Analyze deal failed', analyzeDone.job.message || analyzeDone.normalizedStatus);
+        updateFullStep('analyze_deal', { status: analyzeDone.normalizedStatus as any, message: analyzeDone.job.message ?? null });
+        setFullProcessUi((prev) => (prev ? { ...prev, ok: false, error: 'Analyze deal failed' } : prev));
+        setAnalyzing(false);
+        return;
+      }
+
+      // Post-analysis refresh
+      apiGetDeal(dealId)
+        .then((deal) => {
+          setDealFromApi(deal);
+          setDioMeta({
+            dioVersionId: (deal as any).dioVersionId,
+            dioStatus: (deal as any).dioStatus,
+            lastAnalyzedAt: (deal as any).lastAnalyzedAt,
+            dioRunCount: (deal as any).dioRunCount,
+            dioAnalysisVersion: (deal as any).dioAnalysisVersion,
+          });
+        })
+        .catch(() => {});
+
+      reportMissingRef.current = false;
+      loadReport({ force: true });
+      loadEvidence();
+
+      addToast('success', 'Full process completed', 'Documents, visuals, and analysis refreshed');
+      setFullProcessUi((prev) => (prev ? { ...prev, ok: true, error: null } : prev));
+    } catch (err) {
+      addToast('error', 'Full process failed to start', err instanceof Error ? err.message : 'Unknown error');
+      setFullProcessUi((prev) => (prev ? { ...prev, ok: false, error: err instanceof Error ? err.message : 'Unknown error' } : prev));
+    } finally {
+      setAnalyzing(false);
     }
   };
 
@@ -2766,6 +3044,51 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 )}
               </div>
 
+              {fullProcessUi && (
+                <div className={`mt-4 p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Full process</div>
+                    <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                      {fullProcessUi.ok === true ? 'Completed' : fullProcessUi.ok === false ? 'Failed' : 'Running'}
+                    </div>
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {(['reextract_documents', 'extract_visuals', 'analyze_deal'] as const).map((k) => {
+                      const step = fullProcessUi.steps[k];
+                      const sev = fullProcessStepSeverity(step?.status);
+                      const pct = typeof step?.progress_pct === 'number' ? step.progress_pct : null;
+                      return (
+                        <div
+                          key={k}
+                          className={`rounded-lg border px-3 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className={`text-xs font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{step?.label ?? k}</div>
+                            <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass(sev)}`}>
+                              {fullProcessStepLabel(step?.status)}
+                            </span>
+                          </div>
+                          <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+                            <div className={`text-[11px] font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                              {step?.job_id ? `job ${step.job_id}` : 'job —'}
+                            </div>
+                            {pct != null ? (
+                              <div className={`text-[11px] ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{Math.round(pct)}%</div>
+                            ) : null}
+                          </div>
+                          {step?.message ? (
+                            <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{step.message}</div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {fullProcessUi.error ? (
+                    <div className={`mt-3 text-xs ${darkMode ? 'text-red-300' : 'text-red-700'}`}>{fullProcessUi.error}</div>
+                  ) : null}
+                </div>
+              )}
+
               <div className="flex flex-wrap gap-2 mt-4">
                 {stageChips.map((stage) => (
                   <span
@@ -2782,20 +3105,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   variant="secondary"
                   darkMode={darkMode}
                   icon={<Zap className="w-4 h-4" />}
-                  onClick={runAIAnalysis}
+                  onClick={runFullProcess}
                   loading={analyzing}
                 >
-                  {analyzing ? 'Analyzing...' : 'Run / Re-run analysis'}
-                </Button>
-
-                <Button
-                  variant="secondary"
-                  darkMode={darkMode}
-                  icon={<Eye className="w-4 h-4" />}
-                  onClick={runExtractVisuals}
-                  loading={analyzing}
-                >
-                  {analyzing ? 'Working...' : 'Extract visuals'}
+                  {analyzing ? 'Working...' : 'Run full process'}
                 </Button>
                 {jobStatus && (
                   <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>

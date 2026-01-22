@@ -6,6 +6,20 @@ const healthResponseSchema = z.object({ ok: z.literal(true) });
 type HealthResponse = z.infer<typeof healthResponseSchema>;
 
 export async function registerHealthRoutes(app: FastifyInstance) {
+  // Render default health probe often checks GET /.
+  // Keep this lightweight, unauthenticated, and non-invasive.
+  app.get(
+    "/",
+    {
+      schema: {
+        response: {
+          200: { type: "string" },
+        },
+      },
+    },
+    async (_request, reply) => reply.type("text/plain").send("ok")
+  );
+
   app.get<{ Reply: HealthResponse }>(
     "/api/v1/health",
     {

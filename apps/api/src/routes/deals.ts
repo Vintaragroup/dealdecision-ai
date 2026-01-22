@@ -125,6 +125,62 @@ function parseBoolQ(value: unknown, defaultValue = false): boolean {
   return defaultValue;
 }
 
+function computeOcrV2CleanText(
+  ocrV2: unknown,
+  opts?: {
+    minConfidence?: number;
+    minLen?: number;
+    minAlnumRatio?: number;
+    maxBlocks?: number;
+  }
+): { text: string; keptBlocks: number; totalBlocks: number } {
+  const minConfidence = typeof opts?.minConfidence === "number" && Number.isFinite(opts.minConfidence) ? opts.minConfidence : 0.55;
+  const minLen = typeof opts?.minLen === "number" && Number.isFinite(opts.minLen) ? opts.minLen : 10;
+  const minAlnumRatio = typeof opts?.minAlnumRatio === "number" && Number.isFinite(opts.minAlnumRatio) ? opts.minAlnumRatio : 0.4;
+  const maxBlocks = typeof opts?.maxBlocks === "number" && Number.isFinite(opts.maxBlocks) ? opts.maxBlocks : 80;
+
+  const o = ocrV2 as any;
+  const blocksRaw = Array.isArray(o?.blocks) ? (o.blocks as any[]) : [];
+  const totalBlocks = blocksRaw.length;
+
+  const kept: string[] = [];
+  const cleanOne = (s: string): string => s.replace(/\s+/g, " ").trim();
+  const alnumRatio = (s: string): number => {
+    const t = s.replace(/\s+/g, "");
+    if (!t) return 0;
+    const alnum = (t.match(/[A-Za-z0-9]/g) ?? []).length;
+    return alnum / t.length;
+  };
+
+  for (const b of blocksRaw) {
+    if (kept.length >= maxBlocks) break;
+    const textRaw = typeof b?.text === "string" ? b.text : "";
+    const text = cleanOne(textRaw);
+    if (!text) continue;
+    if (text.length < minLen) continue;
+    const conf = typeof b?.confidence === "number" && Number.isFinite(b.confidence) ? b.confidence : null;
+    if (conf != null && conf < minConfidence) continue;
+    if (alnumRatio(text) < minAlnumRatio) continue;
+    kept.push(text);
+  }
+
+  // De-dupe near-identical repeats while preserving order.
+  const uniq: string[] = [];
+  const seen = new Set<string>();
+  for (const t of kept) {
+    const key = t.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniq.push(t);
+  }
+
+  return {
+    text: uniq.join("\n"),
+    keptBlocks: uniq.length,
+    totalBlocks,
+  };
+}
+
 function pickNonUnknownSegment(value: unknown): AnalystSegment | null {
   const seg = normalizeAnalystSegment(value);
   return seg && seg !== "unknown" ? seg : null;
@@ -1249,6 +1305,7 @@ export function buildScoreBreakdownV1(params: {
     const claimIds = claimIdsForSection(key);
     const docIds = docIdsFromClaims(key);
     const fallbackSample = (params.sectionEvidenceSamples?.[key] ?? []).filter((id) => typeof id === "string" && id.trim().length > 0);
+    const hasExplicitSampleKey = Boolean(params.sectionEvidenceSamples) && Object.prototype.hasOwnProperty.call(params.sectionEvidenceSamples, key);
     const evidence_ids_sample = fallbackSample.slice(0, 3);
     const evidence_ids = Array.from(new Set([...claimEvidenceIds, ...fallbackSample]));
     // In this API-derived breakdown, "linked" means "assigned to this score section".
@@ -1261,7 +1318,8 @@ export function buildScoreBreakdownV1(params: {
       typeof coverageStatusRaw === "string"
       || claimIds.length > 0
       || evidence_ids.length > 0
-      || fallbackSample.length > 0;
+      || fallbackSample.length > 0
+      || hasExplicitSampleKey;
     if (!hasAnyInput) continue;
     const evidence_source: ScoreBreakdownSection["evidence_source"] = claimEvidenceIds.length > 0
       ? "claims"
@@ -1580,16 +1638,24 @@ async function fetchEvidenceSamplesBySection(params: {
       const { rows } = await pool.query<any>(query, paramsArr);
 
       if (hasSectionKey) {
-        const businessModelRegex = /(marketplace|pricing|take rate|take-rate|take\s*rate|fee|commission|subscription|revenue model|royalties|licensing)/i;
-        const filtered = key === "business_model"
-          ? (rows ?? []).filter((r: any) => typeof r?.snippet === "string" && businessModelRegex.test(r.snippet))
-          : rows ?? [];
+        const businessModelNegationRegex = /\b(without|no|not)\s+(pricing|price|revenue|take\s*rate|take-rate|commission|fee|subscription)\b/i;
+        const filtered =
+          key === "business_model"
+            ? (rows ?? []).filter((r: any) => {
+                if (typeof r?.snippet !== "string") return false;
+                const snippet = r.snippet;
+                if (!BUSINESS_MODEL_STRONG_REGEX.test(snippet)) return false;
+                if (businessModelNegationRegex.test(snippet)) return false;
+                return true;
+              })
+            : rows ?? [];
 
         const ids = filtered
           .map((r: any) => (typeof r?.id === "string" ? r.id.trim() : null))
           .filter((v: string | null): v is string => Boolean(v))
           .slice(0, 5);
         if (ids.length > 0) samples[key] = ids;
+        else if (key === "business_model" && (rows ?? []).length > 0) samples[key] = [];
         continue;
       }
 
@@ -2490,6 +2556,65 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     }
   }
 
+  function cueRescueLowSignal(v: any): { segment: AnalystSegment; confidence: number; matched: string } | null {
+    const textRaw = typeof v?.ocr_text === "string" ? v.ocr_text : "";
+    const text = textRaw.replace(/\s+/g, " ").trim().toLowerCase();
+    const assetType = typeof v?.asset_type === "string" ? String(v.asset_type) : "";
+    const structuredKind = typeof v?.structured_kind === "string" ? String(v.structured_kind) : "";
+
+    // Only rescue on truly low-signal cases; avoid overriding structured assets.
+    if (structuredKind === "powerpoint_slide" || structuredKind === "excel_sheet" || structuredKind === "word_section") return null;
+    if (!text) return null;
+
+    const cue = (re: RegExp, matched: string, segment: AnalystSegment, confidence: number) =>
+      re.test(text) ? ({ segment, confidence, matched } as const) : null;
+
+    // Raise / terms cues
+    const raise =
+      cue(/\bcap\s*table\b|\bcaptable\b/, "cap table", "raise_terms", 0.45) ||
+      cue(/\bpre[- ]?money\b|\bpost[- ]?money\b/, "pre/post money", "raise_terms", 0.4) ||
+      cue(/\bvaluation\b/, "valuation", "raise_terms", 0.35) ||
+      cue(/\bterm\s*sheet\b/, "term sheet", "raise_terms", 0.45) ||
+      cue(/\bround\b\s*(seed|series\s*[a-e])\b/, "funding round", "raise_terms", 0.35) ||
+      null;
+    if (raise) return raise;
+
+    // Financial cues
+    const financial =
+      cue(/\b(income\s*statement|p\s*&\s*l|profit\s*&\s*loss)\b/, "P&L", "financials", 0.45) ||
+      cue(/\bbalance\s*sheet\b/, "balance sheet", "financials", 0.45) ||
+      cue(/\bcash\s*flow\b/, "cash flow", "financials", 0.45) ||
+      cue(/\bburn\b|\brunway\b/, "burn/runway", "financials", 0.4) ||
+      cue(/\brevenue\b|\bgross\s*margin\b|\bnet\s*income\b/, "revenue/margins", "financials", 0.35) ||
+      cue(/\bcogs\b|\bop(ex|erating\s*expenses?)\b/, "COGS/Opex", "financials", 0.35) ||
+      null;
+    if (financial) return financial;
+
+    // Market cues
+    const market =
+      cue(/\btam\b|\bsam\b|\bsom\b/, "TAM/SAM/SOM", "market", 0.35) ||
+      cue(/\bmarket\s*(size|opportunity|growth)\b/, "market size/growth", "market", 0.3) ||
+      null;
+    if (market) return market;
+
+    // Product cues
+    const product =
+      cue(/\bproduct\b\s*(roadmap|overview)\b/, "product roadmap/overview", "product", 0.3) ||
+      // Avoid over-classifying generic "platform" language as product.
+      cue(/\bfeatures?\b|\barchitecture\b/, "features/architecture", "product", 0.25) ||
+      null;
+    if (product) return product;
+
+    // If it's a table and we have lots of numbers but no keywords, bias to financials at low confidence.
+    if (assetType === "table") {
+      const digitCount = (text.match(/\d/g) || []).length;
+      const tokenCount = text.split(" ").filter(Boolean).length;
+      if (digitCount >= 25 && tokenCount >= 10) return { segment: "financials", confidence: 0.25, matched: "table_numeric_density" };
+    }
+
+    return null;
+  }
+
   function deriveBestExtractionConfidence(params: {
     structuredJson: unknown;
     fallback: unknown;
@@ -3165,6 +3290,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     const debugPptxRaw = parseBoolQ(((request.query as any) ?? {})?.debug_pptx_raw, false);
     const includeOcrRequested = parseBoolQ(((request.query as any) ?? {})?.include_ocr, false);
     const includeImagesRequested = parseBoolQ(((request.query as any) ?? {})?.include_images, false);
+    const includePageFallbackRequested = parseBoolQ(((request.query as any) ?? {})?.include_page_fallback, false);
     try {
       const hasOcrBlocks = await hasColumn(pool, "visual_extractions", "ocr_blocks");
       const hasUnits = await hasColumn(pool, "visual_extractions", "units");
@@ -3368,17 +3494,22 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 
       const indexFallbackTitle =
         typeof v.page_index === "number" && Number.isFinite(v.page_index) ? `Slide ${Math.max(0, v.page_index) + 1}` : "Slide";
-      const slide_title = titleDerived.slide_title ?? structuredSlideTitle ?? indexFallbackTitle;
-      const slide_title_source = titleDerived.slide_title
+      let slide_title: string | null = titleDerived.slide_title ?? structuredSlideTitle ?? indexFallbackTitle;
+      let slide_title_source = titleDerived.slide_title
         ? titleDerived.slide_title_source
         : structuredSlideTitle
           ? "structured_json.title"
           : "index_fallback_v1";
-      const slide_title_confidence = titleDerived.slide_title
+      let slide_title_confidence = titleDerived.slide_title
         ? titleDerived.slide_title_confidence
         : structuredSlideTitle
           ? 0.9
           : 0.15;
+
+      if (slide_title_source === "index_fallback_v1") {
+        slide_title = null;
+        slide_title_confidence = 0;
+      }
 
       const page_understanding = normalizePageUnderstanding((v as any)?.page_understanding);
 
@@ -3626,6 +3757,40 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
 
       return out;
     });
+
+    // Cue-based rescue pass (keep /lineage consistent with /visual-assets).
+    for (let i = 0; i < visualsWithSegments.length; i++) {
+      const v = visualsWithSegments[i] as any;
+      const seg = normalizeAnalystSegment(v?.effective_segment ?? v?.segment) ?? "unknown";
+      if (seg !== "unknown") continue;
+
+      const src = typeof v?.segment_source === "string" ? String(v.segment_source) : "";
+      if (src === "human_override" || src === "human_override_v1" || src.startsWith("human_override_")) continue;
+
+      const persisted = pickNonUnknownSegment(v?.persisted_segment_key);
+      if (persisted) continue;
+
+      const reason = typeof v?.computed_reason?.unknown_reason_code === "string" ? String(v.computed_reason.unknown_reason_code) : null;
+      if (reason && reason !== "LOW_SIGNAL" && reason !== "NO_TEXT") continue;
+
+      const inferred = cueRescueLowSignal(v);
+      if (!inferred) continue;
+
+      visualsWithSegments[i] = {
+        ...v,
+        segment: inferred.segment,
+        effective_segment: inferred.segment,
+        segment_source: "cue_rescue_v1",
+        segment_confidence: inferred.confidence,
+        computed_segment: inferred.segment,
+        computed_confidence: inferred.confidence,
+        computed_reason: {
+          ...(typeof v?.computed_reason === "object" && v.computed_reason ? v.computed_reason : {}),
+          rule_id: "CUE_RESCUE_V1",
+          matched: inferred.matched,
+        },
+      };
+    }
 
     const unknownStructuredReport = (() => {
       if (!dumpUnknown) return null;
@@ -4361,7 +4526,52 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       return out;
     })();
 
-    for (const v of visualsToRender as any[]) {
+    // UI clarity: suppress per-page "page_image_fallback" rows when a higher-quality visual/group
+    // exists for the same document+page. These usually show up as a duplicate slide with title "-"
+    // and segment_source "default_fallback_v1".
+    const visualsToRenderFinal = (() => {
+      if (includePageFallbackRequested) return visualsToRender as any[];
+      if (!Array.isArray(visualsToRender) || visualsToRender.length === 0) return visualsToRender as any[];
+
+      const keyOf = (v: any): string | null => {
+        const docId = typeof v?.document_id === "string" ? v.document_id : null;
+        const page = typeof v?.page_index === "number" && Number.isFinite(v.page_index) ? v.page_index : null;
+        if (!docId || page == null) return null;
+        return `${docId}::${page}`;
+      };
+
+      const isGroup = (v: any): boolean => Boolean(v?.__word_group || v?.__pptx_group);
+
+      const isPageFallback = (v: any): boolean => {
+        if (isGroup(v)) return false;
+        const qSource = typeof v?.quality_flags?.source === "string" ? String(v.quality_flags.source) : "";
+        const segSrc = typeof v?.segment_source === "string" ? String(v.segment_source) : "";
+        const extractorVer = typeof v?.extractor_version === "string" ? String(v.extractor_version) : "";
+        const ruleId = typeof v?.computed_reason?.rule_id === "string" ? String(v.computed_reason.rule_id) : "";
+        return (
+          qSource === "page_image_fallback" ||
+          segSrc === "default_fallback_v1" ||
+          extractorVer === "default_fallback_v1" ||
+          ruleId === "DEFAULT_SEGMENT_FALLBACK"
+        );
+      };
+
+      const hasNonFallbackByKey = new Map<string, boolean>();
+      for (const v of visualsToRender as any[]) {
+        const k = keyOf(v);
+        if (!k) continue;
+        if (!isPageFallback(v)) hasNonFallbackByKey.set(k, true);
+      }
+
+      return (visualsToRender as any[]).filter((v: any) => {
+        const k = keyOf(v);
+        if (!k) return true;
+        if (!isPageFallback(v)) return true;
+        return !hasNonFallbackByKey.get(k);
+      });
+    })();
+
+    for (const v of visualsToRenderFinal as any[]) {
       const isWordGroup = Boolean((v as any)?.__word_group);
       const isPptxGroup = Boolean((v as any)?.__pptx_group);
       const isAnyGroup = isWordGroup || isPptxGroup;
@@ -6422,6 +6632,9 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     const docHintRequested = parseBoolQ(((request.query as any) ?? {})?.doc_hint, false);
     const includeOcrRequested = parseBoolQ(((request.query as any) ?? {})?.include_ocr, false);
     const includeImagesRequested = parseBoolQ(((request.query as any) ?? {})?.include_images, false);
+    const includePageOcrV2Requested = parseBoolQ(((request.query as any) ?? {})?.include_page_ocr_v2, false);
+    const includePageUnderstandingRequested = parseBoolQ(((request.query as any) ?? {})?.include_page_understanding_v1, false);
+    const includePageFallbackRequested = parseBoolQ(((request.query as any) ?? {})?.include_page_fallback, false);
 
     const logCtx = { route: "deal_visual_assets", deal_id: dealId };
 
@@ -6474,6 +6687,32 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         ? "LEFT JOIN LATERAL (SELECT MAX(created_at) AS last_at FROM visual_asset_ai_analyses WHERE visual_asset_id = va.id AND audience = 'analyst') aa_an ON true"
         : "";
 
+      const includePageOcrV2Select = includePageOcrV2Requested
+        ? "(d.full_content->'pdf_v2'->'pages'->(va.page_index)::int->'ocr_v2'->>'text') AS page_ocr_v2_text"
+        : "NULL::text AS page_ocr_v2_text";
+      const includePageOcrV2ConfSelect = includePageOcrV2Requested
+        ? "(d.full_content->'pdf_v2'->'pages'->(va.page_index)::int->'ocr_v2'->>'avg_confidence')::double precision AS page_ocr_v2_avg_confidence"
+        : "NULL::double precision AS page_ocr_v2_avg_confidence";
+      const includePageOcrV2ProviderSelect = includePageOcrV2Requested
+        ? "(d.full_content->'pdf_v2'->'pages'->(va.page_index)::int->'ocr_v2'->>'provider') AS page_ocr_v2_provider"
+        : "NULL::text AS page_ocr_v2_provider";
+
+      const includePageOcrV2JsonSelect = includePageOcrV2Requested
+        ? "(d.full_content->'pdf_v2'->'pages'->(va.page_index)::int->'ocr_v2') AS page_ocr_v2_json"
+        : "NULL::jsonb AS page_ocr_v2_json";
+
+      const includePageUnderstandingSelect = includePageUnderstandingRequested
+        ? "dpu.payload AS page_understanding_v1"
+        : "NULL::jsonb AS page_understanding_v1";
+
+      const includePageUnderstandingUpdatedAtSelect = includePageUnderstandingRequested
+        ? "dpu.updated_at AS page_understanding_v1_updated_at"
+        : "NULL::timestamptz AS page_understanding_v1_updated_at";
+
+      const pageUnderstandingJoin = includePageUnderstandingRequested
+        ? "LEFT JOIN document_page_understanding dpu ON dpu.document_id = va.document_id AND dpu.page_index = va.page_index AND dpu.version = 'page_understanding_v1'"
+        : "";
+
       const { rows } = await pool.query(
         `WITH latest_extraction AS (
            SELECT ve.visual_asset_id,
@@ -6505,6 +6744,12 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
            d.status AS document_status,
            d.page_count AS document_page_count,
            ${hasMimeType ? "d.mime_type AS document_mime_type" : "NULL::text AS document_mime_type"},
+           ${includePageOcrV2Select},
+           ${includePageOcrV2ConfSelect},
+           ${includePageOcrV2ProviderSelect},
+           ${includePageOcrV2JsonSelect},
+           ${includePageUnderstandingSelect},
+           ${includePageUnderstandingUpdatedAtSelect},
            COALESCE(ev.count, 0) AS evidence_count,
            COALESCE(ev.sample_snippets, ARRAY[]::text[]) AS evidence_sample_snippets,
            (SELECT EXISTS (SELECT 1 FROM visual_extractions ve WHERE ve.visual_asset_id = va.id)) AS has_extraction,
@@ -6518,6 +6763,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
            ${aiAnalystSelect}
          FROM visual_assets va
          JOIN documents d ON d.id = va.document_id
+         ${pageUnderstandingJoin}
          ${aiInvestorJoin}
          ${aiAnalystJoin}
          LEFT JOIN LATERAL (
@@ -6540,6 +6786,16 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       );
 
       const rawAssets = rows ?? [];
+
+      if (includePageOcrV2Requested && rawAssets.length > 0) {
+        for (const r of rawAssets as any[]) {
+          const { text, keptBlocks, totalBlocks } = computeOcrV2CleanText((r as any).page_ocr_v2_json);
+          (r as any).page_ocr_v2_text_clean = text;
+          (r as any).page_ocr_v2_kept_blocks = keptBlocks;
+          (r as any).page_ocr_v2_total_blocks = totalBlocks;
+          delete (r as any).page_ocr_v2_json;
+        }
+      }
 
       const brandModelByDocId = new Map<string, BrandModel>();
       const brandNameByDocId = new Map<string, { brand: string | null; confidence: number | null }>();
@@ -6698,6 +6954,11 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           : structuredTitleMeta
             ? structuredTitleMeta.confidence
             : titleDerived.slide_title_confidence ?? 0.15;
+
+        // Avoid emitting misleading index-only placeholders.
+        const slide_title_final = slide_title_source === "index_fallback_v1" ? null : slide_title;
+        const slide_title_source_final = slide_title_final ? slide_title_source : "none";
+        const slide_title_confidence_final = slide_title_final ? slide_title_confidence : 0;
         const slide_title_warnings = useOcrTitle
           ? titleDerived.slide_title_warnings
           : titleDerived.slide_title_warnings?.includes("picked_title_garbled")
@@ -6778,8 +7039,9 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           structured_json: (r as any)?.structured_json,
           asset_type: r?.asset_type,
           page_index: r?.page_index,
-          slide_title,
-          slide_title_confidence,
+          // Keep computed_v1 consistent with lineage: don't let index-only placeholders influence classification.
+          slide_title: slide_title_final,
+          slide_title_confidence: slide_title_confidence_final,
           evidence_snippets: Array.isArray((r as any).evidence_sample_snippets) ? (r as any).evidence_sample_snippets : [],
           brand_blacklist: blacklist,
           brand_name: brandInfo.brand,
@@ -6852,9 +7114,9 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           visual_asset_id,
           structured_summary,
           structured_kind,
-          slide_title,
-          slide_title_source,
-          slide_title_confidence,
+          slide_title: slide_title_final,
+          slide_title_source: slide_title_source_final,
+          slide_title_confidence: slide_title_confidence_final,
           slide_title_warnings,
           // Backwards-compatible if any consumers use "segment" from this endpoint.
           segment: effectiveSegment,
@@ -7281,63 +7543,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       const docMajorityMinPct = 0.55;
       const docMajorityMinCount = 2;
 
-      const cueRescue = (v: any): { segment: AnalystSegment; confidence: number; matched: string } | null => {
-        const textRaw = typeof v?.ocr_text === "string" ? v.ocr_text : "";
-        const text = textRaw.replace(/\s+/g, " ").trim().toLowerCase();
-        const assetType = typeof v?.asset_type === "string" ? String(v.asset_type) : "";
-        const structuredKind = typeof v?.structured_kind === "string" ? String(v.structured_kind) : "";
-
-        // Only rescue on truly low-signal cases; avoid overriding structured assets.
-        if (structuredKind === "powerpoint_slide" || structuredKind === "excel_sheet" || structuredKind === "word_section") return null;
-        if (!text) return null;
-
-        const cue = (re: RegExp, matched: string, segment: AnalystSegment, confidence: number) =>
-          re.test(text) ? ({ segment, confidence, matched } as const) : null;
-
-        // Raise / terms cues
-        const raise =
-          cue(/\bcap\s*table\b|\bcaptable\b/, "cap table", "raise_terms", 0.45) ||
-          cue(/\bpre[- ]?money\b|\bpost[- ]?money\b/, "pre/post money", "raise_terms", 0.4) ||
-          cue(/\bvaluation\b/, "valuation", "raise_terms", 0.35) ||
-          cue(/\bterm\s*sheet\b/, "term sheet", "raise_terms", 0.45) ||
-          cue(/\bround\b\s*(seed|series\s*[a-e])\b/, "funding round", "raise_terms", 0.35) ||
-          null;
-        if (raise) return raise;
-
-        // Financial cues (tables are especially likely)
-        const financial =
-          cue(/\b(income\s*statement|p\s*&\s*l|profit\s*&\s*loss)\b/, "P&L", "financials", 0.45) ||
-          cue(/\bbalance\s*sheet\b/, "balance sheet", "financials", 0.45) ||
-          cue(/\bcash\s*flow\b/, "cash flow", "financials", 0.45) ||
-          cue(/\bburn\b|\brunway\b/, "burn/runway", "financials", 0.4) ||
-          cue(/\brevenue\b|\bgross\s*margin\b|\bnet\s*income\b/, "revenue/margins", "financials", 0.35) ||
-          cue(/\bcogs\b|\bop(ex|erating\s*expenses?)\b/, "COGS/Opex", "financials", 0.35) ||
-          null;
-        if (financial) return financial;
-
-        // Market cues
-        const market =
-          cue(/\btam\b|\bsam\b|\bsom\b/, "TAM/SAM/SOM", "market", 0.35) ||
-          cue(/\bmarket\s*(size|opportunity|growth)\b/, "market size/growth", "market", 0.3) ||
-          null;
-        if (market) return market;
-
-        // Product cues
-        const product =
-          cue(/\bproduct\b\s*(roadmap|overview)\b/, "product roadmap/overview", "product", 0.3) ||
-          cue(/\bfeatures?\b|\barchitecture\b|\bplatform\b/, "features/architecture", "product", 0.25) ||
-          null;
-        if (product) return product;
-
-        // If it's a table and we have lots of numbers but no keywords, bias to financials at low confidence.
-        if (assetType === "table") {
-          const digitCount = (text.match(/\d/g) || []).length;
-          const tokenCount = text.split(" ").filter(Boolean).length;
-          if (digitCount >= 25 && tokenCount >= 10) return { segment: "financials", confidence: 0.25, matched: "table_numeric_density" };
-        }
-
-        return null;
-      };
+      const cueRescue = cueRescueLowSignal;
 
       // Cue-based rescue pass (before doc-majority, before default fallback).
       for (let i = 0; i < visualAssets.length; i++) {
@@ -7477,6 +7683,47 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
             rule_id: "DEFAULT_SEGMENT_FALLBACK",
           },
         };
+      }
+
+      // UI clarity: suppress per-page "page_image_fallback" rows when a higher-quality asset
+      // exists for the same document+page. These rows typically have no OCR/title and get the
+      // default segment fallback (overview), which looks like a duplicate slide.
+      if (!includePageFallbackRequested && visualAssets.length > 0) {
+        const keyOf = (a: any): string | null => {
+          const docId = typeof a?.document_id === "string" ? a.document_id : null;
+          const page = typeof a?.page_index === "number" && Number.isFinite(a.page_index) ? a.page_index : null;
+          if (!docId || page == null) return null;
+          return `${docId}::${page}`;
+        };
+
+        const isPageFallback = (a: any): boolean => {
+          const qSource = typeof a?.quality_flags?.source === "string" ? String(a.quality_flags.source) : "";
+          const segSrc = typeof a?.segment_source === "string" ? String(a.segment_source) : "";
+          const extractorVer = typeof a?.extractor_version === "string" ? String(a.extractor_version) : "";
+          const ruleId = typeof a?.computed_reason?.rule_id === "string" ? String(a.computed_reason.rule_id) : "";
+          return (
+            qSource === "page_image_fallback" ||
+            segSrc === "default_fallback_v1" ||
+            extractorVer === "default_fallback_v1" ||
+            ruleId === "DEFAULT_SEGMENT_FALLBACK"
+          );
+        };
+
+        const hasNonFallbackByKey = new Map<string, boolean>();
+        for (const a of visualAssets as any[]) {
+          const k = keyOf(a);
+          if (!k) continue;
+          if (!isPageFallback(a)) {
+            hasNonFallbackByKey.set(k, true);
+          }
+        }
+
+        visualAssets = (visualAssets as any[]).filter((a: any) => {
+          const k = keyOf(a);
+          if (!k) return true;
+          if (!isPageFallback(a)) return true;
+          return !hasNonFallbackByKey.get(k);
+        }) as any;
       }
 
       return reply.send({
@@ -8078,7 +8325,10 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       return reply.status(404).send({ error: "Deal not found" });
     }
 
-    const job = await enqueueJob({ deal_id: dealId, type: "analyze_deal" });
+    const job = await enqueueJob(
+      { deal_id: dealId, type: "analyze_deal" },
+      { dedupe: { by: "deal" } }
+    );
 
     // After analysis job is enqueued, mark it so we can auto-progress when complete
     // (This would typically happen in a background worker after job completes)
@@ -8108,15 +8358,18 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     // Single job; the worker resolves deal documents + rendered page image URIs.
     // force_resegment updates segment_key for existing structured synthetic assets (pptx/docx/xlsx)
     // before extracting visuals.
-    const job = await enqueueJob({
-      deal_id: dealId,
-      type: "extract_visuals",
-      payload: {
-        force_resegment: forceResegment,
-        force_reextract: forceReextract,
-        enqueue_deep_scan: enqueueDeepScan,
+    const job = await enqueueJob(
+      {
+        deal_id: dealId,
+        type: "extract_visuals",
+        payload: {
+          force_resegment: forceResegment,
+          force_reextract: forceReextract,
+          enqueue_deep_scan: enqueueDeepScan,
+        },
       },
-    });
+      { dedupe: { by: "deal" } }
+    );
     return reply.status(202).send({ job_id: job.job_id, status: job.status });
   });
 
@@ -8135,11 +8388,14 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       return reply.status(404).send({ error: "Deal not found" });
     }
 
-    const job = await enqueueJob({
-      deal_id: dealId,
-      type: "deep_scan_visuals",
-      payload: { force_refresh: forceRefresh },
-    });
+    const job = await enqueueJob(
+      {
+        deal_id: dealId,
+        type: "deep_scan_visuals",
+        payload: { force_refresh: forceRefresh },
+      },
+      { dedupe: { by: "deal" } }
+    );
 
     return reply.status(202).send({ job_id: job.job_id, status: job.status });
   });

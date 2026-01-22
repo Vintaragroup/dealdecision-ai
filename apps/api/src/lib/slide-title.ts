@@ -79,6 +79,7 @@ const DEFAULT_BLACKLIST = new Set<string>([
 ]);
 
 const headingKeywords = [
+  "the pivot",
   "overview",
   "company overview",
   "problem",
@@ -249,8 +250,65 @@ function looksRandomMixedCaseToken(rawWord: string): boolean {
 export function isLikelyGarbledSlideTitle(title: string | null | undefined): boolean {
   const raw = typeof title === "string" ? title.replace(/\s+/g, " ").trim() : "";
   if (!raw) return true;
+  if (looksLikeSlideIndexPlaceholder(raw)) return true;
   const norm = normalizePhrase(raw);
   return looksGarbledTitleCandidate(raw, norm);
+}
+
+function looksLikeSlideIndexPlaceholder(text: string): boolean {
+  const raw = typeof text === "string" ? text.replace(/\s+/g, " ").trim() : "";
+  if (!raw) return false;
+  const norm = normalizePhrase(raw);
+  // Common OCR variants: "Silde 6", "Sllde 6", etc.
+  if (/^(slide|silde|sllde|sl1de)\s*\d{1,4}$/.test(norm)) return true;
+  if (/^(slide|silde|sllde|sl1de)$/.test(norm)) return true;
+  return false;
+}
+
+function repairSpacedLetterRuns(rawLine: string): string {
+  const raw = typeof rawLine === "string" ? rawLine.replace(/\s+/g, " ").trim() : "";
+  if (!raw) return "";
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return raw;
+
+  const out: string[] = [];
+  let run: string[] = [];
+  const flush = () => {
+    if (run.length > 0) {
+      out.push(run.join(""));
+      run = [];
+    }
+  };
+
+  for (const tok of tokens) {
+    const lettersOnly = tok.replace(/[^A-Za-z]/g, "");
+    if (lettersOnly.length === 1) {
+      run.push(lettersOnly);
+      continue;
+    }
+    flush();
+    out.push(tok);
+  }
+  flush();
+
+  return out.join(" ").replace(/\s+/g, " ").trim();
+}
+
+function repairCommonOcrTypos(rawLine: string): string {
+  const raw = typeof rawLine === "string" ? rawLine : "";
+  if (!raw) return "";
+
+  // Low-risk, high-frequency OCR confusions we’ve seen in pitch decks.
+  // Keep this list small and conservative.
+  let s = raw;
+
+  // Example user report: "Susiness Mociel" → "Business Model".
+  s = s.replace(/\bSusiness\b/gi, "Business");
+  s = s.replace(/\bBusines\b/gi, "Business");
+  s = s.replace(/\bMociel\b/gi, "Model");
+  s = s.replace(/\bMocl?el\b/gi, "Model");
+
+  return s;
 }
 
 function looksUnpronounceableToken(rawWord: string): boolean {
@@ -413,6 +471,17 @@ function looksReasonableTitleCandidate(rawText: string, normText: string): boole
   if (!raw || !norm) return false;
   if (looksGarbledTitleCandidate(raw, norm)) return false;
 
+  // Reject low-signal fragments that are likely body copy (e.g. "credit trends, signals, ...").
+  if (/^[a-z]/.test(raw) && /,/.test(raw) && raw.length >= 18) return false;
+
+  // Reject truncated headings that end on a dangling stopword (common OCR cut-off).
+  // Example user reports: "Significant boost in".
+  const lower = raw.toLowerCase();
+  if (/\b(in|of|to|and|for|with|by|on|at)\s*$/.test(lower)) {
+    const words = norm.split(/\s+/).filter(Boolean);
+    if (words.length <= 6) return false;
+  }
+
   // Strong filter for OCR noise that still contains letters.
   const rawNoSpace = raw.replace(/\s+/g, "");
   const letters = (rawNoSpace.match(/[A-Za-z]/g) ?? []).length;
@@ -423,10 +492,25 @@ function looksReasonableTitleCandidate(rawText: string, normText: string): boole
   const weirdChars = (raw.match(/[^a-zA-Z0-9\s\-\/:,.()&+%$]/g) ?? []).length;
   if (raw.length >= 12 && weirdChars >= Math.ceil(raw.length * 0.12)) return false;
 
+  // Reject bracket-heavy or unbalanced bracket titles (common OCR artifacts like "POA) platform.").
+  const openBr = (raw.match(/[([{]/g) ?? []).length;
+  const closeBr = (raw.match(/[)\]}]/g) ?? []).length;
+  if (openBr !== closeBr) return false;
+  if (openBr > 0 && raw.length < 22) return false;
+
+  // Reject punctuation-heavy titles even if they pass the weirdChars filter.
+  const punctCount = raw.replace(/[A-Za-z0-9\s]/g, "").length;
+  const punctRatio = raw.length > 0 ? punctCount / raw.length : 0;
+  if (punctRatio > 0.28) return false;
+
   const words = norm.split(/\s+/).filter(Boolean);
   if (words.length === 0) return false;
 
   const hasHeadingKeyword = headingKeywords.some((h) => norm.includes(normalizePhrase(h)));
+
+  // Deck titles very rarely start with lowercase; treat short lowercase fragments as body copy.
+  if (!hasHeadingKeyword && /^[a-z]/.test(raw) && words.length <= 3) return false;
+
   if (words.length > 12 && !hasHeadingKeyword) return false;
 
   const longWordCount = words.filter((w) => w.length >= 4).length;
@@ -446,12 +530,51 @@ function inferTitleFromFuzzyHeading(params: {
 
   if (candidates.length === 0) return null;
 
+  // Fast path: detect common deck headings even when OCR drops/space-splits letters.
+  // We only trust this near the top to avoid matching body-copy words.
+  for (const l of candidates) {
+    const isTop = l.bbox?.y != null ? l.bbox.y < 0.35 : l.lineIndex <= 6;
+    if (!isTop) continue;
+    const compact = String(l.text || "").toUpperCase().replace(/[^A-Z]/g, "");
+    if (!compact || compact.length < 4 || compact.length > 24) continue;
+
+    // OCR for big headings is often correct but polluted with a few stray letters.
+    // Allow matching on a stable suffix for common headings.
+    const compactSuffix = compact.slice(-24);
+
+    if (compact === "THEPIVOT" || compact === "PIVOT" || compactSuffix.endsWith("THEPIVOT") || compactSuffix.endsWith("PIVOT")) {
+      return { title: "The Pivot", confidence: 0.78, reason: `compact_heading:${compact}` };
+    }
+    if (
+      compact === "PRODUCTS" ||
+      compact === "PRODUCT" ||
+      compact === "DUCTS" ||
+      compactSuffix.endsWith("PRODUCTS") ||
+      (compactSuffix.endsWith("DUCTS") && compactSuffix.length <= 14)
+    ) {
+      const conf = compact === "DUCTS" || compactSuffix.endsWith("DUCTS") ? 0.72 : 0.78;
+      return { title: "Products", confidence: conf, reason: `compact_heading:${compact}` };
+    }
+    if (
+      compact === "SOLUTION" ||
+      compact === "SOLUTIONS" ||
+      compact === "LUTION" ||
+      compactSuffix.endsWith("SOLUTION") ||
+      compactSuffix.endsWith("SOLUTIONS") ||
+      (compactSuffix.endsWith("LUTION") && compactSuffix.length <= 14)
+    ) {
+      const conf = compact === "LUTION" || compactSuffix.endsWith("LUTION") ? 0.72 : 0.78;
+      return { title: "Solution", confidence: conf, reason: `compact_heading:${compact}` };
+    }
+  }
+
   // Canonical headings we are willing to emit as titles.
   const headings: Array<{ label: string; variants: string[] }> = [
+    { label: "The Pivot", variants: ["the pivot", "pivot"] },
     { label: "Overview", variants: ["overview", "company overview"] },
     { label: "Problem", variants: ["problem", "market problem"] },
     { label: "Solution", variants: ["solution"] },
-    { label: "Product", variants: ["product", "how it works"] },
+    { label: "Products", variants: ["products", "product", "how it works"] },
     { label: "Market", variants: ["market", "market opportunity"] },
     { label: "Traction", variants: ["traction"] },
     { label: "Business Model", variants: ["business model", "pricing"] },
@@ -592,7 +715,8 @@ function groupLines(blocks: Array<{ raw: string; norm: string; bbox: NormBBox; l
   for (const arr of grouped.values()) {
     const sorted = arr.slice().sort((a, b) => (a.bbox?.x ?? 0) - (b.bbox?.x ?? 0));
     const rawLine = sorted.map((s) => s.raw).join(" ").trim();
-    const norm = normalizePhrase(rawLine);
+    const repaired = repairCommonOcrTypos(repairSpacedLetterRuns(rawLine));
+    const norm = normalizePhrase(repaired);
     if (!norm) continue;
     const xs = sorted.map((s) => s.bbox?.x ?? 0);
     const ys = sorted.map((s) => s.bbox?.y ?? 0);
@@ -602,7 +726,7 @@ function groupLines(blocks: Array<{ raw: string; norm: string; bbox: NormBBox; l
     const minY = Math.min(...ys);
     const maxX = Math.max(...ws);
     const hAvg = hs.length > 0 ? hs.reduce((a, b) => a + b, 0) / hs.length : 0;
-    lines.push({ raw: rawLine, norm, bbox: { x: minX, y: minY, w: Math.max(0, maxX - minX), h: hAvg }, lineIndex: idx++ });
+    lines.push({ raw: repaired || rawLine, norm, bbox: { x: minX, y: minY, w: Math.max(0, maxX - minX), h: hAvg }, lineIndex: idx++ });
   }
 
   return lines.sort((a, b) => (a.bbox?.y ?? 0) - (b.bbox?.y ?? 0));
@@ -617,9 +741,10 @@ function extractLines(page: PageInput): LineCandidate[] {
   if (typeof page.ocr_text === "string") {
     let idx = 0;
     for (const rawLine of page.ocr_text.split(/\r?\n/)) {
-      const norm = normalizePhrase(rawLine);
+      const repaired = repairCommonOcrTypos(repairSpacedLetterRuns(rawLine));
+      const norm = normalizePhrase(repaired);
       if (!norm) continue;
-      lines.push({ raw: rawLine.trim(), norm, bbox: null, lineIndex: idx++ });
+      lines.push({ raw: (repaired || rawLine).trim(), norm, bbox: null, lineIndex: idx++ });
     }
   }
   return lines;
@@ -663,9 +788,10 @@ function extractBodyCopyFromOcrText(text: string | null | undefined): string {
   return t;
 }
 
-function stripBrandFromLine(params: { rawLine: string; brandToken: string | null }): string | null {
+function stripBrandFromLine(params: { rawLine: string; brandToken: string | null; docBlacklist?: Set<string> | null }): string | null {
   const raw = typeof params.rawLine === "string" ? params.rawLine : "";
   const brandToken = typeof params.brandToken === "string" && params.brandToken.trim() ? params.brandToken.trim() : null;
+  const docBlacklist = params.docBlacklist ?? null;
   if (!raw.trim()) return null;
 
   // Remove URLs/emails which often appear in top lines.
@@ -684,6 +810,7 @@ function stripBrandFromLine(params: { rawLine: string; brandToken: string | null
   const norm = normalizePhrase(s);
   if (!norm || norm.length < 3) return null;
   if (DEFAULT_BLACKLIST.has(norm)) return null;
+  if (docBlacklist && docBlacklist.has(norm)) return null;
   if (isUrlEmailPhone(norm) || looksLikePageNumber(norm) || isMostlyNumeric(norm)) return null;
 
   return s.length > 180 ? s.slice(0, 180) : s;
@@ -757,6 +884,7 @@ export function buildBrandModel(pages: PageInput[]): BrandModel {
       const norm = normalizePhrase(line.norm);
       if (!norm || norm.length < 3 || norm.length > 120) continue;
       if (isUrlEmailPhone(norm) || looksLikePageNumber(norm)) continue;
+      if (looksLikeSlideIndexPlaceholder(norm)) continue;
       const isTop = line.bbox?.y != null ? line.bbox.y <= 0.5 : line.lineIndex <= 8;
       if (!isTop) continue;
       seen.add(norm);
@@ -807,8 +935,21 @@ function scoreCandidate(line: LineCandidate, brandModel: BrandModel): SlideCandi
   const topScore = line.bbox?.y != null ? clamp(0.7 - line.bbox.y * 1.4, 0, 0.7) : line.lineIndex === 0 ? 0.4 : 0;
   const centerBias = line.bbox?.x != null && line.bbox?.w != null ? clamp(0.3 - Math.abs(line.bbox.x + (line.bbox.w ?? 0) / 2 - 0.5), -0.1, 0.3) : 0;
   const headingBoost = heading ? 1.2 : 0;
-  const brandOverlap = overlapRatio(line.norm, brandModel.phrases);
-  const brandPenalty = brandOverlap >= 0.7 ? -2 : brandOverlap >= 0.5 ? -1.2 : brandOverlap >= 0.3 ? -0.6 : 0;
+
+  const containsBrandPhrase = (normText: string, phrases: Set<string>): boolean => {
+    if (!normText) return false;
+    for (const p of phrases) {
+      if (!p || p.length < 6) continue;
+      if (normText === p) return true;
+      if (normText.includes(p)) return true;
+      if (p.includes(normText) && normText.length >= 10) return true;
+    }
+    return false;
+  };
+
+  const brandContains = containsBrandPhrase(line.norm, brandModel.phrases);
+  const brandOverlap = brandContains ? 1 : overlapRatio(line.norm, brandModel.phrases);
+  const brandPenalty = brandOverlap >= 0.7 ? -2.4 : brandOverlap >= 0.5 ? -1.6 : brandOverlap >= 0.3 ? -0.8 : 0;
   const brandRegionHit = inBrandRegion(line.bbox, brandModel.regions);
   const regionPenalty = brandRegionHit ? -1.2 : 0;
   const alphaScore = alphaRatio(line.norm) < 0.3 ? -0.8 : 0;
@@ -833,18 +974,30 @@ export function inferSlideTitleForSlide(input: SlideTitleInput): SlideTitleResul
   const hasLayoutBlocks = Array.isArray(input.blocks) && input.blocks.length > 0;
   const lines = extractLines({ ocr_blocks: input.blocks ?? null, ocr_text: input.ocr_text ?? null, page_width: input.page_width, page_height: input.page_height });
 
+  const containsBrandPhrase = (normText: string, phrases: Set<string>): boolean => {
+    if (!normText) return false;
+    for (const p of phrases) {
+      if (!p || p.length < 6) continue;
+      if (normText === p) return true;
+      if (normText.includes(p)) return true;
+      if (p.includes(normText) && normText.length >= 10) return true;
+    }
+    return false;
+  };
+
   const candidates: SlideCandidateScore[] = [];
   const altCandidates: SlideCandidateScore[] = [];
   for (const line of lines) {
     const len = line.norm.length;
     if (len < 3 || len > 120) continue;
     if (isUrlEmailPhone(line.norm) || looksLikePageNumber(line.norm)) continue;
+    if (looksLikeSlideIndexPlaceholder(line.norm)) continue;
     if (isMostlyNumeric(line.norm)) continue;
     const alpha = alphaRatio(line.norm);
     if (alpha < 0.25) continue;
     const topPortion = line.bbox?.y != null ? line.bbox.y < 0.35 : line.lineIndex <= 6;
     const sc = scoreCandidate(line, brandModel);
-    const isBrandPhrase = brandModel.phrases.has(line.norm);
+    const isBrandPhrase = brandModel.phrases.has(line.norm) || containsBrandPhrase(line.norm, brandModel.phrases);
     if (topPortion && !isBrandPhrase) {
       candidates.push(sc);
     } else if (!isBrandPhrase) {
@@ -888,7 +1041,7 @@ export function inferSlideTitleForSlide(input: SlideTitleInput): SlideTitleResul
     // Last-resort fallback: if the top line looks like "BRAND + tagline", strip brand token and use remaining phrase.
     const topLine = lines[0]?.raw ?? "";
     const brandToken = findBrandTokenFromText(input.ocr_text ?? "") ?? findBrandTokenFromText(topLine);
-    const stripped = stripBrandFromLine({ rawLine: topLine, brandToken });
+    const stripped = stripBrandFromLine({ rawLine: topLine, brandToken, docBlacklist: brandModel.phrases });
     if (stripped) {
       return {
         slide_title: stripped,
@@ -922,6 +1075,9 @@ export function inferSlideTitleForSlide(input: SlideTitleInput): SlideTitleResul
   })();
 
   const pickedGarbled = looksGarbledTitleCandidate(pickedRaw, pickedNorm);
+  const pickedReasonable = looksReasonableTitleCandidate(pickedRaw, pickedNorm);
+  const pickedBrandish = pickedHasBrandToken && !pickedHasHeading && !pickedLooksLikeHeadingKeyword;
+  let pickedBad = pickedGarbled || !pickedReasonable || pickedBrandish;
 
   // If the OCR line contains a real heading at the start followed by garbled tokens,
   // emit only the heading prefix. This is common in PDFs where a small OCR artifact
@@ -929,7 +1085,12 @@ export function inferSlideTitleForSlide(input: SlideTitleInput): SlideTitleResul
   const headingPrefix = extractHeadingPrefixFromRaw(pickedRaw);
   if (headingPrefix) {
     const headingNorm = normalizePhrase(headingPrefix);
-    if (!looksGarbledTitleCandidate(headingPrefix, headingNorm)) {
+    const tailRaw = pickedRaw.slice(headingPrefix.length).trim();
+    const tailNorm = normalizePhrase(tailRaw);
+    const tailLooksGarbled = tailRaw.length >= 6 && looksGarbledTitleCandidate(tailRaw, tailNorm);
+    const shouldStripToPrefix = pickedGarbled || tailLooksGarbled;
+
+    if (shouldStripToPrefix && !looksGarbledTitleCandidate(headingPrefix, headingNorm)) {
       return {
         slide_title: headingPrefix,
         slide_title_confidence: Math.max(0.6, Math.min(0.85, Number((input.enableDebug ? 0.75 : 0.7).toFixed(3)))),
@@ -949,12 +1110,15 @@ export function inferSlideTitleForSlide(input: SlideTitleInput): SlideTitleResul
   // If the chosen title looks garbled, prefer a high-confidence fuzzy heading title.
   // This tends to stabilize titles (and downstream segments) for common deck pages.
   const fuzzyHeading = inferTitleFromFuzzyHeading({ lines });
-  if (fuzzyHeading && pickedGarbled) {
+  if (fuzzyHeading && pickedBad) {
     return {
       slide_title: fuzzyHeading.title,
       slide_title_confidence: Number(fuzzyHeading.confidence.toFixed(3)),
       slide_title_source: "heading_fuzzy_v1",
-      slide_title_warnings: ["picked_title_garbled", "derived_from_fuzzy_heading"],
+      slide_title_warnings: [
+        pickedGarbled ? "picked_title_garbled" : pickedBrandish ? "picked_title_brandish" : "picked_title_unreasonable",
+        "derived_from_fuzzy_heading",
+      ],
       ...(input.enableDebug
         ? {
             slide_title_debug: {
@@ -973,7 +1137,7 @@ export function inferSlideTitleForSlide(input: SlideTitleInput): SlideTitleResul
       slide_title: bodyFallback.title,
       slide_title_confidence: 0.55,
       slide_title_source: "ocr_fallback",
-      slide_title_warnings: pickedGarbled ? ["picked_title_garbled", "derived_from_body_copy"] : ["derived_from_body_copy"],
+      slide_title_warnings: pickedBad ? [pickedGarbled ? "picked_title_garbled" : "picked_title_unreasonable", "derived_from_body_copy"] : ["derived_from_body_copy"],
       ...(input.enableDebug
         ? {
             slide_title_debug: {
@@ -987,7 +1151,7 @@ export function inferSlideTitleForSlide(input: SlideTitleInput): SlideTitleResul
 
   // If we cannot find a non-garbled title, force callers to fall back to structured titles
   // or stable index-based titles (e.g. "Slide 12") instead of emitting OCR junk.
-  if (pickedGarbled) {
+  if (pickedBad) {
     // Try the best non-garbled runner-up before giving up.
     const pool = [...filtered.slice(0, 6), ...altCandidates.slice(0, 6)];
     for (const c of pool) {
@@ -1002,7 +1166,7 @@ export function inferSlideTitleForSlide(input: SlideTitleInput): SlideTitleResul
         slide_title: candidateText,
         slide_title_confidence: 0.55,
         slide_title_source: hasLayoutBlocks ? "ocr_layout_v1" : "ocr_fallback",
-        slide_title_warnings: ["picked_title_garbled", "used_runner_up_candidate"],
+        slide_title_warnings: [pickedGarbled ? "picked_title_garbled" : "picked_title_unreasonable", "used_runner_up_candidate"],
         ...(input.enableDebug
           ? {
               slide_title_debug: {
@@ -1017,7 +1181,7 @@ export function inferSlideTitleForSlide(input: SlideTitleInput): SlideTitleResul
       slide_title: null,
       slide_title_confidence: 0,
       slide_title_source: "none",
-      slide_title_warnings: ["picked_title_garbled"],
+      slide_title_warnings: [pickedGarbled ? "picked_title_garbled" : "picked_title_unreasonable"],
       ...(input.enableDebug
         ? {
             slide_title_debug: {

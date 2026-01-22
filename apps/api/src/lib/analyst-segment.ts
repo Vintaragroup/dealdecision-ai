@@ -644,6 +644,8 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
   );
 
   const headingKeywords = [
+    "problem",
+    "solution",
     "traction",
     "business model",
     "pricing",
@@ -899,6 +901,7 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
     ],
     solution: [
       { term: "solution" },
+      { term: "our solution", weight: 2 },
       { term: "approach" },
       { term: "value proposition" },
       { term: "impact" },
@@ -907,6 +910,7 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       { term: "outcome" },
       { term: "outcomes" },
       { term: "solve" },
+      { term: "solves", weight: 1.5 },
       { term: "solving" },
       { term: "seamlessly integrates" },
     ],
@@ -1369,6 +1373,13 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
     if (!headerMatchText || !detectedHeader) return false;
     if (!isVisionLike) return true;
     if (!hardHeaderSegment) return false;
+    // Vision assets: when the route-level slide title inference returns a high-confidence title,
+    // treat that header as authoritative even if body scoring leans elsewhere.
+    const titleConfidence =
+      typeof input.slide_title_confidence === "number" && Number.isFinite(input.slide_title_confidence)
+        ? input.slide_title_confidence
+        : null;
+    if (features.title_source === "slide_title" && titleConfidence != null && titleConfidence >= 0.6) return true;
     if (best.score < BODY_SCORE_THRESHOLD) return true;
     if (best.segment === hardHeaderSegment) return true;
     if (best.score >= 0.78 && hardHeaderScore < 0.45) return false;

@@ -1050,12 +1050,15 @@ export async function registerDocumentRoutes(
     );
 
     // Retry now uses persisted original bytes (stored during initial ingestion).
-    const job = await enqueue({
-      deal_id,
-      document_id,
-      type: "reextract_documents",
-      payload: { deal_id, document_ids: [document_id] },
-    });
+    const job = await enqueue(
+      {
+        deal_id,
+        document_id,
+        type: "reextract_documents",
+        payload: { deal_id, document_ids: [document_id] },
+      },
+      { dedupe: { by: "document" } }
+    );
 
     return reply.status(202).send({ ok: true, job_id: job.job_id });
   });
@@ -1066,12 +1069,15 @@ export async function registerDocumentRoutes(
     const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
     const forceResegment = Boolean((request.body as any)?.force_resegment);
 
-    const job = await enqueue({
-      deal_id,
-      document_id,
-      type: "extract_visuals",
-      payload: { force_resegment: forceResegment },
-    });
+    const job = await enqueue(
+      {
+        deal_id,
+        document_id,
+        type: "extract_visuals",
+        payload: { force_resegment: forceResegment },
+      },
+      { dedupe: { by: "document" } }
+    );
 
     return reply.status(202).send({ ok: true, job_id: job.job_id });
   });
@@ -1089,16 +1095,19 @@ export async function registerDocumentRoutes(
       include_warnings?: boolean;
     };
 
-    const job = await enqueue({
-      deal_id: dealId,
-      type: "reextract_documents",
-      payload: {
+    const job = await enqueue(
+      {
         deal_id: dealId,
-        document_ids: Array.isArray(body.document_ids) ? body.document_ids : undefined,
-        threshold_low: typeof body.threshold_low === "number" ? body.threshold_low : undefined,
-        include_warnings: Boolean(body.include_warnings),
+        type: "reextract_documents",
+        payload: {
+          deal_id: dealId,
+          document_ids: Array.isArray(body.document_ids) ? body.document_ids : undefined,
+          threshold_low: typeof body.threshold_low === "number" ? body.threshold_low : undefined,
+          include_warnings: Boolean(body.include_warnings),
+        },
       },
-    });
+      { dedupe: { by: "deal" } }
+    );
 
     return reply.status(202).send({ ok: true, job_id: job.job_id });
   });

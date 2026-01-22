@@ -461,13 +461,24 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           </label>
           <button id="visual-assets-load-btn" class="btn btn-small">Load</button>
           <button id="visual-assets-refresh-btn" class="btn btn-small btn-secondary">Refresh</button>
+          <button id="visual-assets-analyze-deal-btn" class="btn btn-small">Analyze (deal)</button>
           <button id="visual-assets-deep-scan-deal-btn" class="btn btn-small">Deep scan (deal)</button>
+          <button id="visual-assets-run-process-btn" class="btn btn-small">Run full process</button>
+          <button id="documents-reextract-deal-btn" class="btn btn-small btn-danger">Re-extract documents (deal)</button>
           <button id="visual-assets-reextract-deal-btn" class="btn btn-small btn-danger">Re-extract visuals (deal)</button>
           <button id="visual-assets-reextract-all-btn" class="btn btn-small btn-danger">Re-extract visuals (all deals)</button>
           <button id="visual-assets-reextract-stop-btn" class="btn btn-small btn-secondary">Stop polling</button>
           <button id="visual-assets-reextract-clear-btn" class="btn btn-small btn-secondary">Clear progress</button>
+          <button id="documents-reextract-clear-btn" class="btn btn-small btn-secondary">Clear doc re-extract</button>
+          <button id="visual-assets-process-clear-btn" class="btn btn-small btn-secondary">Clear full process</button>
           <span id="visual-assets-selected" class="muted"></span>
         </div>
+
+        <div id="deal-summary-container" class="card" style="margin-bottom: 1rem;">
+          <h2 style="margin-bottom: 0.75rem;">Deal Summary (Phase 1)</h2>
+          <div id="deal-summary" class="muted">Select a deal to view summary.</div>
+        </div>
+
         <div id="va-reextract-panel" class="progress-panel" style="display:none;">
           <div style="display:flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.5rem;">
             <strong>Re-extract visuals progress</strong>
@@ -475,6 +486,24 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           </div>
           <div id="va-reextract-table"></div>
           <div id="va-reextract-log" class="progress-log"></div>
+        </div>
+
+        <div id="doc-reextract-panel" class="progress-panel" style="display:none;">
+          <div style="display:flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.5rem;">
+            <strong>Re-extract documents progress</strong>
+            <span id="doc-reextract-summary" class="muted"></span>
+          </div>
+          <div id="doc-reextract-table"></div>
+          <div id="doc-reextract-log" class="progress-log"></div>
+        </div>
+
+        <div id="full-process-panel" class="progress-panel" style="display:none;">
+          <div style="display:flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.5rem;">
+            <strong>Full process</strong>
+            <span id="full-process-summary" class="muted"></span>
+          </div>
+          <div id="full-process-table"></div>
+          <div id="full-process-log" class="progress-log"></div>
         </div>
         <div id="visual-assets-table" class="muted">Select a deal to load extracted visual nodes.</div>
       </div>
@@ -489,7 +518,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
 
       <div class="table-container" id="score-explain-container" style="display:none;">
         <h2>Score Explainability</h2>
-        <p class="muted" style="margin-bottom: 1rem;">Weighted contributions by analyzer component</p>
+        <p class="muted" style="margin-bottom: 1rem;">Effective v2 weights + contributions (only financial_health + risk_assessment affect overall score; others are diagnostic-only)</p>
         <div id="score-explain" class="loading">Loading explanation...</div>
       </div>
     </div>
@@ -550,6 +579,8 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
     const dealNameById = {};
     const visualAssetById = {};
     const segmentAuditCacheByDealId = {};
+    const dealSummaryFingerprintByDealId = {};
+    let dealSummaryRefreshToken = 0;
 
     const visualReextractState = {
       active: false,
@@ -561,6 +592,36 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       pollTimer: null,
       pollEveryMs: 1500,
       lastPollAt: null,
+    };
+
+    const docReextractState = {
+      active: false,
+      dealId: null,
+      dealName: null,
+      startedAt: null,
+      jobId: null,
+      status: null,
+      progress: null,
+      stage: null,
+      message: null,
+      updatedAt: null,
+      pollTimer: null,
+      pollEveryMs: 1500,
+    };
+
+    const fullProcessState = {
+      active: false,
+      dealId: null,
+      dealName: null,
+      startedAt: null,
+      pollEveryMs: 1500,
+      currentStep: null, // 'reextract_documents' | 'extract_visuals' | 'analyze_deal'
+      steps: {
+        reextract_documents: { label: 'Re-extract documents', job_id: null, status: 'pending', progress: 0, stage: null, message: null, updated_at: null },
+        extract_visuals: { label: 'Extract visuals + page understanding', job_id: null, status: 'pending', progress: 0, stage: null, message: null, updated_at: null },
+        analyze_deal: { label: 'Analyze deal', job_id: null, status: 'pending', progress: 0, stage: null, message: null, updated_at: null },
+      },
+      stopRequested: false,
     };
 
     function setSelectedDeal(dealId) {
@@ -578,6 +639,232 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       const sel = document.getElementById('visual-assets-deal-select');
       if (sel && selectedDealId && sel.value !== selectedDealId) {
         sel.value = selectedDealId;
+      }
+
+      loadDealSummary();
+    }
+
+    function normalizeBullets(value) {
+      if (!value) return [];
+      if (Array.isArray(value)) return value.filter(v => typeof v === 'string').map(v => v.trim()).filter(Boolean);
+      if (typeof value === 'string') {
+        const raw = value.trim();
+        if (!raw) return [];
+        // Split on common list delimiters, but keep single-paragraph summaries as one bullet.
+        const parts = raw.split(/\\r?\\n|\\s*[•*-]\\s+/g).map(s => s.trim()).filter(Boolean);
+        return parts.length >= 2 ? parts.slice(0, 12) : [raw];
+      }
+      return [];
+    }
+
+    function scheduleDealSummaryRefresh(reason, opts) {
+      const dealId = selectedDealId;
+      if (!dealId) return;
+
+      const token = ++dealSummaryRefreshToken;
+      const startFingerprint = typeof dealSummaryFingerprintByDealId[dealId] === 'string' ? dealSummaryFingerprintByDealId[dealId] : null;
+      const maxAttempts = (opts && typeof opts.maxAttempts === 'number') ? opts.maxAttempts : 10;
+      const delayMs = (opts && typeof opts.delayMs === 'number') ? opts.delayMs : 2500;
+      const initialDelayMs = (opts && typeof opts.initialDelayMs === 'number') ? opts.initialDelayMs : 1200;
+
+      let attempts = 0;
+
+      const tick = async () => {
+        if (token !== dealSummaryRefreshToken) return;
+        if (selectedDealId !== dealId) return;
+
+        attempts++;
+        await loadDealSummary({ silent: true, reason: reason || 'auto' });
+
+        const nextFingerprint = typeof dealSummaryFingerprintByDealId[dealId] === 'string' ? dealSummaryFingerprintByDealId[dealId] : null;
+        if (startFingerprint && nextFingerprint && nextFingerprint !== startFingerprint) return;
+        if (attempts >= maxAttempts) return;
+        setTimeout(tick, delayMs);
+      };
+
+      setTimeout(tick, initialDelayMs);
+    }
+
+    let scoreExplainRefreshToken = 0;
+
+    function scheduleExplainScoreRefresh(reason, opts) {
+      const dealId = selectedDealId;
+      if (!dealId) return;
+
+      const token = ++scoreExplainRefreshToken;
+      const startFingerprint = typeof dealSummaryFingerprintByDealId[dealId] === 'string' ? dealSummaryFingerprintByDealId[dealId] : null;
+      const maxAttempts = (opts && typeof opts.maxAttempts === 'number') ? opts.maxAttempts : 10;
+      const delayMs = (opts && typeof opts.delayMs === 'number') ? opts.delayMs : 2500;
+      const initialDelayMs = (opts && typeof opts.initialDelayMs === 'number') ? opts.initialDelayMs : 1500;
+
+      let attempts = 0;
+
+      const tick = async () => {
+        if (token !== scoreExplainRefreshToken) return;
+        if (selectedDealId !== dealId) return;
+
+        attempts++;
+
+        try {
+          const res = await fetch('/api/dashboard/deals/' + encodeURIComponent(dealId) + '/summary?t=' + Date.now());
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            if (attempts < maxAttempts) setTimeout(tick, delayMs);
+            return;
+          }
+
+          const dio = data?.dio || {};
+          const nextFingerprint = String(dio?.analysis_version ?? '') + '|' + String(dio?.updated_at ?? '');
+          const dioId = dio?.dio_id;
+
+          // If we have a prior fingerprint, wait for it to change; otherwise best-effort explain once a DIO exists.
+          const ready = Boolean(dioId) && (!startFingerprint || (nextFingerprint && nextFingerprint !== startFingerprint));
+          if (ready) {
+            try {
+              await loadDIOs();
+              await loadReports();
+            } catch {
+              // best-effort
+            }
+            explainScore(String(dioId));
+            return;
+          }
+        } catch {
+          // ignore and retry
+        }
+
+        if (attempts >= maxAttempts) return;
+        setTimeout(tick, delayMs);
+      };
+
+      setTimeout(tick, initialDelayMs);
+    }
+
+    async function loadDealSummary(opts) {
+      const container = document.getElementById('deal-summary-container');
+      const slot = document.getElementById('deal-summary');
+      if (!slot) return;
+
+      if (!selectedDealId) {
+        if (container) container.style.display = 'block';
+        slot.innerHTML = '<div class="muted">Select a deal to view summary.</div>';
+        return;
+      }
+
+      if (container) container.style.display = 'block';
+      if (!(opts && opts.silent)) {
+        slot.innerHTML = '<div class="loading">Loading summary...</div>';
+      }
+
+      try {
+        const res = await fetch('/api/dashboard/deals/' + encodeURIComponent(selectedDealId) + '/summary?t=' + Date.now());
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          if (!(opts && opts.silent)) {
+            slot.innerHTML = '<div class="muted">Summary unavailable: ' + escapeHtml(res.status) + ' ' + escapeHtml(data?.error || '') + '</div>';
+          }
+          return;
+        }
+
+        const deal = data?.deal || {};
+        const dio = data?.dio || {};
+
+        try {
+          const fp = String(dio?.analysis_version ?? '') + '|' + String(dio?.updated_at ?? '');
+          dealSummaryFingerprintByDealId[selectedDealId] = fp;
+        } catch {
+          // ignore
+        }
+
+        const summary = data?.summary || {};
+        const phase1 = summary?.phase1 || {};
+        const overview = phase1?.deal_overview_v2 || {};
+        const decision = phase1?.decision_summary_v1 || {};
+        const archetype = phase1?.business_archetype_v1 || {};
+
+        const sections = [];
+
+        const businessBullets = [];
+        if (typeof overview?.deal_type === 'string' && overview.deal_type.trim()) businessBullets.push('Deal type: ' + overview.deal_type.trim());
+        if (typeof overview?.business_model === 'string' && overview.business_model.trim()) businessBullets.push('Business model: ' + overview.business_model.trim());
+        if (typeof archetype?.value === 'string' && archetype.value.trim()) {
+          const conf = (typeof archetype?.confidence === 'number' && Number.isFinite(archetype.confidence)) ? archetype.confidence : null;
+          businessBullets.push('Business archetype: ' + archetype.value.trim() + (conf != null ? (' (conf ' + conf.toFixed(2) + ')') : ''));
+        }
+        if (businessBullets.length > 0) sections.push({ title: 'Business', bullets: businessBullets });
+
+        const ps = normalizeBullets(overview?.product_solution);
+        if (ps.length > 0) sections.push({ title: 'What they do / Product', bullets: ps });
+
+        const icp = normalizeBullets(overview?.market_icp);
+        if (icp.length > 0) sections.push({ title: 'Market / ICP', bullets: icp });
+
+        const gtm = normalizeBullets(overview?.go_to_market);
+        if (gtm.length > 0) sections.push({ title: 'Go-to-market', bullets: gtm });
+
+        const traction = normalizeBullets(overview?.traction_signals);
+        if (traction.length > 0) sections.push({ title: 'Traction', bullets: traction });
+
+        const raiseBullets = [];
+        const raise = normalizeBullets(overview?.raise);
+        const terms = normalizeBullets(overview?.raise_terms);
+        if (raise.length > 0) raiseBullets.push('Raise: ' + raise[0]);
+        if (terms.length > 0) raiseBullets.push('Terms: ' + terms[0]);
+        if (raiseBullets.length > 0) sections.push({ title: 'Raise', bullets: raiseBullets });
+
+        const risks = normalizeBullets(overview?.key_risks_detected);
+        if (risks.length > 0) sections.push({ title: 'Key risks (detected)', bullets: risks });
+
+        const decisionBullets = [];
+        if (typeof decision?.recommendation === 'string' && decision.recommendation.trim()) decisionBullets.push('Recommendation: ' + decision.recommendation.trim());
+        if (typeof decision?.confidence === 'number' && Number.isFinite(decision.confidence)) decisionBullets.push('Confidence: ' + decision.confidence.toFixed(0));
+        const reasons = normalizeBullets(decision?.reasons);
+        if (reasons.length > 0) decisionBullets.push('Reasons: ' + reasons.slice(0, 4).join(' • '));
+        const blockers = normalizeBullets(decision?.blockers);
+        if (blockers.length > 0) decisionBullets.push('Blockers: ' + blockers.slice(0, 4).join(' • '));
+        const nextReq = normalizeBullets(decision?.next_requests);
+        if (nextReq.length > 0) decisionBullets.push('Next requests: ' + nextReq.slice(0, 4).join(' • '));
+        if (decisionBullets.length > 0) sections.push({ title: 'Decision readiness', bullets: decisionBullets });
+
+        const header = ''
+          + '<div style="margin-bottom:0.75rem;">'
+          +   '<div><strong>' + escapeHtml(deal?.name || selectedDealName || selectedDealId) + '</strong></div>'
+          +   '<div class="muted">Stage: ' + escapeHtml(deal?.stage || '-') + ' • Priority: ' + escapeHtml(deal?.priority || '-')
+          +     (dio?.analysis_version != null ? (' • DIO v' + escapeHtml(dio.analysis_version)) : '')
+          +   '</div>'
+          +   '<div style="margin-top:0.5rem; display:flex; gap:0.5rem; flex-wrap: wrap; align-items:center;">'
+          +     (dio?.dio_id
+            ? (
+              '<span class="mono muted">dio_id=' + escapeHtml(String(dio.dio_id)) + '</span>'
+                + '<button class="btn btn-small" data-dio-id="' + escapeHtml(String(dio.dio_id)) + '" onclick="inspectDIO(this.dataset.dioId)">Inspect DIO</button>'
+                + '<button class="btn btn-small" data-dio-id="' + escapeHtml(String(dio.dio_id)) + '" onclick="explainScore(this.dataset.dioId)">Explain Score</button>'
+                + (dio?.analysis_version != null
+                  ? '<button class="btn btn-small" data-deal-id="' + escapeHtml(String(deal?.id || selectedDealId)) + '" data-version="' + escapeHtml(String(dio.analysis_version)) + '" onclick="viewReport(this.dataset.dealId, Number(this.dataset.version))">View Report</button>'
+                  : '')
+            )
+            : (
+              '<span class="muted">No DIO yet. Use “Analyze (deal)” or “Run full process”.</span>'
+            ))
+          +   '</div>'
+          + '</div>';
+
+        const sectionHtml = sections.length > 0
+          ? sections.map(s => {
+              return ''
+                + '<div style="margin: 0.75rem 0;">'
+                +   '<div style="font-weight: 600; margin-bottom: 0.25rem;">' + escapeHtml(s.title) + '</div>'
+                +   '<ul style="margin-left: 1.25rem;">'
+                +     s.bullets.map(b => '<li>' + escapeHtml(b) + '</li>').join('')
+                +   '</ul>'
+                + '</div>';
+            }).join('')
+          : '<div class="muted">No Phase 1 summary fields found yet for this deal.</div>';
+
+        slot.innerHTML = header + sectionHtml;
+      } catch (e) {
+        if (!(opts && opts.silent)) {
+          slot.innerHTML = '<div class="muted">Failed to load summary: ' + escapeHtml(e?.message || String(e)) + '</div>';
+        }
       }
     }
 
@@ -701,12 +988,15 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           const dealName = typeof d?.name === 'string' ? d.name : '';
           const hasDio = Boolean(d?.has_dio);
           const created = d?.created_at ? new Date(d.created_at).toLocaleDateString() : '-';
-
           const viewDioBtn = hasDio
             ? '<button data-deal-action="view-dio" data-deal-id="' + dealIdAttr + '" class="btn btn-small">View DIO</button>'
             : '';
 
-          const qaPass = d?.visual_quality_pass;
+          const qaPass = (d?.visual_quality_pass === true)
+            ? true
+            : (d?.visual_quality_pass === false)
+              ? false
+              : null;
           const qaKnownGarbage = Number.isFinite(Number(d?.visual_quality_known_garbage))
             ? Number(d.visual_quality_known_garbage)
             : null;
@@ -835,10 +1125,9 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       }
       slot.innerHTML = '<div class="loading">Loading visual assets...</div>';
       try {
-        const res = await fetch('/api/v1/deals/' + encodeURIComponent(selectedDealId) + '/visual-assets');
+        const res = await fetch('/api/v1/deals/' + encodeURIComponent(selectedDealId) + '/visual-assets?include_page_ocr_v2=1&include_page_understanding_v1=1&t=' + Date.now());
         const data = await res.json();
         const assets = Array.isArray(data?.visual_assets) ? data.visual_assets : [];
-
         // Index by id for Inspect modal.
         try {
           for (const a of assets) {
@@ -848,7 +1137,6 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         } catch {
           // ignore
         }
-
         const headerHtml = ''
           + '<div style="margin-bottom: 0.75rem; color: #666;">'
           +   'Deal: <span class="mono">' + escapeHtml(selectedDealName || selectedDealId) + '</span>'
@@ -864,11 +1152,46 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           const persisted = a.persisted_segment_key || '-';
           const computed = a.computed_segment || '-';
           const kind = a.structured_kind || a.asset_type || '-';
+          const extractor = a.extractor_version || '-';
           const hasStructured = a.structured_json ? 'yes' : (a.structured_summary ? 'summary' : 'no');
           const ocrSuppressed = a.ocr_suppressed === true;
           const ocrLen = typeof a.ocr_text === 'string' ? a.ocr_text.length : 0;
           const ocrCell = ocrSuppressed ? 'suppressed' : String(ocrLen);
-          const updated = a.updated_at ? new Date(a.updated_at).toLocaleString() : (a.created_at ? new Date(a.created_at).toLocaleString() : '-');
+
+          const pageOcrV2TextClean = typeof a.page_ocr_v2_text_clean === 'string' ? a.page_ocr_v2_text_clean : '';
+          const pageOcrV2TextRaw = typeof a.page_ocr_v2_text === 'string' ? a.page_ocr_v2_text : '';
+          const pageOcrV2Text = pageOcrV2TextClean || pageOcrV2TextRaw;
+          const pageOcrV2Mode = pageOcrV2TextClean ? 'clean' : (pageOcrV2TextRaw ? 'raw' : '-');
+          const pageOcrV2Snippet = pageOcrV2Text
+            ? (pageOcrV2Text.length > 140 ? (pageOcrV2Text.slice(0, 140) + '…') : pageOcrV2Text)
+            : '';
+          const pageOcrV2Conf = (typeof a.page_ocr_v2_avg_confidence === 'number' && Number.isFinite(a.page_ocr_v2_avg_confidence))
+            ? a.page_ocr_v2_avg_confidence.toFixed(3)
+            : (typeof a.page_ocr_v2_avg_confidence === 'string' && a.page_ocr_v2_avg_confidence.trim() ? a.page_ocr_v2_avg_confidence : '-');
+          const pageOcrV2Provider = typeof a.page_ocr_v2_provider === 'string' ? a.page_ocr_v2_provider : '';
+          const pageOcrV2Kept = (typeof a.page_ocr_v2_kept_blocks === 'number' && Number.isFinite(a.page_ocr_v2_kept_blocks))
+            ? a.page_ocr_v2_kept_blocks
+            : null;
+          const pageOcrV2Total = (typeof a.page_ocr_v2_total_blocks === 'number' && Number.isFinite(a.page_ocr_v2_total_blocks))
+            ? a.page_ocr_v2_total_blocks
+            : null;
+          const pageOcrV2BlocksMeta = (pageOcrV2Kept != null && pageOcrV2Total != null)
+            ? (' • blocks ' + pageOcrV2Kept + '/' + pageOcrV2Total)
+            : '';
+          const pageOcrV2Cell = pageOcrV2Snippet
+            ? (
+                escapeHtml(pageOcrV2Snippet)
+                + '<br/><span class="muted">'
+                + escapeHtml(pageOcrV2Provider || 'ocr_v2')
+                + ' conf=' + escapeHtml(pageOcrV2Conf)
+                + ' • ' + escapeHtml(pageOcrV2Mode)
+                + escapeHtml(pageOcrV2BlocksMeta)
+                + '</span>'
+              )
+            : '<span class="muted">-</span>';
+          const updatedRaw = a.page_understanding_v1_updated_at || a.updated_at || a.created_at;
+          const updated = updatedRaw ? new Date(updatedRaw).toLocaleString() : '-';
+          const updatedSuffix = a.page_understanding_v1_updated_at ? ' (PU)' : '';
           const vaId = a.visual_asset_id || a.id || '';
           const vaIdAttr = escapeHtml(String(vaId));
 
@@ -889,9 +1212,11 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
             +   '<td class="mono">' + escapeHtml(persisted) + '</td>'
             +   '<td class="mono">' + escapeHtml(computed) + '</td>'
             +   '<td class="mono">' + escapeHtml(kind) + '</td>'
+            +   '<td class="mono">' + escapeHtml(extractor) + '</td>'
             +   '<td>' + hasStructured + '</td>'
             +   '<td class="mono">' + escapeHtml(ocrCell) + '</td>'
-            +   '<td>' + escapeHtml(updated) + '</td>'
+            +   '<td class="va-ocr-v2">' + pageOcrV2Cell + '</td>'
+            +   '<td>' + escapeHtml(updated + updatedSuffix) + '</td>'
             +   '<td>' + aiBtns + '</td>'
             + '</tr>';
         }).join('');
@@ -910,8 +1235,10 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           +       '<th>Persisted</th>'
           +       '<th>Computed</th>'
           +       '<th>Kind</th>'
+          +       '<th>Extractor</th>'
           +       '<th>Structured</th>'
           +       '<th>OCR</th>'
+          +       '<th>Page OCR v2</th>'
           +       '<th>Updated</th>'
           +       '<th>Actions</th>'
           +     '</tr>'
@@ -989,6 +1316,8 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
               <th>Deal</th>
               <th>Type</th>
               <th>Status</th>
+              <th>PDF v2</th>
+              <th>OCR v2</th>
               <th>Uploaded</th>
             </tr>
           </thead>
@@ -999,6 +1328,16 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
                 <td>\${d.deal_name || 'N/A'}</td>
                 <td><span class="badge badge-info">\${d.type}</span></td>
                 <td><span class="badge badge-\${d.status === 'completed' ? 'success' : 'warning'}">\${d.status}</span></td>
+                <td>
+                  \${d.pdf_v2_status
+                    ? '<span class="badge badge-' + (d.pdf_v2_status === 'ok' ? 'success' : (d.pdf_v2_status === 'error' ? 'danger' : 'warning')) + '">' + d.pdf_v2_status + '</span> <span class="muted">(' + Number(d.pdf_v2_pages || 0) + ')</span>'
+                    : '<span class="muted">—</span>'}
+                </td>
+                <td>
+                  \${Number(d.pdf_v2_pages_with_ocr_v2 || 0) > 0
+                    ? '<span class="badge badge-success">' + Number(d.pdf_v2_pages_with_ocr_v2 || 0) + '/' + Number(d.pdf_v2_pages || 0) + '</span>'
+                    : '<span class="muted">—</span>'}
+                </td>
                 <td>\${new Date(d.uploaded_at).toLocaleDateString()}</td>
               </tr>
             \`).join('')}
@@ -1214,6 +1553,8 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       const evidenceSnips = Array.isArray(base.evidence_sample_snippets) ? base.evidence_sample_snippets : [];
       const ocrSuppressed = base.ocr_suppressed === true;
       const ocrText = typeof base.ocr_text === 'string' ? base.ocr_text : '';
+      const pageUnderstandingV1 = (base.page_understanding_v1 && typeof base.page_understanding_v1 === 'object') ? base.page_understanding_v1 : null;
+      const pageUnderstandingV1UpdatedAt = base.page_understanding_v1_updated_at || null;
 
       let html = '';
       html += '<h3>Summary</h3>';
@@ -1237,6 +1578,31 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         : ocrText
           ? '<pre>' + escapeHtml(ocrText) + '</pre>'
           : '<div class="muted">No OCR text found on latest extraction.</div>';
+
+      html += '<h3>Page Understanding v1 (persisted)</h3>';
+      if (pageUnderstandingV1) {
+        const pu = pageUnderstandingV1;
+        const puSummary = (typeof pu.resolved_summary === 'string')
+          ? (pu.resolved_summary.length > 240 ? (pu.resolved_summary.slice(0, 240) + '…') : pu.resolved_summary)
+          : null;
+        html += renderKv([
+          ['resolved_title', pu.resolved_title],
+          ['resolved_slide_type', pu.resolved_slide_type],
+          ['resolved_summary', puSummary],
+          ['generated_at', pu.generated_at],
+          ['persisted_at', pageUnderstandingV1UpdatedAt],
+          ['region_asset_count', pu.inputs && pu.inputs.region_asset_count != null ? pu.inputs.region_asset_count : null],
+          ['regions', Array.isArray(pu.regions) ? pu.regions.length : null],
+          ['key_metrics', Array.isArray(pu.key_metrics) ? pu.key_metrics.length : null],
+        ]);
+        html += '<details style="margin-top: 0.5rem;">'
+          + '<summary class="muted">Raw page_understanding_v1 JSON</summary>'
+          + renderMaybeJson(pu)
+          + '</details>';
+      } else {
+        html += '<div class="muted">None</div>';
+      }
+
       html += '<h3>Structured Summary</h3>';
       html += base.structured_summary ? renderMaybeJson(base.structured_summary) : '<div class="muted">None</div>';
       html += '<h3>Structured JSON</h3>';
@@ -1329,43 +1695,66 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       const agg = expl?.aggregation || {};
       const comps = expl?.components || {};
 
-      const rows = [
-        ['slide_sequence', comps.slide_sequence],
-        ['metric_benchmark', comps.metric_benchmark],
-        ['visual_design', comps.visual_design],
-        ['narrative_arc', comps.narrative_arc],
-        ['financial_health', comps.financial_health],
-        ['risk_assessment', comps.risk_assessment],
-      ];
+      const order = ['financial_health', 'risk_assessment', 'metric_benchmark', 'slide_sequence', 'visual_design', 'narrative_arc'];
+      const rows = order.map((k) => [k, comps?.[k]]);
 
       const weightOf = (k) => (agg.weights && agg.weights[k] != null) ? agg.weights[k] : 0;
+      const scoringKeys = order.filter((k) => Number(weightOf(k)) > 0);
+      const excluded = Array.isArray(agg.excluded_components) ? agg.excluded_components : [];
 
-      const header =
-        '<div>' +
-        '<div style="display:flex; gap: 2rem; flex-wrap: wrap;">' +
-        '<div><span class="muted">Overall</span><div class="stat-value">' + escapeHtml(totals.overall_score ?? 'N/A') + '</div></div>' +
-        '<div><span class="muted">Coverage</span><div class="mono">' + escapeHtml(fmtNum(totals.coverage_ratio, 2)) + '</div></div>' +
-        '<div><span class="muted">Confidence</span><div class="mono">' + escapeHtml(fmtNum(totals.confidence_score, 2)) + '</div></div>' +
-        '<div><span class="muted">Included</span><div class="mono">' + escapeHtml((agg.included_components || []).join(', ')) + '</div></div>' +
-        '</div>';
+      const excludedHtml = excluded.length
+        ? '<div style="margin-top:0.25rem;" class="muted">Excluded: '
+            + excluded.map(e => escapeHtml(String(e.component)) + (e.reason ? (' (' + escapeHtml(String(e.reason)) + ')') : '')).join(', ')
+            + '</div>'
+        : '';
 
-      const tableHead =
-        '<div class="subtable">' +
-        '<table>' +
-        '<thead>' +
-        '<tr>' +
-        '<th>Component</th>' +
-        '<th>Weight</th>' +
-        '<th>Status</th>' +
-        '<th>Raw</th>' +
-        '<th>Inverted</th>' +
-        '<th>Contribution</th>' +
-        '<th>Notes</th>' +
-        '</tr>' +
-        '</thead>' +
-        '<tbody>';
+      const header = ''
+        + '<div>'
+        + '<div style="display:flex; gap: 1.75rem; flex-wrap: wrap; align-items: flex-end;">'
+        + '<div><span class="muted">Overall</span><div class="stat-value">' + escapeHtml(totals.overall_score ?? 'N/A') + '</div></div>'
+        + '<div><span class="muted">Unadjusted</span><div class="mono">' + escapeHtml(totals.unadjusted_overall_score ?? 'N/A') + '</div></div>'
+        + '<div><span class="muted">Adjustment</span><div class="mono">' + escapeHtml(fmtNum(totals.adjustment_factor, 3)) + ' (evidence ' + escapeHtml(fmtNum(totals.evidence_factor, 3)) + ' • diligence ' + escapeHtml(fmtNum(totals.due_diligence_factor, 3)) + ')</div></div>'
+        + '<div><span class="muted">Coverage</span><div class="mono">' + escapeHtml(fmtNum(totals.coverage_ratio, 2)) + '</div></div>'
+        + '<div><span class="muted">Confidence</span><div class="mono">' + escapeHtml(fmtNum(totals.confidence_score, 2)) + '</div></div>'
+        + '</div>'
+        + '<div style="margin-top:0.5rem;" class="muted">Policy: <span class="mono">' + escapeHtml(agg.policy_id ?? 'N/A') + '</span></div>'
+        + '<div style="margin-top:0.25rem;" class="muted">Score-bearing components (effective v2 weights): <span class="mono">'
+          + escapeHtml(scoringKeys.length ? scoringKeys.join(', ') : '(none)')
+          + '</span></div>'
+        + '<div style="margin-top:0.25rem;" class="muted">Included: <span class="mono">' + escapeHtml((agg.included_components || []).join(', ')) + '</span></div>'
+        + excludedHtml
+        + '</div>';
+
+      const tableHead = ''
+        + '<div class="subtable">'
+        + '<table>'
+        + '<thead>'
+        + '<tr>'
+        + '<th>Component</th>'
+        + '<th>Effective Weight</th>'
+        + '<th>Role</th>'
+        + '<th>Status</th>'
+        + '<th>Raw</th>'
+        + '<th>Used</th>'
+        + '<th>Penalty</th>'
+        + '<th>Coverage</th>'
+        + '<th>Conf</th>'
+        + '<th>Inverted</th>'
+        + '<th>Contribution</th>'
+        + '<th>Notes</th>'
+        + '</tr>'
+        + '</thead>'
+        + '<tbody>';
+
+      const roleBadge = (w) => {
+        const weight = Number(w || 0);
+        const cls = weight > 0 ? 'badge-success' : 'badge-info';
+        const label = weight > 0 ? 'score-bearing' : 'diagnostic-only';
+        return '<span class="badge ' + cls + '">' + escapeHtml(label) + '</span>';
+      };
 
       const tableRows = rows.map(([key, c]) => {
+        const w = weightOf(key);
         const inverted = key === 'risk_assessment' ? c?.inverted_investment_score : null;
         const noteList = Array.isArray(c?.notes) ? c.notes : [];
         const notesHtml = noteList.length
@@ -1375,15 +1764,20 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         const contrib = c?.weighted_contribution == null ? 'N/A' : fmtNum(c.weighted_contribution, 3);
 
         return (
-          '<tr>' +
-          '<td class="mono">' + escapeHtml(key) + '</td>' +
-          '<td>' + escapeHtml(weightOf(key)) + '</td>' +
-          '<td>' + escapeHtml(c?.status ?? 'N/A') + '</td>' +
-          '<td>' + escapeHtml(c?.raw_score ?? 'N/A') + '</td>' +
-          '<td>' + escapeHtml(inverted ?? 'N/A') + '</td>' +
-          '<td>' + escapeHtml(contrib) + '</td>' +
-          '<td>' + notesHtml + '</td>' +
-          '</tr>'
+          '<tr>'
+          + '<td class="mono">' + escapeHtml(key) + '</td>'
+          + '<td class="mono">' + escapeHtml(String(w)) + '</td>'
+          + '<td>' + roleBadge(w) + '</td>'
+          + '<td>' + escapeHtml(c?.status ?? 'N/A') + '</td>'
+          + '<td class="mono">' + escapeHtml(c?.raw_score ?? 'N/A') + '</td>'
+          + '<td class="mono">' + escapeHtml(c?.used_score ?? 'N/A') + '</td>'
+          + '<td class="mono">' + escapeHtml(c?.penalty ?? 'N/A') + '</td>'
+          + '<td class="mono">' + escapeHtml(fmtNum(c?.coverage, 2)) + '</td>'
+          + '<td class="mono">' + escapeHtml(fmtNum(c?.confidence, 2)) + '</td>'
+          + '<td class="mono">' + escapeHtml(inverted ?? 'N/A') + '</td>'
+          + '<td class="mono">' + escapeHtml(contrib) + '</td>'
+          + '<td>' + notesHtml + '</td>'
+          + '</tr>'
         );
       }).join('');
 
@@ -1500,6 +1894,9 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
     function setVisualReextractButtonsDisabled(disabled) {
       const ids = [
         'visual-assets-deep-scan-deal-btn',
+        'visual-assets-run-process-btn',
+        'visual-assets-process-clear-btn',
+        'documents-reextract-deal-btn',
         'visual-assets-reextract-deal-btn',
         'visual-assets-reextract-all-btn',
         'visual-assets-load-btn',
@@ -1508,6 +1905,503 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       for (const id of ids) {
         const el = document.getElementById(id);
         if (el) el.disabled = Boolean(disabled);
+      }
+    }
+
+    function showFullProcessPanel(show) {
+      const panel = document.getElementById('full-process-panel');
+      if (panel) panel.style.display = show ? 'block' : 'none';
+    }
+
+    function setFullProcessSummary(text) {
+      const el = document.getElementById('full-process-summary');
+      if (el) el.textContent = text || '';
+    }
+
+    function appendFullProcessLog(line) {
+      const el = document.getElementById('full-process-log');
+      if (!el) return;
+      const ts = new Date().toLocaleTimeString();
+      el.textContent = (el.textContent || '') + '[' + ts + '] ' + String(line || '') + '\\n';
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function clearFullProcessProgress() {
+      fullProcessState.active = false;
+      fullProcessState.stopRequested = false;
+      fullProcessState.dealId = null;
+      fullProcessState.dealName = null;
+      fullProcessState.startedAt = null;
+      fullProcessState.currentStep = null;
+      fullProcessState.steps = {
+        reextract_documents: { label: 'Re-extract documents', job_id: null, status: 'pending', progress: 0, stage: null, message: null, updated_at: null },
+        extract_visuals: { label: 'Extract visuals + page understanding', job_id: null, status: 'pending', progress: 0, stage: null, message: null, updated_at: null },
+        analyze_deal: { label: 'Analyze deal', job_id: null, status: 'pending', progress: 0, stage: null, message: null, updated_at: null },
+      };
+
+      const log = document.getElementById('full-process-log');
+      if (log) log.textContent = '';
+      const tbl = document.getElementById('full-process-table');
+      if (tbl) tbl.innerHTML = '';
+      setFullProcessSummary('');
+      showFullProcessPanel(false);
+      setVisualReextractButtonsDisabled(false);
+    }
+
+    function renderFullProcessTable() {
+      const tbl = document.getElementById('full-process-table');
+      if (!tbl) return;
+
+      const steps = [
+        { key: 'reextract_documents', ...fullProcessState.steps.reextract_documents },
+        { key: 'extract_visuals', ...fullProcessState.steps.extract_visuals },
+        { key: 'analyze_deal', ...fullProcessState.steps.analyze_deal },
+      ];
+
+      const dealName = fullProcessState.dealName || fullProcessState.dealId || '-';
+      const elapsed = fullProcessState.startedAt
+        ? Math.max(0, (Date.now() - new Date(fullProcessState.startedAt).getTime()) / 1000)
+        : 0;
+      setFullProcessSummary(
+        'deal=' + dealName
+          + ' • step=' + (fullProcessState.currentStep || '-')
+          + ' • elapsed=' + elapsed.toFixed(1) + 's'
+      );
+
+      const rowsHtml = steps.map((s) => {
+        const jobId = s.job_id ? String(s.job_id) : '';
+        const jobLink = jobId
+          ? '<a href="/api/v1/jobs/' + encodeURIComponent(jobId) + '" target="_blank">' + escapeHtml(jobId.slice(0, 8)) + '…</a>'
+          : '<span class="muted">-</span>';
+        const pct = s.progress != null ? String(s.progress) : '-';
+        const stage = s.stage ? String(s.stage) : '-';
+        const msg = s.message ? String(s.message) : '';
+        const updated = s.updated_at ? new Date(s.updated_at).toLocaleTimeString() : '-';
+        const status = s.status || '-';
+
+        return ''
+          + '<tr>'
+          + '<td><strong>' + escapeHtml(s.label) + '</strong></td>'
+          + '<td class="mono">' + jobLink + '</td>'
+          + '<td class="mono">' + escapeHtml(String(status)) + '</td>'
+          + '<td class="mono">' + escapeHtml(String(pct)) + '%</td>'
+          + '<td class="mono">' + escapeHtml(stage) + '</td>'
+          + '<td><small>' + escapeHtml(msg) + '</small></td>'
+          + '<td class="mono">' + escapeHtml(updated) + '</td>'
+          + '</tr>';
+      }).join('');
+
+      tbl.innerHTML = ''
+        + '<table class="progress-table">'
+        + '<thead><tr>'
+        + '<th>Step</th>'
+        + '<th>Job</th>'
+        + '<th>Status</th>'
+        + '<th>Progress</th>'
+        + '<th>Stage</th>'
+        + '<th>Message</th>'
+        + '<th>Updated</th>'
+        + '</tr></thead>'
+        + '<tbody>'
+        + rowsHtml
+        + '</tbody>'
+        + '</table>';
+    }
+
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function fetchJobSnapshot(params) {
+      const dealId = params.dealId;
+      const type = params.type;
+      const jobId = params.jobId;
+      const q = '/api/dashboard/jobs?type=' + encodeURIComponent(type) + '&limit=50&deal_id=' + encodeURIComponent(String(dealId || ''));
+      const res = await fetch(q);
+      const jobs = await res.json().catch(() => ([]));
+      const match = (Array.isArray(jobs) ? jobs : []).find((j) => j && String(j.job_id) === String(jobId));
+      return match || null;
+    }
+
+    async function enqueueAnalyzeDeal(dealId) {
+      const url = '/api/v1/deals/' + encodeURIComponent(dealId) + '/analyze';
+      const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error('enqueue failed: ' + res.status + ' ' + (data?.error || ''));
+      const jobId = data?.job_id ? String(data.job_id) : null;
+      if (!jobId) throw new Error('enqueue succeeded but no job_id returned');
+      return { job_id: jobId, status: data?.status || 'queued' };
+    }
+
+    async function waitForStep(params) {
+      const key = params.stepKey;
+      const type = params.type;
+      const dealId = params.dealId;
+      const jobId = params.jobId;
+      const timeoutMs = typeof params.timeoutMs === 'number' ? params.timeoutMs : 15 * 60 * 1000;
+      const deadline = Date.now() + timeoutMs;
+
+      while (fullProcessState.active && !fullProcessState.stopRequested) {
+        if (Date.now() > deadline) {
+          throw new Error('timeout waiting for ' + String(type) + ' job=' + String(jobId));
+        }
+
+        const snap = await fetchJobSnapshot({ dealId, type, jobId }).catch(() => null);
+        if (snap) {
+          const stage = snap.status_detail && snap.status_detail.progress && snap.status_detail.progress.stage
+            ? String(snap.status_detail.progress.stage)
+            : null;
+
+          fullProcessState.steps[key].status = snap.status;
+          fullProcessState.steps[key].progress = snap.progress;
+          fullProcessState.steps[key].message = snap.message;
+          fullProcessState.steps[key].stage = stage || fullProcessState.steps[key].stage;
+          fullProcessState.steps[key].updated_at = snap.updated_at;
+          renderFullProcessTable();
+
+          const st = String(snap.status || '');
+          const isTerminal = st === 'succeeded' || st === 'completed' || st === 'succeeded_with_warnings' || st === 'failed';
+          if (isTerminal) {
+            appendFullProcessLog(type + ' reached terminal state: ' + st);
+            if (st === 'failed') {
+              throw new Error((snap.message || 'job failed') + ' (type=' + type + ')');
+            }
+            return;
+          }
+        }
+
+        await sleep(fullProcessState.pollEveryMs);
+      }
+
+      if (fullProcessState.stopRequested) {
+        appendFullProcessLog('Stop requested; leaving polling loop.');
+      }
+    }
+
+    async function runFullProcessSelectedDeal() {
+      if (!selectedDealId) {
+        alert('Select a deal first.');
+        return;
+      }
+
+      const dealName = selectedDealName || (dealNameById[selectedDealId] || selectedDealId);
+      const ok = confirm(
+        'Run the full process for this deal?\\n\\n'
+          + '1) Re-extract documents (from persisted original bytes)\\n'
+          + '2) Extract visuals + persist page understanding\\n'
+          + '3) Analyze deal\\n\\n'
+          + 'Deal: ' + dealName
+      );
+      if (!ok) return;
+
+      clearFullProcessProgress();
+      showFullProcessPanel(true);
+      setVisualReextractButtonsDisabled(true);
+
+      fullProcessState.active = true;
+      fullProcessState.stopRequested = false;
+      fullProcessState.dealId = selectedDealId;
+      fullProcessState.dealName = dealName;
+      fullProcessState.startedAt = new Date().toISOString();
+
+      appendFullProcessLog('Starting full process for deal: ' + dealName);
+      renderFullProcessTable();
+
+      try {
+        // Step 1: re-extract documents
+        fullProcessState.currentStep = 'reextract_documents';
+        fullProcessState.steps.reextract_documents.status = 'queued';
+        renderFullProcessTable();
+        const docIds = await fetchDealDocumentIds(selectedDealId);
+        if (!docIds || docIds.length === 0) throw new Error('No documents found for this deal');
+        appendFullProcessLog('Re-extracting documents: ' + docIds.length + ' docs');
+        const reextract = await enqueueReextractDocuments(selectedDealId, docIds);
+        fullProcessState.steps.reextract_documents.job_id = reextract.job_id;
+        fullProcessState.steps.reextract_documents.status = reextract.status;
+        renderFullProcessTable();
+        await waitForStep({ stepKey: 'reextract_documents', type: 'reextract_documents', dealId: selectedDealId, jobId: reextract.job_id });
+
+        // Step 2: extract visuals
+        fullProcessState.currentStep = 'extract_visuals';
+        fullProcessState.steps.extract_visuals.status = 'queued';
+        renderFullProcessTable();
+        appendFullProcessLog('Enqueueing extract_visuals (force_reextract=true)');
+        const visuals = await enqueueExtractVisuals(selectedDealId);
+        fullProcessState.steps.extract_visuals.job_id = visuals.job_id;
+        fullProcessState.steps.extract_visuals.status = visuals.status;
+        renderFullProcessTable();
+        await waitForStep({ stepKey: 'extract_visuals', type: 'extract_visuals', dealId: selectedDealId, jobId: visuals.job_id });
+
+        // Step 3: analyze
+        fullProcessState.currentStep = 'analyze_deal';
+        fullProcessState.steps.analyze_deal.status = 'queued';
+        renderFullProcessTable();
+        appendFullProcessLog('Enqueueing analyze_deal');
+        const analyze = await enqueueAnalyzeDeal(selectedDealId);
+        fullProcessState.steps.analyze_deal.job_id = analyze.job_id;
+        fullProcessState.steps.analyze_deal.status = analyze.status;
+        renderFullProcessTable();
+        await waitForStep({ stepKey: 'analyze_deal', type: 'analyze_deal', dealId: selectedDealId, jobId: analyze.job_id });
+
+        fullProcessState.currentStep = null;
+        appendFullProcessLog('Full process completed successfully.');
+
+        // Best-effort refreshes
+        scheduleDealSummaryRefresh('full_process', { initialDelayMs: 1200, delayMs: 2500, maxAttempts: 12 });
+        scheduleExplainScoreRefresh('full_process', { initialDelayMs: 2500, delayMs: 2500, maxAttempts: 14 });
+        setTimeout(() => { if (selectedDealId === fullProcessState.dealId) loadVisualAssets(); }, 1200);
+      } catch (e) {
+        appendFullProcessLog('Full process failed: ' + (e?.message || String(e)));
+      } finally {
+        fullProcessState.active = false;
+        fullProcessState.stopRequested = false;
+        setVisualReextractButtonsDisabled(false);
+        renderFullProcessTable();
+      }
+    }
+
+    function showDocReextractPanel(show) {
+      const panel = document.getElementById('doc-reextract-panel');
+      if (panel) panel.style.display = show ? 'block' : 'none';
+    }
+
+    function setDocReextractSummary(text) {
+      const el = document.getElementById('doc-reextract-summary');
+      if (el) el.textContent = text || '';
+    }
+
+    function appendDocReextractLog(line) {
+      const el = document.getElementById('doc-reextract-log');
+      if (!el) return;
+      const ts = new Date().toLocaleTimeString();
+      el.textContent = (el.textContent || '') + '[' + ts + '] ' + String(line || '') + '\\n';
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function stopDocReextractPolling() {
+      if (docReextractState.pollTimer) {
+        clearInterval(docReextractState.pollTimer);
+        docReextractState.pollTimer = null;
+        appendDocReextractLog('Stopped polling.');
+      }
+    }
+
+    function clearDocReextractProgress() {
+      if (docReextractState.pollTimer) {
+        clearInterval(docReextractState.pollTimer);
+        docReextractState.pollTimer = null;
+      }
+      docReextractState.active = false;
+      docReextractState.dealId = null;
+      docReextractState.dealName = null;
+      docReextractState.startedAt = null;
+      docReextractState.jobId = null;
+      docReextractState.status = null;
+      docReextractState.progress = null;
+      docReextractState.stage = null;
+      docReextractState.message = null;
+      docReextractState.updatedAt = null;
+
+      const log = document.getElementById('doc-reextract-log');
+      if (log) log.textContent = '';
+      const tbl = document.getElementById('doc-reextract-table');
+      if (tbl) tbl.innerHTML = '';
+      setDocReextractSummary('');
+      showDocReextractPanel(false);
+      setVisualReextractButtonsDisabled(false);
+    }
+
+    function renderDocReextractTable() {
+      const tbl = document.getElementById('doc-reextract-table');
+      if (!tbl) return;
+
+      const jobId = docReextractState.jobId ? String(docReextractState.jobId) : '';
+      const jobLink = jobId
+        ? '<a href="/api/v1/jobs/' + encodeURIComponent(jobId) + '" target="_blank">' + escapeHtml(jobId.slice(0, 8)) + '…</a>'
+        : '<span class="muted">-</span>';
+      const pct = docReextractState.progress != null ? String(docReextractState.progress) : '-';
+      const stage = docReextractState.stage ? String(docReextractState.stage) : '-';
+      const msg = docReextractState.message ? String(docReextractState.message) : '';
+      const updated = docReextractState.updatedAt ? new Date(docReextractState.updatedAt).toLocaleTimeString() : '-';
+      const dealName = docReextractState.dealName || docReextractState.dealId || '-';
+      const status = docReextractState.status || '-';
+
+      const elapsed = docReextractState.startedAt
+        ? Math.max(0, (Date.now() - new Date(docReextractState.startedAt).getTime()) / 1000)
+        : 0;
+      setDocReextractSummary(
+        'deal=' + (dealName || '-')
+          + ' • status=' + status
+          + ' • elapsed=' + elapsed.toFixed(1) + 's'
+      );
+
+      tbl.innerHTML = ''
+        + '<table class="progress-table">'
+        + '<thead><tr>'
+        + '<th>Deal</th>'
+        + '<th>Job</th>'
+        + '<th>Status</th>'
+        + '<th>Progress</th>'
+        + '<th>Stage</th>'
+        + '<th>Message</th>'
+        + '<th>Updated</th>'
+        + '</tr></thead>'
+        + '<tbody>'
+        + '<tr>'
+        + '<td><strong>' + escapeHtml(dealName) + '</strong></td>'
+        + '<td class="mono">' + jobLink + '</td>'
+        + '<td class="mono">' + escapeHtml(String(status)) + '</td>'
+        + '<td class="mono">' + escapeHtml(String(pct)) + '%</td>'
+        + '<td class="mono">' + escapeHtml(stage) + '</td>'
+        + '<td><small>' + escapeHtml(msg) + '</small></td>'
+        + '<td class="mono">' + escapeHtml(updated) + '</td>'
+        + '</tr>'
+        + '</tbody>'
+        + '</table>';
+    }
+
+    async function pollDocReextractJobsOnce() {
+      if (!docReextractState.active) return;
+      if (!docReextractState.jobId) return;
+
+      try {
+        const q = '/api/dashboard/jobs?type=reextract_documents&limit=50&deal_id=' + encodeURIComponent(String(docReextractState.dealId || ''));
+        const res = await fetch(q);
+        const jobs = await res.json();
+        const jobId = String(docReextractState.jobId);
+        const match = (Array.isArray(jobs) ? jobs : []).find((j) => j && String(j.job_id) === jobId);
+        if (!match) return;
+
+        const stage = match.status_detail && match.status_detail.progress && match.status_detail.progress.stage
+          ? String(match.status_detail.progress.stage)
+          : null;
+
+        docReextractState.status = match.status;
+        docReextractState.progress = match.progress;
+        docReextractState.message = match.message;
+        docReextractState.stage = stage || docReextractState.stage;
+        docReextractState.updatedAt = match.updated_at;
+        renderDocReextractTable();
+
+        const st = String(match.status || '');
+        const isTerminal = st === 'succeeded' || st === 'completed' || st === 'succeeded_with_warnings' || st === 'failed';
+        if (isTerminal) {
+          appendDocReextractLog('Job reached terminal state: ' + st);
+          stopDocReextractPolling();
+          docReextractState.active = false;
+          setVisualReextractButtonsDisabled(false);
+
+          // Phase 1 outputs may be recomputed asynchronously elsewhere; do a best-effort refresh.
+          scheduleDealSummaryRefresh('reextract_documents', { initialDelayMs: 1500, delayMs: 2500, maxAttempts: 12 });
+        }
+      } catch (e) {
+        appendDocReextractLog('Polling failed: ' + (e?.message || String(e)));
+      }
+    }
+
+    function startDocReextractPolling() {
+      if (docReextractState.pollTimer) clearInterval(docReextractState.pollTimer);
+      docReextractState.pollTimer = setInterval(() => {
+        pollDocReextractJobsOnce();
+      }, docReextractState.pollEveryMs);
+    }
+
+    async function fetchDealDocumentIds(dealId) {
+      const url = '/api/v1/deals/' + encodeURIComponent(dealId) + '/documents';
+      const res = await fetch(url);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error('failed to fetch documents: ' + res.status + ' ' + (data?.error || ''));
+      }
+      const docs = Array.isArray(data?.documents) ? data.documents : [];
+      return docs
+        .map((d) => {
+          if (!d || typeof d !== 'object') return null;
+          if (typeof d.document_id === 'string') return d.document_id;
+          if (typeof d.id === 'string') return d.id;
+          return null;
+        })
+        .filter((x) => x && x.length > 0);
+    }
+
+    async function enqueueReextractDocuments(dealId, documentIds) {
+      const url = '/api/v1/deals/' + encodeURIComponent(dealId) + '/documents/re-extract';
+      const body = {
+        include_warnings: true,
+        document_ids: Array.isArray(documentIds) && documentIds.length > 0 ? documentIds : undefined,
+      };
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error('enqueue failed: ' + res.status + ' ' + (data?.error || ''));
+      }
+      const jobId = data?.job_id ? String(data.job_id) : null;
+      if (!jobId) throw new Error('enqueue succeeded but no job_id returned');
+      return { job_id: jobId, status: data?.status || 'queued' };
+    }
+
+    async function reextractDocumentsSelectedDeal() {
+      if (!selectedDealId) {
+        alert('Select a deal first.');
+        return;
+      }
+
+      const dealName = selectedDealName || (dealNameById[selectedDealId] || selectedDealId);
+
+      let documentIds = [];
+      try {
+        documentIds = await fetchDealDocumentIds(selectedDealId);
+      } catch (e) {
+        alert('Failed to list deal documents: ' + (e?.message || String(e)));
+        return;
+      }
+      if (documentIds.length === 0) {
+        alert('No documents found for this deal.');
+        return;
+      }
+
+      const ok = confirm(
+        'Re-extract ALL documents for this deal ('
+          + documentIds.length
+          + ' docs)? This reprocesses from persisted original bytes and may take time.'
+      );
+      if (!ok) return;
+
+      showDocReextractPanel(true);
+      setVisualReextractButtonsDisabled(true);
+      docReextractState.active = true;
+      docReextractState.dealId = selectedDealId;
+      docReextractState.dealName = dealName;
+      docReextractState.startedAt = new Date().toISOString();
+      docReextractState.jobId = null;
+      docReextractState.status = 'queued';
+      docReextractState.progress = 0;
+      docReextractState.stage = 'enqueued';
+      docReextractState.message = 'enqueued';
+      docReextractState.updatedAt = new Date().toISOString();
+      renderDocReextractTable();
+
+      appendDocReextractLog('Starting re-extract documents for deal: ' + dealName);
+
+      try {
+        const enq = await enqueueReextractDocuments(selectedDealId, documentIds);
+        docReextractState.jobId = enq.job_id;
+        docReextractState.status = enq.status;
+        docReextractState.stage = 'enqueued';
+        docReextractState.message = 'enqueued';
+        docReextractState.updatedAt = new Date().toISOString();
+        appendDocReextractLog('Enqueued reextract_documents job_id=' + enq.job_id);
+        renderDocReextractTable();
+        startDocReextractPolling();
+        await pollDocReextractJobsOnce();
+      } catch (e) {
+        appendDocReextractLog('Failed to enqueue: ' + (e?.message || String(e)));
+        docReextractState.active = false;
+        setVisualReextractButtonsDisabled(false);
       }
     }
 
@@ -1921,11 +2815,16 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       const sel = document.getElementById('visual-assets-deal-select');
       const loadBtn = document.getElementById('visual-assets-load-btn');
       const refreshBtn = document.getElementById('visual-assets-refresh-btn');
+      const analyzeDealBtn = document.getElementById('visual-assets-analyze-deal-btn');
       const deepScanDealBtn = document.getElementById('visual-assets-deep-scan-deal-btn');
+      const runProcessBtn = document.getElementById('visual-assets-run-process-btn');
+      const reextractDocsDealBtn = document.getElementById('documents-reextract-deal-btn');
       const reextractDealBtn = document.getElementById('visual-assets-reextract-deal-btn');
       const reextractAllBtn = document.getElementById('visual-assets-reextract-all-btn');
       const stopBtn = document.getElementById('visual-assets-reextract-stop-btn');
       const clearBtn = document.getElementById('visual-assets-reextract-clear-btn');
+      const clearDocBtn = document.getElementById('documents-reextract-clear-btn');
+      const clearProcessBtn = document.getElementById('visual-assets-process-clear-btn');
 
       if (sel && !sel.dataset.bound) {
         sel.dataset.bound = '1';
@@ -1961,6 +2860,22 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         });
       }
 
+      if (analyzeDealBtn && !analyzeDealBtn.dataset.bound) {
+        analyzeDealBtn.dataset.bound = '1';
+        analyzeDealBtn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          if (!selectedDealId) {
+            alert('Select a deal first.');
+            return;
+          }
+          const ok = confirm('Analyze this deal now? This enqueues a background job and refreshes Phase 1 outputs.');
+          if (!ok) return;
+          await enqueueDealJob(selectedDealId, 'analyze');
+          scheduleDealSummaryRefresh('analyze', { initialDelayMs: 1500, delayMs: 2500, maxAttempts: 12 });
+          scheduleExplainScoreRefresh('analyze', { initialDelayMs: 3000, delayMs: 2500, maxAttempts: 20 });
+        });
+      }
+
       if (deepScanDealBtn && !deepScanDealBtn.dataset.bound) {
         deepScanDealBtn.dataset.bound = '1';
         deepScanDealBtn.addEventListener('click', async (e) => {
@@ -1975,11 +2890,27 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         });
       }
 
+      if (runProcessBtn && !runProcessBtn.dataset.bound) {
+        runProcessBtn.dataset.bound = '1';
+        runProcessBtn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          await runFullProcessSelectedDeal();
+        });
+      }
+
       if (reextractDealBtn && !reextractDealBtn.dataset.bound) {
         reextractDealBtn.dataset.bound = '1';
         reextractDealBtn.addEventListener('click', async (e) => {
           e.preventDefault();
           await reextractVisualsSelectedDeal();
+        });
+      }
+
+      if (reextractDocsDealBtn && !reextractDocsDealBtn.dataset.bound) {
+        reextractDocsDealBtn.dataset.bound = '1';
+        reextractDocsDealBtn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          await reextractDocumentsSelectedDeal();
         });
       }
 
@@ -2006,6 +2937,22 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         clearBtn.addEventListener('click', (e) => {
           e.preventDefault();
           clearVisualReextractProgress();
+        });
+      }
+
+      if (clearDocBtn && !clearDocBtn.dataset.bound) {
+        clearDocBtn.dataset.bound = '1';
+        clearDocBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          clearDocReextractProgress();
+        });
+      }
+
+      if (clearProcessBtn && !clearProcessBtn.dataset.bound) {
+        clearProcessBtn.dataset.bound = '1';
+        clearProcessBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          clearFullProcessProgress();
         });
       }
     })();
@@ -2118,6 +3065,94 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
   });
 
   /**
+   * Dashboard API: Phase 1 summary for a deal (used by the dev dashboard)
+   */
+  app.get("/api/dashboard/deals/:deal_id/summary", async (request, reply) => {
+    const { deal_id } = request.params as { deal_id: string };
+    if (!deal_id || typeof deal_id !== "string") return reply.status(400).send({ error: "Missing deal_id" });
+
+    const { rows } = await pool.query(
+      `
+      SELECT
+        d.id AS deal_id,
+        d.name AS deal_name,
+        d.stage,
+        d.priority,
+        dio.dio_id,
+        dio.analysis_version,
+        dio.updated_at AS dio_updated_at,
+        dio.dio_data
+      FROM deals d
+      LEFT JOIN LATERAL (
+        SELECT dio_id, analysis_version, updated_at, dio_data
+        FROM deal_intelligence_objects
+        WHERE deal_id = d.id
+        ORDER BY analysis_version DESC, updated_at DESC
+        LIMIT 1
+      ) dio ON true
+      WHERE d.id = $1
+        AND d.deleted_at IS NULL
+      LIMIT 1
+      `,
+      [deal_id]
+    );
+
+    if (!rows || rows.length === 0) return reply.status(404).send({ error: "Deal not found" });
+    const row = rows[0] as any;
+
+    const dioData: any = row?.dio_data ?? null;
+    const phase1: any =
+      (dioData?.phase1 && typeof dioData.phase1 === "object" ? dioData.phase1 : null) ??
+      (dioData?.dio?.phase1 && typeof dioData.dio.phase1 === "object" ? dioData.dio.phase1 : null) ??
+      (dioData?.phase_1 && typeof dioData.phase_1 === "object" ? dioData.phase_1 : null) ??
+      (dioData && typeof dioData === "object" ? dioData : null);
+
+    const readPhase1Field = (key: string): any => {
+      if (!dioData || typeof dioData !== "object") return null;
+
+      const direct = (dioData as any)?.[key];
+      if (direct !== undefined && direct !== null) return direct;
+
+      const fromPhase1 = phase1 && typeof phase1 === "object" ? (phase1 as any)?.[key] : undefined;
+      if (fromPhase1 !== undefined && fromPhase1 !== null) return fromPhase1;
+
+      const fromNestedPhase1 = (dioData as any)?.dio?.phase1 && typeof (dioData as any).dio.phase1 === "object"
+        ? (dioData as any).dio.phase1?.[key]
+        : undefined;
+      if (fromNestedPhase1 !== undefined && fromNestedPhase1 !== null) return fromNestedPhase1;
+
+      return null;
+    };
+
+    return {
+      deal: {
+        id: row.deal_id,
+        name: row.deal_name,
+        stage: row.stage,
+        priority: row.priority,
+      },
+      dio: row.dio_id
+        ? {
+            dio_id: row.dio_id,
+            analysis_version: row.analysis_version,
+            updated_at: row.dio_updated_at,
+          }
+        : null,
+      summary: {
+        phase1: row.dio_id
+          ? {
+              deal_overview_v2: readPhase1Field("deal_overview_v2"),
+              deal_summary_v2: readPhase1Field("deal_summary_v2"),
+              decision_summary_v1: readPhase1Field("decision_summary_v1"),
+              business_archetype_v1: readPhase1Field("business_archetype_v1"),
+              executive_summary_v2: readPhase1Field("executive_summary_v2"),
+            }
+          : null,
+      },
+    };
+  });
+
+  /**
    * Dashboard API: Recent documents
    */
   app.get("/api/dashboard/documents", async (request, reply) => {
@@ -2128,7 +3163,14 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         d.type,
         d.status,
         d.uploaded_at,
-        deals.name as deal_name
+        deals.name as deal_name,
+        (d.full_content->'pdf_v2'->>'status') as pdf_v2_status,
+        jsonb_array_length(COALESCE(d.full_content->'pdf_v2'->'pages', '[]'::jsonb)) as pdf_v2_pages,
+        (
+          SELECT count(*)
+          FROM jsonb_array_elements(COALESCE(d.full_content->'pdf_v2'->'pages', '[]'::jsonb)) pg
+          WHERE pg ? 'ocr_v2'
+        ) as pdf_v2_pages_with_ocr_v2
       FROM documents d
       LEFT JOIN deals ON deals.id = d.deal_id
       ORDER BY d.uploaded_at DESC

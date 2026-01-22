@@ -16,6 +16,7 @@ RUN pnpm run build
 
 FROM node:20-alpine AS runner
 WORKDIR /app/apps/api
+ENV NODE_ENV=production
 ENV PNPM_HOME=/root/.local/share/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable

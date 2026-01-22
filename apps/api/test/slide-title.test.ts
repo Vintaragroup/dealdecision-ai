@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildBrandModel, inferSlideTitleForSlide } from '../src/lib/slide-title';
+import { buildBrandModel, inferSlideTitleForSlide, isLikelyGarbledSlideTitle } from '../src/lib/slide-title';
 
 test('blacklists repeated corner logo and selects headline', () => {
   const pages = [
@@ -99,4 +99,29 @@ test('confidence is lower for fallback title', () => {
   });
 
   assert.ok(strong.slide_title_confidence > fallback.slide_title_confidence);
+});
+
+test('treats Slide N placeholders as garbled', () => {
+  assert.equal(isLikelyGarbledSlideTitle('Slide 4'), true);
+  assert.equal(isLikelyGarbledSlideTitle('Silde 6'), true);
+  assert.equal(isLikelyGarbledSlideTitle('Slide'), true);
+});
+
+test('skips Slide N placeholder when choosing headline', () => {
+  const brandModel = buildBrandModel([]);
+  const blocks = [
+    // Placeholder text can otherwise be selected if it is centered and large.
+    { text: 'Slide 4', bbox: { x: 0.35, y: 0.12, w: 0.30, h: 0.10 } },
+    { text: 'Products', bbox: { x: 0.28, y: 0.16, w: 0.44, h: 0.09 } },
+  ];
+  const res = inferSlideTitleForSlide({ blocks: blocks as any, brandModel });
+  assert.equal(res.slide_title, 'Products');
+});
+
+test('joins spaced-letter headings into a readable title', () => {
+  const brandModel = buildBrandModel([]);
+  const letters = 'P R O D U C T S'.split(' ');
+  const blocks = letters.map((ch, i) => ({ text: ch, bbox: { x: 0.20 + i * 0.02, y: 0.14, w: 0.018, h: 0.08 } }));
+  const res = inferSlideTitleForSlide({ blocks: blocks as any, brandModel });
+  assert.equal(res.slide_title, 'PRODUCTS');
 });

@@ -1,5 +1,5 @@
 ---
-description: Used for analyzing and documenting core business algorithms, scoring systems, and calculation logic specific to investment analysis and deal evaluation.
+description: Scoring algorithms and business logic for investment deal analysis, risk assessment, and financial metrics.
 ---
 
 # === USER INSTRUCTIONS ===
@@ -123,46 +123,77 @@ Importance Score: 95
   - High: >80% evidence coverage
   - Medium: 60-80% evidence coverage
   - Low: <60% evidence coverage
-# === END USER INSTRUCTIONS ===
 
-# algorithms-scoring
-
+description: Used for analyzing and documenting core business algorithms, scoring systems, and calculation logic specific to investment analysis and deal evaluation.
 Core Scoring Algorithms:
-
 1. Deal Confidence Score
 Path: apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx
 - Multi-dimensional weighted scoring across market (30%), financial (30%), team (20%), product (20%)
 - Custom thresholds: Very High (90-100), High (80-89), Medium (70-79), Low (<70)
 - Source validation tracking with confidence multipliers
 - Methodology tracking for score transparency
-
-2. Risk Assessment Matrix
 Path: apps/web/src/components/report-templates/sections/RiskAssessment.tsx
 - 6-category risk scoring: market, financial, team, product, legal, competitive
 - Impact x probability calculation with custom weighting
 - Severity classification with red/yellow/green indicators
 - Automated mitigation recommendation engine
-
 3. ROI Projection System
 Path: apps/web/src/components/report-templates/sections/FinancialAnalysis.tsx
 - Unit economics analysis (LTV, CAC, margins)
 - Cash runway projections with burn rate analysis
 - Revenue milestone probability modeling
 - Growth rate calculations with industry benchmarks
-
 4. Market Analysis Formula
 Path: apps/web/src/components/report-templates/sections/CompetitiveLandscape.tsx
 - Market share distribution calculation
 - Feature comparison weighted scoring
 - Competitive advantage quantification
 - Market position strength indicators
-
 5. Evidence Quality Score
 Path: apps/web/src/lib/evidence-scoring.ts
 - Multi-factor evidence validation scoring
 - Source credibility weighting
 - Confidence band calculations (high/medium/low)
 - Evidence density scoring per claim
+# === END USER INSTRUCTIONS ===
+
+# algorithms-scoring
+
+Core Scoring Algorithms:
+
+1. Deal Confidence Scoring
+Path: apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx
+- Multi-dimensional scoring across market, team, financials, product, risk
+- Weighted factors: market size (30%), team capability (25%), financial health (20%), product maturity (15%), risk profile (10%)
+- Confidence bands: Very High (90-100), High (75-89), Medium (60-74), Low (0-59)
+
+2. Risk Assessment Framework
+Path: apps/web/src/components/report-templates/sections/RiskAssessment.tsx
+- Risk severity classification: Critical, High, Medium, Low
+- Category-specific risk weights: Market (30%), Team (25%), Financial (20%), Legal (15%), Tech (10%)
+- Mitigation scoring based on evidence strength and plan viability
+- Aggregate risk score with severity adjustments
+
+3. ROI Calculation Engine
+Path: apps/web/src/components/report-templates/sections/ROISummary.tsx 
+- Deal-specific savings calculation with industry multipliers
+- Traditional vs AI-assisted cost comparison
+- Time value adjustments by deal stage
+- Cumulative ROI tracking with milestone achievements
+
+4. Financial Health Scoring
+Path: packages/core/src/analyzers/financial-health.ts
+- Runway assessment (6/12/18/24 month thresholds)
+- Burn rate evaluation (1.0-3.0 range)
+- Gross margin scoring (50-85% ranges)
+- Composite health score (0-100)
+
+5. Fundability Assessment
+Path: packages/core/src/fundability/v1/gates.ts
+- Phase-specific requirement validation
+- Evidence-based scoring system
+- Progressive gates with conditional approvals
+- Downgrade path analysis for failed assessments
 
 $END$
 

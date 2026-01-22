@@ -1,5 +1,5 @@
 ---
-description: Documents the flow of data through deal analysis systems including document processing, evidence extraction, and report generation
+description: Technical specification for data flow and pipeline analysis in deal assessment systems, document processing, and report generation
 ---
 
 # === USER INSTRUCTIONS ===
@@ -140,58 +140,112 @@ The system maintains data lineage throughout:
 - Each transition includes confidence scoring
 - Evidence relationships preserved end-to-end
 - Full audit trail of analysis decisions
-# === END USER INSTRUCTIONS ===
 
-# dataflow-analysis
-
+description: Documents the flow of data through deal analysis systems including document processing, evidence extraction, and report generation
 Document Processing Pipeline:
 1. Initial Ingestion
 - Batch document uploader processes incoming files (apps/web/src/components/documents/DocumentBatchUploadModal.tsx)
 - Documents classified by type (pitch deck, financials, legal, etc.)
 - Metadata extraction for company name, document type
 - Initial quality assessment scoring
-
 2. Visual Asset Extraction (services/vision_worker/app/main.py)
 - Table detection and data extraction
 - Chart recognition and data point extraction 
 - OCR processing for structured content
 - Confidence scoring for extracted elements
-
 3. Evidence Collection
 - Document segmentation into distinct claims
 - Evidence grouping by business category
 - Citation tracking back to source documents
 - Confidence scoring for extracted evidence
-
 4. Analysis Integration
 - Deal Intelligence Object (DIO) generation from evidence
 - Multi-cycle analysis with progressive refinement
 - Integration of LLM-assisted analysis results
 - Cross-document relationship mapping
-
 5. Report Generation
 - Template selection based on deal type
 - Evidence mapping to report sections
 - Dynamic section inclusion based on available data
 - Export with configurable detail levels
-
 Core Data Flows:
 1. Documents → Visual Assets → Structured Data
 2. Structured Data → Evidence → Analysis Results
 3. Analysis Results → Report Templates → Final Reports
-
 Key Components:
 - Document Processor (apps/web/src/components/documents/*)
 - Vision Worker (services/vision_worker/*)
 - Analysis Pipeline (packages/core/src/orchestration/*)
 - Report Generator (apps/web/src/components/reports/*)
-
 Importance Scores:
 - Document Processing: 90/100 (core business data intake)
 - Visual Extraction: 85/100 (specialized business document analysis)
 - Evidence Collection: 80/100 (domain-specific data organization)
 - Analysis Pipeline: 95/100 (critical business intelligence)
 - Report Generation: 75/100 (business output formatting)
+# === END USER INSTRUCTIONS ===
+
+# dataflow-analysis
+
+Core Data Pipeline Components:
+
+1. Deal Document Processing Pipeline
+Path: apps/web/src/services/documentProcessing.ts
+Importance Score: 90/100
+
+Data Flow Architecture:
+- Document ingestion with intelligent type classification
+- Multi-stage content extraction with OCR and structured data parsing
+- Evidence generation with confidence scoring
+- Node relationship mapping and cluster detection
+- Output validation with quality thresholds
+
+2. Evidence Extraction System  
+Path: packages/core/src/services/evidence/extraction.ts
+Importance Score: 85/100
+
+Flow Components:
+- Visual asset identification and grouping
+- Text block relationship detection
+- Segment classification and annotation
+- Evidence confidence scoring
+- Citation tracking and validation
+
+3. AI Analysis Integration
+Path: apps/web/src/lib/aiAnalysis.ts
+Importance Score: 80/100
+
+Pipeline Stages:
+- Content preprocessing and normalization
+- Model-specific input formatting
+- Multi-model analysis orchestration
+- Result aggregation and scoring
+- Confidence threshold validation
+
+4. Report Generation Workflow
+Path: packages/core/src/services/reportGeneration.ts
+Importance Score: 85/100
+
+Data Transformation Steps:
+- Evidence aggregation by category
+- Score calculation and normalization
+- Finding generation and prioritization
+- Risk assessment compilation
+- Output document assembly
+
+Key Data Flow Patterns:
+- Progressive document analysis with quality gates
+- Evidence-based validation chains
+- Multi-stage confidence scoring
+- Domain-specific classification pipelines
+- Cross-document relationship mapping
+
+Data Quality Controls:
+- Confidence threshold enforcement
+- Evidence quality validation
+- Source verification checks
+- Relationship integrity validation
+- Output format compliance
 
 $END$
 

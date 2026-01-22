@@ -1,5 +1,5 @@
 ---
-description: Defines investment domain data models including Deal, Evidence, Document, and Analysis entities with relationships and state transitions.
+description: Specification for investment-focused data models including Deal, Evidence, Document and Analysis entities used in due diligence and deal assessment workflows
 ---
 
 # === USER INSTRUCTIONS ===
@@ -167,73 +167,112 @@ Key Features:
 - Strict data validation rules
 - Complex relationship mapping
 - Industry-specific extensions
-# === END USER INSTRUCTIONS ===
 
-# data-models-investment
-
+description: Defines investment domain data models including Deal, Evidence, Document, and Analysis entities with relationships and state transitions.
 ## Core Data Models
-
 ### Deal Entity (Importance: 95)
 - Investment deal lifecycle tracking 
 - Stage progression: intake -> under_review -> in_diligence -> ready_decision -> pitched
 - Required confidence thresholds per stage
 - Deal intelligence versioning through DIO objects
 - Parent-child relationship tracking for deal evolution
-
 ### Evidence Entity (Importance: 90)
 - Structured evidence collection for investment decisions
 - Types: fact, metric, quote, document
 - Classification: market, team, financial, risk, competition, product
 - Confidence scoring system
 - Source document linking and traceability
-
 ### Document Entity (Importance: 85)
 - Investment document classification system
 - Categories: pitch_deck, financials, product, legal, team, market
 - Processing status tracking
 - Document relationship mapping
 - Version control and lineage tracking
-
 ### Analysis Entity (Importance: 90)
 - Multi-cycle analysis framework
 - Decision recommendations (GO/NO-GO/CONDITIONAL)  
 - Confidence scoring per analysis dimension
 - Evidence aggregation and validation
 - Risk assessment tracking
-
 ### Report Entity (Importance: 80)
 - Due diligence report generation
 - Section organization and requirements
 - Evidence coverage tracking
 - Recommendation synthesis
 - Multi-format export support
-
 ## Relationships
-
 Deal <-> Evidence: Many-to-many tracking of supporting evidence
 Deal <-> Document: Many-to-many document associations
 Deal <-> Analysis: One-to-many analysis cycles
 Analysis <-> Evidence: Many-to-many evidence validation
-
 ## State Transitions
-
 1. Deal Stage Progression
 - Intake: Initial document collection
 - Under Review: Basic analysis complete
 - In Diligence: Detailed analysis ongoing
 - Ready Decision: Analysis complete, meets confidence threshold
 - Pitched: Final decision made
-
 2. Document Processing
 - Uploaded -> Processing -> Analyzed -> Verified
 - Failed states handled with error tracking
 - Reprocessing triggers for quality issues
-
 3. Analysis Cycles  
 - Phase 1: Initial scoring
 - Phase 2: Detailed analysis with evidence
 - Phase 3: Final recommendation
 - Each phase requires confidence threshold
+# === END USER INSTRUCTIONS ===
+
+# data-models-investment
+
+Core Domain Models:
+
+1. Deal Model (packages/core/src/models/deal.ts)
+Importance Score: 95
+- Investment deal entity with stages: intake, under_review, in_diligence, ready_decision, pitched
+- Multi-tier fundability assessment framework:
+  - Company phase classification (idea through series_b)
+  - Gate outcome decisions (pass/conditional/fail)  
+  - Evidence requirements mapping
+  - Confidence scoring (0-100)
+
+2. Document Model (packages/core/src/models/document.ts)
+Importance Score: 90
+- Investment document classification system
+- Types: pitch_deck, financials, product_docs, legal, cap_table
+- Evidence extraction framework with confidence scoring
+- Document state machine: uploaded -> processing -> analyzed -> verified
+
+3. Evidence Model (packages/core/src/models/evidence.ts) 
+Importance Score: 85
+- Hierarchical evidence structure for deal validation
+- Categories: financial, market, team, product, legal
+- Evidence quality scoring system (0-100)
+- Source validation and confidence tracking
+
+4. Analysis Model (packages/core/src/models/analysis.ts)
+Importance Score: 90  
+- Multi-cycle investment analysis framework
+- Component scores across key dimensions:
+  - Market opportunity (0-100)
+  - Team capability (0-100)
+  - Financial health (0-100)
+  - Risk assessment (0-100)
+- Decision recommendation engine (go/no-go/conditional)
+
+Key Relationships:
+- Deal -> Documents (1:many)
+- Document -> Evidence (1:many) 
+- Evidence -> Analysis (many:many)
+- Analysis -> Deal (many:1)
+
+State Transitions:
+- Document processing pipeline
+- Evidence validation workflow
+- Analysis cycle progression 
+- Deal stage advancement
+
+The models implement a comprehensive investment data framework optimized for deal assessment and due diligence workflows, with sophisticated scoring, validation and recommendation systems.
 
 $END$
 

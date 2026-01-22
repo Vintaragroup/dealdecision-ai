@@ -1,5 +1,5 @@
 ---
-description: Defines business rules and validation logic for investment deal evaluation and due diligence processes
+description: Business rules governing deal evaluation, risk assessment, due diligence requirements, and investment decision criteria
 ---
 
 # === USER INSTRUCTIONS ===
@@ -157,28 +157,23 @@ Investment Deal Assessment Framework:
   * Low risk: Base ROI
   * Medium risk: -10%
   * High risk: -25%
-# === END USER INSTRUCTIONS ===
 
-# business-rules
-
+description: Defines business rules and validation logic for investment deal evaluation and due diligence processes
 Deal Evaluation Framework:
 1. Confidence Scoring System
 - Custom AI-driven confidence metrics across market, financial, team dimensions
 - Weighted validation scoring using data points, sources, methodology
 - Thresholds: 90-100 (Very High), 80-89 (High), 70-79 (Medium), <70 (Low)
-
 2. Risk Assessment Matrix
 - Multi-factor risk scoring across 6 categories 
 - Impact/probability calculations with severity classification
 - Risk mitigation recommendation engine
 - Risk trend analysis (improving/stable/worsening)
-
 3. Due Diligence Requirements
 - Stage-specific document verification checklists
 - Critical path identification and prioritization
 - Completion percentage tracking by category
 - Document relationship mapping system
-
 4. Investment Decision Criteria
 - Four-tier classification system (GO/NO-GO/HOLD/INSUFFICIENT)
 - Deal type-specific evaluation metrics
@@ -186,32 +181,81 @@ Deal Evaluation Framework:
   - Consumer: distribution, inventory, brand metrics
 - Industry-specific benchmark validation
 - Evidence quality requirements by decision type
-
 5. Validation Rules
 - Financial data normalization standards
 - Required evidence thresholds by claim type
 - Document classification confidence minimums
 - Deal stage progression criteria
-
 Key Business Rule Sets:
-
 1. Deal Stage Rules
 - Intake validation requirements
 - Review cycle progression criteria
 - Due diligence completion thresholds
 - Decision readiness requirements
-
 2. Evidence Quality Rules
 - Source validation requirements
 - Confidence scoring thresholds
 - Cross-reference minimums
 - Age/relevance criteria
-
 3. Risk Assessment Rules
 - Category-specific scoring criteria
 - Mitigation requirement thresholds
 - Escalation triggers
 - Monitoring frequency rules
+# === END USER INSTRUCTIONS ===
+
+# business-rules
+
+Deal Assessment & Scoring Framework
+
+1. Deal Qualification Gates
+- Mandatory requirements by deal stage:
+  * Intake: Company name, industry, funding target
+  * Under Review: Pitch deck, financials, cap table
+  * Due Diligence: Full dataset, team background, legal docs
+  * Decision Ready: Complete analysis, risk assessment
+- Auto-progression thresholds between stages
+- Hard stops on missing critical documents
+
+2. Risk Assessment Matrix
+- Risk severity levels: Low (1-3), Medium (4-6), High (7-8), Critical (9-10)
+- Required risk categories:
+  * Market Risk (competition, TAM, timing)
+  * Team Risk (experience, completeness, references)
+  * Financial Risk (runway, burn rate, projections)
+  * Execution Risk (product status, timeline, resources)
+- Weighted risk scoring with category importance multipliers
+- Automatic deal blocking on Critical risks without mitigation
+
+3. Due Diligence Requirements
+- Document completeness thresholds:
+  * Pre-Seed: 65% minimum
+  * Seed: 75% minimum
+  * Series A+: 85% minimum
+- Quality scoring criteria:
+  * Data recency (max 6 months old)
+  * Source validation
+  * Completeness checks
+  * Cross-reference validation
+
+4. Investment Decision Criteria
+- Composite score calculation (0-100):
+  * Market Opportunity (30%)
+  * Team Capability (25%)
+  * Financial Health (25%)
+  * Product/Tech (20%)
+- Auto-recommendations:
+  * Strong Yes: 85-100
+  * Yes: 70-84
+  * Maybe: 55-69
+  * Pass: <55
+
+5. Validation Rules
+- Mandatory fields by company stage
+- Industry-specific metric requirements
+- Financial projection validation thresholds
+- Team background verification requirements
+- Legal document completeness checks
 
 $END$
 

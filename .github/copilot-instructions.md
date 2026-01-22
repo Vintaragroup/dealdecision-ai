@@ -115,6 +115,51 @@ Critical Implementation Paths:
 /packages/core/src/analyzers/metric-benchmark.ts - Industry benchmarking
 /packages/core/src/classification/deal-classifier.ts - Deal type detection
 The system's core value lies in its sophisticated deal analysis capabilities, industry-specific classification logic, and evidence-based decision support framework.
+
+Investment Deal Analysis & Due Diligence Platform implements sophisticated business logic across several key domains:
+## Core Analysis Components
+1. Due Diligence Intelligence Pipeline
+- Multi-cycle analysis workflow with progressive confidence thresholds
+- Specialized analyzers for financial health, market position, team assessment
+- Evidence collection and verification system with source tracking
+- Deal stage progression logic with automated advancement rules
+- Custom scoring algorithms for investment recommendations
+2. Document Processing System
+- Intelligent document classification with industry-specific categories
+- Advanced table and chart data extraction
+- Financial metric normalization and validation
+- Evidence quality assessment with confidence bands
+- Multi-dimensional verification scoring
+3. Financial Analysis Framework
+- Industry-specific KPI benchmarks and thresholds
+- Financial health scoring with runway calculations
+- Unit economics analysis (LTV, CAC, margins)
+- Cash flow modeling and projection system
+- Risk-adjusted valuation metrics
+## Domain-Specific Intelligence
+1. Deal Classification System
+- Multi-signal pattern matching for deal types
+- Industry-specific scoring matrices
+- Custom validation rules per vertical
+- Confidence-based classification routing
+2. Investment Decision Support
+- Four-tier recommendation engine
+- Multi-factor risk assessment framework
+- Evidence-based decision matrices
+- Investment thesis generation system
+## Critical Implementations
+apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx
+- Core confidence scoring system
+- Multi-dimensional validation framework
+packages/core/src/analyzers/financial-health.ts
+- Financial health scoring algorithms
+- Industry-specific benchmark validation
+packages/core/src/classification/deal-classifier.ts
+- Deal type classification engine
+- Multi-signal pattern matching system
+apps/worker/src/jobs/orchestration.ts
+- Analysis pipeline orchestration
+- Multi-cycle progression logic
 # === END USER INSTRUCTIONS ===
 
 
@@ -132,62 +177,50 @@ The system's core value lies in its sophisticated deal analysis capabilities, in
 - Explain your OBSERVATIONS clearly, then provide REASONING to identify the exact issue. Add console logs when needed to gather more information.
 
 
-Investment Deal Analysis & Due Diligence Platform implements sophisticated business logic across several key domains:
+Investment Analysis System Architecture
 
-## Core Analysis Components
+Core Business Components:
 
-1. Due Diligence Intelligence Pipeline
-- Multi-cycle analysis workflow with progressive confidence thresholds
-- Specialized analyzers for financial health, market position, team assessment
-- Evidence collection and verification system with source tracking
-- Deal stage progression logic with automated advancement rules
-- Custom scoring algorithms for investment recommendations
+1. Deal Assessment & Scoring Pipeline
+Manages comprehensive deal evaluation across:
+- Deal qualification and classification
+- Multi-cycle due diligence analysis 
+- Financial health scoring
+- Risk assessment matrices
+- Evidence validation gates
 
-2. Document Processing System
-- Intelligent document classification with industry-specific categories
-- Advanced table and chart data extraction
-- Financial metric normalization and validation
-- Evidence quality assessment with confidence bands
-- Multi-dimensional verification scoring
+Key implementations:
+- apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx
+- packages/core/src/orchestration/pipeline.ts
+- packages/core/src/fundability/v1/phase-inference.ts
 
-3. Financial Analysis Framework
-- Industry-specific KPI benchmarks and thresholds
-- Financial health scoring with runway calculations
-- Unit economics analysis (LTV, CAC, margins)
-- Cash flow modeling and projection system
-- Risk-adjusted valuation metrics
+2. Document Intelligence System
+Processes investment documents through:
+- Financial document classification
+- Visual asset analysis
+- Evidence extraction
+- Content archetype detection
+- Structured data parsing
 
-## Domain-Specific Intelligence
+Key implementations:
+- services/vision_worker/app/extractors/chart_bar.py
+- services/vision_worker/app/extractors/table.py
+- services/vision_worker/app/extractors/xlsx_structured.py
 
-1. Deal Classification System
-- Multi-signal pattern matching for deal types
-- Industry-specific scoring matrices
-- Custom validation rules per vertical
-- Confidence-based classification routing
+3. Investment Analysis Framework
+Implements specialized analysis for:
+- Company phase inference
+- Fundability assessment
+- Market opportunity scoring
+- Team evaluation
+- Risk categorization
 
-2. Investment Decision Support
-- Four-tier recommendation engine
-- Multi-factor risk assessment framework
-- Evidence-based decision matrices
-- Investment thesis generation system
+Key implementations:
+- apps/web/src/components/report-templates/sections/RiskAssessment.tsx
+- packages/core/src/classification/deal-classifier.ts
+- packages/core/src/scoring/policy-kpi-registry.ts
 
-## Critical Implementations
-
-apps/web/src/components/report-templates/sections/AIConfidenceScores.tsx
-- Core confidence scoring system
-- Multi-dimensional validation framework
-
-packages/core/src/analyzers/financial-health.ts
-- Financial health scoring algorithms
-- Industry-specific benchmark validation
-
-packages/core/src/classification/deal-classifier.ts
-- Deal type classification engine
-- Multi-signal pattern matching system
-
-apps/worker/src/jobs/orchestration.ts
-- Analysis pipeline orchestration
-- Multi-cycle progression logic
+The system orchestrates deal evaluation through multi-stage analysis pipelines, combining document intelligence with structured financial analysis to generate comprehensive investment recommendations. Core business logic focuses on deal qualification, risk assessment, and evidence-based validation using domain-specific scoring algorithms and classification systems.
 
 $END$
 

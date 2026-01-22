@@ -37,6 +37,7 @@ services:
       dockerfile: apps/api/Dockerfile
     command: ["pnpm", "--filter", "api", "db:migrate"]
     environment:
+      NODE_ENV: production
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/dealdecision}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
     depends_on:
@@ -50,11 +51,15 @@ services:
       dockerfile: apps/api/Dockerfile
     command: ["pnpm", "start"]
     environment:
+      NODE_ENV: production
       API_PORT: "9000"
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/dealdecision}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      UPLOAD_DIR: /app/uploads
     ports:
       - "9000:9000"
+    volumes:
+      - dealdecision_uploads:/app/uploads
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -62,6 +67,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      vision_worker:
+        condition: service_healthy
     restart: unless-stopped
 
   worker:
@@ -70,12 +77,20 @@ services:
       dockerfile: apps/worker/Dockerfile
     command: ["pnpm", "start"]
     environment:
+      NODE_ENV: production
       DATABASE_URL: ${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/dealdecision}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      UPLOAD_DIR: /app/uploads
+      # Pipeline automation policy (prod default is "off"; set to "shadow" for set-and-forget).
+      PIPELINE_AUTOMATION_MODE: ${PIPELINE_AUTOMATION_MODE:-off}
+      # Visual extraction uses the vision worker (can be an internal service or external URL).
+      VISION_WORKER_URL: ${VISION_WORKER_URL:-http://vision_worker:8000}
       # Analysis Foundation (Fundability) flags (default OFF; set to 1 to enable)
       FUNDABILITY_SHADOW_MODE: ${FUNDABILITY_SHADOW_MODE:-0}
       FUNDABILITY_SOFT_CAPS: ${FUNDABILITY_SOFT_CAPS:-0}
       FUNDABILITY_HARD_GATES: ${FUNDABILITY_HARD_GATES:-0}
+    volumes:
+      - dealdecision_uploads:/app/uploads
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -85,6 +100,31 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # Optional: co-locate the vision worker for visual extraction.
+  # If you run it elsewhere, set VISION_WORKER_URL and remove this service.
+  vision_worker:
+    build:
+      context: ../services/vision_worker
+      dockerfile: Dockerfile
+      args:
+        ENABLE_VISION_UNDERSTANDING: ${ENABLE_VISION_UNDERSTANDING:-0}
+    environment:
+      PYTHONUNBUFFERED: "1"
+      ENABLE_VISION_UNDERSTANDING: ${ENABLE_VISION_UNDERSTANDING:-0}
+      VISION_UNDERSTANDING_CACHE_DIR: /app/.cache/vision_understanding
+      XDG_CACHE_HOME: /app/.cache
+      HF_HOME: /app/.cache/huggingface
+    volumes:
+      - dealdecision_uploads:/app/uploads
+      - vision_worker_cache:/app/.cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   postgres_data:
   redis_data:
+  dealdecision_uploads:
+  vision_worker_cache:

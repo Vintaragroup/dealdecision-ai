@@ -40,3 +40,4 @@ volumes:
   postgres_data:
   redis_data:
   dealdecision_uploads:
+  vision_worker_cache:

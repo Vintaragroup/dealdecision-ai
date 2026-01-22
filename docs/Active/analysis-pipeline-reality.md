@@ -19,6 +19,10 @@ Covers:
 - Whether Phase 1 scoring consumes Phase B outputs (current answer)
 - DB “truth queries” used to verify reality
 
+Related runbook (operations):
+
+- `docs/Active/runbooks/RUNBOOK-extraction-and-analysis-set-and-forget.md`
+
 ---
 
 ## Definitions

@@ -43,6 +43,20 @@ At a conceptual level, the system consists of four major components:
 
 This repository intentionally omits deployment, infrastructure, and environment-specific details.
 
+## Production (set-and-forget)
+
+If you deploy with Docker Compose, see `infra/docker-compose.deploy.yml`.
+
+Key knobs:
+
+- `PIPELINE_AUTOMATION_MODE=off|shadow|primary` (worker)
+  - Production defaults to `off`.
+  - Set to `shadow` to run the newer pipelines additively without changing legacy results.
+- `VISION_WORKER_URL` (worker)
+  - Required for visual extraction; `infra/docker-compose.deploy.yml` includes an optional `vision_worker` service.
+- `UPLOAD_DIR` (api + worker)
+  - Must be shared between API and worker so `/uploads/*` can serve extracted artifacts.
+
 ---
 
 ## Analysis Phases (Conceptual)

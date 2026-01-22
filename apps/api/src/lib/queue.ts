@@ -5,6 +5,34 @@ import dotenv from "dotenv";
 // Ensure env is loaded before queues initialize.
 dotenv.config();
 
+function installBullmqEvictionPolicyWarningDeduper() {
+  const originalWarn = console.warn;
+  let warned = false;
+
+  // BullMQ logs this warning via console.warn when maxmemory-policy !== "noeviction".
+  // On managed Redis/Valkey, changing the eviction policy may not be possible.
+  // We keep the safety intent but ensure it only logs once per process.
+  console.warn = (...args: any[]) => {
+    const first = args[0];
+    if (
+      typeof first === "string" &&
+      first.startsWith("IMPORTANT! Eviction policy is ") &&
+      first.includes('It should be "noeviction"')
+    ) {
+      if (warned) return;
+      warned = true;
+
+      // Re-log once with an explicit non-fatal note.
+      return originalWarn(
+        `${first} (continuing anyway; managed Redis/Valkey may not allow changing this setting)`
+      );
+    }
+    return originalWarn(...args);
+  };
+}
+
+installBullmqEvictionPolicyWarningDeduper();
+
 const redisUrl = process.env.REDIS_URL;
 
 if (!redisUrl) {

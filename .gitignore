@@ -99,3 +99,6 @@ packages/**/docs/.vscode/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# local debug
+apps/api/tmp_parity_debug.cjs

@@ -51,6 +51,6 @@ COPY --from=build /app/apps/worker/package.json ./package.json
 # pnpm workspace runtime deps (symlinks + .pnpm store live under /app/node_modules)
 COPY --from=deps /app/node_modules /app/node_modules
 COPY --from=deps /app/apps/worker/node_modules ./node_modules
-COPY --from=deps /app/packages /app/packages
+COPY --from=build /app/packages /app/packages
 
 CMD ["node", "dist/src/index.js"]

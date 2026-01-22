@@ -54,8 +54,8 @@ COPY --from=build /app/apps/api/package.json ./package.json
 COPY --from=deps /app/node_modules /app/node_modules
 COPY --from=deps /app/apps/api/node_modules ./node_modules
 
-# Copy workspace packages that may be required at runtime (workspace-linked deps)
-COPY --from=deps /app/packages /app/packages
+# Copy built workspace packages required at runtime (workspace-linked deps)
+COPY --from=build /app/packages /app/packages
 
 EXPOSE 9000
 CMD ["node", "dist/src/index.js"]

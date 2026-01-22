@@ -19,6 +19,8 @@ import {
   apiGetDealVisualAssets,
   apiGetDocumentVisualAssets,
   apiDeleteVisualAssetSegmentOverride,
+  apiPostExtractVisuals,
+  apiRetryDocument,
   apiPostDealNodeAiAnalyze,
   apiPostVisualAssetAiAnalyze,
   isLiveBackend,
@@ -2198,6 +2200,41 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
   const visualAssetCacheRef = useRef(new Map<string, DealVisualAsset>());
   const dealAssetsFetchedRef = useRef(false);
 
+  const filterNoisyFallbackAssets = (assets: DealVisualAsset[]): DealVisualAsset[] => {
+    // Some extraction runs may emit a per-page "default_fallback_v1" record (often empty) alongside
+    // a higher-quality computed/structured asset. For UI clarity, hide the fallback when a better
+    // asset exists for the same document+page.
+    const byKey = new Map<string, DealVisualAsset[]>();
+    for (const a of assets) {
+      const docId = a?.document_id;
+      const page = typeof a?.page_index === 'number' && Number.isFinite(a.page_index) ? a.page_index : null;
+      if (!docId || page == null) continue;
+      const k = `${docId}::${page}`;
+      const list = byKey.get(k) ?? [];
+      list.push(a);
+      byKey.set(k, list);
+    }
+
+    const isFallback = (a: DealVisualAsset): boolean => {
+      const src = typeof a?.segment_source === 'string' ? a.segment_source : '';
+      const ver = typeof a?.extractor_version === 'string' ? a.extractor_version : '';
+      return src === 'default_fallback_v1' || ver === 'default_fallback_v1';
+    };
+
+    const drop = new Set<string>();
+    for (const list of byKey.values()) {
+      if (list.length <= 1) continue;
+      const hasNonFallback = list.some((a) => !isFallback(a));
+      if (!hasNonFallback) continue;
+      for (const a of list) {
+        if (isFallback(a)) drop.add(a.visual_asset_id);
+      }
+    }
+
+    if (drop.size === 0) return assets;
+    return assets.filter((a) => !drop.has(a.visual_asset_id));
+  };
+
   const refresh = async () => {
     if (!dealId || !isLiveBackend()) return;
 
@@ -2219,7 +2256,8 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
       const res = lineageRes.value;
 
       if (assetsRes.status === 'fulfilled') {
-        const assets = Array.isArray(assetsRes.value?.visual_assets) ? assetsRes.value.visual_assets : [];
+        const assetsRaw = Array.isArray(assetsRes.value?.visual_assets) ? assetsRes.value.visual_assets : [];
+        const assets = filterNoisyFallbackAssets(assetsRaw);
         setDealVisualAssets(assets);
         upsertAssetsIntoCache(assets);
         dealAssetsFetchedRef.current = true;
@@ -3108,12 +3146,30 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
     }
   };
 
+  const [devLastJob, setDevLastJob] = useState<{ label: string; jobId: string } | null>(null);
+  const [devLastJobError, setDevLastJobError] = useState<string | null>(null);
+
   const loadVisualDetails = async (documentId: string, visualAssetId: string) => {
     if (!dealId || !visualAssetId) return;
 
     setVisualDetailLoading(true);
     setVisualDetailError(null);
     setSelectedVisual(null);
+
+    const hasAnyDisplayableText = (asset: any): boolean => {
+      if (!asset || typeof asset !== 'object') return false;
+      if (!asset.ocr_suppressed && typeof asset.ocr_text === 'string' && asset.ocr_text.trim().length > 0) return true;
+      if (typeof asset.structured_summary === 'string' && asset.structured_summary.trim().length > 0) return true;
+      const sj = asset.structured_json;
+      if (sj && typeof sj === 'object') {
+        const snippet = (sj as any).text_snippet;
+        if (typeof snippet === 'string' && snippet.trim().length > 0) return true;
+
+        const text = (sj as any).text;
+        if (typeof text === 'string' && text.trim().length > 0) return true;
+      }
+      return false;
+    };
 
     try {
       if (!dealAssetsFetchedRef.current) {
@@ -3133,9 +3189,18 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
       let match = visualAssetCacheRef.current.get(visualAssetId) ?? null;
 
       if (!match && documentId) {
-        const resp = await apiGetDocumentVisualAssets(dealId, documentId);
+        const resp = await apiGetDocumentVisualAssets(dealId, documentId, { includeOcr: true });
         upsertAssetsIntoCache(resp.visual_assets ?? []);
         match = visualAssetCacheRef.current.get(visualAssetId) ?? null;
+      }
+
+      // The API hides OCR by default unless include_ocr=true.
+      // In Analyst Mode, we want the details panel to reliably show extracted text,
+      // so if the cached record lacks any displayable text, refetch with OCR enabled.
+      if (match && documentId && !hasAnyDisplayableText(match)) {
+        const resp = await apiGetDocumentVisualAssets(dealId, documentId, { includeOcr: true });
+        upsertAssetsIntoCache(resp.visual_assets ?? []);
+        match = visualAssetCacheRef.current.get(visualAssetId) ?? match;
       }
 
       setSelectedVisual(match ?? null);
@@ -4444,6 +4509,82 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                         Evidence: {selectedVisual.evidence?.evidence_count ?? selectedVisual.evidence?.count ?? 0}
                       </div>
 
+                      {import.meta.env.DEV ? (
+                        <div
+                          className={`mt-3 rounded-md border p-3 text-xs ${
+                            darkMode ? 'border-white/10 bg-white/5 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
+                          }`}
+                        >
+                          <div className={`font-medium ${darkMode ? 'text-gray-100' : 'text-gray-900'}`}>Dev tools</div>
+                          <div className={`mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            Quick reruns to validate slide titles + summaries after extractor changes.
+                          </div>
+
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={async () => {
+                                const docId = String((selectedVisual as any)?.document_id || '').trim();
+                                if (!docId) {
+                                  setDevLastJobError('Missing document_id for selection');
+                                  return;
+                                }
+                                setDevLastJobError(null);
+                                try {
+                                  const res = await apiRetryDocument(dealId, docId);
+                                  const jobId = typeof (res as any)?.job_id === 'string' ? String((res as any).job_id) : '';
+                                  if (jobId) setDevLastJob({ label: 'reextract_documents (single)', jobId });
+                                  else setDevLastJob({ label: 'reextract_documents (single)', jobId: '(enqueued)' });
+                                } catch (e) {
+                                  setDevLastJobError(e instanceof Error ? e.message : String(e));
+                                }
+                              }}
+                            >
+                              Re-extract this document
+                            </Button>
+
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={async () => {
+                                setDevLastJobError(null);
+                                try {
+                                  const res = await apiPostExtractVisuals(dealId);
+                                  const jobId = typeof (res as any)?.job_id === 'string' ? String((res as any).job_id) : '';
+                                  if (jobId) setDevLastJob({ label: 'extract_visuals (deal)', jobId });
+                                  else setDevLastJob({ label: 'extract_visuals (deal)', jobId: '(enqueued)' });
+                                } catch (e) {
+                                  setDevLastJobError(e instanceof Error ? e.message : String(e));
+                                }
+                              }}
+                            >
+                              Extract visuals (deal)
+                            </Button>
+
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                // Simple, reliable refresh: clears transient UI state and reloads.
+                                window.location.reload();
+                              }}
+                            >
+                              Reload UI
+                            </Button>
+                          </div>
+
+                          {devLastJob ? (
+                            <div className={`mt-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                              Last job: {devLastJob.label} • job_id={devLastJob.jobId}
+                            </div>
+                          ) : null}
+                          {devLastJobError ? (
+                            <div className="mt-2 text-red-500">{devLastJobError}</div>
+                          ) : null}
+                        </div>
+                      ) : null}
+
                       {Array.isArray(selectedVisual.evidence?.sample_snippets) && selectedVisual.evidence.sample_snippets.length > 0 ? (
                         <details className="rounded-md">
                           <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
@@ -4465,6 +4606,25 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                           </pre>
                         </details>
                       ) : null}
+
+                      {(() => {
+                        // Many extractions (DOCX block grouping, table/structured parsers) do not populate ocr_text.
+                        // Surface a consistent text panel so users don’t see “no text” when text_snippet is present.
+                        const sj = selectedVisual.structured_json as any;
+                        const structuredSnippet = typeof sj?.text_snippet === 'string' ? sj.text_snippet.trim() : '';
+                        const structuredText = typeof sj?.text === 'string' ? sj.text.trim() : '';
+                        const structuredSummary = typeof (selectedVisual as any).structured_summary === 'string' ? String((selectedVisual as any).structured_summary).trim() : '';
+                        const text = structuredSnippet || structuredText || structuredSummary;
+                        if (!text) return null;
+                        return (
+                          <details open>
+                            <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Extracted text</summary>
+                            <pre className={`mt-2 whitespace-pre-wrap text-xs rounded-md p-2 border ${darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'}`}>
+                              {text}
+                            </pre>
+                          </details>
+                        );
+                      })()}
 
                       {selectedVisual.ocr_suppressed ? (
                         <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>OCR suppressed for structured Excel</div>

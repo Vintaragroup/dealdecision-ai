@@ -632,9 +632,12 @@ export type DocumentVisualAssetsResponse = {
   warnings: string[];
 };
 
-export async function apiGetDocumentVisualAssets(dealId: string, documentId: string) {
+export async function apiGetDocumentVisualAssets(dealId: string, documentId: string, opts?: { includeOcr?: boolean }) {
+  const params = new URLSearchParams();
+  if (opts?.includeOcr) params.set('include_ocr', '1');
+  const qs = params.toString();
   const res = await request<{ deal_id: string; document_id: string; assets?: any[]; visual_assets?: any[]; warnings?: string[] }>(
-    `/api/v1/deals/${dealId}/documents/${documentId}/visual-assets`
+    `/api/v1/deals/${dealId}/documents/${documentId}/visual-assets${qs ? `?${qs}` : ''}`
   );
   const assetsRaw = Array.isArray(res?.visual_assets) ? res.visual_assets : Array.isArray(res?.assets) ? res.assets : [];
   const visual_assets = normalizeVisualAssetsResponse(assetsRaw, dealId);
@@ -646,8 +649,11 @@ export async function apiGetDocumentVisualAssets(dealId: string, documentId: str
   } satisfies DocumentVisualAssetsResponse;
 }
 
-export async function apiGetDealVisualAssets(dealId: string) {
-  const res = await request<{ deal_id: string; visual_assets?: any[] }>(`/api/v1/deals/${dealId}/visual-assets`);
+export async function apiGetDealVisualAssets(dealId: string, opts?: { includeOcr?: boolean }) {
+  const params = new URLSearchParams();
+  if (opts?.includeOcr) params.set('include_ocr', '1');
+  const qs = params.toString();
+  const res = await request<{ deal_id: string; visual_assets?: any[] }>(`/api/v1/deals/${dealId}/visual-assets${qs ? `?${qs}` : ''}`);
   const visual_assets = normalizeVisualAssetsResponse(Array.isArray(res?.visual_assets) ? res.visual_assets : [], dealId);
   return { deal_id: res?.deal_id ?? dealId, visual_assets };
 }

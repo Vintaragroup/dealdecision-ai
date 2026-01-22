@@ -78,3 +78,41 @@ class ExtractXlsxResponse(BaseModel):
     document_id: str
     extractor_version: str
     pages: List[ExtractVisualsResponse] = Field(default_factory=list)
+
+
+# --- PDF Extraction v2 (native text-first) ---
+
+
+class ExtractPdfV2Request(BaseModel):
+    """Extract native text/blocks from a PDF.
+
+    We use base64-encoded bytes so callers don't need a shared filesystem path.
+    """
+
+    document_id: str
+    pdf_b64: str
+    extractor_version: str = "pdf_native_v2"
+    max_pages: int = Field(default=30, ge=1, le=200)
+
+
+class PdfV2Block(BaseModel):
+    text: str
+    bbox: BBox
+    bbox_units: str = "normalized"
+
+
+class PdfV2NativePage(BaseModel):
+    page_index: int
+    method: Literal["pdfplumber", "pymupdf"]
+    text: str
+    word_count: int = 0
+    image_count: int = 0
+    page_width: float = 0.0
+    page_height: float = 0.0
+    blocks: List[PdfV2Block] = Field(default_factory=list)
+
+
+class ExtractPdfV2Response(BaseModel):
+    document_id: str
+    extractor_version: str
+    pages: List[PdfV2NativePage] = Field(default_factory=list)

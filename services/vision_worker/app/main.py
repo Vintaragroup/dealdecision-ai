@@ -18,9 +18,19 @@ from .extractors.layout import detect_layout_assets
 from .extractors.ocr import run_ocr_lite
 from .extractors.chart_bar import detect_bar_chart, extract_bar_chart
 from .extractors.table import detect_table, extract_table
-from .models import BBox, ExtractVisualsRequest, ExtractVisualsResponse, VisualAsset, ExtractXlsxRequest, ExtractXlsxResponse
+from .models import (
+    BBox,
+    ExtractVisualsRequest,
+    ExtractVisualsResponse,
+    VisualAsset,
+    ExtractXlsxRequest,
+    ExtractXlsxResponse,
+    ExtractPdfV2Request,
+    ExtractPdfV2Response,
+)
 
 from .extractors.xlsx_structured import extract_xlsx_structured_pages
+from .extractors.pdf_v2 import extract_pdf_v2_native_pages
 
 
 logger = logging.getLogger("vision_worker")
@@ -163,6 +173,48 @@ def extract_xlsx(req: ExtractXlsxRequest) -> JSONResponse:
         return JSONResponse(
             status_code=200,
             content=ExtractXlsxResponse(document_id=req.document_id, extractor_version=req.extractor_version, pages=[]).model_dump(),
+        )
+
+
+@app.post("/extract-pdf-v2")
+def extract_pdf_v2(req: ExtractPdfV2Request) -> JSONResponse:
+    started = time.perf_counter()
+    base_log = {
+        "document_id": req.document_id,
+        "extractor_version": req.extractor_version,
+    }
+    try:
+        pages = extract_pdf_v2_native_pages(
+            document_id=req.document_id,
+            pdf_b64=req.pdf_b64,
+            max_pages=req.max_pages,
+        )
+        out = ExtractPdfV2Response(document_id=req.document_id, extractor_version=req.extractor_version, pages=pages)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        _log_event(
+            "extract_pdf_v2",
+            {
+                **base_log,
+                "elapsed_ms": elapsed_ms,
+                "status": "ok",
+                "pages": len(out.pages),
+            },
+        )
+        return JSONResponse(status_code=200, content=out.model_dump())
+    except Exception as e:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        _log_event(
+            "extract_pdf_v2",
+            {
+                **base_log,
+                "elapsed_ms": elapsed_ms,
+                "status": "error",
+                "error": str(e),
+            },
+        )
+        return JSONResponse(
+            status_code=200,
+            content=ExtractPdfV2Response(document_id=req.document_id, extractor_version=req.extractor_version, pages=[]).model_dump(),
         )
 
 

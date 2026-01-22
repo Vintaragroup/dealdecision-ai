@@ -49,7 +49,7 @@ def run_ocr_lite(image: Image.Image) -> Tuple[VisualExtraction, Dict[str, Any]]:
         flags["ocr"] = "tesseract_binary_missing"
         return VisualExtraction(ocr_text=None, ocr_blocks=[], confidence=0.0), flags
 
-    def _preprocess_for_ocr(img_in: Image.Image) -> Tuple[Image.Image, Dict[str, Any]]:
+    def _preprocess_for_ocr(img_in: Image.Image, *, binarize: bool = True) -> Tuple[Image.Image, Dict[str, Any]]:
         meta: Dict[str, Any] = {}
         img = img_in
 
@@ -102,47 +102,50 @@ def run_ocr_lite(image: Image.Image) -> Tuple[VisualExtraction, Dict[str, Any]]:
         except Exception:
             meta["unsharp"] = False
 
-        # Optional binarization (Otsu) to reduce background gradients.
-        # If numpy isn't available, fall back to a conservative fixed threshold.
-        try:
-            import numpy as np  # type: ignore
-
-            arr = np.array(img)
-            if arr.size > 0:
-                # Otsu threshold
-                hist = np.bincount(arr.flatten(), minlength=256).astype(np.float64)
-                total = arr.size
-                sum_total = float((np.arange(256) * hist).sum())
-                sum_b = 0.0
-                w_b = 0.0
-                best_var = -1.0
-                best_t = 180
-                for t in range(256):
-                    w_b += float(hist[t])
-                    if w_b == 0.0:
-                        continue
-                    w_f = float(total) - w_b
-                    if w_f == 0.0:
-                        break
-                    sum_b += float(t * hist[t])
-                    m_b = sum_b / w_b
-                    m_f = (sum_total - sum_b) / w_f
-                    var_between = w_b * w_f * (m_b - m_f) * (m_b - m_f)
-                    if var_between > best_var:
-                        best_var = var_between
-                        best_t = t
-
-                bin_arr = (arr > best_t).astype(np.uint8) * 255
-                img = Image.fromarray(bin_arr, mode="L")
-                meta["binarize"] = "otsu"
-                meta["threshold"] = int(best_t)
-        except Exception:
+        if binarize:
+            # Optional binarization (Otsu) to reduce background gradients.
+            # If numpy isn't available, fall back to a conservative fixed threshold.
             try:
-                img = img.point(lambda p: 255 if p > 180 else 0)
-                meta["binarize"] = "fixed"
-                meta["threshold"] = 180
+                import numpy as np  # type: ignore
+
+                arr = np.array(img)
+                if arr.size > 0:
+                    # Otsu threshold
+                    hist = np.bincount(arr.flatten(), minlength=256).astype(np.float64)
+                    total = arr.size
+                    sum_total = float((np.arange(256) * hist).sum())
+                    sum_b = 0.0
+                    w_b = 0.0
+                    best_var = -1.0
+                    best_t = 180
+                    for t in range(256):
+                        w_b += float(hist[t])
+                        if w_b == 0.0:
+                            continue
+                        w_f = float(total) - w_b
+                        if w_f == 0.0:
+                            break
+                        sum_b += float(t * hist[t])
+                        m_b = sum_b / w_b
+                        m_f = (sum_total - sum_b) / w_f
+                        var_between = w_b * w_f * (m_b - m_f) * (m_b - m_f)
+                        if var_between > best_var:
+                            best_var = var_between
+                            best_t = t
+
+                    bin_arr = (arr > best_t).astype(np.uint8) * 255
+                    img = Image.fromarray(bin_arr, mode="L")
+                    meta["binarize"] = "otsu"
+                    meta["threshold"] = int(best_t)
             except Exception:
-                meta["binarize"] = False
+                try:
+                    img = img.point(lambda p: 255 if p > 180 else 0)
+                    meta["binarize"] = "fixed"
+                    meta["threshold"] = 180
+                except Exception:
+                    meta["binarize"] = False
+        else:
+            meta["binarize"] = False
 
         return img, meta
 
@@ -153,8 +156,27 @@ def run_ocr_lite(image: Image.Image) -> Tuple[VisualExtraction, Dict[str, Any]]:
         except Exception:
             img_rgb = image
 
-        img, prep_meta = _preprocess_for_ocr(img_rgb)
+        img, prep_meta = _preprocess_for_ocr(img_rgb, binarize=True)
         flags["ocr_preprocess_v1"] = prep_meta
+
+        # Separate preprocessing for title/heading capture: avoid binarization and optionally invert
+        # for dark slides (white text on dark background) to help Tesseract.
+        img_title, title_meta = _preprocess_for_ocr(img_rgb, binarize=False)
+        try:
+            # If the average brightness is low, invert to make background light.
+            # (Tesseract tends to prefer dark text on a light background.)
+            hist = img_title.histogram()
+            total = float(sum(hist)) or 1.0
+            mean = float(sum(i * float(hist[i]) for i in range(256)) / total)
+            title_meta["mean"] = mean
+            if mean < 110.0:
+                img_title = ImageOps.invert(img_title)
+                title_meta["inverted"] = True
+            else:
+                title_meta["inverted"] = False
+        except Exception:
+            pass
+        flags["ocr_preprocess_title_v1"] = title_meta
 
         # Tesseract config tuned for slide/page-like layouts.
         # - oem 1: LSTM
@@ -176,44 +198,96 @@ def run_ocr_lite(image: Image.Image) -> Tuple[VisualExtraction, Dict[str, Any]]:
                 flags["ocr_psm"] = 6
         except Exception:
             flags["ocr_psm"] = 6
+
+        # Extra pass: OCR the top portion of the page with a single-line mode.
+        # This materially improves capture of large slide headers (e.g. "Products", "Solution")
+        # that can be missed in block/sparse modes.
+        header_data = None
+        try:
+            img_w, img_h = img.size
+            header_h = int(max(1, min(img_h, int(img_h * 0.28))))
+            header_crop = img_title.crop((0, 0, img_w, header_h))
+            header_config = "--oem 1 --psm 7 -c preserve_interword_spaces=1"
+            header_data = pytesseract.image_to_data(
+                header_crop, output_type=pytesseract.Output.DICT, lang="eng", config=header_config
+            )
+            flags["ocr_header_psm"] = 7
+        except Exception as e:
+            flags["ocr_header_failed"] = True
+            flags["ocr_header_error"] = str(e)
+
+        # Additional pass: OCR a mid-page band (often where PPT slide titles live when the
+        # template uses centered headers). Cropping reduces clutter and improves heading recall.
+        mid_data = None
+        mid_y0 = 0
+        try:
+            img_w, img_h = img.size
+            mid_y0 = int(max(0, min(img_h - 1, int(img_h * 0.12))))
+            mid_y1 = int(max(mid_y0 + 1, min(img_h, int(img_h * 0.62))))
+            mid_crop = img_title.crop((0, mid_y0, img_w, mid_y1))
+            mid_config = "--oem 1 --psm 11 -c preserve_interword_spaces=1"
+            mid_data = pytesseract.image_to_data(
+                mid_crop, output_type=pytesseract.Output.DICT, lang="eng", config=mid_config
+            )
+            flags["ocr_mid_psm"] = 11
+            flags["ocr_mid_band"] = {"y0": float(mid_y0) / float(max(1, img_h)), "y1": float(mid_y1) / float(max(1, img_h))}
+        except Exception as e:
+            flags["ocr_mid_failed"] = True
+            flags["ocr_mid_error"] = str(e)
         text_items: List[str] = []
         blocks: List[OcrBlock] = []
 
-        img_w, img_h = img.size
+        seen: set = set()
 
-        n = len(data.get("text", []))
-        for i in range(n):
-            raw_text = data.get("text", [""])[i]
-            if not raw_text:
-                continue
-            t = str(raw_text).strip()
-            if not t:
-                continue
+        def _append_from_data(d: Dict[str, Any], *, x_off: int, y_off: int, y_limit: Optional[int] = None) -> None:
+            n = len(d.get("text", []))
+            for i in range(n):
+                raw_text = d.get("text", [""])[i]
+                if not raw_text:
+                    continue
+                t = str(raw_text).strip()
+                if not t:
+                    continue
 
-            left = int(data.get("left", [0])[i] or 0)
-            top = int(data.get("top", [0])[i] or 0)
-            width = int(data.get("width", [0])[i] or 0)
-            height = int(data.get("height", [0])[i] or 0)
+                left = int(d.get("left", [0])[i] or 0) + int(x_off)
+                top = int(d.get("top", [0])[i] or 0) + int(y_off)
+                width = int(d.get("width", [0])[i] or 0)
+                height = int(d.get("height", [0])[i] or 0)
 
-            conf_val: Optional[float] = None
-            try:
-                # pytesseract conf is typically 0-100 or -1
-                conf_raw = data.get("conf", [None])[i]
-                if conf_raw is not None:
-                    conf_num = float(conf_raw)
-                    if conf_num >= 0:
-                        conf_val = _clamp01(conf_num / 100.0)
-            except Exception:
-                conf_val = None
+                if y_limit is not None and top > y_limit:
+                    continue
 
-            blocks.append(
-                OcrBlock(
-                    text=t,
-                    bbox=_norm_bbox(left, top, width, height, img_w=img_w, img_h=img_h),
-                    confidence=conf_val,
+                key = (t.lower(), left // 2, top // 2, max(0, width) // 2, max(0, height) // 2)
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                conf_val: Optional[float] = None
+                try:
+                    # pytesseract conf is typically 0-100 or -1
+                    conf_raw = d.get("conf", [None])[i]
+                    if conf_raw is not None:
+                        conf_num = float(conf_raw)
+                        if conf_num >= 0:
+                            conf_val = _clamp01(conf_num / 100.0)
+                except Exception:
+                    conf_val = None
+
+                blocks.append(
+                    OcrBlock(
+                        text=t,
+                        bbox=_norm_bbox(left, top, width, height, img_w=img_w, img_h=img_h),
+                        confidence=conf_val,
+                    )
                 )
-            )
-            text_items.append(t)
+                text_items.append(t)
+
+        _append_from_data(data, x_off=0, y_off=0)
+        if isinstance(header_data, dict):
+            # Only allow blocks from the top crop area.
+            _append_from_data(header_data, x_off=0, y_off=0, y_limit=int(img_h * 0.30))
+        if isinstance(mid_data, dict):
+            _append_from_data(mid_data, x_off=0, y_off=int(mid_y0))
 
         ocr_text = " ".join(text_items).strip() if text_items else None
 

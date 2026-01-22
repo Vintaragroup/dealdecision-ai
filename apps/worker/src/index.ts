@@ -4005,6 +4005,34 @@ registerWorker("reextract_documents", async (job: Job) => {
 				doc.deal_id
 			);
 
+			devLog("reextract_documents.classification", {
+				dealId: doc.deal_id,
+				documentId: doc.id,
+				fileName,
+				fileExt: path.extname(fileName).toLowerCase(),
+				analysisContentType: analysis.contentType,
+				bufferBytes: buffer.length,
+			});
+
+			// Normalization (parity with ingest): ensure structured_data.canonical.* exists.
+			const normalized = normalizeToCanonical({
+				contentType: analysis.contentType,
+				content: analysis.content,
+				structuredData: analysis.structuredData,
+			});
+			analysis.structuredData = normalized.structuredData;
+			const structuredDataToPersist = normalized.structuredData;
+			const canonicalMetrics = (structuredDataToPersist as any)?.canonical?.financials?.canonical_metrics;
+			devLog("reextract_documents.normalized", {
+				dealId: doc.deal_id,
+				documentId: doc.id,
+				analysisContentType: analysis.contentType,
+				hasCanonicalMetrics: canonicalMetrics != null,
+				nonNullCanonicalMetricCount: canonicalMetrics
+					? Object.values(canonicalMetrics as Record<string, unknown>).filter((v) => v != null).length
+					: 0,
+			});
+
 			const decodedBytes = buffer.length;
 			const completeness = computeCompleteness(analysis);
 			const prevMeta = (doc.extraction_metadata && typeof doc.extraction_metadata === "object")
@@ -4040,12 +4068,38 @@ registerWorker("reextract_documents", async (job: Job) => {
 				const pageCount = getPageCount(analysis.content, analysis.contentType);
 				await updateDocumentAnalysis({
 					documentId: doc.id,
-					structuredData: analysis.structuredData,
+					structuredData: structuredDataToPersist,
 					extractionMetadata,
 					fullContent: analysis.content,
 					fullText: fullText || undefined,
 					pageCount: pageCount || undefined,
 				});
+
+				if (devLogEnabled) {
+					const pool = getPool();
+					const { rows } = await pool.query<{ cm: unknown }>(
+						"SELECT structured_data #> '{canonical,financials,canonical_metrics}' AS cm FROM documents WHERE id = $1",
+						[doc.id]
+					);
+					devLog("reextract_documents.persist_check", {
+						dealId: doc.deal_id,
+						documentId: doc.id,
+						hasCanonicalMetricsAfterPersist: rows?.[0]?.cm != null,
+					});
+				}
+
+				// Evidence emission (parity with ingest): canonical metrics with pointers.
+				for (const ev of normalized.canonicalEvidence) {
+					await insertEvidence({
+						deal_id: doc.deal_id,
+						document_id: doc.id,
+						source: "extraction",
+						kind: "canonical_metric",
+						text: `${ev.metric_key}: ${ev.value} • ${ev.source_pointer}`,
+						confidence: 0.9,
+					});
+				}
+
 				await updateDocumentStatus(doc.id, "failed");
 				await updateJob(job, "running", `Failed ${doc.title}: ${message}`, progressPct);
 				continue;
@@ -4057,12 +4111,37 @@ registerWorker("reextract_documents", async (job: Job) => {
 			await updateDocumentAnalysis({
 				documentId: doc.id,
 				status: "completed",
-				structuredData: analysis.structuredData,
+				structuredData: structuredDataToPersist,
 				extractionMetadata,
 				fullContent: analysis.content,
 				fullText: fullText || undefined,
 				pageCount: pageCount || undefined,
 			});
+
+			if (devLogEnabled) {
+				const pool = getPool();
+				const { rows } = await pool.query<{ cm: unknown }>(
+					"SELECT structured_data #> '{canonical,financials,canonical_metrics}' AS cm FROM documents WHERE id = $1",
+					[doc.id]
+				);
+				devLog("reextract_documents.persist_check", {
+					dealId: doc.deal_id,
+					documentId: doc.id,
+					hasCanonicalMetricsAfterPersist: rows?.[0]?.cm != null,
+				});
+			}
+
+			// Evidence emission (parity with ingest): canonical metrics with pointers.
+			for (const ev of normalized.canonicalEvidence) {
+				await insertEvidence({
+					deal_id: doc.deal_id,
+					document_id: doc.id,
+					source: "extraction",
+					kind: "canonical_metric",
+					text: `${ev.metric_key}: ${ev.value} • ${ev.source_pointer}`,
+					confidence: 0.9,
+				});
+			}
 
 			// Re-insert evidence for metrics/headings/summary
 			for (const metric of analysis.structuredData.keyMetrics) {

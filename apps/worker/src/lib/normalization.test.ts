@@ -64,6 +64,51 @@ test("normalizeToCanonical maps Excel revenue/expenses/cash and derives burn+run
 	expect(out.canonicalEvidence.some((e) => e.metric_key === "revenue" && e.source_pointer.includes("sheet=P&L"))).toBe(true);
 });
 
+test("normalizeToCanonical prefers TOTAL rows for revenue/expenses over line items", () => {
+	const excelContent: any = {
+		sheets: [
+			{
+				name: "Revenue",
+				headers: ["Line Item", "Month 1", "Month 2"],
+				rows: [
+					{ "Line Item": "Sales 1", "Month 1": 7000, "Month 2": 8000 },
+					{ "Line Item": "Sales 2", "Month 1": 1000, "Month 2": 1500 },
+					{ "Line Item": "Total", "Month 1": 8000, "Month 2": 9500 },
+				],
+			},
+			{
+				name: "Valuation - Allocation of Funds",
+				headers: ["Line Item", "Sep", "Oct"],
+				rows: [
+					{ "Line Item": "Expenses Fixed", Sep: 31000, Oct: 32000 },
+					{ "Line Item": "Expenses Variable", Sep: 2000, Oct: 2500 },
+					{ "Line Item": "Total", Sep: 33000, Oct: 34500 },
+				],
+			},
+		],
+	};
+
+	const out = normalizeToCanonical({
+		contentType: "excel",
+		content: excelContent,
+		structuredData: {
+			keyFinancialMetrics: {},
+			keyMetrics: [],
+			mainHeadings: [],
+			textSummary: "",
+			entities: [],
+		},
+	});
+
+	const m = out.structuredData.canonical.financials.canonical_metrics;
+	// Ensure totals are chosen (Month 2 / Oct as "latest" in each sheet)
+	expect(m.revenue).toBe(9500);
+	expect(m.expenses).toBe(34500);
+	// Ensure we did NOT pick the line items that were previously winning
+	expect(m.revenue).not.toBe(8000);
+	expect(m.expenses).not.toBe(32000);
+});
+
 test("normalizeToCanonical maps canonical financial metrics from a minimal synthetic workbook (xlsx)", () => {
 	// Build a minimal real .xlsx buffer to ensure we exercise the actual Excel extractor.
 	const aoa = [
@@ -149,6 +194,98 @@ test("extractExcelContent detects month time-series tables and normalization can
 	expect(out.canonicalEvidence.some((e) => e.source_pointer.includes("table="))).toBe(true);
 });
 
+test("normalizeToCanonical can extract runway_months directly when present (no cash_balance)", () => {
+	const aoa = [
+		["Line Item", "Value"],
+		["Runway (months)", 12],
+		["Revenue", 100],
+		["Expenses", 130],
+	];
+
+	const wb = XLSX.utils.book_new();
+	const ws = XLSX.utils.aoa_to_sheet(aoa);
+	XLSX.utils.book_append_sheet(wb, ws, "Summary");
+	const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+
+	const extracted = extractExcelContent(buffer);
+	const out = normalizeToCanonical({
+		contentType: "excel",
+		content: extracted as any,
+		structuredData: {
+			keyFinancialMetrics: {},
+			keyMetrics: [],
+			mainHeadings: [],
+			textSummary: "",
+			entities: [],
+		},
+	});
+
+	const m = out.structuredData.canonical.financials.canonical_metrics;
+	expect(m.runway_months).toBe(12);
+	expect(m.cash_balance).toBeNull();
+});
+
+test("normalizeToCanonical emits xlsx_label_inventory_v1 only when XLSX_LABEL_INVENTORY=1 (no numeric values)", () => {
+	const prev = process.env.XLSX_LABEL_INVENTORY;
+	try {
+		const excelContent: any = {
+			sheets: [
+				{
+					name: "P&L",
+					headers: ["Line Item", "2024-02"],
+					rows: [
+						{ "Line Item": "Revenue", "2024-02": 100 },
+						{ "Line Item": "Expenses", "2024-02": 130 },
+						{ "Line Item": "Cash Balance", "2024-02": 520 },
+					],
+				},
+			],
+		};
+
+		process.env.XLSX_LABEL_INVENTORY = "0";
+		const outNo = normalizeToCanonical({
+			contentType: "excel",
+			content: excelContent,
+			structuredData: {
+				keyFinancialMetrics: {},
+				keyMetrics: [],
+				mainHeadings: [],
+				textSummary: "",
+				entities: [],
+			},
+		});
+		expect((outNo.structuredData as any).debug?.xlsx_label_inventory_v1).toBeUndefined();
+
+		process.env.XLSX_LABEL_INVENTORY = "1";
+		const outYes = normalizeToCanonical({
+			contentType: "excel",
+			content: excelContent,
+			structuredData: {
+				keyFinancialMetrics: {},
+				keyMetrics: [],
+				mainHeadings: [],
+				textSummary: "",
+				entities: [],
+			},
+		});
+
+		const inv = (outYes.structuredData as any).debug?.xlsx_label_inventory_v1;
+		expect(inv).toBeTruthy();
+		const asJson = JSON.stringify(inv);
+		// Must not include numeric cell values.
+		expect(asJson).not.toContain("520");
+		expect(asJson).not.toContain("130");
+		expect(asJson).not.toContain("100");
+		// Should include labels.
+		expect(asJson).toContain("Revenue");
+		expect(asJson).toContain("Expenses");
+		expect(asJson).toContain("Cash Balance");
+	} finally {
+		if (prev === undefined) delete process.env.XLSX_LABEL_INVENTORY;
+		else process.env.XLSX_LABEL_INVENTORY = prev;
+	}
+});
+
 test("extractExcelContent normalizes multi-row merged headers (no __EMPTY headers)", () => {
 	const aoa = [
 		["", "Revenue", null, "Expenses", null],
@@ -177,4 +314,41 @@ test("extractExcelContent normalizes multi-row merged headers (no __EMPTY header
 	expect(modelSheet.headers).toContain("Revenue / Feb");
 	expect(modelSheet.headers).toContain("Expenses / Jan");
 	expect(modelSheet.headers).toContain("Expenses / Feb");
+});
+
+test("reextract_documents preserves canonical financials", () => {
+	// Build a minimal real .xlsx buffer to exercise the same extractor + normalization path
+	// that reextract_documents uses after processDocument(...).
+	const aoa = [
+		["Line Item", "2024-01", "2024-02"],
+		["Revenue", 90, 100],
+		["Expenses", 120, 130],
+	];
+
+	const wb = XLSX.utils.book_new();
+	const ws = XLSX.utils.aoa_to_sheet(aoa);
+	XLSX.utils.book_append_sheet(wb, ws, "P&L");
+	const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
+
+	const extracted = extractExcelContent(buffer);
+
+	// Simulate processDocument(...) structuredData shape (no canonical).
+	const out = normalizeToCanonical({
+		contentType: "excel",
+		content: extracted as any,
+		structuredData: {
+			keyFinancialMetrics: {},
+			keyMetrics: [],
+			mainHeadings: [],
+			textSummary: "",
+			entities: [],
+		},
+	});
+
+	const m = out.structuredData.canonical.financials.canonical_metrics;
+	expect(m).toBeTruthy();
+	expect(m.revenue).not.toBeNull();
+	expect(m.expenses).not.toBeNull();
+	expect(m.revenue).toBe(100);
+	expect(m.expenses).toBe(130);
 });

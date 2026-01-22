@@ -7,6 +7,8 @@ import { promisify } from "util";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.js";
 import { createCanvas, ImageData, loadImage } from "@napi-rs/canvas";
 
+import { defaultVisualExtractionEnabled } from "./pipeline-policy";
+
 const execFileAsync = promisify(execFile);
 
 // pdf.js render needs ImageData in the Node runtime
@@ -50,9 +52,9 @@ async function dirExists(fsImpl: Pick<FsLike, "stat">, dir: string): Promise<boo
 }
 
 export function getVisualPageImagePersistConfig(env: NodeJS.ProcessEnv = process.env, opts?: { forceEnable?: boolean }): VisualPageImagePersistConfig {
-	// Default ON so rendered pages are produced even if ENABLE_VISUAL_EXTRACTION is unset.
+	// Default follows pipeline policy (dev on; prod off unless explicitly opted in).
 	const enabledRaw = env.ENABLE_VISUAL_EXTRACTION == null
-		? true
+		? defaultVisualExtractionEnabled(env)
 		: parseBool(env.ENABLE_VISUAL_EXTRACTION);
 	const enabled = opts?.forceEnable ? true : enabledRaw;
 	const persist = opts?.forceEnable

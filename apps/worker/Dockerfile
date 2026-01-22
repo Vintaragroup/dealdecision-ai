@@ -14,11 +14,17 @@ COPY apps/worker .
 COPY --from=deps /app/apps/worker/node_modules ./node_modules
 RUN pnpm run build
 
-FROM node:20-alpine AS runner
+FROM node:20-bookworm-slim AS runner
 WORKDIR /app/apps/worker
+ENV NODE_ENV=production
 ENV PNPM_HOME=/root/.local/share/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable
+
+# Needed for Office document rendering (pptx/docx/xlsx -> pdf) via `soffice`.
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends libreoffice \
+	&& rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/apps/worker/dist ./dist
 COPY apps/worker/package.json ./
 RUN pnpm install --prod --frozen-lockfile=false

@@ -61,8 +61,14 @@ function makeVisualAssetsStatePoolMock() {
 	return { pool, calls, rowsByKey };
 }
 
-test("getVisionExtractorConfig defaults are safe and disabled", () => {
-	const cfg = getVisionExtractorConfig({} as any);
+test("getVisionExtractorConfig defaults are production-safe (disabled)", () => {
+	const cfg = getVisionExtractorConfig({
+		NODE_ENV: "production",
+		// Ensure we're testing the policy default path.
+		PIPELINE_AUTOMATION_MODE: undefined,
+		ENABLE_VISUAL_EXTRACTION: undefined,
+	} as any);
+
 	expect(cfg.enabled).toBe(false);
 	expect(cfg.visionWorkerUrl).toBe("http://localhost:8000");
 	expect(cfg.extractorVersion).toBe("vision_v1");

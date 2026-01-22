@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import path from "path";
 import fs from "fs/promises";
 import { createHash } from "crypto";
+import { defaultVisualExtractionEnabled } from "./pipeline-policy";
 
 export type VisionExtractorConfig = {
 	enabled: boolean;
@@ -266,8 +267,10 @@ function parseIntWithDefault(input: string | undefined, fallback: number): numbe
 let didWarnVisualExtractionDisabled = false;
 
 export function getVisionExtractorConfig(env: NodeJS.ProcessEnv = process.env): VisionExtractorConfig {
+	const enabledRaw = env.ENABLE_VISUAL_EXTRACTION;
+	const enabled = enabledRaw == null ? defaultVisualExtractionEnabled(env) : parseBool(enabledRaw);
 	return {
-		enabled: parseBool(env.ENABLE_VISUAL_EXTRACTION),
+		enabled,
 		visionWorkerUrl: (env.VISION_WORKER_URL || "http://localhost:8000").replace(/\/$/, ""),
 		extractorVersion: env.VISION_EXTRACTOR_VERSION || "vision_v1",
 		timeoutMs: parseIntWithDefault(env.VISION_TIMEOUT_MS, 8000),
@@ -787,6 +790,12 @@ export async function persistVisionResponse(
 		}
 	})();
 
+	const excelVisionEnabled = (() => {
+		const raw = env.ENABLE_EXCEL_VISION_EXTRACTION;
+		if (raw == null) return false;
+		return ["1", "true", "yes", "on"].includes(String(raw).trim().toLowerCase());
+	})();
+
 	for (const asset of response.assets ?? []) {
 		const normalizedAssetImageUri = normalizeImageUriForApi(asset.image_uri ?? null, env) ?? pageImageUriNormalized;
 		const assetBBox = coerceBBox((asset as any)?.bbox);
@@ -836,9 +845,16 @@ export async function persistVisionResponse(
 			(assetQualityFlags as any).original_source = response.extractor_version;
 		}
 
-		// Skip persisting empty page-image artifacts for Excel documents.
+
+		// Excel: OCR/vision on rendered sheet images is disabled by default.
+		// We only persist structured (cell-based) assets unless ENABLE_EXCEL_VISION_EXTRACTION is explicitly turned on.
+		if (isExcelDoc && asset.asset_type === "image_text" && !excelVisionEnabled) {
+			continue;
+		}
+
+		// Skip persisting empty page-image artifacts for Excel documents even when vision is enabled.
 		// These frequently have no OCR/title signal, become segment_key=unknown, and add noise to the graph.
-		if (isExcelDoc && asset.asset_type === "image_text" && !hasAnyTextSignal && (!segmentKey || segmentKey === "unknown")) {
+		if (isExcelDoc && excelVisionEnabled && asset.asset_type === "image_text" && !hasAnyTextSignal && (!segmentKey || segmentKey === "unknown")) {
 			continue;
 		}
 
@@ -3341,16 +3357,36 @@ export async function enqueueExtractVisualsIfPossible(params: {
 	});
 	if (imageUris.length === 0) return false;
 
-	await params.queue.add(
-		"extract_visuals",
-		{
-			document_id: params.documentId,
-			deal_id: params.dealId,
-			extractor_version: params.config.extractorVersion,
-			image_uris: imageUris,
-		},
-		{ removeOnComplete: true, removeOnFail: false, delay: 750 }
-	);
+	try {
+		await params.queue.add(
+			"extract_visuals",
+			{
+				document_id: params.documentId,
+				deal_id: params.dealId,
+				extractor_version: params.config.extractorVersion,
+				image_uris: imageUris,
+			},
+			{
+				jobId: `extract_visuals:${params.documentId}`,
+				removeOnComplete: true,
+				removeOnFail: false,
+				delay: 750,
+			}
+		);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		if (msg.toLowerCase().includes("exists")) {
+			logger.log(
+				JSON.stringify({
+					event: "extract_visuals_already_enqueued",
+					document_id: params.documentId,
+					pages: imageUris.length,
+				})
+			);
+			return true;
+		}
+		throw err;
+	}
 	logger.log(
 		JSON.stringify({
 			event: "extract_visuals_enqueued",

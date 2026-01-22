@@ -57,6 +57,8 @@ import { normalizeToCanonical } from "./lib/normalization";
 import { processDocument } from "./lib/processors";
 import { verifyDocumentExtraction } from "./lib/verification";
 import { remediateStructuredData } from "./lib/remediation";
+import { persistPdfV2TextRegionAssetsV1Shadow } from "./lib/pdf_v2/pdf-text-region-assets-v1";
+import { persistPdfPageUnderstandingV1Shadow } from "./lib/pdf_v2/page-understanding-v1";
 import { parseIngestDocumentsJobData, validateIngestDocumentsPayload } from "./lib/ingest/ingest-payload";
 import { buildPhase1DealOverviewV2, buildPhase1DealUnderstandingV1, buildPhase1UpdateReportV1 } from "./lib/phase1/dealOverviewV2";
 import { computeVisualQualityAuditForDeal } from "./lib/visual-quality-audit";
@@ -1307,14 +1309,27 @@ async function ingestDocumentProcessor(job: Job) {
 
 			// Queue verification job for this document
 			const verifyQueue = getQueue("verify_documents");
-			await verifyQueue.add(
-				"verify_documents",
-				{
-					deal_id: dealIdSafe,
-					document_ids: [docId],
-				},
-				{ removeOnComplete: true, removeOnFail: false, delay: 500 } // Small delay to ensure extraction is fully written
-			);
+			try {
+				await verifyQueue.add(
+					"verify_documents",
+					{
+						deal_id: dealIdSafe,
+						document_ids: [docId],
+					},
+					{
+						jobId: `verify_documents:${docId}`,
+						removeOnComplete: true,
+						removeOnFail: false,
+						delay: 500,
+					}
+				);
+			} catch (err) {
+				// Best-effort dedupe: if a job with this ID already exists, treat as already enqueued.
+				const msg = err instanceof Error ? err.message : String(err);
+				if (!msg.toLowerCase().includes("job") || !msg.toLowerCase().includes("exists")) {
+					console.warn(`[ingest_document] verify_documents enqueue failed doc=${docId}: ${msg}`);
+				}
+			}
 
 			// Optional: queue visual extraction (best-effort, never blocks ingestion)
 			const visionCfg = getVisionExtractorConfig();
@@ -1769,6 +1784,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 	let docsRenderedViaPdf = 0;
 	let docsRenderedViaLibreoffice = 0;
 	let docsSyntheticAssetsUsed = 0;
+	let docsPdfTextRegionAssetsUsed = 0;
 	let docsExcelSkippedVision = 0;
 	let docsExcelPyAssetsUsed = 0;
 	let imageUrisBackfilled = 0;
@@ -1784,6 +1800,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 
 
 		let docMeta: {
+			deal_id?: string | null;
 			type?: string | null;
 			extraction_metadata?: unknown;
 			structured_data?: unknown;
@@ -1793,7 +1810,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 		} | null = null;
 		try {
 			const { rows } = await pool.query(
-				"SELECT type, title, extraction_metadata, structured_data, full_content, page_count FROM documents WHERE id = $1 LIMIT 1",
+				"SELECT deal_id, type, title, extraction_metadata, structured_data, full_content, page_count FROM documents WHERE id = $1 LIMIT 1",
 				[sanitizeText(docId)]
 			);
 			docMeta = rows?.[0] ?? null;
@@ -1824,6 +1841,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 		const docKind = deduceDocKind({ extraction_metadata: docMeta?.extraction_metadata, type: docMeta?.type ?? null });
 		const docPageCount = typeof docMeta?.page_count === "number" && Number.isFinite(docMeta.page_count) ? docMeta.page_count : null;
 		let syntheticPersisted = 0;
+		let pdfTextRegionPersisted = 0;
 		// Always persist structured synthetic assets for Office docs when available.
 		// These are complementary to vision/OCR page assets and keep lineage/scoring grounded in text.
 		const pyExcelEnabled = (() => {
@@ -1850,6 +1868,54 @@ registerWorker("extract_visuals", async (job: Job) => {
 			} catch (err) {
 				console.warn(
 					`[extract_visuals] persistSyntheticVisualAssets failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+				);
+			}
+		}
+
+		// PDF-only synthetic assets: stable text region nodes built from pdf_v2 slide-understanding regions.
+		// Shadow-only in this PR: persists assets for future lineage/scoring adoption without changing analyzers.
+		if (docKind === "pdf") {
+			try {
+				pdfTextRegionPersisted = await persistPdfV2TextRegionAssetsV1Shadow({
+					pool,
+					documentId: docId,
+					dealId: dealId ?? (typeof docMeta?.deal_id === "string" ? docMeta.deal_id : null),
+					fullContent: docMeta?.full_content ?? {},
+					env: process.env,
+				});
+				if (pdfTextRegionPersisted > 0) {
+					docsPdfTextRegionAssetsUsed += 1;
+					persisted += pdfTextRegionPersisted;
+				}
+			} catch (err) {
+				console.warn(
+					`[extract_visuals] pdf text region assets failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+				);
+			}
+
+			// PDF-only canonical per-page understanding snapshot (shadow-first).
+			// Additive: persists to document_page_understanding; does not change scoring/title/segment behavior.
+			try {
+				const res = await persistPdfPageUnderstandingV1Shadow({
+					pool,
+					documentId: docId,
+					dealId: dealId ?? (typeof docMeta?.deal_id === "string" ? docMeta.deal_id : null),
+					fullContent: docMeta?.full_content ?? {},
+					env: process.env,
+				});
+				if (res.persisted_pages > 0) {
+					console.log(
+						JSON.stringify({
+							event: "PDF_PAGE_UNDERSTANDING_PERSISTED",
+							document_id: docId,
+							persisted_pages: res.persisted_pages,
+							attempted_pages: res.attempted_pages,
+						})
+					);
+				}
+			} catch (err) {
+				console.warn(
+					`[extract_visuals] pdf page understanding failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
 				);
 			}
 		}
@@ -2133,7 +2199,11 @@ registerWorker("extract_visuals", async (job: Job) => {
 									  JOIN visual_extractions ve ON ve.visual_asset_id = va.id
 									 WHERE va.document_id = $1
 									   AND ve.extractor_version = $2
-									   AND ve.structured_json->>'kind' = 'excel_range'
+									   AND (
+											(ve.structured_json->>'kind') LIKE 'excel_%'
+											OR (ve.structured_json->>'kind') = 'table'
+											OR (ve.structured_json->>'kind') = 'excel_range'
+									   )
 									 LIMIT 1
 							`,
 							[sanitizeText(docId), sanitizeText(process.env.EXCEL_PY_EXTRACTOR_VERSION || "excel_py_v1")]
@@ -2144,7 +2214,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 								JSON.stringify({
 									event: "EXCEL_SKIP_VISION_EXTRACTION",
 									document_id: docId,
-										reason: "excel_py_range_assets_already_present",
+									reason: "excel_py_assets_already_present",
 								})
 							);
 							continue;
@@ -2335,6 +2405,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 		docs_rendered_via_pdf: docsRenderedViaPdf,
 		docs_rendered_via_libreoffice: docsRenderedViaLibreoffice,
 		docs_synthetic_assets_used: docsSyntheticAssetsUsed,
+		docs_pdf_text_region_assets_used: docsPdfTextRegionAssetsUsed,
 		docs_excel_skipped_vision: docsExcelSkippedVision,
 		docs_excel_py_assets_used: docsExcelPyAssetsUsed,
 		image_uri_backfilled: imageUrisBackfilled,
@@ -2881,6 +2952,138 @@ registerWorker("analyze_deal", async (job: Job) => {
 			return { ok: false };
 		}
 
+		// Phase 1 needs *semantic* text coverage. For pitch decks, important signals (raise amount, ICP, product)
+		// are often present only in slide OCR stored in `visual_extractions.ocr_text`.
+		// Enrich Phase 1 inputs with a capped concatenation of per-page OCR to avoid "missing" summaries.
+		const looksLikePitchDeckContent = (value: unknown): boolean => {
+			if (!value || typeof value !== "object") return false;
+			const pages = (value as any).pages;
+			if (!Array.isArray(pages) || pages.length === 0) return false;
+			const p0 = pages[0];
+			if (!p0 || typeof p0 !== "object") return true;
+			// Evidence of slide/pitch-deck extraction shapes.
+			if (Array.isArray((p0 as any).words)) return true;
+			if ((p0 as any).understanding_v1 || (p0 as any).understandingV1) return true;
+			return true;
+		};
+		const inferAnalysisDocType = (doc: any): string => {
+			if (doc?.type === "pitch_deck") return "pitch_deck";
+			const structured = (doc?.structured_data && typeof doc.structured_data === "object")
+				? (doc.structured_data as Record<string, unknown>)
+				: {};
+			const fromDb = looksLikePitchDeckContent(doc?.full_content);
+			const fromStructured = looksLikePitchDeckContent((structured as any).full_content);
+			return (fromDb || fromStructured) ? "pitch_deck" : (typeof doc?.type === "string" ? doc.type : "other");
+		};
+
+		const allowAppendVisualOcr = process.env.PHASE1_APPEND_VISUAL_OCR !== "0";
+		const visualOcrByDocumentId = new Map<string, string>();
+		if (allowAppendVisualOcr) {
+			try {
+				const pool = getPool();
+				const tablesOk = (await hasTable(pool, "visual_assets")) && (await hasTable(pool, "visual_extractions"));
+				if (tablesOk) {
+					const pitchDeckIds = eligible
+						.filter((d) => inferAnalysisDocType(d) === "pitch_deck")
+						.map((d) => String(d.id))
+						.filter((id) => id.trim().length > 0);
+					if (pitchDeckIds.length > 0) {
+						const { rows: ocrRows } = await pool.query<{ document_id: string; page_index: number; ocr_text: string }>(
+							`
+								SELECT va.document_id, va.page_index, ve.ocr_text
+								  FROM visual_assets va
+								  JOIN visual_extractions ve ON ve.visual_asset_id = va.id
+								 WHERE va.document_id = ANY($1::uuid[])
+								   AND ve.ocr_text IS NOT NULL
+								   AND length(ve.ocr_text) > 0
+								 ORDER BY va.document_id, va.page_index
+							`,
+							[pitchDeckIds]
+						);
+
+						const partsByDoc = new Map<string, string[]>();
+						for (const r of ocrRows) {
+							const docId = typeof r.document_id === "string" ? r.document_id : "";
+							if (!docId) continue;
+							const txt = typeof r.ocr_text === "string" ? r.ocr_text : "";
+							if (!txt.trim()) continue;
+							const arr = partsByDoc.get(docId) ?? [];
+							// Keep deterministic ordering and add a lightweight page marker.
+							arr.push(`\n\n[page ${Number(r.page_index ?? 0) + 1}]\n${txt}`);
+							partsByDoc.set(docId, arr);
+						}
+
+						for (const [docId, parts] of partsByDoc.entries()) {
+							const joined = parts.join("\n");
+							// Cap to keep Phase 1 deterministic and avoid ballooning payloads.
+							visualOcrByDocumentId.set(docId, joined.slice(0, 80_000));
+						}
+					}
+				}
+			} catch (err) {
+				console.warn(
+					JSON.stringify({
+						event: "phase1_visual_ocr_append_failed",
+						deal_id: dealId,
+						reason: err instanceof Error ? err.message : String(err),
+					})
+				);
+			}
+		}
+
+		const extractTextAppendFromFullContent = (fullContent: unknown): string => {
+			let fc: any = fullContent;
+			if (typeof fc === "string") {
+				try {
+					fc = JSON.parse(fc);
+				} catch {
+					return "";
+				}
+			}
+			if (!fc || typeof fc !== "object") return "";
+
+			const out: string[] = [];
+			const pushText = (t: unknown) => {
+				if (typeof t !== "string") return;
+				const s = t.trim();
+				if (!s) return;
+				out.push(s);
+			};
+
+			const readUnderstanding = (u: any) => {
+				if (!u || typeof u !== "object") return;
+				pushText(u.text);
+				const regions = Array.isArray(u.regions) ? u.regions : [];
+				for (const r of regions) {
+					if (!r || typeof r !== "object") continue;
+					// Common shapes: {text}, {lines:[{text}]}, {tokens:[{text}]}
+					pushText(r.text);
+					if (Array.isArray(r.lines)) {
+						for (const ln of r.lines) pushText(ln?.text);
+					}
+					if (Array.isArray(r.tokens)) {
+						for (const tk of r.tokens) pushText(tk?.text);
+					}
+				}
+			};
+
+			const readPages = (pages: any[]) => {
+				for (const p of pages) {
+					if (!p || typeof p !== "object") continue;
+					readUnderstanding(p.understanding_v1);
+					readUnderstanding(p.understandingV1);
+				}
+			};
+
+			if (Array.isArray(fc.pages)) readPages(fc.pages);
+			if (fc.pdf_v2 && Array.isArray(fc.pdf_v2.pages)) readPages(fc.pdf_v2.pages);
+			if (fc.understanding_v1) readUnderstanding(fc.understanding_v1);
+			if (fc.understandingV1) readUnderstanding(fc.understandingV1);
+
+			// Cap aggressively: this is an append-only hint stream.
+			return out.join("\n").slice(0, 80_000);
+		};
+
 		// Build two document arrays:
 		// A) `phase1Documents`: Phase 1 deterministic builders may use minimal pitch-deck layout tokens
 		// B) `documentsForAnalyzers`: downstream analyzers remain canonical-only (no `full_content`)
@@ -2896,9 +3099,10 @@ registerWorker("analyze_deal", async (job: Job) => {
 			const structured = (doc.structured_data && typeof doc.structured_data === "object")
 				? (doc.structured_data as Record<string, unknown>)
 				: {};
+			const analysisType = inferAnalysisDocType({ ...doc, structured_data: structured });
 
 			let minimalFullContent: unknown | undefined = undefined;
-			if (doc.type === "pitch_deck") {
+			if (analysisType === "pitch_deck") {
 				const fromDb = pickPages(doc.full_content);
 				const fromStructured = pickPages((structured as any).full_content);
 				const pages = fromDb ?? fromStructured;
@@ -2912,11 +3116,25 @@ registerWorker("analyze_deal", async (job: Job) => {
 				}
 			}
 
+			const baseFullText = typeof doc.full_text === "string" ? doc.full_text : "";
+			const contentAppend = [
+				extractTextAppendFromFullContent(doc.full_content),
+				extractTextAppendFromFullContent((structured as any).full_content),
+			]
+				.filter((s) => typeof s === "string" && s.trim().length > 0)
+				.join("\n\n");
+			const ocrAppend = visualOcrByDocumentId.get(String(doc.id)) ?? "";
+			const enrichedFullText = (
+				baseFullText +
+				(contentAppend ? `\n\n${contentAppend}` : "") +
+				(ocrAppend ? `\n\n${ocrAppend}` : "")
+			).slice(0, 120_000);
+
 			return {
 				document_id: doc.id,
 				title: doc.title,
-				type: doc.type,
-				full_text: typeof doc.full_text === "string" ? doc.full_text : null,
+				type: analysisType,
+				full_text: enrichedFullText.trim() ? enrichedFullText : null,
 				...(minimalFullContent ? { full_content: minimalFullContent } : {}),
 			};
 		});
@@ -2925,6 +3143,7 @@ registerWorker("analyze_deal", async (job: Job) => {
 			const structured = (doc.structured_data && typeof doc.structured_data === "object")
 				? (doc.structured_data as Record<string, unknown>)
 				: {};
+			const analysisType = inferAnalysisDocType({ ...doc, structured_data: structured });
 			const canonical = (structured as any)?.canonical && typeof (structured as any).canonical === "object"
 				? (structured as any).canonical
 				: undefined;
@@ -2936,10 +3155,24 @@ registerWorker("analyze_deal", async (job: Job) => {
 				.sort(([a], [b]) => a.localeCompare(b))
 				.map(([k, v]) => ({ key: k, value: v, source: "canonical" }));
 
+			const baseFullText = typeof doc.full_text === "string" ? doc.full_text : "";
+			const contentAppend = [
+				extractTextAppendFromFullContent(doc.full_content),
+				extractTextAppendFromFullContent((structured as any).full_content),
+			]
+				.filter((s) => typeof s === "string" && s.trim().length > 0)
+				.join("\n\n");
+			const ocrAppend = visualOcrByDocumentId.get(String(doc.id)) ?? "";
+			const enrichedFullText = (
+				baseFullText +
+				(contentAppend ? `\n\n${contentAppend}` : "") +
+				(ocrAppend ? `\n\n${ocrAppend}` : "")
+			).slice(0, 120_000);
+
 			return {
 				document_id: doc.id,
 				title: doc.title,
-				type: doc.type,
+				type: analysisType,
 				page_count: doc.page_count ?? undefined,
 				verification_status: doc.verification_status ?? null,
 				verification_result: doc.verification_result ?? null,
@@ -2953,7 +3186,7 @@ registerWorker("analyze_deal", async (job: Job) => {
 				keyMetrics: canonicalKeyMetrics,
 				mainHeadings: [],
 				textSummary: "",
-				full_text: typeof doc.full_text === "string" ? doc.full_text : undefined,
+				full_text: enrichedFullText.trim() ? enrichedFullText : undefined,
 				full_text_absent_reason: typeof doc.full_text_absent_reason === "string" ? doc.full_text_absent_reason : undefined,
 			};
 		});

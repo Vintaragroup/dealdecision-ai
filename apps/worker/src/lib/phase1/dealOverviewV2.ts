@@ -1460,9 +1460,9 @@ export function buildPhase1DealOverviewV2(input: { documents: OverviewDocumentIn
 
 	if (primary && primary.pages.length > 0) {
 		const docId = primary.d.document_id;
-		const firstPagesText = primary.pages.slice(0, 8).map((p) => p.text).join('\n');
-		const productCandidates = collectCandidatesFromPages({ docId, pages: primary.pages, maxPages: 8, mode: 'product' });
-		const marketCandidates = collectCandidatesFromPages({ docId, pages: primary.pages, maxPages: 8, mode: 'market' });
+		const firstPagesText = primary.pages.slice(0, 20).map((p) => p.text).join('\n');
+		const productCandidates = collectCandidatesFromPages({ docId, pages: primary.pages, maxPages: 20, mode: 'product' });
+		const marketCandidates = collectCandidatesFromPages({ docId, pages: primary.pages, maxPages: 20, mode: 'market' });
 
 		const bestProduct = pickBestCandidate(productCandidates);
 		if (bestProduct) {
@@ -1508,11 +1508,16 @@ export function buildPhase1DealOverviewV2(input: { documents: OverviewDocumentIn
 		const raiseLine = findFirstLineMatchWithPage({
 			docId,
 			pages: primary.pages,
-			maxPages: 10,
+			maxPages: 30,
 			re: /\b(raising|raise|seeking|funding|the\s+ask)\b|\$\s?\d[\d,]*(?:\.\d+)?\s*(?:k|m|b|mm|bn|million|billion)?\b/i,
 			note: 'raise signal (page line)',
 		});
-		raise = (raiseLine?.value ? detectRaiseFromText(raiseLine.value) : null) ?? detectRaiseFromText(firstPagesText) ?? undefined;
+		const allPagesTextForRaise = primary.pages.map((p) => p.text).join('\n').slice(0, 120_000);
+		raise =
+			(raiseLine?.value ? detectRaiseFromText(raiseLine.value) : null)
+			?? detectRaiseFromText(firstPagesText)
+			?? detectRaiseFromText(allPagesTextForRaise)
+			?? undefined;
 		if (raise && raiseLine?.source) pushSource(raiseLine.source);
 
 		const bmLine = findFirstLineMatchWithPage({
@@ -1716,7 +1721,7 @@ export function buildPhase1DealUnderstandingV1(input: {
 
 	if (primary && primary.pages.length > 0) {
 		const docId = primary.d.document_id;
-		const firstPagesText = primary.pages.slice(0, 10).map((p) => p.text).join('\n');
+		const firstPagesText = primary.pages.slice(0, 20).map((p) => p.text).join('\n');
 		const slideTitleByPage = new Map<number, string>();
 		for (const p of primary.pages) {
 			if (p.slideTitle) slideTitleByPage.set(p.page, p.slideTitle);
@@ -1954,11 +1959,16 @@ export function buildPhase1DealUnderstandingV1(input: {
 		const raiseLine = findFirstLineMatchWithPage({
 			docId,
 			pages: primary.pages,
-			maxPages: 10,
+			maxPages: 30,
 			re: /\b(raising|raise|seeking|funding|the\s+ask)\b|\$\s?\d[\d,]*(?:\.\d+)?\s*(?:k|m|b|mm|bn|million|billion)?\b/i,
 			note: 'raise signal (page line)',
 		});
-		raise = (raiseLine?.value ? detectRaiseFromText(raiseLine.value) : null) ?? detectRaiseFromText(firstPagesText) ?? undefined;
+		const allPagesTextForRaise = primary.pages.map((p) => p.text).join('\n').slice(0, 120_000);
+		raise =
+			(raiseLine?.value ? detectRaiseFromText(raiseLine.value) : null)
+			?? detectRaiseFromText(firstPagesText)
+			?? detectRaiseFromText(allPagesTextForRaise)
+			?? undefined;
 		if (raise) {
 			confidence.raise = 'medium';
 			sources.raise = [

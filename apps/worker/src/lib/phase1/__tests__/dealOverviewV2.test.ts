@@ -33,6 +33,14 @@ describe('buildPhase1DealOverviewV2 (product_solution / market_icp extraction)',
 		expect(out.deal_type).toBe('startup_raise');
 	});
 
+	it('detects raise signal beyond first 10 pages', () => {
+		const pages = Array.from({ length: 25 }, (_, i) => ({ text: i === 17 ? 'We are raising $10M to expand nationwide.' : `Slide ${i + 1}` }));
+		const docs: OverviewDocumentInput[] = [docWithPages('doc-late-raise', pages, 'Late Raise Deck')];
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		expect(out.raise ?? '').toMatch(/\$\s?10\s*m/i);
+		expect(out.deal_type).toBe('startup_raise');
+	});
+
 	it('accepts ALL-CAPS tagline if it matches verb pattern', () => {
 		const docs: OverviewDocumentInput[] = [
 			docWithPages('doc1', [

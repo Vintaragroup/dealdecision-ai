@@ -492,6 +492,222 @@ export interface PDFContent {
     textItems: number;
     ocrUsed?: boolean;
   };
+
+  // PDF Extraction v2 (shadow mode) artifacts. Additive only.
+  // Kept optional to preserve v1 callers and downstream contracts.
+  pdf_v2?: unknown;
+}
+
+// Exported for PDF v2 OCR fallback reuse.
+// V2 will call this only for pages that are classified as scanned or have insufficient native text.
+export async function ocrPdfPageV1(
+  page: pdfjs.PDFPageProxy,
+  pageNumber: number,
+  captureDebug = false
+): Promise<
+  OCRResult & {
+    rawPng?: Buffer;
+    prePng?: Buffer;
+    regions?: Region[];
+    scale: number;
+    provider: "tesseract";
+    imageWidth: number;
+    imageHeight: number;
+    skippedRegions: number;
+  }
+> {
+  return ocrPage(page, pageNumber, captureDebug);
+}
+
+export type OcrV2Block = {
+  text: string;
+  bbox: { x: number; y: number; w: number; h: number };
+  bbox_units: "pixels";
+  confidence: number; // 0..1
+};
+
+export type OcrV2Result = {
+  provider: "tesseract";
+  version: "ocr_v2";
+  text: string;
+  blocks: OcrV2Block[];
+  avg_confidence: number; // 0..1
+  bbox_units: "pixels";
+  preproc: { mode: "basic"; contrast: number; threshold: number };
+  scale: number;
+  imageWidth: number;
+  imageHeight: number;
+  regions: Array<{ x: number; y: number; w: number; h: number }>;
+  skippedRegions: number;
+  usedFullPageFallback: boolean;
+};
+
+// OCR v2: deterministic region selection + deterministic reading order + line/word blocks.
+// Used by PDF v2 shadow artifacts only (additive under pdf_v2.pages[i].ocr_v2).
+export async function ocrPdfPageV2(
+  page: pdfjs.PDFPageProxy,
+  pageNumber: number,
+  captureDebug = false
+): Promise<OcrV2Result> {
+  const scale = computeOcrScale(page);
+  const { canvas, imageData } = await renderPageToCanvas(page, scale, "basic", captureDebug);
+
+  const regions = detectTextRegions(imageData, canvas.width, canvas.height);
+  const selected = selectRegionsForOcrV2(regions);
+
+  const blocks: OcrV2Block[] = [];
+  const textParts: string[] = [];
+  let skippedRegions = 0;
+  let usedFullPageFallback = false;
+
+  const pushBlocks = (newBlocks: OcrV2Block[]) => {
+    for (const b of newBlocks) {
+      const t = (b.text || "").replace(/\s+/g, " ").trim();
+      if (!t) continue;
+      blocks.push({ ...b, text: t });
+      textParts.push(t);
+    }
+  };
+
+  const ocrPng = async (png: Buffer, label: string) => {
+    const { data } = await withTimeout(
+      withSilencedTesseractNoise(() => Tesseract.recognize(png, "eng", { logger: () => {} })),
+      label,
+      OCR_TIMEOUT_MS
+    );
+    return data;
+  };
+
+  const blocksFromTesseract = (data: any, offsetX = 0, offsetY = 0): OcrV2Block[] => {
+  const minConf = 25;
+    const out: OcrV2Block[] = [];
+    const lines = Array.isArray(data?.lines) ? data.lines : [];
+    if (lines.length) {
+      for (const l of lines) {
+        const text = (l?.text || "").trim();
+        const conf = normalizeConfidence(l?.confidence ?? l?.conf ?? 0);
+        const bbox = l?.bbox;
+        if (!text) continue;
+        if (conf < minConf) continue;
+        const x0 = Number(bbox?.x0 ?? 0) + offsetX;
+        const y0 = Number(bbox?.y0 ?? 0) + offsetY;
+        const x1 = Number(bbox?.x1 ?? 0) + offsetX;
+        const y1 = Number(bbox?.y1 ?? 0) + offsetY;
+        const w = Math.max(0, x1 - x0);
+        const h = Math.max(0, y1 - y0);
+        if (w <= 0 || h <= 0) continue;
+        out.push({
+          text,
+          bbox: { x: x0, y: y0, w, h },
+          bbox_units: "pixels",
+          confidence: Math.max(0, Math.min(1, conf / 100)),
+        });
+      }
+    } else {
+      const words = Array.isArray(data?.words) ? data.words : [];
+      for (const w of words) {
+        const text = (w?.text || "").trim();
+        const conf = normalizeConfidence(w?.confidence ?? w?.conf ?? 0);
+        const bbox = w?.bbox;
+        if (!text) continue;
+        if (conf < minConf) continue;
+        const x0 = Number(bbox?.x0 ?? 0) + offsetX;
+        const y0 = Number(bbox?.y0 ?? 0) + offsetY;
+        const x1 = Number(bbox?.x1 ?? 0) + offsetX;
+        const y1 = Number(bbox?.y1 ?? 0) + offsetY;
+        const ww = Math.max(0, x1 - x0);
+        const hh = Math.max(0, y1 - y0);
+        if (ww <= 0 || hh <= 0) continue;
+        out.push({
+          text,
+          bbox: { x: x0, y: y0, w: ww, h: hh },
+          bbox_units: "pixels",
+          confidence: Math.max(0, Math.min(1, conf / 100)),
+        });
+      }
+    }
+
+    // Deterministic reading order for blocks.
+    out.sort((a, b) => {
+      const yDiff = a.bbox.y - b.bbox.y;
+      if (Math.abs(yDiff) > 2) return yDiff;
+      return a.bbox.x - b.bbox.x;
+    });
+
+    return out;
+  };
+
+  if (selected.length === 0) {
+    const fullPng = canvas.toBuffer("image/png");
+    const data = await ocrPng(fullPng, `ocr_v2 page ${pageNumber}`);
+    pushBlocks(blocksFromTesseract(data, 0, 0));
+  } else {
+    // 1) Region OCR pass
+    for (const region of selected) {
+      if (region.w < 60 || region.h < 25) {
+        skippedRegions++;
+        continue;
+      }
+      if (region.w / Math.max(1, region.h) > 25 && region.y >= canvas.height * 0.25) {
+        skippedRegions++;
+        continue;
+      }
+      const crop = createCanvas(region.w, region.h);
+      const ctx = crop.getContext("2d");
+      ctx.drawImage(canvas, region.x, region.y, region.w, region.h, 0, 0, region.w, region.h);
+      const png = crop.toBuffer("image/png");
+      const data = await ocrPng(png, `ocr_v2 page ${pageNumber} region`);
+      pushBlocks(blocksFromTesseract(data, region.x, region.y));
+    }
+
+    // 2) Full-page OCR pass (maximization): for scanned/hybrid pages, region OCR can miss text.
+    // We run full-page OCR once and deterministically pick the better result.
+    const regionText = textParts.join(" ").replace(/\s+/g, " ").trim();
+    const fullPng = canvas.toBuffer("image/png");
+    const fullData = await ocrPng(fullPng, `ocr_v2 page ${pageNumber} full`);
+    const fullBlocks = blocksFromTesseract(fullData, 0, 0);
+    const fullText = fullBlocks.map((b) => b.text).join(" ").replace(/\s+/g, " ").trim();
+
+    // Choose full-page OCR if it yields materially more text.
+    if (fullText.length > regionText.length + 40) {
+      usedFullPageFallback = true;
+      blocks.length = 0;
+      textParts.length = 0;
+      pushBlocks(fullBlocks);
+    }
+  }
+
+  const confs = blocks.map((b) => b.confidence).filter((n) => Number.isFinite(n));
+  const avg_confidence = confs.length ? Math.max(0, Math.min(1, confs.reduce((a, b) => a + b, 0) / confs.length)) : 0;
+
+  return {
+    provider: "tesseract",
+    version: "ocr_v2",
+    text: textParts.join(" ").replace(/\s+/g, " ").trim(),
+    blocks,
+    avg_confidence,
+    bbox_units: "pixels",
+    preproc: { mode: "basic", contrast: OCR_CONTRAST, threshold: OCR_THRESHOLD },
+    scale,
+    imageWidth: canvas.width,
+    imageHeight: canvas.height,
+    regions: selected.map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h })),
+    skippedRegions,
+    usedFullPageFallback,
+  };
+}
+
+function selectRegionsForOcrV2(regions: Array<{ x: number; y: number; w: number; h: number }>): Array<{ x: number; y: number; w: number; h: number }> {
+  if (!Array.isArray(regions) || regions.length === 0) return [];
+  const topByArea = [...regions]
+    .sort((a, b) => b.w * b.h - a.w * a.h)
+    .slice(0, 12);
+  // Deterministic reading order: top-to-bottom, left-to-right.
+  return topByArea.sort((a, b) => {
+    const yDiff = a.y - b.y;
+    if (Math.abs(yDiff) > 2) return yDiff;
+    return a.x - b.x;
+  });
 }
 
 type PreprocessMode = "none" | "basic";

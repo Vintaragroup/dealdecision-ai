@@ -3,7 +3,7 @@ import { RiskAssessmentEngine } from "../../analyzers/risk-assessment";
 import { buildScoreExplanationFromDIO, buildScoringDiagnosticsFromDIO } from "../score-explanation";
 
 describe("real_estate_underwriting gold standard (CROSS Dev)", () => {
-  it("scores >= 75 with no red flags and strong metric benchmark", async () => {
+  it("scores >= 70 with no red flags; metric_benchmark is strong but diagnostic-only in v2", async () => {
     const now = new Date().toISOString();
 
     const metricBenchmark = new MetricBenchmarkValidator();
@@ -129,7 +129,10 @@ describe("real_estate_underwriting gold standard (CROSS Dev)", () => {
 
     expect(explanation.aggregation.policy_id).toBe("real_estate_underwriting");
     expect(explanation.totals.overall_score).not.toBeNull();
-    expect(explanation.totals.overall_score as number).toBeGreaterThanOrEqual(75);
+    // v2 decision score excludes metric_benchmark; it must not be a driver of overall_score.
+    expect(explanation.aggregation.weights.metric_benchmark).toBe(0);
+    expect(explanation.components.metric_benchmark.weighted_contribution).toBe(0);
+    expect(explanation.totals.overall_score as number).toBeGreaterThanOrEqual(70);
 
     expect(diagnostics.buckets.red_flags.length).toBe(0);
 

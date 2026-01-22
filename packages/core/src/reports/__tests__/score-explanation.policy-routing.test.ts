@@ -77,6 +77,7 @@ describe("score_explanation policy routing", () => {
 
     // v2 effective aggregation forces metric_benchmark to 0 (diagnostic-only), even when a policy assigns it weight.
     expect(explanation.aggregation.weights.metric_benchmark).toBe(0);
+    expect(explanation.components.metric_benchmark.weighted_contribution).toBe(0);
     expect(explanation.aggregation.weights.slide_sequence).toBe(0);
     expect(explanation.aggregation.weights.narrative_arc).toBe(0);
     expect(explanation.aggregation.weights.financial_health).toBe(0);
@@ -89,6 +90,7 @@ describe("score_explanation policy routing", () => {
 
     const explanation = buildScoreExplanationFromDIO(dio);
     expect(explanation.aggregation.weights.metric_benchmark).toBe(0);
+    expect(explanation.components.metric_benchmark.weighted_contribution).toBe(0);
     expect(explanation.aggregation.weights.narrative_arc).toBe(0);
     expect(explanation.aggregation.policy_id).toBeNull();
   });

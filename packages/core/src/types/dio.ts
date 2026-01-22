@@ -592,6 +592,30 @@ export const FinancialHealthResultSchema = z.object({
   runway_months: z.number().nullable(),
   burn_multiple: z.number().nullable(),
   health_score: z.number().min(0).max(100).nullable(),
+
+  // Additive: deterministic explanation flags (no scoring math impact)
+  explanation_flags: z
+    .object({
+      reason_code: z.string().min(1).optional(),
+      missing_cash_runway_inputs: z.boolean().optional(),
+      implied_runway_not_accepted: z.boolean().optional(),
+      follow_up_diligence_required: z.boolean().optional(),
+      has_revenue_or_burn: z.boolean().optional(),
+    })
+    .optional(),
+
+  // Additive: user-facing diligence disclosures (no scoring math impact)
+  disclosures: z.array(z.string().min(1)).optional(),
+
+  // Additive: structured disclosures (code + message) for UI and downstream contracts.
+  disclosures_v1: z
+    .array(
+      z.object({
+        code: z.string().min(1),
+        message: z.string().min(1),
+      })
+    )
+    .optional(),
   
   metrics: z.object({
     revenue: z.number().nullable(),

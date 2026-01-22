@@ -20,6 +20,10 @@ describe("Scoring contract v2", () => {
   });
 
   it("decision keys equal fundamentals", () => {
-    expect([...DECISION_SCORE_COMPONENT_KEYS_V2]).toEqual([...FUNDAMENTALS_COMPONENT_KEYS_V2]);
+    expect([...DECISION_SCORE_COMPONENT_KEYS_V2]).toEqual(["financial_health", "risk_assessment"]);
+    // Decision score keys must be a subset of fundamentals keys.
+    for (const k of DECISION_SCORE_COMPONENT_KEYS_V2) {
+      expect([...FUNDAMENTALS_COMPONENT_KEYS_V2]).toContain(k);
+    }
   });
 });

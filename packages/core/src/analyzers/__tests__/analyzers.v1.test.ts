@@ -352,6 +352,53 @@ describe("FinancialHealthCalculator", () => {
     expect(result.health_score).not.toBeNull();
   });
 
+  test("does not compute runway or emit runway risk when burn_rate is non-positive (net cashflow positive/neutral)", async () => {
+    const result = await financialHealthCalculator.analyze({
+      revenue: 9_056_207.07,
+      expenses: 828_075.3756,
+      burn_rate: -8_228_131.6944,
+      cash_balance: 9_688.05,
+      evidence_ids: [EVIDENCE_ID],
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.metrics.burn_rate).toBeLessThanOrEqual(0);
+    expect(result.runway_months).toBeNull();
+
+    // No runway risk should be emitted when burn is non-positive.
+    expect(result.risks.some((r) => r.category === "runway")).toBe(false);
+
+    expect(Array.isArray((result as any).disclosures_v1) ? (result as any).disclosures_v1 : []).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "runway_not_applicable_nonpositive_burn",
+          message: expect.stringContaining("Runway not applicable"),
+        }),
+      ])
+    );
+  });
+
+  test("burn_rate=0 + cash_balance present => runway null, no runway risk, disclosure not_applicable", async () => {
+    const result = await financialHealthCalculator.analyze({
+      burn_rate: 0,
+      cash_balance: 250_000,
+      evidence_ids: [EVIDENCE_ID],
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.metrics.burn_rate).toBe(0);
+    expect(result.runway_months).toBeNull();
+    expect(result.risks.some((r) => r.category === "runway")).toBe(false);
+
+    expect(Array.isArray((result as any).disclosures_v1) ? (result as any).disclosures_v1 : []).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "runway_not_applicable_nonpositive_burn",
+        }),
+      ])
+    );
+  });
+
   test("insufficient_data when no financial fields provided", async () => {
     const result = await financialHealthCalculator.analyze({
       evidence_ids: [EVIDENCE_ID],
@@ -361,6 +408,60 @@ describe("FinancialHealthCalculator", () => {
     expect(result.runway_months).toBeNull();
     expect(result.health_score).toBeNull();
     expect(result.risks).toEqual([]);
+  });
+
+  test("disclosure flags when revenue/burn exist but cash/runway missing", async () => {
+    const result = await financialHealthCalculator.analyze({
+      // revenue/expenses present => KPIs exist
+      revenue: 8000,
+      expenses: 32000,
+      // cash_balance missing => runway cannot be computed
+      evidence_ids: [EVIDENCE_ID],
+    } as any);
+
+    expect(result.status).toBe("insufficient_data");
+    expect(result.runway_months).toBeNull();
+    expect(result.health_score).toBeNull();
+    expect((result as any).explanation_flags).toBeTruthy();
+    expect((result as any).explanation_flags.reason_code).toBe("missing_cash_runway_inputs");
+    expect((result as any).explanation_flags.missing_cash_runway_inputs).toBe(true);
+    expect((result as any).explanation_flags.implied_runway_not_accepted).toBe(true);
+    expect((result as any).explanation_flags.follow_up_diligence_required).toBe(true);
+
+    // Coverage should reflect partial KPI presence (deterministic +0.2 per present KPI).
+    expect(result.coverage).toBeGreaterThan(0);
+
+    expect(Array.isArray((result as any).disclosures_v1) ? (result as any).disclosures_v1 : []).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "missing_cash_runway_inputs",
+          message: expect.stringContaining("Runway may be implied"),
+        }),
+      ])
+    );
+
+    expect(Array.isArray((result as any).disclosures) ? (result as any).disclosures : []).toEqual(
+      expect.arrayContaining([expect.stringContaining("Runway may be implied")])
+    );
+  });
+
+  test("burn_rate > 0 + cash_balance missing + runway missing => insufficient_data + missing_cash_runway_inputs disclosure", async () => {
+    const result = await financialHealthCalculator.analyze({
+      burn_rate: 50_000,
+      // cash_balance intentionally missing
+      evidence_ids: [EVIDENCE_ID],
+    } as any);
+
+    expect(result.status).toBe("insufficient_data");
+    expect(result.runway_months).toBeNull();
+
+    expect(Array.isArray((result as any).disclosures_v1) ? (result as any).disclosures_v1 : []).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "missing_cash_runway_inputs",
+        }),
+      ])
+    );
   });
 
   test("generates runway risk when < 6 months", async () => {
@@ -390,6 +491,25 @@ describe("FinancialHealthCalculator", () => {
     expect(result.metrics.cash_balance).toBeGreaterThan(0);
     expect(result.metrics.burn_rate).toBeGreaterThan(0);
     expect(result.coverage).toBeGreaterThanOrEqual(0.4);
+  });
+
+  test("explicit runway_months provided => uses explicit runway regardless of burn sign", async () => {
+    const result = await financialHealthCalculator.analyze({
+      extracted_metrics: [
+        { name: "runway_months", value: 5, source_doc_id: "doc-explicit-runway" },
+        { name: "burn_rate", value: -1000, source_doc_id: "doc-explicit-runway" },
+        { name: "cash_balance", value: 10000, source_doc_id: "doc-explicit-runway" },
+      ],
+      evidence_ids: [EVIDENCE_ID],
+    } as any);
+
+    expect(result.status).toBe("ok");
+    expect(result.metrics.burn_rate).toBeLessThanOrEqual(0);
+    expect(result.runway_months).toBe(5);
+
+    // If runway is explicit, we should not force the non-positive burn "not applicable" disclosure.
+    const codes = (Array.isArray((result as any).disclosures_v1) ? (result as any).disclosures_v1 : []).map((d: any) => d?.code);
+    expect(codes).not.toContain("runway_not_applicable_nonpositive_burn");
   });
 
   test("WebMax Excel (DIO doc payload): derives cash/burn/runway from keyFinancialMetrics", async () => {

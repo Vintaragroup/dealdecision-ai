@@ -59,6 +59,8 @@ export class FinancialHealthCalculator extends BaseAnalyzer<FinancialHealthInput
     const executed_at = new Date().toISOString();
       const debugEnabled = Boolean((input as any).debug_scoring);
 
+    const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
+
     const extractedInput = Array.isArray((input as any).extracted_metrics) ? (input as any).extracted_metrics : [];
     const keyFinancialMetrics = ((input as any).keyFinancialMetrics ?? (input as any).key_financial_metrics) as Record<string, unknown> | undefined;
 
@@ -186,6 +188,29 @@ export class FinancialHealthCalculator extends BaseAnalyzer<FinancialHealthInput
     const usedExpensesAsBurnProxy = burn_rate_raw === undefined && expenses !== undefined;
     const burn_rate = burn_rate_raw ?? (usedExpensesAsBurnProxy ? expenses : undefined);
 
+    // Explicit runway (from labeled runway metric) is treated as fact regardless of burn sign.
+    const hasExplicitRunwayMetric = runway_months_from_extracted !== undefined && runway_months_from_extracted !== null;
+
+    // Runway derived from cash/burn is only meaningful when burn is strictly positive.
+    // If burn_rate is <= 0 (profitable/breakeven), treat as not burning: do not compute runway from cash/burn and do not emit runway risk.
+    const burn_rate_for_runway = burn_rate != null && burn_rate > 0 ? burn_rate : undefined;
+    const runway_not_applicable_nonpositive_burn =
+      burn_rate != null && burn_rate <= 0 && cash_balance != null && !hasExplicitRunwayMetric;
+
+    // Coverage policy (deterministic): +0.2 per present KPI, clamp [0, 1].
+    // KPI set: revenue, expenses, burn_rate, cash_balance, runway_months.
+    const coverageFromKpis = (runwayMonths: number | null): number => {
+      const present = [
+        revenue != null,
+        expenses != null,
+        burn_rate != null,
+        cash_balance != null,
+        runwayMonths != null,
+      ];
+      const count = present.filter(Boolean).length;
+      return clamp01(count * 0.2);
+    };
+
     if (
       revenue === undefined &&
       expenses === undefined &&
@@ -250,12 +275,45 @@ export class FinancialHealthCalculator extends BaseAnalyzer<FinancialHealthInput
       let runway_months: number | null = null;
       if (runway_months_from_extracted !== undefined) {
         runway_months = Math.round(runway_months_from_extracted * 10) / 10;
-      } else if (cash_balance !== undefined && burn_rate !== undefined) {
-        runway_months = this.calculateRunway(cash_balance, burn_rate);
+      } else if (!runway_not_applicable_nonpositive_burn && cash_balance !== undefined && burn_rate_for_runway !== undefined) {
+        runway_months = this.calculateRunway(cash_balance, burn_rate_for_runway);
       }
+
+      // Calculate monthly growth rate
+      const monthly_growth_rate = growth_rate ?? null;
 
       // Without runway we cannot produce a meaningful health score.
       if (runway_months === null) {
+          const hasRevenueOrBurn = revenue != null || burn_rate != null || expenses != null;
+          const missingCash = cash_balance == null;
+          const missingCashRunwayInputsDisclosure = hasRevenueOrBurn && missingCash && !hasExplicitRunwayMetric;
+          const disclosureSentence =
+            'Runway may be implied but is not treated as fact without explicit cash balance or labeled runway. Follow-up diligence required.';
+
+          const nonpositiveBurnDisclosureSentence =
+            'Runway not applicable: burn rate is zero or negative (net cashflow positive/neutral). No runway risk inferred.';
+          const explanation_flags = missingCashRunwayInputsDisclosure
+            ? {
+                reason_code: "missing_cash_runway_inputs",
+                missing_cash_runway_inputs: true,
+                implied_runway_not_accepted: true,
+                follow_up_diligence_required: true,
+                has_revenue_or_burn: true,
+              }
+            : undefined;
+
+          const disclosures = missingCashRunwayInputsDisclosure
+            ? [disclosureSentence]
+            : runway_not_applicable_nonpositive_burn
+              ? [nonpositiveBurnDisclosureSentence]
+              : undefined;
+
+          const disclosures_v1 = missingCashRunwayInputsDisclosure
+            ? [{ code: "missing_cash_runway_inputs", message: disclosureSentence }]
+            : runway_not_applicable_nonpositive_burn
+              ? [{ code: "runway_not_applicable_nonpositive_burn", message: nonpositiveBurnDisclosureSentence }]
+              : undefined;
+
           const debug_scoring: DebugScoringTrace | undefined = debugEnabled
             ? {
                 inputs_used: [
@@ -292,13 +350,25 @@ export class FinancialHealthCalculator extends BaseAnalyzer<FinancialHealthInput
           analyzer_version: this.metadata.version,
           executed_at,
 
-          status: "insufficient_data",
-          coverage: 0,
-          confidence: 0.3,
+          // If burn is non-positive and cash is present, runway is not applicable (do not treat as missing data).
+          status: runway_not_applicable_nonpositive_burn ? "ok" : "insufficient_data",
+          coverage: coverageFromKpis(null),
+          confidence: runway_not_applicable_nonpositive_burn ? 0.6 : 0.3,
 
           runway_months: null,
           burn_multiple: null,
-          health_score: null,
+          // Deterministic: treat non-positive burn as effectively non-constraining runway for scoring purposes.
+          health_score: runway_not_applicable_nonpositive_burn
+            ? this.calculateHealthScore(
+                HEALTH_THRESHOLDS.runway_months.excellent,
+                null,
+                undefined,
+                monthly_growth_rate
+              )
+            : null,
+          ...(explanation_flags ? { explanation_flags } : {}),
+          ...(disclosures ? { disclosures } : {}),
+          ...(disclosures_v1 ? { disclosures_v1 } : {}),
           metrics: {
             revenue: revenue ?? null,
             expenses: expenses ?? null,
@@ -315,9 +385,6 @@ export class FinancialHealthCalculator extends BaseAnalyzer<FinancialHealthInput
       // Calculate burn multiple (not available from current input schema)
       const burn_multiple = null;
 
-      // Calculate monthly growth rate
-      const monthly_growth_rate = growth_rate ?? null;
-
       // Calculate health score
       const health_score = this.calculateHealthScore(
         runway_months,
@@ -331,20 +398,7 @@ export class FinancialHealthCalculator extends BaseAnalyzer<FinancialHealthInput
         ? Math.max(0, Math.min(100, Math.round((health_score - 5) * 10) / 10))
         : health_score;
 
-      // Coverage reflects completeness of key runway inputs.
-      const cashPresent = cash_balance !== undefined && cash_balance !== null;
-      const burnPresent = burn_rate !== undefined && burn_rate !== null;
-      const runwayPresent = runway_months !== null;
-      const revPresent = revenue !== undefined && revenue !== null;
-      const growthPresent = growth_rate !== undefined && growth_rate !== null;
-      const burnWeight = usedExpensesAsBurnProxy ? 0.5 : 1;
-      const coverageRaw =
-        (runwayPresent ? 1 : 0) +
-        (cashPresent ? 1 : 0) +
-        (burnPresent ? burnWeight : 0) +
-        (revPresent ? 1 : 0) +
-        (growthPresent ? 1 : 0);
-      const coverage = Math.max(0.4, Math.min(1, coverageRaw / 5));
+      const coverage = coverageFromKpis(runway_months);
       const confidence = Math.max(0.4, Math.min(0.85, 0.4 + coverage * 0.5 - (usedExpensesAsBurnProxy ? 0.05 : 0)));
 
       // Generate financial risks
@@ -569,8 +623,9 @@ export class FinancialHealthCalculator extends BaseAnalyzer<FinancialHealthInput
       errors.push("cash_balance must be non-negative");
     }
 
+    // Negative burn_rate indicates net positive cashflow; allow it and treat runway as not applicable.
     if (input.burn_rate !== undefined && input.burn_rate < 0) {
-      errors.push("burn_rate must be non-negative");
+      warnings.push("burn_rate is negative (net cashflow positive); runway not applicable");
     }
 
     const extracted = Array.isArray((input as any).extracted_metrics) ? (input as any).extracted_metrics : [];

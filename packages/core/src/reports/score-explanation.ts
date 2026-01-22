@@ -1547,9 +1547,53 @@ const buildComponentDetail = (params: {
         set("Insufficient structure signal; expected slide headings/sections not detected", { gaps: ["headings", "sections"] });
         break;
       case "financial_health":
-        set("No financial KPIs extracted (revenue/expenses/burn/runway)", {
-          gaps: ["revenue", "expenses", "burn_rate", "cash_balance", "runway_months", "burn_multiple"],
-        });
+        {
+          const fh: any = results?.financial_health;
+          const m: any = fh?.metrics;
+          const revenue = m?.revenue ?? null;
+          const expenses = m?.expenses ?? null;
+          const burn_rate = m?.burn_rate ?? null;
+          const cash_balance = m?.cash_balance ?? null;
+          const runway_months = fh?.runway_months ?? null;
+
+          const hasAnyKpi =
+            revenue != null ||
+            expenses != null ||
+            burn_rate != null ||
+            cash_balance != null ||
+            runway_months != null;
+
+          const gapsOut: string[] = [];
+          if (revenue == null) gapsOut.push("revenue");
+          if (expenses == null) gapsOut.push("expenses");
+          if (burn_rate == null) gapsOut.push("burn_rate");
+          if (cash_balance == null) gapsOut.push("cash_balance");
+          if (runway_months == null) gapsOut.push("runway_months");
+          gapsOut.push("burn_multiple");
+
+          if (!hasAnyKpi) {
+            set("No financial KPIs extracted (revenue/expenses/burn/runway)", {
+              gaps: gapsOut,
+            });
+          } else {
+            const fhFlags: any = fh?.explanation_flags;
+            const hasMissingCashRunwayDisclosure =
+              fhFlags &&
+              (fhFlags.reason_code === "missing_cash_runway_inputs" || fhFlags.missing_cash_runway_inputs === true);
+
+            set("Financial KPIs extracted, but runway could not be computed", {
+              gaps: gapsOut,
+              reasons: [
+                "Runway requires cash balance or an explicit runway metric",
+                ...(hasMissingCashRunwayDisclosure
+                  ? [
+                      "Runway may be implied but is not treated as fact without explicit cash balance or labeled runway. Follow-up diligence required.",
+                    ]
+                  : []),
+              ],
+            });
+          }
+        }
         break;
       case "metric_benchmark":
         set("No financial metrics extracted for benchmarking", { gaps: ["metrics"] });
@@ -1642,13 +1686,22 @@ const buildComponentDetail = (params: {
         set(`Red flags detected in financial health (${texts.length})`);
       } else {
         const metrics: any = fh?.metrics;
+        const disclosuresV1: any[] = Array.isArray(fh?.disclosures_v1) ? fh.disclosures_v1 : [];
         const missing: string[] = [];
+
+        const burnRate = typeof metrics?.burn_rate === "number" ? metrics.burn_rate : null;
+        const cashBalance = typeof metrics?.cash_balance === "number" ? metrics.cash_balance : null;
+        const runwayMonths = fh?.runway_months ?? null;
+        const runwayNotApplicable =
+          disclosuresV1.some((d: any) => d && d.code === "runway_not_applicable_nonpositive_burn") ||
+          (burnRate != null && burnRate <= 0 && cashBalance != null && runwayMonths == null);
+
         const need = [
           ["revenue", metrics?.revenue],
           ["expenses", metrics?.expenses],
           ["burn_rate", metrics?.burn_rate],
           ["cash_balance", metrics?.cash_balance],
-          ["runway_months", fh?.runway_months],
+          ...(runwayNotApplicable ? [] : [["runway_months", fh?.runway_months]]),
           ["burn_multiple", fh?.burn_multiple],
         ] as const;
         for (const [name, val] of need) {
@@ -1892,6 +1945,42 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
     const penalty = penalties[key] ?? 0;
     const effective = used == null ? null : Math.min(100, Math.max(0, used - penalty));
     effectiveScores[key] = effective;
+
+    if (key === "financial_health") {
+      const fh: any = results?.financial_health;
+      const metrics: any = fh?.metrics || {};
+      const runwayMonths = fh?.runway_months ?? null;
+
+      const bits: string[] = [];
+      const add = (label: string, v: any) => {
+        if (v == null) return;
+        if (typeof v === "number" && Number.isFinite(v)) bits.push(`${label}=${v}`);
+      };
+
+      add("revenue", metrics?.revenue);
+      add("expenses", metrics?.expenses);
+      add("burn_rate", metrics?.burn_rate);
+      add("cash_balance", metrics?.cash_balance);
+      add("runway_months", runwayMonths);
+
+      if (bits.length > 0) {
+        notes[key].push(`metrics: ${bits.join(", ")}`);
+      }
+
+      const d1: any[] = Array.isArray(fh?.disclosures_v1) ? fh.disclosures_v1 : [];
+      const d0: string[] = Array.isArray(fh?.disclosures) ? fh.disclosures : [];
+
+      if (d1.length > 0) {
+        notes[key].push(
+          `disclosures: ${d1
+            .map((d) => (d && typeof d === "object" ? `${String(d.code)}: ${String(d.message)}` : null))
+            .filter(Boolean)
+            .join(" | ")}`
+        );
+      } else if (d0.length > 0) {
+        notes[key].push(`disclosures: ${d0.join(" | ")}`);
+      }
+    }
 
     const detail = buildComponentDetail({
       key,

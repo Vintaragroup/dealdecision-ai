@@ -830,6 +830,80 @@ describe('DealOrchestrator (unit)', () => {
     expect(storage.saveDIO).toHaveBeenCalledTimes(1);
   });
 
+  it('surfaces missing cash/runway disclosure in phase1 summaries (no score change)', async () => {
+    const storage = createStorage();
+
+    const analyzers = {
+      slideSequence: createAnalyzer(okSlideSequence()),
+      metricBenchmark: createAnalyzer(okMetricBenchmark()),
+      visualDesign: createAnalyzer(okVisualDesign()),
+      narrativeArc: createAnalyzer(okNarrativeArc()),
+      financialHealth: createAnalyzer(
+        okFinancialHealth({
+          status: 'insufficient_data',
+          runway_months: null,
+          burn_multiple: null,
+          health_score: null,
+          disclosures: [
+            'Runway may be implied but is not treated as fact without explicit cash balance or labeled runway. Follow-up diligence required.',
+          ],
+          metrics: {
+            revenue: 8000,
+            expenses: 32000,
+            cash_balance: null,
+            burn_rate: 32000,
+            growth_rate: null,
+          },
+          explanation_flags: {
+            reason_code: 'missing_cash_runway_inputs',
+            missing_cash_runway_inputs: true,
+            implied_runway_not_accepted: true,
+            follow_up_diligence_required: true,
+            has_revenue_or_burn: true,
+          },
+        })
+      ),
+      riskAssessment: createAnalyzer(okRiskAssessment()),
+    };
+
+    const orchestrator = new DealOrchestrator(analyzers as any, storage, { debug: false });
+
+    const input: OrchestrationInput = {
+      deal_id: '99999999-9999-9999-9999-999999999999',
+      analysis_cycle: 1,
+      input_data: {
+        documents: [
+          {
+            id: 'doc1',
+            title: 'Financials',
+            type: 'financials',
+            full_text: 'Revenue and expenses are provided; cash/runway not explicitly stated.',
+          },
+        ],
+      },
+    };
+
+    const result = await orchestrator.analyze(input);
+    expect(result.success).toBe(true);
+
+    const saved = storage.saved[storage.saved.length - 1] as any;
+    const es2 = saved?.dio?.phase1?.executive_summary_v2;
+    const ds1 = saved?.dio?.phase1?.decision_summary_v1;
+    const fh = saved?.analyzer_results?.financial_health;
+
+    expect(es2).toBeTruthy();
+    expect(ds1).toBeTruthy();
+
+    expect(Array.isArray(es2?.missing) ? es2.missing : []).toContain('missing_cash_runway_inputs');
+
+    const disclosures = Array.isArray(fh?.disclosures) ? fh.disclosures : [];
+    expect(disclosures.join('\n')).toContain('Runway may be implied');
+
+    const reasons = Array.isArray(ds1?.reasons) ? ds1.reasons : [];
+    expect(reasons.join('\n')).toContain('[missing_cash_runway_inputs]');
+    expect(reasons.join('\n')).toContain('Runway may be implied');
+  });
+
   it('persists phase1.coverage.sections with standard keys', async () => {
     const storage = createStorage();
 

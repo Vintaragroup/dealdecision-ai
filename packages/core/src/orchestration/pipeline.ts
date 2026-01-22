@@ -454,8 +454,22 @@ export class AnalysisPipeline {
     }
     
     // Check financial health gaps
-    if (!dio.analyzer_results.financial_health.runway_months) {
-      gaps.push('What is the company runway?');
+    {
+      const fh: any = dio.analyzer_results.financial_health;
+      const metrics: any = fh?.metrics;
+      const runwayMonths = fh?.runway_months ?? null;
+      const burnRate = typeof metrics?.burn_rate === 'number' ? metrics.burn_rate : null;
+      const cashBalance = typeof metrics?.cash_balance === 'number' ? metrics.cash_balance : null;
+      const disclosuresV1 = Array.isArray(fh?.disclosures_v1) ? fh.disclosures_v1 : [];
+
+      const runwayNotApplicable =
+        disclosuresV1.some((d: any) => d && d.code === 'runway_not_applicable_nonpositive_burn') ||
+        (burnRate != null && burnRate <= 0 && cashBalance != null && runwayMonths == null);
+
+      const runwayIsRequired = !runwayNotApplicable && burnRate != null && burnRate > 0;
+      if (runwayIsRequired && runwayMonths == null) {
+        gaps.push('What is the company runway?');
+      }
     }
     if (!dio.analyzer_results.financial_health.burn_multiple) {
       gaps.push('What is the monthly burn rate?');

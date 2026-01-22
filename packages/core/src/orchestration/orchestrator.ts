@@ -532,7 +532,9 @@ export class DealOrchestrator {
 
         // Canonical metrics (deterministic normalization output). These should take precedence.
         const canonical =
-          (doc?.structured_data?.canonical?.financials?.canonical_metrics ??
+          (doc?.canonical?.financials?.canonical_metrics ??
+            doc?.canonical?.financials?.canonicalMetrics ??
+            doc?.structured_data?.canonical?.financials?.canonical_metrics ??
             doc?.structuredData?.canonical?.financials?.canonical_metrics ??
             doc?.structured_data?.canonical?.financials?.canonicalMetrics ??
             doc?.structuredData?.canonical?.financials?.canonicalMetrics) as any;
@@ -1130,6 +1132,56 @@ export class DealOrchestrator {
 		// Additive: optional investor-readable synthesis from worker (Phase 1 only)
 		deal_summary_v2: (input.input_data as any).phase1_deal_summary_v2,
       };
+
+      // Additive: deterministic runway disclosure surfacing (no scoring math changes)
+      try {
+        const fh: any = (dio as any)?.analyzer_results?.financial_health;
+        const fhFlags: any = fh?.explanation_flags;
+        const disclosuresV1: any[] = Array.isArray(fh?.disclosures_v1) ? fh.disclosures_v1 : [];
+
+        const addDisclosureToPhase1 = (reasonCode: string, sentence: string) => {
+          const tagged = `[${reasonCode}] ${sentence}`;
+
+          const es2 = (phase1WithWorkerExtras as any)?.executive_summary_v2;
+          if (es2 && typeof es2 === 'object') {
+            const existingMissing = Array.isArray((es2 as any).missing) ? ((es2 as any).missing as any[]) : [];
+            const mergedMissing = Array.from(new Set(existingMissing.filter((x) => typeof x === 'string').concat([reasonCode])));
+            (es2 as any).missing = mergedMissing;
+          }
+
+          const ds1 = (phase1WithWorkerExtras as any)?.decision_summary_v1;
+          if (ds1 && typeof ds1 === 'object') {
+            const reasons = Array.isArray((ds1 as any).reasons) ? ((ds1 as any).reasons as any[]) : [];
+            const dedup = new Set(reasons.filter((x) => typeof x === 'string'));
+            if (!dedup.has(tagged)) {
+              (ds1 as any).reasons = [...Array.from(dedup), tagged];
+            }
+          }
+        };
+
+        const hasMissingCashRunwayDisclosure =
+          (fhFlags && (fhFlags.reason_code === 'missing_cash_runway_inputs' || fhFlags.missing_cash_runway_inputs === true)) ||
+          disclosuresV1.some((d: any) => d && d.code === 'missing_cash_runway_inputs');
+
+        const hasRunwayNotApplicableDisclosure =
+          disclosuresV1.some((d: any) => d && d.code === 'runway_not_applicable_nonpositive_burn');
+
+        if (hasMissingCashRunwayDisclosure) {
+          addDisclosureToPhase1(
+            'missing_cash_runway_inputs',
+            'Runway may be implied but is not treated as fact without explicit cash balance or labeled runway. Follow-up diligence required.'
+          );
+        }
+
+        if (hasRunwayNotApplicableDisclosure) {
+          addDisclosureToPhase1(
+            'runway_not_applicable_nonpositive_burn',
+            'Runway is not applicable when burn is non-positive; do not treat this as a low-runway signal.'
+          );
+        }
+      } catch {
+        // Never fail orchestration due to disclosure surfacing.
+      }
 
       dio = mergePhase1IntoDIO(dio as any, phase1WithWorkerExtras as any) as DealIntelligenceObject;
     } catch (err) {

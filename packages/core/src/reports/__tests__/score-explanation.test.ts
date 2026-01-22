@@ -286,6 +286,151 @@ describe("score_explanation", () => {
     expect(explanation.totals.overall_score).toBe(expectedAdjusted);
   });
 
+  it("does not render 0-month runway semantics when burn is non-positive", () => {
+    const now = new Date().toISOString();
+
+    const dio: any = {
+      schema_version: "1.0.0",
+      dio_id: "00000000-0000-4000-8000-000000009901",
+      deal_id: "00000000-0000-4000-8000-000000009902",
+      created_at: now,
+      updated_at: now,
+      analysis_version: 1,
+      dio_context: {
+        primary_doc_type: "pitch_deck",
+        deal_type: "startup_raise",
+        vertical: "saas",
+        stage: "seed",
+        confidence: 0.9,
+      },
+      inputs: { documents: [], evidence: [], config: { features: {} } },
+      analyzer_results: {
+        slide_sequence: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.8, score: 60, deviations: [] },
+        metric_benchmark: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 0.5, confidence: 0.7, overall_score: 50, metrics_analyzed: [] },
+        visual_design: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 0.5, confidence: 0.7, design_score: 50, strengths: [], weaknesses: [] },
+        narrative_arc: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 0.5, confidence: 0.7, pacing_score: 50 },
+        financial_health: {
+          analyzer_version: "1.0.0",
+          executed_at: now,
+          status: "ok",
+          coverage: 0.6,
+          confidence: 0.7,
+          health_score: 70,
+          metrics: {
+            burn_rate: -1000,
+            cash_balance: 50000,
+          },
+          runway_months: null,
+          burn_multiple: null,
+          risks: [],
+          disclosures_v1: [
+            {
+              code: "runway_not_applicable_nonpositive_burn",
+              severity: "info",
+              message: "Runway is not applicable when burn is non-positive.",
+            },
+          ],
+        },
+        risk_assessment: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 0.5, confidence: 0.7, overall_risk_score: 50 },
+      },
+      risk_map: [],
+    };
+
+    const explanation = buildScoreExplanationFromDIO(dio);
+
+    const fh: any = (explanation.components as any).financial_health;
+    expect(fh).toBeTruthy();
+
+    const noteText = Array.isArray(fh.notes) ? fh.notes.join("\n") : "";
+    expect(noteText).toContain("runway_not_applicable_nonpositive_burn");
+    expect(noteText.toLowerCase()).not.toContain("0 months");
+    expect(noteText.toLowerCase()).not.toContain("critical runway");
+
+    const flagsText = Array.isArray(fh.red_flags) ? fh.red_flags.join("\n") : "";
+    expect(flagsText.toLowerCase()).not.toContain("critical runway");
+  });
+
+  it("when runway_not_applicable_nonpositive_burn disclosure present, DIO JSON contains no forbidden runway strings and disclosure is surfaced", () => {
+    const now = new Date().toISOString();
+
+    const dio: any = {
+      schema_version: "1.0.0",
+      dio_id: "00000000-0000-4000-8000-000000009911",
+      deal_id: "00000000-0000-4000-8000-000000009912",
+      created_at: now,
+      updated_at: now,
+      analysis_version: 1,
+      dio_context: {
+        primary_doc_type: "pitch_deck",
+        deal_type: "startup_raise",
+        vertical: "saas",
+        stage: "seed",
+        confidence: 0.9,
+      },
+      inputs: { documents: [], evidence: [], config: { features: {} } },
+      analyzer_results: {
+        slide_sequence: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.8, score: 60, deviations: [] },
+        metric_benchmark: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 0.5, confidence: 0.7, overall_score: 50, metrics_analyzed: [] },
+        visual_design: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 0.5, confidence: 0.7, design_score: 50, strengths: [], weaknesses: [] },
+        narrative_arc: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 0.5, confidence: 0.7, pacing_score: 50 },
+        financial_health: {
+          analyzer_version: "1.0.0",
+          executed_at: now,
+          status: "ok",
+          coverage: 0.6,
+          confidence: 0.7,
+          health_score: 70,
+          metrics: {
+            burn_rate: 0,
+            cash_balance: 50000,
+          },
+          runway_months: null,
+          burn_multiple: null,
+          risks: [],
+          disclosures_v1: [
+            {
+              code: "runway_not_applicable_nonpositive_burn",
+              severity: "info",
+              message: "Runway not applicable: burn rate is zero or negative.",
+            },
+          ],
+        },
+        risk_assessment: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 0.5, confidence: 0.7, overall_risk_score: 50 },
+      },
+      risk_map: [],
+    };
+
+    const explanation = buildScoreExplanationFromDIO(dio);
+    const fh: any = (explanation.components as any).financial_health;
+
+    // Disclosure appears in a user-facing channel (score explanation notes)
+    const noteText = Array.isArray(fh?.notes) ? fh.notes.join("\n") : "";
+    expect(noteText).toContain("runway_not_applicable_nonpositive_burn");
+
+    // Build a representative DIO JSON payload (similar shape to stored dio_data)
+    const dioData: any = {
+      ...dio,
+      score_explanation: explanation,
+      dio: {
+        phase1: {
+          executive_summary_v2: {
+            missing: ["runway_not_applicable_nonpositive_burn"],
+          },
+          decision_summary_v1: {
+            reasons: [
+              "[runway_not_applicable_nonpositive_burn] Runway is not applicable when burn is non-positive; do not treat this as a low-runway signal.",
+            ],
+          },
+        },
+      },
+    };
+
+    const blob = JSON.stringify(dioData);
+    expect(blob).not.toContain("0 months");
+    expect(blob).not.toContain("Critical runway");
+    expect(blob.toLowerCase()).not.toContain("missing runway");
+  });
+
   it("blends low-confidence included component toward neutral baseline (prevents tanking overall)", () => {
     const now = new Date().toISOString();
 
@@ -676,6 +821,10 @@ describe("score_explanation", () => {
     expect(lowMetric.components.metric_benchmark).toBeTruthy();
     expect(lowMetric.components.metric_benchmark.raw_score).toBe(0);
     expect(highMetric.components.metric_benchmark.raw_score).toBe(100);
+
+    // And it must contribute nothing to the numeric aggregate.
+    expect(lowMetric.components.metric_benchmark.weighted_contribution).toBe(0);
+    expect(highMetric.components.metric_benchmark.weighted_contribution).toBe(0);
 
     // But overall score is unaffected by metric_benchmark changes.
     expect(lowMetric.totals.overall_score).toBe(highMetric.totals.overall_score);

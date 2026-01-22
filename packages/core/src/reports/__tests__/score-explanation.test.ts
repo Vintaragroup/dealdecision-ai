@@ -272,13 +272,12 @@ describe("score_explanation", () => {
     expect(explanation.components.metric_benchmark.penalty).toBeGreaterThan(0);
     expect(explanation.components.metric_benchmark.reason).toMatch(/no financial metrics extracted/i);
 
-    // v2 decision scoring: fundamentals only (metric_benchmark, financial_health, risk_assessment).
-    // totalWeight = 1 + 0.5 + 1 = 2.5
-    // metric_benchmark insufficient_data => neutral 50 - penalty(6) => 44
+    // v2 decision scoring: metric_benchmark is diagnostic-only; aggregation uses financial_health + risk_assessment.
+    // totalWeight = 0.5 + 1 = 1.5
     // financial 80
     // risk inverted 58 -> 42
-    // unadjusted = round((44*1 + 80*0.5 + 42*1)/2.5) = round(50.4) = 50
-    expect(explanation.totals.unadjusted_overall_score).toBe(50);
+    // unadjusted = round((80*0.5 + 42*1)/1.5) = round(54.666..) = 55
+    expect(explanation.totals.unadjusted_overall_score).toBe(55);
 
     const expectedAdjusted = Math.round(
       (explanation.totals.unadjusted_overall_score as number) * explanation.totals.adjustment_factor
@@ -452,10 +451,10 @@ describe("score_explanation", () => {
     expect(explanation.components.risk_assessment.inverted_investment_score).toBe(50);
     expect(explanation.components.risk_assessment.notes.join("\n")).toMatch(/no_signal/i);
 
-    // v2 decision scoring: fundamentals only (metric_benchmark, financial_health, risk_assessment).
+    // v2 decision scoring: metric_benchmark is diagnostic-only; aggregation uses financial_health + risk_assessment.
     // risk no-signal => neutral 50 - penalty(6) => 44
-    // unadjusted = round((60*1 + 80*0.5 + 44*1)/2.5) = round(57.6) = 58
-    expect(explanation.totals.unadjusted_overall_score).toBe(58);
+    // unadjusted = round((80*0.5 + 44*1)/1.5) = round(56) = 56
+    expect(explanation.totals.unadjusted_overall_score).toBe(56);
 
     const expectedAdjusted = Math.round(
       (explanation.totals.unadjusted_overall_score as number) * explanation.totals.adjustment_factor
@@ -570,15 +569,116 @@ describe("score_explanation", () => {
     expect(normal.aggregation.weights.slide_sequence).toBe(0);
     expect(normal.aggregation.weights.narrative_arc).toBe(0);
     expect(normal.aggregation.weights.visual_design).toBe(0);
+    expect(normal.aggregation.weights.metric_benchmark).toBe(0);
 
     expect(traction.aggregation.weights.slide_sequence).toBe(0);
     expect(traction.aggregation.weights.narrative_arc).toBe(0);
     expect(traction.aggregation.weights.visual_design).toBe(0);
+    expect(traction.aggregation.weights.metric_benchmark).toBe(0);
 
-    // Fundamentals weights remain stable.
-    expect(traction.aggregation.weights.metric_benchmark).toBeCloseTo(normal.aggregation.weights.metric_benchmark);
+    // v2 fundamentals-only scoring is driven by financial_health + risk_assessment.
     expect(traction.aggregation.weights.financial_health).toBeCloseTo(normal.aggregation.weights.financial_health);
     expect(traction.aggregation.weights.risk_assessment).toBeCloseTo(normal.aggregation.weights.risk_assessment);
+  });
+
+  it("v2: metric_benchmark is diagnostic-only and does not affect overall_score", () => {
+    const now = new Date().toISOString();
+
+    const mkDio = (metricScore: number): any => ({
+      schema_version: "1.0.0",
+      dio_id: "00000000-0000-4000-8000-000000000301",
+      deal_id: "00000000-0000-4000-8000-000000000302",
+      created_at: now,
+      updated_at: now,
+      analysis_version: 1,
+      dio_context: {
+        primary_doc_type: "pitch_deck",
+        confidence: 1,
+      },
+      inputs: {
+        documents: [],
+        evidence: [],
+        config: {
+          analyzer_versions: {
+            slide_sequence: "1.0.0",
+            metric_benchmark: "1.0.0",
+            visual_design: "1.0.0",
+            narrative_arc: "1.0.0",
+            financial_health: "1.0.0",
+            risk_assessment: "1.0.0",
+          },
+          features: { tavily_enabled: false, mcp_enabled: false, llm_synthesis_enabled: false },
+          parameters: { max_cycles: 3, depth_threshold: 2, min_confidence: 0.7 },
+        },
+      },
+      analyzer_results: {
+        metric_benchmark: {
+          analyzer_version: "1.0.0",
+          executed_at: now,
+          status: "ok",
+          coverage: 1,
+          confidence: 1,
+          overall_score: metricScore,
+          metrics_analyzed: [
+            {
+              metric: "ARR",
+              value: 10,
+              benchmark_value: 12,
+              benchmark_source: "test",
+              rating: "Adequate",
+              deviation_pct: -16.7,
+            },
+          ],
+        },
+        financial_health: {
+          analyzer_version: "1.0.0",
+          executed_at: now,
+          status: "ok",
+          coverage: 1,
+          confidence: 1,
+          health_score: 80,
+          metrics: { revenue: 10, expenses: 8, cash_balance: 20, burn_rate: 2, growth_rate: null },
+          runway_months: 10,
+          burn_multiple: 1,
+          risks: [],
+        },
+        // Risk is inverted: 20 risk => 80 investment score.
+        risk_assessment: {
+          analyzer_version: "1.0.0",
+          executed_at: now,
+          status: "ok",
+          coverage: 1,
+          confidence: 1,
+          overall_risk_score: 20,
+          total_risks: 1,
+          critical_count: 0,
+          high_count: 0,
+          risks_by_category: { market: [], team: [], financial: [], execution: [] },
+          evidence_ids: [],
+        },
+        // Remaining analyzers are present but have no weight in v2.
+        slide_sequence: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 1, score: 0, deviations: [] },
+        visual_design: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 1, design_score: 0, strengths: [], weaknesses: [] },
+        narrative_arc: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 1, pacing_score: 0 },
+      },
+      risk_map: [{ severity: "low" }],
+    });
+
+    const lowMetric = buildScoreExplanationFromDIO(mkDio(0));
+    const highMetric = buildScoreExplanationFromDIO(mkDio(100));
+
+    // v2 effective weights: metric_benchmark is forced to 0.
+    expect(lowMetric.aggregation.weights.metric_benchmark).toBe(0);
+    expect(lowMetric.aggregation.weights.financial_health).toBeGreaterThan(0);
+    expect(lowMetric.aggregation.weights.risk_assessment).toBeGreaterThan(0);
+
+    // Metric score remains present as a diagnostic component.
+    expect(lowMetric.components.metric_benchmark).toBeTruthy();
+    expect(lowMetric.components.metric_benchmark.raw_score).toBe(0);
+    expect(highMetric.components.metric_benchmark.raw_score).toBe(100);
+
+    // But overall score is unaffected by metric_benchmark changes.
+    expect(lowMetric.totals.overall_score).toBe(highMetric.totals.overall_score);
   });
 
   it("Vintara: exec_summary weights downweight slide/visual so >15 pages isn't primary penalty", () => {

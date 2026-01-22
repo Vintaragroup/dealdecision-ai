@@ -109,6 +109,27 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		expect(text).not.toMatch(/THEBESTPARTOFHOCKEY|@@@@|%%%%%|\uFFFD/i);
 	});
 
+	it("does not treat sports schedule text as raise/terms", () => {
+		const out = generatePhase1DIOV1({
+			deal: { deal_id: "deal-sports", name: "3ICE", stage: "in_diligence" },
+			inputDocuments: [
+				{
+					document_id: "doc-sports",
+					title: "3ICE Deck",
+					type: "pitch_deck",
+					full_text:
+						"OPENING ROUND TEAM TEAM 2 VS TEAM TEAM 3\n" +
+						"CONSOLATION GAME WEEKLY CHAMPIONSHIP TEAM TEAM 2023\n" +
+						"BROADCAST PARTNERS\n",
+				},
+			],
+		});
+
+		expect(out.deal_overview_v2?.raise_terms ?? null).toBeNull();
+		const bullets = (out.executive_summary_v2?.highlights ?? []).join("\n");
+		expect(bullets).toMatch(/Raise\/terms:\s*not provided/i);
+	});
+
 	it("fills Phase 1 overview v2 from document text (headings) and reduces 'not provided' gaps", () => {
 		const out = generatePhase1DIOV1({
 			deal: { deal_id: "deal-v2-text-first", name: "TextFirstCo", stage: "intake" },

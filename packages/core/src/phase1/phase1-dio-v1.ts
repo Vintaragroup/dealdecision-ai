@@ -1300,6 +1300,22 @@ function extractWindow(text: string, re: RegExp, maxChars: number): { snippet: s
 	return { snippet, confidence: strong ? 0.75 : 0.6 };
 }
 
+function looksLikeFinancingTerms(text: string): boolean {
+	const t = sanitizeInlineText(text).toLowerCase();
+	if (!t.trim()) return false;
+
+	// Positive signals
+	const hasAmount = /\$\s?\d|\b\d+(?:\.\d+)?\s*(?:m|mm|million|k)\b/i.test(t);
+	const hasInstrument = /\b(safe|valuation|pre[-\s]?money|post[-\s]?money|cap\s*table|term\s*sheet|convertible|note|equity|preferred|seed|series\s+[a-e]|proceeds|use\s+of\s+funds)\b/i.test(t);
+	if (hasAmount || hasInstrument) return true;
+
+	// Common false-positive patterns (sports schedules, standings, etc.)
+	const looksSportsy = /\b(opening\s+round|consolation|weekly\s+championship|power\s*play|penalt(?:y|ies)|broadcast\s+partners|\bteam\b|\bvs\b|\bperiod\b)\b/i.test(t);
+	if (looksSportsy) return false;
+
+	return false;
+}
+
 export function extractPhase1OverviewFromDocuments(
 	docs: Array<{ document_id: string; title?: string | null; full_text?: string | null }>
 ): Phase1OverviewExtractorOutput {
@@ -1352,7 +1368,7 @@ export function extractPhase1OverviewFromDocuments(
 			const joined = parts.join(" ").trim();
 			return joined ? capOneLiner(joined, 220) : "";
 		})();
-		if (raiseCandidate) {
+		if (raiseCandidate && looksLikeFinancingTerms(raiseCandidate)) {
 			const strongAmt = /\$\s?\d|\b\d+(?:\.\d+)?\s*(?:m|mm|million|k)\b/i.test(raiseCandidate);
 			raiseCands.push({ value: raiseCandidate, document_id: docId, confidence: strongAmt ? 0.85 : 0.65, rawSnippet: raiseCandidate });
 		}
@@ -2695,9 +2711,11 @@ export function generatePhase1DIOV1(params: {
 			return candidate;
 		})(),
 		raise: safeNonEmpty((overviewV2Normalized as any)?.raise) || finalTruth.raise,
-		raise_terms: safeNonEmpty((overviewV2Normalized as any)?.raise_terms)
-			|| extractedRaiseTerms
-			|| (finalTruth.raise !== "Unknown" ? finalTruth.raise : null),
+		raise_terms: (() => {
+			const existing = safeNonEmpty((overviewV2Normalized as any)?.raise_terms);
+			const keepExisting = existing && looksLikeFinancingTerms(existing) ? existing : "";
+			return keepExisting || extractedRaiseTerms || (finalTruth.raise !== "Unknown" ? finalTruth.raise : null);
+		})(),
 		go_to_market: safeNonEmpty((overviewV2Normalized as any)?.go_to_market) || extractedGtm || null,
 		traction_signals: finalTruth.traction_signals,
 		key_risks_detected: finalTruth.key_risks_detected,

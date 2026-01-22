@@ -1793,7 +1793,7 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   // When missing/non-ok/no-signal, we still compute a neutral baseline (50) plus an explicit deterministic penalty.
   const weights: ScoreExplanation["aggregation"]["weights"] = {
     slide_sequence: 0,
-    metric_benchmark: adjustedBaseWeights.metric_benchmark,
+    metric_benchmark: 0,
     visual_design: 0,
     narrative_arc: 0,
     financial_health: adjustedBaseWeights.financial_health,

@@ -438,9 +438,9 @@ describe("scoring_diagnostics_v1", () => {
         ],
         evidence_ids: [],
       },
-      risk_assessment: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, overall_risk_score: 30, risks_by_category: { market: [], team: [], financial: [], execution: [] }, total_risks: 0, critical_count: 0, high_count: 0, evidence_ids: [] },
+      risk_assessment: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, overall_risk_score: 20, risks_by_category: { market: [], team: [], financial: [], execution: [] }, total_risks: 0, critical_count: 0, high_count: 0, evidence_ids: [] },
       slide_sequence: { analyzer_version: "1.0.0", executed_at: now, status: "insufficient_data", coverage: 0, confidence: 0.3, score: null, pattern_match: "None", sequence_detected: [], expected_sequence: [], deviations: [], evidence_ids: [] },
-      financial_health: { analyzer_version: "1.0.0", executed_at: now, status: "insufficient_data", coverage: 0, confidence: 0.3, runway_months: null, burn_multiple: null, health_score: null, metrics: { revenue: null, expenses: null, cash_balance: null, burn_rate: null, growth_rate: null }, risks: [], evidence_ids: [] },
+      financial_health: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, runway_months: 18, burn_multiple: 1.2, health_score: 80, metrics: { revenue: 1200000, expenses: 0, cash_balance: 0, burn_rate: 0, growth_rate: null }, risks: [], evidence_ids: [] },
       visual_design: { analyzer_version: "1.0.0", executed_at: now, status: "insufficient_data", coverage: 0, confidence: 0.3, design_score: null, proxy_signals: { page_count_appropriate: true, image_to_text_ratio_balanced: true, consistent_formatting: true }, strengths: [], weaknesses: [], evidence_ids: [] },
     };
 
@@ -600,7 +600,7 @@ describe("scoring_diagnostics_v1", () => {
         ],
         evidence_ids: [],
       },
-      risk_assessment: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, overall_risk_score: 30, risks_by_category: { market: [], team: [], financial: [], execution: [] }, total_risks: 0, critical_count: 0, high_count: 0, evidence_ids: [] },
+      risk_assessment: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, overall_risk_score: 20, risks_by_category: { market: [], team: [], financial: [], execution: [] }, total_risks: 0, critical_count: 0, high_count: 0, evidence_ids: [] },
       slide_sequence: { analyzer_version: "1.0.0", executed_at: now, status: "insufficient_data", coverage: 0, confidence: 0.3, score: null, pattern_match: "None", sequence_detected: [], expected_sequence: [], deviations: [], evidence_ids: [] },
       financial_health: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, runway_months: 18, burn_multiple: 1.2, health_score: 80, metrics: { revenue: 1500000, expenses: 0, cash_balance: 0, burn_rate: 0, growth_rate: null }, risks: [], evidence_ids: [] },
       visual_design: { analyzer_version: "1.0.0", executed_at: now, status: "insufficient_data", coverage: 0, confidence: 0.3, design_score: null, proxy_signals: { page_count_appropriate: true, image_to_text_ratio_balanced: true, consistent_formatting: true }, strengths: [], weaknesses: [], evidence_ids: [] },
@@ -789,7 +789,7 @@ describe("scoring_diagnostics_v1", () => {
         ],
         evidence_ids: [],
       },
-      risk_assessment: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, overall_risk_score: 25, risks_by_category: { market: [], team: [], financial: [], execution: [] }, total_risks: 0, critical_count: 0, high_count: 0, evidence_ids: [] },
+      risk_assessment: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, overall_risk_score: 10, risks_by_category: { market: [], team: [], financial: [], execution: [] }, total_risks: 0, critical_count: 0, high_count: 0, evidence_ids: [] },
       slide_sequence: { analyzer_version: "1.0.0", executed_at: now, status: "insufficient_data", coverage: 0, confidence: 0.3, score: null, pattern_match: "None", sequence_detected: [], expected_sequence: [], deviations: [], evidence_ids: [] },
       financial_health: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, runway_months: 18, burn_multiple: 1.2, health_score: 75, metrics: { revenue: null, expenses: 0, cash_balance: 0, burn_rate: 0, growth_rate: null }, risks: [], evidence_ids: [] },
       visual_design: { analyzer_version: "1.0.0", executed_at: now, status: "insufficient_data", coverage: 0, confidence: 0.3, design_score: null, proxy_signals: { page_count_appropriate: true, image_to_text_ratio_balanced: true, consistent_formatting: true }, strengths: [], weaknesses: [], evidence_ids: [] },
@@ -1210,10 +1210,10 @@ describe("scoring_diagnostics_v1", () => {
         ],
         evidence_ids: [],
       },
-      risk_assessment: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, overall_risk_score: 40, risks_by_category: { market: [], team: [], financial: [], execution: [] }, total_risks: 0, critical_count: 0, high_count: 0, evidence_ids: [] },
+      risk_assessment: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, overall_risk_score: 20, risks_by_category: { market: [], team: [], financial: [], execution: [] }, total_risks: 0, critical_count: 0, high_count: 0, evidence_ids: [] },
       slide_sequence: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, score: 70, pattern_match: "problem_first", sequence_detected: [], expected_sequence: [], deviations: [], evidence_ids: [] },
       visual_design: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, design_score: 60, proxy_signals: { page_count_appropriate: true, image_to_text_ratio_balanced: true, consistent_formatting: true }, strengths: [], weaknesses: [], evidence_ids: [] },
-      financial_health: { analyzer_version: "1.0.0", executed_at: now, status: "insufficient_data", coverage: 0, confidence: 0.3, runway_months: null, burn_multiple: null, health_score: null, metrics: { revenue: null, expenses: null, cash_balance: null, burn_rate: null, growth_rate: null }, risks: [], evidence_ids: [] },
+      financial_health: { analyzer_version: "1.0.0", executed_at: now, status: "ok", coverage: 1, confidence: 0.9, runway_months: 24, burn_multiple: 1.0, health_score: 85, metrics: { revenue: 500000, expenses: 0, cash_balance: 0, burn_rate: 0, growth_rate: 0.6 }, risks: [], evidence_ids: [] },
     };
 
     const diagnostics = buildScoringDiagnosticsFromDIO(dio);

@@ -14,8 +14,22 @@ export async function registerUploadsStatic(app: FastifyInstance): Promise<void>
   const rootDir = getUploadsRootDir();
 
   if (!fs.existsSync(rootDir)) {
-    app.log.warn({ uploadsRootDir: rootDir }, "UPLOAD_DIR does not exist; /uploads/* will return 404 until populated");
-  } else if (process.env.NODE_ENV !== "production") {
+    try {
+      fs.mkdirSync(rootDir, { recursive: true });
+      app.log.info({ uploadsRootDir: rootDir }, "Created UPLOAD_DIR on startup");
+    } catch (err) {
+      // Do not crash startup if we cannot create the directory (e.g. read-only filesystem).
+      app.log.warn({ uploadsRootDir: rootDir, err }, "Failed to create UPLOAD_DIR; uploads will be disabled");
+    }
+  }
+
+  if (!fs.existsSync(rootDir)) {
+    // Avoid fastify-static throwing on a missing root directory.
+    app.log.warn({ uploadsRootDir: rootDir }, "UPLOAD_DIR does not exist; skipping /uploads static route");
+    return;
+  }
+
+  if (process.env.NODE_ENV !== "production") {
     app.log.info({ uploadsRootDir: rootDir }, "uploads static root resolved");
   }
 

@@ -11,6 +11,7 @@ export async function registerHealthRoutes(app: FastifyInstance) {
   app.get(
     "/",
     {
+      logLevel: "silent",
       schema: {
         response: {
           200: { type: "string" },
@@ -23,6 +24,7 @@ export async function registerHealthRoutes(app: FastifyInstance) {
   app.get<{ Reply: HealthResponse }>(
     "/api/v1/health",
     {
+      logLevel: "silent",
       schema: {
         response: {
           200: {
@@ -40,6 +42,7 @@ export async function registerHealthRoutes(app: FastifyInstance) {
   app.get(
     "/healthz",
     {
+      logLevel: "silent",
       schema: {
         response: {
           200: { type: "string" },

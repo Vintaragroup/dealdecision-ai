@@ -4,7 +4,7 @@ WORKDIR /app
 ENV PNPM_HOME=/root/.local/share/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable
-RUN corepack prepare pnpm@9.12.0 --activate
+RUN corepack prepare pnpm@10.28.1 --activate
 
 # ----------------------
 # deps: install workspace deps

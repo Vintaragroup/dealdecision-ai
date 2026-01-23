@@ -1,6 +1,8 @@
 import type { Deal, WorkspaceChatResponse, DealChatResponse, JobProgressEventV1, JobStatusDetail } from '@dealdecision/contracts';
 
 import { debugApiInferDealId, debugApiIsEnabled, debugApiLogCall, debugApiLogSse } from './debugApi';
+import { getAuthToken } from './authToken';
+import { fetchEventSource } from '@microsoft/fetch-event-source';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:9000';
 const BACKEND_MODE = (import.meta.env.VITE_BACKEND_MODE || 'mock').toLowerCase();
@@ -227,10 +229,16 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   let error: unknown = undefined;
 
   try {
+    const clerkToken = await getAuthToken();
+    const devAdminToken = getDevAdminToken();
+    const fallbackBearer = !clerkToken && devAdminToken ? `Bearer ${devAdminToken}` : undefined;
+    const bearer = clerkToken ? `Bearer ${clerkToken}` : fallbackBearer;
+
     res = await fetch(`${API_BASE_URL}${path}`, {
       ...options,
       headers: {
         ...(isFormData ? {} : hasBody ? { 'Content-Type': 'application/json' } : {}),
+        ...(bearer ? { Authorization: bearer } : {}),
         ...(options?.headers || {})
       }
     });
@@ -1045,24 +1053,19 @@ export function subscribeToEvents(
   },
   options?: { cursor?: string }
 ) {
-  if (typeof EventSource === 'undefined') {
-    return () => {};
-  }
-
   const lastEventIdRef = { current: options?.cursor } as { current: string | undefined };
-  let source: EventSource | null = null;
   let stopped = false;
   let retryDelay = 1000;
 
+  let controller: AbortController | null = null;
+
   const cleanupSource = () => {
-    if (source) {
-      try {
-        source.close();
-      } catch {
-        // ignore
-      }
-      source = null;
+    try {
+      controller?.abort();
+    } catch {
+      // ignore
     }
+    controller = null;
   };
 
   const normalizeProgress = (payload: any, eventName: string): JobProgressEventV1 | null => {
@@ -1118,8 +1121,16 @@ export function subscribeToEvents(
     return normalized;
   };
 
-  const connect = () => {
+  const connect = async () => {
     if (stopped) return;
+
+    // New controller per connection attempt.
+    controller = new AbortController();
+
+    const clerkToken = await getAuthToken();
+    const devAdminToken = getDevAdminToken();
+    const fallbackBearer = !clerkToken && devAdminToken ? `Bearer ${devAdminToken}` : undefined;
+    const bearer = clerkToken ? `Bearer ${clerkToken}` : fallbackBearer;
 
     const params = new URLSearchParams({ deal_id: dealId });
     if (lastEventIdRef.current) {
@@ -1132,13 +1143,10 @@ export function subscribeToEvents(
     const url = `${API_BASE_URL}/api/v1/events?${params.toString()}`;
 
     try {
-      source = new EventSource(url);
-
-      const handleJobEvent = (eventName: string) => (event: MessageEvent) => {
+      const handleJobEvent = (eventName: string, data: unknown, lastEventId?: string) => {
         try {
-          const data = JSON.parse(event.data);
           const normalized = normalizeJobPayload(data, eventName);
-          const lastId = (event as any)?.lastEventId || normalized.updated_at;
+          const lastId = lastEventId || normalized.updated_at;
           if (lastId) lastEventIdRef.current = lastId;
           if (debugApiIsEnabled()) {
             debugApiLogSse({ event: eventName, dealId: normalized?.deal_id ?? dealId, data: normalized });
@@ -1152,25 +1160,48 @@ export function subscribeToEvents(
         }
       };
 
-      source.addEventListener('open', () => {
-        retryDelay = 1000;
-      });
+      await fetchEventSource(url, {
+        signal: controller.signal,
+        headers: {
+          ...(bearer ? { Authorization: bearer } : {}),
+        },
+        onopen: async (resp) => {
+          if (resp.ok) {
+            retryDelay = 1000;
+            return;
+          }
+          const text = await resp.text().catch(() => '');
+          throw new Error(text || `SSE open failed (${resp.status})`);
+        },
+        onmessage: (msg) => {
+          if (msg.event === 'ready') {
+            retryDelay = 1000;
+            if (debugApiIsEnabled()) debugApiLogSse({ event: 'ready', dealId });
+            handlers.onReady?.();
+            return;
+          }
 
-      source.addEventListener('ready', () => {
-        retryDelay = 1000;
-        if (debugApiIsEnabled()) debugApiLogSse({ event: 'ready', dealId });
-        handlers.onReady?.();
-      });
-      source.addEventListener('job.updated', handleJobEvent('job.updated'));
-      source.addEventListener('job.progress', handleJobEvent('job.progress'));
-      source.addEventListener('error', (event) => {
-        if (debugApiIsEnabled()) debugApiLogSse({ event: 'error', dealId, error: event });
-        handlers.onError?.(event);
-        cleanupSource();
-        if (stopped) return;
-        const delay = retryDelay;
-        retryDelay = Math.min(10000, retryDelay * 2);
-        setTimeout(connect, delay);
+          if (msg.event === 'job.updated' || msg.event === 'job.progress') {
+            let parsed: unknown = msg.data;
+            try {
+              parsed = msg.data ? JSON.parse(msg.data) : null;
+            } catch {
+              // ignore
+            }
+            handleJobEvent(msg.event, parsed, msg.id);
+          }
+        },
+        onerror: (err) => {
+          if (debugApiIsEnabled()) debugApiLogSse({ event: 'error', dealId, error: err });
+          handlers.onError?.(err);
+          cleanupSource();
+          if (stopped) return;
+          const delay = retryDelay;
+          retryDelay = Math.min(10000, retryDelay * 2);
+          setTimeout(() => {
+            connect();
+          }, delay);
+        },
       });
     } catch (err) {
       if (debugApiIsEnabled()) debugApiLogSse({ event: 'init_error', dealId, error: err });
@@ -1178,11 +1209,11 @@ export function subscribeToEvents(
       if (stopped) return;
       const delay = retryDelay;
       retryDelay = Math.min(10000, retryDelay * 2);
-      setTimeout(connect, delay);
+      setTimeout(() => connect(), delay);
     }
   };
 
-  connect();
+  void connect();
 
   return () => {
     stopped = true;

@@ -2,7 +2,7 @@
   "name": "dealdecision-ai",
   "version": "0.0.0",
   "private": true,
-  "packageManager": "pnpm@9.12.0",
+  "packageManager": "pnpm@10.28.1",
   "scripts": {
       "report:segments:audit:md": "tsx scripts/segment-classification-audit.ts",
     "report:segments:audit:all": "tsx scripts/segment-classification-audit-all.ts",

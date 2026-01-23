@@ -21,6 +21,11 @@ function requireAdminAuth(
   reply: FastifyReply,
   next: () => void
 ): void {
+  const orgRole = (request as any)?.auth?.orgRole;
+  if (typeof orgRole === "string" && orgRole.toLowerCase().includes("admin")) {
+    return next();
+  }
+
   const authHeader = request.headers.authorization;
   const adminToken = process.env.ADMIN_TOKEN;
 

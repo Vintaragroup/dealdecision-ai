@@ -561,6 +561,9 @@ function requireDestructiveAuth(request: FastifyRequest | any): { ok: true } | {
   // Allow destructive operations in non-production by default to keep tests/dev simple.
   if (process.env.NODE_ENV !== "production") return { ok: true };
 
+  const orgRole = (request as any)?.auth?.orgRole;
+  if (typeof orgRole === "string" && orgRole.toLowerCase().includes("admin")) return { ok: true };
+
   const headers = (request?.headers ?? {}) as any;
   const token = headers["x-admin-token"] ?? headers["admin-token"];
   if (typeof token === "string" && token.trim() && token === process.env.ADMIN_TOKEN) return { ok: true };

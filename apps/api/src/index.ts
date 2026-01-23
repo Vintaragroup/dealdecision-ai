@@ -1,6 +1,7 @@
 import fastify from "fastify";
 import { registerCors } from "./plugins/cors";
 import { registerUploadsStatic } from "./plugins/uploads-static";
+import { registerClerkAuth } from "./plugins/clerk-auth";
 import multipart from "@fastify/multipart";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
@@ -38,6 +39,7 @@ const host = "0.0.0.0";
 
 async function bootstrap() {
   await registerCors(app);
+  await registerClerkAuth(app);
   await registerUploadsStatic(app);
   const pool = getPool();
   await app.register(swagger, {

@@ -6297,15 +6297,16 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     const stage = data?.stage ?? "intake";
     const priority = data?.priority ?? "medium";
     const owner = data?.owner ?? null;
+    const createdByUserId = (request as any)?.auth?.userId ?? null;
 
     const requestedName = typeof data?.name === "string" ? sanitizeText(data.name) : "";
     const name = requestedName || `Draft Deal ${randomUUID().slice(0, 8)}`;
 
     const { rows } = await pool.query<{ id: string }>(
-      `INSERT INTO deals (name, stage, priority, owner)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO deals (name, stage, priority, owner, created_by_user_id)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING id`,
-      [name, stage, priority, owner]
+      [name, stage, priority, owner, createdByUserId]
     );
 
     const dealId = rows[0]?.id;
@@ -6319,6 +6320,26 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     }
 
     return reply.status(201).send({ deal_id: dealId });
+  });
+
+  // Claim legacy deals that don't have an explicit creator.
+  // Useful when moving from a single-tenant/dev dataset to per-user deal ownership.
+  app.post("/api/v1/deals/claim", async (request, reply) => {
+    const userId = (request as any)?.auth?.userId;
+    if (typeof userId !== "string" || userId.trim().length === 0) {
+      return reply.status(401).send({ error: "Unauthorized" });
+    }
+
+    const { rowCount } = await pool.query(
+      `UPDATE deals
+          SET created_by_user_id = $1,
+              updated_at = now()
+        WHERE deleted_at IS NULL
+          AND created_by_user_id IS NULL`,
+      [userId.trim()]
+    );
+
+    return reply.status(200).send({ claimed: rowCount ?? 0 });
   });
 
   app.post("/api/v1/deals/:deal_id/auto-profile", async (request, reply) => {
@@ -6498,6 +6519,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     }
 
     const { name, stage, priority, trend, score, owner } = parsed.data;
+    const createdByUserId = (request as any)?.auth?.userId ?? null;
 
     // Guard against accidental duplicates (common in bulk assignment / OCR scenarios).
     // We keep this lightweight (no schema changes) by normalizing and comparing in-app.
@@ -6517,10 +6539,10 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     }
 
     const { rows } = await pool.query<DealRow>(
-      `INSERT INTO deals (name, stage, priority, trend, score, owner)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO deals (name, stage, priority, trend, score, owner, created_by_user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING *`,
-      [name, stage, priority, trend ?? null, score ?? null, owner ?? null]
+      [name, stage, priority, trend ?? null, score ?? null, owner ?? null, createdByUserId]
     );
 
     return mapDeal(rows[0], null, "full");
@@ -7757,6 +7779,8 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
   app.get("/api/v1/deals", async (request) => {
     const mode = parseDealApiMode(request);
     // Accept optional filters but ignore for now (TODO)
+    const userId = (request as any)?.auth?.userId;
+    const userIdParam = typeof userId === "string" ? userId : "";
     const { rows } = await pool.query<DealRow & {
       dio_id: string | null;
       analysis_version: number | null;
@@ -7879,7 +7903,9 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
             WHERE deal_id = d.id
          ) stats ON TRUE
         WHERE d.deleted_at IS NULL
-        ORDER BY d.created_at DESC`
+          AND d.created_by_user_id = $1
+        ORDER BY d.created_at DESC`,
+      [userIdParam]
     );
     return rows.map((row) => mapDeal(row, {
       dio_id: row.dio_id,

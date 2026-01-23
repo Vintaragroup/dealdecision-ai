@@ -1144,9 +1144,19 @@ export async function registerDocumentRoutes(
    * Accepts FormData with files and returns grouping suggestions
    */
   app.post("/api/v1/documents/analyze-batch", async (request, reply) => {
+    const userId = (request as any)?.auth?.userId as string | undefined;
+    if (!userId) {
+      return reply.status(401).send({ error: "Unauthorized" });
+    }
+
     // Get all deals for matching
     const dealsResult = await pool.query<{ id: string; name: string }>(
-      `SELECT id, name FROM deals ORDER BY name`,
+      `SELECT id, name
+         FROM deals
+        WHERE deleted_at IS NULL
+          AND created_by_user_id = $1
+        ORDER BY name`,
+      [userId]
     );
     const deals = dealsResult.rows;
 
@@ -1179,6 +1189,11 @@ export async function registerDocumentRoutes(
    * Handles document grouping, creates new deals if needed, and queues processing
    */
   app.post("/api/v1/documents/bulk-assign", async (request, reply) => {
+    const userId = (request as any)?.auth?.userId as string | undefined;
+    if (!userId) {
+      return reply.status(401).send({ error: "Unauthorized" });
+    }
+
     const body = request.body as {
       assignments: Array<{
         filename: string;
@@ -1218,7 +1233,11 @@ export async function registerDocumentRoutes(
     // Handle new deals if requested
     if (body.newDeals && body.newDeals.length > 0) {
       const { rows: existingDeals } = await pool.query<{ id: string; name: string }>(
-        `SELECT id, name FROM deals WHERE deleted_at IS NULL`
+        `SELECT id, name
+           FROM deals
+          WHERE deleted_at IS NULL
+            AND created_by_user_id = $1`,
+        [userId]
       );
 
       for (const newDeal of body.newDeals) {
@@ -1230,10 +1249,18 @@ export async function registerDocumentRoutes(
         const dealId = match?.id ?? randomUUID();
         try {
           if (!match) {
+            const createdByUserId = userId;
             await pool.query(
-              `INSERT INTO deals (id, name, stage, priority, updated_at)
-               VALUES ($1, $2, $3, $4, $5)`,
-              [sanitizeText(dealId), sanitizeText(newDeal.dealName), "intake", "medium", new Date().toISOString()],
+              `INSERT INTO deals (id, name, stage, priority, updated_at, created_by_user_id)
+               VALUES ($1, $2, $3, $4, $5, $6)`,
+              [
+                sanitizeText(dealId),
+                sanitizeText(newDeal.dealName),
+                "intake",
+                "medium",
+                new Date().toISOString(),
+                createdByUserId,
+              ],
             );
           }
 

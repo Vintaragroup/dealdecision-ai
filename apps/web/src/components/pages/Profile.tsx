@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Textarea } from '../ui/textarea';
+import { useClerk, useOrganization, useUser } from '@clerk/clerk-react';
 import { 
   User,
   Mail,
@@ -32,21 +33,46 @@ interface ProfileProps {
 }
 
 export function Profile({ darkMode, setDarkMode }: ProfileProps) {
+  const { isLoaded: userLoaded, isSignedIn, user } = useUser();
+  const { isLoaded: orgLoaded, organization, membership } = useOrganization();
+  const clerk = useClerk();
+
   const [activeTab, setActiveTab] = useState<'profile' | 'preferences' | 'notifications' | 'billing'>('profile');
   const [isSaving, setIsSaving] = useState(false);
 
-  // Profile data
-  const [profileData, setProfileData] = useState({
-    name: 'Sarah Chen',
-    email: 'sarah.chen@company.com',
-    title: 'Founder & CEO',
-    company: 'TechVision AI',
-    location: 'San Francisco, CA',
-    phone: '+1 (555) 123-4567',
-    bio: 'Serial entrepreneur with 2 successful exits. Building the future of AI infrastructure.',
-    linkedIn: 'linkedin.com/in/sarahchen',
-    twitter: '@sarahchen'
-  });
+  const fullName = user?.fullName || [user?.firstName, user?.lastName].filter(Boolean).join(' ') || 'Account';
+  const primaryEmail =
+    user?.primaryEmailAddress?.emailAddress || user?.emailAddresses?.[0]?.emailAddress || '';
+  const avatarUrl = user?.imageUrl || '';
+  const memberSince = (() => {
+    const raw = (user as any)?.createdAt;
+    const date = raw instanceof Date ? raw : typeof raw === 'number' ? new Date(raw) : null;
+    if (!date) return null;
+    try {
+      return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short' });
+    } catch {
+      return null;
+    }
+  })();
+
+  const orgName = orgLoaded ? organization?.name || null : null;
+  const orgRole = orgLoaded ? (membership as any)?.role || null : null;
+
+  if (!userLoaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a] text-white px-6">
+        <div className="text-sm text-white/70">Loading profile…</div>
+      </div>
+    );
+  }
+
+  if (!isSignedIn) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a] text-white px-6">
+        <div className="text-sm text-white/70">You are signed out.</div>
+      </div>
+    );
+  }
 
   // Notification settings
   const [notifications, setNotifications] = useState({
@@ -58,6 +84,17 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
     pushMentions: true,
     weeklyReport: true,
     monthlyReport: false
+  });
+
+  // Optional user-entered profile details (not used for auth; Clerk remains source of truth).
+  const [profileExtras, setProfileExtras] = useState({
+    title: '',
+    company: '',
+    location: '',
+    phone: '',
+    bio: '',
+    linkedIn: '',
+    twitter: '',
   });
 
   const stats = [
@@ -86,8 +123,12 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
           <div className="flex items-start gap-6 mb-6">
             {/* Avatar */}
             <div className="relative">
-              <div className="w-24 h-24 bg-gradient-to-br from-[#6366f1] to-[#8b5cf6] rounded-2xl flex items-center justify-center text-4xl shadow-lg">
-                👩‍💼
+              <div className="w-24 h-24 bg-gradient-to-br from-[#6366f1] to-[#8b5cf6] rounded-2xl flex items-center justify-center text-4xl shadow-lg overflow-hidden">
+                {avatarUrl ? (
+                  <img src={avatarUrl} alt={fullName} className="w-full h-full object-cover" />
+                ) : (
+                  <span aria-hidden>👤</span>
+                )}
               </div>
               <button className={`absolute -bottom-2 -right-2 w-8 h-8 rounded-full flex items-center justify-center shadow-lg ${
                 darkMode ? 'bg-[#6366f1] hover:bg-[#5558e3]' : 'bg-[#6366f1] hover:bg-[#5558e3]'
@@ -99,24 +140,25 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
             {/* Info */}
             <div className="flex-1">
               <h1 className={`text-2xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                {profileData.name}
+                {fullName}
               </h1>
-              <p className={`text-sm mb-3 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                {profileData.title} at {profileData.company}
-              </p>
+              {(orgName || orgRole) && (
+                <p className={`text-sm mb-3 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  {orgName ? `Org: ${orgName}` : 'Org'}
+                  {orgRole ? ` · Role: ${String(orgRole)}` : ''}
+                </p>
+              )}
               <div className={`flex items-center gap-4 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                 <span className="flex items-center gap-1">
                   <Mail className="w-3 h-3" />
-                  {profileData.email}
+                  {primaryEmail}
                 </span>
-                <span className="flex items-center gap-1">
-                  <MapPin className="w-3 h-3" />
-                  {profileData.location}
-                </span>
-                <span className="flex items-center gap-1">
-                  <Calendar className="w-3 h-3" />
-                  Member since Jan 2024
-                </span>
+                {memberSince && (
+                  <span className="flex items-center gap-1">
+                    <Calendar className="w-3 h-3" />
+                    Member since {memberSince}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -124,6 +166,9 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
               variant="secondary"
               darkMode={darkMode}
               icon={<LogOut className="w-4 h-4" />}
+              onClick={() => {
+                void clerk.signOut({ redirectUrl: '/' });
+              }}
             >
               Sign Out
             </Button>
@@ -199,9 +244,12 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                     </label>
                     <Input
                       darkMode={darkMode}
-                      value={profileData.name}
-                      onChange={(e) => setProfileData({ ...profileData, name: e.target.value })}
+                      value={fullName}
+                      disabled
                     />
+                    <div className={`text-xs mt-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                      Managed by Clerk
+                    </div>
                   </div>
                   <div>
                     <label className={`block text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
@@ -210,9 +258,12 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                     <Input
                       darkMode={darkMode}
                       type="email"
-                      value={profileData.email}
-                      onChange={(e) => setProfileData({ ...profileData, email: e.target.value })}
+                      value={primaryEmail}
+                      disabled
                     />
+                    <div className={`text-xs mt-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                      Managed by Clerk
+                    </div>
                   </div>
                 </div>
 
@@ -223,8 +274,8 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                     </label>
                     <Input
                       darkMode={darkMode}
-                      value={profileData.title}
-                      onChange={(e) => setProfileData({ ...profileData, title: e.target.value })}
+                      value={profileExtras.title}
+                      onChange={(e) => setProfileExtras({ ...profileExtras, title: e.target.value })}
                     />
                   </div>
                   <div>
@@ -233,8 +284,8 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                     </label>
                     <Input
                       darkMode={darkMode}
-                      value={profileData.company}
-                      onChange={(e) => setProfileData({ ...profileData, company: e.target.value })}
+                      value={profileExtras.company}
+                      onChange={(e) => setProfileExtras({ ...profileExtras, company: e.target.value })}
                     />
                   </div>
                 </div>
@@ -246,8 +297,8 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                     </label>
                     <Input
                       darkMode={darkMode}
-                      value={profileData.location}
-                      onChange={(e) => setProfileData({ ...profileData, location: e.target.value })}
+                      value={profileExtras.location}
+                      onChange={(e) => setProfileExtras({ ...profileExtras, location: e.target.value })}
                     />
                   </div>
                   <div>
@@ -256,8 +307,8 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                     </label>
                     <Input
                       darkMode={darkMode}
-                      value={profileData.phone}
-                      onChange={(e) => setProfileData({ ...profileData, phone: e.target.value })}
+                      value={profileExtras.phone}
+                      onChange={(e) => setProfileExtras({ ...profileExtras, phone: e.target.value })}
                     />
                   </div>
                 </div>
@@ -268,8 +319,8 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                   </label>
                   <Textarea
                     darkMode={darkMode}
-                    value={profileData.bio}
-                    onChange={(e) => setProfileData({ ...profileData, bio: e.target.value })}
+                    value={profileExtras.bio}
+                    onChange={(e) => setProfileExtras({ ...profileExtras, bio: e.target.value })}
                     rows={3}
                   />
                 </div>
@@ -281,8 +332,8 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                     </label>
                     <Input
                       darkMode={darkMode}
-                      value={profileData.linkedIn}
-                      onChange={(e) => setProfileData({ ...profileData, linkedIn: e.target.value })}
+                      value={profileExtras.linkedIn}
+                      onChange={(e) => setProfileExtras({ ...profileExtras, linkedIn: e.target.value })}
                     />
                   </div>
                   <div>
@@ -291,8 +342,8 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                     </label>
                     <Input
                       darkMode={darkMode}
-                      value={profileData.twitter}
-                      onChange={(e) => setProfileData({ ...profileData, twitter: e.target.value })}
+                      value={profileExtras.twitter}
+                      onChange={(e) => setProfileExtras({ ...profileExtras, twitter: e.target.value })}
                     />
                   </div>
                 </div>

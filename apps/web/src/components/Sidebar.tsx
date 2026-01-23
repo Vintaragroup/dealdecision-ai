@@ -22,6 +22,7 @@ import {
 import { Logo } from './Logo';
 import { useAppSettings } from '../contexts/AppSettingsContext';
 import { useUserRole } from '../contexts/UserRoleContext';
+import { useUser } from '@clerk/clerk-react';
 
 type LogoVariant = 'orbiting' | 'pulse' | 'network' | 'hexagon' | 'morph';
 export type PageView =
@@ -57,6 +58,13 @@ interface SidebarProps {
 export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavigate, onRestartOnboarding, onNewDeal, mobileMenuOpen = false, setMobileMenuOpen }: SidebarProps) {
   const { settings } = useAppSettings();
   const { isInvestor, isAnalyst } = useUserRole();
+  const { user, isLoaded: userLoaded } = useUser();
+
+  const isRyanAdmin = (() => {
+    if (!userLoaded) return false;
+    const email = user?.primaryEmailAddress?.emailAddress;
+    return typeof email === 'string' && email.toLowerCase() === 'ryan@vintaragroup.com';
+  })();
   
   const getNavItemClass = (page: PageView) => {
     const isActive = currentPage === page;
@@ -154,6 +162,15 @@ export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavi
                   <BarChart3 className="w-4 h-4" />
                   <span className="text-sm">Analytics</span>
                 </button>
+              </div>
+            </div>
+
+            {/* Tools */}
+            <div>
+              <h3 className={`px-3 mb-2 text-xs uppercase tracking-wider ${
+                darkMode ? 'text-gray-500' : 'text-gray-400'
+              }`}>Tools</h3>
+              <div className="space-y-1">
                 {/* Deal Comparison - Investor Only */}
                 {isInvestor && (
                   <button 
@@ -164,15 +181,6 @@ export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavi
                     <span className="text-sm">Compare Deals</span>
                   </button>
                 )}
-              </div>
-            </div>
-
-            {/* Tools */}
-            <div>
-              <h3 className={`px-3 mb-2 text-xs uppercase tracking-wider ${
-                darkMode ? 'text-gray-500' : 'text-gray-400'
-              }`}>Tools</h3>
-              <div className="space-y-1">
                 {/* Document Studio - Analyst Only */}
                 {isAnalyst && (
                   <button 
@@ -189,20 +197,6 @@ export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavi
                 >
                   <FileCode className="w-4 h-4" />
                   <span className="text-sm">Reports Generated</span>
-                </button>
-                <button 
-                  onClick={() => onNavigate('roiCalculator')}
-                  className={getNavItemClass('roiCalculator')}
-                >
-                  <TrendingUp className="w-4 h-4" />
-                  <span className="text-sm">ROI Calculator</span>
-                </button>
-                <button 
-                  onClick={() => onNavigate('templates')}
-                  className={getNavItemClass('templates')}
-                >
-                  <FileText className="w-4 h-4" />
-                  <span className="text-sm">Templates</span>
                 </button>
               </div>
             </div>
@@ -276,28 +270,30 @@ export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavi
               </div>
             </div>
 
-            {/* Dev Tools */}
-            <div>
-              <h3 className={`px-3 mb-2 text-xs uppercase tracking-wider ${
-                darkMode ? 'text-gray-500' : 'text-gray-400'
-              }`}>Dev</h3>
-              <div className="space-y-1">
-                <button 
-                  onClick={() => onNavigate('componentShowcase')}
-                  className={getNavItemClass('componentShowcase')}
-                >
-                  <BookOpen className="w-4 h-4" />
-                  <span className="text-sm">Components</span>
-                </button>
-                <button 
-                  onClick={() => onNavigate('logoShowcase')}
-                  className={getNavItemClass('logoShowcase')}
-                >
-                  <Target className="w-4 h-4" />
-                  <span className="text-sm">Logo Variants</span>
-                </button>
+            {/* Dev Tools (Ryan Admin Only) */}
+            {isRyanAdmin && (
+              <div>
+                <h3 className={`px-3 mb-2 text-xs uppercase tracking-wider ${
+                  darkMode ? 'text-gray-500' : 'text-gray-400'
+                }`}>Dev</h3>
+                <div className="space-y-1">
+                  <button 
+                    onClick={() => onNavigate('componentShowcase')}
+                    className={getNavItemClass('componentShowcase')}
+                  >
+                    <BookOpen className="w-4 h-4" />
+                    <span className="text-sm">Components</span>
+                  </button>
+                  <button 
+                    onClick={() => onNavigate('logoShowcase')}
+                    className={getNavItemClass('logoShowcase')}
+                  >
+                    <Target className="w-4 h-4" />
+                    <span className="text-sm">Logo Variants</span>
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </nav>
 

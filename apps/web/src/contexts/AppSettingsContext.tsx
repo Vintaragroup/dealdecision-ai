@@ -10,8 +10,12 @@ interface AppSettingsContextType {
   toggleGamification: () => void;
 }
 
+// Gamification is intentionally disabled for now.
+// Keep the setting wired for later re-enable, but do not allow it to be turned on yet.
+const FORCED_GAMIFICATION_ENABLED = false;
+
 const defaultSettings: AppSettings = {
-  gamificationEnabled: true,
+  gamificationEnabled: FORCED_GAMIFICATION_ENABLED,
 };
 
 const AppSettingsContext = createContext<AppSettingsContextType | undefined>(undefined);
@@ -22,7 +26,8 @@ export function AppSettingsProvider({ children }: { children: ReactNode }) {
     const stored = localStorage.getItem('appSettings');
     if (stored) {
       try {
-        return { ...defaultSettings, ...JSON.parse(stored) };
+        const parsed = JSON.parse(stored);
+        return { ...defaultSettings, ...parsed, gamificationEnabled: FORCED_GAMIFICATION_ENABLED };
       } catch (e) {
         console.error('Failed to parse app settings from localStorage:', e);
         return defaultSettings;
@@ -37,11 +42,13 @@ export function AppSettingsProvider({ children }: { children: ReactNode }) {
   }, [settings]);
 
   const updateSettings = (newSettings: Partial<AppSettings>) => {
-    setSettings(prev => ({ ...prev, ...newSettings }));
+    const { gamificationEnabled: _ignored, ...rest } = newSettings;
+    setSettings(prev => ({ ...prev, ...rest, gamificationEnabled: FORCED_GAMIFICATION_ENABLED }));
   };
 
   const toggleGamification = () => {
-    setSettings(prev => ({ ...prev, gamificationEnabled: !prev.gamificationEnabled }));
+    // Intentionally no-op until gamification is implemented.
+    setSettings(prev => ({ ...prev, gamificationEnabled: FORCED_GAMIFICATION_ENABLED }));
   };
 
   return (

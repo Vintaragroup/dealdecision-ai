@@ -2,7 +2,6 @@ import type { ReactNode } from 'react';
 import { Link, Navigate, Route, Routes } from 'react-router-dom';
 import {
   OrganizationSwitcher,
-  RedirectToSignIn,
   SignedIn,
   SignedOut,
   SignIn,
@@ -11,6 +10,7 @@ import {
 } from '@clerk/clerk-react';
 
 import AppShell from './AppShell';
+import { ProtectedRoute } from './components/auth/ProtectedRoute';
 
 function PublicHome() {
   return (
@@ -32,7 +32,16 @@ function PublicHome() {
 }
 
 function OrgGate({ children }: { children: ReactNode }) {
-  const { orgId } = useAuth();
+  const { orgId, isLoaded } = useAuth();
+
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a] text-white px-6">
+        <div className="text-sm text-white/70">Loading…</div>
+      </div>
+    );
+  }
+
   if (orgId) return <>{children}</>;
 
   return (
@@ -50,16 +59,11 @@ function OrgGate({ children }: { children: ReactNode }) {
 
 function ProtectedApp() {
   return (
-    <>
-      <SignedIn>
-        <OrgGate>
-          <AppShell />
-        </OrgGate>
-      </SignedIn>
-      <SignedOut>
-        <RedirectToSignIn redirectUrl="/app" />
-      </SignedOut>
-    </>
+    <ProtectedRoute>
+      <OrgGate>
+        <AppShell />
+      </OrgGate>
+    </ProtectedRoute>
   );
 }
 
@@ -83,25 +87,33 @@ export default function App() {
       <Route
         path="/sign-in/*"
         element={
-          <SignIn
-            routing="path"
-            path="/sign-in"
-            signUpUrl="/sign-up"
-            afterSignInUrl="/app"
-            afterSignUpUrl="/app"
-          />
+          <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a] px-6 py-10">
+            <div className="w-full max-w-md flex justify-center">
+              <SignIn
+                routing="path"
+                path="/sign-in"
+                signUpUrl="/sign-up"
+                afterSignInUrl="/app"
+                afterSignUpUrl="/app"
+              />
+            </div>
+          </div>
         }
       />
       <Route
         path="/sign-up/*"
         element={
-          <SignUp
-            routing="path"
-            path="/sign-up"
-            signInUrl="/sign-in"
-            afterSignInUrl="/app"
-            afterSignUpUrl="/app"
-          />
+          <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a] px-6 py-10">
+            <div className="w-full max-w-md flex justify-center">
+              <SignUp
+                routing="path"
+                path="/sign-up"
+                signInUrl="/sign-in"
+                afterSignInUrl="/app"
+                afterSignUpUrl="/app"
+              />
+            </div>
+          </div>
         }
       />
 

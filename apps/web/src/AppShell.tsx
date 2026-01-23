@@ -13,7 +13,6 @@ import { DocumentsPage } from './components/pages/DocumentsPage';
 import { AIStudio } from './components/pages/AIStudio';
 import { DueDiligenceReport } from './components/pages/DueDiligenceReport';
 import { DealComparison } from './components/pages/DealComparison';
-import { Gamification } from './components/pages/Gamification';
 import { Templates } from './components/pages/Templates';
 import { Team } from './components/pages/Team';
 import { Profile } from './components/pages/Profile';
@@ -26,8 +25,10 @@ import { AppSettingsProvider } from './contexts/AppSettingsContext';
 import { UserRoleProvider } from './contexts/UserRoleContext';
 import { ScoreSourceProvider } from './contexts/ScoreSourceContext';
 import { ChatAssistant } from './components/ChatAssistant';
+import { CommandPalette } from './components/CommandPalette';
 import { ApiAuthBridge } from './components/auth/ApiAuthBridge';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useUser } from '@clerk/clerk-react';
 
 type LogoVariant = 'orbiting' | 'pulse' | 'network' | 'hexagon' | 'morph';
 
@@ -37,7 +38,7 @@ const defaultNotificationPreferences: NotificationPreferences = {
     enabled: true,
     savingsMilestones: true,
     weeklyRoiSummaries: true,
-    achievementUnlocks: true,
+    achievementUnlocks: false,
   },
   dealUpdates: {
     enabled: true,
@@ -58,10 +59,10 @@ const defaultNotificationPreferences: NotificationPreferences = {
     teamActivity: false, // Default off to reduce noise
   },
   achievements: {
-    enabled: true,
-    newBadges: true,
-    levelUps: true,
-    challengeCompletions: true,
+    enabled: false,
+    newBadges: false,
+    levelUps: false,
+    challengeCompletions: false,
   },
   documents: {
     enabled: true,
@@ -89,10 +90,12 @@ function pathFromPage(page: PageView): string {
 export default function AppShell() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { user, isLoaded: userLoaded } = useUser();
 
   const [darkMode, setDarkMode] = useState(true);
   const [rightSidebarOpen, setRightSidebarOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [logoVariant, setLogoVariant] = useState<LogoVariant>('network');
   const [currentPage, setCurrentPage] = useState<PageView>('dashboard');
   const [selectedDealId, setSelectedDealId] = useState<string | null>(null);
@@ -108,11 +111,25 @@ export default function AppShell() {
 
   const routeDrivenPage = useMemo(() => pageFromPath(location.pathname), [location.pathname]);
 
+  const isRyanAdmin = useMemo(() => {
+    if (!userLoaded) return false;
+    const email = user?.primaryEmailAddress?.emailAddress;
+    return typeof email === 'string' && email.toLowerCase() === 'ryan@vintaragroup.com';
+  }, [userLoaded, user]);
+
   useEffect(() => {
     if (routeDrivenPage) {
       setCurrentPage(routeDrivenPage);
     }
   }, [routeDrivenPage]);
+
+  useEffect(() => {
+    if (!userLoaded) return;
+    if (!isRyanAdmin && (currentPage === 'logoShowcase' || currentPage === 'componentShowcase')) {
+      setCurrentPage('dashboard');
+      navigate('/app');
+    }
+  }, [currentPage, isRyanAdmin, navigate, userLoaded]);
 
   const handleDealClick = (dealId: string) => {
     setSelectedDealId(dealId);
@@ -124,6 +141,18 @@ export default function AppShell() {
   };
 
   const handleNavigate = (page: PageView) => {
+    if (page === 'gamification') {
+      setCurrentPage('dashboard');
+      setMobileMenuOpen(false);
+      navigate('/app');
+      return;
+    }
+    if (!isRyanAdmin && (page === 'logoShowcase' || page === 'componentShowcase')) {
+      setCurrentPage('dashboard');
+      setMobileMenuOpen(false);
+      navigate('/app');
+      return;
+    }
     setCurrentPage(page);
     setMobileMenuOpen(false); // Close mobile menu on navigation
     navigate(pathFromPage(page));
@@ -168,6 +197,19 @@ export default function AppShell() {
     document.documentElement.classList.toggle('dark', darkMode);
   }, [darkMode]);
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const isK = e.key.toLowerCase() === 'k';
+      if (!isK) return;
+      if (!(e.metaKey || e.ctrlKey)) return;
+      e.preventDefault();
+      setCommandPaletteOpen(true);
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   return (
     <AppSettingsProvider>
       <UserRoleProvider>
@@ -205,9 +247,11 @@ export default function AppShell() {
                   currentPage={currentPage}
                   mobileMenuOpen={mobileMenuOpen}
                   setMobileMenuOpen={setMobileMenuOpen}
+                  onNavigate={handleNavigate}
+                  onOpenCommandPalette={() => setCommandPaletteOpen(true)}
                 />
                 <main className="flex-1 overflow-auto">
-                  {currentPage === 'logoShowcase' && (
+                  {currentPage === 'logoShowcase' && isRyanAdmin && (
                     <div className="p-6">
                       <LogoShowcase 
                         darkMode={darkMode} 
@@ -219,7 +263,7 @@ export default function AppShell() {
                       />
                     </div>
                   )}
-                  {currentPage === 'componentShowcase' && (
+                  {currentPage === 'componentShowcase' && isRyanAdmin && (
                     <ComponentShowcase darkMode={darkMode} />
                   )}
                   {currentPage === 'dashboard' && (
@@ -247,7 +291,7 @@ export default function AppShell() {
                     />
                   )}
                   {currentPage === 'analytics' && (
-                    <Analytics darkMode={darkMode} />
+                    <Analytics darkMode={darkMode} onNavigate={handleNavigate} onDealClick={handleDealClick} />
                   )}
                   {currentPage === 'documents' && (
                     <DocumentsPage darkMode={darkMode} />
@@ -268,9 +312,6 @@ export default function AppShell() {
                       darkMode={darkMode}
                       onBack={() => setCurrentPage('dueDiligence')}
                     />
-                  )}
-                  {currentPage === 'gamification' && (
-                    <Gamification darkMode={darkMode} />
                   )}
                   {currentPage === 'templates' && (
                     <Templates darkMode={darkMode} />
@@ -311,6 +352,14 @@ export default function AppShell() {
                   darkMode={darkMode}
                   isOpen={rightSidebarOpen}
                   notificationPreferences={notificationPreferences}
+                />
+
+                <CommandPalette
+                  open={commandPaletteOpen}
+                  onOpenChange={setCommandPaletteOpen}
+                  onNavigate={handleNavigate}
+                  onToggleDarkMode={() => setDarkMode((d) => !d)}
+                  onToggleNotifications={() => setRightSidebarOpen((o) => !o)}
                 />
 
                 {/* Chat Assistant */}

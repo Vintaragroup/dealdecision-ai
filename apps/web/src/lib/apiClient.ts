@@ -277,6 +277,12 @@ export function apiGetDeals() {
   return request<Deal[]>(`/api/v1/deals`).then((deals) => deals.map((d) => normalizeDeal(d)));
 }
 
+export function apiClaimLegacyDeals() {
+  return request<{ claimed: number }>(`/api/v1/deals/claim`, {
+    method: 'POST',
+  });
+}
+
 export function apiCreateDeal(input: {
   name: string;
   stage: Deal['stage'];
@@ -351,6 +357,16 @@ export function apiPostReextractDocuments(
     method: 'POST',
     body: JSON.stringify(input ?? {}),
   });
+}
+
+export function apiPostVerifyDealDocuments(dealId: string, input?: { document_ids?: string[] }) {
+  return request<{ ok: true; deal_id: string; job_id: string; status: string; document_count: number }>(
+    `/api/v1/deals/${dealId}/documents/verify`,
+    {
+      method: 'POST',
+      body: JSON.stringify(input ?? {}),
+    }
+  );
 }
 
 export function apiGetJob(jobId: string) {
@@ -804,6 +820,29 @@ export type DealExtractionReport = {
   recommendation_reason: string;
   note?: string | null;
 };
+
+export type DealIngestionStatusResponse = {
+  deal_id: string;
+  ingestion_status: {
+    files_uploaded: number;
+    total_pages: number;
+    verification_summary: {
+      verified: number;
+      warnings: number;
+      failed: number;
+      pending: number;
+    };
+    overall_readiness: 'ready' | 'needs_review' | 'in_progress' | 'failed';
+    readiness_details: string;
+  };
+  extraction_report: DealExtractionReport;
+  documents: DocumentExtractionReport[];
+  last_updated?: string;
+};
+
+export function apiGetDealIngestionStatus(dealId: string) {
+  return request<DealIngestionStatusResponse>(`/api/v1/deals/${dealId}/documents/ingestion-status`);
+}
 
 export function apiGetDealExtractionReport(dealId: string) {
   return request<{

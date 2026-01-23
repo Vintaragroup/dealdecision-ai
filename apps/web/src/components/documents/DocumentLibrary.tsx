@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
@@ -30,9 +30,10 @@ interface DocumentLibraryProps {
   loading?: boolean;
   onRetry?: (documentId: string) => void;
   onDeleted?: () => void;
+  focusSearchSignal?: number;
 }
 
-export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments, loading, onRetry, onDeleted }: DocumentLibraryProps) {
+export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments, loading, onRetry, onDeleted, focusSearchSignal }: DocumentLibraryProps) {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
@@ -41,6 +42,7 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
   const [deleteTargets, setDeleteTargets] = useState<string[] | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   type LibraryDoc = {
     id: string;
@@ -68,15 +70,27 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
         uploadedAt: doc.uploaded_at ? new Date(doc.uploaded_at) : new Date(),
         uploadedBy: 'System',
         tags: [],
-        url: '#',
-        aiExtracted: false,
+        url: '',
+        aiExtracted: doc.status === 'completed',
         status: doc.status,
       }));
     }
     return []; // Return empty instead of mock data
   }, [initialDocuments]);
 
-  const categories = ['all', 'Pitch Decks', 'Financial Models', 'Legal', 'Media', 'Research', 'Data'];
+  const categories = useMemo(() => {
+    const unique = new Set<string>();
+    for (const d of documents) {
+      if (typeof d.category === 'string' && d.category.trim().length > 0) unique.add(d.category);
+    }
+    return ['all', ...Array.from(unique).sort((a, b) => a.localeCompare(b))];
+  }, [documents]);
+
+  const labelCategory = (raw: string) => {
+    if (raw === 'all') return 'All';
+    const normalized = raw.replace(/_/g, ' ').trim();
+    return normalized.length > 0 ? normalized.replace(/\b\w/g, (c) => c.toUpperCase()) : raw;
+  };
 
   const getFileIcon = (type: string) => {
     if (type.includes('pdf')) return <FileText className="w-6 h-6 text-red-500" />;
@@ -108,6 +122,12 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
     const matchesCategory = selectedCategory === 'all' || doc.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });
+
+  useEffect(() => {
+    if (typeof focusSearchSignal !== 'number') return;
+    // Focus search when signaled from parent (e.g. "Smart Organization" card).
+    searchInputRef.current?.focus();
+  }, [focusSearchSignal]);
 
   const handlePreview = (doc: LibraryDoc) => {
     setSelectedDocument(doc);
@@ -147,8 +167,8 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
 
   const stats = {
     total: documents.length,
-    aiProcessed: documents.filter(d => d.aiExtracted).length,
-    totalSize: documents.reduce((sum, d) => sum + d.size, 0)
+    completed: documents.filter((d) => d.status === 'completed').length,
+    inProgress: documents.filter((d) => d.status === 'processing' || d.status === 'pending').length,
   };
 
   return (
@@ -186,10 +206,10 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
             <Sparkles className="w-5 h-5 text-purple-500" />
             <div>
               <div className={`text-2xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                {stats.aiProcessed}
+                {stats.completed}
               </div>
               <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                AI Processed
+                Completed
               </div>
             </div>
           </div>
@@ -206,10 +226,10 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
             <FileText className="w-5 h-5 text-emerald-500" />
             <div>
               <div className={`text-2xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                {formatFileSize(stats.totalSize)}
+                {stats.inProgress}
               </div>
               <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                Total Storage
+                In Progress
               </div>
             </div>
           </div>
@@ -221,6 +241,7 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
         <div className="flex-1 relative">
           <Search className={`absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
           <Input
+            ref={searchInputRef}
             placeholder="Search documents..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -285,7 +306,7 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
                 : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
             }`}
           >
-            {category.charAt(0).toUpperCase() + category.slice(1)}
+            {labelCategory(category)}
           </button>
         ))}
       </div>
@@ -364,8 +385,13 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
                       e.stopPropagation();
                       onRetry?.(doc.id);
                     }}
+                    disabled={!onRetry}
                     className={`p-1.5 rounded-lg transition-colors ${
-                      darkMode ? 'hover:bg-white/10 text-amber-300' : 'hover:bg-gray-100 text-amber-600'
+                      !onRetry
+                        ? 'opacity-50 cursor-not-allowed'
+                        : darkMode
+                          ? 'hover:bg-white/10 text-amber-300'
+                          : 'hover:bg-gray-100 text-amber-600'
                     }`}
                   >
                     <Sparkles className="w-4 h-4" />
@@ -478,8 +504,13 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
                       e.stopPropagation();
                       onRetry?.(doc.id);
                     }}
+                    disabled={!onRetry}
                     className={`p-2 rounded-lg transition-colors ${
-                      darkMode ? 'hover:bg-white/10 text-amber-300' : 'hover:bg-gray-100 text-amber-600'
+                      !onRetry
+                        ? 'opacity-50 cursor-not-allowed'
+                        : darkMode
+                          ? 'hover:bg-white/10 text-amber-300'
+                          : 'hover:bg-gray-100 text-amber-600'
                     }`}
                   >
                     <Sparkles className="w-4 h-4" />

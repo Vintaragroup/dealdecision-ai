@@ -92,18 +92,26 @@ export function DocumentPreviewModal({ document, darkMode, onClose, onRequestDel
           </div>
 
           <div className="flex items-center gap-3">
-            <Button variant="primary" size="sm">
-              <Download className="w-4 h-4" />
-              Download
-            </Button>
-            <Button variant="secondary" size="sm" darkMode={darkMode}>
-              <Share2 className="w-4 h-4" />
-              Share
-            </Button>
-            <Button variant="secondary" size="sm" darkMode={darkMode}>
-              <Copy className="w-4 h-4" />
-              Copy Link
-            </Button>
+            {typeof document?.url === 'string' && document.url.trim().length > 0 ? (
+              <>
+                <Button variant="primary" size="sm">
+                  <Download className="w-4 h-4" />
+                  Download
+                </Button>
+                <Button variant="secondary" size="sm" darkMode={darkMode}>
+                  <Share2 className="w-4 h-4" />
+                  Share
+                </Button>
+                <Button variant="secondary" size="sm" darkMode={darkMode}>
+                  <Copy className="w-4 h-4" />
+                  Copy Link
+                </Button>
+              </>
+            ) : (
+              <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                Download/preview links are not available yet.
+              </div>
+            )}
           </div>
         </div>
 
@@ -119,7 +127,7 @@ export function DocumentPreviewModal({ document, darkMode, onClose, onRequestDel
                     : 'bg-gray-50 border-gray-200'
                 }`}
               >
-                {document.type.includes('image') ? (
+                {typeof document?.url === 'string' && document.url.trim().length > 0 && document.type.includes('image') ? (
                   <img
                     src={document.url}
                     alt={document.name}
@@ -134,7 +142,7 @@ export function DocumentPreviewModal({ document, darkMode, onClose, onRequestDel
                       Preview not available
                     </p>
                     <p className={`text-xs mt-2 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                      Click download to view this file
+                      Document links have not been wired yet
                     </p>
                   </div>
                 )}

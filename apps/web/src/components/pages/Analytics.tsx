@@ -1,127 +1,349 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button } from '../ui/button';
 import { Select } from '../ui/select';
 import {
-  LineChart,
-  Line,
-  BarChart,
-  Bar,
-  PieChart,
-  Pie,
-  Cell,
-  AreaChart,
   Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer
 } from 'recharts';
-import {
-  TrendingUp,
-  TrendingDown,
-  Download,
-  Calendar,
-  Target,
-  FileText,
-  DollarSign,
-  Zap,
-  Sparkles,
-  ArrowUpRight,
-  ArrowDownRight,
-  Award,
-  Clock
-} from 'lucide-react';
+import { ChevronDown, Clock, FileText, Sparkles, Target, Zap } from 'lucide-react';
+import type { PageView } from '../Sidebar';
+import { apiGetDealExtractionReport, apiGetDeals, apiGetDocuments } from '../../lib/apiClient';
+import { DealExtractionReportModal } from '../documents/DealExtractionReportModal';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
 
 interface AnalyticsProps {
   darkMode: boolean;
+  onNavigate?: (page: PageView) => void;
+  onDealClick?: (dealId: string) => void;
 }
 
-export function Analytics({ darkMode }: AnalyticsProps) {
-  const [dateRange, setDateRange] = useState('30days');
-  const [dealFilter, setDealFilter] = useState('all');
-  const [sectorFilter, setSectorFilter] = useState('all');
-  const [compareMode, setCompareMode] = useState(false);
+export function Analytics({ darkMode, onNavigate, onDealClick }: AnalyticsProps) {
+  const [dateRange, setDateRange] = useState<'7days' | '30days' | '90days' | 'ytd' | 'all'>('30days');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [deals, setDeals] = useState<any[]>([]);
+  const [docSummaryByDealId, setDocSummaryByDealId] = useState<Record<string, { count: number; lastUploadedAt?: string }>>(
+    {}
+  );
+  const [docsOverTime, setDocsOverTime] = useState<Array<{ label: string; documents: number; sort: number }>>([]);
+  const [attentionItems, setAttentionItems] = useState<
+    Array<{
+      dealId: string;
+      dealName: string;
+      confidenceBand?: string;
+      recommendedAction?: string;
+      docIssues: number;
+    }>
+  >([]);
+  const [aiModalDealId, setAiModalDealId] = useState<string | null>(null);
+  const [needsAttentionOpen, setNeedsAttentionOpen] = useState(false);
 
-  // Sample data for charts
-  const reportsOverTime = [
-    { month: 'Jan', reports: 12, deals: 3 },
-    { month: 'Feb', reports: 18, deals: 4 },
-    { month: 'Mar', reports: 24, deals: 5 },
-    { month: 'Apr', reports: 32, deals: 6 },
-    { month: 'May', reports: 28, deals: 7 },
-    { month: 'Jun', reports: 38, deals: 8 }
-  ];
+  function formatRelativeTime(iso: string | undefined | null): string {
+    if (!iso) return '—';
+    const t = Date.parse(iso);
+    if (!Number.isFinite(t)) return '—';
+    const diffMs = Date.now() - t;
+    const sec = Math.max(0, Math.floor(diffMs / 1000));
+    if (sec < 60) return `${sec}s ago`;
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    const d = Math.floor(hr / 24);
+    return `${d}d ago`;
+  }
 
-  const dealsByStage = [
-    { stage: 'Sourced', count: 2, percentage: 25 },
-    { stage: 'Due Diligence', count: 3, percentage: 37.5 },
-    { stage: 'Committee Review', count: 2, percentage: 25 },
-    { stage: 'Closed', count: 1, percentage: 12.5 }
-  ];
+  function stageLabel(raw: unknown): string {
+    const s = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+    if (!s) return 'Unknown';
+    if (s === 'intake') return 'Intake';
+    if (s === 'under_review' || s === 'under review') return 'Under Review';
+    if (s === 'in_diligence' || s === 'in diligence') return 'In Diligence';
+    if (s === 'decision_ready' || s === 'ready_decision' || s === 'ready decision') return 'Decision Ready';
+    return s
+      .split(/[_\s]+/)
+      .filter(Boolean)
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' ');
+  }
 
-  const sectorData = [
-    { name: 'AI/ML', value: 3, color: '#6366f1' },
-    { name: 'HealthTech', value: 2, color: '#8b5cf6' },
-    { name: 'FinTech', value: 2, color: '#ec4899' },
-    { name: 'EdTech', value: 1, color: '#10b981' }
-  ];
+  function scoreBucket(score: number): '0-50' | '51-70' | '71-85' | '86-100' {
+    if (score <= 50) return '0-50';
+    if (score <= 70) return '51-70';
+    if (score <= 85) return '71-85';
+    return '86-100';
+  }
 
-  const scoreDistribution = [
-    { range: '0-50', count: 1 },
-    { range: '51-70', count: 2 },
-    { range: '71-85', count: 3 },
-    { range: '86-100', count: 2 }
-  ];
+  const getRangeStart = useCallback((): number | null => {
+    const now = new Date();
+    if (dateRange === '7days') return Date.now() - 7 * 24 * 60 * 60 * 1000;
+    if (dateRange === '30days') return Date.now() - 30 * 24 * 60 * 60 * 1000;
+    if (dateRange === '90days') return Date.now() - 90 * 24 * 60 * 60 * 1000;
+    if (dateRange === 'ytd') return new Date(now.getFullYear(), 0, 1).getTime();
+    return null;
+  }, [dateRange]);
 
-  const dealsTableData = [
-    { id: '1', name: 'TechVision AI Platform', readiness: 87, lastActivity: '2h ago', roi: 2850, trend: 'up', change: 5 },
-    { id: '2', name: 'EcoLogistics Network', readiness: 91, lastActivity: '3d ago', roi: 3200, trend: 'stable', change: 0 },
-    { id: '3', name: 'CryptoTrade Pro', readiness: 89, lastActivity: '4h ago', roi: 2950, trend: 'up', change: 7 },
-    { id: '4', name: 'FinFlow Analytics', readiness: 84, lastActivity: '5h ago', roi: 1850, trend: 'up', change: 3 },
-    { id: '5', name: 'FoodDelivery Express', readiness: 76, lastActivity: '6h ago', roi: 1250, trend: 'up', change: 8 },
-    { id: '6', name: 'HealthTrack Wearables', readiness: 72, lastActivity: '1d ago', roi: 950, trend: 'up', change: 4 },
-    { id: '7', name: 'EduConnect Platform', readiness: 68, lastActivity: '2d ago', roi: 650, trend: 'down', change: -2 },
-    { id: '8', name: 'SmartHome IoT Hub', readiness: 45, lastActivity: '1w ago', roi: 350, trend: 'stable', change: 0 }
-  ];
+  const buildDocsSeries = useCallback(
+    (allDocs: Array<{ uploaded_at?: string | null }>) => {
+      const rangeStart = getRangeStart();
+      const bucketMode: 'day' | 'week' | 'month' =
+        dateRange === '7days' || dateRange === '30days' ? 'day' : dateRange === '90days' ? 'week' : 'month';
 
-  const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>(null);
+      const toBucketStart = (d: Date): Date => {
+        if (bucketMode === 'day') return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        if (bucketMode === 'month') return new Date(d.getFullYear(), d.getMonth(), 1);
+        // week: Monday
+        const day = d.getDay();
+        const diffToMonday = (day + 6) % 7;
+        return new Date(d.getFullYear(), d.getMonth(), d.getDate() - diffToMonday);
+      };
 
-  const sortedDeals = [...dealsTableData].sort((a, b) => {
-    if (!sortConfig) return 0;
-    const aValue = a[sortConfig.key as keyof typeof a];
-    const bValue = b[sortConfig.key as keyof typeof b];
-    if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;
-    if (aValue > bValue) return sortConfig.direction === 'asc' ? 1 : -1;
-    return 0;
-  });
+      const labelFor = (bucketStart: Date): string => {
+        const month = bucketStart.toLocaleString(undefined, { month: 'short' });
+        if (bucketMode === 'month') return `${month} ${bucketStart.getFullYear()}`;
+        return `${month} ${bucketStart.getDate()}`;
+      };
 
-  const handleSort = (key: string) => {
-    setSortConfig(current => {
-      if (!current || current.key !== key) {
-        return { key, direction: 'desc' };
+      const buckets = new Map<string, { documents: number; sort: number }>();
+      for (const doc of allDocs) {
+        const iso = doc?.uploaded_at;
+        if (!iso) continue;
+        const t = Date.parse(iso);
+        if (!Number.isFinite(t)) continue;
+        if (rangeStart != null && t < rangeStart) continue;
+
+        const bucketStart = toBucketStart(new Date(t));
+        const sort = bucketStart.getTime();
+        const label = labelFor(bucketStart);
+        const existing = buckets.get(label);
+        if (existing) existing.documents += 1;
+        else buckets.set(label, { documents: 1, sort });
       }
-      if (current.direction === 'desc') {
-        return { key, direction: 'asc' };
-      }
+
+      return Array.from(buckets.entries())
+        .map(([label, v]) => ({ label, documents: v.documents, sort: v.sort }))
+        .sort((a, b) => a.sort - b.sort);
+    },
+    [dateRange, getRangeStart]
+  );
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const loadedDeals = await apiGetDeals();
+      const normalizedDeals = Array.isArray(loadedDeals) ? loadedDeals : [];
+      setDeals(normalizedDeals);
+
+      // Best-effort aggregations: sample deals to keep the page fast.
+      const sampledDealIds = normalizedDeals
+        .map((d: any) => String(d?.id ?? d?.deal_id ?? ''))
+        .filter((id: string) => id.length > 0)
+        .slice(0, 20);
+
+      const docResults = await Promise.allSettled(sampledDealIds.map((dealId) => apiGetDocuments(dealId)));
+
+      const summary: Record<string, { count: number; lastUploadedAt?: string }> = {};
+      const allDocs: Array<{ uploaded_at?: string | null }> = [];
+
+      docResults.forEach((r, idx) => {
+        if (r.status !== 'fulfilled') return;
+        const dealId = sampledDealIds[idx];
+        const docs = (r.value?.documents ?? []) as any[];
+        summary[dealId] = { count: docs.length };
+
+        let latest: string | undefined = undefined;
+        for (const d of docs) {
+          const iso = typeof d?.uploaded_at === 'string' ? d.uploaded_at : undefined;
+          if (iso) {
+            allDocs.push({ uploaded_at: iso });
+            if (!latest || Date.parse(iso) > Date.parse(latest)) latest = iso;
+          }
+        }
+        if (latest) summary[dealId].lastUploadedAt = latest;
+      });
+
+      setDocSummaryByDealId(summary);
+      setDocsOverTime(buildDocsSeries(allDocs));
+
+      // Action queue (best-effort): sample a smaller set since extraction reports can be heavier.
+      const attentionDealIds = sampledDealIds.slice(0, 10);
+      const dealNameById = new Map(
+        normalizedDeals
+          .map((d: any) => [String(d?.id ?? d?.deal_id ?? ''), String(d?.name ?? 'Deal')] as const)
+          .filter(([id]) => id.length > 0)
+      );
+
+      const reportResults = await Promise.allSettled(attentionDealIds.map((dealId) => apiGetDealExtractionReport(dealId)));
+      const items: Array<{
+        dealId: string;
+        dealName: string;
+        confidenceBand?: string;
+        recommendedAction?: string;
+        docIssues: number;
+        _severity: number;
+      }> = [];
+
+      reportResults.forEach((r, idx) => {
+        if (r.status !== 'fulfilled') return;
+        const dealId = attentionDealIds[idx];
+        const dealName = dealNameById.get(dealId) || 'Deal';
+        const report = r.value as any;
+
+        const dealBand = String(report?.extraction_report?.confidence_band ?? '').toLowerCase();
+        const recommendedAction = String(report?.extraction_report?.recommended_action ?? '');
+        const docReports = Array.isArray(report?.documents) ? report.documents : [];
+        const docIssues = docReports.filter((d: any) => {
+          const action = String(d?.recommended_action ?? '');
+          return action && action.toLowerCase() !== 'none' && action.toLowerCase() !== 'ok';
+        }).length;
+
+        const severity = dealBand === 'low' ? 3 : dealBand === 'med' || dealBand === 'medium' ? 2 : dealBand === 'high' ? 1 : 0;
+        const shouldShow = severity > 0 || docIssues > 0 || (recommendedAction && recommendedAction.toLowerCase() !== 'none');
+        if (!shouldShow) return;
+
+        items.push({
+          dealId,
+          dealName,
+          confidenceBand: dealBand || undefined,
+          recommendedAction: recommendedAction || undefined,
+          docIssues,
+          _severity: severity,
+        });
+      });
+
+      items.sort((a, b) => b._severity - a._severity || b.docIssues - a.docIssues || a.dealName.localeCompare(b.dealName));
+      setAttentionItems(items.map(({ _severity, ...rest }) => rest));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to load analytics';
+      setError(msg);
+      setDeals([]);
+      setDocSummaryByDealId({});
+      setDocsOverTime([]);
+      setAttentionItems([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [buildDocsSeries]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const derived = useMemo(() => {
+    const dealItems = deals;
+    const totalDeals = dealItems.length;
+    const scores = dealItems
+      .map((d: any) => {
+        const raw = d?.score ?? d?.overall_score;
+        const n = typeof raw === 'number' ? raw : Number(raw);
+        return Number.isFinite(n) ? n : null;
+      })
+      .filter((x: number | null): x is number => x != null);
+    const avgScore = scores.length > 0 ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10 : null;
+
+    const stageCounts = new Map<string, number>();
+    const bucketCounts = new Map<string, number>([
+      ['0-50', 0],
+      ['51-70', 0],
+      ['71-85', 0],
+      ['86-100', 0],
+    ]);
+
+    let decisionReadyCount = 0;
+    let inDiligenceCount = 0;
+    let analyzedCount = 0;
+
+    for (const d of dealItems) {
+      const stage = stageLabel((d as any)?.stage);
+      stageCounts.set(stage, (stageCounts.get(stage) ?? 0) + 1);
+
+      const rawScore = (d as any)?.score ?? (d as any)?.overall_score;
+      const score = typeof rawScore === 'number' ? rawScore : Number(rawScore);
+      if (Number.isFinite(score)) bucketCounts.set(scoreBucket(score), (bucketCounts.get(scoreBucket(score)) ?? 0) + 1);
+
+      const stageRaw = String((d as any)?.stage ?? '').toLowerCase();
+      if (stageRaw === 'decision_ready' || stageRaw === 'ready_decision') decisionReadyCount += 1;
+      if (stageRaw === 'in_diligence') inDiligenceCount += 1;
+
+      const ui = (d as any)?.ui;
+      if (ui?.overviewV2 || ui?.dealOverviewV2 || ui?.executiveSummaryV2 || ui?.updateReportV1) analyzedCount += 1;
+    }
+
+    const dealsByStage = Array.from(stageCounts.entries())
+      .map(([stage, count]) => ({ stage, count, percentage: totalDeals > 0 ? Math.round((100 * count * 10) / totalDeals) / 10 : 0 }))
+      .sort((a, b) => b.count - a.count);
+
+    const scoreDistribution = ['0-50', '51-70', '71-85', '86-100'].map((range) => ({
+      range,
+      count: bucketCounts.get(range) ?? 0,
+    }));
+
+    const docsInRange = docsOverTime.reduce((sum, x) => sum + x.documents, 0);
+
+    const insights = [
+      { text: `${decisionReadyCount} deal(s) are Decision Ready`, type: 'info' },
+      { text: `${inDiligenceCount} deal(s) currently In Diligence`, type: 'info' },
+      { text: `${analyzedCount} deal(s) have Phase 1 outputs available`, type: 'success' },
+      { text: `${docsInRange} document(s) uploaded in selected range`, type: 'success' },
+    ];
+
+    const rows = dealItems
+      .map((d: any) => {
+        const id = String(d?.id ?? d?.deal_id ?? '');
+        const name = String(d?.name ?? 'Deal');
+        const rawScore = d?.score ?? d?.overall_score;
+        const score = Number.isFinite(Number(rawScore)) ? Number(rawScore) : 0;
+        const stage = stageLabel(d?.stage);
+        const docSummary = docSummaryByDealId[id];
+        const lastActivity = docSummary?.lastUploadedAt ? formatRelativeTime(docSummary.lastUploadedAt) : '—';
+        const docs = typeof docSummary?.count === 'number' ? docSummary.count : 0;
+        return { id, name, score, stage, docs, lastActivity };
+      })
+      .filter((r) => r.id.length > 0)
+      .sort((a, b) => b.score - a.score);
+
+    return {
+      totalDeals,
+      avgScore,
+      analyzedCount,
+      dealsByStage,
+      scoreDistribution,
+      insights,
+      rows,
+    };
+  }, [deals, docSummaryByDealId, docsOverTime]);
+
+  const [sortConfig, setSortConfig] = useState<{ key: 'name' | 'stage' | 'score' | 'docs' | 'lastActivity'; direction: 'asc' | 'desc' } | null>(
+    null
+  );
+
+  const sortedDeals = useMemo(() => {
+    const items = [...derived.rows];
+    if (!sortConfig) return items;
+    return items.sort((a, b) => {
+      const aValue = a[sortConfig.key];
+      const bValue = b[sortConfig.key];
+      if (aValue < bValue) return sortConfig.direction === 'asc' ? -1 : 1;
+      if (aValue > bValue) return sortConfig.direction === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }, [derived.rows, sortConfig]);
+
+  const handleSort = (key: 'name' | 'stage' | 'score' | 'docs' | 'lastActivity') => {
+    setSortConfig((current) => {
+      if (!current || current.key !== key) return { key, direction: 'desc' };
+      if (current.direction === 'desc') return { key, direction: 'asc' };
       return null;
     });
   };
-
-  const metrics = {
-    totalDeals: { value: 8, change: 23, trend: 'up' as const },
-    reportsGenerated: { value: 152, change: 15, trend: 'up' as const },
-    avgReadiness: { value: 76.5, change: 12, trend: 'up' as const },
-    roiSavings: { value: 12450, change: 28, trend: 'up' as const }
-  };
-
-  const insights = [
-    { text: '3 deals advancing to committee review', type: 'success' },
-    { text: 'Average deal quality improved 12% this month', type: 'success' },
-    { text: 'You\'ve saved $12,450 in analyst fees', type: 'info' },
-    { text: 'Team has earned 8,500 XP collectively', type: 'info' }
-  ];
 
   const CustomTooltip = ({ active, payload, label }: any) => {
     if (active && payload && payload.length) {
@@ -156,13 +378,8 @@ export function Analytics({ darkMode }: AnalyticsProps) {
             <h2 className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>
               Analytics Dashboard
             </h2>
-            <Button
-              variant="secondary"
-              size="sm"
-              darkMode={darkMode}
-              icon={<Download className="w-4 h-4" />}
-            >
-              Export Report
+            <Button variant="secondary" size="sm" darkMode={darkMode} onClick={load} disabled={loading}>
+              {loading ? 'Refreshing…' : 'Refresh'}
             </Button>
           </div>
 
@@ -170,7 +387,7 @@ export function Analytics({ darkMode }: AnalyticsProps) {
             <Select
               darkMode={darkMode}
               value={dateRange}
-              onChange={(e) => setDateRange(e.target.value)}
+              onChange={(e) => setDateRange(e.target.value as any)}
               options={[
                 { value: '7days', label: 'Last 7 days' },
                 { value: '30days', label: 'Last 30 days' },
@@ -180,42 +397,14 @@ export function Analytics({ darkMode }: AnalyticsProps) {
               ]}
             />
 
-            <Select
-              darkMode={darkMode}
-              value={dealFilter}
-              onChange={(e) => setDealFilter(e.target.value)}
-              options={[
-                { value: 'all', label: 'All Deals' },
-                { value: 'my', label: 'My Deals' },
-                { value: 'team', label: 'Team Deals' }
-              ]}
-            />
-
-            <Select
-              darkMode={darkMode}
-              value={sectorFilter}
-              onChange={(e) => setSectorFilter(e.target.value)}
-              options={[
-                { value: 'all', label: 'All Sectors' },
-                { value: 'ai', label: 'AI/ML' },
-                { value: 'health', label: 'HealthTech' },
-                { value: 'fintech', label: 'FinTech' },
-                { value: 'edtech', label: 'EdTech' }
-              ]}
-            />
-
-            <div className="col-span-2 flex items-center gap-3">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={compareMode}
-                  onChange={(e) => setCompareMode(e.target.checked)}
-                  className="rounded"
-                />
+            <div className="col-span-4 flex items-center">
+              {error ? (
+                <span className="text-sm text-red-400">{error}</span>
+              ) : (
                 <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                  Compare to previous period
+                  Live-backed snapshot from your deals and documents
                 </span>
-              </label>
+              )}
             </div>
           </div>
         </div>
@@ -238,7 +427,7 @@ export function Analytics({ darkMode }: AnalyticsProps) {
             </div>
           </div>
           <div className="grid grid-cols-2 gap-2">
-            {insights.map((insight, i) => (
+            {derived.insights.map((insight, i) => (
               <div
                 key={i}
                 className={`p-3 rounded-lg ${
@@ -251,6 +440,110 @@ export function Analytics({ darkMode }: AnalyticsProps) {
               </div>
             ))}
           </div>
+        </div>
+
+        {/* Needs Attention Queue (Accordion) */}
+        <div
+          className={`backdrop-blur-xl border rounded-2xl p-4 sm:p-6 ${
+            darkMode
+              ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
+              : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
+          }`}
+        >
+          <Collapsible open={needsAttentionOpen} onOpenChange={setNeedsAttentionOpen}>
+            <div className="flex items-start justify-between gap-4">
+              <CollapsibleTrigger asChild>
+                <button
+                  type="button"
+                  className="group flex-1 text-left outline-none"
+                  aria-label="Toggle Needs Attention"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className={`text-sm mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>Needs Attention</h3>
+                        {!loading && attentionItems.length > 0 && (
+                          <span
+                            className={
+                              darkMode
+                                ? 'inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-200'
+                                : 'inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-800'
+                            }
+                          >
+                            {attentionItems.length} item{attentionItems.length === 1 ? '' : 's'}
+                          </span>
+                        )}
+                      </div>
+                      <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        Based on document extraction confidence and recommended actions (sampled)
+                      </p>
+                    </div>
+                    <ChevronDown
+                      className={`mt-0.5 h-4 w-4 shrink-0 transition-transform duration-200 group-data-[state=open]:rotate-180 ${
+                        darkMode ? 'text-gray-400' : 'text-gray-500'
+                      }`}
+                    />
+                  </div>
+                </button>
+              </CollapsibleTrigger>
+
+              <Button variant="outline" size="sm" darkMode={darkMode} onClick={load} disabled={loading}>
+                {loading ? 'Refreshing…' : 'Refresh'}
+              </Button>
+            </div>
+
+            <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-accordion-up data-[state=open]:animate-accordion-down">
+              <div className="mt-4">
+                {loading ? (
+                  <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Loading…</div>
+                ) : attentionItems.length === 0 ? (
+                  <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No flagged deals in the sample.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {attentionItems.slice(0, 8).map((item) => (
+                      <div
+                        key={item.dealId}
+                        className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 rounded-lg ${
+                          darkMode ? 'bg-white/5' : 'bg-white/60'
+                        }`}
+                      >
+                        <div className="min-w-0">
+                          <div className={`text-sm truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>{item.dealName}</div>
+                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            {item.confidenceBand ? `Confidence: ${item.confidenceBand}` : 'Confidence: —'}
+                            {item.docIssues > 0 ? ` • ${item.docIssues} doc(s) need action` : ''}
+                            {item.recommendedAction ? ` • ${item.recommendedAction}` : ''}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            darkMode={darkMode}
+                            onClick={() => setAiModalDealId(item.dealId)}
+                          >
+                            Open AI Status
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            darkMode={darkMode}
+                            onClick={() => {
+                              if (onDealClick) return onDealClick(item.dealId);
+                              onNavigate?.('dealsList');
+                            }}
+                            disabled={!onDealClick && !onNavigate}
+                          >
+                            View Deal
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
         </div>
 
         {/* Metrics Row */}
@@ -267,23 +560,16 @@ export function Analytics({ darkMode }: AnalyticsProps) {
               }`}>
                 <Target className="w-5 h-5 text-[#6366f1]" />
               </div>
-              <div className="flex items-center gap-1 text-xs text-emerald-400">
-                <TrendingUp className="w-3 h-3" />
-                {metrics.totalDeals.change}%
-              </div>
             </div>
             <div className={`text-2xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              {metrics.totalDeals.value}
+              {derived.totalDeals}
             </div>
             <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
               Total Deals
             </div>
-            <div className={`text-xs mt-1 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-              vs last period
-            </div>
           </div>
 
-          {/* Reports Generated */}
+          {/* Deals with Phase 1 Outputs */}
           <div className={`backdrop-blur-xl border rounded-xl p-4 ${
             darkMode
               ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
@@ -295,23 +581,16 @@ export function Analytics({ darkMode }: AnalyticsProps) {
               }`}>
                 <FileText className="w-5 h-5 text-[#8b5cf6]" />
               </div>
-              <div className="flex items-center gap-1 text-xs text-emerald-400">
-                <TrendingUp className="w-3 h-3" />
-                {metrics.reportsGenerated.change}%
-              </div>
             </div>
             <div className={`text-2xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              {metrics.reportsGenerated.value}
+              {derived.analyzedCount}
             </div>
             <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              Reports Generated
-            </div>
-            <div className={`text-xs mt-1 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-              vs last period
+              Deals with Phase 1 Outputs
             </div>
           </div>
 
-          {/* Average Readiness */}
+          {/* Avg Score */}
           <div className={`backdrop-blur-xl border rounded-xl p-4 ${
             darkMode
               ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
@@ -323,23 +602,16 @@ export function Analytics({ darkMode }: AnalyticsProps) {
               }`}>
                 <Zap className="w-5 h-5 text-emerald-400" />
               </div>
-              <div className="flex items-center gap-1 text-xs text-emerald-400">
-                <TrendingUp className="w-3 h-3" />
-                {metrics.avgReadiness.change}%
-              </div>
             </div>
             <div className={`text-2xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              {metrics.avgReadiness.value}%
+              {derived.avgScore == null ? '—' : `${derived.avgScore}%`}
             </div>
             <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
               Avg Deal Quality Score
             </div>
-            <div className={`text-xs mt-1 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-              vs last period
-            </div>
           </div>
 
-          {/* ROI Savings */}
+          {/* Documents in Range */}
           <div className={`backdrop-blur-xl border rounded-xl p-4 ${
             darkMode
               ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
@@ -349,38 +621,31 @@ export function Analytics({ darkMode }: AnalyticsProps) {
               <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
                 darkMode ? 'bg-emerald-500/20' : 'bg-emerald-500/10'
               }`}>
-                <DollarSign className="w-5 h-5 text-emerald-400" />
-              </div>
-              <div className="flex items-center gap-1 text-xs text-emerald-400">
-                <TrendingUp className="w-3 h-3" />
-                {metrics.roiSavings.change}%
+                <FileText className="w-5 h-5 text-emerald-400" />
               </div>
             </div>
             <div className={`text-2xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              ${metrics.roiSavings.value.toLocaleString()}
+              {docsOverTime.reduce((sum, x) => sum + x.documents, 0)}
             </div>
             <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              Total ROI Savings
-            </div>
-            <div className={`text-xs mt-1 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-              vs last period
+              Documents Uploaded (sampled)
             </div>
           </div>
         </div>
 
         {/* Charts Row 1 */}
         <div className="grid grid-cols-2 gap-4">
-          {/* Line Chart - Reports Over Time */}
+          {/* Area Chart - Documents Over Time */}
           <div className={`backdrop-blur-xl border rounded-2xl p-6 ${
             darkMode
               ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
               : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
           }`}>
             <h3 className={`text-sm mb-4 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              Reports Generated Over Time
+              Documents Uploaded Over Time (sampled)
             </h3>
             <ResponsiveContainer width="100%" height={250}>
-              <AreaChart data={reportsOverTime}>
+              <AreaChart data={docsOverTime}>
                 <defs>
                   <linearGradient id="colorReports" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3}/>
@@ -389,7 +654,7 @@ export function Analytics({ darkMode }: AnalyticsProps) {
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke={darkMode ? '#ffffff10' : '#00000010'} />
                 <XAxis 
-                  dataKey="month" 
+                  dataKey="label" 
                   stroke={darkMode ? '#666' : '#999'}
                   style={{ fontSize: '12px' }}
                 />
@@ -400,7 +665,7 @@ export function Analytics({ darkMode }: AnalyticsProps) {
                 <Tooltip content={<CustomTooltip />} />
                 <Area 
                   type="monotone" 
-                  dataKey="reports" 
+                  dataKey="documents" 
                   stroke="#6366f1" 
                   strokeWidth={2}
                   fillOpacity={1} 
@@ -420,7 +685,7 @@ export function Analytics({ darkMode }: AnalyticsProps) {
               Deals by Pipeline Stage
             </h3>
             <ResponsiveContainer width="100%" height={250}>
-              <BarChart data={dealsByStage}>
+              <BarChart data={derived.dealsByStage}>
                 <CartesianGrid strokeDasharray="3 3" stroke={darkMode ? '#ffffff10' : '#00000010'} />
                 <XAxis 
                   dataKey="stage" 
@@ -440,55 +705,6 @@ export function Analytics({ darkMode }: AnalyticsProps) {
 
         {/* Charts Row 2 */}
         <div className="grid grid-cols-2 gap-4">
-          {/* Donut Chart - Sectors */}
-          <div className={`backdrop-blur-xl border rounded-2xl p-6 ${
-            darkMode
-              ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
-              : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
-          }`}>
-            <h3 className={`text-sm mb-4 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              Deals by Sector
-            </h3>
-            <div className="flex items-center gap-6">
-              <ResponsiveContainer width="60%" height={200}>
-                <PieChart>
-                  <Pie
-                    data={sectorData}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={60}
-                    outerRadius={80}
-                    paddingAngle={5}
-                    dataKey="value"
-                  >
-                    {sectorData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip content={<CustomTooltip />} />
-                </PieChart>
-              </ResponsiveContainer>
-              <div className="flex-1 space-y-2">
-                {sectorData.map((sector, i) => (
-                  <div key={i} className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div 
-                        className="w-3 h-3 rounded-full" 
-                        style={{ backgroundColor: sector.color }}
-                      />
-                      <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                        {sector.name}
-                      </span>
-                    </div>
-                    <span className={`text-xs ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                      {sector.value}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
           {/* Score Distribution */}
           <div className={`backdrop-blur-xl border rounded-2xl p-6 ${
             darkMode
@@ -499,7 +715,7 @@ export function Analytics({ darkMode }: AnalyticsProps) {
               Score Distribution
             </h3>
             <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={scoreDistribution}>
+              <BarChart data={derived.scoreDistribution}>
                 <CartesianGrid strokeDasharray="3 3" stroke={darkMode ? '#ffffff10' : '#00000010'} />
                 <XAxis 
                   dataKey="range" 
@@ -514,6 +730,28 @@ export function Analytics({ darkMode }: AnalyticsProps) {
                 <Bar dataKey="count" fill="#8b5cf6" radius={[8, 8, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
+          </div>
+
+          {/* Stage Breakdown (text) */}
+          <div className={`backdrop-blur-xl border rounded-2xl p-6 ${
+            darkMode
+              ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
+              : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
+          }`}>
+            <h3 className={`text-sm mb-4 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              Stage Breakdown
+            </h3>
+            <div className="space-y-2">
+              {derived.dealsByStage.map((s) => (
+                <div key={s.stage} className="flex items-center justify-between">
+                  <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{s.stage}</span>
+                  <span className={`text-xs ${darkMode ? 'text-white' : 'text-gray-900'}`}>{s.count}</span>
+                </div>
+              ))}
+              {derived.dealsByStage.length === 0 && (
+                <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No deals yet</span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -540,15 +778,15 @@ export function Analytics({ darkMode }: AnalyticsProps) {
                   </th>
                   <th 
                     className={`p-4 text-left text-xs cursor-pointer hover:bg-white/5 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}
-                    onClick={() => handleSort('readiness')}
+                    onClick={() => handleSort('score')}
                   >
-                    Deal Quality {sortConfig?.key === 'readiness' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    Deal Quality {sortConfig?.key === 'score' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                   </th>
                   <th 
                     className={`p-4 text-left text-xs cursor-pointer hover:bg-white/5 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}
-                    onClick={() => handleSort('change')}
+                    onClick={() => handleSort('stage')}
                   >
-                    Trend {sortConfig?.key === 'change' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    Stage {sortConfig?.key === 'stage' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                   </th>
                   <th 
                     className={`p-4 text-left text-xs cursor-pointer hover:bg-white/5 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}
@@ -558,9 +796,9 @@ export function Analytics({ darkMode }: AnalyticsProps) {
                   </th>
                   <th 
                     className={`p-4 text-left text-xs cursor-pointer hover:bg-white/5 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}
-                    onClick={() => handleSort('roi')}
+                    onClick={() => handleSort('docs')}
                   >
-                    ROI Saved {sortConfig?.key === 'roi' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
+                    Documents {sortConfig?.key === 'docs' && (sortConfig.direction === 'asc' ? '↑' : '↓')}
                   </th>
                   <th className={`p-4 text-left text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                     Actions
@@ -589,32 +827,16 @@ export function Analytics({ darkMode }: AnalyticsProps) {
                         }`}>
                           <div
                             className="h-full bg-gradient-to-r from-[#6366f1] to-[#8b5cf6]"
-                            style={{ width: `${deal.readiness}%` }}
+                            style={{ width: `${Math.min(100, Math.max(0, deal.score))}%` }}
                           />
                         </div>
                         <span className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                          {deal.readiness}%
+                          {Math.round(deal.score)}%
                         </span>
                       </div>
                     </td>
                     <td className="p-4">
-                      <div className="flex items-center gap-1">
-                        {deal.trend === 'up' && (
-                          <>
-                            <ArrowUpRight className="w-4 h-4 text-emerald-400" />
-                            <span className="text-xs text-emerald-400">+{deal.change}%</span>
-                          </>
-                        )}
-                        {deal.trend === 'down' && (
-                          <>
-                            <ArrowDownRight className="w-4 h-4 text-red-400" />
-                            <span className="text-xs text-red-400">{deal.change}%</span>
-                          </>
-                        )}
-                        {deal.trend === 'stable' && (
-                          <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No change</span>
-                        )}
-                      </div>
+                      <span className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{deal.stage}</span>
                     </td>
                     <td className="p-4">
                       <div className="flex items-center gap-1">
@@ -625,21 +847,43 @@ export function Analytics({ darkMode }: AnalyticsProps) {
                       </div>
                     </td>
                     <td className="p-4">
-                      <span className={`text-sm ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`}>
-                        ${deal.roi.toLocaleString()}
-                      </span>
+                      <span className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{deal.docs}</span>
                     </td>
                     <td className="p-4">
-                      <Button variant="ghost" size="sm" darkMode={darkMode}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        darkMode={darkMode}
+                        disabled={!onDealClick && !onNavigate}
+                        onClick={() => {
+                          if (onDealClick) return onDealClick(deal.id);
+                          if (onNavigate) return onNavigate('dealsList');
+                        }}
+                      >
                         View
                       </Button>
                     </td>
                   </tr>
                 ))}
+                {!loading && sortedDeals.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className={`p-6 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      No deals found.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
         </div>
+
+        {aiModalDealId && (
+          <DealExtractionReportModal
+            darkMode={darkMode}
+            dealId={aiModalDealId}
+            onClose={() => setAiModalDealId(null)}
+          />
+        )}
       </div>
     </div>
   );

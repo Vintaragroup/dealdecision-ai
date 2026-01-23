@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "node dist/src/index.js",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && pnpm --filter worker build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "worker": "node ../worker/dist/src/index.js",
+    "worker:dev": "tsx watch ../worker/src/index.ts",
     "db:migrate": "tsx scripts/migrate.ts",
     "test": "node --test --require ts-node/register test/*.test.ts"
   },

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "node dist/src/index.js",
-    "build": "tsc -p tsconfig.json && pnpm --filter worker build",
+    "build": "pnpm --filter @dealdecision/core build && pnpm --filter @dealdecision/contracts build && tsc -p tsconfig.json && pnpm --filter worker build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "worker": "node ../worker/dist/src/index.js",
     "worker:dev": "tsx watch ../worker/src/index.ts",

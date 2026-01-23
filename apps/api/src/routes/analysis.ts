@@ -179,7 +179,7 @@ export async function registerAnalysisRoutes(
           decision_recommendation: analysisState.decision_pack.go_no_go,
           executive_summary: analysisState.decision_pack.executive_summary,
           key_findings: [], // Extract from decision_pack
-          risks_identified: analysisState.decision_pack.risk_map.map((r) => r.risk),
+          risks_identified: analysisState.decision_pack.risk_map.map((r: any) => r.risk),
           next_steps: analysisState.decision_pack.what_to_verify,
           confidence_score: calculateConfidence(analysisState),
           completed_at: new Date().toISOString(),

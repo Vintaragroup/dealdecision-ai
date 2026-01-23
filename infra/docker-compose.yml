@@ -50,6 +50,7 @@ services:
     command: ["pnpm", "--filter", "api", "dev"]
     env_file:
       - ../.env
+      - ../apps/api/.env
     environment:
       API_PORT: "9000"
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/dealdecision
@@ -159,12 +160,13 @@ services:
       - sh
       - -lc
       - |
-        if [ ! -f /app/node_modules/@xyflow/react/dist/style.css ] || [ ! -d /app/node_modules/@dagrejs/dagre ]; then
-          pnpm install --frozen-lockfile=false
+        if [ ! -f /app/node_modules/@xyflow/react/dist/style.css ] || [ ! -d /app/node_modules/@dagrejs/dagre ] || [ ! -d /app/node_modules/@clerk/clerk-react ] || [ ! -d /app/node_modules/react-router-dom ] || [ ! -d /app/node_modules/@microsoft/fetch-event-source ]; then
+          CI=true pnpm install --frozen-lockfile
         fi
         pnpm --filter web dev -- --host 0.0.0.0 --port 5173
     env_file:
       - ../.env
+      - ../apps/web/.env
     environment:
       VITE_API_BASE_URL: http://localhost:9000
       VITE_BACKEND_MODE: live

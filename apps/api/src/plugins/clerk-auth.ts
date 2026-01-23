@@ -179,24 +179,6 @@ export async function registerClerkAuth(app: FastifyInstance) {
     if (request.method === 'OPTIONS') return;
     if (!isProtectedPath(request.url)) return;
 
-    // If auth is not configured in production, fail closed with a clear error.
-    if (!isDevLike() && !shouldBypassAuth()) {
-      const pem = process.env.CLERK_JWT_VERIFICATION_KEY;
-      const jwksUrl = process.env.CLERK_JWKS_URL;
-      const issuer = process.env.CLERK_JWT_ISSUER;
-      const hasPem = typeof pem === 'string' && pem.trim().length > 0;
-      const hasJwksUrl = typeof jwksUrl === 'string' && jwksUrl.trim().length > 0;
-      const hasIssuer = typeof issuer === 'string' && issuer.trim().length > 0;
-
-      if (!hasPem && !hasJwksUrl && !hasIssuer) {
-        reply.status(503).send({
-          error:
-            'Auth not configured (set CLERK_JWKS_URL or CLERK_JWT_ISSUER or CLERK_JWT_VERIFICATION_KEY)',
-        });
-        return;
-      }
-    }
-
     try {
       request.auth = await authenticateRequest(request);
     } catch (err: any) {

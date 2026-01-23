@@ -29,6 +29,7 @@ import { CommandPalette } from './components/CommandPalette';
 import { ApiAuthBridge } from './components/auth/ApiAuthBridge';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useUser } from '@clerk/clerk-react';
+import { clearLocalOnboardingComplete, getPostLoginRoute, markOnboardingComplete } from './lib/postLoginRouting';
 
 type LogoVariant = 'orbiting' | 'pulse' | 'network' | 'hexagon' | 'morph';
 
@@ -103,11 +104,6 @@ export default function AppShell() {
   const [createdDeal, setCreatedDeal] = useState<Deal | null>(null);
   const [showNewDealModal, setShowNewDealModal] = useState(false);
   const [notificationPreferences, setNotificationPreferences] = useState<NotificationPreferences>(defaultNotificationPreferences);
-  const [showOnboarding, setShowOnboarding] = useState(() => {
-    // Check if user has completed onboarding before
-    const completed = localStorage.getItem('onboardingCompleted');
-    return completed !== 'true'; // Show onboarding if not completed
-  });
 
   const routeDrivenPage = useMemo(() => pageFromPath(location.pathname), [location.pathname]);
 
@@ -122,6 +118,22 @@ export default function AppShell() {
       setCurrentPage(routeDrivenPage);
     }
   }, [routeDrivenPage]);
+
+  useEffect(() => {
+    if (!userLoaded) return;
+    const decision = getPostLoginRoute({ user, pathname: location.pathname });
+    if (import.meta.env.DEV) {
+      // Minimal trace to debug production routing issues during dev/staging.
+      console.debug('[post-login-route]', {
+        pathname: location.pathname,
+        decided: decision.route,
+        reason: decision.reason,
+      });
+    }
+    if (decision.route !== location.pathname) {
+      navigate(decision.route, { replace: true });
+    }
+  }, [location.pathname, navigate, user, userLoaded]);
 
   useEffect(() => {
     if (!userLoaded) return;
@@ -176,14 +188,17 @@ export default function AppShell() {
   };
 
   const handleOnboardingComplete = (data: OnboardingData) => {
-    console.log('Onboarding completed:', data);
-    setShowOnboarding(false);
-    localStorage.setItem('onboardingCompleted', 'true');
+    if (import.meta.env.DEV) {
+      console.debug('[onboarding] completed', data);
+    }
+    void markOnboardingComplete({ user }).finally(() => {
+      navigate('/app', { replace: true });
+    });
   };
 
   const handleRestartOnboarding = () => {
-    localStorage.removeItem('onboardingCompleted');
-    setShowOnboarding(true);
+    clearLocalOnboardingComplete();
+    navigate('/app/onboarding');
   };
 
   const handleSaveNotificationPreferences = (prefs: NotificationPreferences) => {
@@ -216,13 +231,9 @@ export default function AppShell() {
         <ScoreSourceProvider>
           <ApiAuthBridge />
           <div className={darkMode ? 'dark' : ''}>
-            {/* Onboarding Flow */}
-            {showOnboarding && (
-              <OnboardingFlow 
-                darkMode={darkMode} 
-                onComplete={handleOnboardingComplete}
-              />
-            )}
+            {location.pathname.startsWith('/app/onboarding') ? (
+              <OnboardingFlow darkMode={darkMode} onComplete={handleOnboardingComplete} />
+            ) : null}
 
             {/* Main App */}
             <div className={`flex h-screen overflow-hidden ${

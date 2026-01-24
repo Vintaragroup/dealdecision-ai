@@ -2,16 +2,32 @@ import { describe, expect, it, vi } from 'vitest';
 import { getPostLoginRoute, ONBOARDING_STORAGE_KEY } from '../postLoginRouting';
 
 describe('getPostLoginRoute', () => {
-  it('routes to onboarding when landing on /app and incomplete', () => {
+  it('defaults to /app for existing users even if incomplete', () => {
     const getItem = vi.fn(() => null);
     (globalThis as any).window = {
       localStorage: { getItem },
     };
 
-    const decision = getPostLoginRoute({ user: { publicMetadata: {} }, pathname: '/app' });
-    expect(decision.route).toBe('/app/onboarding');
-    expect(decision.reason).toBe('onboarding_incomplete');
+    const decision = getPostLoginRoute({
+      user: { publicMetadata: {}, createdAt: new Date('2020-01-01T00:00:00.000Z') },
+      pathname: '/app',
+    });
+    expect(decision.route).toBe('/app');
+    expect(decision.reason).toBe('onboarding_incomplete_existing_user');
     expect(getItem).toHaveBeenCalledWith(ONBOARDING_STORAGE_KEY);
+  });
+
+  it('routes to onboarding for likely-new users when landing on /app and incomplete', () => {
+    (globalThis as any).window = {
+      localStorage: { getItem: vi.fn(() => null) },
+    };
+
+    const decision = getPostLoginRoute({
+      user: { publicMetadata: {}, createdAt: new Date() },
+      pathname: '/app',
+    });
+    expect(decision.route).toBe('/app/onboarding');
+    expect(decision.reason).toBe('onboarding_incomplete_new_user');
   });
 
   it('routes to /app when onboarding complete via Clerk metadata', () => {

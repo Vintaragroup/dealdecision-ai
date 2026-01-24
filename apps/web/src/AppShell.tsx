@@ -29,7 +29,7 @@ import { CommandPalette } from './components/CommandPalette';
 import { ApiAuthBridge } from './components/auth/ApiAuthBridge';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useUser } from '@clerk/clerk-react';
-import { clearLocalOnboardingComplete, getPostLoginRoute, markOnboardingComplete } from './lib/postLoginRouting';
+import { clearLocalOnboardingComplete, getPostLoginRoute, markOnboardingComplete, maybeBackfillOnboardingComplete } from './lib/postLoginRouting';
 
 type LogoVariant = 'orbiting' | 'pulse' | 'network' | 'hexagon' | 'morph';
 
@@ -134,6 +134,13 @@ export default function AppShell() {
       navigate(decision.route, { replace: true });
     }
   }, [location.pathname, navigate, user, userLoaded]);
+
+  useEffect(() => {
+    if (!userLoaded) return;
+    // Best-effort: for existing users missing the flag, persist onboardingComplete
+    // so they don't get forced into onboarding on future sessions/devices.
+    void maybeBackfillOnboardingComplete({ user });
+  }, [userLoaded, user?.id]);
 
   useEffect(() => {
     if (!userLoaded) return;

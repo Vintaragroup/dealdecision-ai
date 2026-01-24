@@ -10,19 +10,23 @@ vi.mock('../contexts/UserRoleContext', () => ({
   useUserRole: () => ({ isAnalyst: true, isInvestor: false }),
 }));
 
-vi.mock('../lib/apiClient', () => {
-  const apiGetDeal = vi.fn();
-  const apiPostAnalyze = vi.fn();
-  const apiPostReextractDocuments = vi.fn();
-  const apiPostExtractVisuals = vi.fn();
-  const apiGetJob = vi.fn();
+vi.mock('../lib/apiClient', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/apiClient')>();
   return {
-    isLiveBackend: () => true,
-    apiGetDeal,
-    apiPostAnalyze,
-    apiPostReextractDocuments,
-    apiPostExtractVisuals,
-    apiGetJob,
+    ...actual,
+    apiGetDeal: vi.fn(),
+    apiPostAnalyze: vi.fn(),
+    apiPostReextractDocuments: vi.fn(),
+    apiPostExtractVisuals: vi.fn(),
+    apiGetDealJobs: vi.fn(async () => []),
+    apiGetJob: vi.fn(),
+    isLiveBackend: vi.fn(() => true),
+    // Non-critical: keep these as no-ops unless a test asserts on them.
+    apiGetEvidence: vi.fn(async () => ({ evidence: [] } as any)),
+    apiGetDocuments: vi.fn(async () => ({ documents: [] } as any)),
+    apiGetDealReport: vi.fn(async () => null as any),
+    subscribeToEvents: vi.fn(() => () => undefined),
+    apiResolveEvidence: vi.fn(async () => ({ results: [] } as any)),
   };
 });
 
@@ -208,6 +212,18 @@ describe('DealWorkspace Job Center (live mode)', () => {
       expect(screen.getByText(/42% complete/i)).toBeInTheDocument();
       // Message can appear in multiple UI locations.
       expect(screen.getAllByText(/^Crunching signals$/i).length).toBeGreaterThan(0);
+    });
+  });
+
+  test('renders Job Center even when backend mode is not live', async () => {
+    const { isLiveBackend } = await import('../lib/apiClient');
+    vi.mocked(isLiveBackend).mockReturnValue(false);
+
+    vi.mocked(apiGetDeal).mockResolvedValue({} as any);
+    renderWorkspace({ dealId: 'deal-8' });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Job Center/i)).toBeInTheDocument();
     });
   });
 });

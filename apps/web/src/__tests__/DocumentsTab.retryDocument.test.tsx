@@ -6,7 +6,21 @@ import { DocumentsTab } from '../components/documents/DocumentsTab';
 
 vi.mock('../components/documents/DocumentUpload', () => {
   return {
-    DocumentUpload: () => null,
+    DocumentUpload: ({ onUploaded }: { onUploaded?: (doc: any) => void }) => (
+      <button
+        type="button"
+        onClick={() =>
+          onUploaded?.({
+            document_id: 'doc-uploaded',
+            title: 'Uploaded.pdf',
+            status: 'pending',
+            uploaded_at: new Date().toISOString(),
+          })
+        }
+      >
+        Trigger Upload
+      </button>
+    ),
   };
 });
 
@@ -57,6 +71,25 @@ describe('DocumentsTab retry document', () => {
     // refresh after retry
     await waitFor(() => {
       expect(apiClient.apiGetDocuments).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('refreshes documents after a successful upload callback', async () => {
+    vi.mocked(apiClient.apiGetDocuments).mockResolvedValue({ documents: [] } as any);
+
+    render(<DocumentsTab dealId="deal-1" darkMode={true} />);
+
+    await waitFor(() => expect(apiClient.apiGetDocuments).toHaveBeenCalled());
+    const callsBefore = vi.mocked(apiClient.apiGetDocuments).mock.calls.length;
+
+    const user = userEvent.setup();
+    // DocumentUpload is rendered only when the Upload section is opened.
+    await user.click(screen.getByRole('button', { name: /^upload$/i }));
+    await user.click(screen.getByRole('button', { name: /trigger upload/i }));
+
+    await waitFor(() => {
+      const callsAfter = vi.mocked(apiClient.apiGetDocuments).mock.calls.length;
+      expect(callsAfter).toBeGreaterThan(callsBefore);
     });
   });
 });

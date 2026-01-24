@@ -5,7 +5,10 @@ import { getAuthToken } from './authToken';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:9000';
-const BACKEND_MODE = (import.meta.env.VITE_BACKEND_MODE || 'mock').toLowerCase();
+// In production we default to "live" to avoid accidental "mock" deployments when env is missing.
+// In development we default to "mock" for easier UI iteration.
+const DEFAULT_BACKEND_MODE = (import.meta as any)?.env?.PROD ? 'live' : 'mock';
+const BACKEND_MODE = (import.meta.env.VITE_BACKEND_MODE || DEFAULT_BACKEND_MODE).toLowerCase();
 
 function getDevAdminToken(): string | null {
   const metaEnv = (import.meta as any)?.env as any;
@@ -222,6 +225,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const method = String(options?.method ?? 'GET').toUpperCase();
   const startedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
 
+  const metaEnv = (import.meta as any)?.env as any;
+  const isDev = !!metaEnv?.DEV;
+  const isMutation = method !== 'GET' && method !== 'HEAD';
+
   const isFormData = options?.body instanceof FormData;
 	const hasBody = options?.body !== undefined && options?.body !== null;
   let res: Response | undefined;
@@ -229,6 +236,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   let error: unknown = undefined;
 
   try {
+    if (isDev && isMutation) {
+      console.debug('[api]', method, `${API_BASE_URL}${path}`);
+    }
+
     const clerkToken = await getAuthToken();
     const devAdminToken = getDevAdminToken();
     const fallbackBearer = !clerkToken && devAdminToken ? `Bearer ${devAdminToken}` : undefined;
@@ -244,8 +255,29 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     });
 
     if (!res.ok) {
-      const text = await res.text();
-      throw new Error(text || `Request failed with ${res.status}`);
+      const contentType = res.headers.get('content-type') || '';
+      let bodyText = '';
+      try {
+        if (contentType.includes('application/json')) {
+          const bodyJson = await res.json();
+          bodyText = JSON.stringify(bodyJson);
+        } else {
+          bodyText = await res.text();
+        }
+      } catch {
+        try {
+          bodyText = await res.text();
+        } catch {
+          bodyText = '';
+        }
+      }
+
+      if (isDev) {
+        console.error('[api]', method, `${API_BASE_URL}${path}`, res.status, bodyText);
+      }
+
+      const message = bodyText?.trim() || `Request failed with ${res.status}`;
+      throw new Error(`HTTP ${res.status} ${method} ${path}: ${message}`);
     }
 
     responseJson = await res.json();
@@ -254,14 +286,22 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     error = err;
     throw err;
   } finally {
+    const endedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+    const status = typeof res?.status === 'number' ? res.status : 0;
+    const durationMs = endedAt - startedAt;
+
+    // DEV-only logging for write requests (never log tokens or request bodies).
+    if (isDev && isMutation) {
+      console.debug('[api]', method, `${API_BASE_URL}${path}`, status, `${Math.round(durationMs)}ms`);
+    }
+
     if (debugEnabled) {
-      const endedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
       debugApiLogCall({
         method,
         path,
         dealId: debugApiInferDealId({ path, body: options?.body }),
-        status: typeof res?.status === 'number' ? res.status : 0,
-        duration_ms: endedAt - startedAt,
+        status,
+        duration_ms: durationMs,
         response: responseJson,
         error,
       });

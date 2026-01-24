@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { AnimatedCounter } from './AnimatedCounter';
 import { apiCreateDeal, apiCreateDealDraft, apiGetDeal, apiUploadDocument, isLiveBackend } from '../lib/apiClient';
+import { ToastContainer, ToastType } from './ui/Toast';
 
 import type { Deal } from '@dealdecision/contracts';
 
@@ -73,6 +74,21 @@ export function NewDealModal({ isOpen, onClose, onSuccess, onCreatedDeal, darkMo
   const [showSuccess, setShowSuccess] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<Array<{ id: string; type: ToastType; title: string; message?: string }>>([]);
+
+  const addToast = (type: ToastType, title: string, message?: string) => {
+    const newToast = {
+      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      type,
+      title,
+      message
+    };
+    setToasts((prev) => [...prev, newToast]);
+  };
+
+  const removeToast = (id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
 
   type UploadItem = {
     file: File;
@@ -190,13 +206,6 @@ export function NewDealModal({ isOpen, onClose, onSuccess, onCreatedDeal, darkMo
         }, 3500);
       };
 
-      if (!isLiveBackend()) {
-        const dealData = buildDealData(`deal-${Date.now()}`);
-        proceedToWorkspace(dealData);
-        setSubmitting(false);
-        return;
-      }
-
       apiCreateDeal({
         name: formData.name || 'Untitled Deal',
         stage: mapStageToApi(formData.stage),
@@ -212,7 +221,9 @@ export function NewDealModal({ isOpen, onClose, onSuccess, onCreatedDeal, darkMo
           proceedToWorkspace(dealData, created);
         })
         .catch((err) => {
-          setSubmitError(err instanceof Error ? err.message : 'Failed to create deal');
+          const message = err instanceof Error ? err.message : 'Failed to create deal';
+          setSubmitError(message);
+          addToast('error', 'Failed to create deal', message);
         })
         .finally(() => setSubmitting(false));
     }
@@ -354,6 +365,7 @@ export function NewDealModal({ isOpen, onClose, onSuccess, onCreatedDeal, darkMo
 
   return (
     <Modal isOpen={isOpen} onClose={handleClose} size="lg" darkMode={darkMode}>
+      <ToastContainer toasts={toasts} onClose={removeToast} darkMode={darkMode} />
       {!showSuccess ? (
         <>
           {/* Header */}

@@ -20,6 +20,7 @@ import {
   List,
   SortAsc
 } from 'lucide-react';
+import { ToastContainer, ToastType } from '../ui/Toast';
 import type { Document as ApiDocument } from '@dealdecision/contracts';
 import { apiDeleteDocument, isLiveBackend } from '../../lib/apiClient';
 
@@ -42,7 +43,22 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
   const [deleteTargets, setDeleteTargets] = useState<string[] | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [toasts, setToasts] = useState<Array<{ id: string; type: ToastType; title: string; message?: string }>>([]);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  const addToast = (type: ToastType, title: string, message?: string) => {
+    const newToast = {
+      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      type,
+      title,
+      message
+    };
+    setToasts((prev) => [...prev, newToast]);
+  };
+
+  const removeToast = (id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
 
   type LibraryDoc = {
     id: string;
@@ -159,7 +175,9 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
       setSelectedDocument(null);
       onDeleted?.();
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to delete document(s)';
       console.error(err);
+      addToast('error', 'Delete failed', message);
     } finally {
       setDeleting(false);
     }
@@ -173,6 +191,7 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
 
   return (
     <div className="space-y-6">
+      <ToastContainer toasts={toasts} onClose={removeToast} darkMode={darkMode} />
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4">
         <div

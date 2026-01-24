@@ -42,20 +42,39 @@ RUN pnpm run build
 # runner: production image
 # ----------------------
 FROM node:20-alpine AS runner
-WORKDIR /app/apps/api
+WORKDIR /app
 
 ENV NODE_ENV=production
 
+# Ensure pnpm is available in the runtime image (Render Docker deploy does not run build commands).
+ENV PNPM_HOME=/root/.local/share/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+RUN corepack enable
+RUN corepack prepare pnpm@10.28.1 --activate
+
+# Workspace metadata is required for `pnpm --filter api ...` to work.
+COPY pnpm-workspace.yaml package.json ./
+
 # Copy built output + package metadata
-COPY --from=build /app/apps/api/dist ./dist
-COPY --from=build /app/apps/api/package.json ./package.json
+COPY --from=build /app/apps/api/dist ./apps/api/dist
+COPY --from=build /app/apps/api/package.json ./apps/api/package.json
+
+# Startup script runs migrations then starts the server
+COPY apps/api/start.sh ./apps/api/start.sh
+RUN chmod +x ./apps/api/start.sh
+
+# Migration runner uses TS sources + infra SQL migrations
+COPY apps/api/scripts ./apps/api/scripts
+COPY apps/api/src ./apps/api/src
+COPY infra/migrations ./infra/migrations
 
 # Copy installed node_modules (pnpm creates symlinks into root .pnpm dir)
 COPY --from=deps /app/node_modules /app/node_modules
-COPY --from=deps /app/apps/api/node_modules ./node_modules
+COPY --from=deps /app/apps/api/node_modules /app/apps/api/node_modules
 
 # Copy built workspace packages required at runtime (workspace-linked deps)
 COPY --from=build /app/packages /app/packages
 
 EXPOSE 9000
-CMD ["node", "dist/src/index.js"]
+WORKDIR /app/apps/api
+CMD ["./start.sh"]

@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import type { Document } from '@dealdecision/contracts';
 import { apiUploadDocument } from '../../lib/apiClient';
+import { useAuth } from '@clerk/clerk-react';
 
 interface DocumentUploadProps {
   darkMode: boolean;
@@ -52,12 +53,14 @@ export function DocumentUpload({
   maxFileSize = 25,
   enableAIExtraction = true
 }: DocumentUploadProps) {
+  const { isLoaded: authLoaded, isSignedIn, orgId } = useAuth();
   const [isDragging, setIsDragging] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hasDeal = !!dealId && dealId !== 'demo' && dealId !== 'deal-fallback';
   const requiresDealSelection = !hasDeal;
+  const requiresOrgSelection = authLoaded && isSignedIn && !orgId;
 
   const getFileIcon = (fileName: string) => {
     const ext = fileName.split('.').pop()?.toLowerCase();
@@ -103,6 +106,13 @@ export function DocumentUpload({
 
     setUploadedFiles(prev => [...prev, uploadedFile]);
 
+    if (!authLoaded || !isSignedIn || !orgId) {
+      const message = 'Select an organization before uploading documents.';
+      onError?.(message);
+      setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'error', error: message } : f));
+      return { ...uploadedFile, status: 'error', error: message };
+    }
+
     if (!hasDeal) {
       const message = 'Select a real deal before uploading (demo deals cannot receive uploads).';
       onError?.(message);
@@ -126,6 +136,13 @@ export function DocumentUpload({
 
   const handleFiles = async (files: FileList | null) => {
     if (!files) return;
+
+    if (!authLoaded || !isSignedIn || !orgId) {
+      const message = 'Select an organization before uploading documents.';
+      setErrorMessage(message);
+      onError?.(message);
+      return;
+    }
 
     if (!hasDeal) {
       const message = 'Select a real deal before uploading (demo deals cannot receive uploads).';
@@ -208,6 +225,15 @@ export function DocumentUpload({
 
   return (
     <div className="space-y-4">
+      {requiresOrgSelection && (
+        <div className={`p-3 rounded-lg border text-sm ${
+          darkMode
+            ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+            : 'border-amber-300 bg-amber-50 text-amber-800'
+        }`}>
+          Select an organization before uploading documents.
+        </div>
+      )}
       {requiresDealSelection && (
         <div className={`p-3 rounded-lg border text-sm ${
           darkMode

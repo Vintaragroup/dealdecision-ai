@@ -3,7 +3,7 @@ import { Button } from '../ui/button';
 import { DocumentUpload } from './DocumentUpload';
 import { DocumentLibrary } from './DocumentLibrary';
 import { Upload, Sparkles, FileText } from 'lucide-react';
-import { apiGetDocuments, apiRetryDocument, isLiveBackend } from '../../lib/apiClient';
+import { apiGetDocuments, apiRetryDocument } from '../../lib/apiClient';
 import type { Document } from '@dealdecision/contracts';
 import { ExtractionReportModal } from './ExtractionReportModal';
 import { ToastContainer, type ToastType } from '../ui/Toast';
@@ -31,7 +31,7 @@ export function DocumentsTab({ dealId, darkMode = true, reloadKey = 0 }: Documen
   };
 
   const loadDocuments = async () => {
-    if (!dealId || !isLiveBackend()) return;
+    if (!dealId) return;
     setLoading(true);
     try {
       const res = await apiGetDocuments(dealId);
@@ -106,7 +106,7 @@ export function DocumentsTab({ dealId, darkMode = true, reloadKey = 0 }: Documen
           <DocumentUpload
             darkMode={darkMode}
             dealId={dealId}
-            enableAIExtraction={!isLiveBackend()}
+            enableAIExtraction={true}
             onUploaded={async () => {
               await loadDocuments();
             }}

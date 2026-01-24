@@ -90,6 +90,7 @@ describe("rendered pages", () => {
 			maxPages: 50,
 			format: "png",
 			dpi: 200,
+			maxPixelsPerPage: 6_500_000,
 		};
 
 		const res = await persistRenderedPageImages({

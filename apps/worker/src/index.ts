@@ -1239,58 +1239,61 @@ async function ingestDocumentProcessor(job: Job) {
 				try {
 					const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
 					if (persistCfg.enabled && persistCfg.persist) {
-						const renderStarted = Date.now();
-						// re-use resolved uploadDir
-						const res = await persistRenderedPageImages({
-							buffer,
-							documentId: docId,
-							pageCount: pageCount || 0,
-							uploadDir,
-							config: persistCfg,
-							logger: console,
-						});
-						console.log(
-							JSON.stringify({
-								event: "PDF_RENDERED_PAGES",
-								document_id: documentId,
-								page_count_input: pageCount || 0,
-								rendered_pages_dir: res.rendered_pages_dir ?? null,
-								rendered_pages_count: res.rendered_pages_count ?? 0,
-								page_count_detected: res.page_count_detected ?? null,
-								reason: res.reason ?? null,
-								duration_ms: Date.now() - renderStarted,
-							})
-						);
-						if (res.rendered_pages_dir) {
-							await mergeDocumentExtractionMetadata({
-									documentId: docId,
-								patch: {
-									rendered_pages_dir: res.rendered_pages_dir,
-									rendered_pages_format: res.rendered_pages_format,
-									rendered_pages_count: res.rendered_pages_count,
-									rendered_pages_max_pages: res.rendered_pages_max_pages,
-									rendered_pages_created_at: res.rendered_pages_created_at,
-								},
+						if (!buffer) {
+							console.warn(`[ingest_document] Skipping persistRenderedPageImages: missing buffer doc=${docId}`);
+						} else {
+							const renderStarted = Date.now();
+							const res = await persistRenderedPageImages({
+								buffer,
+								documentId: docId,
+								pageCount: pageCount || 0,
+								uploadDir,
+								config: persistCfg,
+								logger: console,
 							});
-							if (res.page_count_detected && res.page_count_detected > 0) {
-								await updateDocumentAnalysis({
-										documentId: docId,
-									pageCount: res.page_count_detected,
+
+							console.log(
+								JSON.stringify({
+									event: "PDF_RENDERED_PAGES",
+									document_id: documentId,
+									page_count_input: pageCount || 0,
+									rendered_pages_dir: res.rendered_pages_dir ?? null,
+									rendered_pages_count: res.rendered_pages_count ?? 0,
+									page_count_detected: res.page_count_detected ?? null,
+									reason: res.reason ?? null,
+									duration_ms: Date.now() - renderStarted,
+								})
+							);
+
+							if (res.rendered_pages_dir) {
+								await mergeDocumentExtractionMetadata({
+									documentId: docId,
+									patch: {
+										rendered_pages_dir: res.rendered_pages_dir,
+										rendered_pages_format: res.rendered_pages_format,
+										rendered_pages_count: res.rendered_pages_count,
+										rendered_pages_max_pages: res.rendered_pages_max_pages,
+										rendered_pages_created_at: res.rendered_pages_created_at,
+									},
 								});
+								if (res.page_count_detected && res.page_count_detected > 0) {
+									await updateDocumentAnalysis({ documentId: docId, pageCount: res.page_count_detected });
+								}
 							}
-						}
-						await emitJobProgress(job, {
-							job_id: job.id ? String(job.id) : "",
+
+							await emitJobProgress(job, {
+								job_id: job.id ? String(job.id) : "",
 								deal_id: dealIdSafe,
 								document_id: docId,
-							stage: "render_pages",
-							percent: 90,
-							message: `Rendered PDF pages (${res.rendered_pages_count ?? 0})`,
-						});
+								stage: "render_pages",
+								percent: 90,
+								message: `Rendered PDF pages (${res.rendered_pages_count ?? 0})`,
+							});
+						}
 					}
 				} catch (err) {
 					console.warn(
-							`[ingest_document] rendered page persistence failed doc=${docId}: ${
+						`[ingest_document] rendered page persistence failed doc=${docId}: ${
 							err instanceof Error ? err.message : String(err)
 						}`
 					);
@@ -2407,20 +2410,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 									OR ve.confidence > 0.55
 									OR (ve.structured_json IS NOT NULL AND ve.structured_json <> '{}'::jsonb)
 								)
-								await updateJobProgress(job, {
-									stage: "extract_visual_assets",
-									current: Math.min(pagesInJob, (i - pageStart) + 1),
-									total: pagesInJob,
-									message: `Extracted page ${i + 1}/${totalPages}`,
-									page_start: pageStart,
-									page_end: pageEndExclusive,
-									meta: {
-										document_id: docId,
-										page_index: i,
-										range: { start: pageStart, end: pageEndExclusive },
-									},
-								});
-							   )
+							)
 							 LIMIT 1
 						`,
 						[sanitizeText(docId), i, sanitizeText(extractorVersion)]
@@ -2477,6 +2467,19 @@ registerWorker("extract_visuals", async (job: Job) => {
 				persisted += pCount;
 				docPersisted += pCount;
 				docPersistedWithImageUri += withImageUri;
+				await updateJobProgress(job, {
+					stage: "extract_visual_assets",
+					current: Math.min(pagesInJob, (i - pageStart) + 1),
+					total: pagesInJob,
+					message: `Extracted page ${i + 1}/${totalPages}`,
+					page_start: pageStart,
+					page_end: pageEndExclusive,
+					meta: {
+						document_id: docId,
+						page_index: i,
+						range: { start: pageStart, end: pageEndExclusive },
+					},
+				});
 				if ((i - pageStart) % 2 === 0) {
 					logMemory("extract_visuals:page_persisted", {
 						document_id: docId,

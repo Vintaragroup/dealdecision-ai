@@ -70,6 +70,9 @@ import { OpenAIGPT4oProvider } from "./lib/llm/providers/openai-provider";
 import type { ProviderConfig } from "./lib/llm/types";
 import { extractPhaseBFeaturesV1, fetchPhaseBVisualsFromDb } from "./lib/phaseb/extract";
 import { materializePhaseBVisualEvidenceForDeal } from "./lib/phaseb/materialize-evidence";
+import { logMemory, yieldToEventLoop } from "./lib/memory";
+import { updateJobProgress } from "./lib/job-progress";
+import { enqueuePersistedJob } from "./lib/job-enqueue";
 
 // Deterministic startup log for Docker verification.
 // Do not log secrets; only the explicit flag value.
@@ -660,19 +663,14 @@ function startHeartbeat(
 }
 
 async function updateJob(job: Job, status: JobStatus, message?: string, progressPct?: number | null) {
-	const pool = getPool();
-	const jobId = sanitizeText((job.id ?? job.name).toString());
-	const startedAt = status === "running" ? new Date().toISOString() : null;
-	await pool.query(
-		`UPDATE jobs
-		 SET status = $2,
-		     updated_at = now(),
-		     message = COALESCE($3, message),
-		     progress_pct = COALESCE($4, progress_pct),
-		     started_at = COALESCE($5, started_at)
-		 WHERE job_id = $1`,
-		[jobId, sanitizeText(status), message ? sanitizeText(message) : null, progressPct ?? null, startedAt]
-	);
+	await updateJobProgress(job, {
+		status: status as any,
+		stage: "status_update",
+		current: typeof progressPct === "number" ? progressPct : undefined,
+		total: typeof progressPct === "number" ? 100 : undefined,
+		message,
+		error: status === "failed" ? message ?? "failed" : undefined,
+	});
 }
 
 async function emitJobProgress(job: Job, progress: JobProgressEventV1) {
@@ -683,35 +681,15 @@ async function emitJobProgress(job: Job, progress: JobProgressEventV1) {
 	if (prev && prev.stage === progress.stage && now - prev.ts < 1000) return;
 	progressEmitCache.set(jobId, { ts: now, stage: progress.stage });
 
-	try {
-		const pool = getPool();
-		const at = progress.at ?? new Date().toISOString();
-		const detail: JobStatusDetail = {
-			progress: {
-				...progress,
-				at,
-				job_id: progress.job_id ?? jobId,
-			},
-		};
-		await pool.query(
-			`UPDATE jobs
-			 SET progress_pct = COALESCE($2, progress_pct),
-			     message = COALESCE($3, message),
-			     status_detail = $4::jsonb,
-			     updated_at = now()
-			 WHERE job_id = $1`,
-			[
-				sanitizeText(jobId),
-				progress.percent ?? null,
-				progress.message ?? null,
-				JSON.stringify(detail),
-			]
-		);
-	} catch (err) {
-		console.warn(
-			`[emitJobProgress] failed job=${jobId} stage=${progress.stage}: ${err instanceof Error ? err.message : String(err)}`
-		);
-	}
+	await updateJobProgress(job, {
+		stage: progress.stage,
+		current: typeof progress.percent === "number" ? progress.percent : undefined,
+		total: typeof progress.percent === "number" ? 100 : undefined,
+		message: progress.message,
+		meta: (progress as any).meta,
+		page_start: typeof (progress as any)?.meta?.page_start === "number" ? (progress as any).meta.page_start : undefined,
+		page_end: typeof (progress as any)?.meta?.page_end === "number" ? (progress as any).meta.page_end : undefined,
+	});
 }
 
 async function failLatestIngestJob(documentId: string) {
@@ -852,7 +830,7 @@ async function ingestDocumentProcessor(job: Job) {
 	const docId = documentId as string;
 	const dealIdSafe = dealId as string;
 	const fileNameSafe = fileName as string;
-	const fileBufferB64Safe = fileBufferB64 as string;
+	let fileBufferB64Safe = fileBufferB64 as string;
 
 	try {
 		const extractionStartedAt = new Date().toISOString();
@@ -868,9 +846,30 @@ async function ingestDocumentProcessor(job: Job) {
 		});
 		await updateDocumentStatus(docId, "processing");
 
-		// Decode base64 buffer
-		const buffer = Buffer.from(fileBufferB64Safe, "base64");
+		logMemory("ingest_document:before_decode_b64", {
+			document_id: docId,
+			deal_id: dealIdSafe,
+			file_name: fileNameSafe,
+			b64_chars: fileBufferB64Safe.length,
+		});
+
+		// Decode base64 buffer (drop the base64 reference ASAP to reduce peak RSS)
+		let buffer: Buffer | null = Buffer.from(fileBufferB64Safe, "base64");
 		const decodedBytes = buffer.length;
+		try {
+			if (job.data && typeof job.data === "object") {
+				(job.data as any).fileBufferB64 = undefined;
+			}
+		} catch {
+			// best-effort
+		}
+		fileBufferB64Safe = "";
+		logMemory("ingest_document:after_decode_b64", {
+			document_id: docId,
+			deal_id: dealIdSafe,
+			decoded_bytes: decodedBytes,
+		});
+		await yieldToEventLoop();
 		console.log(
 			`[ingest_document] decoded bytes=${decodedBytes} doc=${docId} deal=${dealIdSafe} attempt=${attempt}`
 		);
@@ -880,14 +879,14 @@ async function ingestDocumentProcessor(job: Job) {
 			console.error(`[ingest_document] decoded empty buffer doc=${docId} deal=${dealIdSafe} attempt=${attempt}`);
 			return { ok: false };
 		}
-		await updateJob(job, "running", `Decoded file (${buffer.length} bytes)`, 15);
+		await updateJob(job, "running", `Decoded file (${decodedBytes} bytes)`, 15);
 		await emitJobProgress(job, {
 			job_id: job.id ? String(job.id) : "",
 			deal_id: dealIdSafe,
 			document_id: docId,
 			stage: "persist_document",
 			percent: 15,
-			message: `Decoded file (${buffer.length} bytes)`,
+			message: `Decoded file (${decodedBytes} bytes)`,
 		});
 
 		// Persist original bytes for future true re-extraction
@@ -923,6 +922,12 @@ async function ingestDocumentProcessor(job: Job) {
 				`[ingest_document] failed to store original bytes doc=${documentId}: ${originalBytesPersistError}`
 			);
 		}
+		logMemory("ingest_document:after_persist_original_bytes", {
+			document_id: docId,
+			deal_id: dealIdSafe,
+			original_bytes_persisted: originalBytesPersisted,
+		});
+		await yieldToEventLoop();
 
 
 		const heartbeat = startHeartbeat(job, {
@@ -938,6 +943,12 @@ async function ingestDocumentProcessor(job: Job) {
 		// Process document
 		let analysis: DocumentAnalysis;
 		try {
+			logMemory("ingest_document:before_process_document", {
+				document_id: docId,
+				deal_id: dealIdSafe,
+				decoded_bytes: decodedBytes,
+			});
+			await yieldToEventLoop();
 			analysis = await processDocument(
 				buffer,
 				fileNameSafe,
@@ -947,6 +958,13 @@ async function ingestDocumentProcessor(job: Job) {
 		} finally {
 			heartbeat.stop();
 		}
+		logMemory("ingest_document:after_process_document", {
+			document_id: docId,
+			deal_id: dealIdSafe,
+			content_type: analysis.contentType,
+		});
+		buffer = null;
+		await yieldToEventLoop();
 
 		await emitJobProgress(job, {
 			job_id: job.id ? String(job.id) : "",
@@ -1536,6 +1554,8 @@ registerWorker("extract_visuals", async (job: Job) => {
 		force_resegment?: boolean;
 		force_reextract?: boolean;
 		enqueue_deep_scan?: boolean;
+		page_start?: number;
+		page_end?: number;
 	};
 	const documentId = typeof data.document_id === "string" ? data.document_id : undefined;
 	const dealId = typeof data.deal_id === "string" ? data.deal_id : undefined;
@@ -1544,6 +1564,13 @@ registerWorker("extract_visuals", async (job: Job) => {
 	const forceResegment = Boolean((data as any).force_resegment);
 	const forceReextract = Boolean((data as any).force_reextract);
 	const enqueueDeepScan = Boolean((data as any).enqueue_deep_scan);
+	const pageStartRaw = (data as any).page_start;
+	const pageEndRaw = (data as any).page_end;
+	const isChunkJob = pageStartRaw != null || pageEndRaw != null;
+	const requestedPageStart =
+		typeof pageStartRaw === "number" && Number.isFinite(pageStartRaw) ? Math.max(0, Math.floor(pageStartRaw)) : 0;
+	const requestedPageEnd =
+		typeof pageEndRaw === "number" && Number.isFinite(pageEndRaw) ? Math.max(0, Math.floor(pageEndRaw)) : undefined;
 
 	const explicitDocumentIds = Array.isArray(data.document_ids)
 		? data.document_ids.filter((id) => typeof id === "string" && id.trim().length > 0)
@@ -1600,6 +1627,12 @@ registerWorker("extract_visuals", async (job: Job) => {
 
 	const pool = getPool();
 	const docsTotal = targetDocumentIds.length;
+	logMemory("extract_visuals:job_start", {
+		job_id: job.id ? String(job.id) : null,
+		deal_id: dealId ?? null,
+		docs_total: docsTotal,
+		chunk: isChunkJob ? { page_start: requestedPageStart, page_end: requestedPageEnd ?? null } : null,
+	});
 	devLog("worker_extract_visuals_start", {
 		job_id: job.id ? String(job.id) : null,
 		deal_id: dealId ?? null,
@@ -1941,6 +1974,50 @@ registerWorker("extract_visuals", async (job: Job) => {
 		}
 		if (uris.length === 0) {
 			uris = await resolvePageImageUris(pool, docId, { env: process.env, logger: console });
+		}
+
+		const chunkSize = config.maxPages;
+		const totalPages = uris.length;
+		const pageStart = isChunkJob ? Math.min(requestedPageStart, Math.max(0, totalPages - 1)) : 0;
+		const pageEndExclusive =
+			typeof requestedPageEnd === "number"
+				? Math.min(Math.max(pageStart, requestedPageEnd), totalPages)
+				: Math.min(pageStart + chunkSize, totalPages);
+
+		// If this doc has more pages than we can safely process in one job, enqueue follow-up chunk jobs.
+		if (!isChunkJob && totalPages > chunkSize) {
+			try {
+				const parentJobId = job.id ? String(job.id) : null;
+				for (let start = chunkSize; start < totalPages; start += chunkSize) {
+					const end = Math.min(start + chunkSize, totalPages);
+					await enqueuePersistedJob({
+						type: "extract_visuals",
+						deal_id: dealId ?? (typeof docMeta?.deal_id === "string" ? docMeta.deal_id : undefined),
+						document_id: docId,
+						parent_job_id: parentJobId,
+						page_start: start,
+						page_end: end,
+						payload: {
+							extractor_version: extractorVersion,
+							force_resegment: forceResegment,
+							force_reextract: forceReextract,
+						},
+					});
+				}
+				console.log(
+					JSON.stringify({
+						event: "EXTRACT_VISUALS_CHUNK_ENQUEUED",
+						document_id: docId,
+						total_pages: totalPages,
+						chunk_size: chunkSize,
+						chunks_enqueued: Math.ceil(totalPages / chunkSize) - 1,
+					})
+				);
+			} catch (err) {
+				console.warn(
+					`[extract_visuals] failed to enqueue chunk jobs doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+				);
+			}
 		}
 
 		if (uris.length === 0) {
@@ -2292,7 +2369,23 @@ registerWorker("extract_visuals", async (job: Job) => {
 			continue;
 		}
 
-		for (let i = 0; i < uris.length && i < config.maxPages; i += 1) {
+		const pagesInJob = Math.max(0, pageEndExclusive - pageStart);
+		await updateJobProgress(job, {
+			status: "running" as any,
+			stage: "extract_visual_assets",
+			current: 0,
+			total: pagesInJob,
+			message: `Extracting visuals (${pagesInJob} page(s))`,
+			page_start: pageStart,
+			page_end: pageEndExclusive,
+			meta: {
+				document_id: docId,
+				total_pages: totalPages,
+				range: { start: pageStart, end: pageEndExclusive },
+			},
+		});
+
+		for (let i = pageStart; i < pageEndExclusive; i += 1) {
 			const image_uri = uris[i];
 
 			// If we've already extracted this page for this extractor version, don't re-run.
@@ -2314,6 +2407,19 @@ registerWorker("extract_visuals", async (job: Job) => {
 									OR ve.confidence > 0.55
 									OR (ve.structured_json IS NOT NULL AND ve.structured_json <> '{}'::jsonb)
 								)
+								await updateJobProgress(job, {
+									stage: "extract_visual_assets",
+									current: Math.min(pagesInJob, (i - pageStart) + 1),
+									total: pagesInJob,
+									message: `Extracted page ${i + 1}/${totalPages}`,
+									page_start: pageStart,
+									page_end: pageEndExclusive,
+									meta: {
+										document_id: docId,
+										page_index: i,
+										range: { start: pageStart, end: pageEndExclusive },
+									},
+								});
 							   )
 							 LIMIT 1
 						`,
@@ -2371,6 +2477,28 @@ registerWorker("extract_visuals", async (job: Job) => {
 				persisted += pCount;
 				docPersisted += pCount;
 				docPersistedWithImageUri += withImageUri;
+				if ((i - pageStart) % 2 === 0) {
+					logMemory("extract_visuals:page_persisted", {
+						document_id: docId,
+						page_index: i,
+						persisted_assets: pCount,
+						page_range: { start: pageStart, end: pageEndExclusive },
+					});
+					await emitJobProgress(job, {
+						job_id: job.id ? String(job.id) : "",
+						deal_id: dealId ?? undefined,
+						document_id: docId,
+						stage: "extract_visual_assets",
+						percent: basePct,
+						message: `Extracted page ${i + 1}/${totalPages} (range ${pageStart + 1}-${pageEndExclusive})`,
+						meta: {
+							page_index: i,
+							page_start: pageStart,
+							page_end: pageEndExclusive,
+							total_pages: totalPages,
+						},
+					});
+				}
 			} catch (err) {
 				console.warn(
 					`[extract_visuals] Persist failed doc=${docId} page=${i}: ${
@@ -2378,6 +2506,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 					}`
 				);
 			}
+			await yieldToEventLoop();
 		}
 
 		console.log(
@@ -2538,12 +2667,21 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 		document_ids?: string[];
 		force_refresh?: boolean;
 		parent_job_id?: string | null;
+		page_start?: number;
+		page_end?: number;
 	};
 	const dealId = typeof data.deal_id === "string" ? data.deal_id : undefined;
 	const explicitDocumentIds = Array.isArray(data.document_ids)
 		? data.document_ids.filter((id) => typeof id === "string" && id.trim().length > 0)
 		: [];
 	const forceRefresh = Boolean((data as any).force_refresh);
+	const pageStartRaw = (data as any).page_start;
+	const pageEndRaw = (data as any).page_end;
+	const isChunkJob = pageStartRaw != null || pageEndRaw != null;
+	const requestedPageStart =
+		typeof pageStartRaw === "number" && Number.isFinite(pageStartRaw) ? Math.max(0, Math.floor(pageStartRaw)) : 0;
+	const requestedPageEnd =
+		typeof pageEndRaw === "number" && Number.isFinite(pageEndRaw) ? Math.max(0, Math.floor(pageEndRaw)) : undefined;
 
 	if (!dealId) {
 		await updateJob(job, "failed", "Missing deal_id", 100);
@@ -2576,6 +2714,11 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 		percent: 1,
 		message: "Deep scan started",
 		meta: { force_refresh: forceRefresh, parent_job_id: (data as any).parent_job_id ?? null },
+	});
+	logMemory("deep_scan_visuals:job_start", {
+		job_id: job.id ? String(job.id) : null,
+		deal_id: dealId,
+		chunk: isChunkJob ? { page_start: requestedPageStart, page_end: requestedPageEnd ?? null } : null,
 	});
 
 	let targetDocumentIds: string[] = [];
@@ -2644,7 +2787,67 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 			continue;
 		}
 
-		for (let pageIndex = 0; pageIndex < uris.length && pageIndex < config.maxPages; pageIndex += 1) {
+		const chunkSize = config.maxPages;
+		const totalPages = uris.length;
+		const pageStart = isChunkJob ? Math.min(requestedPageStart, Math.max(0, totalPages - 1)) : 0;
+		const pageEndExclusive =
+			typeof requestedPageEnd === "number"
+				? Math.min(Math.max(pageStart, requestedPageEnd), totalPages)
+				: Math.min(pageStart + chunkSize, totalPages);
+
+		if (!isChunkJob && totalPages > chunkSize) {
+			try {
+				const parentJobId = job.id ? String(job.id) : null;
+				for (let start = chunkSize; start < totalPages; start += chunkSize) {
+					const end = Math.min(start + chunkSize, totalPages);
+					await enqueuePersistedJob({
+						type: "deep_scan_visuals",
+						deal_id: dealId,
+						document_id: docId,
+						parent_job_id: parentJobId,
+						page_start: start,
+						page_end: end,
+						payload: {
+							deal_id: dealId,
+							document_ids: [docId],
+							force_refresh: forceRefresh,
+							parent_job_id: parentJobId,
+						},
+					});
+				}
+				console.log(
+					JSON.stringify({
+						event: "DEEP_SCAN_VISUALS_CHUNK_ENQUEUED",
+						document_id: docId,
+						total_pages: totalPages,
+						chunk_size: chunkSize,
+						chunks_enqueued: Math.ceil(totalPages / chunkSize) - 1,
+					})
+				);
+			} catch (err) {
+				console.warn(
+					`[deep_scan_visuals] failed to enqueue chunk jobs doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+				);
+			}
+		}
+
+		const pagesInJob = Math.max(0, pageEndExclusive - pageStart);
+		await updateJobProgress(job, {
+			status: "running" as any,
+			stage: "deep_scan_visuals",
+			current: 0,
+			total: pagesInJob,
+			message: `Deep scanning visuals (${pagesInJob} page(s))`,
+			page_start: pageStart,
+			page_end: pageEndExclusive,
+			meta: {
+				document_id: docId,
+				total_pages: totalPages,
+				range: { start: pageStart, end: pageEndExclusive },
+			},
+		});
+
+		for (let pageIndex = pageStart; pageIndex < pageEndExclusive; pageIndex += 1) {
 			pagesConsidered += 1;
 			const image_uri = uris[pageIndex];
 			if (!forceRefresh) {
@@ -2698,9 +2901,27 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 				const { persisted } = await persistVisionResponse(pool, response, { pageImageUri: image_uri });
 				persistedAssets += persisted;
 				pagesUpdated += 1;
+				await updateJobProgress(job, {
+					stage: "deep_scan_visuals",
+					current: Math.min(pagesInJob, (pageIndex - pageStart) + 1),
+					total: pagesInJob,
+					message: `Deep scanned page ${pageIndex + 1}/${totalPages}`,
+					page_start: pageStart,
+					page_end: pageEndExclusive,
+					meta: { document_id: docId, page_index: pageIndex, range: { start: pageStart, end: pageEndExclusive } },
+				});
+				if ((pageIndex - pageStart) % 2 === 0) {
+					logMemory("deep_scan_visuals:page_persisted", {
+						document_id: docId,
+						page_index: pageIndex,
+						persisted_assets: persisted,
+						page_range: { start: pageStart, end: pageEndExclusive },
+					});
+				}
 			} catch {
 				pagesErrored += 1;
 			}
+			await yieldToEventLoop();
 		}
 
 		docsProcessed += 1;

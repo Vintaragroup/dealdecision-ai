@@ -66,11 +66,27 @@ export function createWorker(
   processor: Processor<any, any, string>
 ) {
   console.log(`[queue] Creating worker for queue: ${name}`);
-  
-  const worker = new Worker(name, processor, { 
+
+  // Render OOM prevention: keep the heavy queues single-threaded in-process.
+  // NOTE: lockDuration must cover long-running CPU-heavy extraction loops.
+  const heavyQueues = new Set(["ingest_documents", "extract_visuals", "deep_scan_visuals"]);
+  const concurrency = heavyQueues.has(name) ? 1 : 2;
+  const lockDuration = heavyQueues.has(name) ? 10 * 60 * 1000 : 2 * 60 * 1000;
+
+  const worker = new Worker(name, processor, {
     connection,
-    concurrency: 2,  // Allow 2 concurrent jobs
+    concurrency,
+    lockDuration,
   });
+
+  console.log(
+    JSON.stringify({
+      event: "worker_config",
+      queue: name,
+      concurrency,
+      lock_duration_ms: lockDuration,
+    })
+  );
   
   worker.on('active', (job) => {
     console.log(`[worker] Job active: ${job.id} - ${name}`);

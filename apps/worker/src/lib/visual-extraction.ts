@@ -274,8 +274,8 @@ export function getVisionExtractorConfig(env: NodeJS.ProcessEnv = process.env): 
 		visionWorkerUrl: (env.VISION_WORKER_URL || "http://localhost:8000").replace(/\/$/, ""),
 		extractorVersion: env.VISION_EXTRACTOR_VERSION || "vision_v1",
 		timeoutMs: parseIntWithDefault(env.VISION_TIMEOUT_MS, 8000),
-		// Default high enough to cover typical pitch decks while keeping a hard cap via env.
-		maxPages: parseIntWithDefault(env.VISION_MAX_PAGES, 50),
+		// Default small to keep memory bounded; larger documents are processed via page-range sub-jobs.
+		maxPages: parseIntWithDefault(env.VISION_MAX_PAGES, 10),
 	};
 }
 

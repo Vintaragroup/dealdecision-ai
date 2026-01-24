@@ -5,6 +5,8 @@ import fs from "fs/promises";
 import crypto from "crypto";
 import Tesseract from "tesseract.js";
 
+import { logMemory } from "../memory";
+
 (pdfjs as any).GlobalWorkerOptions.disableWorker = true;
 
 // pdf.js render needs ImageData in the Node runtime
@@ -1204,6 +1206,7 @@ type OCRResult = {
 };
 
 export async function extractPDFContent(buffer: Buffer, options: { docId?: string } = {}): Promise<PDFContent> {
+  logMemory("pdf_v1:before_pdf_load", { doc_id: options.docId ?? null, bytes: buffer.length });
   const data = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
   if (data.byteLength === 0) {
@@ -1220,10 +1223,16 @@ export async function extractPDFContent(buffer: Buffer, options: { docId?: strin
   const standardFontDataUrl = path.join(path.dirname(require.resolve("pdfjs-dist/package.json")), "standard_fonts/");
 
   const worker = await withTimeout(pdfjs.getDocument({ data, standardFontDataUrl }).promise, "pdf load");
+  logMemory("pdf_v1:after_pdf_load", { doc_id: options.docId ?? null, num_pages: worker.numPages });
   const processedPages = Math.min(worker.numPages, PDF_MAX_PAGES);
   const metadata = await worker.getMetadata().catch(() => ({}));
 
   const { pages, summary, usedOcr, debugRecords } = await extractWithTextThenOcr(worker, processedPages, debugDir);
+  logMemory("pdf_v1:after_extract", {
+    doc_id: options.docId ?? null,
+    processed_pages: summary.processedPages,
+    ocr_used: usedOcr,
+  });
 
   if (DEBUG_ENABLED && debugDir) {
     await writeDebugSummary(debugDir, {
@@ -1236,6 +1245,14 @@ export async function extractPDFContent(buffer: Buffer, options: { docId?: strin
       pageDebug: debugRecords,
     });
   }
+
+  try {
+    await (worker as any).destroy?.();
+  } catch {
+    // ignore
+  }
+
+  logMemory("pdf_v1:after_destroy", { doc_id: options.docId ?? null });
 
   return {
     metadata: {

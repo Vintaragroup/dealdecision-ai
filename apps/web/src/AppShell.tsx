@@ -28,6 +28,7 @@ import { ChatAssistant } from './components/ChatAssistant';
 import { CommandPalette } from './components/CommandPalette';
 import { ApiAuthBridge } from './components/auth/ApiAuthBridge';
 import { ApiMutationsPanel } from './components/debug/ApiMutationsPanel';
+import { DealsListDebugBadge } from './components/debug/DealsListDebugBadge';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useUser } from '@clerk/clerk-react';
 import { clearLocalOnboardingComplete, getPostLoginRoute, markOnboardingComplete, maybeBackfillOnboardingComplete } from './lib/postLoginRouting';
@@ -386,6 +387,9 @@ export default function AppShell() {
 
                 {/* Runtime-only production debug panel (disabled unless opted-in via localStorage/query param) */}
                 <ApiMutationsPanel />
+
+                {/* Runtime-only DealsList visibility badge (disabled unless opted-in via localStorage/query param) */}
+                <DealsListDebugBadge />
               </div>
             </div>
           </div>

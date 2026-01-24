@@ -235,11 +235,13 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
 
     debug_logs = os.getenv("VISION_DEBUG_LOGS", "").strip().lower() in {"1", "true", "yes", "on"}
     if debug_logs:
-        image_uri_kind = "http" if (req.image_uri or "").startswith(("http://", "https://")) else "file"
+        has_inline = bool(getattr(req, "image_b64", None))
+        image_uri_val = (req.image_uri or "") if getattr(req, "image_uri", None) else ""
+        image_uri_kind = "inline" if has_inline else ("http" if image_uri_val.startswith(("http://", "https://")) else "file")
         local_exists = None
-        if image_uri_kind == "file":
+        if image_uri_kind == "file" and image_uri_val:
             try:
-                local_exists = bool(os.path.exists(req.image_uri))
+                local_exists = bool(os.path.exists(image_uri_val))
             except Exception:
                 local_exists = None
         _log_event(
@@ -248,6 +250,7 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
                 **base_log,
                 "image_uri_kind": image_uri_kind,
                 "image_uri": req.image_uri,
+                "image_b64_len": len(req.image_b64) if getattr(req, "image_b64", None) else 0,
                 "local_exists": local_exists,
                 "crop_saved": False,
                 "note": "vision_v1 does not write per-asset crops; assets.image_uri will be null",
@@ -255,7 +258,26 @@ def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
         )
 
     try:
-        image_bytes, load_flags = _read_image_bytes(req.image_uri)
+        load_flags: Dict[str, Any] = {}
+        image_bytes: Optional[bytes] = None
+
+        if getattr(req, "image_b64", None):
+            try:
+                import base64
+
+                image_bytes = base64.b64decode(req.image_b64)
+                load_flags["image_load"] = "inline_b64"
+                load_flags["image_b64_len"] = len(req.image_b64)
+            except Exception as e:
+                load_flags["image_load"] = "inline_b64_decode_failed"
+                load_flags["image_load_error"] = str(e)
+                image_bytes = None
+
+        if image_bytes is None:
+            image_uri = req.image_uri or ""
+            image_bytes, uri_flags = _read_image_bytes(image_uri)
+            load_flags.update(uri_flags)
+
         if not image_bytes:
             elapsed_ms = int((time.perf_counter() - started) * 1000)
             _log_event(

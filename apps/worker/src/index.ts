@@ -1,6 +1,7 @@
 import type { Job } from "bullmq";
 import { randomUUID, createHash } from "crypto";
 import path from "path";
+import fs from "fs/promises";
 import type { JobProgressEventV1, JobStatus, JobStatusDetail } from "@dealdecision/contracts";
 import {
 	sanitizeText,
@@ -58,6 +59,61 @@ import { processDocument } from "./lib/processors";
 import { verifyDocumentExtraction } from "./lib/verification";
 import { remediateStructuredData } from "./lib/remediation";
 import { persistPdfV2TextRegionAssetsV1Shadow } from "./lib/pdf_v2/pdf-text-region-assets-v1";
+
+function pickDownloadUrlFromExtractionMetadata(meta: unknown): string | null {
+	if (!meta || typeof meta !== "object") return null;
+	const m = meta as any;
+	const candidates: unknown[] = [
+		m?.upload?.signed_url,
+		m?.upload?.signedUrl,
+		m?.upload?.download_url,
+		m?.upload?.downloadUrl,
+		m?.upload?.url,
+		m?.upload?.file_url,
+		m?.upload?.fileUrl,
+		m?.original_url,
+		m?.originalUrl,
+		m?.source_url,
+		m?.sourceUrl,
+		m?.r2_signed_url,
+		m?.r2_url,
+		m?.r2?.signed_url,
+		m?.r2?.url,
+		m?.storage?.signed_url,
+		m?.storage?.url,
+	];
+	for (const c of candidates) {
+		if (typeof c !== "string") continue;
+		const s = c.trim();
+		if (s.startsWith("http://") || s.startsWith("https://")) return s;
+	}
+	return null;
+}
+
+function resolveLocalImagePath(imageUri: string, env: NodeJS.ProcessEnv = process.env): string | null {
+	const trimmed = String(imageUri || "").trim();
+	if (!trimmed) return null;
+	if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return null;
+	if (trimmed.startsWith("/uploads/")) {
+		const uploadDir = env.UPLOAD_DIR ? path.resolve(env.UPLOAD_DIR) : path.resolve(process.cwd(), "uploads");
+		return path.join(uploadDir, trimmed.slice("/uploads".length));
+	}
+	if (trimmed.startsWith("/")) return trimmed;
+	// Treat relative paths as relative to cwd.
+	return path.resolve(process.cwd(), trimmed);
+}
+
+async function tryReadImageB64ForVision(imageUri: string, env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+	const localPath = resolveLocalImagePath(imageUri, env);
+	if (!localPath) return null;
+	try {
+		const bytes = await fs.readFile(localPath);
+		if (!bytes || bytes.length === 0) return null;
+		return bytes.toString("base64");
+	} catch {
+		return null;
+	}
+}
 import { persistPdfPageUnderstandingV1Shadow } from "./lib/pdf_v2/page-understanding-v1";
 import { parseIngestDocumentsJobData, validateIngestDocumentsPayload } from "./lib/ingest/ingest-payload";
 import { buildPhase1DealOverviewV2, buildPhase1DealUnderstandingV1, buildPhase1UpdateReportV1 } from "./lib/phase1/dealOverviewV2";
@@ -2039,10 +2095,74 @@ registerWorker("extract_visuals", async (job: Job) => {
 					// ignore
 				}
 				const original = await getDocumentOriginalFile(docId);
+				let originalBytes: Buffer | null = original?.bytes ?? null;
+				const originalFileName: string | null = typeof original?.file_name === "string" ? original.file_name : null;
+				const originalMimeType: string | null = typeof original?.mime_type === "string" ? original.mime_type : null;
+
+				// If DB blob is missing (common in prod setups), attempt to fetch bytes from a URL stored in extraction_metadata.
+				if ((!originalBytes || originalBytes.length === 0) && docMeta?.extraction_metadata) {
+					const url = pickDownloadUrlFromExtractionMetadata(docMeta.extraction_metadata);
+					if (url) {
+						try {
+							const controller = new AbortController();
+							const timer = setTimeout(() => controller.abort(), 20000);
+							const res = await fetch(url, { signal: controller.signal });
+							clearTimeout(timer);
+							if (res.ok) {
+								const ab = await res.arrayBuffer();
+								originalBytes = Buffer.from(ab);
+								console.log(
+									JSON.stringify({
+										event: "FETCHED_ORIGINAL_BYTES_FROM_URL",
+										document_id: docId,
+										url_host: (() => {
+											try {
+												return new URL(url).host;
+											} catch {
+												return null;
+											}
+										})(),
+										size_bytes: originalBytes.length,
+									})
+								);
+
+								// Best-effort: persist for future re-runs.
+								try {
+									const sha256 = createHash("sha256").update(originalBytes).digest("hex");
+									const inferredName =
+										(typeof (docMeta as any)?.extraction_metadata === "object" &&
+											(typeof (docMeta as any)?.extraction_metadata?.upload?.file_name === "string"
+												? (docMeta as any).extraction_metadata.upload.file_name
+												: null)) ||
+										originalFileName ||
+										`${docId}.bin`;
+									await upsertDocumentOriginalFile({
+										documentId: docId,
+										sha256,
+										bytes: originalBytes,
+										sizeBytes: originalBytes.length,
+										fileName: inferredName,
+										mimeType: originalMimeType,
+									});
+								} catch {
+									// ignore persistence errors
+								}
+							}
+						} catch (err) {
+							console.warn(
+								`[extract_visuals] failed to fetch original bytes from url doc=${docId}: ${
+									err instanceof Error ? err.message : String(err)
+								}`
+							);
+						}
+					}
+				}
+
 				const isPdf =
-					(original?.mime_type && original.mime_type.toLowerCase().includes("pdf")) ||
-					(original?.file_name && original.file_name.toLowerCase().endsWith(".pdf"));
-				if (!original?.bytes) {
+					(originalMimeType && originalMimeType.toLowerCase().includes("pdf")) ||
+					(originalFileName && originalFileName.toLowerCase().endsWith(".pdf")) ||
+					docKind === "pdf";
+				if (!originalBytes || originalBytes.length === 0) {
 					docsMissingOriginalBytes += 1;
 					docsMissingOriginalBytesIds.push(docId);
 				}
@@ -2053,7 +2173,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 				const persistCfg = getVisualPageImagePersistConfig();
 
 				// PDF rendering fallback
-				if (original?.bytes && isPdf) {
+				if (originalBytes && isPdf) {
 					const { rows } = await pool.query<{ page_count: number | null }>(
 						"SELECT page_count FROM documents WHERE id = $1 LIMIT 1",
 						[docId]
@@ -2064,7 +2184,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 							: 0;
 
 					const renderRes = await persistRenderedPageImages({
-						buffer: original.bytes,
+						buffer: originalBytes,
 						documentId: docId,
 						pageCount: existingPageCount || 0,
 						uploadDir,
@@ -2087,9 +2207,9 @@ registerWorker("extract_visuals", async (job: Job) => {
 				}
 
 				// Non-PDF rendering (LibreOffice -> PDF -> pages) when enabled
-				if (original?.bytes && nonPdfRenderEnabled && ["powerpoint", "word", "excel"].includes(docKind)) {
-					const fileExt = typeof original.file_name === "string"
-						? original.file_name.split(".").pop() ?? docKind
+				if (originalBytes && nonPdfRenderEnabled && ["powerpoint", "word", "excel"].includes(docKind)) {
+					const fileExt = typeof originalFileName === "string"
+						? originalFileName.split(".").pop() ?? docKind
 						: docKind;
 					const { rows } = await pool.query<{ page_count: number | null }>(
 						"SELECT page_count FROM documents WHERE id = $1 LIMIT 1",
@@ -2101,7 +2221,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 							: 0;
 
 					const renderRes = await renderNonPdfToPageImages({
-						buffer: original.bytes,
+						buffer: originalBytes,
 						fileExt,
 						documentId: docId,
 						uploadDir,
@@ -2151,9 +2271,9 @@ registerWorker("extract_visuals", async (job: Job) => {
 				}
 
 				// Image docs: normalize into rendered_pages/page_000.png
-				if (original?.bytes && docKind === "image") {
+				if (originalBytes && docKind === "image") {
 					const res = await persistImagePage({
-						buffer: original.bytes,
+						buffer: originalBytes,
 						documentId: docId,
 						uploadDir,
 						config: persistCfg,
@@ -2390,6 +2510,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 
 		for (let i = pageStart; i < pageEndExclusive; i += 1) {
 			const image_uri = uris[i];
+			const image_b64 = await tryReadImageB64ForVision(image_uri, process.env);
 
 			// If we've already extracted this page for this extractor version, don't re-run.
 			// This prevents repeated OCR/vision-understanding passes on the same slide across extractions.
@@ -2431,6 +2552,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 				document_id: docId,
 				page_index: i,
 				image_uri,
+				image_b64: image_b64 ?? undefined,
 				extractor_version: extractorVersion,
 			});
 
@@ -2885,10 +3007,12 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 				});
 			}
 
+			const image_b64 = await tryReadImageB64ForVision(image_uri, process.env);
 			let response = await callVisionWorker(config, {
 				document_id: docId,
 				page_index: pageIndex,
 				image_uri,
+				image_b64: image_b64 ?? undefined,
 				extractor_version: forceExtractorVersion,
 			});
 

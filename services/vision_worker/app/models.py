@@ -24,7 +24,9 @@ class BBox(BaseModel):
 class ExtractVisualsRequest(BaseModel):
     document_id: str
     page_index: int
-    image_uri: str
+    # If provided, preferred over image_uri. This avoids requiring a shared filesystem or public URL.
+    image_b64: Optional[str] = None
+    image_uri: Optional[str] = None
     extractor_version: str = "vision_v1"
 
 

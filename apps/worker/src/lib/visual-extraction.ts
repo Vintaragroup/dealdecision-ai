@@ -20,7 +20,8 @@ type FsLike = Pick<typeof fs, "readdir" | "stat">;
 export type VisionExtractRequest = {
 	document_id: string;
 	page_index: number;
-	image_uri: string;
+	image_uri?: string;
+	image_b64?: string;
 	extractor_version: string;
 };
 
@@ -368,6 +369,58 @@ export async function resolvePageImageUris(
 		);
 		const row = rows?.[0];
 		const pageCount = typeof row?.page_count === "number" && Number.isFinite(row.page_count) ? row.page_count : 0;
+
+		// If extraction_metadata already contains page image URLs (e.g. object storage), prefer them.
+		const metaObj = row?.extraction_metadata && typeof row.extraction_metadata === "object" ? (row.extraction_metadata as any) : null;
+		const metaListCandidates: unknown[] = [
+			metaObj?.page_image_uris,
+			metaObj?.page_image_urls,
+			metaObj?.page_images,
+			metaObj?.rendered_page_uris,
+			metaObj?.rendered_page_urls,
+			metaObj?.rendered_pages_urls,
+			metaObj?.rendered_pages_uris,
+		];
+		for (const cand of metaListCandidates) {
+			if (!Array.isArray(cand)) continue;
+			const urls = cand
+				.filter((u) => typeof u === "string" && u.trim().length > 0)
+				.map((u) => u.trim());
+			if (urls.length > 0) {
+				logger.log(
+					JSON.stringify({
+						event: "PAGE_IMAGE_URIS_FROM_METADATA",
+						document_id: documentId,
+						count: urls.length,
+					})
+				);
+				return urls;
+			}
+		}
+
+		const prefixCandidates: unknown[] = [
+			metaObj?.rendered_pages_url_prefix,
+			metaObj?.rendered_pages_uri_prefix,
+			metaObj?.page_images_url_prefix,
+			metaObj?.page_images_uri_prefix,
+			metaObj?.page_image_url_prefix,
+		];
+		for (const cand of prefixCandidates) {
+			if (typeof cand !== "string") continue;
+			const prefix = cand.trim().replace(/\/$/, "");
+			if (!prefix || !(prefix.startsWith("http://") || prefix.startsWith("https://"))) continue;
+			if (!pageCount || pageCount <= 0) continue;
+			const urls = Array.from({ length: pageCount }, (_, i) => `${prefix}/page_${String(i).padStart(3, "0")}.png`);
+			logger.log(
+				JSON.stringify({
+					event: "PAGE_IMAGE_URIS_FROM_METADATA_PREFIX",
+					document_id: documentId,
+					count: urls.length,
+					page_count: pageCount,
+				})
+			);
+			return urls;
+		}
 
 		const dirs = candidateArtifactDirs({ documentId, meta: row?.extraction_metadata, env: options?.env });
 		for (const dir of dirs) {

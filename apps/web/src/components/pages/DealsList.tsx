@@ -293,6 +293,41 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
     });
   }, [createdDeal]);
 
+  const filteredDeals = deals.filter(deal => {
+    const matchesSearch = deal.name.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesStage = stageFilter === 'all' || deal.stage === stageFilter;
+    const matchesPriority = priorityFilter === 'all' || deal.priority === priorityFilter;
+    return matchesSearch && matchesStage && matchesPriority;
+  });
+
+  useEffect(() => {
+    if (!debugDealsList) return;
+    try {
+      if (typeof window !== 'undefined') {
+        (window as any).__ddaiDealsListDebug = {
+          ts: Date.now(),
+          orgId,
+          liveDeals: liveDeals.length,
+          deals: deals.length,
+          filteredDeals: filteredDeals.length,
+          searchQuery,
+          stageFilter,
+          priorityFilter,
+        };
+      }
+    } catch {
+      // ignore
+    }
+    console.info('[DDAI][DealsList] post-filter', {
+      liveDeals: liveDeals.length,
+      deals: deals.length,
+      filteredDeals: filteredDeals.length,
+      searchQuery,
+      stageFilter,
+      priorityFilter,
+    });
+  }, [debugDealsList, orgId, liveDeals.length, deals.length, filteredDeals.length, searchQuery, stageFilter, priorityFilter]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
@@ -365,41 +400,6 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
     const d = new Date(value);
     return Number.isFinite(d.getTime()) ? d.toLocaleString() : value;
   };
-
-  const filteredDeals = deals.filter(deal => {
-    const matchesSearch = deal.name.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStage = stageFilter === 'all' || deal.stage === stageFilter;
-    const matchesPriority = priorityFilter === 'all' || deal.priority === priorityFilter;
-    return matchesSearch && matchesStage && matchesPriority;
-  });
-
-  useEffect(() => {
-    if (!debugDealsList) return;
-    try {
-      if (typeof window !== 'undefined') {
-        (window as any).__ddaiDealsListDebug = {
-          ts: Date.now(),
-          orgId,
-          liveDeals: liveDeals.length,
-          deals: deals.length,
-          filteredDeals: filteredDeals.length,
-          searchQuery,
-          stageFilter,
-          priorityFilter,
-        };
-      }
-    } catch {
-      // ignore
-    }
-    console.info('[DDAI][DealsList] post-filter', {
-      liveDeals: liveDeals.length,
-      deals: deals.length,
-      filteredDeals: filteredDeals.length,
-      searchQuery,
-      stageFilter,
-      priorityFilter,
-    });
-  }, [debugDealsList, orgId, liveDeals.length, deals.length, filteredDeals.length, searchQuery, stageFilter, priorityFilter]);
 
   const summaryStats = {
     total: deals.length,

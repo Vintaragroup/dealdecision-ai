@@ -72,7 +72,7 @@ describe("rendered pages", () => {
 		} as any);
 		expect(cfg.enabled).toBe(true);
 		expect(cfg.persist).toBe(true);
-		expect(cfg.maxPages).toBe(50);
+		expect(cfg.maxPages).toBe(10);
 		expect(cfg.dpi).toBe(200);
 		expect(cfg.format).toBe("png");
 	});

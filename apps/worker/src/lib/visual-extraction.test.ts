@@ -73,8 +73,8 @@ test("getVisionExtractorConfig defaults are production-safe (disabled)", () => {
 	expect(cfg.visionWorkerUrl).toBe("http://localhost:8000");
 	expect(cfg.extractorVersion).toBe("vision_v1");
 	expect(cfg.timeoutMs).toBe(8000);
-	// Default aligns with rendered-pages config to cover large decks while allowing env override.
-	expect(cfg.maxPages).toBe(50);
+	// Default aligns with rendered-pages config to stay bounded under low-memory worker environments.
+	expect(cfg.maxPages).toBe(10);
 });
 
 test("upsertVisualAsset uses null-hash conflict target when image_hash is null", async () => {

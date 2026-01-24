@@ -11,7 +11,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { ExportDealsModal } from '../ExportDealsModal';
-import { apiGetDeals, apiGetDocuments, apiAutoProgressDeal, apiDeleteDeal, isLiveBackend } from '../../lib/apiClient';
+import { apiGetDeals, apiGetDocuments, apiAutoProgressDeal, apiDeleteDeal } from '../../lib/apiClient';
 import { Modal } from '../ui/Modal';
 import { useScoreSource } from '../../contexts/ScoreSourceContext';
 import { getDisplayScoreForDeal } from '../../lib/dealScore';
@@ -68,6 +68,16 @@ interface DealsListProps {
 export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, createdDeal }: DealsListProps) {
   const { isLoaded: authLoaded, isSignedIn, orgId } = useAuth();
   const { scoreSource } = useScoreSource();
+  const debugDealsList = useMemo(() => {
+    try {
+      if (typeof window === 'undefined') return false;
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('debugDealsList') === '1') return true;
+      return window.localStorage.getItem('ddai:debugDealsList') === '1';
+    } catch {
+      return false;
+    }
+  }, []);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [searchQuery, setSearchQuery] = useState('');
   const [stageFilter, setStageFilter] = useState('all');
@@ -86,7 +96,6 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
   const [deletingDealId, setDeletingDealId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isLiveBackend()) return;
     if (!authLoaded) return;
 
     // Do not call the API until an active org exists.
@@ -105,6 +114,14 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
       try {
         const deals = await apiGetDeals();
         if (!isMounted) return;
+
+        if (debugDealsList) {
+          console.info('[DDAI][DealsList] apiGetDeals resolved', {
+            orgId,
+            count: Array.isArray(deals) ? deals.length : null,
+            first: Array.isArray(deals) && deals.length > 0 ? deals[0] : null,
+          });
+        }
 
         // Fetch documents for each deal
         const documentCounts: Record<string, number> = {};
@@ -126,6 +143,14 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
 
         if (!isMounted) return;
         setLiveDeals(dealsWithDocuments);
+
+        if (debugDealsList) {
+          console.info('[DDAI][DealsList] setLiveDeals', {
+            count: dealsWithDocuments.length,
+            firstId: dealsWithDocuments[0]?.id,
+            firstName: dealsWithDocuments[0]?.name,
+          });
+        }
       } catch (err) {
         if (!isMounted) return;
         setError(err instanceof Error ? err.message : 'Failed to load deals');
@@ -260,7 +285,6 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
   }, [liveDeals, scoreSource]);
 
   useEffect(() => {
-    if (!isLiveBackend()) return;
     if (!createdDeal) return;
     setLiveDeals((prev) => {
       const exists = prev.some((d) => d.id === createdDeal.id);
@@ -348,6 +372,34 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
     const matchesPriority = priorityFilter === 'all' || deal.priority === priorityFilter;
     return matchesSearch && matchesStage && matchesPriority;
   });
+
+  useEffect(() => {
+    if (!debugDealsList) return;
+    try {
+      if (typeof window !== 'undefined') {
+        (window as any).__ddaiDealsListDebug = {
+          ts: Date.now(),
+          orgId,
+          liveDeals: liveDeals.length,
+          deals: deals.length,
+          filteredDeals: filteredDeals.length,
+          searchQuery,
+          stageFilter,
+          priorityFilter,
+        };
+      }
+    } catch {
+      // ignore
+    }
+    console.info('[DDAI][DealsList] post-filter', {
+      liveDeals: liveDeals.length,
+      deals: deals.length,
+      filteredDeals: filteredDeals.length,
+      searchQuery,
+      stageFilter,
+      priorityFilter,
+    });
+  }, [debugDealsList, orgId, liveDeals.length, deals.length, filteredDeals.length, searchQuery, stageFilter, priorityFilter]);
 
   const summaryStats = {
     total: deals.length,

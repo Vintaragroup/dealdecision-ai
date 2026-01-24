@@ -16,7 +16,7 @@ import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
-import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, apiResolveEvidence, isLiveBackend, subscribeToEvents, type AutoProfileResponse, type DealReport, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile } from '../../lib/apiClient';
+import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, apiResolveEvidence, subscribeToEvents, type AutoProfileResponse, type DealReport, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2 } from '../../lib/apiClient';
 import type { JobProgressEventV1 } from '@dealdecision/contracts';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
@@ -115,6 +115,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [jobProgressSnapshot, setJobProgressSnapshot] = useState<JobProgressEventV1 | null>(null);
   const [jobType, setJobType] = useState<string | null>(null);
   const [jobQueuedSeconds, setJobQueuedSeconds] = useState<number>(0);
+  const [dealJobs, setDealJobs] = useState<DealJobRowV2[]>([]);
+  const [dealJobsError, setDealJobsError] = useState<string | null>(null);
   type FullProcessStepKey = 'reextract_documents' | 'extract_visuals' | 'analyze_deal';
   type FullProcessStepStatus = 'pending' | 'queued' | 'running' | 'succeeded' | 'succeeded_with_warnings' | 'failed' | 'cancelled';
   type FullProcessStepUi = {
@@ -227,7 +229,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
 
   const loadReport = async (opts?: { force?: boolean }) => {
-    if (!dealId || !isLiveBackend()) {
+    if (!dealId) {
       setReportFromApi(null);
       return;
     }
@@ -254,7 +256,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
   // Fetch the actual deal from API
   useEffect(() => {
-    if (!dealId || !isLiveBackend()) {
+    if (!dealId) {
       setDealFromApi(null);
       setReportFromApi(null);
       return;
@@ -302,10 +304,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, [jobId]);
 
   useEffect(() => {
-    if (!isLiveBackend()) {
-      setResolvedEvidence({});
-      return;
-    }
     const highlightedIds = (highlightedEvidenceIds ?? []).filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
     const visibleEvidenceIds = (evidence ?? []).map((e) => e?.evidence_id).filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
     const ids = Array.from(new Set([...highlightedIds, ...visibleEvidenceIds])).slice(0, 100);
@@ -1167,7 +1165,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, [displayScore, investorScore]);
 
   const loadEvidence = async () => {
-    if (!dealId || !isLiveBackend()) return;
+    if (!dealId) return;
     setEvidenceLoading(true);
     try {
       const res = await apiGetEvidence(dealId);
@@ -1181,10 +1179,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
 
   const loadDocumentTitles = async () => {
-    if (!dealId || !isLiveBackend()) {
-      setDocumentTitles({});
-      return;
-    }
+    if (!dealId) return;
     try {
       const res = await apiGetDocuments(dealId);
       const map: Record<string, string> = {};
@@ -1200,10 +1195,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
 
   useEffect(() => {
-    if (!dealId || !isLiveBackend()) {
-      setEvidence([]);
-      return;
-    }
+    if (!dealId) return;
     loadEvidence();
     loadDocumentTitles();
   }, [dealId]);
@@ -1353,7 +1345,49 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, [jobId, sseReady]);
 
   useEffect(() => {
-    if (!dealId || !isLiveBackend() || typeof EventSource === 'undefined') {
+    if (!dealId) {
+      setDealJobs([]);
+      setDealJobsError(null);
+      return;
+    }
+
+    let cancelled = false;
+    let pollTimer: number | undefined;
+
+    const clearTimer = () => {
+      if (pollTimer != null) {
+        window.clearTimeout(pollTimer);
+        pollTimer = undefined;
+      }
+    };
+
+    const poll = async () => {
+      if (cancelled) return;
+      try {
+        const rows = await apiGetDealJobs(dealId, { limit: 200 });
+        if (cancelled) return;
+        setDealJobs(Array.isArray(rows) ? rows : []);
+        setDealJobsError(null);
+      } catch (err) {
+        if (cancelled) return;
+        const msg = err instanceof Error ? err.message : 'Failed to load jobs';
+        setDealJobsError(msg);
+      } finally {
+        if (cancelled) return;
+        const isActive = jobStatus === 'queued' || jobStatus === 'running' || jobStatus === 'retrying';
+        pollTimer = window.setTimeout(poll, isActive ? 2500 : 15000);
+      }
+    };
+
+    void poll();
+    return () => {
+      cancelled = true;
+      clearTimer();
+    };
+  }, [dealId, jobStatus]);
+
+  useEffect(() => {
+    if (!dealId || typeof EventSource === 'undefined') {
       setSseReady(false);
       return;
     }
@@ -1644,6 +1678,50 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     blocked: 'Blocked',
     error: 'Error',
   };
+
+  const jobSeverityFromStatus = (status: string | null | undefined): JobSeverity => {
+    const s = String(status ?? '').toLowerCase();
+    if (s === 'succeeded') return 'success';
+    if (s === 'succeeded_with_warnings') return 'warning';
+    if (s === 'failed') return 'danger';
+    if (s === 'cancelled') return 'warning';
+    if (s === 'running' || s === 'retrying') return 'info';
+    if (s === 'queued') return 'muted';
+    return 'muted';
+  };
+
+  const computePct = (current?: number, total?: number, pct?: number): number | null => {
+    if (typeof current === 'number' && typeof total === 'number' && total > 0) {
+      return Math.round(Math.min(Math.max((current / total) * 100, 0), 100));
+    }
+    if (typeof pct === 'number' && Number.isFinite(pct)) return Math.round(Math.min(Math.max(pct, 0), 100));
+    return null;
+  };
+
+  const childrenByParentJobId = (() => {
+    const map = new Map<string, DealJobRowV2[]>();
+    for (const j of dealJobs ?? []) {
+      if (!j?.parent_job_id) continue;
+      const arr = map.get(j.parent_job_id) ?? [];
+      arr.push(j);
+      map.set(j.parent_job_id, arr);
+    }
+    for (const [k, v] of map) {
+      v.sort((a, b) => String(a.job_id).localeCompare(String(b.job_id)));
+      map.set(k, v);
+    }
+    return map;
+  })();
+
+  const recentParentJobs = (() => {
+    const parents = (dealJobs ?? []).filter((j) => !j?.parent_job_id);
+    parents.sort((a, b) => {
+      const aT = Date.parse(a.updated_at ?? a.created_at ?? '') || 0;
+      const bT = Date.parse(b.updated_at ?? b.created_at ?? '') || 0;
+      return bT - aT;
+    });
+    return parents.slice(0, 8);
+  })();
 
   const stageSequences: Record<string, string[]> = {
     ingest_documents: ['fetch_original_bytes', 'persist_document', 'extract_text', 'render_pages', 'finalize'],
@@ -2205,37 +2283,35 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 </span>
               </div>
 
-              {isLiveBackend() && (
-                <div className="mt-2 flex flex-wrap items-center gap-3 text-xs sm:text-sm">
+              <div className="mt-2 flex flex-wrap items-center gap-3 text-xs sm:text-sm">
+                <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
+                  DIO: {dioMeta?.dioVersionId ? dioMeta.dioVersionId : 'Not generated'}
+                </span>
+                {typeof dioMeta?.dioRunCount === 'number' && (
                   <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
-                    DIO: {dioMeta?.dioVersionId ? dioMeta.dioVersionId : 'Not generated'}
+                    Runs: {dioMeta.dioRunCount}
+                    {typeof dioMeta.dioAnalysisVersion === 'number' ? ` (latest v${dioMeta.dioAnalysisVersion})` : ''}
                   </span>
-                  {typeof dioMeta?.dioRunCount === 'number' && (
-                    <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
-                      Runs: {dioMeta.dioRunCount}
-                      {typeof dioMeta.dioAnalysisVersion === 'number' ? ` (latest v${dioMeta.dioAnalysisVersion})` : ''}
-                    </span>
-                  )}
-                  <span className={`px-2 py-1 rounded-full ${darkMode ? 'bg-blue-500/10 text-blue-200' : 'bg-blue-50 text-blue-700'}`}>
-                    Status: {dioMeta?.dioStatus ?? 'unknown'}
+                )}
+                <span className={`px-2 py-1 rounded-full ${darkMode ? 'bg-blue-500/10 text-blue-200' : 'bg-blue-50 text-blue-700'}`}>
+                  Status: {dioMeta?.dioStatus ?? 'unknown'}
+                </span>
+                {dealStageRaw && (
+                  <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
+                    Stage: {dealStageLabel}
                   </span>
-                  {dealStageRaw && (
-                    <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
-                      Stage: {dealStageLabel}
-                    </span>
-                  )}
-                  {dioMeta?.lastAnalyzedAt && (
-                    <span className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      Last analyzed: {new Date(dioMeta.lastAnalyzedAt).toLocaleString()}
-                    </span>
-                  )}
-                  {jobStatus && (
-                    <span className={`${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>
-                      Job: {jobStatus}{jobId ? ` (${jobId})` : ''}
-                    </span>
-                  )}
-                </div>
-              )}
+                )}
+                {dioMeta?.lastAnalyzedAt && (
+                  <span className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    Last analyzed: {new Date(dioMeta.lastAnalyzedAt).toLocaleString()}
+                  </span>
+                )}
+                {jobStatus && (
+                  <span className={`${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>
+                    Job: {jobStatus}{jobId ? ` (${jobId})` : ''}
+                  </span>
+                )}
+              </div>
             </div>
             
             {/* Streamlined Action Buttons - 3 Main + More Menu */}
@@ -2246,7 +2322,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 darkMode={darkMode}
                 icon={<MessageSquare className="w-4 h-4" />}
                 onClick={() => dioMeta?.dioVersionId ? setShowAIAssistant(true) : addToast('info', 'AI Assistant needs DIO', 'Run analysis to generate DIO first')}
-                disabled={!dioMeta?.dioVersionId && isLiveBackend()}
+                disabled={!dioMeta?.dioVersionId}
               >
                 💬 AI Assistant
               </Button>
@@ -2930,34 +3006,33 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           </div>
         </div>
 
-        {isLiveBackend() && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className={`backdrop-blur-xl border rounded-2xl p-4 sm:p-6 ${
-              darkMode
-                ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
-                : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
-            }`}>
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>Job Center</div>
-                  <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    Track analyze jobs and backend progress. Polling runs while a job is active.
-                  </p>
-                  {reportMissing && (
-                    <p className="text-xs text-amber-600 mt-1">Report not generated yet. Run analysis to create it.</p>
-                  )}
-                </div>
-                <div className="flex flex-col items-end gap-1">
-                  <span className={`px-3 py-1 rounded-full border text-xs font-medium ${severityBadgeClass(jobDisplay.severity)}`}>
-                    {jobStatus ? jobDisplay.label : 'Idle'}
-                  </span>
-                  {jobDisplay.sublabel && (
-                    <span className={`text-[11px] leading-tight ${severityTextClass(jobDisplay.severity)}`}>
-                      {jobDisplay.sublabel}
-                    </span>
-                  )}
-                </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className={`backdrop-blur-xl border rounded-2xl p-4 sm:p-6 ${
+            darkMode
+              ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
+              : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
+          }`}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>Job Center</div>
+                <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  Track analyze jobs and backend progress. Polling runs while a job is active.
+                </p>
+                {reportMissing && (
+                  <p className="text-xs text-amber-600 mt-1">Report not generated yet. Run analysis to create it.</p>
+                )}
               </div>
+              <div className="flex flex-col items-end gap-1">
+                <span className={`px-3 py-1 rounded-full border text-xs font-medium ${severityBadgeClass(jobDisplay.severity)}`}>
+                  {jobStatus ? jobDisplay.label : 'Idle'}
+                </span>
+                {jobDisplay.sublabel && (
+                  <span className={`text-[11px] leading-tight ${severityTextClass(jobDisplay.severity)}`}>
+                    {jobDisplay.sublabel}
+                  </span>
+                )}
+              </div>
+            </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
                 <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
@@ -3016,6 +3091,135 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     }`}
                   >
                     Still queued after {jobQueuedSeconds}s. If this persists, the worker may not be running or may be pointed at a different Redis/DB.
+                  </div>
+                )}
+              </div>
+
+              <div className={`mt-4 p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Recent jobs</div>
+                  <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                    {(dealJobs?.length ?? 0) > 0 ? `${dealJobs.length} total` : '—'}
+                  </div>
+                </div>
+
+                {dealJobsError ? (
+                  <div className={`text-xs ${darkMode ? 'text-red-300' : 'text-red-700'}`}>{dealJobsError}</div>
+                ) : recentParentJobs.length === 0 ? (
+                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No jobs yet.</div>
+                ) : (
+                  <div className="space-y-2">
+                    {recentParentJobs.map((row) => {
+                      const children = childrenByParentJobId.get(row.job_id) ?? [];
+                      const hasChildren = children.length > 0;
+
+                      const agg = (() => {
+                        if (!hasChildren) {
+                          return {
+                            status: row.status,
+                            current: row.progress_current,
+                            total: row.progress_total,
+                            pct: row.progress_pct,
+                          };
+                        }
+                        const totals = children
+                          .map((c) => ({
+                            current: typeof c.progress_current === 'number' ? c.progress_current : null,
+                            total: typeof c.progress_total === 'number' ? c.progress_total : null,
+                            pct: typeof c.progress_pct === 'number' ? c.progress_pct : null,
+                            status: c.status,
+                          }))
+                          .filter(Boolean);
+
+                        const currentSum = totals.reduce((acc, t) => acc + (typeof t.current === 'number' ? t.current : 0), 0);
+                        const totalSum = totals.reduce((acc, t) => acc + (typeof t.total === 'number' ? t.total : 0), 0);
+
+                        const status = (() => {
+                          const st = totals.map((t) => String(t.status ?? '').toLowerCase());
+                          if (st.some((s) => s === 'failed')) return 'failed';
+                          if (st.every((s) => s === 'succeeded' || s === 'succeeded_with_warnings')) {
+                            return st.some((s) => s === 'succeeded_with_warnings') ? 'succeeded_with_warnings' : 'succeeded';
+                          }
+                          if (st.some((s) => s === 'running' || s === 'retrying')) return 'running';
+                          if (st.some((s) => s === 'queued')) return 'queued';
+                          return row.status;
+                        })();
+
+                        return {
+                          status,
+                          current: totalSum > 0 ? currentSum : undefined,
+                          total: totalSum > 0 ? totalSum : undefined,
+                          pct: totalSum > 0 ? undefined : row.progress_pct,
+                        };
+                      })();
+
+                      const title = (row.queue || row.type || 'job').replace(/_/g, ' ');
+                      const subtitle = row.stage ? (stageLabelMap[row.stage] ?? row.stage.replace(/_/g, ' ')) : undefined;
+                      const pct = computePct(agg.current, agg.total, agg.pct);
+                      const sev = jobSeverityFromStatus(agg.status);
+
+                      return (
+                        <div key={row.job_id} className={`rounded-lg border px-3 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}>
+                          <div className="flex items-center justify-between gap-3">
+                            <div className={`text-xs font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{title}</div>
+                            <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass(sev)}`}>
+                              {fullProcessStepLabel(agg.status)}
+                            </span>
+                          </div>
+
+                          <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+                            <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                              {subtitle ? subtitle : '—'}
+                              {hasChildren ? ` • ${children.length} chunk(s)` : ''}
+                            </div>
+                            {typeof agg.current === 'number' && typeof agg.total === 'number' && agg.total > 0 ? (
+                              <div className={`text-[11px] font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                {agg.current}/{agg.total}
+                              </div>
+                            ) : null}
+                          </div>
+
+                          {pct != null ? (
+                            <div className="mt-2 space-y-1">
+                              <div className={`h-2 rounded-full overflow-hidden ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`}>
+                                <div
+                                  className="h-full bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] transition-all"
+                                  style={{ width: `${pct}%` }}
+                                />
+                              </div>
+                              <div className={`text-[11px] ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{pct}%</div>
+                            </div>
+                          ) : null}
+
+                          {row.message ? (
+                            <div className={`mt-2 text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{row.message}</div>
+                          ) : null}
+
+                          {hasChildren ? (
+                            <div className="mt-2 space-y-1">
+                              {children.slice(0, 6).map((c) => {
+                                const childPct = computePct(c.progress_current, c.progress_total, c.progress_pct);
+                                const childRange =
+                                  typeof c.page_start === 'number' && typeof c.page_end === 'number'
+                                    ? `Pages ${c.page_start + 1}–${c.page_end}`
+                                    : 'Chunk';
+                                return (
+                                  <div key={c.job_id} className="flex items-center justify-between gap-2">
+                                    <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{childRange}</div>
+                                    <div className="flex items-center gap-2">
+                                      <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>{fullProcessStepLabel(c.status)}</div>
+                                      {childPct != null ? (
+                                        <div className={`text-[11px] font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{childPct}%</div>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -3094,7 +3298,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               </div>
             </div>
           </div>
-        )}
+        </div>
 
         {/* Tabs Section */}
 
@@ -3178,7 +3382,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             {/* Overview Tab */}
             {activeTab === 'overview' && (
               <div className="space-y-6">
-                {isLiveBackend() && dealId && (
+                {dealId && (
                   <div className={`p-5 rounded-2xl border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}>
                     <div className="flex items-start justify-between gap-4">
                       <div>
@@ -4141,7 +4345,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             )}
           </div>
         </div>
-      </div>
 
       {/* Toast Container */}
       <ToastContainer

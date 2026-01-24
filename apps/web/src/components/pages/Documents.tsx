@@ -43,14 +43,10 @@ export function Documents({ darkMode }: DocumentsProps) {
   const [showAiAnalysis, setShowAiAnalysis] = useState(false);
   const [focusLibrarySignal, setFocusLibrarySignal] = useState(0);
 
-  const liveMode = isLiveBackend();
+  // Informational only: do not use this to disable production behavior.
+  const backendIsLive = isLiveBackend();
 
   useEffect(() => {
-    if (!liveMode) {
-      setDealsLoading(false);
-      return;
-    }
-
     if (!authLoaded) return;
     if (!isSignedIn || !orgId) {
       setDealsLoading(false);
@@ -72,10 +68,9 @@ export function Documents({ darkMode }: DocumentsProps) {
         setAvailableDeals([]);
       })
       .finally(() => setDealsLoading(false));
-  }, [liveMode, authLoaded, isSignedIn, orgId]);
+  }, [authLoaded, isSignedIn, orgId]);
 
   const refreshDocuments = async (dealId: string) => {
-    if (!liveMode) return;
     if (!dealId) return;
     setDocumentsLoading(true);
     setDocumentsError(null);
@@ -92,8 +87,6 @@ export function Documents({ darkMode }: DocumentsProps) {
   };
 
   useEffect(() => {
-    if (!liveMode) return;
-
     if (!selectedDealId) {
       setDocuments([]);
       setDocumentsError(null);
@@ -102,10 +95,9 @@ export function Documents({ darkMode }: DocumentsProps) {
     }
 
     void refreshDocuments(selectedDealId);
-  }, [liveMode, selectedDealId]);
+  }, [selectedDealId]);
 
   const refreshDeals = () => {
-    if (!liveMode) return;
     if (!authLoaded) return;
     if (!isSignedIn || !orgId) return;
     apiGetDeals()
@@ -156,7 +148,7 @@ export function Documents({ darkMode }: DocumentsProps) {
         </div>
       </div>
 
-      {!liveMode && (
+      {!backendIsLive && (
         <div
           className={`p-4 rounded-xl border text-sm ${
             darkMode
@@ -164,7 +156,7 @@ export function Documents({ darkMode }: DocumentsProps) {
               : 'border-amber-300 bg-amber-50 text-amber-800'
           }`}
         >
-          Mock backend mode is enabled. Uploads are local-only and will not appear in your deal document library.
+          Backend mode is set to mock. The UI will still attempt real API calls (no silent local-only fallbacks).
         </div>
       )}
 
@@ -200,15 +192,14 @@ export function Documents({ darkMode }: DocumentsProps) {
         />
       )}
 
-      {/* Deal Selector (live backend) */}
-      {liveMode && (
-        <div
-          className={`p-5 rounded-xl border ${
-            darkMode
-              ? 'bg-white/5 border-white/10'
-              : 'bg-white border-gray-200'
-          }`}
-        >
+      {/* Deal Selector */}
+      <div
+        className={`p-5 rounded-xl border ${
+          darkMode
+            ? 'bg-white/5 border-white/10'
+            : 'bg-white border-gray-200'
+        }`}
+      >
           <label className={`block text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
             Current Deal
           </label>
@@ -304,10 +295,9 @@ export function Documents({ darkMode }: DocumentsProps) {
               Select a deal to view and upload documents.
             </p>
           )}
-        </div>
-      )}
+      </div>
 
-      {liveMode && selectedDealId && (
+      {selectedDealId && (
         <div
           className={`p-5 rounded-xl border ${
             darkMode
@@ -392,7 +382,7 @@ export function Documents({ darkMode }: DocumentsProps) {
             </span>
           </div>
         </div>
-        {liveMode && !selectedDealId && (
+        {!selectedDealId && (
           <div className={`p-4 rounded-lg border text-sm ${darkMode ? 'border-white/10 text-gray-300' : 'border-gray-200 text-gray-700'}`}>
             Select a deal in the upload panel to view its documents here.
           </div>

@@ -490,6 +490,41 @@ export function apiGetJob(jobId: string) {
   }>(`/api/v1/jobs/${jobId}`);
 }
 
+export type DealJobRowV2 = {
+  job_id: string;
+  queue?: string;
+  type?: string;
+  status: string;
+  stage?: string;
+  progress_current?: number;
+  progress_total?: number;
+  progress_pct?: number;
+  message?: string;
+  deal_id?: string;
+  document_id?: string;
+  parent_job_id?: string;
+  page_start?: number;
+  page_end?: number;
+  error?: string;
+  created_at?: string;
+  updated_at?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  status_detail?: JobStatusDetail | null;
+};
+
+export function apiGetDealJobs(
+  dealId: string,
+  opts?: { limit?: number; type?: string; queue?: string }
+) {
+  const params = new URLSearchParams();
+  if (typeof opts?.limit === 'number' && Number.isFinite(opts.limit)) params.set('limit', String(opts.limit));
+  if (opts?.type) params.set('type', opts.type);
+  if (opts?.queue) params.set('queue', opts.queue);
+  const qs = params.toString();
+  return request<DealJobRowV2[]>(`/api/v1/deals/${dealId}/jobs${qs ? `?${qs}` : ''}`);
+}
+
 export function apiAutoProgressDeal(dealId: string) {
   return request<{
     progressed: boolean;

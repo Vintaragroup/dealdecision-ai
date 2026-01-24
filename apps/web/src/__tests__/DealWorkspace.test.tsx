@@ -13,12 +13,14 @@ vi.mock('../contexts/UserRoleContext', () => ({
 vi.mock('../lib/apiClient', () => {
   const apiGetDeal = vi.fn();
   const apiPostAnalyze = vi.fn();
+  const apiPostReextractDocuments = vi.fn();
   const apiPostExtractVisuals = vi.fn();
   const apiGetJob = vi.fn();
   return {
     isLiveBackend: () => true,
     apiGetDeal,
     apiPostAnalyze,
+    apiPostReextractDocuments,
     apiPostExtractVisuals,
     apiGetJob,
   };
@@ -140,14 +142,27 @@ describe('DealWorkspace Job Center (live mode)', () => {
   });
 
   test('Extract visuals button triggers apiPostExtractVisuals', async () => {
-    const { apiPostExtractVisuals } = await import('../lib/apiClient');
+    const { apiPostAnalyze, apiPostExtractVisuals, apiPostReextractDocuments } = await import('../lib/apiClient');
     vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v3', dioStatus: 'ready' } as any);
+    vi.mocked(apiPostReextractDocuments).mockResolvedValue({ job_id: 'job-rex-1', status: 'queued' } as any);
     vi.mocked(apiPostExtractVisuals).mockResolvedValue({ job_id: 'job-viz-1', status: 'queued' } as any);
+    vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-an-1', status: 'queued' } as any);
+
+    // Make polling complete immediately for each step.
+    vi.mocked(apiGetJob).mockImplementation(async (jobId: string) => {
+      return {
+        job_id: jobId,
+        status: 'succeeded',
+        progress_pct: 100,
+        message: 'Done',
+        updated_at: new Date().toISOString(),
+      } as any;
+    });
 
     renderWorkspace({ dealId: 'deal-5' });
 
-    const extractButton = screen.getByRole('button', { name: /Extract visuals/i });
-    await userEvent.click(extractButton);
+    const runFullProcessButton = screen.getByRole('button', { name: /Run full process/i });
+    await userEvent.click(runFullProcessButton);
 
     await waitFor(() => expect(apiPostExtractVisuals).toHaveBeenCalledWith('deal-5'));
   });

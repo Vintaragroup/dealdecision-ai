@@ -7,6 +7,7 @@ import { DealExtractionReportModal } from '../documents/DealExtractionReportModa
 import { NewDealModal } from '../NewDealModal';
 import type { Document as ApiDocument } from '@dealdecision/contracts';
 import { apiGetDeals, apiGetDocuments, apiRetryDocument, isLiveBackend } from '../../lib/apiClient';
+import { useAuth } from '@clerk/clerk-react';
 import { 
   Upload, 
   FolderOpen,
@@ -24,6 +25,7 @@ interface DocumentsProps {
 }
 
 export function Documents({ darkMode }: DocumentsProps) {
+  const { isLoaded: authLoaded, isSignedIn, orgId } = useAuth();
   const [showUpload, setShowUpload] = useState(false);
   const [showBatchUpload, setShowBatchUpload] = useState(false);
   const [showCreateDealModal, setShowCreateDealModal] = useState(false);
@@ -49,6 +51,14 @@ export function Documents({ darkMode }: DocumentsProps) {
       return;
     }
 
+    if (!authLoaded) return;
+    if (!isSignedIn || !orgId) {
+      setDealsLoading(false);
+      setDealsError(null);
+      setAvailableDeals([]);
+      return;
+    }
+
     setDealsLoading(true);
     setDealsError(null);
 
@@ -62,7 +72,7 @@ export function Documents({ darkMode }: DocumentsProps) {
         setAvailableDeals([]);
       })
       .finally(() => setDealsLoading(false));
-  }, [liveMode]);
+  }, [liveMode, authLoaded, isSignedIn, orgId]);
 
   const refreshDocuments = async (dealId: string) => {
     if (!liveMode) return;
@@ -96,6 +106,8 @@ export function Documents({ darkMode }: DocumentsProps) {
 
   const refreshDeals = () => {
     if (!liveMode) return;
+    if (!authLoaded) return;
+    if (!isSignedIn || !orgId) return;
     apiGetDeals()
       .then(deals => setAvailableDeals(deals))
       .catch(() => {});

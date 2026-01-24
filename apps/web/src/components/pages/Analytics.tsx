@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useAuth } from '@clerk/clerk-react';
 import { Button } from '../ui/button';
 import { Select } from '../ui/select';
 import {
@@ -25,6 +26,7 @@ interface AnalyticsProps {
 }
 
 export function Analytics({ darkMode, onNavigate, onDealClick }: AnalyticsProps) {
+  const { isLoaded: authLoaded, isSignedIn, orgId } = useAuth();
   const [dateRange, setDateRange] = useState<'7days' | '30days' | '90days' | 'ytd' | 'all'>('30days');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -234,8 +236,19 @@ export function Analytics({ darkMode, onNavigate, onDealClick }: AnalyticsProps)
   }, [buildDocsSeries]);
 
   useEffect(() => {
+    if (!authLoaded) return;
+    if (!isSignedIn || !orgId) {
+      setLoading(false);
+      setError(null);
+      setDeals([]);
+      setDocSummaryByDealId({});
+      setDocsOverTime([]);
+      setAttentionItems([]);
+      return;
+    }
+
     load();
-  }, [load]);
+  }, [authLoaded, isSignedIn, orgId, load]);
 
   const derived = useMemo(() => {
     const dealItems = deals;

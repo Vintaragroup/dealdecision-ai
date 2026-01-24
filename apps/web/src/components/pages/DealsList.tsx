@@ -15,6 +15,7 @@ import { apiGetDeals, apiGetDocuments, apiAutoProgressDeal, apiDeleteDeal, isLiv
 import { Modal } from '../ui/Modal';
 import { useScoreSource } from '../../contexts/ScoreSourceContext';
 import { getDisplayScoreForDeal } from '../../lib/dealScore';
+import { useAuth } from '@clerk/clerk-react';
 import { 
   Search,
   Plus,
@@ -65,6 +66,7 @@ interface DealsListProps {
 }
 
 export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, createdDeal }: DealsListProps) {
+  const { isLoaded: authLoaded, isSignedIn, orgId } = useAuth();
   const { scoreSource } = useScoreSource();
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [searchQuery, setSearchQuery] = useState('');
@@ -85,6 +87,15 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
 
   useEffect(() => {
     if (!isLiveBackend()) return;
+    if (!authLoaded) return;
+
+    // Do not call the API until an active org exists.
+    if (!isSignedIn || !orgId) {
+      setLoading(false);
+      setError(null);
+      setLiveDeals([]);
+      return;
+    }
 
     let isMounted = true;
     setLoading(true);
@@ -129,7 +140,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [authLoaded, isSignedIn, orgId]);
 
   const openDeleteModal = (deal: { id: string; name: string }) => {
     setError(null);

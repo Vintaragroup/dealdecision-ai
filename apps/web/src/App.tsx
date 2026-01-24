@@ -1,16 +1,15 @@
-import type { ReactNode } from 'react';
 import { Link, Navigate, Route, Routes } from 'react-router-dom';
 import {
-  OrganizationSwitcher,
   SignedIn,
   SignedOut,
   SignIn,
   SignUp,
-  useAuth,
 } from '@clerk/clerk-react';
 
 import AppShell from './AppShell';
 import { ProtectedRoute } from './components/auth/ProtectedRoute';
+import { OrgGate } from './components/auth/OrgGate';
+import { SelectOrg } from './components/pages/SelectOrg';
 
 function PublicHome() {
   return (
@@ -26,32 +25,6 @@ function PublicHome() {
             Sign up
           </Link>
         </div>
-      </div>
-    </div>
-  );
-}
-
-function OrgGate({ children }: { children: ReactNode }) {
-  const { orgId, isLoaded } = useAuth();
-
-  if (!isLoaded) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a] text-white px-6">
-        <div className="text-sm text-white/70">Loading…</div>
-      </div>
-    );
-  }
-
-  if (orgId) return <>{children}</>;
-
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a] text-white px-6">
-      <div className="max-w-xl w-full space-y-4">
-        <h1 className="text-2xl font-semibold">Select a team</h1>
-        <p className="text-white/70">
-          This app uses Clerk Organizations. Select or create an organization to continue.
-        </p>
-        <OrganizationSwitcher hidePersonal afterSelectOrganizationUrl="/app" />
       </div>
     </div>
   );
@@ -118,6 +91,14 @@ export default function App() {
       />
 
       {/* Protected */}
+      <Route
+        path="/app/select-org"
+        element={
+          <ProtectedRoute>
+            <SelectOrg />
+          </ProtectedRoute>
+        }
+      />
       <Route path="/app/*" element={<ProtectedApp />} />
 
       {/* Fallback */}

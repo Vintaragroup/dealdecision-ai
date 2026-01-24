@@ -92,9 +92,24 @@ async function getVerificationKey(): Promise<KeyOrKeyFunction> {
   return cachedKeyPromise;
 }
 
-function extractOrg(payload: Record<string, unknown>): { orgId: string | null; orgRole: string | null } {
-  const orgId = typeof payload.org_id === 'string' ? payload.org_id : null;
-  const orgRole = typeof payload.org_role === 'string' ? payload.org_role : null;
+function readNonEmptyString(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const v = value.trim();
+  return v.length > 0 ? v : null;
+}
+
+export function extractOrgFromPayload(payload: Record<string, unknown>): { orgId: string | null; orgRole: string | null } {
+  const p: any = payload as any;
+
+  const orgId =
+    readNonEmptyString(p.org_id) ||
+    readNonEmptyString(p.orgId) ||
+    readNonEmptyString(p?.o?.id) ||
+    readNonEmptyString(p?.org?.id) ||
+    null;
+
+  const orgRole = readNonEmptyString(p.org_role) || null;
+
   return { orgId, orgRole };
 }
 
@@ -130,7 +145,7 @@ async function authenticateRequest(request: FastifyRequest): Promise<ClerkAuthCo
     throw Object.assign(new Error('Invalid token: missing sub'), { statusCode: 401 });
   }
 
-  const extracted = extractOrg(payload as any);
+  const extracted = extractOrgFromPayload(payload as any);
   let orgId: string | null = extracted.orgId;
   let orgRole: string | null = extracted.orgRole;
 

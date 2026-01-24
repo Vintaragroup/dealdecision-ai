@@ -9,7 +9,7 @@ import { QuickLinksWidget, QuickLink } from './widgets/QuickLinksWidget';
 import type { PageView } from './Sidebar';
 import { useAppSettings } from '../contexts/AppSettingsContext';
 import { useUserRole } from '../contexts/UserRoleContext';
-import { useUser } from '@clerk/clerk-react';
+import { useAuth, useUser } from '@clerk/clerk-react';
 import { apiGetDeals, apiGetDocuments } from '../lib/apiClient';
 
 type RecentDocItem = {
@@ -62,6 +62,7 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
   const { settings } = useAppSettings();
   const { isAnalyst, isInvestor } = useUserRole();
   const { user, isLoaded: isUserLoaded } = useUser();
+  const { isLoaded: authLoaded, isSignedIn, orgId } = useAuth();
 
   const [allDeals, setAllDeals] = useState<any[]>([]);
   const [activeDeals, setActiveDeals] = useState<any[]>([]);
@@ -162,9 +163,21 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
 
   // Fetch deals from API
   useEffect(() => {
+    if (!authLoaded) return;
+
+    // Never call the backend until an active org exists.
+    if (!isSignedIn || !orgId) {
+      setLoadingDeals(false);
+      setAllDeals([]);
+      setActiveDeals([]);
+      setRecentDocuments([]);
+      setRecentActivity([]);
+      return;
+    }
+
     // Investor + Analyst share the same deal-evaluation experience
     loadDeals();
-  }, [loadDeals, isInvestor, isAnalyst]);
+  }, [authLoaded, isSignedIn, orgId, loadDeals, isInvestor, isAnalyst]);
   
   const numericScores = allDeals
     .map((d: any) => {

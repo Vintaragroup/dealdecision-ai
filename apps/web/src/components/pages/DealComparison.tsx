@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useAuth } from '@clerk/clerk-react';
 import { Button } from '../ui/button';
 import {
   ArrowLeft,
@@ -159,6 +160,7 @@ function getRecommendationConfig(recommendation: ComparisonRecommendation) {
 }
 
 export function DealComparison({ darkMode, onBack }: DealComparisonProps) {
+  const { isLoaded: authLoaded, isSignedIn, orgId } = useAuth();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [availableDeals, setAvailableDeals] = useState<ComparisonDeal[]>([]);
@@ -218,8 +220,16 @@ export function DealComparison({ darkMode, onBack }: DealComparisonProps) {
   }, []);
 
   useEffect(() => {
+    if (!authLoaded) return;
+    if (!isSignedIn || !orgId) {
+      setLoading(false);
+      setError(null);
+      setAvailableDeals([]);
+      setSelectedDealIds([]);
+      return;
+    }
     void loadDeals();
-  }, [loadDeals]);
+  }, [authLoaded, isSignedIn, orgId, loadDeals]);
 
   const selectedDeals = useMemo(() => {
     const byId = new Map(availableDeals.map((d) => [d.id, d] as const));

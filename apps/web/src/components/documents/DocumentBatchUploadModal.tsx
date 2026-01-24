@@ -1,6 +1,8 @@
 import React, { useState, useRef } from 'react';
 import { AlertCircle, CheckCircle, FileText, Upload, X, ChevronDown, ChevronUp } from 'lucide-react';
 import { apiAnalyzeDocumentsBatch, apiBulkAssignDocuments, apiUploadDocument, isLiveBackend } from '../../lib/apiClient';
+import { ToastContainer } from '../ui/Toast';
+import { useLocalToasts } from '../../lib/useLocalToasts';
 
 interface DocumentBatchUploadProps {
   onClose: () => void;
@@ -10,6 +12,8 @@ interface DocumentBatchUploadProps {
 export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUploadProps) {
   const ACCEPTED_EXTENSIONS = ['.pdf', '.xlsx', '.xls', '.pptx', '.ppt', '.docx', '.doc', '.png', '.jpg', '.jpeg'];
   const MAX_FILE_SIZE_MB = 25;
+
+  const { toasts, addToast, removeToast } = useLocalToasts();
 
   const [step, setStep] = useState<'select' | 'review' | 'confirm'>('select');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -31,7 +35,11 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
         return ok;
       });
       if (invalid.length) {
-        alert(`Skipped ${invalid.length} file(s) due to type/size limits (max ${MAX_FILE_SIZE_MB}MB). First few: ${invalid.slice(0, 5).join('; ')}`);
+        addToast(
+          'warning',
+          'Some files skipped',
+          `Skipped ${invalid.length} file(s) due to type/size limits (max ${MAX_FILE_SIZE_MB}MB). First few: ${invalid.slice(0, 5).join('; ')}`
+        );
       }
       setSelectedFiles(filtered);
       if (filtered.length) analyzeFiles(filtered);
@@ -59,7 +67,7 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
 
       setStep('review');
     } catch (error) {
-      alert(`Error analyzing files: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      addToast('error', 'Analyze failed', error instanceof Error ? error.message : 'Unknown error');
     } finally {
       setLoading(false);
     }
@@ -160,17 +168,25 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
         }
       }
 
-      const summary = `Uploaded ${successCount} file(s). Failures: ${failures.length}.`;
       if (failures.length) {
-        alert(`${summary}\nFirst few failures: ${failures.slice(0, 5).join('; ')}`);
-      } else {
-        alert(summary);
+        addToast(
+          'error',
+          'Upload incomplete',
+          `Uploaded ${successCount} file(s). Failures: ${failures.length}. First few: ${failures.slice(0, 5).join('; ')}`
+        );
+        return;
       }
 
+      if (successCount === 0) {
+        addToast('warning', 'Nothing uploaded', 'No files were uploaded.');
+        return;
+      }
+
+      addToast('success', 'Upload complete', `Uploaded ${successCount} file(s).`);
       onSuccess?.(result);
       onClose();
     } catch (error) {
-      alert(`Error uploading documents: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      addToast('error', 'Upload failed', error instanceof Error ? error.message : 'Unknown error');
     } finally {
       setLoading(false);
     }
@@ -418,6 +434,8 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
           )}
         </div>
       </div>
+
+      <ToastContainer toasts={toasts} onClose={removeToast} darkMode={true} />
     </div>
   );
 }

@@ -4,6 +4,8 @@ import { Button } from './ui/button';
 import { DealFormData } from './NewDealModal';
 import { TemplateCustomizer, TemplateCustomization } from './TemplateCustomizer';
 import { TemplateEditor } from './TemplateEditor';
+import { ToastContainer } from './ui/Toast';
+import { useLocalToasts } from '../lib/useLocalToasts';
 
 interface TemplateExportModalProps {
   isOpen: boolean;
@@ -66,6 +68,7 @@ const templates: Template[] = [
 ];
 
 export function TemplateExportModal({ isOpen, onClose, darkMode, dealData }: TemplateExportModalProps) {
+  const { toasts, addToast, removeToast } = useLocalToasts();
   const [selectedTemplate, setSelectedTemplate] = useState<Template | null>(null);
   const [showCustomizer, setShowCustomizer] = useState(false);
   const [showEditor, setShowEditor] = useState(false);
@@ -103,7 +106,11 @@ export function TemplateExportModal({ isOpen, onClose, darkMode, dealData }: Tem
     });
     
     // Simulate export
-    alert(`Exporting ${selectedTemplate?.name} as ${format.toUpperCase()} with your deal data and customizations!`);
+    addToast(
+      'info',
+      'Export started',
+      `Exporting ${selectedTemplate?.name || 'template'} as ${format.toUpperCase()} with your deal data and customizations.`
+    );
   };
 
   return (
@@ -437,6 +444,7 @@ export function TemplateExportModal({ isOpen, onClose, darkMode, dealData }: Tem
             </div>
           </div>
         )}
+        <ToastContainer toasts={toasts} onClose={removeToast} darkMode={darkMode} />
       </div>
     </div>
   );

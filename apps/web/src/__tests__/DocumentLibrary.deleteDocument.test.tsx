@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { MockedFunction } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -15,7 +16,10 @@ import * as apiClient from '../lib/apiClient';
 
 describe('DocumentLibrary delete document', () => {
   it('calls apiDeleteDocument when confirming delete', async () => {
-    apiClient.apiDeleteDocument.mockResolvedValue({ ok: true } as any);
+    const apiDeleteDocument = apiClient.apiDeleteDocument as MockedFunction<
+      typeof apiClient.apiDeleteDocument
+    >;
+    apiDeleteDocument.mockResolvedValue({ ok: true } as any);
 
     render(
       <DocumentLibrary
@@ -46,8 +50,8 @@ describe('DocumentLibrary delete document', () => {
     await user.click(screen.getByRole('button', { name: /^delete$/i }));
 
     await waitFor(() => {
-      expect(apiClient.apiDeleteDocument).toHaveBeenCalledTimes(1);
-      expect(apiClient.apiDeleteDocument).toHaveBeenCalledWith('deal-1', 'doc-1');
+      expect(apiDeleteDocument).toHaveBeenCalledTimes(1);
+      expect(apiDeleteDocument).toHaveBeenCalledWith('deal-1', 'doc-1');
     });
   });
 });

@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { Button } from '../ui/button';
 import { ExportOptionsModal, ExportOptions } from './ExportOptionsModal';
 import { generatePDF, generateShareableLink, emailReport, saveExportHistory } from '../../utils/pdfExport';
+import { ToastContainer } from '../ui/Toast';
+import { useLocalToasts } from '../../lib/useLocalToasts';
 import {
   Download,
   Share2,
@@ -47,6 +49,7 @@ export function ProfessionalReportGenerator({
   dealData,
   onClose 
 }: ReportGeneratorProps) {
+  const { toasts, addToast, removeToast } = useLocalToasts();
   const [reportSections, setReportSections] = useState<ReportSection[]>([
     { id: 'cover', title: 'Cover Page', enabled: true, required: true },
     { id: 'executive', title: 'Executive Summary', enabled: true, required: true },
@@ -81,10 +84,12 @@ export function ProfessionalReportGenerator({
 
       // Generate PDF
       await generatePDF('report-content', filename, options);
+
+      addToast('success', 'Export ready', `${filename}.pdf generated.`);
       
     } catch (error) {
       console.error('Export failed:', error);
-      alert('Failed to export report. Please try again.');
+      addToast('error', 'Export failed', 'Please try again.');
     }
   };
 
@@ -708,6 +713,7 @@ export function ProfessionalReportGenerator({
           onExport={handleExport}
         />
       )}
+      <ToastContainer toasts={toasts} onClose={removeToast} darkMode={darkMode} />
     </div>
   );
 }

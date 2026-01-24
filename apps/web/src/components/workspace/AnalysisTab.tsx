@@ -29,6 +29,8 @@ import { Button } from '../ui/button';
 import { DealFormData } from '../NewDealModal';
 import { ProfessionalReportGenerator } from '../reports/ProfessionalReportGenerator';
 import { useUserRole } from '../../contexts/UserRoleContext';
+import { ToastContainer } from '../ui/Toast';
+import { useLocalToasts } from '../../lib/useLocalToasts';
 
 interface AnalysisTabProps {
   darkMode: boolean;
@@ -61,6 +63,7 @@ interface DealAnalysis {
 }
 
 export function AnalysisTab({ darkMode, dealData, onRunAnalysis }: AnalysisTabProps) {
+  const { toasts, addToast, removeToast } = useLocalToasts();
   const [analysis, setAnalysis] = useState<DealAnalysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -1040,7 +1043,11 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis }: AnalysisTabPr
                 setRunningDeepAnalysis(true);
                 setTimeout(() => {
                   setRunningDeepAnalysis(false);
-                  alert(`Deep analysis complete from ${selectedPerspective} perspective!\n\nThis would show detailed insights, risks, and recommendations from that specific professional viewpoint.`);
+                  addToast(
+                    'info',
+                    'Deep analysis complete',
+                    `Completed from ${selectedPerspective} perspective. (UI-only simulation)`
+                  );
                 }, 2500);
               }}
             >
@@ -1049,6 +1056,8 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis }: AnalysisTabPr
           </div>
         </div>
       )}
+
+      <ToastContainer toasts={toasts} onClose={removeToast} darkMode={darkMode} />
 
       {/* CTA Section - For Analysts */}
       {userRole.isAnalyst && (

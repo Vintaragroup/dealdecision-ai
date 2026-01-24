@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { MockedFunction } from 'vitest';
 import { render, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -19,7 +20,11 @@ describe('DocumentUpload upload document', () => {
     (globalThis as any).URL = (globalThis as any).URL || {};
     (globalThis as any).URL.createObjectURL = vi.fn(() => 'blob:mock');
 
-    apiClient.apiUploadDocument.mockResolvedValue({
+    const apiUploadDocument = apiClient.apiUploadDocument as MockedFunction<
+      typeof apiClient.apiUploadDocument
+    >;
+
+    apiUploadDocument.mockResolvedValue({
       document: {
         document_id: 'doc-1',
         title: 'Pitch Deck.pdf',
@@ -46,8 +51,8 @@ describe('DocumentUpload upload document', () => {
     await user.upload(input as HTMLInputElement, file);
 
     await waitFor(() => {
-      expect(apiClient.apiUploadDocument).toHaveBeenCalledTimes(1);
-      const [dealId, uploadedFile, docType, title] = apiClient.apiUploadDocument.mock.calls[0];
+      expect(apiUploadDocument).toHaveBeenCalledTimes(1);
+      const [dealId, uploadedFile, docType, title] = apiUploadDocument.mock.calls[0];
       expect(dealId).toBe('deal-1');
       expect(uploadedFile).toBe(file);
       expect(docType).toBe('other');

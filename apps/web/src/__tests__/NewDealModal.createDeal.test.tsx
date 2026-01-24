@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import type { MockedFunction } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { waitFor } from '@testing-library/react';
@@ -19,7 +20,8 @@ import * as apiClient from '../lib/apiClient';
 
 describe('NewDealModal create deal', () => {
   beforeEach(() => {
-    (apiClient.apiCreateDeal as any).mockReset();
+    const apiCreateDeal = apiClient.apiCreateDeal as MockedFunction<typeof apiClient.apiCreateDeal>;
+    apiCreateDeal.mockReset();
   });
 
   it('calls apiCreateDeal on final Create Deal click', async () => {
@@ -33,7 +35,8 @@ describe('NewDealModal create deal', () => {
       owner: 'CloudScale Inc.',
     };
 
-    apiClient.apiCreateDeal.mockResolvedValue(created);
+    const apiCreateDeal = apiClient.apiCreateDeal as MockedFunction<typeof apiClient.apiCreateDeal>;
+    apiCreateDeal.mockResolvedValue(created as any);
 
     const onSuccess = vi.fn();
 
@@ -60,7 +63,7 @@ describe('NewDealModal create deal', () => {
     await user.click(screen.getByRole('button', { name: /^create deal$/i }));
 
     await waitFor(() => {
-      expect(apiClient.apiCreateDeal).toHaveBeenCalledTimes(1);
+      expect(apiCreateDeal).toHaveBeenCalledTimes(1);
     });
   });
 });

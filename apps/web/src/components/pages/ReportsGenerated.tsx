@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Button } from '../ui/button';
 import { FileCode, Calendar, Target, FileText, Eye, Download, Share2, Search } from 'lucide-react';
+import { ToastContainer } from '../ui/Toast';
+import { useLocalToasts } from '../../lib/useLocalToasts';
 
 interface ReportsGeneratedProps {
   darkMode: boolean;
@@ -9,6 +11,7 @@ interface ReportsGeneratedProps {
 
 export function ReportsGenerated({ darkMode, onViewReport }: ReportsGeneratedProps) {
   const [searchQuery, setSearchQuery] = useState('');
+  const { toasts, addToast, removeToast } = useLocalToasts();
 
   const reports = [
     {
@@ -173,7 +176,7 @@ export function ReportsGenerated({ darkMode, onViewReport }: ReportsGeneratedPro
                       if (report.id === 'vintara-001') {
                         onViewReport?.(report.id);
                       } else {
-                        alert('Opening TechVision AI report...');
+                        addToast('info', 'Not wired yet', 'Opening TechVision AI report...');
                       }
                     }}
                   >
@@ -183,7 +186,7 @@ export function ReportsGenerated({ darkMode, onViewReport }: ReportsGeneratedPro
                     variant="secondary"
                     darkMode={darkMode}
                     icon={<Download className="w-4 h-4" />}
-                    onClick={() => alert('Export functionality coming soon!')}
+                    onClick={() => addToast('info', 'Coming soon', 'Export functionality coming soon!')}
                   >
                     Export
                   </Button>
@@ -191,7 +194,7 @@ export function ReportsGenerated({ darkMode, onViewReport }: ReportsGeneratedPro
                     variant="secondary"
                     darkMode={darkMode}
                     icon={<Share2 className="w-4 h-4" />}
-                    onClick={() => alert('Share functionality coming soon!')}
+                    onClick={() => addToast('info', 'Coming soon', 'Share functionality coming soon!')}
                   >
                     Share
                   </Button>
@@ -200,6 +203,8 @@ export function ReportsGenerated({ darkMode, onViewReport }: ReportsGeneratedPro
             ))
           )}
         </div>
+
+        <ToastContainer toasts={toasts} onClose={removeToast} darkMode={darkMode} />
       </div>
     </div>
   );

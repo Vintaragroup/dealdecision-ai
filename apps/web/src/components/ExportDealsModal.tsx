@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Button } from './ui/button';
 import type { DealListItem } from '@dealdecision/contracts';
+import { ToastContainer } from './ui/Toast';
+import { useLocalToasts } from '../lib/useLocalToasts';
 import { 
   X, 
   Download, 
@@ -30,6 +32,7 @@ interface ExportField {
 }
 
 export function ExportDealsModal({ isOpen, onClose, darkMode, deals }: ExportDealsModalProps) {
+  const { toasts, addToast, removeToast } = useLocalToasts();
   const [selectedDeals, setSelectedDeals] = useState<string[]>(deals.map(d => d.id));
   const [exportFormat, setExportFormat] = useState<ExportFormat>('csv');
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -81,7 +84,7 @@ export function ExportDealsModal({ isOpen, onClose, darkMode, deals }: ExportDea
 
     // Simulate download
     const filename = `deals-export-${new Date().toISOString().split('T')[0]}.${exportFormat === 'excel' ? 'xlsx' : exportFormat}`;
-    alert(`Downloading ${filename} with ${selectedDealData.length} deals and ${enabledFields.length} fields`);
+    addToast('success', 'Export started', `Downloading ${filename} with ${selectedDealData.length} deals and ${enabledFields.length} fields.`);
     onClose();
   };
 
@@ -341,6 +344,8 @@ export function ExportDealsModal({ isOpen, onClose, darkMode, deals }: ExportDea
           </div>
         </div>
       </div>
+
+      <ToastContainer toasts={toasts} onClose={removeToast} darkMode={darkMode} />
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { MockedFunction } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -47,7 +48,13 @@ import * as apiClient from '../lib/apiClient';
 
 describe('DealsList delete deal', () => {
   it('calls apiDeleteDeal after user confirms delete', async () => {
-    apiClient.apiGetDeals.mockResolvedValue([
+    const apiGetDeals = apiClient.apiGetDeals as MockedFunction<typeof apiClient.apiGetDeals>;
+    const apiGetDocuments = apiClient.apiGetDocuments as MockedFunction<
+      typeof apiClient.apiGetDocuments
+    >;
+    const apiDeleteDeal = apiClient.apiDeleteDeal as MockedFunction<typeof apiClient.apiDeleteDeal>;
+
+    apiGetDeals.mockResolvedValue([
       {
         id: 'deal-1',
         name: 'Demo Deal',
@@ -57,8 +64,8 @@ describe('DealsList delete deal', () => {
         updated_at: new Date().toISOString(),
       } as any,
     ]);
-    apiClient.apiGetDocuments.mockResolvedValue({ documents: [] } as any);
-    apiClient.apiDeleteDeal.mockResolvedValue({ ok: true } as any);
+    apiGetDocuments.mockResolvedValue({ documents: [] } as any);
+    apiDeleteDeal.mockResolvedValue({ ok: true } as any);
 
     render(
       <ScoreSourceProvider>
@@ -86,8 +93,8 @@ describe('DealsList delete deal', () => {
     await user.click(screen.getByRole('button', { name: /delete permanently/i }));
 
     await waitFor(() => {
-      expect(apiClient.apiDeleteDeal).toHaveBeenCalledTimes(1);
-      expect(apiClient.apiDeleteDeal).toHaveBeenCalledWith('deal-1', { purge: true });
+      expect(apiDeleteDeal).toHaveBeenCalledTimes(1);
+      expect(apiDeleteDeal).toHaveBeenCalledWith('deal-1', { purge: true });
     });
   });
 });

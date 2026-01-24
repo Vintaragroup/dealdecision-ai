@@ -53,7 +53,7 @@ CREATE INDEX IF NOT EXISTS idx_documents_ready_for_analysis ON documents(ready_f
 -- Add ingestion report tracking table
 CREATE TABLE IF NOT EXISTS ingestion_reports (
   report_id TEXT PRIMARY KEY,
-  deal_id TEXT NOT NULL,
+  deal_id UUID NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   summary JSONB NOT NULL,
   document_ids TEXT[] NOT NULL

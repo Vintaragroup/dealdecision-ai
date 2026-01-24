@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 import { ToastContainer, ToastType } from '../ui/Toast';
 import type { Document as ApiDocument } from '@dealdecision/contracts';
-import { apiDeleteDocument, isLiveBackend } from '../../lib/apiClient';
+import { apiDeleteDocument } from '../../lib/apiClient';
 
 interface DocumentLibraryProps {
   darkMode: boolean;
@@ -155,7 +155,6 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
   };
 
   const requestDelete = (documentIds: string[]) => {
-    if (!isLiveBackend()) return;
     if (!dealId) return;
     if (documentIds.length === 0) return;
     setDeleteTargets(documentIds);
@@ -163,7 +162,7 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
 
   const confirmDelete = async () => {
     if (!deleteTargets || deleteTargets.length === 0) return;
-    if (!dealId || !isLiveBackend()) return;
+    if (!dealId) return;
     setDeleting(true);
     try {
       for (const documentId of deleteTargets) {

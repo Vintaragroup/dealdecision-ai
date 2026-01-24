@@ -408,7 +408,6 @@ export function Documents({ darkMode }: DocumentsProps) {
           documents={documents}
           loading={documentsLoading}
           onRetry={async (documentId) => {
-            if (!liveMode) return;
             if (!selectedDealId) return;
             try {
               await apiRetryDocument(selectedDealId, documentId);

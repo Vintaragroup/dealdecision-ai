@@ -53,7 +53,7 @@ export function DocumentsTab({ dealId, darkMode = true, reloadKey = 0 }: Documen
   }, [dealId, reloadKey]);
 
   const handleRetry = async (documentId: string) => {
-    if (!dealId || !isLiveBackend()) return;
+    if (!dealId) return;
     try {
       await apiRetryDocument(dealId, documentId);
       await loadDocuments();

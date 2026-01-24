@@ -51,10 +51,10 @@ export function DealExtractionReportModal({ dealId, darkMode, onClose }: DealExt
   const [documents, setDocuments] = useState<DocumentExtractionReport[]>([]);
   const [actionBusy, setActionBusy] = useState(false);
 
-  const canUse = isLiveBackend() && !!dealId;
+  const canRead = isLiveBackend() && !!dealId;
 
   const refresh = async () => {
-    if (!canUse) {
+    if (!canRead) {
       setError('This view requires live backend mode.');
       setLoading(false);
       return;
@@ -93,7 +93,7 @@ export function DealExtractionReportModal({ dealId, darkMode, onClose }: DealExt
   }, [dealReport]);
 
   const handleVerify = async () => {
-    if (!canUse) return;
+    if (!dealId) return;
     setActionBusy(true);
     try {
       await apiPostVerifyDealDocuments(dealId);
@@ -106,7 +106,7 @@ export function DealExtractionReportModal({ dealId, darkMode, onClose }: DealExt
   };
 
   const handleReextract = async () => {
-    if (!canUse) return;
+    if (!dealId) return;
     setActionBusy(true);
     try {
       await apiPostReextractDocuments(dealId, { include_warnings: true });

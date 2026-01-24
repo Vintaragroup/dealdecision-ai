@@ -15,7 +15,7 @@ import {
   PartyPopper
 } from 'lucide-react';
 import { AnimatedCounter } from './AnimatedCounter';
-import { apiCreateDeal, apiCreateDealDraft, apiGetDeal, apiUploadDocument, isLiveBackend } from '../lib/apiClient';
+import { apiCreateDeal, apiCreateDealDraft, apiGetDeal, apiUploadDocument } from '../lib/apiClient';
 import { ToastContainer, ToastType } from './ui/Toast';
 
 import type { Deal } from '@dealdecision/contracts';
@@ -231,10 +231,6 @@ export function NewDealModal({ isOpen, onClose, onSuccess, onCreatedDeal, darkMo
 
   const handleStartUploadFirst = () => {
     setSubmitError(null);
-    if (!isLiveBackend()) {
-      setSubmitError('Upload-first creation requires the live backend.');
-      return;
-    }
     setShowUploadFirst(true);
   };
 
@@ -269,11 +265,6 @@ export function NewDealModal({ isOpen, onClose, onSuccess, onCreatedDeal, darkMo
   const handleCreateDraftAndUpload = async () => {
     if (submitting) return;
     setSubmitError(null);
-
-    if (!isLiveBackend()) {
-      setSubmitError('Upload-first creation requires the live backend.');
-      return;
-    }
 
     if (uploadItems.length === 0) {
       setSubmitError('Select at least one document to upload.');

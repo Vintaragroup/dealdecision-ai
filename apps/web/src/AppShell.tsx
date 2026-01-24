@@ -27,6 +27,7 @@ import { ScoreSourceProvider } from './contexts/ScoreSourceContext';
 import { ChatAssistant } from './components/ChatAssistant';
 import { CommandPalette } from './components/CommandPalette';
 import { ApiAuthBridge } from './components/auth/ApiAuthBridge';
+import { ApiMutationsPanel } from './components/debug/ApiMutationsPanel';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useUser } from '@clerk/clerk-react';
 import { clearLocalOnboardingComplete, getPostLoginRoute, markOnboardingComplete, maybeBackfillOnboardingComplete } from './lib/postLoginRouting';
@@ -382,6 +383,9 @@ export default function AppShell() {
 
                 {/* Chat Assistant */}
                 <ChatAssistant darkMode={darkMode} />
+
+                {/* Runtime-only production debug panel (disabled unless opted-in via localStorage/query param) */}
+                <ApiMutationsPanel />
               </div>
             </div>
           </div>

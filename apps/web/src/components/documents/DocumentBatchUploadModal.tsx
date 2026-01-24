@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { AlertCircle, CheckCircle, FileText, Upload, X, ChevronDown, ChevronUp } from 'lucide-react';
-import { apiAnalyzeDocumentsBatch, apiBulkAssignDocuments, apiUploadDocument, isLiveBackend } from '../../lib/apiClient';
+import { apiAnalyzeDocumentsBatch, apiBulkAssignDocuments, apiUploadDocument } from '../../lib/apiClient';
 import { ToastContainer } from '../ui/Toast';
 import { useLocalToasts } from '../../lib/useLocalToasts';
 
@@ -51,10 +51,6 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
     try {
       const filenames = files.map((f) => f.name);
 
-      if (!isLiveBackend()) {
-        throw new Error('Batch upload requires live backend');
-      }
-
       const data = await apiAnalyzeDocumentsBatch(filenames);
       setAnalysisResult(data.analysis);
 
@@ -90,10 +86,6 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
   const handleUpload = async () => {
     setLoading(true);
     try {
-      if (!isLiveBackend()) {
-        throw new Error('Batch upload requires live backend');
-      }
-
       // Build assignments based on user confirmations
       // NOTE: We only send one "newDeals" entry per company to avoid duplicate deal creation.
       // We still upload all files in the group after we resolve the target deal id.

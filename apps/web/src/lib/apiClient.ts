@@ -10,6 +10,48 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:9000
 const DEFAULT_BACKEND_MODE = (import.meta as any)?.env?.PROD ? 'live' : 'mock';
 const BACKEND_MODE = (import.meta.env.VITE_BACKEND_MODE || DEFAULT_BACKEND_MODE).toLowerCase();
 
+type ApiMutationLogEntry = {
+  ts: number;
+  method: string;
+  url: string;
+  path: string;
+  status: number;
+  duration_ms: number;
+  ok: boolean;
+  error?: string;
+};
+
+function getLocalStorageFlag(key: string): string | null {
+  try {
+    if (typeof window === 'undefined') return null;
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function shouldLogApiMutations(): boolean {
+  const raw = getLocalStorageFlag('ddai:logApiMutations');
+  if (!raw) return true;
+  const v = raw.trim().toLowerCase();
+  if (v === '0' || v === 'false' || v === 'off') return false;
+  if (v === '1' || v === 'true' || v === 'on') return true;
+  return true;
+}
+
+function recordApiMutation(entry: ApiMutationLogEntry) {
+  try {
+    if (typeof window === 'undefined') return;
+    const w = window as any;
+    const existing = Array.isArray(w.__ddaiApiMutations) ? w.__ddaiApiMutations : [];
+    existing.unshift(entry);
+    if (existing.length > 50) existing.length = 50;
+    w.__ddaiApiMutations = existing;
+  } catch {
+    // ignore
+  }
+}
+
 function getDevAdminToken(): string | null {
   const metaEnv = (import.meta as any)?.env as any;
   if (!metaEnv?.DEV) return null;
@@ -289,6 +331,31 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     const endedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
     const status = typeof res?.status === 'number' ? res.status : 0;
     const durationMs = endedAt - startedAt;
+
+    // Always record mutations in a runtime-visible buffer (prod-safe, no tokens/bodies).
+    if (isMutation) {
+      const fullUrl = `${API_BASE_URL}${path}`;
+      const errorMessage = error instanceof Error ? error.message : error ? String(error) : undefined;
+      recordApiMutation({
+        ts: Date.now(),
+        method,
+        url: fullUrl,
+        path,
+        status,
+        duration_ms: Math.round(durationMs),
+        ok: status >= 200 && status < 400,
+        ...(errorMessage ? { error: errorMessage } : {}),
+      });
+
+      if (shouldLogApiMutations()) {
+        const ms = `${Math.round(durationMs)}ms`;
+        if (status >= 200 && status < 400) {
+          console.info('[DDAI][api:mutation]', method, fullUrl, status, ms);
+        } else {
+          console.warn('[DDAI][api:mutation]', method, fullUrl, status, ms, errorMessage ?? '');
+        }
+      }
+    }
 
     // DEV-only logging for write requests (never log tokens or request bodies).
     if (isDev && isMutation) {

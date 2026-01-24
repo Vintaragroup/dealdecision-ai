@@ -14,7 +14,7 @@ import {
   FolderOpen
 } from 'lucide-react';
 import type { Document } from '@dealdecision/contracts';
-import { apiUploadDocument, isLiveBackend } from '../../lib/apiClient';
+import { apiUploadDocument } from '../../lib/apiClient';
 
 interface DocumentUploadProps {
   darkMode: boolean;
@@ -56,9 +56,8 @@ export function DocumentUpload({
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const liveMode = isLiveBackend();
   const hasDeal = !!dealId && dealId !== 'demo' && dealId !== 'deal-fallback';
-  const requiresDealSelection = liveMode && !hasDeal;
+  const requiresDealSelection = !hasDeal;
 
   const getFileIcon = (fileName: string) => {
     const ext = fileName.split('.').pop()?.toLowerCase();
@@ -90,46 +89,6 @@ export function DocumentUpload({
     return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
   };
 
-  const simulateAIExtraction = async (file: UploadedFile) => {
-    // Simulate AI processing delay
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // Mock extracted data based on file type
-    const ext = file.name.split('.').pop()?.toLowerCase();
-    let extractedData = {};
-    
-    if (ext === 'pdf' || ext === 'doc' || ext === 'docx') {
-      extractedData = {
-        documentType: 'Pitch Deck',
-        companyName: 'TechStartup Inc.',
-        foundingDate: '2023',
-        fundingRound: 'Series A',
-        amountRaising: '$5M',
-        keyMetrics: {
-          revenue: '$2.5M ARR',
-          growth: '180% YoY',
-          customers: '145'
-        }
-      };
-    } else if (ext === 'xls' || ext === 'xlsx' || ext === 'csv') {
-      extractedData = {
-        documentType: 'Financial Model',
-        revenue: [
-          { year: 2024, value: 2500000 },
-          { year: 2025, value: 7500000 },
-          { year: 2026, value: 18000000 }
-        ],
-        expenses: {
-          cogs: 750000,
-          sales: 1200000,
-          engineering: 1800000
-        }
-      };
-    }
-    
-    return extractedData;
-  };
-
   const processFile = async (file: File): Promise<UploadedFile> => {
     const uploadedFile: UploadedFile = {
       id: Math.random().toString(36).substr(2, 9),
@@ -144,56 +103,34 @@ export function DocumentUpload({
 
     setUploadedFiles(prev => [...prev, uploadedFile]);
 
-    const useLive = liveMode && hasDeal;
-
-    if (useLive) {
-      try {
-        const { document } = await apiUploadDocument(dealId as string, file, 'other', file.name);
-        setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'processing' } : f));
-        onUploaded?.(document as Document);
-        setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'complete' } : f));
-        return { ...uploadedFile, status: 'complete' };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Upload failed';
-        onError?.(message);
-        setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'error', error: message } : f));
-        return { ...uploadedFile, status: 'error', error: message };
-      }
+    if (!hasDeal) {
+      const message = 'Select a real deal before uploading (demo deals cannot receive uploads).';
+      onError?.(message);
+      setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'error', error: message } : f));
+      return { ...uploadedFile, status: 'error', error: message };
     }
 
-    // Offline/mock path
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    if (enableAIExtraction) {
-      setUploadedFiles(prev =>
-        prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'processing' } : f)
-      );
-
-      const extractedData = await simulateAIExtraction(uploadedFile);
-
-      setUploadedFiles(prev =>
-        prev.map(f =>
-          f.id === uploadedFile.id
-            ? { ...f, status: 'complete', aiExtracted: true, extractedData }
-            : f
-        )
-      );
-      return { ...uploadedFile, status: 'complete', aiExtracted: true, extractedData };
-    } else {
-      setUploadedFiles(prev =>
-        prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'complete' } : f)
-      );
+    try {
+      const { document } = await apiUploadDocument(dealId as string, file, 'other', file.name);
+      setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'processing' } : f));
+      onUploaded?.(document as Document);
+      setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'complete' } : f));
       return { ...uploadedFile, status: 'complete' };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Upload failed';
+      onError?.(message);
+      setUploadedFiles(prev => prev.map(f => f.id === uploadedFile.id ? { ...f, status: 'error', error: message } : f));
+      return { ...uploadedFile, status: 'error', error: message };
     }
   };
 
   const handleFiles = async (files: FileList | null) => {
     if (!files) return;
 
-      if (liveMode && !hasDeal) {
-        const message = 'Select a real deal before uploading (demo deals cannot receive uploads).';
-        setErrorMessage(message);
-        onError?.(message);
+    if (!hasDeal) {
+      const message = 'Select a real deal before uploading (demo deals cannot receive uploads).';
+      setErrorMessage(message);
+      onError?.(message);
       return;
     }
 

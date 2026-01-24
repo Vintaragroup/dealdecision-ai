@@ -165,10 +165,6 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
 
   const handleConfirmDelete = async () => {
     if (!deleteTarget) return;
-    if (!isLiveBackend()) {
-      setError('Delete Deal is only available in live backend mode.');
-      return;
-    }
     if (!isDeleteConfirmed) return;
 
     setDeletingDealId(deleteTarget.id);

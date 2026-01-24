@@ -340,7 +340,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
 
   const handleAnalyzeAndAutofill = async () => {
-    if (!dealId || !isLiveBackend()) return;
+    if (!dealId) return;
     setAutoProfileLoading(true);
     try {
       const res = await apiAutoProfileDeal(dealId);
@@ -370,7 +370,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
 
   const handleConfirmProfile = async () => {
-    if (!dealId || !isLiveBackend()) return;
+    if (!dealId) return;
     try {
       const updated = await apiConfirmDealProfile(dealId, profileEdits);
       setDealFromApi(updated);
@@ -1527,13 +1527,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
 
   const refreshDealFromApi = async () => {
-    if (!dealId || !isLiveBackend()) return;
+    if (!dealId) return;
     const deal = await apiGetDeal(dealId);
     setDealFromApi(deal);
   };
 
   const handleAutoProgressStage = async () => {
-    if (!dealId || !isLiveBackend()) return;
+    if (!dealId) return;
     if (stageActionLoading) return;
     setStageActionLoading(true);
     try {
@@ -1553,7 +1553,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
 
   const handleMarkPitched = async () => {
-    if (!dealId || !isLiveBackend()) return;
+    if (!dealId) return;
     if (stageActionLoading) return;
     setStageActionLoading(true);
     try {
@@ -1568,7 +1568,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
 
   const handleMarkDecisionReady = async () => {
-    if (!dealId || !isLiveBackend()) return;
+    if (!dealId) return;
     if (stageActionLoading) return;
     setStageActionLoading(true);
     try {
@@ -1688,10 +1688,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
 
   const runAIAnalysis = async () => {
-    if (!dealId || !isLiveBackend()) {
-      addToast('info', 'Live mode required', 'Switch to live backend to run analysis');
-      return;
-    }
+    if (!dealId) return;
     setAnalyzing(true);
     setJobProgress(null);
     setJobMessage(null);
@@ -1751,10 +1748,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
 
   const runFullProcess = async () => {
-    if (!dealId || !isLiveBackend()) {
-      addToast('info', 'Live mode required', 'Switch to live backend to run the full process');
-      return;
-    }
+    if (!dealId) return;
 
     setAnalyzing(true);
     setJobProgress(null);
@@ -1950,10 +1944,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
 
   const runExtractVisuals = async () => {
-    if (!dealId || !isLiveBackend()) {
-      addToast('info', 'Live mode required', 'Switch to live backend to extract visuals');
-      return;
-    }
+    if (!dealId) return;
     setAnalyzing(true);
     setJobProgress(null);
     setJobMessage(null);
@@ -2013,10 +2004,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
 
   const handleFetchEvidence = async () => {
-    if (!dealId || !isLiveBackend()) {
-      addToast('info', 'Live mode required', 'Switch to live backend to fetch evidence');
-      return;
-    }
+    if (!dealId) return;
     try {
       const res = await apiFetchEvidence(dealId);
       addToast('info', 'Evidence fetch queued', `Job ${res.job_id}`);
@@ -2380,10 +2368,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                           disabled={!dealId || stageActionLoading}
                           onClick={async () => {
                             setShowMoreActions(false);
-                            if (!dealId || !isLiveBackend()) {
-                              addToast('info', 'Stage controls unavailable', 'Stage progression is only available in live backend mode.');
-                              return;
-                            }
                             await handleAutoProgressStage();
                           }}
                           className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
@@ -2400,10 +2384,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                           disabled={!dealId || stageActionLoading}
                           onClick={async () => {
                             setShowMoreActions(false);
-                            if (!dealId || !isLiveBackend()) {
-                              addToast('info', 'Stage controls unavailable', 'Stage updates are only available in live backend mode.');
-                              return;
-                            }
                             await handleMarkDecisionReady();
                           }}
                           className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
@@ -2420,10 +2400,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                           disabled={!dealId || stageActionLoading}
                           onClick={async () => {
                             setShowMoreActions(false);
-                            if (!dealId || !isLiveBackend()) {
-                              addToast('info', 'Stage controls unavailable', 'Stage updates are only available in live backend mode.');
-                              return;
-                            }
                             await handleMarkPitched();
                           }}
                           className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${

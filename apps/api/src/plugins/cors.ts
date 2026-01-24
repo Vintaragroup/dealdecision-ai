@@ -8,7 +8,7 @@ export async function registerCors(app: FastifyInstance) {
     origin: true,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "Last-Event-ID", "Cache-Control"],
     exposedHeaders: ["Content-Type"],
     // Ensure preflight is answered by the CORS plugin (prevents OPTIONS 404).
     preflightContinue: false,

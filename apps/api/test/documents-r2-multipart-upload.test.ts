@@ -105,8 +105,7 @@ test('multipart upload streams to R2 and enqueues from_storage ingest', async ()
     deleteFromR2: async () => {},
     getSignedDownloadUrl: async ({ key }: { key: string }) => `https://signed.example/${encodeURIComponent(key)}`,
     uploadToR2: async ({ key, body }: { key: string; body: any }) => {
-      let bytes = 0;
-      for await (const chunk of body) bytes += Buffer.byteLength(chunk);
+      const bytes = Buffer.isBuffer(body) ? body.length : 0;
       return { bucket: 'test-bucket', key, etag: 'etag-test', size_bytes: bytes };
     },
   };

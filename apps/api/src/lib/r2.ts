@@ -1,6 +1,10 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { Transform } from "node:stream";
+import { Transform, Readable } from "node:stream";
+
+function stripUndefined<T extends Record<string, any>>(o: T): T {
+  return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T;
+}
 
 type R2Config = {
   endpoint: string;
@@ -78,33 +82,59 @@ export function getR2Client(): S3Client {
 
 export async function uploadToR2(args: {
   key: string;
-  body: NodeJS.ReadableStream;
+  body: Readable | Buffer;
   contentType?: string | null;
 }): Promise<{ bucket: string; key: string; etag: string | null; size_bytes: number }> {
   const cfg = getR2Config();
   const client = getR2Client();
 
-  const counter = new CountingStream();
-  // Pipe the request stream through a counting transform into the SDK.
-  args.body.pipe(counter);
+  let body: Buffer | Readable;
+  let sizeBytes = 0;
+  let contentLength: number | undefined;
 
-  const result = await client.send(
-    new PutObjectCommand({
-      Bucket: cfg.bucket,
-      Key: args.key,
-      Body: counter,
-      ContentType: args.contentType ?? undefined,
-    })
-  );
+  if (Buffer.isBuffer(args.body)) {
+    body = args.body;
+    sizeBytes = args.body.length;
+    contentLength = sizeBytes;
+  } else {
+    const counter = new CountingStream();
+    args.body.pipe(counter);
+    body = counter as unknown as Readable;
+    // For streaming uploads we can't reliably know length up-front; use counted bytes as the returned size.
+    // Note: some S3-compatible providers are strict about chunked uploads; callers can prefer Buffer uploads.
+    contentLength = undefined;
+    sizeBytes = 0;
+  }
+
+  const putInput = stripUndefined({
+    Bucket: cfg.bucket,
+    Key: args.key,
+    Body: body,
+    ContentType: args.contentType ?? undefined,
+    ContentLength: contentLength,
+  });
+
+  const result = await client.send(new PutObjectCommand(putInput));
 
   const etag = typeof (result as any)?.ETag === "string" ? (result as any).ETag : null;
 
-  return {
-    bucket: cfg.bucket,
-    key: args.key,
-    etag,
-    size_bytes: counter.bytes,
-  };
+  // If we streamed, the transform has the counted bytes. If we buffered, it's the buffer length.
+  if (!Buffer.isBuffer(args.body)) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const bytes = (body as any)?.bytes;
+    if (typeof bytes === "number" && Number.isFinite(bytes) && bytes >= 0) sizeBytes = bytes;
+  }
+
+  // Optional hard verification (helpful when debugging R2 permissions / bucket policies).
+  if (process.env.R2_VERIFY_UPLOAD === "1") {
+    try {
+      await client.send(new HeadObjectCommand({ Bucket: cfg.bucket, Key: args.key }));
+    } catch {
+      // Best-effort; do not fail the upload response based on HEAD.
+    }
+  }
+
+  return { bucket: cfg.bucket, key: args.key, etag, size_bytes: sizeBytes };
 }
 
 export async function getSignedDownloadUrl(args: { key: string; ttlSeconds?: number }): Promise<string> {

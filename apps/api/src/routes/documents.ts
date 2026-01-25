@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { z } from "zod";
 import type { Document } from "@dealdecision/contracts";
 import { sanitizeText } from "@dealdecision/core";
@@ -77,6 +77,7 @@ async function persistUploadMetadata(pool: ReturnType<typeof getPool>, args: {
   mimeType: string | null;
   title: string;
   sizeBytes?: number | null;
+  sha256?: string | null;
   upload?: {
     provider: string;
     bucket: string;
@@ -192,6 +193,12 @@ async function persistUploadMetadata(pool: ReturnType<typeof getPool>, args: {
         mime_type: args.mimeType,
       };
 
+      if (typeof args.sha256 === "string" && args.sha256.trim()) {
+        uploadPatch.sha256 = args.sha256.trim();
+        // Compatibility: other parts of the system probe this key.
+        (uploadPatch as any).original_bytes_sha256 = args.sha256.trim();
+      }
+
       if (typeof args.sizeBytes === "number" && Number.isFinite(args.sizeBytes) && args.sizeBytes >= 0) {
         uploadPatch.size_bytes = args.sizeBytes;
       }
@@ -212,6 +219,10 @@ async function persistUploadMetadata(pool: ReturnType<typeof getPool>, args: {
         doc_kind: docKind,
         upload: uploadPatch,
       };
+
+      if (typeof args.sha256 === "string" && args.sha256.trim()) {
+        (patch as any).original_bytes_sha256 = args.sha256.trim();
+      }
 
       // Compatibility: other parts of the system read fileSizeBytes (camel).
       if (typeof args.sizeBytes === "number" && Number.isFinite(args.sizeBytes) && args.sizeBytes >= 0) {
@@ -913,6 +924,7 @@ export async function registerDocumentRoutes(
     let uploadedBucket: string | null = null;
     let uploadedEtag: string | null = null;
     let uploadedSizeBytes: number | null = null;
+    let uploadedSha256: string | null = null;
 
     let fileName = "document";
     let mimeType: string | null = null;
@@ -959,6 +971,12 @@ export async function registerDocumentRoutes(
           const key = `deals/${dealId}/documents/${documentId}/${safeName}`;
           const cfg = r2.getR2Config();
 
+          // Buffer-first upload for R2: avoids S3 streaming/chunked edge cases that can produce
+          // invalid/undefined decoded length headers on some S3-compatible providers.
+          const buf = await part.toBuffer();
+          uploadedSizeBytes = buf.length;
+          uploadedSha256 = createHash("sha256").update(buf).digest("hex");
+
           request.log.info(
             {
               event: "upload_r2_start",
@@ -975,7 +993,7 @@ export async function registerDocumentRoutes(
           try {
             const res = await r2.uploadToR2({
               key,
-              body: part.file,
+              body: buf,
               contentType: mimeType,
             });
             uploadedKey = res.key;
@@ -1113,6 +1131,7 @@ export async function registerDocumentRoutes(
         mimeType,
         title: titleValue,
         sizeBytes: uploadedSizeBytes,
+        sha256: uploadedSha256,
         upload:
           useR2 && uploadedKey && uploadedBucket
             ? {
@@ -1127,6 +1146,18 @@ export async function registerDocumentRoutes(
               }
             : undefined,
         warnings,
+      });
+
+      request.log.info({
+        event: "upload_multipart_metadata_persisted",
+        deal_id: dealId,
+        document_id: documentId,
+        storage_provider: useR2 ? "r2" : "local",
+        storage_bucket: uploadedBucket,
+        storage_key: uploadedKey,
+        size_bytes: uploadedSizeBytes,
+        sha256: uploadedSha256,
+        mime_type: mimeType,
       });
 
       if (!rows[0]?.deal_id || rows[0].deal_id !== dealId) {

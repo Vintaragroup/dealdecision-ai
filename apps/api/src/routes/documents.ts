@@ -5,6 +5,7 @@ import type { Document } from "@dealdecision/contracts";
 import { sanitizeText } from "@dealdecision/core";
 import { getPool } from "../lib/db";
 import { inferDocumentTypeFromName } from "../lib/document-type-inference";
+import { deleteFromR2, getPublicUrlForKey, getR2Config, getSignedDownloadUrl, uploadToR2 } from "../lib/r2";
 import { insertEvidence } from "../services/evidence";
 import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
@@ -37,6 +38,10 @@ async function hasTable(pool: ReturnType<typeof getPool>, table: string) {
 
 let hasDocumentsMimeTypeColumn: boolean | null = null;
 let hasDocumentsExtractionMetadataColumn: boolean | null = null;
+let hasDocumentsSizeBytesColumn: boolean | null = null;
+let hasDocumentsStorageProviderColumn: boolean | null = null;
+let hasDocumentsStorageBucketColumn: boolean | null = null;
+let hasDocumentsStorageKeyColumn: boolean | null = null;
 
 async function hasColumn(pool: ReturnType<typeof getPool>, table: string, column: string): Promise<boolean> {
   try {
@@ -71,12 +76,35 @@ async function persistUploadMetadata(pool: ReturnType<typeof getPool>, args: {
   fileName: string;
   mimeType: string | null;
   title: string;
+  sizeBytes?: number | null;
+  upload?: {
+    provider: string;
+    bucket: string;
+    key: string;
+    endpoint?: string;
+    url?: string | null;
+    signed_url?: string | null;
+    signed_url_ttl_seconds?: number | null;
+    etag?: string | null;
+  };
   warnings: string[];
 }) {
   const docKind = inferDocKindFromUpload({ fileName: args.fileName, mimeType: args.mimeType, title: args.title });
 
   if (hasDocumentsMimeTypeColumn === null) {
     hasDocumentsMimeTypeColumn = await hasColumn(pool, "documents", "mime_type");
+  }
+  if (hasDocumentsSizeBytesColumn === null) {
+    hasDocumentsSizeBytesColumn = await hasColumn(pool, "documents", "size_bytes");
+  }
+  if (hasDocumentsStorageProviderColumn === null) {
+    hasDocumentsStorageProviderColumn = await hasColumn(pool, "documents", "storage_provider");
+  }
+  if (hasDocumentsStorageBucketColumn === null) {
+    hasDocumentsStorageBucketColumn = await hasColumn(pool, "documents", "storage_bucket");
+  }
+  if (hasDocumentsStorageKeyColumn === null) {
+    hasDocumentsStorageKeyColumn = await hasColumn(pool, "documents", "storage_key");
   }
   if (hasDocumentsExtractionMetadataColumn === null) {
     hasDocumentsExtractionMetadataColumn = await hasColumn(pool, "documents", "extraction_metadata");
@@ -97,15 +125,104 @@ async function persistUploadMetadata(pool: ReturnType<typeof getPool>, args: {
     }
   }
 
+  if (hasDocumentsSizeBytesColumn && typeof args.sizeBytes === "number" && Number.isFinite(args.sizeBytes) && args.sizeBytes >= 0) {
+    try {
+      await pool.query(
+        `UPDATE documents
+            SET size_bytes = $2,
+                updated_at = now()
+          WHERE id = $1
+            AND (size_bytes IS NULL OR size_bytes = 0)`,
+        [args.documentId, args.sizeBytes]
+      );
+    } catch (e: any) {
+      args.warnings.push(`failed to persist size_bytes for uploaded document: ${e?.message || "unknown error"}`);
+    }
+  }
+
+  if (args.upload && hasDocumentsStorageProviderColumn) {
+    try {
+      await pool.query(
+        `UPDATE documents
+            SET storage_provider = $2,
+                updated_at = now()
+          WHERE id = $1
+            AND (storage_provider IS NULL OR storage_provider = '')`,
+        [args.documentId, args.upload.provider]
+      );
+    } catch (e: any) {
+      args.warnings.push(`failed to persist storage_provider for uploaded document: ${e?.message || "unknown error"}`);
+    }
+  }
+
+  if (args.upload && hasDocumentsStorageBucketColumn) {
+    try {
+      await pool.query(
+        `UPDATE documents
+            SET storage_bucket = $2,
+                updated_at = now()
+          WHERE id = $1
+            AND (storage_bucket IS NULL OR storage_bucket = '')`,
+        [args.documentId, args.upload.bucket]
+      );
+    } catch (e: any) {
+      args.warnings.push(`failed to persist storage_bucket for uploaded document: ${e?.message || "unknown error"}`);
+    }
+  }
+
+  if (args.upload && hasDocumentsStorageKeyColumn) {
+    try {
+      await pool.query(
+        `UPDATE documents
+            SET storage_key = $2,
+                updated_at = now()
+          WHERE id = $1
+            AND (storage_key IS NULL OR storage_key = '')`,
+        [args.documentId, args.upload.key]
+      );
+    } catch (e: any) {
+      args.warnings.push(`failed to persist storage_key for uploaded document: ${e?.message || "unknown error"}`);
+    }
+  }
+
   if (hasDocumentsExtractionMetadataColumn) {
     try {
-      const patch = {
-        doc_kind: docKind,
-        upload: {
-          file_name: args.fileName,
-          mime_type: args.mimeType,
-        },
+      const uploadPatch: Record<string, unknown> = {
+        file_name: args.fileName,
+        mime_type: args.mimeType,
       };
+
+      if (typeof args.sizeBytes === "number" && Number.isFinite(args.sizeBytes) && args.sizeBytes >= 0) {
+        uploadPatch.size_bytes = args.sizeBytes;
+      }
+
+      if (args.upload) {
+        uploadPatch.provider = args.upload.provider;
+        uploadPatch.bucket = args.upload.bucket;
+        uploadPatch.key = args.upload.key;
+        if (args.upload.endpoint) uploadPatch.endpoint = args.upload.endpoint;
+        if (args.upload.url) uploadPatch.url = args.upload.url;
+        if (args.upload.signed_url) uploadPatch.signed_url = args.upload.signed_url;
+        if (typeof args.upload.signed_url_ttl_seconds === "number") uploadPatch.signed_url_ttl_seconds = args.upload.signed_url_ttl_seconds;
+        if (args.upload.etag) uploadPatch.etag = args.upload.etag;
+        uploadPatch.uploaded_at = new Date().toISOString();
+      }
+
+      const patch: Record<string, unknown> = {
+        doc_kind: docKind,
+        upload: uploadPatch,
+      };
+
+      // Compatibility: other parts of the system read fileSizeBytes (camel).
+      if (typeof args.sizeBytes === "number" && Number.isFinite(args.sizeBytes) && args.sizeBytes >= 0) {
+        (patch as any).fileSizeBytes = args.sizeBytes;
+      }
+
+      // Compatibility: worker fallback probes for these keys.
+      if (args.upload?.signed_url) {
+        (patch as any).r2_signed_url = args.upload.signed_url;
+        (patch as any).r2 = { signed_url: args.upload.signed_url, bucket: args.upload.bucket, key: args.upload.key };
+      }
 
       await pool.query(
         `UPDATE documents
@@ -118,6 +235,13 @@ async function persistUploadMetadata(pool: ReturnType<typeof getPool>, args: {
       args.warnings.push(`failed to persist extraction_metadata for uploaded document: ${e?.message || "unknown error"}`);
     }
   }
+}
+
+function sanitizeFileNameForKey(name: string): string {
+  const raw = String(name || "document");
+  const justName = raw.split("/").pop()?.split("\\").pop() || "document";
+  const cleaned = justName.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^[-.]+|[-.]+$/g, "");
+  return cleaned.length > 0 ? cleaned.slice(0, 180) : "document";
 }
 
 const documentTypeSchema = z
@@ -352,10 +476,24 @@ export async function registerDocumentRoutes(
   deps?: {
     enqueueJob?: typeof enqueueJob;
     autoProgressDealStage?: typeof autoProgressDealStage;
+    r2?: {
+      uploadToR2: typeof uploadToR2;
+      getSignedDownloadUrl: typeof getSignedDownloadUrl;
+      deleteFromR2: typeof deleteFromR2;
+      getR2Config: typeof getR2Config;
+      getPublicUrlForKey: typeof getPublicUrlForKey;
+    };
   }
 ) {
   const enqueue = deps?.enqueueJob ?? enqueueJob;
   const autoProgress = deps?.autoProgressDealStage ?? autoProgressDealStage;
+  const r2 = deps?.r2 ?? {
+    uploadToR2,
+    getSignedDownloadUrl,
+    deleteFromR2,
+    getR2Config,
+    getPublicUrlForKey,
+  };
   app.get(
     "/api/v1/deals/:deal_id/documents/:document_id/visual-assets",
     {
@@ -763,7 +901,19 @@ export async function registerDocumentRoutes(
 
   app.post("/api/v1/deals/:deal_id/documents", async (request, reply) => {
     const dealId = sanitizeText((request.params as any)?.deal_id);
-    let fileBuffer: Buffer | null = null;
+    const documentId = randomUUID();
+    const useR2 =
+      !!process.env.R2_ENDPOINT &&
+      !!process.env.R2_BUCKET &&
+      !!process.env.R2_ACCESS_KEY_ID &&
+      !!process.env.R2_SECRET_ACCESS_KEY;
+
+    let legacyFileBuffer: Buffer | null = null;
+    let uploadedKey: string | null = null;
+    let uploadedBucket: string | null = null;
+    let uploadedEtag: string | null = null;
+    let uploadedSizeBytes: number | null = null;
+
     let fileName = "document";
     let mimeType: string | null = null;
     let docType: any = "other";
@@ -782,9 +932,87 @@ export async function registerDocumentRoutes(
       const parts = (request as any).parts();
       for await (const part of parts) {
         if (part.type === "file") {
-          fileBuffer = await part.toBuffer();
+          if (!useR2) {
+            const buf = await part.toBuffer();
+            legacyFileBuffer = buf;
+            fileName = part.filename || "document";
+            mimeType = typeof part.mimetype === "string" ? part.mimetype : null;
+            uploadedSizeBytes = buf.length;
+            continue;
+          }
+
+          if (uploadedKey) {
+            // Drain any unexpected additional file parts.
+            try {
+              for await (const _ of part.file) {
+                // no-op
+              }
+            } catch {
+              // best-effort
+            }
+            continue;
+          }
+
           fileName = part.filename || "document";
           mimeType = typeof part.mimetype === "string" ? part.mimetype : null;
+          const safeName = sanitizeFileNameForKey(fileName);
+          const key = `deals/${dealId}/documents/${documentId}/${safeName}`;
+          const cfg = r2.getR2Config();
+
+          request.log.info(
+            {
+              event: "upload_r2_start",
+              deal_id: dealId,
+              document_id: documentId,
+              bucket: cfg.bucket,
+              key,
+              file_name: fileName,
+              content_type: mimeType,
+            },
+            "Uploading document to R2"
+          );
+
+          try {
+            const res = await r2.uploadToR2({
+              key,
+              body: part.file,
+              contentType: mimeType,
+            });
+            uploadedKey = res.key;
+            uploadedBucket = res.bucket;
+            uploadedEtag = res.etag;
+            uploadedSizeBytes = res.size_bytes;
+
+            request.log.info(
+              {
+                event: "upload_r2_done",
+                deal_id: dealId,
+                document_id: documentId,
+                bucket: res.bucket,
+                key: res.key,
+                etag: res.etag,
+                size_bytes: res.size_bytes,
+              },
+              "Uploaded document to R2"
+            );
+          } catch (error: any) {
+            request.log.error(
+              {
+                event: "upload_r2_error",
+                deal_id: dealId,
+                document_id: documentId,
+                key,
+                err: error,
+                aws: {
+                  name: error?.name,
+                  message: error?.message,
+                  $metadata: error?.$metadata,
+                },
+              },
+              "Failed uploading document to R2"
+            );
+            throw error;
+          }
         } else if (part.type === "field") {
           const fieldValue = typeof part.value === "string" ? part.value : String(part.value ?? "");
           if (part.fieldname === "type") {
@@ -795,7 +1023,7 @@ export async function registerDocumentRoutes(
         }
       }
 
-      if (!fileBuffer) {
+      if (!legacyFileBuffer && (!uploadedKey || !uploadedBucket || uploadedSizeBytes === null)) {
         return reply.status(400).send({ error: "file is required" });
       }
 
@@ -810,8 +1038,6 @@ export async function registerDocumentRoutes(
       const finalType: Document["type"] =
         parsedType.success && parsedType.data ? parsedType.data : inferredType;
 
-      const fileBufferB64 = fileBuffer.toString("base64");
-
       if (titleValue === "document" && fileName && fileName !== "document") {
         titleValue = fileName;
       }
@@ -821,20 +1047,56 @@ export async function registerDocumentRoutes(
         deal_id: dealId,
         file_name: fileName,
         mime_type: mimeType,
-        buffer_len: fileBuffer.length,
+        size_bytes: uploadedSizeBytes,
         doc_type: docType,
         title: titleValue,
       });
 
-      const { rows } = await pool.query<DocumentRow>(
-        `INSERT INTO documents (deal_id, title, type, status)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, deal_id, title, type, status, uploaded_at`,
-        [dealId, titleValue, finalType, "pending"]
-      );
+      // Generate a signed download URL for the worker to fetch immediately.
+      const signedUrlTtl = useR2 ? r2.getR2Config().signedUrlTtlSeconds : null;
+      const signedUrl = useR2 && uploadedKey ? await r2.getSignedDownloadUrl({ key: uploadedKey, ttlSeconds: signedUrlTtl! }) : null;
+      const publicUrl =
+        useR2 && uploadedKey
+          ? (() => {
+              try {
+                return r2.getPublicUrlForKey(uploadedKey);
+              } catch {
+                return null;
+              }
+            })()
+          : null;
+
+      // Insert DB row only after upload succeeds.
+      let rows: DocumentRow[] = [];
+      try {
+        await pool.query("BEGIN");
+        const inserted = await pool.query<DocumentRow>(
+          `INSERT INTO documents (id, deal_id, title, type, status)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, deal_id, title, type, status, uploaded_at`,
+          [documentId, dealId, titleValue, finalType, "pending"]
+        );
+        rows = inserted.rows;
+        await pool.query("COMMIT");
+      } catch (dbErr: any) {
+        try {
+          await pool.query("ROLLBACK");
+        } catch {
+          // ignore
+        }
+
+        // Best-effort cleanup to avoid orphaned objects.
+        if (useR2 && uploadedKey) {
+          try {
+            await r2.deleteFromR2({ key: uploadedKey });
+          } catch {
+            // ignore
+          }
+        }
+        throw dbErr;
+      }
 
       const warnings: string[] = [];
-      const documentId = rows[0].id;
       request.log.info({
         event: "upload_multipart_document_inserted",
         deal_id: dealId,
@@ -844,13 +1106,28 @@ export async function registerDocumentRoutes(
         inferred_type: inferredType,
       });
 
-	  await persistUploadMetadata(pool, {
-		  documentId,
-		  fileName,
-		  mimeType,
-		  title: titleValue,
-		  warnings,
-	  });
+
+      await persistUploadMetadata(pool, {
+        documentId,
+        fileName,
+        mimeType,
+        title: titleValue,
+        sizeBytes: uploadedSizeBytes,
+        upload:
+          useR2 && uploadedKey && uploadedBucket
+            ? {
+                provider: "r2",
+                bucket: uploadedBucket,
+                key: uploadedKey,
+                endpoint: process.env.R2_ENDPOINT,
+                url: publicUrl,
+                signed_url: signedUrl,
+                signed_url_ttl_seconds: signedUrlTtl,
+                etag: uploadedEtag,
+              }
+            : undefined,
+        warnings,
+      });
 
       if (!rows[0]?.deal_id || rows[0].deal_id !== dealId) {
         try {
@@ -873,7 +1150,7 @@ export async function registerDocumentRoutes(
         }
       }
 
-      // Queue document processing job with file buffer
+      // Queue document processing job.
       const job = await enqueue({
         deal_id: dealId,
         document_id: documentId,
@@ -881,8 +1158,9 @@ export async function registerDocumentRoutes(
         payload: {
           document_id: documentId,
           deal_id: dealId,
-          file_buffer: fileBufferB64,
+          mode: useR2 ? "from_storage" : "upload",
           file_name: fileName,
+          file_buffer: useR2 ? undefined : legacyFileBuffer?.toString("base64"),
           attempt: 1,
         },
       });
@@ -891,7 +1169,10 @@ export async function registerDocumentRoutes(
         deal_id: dealId,
         document_id: documentId,
         job_id: job.job_id,
-        buffer_b64_len: fileBufferB64.length,
+        storage_provider: useR2 ? "r2" : "local",
+        storage_bucket: uploadedBucket,
+        storage_key: uploadedKey,
+        size_bytes: uploadedSizeBytes,
       });
 
       // Auto-check if deal should progress based on document count
@@ -899,6 +1180,13 @@ export async function registerDocumentRoutes(
 
       return reply.status(202).send({
         document: mapDocument(rows[0]),
+        upload: {
+          provider: useR2 ? "r2" : "local",
+          bucket: uploadedBucket,
+          key: uploadedKey,
+          size_bytes: uploadedSizeBytes,
+          mime_type: mimeType,
+        },
         job_status: "queued",
         job_id: job.job_id,
         warnings,
@@ -943,6 +1231,71 @@ export async function registerDocumentRoutes(
     });
 
     return reply.send({ documents: rows.map(mapDocument) });
+  });
+
+  app.get("/api/v1/deals/:deal_id/documents/:document_id/download-url", async (request, reply) => {
+    const dealId = sanitizeText((request.params as any)?.deal_id);
+    const documentId = sanitizeText((request.params as any)?.document_id);
+
+    if (!dealId) return reply.status(400).send({ error: "deal_id is required" });
+    if (!documentId) return reply.status(400).send({ error: "document_id is required" });
+
+    const hasStorageBucket = await hasColumn(pool, "documents", "storage_bucket");
+    const hasStorageKey = await hasColumn(pool, "documents", "storage_key");
+    const hasExtractionMetadata = await hasColumn(pool, "documents", "extraction_metadata");
+
+    const { rows } = await pool.query<{
+      id: string;
+      storage_bucket: string | null;
+      storage_key: string | null;
+      extraction_metadata: any | null;
+    }>(
+      `SELECT id
+              ${hasStorageBucket ? ", storage_bucket" : ", NULL::text AS storage_bucket"}
+              ${hasStorageKey ? ", storage_key" : ", NULL::text AS storage_key"}
+              ${hasExtractionMetadata ? ", extraction_metadata" : ", NULL::jsonb AS extraction_metadata"}
+         FROM documents
+        WHERE deal_id = $1
+          AND id = $2
+        LIMIT 1`,
+      [dealId, documentId]
+    );
+
+    if (!rows.length) return reply.status(404).send({ error: "Document not found" });
+
+    const row = rows[0];
+    const meta = row.extraction_metadata && typeof row.extraction_metadata === "object" ? row.extraction_metadata : null;
+    const bucketFromMeta = meta?.upload?.bucket ?? meta?.r2?.bucket ?? null;
+    const keyFromMeta = meta?.upload?.key ?? meta?.r2?.key ?? null;
+
+    const bucket = row.storage_bucket ?? bucketFromMeta;
+    const key = row.storage_key ?? keyFromMeta;
+
+    if (!key) {
+      return reply.status(404).send({ error: "Document storage key not found" });
+    }
+
+    const ttl = r2.getR2Config().signedUrlTtlSeconds;
+    request.log.info({ event: "document_download_url_start", deal_id: dealId, document_id: documentId, key }, "Signing R2 download URL");
+
+    try {
+      const signed_url = await r2.getSignedDownloadUrl({ key, ttlSeconds: ttl });
+      return reply.send({
+        deal_id: dealId,
+        document_id: documentId,
+        provider: "r2",
+        bucket: bucket ?? r2.getR2Config().bucket,
+        key,
+        signed_url,
+        expires_in_seconds: ttl,
+      });
+    } catch (error: any) {
+      request.log.error(
+        { event: "document_download_url_error", deal_id: dealId, document_id: documentId, key, err: error, aws: { name: error?.name, message: error?.message, $metadata: error?.$metadata } },
+        "Failed signing R2 download URL"
+      );
+      return reply.status(500).send({ error: "Failed to create signed URL" });
+    }
   });
 
   app.delete("/api/v1/deals/:deal_id/documents/:document_id", async (request, reply) => {

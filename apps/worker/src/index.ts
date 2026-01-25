@@ -4943,6 +4943,39 @@ registerWorker("generate_ingestion_report", async (job: Job) => {
 
 logWorkerQueueConfig("worker", Array.from(new Set(registeredWorkers)));
 
+// One-time DB fingerprint log to confirm which Postgres instance this worker is connected to.
+// Do NOT log credentials or DATABASE_URL.
+// Runs after pool initialization and before the worker starts processing jobs.
+void (async () => {
+	try {
+		const pool = getPool();
+		const { rows } = await pool.query<{ db: string; ip: string | null; port: number | null }>(
+			`SELECT
+				current_database() AS db,
+				inet_server_addr() AS ip,
+				inet_server_port() AS port;`
+		);
+		const row = rows?.[0];
+		console.log(
+			JSON.stringify({
+				event: "db_fingerprint",
+				service: "worker",
+				db: row?.db ?? null,
+				ip: row?.ip ?? null,
+				port: row?.port ?? null,
+			})
+		);
+	} catch (err) {
+		console.log(
+			JSON.stringify({
+				event: "db_fingerprint_error",
+				service: "worker",
+				err: err instanceof Error ? err.message : String(err),
+			})
+		);
+	}
+})();
+
 const shutdown = async () => {
 	await closePool();
 	process.exit(0);

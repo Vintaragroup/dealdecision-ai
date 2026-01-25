@@ -62,6 +62,8 @@ import { persistPdfV2TextRegionAssetsV1Shadow } from "./lib/pdf_v2/pdf-text-regi
 import os from "os";
 import { loadOriginalBytesFromDocumentStorage } from "./lib/ingest/from-storage";
 import { uploadToR2 } from "./lib/r2";
+import { runJobWatchdogOnce } from "./lib/job-watchdog";
+import { assertSchema } from "./lib/schema-check";
 
 let didWarnUploadDirFallback = false;
 
@@ -4943,9 +4945,9 @@ registerWorker("generate_ingestion_report", async (job: Job) => {
 
 logWorkerQueueConfig("worker", Array.from(new Set(registeredWorkers)));
 
-// One-time DB fingerprint log to confirm which Postgres instance this worker is connected to.
-// Do NOT log credentials or DATABASE_URL.
-// Runs after pool initialization and before the worker starts processing jobs.
+// One-time DB fingerprint + schema assertion.
+// - Do NOT log credentials or DATABASE_URL.
+// - If schema is missing required columns, log schema_check_failed once and exit non-zero.
 void (async () => {
 	try {
 		const pool = getPool();
@@ -4956,13 +4958,32 @@ void (async () => {
 				inet_server_port() AS port;`
 		);
 		const row = rows?.[0];
+		const fingerprint = {
+			db: row?.db ?? null,
+			ip: row?.ip ?? null,
+			port: row?.port ?? null,
+		};
+
+		try {
+			await assertSchema({ fingerprint });
+		} catch (schemaErr) {
+			const missing = Array.isArray((schemaErr as any)?.missing) ? (schemaErr as any).missing : [];
+			console.log(
+				JSON.stringify({
+					event: "schema_check_failed",
+					missing,
+					...fingerprint,
+				})
+			);
+			await closePool();
+			process.exit(1);
+		}
+
 		console.log(
 			JSON.stringify({
 				event: "db_fingerprint",
 				service: "worker",
-				db: row?.db ?? null,
-				ip: row?.ip ?? null,
-				port: row?.port ?? null,
+				...fingerprint,
 			})
 		);
 	} catch (err) {
@@ -4974,6 +4995,43 @@ void (async () => {
 			})
 		);
 	}
+})();
+
+// Job watchdog: mark stale running jobs as failed so new work can proceed.
+// Enabled by default; can be disabled by setting JOB_WATCHDOG_ENABLED=0.
+void (async () => {
+	const enabled = process.env.JOB_WATCHDOG_ENABLED;
+	if (enabled === "0" || enabled === "false") return;
+
+	const intervalMsRaw = process.env.JOB_WATCHDOG_INTERVAL_MS;
+	const intervalMs = intervalMsRaw == null ? 5 * 60_000 : Number(intervalMsRaw);
+	const safeIntervalMs = Number.isFinite(intervalMs) ? Math.max(60_000, Math.floor(intervalMs)) : 5 * 60_000;
+
+	const tick = async () => {
+		try {
+			const res = await runJobWatchdogOnce();
+			if (res.failed > 0) {
+				console.log(
+					JSON.stringify({
+						event: "job_watchdog_stale_jobs_failed",
+						scanned: res.scanned,
+						failed: res.failed,
+					})
+				);
+			}
+		} catch (err) {
+			console.warn(
+				JSON.stringify({
+					event: "job_watchdog_error",
+					err: err instanceof Error ? err.message : String(err),
+				})
+			);
+		}
+	};
+
+	// Run once on startup.
+	void tick();
+	setInterval(() => void tick(), safeIntervalMs);
 })();
 
 const shutdown = async () => {

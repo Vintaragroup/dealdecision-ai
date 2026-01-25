@@ -1,31 +1,36 @@
 import type { JobType, JobStatus } from "@dealdecision/contracts";
 import { randomUUID } from "crypto";
-import { sanitizeText } from "@dealdecision/core";
+import { sanitizeDeep, sanitizeText } from "@dealdecision/core";
 import { getPool } from "../lib/db";
-import {
-  ingestQueue,
-  extractVisualsQueue,
-  deepScanVisualsQueue,
-  fetchEvidenceQueue,
-  analyzeDealQueue,
-  verifyDocumentsQueue,
-  remediateExtractionQueue,
-  reextractDocumentsQueue,
-} from "../lib/queue";
 
-const queueMap: Record<JobType, typeof ingestQueue> = {
-  ingest_documents: ingestQueue,
-  extract_visuals: extractVisualsQueue,
-  deep_scan_visuals: deepScanVisualsQueue,
-  fetch_evidence: fetchEvidenceQueue,
-  analyze_deal: analyzeDealQueue,
-  verify_documents: verifyDocumentsQueue,
-  remediate_extraction: remediateExtractionQueue,
-  reextract_documents: reextractDocumentsQueue,
-  generate_report: analyzeDealQueue,
-  sync_crm: analyzeDealQueue,
-  classify_document: ingestQueue,
+type QueueLike = {
+  add: (name: string, data: Record<string, unknown>, opts: { jobId: string; removeOnComplete: boolean; removeOnFail: boolean }) => Promise<any>;
 };
+
+type DbPoolLike = Pick<ReturnType<typeof getPool>, "query">;
+
+function getQueueForType(type: JobType): QueueLike {
+  // Lazily require queues so unit tests can import this module without REDIS_URL.
+  // In production, this resolves to BullMQ Queue instances.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const q = require("../lib/queue") as typeof import("../lib/queue");
+
+  const queueMap: Record<JobType, QueueLike> = {
+    ingest_documents: q.ingestQueue,
+    extract_visuals: q.extractVisualsQueue,
+    deep_scan_visuals: q.deepScanVisualsQueue,
+    fetch_evidence: q.fetchEvidenceQueue,
+    analyze_deal: q.analyzeDealQueue,
+    verify_documents: q.verifyDocumentsQueue,
+    remediate_extraction: q.remediateExtractionQueue,
+    reextract_documents: q.reextractDocumentsQueue,
+    generate_report: q.analyzeDealQueue,
+    sync_crm: q.analyzeDealQueue,
+    classify_document: q.ingestQueue,
+  };
+
+  return queueMap[type];
+}
 
 export interface EnqueueJobInput {
   deal_id?: string;
@@ -43,6 +48,14 @@ export interface EnqueueJobOptions {
 		by: "deal" | "document";
 		statuses?: JobStatus[];
 	};
+
+  /**
+   * Dependency injection for tests.
+   */
+  deps?: {
+    pool?: DbPoolLike;
+    queue?: QueueLike;
+  };
 }
 
 const DEFAULT_DEDUPE_STATUSES: JobStatus[] = ["queued", "running", "retrying"];
@@ -51,8 +64,8 @@ const DEFAULT_DEDUPE_STATUSES: JobStatus[] = ["queued", "running", "retrying"];
 const DEFAULT_DEDUPE_MAX_AGE_MINUTES = 30;
 
 export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOptions) {
-  const pool = getPool();
-  const queue = queueMap[input.type];
+  const pool: DbPoolLike = opts?.deps?.pool ?? getPool();
+  const queue = opts?.deps?.queue ?? getQueueForType(input.type);
 
   // Optional dedupe: if a matching job is already active, return it.
   if (opts?.dedupe?.by && (input.deal_id || input.document_id)) {
@@ -62,7 +75,7 @@ export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOption
     const maxAgeMinutes = DEFAULT_DEDUPE_MAX_AGE_MINUTES;
 
     if (opts.dedupe.by === "deal" && input.deal_id) {
-      const existing = await pool.query<{ id: number; job_id: string; status: JobStatus }>(
+      const existing = (await pool.query(
         `SELECT id, job_id, status
            FROM jobs
           WHERE deal_id = $1
@@ -72,12 +85,12 @@ export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOption
           ORDER BY created_at DESC
           LIMIT 1`,
         [sanitizeText(input.deal_id), sanitizeText(input.type), statuses, maxAgeMinutes]
-      );
+      )) as unknown as { rows: Array<{ id: number; job_id: string; status: JobStatus }> };
       if (existing.rows.length > 0) return existing.rows[0];
     }
 
     if (opts.dedupe.by === "document" && input.document_id) {
-      const existing = await pool.query<{ id: number; job_id: string; status: JobStatus }>(
+      const existing = (await pool.query(
         `SELECT id, job_id, status
            FROM jobs
           WHERE document_id = $1
@@ -87,7 +100,7 @@ export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOption
           ORDER BY created_at DESC
           LIMIT 1`,
         [sanitizeText(input.document_id), sanitizeText(input.type), statuses, maxAgeMinutes]
-      );
+      )) as unknown as { rows: Array<{ id: number; job_id: string; status: JobStatus }> };
       if (existing.rows.length > 0) return existing.rows[0];
     }
   }
@@ -108,11 +121,29 @@ export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOption
     removeOnFail: false,
   });
 
+  // Persist a non-null payload for debugging and filtering.
+  // Include identifiers even if the caller didn't supply them in payload.
+  const persistedPayload = sanitizeDeep({
+    ...(input.payload ?? {}),
+    ...(input.deal_id ? { deal_id: input.deal_id } : {}),
+    ...(input.document_id ? { document_id: input.document_id } : {}),
+    job_id: jobId,
+    type: input.type,
+  }) as Record<string, unknown>;
+
   const { rows } = await pool.query(
-    `INSERT INTO jobs (job_id, deal_id, document_id, type, status)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO jobs (job_id, deal_id, document_id, type, queue, status, payload)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
      RETURNING id, job_id, status`,
-    [sanitizeText(jobId), input.deal_id ? sanitizeText(input.deal_id) : null, input.document_id ? sanitizeText(input.document_id) : null, sanitizeText(input.type), "queued"]
+    [
+      sanitizeText(jobId),
+      input.deal_id ? sanitizeText(input.deal_id) : null,
+      input.document_id ? sanitizeText(input.document_id) : null,
+      sanitizeText(input.type),
+      sanitizeText(input.type),
+      "queued",
+      JSON.stringify(persistedPayload ?? {}),
+    ]
   );
 
   return rows[0];

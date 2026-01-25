@@ -73,7 +73,34 @@ export function createWorker(
   const concurrency = heavyQueues.has(name) ? 1 : 2;
   const lockDuration = heavyQueues.has(name) ? 10 * 60 * 1000 : 2 * 60 * 1000;
 
-  const worker = new Worker(name, processor, {
+  const heartbeatMsRaw = process.env.JOB_HEARTBEAT_INTERVAL_MS;
+  const heartbeatMs = heartbeatMsRaw == null ? 60000 : Number(heartbeatMsRaw);
+
+  const wrappedProcessor: Processor<any, any, string> = async (job, token) => {
+    const intervalMs = Number.isFinite(heartbeatMs) ? Math.max(5000, Math.floor(heartbeatMs)) : 60000;
+    let stopped = false;
+
+    const timer = setInterval(() => {
+      if (stopped) return;
+      // Only update updated_at / status_detail; do NOT overwrite stage or message.
+      // Lazily require to avoid forcing DB env in unit tests that don't need it.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { updateJobProgress } = require("./job-progress") as typeof import("./job-progress");
+
+      void updateJobProgress(job as Job, { meta: { heartbeat: true } }).catch(() => {
+        // Best-effort heartbeat.
+      });
+    }, intervalMs);
+
+    try {
+      return await processor(job, token);
+    } finally {
+      stopped = true;
+      clearInterval(timer);
+    }
+  };
+
+  const worker = new Worker(name, wrappedProcessor, {
     connection,
     concurrency,
     lockDuration,

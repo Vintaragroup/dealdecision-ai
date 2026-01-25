@@ -3478,6 +3478,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       const titleDerived = inferSlideTitleForSlide({
         blocks: (v as any).ocr_blocks as any[],
         ocr_text: v.ocr_text,
+        page_index: typeof v.page_index === "number" && Number.isFinite(v.page_index) ? v.page_index : null,
         page_width: null,
         page_height: null,
         brandModel,
@@ -6015,6 +6016,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         const titleDerived = inferSlideTitleForSlide({
           blocks: (v as any).ocr_blocks as any[],
           ocr_text: v.ocr_text,
+          page_index: typeof v.page_index === "number" && Number.isFinite(v.page_index) ? v.page_index : null,
           page_width: null,
           page_height: null,
           brandModel,
@@ -6865,6 +6867,8 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         const titleDerived = inferSlideTitleForSlide({
           blocks: (r as any).ocr_blocks as any[],
           ocr_text: r?.ocr_text,
+          page_index:
+            typeof (r as any)?.page_index === "number" && Number.isFinite((r as any).page_index) ? (r as any).page_index : null,
           page_width: null,
           page_height: null,
           brandModel,

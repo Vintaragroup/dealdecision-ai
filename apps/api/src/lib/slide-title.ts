@@ -57,6 +57,7 @@ export type SlideTitleResult = {
 export type SlideTitleInput = {
   blocks?: OcrBlock[] | null;
   ocr_text?: string | null;
+  page_index?: number | null;
   page_width?: number | null;
   page_height?: number | null;
   brandModel?: BrandModel;
@@ -1021,7 +1022,8 @@ export function inferSlideTitleForSlide(input: SlideTitleInput): SlideTitleResul
 
   if (!pick) {
     // System-wide fallback: attempt fuzzy detection of common pitch-deck headings.
-    const fuzzy = inferTitleFromFuzzyHeading({ lines });
+    const fuzzyLines = lines.filter((l) => !(brandModel.phrases.has(l.norm) || containsBrandPhrase(l.norm, brandModel.phrases)));
+    const fuzzy = inferTitleFromFuzzyHeading({ lines: fuzzyLines });
     if (fuzzy) {
       return {
         slide_title: fuzzy.title,
@@ -1059,6 +1061,31 @@ export function inferSlideTitleForSlide(input: SlideTitleInput): SlideTitleResul
     }
 
     return { slide_title: null, slide_title_confidence: 0, slide_title_source: "none" };
+  }
+
+  // Heuristic guardrail: on OCR-text-only slides very early in the deck, a lone generic
+  // heading like "Solution" tends to be a section label rather than a real slide title,
+  // especially when a strong repeated brand line is present.
+  //
+  // Keep this narrowly-scoped so that layout-aware title extraction (OCR blocks) still
+  // uses headings like "Solution" to drive segmenting.
+  const pageIndex = typeof input.page_index === "number" && Number.isFinite(input.page_index) ? input.page_index : null;
+  const slideHasBrandLine = lines.some((l) => brandModel.phrases.has(l.norm) || containsBrandPhrase(l.norm, brandModel.phrases));
+  const pickNormEarly = normalizePhrase(pick.rawText || pick.text);
+  if (!hasLayoutBlocks && pageIndex != null && pageIndex <= 1 && pickNormEarly === "solution" && slideHasBrandLine) {
+    return {
+      slide_title: null,
+      slide_title_confidence: 0,
+      slide_title_source: "none",
+      slide_title_warnings: ["generic_solution_heading_suppressed"],
+      ...(input.enableDebug
+        ? {
+            slide_title_debug: {
+              candidates: [{ text: pick.text, score: Number(pick.score.toFixed(3)), reasons: ["suppressed_generic_solution_early_with_brand"] }],
+            },
+          }
+        : {}),
+    };
   }
 
   // If the selected top-line title doesn't appear to include any recognizable heading
@@ -1109,7 +1136,8 @@ export function inferSlideTitleForSlide(input: SlideTitleInput): SlideTitleResul
 
   // If the chosen title looks garbled, prefer a high-confidence fuzzy heading title.
   // This tends to stabilize titles (and downstream segments) for common deck pages.
-  const fuzzyHeading = inferTitleFromFuzzyHeading({ lines });
+  const fuzzyHeadingLines = lines.filter((l) => !(brandModel.phrases.has(l.norm) || containsBrandPhrase(l.norm, brandModel.phrases)));
+  const fuzzyHeading = inferTitleFromFuzzyHeading({ lines: fuzzyHeadingLines });
   if (fuzzyHeading && pickedBad) {
     return {
       slide_title: fuzzyHeading.title,
@@ -1218,7 +1246,16 @@ export function inferSlideTitleForSlide(input: SlideTitleInput): SlideTitleResul
 
 export function inferSlideTitleForDocument(pages: PageInput[]): { brandModel: BrandModel; titles: SlideTitleResult[] } {
   const brandModel = buildBrandModel(pages);
-  const titles = pages.map((p) => inferSlideTitleForSlide({ blocks: p.ocr_blocks ?? null, ocr_text: p.ocr_text ?? null, page_height: p.page_height, page_width: p.page_width, brandModel }));
+  const titles = pages.map((p) =>
+    inferSlideTitleForSlide({
+      blocks: p.ocr_blocks ?? null,
+      ocr_text: p.ocr_text ?? null,
+      page_index: (p as any).page_index ?? null,
+      page_height: p.page_height,
+      page_width: p.page_width,
+      brandModel,
+    })
+  );
   return { brandModel, titles };
 }
 
@@ -1261,5 +1298,11 @@ export const buildBrandBlacklist = buildBrandBlacklistForDocument;
 export function inferSlideTitle(params: { ocr_blocks?: unknown; ocr_text?: string | null; page_index?: number | null; doc_brand_blacklist: Set<string>; brand_name?: string | null; enableDebug?: boolean }): SlideTitleResult {
   const brandModel: BrandModel = { phrases: new Set(params.doc_brand_blacklist ?? []), regions: [] };
   if (params.brand_name) brandModel.phrases.add(normalizePhrase(params.brand_name));
-  return inferSlideTitleForSlide({ blocks: Array.isArray(params.ocr_blocks) ? (params.ocr_blocks as OcrBlock[]) : null, ocr_text: params.ocr_text ?? null, brandModel, enableDebug: params.enableDebug });
+  return inferSlideTitleForSlide({
+    blocks: Array.isArray(params.ocr_blocks) ? (params.ocr_blocks as OcrBlock[]) : null,
+    ocr_text: params.ocr_text ?? null,
+    page_index: params.page_index ?? null,
+    brandModel,
+    enableDebug: params.enableDebug,
+  });
 }

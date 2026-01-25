@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 import { sanitizeText, sanitizeDeep } from "@dealdecision/core";
+import { randomUUID } from "crypto";
 
 const connectionString = process.env.DATABASE_URL;
 
@@ -93,18 +94,78 @@ export async function insertEvidence(params: {
   confidence?: number;
 }) {
   const currentPool = getPool();
-  await currentPool.query(
-    `INSERT INTO evidence (deal_id, document_id, source, kind, text, confidence)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-    [
-      sanitizeText(params.deal_id),
-      params.document_id ?? null,
-      sanitizeText(params.source),
-      sanitizeText(params.kind),
-      sanitizeText(params.text),
-      params.confidence ?? 0.5,
-    ]
+
+  const shape = await getEvidenceInsertShape(currentPool);
+  const cols: string[] = [];
+  const values: any[] = [];
+
+  if (shape.idColumn) {
+    cols.push(shape.idColumn);
+    values.push(randomUUID());
+  }
+
+  cols.push("deal_id");
+  values.push(sanitizeText(params.deal_id));
+
+  if (shape.hasDocumentId) {
+    cols.push("document_id");
+    values.push(params.document_id ?? null);
+  }
+
+  cols.push("source", "kind", "text");
+  values.push(sanitizeText(params.source), sanitizeText(params.kind), sanitizeText(params.text));
+
+  if (shape.hasConfidence) {
+    cols.push("confidence");
+    values.push(params.confidence ?? 0.5);
+  }
+
+  const placeholders = values.map((_, i) => `$${i + 1}`).join(", ");
+
+  try {
+    await currentPool.query(`INSERT INTO evidence (${cols.join(", ")}) VALUES (${placeholders})`, values);
+  } catch (err: any) {
+    // Emit structured diagnostics for common schema drift failures.
+    const code = typeof err?.code === "string" ? err.code : undefined;
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(
+      JSON.stringify({
+        event: "evidence_insert_failed",
+        pg_code: code,
+        message,
+        deal_id: params.deal_id,
+        document_id: params.document_id ?? null,
+        attempted_cols: cols,
+      })
+    );
+    throw err;
+  }
+}
+
+type EvidenceInsertShape = {
+  hasDocumentId: boolean;
+  hasConfidence: boolean;
+  idColumn: "id" | "evidence_id" | null;
+};
+
+let cachedEvidenceInsertShape: EvidenceInsertShape | null = null;
+
+async function getEvidenceInsertShape(currentPool: Pool): Promise<EvidenceInsertShape> {
+  if (cachedEvidenceInsertShape) return cachedEvidenceInsertShape;
+  const { rows } = await currentPool.query<{ column_name: string }>(
+    `SELECT column_name
+       FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND table_name = 'evidence'`
   );
+  const cols = new Set(rows.map((r) => r.column_name));
+  const idColumn = cols.has("id") ? "id" : cols.has("evidence_id") ? "evidence_id" : null;
+  cachedEvidenceInsertShape = {
+    hasDocumentId: cols.has("document_id"),
+    hasConfidence: cols.has("confidence"),
+    idColumn,
+  };
+  return cachedEvidenceInsertShape;
 }
 
 export async function deleteExtractionEvidenceForDocument(params: {

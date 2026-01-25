@@ -198,6 +198,23 @@ export async function registerClerkAuth(app: FastifyInstance) {
       request.auth = await authenticateRequest(request);
     } catch (err: any) {
       const status = typeof err?.statusCode === 'number' ? err.statusCode : 401;
+
+      // Targeted diagnostics for SSE auth issues (common when proxies strip headers).
+      if (request.url.startsWith('/api/v1/events')) {
+        const hasAuthHeader = typeof request.headers.authorization === 'string' && request.headers.authorization.trim().length > 0;
+        request.log.warn(
+          {
+            event: 'auth_failed',
+            path: request.url,
+            method: request.method,
+            status,
+            has_authorization_header: hasAuthHeader,
+            reason: err instanceof Error ? err.message : String(err),
+          },
+          'SSE auth failed'
+        );
+      }
+
       reply.status(status).send({ error: err instanceof Error ? err.message : 'Unauthorized' });
       return;
     }

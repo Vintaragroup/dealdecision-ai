@@ -1237,6 +1237,8 @@ export function subscribeToEvents(
   const lastEventIdRef = { current: options?.cursor } as { current: string | undefined };
   let stopped = false;
   let retryDelay = 1000;
+  let authBlockedUntil = 0;
+  const AUTH_ERR_PREFIX = '__SSE_AUTH__';
 
   let controller: AbortController | null = null;
 
@@ -1305,6 +1307,14 @@ export function subscribeToEvents(
   const connect = async () => {
     if (stopped) return;
 
+    // If we recently got an auth failure, back off harder to avoid spamming.
+    if (authBlockedUntil > Date.now()) {
+      setTimeout(() => {
+        connect();
+      }, authBlockedUntil - Date.now());
+      return;
+    }
+
     // New controller per connection attempt.
     controller = new AbortController();
 
@@ -1312,6 +1322,17 @@ export function subscribeToEvents(
     const devAdminToken = getDevAdminToken();
     const fallbackBearer = !clerkToken && devAdminToken ? `Bearer ${devAdminToken}` : undefined;
     const bearer = clerkToken ? `Bearer ${clerkToken}` : fallbackBearer;
+
+    // Don't attempt to open SSE without credentials; wait for auth to become available.
+    if (!bearer) {
+      cleanupSource();
+      const delay = retryDelay;
+      retryDelay = Math.min(10000, retryDelay * 2);
+      setTimeout(() => {
+        connect();
+      }, delay);
+      return;
+    }
 
     const params = new URLSearchParams({ deal_id: dealId });
     if (lastEventIdRef.current) {
@@ -1351,6 +1372,11 @@ export function subscribeToEvents(
             retryDelay = 1000;
             return;
           }
+          if (resp.status === 401 || resp.status === 403) {
+            // Auth failures should not be retried aggressively.
+            authBlockedUntil = Date.now() + 30_000;
+            throw new Error(`${AUTH_ERR_PREFIX}:${resp.status}`);
+          }
           const text = await resp.text().catch(() => '');
           throw new Error(text || `SSE open failed (${resp.status})`);
         },
@@ -1377,8 +1403,11 @@ export function subscribeToEvents(
           handlers.onError?.(err);
           cleanupSource();
           if (stopped) return;
-          const delay = retryDelay;
-          retryDelay = Math.min(10000, retryDelay * 2);
+          const isAuthError = typeof (err as any)?.message === 'string' && String((err as any).message).startsWith(AUTH_ERR_PREFIX);
+          const delay = isAuthError
+            ? Math.max(5000, authBlockedUntil - Date.now())
+            : retryDelay;
+          retryDelay = isAuthError ? 1000 : Math.min(10000, retryDelay * 2);
           setTimeout(() => {
             connect();
           }, delay);
@@ -1388,8 +1417,11 @@ export function subscribeToEvents(
       if (debugApiIsEnabled()) debugApiLogSse({ event: 'init_error', dealId, error: err });
       handlers.onError?.(err);
       if (stopped) return;
-      const delay = retryDelay;
-      retryDelay = Math.min(10000, retryDelay * 2);
+      const isAuthError = typeof (err as any)?.message === 'string' && String((err as any).message).startsWith(AUTH_ERR_PREFIX);
+      const delay = isAuthError
+        ? Math.max(5000, authBlockedUntil - Date.now())
+        : retryDelay;
+      retryDelay = isAuthError ? 1000 : Math.min(10000, retryDelay * 2);
       setTimeout(() => connect(), delay);
     }
   };

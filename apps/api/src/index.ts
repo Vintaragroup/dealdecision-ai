@@ -21,6 +21,7 @@ import { registerVisualAssetRoutes } from "./routes/visual-assets";
 import { registerNodeAiAnalyzeRoutes } from "./routes/node-ai-analyze";
 import { initializeLLM } from "./lib/llm";
 import { getPool } from "./lib/db";
+import { applyPendingMigrations, getMigrationStatus } from "./lib/migrations";
 import "./lib/queue";
 import dotenv from "dotenv";
 
@@ -42,6 +43,40 @@ async function bootstrap() {
   await registerClerkAuth(app);
   await registerUploadsStatic(app);
   const pool = getPool();
+
+  // Schema drift guardrail: log migration status on startup.
+  // Optionally apply pending migrations when explicitly enabled.
+  try {
+    const status = await getMigrationStatus(pool);
+    app.log.info({
+      event: "db.migrations.status",
+      applied: status.applied.length,
+      pending: status.pending.length,
+      latest_applied: status.latestApplied,
+      migrations_dir: status.migrationsDir,
+    });
+
+    if (process.env.AUTO_MIGRATE === "1" && status.pending.length > 0) {
+      app.log.warn({ event: "db.migrations.auto_apply", pending: status.pending.length }, "AUTO_MIGRATE=1 applying pending migrations");
+      const after = await applyPendingMigrations(pool);
+      app.log.info({
+        event: "db.migrations.applied",
+        applied: after.applied.length,
+        pending: after.pending.length,
+        latest_applied: after.latestApplied,
+      });
+    } else if (status.pending.length > 0) {
+      app.log.warn({
+        event: "db.migrations.pending",
+        pending: status.pending.length,
+        latest_applied: status.latestApplied,
+        next_pending: status.pending.slice(0, 5),
+      }, "Database has pending migrations (run apps/api db:migrate)");
+    }
+  } catch (err) {
+    app.log.error({ event: "db.migrations.status_error", err }, "Failed reading migration status");
+  }
+
   await app.register(swagger, {
     openapi: {
       info: {

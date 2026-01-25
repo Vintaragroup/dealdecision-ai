@@ -1,73 +1,26 @@
-import fs from "fs";
-import path from "path";
 import dotenv from "dotenv";
 import { getPool, closePool } from "../src/lib/db";
+import { applyPendingMigrations, getMigrationStatus } from "../src/lib/migrations";
 
 // Load env from monorepo root; fallback to app-local .env if present
 const rootEnvPath = path.resolve(__dirname, "../../../.env");
 const appEnvPath = path.resolve(__dirname, "../../.env");
 dotenv.config({ path: fs.existsSync(rootEnvPath) ? rootEnvPath : appEnvPath });
 
-async function ensureMigrationsTable() {
-  const pool = getPool();
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS migrations (
-      id SERIAL PRIMARY KEY,
-      name TEXT UNIQUE NOT NULL,
-      applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
-  `);
-}
-
-async function getAppliedMigrations(): Promise<Set<string>> {
-  const pool = getPool();
-  const { rows } = await pool.query<{ name: string }>(
-    "SELECT name FROM migrations ORDER BY id ASC"
-  );
-  return new Set(rows.map((r) => r.name));
-}
-
-async function applyMigration(name: string, sql: string) {
-  const pool = getPool();
-  await pool.query("BEGIN");
-  try {
-    await pool.query(sql);
-    await pool.query("INSERT INTO migrations (name) VALUES ($1)", [name]);
-    await pool.query("COMMIT");
-    console.log(`Applied migration: ${name}`);
-  } catch (err) {
-    await pool.query("ROLLBACK");
-    console.error(`Failed migration: ${name}`);
-    throw err;
-  }
-}
-
 async function main() {
-  const migrationsDir = path.resolve(__dirname, "../../../infra/migrations");
-  const files = fs
-    .readdirSync(migrationsDir)
-    .filter((f) => f.endsWith(".sql"))
-    .sort();
-
-  if (files.length === 0) {
+  const pool = getPool();
+  const before = await getMigrationStatus(pool);
+  if (before.files.length === 0) {
     console.log("No migrations found.");
     return;
   }
 
-  await ensureMigrationsTable();
-  const applied = await getAppliedMigrations();
-
-  for (const file of files) {
-    if (applied.has(file)) {
-      console.log(`Skipping already applied migration: ${file}`);
-      continue;
-    }
-    const fullPath = path.join(migrationsDir, file);
-    const sql = fs.readFileSync(fullPath, "utf8");
-    await applyMigration(file, sql);
+  for (const file of before.pending) {
+    console.log(`Applying migration: ${file}`);
   }
 
-  console.log("Migrations complete.");
+  const after = await applyPendingMigrations(pool);
+  console.log(`Migrations complete. applied=${after.applied.length} pending=${after.pending.length}`);
 }
 
 main()

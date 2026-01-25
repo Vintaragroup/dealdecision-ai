@@ -1082,8 +1082,16 @@ export async function apiGetDealReport(dealId: string): Promise<DealReport | nul
   let error: unknown = undefined;
 
   try {
+    const clerkToken = await getAuthToken();
+    const devAdminToken = getDevAdminToken();
+    const fallbackBearer = !clerkToken && devAdminToken ? `Bearer ${devAdminToken}` : undefined;
+    const bearer = clerkToken ? `Bearer ${clerkToken}` : fallbackBearer;
+
     res = await fetch(`${API_BASE_URL}${path}`, {
       method: 'GET',
+      headers: {
+        ...(bearer ? { Authorization: bearer } : {}),
+      },
     });
     if (res.status === 404) {
       return null;
@@ -1239,6 +1247,7 @@ export function subscribeToEvents(
   let retryDelay = 1000;
   let authBlockedUntil = 0;
   const AUTH_ERR_PREFIX = '__SSE_AUTH__';
+  let sseAuthMode: 'header' | 'query' = 'header';
 
   let controller: AbortController | null = null;
 
@@ -1335,6 +1344,10 @@ export function subscribeToEvents(
     }
 
     const params = new URLSearchParams({ deal_id: dealId });
+    // Browser/proxy-safe auth fallback: if header-based SSE fails, retry with a query token.
+    if (sseAuthMode === 'query' && clerkToken) {
+      params.set('token', clerkToken);
+    }
     if (lastEventIdRef.current) {
       const raw = lastEventIdRef.current;
       // Backend expects ISO datetime with offset. If we somehow have a JS Date string, normalize it.
@@ -1373,6 +1386,11 @@ export function subscribeToEvents(
             return;
           }
           if (resp.status === 401 || resp.status === 403) {
+            // If header auth failed but we have a Clerk token, retry once using a query token.
+            if (sseAuthMode === 'header' && clerkToken) {
+              sseAuthMode = 'query';
+              throw new Error(`${AUTH_ERR_PREFIX}:retry_query:${resp.status}`);
+            }
             // Auth failures should not be retried aggressively.
             authBlockedUntil = Date.now() + 30_000;
             throw new Error(`${AUTH_ERR_PREFIX}:${resp.status}`);

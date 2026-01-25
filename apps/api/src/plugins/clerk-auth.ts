@@ -46,6 +46,23 @@ function getBearerToken(request: FastifyRequest): string | null {
   return token.length > 0 ? token : null;
 }
 
+function getQueryTokenForEvents(request: FastifyRequest): string | null {
+  // Only allow query-token auth on SSE endpoint (browser-safe for native EventSource).
+  if (!request.url.startsWith('/api/v1/events')) return null;
+  const q: any = request.query as any;
+  const raw = q?.token;
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  // Allow either raw JWT or "Bearer <jwt>".
+  if (trimmed.toLowerCase().startsWith('bearer ')) {
+    const t = trimmed.slice('bearer '.length).trim();
+    return t.length > 0 ? t : null;
+  }
+  return trimmed;
+}
+
 let cachedKeyPromise: Promise<KeyLike> | null = null;
 async function getVerificationKey(): Promise<KeyOrKeyFunction> {
   if (cachedKeyPromise) return cachedKeyPromise;
@@ -125,7 +142,7 @@ async function authenticateRequest(request: FastifyRequest): Promise<ClerkAuthCo
     };
   }
 
-  const token = getBearerToken(request);
+  const token = getBearerToken(request) || getQueryTokenForEvents(request);
   if (!token) {
     throw Object.assign(new Error('Missing Authorization bearer token'), { statusCode: 401 });
   }

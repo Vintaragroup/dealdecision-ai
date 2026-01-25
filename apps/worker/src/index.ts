@@ -849,6 +849,78 @@ async function ingestDocumentProcessor(job: Job) {
 		}
 	}
 
+	// from_storage recovery: if the blob table is empty, attempt to fetch from a URL in extraction_metadata (R2/S3 signed URL)
+	if ((!fileBufferB64 || fileBufferB64.length === 0) && isFromStorage && documentId) {
+		try {
+			const pool = getPool();
+			const { rows } = await pool.query<{ extraction_metadata: unknown | null; mime_type: string | null }>(
+				"SELECT extraction_metadata, mime_type FROM documents WHERE id = $1 LIMIT 1",
+				[sanitizeText(documentId)]
+			);
+			const meta = rows?.[0]?.extraction_metadata ?? null;
+			if (!storedMimeType) storedMimeType = rows?.[0]?.mime_type ?? null;
+
+			if (meta) {
+				const url = pickDownloadUrlFromExtractionMetadata(meta);
+				if (url) {
+					try {
+						const controller = new AbortController();
+						const timer = setTimeout(() => controller.abort(), 30000);
+						const res = await fetch(url, { signal: controller.signal });
+						clearTimeout(timer);
+						if (res.ok) {
+							const ab = await res.arrayBuffer();
+							const bytes = Buffer.from(ab);
+							if (bytes.length > 0) {
+								const sha256 = createHash("sha256").update(bytes).digest("hex");
+								const inferredName =
+									(typeof meta === "object" && meta !== null && typeof (meta as any)?.upload?.file_name === "string"
+										? String((meta as any).upload.file_name)
+										: null) ||
+									inferFileNameForStorageFallback(documentId, storedMimeType);
+								try {
+									await upsertDocumentOriginalFile({
+										documentId,
+										sha256,
+										bytes,
+										sizeBytes: bytes.length,
+										fileName: inferredName,
+										mimeType: storedMimeType,
+									});
+								} catch {
+									// ignore persistence failures
+								}
+								fileBufferB64 = bytes.toString("base64");
+								if (!fileName) fileName = inferredName;
+								console.log(
+									`[ingest_document] fetched original bytes from url size=${bytes.length} doc=${documentId}`
+								);
+								await emitJobProgress(job, {
+									job_id: job.id ? String(job.id) : "",
+									deal_id: dealId ?? undefined,
+									document_id: documentId ?? undefined,
+									stage: "fetch_original_bytes",
+									percent: 8,
+									message: "Fetched original bytes from download URL",
+								});
+							}
+						}
+					} catch (err) {
+						console.warn(
+							`[ingest_document] failed to fetch original bytes from url doc=${documentId}: ${
+								err instanceof Error ? err.message : String(err)
+							}`
+						);
+					}
+				}
+			}
+		} catch (err) {
+			console.warn(
+				`[ingest_document] from_storage url recovery failed doc=${documentId}: ${err instanceof Error ? err.message : String(err)}`
+			);
+		}
+	}
+
 	// If from_storage was requested but we still don't have bytes, fail clearly.
 	if (isFromStorage && (!fileBufferB64 || fileBufferB64.length === 0)) {
 		console.error(`[ingest_document] from_storage missing blob bytes doc=${documentId ?? ""} deal=${dealId ?? ""}`);

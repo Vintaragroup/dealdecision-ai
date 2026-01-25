@@ -293,6 +293,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@aws-sdk/client-s3':
+        specifier: ^3.975.0
+        version: 3.975.0
       '@dealdecision/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts

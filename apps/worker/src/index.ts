@@ -59,6 +59,45 @@ import { processDocument } from "./lib/processors";
 import { verifyDocumentExtraction } from "./lib/verification";
 import { remediateStructuredData } from "./lib/remediation";
 import { persistPdfV2TextRegionAssetsV1Shadow } from "./lib/pdf_v2/pdf-text-region-assets-v1";
+import os from "os";
+import { loadOriginalBytesFromDocumentStorage } from "./lib/ingest/from-storage";
+
+let didWarnUploadDirFallback = false;
+
+async function resolveWritableUploadDir(env: NodeJS.ProcessEnv, logger: Pick<Console, "log" | "warn"> = console): Promise<string> {
+	const configured = env.UPLOAD_DIR ? path.resolve(env.UPLOAD_DIR) : path.resolve(process.cwd(), "uploads");
+	const fallback = path.resolve(os.tmpdir(), "dealdecisionai", "uploads");
+
+	const tryDir = async (dir: string): Promise<boolean> => {
+		try {
+			await fs.mkdir(dir, { recursive: true });
+			const probe = path.join(dir, `.write_test_${process.pid}_${Date.now()}`);
+			await fs.writeFile(probe, "ok");
+			await fs.unlink(probe);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+
+	if (await tryDir(configured)) return configured;
+	if (await tryDir(fallback)) {
+		if (!didWarnUploadDirFallback) {
+			didWarnUploadDirFallback = true;
+			logger.warn(
+				JSON.stringify({
+					event: "WORKER_UPLOAD_DIR_FALLBACK",
+					configured_upload_dir: env.UPLOAD_DIR ?? null,
+					using_upload_dir: fallback,
+				})
+			);
+		}
+		return fallback;
+	}
+
+	// Last resort: use configured even if not writable; downstream will handle failures.
+	return configured;
+}
 
 function pickDownloadUrlFromExtractionMetadata(meta: unknown): string | null {
 	if (!meta || typeof meta !== "object") return null;
@@ -800,6 +839,9 @@ async function ingestDocumentProcessor(job: Job) {
 	let fileName = parsed.fileName;
 	const attempt = parsed.attempt;
 	let storedMimeType: string | null = null;
+	let ingestSource: "r2" | "blob" | "signed_url" | "local" = "local";
+	let r2StorageBucket: string | null = null;
+	let r2StorageKey: string | null = null;
 
 	console.log(
 		`[ingest_document] start job=${job.id} doc=${documentId ?? ""} deal=${dealId ?? ""} attempt=${attempt} payloadSize=${fileBufferB64?.length ?? 0} mode=${mode ?? "upload"}`
@@ -824,6 +866,7 @@ async function ingestDocumentProcessor(job: Job) {
 			const original = await getDocumentOriginalFile(documentId);
 			storedMimeType = original?.mime_type ?? null;
 			if (original?.bytes?.length) {
+				ingestSource = "blob";
 				fileBufferB64 = original.bytes.toString("base64");
 				if (!fileName) {
 					fileName = original.file_name ?? inferFileNameForStorageFallback(documentId, storedMimeType);
@@ -872,6 +915,7 @@ async function ingestDocumentProcessor(job: Job) {
 							const ab = await res.arrayBuffer();
 							const bytes = Buffer.from(ab);
 							if (bytes.length > 0) {
+								ingestSource = "signed_url";
 								const sha256 = createHash("sha256").update(bytes).digest("hex");
 								const inferredName =
 									(typeof meta === "object" && meta !== null && typeof (meta as any)?.upload?.file_name === "string"
@@ -917,6 +961,52 @@ async function ingestDocumentProcessor(job: Job) {
 		} catch (err) {
 			console.warn(
 				`[ingest_document] from_storage url recovery failed doc=${documentId}: ${err instanceof Error ? err.message : String(err)}`
+			);
+		}
+	}
+
+	// from_storage recovery: if we still don't have bytes, attempt to download directly from R2 using documents.storage_bucket/storage_key.
+	if ((!fileBufferB64 || fileBufferB64.length === 0) && isFromStorage && documentId) {
+		try {
+			const pool = getPool();
+			const r2 = await loadOriginalBytesFromDocumentStorage({ pool, documentId, env: process.env, logger: console });
+			if (r2?.bytes?.length) {
+				const bytes = r2.bytes;
+				ingestSource = "r2";
+				r2StorageBucket = r2.bucket || null;
+				r2StorageKey = r2.key || null;
+				storedMimeType = storedMimeType ?? r2.mime_type ?? null;
+				const sha256 = createHash("sha256").update(bytes).digest("hex");
+				const inferredName = inferFileNameForStorageFallback(documentId, storedMimeType);
+				try {
+					await upsertDocumentOriginalFile({
+						documentId,
+						sha256,
+						bytes,
+						sizeBytes: bytes.length,
+						fileName: fileName ?? inferredName,
+						mimeType: storedMimeType,
+					});
+				} catch {
+					// ignore persistence failures
+				}
+				fileBufferB64 = bytes.toString("base64");
+				if (!fileName) fileName = inferredName;
+				console.log(`[ingest_document] fetched original bytes from r2 size=${bytes.length} doc=${documentId}`);
+				await emitJobProgress(job, {
+					job_id: job.id ? String(job.id) : "",
+					deal_id: dealId ?? undefined,
+					document_id: documentId ?? undefined,
+					stage: "fetch_original_bytes",
+					percent: 9,
+					message: "Fetched original bytes from R2",
+				});
+			}
+		} catch (err) {
+			console.warn(
+				`[ingest_document] from_storage r2 recovery failed doc=${documentId}: ${
+					err instanceof Error ? err.message : String(err)
+				}`
 			);
 		}
 	}
@@ -1280,13 +1370,15 @@ async function ingestDocumentProcessor(job: Job) {
 
 		const fullText = extractFullText(analysis.content, analysis.contentType);
 		const pageCount = getPageCount(analysis.content, analysis.contentType);
+		let finalPageCountForLog: number | null = typeof pageCount === "number" && Number.isFinite(pageCount) ? pageCount : null;
+		let renderedPagesDirForLog: string | null = null;
 		const fullTextAbsentReason = fullText && fullText.trim().length > 0
 			? null
 			: analysis.contentType === "excel"
 				? "excel_has_no_full_text"
 				: "no_text_extracted";
 
-		const uploadDir = process.env.UPLOAD_DIR ? path.resolve(process.env.UPLOAD_DIR) : path.resolve(process.cwd(), "uploads");
+		const uploadDir = await resolveWritableUploadDir(process.env);
 		
 		// Determine content threshold based on document type
 		// Word docs (cut sheets, whitepapers) can be valid with minimal content
@@ -1394,6 +1486,7 @@ async function ingestDocumentProcessor(job: Job) {
 							);
 
 							if (res.rendered_pages_dir) {
+								renderedPagesDirForLog = res.rendered_pages_dir;
 								await mergeDocumentExtractionMetadata({
 									documentId: docId,
 									patch: {
@@ -1406,6 +1499,7 @@ async function ingestDocumentProcessor(job: Job) {
 								});
 								if (res.page_count_detected && res.page_count_detected > 0) {
 									await updateDocumentAnalysis({ documentId: docId, pageCount: res.page_count_detected });
+									finalPageCountForLog = res.page_count_detected;
 								}
 							}
 
@@ -1438,6 +1532,7 @@ async function ingestDocumentProcessor(job: Job) {
 						const storedPageCount = typeof rows?.[0]?.page_count === "number" ? rows[0].page_count : null;
 						const extractedPages = getPageCount(analysis.content, analysis.contentType) || 0;
 						const finalPageCount = Math.max(storedPageCount ?? 0, extractedPages);
+						finalPageCountForLog = finalPageCount > 0 ? finalPageCount : finalPageCountForLog;
 						if (finalPageCount > 0 && finalPageCount !== storedPageCount) {
 							await updateDocumentAnalysis({ documentId: docId, pageCount: finalPageCount });
 						}
@@ -1454,6 +1549,22 @@ async function ingestDocumentProcessor(job: Job) {
 							}`
 						);
 					}
+				}
+
+				// Structured one-line log for Render debugging: confirms page_count + rendered_pages_dir.
+				if (analysis.contentType === "pdf") {
+					console.log(
+						JSON.stringify({
+							event: "ingest_render_pages_done",
+							deal_id: dealIdSafe,
+							document_id: docId,
+							page_count: finalPageCountForLog,
+							rendered_pages_dir: renderedPagesDirForLog,
+							source: ingestSource,
+							storage_bucket: ingestSource === "r2" ? r2StorageBucket : null,
+							storage_key: ingestSource === "r2" ? r2StorageKey : null,
+						})
+					)
 				}
 
 			// Queue verification job for this document

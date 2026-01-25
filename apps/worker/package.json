@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.975.0",
+    "@aws-sdk/s3-request-presigner": "^3.975.0",
     "@dealdecision/contracts": "workspace:*",
     "@dealdecision/core": "workspace:*",
     "@napi-rs/canvas": "^0.1.84",

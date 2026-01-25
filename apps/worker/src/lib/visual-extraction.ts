@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs/promises";
 import { createHash } from "crypto";
 import { defaultVisualExtractionEnabled } from "./pipeline-policy";
+import { getR2ObjectUrl } from "./r2";
 
 export type VisionExtractorConfig = {
 	enabled: boolean;
@@ -420,6 +421,38 @@ export async function resolvePageImageUris(
 				})
 			);
 			return urls;
+		}
+
+		// Preferred Render-safe location: R2-backed rendered pages.
+		const renderedR2 = metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === "object"
+			? (metaObj.rendered_pages_r2 as any)
+			: null;
+		if (renderedR2) {
+			const bucket = typeof renderedR2.bucket === "string" ? renderedR2.bucket.trim() : null;
+			const prefix = typeof renderedR2.prefix === "string" ? renderedR2.prefix.trim().replace(/\/$/, "") : "";
+			if (prefix && pageCount && pageCount > 0) {
+				const urls: string[] = [];
+				for (let i = 0; i < pageCount; i += 1) {
+					const key = `${prefix}/page_${String(i).padStart(4, "0")}.png`;
+					try {
+						const url = await getR2ObjectUrl({ bucket, key, env: options?.env });
+						urls.push(url);
+					} catch {
+						// best-effort: skip this page
+					}
+				}
+				if (urls.length > 0) {
+					logger.log(
+						JSON.stringify({
+							event: "PAGE_IMAGE_URIS_FROM_RENDERED_PAGES_R2",
+							document_id: documentId,
+							count: urls.length,
+							page_count: pageCount,
+						})
+					);
+					return urls;
+				}
+			}
 		}
 
 		const dirs = candidateArtifactDirs({ documentId, meta: row?.extraction_metadata, env: options?.env });

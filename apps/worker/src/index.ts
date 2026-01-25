@@ -61,6 +61,7 @@ import { remediateStructuredData } from "./lib/remediation";
 import { persistPdfV2TextRegionAssetsV1Shadow } from "./lib/pdf_v2/pdf-text-region-assets-v1";
 import os from "os";
 import { loadOriginalBytesFromDocumentStorage } from "./lib/ingest/from-storage";
+import { uploadToR2 } from "./lib/r2";
 
 let didWarnUploadDirFallback = false;
 
@@ -143,6 +144,23 @@ function resolveLocalImagePath(imageUri: string, env: NodeJS.ProcessEnv = proces
 }
 
 async function tryReadImageB64ForVision(imageUri: string, env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+	const trimmed = String(imageUri || "").trim();
+	if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+		try {
+			const controller = new AbortController();
+			const timer = setTimeout(() => controller.abort(), 15000);
+			const res = await fetch(trimmed, { signal: controller.signal });
+			clearTimeout(timer);
+			if (!res.ok) return null;
+			const ab = await res.arrayBuffer();
+			const bytes = Buffer.from(ab);
+			if (!bytes || bytes.length === 0) return null;
+			return bytes.toString("base64");
+		} catch {
+			return null;
+		}
+	}
+
 	const localPath = resolveLocalImagePath(imageUri, env);
 	if (!localPath) return null;
 	try {
@@ -1372,6 +1390,7 @@ async function ingestDocumentProcessor(job: Job) {
 		const pageCount = getPageCount(analysis.content, analysis.contentType);
 		let finalPageCountForLog: number | null = typeof pageCount === "number" && Number.isFinite(pageCount) ? pageCount : null;
 		let renderedPagesDirForLog: string | null = null;
+		let renderedPagesR2ForLog: { bucket: string; prefix: string } | null = null;
 		const fullTextAbsentReason = fullText && fullText.trim().length > 0
 			? null
 			: analysis.contentType === "excel"
@@ -1501,6 +1520,63 @@ async function ingestDocumentProcessor(job: Job) {
 									await updateDocumentAnalysis({ documentId: docId, pageCount: res.page_count_detected });
 									finalPageCountForLog = res.page_count_detected;
 								}
+
+								// Persist rendered pages to R2 so the API + worker (separate services on Render) can access them.
+								try {
+									const r2Bucket = (process.env.R2_BUCKET || "").trim();
+									const prefix = `deals/${dealIdSafe}/documents/${docId}/pages`;
+									if (r2Bucket && res.rendered_pages_dir) {
+										let names: string[] = [];
+										try {
+											names = await fs.readdir(res.rendered_pages_dir);
+										} catch {
+											names = [];
+										}
+
+										const pageFiles = names
+											.map((n) => {
+												const m = n.match(/^page_(\d{3})\.png$/);
+												if (!m) return null;
+												const pageIndex = Number.parseInt(m[1], 10);
+												if (!Number.isFinite(pageIndex)) return null;
+												return { name: n, pageIndex };
+											})
+											.filter(Boolean) as Array<{ name: string; pageIndex: number }>;
+
+										pageFiles.sort((a, b) => a.pageIndex - b.pageIndex);
+										for (const f of pageFiles) {
+											const localPath = path.join(res.rendered_pages_dir, f.name);
+											const bytes = await fs.readFile(localPath);
+											if (!bytes || bytes.length === 0) continue;
+											const key = `${prefix}/page_${String(f.pageIndex).padStart(4, "0")}.png`;
+											await uploadToR2({
+												bucket: r2Bucket,
+												key,
+												body: bytes,
+												contentType: "image/png",
+												env: process.env,
+											});
+										}
+
+										renderedPagesR2ForLog = { bucket: r2Bucket, prefix };
+										await mergeDocumentExtractionMetadata({
+											documentId: docId,
+											patch: {
+												rendered_pages_r2: {
+													bucket: r2Bucket,
+													prefix,
+													format: "page_%04d.png",
+											},
+										},
+									});
+									}
+								} catch (err) {
+									console.warn(
+										`[ingest_document] rendered page R2 upload failed doc=${docId}: ${
+											err instanceof Error ? err.message : String(err)
+										}`
+									);
+								}
 							}
 
 							await emitJobProgress(job, {
@@ -1551,16 +1627,17 @@ async function ingestDocumentProcessor(job: Job) {
 					}
 				}
 
-				// Structured one-line log for Render debugging: confirms page_count + rendered_pages_dir.
+				// Structured one-line log for Render debugging: confirms page_count + rendered pages location.
 				if (analysis.contentType === "pdf") {
 					console.log(
 						JSON.stringify({
-							event: "ingest_render_pages_done",
+							event: "pdf_ingest_done",
 							deal_id: dealIdSafe,
 							document_id: docId,
 							page_count: finalPageCountForLog,
 							rendered_pages_dir: renderedPagesDirForLog,
 							source: ingestSource,
+							rendered_pages_r2: renderedPagesR2ForLog,
 							storage_bucket: ingestSource === "r2" ? r2StorageBucket : null,
 							storage_key: ingestSource === "r2" ? r2StorageKey : null,
 						})
@@ -2694,6 +2771,10 @@ registerWorker("extract_visuals", async (job: Job) => {
 		for (let i = pageStart; i < pageEndExclusive; i += 1) {
 			const image_uri = uris[i];
 			const image_b64 = await tryReadImageB64ForVision(image_uri, process.env);
+			const safe_image_uri =
+				image_b64 && (image_uri.startsWith("http://") || image_uri.startsWith("https://"))
+					? undefined
+					: image_uri;
 
 			// If we've already extracted this page for this extractor version, don't re-run.
 			// This prevents repeated OCR/vision-understanding passes on the same slide across extractions.
@@ -2734,7 +2815,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 			let response = await callVisionWorker(config, {
 				document_id: docId,
 				page_index: i,
-				image_uri,
+				image_uri: safe_image_uri,
 				image_b64: image_b64 ?? undefined,
 				extractor_version: extractorVersion,
 			});
@@ -3191,10 +3272,14 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 			}
 
 			const image_b64 = await tryReadImageB64ForVision(image_uri, process.env);
+			const safe_image_uri =
+				image_b64 && (image_uri.startsWith("http://") || image_uri.startsWith("https://"))
+					? undefined
+					: image_uri;
 			let response = await callVisionWorker(config, {
 				document_id: docId,
 				page_index: pageIndex,
-				image_uri,
+				image_uri: safe_image_uri,
 				image_b64: image_b64 ?? undefined,
 				extractor_version: forceExtractorVersion,
 			});

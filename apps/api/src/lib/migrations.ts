@@ -18,6 +18,8 @@ function resolveMigrationsDir(): string {
   }
 
   const candidates = [
+    // Render (recommended): the repo is mounted at /app
+    "/app/infra/migrations",
     path.resolve(process.cwd(), "infra/migrations"),
     // dist/src/lib -> ../../../.. -> repo root
     path.resolve(__dirname, "../../../../infra/migrations"),

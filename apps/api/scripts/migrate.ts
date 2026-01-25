@@ -1,4 +1,6 @@
 import dotenv from "dotenv";
+import path from "path";
+import fs from "fs";
 import { getPool, closePool } from "../src/lib/db";
 import { applyPendingMigrations, getMigrationStatus } from "../src/lib/migrations";
 

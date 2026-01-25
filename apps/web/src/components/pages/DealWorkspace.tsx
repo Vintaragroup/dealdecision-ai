@@ -1698,6 +1698,33 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return null;
   };
 
+  const formatJobTitle = (job: DealJobRowV2): string => {
+    const raw = job.queue || job.type || 'job';
+    return String(raw).replace(/_/g, ' ');
+  };
+
+  const formatJobStage = (job: DealJobRowV2): string => {
+    if (!job.stage) return '—';
+    return stageLabelMap[job.stage] ?? String(job.stage).replace(/_/g, ' ');
+  };
+
+  const formatJobTimestamp = (job: DealJobRowV2): string | null => {
+    const ts = job.updated_at ?? job.created_at;
+    const t = ts ? Date.parse(ts) : NaN;
+    if (!Number.isFinite(t)) return null;
+    const now = Date.now();
+    const deltaSec = Math.floor((now - t) / 1000);
+    if (deltaSec < 0) return new Date(t).toLocaleTimeString();
+    if (deltaSec < 60) return `${deltaSec}s ago`;
+    if (deltaSec < 60 * 60) return `${Math.floor(deltaSec / 60)}m ago`;
+    return new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const isRunningStatus = (status: string | null | undefined): boolean => {
+    const s = String(status ?? '').toLowerCase();
+    return s === 'running' || s === 'retrying';
+  };
+
   const childrenByParentJobId = (() => {
     const map = new Map<string, DealJobRowV2[]>();
     for (const j of dealJobs ?? []) {
@@ -1720,7 +1747,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       const bT = Date.parse(b.updated_at ?? b.created_at ?? '') || 0;
       return bT - aT;
     });
-    return parents.slice(0, 8);
+    return parents.slice(0, 5);
   })();
 
   const stageSequences: Record<string, string[]> = {
@@ -3095,132 +3122,130 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 )}
               </div>
 
-              <div className={`mt-4 p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                <div className="flex items-center justify-between mb-2">
-                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Recent jobs</div>
-                  <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                    {(dealJobs?.length ?? 0) > 0 ? `${dealJobs.length} total` : '—'}
-                  </div>
-                </div>
-
+              <div className={`mt-4 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
                 {dealJobsError ? (
-                  <div className={`text-xs ${darkMode ? 'text-red-300' : 'text-red-700'}`}>{dealJobsError}</div>
-                ) : recentParentJobs.length === 0 ? (
-                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No jobs yet.</div>
+                  <div className={`p-3 text-xs ${darkMode ? 'text-red-300' : 'text-red-700'}`}>{dealJobsError}</div>
                 ) : (
-                  <div className="space-y-2">
-                    {recentParentJobs.map((row) => {
-                      const children = childrenByParentJobId.get(row.job_id) ?? [];
-                      const hasChildren = children.length > 0;
+                  <Accordion
+                    darkMode={darkMode}
+                    defaultOpenItems={[]}
+                    className="px-3"
+                    items={[
+                      {
+                        id: 'recent_jobs',
+                        title: 'Recent jobs',
+                        badge: (() => {
+                          const totalParents = (dealJobs ?? []).filter((j) => !j?.parent_job_id).length;
+                          const shown = recentParentJobs.length;
+                          const running = recentParentJobs.filter((j) => isRunningStatus(j.status)).length;
+                          const failed = recentParentJobs.filter((j) => String(j.status ?? '').toLowerCase() === 'failed').length;
+                          const done = recentParentJobs.filter((j) => String(j.status ?? '').toLowerCase() === 'succeeded').length;
+                          const base = totalParents > 0 ? `${shown}/${totalParents}` : String(shown);
+                          if (shown === 0) return base;
+                          return `${base}${running ? ` • ${running}R` : ''}${failed ? ` • ${failed}F` : ''}${done ? ` • ${done}D` : ''}`;
+                        })(),
+                        content: recentParentJobs.length === 0 ? (
+                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No jobs yet.</div>
+                        ) : (
+                          <div className={`divide-y ${darkMode ? 'divide-white/10' : 'divide-gray-200'}`}>
+                            {recentParentJobs.map((row) => {
+                              const children = childrenByParentJobId.get(row.job_id) ?? [];
+                              const hasChildren = children.length > 0;
 
-                      const agg = (() => {
-                        if (!hasChildren) {
-                          return {
-                            status: row.status,
-                            current: row.progress_current,
-                            total: row.progress_total,
-                            pct: row.progress_pct,
-                          };
-                        }
-                        const totals = children
-                          .map((c) => ({
-                            current: typeof c.progress_current === 'number' ? c.progress_current : null,
-                            total: typeof c.progress_total === 'number' ? c.progress_total : null,
-                            pct: typeof c.progress_pct === 'number' ? c.progress_pct : null,
-                            status: c.status,
-                          }))
-                          .filter(Boolean);
+                              const agg = (() => {
+                                if (!hasChildren) {
+                                  return {
+                                    status: row.status,
+                                    current: row.progress_current,
+                                    total: row.progress_total,
+                                    pct: row.progress_pct,
+                                  };
+                                }
 
-                        const currentSum = totals.reduce((acc, t) => acc + (typeof t.current === 'number' ? t.current : 0), 0);
-                        const totalSum = totals.reduce((acc, t) => acc + (typeof t.total === 'number' ? t.total : 0), 0);
+                                const totals = children
+                                  .map((c) => ({
+                                    current: typeof c.progress_current === 'number' ? c.progress_current : null,
+                                    total: typeof c.progress_total === 'number' ? c.progress_total : null,
+                                    pct: typeof c.progress_pct === 'number' ? c.progress_pct : null,
+                                    status: c.status,
+                                  }))
+                                  .filter(Boolean);
 
-                        const status = (() => {
-                          const st = totals.map((t) => String(t.status ?? '').toLowerCase());
-                          if (st.some((s) => s === 'failed')) return 'failed';
-                          if (st.every((s) => s === 'succeeded' || s === 'succeeded_with_warnings')) {
-                            return st.some((s) => s === 'succeeded_with_warnings') ? 'succeeded_with_warnings' : 'succeeded';
-                          }
-                          if (st.some((s) => s === 'running' || s === 'retrying')) return 'running';
-                          if (st.some((s) => s === 'queued')) return 'queued';
-                          return row.status;
-                        })();
+                                const currentSum = totals.reduce((acc, t) => acc + (typeof t.current === 'number' ? t.current : 0), 0);
+                                const totalSum = totals.reduce((acc, t) => acc + (typeof t.total === 'number' ? t.total : 0), 0);
 
-                        return {
-                          status,
-                          current: totalSum > 0 ? currentSum : undefined,
-                          total: totalSum > 0 ? totalSum : undefined,
-                          pct: totalSum > 0 ? undefined : row.progress_pct,
-                        };
-                      })();
+                                const status = (() => {
+                                  const st = totals.map((t) => String(t.status ?? '').toLowerCase());
+                                  if (st.some((s) => s === 'failed')) return 'failed';
+                                  if (st.every((s) => s === 'succeeded' || s === 'succeeded_with_warnings')) {
+                                    return st.some((s) => s === 'succeeded_with_warnings') ? 'succeeded_with_warnings' : 'succeeded';
+                                  }
+                                  if (st.some((s) => s === 'running' || s === 'retrying')) return 'running';
+                                  if (st.some((s) => s === 'queued')) return 'queued';
+                                  return row.status;
+                                })();
 
-                      const title = (row.queue || row.type || 'job').replace(/_/g, ' ');
-                      const subtitle = row.stage ? (stageLabelMap[row.stage] ?? row.stage.replace(/_/g, ' ')) : undefined;
-                      const pct = computePct(agg.current, agg.total, agg.pct);
-                      const sev = jobSeverityFromStatus(agg.status);
+                                return {
+                                  status,
+                                  current: totalSum > 0 ? currentSum : undefined,
+                                  total: totalSum > 0 ? totalSum : undefined,
+                                  pct: totalSum > 0 ? undefined : row.progress_pct,
+                                };
+                              })();
 
-                      return (
-                        <div key={row.job_id} className={`rounded-lg border px-3 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}>
-                          <div className="flex items-center justify-between gap-3">
-                            <div className={`text-xs font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{title}</div>
-                            <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass(sev)}`}>
-                              {fullProcessStepLabel(agg.status)}
-                            </span>
-                          </div>
+                              const title = formatJobTitle(row);
+                              const stage = formatJobStage(row);
+                              const pct = computePct(agg.current, agg.total, agg.pct);
+                              const sev = jobSeverityFromStatus(agg.status);
+                              const ts = formatJobTimestamp(row);
+                              const detail = row.error || row.message;
+                              const running = isRunningStatus(agg.status);
 
-                          <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
-                            <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                              {subtitle ? subtitle : '—'}
-                              {hasChildren ? ` • ${children.length} chunk(s)` : ''}
-                            </div>
-                            {typeof agg.current === 'number' && typeof agg.total === 'number' && agg.total > 0 ? (
-                              <div className={`text-[11px] font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                                {agg.current}/{agg.total}
-                              </div>
-                            ) : null}
-                          </div>
-
-                          {pct != null ? (
-                            <div className="mt-2 space-y-1">
-                              <div className={`h-2 rounded-full overflow-hidden ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`}>
-                                <div
-                                  className="h-full bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] transition-all"
-                                  style={{ width: `${pct}%` }}
-                                />
-                              </div>
-                              <div className={`text-[11px] ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{pct}%</div>
-                            </div>
-                          ) : null}
-
-                          {row.message ? (
-                            <div className={`mt-2 text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{row.message}</div>
-                          ) : null}
-
-                          {hasChildren ? (
-                            <div className="mt-2 space-y-1">
-                              {children.slice(0, 6).map((c) => {
-                                const childPct = computePct(c.progress_current, c.progress_total, c.progress_pct);
-                                const childRange =
-                                  typeof c.page_start === 'number' && typeof c.page_end === 'number'
-                                    ? `Pages ${c.page_start + 1}–${c.page_end}`
-                                    : 'Chunk';
-                                return (
-                                  <div key={c.job_id} className="flex items-center justify-between gap-2">
-                                    <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{childRange}</div>
-                                    <div className="flex items-center gap-2">
-                                      <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>{fullProcessStepLabel(c.status)}</div>
-                                      {childPct != null ? (
-                                        <div className={`text-[11px] font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{childPct}%</div>
+                              return (
+                                <div key={row.job_id} className="py-2.5">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div className="min-w-0">
+                                      <div className={`text-xs font-medium truncate ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{title}</div>
+                                      <div className={`text-[11px] truncate ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                        {stage}
+                                        {hasChildren ? ` • ${children.length} chunk(s)` : ''}
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      {ts ? (
+                                        <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>{ts}</div>
+                                      ) : null}
+                                      <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass(sev)}`}>
+                                        {agg.status && String(agg.status).toLowerCase() === 'succeeded' ? 'Done' : agg.status && String(agg.status).toLowerCase() === 'failed' ? 'Failed' : running ? 'Running' : fullProcessStepLabel(agg.status)}
+                                      </span>
+                                      {running && pct != null ? (
+                                        <div className={`text-[11px] font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{pct}%</div>
                                       ) : null}
                                     </div>
                                   </div>
-                                );
-                              })}
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
+
+                                  {running && pct != null ? (
+                                    <div className="mt-2">
+                                      <div className={`h-2 rounded-full overflow-hidden ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`}>
+                                        <div
+                                          className="h-full bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] transition-all"
+                                          style={{ width: `${pct}%` }}
+                                        />
+                                      </div>
+                                    </div>
+                                  ) : null}
+
+                                  {detail ? (
+                                    <div className={`mt-1 text-[11px] truncate ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{detail}</div>
+                                  ) : null}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ),
+                      },
+                    ]}
+                  />
                 )}
               </div>
 

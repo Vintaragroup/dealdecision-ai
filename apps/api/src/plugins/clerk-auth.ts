@@ -12,6 +12,14 @@ async function getJose() {
   return cachedJosePromise;
 }
 
+function getAuthClockToleranceSeconds(): number {
+  const raw = process.env.AUTH_CLOCK_TOLERANCE_SECONDS;
+  const n = raw == null ? 60 : Number(raw);
+  if (!Number.isFinite(n)) return 60;
+  // Guardrails: allow 0..300s
+  return Math.max(0, Math.min(300, Math.floor(n)));
+}
+
 function shouldBypassAuth(): boolean {
   const raw = process.env.DISABLE_CLERK_AUTH;
   if (!raw) return false;
@@ -109,6 +117,11 @@ async function getVerificationKey(): Promise<KeyOrKeyFunction> {
   return cachedKeyPromise;
 }
 
+export function __resetAuthCachesForTest() {
+  cachedKeyPromise = null;
+  cachedJosePromise = null;
+}
+
 function readNonEmptyString(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const v = value.trim();
@@ -152,10 +165,52 @@ async function authenticateRequest(request: FastifyRequest): Promise<ClerkAuthCo
   const audience = process.env.CLERK_JWT_AUDIENCE;
 
   const jose = await getJose();
-  const { payload } = await jose.jwtVerify(token, key, {
-    ...(typeof issuer === 'string' && issuer.trim().length > 0 ? { issuer: issuer.trim() } : {}),
-    ...(typeof audience === 'string' && audience.trim().length > 0 ? { audience: audience.trim() } : {}),
-  });
+
+  let payload: any;
+  try {
+    const res = await jose.jwtVerify(token, key, {
+      ...(typeof issuer === 'string' && issuer.trim().length > 0 ? { issuer: issuer.trim() } : {}),
+      ...(typeof audience === 'string' && audience.trim().length > 0 ? { audience: audience.trim() } : {}),
+      clockTolerance: getAuthClockToleranceSeconds(),
+    });
+    payload = res.payload;
+  } catch (err) {
+    // Structured debug log: do NOT log token.
+    const nowEpoch = Math.floor(Date.now() / 1000);
+    let exp: number | null = null;
+    let iat: number | null = null;
+    let nbf: number | null = null;
+    try {
+      const decoded = jose.decodeJwt(token) as any;
+      exp = typeof decoded?.exp === 'number' ? decoded.exp : null;
+      iat = typeof decoded?.iat === 'number' ? decoded.iat : null;
+      nbf = typeof decoded?.nbf === 'number' ? decoded.nbf : null;
+    } catch {
+      // ignore decode errors
+    }
+
+    const expMinusNow = typeof exp === 'number' ? exp - nowEpoch : null;
+    const requestDateHeader = typeof request.headers.date === 'string' ? request.headers.date : null;
+    const serverDateHttp = new Date().toUTCString();
+
+    request.log.warn(
+      {
+        event: 'auth_verify_failed',
+        reason: err instanceof Error ? err.message : String(err),
+        now_epoch: nowEpoch,
+        exp,
+        iat,
+        nbf,
+        exp_minus_now: expMinusNow,
+        request_date_header: requestDateHeader,
+        server_date_http: serverDateHttp,
+        clock_tolerance_seconds: getAuthClockToleranceSeconds(),
+      },
+      'JWT verify failed'
+    );
+
+    throw err;
+  }
 
   const userId = typeof payload.sub === 'string' ? payload.sub : null;
   if (!userId) {
@@ -193,6 +248,24 @@ async function authenticateRequest(request: FastifyRequest): Promise<ClerkAuthCo
     sessionId,
     claims: payload as any,
   };
+}
+
+// Exported for unit tests to verify leeway behavior with a controlled clock.
+export async function verifyClerkJwtForTest(input: {
+  token: string;
+  key: any;
+  issuer?: string;
+  audience?: string;
+  currentDate?: Date;
+}): Promise<Record<string, unknown>> {
+  const jose = await getJose();
+  const res = await jose.jwtVerify(input.token, input.key, {
+    ...(typeof input.issuer === 'string' && input.issuer.trim().length > 0 ? { issuer: input.issuer.trim() } : {}),
+    ...(typeof input.audience === 'string' && input.audience.trim().length > 0 ? { audience: input.audience.trim() } : {}),
+    clockTolerance: getAuthClockToleranceSeconds(),
+    ...(input.currentDate ? { currentDate: input.currentDate } : {}),
+  });
+  return res.payload as any;
 }
 
 function isProtectedPath(url: string): boolean {

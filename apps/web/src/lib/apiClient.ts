@@ -277,17 +277,20 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   let responseJson: unknown = undefined;
   let error: unknown = undefined;
 
-  try {
-    if (isDev && isMutation) {
-      console.debug('[api]', method, `${API_BASE_URL}${path}`);
-    }
+  const looksLikeJwtExpFailure = (text: string): boolean => {
+    const t = (text ?? '').toLowerCase();
+    return (
+      t.includes('exp') && t.includes('timestamp') && t.includes('failed')
+    ) || t.includes('"exp" claim timestamp check failed') || t.includes('jwt expired');
+  };
 
-    const clerkToken = await getAuthToken();
+  const doFetch = async (forceRefreshToken: boolean): Promise<Response> => {
+    const clerkToken = await getAuthToken({ forceRefresh: forceRefreshToken, refreshWithinSeconds: 30 });
     const devAdminToken = getDevAdminToken();
     const fallbackBearer = !clerkToken && devAdminToken ? `Bearer ${devAdminToken}` : undefined;
     const bearer = clerkToken ? `Bearer ${clerkToken}` : fallbackBearer;
 
-    res = await fetch(`${API_BASE_URL}${path}`, {
+    return await fetch(`${API_BASE_URL}${path}`, {
       ...options,
       headers: {
         ...(isFormData ? {} : hasBody ? { 'Content-Type': 'application/json' } : {}),
@@ -295,6 +298,14 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
         ...(options?.headers || {})
       }
     });
+  };
+
+  try {
+    if (isDev && isMutation) {
+      console.debug('[api]', method, `${API_BASE_URL}${path}`);
+    }
+
+    res = await doFetch(false);
 
     if (!res.ok) {
       const contentType = res.headers.get('content-type') || '';
@@ -316,6 +327,16 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
       if (isDev) {
         console.error('[api]', method, `${API_BASE_URL}${path}`, res.status, bodyText);
+      }
+
+      // Retry once on likely-expired JWT by forcing token refresh.
+      if (res.status === 401 && looksLikeJwtExpFailure(bodyText)) {
+        const refreshed = await doFetch(true);
+        if (refreshed.ok) {
+          res = refreshed;
+          responseJson = await res.json();
+          return responseJson as T;
+        }
       }
 
       const message = bodyText?.trim() || `Request failed with ${res.status}`;
@@ -1081,23 +1102,45 @@ export async function apiGetDealReport(dealId: string): Promise<DealReport | nul
   let responseJson: unknown = undefined;
   let error: unknown = undefined;
 
-  try {
-    const clerkToken = await getAuthToken();
+  const doFetch = async (forceRefreshToken: boolean): Promise<Response> => {
+    const clerkToken = await getAuthToken({ forceRefresh: forceRefreshToken, refreshWithinSeconds: 30 });
     const devAdminToken = getDevAdminToken();
     const fallbackBearer = !clerkToken && devAdminToken ? `Bearer ${devAdminToken}` : undefined;
     const bearer = clerkToken ? `Bearer ${clerkToken}` : fallbackBearer;
 
-    res = await fetch(`${API_BASE_URL}${path}`, {
+    return await fetch(`${API_BASE_URL}${path}`, {
       method: 'GET',
       headers: {
         ...(bearer ? { Authorization: bearer } : {}),
       },
     });
+  };
+
+  const looksLikeJwtExpFailure = (text: string): boolean => {
+    const t = (text ?? '').toLowerCase();
+    return (
+      t.includes('exp') && t.includes('timestamp') && t.includes('failed')
+    ) || t.includes('"exp" claim timestamp check failed') || t.includes('jwt expired');
+  };
+
+  try {
+    res = await doFetch(false);
     if (res.status === 404) {
       return null;
     }
     if (!res.ok) {
       const text = await res.text();
+
+      if (res.status === 401 && looksLikeJwtExpFailure(text || '')) {
+        const refreshed = await doFetch(true);
+        if (refreshed.status === 404) return null;
+        if (refreshed.ok) {
+          res = refreshed;
+          responseJson = await res.json();
+          return responseJson as DealReport;
+        }
+      }
+
       throw new Error(text || `Request failed with ${res.status}`);
     }
     responseJson = await res.json();
@@ -1246,6 +1289,8 @@ export function subscribeToEvents(
   let stopped = false;
   let retryDelay = 1000;
   let authBlockedUntil = 0;
+  let forceRefreshNextConnect = false;
+  let authRefreshRetryUsed = false;
   const AUTH_ERR_PREFIX = '__SSE_AUTH__';
   let sseAuthMode: 'header' | 'query' = 'header';
 
@@ -1327,7 +1372,8 @@ export function subscribeToEvents(
     // New controller per connection attempt.
     controller = new AbortController();
 
-    const clerkToken = await getAuthToken();
+    const clerkToken = await getAuthToken({ forceRefresh: forceRefreshNextConnect, refreshWithinSeconds: 30 });
+    forceRefreshNextConnect = false;
     const devAdminToken = getDevAdminToken();
     const fallbackBearer = !clerkToken && devAdminToken ? `Bearer ${devAdminToken}` : undefined;
     const bearer = clerkToken ? `Bearer ${clerkToken}` : fallbackBearer;
@@ -1383,9 +1429,16 @@ export function subscribeToEvents(
         onopen: async (resp) => {
           if (resp.ok) {
             retryDelay = 1000;
+            authRefreshRetryUsed = false;
             return;
           }
           if (resp.status === 401 || resp.status === 403) {
+                        // First: force-refresh token once and retry.
+            if (!authRefreshRetryUsed && clerkToken) {
+              authRefreshRetryUsed = true;
+                          forceRefreshNextConnect = true;
+                          throw new Error(`${AUTH_ERR_PREFIX}:retry_refresh:${resp.status}`);
+                        }
             // If header auth failed but we have a Clerk token, retry once using a query token.
             if (sseAuthMode === 'header' && clerkToken) {
               sseAuthMode = 'query';

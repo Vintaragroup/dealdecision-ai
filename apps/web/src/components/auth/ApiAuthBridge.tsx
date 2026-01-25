@@ -13,7 +13,10 @@ export function ApiAuthBridge() {
     }
 
     setAuthTokenProvider(async () => {
-      const token = await getToken();
+      const template = (import.meta as any)?.env?.VITE_CLERK_JWT_TEMPLATE;
+      const token = typeof template === 'string' && template.trim().length > 0
+        ? await getToken({ template: template.trim() } as any)
+        : await getToken();
       return typeof token === 'string' && token.trim().length > 0 ? token : null;
     });
 

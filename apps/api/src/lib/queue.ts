@@ -45,7 +45,10 @@ export const connection = new IORedis(redisUrl, {
 });
 
 export const ingestQueue = new Queue("ingest_documents", { connection });
-export const extractVisualsQueue = new Queue("extract_visuals", { connection });
+export const extractVisualsQueue = new Queue("extract_visuals", {
+  connection,
+  defaultJobOptions: { attempts: 5, backoff: { type: "exponential", delay: 10_000 } },
+});
 export const deepScanVisualsQueue = new Queue("deep_scan_visuals", { connection });
 export const fetchEvidenceQueue = new Queue("fetch_evidence", { connection });
 export const analyzeDealQueue = new Queue("analyze_deal", { connection });

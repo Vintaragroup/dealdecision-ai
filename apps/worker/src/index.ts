@@ -66,6 +66,7 @@ import { uploadToR2 } from "./lib/r2";
 import { runJobWatchdogOnce } from "./lib/job-watchdog";
 import { selectReextractCandidates } from "./lib/reextract-selection";
 import { assertSchema } from "./lib/schema-check";
+import { computeChunkRangeForPage, probeHttpStatus } from "./lib/r2-probe";
 
 let didWarnUploadDirFallback = false;
 
@@ -1799,14 +1800,18 @@ registerWorker("render_document_pages", async (job: Job) => {
 	await updateJob(job, "running", `Rendering pages chunk start=${pageStart} end=${pageEnd ?? "?"}`, 5);
 
 	const pool = getPool();
+	let dealIdResolved: string | null = dealIdSafe || null;
 	let pageCount: number = 0;
 	try {
-		const { rows } = await pool.query<{ page_count: number | null; extraction_metadata: unknown | null }>(
-			"SELECT page_count, extraction_metadata FROM documents WHERE id = $1 LIMIT 1",
+		const { rows } = await pool.query<{ page_count: number | null; extraction_metadata: unknown | null; deal_id: string | null }>(
+			"SELECT page_count, extraction_metadata, deal_id FROM documents WHERE id = $1 LIMIT 1",
 			[sanitizeText(docId)]
 		);
 		const stored = typeof rows?.[0]?.page_count === "number" && Number.isFinite(rows[0].page_count) ? rows[0].page_count : 0;
 		pageCount = stored > 0 ? stored : 0;
+		if (!dealIdResolved && typeof rows?.[0]?.deal_id === "string" && rows[0].deal_id.trim()) {
+			dealIdResolved = rows[0].deal_id.trim();
+		}
 	} catch {
 		pageCount = 0;
 	}
@@ -1854,10 +1859,22 @@ registerWorker("render_document_pages", async (job: Job) => {
 		JSON.stringify({
 			event: "PDF_RENDERED_PAGES_CHUNK",
 			document_id: docId,
-			deal_id: dealIdSafe || null,
+			deal_id: dealIdResolved || dealIdSafe || null,
 			page_count_total: totalPages || null,
 			page_range: { start: pageStart, end: pageEnd ?? null },
 			rendered_pages_dir: res.rendered_pages_dir ?? null,
+			rendered_pages_chunk_written: res.rendered_pages_count ?? 0,
+			duration_ms: Date.now() - renderStarted,
+		})
+	);
+
+	console.log(
+		JSON.stringify({
+			event: "RENDER_CHUNK_DONE",
+			document_id: docId,
+			deal_id: dealIdResolved || dealIdSafe || null,
+			page_count_total: totalPages || null,
+			page_range: { start: pageStart, end: pageEnd ?? null },
 			rendered_pages_chunk_written: res.rendered_pages_count ?? 0,
 			duration_ms: Date.now() - renderStarted,
 		})
@@ -1919,6 +1936,38 @@ registerWorker("render_document_pages", async (job: Job) => {
 			const msg = err instanceof Error ? err.message : String(err);
 			if (!msg.toLowerCase().includes("exists")) {
 				console.warn(`[render_document_pages] enqueue next chunk failed doc=${docId}: ${msg}`);
+			}
+		}
+	}
+
+	// If this was the final chunk, trigger visual extraction (best-effort).
+	if (total > 0 && thisEnd >= total) {
+		const visionCfg = getVisionExtractorConfig();
+		if (visionCfg.enabled) {
+			try {
+				const visualsQueue = getQueue("extract_visuals");
+				const effectiveDealId = (dealIdResolved || dealIdSafe || "").trim();
+				const dealIdForEnqueue = effectiveDealId || (typeof (job.data as any)?.deal_id === "string" ? String((job.data as any).deal_id) : "");
+				const enqueued = await enqueueExtractVisualsIfPossible({
+					pool: getPool(),
+					queue: visualsQueue,
+					config: visionCfg,
+					documentId: docId,
+					dealId: dealIdForEnqueue || "unknown",
+				});
+				console.log(
+					JSON.stringify({
+						event: "RENDER_COMPLETE_TRIGGERED_EXTRACTION",
+						document_id: docId,
+						deal_id: dealIdForEnqueue || null,
+						page_count_total: total,
+						extract_visuals_enqueued: enqueued,
+					})
+				);
+			} catch (err) {
+				console.warn(
+					`[render_document_pages] render-complete extraction enqueue failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+				);
 			}
 		}
 	}
@@ -2058,7 +2107,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 
 	try {
 		const { rows: metaRows } = await pool.query(
-			"SELECT id, title, type, status, page_count, extraction_metadata FROM documents WHERE id = ANY($1)",
+			"SELECT id, deal_id, title, type, status, page_count, extraction_metadata FROM documents WHERE id = ANY($1)",
 			[targetDocumentIds]
 		);
 		const metaMap = new Map<string, any>();
@@ -2352,7 +2401,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 		});
 
 		// Use explicit image_uris only for single-document jobs; otherwise resolve from rendered pages.
-		let uris: string[] = [];
+			let uris: string[] = [];
 		if (targetDocumentIds.length === 1 && Array.isArray(imageUris)) {
 			uris = imageUris.filter((u) => typeof u === "string" && u.length > 0);
 		}
@@ -2367,6 +2416,57 @@ registerWorker("extract_visuals", async (job: Job) => {
 			typeof requestedPageEnd === "number"
 				? Math.min(Math.max(pageStart, requestedPageEnd), totalPages)
 				: Math.min(pageStart + chunkSize, totalPages);
+
+		// Defensive: if R2-signed page URLs exist but the objects are not actually present yet,
+		// enqueue the missing render chunk and throw so BullMQ retries.
+		if (uris.length > 0) {
+			const probeIndex = pageStart;
+			const probeUri = uris[probeIndex];
+			if (typeof probeUri === "string" && (probeUri.startsWith("http://") || probeUri.startsWith("https://"))) {
+				const probe = await probeHttpStatus(probeUri, { timeoutMs: 7000, method: "HEAD" });
+				if (probe.status === 404) {
+					const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
+					const renderChunkSize = persistCfg.maxPages;
+					const range = computeChunkRangeForPage({ pageIndex: probeIndex, totalPages, chunkSize: renderChunkSize });
+					const dealIdForRender = dealId ?? (typeof (docMeta as any)?.deal_id === "string" ? String((docMeta as any).deal_id) : undefined);
+					try {
+						console.log(
+							JSON.stringify({
+								event: "R2_PROBE_404_TRIGGER_RENDER",
+								document_id: docId,
+								deal_id: dealIdForRender ?? null,
+								probe_page_index: probeIndex,
+								probe_status: probe.status,
+								render_chunk: range,
+								parent_job_id: job.id ? String(job.id) : null,
+							})
+						);
+					} catch {
+						// ignore
+					}
+
+					if (dealIdForRender) {
+						try {
+							const q = getQueue("render_document_pages");
+							await q.add(
+								"render_document_pages",
+								{ deal_id: dealIdForRender, document_id: docId, page_start: range.start, page_end: range.end },
+								{ jobId: `render_document_pages:${docId}:${range.start}-${range.end}`, removeOnComplete: true, removeOnFail: false }
+							);
+						} catch (err) {
+							const msg = err instanceof Error ? err.message : String(err);
+							if (!msg.toLowerCase().includes("exists")) {
+								console.warn(`[extract_visuals] render enqueue on 404 failed doc=${docId}: ${msg}`);
+							}
+						}
+					}
+
+					throw new Error(
+						`RETRYABLE_R2_404: missing rendered page (doc=${docId} page=${probeIndex}) - render enqueued`
+					);
+				}
+			}
+		}
 
 		// If this doc has more pages than we can safely process in one job, enqueue follow-up chunk jobs.
 		if (!isChunkJob && totalPages > chunkSize) {
@@ -4906,6 +5006,71 @@ registerWorker("reextract_documents", async (job: Job) => {
 				fullText: fullText || undefined,
 				pageCount: pageCount || undefined,
 			});
+
+			// Render-first for PDFs: enqueue render_document_pages and do NOT enqueue extract_visuals until rendering completes.
+			if (analysis.contentType === "pdf") {
+				try {
+					const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
+					const chunkSize = persistCfg.maxPages;
+					const totalPages = pageCount || 0;
+					const r2Bucket = (process.env.R2_BUCKET || "").trim();
+					const prefix = `deals/${doc.deal_id}/documents/${doc.id}/pages`;
+					if (r2Bucket && totalPages > 0) {
+						await mergeDocumentExtractionMetadata({
+							documentId: doc.id,
+							patch: {
+								rendered_pages_r2: { bucket: r2Bucket, prefix, format: "page_%04d.png" },
+								rendered_pages_count: totalPages,
+								rendered_pages_rendered: 0,
+							},
+						});
+
+						const renderQueue = getQueue("render_document_pages");
+						const firstEnd = Math.min(totalPages, chunkSize);
+						await renderQueue.add(
+							"render_document_pages",
+							{ deal_id: doc.deal_id, document_id: doc.id, page_start: 0, page_end: firstEnd },
+							{ jobId: `render_document_pages:${doc.id}:0-${firstEnd}`, removeOnComplete: true, removeOnFail: false }
+						);
+
+						console.log(
+							JSON.stringify({
+								event: "RENDER_DOC_ENQUEUED",
+								deal_id: doc.deal_id,
+								document_id: doc.id,
+								total_pages: totalPages,
+								chunk_size: chunkSize,
+								first_chunk: { start: 0, end: firstEnd },
+								reason: "reextract_documents",
+								parent_job_id: job.id ? String(job.id) : null,
+							})
+						);
+					}
+				} catch (err) {
+					console.warn(
+						`[reextract_documents] enqueue render_document_pages failed doc=${doc.id}: ${err instanceof Error ? err.message : String(err)}`
+					);
+				}
+			} else {
+				// Non-PDF: best-effort enqueue extract_visuals immediately (parity with ingest).
+				const visionCfg = getVisionExtractorConfig();
+				if (visionCfg.enabled) {
+					try {
+						const visualsQueue = getQueue("extract_visuals");
+						await enqueueExtractVisualsIfPossible({
+							pool: getPool(),
+							queue: visualsQueue,
+							config: visionCfg,
+							documentId: doc.id,
+							dealId: doc.deal_id,
+						});
+					} catch (err) {
+						console.warn(
+							`[reextract_documents] visual extraction enqueue failed doc=${doc.id}: ${err instanceof Error ? err.message : String(err)}`
+						);
+					}
+				}
+			}
 
 			if (devLogEnabled) {
 				const pool = getPool();

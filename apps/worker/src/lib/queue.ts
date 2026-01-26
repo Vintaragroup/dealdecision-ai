@@ -180,7 +180,10 @@ export function getQueue(
     | "reconcile_ingest"
     | "orchestration"
 ) {
-  return new Queue(name, { connection });
+  const defaultJobOptions = name === "extract_visuals"
+    ? { attempts: 5, backoff: { type: "exponential", delay: 10_000 } }
+    : undefined;
+  return new Queue(name, { connection, defaultJobOptions });
 }
 
 export function logWorkerQueueConfig(kind: "worker", workers: string[]) {

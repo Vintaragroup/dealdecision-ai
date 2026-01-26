@@ -69,6 +69,113 @@ import { assertSchema } from "./lib/schema-check";
 import { computeChunkRangeForPage } from "./lib/r2-probe";
 import { makeJobId } from "./lib/job-id";
 
+async function countVisualAssetsForDeal(pool: ReturnType<typeof getPool>, dealId: string): Promise<number | null> {
+	try {
+		const { rows } = await pool.query<{ c: number }>(
+			`SELECT COUNT(*)::int AS c
+			   FROM visual_assets va
+			   JOIN documents d ON d.id = va.document_id
+			  WHERE d.deal_id = $1`,
+			[sanitizeText(dealId)]
+		);
+		return typeof rows?.[0]?.c === "number" ? rows[0].c : null;
+	} catch {
+		return null;
+	}
+}
+
+async function enqueueAnalyzeDeal(params: {
+	dealId: string | null | undefined;
+	reason: string;
+	triggerJobId?: string | null;
+	shouldEnqueue?: boolean;
+	skipReason?: string | null;
+	prereq?: Record<string, unknown>;
+	extra?: Record<string, unknown>;
+}): Promise<{ enqueued: boolean; jobId: string | null }> {
+	const dealId = typeof params.dealId === "string" ? params.dealId.trim() : "";
+	const mergedExtra = {
+		...(params.prereq ?? {}),
+		...(params.extra ?? {}),
+	};
+	if (params.shouldEnqueue === false) {
+		console.warn(
+			JSON.stringify({
+				event: "ANALYZE_DEAL_SKIPPED",
+				deal_id: dealId || null,
+				reason: params.reason,
+				gate: params.skipReason ?? "gated",
+				trigger_job_id: params.triggerJobId ?? null,
+				extra: mergedExtra,
+			})
+		);
+		return { enqueued: false, jobId: null };
+	}
+	if (!dealId) {
+		console.warn(
+			JSON.stringify({
+				event: "ANALYZE_DEAL_SKIPPED",
+				reason: params.reason,
+				gate: "missing_deal_id",
+				trigger_job_id: params.triggerJobId ?? null,
+				extra: mergedExtra,
+			})
+		);
+		return { enqueued: false, jobId: null };
+	}
+
+	const q = getQueue("analyze_deal");
+	const jobId = makeJobId("analyze_deal", [dealId, Date.now()]);
+	try {
+		const pool = getPool();
+		const visualAssetsTotal = await countVisualAssetsForDeal(pool, dealId);
+		const prereq = { ...mergedExtra, visual_assets_total: visualAssetsTotal };
+
+		const forwarded = await q.add(
+			"analyze_deal",
+			{ deal_id: dealId, reason: params.reason, parent_job_id: params.triggerJobId ?? null },
+			{ jobId, removeOnComplete: true, removeOnFail: false, delay: 250 }
+		);
+
+		console.log(
+			JSON.stringify({
+				event: "ANALYZE_DEAL_ENQUEUED",
+				deal_id: dealId,
+				reason: params.reason,
+				job_id: forwarded?.id ? String(forwarded.id) : jobId,
+				trigger_job_id: params.triggerJobId ?? null,
+				prereq,
+			})
+		);
+		return { enqueued: true, jobId: forwarded?.id ? String(forwarded.id) : jobId };
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		if (msg.toLowerCase().includes("exists") || msg.toLowerCase().includes("already exists")) {
+			console.warn(
+				JSON.stringify({
+					event: "ANALYZE_DEAL_SKIPPED",
+					deal_id: dealId,
+					reason: params.reason,
+					gate: "already_enqueued",
+					trigger_job_id: params.triggerJobId ?? null,
+					error: msg,
+				})
+			);
+			return { enqueued: false, jobId: null };
+		}
+		console.warn(
+			JSON.stringify({
+				event: "ANALYZE_DEAL_ENQUEUE_FAILED",
+				deal_id: dealId,
+				reason: params.reason,
+				trigger_job_id: params.triggerJobId ?? null,
+				error: msg,
+			})
+		);
+		return { enqueued: false, jobId: null };
+	}
+}
+
 let didWarnUploadDirFallback = false;
 
 async function resolveWritableUploadDir(env: NodeJS.ProcessEnv, logger: Pick<Console, "log" | "warn"> = console): Promise<string> {
@@ -2075,12 +2182,41 @@ registerWorker("extract_visuals", async (job: Job) => {
 
 	if (targetDocumentIds.length === 0) {
 		console.warn("[extract_visuals] Missing document_id (or deal_id with documents)");
+		try {
+			await enqueueAnalyzeDeal({
+				dealId: dealId ?? null,
+				reason: "extract_visuals_start",
+				triggerJobId: job.id ? String(job.id) : null,
+				shouldEnqueue: false,
+				skipReason: "missing_target_documents",
+				extra: {
+					document_id: documentId ?? null,
+					document_ids: explicitDocumentIds,
+				},
+			});
+		} catch {
+			// never block failure reporting
+		}
 		await updateJob(job, "failed", "Missing document_id (or deal_id with documents)", 100);
 		return { ok: false };
 	}
 
 	const config = getVisionExtractorConfig();
 	if (!config.enabled) {
+		try {
+			await enqueueAnalyzeDeal({
+				dealId: dealId ?? null,
+				reason: "extract_visuals_start",
+				triggerJobId: job.id ? String(job.id) : null,
+				shouldEnqueue: false,
+				skipReason: "visual_extraction_disabled",
+				extra: {
+					enable_flag: "ENABLE_VISUAL_EXTRACTION",
+				},
+			});
+		} catch {
+			// never block
+		}
 		await updateJob(
 			job,
 			"failed",
@@ -2127,6 +2263,20 @@ registerWorker("extract_visuals", async (job: Job) => {
 		console.warn(
 			`[extract_visuals] Visual tables missing; skipping (did you run migrations?)`
 		);
+		try {
+			await enqueueAnalyzeDeal({
+				dealId: dealId ?? null,
+				reason: "extract_visuals_start",
+				triggerJobId: job.id ? String(job.id) : null,
+				shouldEnqueue: false,
+				skipReason: "visual_tables_missing",
+				extra: {
+					required_tables: ["visual_assets", "visual_extractions", "evidence_links"],
+				},
+			});
+		} catch {
+			// never block
+		}
 		await updateJob(
 			job,
 			"failed",
@@ -2239,6 +2389,23 @@ registerWorker("extract_visuals", async (job: Job) => {
 				document_file_tables_present: originalFileTablesOk,
 			},
 		};
+		try {
+			await enqueueAnalyzeDeal({
+				dealId: dealId ?? null,
+				reason: "extract_visuals_guard",
+				triggerJobId: job.id ? String(job.id) : null,
+				shouldEnqueue: false,
+				skipReason: "ingest_not_complete",
+				extra: {
+					docs_total: docsTotal,
+					docs_blocked: docsBlocked,
+					docs_ready: docsReady,
+					blocked_document_ids: blockedDocs.map((d) => d.document_id),
+				},
+			});
+		} catch {
+			// never block
+		}
 		await updateJob(
 			job,
 			"failed",
@@ -2304,6 +2471,9 @@ registerWorker("extract_visuals", async (job: Job) => {
 	let imageUrisBackfilled = 0;
 	const docsMissingOriginalBytesIds: string[] = [];
 	const docsMissingPageImagesIds: string[] = [];
+	let chunksEnqueuedAny = false;
+	let chunkJobIsLastChunk: boolean | null = null;
+	let chunkJobTotalPages: number | null = null;
 
 	for (let docIndex = 0; docIndex < targetDocumentIds.length; docIndex += 1) {
 		const docId = targetDocumentIds[docIndex];
@@ -2465,10 +2635,16 @@ registerWorker("extract_visuals", async (job: Job) => {
 				? Math.min(Math.max(pageStart, requestedPageEnd), totalPages)
 				: Math.min(pageStart + chunkSize, totalPages);
 
+		if (isChunkJob && targetDocumentIds.length === 1) {
+			chunkJobTotalPages = totalPages;
+			chunkJobIsLastChunk = pageEndExclusive >= totalPages;
+		}
+
 		// If this doc has more pages than we can safely process in one job, enqueue follow-up chunk jobs.
 		if (!isChunkJob && totalPages > chunkSize) {
 			try {
 				const parentJobId = job.id ? String(job.id) : null;
+				chunksEnqueuedAny = true;
 				for (let start = chunkSize; start < totalPages; start += chunkSize) {
 					const end = Math.min(start + chunkSize, totalPages);
 					await enqueuePersistedJob({
@@ -3045,6 +3221,8 @@ registerWorker("extract_visuals", async (job: Job) => {
 				docMeta?.extraction_metadata && typeof (docMeta.extraction_metadata as any)?.rendered_pages_r2 === "object"
 					? ((docMeta.extraction_metadata as any).rendered_pages_r2 as any)
 					: null;
+			let resolvedR2Bucket: string | null = null;
+			let resolvedR2Key: string | null = null;
 			if (renderedR2) {
 				const resolvedBucket =
 					typeof renderedR2.bucket === "string" && renderedR2.bucket.trim()
@@ -3052,6 +3230,8 @@ registerWorker("extract_visuals", async (job: Job) => {
 						: (process.env.R2_BUCKET || "").trim() || null;
 				const resolvedPrefix = typeof renderedR2.prefix === "string" ? renderedR2.prefix.trim().replace(/\/$/, "") : "";
 				const resolvedKey = resolvedPrefix ? formatRenderedPageKey({ prefix: resolvedPrefix, format: renderedR2.format, pageIndex: i }) : "";
+				resolvedR2Bucket = resolvedBucket;
+				resolvedR2Key = resolvedKey || null;
 
 				if (resolvedBucket && resolvedKey) {
 					const exists = await r2ObjectExists({ bucket: resolvedBucket, key: resolvedKey, env: process.env });
@@ -3103,6 +3283,26 @@ registerWorker("extract_visuals", async (job: Job) => {
 			}
 
 			const image_uri = uris[i];
+			const signedUrlPrefix = (() => {
+				if (typeof image_uri !== "string" || !image_uri) return null;
+				try {
+					const u = new URL(image_uri);
+					const pathParts = u.pathname.split("/").filter(Boolean);
+					if (pathParts.length <= 1) return `${u.origin}${u.pathname}`;
+					pathParts.pop();
+					return `${u.origin}/${pathParts.join("/")}`;
+				} catch {
+					const q = image_uri.indexOf("?");
+					const noQuery = q >= 0 ? image_uri.slice(0, q) : image_uri;
+					const lastSlash = noQuery.lastIndexOf("/");
+					return lastSlash > 0 ? noQuery.slice(0, lastSlash) : noQuery;
+				}
+			})();
+			const signedUrlPrefixKind = renderedR2
+				? "rendered_pages"
+				: typeof signedUrlPrefix === "string" && signedUrlPrefix.includes("rendered_pages")
+					? "rendered_pages"
+					: "pages";
 			const image_b64 = await tryReadImageB64ForVision(image_uri, process.env);
 			const safe_image_uri =
 				image_b64 && (image_uri.startsWith("http://") || image_uri.startsWith("https://"))
@@ -3145,13 +3345,27 @@ registerWorker("extract_visuals", async (job: Job) => {
 				}
 			}
 
-			let response = await callVisionWorker(config, {
-				document_id: docId,
-				page_index: i,
-				image_uri: safe_image_uri,
-				image_b64: image_b64 ?? undefined,
-				extractor_version: extractorVersion,
-			});
+			const visionLogMeta = {
+				stage: "extract_visual_assets",
+				job_id: job.id ? String(job.id) : null,
+				deal_id: dealId ?? null,
+				vision_base_url: config.visionWorkerUrl,
+				image_url_prefix_kind: signedUrlPrefixKind,
+				image_url_prefix: signedUrlPrefix,
+				r2_bucket: resolvedR2Bucket,
+				r2_key: resolvedR2Key,
+			};
+			let response = await callVisionWorker(
+				config,
+				{
+					document_id: docId,
+					page_index: i,
+					image_uri: safe_image_uri,
+					image_b64: image_b64 ?? undefined,
+					extractor_version: extractorVersion,
+				},
+				{ logger: console, attempt: 1, logMeta: visionLogMeta }
+			);
 			if (!response) {
 				console.warn(
 					JSON.stringify({
@@ -3287,6 +3501,18 @@ registerWorker("extract_visuals", async (job: Job) => {
 			missing_page_images_doc_ids: docsMissingPageImagesIds.slice(0, 5),
 			job_counters: jobCounters,
 		};
+		try {
+			await enqueueAnalyzeDeal({
+				dealId: dealIdForAudit,
+				reason: "extract_visuals_complete",
+				triggerJobId: job.id ? String(job.id) : null,
+				shouldEnqueue: false,
+				skipReason: "no_docs_processed",
+				extra: { diag },
+			});
+		} catch {
+			// never block
+		}
 		await updateJob(
 			job,
 			"succeeded_with_warnings",
@@ -3358,6 +3584,42 @@ registerWorker("extract_visuals", async (job: Job) => {
 				: {}),
 		},
 	});
+
+	// Follow-up: enqueue analyze_deal when extract_visuals completes and no further chunk jobs are pending.
+	// This is intentionally best-effort, but should emit clear ENQUEUED/SKIPPED logs for production debugging.
+	try {
+		const dealIdForAnalyze = dealIdForAudit;
+		const triggerJobId = job.id ? String(job.id) : null;
+		const skipReason = !dealIdForAnalyze
+			? "missing_deal_id"
+			: chunksEnqueuedAny
+				? "extract_visuals_chunks_enqueued"
+				: isChunkJob && chunkJobIsLastChunk === false
+					? "extract_visuals_not_last_chunk"
+					: null;
+		await enqueueAnalyzeDeal({
+			dealId: dealIdForAnalyze ?? "",
+			reason: "extract_visuals_complete",
+			triggerJobId,
+			shouldEnqueue: skipReason == null,
+			skipReason,
+			extra: {
+				extract_visuals: {
+					status: finalStatus,
+					is_chunk_job: isChunkJob,
+					chunk_is_last: chunkJobIsLastChunk,
+					chunk_total_pages: chunkJobTotalPages,
+					chunks_enqueued_any: chunksEnqueuedAny,
+					persisted_assets: persisted,
+					docs_processed: docsProcessed,
+					docs_skipped: docsSkipped,
+					docs_blocked: docsBlocked,
+				},
+			},
+		});
+	} catch {
+		// never block extraction completion
+	}
 
 	// Optional follow-up: enqueue a deep scan pass to force vision-understanding hints.
 	// This is intentionally best-effort and should never block the quick extraction.
@@ -4912,6 +5174,22 @@ registerWorker("reextract_documents", async (job: Job) => {
 		});
 
 		if (candidates.length === 0) {
+			try {
+				await enqueueAnalyzeDeal({
+					dealId,
+					reason: "reextract_documents_no_candidates",
+					triggerJobId: job.id ? String(job.id) : null,
+					shouldEnqueue: false,
+					skipReason: "no_documents_matched_reextraction_criteria",
+					extra: {
+						explicit_doc_ids: explicitDocIds,
+						threshold_low: thresholdLow,
+						include_warnings: includeWarnings,
+					},
+				});
+			} catch {
+				// never block completion
+			}
 			await updateJob(job, "succeeded", "No documents matched re-extraction criteria", 100);
 			return { ok: true, reextracted: 0 };
 		}
@@ -5212,6 +5490,21 @@ registerWorker("reextract_documents", async (job: Job) => {
 		}
 
 		const message = `Re-extraction complete: reextracted=${reextracted}, skipped_no_file=${skippedNoFile}`;
+		try {
+			await enqueueAnalyzeDeal({
+				dealId,
+				reason: "reextract_documents_complete",
+				triggerJobId: job.id ? String(job.id) : null,
+				shouldEnqueue: true,
+				extra: {
+					reextracted,
+					skipped_no_file: skippedNoFile,
+					candidates: candidates.length,
+				},
+			});
+		} catch {
+			// never block completion
+		}
 		await updateJob(job, "succeeded", message, 100);
 		console.log(`[reextract_documents] deal=${dealId} ${message}`);
 		return { ok: true, reextracted, skippedNoFile };

@@ -9,6 +9,13 @@ describe("makeJobId", () => {
 		expect(id).toContain("extract_visuals");
 	});
 
+	it("normalizes ':' to '__'", () => {
+		const id = makeJobId("a:b", ["c:d"]);
+		expect(id).not.toContain(":");
+		expect(id).toContain("a__b");
+		expect(id).toMatch(/^[A-Za-z0-9_-]+$/);
+	});
+
 	it("never returns empty", () => {
 		const id = makeJobId(":", [":", " ", null, undefined]);
 		expect(id.length).toBeGreaterThan(0);

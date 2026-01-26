@@ -671,6 +671,9 @@ export async function callVisionWorker(
 		| {
 				fetchImpl?: typeof fetch;
 				timeoutMs?: number;
+				logger?: LogLike | null;
+				logMeta?: Record<string, unknown>;
+				attempt?: number;
 		  }
 		| undefined = fetch
 ): Promise<VisionExtractResponse | null> {
@@ -680,17 +683,59 @@ export async function callVisionWorker(
 			: (fetchImplOrOptions ?? {});
 	const fetchImpl = options.fetchImpl ?? fetch;
 	const timeoutMs = typeof options.timeoutMs === "number" && Number.isFinite(options.timeoutMs) ? options.timeoutMs : config.timeoutMs;
+	const loggerOption = (options as any).logger;
+	const logger: LogLike | undefined =
+		typeof fetchImplOrOptions === "function" ? undefined : loggerOption === null ? undefined : (loggerOption ?? console);
+	const logMeta: Record<string, unknown> = (options as any).logMeta && typeof (options as any).logMeta === "object" ? (options as any).logMeta : {};
+	const attempt = typeof (options as any).attempt === "number" && Number.isFinite((options as any).attempt) ? (options as any).attempt : 1;
+	const url = `${config.visionWorkerUrl}/extract-visuals`;
 
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	const startedAt = Date.now();
+	if (logger) {
+		logger.log(
+			JSON.stringify({
+				event: "VISION_REQUEST_START",
+				deal_id: (logMeta as any)?.deal_id ?? null,
+				document_id: request.document_id,
+				page_index: request.page_index,
+				vision_base_url: config.visionWorkerUrl,
+				url,
+				attempt,
+				timeout_ms: timeoutMs,
+				extractor_version: request.extractor_version,
+				...logMeta,
+			})
+		);
+	}
 
 	try {
-		const res = await fetchImpl(`${config.visionWorkerUrl}/extract-visuals`, {
+		const res = await fetchImpl(url, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify(request),
 			signal: controller.signal,
 		});
+
+		if (logger) {
+			logger.log(
+				JSON.stringify({
+					event: "VISION_REQUEST_DONE",
+					deal_id: (logMeta as any)?.deal_id ?? null,
+					document_id: request.document_id,
+					page_index: request.page_index,
+					vision_base_url: config.visionWorkerUrl,
+					url,
+					attempt,
+					status_code: res.status,
+					elapsed_ms: Date.now() - startedAt,
+					error: res.ok ? null : `HTTP_${res.status}`,
+					extractor_version: request.extractor_version,
+					...logMeta,
+				})
+			);
+		}
 
 		if (!res.ok) {
 			return null;
@@ -700,7 +745,25 @@ export async function callVisionWorker(
 		if (!json || typeof json !== "object") return null;
 		if (!Array.isArray((json as any).assets)) return null;
 		return json;
-	} catch {
+	} catch (err) {
+		if (logger) {
+			logger.warn(
+				JSON.stringify({
+					event: "VISION_REQUEST_DONE",
+					deal_id: (logMeta as any)?.deal_id ?? null,
+					document_id: request.document_id,
+					page_index: request.page_index,
+					vision_base_url: config.visionWorkerUrl,
+					url,
+					attempt,
+					status_code: null,
+					elapsed_ms: Date.now() - startedAt,
+					error: err instanceof Error ? err.message : String(err),
+					extractor_version: request.extractor_version,
+					...logMeta,
+				})
+			);
+		}
 		return null;
 	} finally {
 		clearTimeout(timer);
@@ -952,6 +1015,12 @@ export async function persistVisionResponse(
 		return ["1", "true", "yes", "on"].includes(String(raw).trim().toLowerCase());
 	})();
 
+	const persistExcelImageText = (() => {
+		const raw = env.PERSIST_EXCEL_IMAGE_TEXT;
+		if (raw == null) return false;
+		return ["1", "true", "yes", "on"].includes(String(raw).trim().toLowerCase());
+	})();
+
 	for (const asset of response.assets ?? []) {
 		const normalizedAssetImageUri = normalizeImageUriForApi(asset.image_uri ?? null, env) ?? pageImageUriNormalized;
 		const assetBBox = coerceBBox((asset as any)?.bbox);
@@ -1004,13 +1073,19 @@ export async function persistVisionResponse(
 
 		// Excel: OCR/vision on rendered sheet images is disabled by default.
 		// We only persist structured (cell-based) assets unless ENABLE_EXCEL_VISION_EXTRACTION is explicitly turned on.
-		if (isExcelDoc && asset.asset_type === "image_text" && !excelVisionEnabled) {
+		if (isExcelDoc && asset.asset_type === "image_text" && !excelVisionEnabled && !persistExcelImageText) {
 			continue;
 		}
 
 		// Skip persisting empty page-image artifacts for Excel documents even when vision is enabled.
 		// These frequently have no OCR/title signal, become segment_key=unknown, and add noise to the graph.
-		if (isExcelDoc && excelVisionEnabled && asset.asset_type === "image_text" && !hasAnyTextSignal && (!segmentKey || segmentKey === "unknown")) {
+		if (
+			isExcelDoc &&
+			excelVisionEnabled &&
+			asset.asset_type === "image_text" &&
+			!hasAnyTextSignal &&
+			(!segmentKey || segmentKey === "unknown")
+		) {
 			continue;
 		}
 

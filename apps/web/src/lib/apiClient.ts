@@ -4,11 +4,25 @@ import { debugApiInferDealId, debugApiIsEnabled, debugApiLogCall, debugApiLogSse
 import { getAuthToken } from './authToken';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 
+const META_ENV = (import.meta as any)?.env as any;
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:9000';
-// In production we default to "live" to avoid accidental "mock" deployments when env is missing.
-// In development we default to "mock" for easier UI iteration.
-const DEFAULT_BACKEND_MODE = (import.meta as any)?.env?.PROD ? 'live' : 'mock';
+// Default to live for any non-dev build (Render preview/staging builds may not set import.meta.env.PROD).
+// Default to mock only for true local dev.
+const DEFAULT_BACKEND_MODE = META_ENV?.DEV ? 'mock' : 'live';
 const BACKEND_MODE = (import.meta.env.VITE_BACKEND_MODE || DEFAULT_BACKEND_MODE).toLowerCase();
+
+export function getWebBackendRuntimeConfig() {
+  return {
+    apiBaseUrl: API_BASE_URL,
+    backendMode: BACKEND_MODE,
+    defaultBackendMode: DEFAULT_BACKEND_MODE,
+    viteBackendMode: (import.meta.env as any)?.VITE_BACKEND_MODE ?? null,
+    viteApiBaseUrl: (import.meta.env as any)?.VITE_API_BASE_URL ?? null,
+    dev: !!META_ENV?.DEV,
+    prod: !!META_ENV?.PROD,
+    mode: typeof META_ENV?.MODE === 'string' ? META_ENV.MODE : null,
+  };
+}
 
 async function getAuthHeader(opts?: { forceRefresh?: boolean; refreshWithinSeconds?: number }): Promise<Record<string, string>> {
   const clerkToken = await getAuthToken({

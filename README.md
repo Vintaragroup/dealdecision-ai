@@ -65,6 +65,19 @@ If running the worker on low-memory instances (e.g. 512MB), keep BullMQ worker c
 - `WORKER_CONCURRENCY=1`
 - `NODE_OPTIONS=--max-old-space-size=384`
 
+### Render (Web / Vite env vars)
+
+The web app is a Vite build, so any runtime configuration must be provided at **build time** via `VITE_*` env vars.
+
+- `VITE_API_BASE_URL` (required)
+  - Example: `https://dealdecision-api.onrender.com`
+- `VITE_BACKEND_MODE` (required)
+  - Set to `live` in production to avoid UI gates (Analyst lineage, Data tab).
+  - Example: `live`
+- `VITE_CLERK_PUBLISHABLE_KEY` (required)
+- `VITE_CLERK_JWT_TEMPLATE` (optional)
+  - If set, the web app requests Clerk tokens using this template.
+
 ### Prod parity checklist (Render + Docker)
 
 - Confirm worker system tools exist (run inside the worker container):

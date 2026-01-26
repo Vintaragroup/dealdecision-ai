@@ -23,6 +23,7 @@ import {
   apiRetryDocument,
   apiPostDealNodeAiAnalyze,
   apiPostVisualAssetAiAnalyze,
+  getWebBackendRuntimeConfig,
   isLiveBackend,
   resolveApiAssetUrl,
   type DealLineageResponse,
@@ -2236,7 +2237,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
   };
 
   const refresh = async () => {
-    if (!dealId || !isLiveBackend()) return;
+    if (!dealId) return;
 
     setLoading(true);
     setError(null);
@@ -3212,19 +3213,19 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
     }
   };
 
-  if (!isLiveBackend()) {
-    return (
-      <div className={`text-center py-12 rounded-lg border-2 border-dashed ${
-        darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50/50'
-      }`}>
-        <AlertCircle className={`w-12 h-12 mx-auto mb-3 opacity-40 ${darkMode ? 'text-gray-400' : 'text-gray-400'}`} />
-        <h3 className={`text-base mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Live mode required</h3>
-        <p className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-          Switch to the live backend to view the analyst lineage graph.
-        </p>
-      </div>
-    );
-  }
+  const backendIsLive = isLiveBackend();
+  const loggedLiveDisabledRef = useRef(false);
+  useEffect(() => {
+    if (backendIsLive) return;
+    if (loggedLiveDisabledRef.current) return;
+    loggedLiveDisabledRef.current = true;
+
+    if ((import.meta as any)?.env?.DEV) {
+      const cfg = getWebBackendRuntimeConfig();
+      // eslint-disable-next-line no-console
+      console.warn('[DealAnalystTab] live mode disabled; attempting stored lineage fetch anyway', cfg);
+    }
+  }, [backendIsLive]);
 
   return (
     <div className="space-y-4">
@@ -3254,6 +3255,18 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
               <li key={`warn-${idx}`}>{w}</li>
             ))}
           </ul>
+        </div>
+      ) : null}
+
+      {!backendIsLive ? (
+        <div
+          className={`rounded-lg border px-4 py-3 text-sm ${
+            darkMode
+              ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+              : 'border-amber-300 bg-amber-50 text-amber-800'
+          }`}
+        >
+          Live mode is disabled (backend mode is set to mock). The app will still try to load the last stored lineage graph from the API.
         </div>
       ) : null}
 

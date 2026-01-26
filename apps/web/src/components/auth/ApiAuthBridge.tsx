@@ -12,10 +12,18 @@ export function ApiAuthBridge() {
       return;
     }
 
-    setAuthTokenProvider(async () => {
+    setAuthTokenProvider(async (opts) => {
       const template = (import.meta as any)?.env?.VITE_CLERK_JWT_TEMPLATE;
-      const token = typeof template === 'string' && template.trim().length > 0
-        ? await getToken({ template: template.trim() } as any)
+      const forceRefresh = !!opts?.forceRefresh;
+      const tokenOptions: any = typeof template === 'string' && template.trim().length > 0
+        ? { template: template.trim() }
+        : {};
+      // Clerk supports bypassing cached tokens in newer versions via `skipCache`.
+      // We use it when force-refreshing (e.g., SSE reconnect on 401).
+      if (forceRefresh) tokenOptions.skipCache = true;
+
+      const token = Object.keys(tokenOptions).length > 0
+        ? await getToken(tokenOptions)
         : await getToken();
       return typeof token === 'string' && token.trim().length > 0 ? token : null;
     });

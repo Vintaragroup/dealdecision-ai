@@ -10,6 +10,17 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:9000
 const DEFAULT_BACKEND_MODE = (import.meta as any)?.env?.PROD ? 'live' : 'mock';
 const BACKEND_MODE = (import.meta.env.VITE_BACKEND_MODE || DEFAULT_BACKEND_MODE).toLowerCase();
 
+async function getAuthHeader(opts?: { forceRefresh?: boolean; refreshWithinSeconds?: number }): Promise<Record<string, string>> {
+  const clerkToken = await getAuthToken({
+    forceRefresh: !!opts?.forceRefresh,
+    refreshWithinSeconds: typeof opts?.refreshWithinSeconds === 'number' ? opts.refreshWithinSeconds : 30,
+  });
+  const devAdminToken = getDevAdminToken();
+  const fallbackBearer = !clerkToken && devAdminToken ? `Bearer ${devAdminToken}` : undefined;
+  const bearer = clerkToken ? `Bearer ${clerkToken}` : fallbackBearer;
+  return bearer ? { Authorization: bearer } : {};
+}
+
 type ApiMutationLogEntry = {
   ts: number;
   method: string;
@@ -285,16 +296,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   };
 
   const doFetch = async (forceRefreshToken: boolean): Promise<Response> => {
-    const clerkToken = await getAuthToken({ forceRefresh: forceRefreshToken, refreshWithinSeconds: 30 });
-    const devAdminToken = getDevAdminToken();
-    const fallbackBearer = !clerkToken && devAdminToken ? `Bearer ${devAdminToken}` : undefined;
-    const bearer = clerkToken ? `Bearer ${clerkToken}` : fallbackBearer;
-
+    const authHeader = await getAuthHeader({ forceRefresh: forceRefreshToken, refreshWithinSeconds: 30 });
     return await fetch(`${API_BASE_URL}${path}`, {
       ...options,
       headers: {
         ...(isFormData ? {} : hasBody ? { 'Content-Type': 'application/json' } : {}),
-        ...(bearer ? { Authorization: bearer } : {}),
+        ...authHeader,
         ...(options?.headers || {})
       }
     });
@@ -1103,15 +1110,11 @@ export async function apiGetDealReport(dealId: string): Promise<DealReport | nul
   let error: unknown = undefined;
 
   const doFetch = async (forceRefreshToken: boolean): Promise<Response> => {
-    const clerkToken = await getAuthToken({ forceRefresh: forceRefreshToken, refreshWithinSeconds: 30 });
-    const devAdminToken = getDevAdminToken();
-    const fallbackBearer = !clerkToken && devAdminToken ? `Bearer ${devAdminToken}` : undefined;
-    const bearer = clerkToken ? `Bearer ${clerkToken}` : fallbackBearer;
-
+    const authHeader = await getAuthHeader({ forceRefresh: forceRefreshToken, refreshWithinSeconds: 30 });
     return await fetch(`${API_BASE_URL}${path}`, {
       method: 'GET',
       headers: {
-        ...(bearer ? { Authorization: bearer } : {}),
+        ...authHeader,
       },
     });
   };
@@ -1287,10 +1290,8 @@ export function subscribeToEvents(
 ) {
   const lastEventIdRef = { current: options?.cursor } as { current: string | undefined };
   let stopped = false;
-  let retryDelay = 1000;
-  let authBlockedUntil = 0;
-  let forceRefreshNextConnect = false;
-  let authRefreshRetryUsed = false;
+  let retryDelay = 250;
+  const MAX_RETRY_DELAY = 10_000;
   const AUTH_ERR_PREFIX = '__SSE_AUTH__';
   let sseAuthMode: 'header' | 'query' = 'header';
 
@@ -1303,6 +1304,24 @@ export function subscribeToEvents(
       // ignore
     }
     controller = null;
+  };
+
+  const metaEnv = (import.meta as any)?.env as any;
+  const isDev = !!metaEnv?.DEV;
+  const sseLog = (...args: any[]) => {
+    if (!isDev) return;
+    // Never log tokens.
+    console.debug('[DDAI][sse]', ...args);
+  };
+
+  const nextBackoffMs = (): number => {
+    const d = retryDelay;
+    retryDelay = Math.min(MAX_RETRY_DELAY, retryDelay * 2);
+    return d;
+  };
+
+  const resetBackoff = () => {
+    retryDelay = 250;
   };
 
   const normalizeProgress = (payload: any, eventName: string): JobProgressEventV1 | null => {
@@ -1361,28 +1380,22 @@ export function subscribeToEvents(
   const connect = async () => {
     if (stopped) return;
 
-    // If we recently got an auth failure, back off harder to avoid spamming.
-    if (authBlockedUntil > Date.now()) {
-      setTimeout(() => {
-        connect();
-      }, authBlockedUntil - Date.now());
-      return;
-    }
+    // Ensure only one active connection attempt at a time.
+    cleanupSource();
 
     // New controller per connection attempt.
     controller = new AbortController();
 
-    const clerkToken = await getAuthToken({ forceRefresh: forceRefreshNextConnect, refreshWithinSeconds: 30 });
-    forceRefreshNextConnect = false;
-    const devAdminToken = getDevAdminToken();
-    const fallbackBearer = !clerkToken && devAdminToken ? `Bearer ${devAdminToken}` : undefined;
-    const bearer = clerkToken ? `Bearer ${clerkToken}` : fallbackBearer;
+    // Always fetch a fresh token immediately before opening SSE.
+    // This avoids long-lived sessions reusing stale JWTs.
+    const authHeader = await getAuthHeader({ forceRefresh: true, refreshWithinSeconds: 30 });
+    const clerkToken = await getAuthToken({ forceRefresh: true, refreshWithinSeconds: 30 });
 
     // Don't attempt to open SSE without credentials; wait for auth to become available.
-    if (!bearer) {
-      cleanupSource();
-      const delay = retryDelay;
-      retryDelay = Math.min(10000, retryDelay * 2);
+    if (!authHeader.Authorization && !clerkToken) {
+      const delay = nextBackoffMs();
+      sseLog('connect:no-auth', { dealId, retry_in_ms: delay });
+      if (debugApiIsEnabled()) debugApiLogSse({ event: 'connect:no-auth', dealId, data: { retry_in_ms: delay } });
       setTimeout(() => {
         connect();
       }, delay);
@@ -1402,6 +1415,9 @@ export function subscribeToEvents(
       params.set('cursor', normalized);
     }
     const url = `${API_BASE_URL}/api/v1/events?${params.toString()}`;
+
+    sseLog('connect:attempt', { dealId, mode: sseAuthMode, retry_delay_ms: retryDelay });
+    if (debugApiIsEnabled()) debugApiLogSse({ event: 'connect:attempt', dealId, data: { mode: sseAuthMode, retry_delay_ms: retryDelay } });
 
     try {
       const handleJobEvent = (eventName: string, data: unknown, lastEventId?: string) => {
@@ -1424,28 +1440,26 @@ export function subscribeToEvents(
       await fetchEventSource(url, {
         signal: controller.signal,
         headers: {
-          ...(bearer ? { Authorization: bearer } : {}),
+          ...authHeader,
         },
         onopen: async (resp) => {
           if (resp.ok) {
-            retryDelay = 1000;
-            authRefreshRetryUsed = false;
+            resetBackoff();
+            sseLog('connect:open', { dealId, mode: sseAuthMode });
+            if (debugApiIsEnabled()) debugApiLogSse({ event: 'connect:open', dealId, data: { mode: sseAuthMode } });
             return;
           }
           if (resp.status === 401 || resp.status === 403) {
-                        // First: force-refresh token once and retry.
-            if (!authRefreshRetryUsed && clerkToken) {
-              authRefreshRetryUsed = true;
-                          forceRefreshNextConnect = true;
-                          throw new Error(`${AUTH_ERR_PREFIX}:retry_refresh:${resp.status}`);
-                        }
-            // If header auth failed but we have a Clerk token, retry once using a query token.
+            // If header auth failed but we have a Clerk token, retry using a query token.
             if (sseAuthMode === 'header' && clerkToken) {
               sseAuthMode = 'query';
-              throw new Error(`${AUTH_ERR_PREFIX}:retry_query:${resp.status}`);
+              sseLog('connect:401:switch-to-query', { dealId, status: resp.status });
+              if (debugApiIsEnabled()) debugApiLogSse({ event: 'connect:401:switch-to-query', dealId, data: { status: resp.status } });
+              throw new Error(`${AUTH_ERR_PREFIX}:switch_to_query:${resp.status}`);
             }
-            // Auth failures should not be retried aggressively.
-            authBlockedUntil = Date.now() + 30_000;
+
+            sseLog('connect:401', { dealId, status: resp.status });
+            if (debugApiIsEnabled()) debugApiLogSse({ event: 'connect:401', dealId, data: { status: resp.status } });
             throw new Error(`${AUTH_ERR_PREFIX}:${resp.status}`);
           }
           const text = await resp.text().catch(() => '');
@@ -1453,7 +1467,7 @@ export function subscribeToEvents(
         },
         onmessage: (msg) => {
           if (msg.event === 'ready') {
-            retryDelay = 1000;
+            resetBackoff();
             if (debugApiIsEnabled()) debugApiLogSse({ event: 'ready', dealId });
             handlers.onReady?.();
             return;
@@ -1470,29 +1484,27 @@ export function subscribeToEvents(
           }
         },
         onerror: (err) => {
-          if (debugApiIsEnabled()) debugApiLogSse({ event: 'error', dealId, error: err });
-          handlers.onError?.(err);
-          cleanupSource();
-          if (stopped) return;
-          const isAuthError = typeof (err as any)?.message === 'string' && String((err as any).message).startsWith(AUTH_ERR_PREFIX);
-          const delay = isAuthError
-            ? Math.max(5000, authBlockedUntil - Date.now())
-            : retryDelay;
-          retryDelay = isAuthError ? 1000 : Math.min(10000, retryDelay * 2);
-          setTimeout(() => {
-            connect();
-          }, delay);
+          // Important: throw to stop fetch-event-source's internal retry.
+          // We handle retries in the outer catch with fresh tokens.
+          throw err;
         },
       });
     } catch (err) {
-      if (debugApiIsEnabled()) debugApiLogSse({ event: 'init_error', dealId, error: err });
+      if (debugApiIsEnabled()) debugApiLogSse({ event: 'disconnect', dealId, error: err });
       handlers.onError?.(err);
       if (stopped) return;
+
       const isAuthError = typeof (err as any)?.message === 'string' && String((err as any).message).startsWith(AUTH_ERR_PREFIX);
-      const delay = isAuthError
-        ? Math.max(5000, authBlockedUntil - Date.now())
-        : retryDelay;
-      retryDelay = isAuthError ? 1000 : Math.min(10000, retryDelay * 2);
+      const delay = nextBackoffMs();
+
+      if (isAuthError) {
+        sseLog('retry:auth', { dealId, retry_in_ms: delay, error: String((err as any)?.message ?? '') });
+        if (debugApiIsEnabled()) debugApiLogSse({ event: 'retry:auth', dealId, data: { retry_in_ms: delay, error: String((err as any)?.message ?? '') } });
+      } else {
+        sseLog('retry', { dealId, retry_in_ms: delay });
+        if (debugApiIsEnabled()) debugApiLogSse({ event: 'retry', dealId, data: { retry_in_ms: delay } });
+      }
+
       setTimeout(() => connect(), delay);
     }
   };

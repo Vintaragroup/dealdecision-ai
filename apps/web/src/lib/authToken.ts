@@ -1,4 +1,4 @@
-export type AuthTokenProvider = () => Promise<string | null>;
+export type AuthTokenProvider = (opts?: { forceRefresh?: boolean }) => Promise<string | null>;
 
 let provider: AuthTokenProvider | null = null;
 let cachedToken: string | null = null;
@@ -65,7 +65,7 @@ export async function getAuthToken(opts?: { forceRefresh?: boolean; refreshWithi
   }
 
   try {
-    const token = await provider();
+    const token = await provider({ forceRefresh: !!opts?.forceRefresh });
     if (typeof token !== 'string' || token.trim().length === 0) {
       cachedToken = null;
       cachedExp = null;

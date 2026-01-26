@@ -24,7 +24,7 @@ describe("renderNonPdfToPageImages", () => {
   });
 
   it("returns reason=soffice_missing for xlsx when LibreOffice is not installed", async () => {
-    const { renderNonPdfToPageImages, getVisualPageImagePersistConfig } = await import("../rendered-pages");
+    const { renderNonPdfToPageImages, getVisualPageImagePersistConfig } = await import("../rendered-pages.js");
 
     const cfg = { ...getVisualPageImagePersistConfig({ ENABLE_VISUAL_EXTRACTION: "1", VISUAL_PAGE_IMAGE_PERSIST: "1" } as any), enabled: true, persist: true };
 

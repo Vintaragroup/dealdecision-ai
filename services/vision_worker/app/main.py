@@ -5,7 +5,9 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 import requests
@@ -39,14 +41,32 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 app = FastAPI(title="vision_worker", version="1.0.0")
 
 
+def _iso_utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 @app.on_event("startup")
 def _startup_log() -> None:
     tesseract_path = shutil.which("tesseract")
     logger.info(
-        "startup tesseract_available=%s tesseract_path=%s",
+        "vision_worker:startup tesseract_available=%s tesseract_path=%s",
         bool(tesseract_path),
         tesseract_path,
     )
+    if tesseract_path:
+        try:
+            proc = subprocess.run(
+                ["tesseract", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            first_line = (proc.stdout or proc.stderr or "").splitlines()[:1]
+            if first_line:
+                logger.info("vision_worker:tesseract_version %s", first_line[0].strip())
+        except Exception:
+            pass
 
 
 def _log_event(event: str, payload: Dict[str, Any]) -> None:
@@ -126,9 +146,16 @@ def health() -> Dict[str, Any]:
     tesseract_path = shutil.which("tesseract")
     return {
         "status": "ok",
+        "service": "vision_worker",
+        "timestamp": _iso_utc_now(),
         "tesseract_available": bool(tesseract_path),
         "tesseract_path": tesseract_path,
     }
+
+
+@app.get("/")
+def root() -> Dict[str, Any]:
+    return {"status": "ok"}
 
 
 @app.post("/extract-xlsx")

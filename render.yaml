@@ -7,7 +7,7 @@
 services:
   - type: web
     name: dealdecision-api
-    env: docker
+    runtime: docker
     plan: starter
     dockerfilePath: apps/api/Dockerfile
     dockerContext: .
@@ -43,7 +43,7 @@ services:
 
   - type: worker
     name: dealdecision-worker
-    env: docker
+    runtime: docker
     plan: starter
     dockerfilePath: apps/worker/Dockerfile
     dockerContext: .
@@ -73,3 +73,17 @@ services:
         sync: false
       - key: R2_S3_ENDPOINT
         sync: false
+
+  - type: web
+    name: dealdecision-vision
+    runtime: docker
+    plan: starter
+    dockerfilePath: services/vision_worker/Dockerfile
+    dockerContext: services/vision_worker
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "8000"
+      - key: LOG_LEVEL
+        value: INFO

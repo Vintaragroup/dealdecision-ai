@@ -65,7 +65,7 @@ describe("resolvePageImageUris path safety", () => {
           {
             page_count: 3,
             extraction_metadata: {
-              rendered_pages_r2: { bucket: "b", prefix: "deals/d/documents/x/pages" },
+				rendered_pages_r2: { bucket: "b", prefix: "deals/d/documents/x/rendered_pages", format: "page_%04d.png" },
             },
           },
         ],
@@ -83,5 +83,10 @@ describe("resolvePageImageUris path safety", () => {
 
     expect(uris.length).toBe(3);
     expect(uris[0].startsWith("https://r2.example/")).toBe(true);
+
+	// Ensure we use rendered_pages_r2.prefix in the signed URL keys.
+	expect(decodeURIComponent(uris[0])).toContain("/b/deals/d/documents/x/rendered_pages/");
+	// And ensure we did NOT fall back to legacy /documents/<doc>/pages paths.
+	expect(decodeURIComponent(uris[0])).not.toContain("/documents/doc_r2/pages/");
   });
 });

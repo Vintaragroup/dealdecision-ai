@@ -445,15 +445,42 @@ export async function resolvePageImageUris(
 		if (renderedR2) {
 			const bucket = typeof renderedR2.bucket === "string" ? renderedR2.bucket.trim() : null;
 			const prefix = typeof renderedR2.prefix === "string" ? renderedR2.prefix.trim().replace(/\/$/, "") : "";
+			const formatRaw = typeof renderedR2.format === "string" ? renderedR2.format.trim() : "";
+			const format = formatRaw && !formatRaw.includes("/") ? formatRaw : "page_%04d.png";
 			const metaRenderedCount = typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count)
 				? metaObj.rendered_pages_count
 				: 0;
 			const effectiveCount = pageCount && pageCount > 0 ? pageCount : metaRenderedCount;
 			if (prefix && effectiveCount && effectiveCount > 0) {
 				try {
+					const formatFilename = (pageIndex: number) => {
+						const idx = Number.isFinite(pageIndex) ? Math.max(0, Math.floor(pageIndex)) : 0;
+						const m = format.match(/%0(\d+)d/);
+						if (m) {
+							const width = Number.parseInt(m[1], 10);
+							const padded = String(idx).padStart(Number.isFinite(width) ? Math.max(1, width) : 4, "0");
+							return format.replace(m[0], padded);
+						}
+						if (format.includes("%d")) return format.replace("%d", String(idx));
+						return `page_${String(idx).padStart(4, "0")}.png`;
+					};
+					const exampleKey0 = `${prefix}/${formatFilename(0)}`;
+					const exampleKey10 = `${prefix}/${formatFilename(10)}`;
+					logger.log(
+						JSON.stringify({
+							event: "RENDERED_PAGES_R2_RESOLVE",
+							document_id: documentId,
+							bucket: bucket,
+							prefix,
+							format,
+							page_count: effectiveCount,
+							example_keys: { page_0000: exampleKey0, page_0010: exampleKey10 },
+						})
+					);
+
 					const urls: string[] = [];
 					for (let i = 0; i < effectiveCount; i += 1) {
-						const key = `${prefix}/page_${String(i).padStart(4, "0")}.png`;
+						const key = `${prefix}/${formatFilename(i)}`;
 						urls.push(await getR2ObjectUrl({ bucket, key, env: options?.env }));
 					}
 					logger.log(

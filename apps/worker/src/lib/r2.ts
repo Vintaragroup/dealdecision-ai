@@ -1,4 +1,4 @@
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Readable } from "stream";
 
@@ -153,4 +153,27 @@ export async function getR2ObjectUrl(args: {
 	return await getSignedUrl(client as any, new GetObjectCommand({ Bucket: bucket, Key: args.key }) as any, {
 		expiresIn: ttlSeconds,
 	});
+}
+
+export async function r2ObjectExists(args: {
+	bucket?: string | null;
+	key: string;
+	env?: NodeJS.ProcessEnv;
+}): Promise<boolean> {
+	const env = args.env ?? process.env;
+	const cfg = getR2Config(env);
+	const client = getR2Client(env);
+	const bucket = (args.bucket ?? cfg.defaultBucket ?? "").trim();
+	if (!bucket) throw new Error("Missing R2 bucket (provide env R2_BUCKET)");
+	try {
+		await client.send(
+			new HeadObjectCommand({
+				Bucket: bucket,
+				Key: args.key,
+			})
+		);
+		return true;
+	} catch {
+		return false;
+	}
 }

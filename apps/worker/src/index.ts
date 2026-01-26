@@ -62,7 +62,7 @@ import { remediateStructuredData } from "./lib/remediation";
 import { persistPdfV2TextRegionAssetsV1Shadow } from "./lib/pdf_v2/pdf-text-region-assets-v1";
 import os from "os";
 import { loadOriginalBytesFromDocumentStorage } from "./lib/ingest/from-storage";
-import { uploadToR2 } from "./lib/r2";
+import { r2ObjectExists, uploadToR2 } from "./lib/r2";
 import { runJobWatchdogOnce } from "./lib/job-watchdog";
 import { selectReextractCandidates } from "./lib/reextract-selection";
 import { assertSchema } from "./lib/schema-check";
@@ -1882,7 +1882,7 @@ registerWorker("render_document_pages", async (job: Job) => {
 
 	// Upload just this chunk to R2.
 	const r2Bucket = (process.env.R2_BUCKET || "").trim();
-	const prefix = `deals/${dealIdSafe || "unknown"}/documents/${docId}/pages`;
+	const prefix = `deals/${(dealIdResolved || dealIdSafe || "unknown")}/documents/${docId}/pages`;
 	if (r2Bucket && res.rendered_pages_dir) {
 		try {
 			const chunkStart = pageStart;
@@ -1898,6 +1898,16 @@ registerWorker("render_document_pages", async (job: Job) => {
 				}
 				if (!bytes || bytes.length === 0) continue;
 				await uploadToR2({ bucket: r2Bucket, key: r2RenderedPageKey(prefix, i), body: bytes, contentType: "image/png", env: process.env });
+			}
+
+			// Post-upload verification: ensure a representative mid-document key exists.
+			// Specifically requested: verify page 10 for a 15-page doc (this chunk should be 10-15).
+			if ((totalPages || pageCount || 0) >= 11 && chunkStart <= 10 && 10 < chunkEnd) {
+				const key10 = r2RenderedPageKey(prefix, 10);
+				const ok10 = await r2ObjectExists({ bucket: r2Bucket, key: key10, env: process.env });
+				if (!ok10) {
+					throw new Error(`R2_UPLOAD_VERIFY_FAILED: missing key after upload doc=${docId} key=${key10}`);
+				}
 			}
 
 			await mergeDocumentExtractionMetadata({

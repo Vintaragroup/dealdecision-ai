@@ -2146,6 +2146,11 @@ registerWorker("extract_visuals", async (job: Job) => {
 	};
 	const documentId = typeof data.document_id === "string" ? data.document_id : undefined;
 	const dealId = typeof data.deal_id === "string" ? data.deal_id : undefined;
+	let dealIdForAudit: string | undefined = typeof dealId === "string" && dealId.trim().length > 0 ? dealId.trim() : undefined;
+	if (!dealIdForAudit) {
+		const payloadDealId = typeof (data as any)?.deal_id === "string" ? String((data as any).deal_id).trim() : "";
+		dealIdForAudit = payloadDealId.length > 0 ? payloadDealId : undefined;
+	}
 	const imageUris = Array.isArray(data.image_uris) ? data.image_uris : undefined;
 	const extractorVersionOverride = typeof data.extractor_version === "string" ? data.extractor_version : undefined;
 	const forceResegment = Boolean((data as any).force_resegment);
@@ -2184,7 +2189,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 		console.warn("[extract_visuals] Missing document_id (or deal_id with documents)");
 		try {
 			await enqueueAnalyzeDeal({
-				dealId: dealId ?? null,
+				dealId: dealIdForAudit,
 				reason: "extract_visuals_start",
 				triggerJobId: job.id ? String(job.id) : null,
 				shouldEnqueue: false,
@@ -2205,7 +2210,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 	if (!config.enabled) {
 		try {
 			await enqueueAnalyzeDeal({
-				dealId: dealId ?? null,
+				dealId: dealIdForAudit,
 				reason: "extract_visuals_start",
 				triggerJobId: job.id ? String(job.id) : null,
 				shouldEnqueue: false,
@@ -2265,7 +2270,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 		);
 		try {
 			await enqueueAnalyzeDeal({
-				dealId: dealId ?? null,
+				dealId: dealIdForAudit,
 				reason: "extract_visuals_start",
 				triggerJobId: job.id ? String(job.id) : null,
 				shouldEnqueue: false,
@@ -2391,7 +2396,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 		};
 		try {
 			await enqueueAnalyzeDeal({
-				dealId: dealId ?? null,
+				dealId: dealIdForAudit,
 				reason: "extract_visuals_guard",
 				triggerJobId: job.id ? String(job.id) : null,
 				shouldEnqueue: false,
@@ -2500,6 +2505,9 @@ registerWorker("extract_visuals", async (job: Job) => {
 			docMeta = rows?.[0] ?? null;
 		} catch {
 			// best-effort metadata fetch
+		}
+		if (!dealIdForAudit && typeof docMeta?.deal_id === "string" && docMeta.deal_id.trim().length > 0) {
+			dealIdForAudit = docMeta.deal_id.trim();
 		}
 
 		// Optional maintenance: recompute segment_key for existing structured synthetic assets.
@@ -3501,6 +3509,17 @@ registerWorker("extract_visuals", async (job: Job) => {
 			missing_page_images_doc_ids: docsMissingPageImagesIds.slice(0, 5),
 			job_counters: jobCounters,
 		};
+		if (!dealIdForAudit) {
+			try {
+				const { rows } = await pool.query<{ deal_id: string | null }>(
+					"SELECT deal_id FROM documents WHERE id = $1",
+					[targetDocumentIds[0]]
+				);
+				dealIdForAudit = rows?.[0]?.deal_id ?? undefined;
+			} catch {
+				dealIdForAudit = undefined;
+			}
+		}
 		try {
 			await enqueueAnalyzeDeal({
 				dealId: dealIdForAudit,
@@ -3536,16 +3555,15 @@ registerWorker("extract_visuals", async (job: Job) => {
 			? `Visual extraction succeeded with warnings (blocked=${docsBlocked}, processed=${docsProcessed}, skipped=${docsSkipped}, pages_skipped_existing=${pagesSkippedExisting}, missing_page_images=${docsMissingPageImages}, missing_original_bytes=${docsMissingOriginalBytes}) counters=${JSON.stringify(jobCounters)}`
 			: `Visual extraction complete (persisted=${persisted}, docs_processed=${docsProcessed}, docs_skipped=${docsSkipped}, pages_skipped_existing=${pagesSkippedExisting}) counters=${JSON.stringify(jobCounters)}`;
 
-	let dealIdForAudit: string | null = dealId ?? null;
 	if (!dealIdForAudit) {
 		try {
 			const { rows } = await pool.query<{ deal_id: string | null }>(
 				"SELECT deal_id FROM documents WHERE id = $1",
 				[targetDocumentIds[0]]
 			);
-			dealIdForAudit = rows?.[0]?.deal_id ?? null;
+			dealIdForAudit = rows?.[0]?.deal_id ?? undefined;
 		} catch {
-			dealIdForAudit = null;
+			dealIdForAudit = undefined;
 		}
 	}
 

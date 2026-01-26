@@ -55,7 +55,8 @@ Key knobs:
 - `VISION_WORKER_URL` (worker)
   - Required for visual extraction; `infra/docker-compose.deploy.yml` includes an optional `vision_worker` service.
 - `UPLOAD_DIR` (api + worker)
-  - Must be shared between API and worker so `/uploads/*` can serve extracted artifacts.
+  - Used for temporary local artifacts.
+  - Production does **not** require a shared filesystem between API and worker; rendered pages and visual assets should resolve via R2-backed HTTP(S) URLs.
 
 ### Render (worker memory/concurrency)
 
@@ -63,6 +64,25 @@ If running the worker on low-memory instances (e.g. 512MB), keep BullMQ worker c
 
 - `WORKER_CONCURRENCY=1`
 - `NODE_OPTIONS=--max-old-space-size=384`
+
+### Prod parity checklist (Render + Docker)
+
+- Confirm worker system tools exist (run inside the worker container):
+  - `soffice --version`
+  - `pdfinfo -v` and `pdftoppm -h`
+  - `gs --version`
+  - `convert -version`
+  - `tesseract --version`
+- Confirm worker startup logs include:
+  - `db_fingerprint` and `schema_check_ok` (API + worker)
+  - `soffice_available` (worker)
+- Confirm extraction produces R2-backed page images (no API filesystem paths):
+  - `documents.extraction_metadata.rendered_pages_r2` populated
+  - `documents.extraction_metadata.rendered_pages_count` populated
+  - page keys under `deals/<dealId>/documents/<docId>/pages/page_%04d.png`
+- Smoke-test end-to-end document types (upload → ingest → extract visuals → Analyst nodes render):
+  - PDF (scanned + editable), PNG/JPG, XLSX/XLS, DOCX/DOC, PPTX/PPT
+  - verify `visual_assets.image_uri` is non-null for persisted assets
 
 ---
 

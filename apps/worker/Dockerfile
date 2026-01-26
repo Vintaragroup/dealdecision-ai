@@ -40,9 +40,24 @@ WORKDIR /app/apps/worker
 
 ENV NODE_ENV=production
 
-# Needed for Office document rendering (pptx/docx/xlsx -> pdf) via `soffice`.
+# System tools for document processing parity:
+# - LibreOffice: Office -> PDF conversion (`soffice`)
+# - Poppler: PDF inspection/rasterization helpers (pdfinfo/pdftoppm)
+# - Ghostscript: PDF compatibility edge cases
+# - ImageMagick: image transforms
+# - Tesseract: OCR (binary; some flows may prefer it)
+# - Fonts: rendering fidelity
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends libreoffice \
+	&& apt-get install -y --no-install-recommends \
+		libreoffice \
+		poppler-utils \
+		ghostscript \
+		imagemagick \
+		tesseract-ocr \
+		tesseract-ocr-eng \
+		fonts-dejavu-core \
+		fonts-liberation \
+		fonts-noto-core \
 	&& rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/apps/worker/dist ./dist

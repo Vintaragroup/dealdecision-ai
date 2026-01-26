@@ -4,10 +4,24 @@ ENV PNPM_HOME=/root/.local/share/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 RUN corepack enable
 
-# Needed for Office document rendering (pptx/docx/xlsx -> pdf) via `soffice`.
-# Without this, `extract_visuals` will skip Office docs that lack pre-rendered page images.
+# System tools for document processing parity (dev):
+# - LibreOffice: Office -> PDF conversion (`soffice`)
+# - Poppler: pdfinfo/pdftoppm
+# - Ghostscript: PDF compatibility
+# - ImageMagick: image transforms
+# - Tesseract: OCR
+# - Fonts: rendering fidelity
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends libreoffice \
+	&& apt-get install -y --no-install-recommends \
+		libreoffice \
+		poppler-utils \
+		ghostscript \
+		imagemagick \
+		tesseract-ocr \
+		tesseract-ocr-eng \
+		fonts-dejavu-core \
+		fonts-liberation \
+		fonts-noto-core \
 	&& rm -rf /var/lib/apt/lists/*
 
 COPY pnpm-lock.yaml package.json pnpm-workspace.yaml tsconfig.base.json ./

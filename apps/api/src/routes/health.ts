@@ -4,6 +4,16 @@ import { getPool } from "../lib/db";
 
 const healthResponseSchema = z.object({ ok: z.literal(true) });
 
+const renderHealthSchema = z.object({
+  status: z.literal("ok"),
+  service: z.literal("api"),
+  uptime_seconds: z.number(),
+  timestamp: z.string(),
+  db: z.enum(["ok", "unreachable"]),
+});
+
+type RenderHealthResponse = z.infer<typeof renderHealthSchema>;
+
 type HealthResponse = z.infer<typeof healthResponseSchema>;
 
 export async function registerHealthRoutes(app: FastifyInstance) {
@@ -37,6 +47,57 @@ export async function registerHealthRoutes(app: FastifyInstance) {
       },
     },
     async () => ({ ok: true })
+  );
+
+  // Canonical external health check endpoint.
+  // Requirements:
+  // - Always return 200 (even if DB unreachable)
+  // - Include a lightweight DB connectivity probe
+  app.get<{ Reply: RenderHealthResponse }>(
+    "/health",
+    {
+      logLevel: "silent",
+      schema: {
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              status: { type: "string" },
+              service: { type: "string" },
+              uptime_seconds: { type: "number" },
+              timestamp: { type: "string" },
+              db: { type: "string" },
+            },
+            required: ["status", "service", "uptime_seconds", "timestamp", "db"],
+          },
+        },
+      },
+    },
+    async () => {
+      const pool = getPool();
+      const timestamp = new Date().toISOString();
+      let db: "ok" | "unreachable" = "unreachable";
+
+      // Keep the probe fast; if it errors or times out, still return 200.
+      const timeoutMs = 40;
+      try {
+        await Promise.race([
+          pool.query("SELECT 1"),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("db_probe_timeout")), timeoutMs)),
+        ]);
+        db = "ok";
+      } catch {
+        db = "unreachable";
+      }
+
+      return {
+        status: "ok",
+        service: "api",
+        uptime_seconds: Math.floor(process.uptime()),
+        timestamp,
+        db,
+      };
+    }
   );
 
   // Render-style health check (no auth, lightweight).

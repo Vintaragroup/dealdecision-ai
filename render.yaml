@@ -1,22 +1,75 @@
-# Render Blueprint (optional)
+# Render Blueprint
 #
-# Purpose: Ensure the BullMQ worker runs with system LibreOffice installed
-# so XLS/XLSX documents can be converted to PDF for visual extraction.
-#
-# This blueprint defines ONLY the worker service, so the apt packages are not
-# applied to API or web services.
+# Goal: Docker-based deployment for both API + worker that matches local Docker dev.
+# - No shared filesystem assumptions between services.
+# - Worker image includes system tools for PDF/Office/image/OCR processing.
 
 services:
-  - type: worker
-    name: dealdecision-worker
-    env: node
+  - type: web
+    name: dealdecision-api
+    env: docker
     plan: starter
-    buildCommand: pnpm install --frozen-lockfile && pnpm --filter worker build
-    startCommand: node apps/worker/dist/src/index.js
-    aptPackages:
-      - libreoffice
-      - fonts-dejavu-core
-      - fonts-liberation
+    dockerfilePath: apps/api/Dockerfile
+    dockerContext: .
+    autoDeploy: true
+    healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
+      - key: PORT
+        value: "9000"
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false
+      - key: R2_S3_ENDPOINT
+        sync: false
+
+  - type: worker
+    name: dealdecision-worker
+    env: docker
+    plan: starter
+    dockerfilePath: apps/worker/Dockerfile
+    dockerContext: .
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: ENABLE_VISUAL_EXTRACTION
+        value: "1"
+      - key: VISUAL_PAGE_IMAGE_PERSIST
+        value: "1"
+      - key: WORKER_CONCURRENCY
+        value: "1"
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false
+      - key: R2_S3_ENDPOINT
+        sync: false

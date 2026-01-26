@@ -24,6 +24,7 @@ import { getPool } from "./lib/db";
 import { applyPendingMigrations, getMigrationStatus } from "./lib/migrations";
 import "./lib/queue";
 import dotenv from "dotenv";
+import { createHash } from "crypto";
 
 dotenv.config();
 
@@ -43,6 +44,49 @@ async function bootstrap() {
   await registerClerkAuth(app);
   await registerUploadsStatic(app);
   const pool = getPool();
+
+  // Startup verification: DB fingerprint + basic schema presence check.
+  // Do NOT log DATABASE_URL or credentials.
+  try {
+    const { rows } = await pool.query(
+      `SELECT current_database() as db, current_user as db_user, version() as version, inet_server_addr() as host, inet_server_port() as port`
+    );
+    const row = (rows?.[0] ?? {}) as any;
+    const fingerprintSource = JSON.stringify({
+      db: row.db ?? null,
+      db_user: row.db_user ?? null,
+      host: row.host ?? null,
+      port: row.port ?? null,
+      version: typeof row.version === "string" ? row.version.slice(0, 80) : null,
+    });
+    const dbFingerprint = createHash("sha256").update(fingerprintSource, "utf8").digest("hex").slice(0, 16);
+    app.log.info({
+      event: "db_fingerprint",
+      service: "api",
+      db: row.db ?? null,
+      host: row.host ?? null,
+      port: row.port ?? null,
+      fingerprint: dbFingerprint,
+    });
+  } catch (err) {
+    app.log.warn({ event: "db_fingerprint_failed", service: "api", err }, "Failed to fingerprint DB");
+  }
+
+  try {
+    const requiredTables = ["deals", "documents", "jobs", "document_files", "document_file_blobs", "visual_assets", "visual_extractions"];
+    const missing: string[] = [];
+    for (const t of requiredTables) {
+      const res = await pool.query<{ oid: string | null }>("SELECT to_regclass($1) as oid", [t]);
+      if (res.rows?.[0]?.oid == null) missing.push(t);
+    }
+    if (missing.length === 0) {
+      app.log.info({ event: "schema_check_ok", service: "api", required_tables: requiredTables.length });
+    } else {
+      app.log.warn({ event: "schema_check_failed", service: "api", missing_tables: missing }, "Database schema missing required tables");
+    }
+  } catch (err) {
+    app.log.warn({ event: "schema_check_failed", service: "api", err }, "Failed checking schema");
+  }
 
   // Schema drift guardrail: log migration status on startup.
   // Optionally apply pending migrations when explicitly enabled.

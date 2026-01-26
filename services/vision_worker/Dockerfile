@@ -14,10 +14,20 @@ RUN apt-get update \
         poppler-utils \
         ghostscript \
         imagemagick \
+        fontconfig \
         fonts-dejavu-core \
         fonts-liberation \
         fonts-noto-core \
     && rm -rf /var/lib/apt/lists/*
+
+# Fail-fast verification: ensure the runtime has OCR + PDF tooling.
+RUN set -euo pipefail; \
+    command -v tesseract; \
+    tesseract --version | head -n 1; \
+    command -v pdftoppm; \
+    pdftoppm -v 2>&1 | head -n 1; \
+    command -v pdftotext; \
+    pdftotext -v 2>&1 | head -n 1
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt

@@ -1,6 +1,6 @@
 export type JobIdPart = string | number | boolean | null | undefined;
 
-function sanitizeJobId(input: string): string {
+export function sanitizeJobId(input: string): string {
 	// BullMQ/Redis job ids must not contain separators like ':'; keep a conservative safe set.
 	// Allowed: [A-Za-z0-9_-]
 	const colonNormalized = input.replace(/:+/g, "__");

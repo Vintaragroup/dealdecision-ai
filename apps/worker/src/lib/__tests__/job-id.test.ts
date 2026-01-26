@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { makeJobId } from "../job-id";
+import { makeJobId, sanitizeJobId } from "../job-id";
+
+describe("sanitizeJobId", () => {
+	it("removes ':' and stays stable", () => {
+		const input = "extract_visuals:doc:123";
+		const a = sanitizeJobId(input);
+		const b = sanitizeJobId(input);
+		expect(a).toBe(b);
+		expect(a).not.toContain(":");
+		expect(a).toMatch(/^[A-Za-z0-9_-]+$/);
+	});
+});
 
 describe("makeJobId", () => {
 	it("removes colons and restricts to [A-Za-z0-9_-]", () => {

@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { sanitizeDeep, sanitizeText } from "@dealdecision/core";
+import { sanitizeJobId } from "./job-id";
 
 import { getPool } from "./db";
 import { getQueue } from "./queue";
@@ -28,7 +29,9 @@ export async function enqueuePersistedJob(input: EnqueuePersistedJobInput): Prom
   const pool = getPool();
   const queue = getQueue(input.type as any);
 
-  const jobId = randomUUID();
+  // Defensive: BullMQ job ids must not contain ':' or other reserved separators.
+  // UUIDs are already safe, but sanitize to harden against any future changes.
+  const jobId = sanitizeJobId(randomUUID());
 
   const payload = sanitizeDeep({
     ...(input.payload ?? {}),

@@ -4782,6 +4782,14 @@ registerWorker("analyze_deal", async (job: Job) => {
 			100
 		);
 
+		console.log(
+			JSON.stringify({
+				event: "ANALYZE_DEAL_COMPLETED",
+				deal_id: dealId,
+				job_id: job.id ? String(job.id) : null,
+			})
+		);
+
 		return {
 			ok: true,
 			dio_id: result.storage_result.dio_id,

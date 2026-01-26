@@ -5,7 +5,7 @@ import fs from "fs/promises";
 import { createHash } from "crypto";
 import { defaultVisualExtractionEnabled } from "./pipeline-policy";
 import { getR2ObjectUrl } from "./r2";
-import { makeJobId } from "./job-id";
+import { makeJobId, sanitizeJobId } from "./job-id";
 
 export type VisionExtractorConfig = {
 	enabled: boolean;
@@ -3592,6 +3592,7 @@ export async function enqueueExtractVisualsIfPossible(params: {
 	if (imageUris.length === 0) return false;
 
 	try {
+		const safeJobId = sanitizeJobId(makeJobId("extract_visuals", [params.documentId]));
 		await params.queue.add(
 			"extract_visuals",
 			{
@@ -3601,7 +3602,7 @@ export async function enqueueExtractVisualsIfPossible(params: {
 				image_uris: imageUris,
 			},
 			{
-				jobId: makeJobId("extract_visuals", [params.documentId]),
+				jobId: safeJobId,
 				removeOnComplete: true,
 				removeOnFail: false,
 				delay: 750,

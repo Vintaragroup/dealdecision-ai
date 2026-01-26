@@ -63,6 +63,7 @@ import os from "os";
 import { loadOriginalBytesFromDocumentStorage } from "./lib/ingest/from-storage";
 import { uploadToR2 } from "./lib/r2";
 import { runJobWatchdogOnce } from "./lib/job-watchdog";
+import { selectReextractCandidates } from "./lib/reextract-selection";
 import { assertSchema } from "./lib/schema-check";
 
 let didWarnUploadDirFallback = false;
@@ -4560,17 +4561,11 @@ registerWorker("reextract_documents", async (job: Job) => {
 			: await getDocumentsForDealWithVerification(dealId);
 		const explicitDocIds = Array.isArray(documentIds) && documentIds.length > 0;
 
-		const candidates = sourceDocs.filter((d) => {
-			if (d.deal_id !== dealId) return false;
-			// If specific document_ids were requested, always attempt re-extraction
-			// (regardless of current status/verification gating).
-			if (explicitDocIds) return true;
-			if (d.status !== "completed" && d.status !== "ready_for_analysis") return false;
-			if (d.verification_status === "failed") return true;
-			if (includeWarnings && d.verification_status === "warnings") return true;
-			const score = (d.verification_result as any)?.overall_score;
-			if (typeof score === "number" && Number.isFinite(score) && score < thresholdLow) return true;
-			return false;
+		const candidates = selectReextractCandidates(sourceDocs, {
+			dealId,
+			explicitDocIds,
+			thresholdLow,
+			includeWarnings,
 		});
 
 		if (candidates.length === 0) {

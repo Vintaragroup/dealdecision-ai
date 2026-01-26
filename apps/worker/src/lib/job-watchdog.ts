@@ -12,6 +12,7 @@ type RunningJobRow = {
   type: string | null;
   stage: string | null;
   updated_at: string | Date;
+  document_id: string | null;
 };
 
 const MIN_SCAN_AGE_MS = 5 * 60_000;
@@ -75,7 +76,7 @@ export async function runJobWatchdogOnce(opts?: JobWatchdogOptions): Promise<{ s
   const limit = typeof opts?.limit === "number" && Number.isFinite(opts.limit) ? Math.max(1, Math.floor(opts.limit)) : 500;
 
   const { rows } = (await pool.query(
-    `SELECT job_id, queue, type, stage, updated_at
+    `SELECT job_id, queue, type, stage, updated_at, document_id
        FROM jobs
       WHERE status = 'running'
         AND updated_at < (now() - ($1::int * interval '1 millisecond'))
@@ -106,6 +107,22 @@ export async function runJobWatchdogOnce(opts?: JobWatchdogOptions): Promise<{ s
         RETURNING job_id`,
       [sanitizeText(row.job_id), sanitizeText(error)]
     );
+
+    // Self-heal: if an ingest_documents job stalls/fails, ensure the related document row is also marked failed.
+    const isIngest = String(row.queue ?? row.type ?? '').toLowerCase() === 'ingest_documents';
+    if (isIngest && row.document_id && (res.rows?.length ?? 0) > 0) {
+      await pool.query(
+        `UPDATE documents
+            SET status = 'failed',
+                extraction_metadata = jsonb_set(
+                  jsonb_set(COALESCE(extraction_metadata, '{}'::jsonb), '{status}', '"failed"'::jsonb, true),
+                  '{errorMessage}', to_jsonb($2::text), true
+                ),
+                updated_at = now()
+          WHERE id = $1`,
+        [sanitizeText(row.document_id), sanitizeText(error)]
+      );
+    }
 
     if ((res.rows?.length ?? 0) > 0) failed++;
   }

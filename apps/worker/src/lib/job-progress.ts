@@ -28,6 +28,7 @@ export type UpdateJobProgressInput = {
 
 type PendingDbWrite = {
   jobId: string;
+  queueName?: string | null;
   status?: JobStatus;
   stage?: string;
   current?: number;
@@ -112,6 +113,29 @@ async function writeJobProgressToDb(pending: PendingDbWrite): Promise<void> {
       typeof pending.pageEnd === "number" ? pending.pageEnd : null,
     ]
   );
+
+  const isIngest = String(pending.queueName ?? "").toLowerCase() === "ingest_documents";
+  if (pending.status === "failed" && isIngest) {
+    const { rows } = await pool.query<{ document_id: string | null }>(
+      `SELECT document_id FROM jobs WHERE job_id = $1 LIMIT 1`,
+      [sanitizeText(pending.jobId)]
+    );
+    const documentId = rows?.[0]?.document_id;
+    if (documentId) {
+      const message = pending.error ?? pending.message ?? "failed";
+      await pool.query(
+        `UPDATE documents
+            SET status = 'failed',
+                extraction_metadata = jsonb_set(
+                  jsonb_set(COALESCE(extraction_metadata, '{}'::jsonb), '{status}', '"failed"'::jsonb, true),
+                  '{errorMessage}', to_jsonb($2::text), true
+                ),
+                updated_at = now()
+          WHERE id = $1`,
+        [sanitizeText(documentId), sanitizeText(message)]
+      );
+    }
+  }
 }
 
 function scheduleDbWrite(jobId: string, pending: PendingDbWrite): void {
@@ -194,6 +218,7 @@ export async function updateJobProgress(job: Job, input: UpdateJobProgressInput)
 
   const pending: PendingDbWrite = {
     jobId,
+    queueName: (job as any).queueName ?? null,
     status: input.status,
     stage,
     current,

@@ -1,0 +1,22 @@
+# Render Blueprint (optional)
+#
+# Purpose: Ensure the BullMQ worker runs with system LibreOffice installed
+# so XLS/XLSX documents can be converted to PDF for visual extraction.
+#
+# This blueprint defines ONLY the worker service, so the apt packages are not
+# applied to API or web services.
+
+services:
+  - type: worker
+    name: dealdecision-worker
+    env: node
+    plan: starter
+    buildCommand: pnpm install --frozen-lockfile && pnpm --filter worker build
+    startCommand: node apps/worker/dist/src/index.js
+    aptPackages:
+      - libreoffice
+      - fonts-dejavu-core
+      - fonts-liberation
+    envVars:
+      - key: NODE_ENV
+        value: production

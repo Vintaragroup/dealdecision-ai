@@ -5058,7 +5058,7 @@ try {
 	const v = execSync("soffice --version").toString().trim();
 	console.log(
 		JSON.stringify({
-			event: "soffice_version",
+			event: "soffice_available",
 			service: "worker",
 			version: v,
 		})

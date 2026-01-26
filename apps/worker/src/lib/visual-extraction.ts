@@ -5,6 +5,7 @@ import fs from "fs/promises";
 import { createHash } from "crypto";
 import { defaultVisualExtractionEnabled } from "./pipeline-policy";
 import { getR2ObjectUrl } from "./r2";
+import { makeJobId } from "./job-id";
 
 export type VisionExtractorConfig = {
 	enabled: boolean;
@@ -3491,6 +3492,7 @@ export async function enqueueExtractVisualsIfPossible(params: {
 	dealId: string;
 	logger?: LogLike;
 	resolveOptions?: { fsImpl?: FsLike; env?: NodeJS.ProcessEnv };
+	imageUrisOverride?: string[];
 }): Promise<boolean> {
 	const logger = params.logger ?? console;
 	if (!params.config.enabled) {
@@ -3505,11 +3507,13 @@ export async function enqueueExtractVisualsIfPossible(params: {
 		return false;
 	}
 
-	const imageUris = await resolvePageImageUris(params.pool, params.documentId, {
-		logger,
-		fsImpl: params.resolveOptions?.fsImpl,
-		env: params.resolveOptions?.env,
-	});
+	const imageUris = Array.isArray(params.imageUrisOverride)
+		? params.imageUrisOverride
+		: await resolvePageImageUris(params.pool, params.documentId, {
+				logger,
+				fsImpl: params.resolveOptions?.fsImpl,
+				env: params.resolveOptions?.env,
+		  });
 	if (imageUris.length === 0) return false;
 
 	try {
@@ -3522,7 +3526,7 @@ export async function enqueueExtractVisualsIfPossible(params: {
 				image_uris: imageUris,
 			},
 			{
-				jobId: `extract_visuals:${params.documentId}`,
+				jobId: makeJobId("extract_visuals", [params.documentId]),
 				removeOnComplete: true,
 				removeOnFail: false,
 				delay: 750,

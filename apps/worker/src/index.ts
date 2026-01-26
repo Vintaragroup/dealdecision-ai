@@ -67,6 +67,7 @@ import { runJobWatchdogOnce } from "./lib/job-watchdog";
 import { selectReextractCandidates } from "./lib/reextract-selection";
 import { assertSchema } from "./lib/schema-check";
 import { computeChunkRangeForPage } from "./lib/r2-probe";
+import { makeJobId } from "./lib/job-id";
 
 let didWarnUploadDirFallback = false;
 
@@ -1562,7 +1563,7 @@ async function ingestDocumentProcessor(job: Job) {
 						await renderQueue.add(
 							"render_document_pages",
 							{ deal_id: dealIdSafe, document_id: docId, page_start: 0, page_end: firstEnd },
-							{ jobId: `render_document_pages:${docId}:0-${firstEnd}`, removeOnComplete: true, removeOnFail: false }
+							{ jobId: makeJobId("render_document_pages", [docId, `0-${firstEnd}`]), removeOnComplete: true, removeOnFail: false }
 						);
 					}
 				} catch (err) {
@@ -1601,7 +1602,7 @@ async function ingestDocumentProcessor(job: Job) {
 						document_ids: [docId],
 					},
 					{
-						jobId: `verify_documents:${docId}`,
+						jobId: makeJobId("verify_documents", [docId]),
 						removeOnComplete: true,
 						removeOnFail: false,
 						delay: 500,
@@ -1971,7 +1972,11 @@ registerWorker("render_document_pages", async (job: Job) => {
 			await q.add(
 				"render_document_pages",
 				{ deal_id: dealIdSafe, document_id: docId, page_start: nextStart, page_end: nextEnd },
-				{ jobId: `render_document_pages:${docId}:${nextStart}-${nextEnd}`, removeOnComplete: true, removeOnFail: false }
+				{
+					jobId: makeJobId("render_document_pages", [docId, `${nextStart}-${nextEnd}`]),
+					removeOnComplete: true,
+					removeOnFail: false,
+				}
 			);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -1996,15 +2001,17 @@ registerWorker("render_document_pages", async (job: Job) => {
 					documentId: docId,
 					dealId: dealIdForEnqueue || "unknown",
 				});
-				console.log(
-					JSON.stringify({
-						event: "RENDER_COMPLETE_TRIGGERED_EXTRACTION",
-						document_id: docId,
-						deal_id: dealIdForEnqueue || null,
-						page_count_total: total,
-						extract_visuals_enqueued: enqueued,
-					})
-				);
+				if (enqueued) {
+					console.log(
+						JSON.stringify({
+							event: "RENDER_COMPLETE_TRIGGERED_EXTRACTION",
+							document_id: docId,
+							deal_id: dealIdForEnqueue || null,
+							page_count_total: total,
+							extract_visuals_enqueued: true,
+						})
+					);
+				}
 			} catch (err) {
 				console.warn(
 					`[render_document_pages] render-complete extraction enqueue failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
@@ -3076,7 +3083,11 @@ registerWorker("extract_visuals", async (job: Job) => {
 								await q.add(
 									"render_document_pages",
 									{ deal_id: dealIdForRender, document_id: docId, page_start: range.start, page_end: range.end },
-									{ jobId: `render_document_pages:${docId}:${range.start}-${range.end}`, removeOnComplete: true, removeOnFail: false }
+												{
+													jobId: makeJobId("render_document_pages", [docId, `${range.start}-${range.end}`]),
+													removeOnComplete: true,
+													removeOnFail: false,
+												}
 								);
 							} catch (err) {
 								const msg = err instanceof Error ? err.message : String(err);
@@ -5090,7 +5101,7 @@ registerWorker("reextract_documents", async (job: Job) => {
 						await renderQueue.add(
 							"render_document_pages",
 							{ deal_id: doc.deal_id, document_id: doc.id, page_start: 0, page_end: firstEnd },
-							{ jobId: `render_document_pages:${doc.id}:0-${firstEnd}`, removeOnComplete: true, removeOnFail: false }
+							{ jobId: makeJobId("render_document_pages", [doc.id, `0-${firstEnd}`]), removeOnComplete: true, removeOnFail: false }
 						);
 
 						console.log(

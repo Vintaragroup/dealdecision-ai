@@ -450,17 +450,12 @@ export async function resolvePageImageUris(
 				: 0;
 			const effectiveCount = pageCount && pageCount > 0 ? pageCount : metaRenderedCount;
 			if (prefix && effectiveCount && effectiveCount > 0) {
-				const urls: string[] = [];
-				for (let i = 0; i < effectiveCount; i += 1) {
-					const key = `${prefix}/page_${String(i).padStart(4, "0")}.png`;
-					try {
-						const url = await getR2ObjectUrl({ bucket, key, env: options?.env });
-						urls.push(url);
-					} catch {
-						// best-effort: skip this page
+				try {
+					const urls: string[] = [];
+					for (let i = 0; i < effectiveCount; i += 1) {
+						const key = `${prefix}/page_${String(i).padStart(4, "0")}.png`;
+						urls.push(await getR2ObjectUrl({ bucket, key, env: options?.env }));
 					}
-				}
-				if (urls.length > 0) {
 					logger.log(
 						JSON.stringify({
 							event: "PAGE_IMAGE_URIS_FROM_RENDERED_PAGES_R2",
@@ -470,6 +465,11 @@ export async function resolvePageImageUris(
 						})
 					);
 					return urls;
+				} catch (err) {
+					logger.warn(
+						`[visual_extraction] rendered_pages_r2 url generation failed doc=${documentId}: ${err instanceof Error ? err.message : String(err)}`
+					);
+					// fall through to filesystem discovery
 				}
 			}
 		}

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
 	getVisualPageImagePersistConfig,
+	planPdfRenderChunks,
+	r2RenderedPageKey,
 	persistRenderedPageImages,
 	type VisualPageImagePersistConfig,
 } from "../rendered-pages";
@@ -75,6 +77,17 @@ describe("rendered pages", () => {
 		expect(cfg.maxPages).toBe(10);
 		expect(cfg.dpi).toBe(200);
 		expect(cfg.format).toBe("png");
+	});
+
+	it("plans chunk rendering and R2 keys for full PDFs", () => {
+		const chunks = planPdfRenderChunks({ totalPages: 15, chunkSize: 10 });
+		expect(chunks).toEqual([
+			{ page_start: 0, page_end: 10 },
+			{ page_start: 10, page_end: 15 },
+		]);
+
+		const keys = Array.from({ length: 15 }, (_, i) => r2RenderedPageKey("deals/d/documents/x/pages", i));
+		expect(keys).toContain("deals/d/documents/x/pages/page_0014.png");
 	});
 
 	it("copies from /tmp debug dir when present", async () => {

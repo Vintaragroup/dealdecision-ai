@@ -20,11 +20,31 @@ const execFileAsync = promisify(execFile);
 export type VisualPageImagePersistConfig = {
 	enabled: boolean;
 	persist: boolean;
+	// Max pages to render per chunk. Larger documents are handled via page-range sub-jobs.
 	maxPages: number;
 	format: "png";
 	dpi: number;
 	maxPixelsPerPage: number;
 };
+
+export type PdfPageChunk = { page_start: number; page_end: number };
+
+export function planPdfRenderChunks(params: { totalPages: number; chunkSize: number }): PdfPageChunk[] {
+	const totalPages = Number.isFinite(params.totalPages) ? Math.max(0, Math.floor(params.totalPages)) : 0;
+	const chunkSize = Number.isFinite(params.chunkSize) ? Math.max(1, Math.floor(params.chunkSize)) : 10;
+	if (!totalPages) return [];
+	const out: PdfPageChunk[] = [];
+	for (let start = 0; start < totalPages; start += chunkSize) {
+		out.push({ page_start: start, page_end: Math.min(totalPages, start + chunkSize) });
+	}
+	return out;
+}
+
+export function r2RenderedPageKey(prefix: string, pageIndex: number): string {
+	const safePrefix = String(prefix ?? "").trim().replace(/\/$/, "");
+	const idx = Number.isFinite(pageIndex) ? Math.max(0, Math.floor(pageIndex)) : 0;
+	return `${safePrefix}/page_${String(idx).padStart(4, "0")}.png`;
+}
 
 type LogLike = Pick<Console, "log" | "warn" | "error">;
 
@@ -177,6 +197,7 @@ async function renderPdfToPngFiles(params: {
 	format: "png";
 	logger: LogLike;
 	pageStart?: number;
+	// End is exclusive (0-based page index). If omitted, renders up to maxPages pages.
 	pageEnd?: number;
 }): Promise<number> {
 	const data = new Uint8Array(params.buffer.buffer, params.buffer.byteOffset, params.buffer.byteLength);
@@ -199,13 +220,13 @@ async function renderPdfToPngFiles(params: {
 
 	const totalPages = typeof pdf?.numPages === "number" ? pdf.numPages : 0;
 	const requestedStart = typeof params.pageStart === "number" && Number.isFinite(params.pageStart) ? Math.max(0, params.pageStart) : 0;
-	const requestedEnd = typeof params.pageEnd === "number" && Number.isFinite(params.pageEnd) ? Math.max(requestedStart, params.pageEnd) : null;
+	const requestedEndExclusive = typeof params.pageEnd === "number" && Number.isFinite(params.pageEnd) ? Math.max(requestedStart, params.pageEnd) : null;
 	const maxByConfig = Math.max(0, params.maxPages);
 	const scale = params.dpi / 72;
 	const lastPageIndex = totalPages > 0 ? totalPages - 1 : -1;
-	const effectiveEndIndex = requestedEnd == null
+	const effectiveEndIndex = requestedEndExclusive == null
 		? (lastPageIndex >= 0 ? Math.min(lastPageIndex, requestedStart + maxByConfig - 1) : requestedStart + maxByConfig - 1)
-		: (lastPageIndex >= 0 ? Math.min(lastPageIndex, requestedEnd) : requestedEnd);
+		: (lastPageIndex >= 0 ? Math.min(lastPageIndex, requestedEndExclusive - 1) : requestedEndExclusive - 1);
 
 	let written = 0;
 	for (let pageIndex = requestedStart; pageIndex <= effectiveEndIndex; pageIndex += 1) {

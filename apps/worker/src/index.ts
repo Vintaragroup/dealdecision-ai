@@ -180,7 +180,7 @@ import { parseIngestDocumentsJobData, validateIngestDocumentsPayload } from "./l
 import { buildPhase1DealOverviewV2, buildPhase1DealUnderstandingV1, buildPhase1UpdateReportV1 } from "./lib/phase1/dealOverviewV2";
 import { computeVisualQualityAuditForDeal } from "./lib/visual-quality-audit";
 import { buildPhase1BusinessArchetypeV1 } from "./lib/phase1/businessArchetypeV1";
-import { getVisualPageImagePersistConfig, persistRenderedPageImages, persistImagePage, renderNonPdfToPageImages } from "./lib/rendered-pages";
+import { getVisualPageImagePersistConfig, persistRenderedPageImages, persistImagePage, renderNonPdfToPageImages, r2RenderedPageKey } from "./lib/rendered-pages";
 import type { DocumentAnalysis, ExtractedContent } from "./lib/processors";
 import type { VerificationResult } from "./lib/verification";
 import { OpenAIGPT4oProvider } from "./lib/llm/providers/openai-provider";
@@ -1477,176 +1477,87 @@ async function ingestDocumentProcessor(job: Job) {
 				`[ingest_document] documentId=${docId} dealId=${dealIdSafe} type=${analysis.contentType} success=true metrics=${metricsInserted} headings=${headingsInserted} score=${completeness.score.toFixed(2)}`
 			);
 
-			// Step 6: persist rendered page images to a stable artifacts directory (best-effort)
+			// Ensure PDFs end with a concrete page_count before queuing downstream steps.
 			if (analysis.contentType === "pdf") {
 				try {
-					const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
-					if (persistCfg.enabled && persistCfg.persist) {
-						if (!buffer) {
-							console.warn(`[ingest_document] Skipping persistRenderedPageImages: missing buffer doc=${docId}`);
-						} else {
-							const renderStarted = Date.now();
-							const res = await persistRenderedPageImages({
-								buffer,
-								documentId: docId,
-								pageCount: pageCount || 0,
-								uploadDir,
-								config: persistCfg,
-								logger: console,
-							});
-
-							console.log(
-								JSON.stringify({
-									event: "PDF_RENDERED_PAGES",
-									document_id: documentId,
-									page_count_input: pageCount || 0,
-									rendered_pages_dir: res.rendered_pages_dir ?? null,
-									rendered_pages_count: res.rendered_pages_count ?? 0,
-									page_count_detected: res.page_count_detected ?? null,
-									reason: res.reason ?? null,
-									duration_ms: Date.now() - renderStarted,
-								})
-							);
-
-							if (res.rendered_pages_dir) {
-								renderedPagesDirForLog = res.rendered_pages_dir;
-								await mergeDocumentExtractionMetadata({
-									documentId: docId,
-									patch: {
-										rendered_pages_dir: res.rendered_pages_dir,
-										rendered_pages_format: res.rendered_pages_format,
-										rendered_pages_count: res.rendered_pages_count,
-										rendered_pages_max_pages: res.rendered_pages_max_pages,
-										rendered_pages_created_at: res.rendered_pages_created_at,
-									},
-								});
-								if (res.page_count_detected && res.page_count_detected > 0) {
-									await updateDocumentAnalysis({ documentId: docId, pageCount: res.page_count_detected });
-									finalPageCountForLog = res.page_count_detected;
-								}
-
-								// Persist rendered pages to R2 so the API + worker (separate services on Render) can access them.
-								try {
-									const r2Bucket = (process.env.R2_BUCKET || "").trim();
-									const prefix = `deals/${dealIdSafe}/documents/${docId}/pages`;
-									if (r2Bucket && res.rendered_pages_dir) {
-										let names: string[] = [];
-										try {
-											names = await fs.readdir(res.rendered_pages_dir);
-										} catch {
-											names = [];
-										}
-
-										const pageFiles = names
-											.map((n) => {
-												const m = n.match(/^page_(\d{3})\.png$/);
-												if (!m) return null;
-												const pageIndex = Number.parseInt(m[1], 10);
-												if (!Number.isFinite(pageIndex)) return null;
-												return { name: n, pageIndex };
-											})
-											.filter(Boolean) as Array<{ name: string; pageIndex: number }>;
-
-										pageFiles.sort((a, b) => a.pageIndex - b.pageIndex);
-										for (const f of pageFiles) {
-											const localPath = path.join(res.rendered_pages_dir, f.name);
-											const bytes = await fs.readFile(localPath);
-											if (!bytes || bytes.length === 0) continue;
-											const key = `${prefix}/page_${String(f.pageIndex).padStart(4, "0")}.png`;
-											await uploadToR2({
-												bucket: r2Bucket,
-												key,
-												body: bytes,
-												contentType: "image/png",
-												env: process.env,
-											});
-										}
-
-										renderedPagesR2ForLog = { bucket: r2Bucket, prefix };
-										await mergeDocumentExtractionMetadata({
-											documentId: docId,
-											patch: {
-												rendered_pages_r2: {
-													bucket: r2Bucket,
-													prefix,
-													format: "page_%04d.png",
-											},
-										},
-									});
-									}
-								} catch (err) {
-									console.warn(
-										`[ingest_document] rendered page R2 upload failed doc=${docId}: ${
-											err instanceof Error ? err.message : String(err)
-										}`
-									);
-								}
-							}
-
-							await emitJobProgress(job, {
-								job_id: job.id ? String(job.id) : "",
-								deal_id: dealIdSafe,
-								document_id: docId,
-								stage: "render_pages",
-								percent: 90,
-								message: `Rendered PDF pages (${res.rendered_pages_count ?? 0})`,
-							});
-						}
+					const { rows } = await getPool().query<{ page_count: number | null }>(
+						"SELECT page_count FROM documents WHERE id = $1 LIMIT 1",
+						[sanitizeText(docId)]
+					);
+					const storedPageCount = typeof rows?.[0]?.page_count === "number" ? rows[0].page_count : null;
+					const extractedPages = getPageCount(analysis.content, analysis.contentType) || 0;
+					const finalPageCount = Math.max(storedPageCount ?? 0, extractedPages);
+					finalPageCountForLog = finalPageCount > 0 ? finalPageCount : finalPageCountForLog;
+					if (finalPageCount > 0 && finalPageCount !== storedPageCount) {
+						await updateDocumentAnalysis({ documentId: docId, pageCount: finalPageCount });
+					}
+					if (!finalPageCount || finalPageCount <= 0) {
+						await updateDocumentStatus(docId, "failed");
+						await updateJob(job, "failed", "PDF ingest produced no pages", 100);
+						console.error(`[ingest_document] pdf page_count missing doc=${docId}`);
+						return { ok: false, analysis, completeness };
 					}
 				} catch (err) {
 					console.warn(
-						`[ingest_document] rendered page persistence failed doc=${docId}: ${
+						`[ingest_document] page_count guard failed doc=${docId}: ${
 							err instanceof Error ? err.message : String(err)
 						}`
 					);
 				}
 			}
 
-				// Ensure PDFs end with a concrete page_count before queuing downstream steps.
-				if (analysis.contentType === "pdf") {
-					try {
-						const { rows } = await getPool().query<{ page_count: number | null }>(
-							"SELECT page_count FROM documents WHERE id = $1 LIMIT 1",
-							[sanitizeText(docId)]
-						);
-						const storedPageCount = typeof rows?.[0]?.page_count === "number" ? rows[0].page_count : null;
-						const extractedPages = getPageCount(analysis.content, analysis.contentType) || 0;
-						const finalPageCount = Math.max(storedPageCount ?? 0, extractedPages);
-						finalPageCountForLog = finalPageCount > 0 ? finalPageCount : finalPageCountForLog;
-						if (finalPageCount > 0 && finalPageCount !== storedPageCount) {
-							await updateDocumentAnalysis({ documentId: docId, pageCount: finalPageCount });
-						}
-						if (!finalPageCount || finalPageCount <= 0) {
-							await updateDocumentStatus(docId, "failed");
-							await updateJob(job, "failed", "PDF ingest produced no pages", 100);
-							console.error(`[ingest_document] pdf page_count missing doc=${docId}`);
-							return { ok: false, analysis, completeness };
-						}
-					} catch (err) {
-						console.warn(
-							`[ingest_document] page_count guard failed doc=${docId}: ${
-								err instanceof Error ? err.message : String(err)
-							}`
+			// Render page images in chunks to R2 (best-effort; does not block ingestion).
+			if (analysis.contentType === "pdf") {
+				try {
+					const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
+					const chunkSize = persistCfg.maxPages;
+					const totalPages = finalPageCountForLog || pageCount || 0;
+					const r2Bucket = (process.env.R2_BUCKET || "").trim();
+					const prefix = `deals/${dealIdSafe}/documents/${docId}/pages`;
+					if (r2Bucket && totalPages > 0) {
+						renderedPagesR2ForLog = { bucket: r2Bucket, prefix };
+						await mergeDocumentExtractionMetadata({
+							documentId: docId,
+							patch: {
+								rendered_pages_r2: { bucket: r2Bucket, prefix, format: "page_%04d.png" },
+								rendered_pages_count: totalPages,
+								rendered_pages_rendered: 0,
+						},
+						});
+
+						const renderQueue = getQueue("render_document_pages");
+						const firstEnd = Math.min(totalPages, chunkSize);
+						await renderQueue.add(
+							"render_document_pages",
+							{ deal_id: dealIdSafe, document_id: docId, page_start: 0, page_end: firstEnd },
+							{ jobId: `render_document_pages:${docId}:0-${firstEnd}`, removeOnComplete: true, removeOnFail: false }
 						);
 					}
+				} catch (err) {
+					console.warn(
+						`[ingest_document] enqueue render_document_pages failed doc=${docId}: ${
+							err instanceof Error ? err.message : String(err)
+						}`
+					);
 				}
+			}
 
-				// Structured one-line log for Render debugging: confirms page_count + rendered pages location.
-				if (analysis.contentType === "pdf") {
-					console.log(
-						JSON.stringify({
-							event: "pdf_ingest_done",
-							deal_id: dealIdSafe,
-							document_id: docId,
-							page_count: finalPageCountForLog,
-							rendered_pages_dir: renderedPagesDirForLog,
-							source: ingestSource,
-							rendered_pages_r2: renderedPagesR2ForLog,
-							storage_bucket: ingestSource === "r2" ? r2StorageBucket : null,
-							storage_key: ingestSource === "r2" ? r2StorageKey : null,
-						})
-					)
-				}
+			// Structured one-line log for Render debugging: confirms page_count + rendered pages location.
+			if (analysis.contentType === "pdf") {
+				console.log(
+					JSON.stringify({
+						event: "pdf_ingest_done",
+						deal_id: dealIdSafe,
+						document_id: docId,
+						page_count: finalPageCountForLog,
+						rendered_pages_dir: renderedPagesDirForLog,
+						source: ingestSource,
+						rendered_pages_r2: renderedPagesR2ForLog,
+						storage_bucket: ingestSource === "r2" ? r2StorageBucket : null,
+						storage_key: ingestSource === "r2" ? r2StorageKey : null,
+					})
+				);
+			}
 
 			// Queue verification job for this document
 			const verifyQueue = getQueue("verify_documents");
@@ -1866,6 +1777,155 @@ registerWorker("reconcile_ingest", async (job: Job) => {
 });
 
 registerWorker("ingest_documents", ingestDocumentProcessor);
+registerWorker("render_document_pages", async (job: Job) => {
+	const data = (job.data ?? {}) as {
+		deal_id?: string;
+		document_id?: string;
+		page_start?: number;
+		page_end?: number;
+	};
+	const dealIdSafe = typeof data.deal_id === "string" ? data.deal_id : "";
+	const docId = typeof data.document_id === "string" ? data.document_id : "";
+	const pageStartRaw = (data as any).page_start;
+	const pageEndRaw = (data as any).page_end;
+	const pageStart = typeof pageStartRaw === "number" && Number.isFinite(pageStartRaw) ? Math.max(0, Math.floor(pageStartRaw)) : 0;
+	const pageEnd = typeof pageEndRaw === "number" && Number.isFinite(pageEndRaw) ? Math.max(pageStart, Math.floor(pageEndRaw)) : undefined;
+
+	if (!docId) {
+		await updateJob(job, "failed", "Missing document_id", 100);
+		return { ok: false, reason: "missing_document_id" };
+	}
+
+	await updateJob(job, "running", `Rendering pages chunk start=${pageStart} end=${pageEnd ?? "?"}`, 5);
+
+	const pool = getPool();
+	let pageCount: number = 0;
+	try {
+		const { rows } = await pool.query<{ page_count: number | null; extraction_metadata: unknown | null }>(
+			"SELECT page_count, extraction_metadata FROM documents WHERE id = $1 LIMIT 1",
+			[sanitizeText(docId)]
+		);
+		const stored = typeof rows?.[0]?.page_count === "number" && Number.isFinite(rows[0].page_count) ? rows[0].page_count : 0;
+		pageCount = stored > 0 ? stored : 0;
+	} catch {
+		pageCount = 0;
+	}
+
+	// Fetch original bytes so we can render without relying on API filesystem.
+	let original: any = null;
+	try {
+		original = await getDocumentOriginalFile(docId);
+	} catch (err) {
+		await updateJob(job, "failed", err instanceof Error ? err.message : "missing original bytes", 100);
+		return { ok: false, reason: "missing_original_bytes" };
+	}
+	const buffer: Buffer | null = original?.bytes && Buffer.isBuffer(original.bytes) ? original.bytes : null;
+	if (!buffer || buffer.length === 0) {
+		await updateJob(job, "failed", "missing original bytes", 100);
+		return { ok: false, reason: "missing_original_bytes" };
+	}
+
+	const uploadDir = await resolveWritableUploadDir(process.env);
+	const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
+
+	const renderStarted = Date.now();
+	const res = await persistRenderedPageImages({
+		buffer,
+		documentId: docId,
+		pageCount: pageCount || 0,
+		uploadDir,
+		config: persistCfg,
+		logger: console,
+		pageStart,
+		pageEnd,
+	});
+
+	const totalPages = Math.max(pageCount || 0, res.page_count_detected || 0);
+	if (totalPages > 0 && totalPages !== pageCount) {
+		try {
+			await updateDocumentAnalysis({ documentId: docId, pageCount: totalPages });
+			pageCount = totalPages;
+		} catch {
+			// ignore
+		}
+	}
+
+	console.log(
+		JSON.stringify({
+			event: "PDF_RENDERED_PAGES_CHUNK",
+			document_id: docId,
+			deal_id: dealIdSafe || null,
+			page_count_total: totalPages || null,
+			page_range: { start: pageStart, end: pageEnd ?? null },
+			rendered_pages_dir: res.rendered_pages_dir ?? null,
+			rendered_pages_chunk_written: res.rendered_pages_count ?? 0,
+			duration_ms: Date.now() - renderStarted,
+		})
+	);
+
+	// Upload just this chunk to R2.
+	const r2Bucket = (process.env.R2_BUCKET || "").trim();
+	const prefix = `deals/${dealIdSafe || "unknown"}/documents/${docId}/pages`;
+	if (r2Bucket && res.rendered_pages_dir) {
+		try {
+			const chunkStart = pageStart;
+			const chunkEnd = pageEnd ?? (pageCount > 0 ? Math.min(pageCount, pageStart + persistCfg.maxPages) : pageStart + persistCfg.maxPages);
+			for (let i = chunkStart; i < chunkEnd; i += 1) {
+				const localName = `page_${String(i).padStart(3, "0")}.png`;
+				const localPath = path.join(res.rendered_pages_dir, localName);
+				let bytes: Buffer;
+				try {
+					bytes = await fs.readFile(localPath);
+				} catch {
+					continue;
+				}
+				if (!bytes || bytes.length === 0) continue;
+				await uploadToR2({ bucket: r2Bucket, key: r2RenderedPageKey(prefix, i), body: bytes, contentType: "image/png", env: process.env });
+			}
+
+			await mergeDocumentExtractionMetadata({
+				documentId: docId,
+				patch: {
+					rendered_pages_r2: { bucket: r2Bucket, prefix, format: "page_%04d.png" },
+					// Required: total PDF pages (not just this chunk).
+					rendered_pages_count: totalPages || pageCount || 0,
+					// Optional: progress (best-effort).
+					rendered_pages_rendered: Math.min(totalPages || pageCount || 0, chunkStart + (res.rendered_pages_count ?? 0)),
+					rendered_pages_last_chunk: { page_start: chunkStart, page_end: chunkEnd },
+				},
+			});
+		} catch (err) {
+			console.warn(
+				`[render_document_pages] R2 upload failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+			);
+		}
+	}
+
+	// Schedule the next chunk (serializes work to avoid OOM).
+	const chunkSize = persistCfg.maxPages;
+	const total = totalPages || pageCount || 0;
+	const thisEnd = pageEnd ?? Math.min(total || (pageStart + chunkSize), pageStart + chunkSize);
+	if (total > 0 && thisEnd < total) {
+		const nextStart = thisEnd;
+		const nextEnd = Math.min(total, nextStart + chunkSize);
+		try {
+			const q = getQueue("render_document_pages");
+			await q.add(
+				"render_document_pages",
+				{ deal_id: dealIdSafe, document_id: docId, page_start: nextStart, page_end: nextEnd },
+				{ jobId: `render_document_pages:${docId}:${nextStart}-${nextEnd}`, removeOnComplete: true, removeOnFail: false }
+			);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (!msg.toLowerCase().includes("exists")) {
+				console.warn(`[render_document_pages] enqueue next chunk failed doc=${docId}: ${msg}`);
+			}
+		}
+	}
+
+	await updateJob(job, "succeeded", `Rendered pages chunk (${res.rendered_pages_count ?? 0})`, 100);
+	return { ok: true, rendered: res.rendered_pages_count ?? 0, total_pages: total };
+});
 
 registerWorker("extract_visuals", async (job: Job) => {
 	const data = (job.data ?? {}) as {

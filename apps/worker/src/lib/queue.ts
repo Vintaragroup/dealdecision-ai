@@ -52,6 +52,7 @@ connection.on('error', (err) => {
 export function createWorker(
   name:
     | "ingest_documents"
+    | "render_document_pages"
     | "extract_visuals"
     | "deep_scan_visuals"
     | "fetch_evidence"
@@ -88,7 +89,7 @@ export function createWorker(
     const concurrency = options?.concurrency ?? envConcurrency;
 
     // NOTE: lockDuration must cover long-running CPU-heavy extraction loops.
-    const heavyQueues = new Set(["ingest_documents", "extract_visuals", "deep_scan_visuals"]);
+    const heavyQueues = new Set(["ingest_documents", "render_document_pages", "extract_visuals", "deep_scan_visuals"]);
     const lockDuration =
       options?.lockDuration ?? (heavyQueues.has(name) ? 10 * 60 * 1000 : 2 * 60 * 1000);
 
@@ -166,6 +167,7 @@ export function createWorker(
 export function getQueue(
   name:
     | "ingest_documents"
+    | "render_document_pages"
     | "extract_visuals"
     | "deep_scan_visuals"
     | "fetch_evidence"

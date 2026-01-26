@@ -57,6 +57,13 @@ Key knobs:
 - `UPLOAD_DIR` (api + worker)
   - Must be shared between API and worker so `/uploads/*` can serve extracted artifacts.
 
+### Render (worker memory/concurrency)
+
+If running the worker on low-memory instances (e.g. 512MB), keep BullMQ worker concurrency capped to avoid OOM from overlapping extraction jobs:
+
+- `WORKER_CONCURRENCY=1`
+- `NODE_OPTIONS=--max-old-space-size=384`
+
 ---
 
 ## Analysis Phases (Conceptual)

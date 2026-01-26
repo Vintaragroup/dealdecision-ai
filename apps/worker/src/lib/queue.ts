@@ -63,15 +63,34 @@ export function createWorker(
     | "generate_ingestion_report"
     | "reconcile_ingest"
     | "orchestration",
-  processor: Processor<any, any, string>
+    processor: Processor<any, any, string>,
+    options?: {
+      concurrency?: number;
+      lockDuration?: number;
+    }
 ) {
   console.log(`[queue] Creating worker for queue: ${name}`);
 
-  // Render OOM prevention: keep the heavy queues single-threaded in-process.
-  // NOTE: lockDuration must cover long-running CPU-heavy extraction loops.
-  const heavyQueues = new Set(["ingest_documents", "extract_visuals", "deep_scan_visuals"]);
-  const concurrency = heavyQueues.has(name) ? 1 : 2;
-  const lockDuration = heavyQueues.has(name) ? 10 * 60 * 1000 : 2 * 60 * 1000;
+    const readPositiveIntEnv = (key: string, fallback: number) => {
+      const raw = process.env[key];
+      if (raw == null || raw.trim() === "") return fallback;
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 1) {
+        console.warn(`[queue] Invalid ${key}=${raw}; using ${fallback}`);
+        return fallback;
+      }
+      return parsed;
+    };
+
+    // Global concurrency cap (Render OOM prevention).
+    // Default is 1 unless explicitly overridden per-queue.
+    const envConcurrency = readPositiveIntEnv("WORKER_CONCURRENCY", 1);
+    const concurrency = options?.concurrency ?? envConcurrency;
+
+    // NOTE: lockDuration must cover long-running CPU-heavy extraction loops.
+    const heavyQueues = new Set(["ingest_documents", "extract_visuals", "deep_scan_visuals"]);
+    const lockDuration =
+      options?.lockDuration ?? (heavyQueues.has(name) ? 10 * 60 * 1000 : 2 * 60 * 1000);
 
   const heartbeatMsRaw = process.env.JOB_HEARTBEAT_INTERVAL_MS;
   const heartbeatMs = heartbeatMsRaw == null ? 60000 : Number(heartbeatMsRaw);

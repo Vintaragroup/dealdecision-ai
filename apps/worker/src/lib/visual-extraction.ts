@@ -397,22 +397,6 @@ export async function resolvePageImageUris(
 			metaObj?.rendered_pages_urls,
 			metaObj?.rendered_pages_uris,
 		];
-		for (const cand of metaListCandidates) {
-			if (!Array.isArray(cand)) continue;
-			const urls = cand
-				.filter((u) => typeof u === "string" && u.trim().length > 0)
-				.map((u) => u.trim());
-			if (urls.length > 0) {
-				logger.log(
-					JSON.stringify({
-						event: "PAGE_IMAGE_URIS_FROM_METADATA",
-						document_id: documentId,
-						count: urls.length,
-					})
-				);
-				return urls;
-			}
-		}
 
 		const prefixCandidates: unknown[] = [
 			metaObj?.rendered_pages_url_prefix,
@@ -421,38 +405,44 @@ export async function resolvePageImageUris(
 			metaObj?.page_images_uri_prefix,
 			metaObj?.page_image_url_prefix,
 		];
+
+		const legacyCandidateCounts = { list_urls: 0, prefix: 0 };
+		for (const cand of metaListCandidates) {
+			if (!Array.isArray(cand)) continue;
+			legacyCandidateCounts.list_urls += cand.filter((u) => typeof u === "string" && u.trim().length > 0).length;
+		}
 		for (const cand of prefixCandidates) {
 			if (typeof cand !== "string") continue;
-			const prefix = cand.trim().replace(/\/$/, "");
-			if (!prefix || !(prefix.startsWith("http://") || prefix.startsWith("https://"))) continue;
-			if (!pageCount || pageCount <= 0) continue;
-			const urls = Array.from({ length: pageCount }, (_, i) => `${prefix}/page_${String(i).padStart(3, "0")}.png`);
-			logger.log(
-				JSON.stringify({
-					event: "PAGE_IMAGE_URIS_FROM_METADATA_PREFIX",
-					document_id: documentId,
-					count: urls.length,
-					page_count: pageCount,
-				})
-			);
-			return urls;
+			const prefix = cand.trim();
+			if (prefix) legacyCandidateCounts.prefix += 1;
 		}
 
 		// Preferred Render-safe location: R2-backed rendered pages.
-		const renderedR2 = metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === "object"
-			? (metaObj.rendered_pages_r2 as any)
-			: null;
+		// When present, always prefer it over any legacy URL lists/prefixes.
+		const renderedR2 =
+			metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === "object" ? (metaObj.rendered_pages_r2 as any) : null;
 		if (renderedR2) {
 			const bucket = typeof renderedR2.bucket === "string" ? renderedR2.bucket.trim() : null;
 			const prefix = typeof renderedR2.prefix === "string" ? renderedR2.prefix.trim().replace(/\/$/, "") : "";
 			const formatRaw = typeof renderedR2.format === "string" ? renderedR2.format.trim() : "";
 			const format = formatRaw && !formatRaw.includes("/") ? formatRaw : "page_%04d.png";
-			const metaRenderedCount = typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count)
-				? metaObj.rendered_pages_count
-				: 0;
+			const metaRenderedCount =
+				typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count)
+					? metaObj.rendered_pages_count
+					: 0;
 			const effectiveCount = pageCount && pageCount > 0 ? pageCount : metaRenderedCount;
 			if (prefix && effectiveCount && effectiveCount > 0) {
 				try {
+					if (legacyCandidateCounts.list_urls > 0 || legacyCandidateCounts.prefix > 0) {
+						logger.warn(
+							JSON.stringify({
+								event: "RENDERED_PAGES_R2_PREFERRED_OVER_LEGACY",
+								document_id: documentId,
+								legacy_candidate_counts: legacyCandidateCounts,
+							})
+						);
+					}
+
 					const formatFilename = (pageIndex: number) => {
 						const idx = Number.isFinite(pageIndex) ? Math.max(0, Math.floor(pageIndex)) : 0;
 						const m = format.match(/%0(\d+)d/);
@@ -496,9 +486,42 @@ export async function resolvePageImageUris(
 					logger.warn(
 						`[visual_extraction] rendered_pages_r2 url generation failed doc=${documentId}: ${err instanceof Error ? err.message : String(err)}`
 					);
-					// fall through to filesystem discovery
+					// fall through to legacy metadata and/or filesystem discovery
 				}
 			}
+		}
+
+		for (const cand of metaListCandidates) {
+			if (!Array.isArray(cand)) continue;
+			const urls = cand
+				.filter((u) => typeof u === "string" && u.trim().length > 0)
+				.map((u) => u.trim());
+			if (urls.length > 0) {
+				logger.log(
+					JSON.stringify({
+						event: "PAGE_IMAGE_URIS_FROM_METADATA",
+						document_id: documentId,
+						count: urls.length,
+					})
+				);
+				return urls;
+			}
+		}
+		for (const cand of prefixCandidates) {
+			if (typeof cand !== "string") continue;
+			const prefix = cand.trim().replace(/\/$/, "");
+			if (!prefix || !(prefix.startsWith("http://") || prefix.startsWith("https://"))) continue;
+			if (!pageCount || pageCount <= 0) continue;
+			const urls = Array.from({ length: pageCount }, (_, i) => `${prefix}/page_${String(i).padStart(3, "0")}.png`);
+			logger.log(
+				JSON.stringify({
+					event: "PAGE_IMAGE_URIS_FROM_METADATA_PREFIX",
+					document_id: documentId,
+					count: urls.length,
+					page_count: pageCount,
+				})
+			);
+			return urls;
 		}
 
 		const dirs = candidateArtifactDirs({ documentId, meta: row?.extraction_metadata, env: options?.env });

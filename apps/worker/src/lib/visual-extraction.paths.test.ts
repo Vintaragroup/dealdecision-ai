@@ -63,7 +63,7 @@ describe("resolvePageImageUris path safety", () => {
       query: async () => ({
         rows: [
           {
-            page_count: 3,
+            page_count: 15,
             extraction_metadata: {
 				rendered_pages_r2: { bucket: "b", prefix: "deals/d/documents/x/rendered_pages", format: "page_%04d.png" },
             },
@@ -81,12 +81,14 @@ describe("resolvePageImageUris path safety", () => {
 
     const uris = await resolvePageImageUris(pool, "doc_r2", { fsImpl, env: process.env, logger: { log() {}, warn() {}, error() {} } as any });
 
-    expect(uris.length).toBe(3);
+    expect(uris.length).toBe(15);
     expect(uris[0].startsWith("https://r2.example/")).toBe(true);
 
-	// Ensure we use rendered_pages_r2.prefix in the signed URL keys.
-	expect(decodeURIComponent(uris[0])).toContain("/b/deals/d/documents/x/rendered_pages/");
-	// And ensure we did NOT fall back to legacy /documents/<doc>/pages paths.
-	expect(decodeURIComponent(uris[0])).not.toContain("/documents/doc_r2/pages/");
+  // Ensure we use rendered_pages_r2.prefix in the signed URL keys.
+  for (const idx of [0, 10, 14]) {
+    expect(decodeURIComponent(uris[idx])).toContain("/b/deals/d/documents/x/rendered_pages/");
+    // And ensure we did NOT fall back to legacy /documents/<doc>/pages paths.
+    expect(decodeURIComponent(uris[idx])).not.toContain("/documents/doc_r2/pages/");
+  }
   });
 });

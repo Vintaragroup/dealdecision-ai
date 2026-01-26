@@ -66,7 +66,7 @@ import { r2ObjectExists, uploadToR2 } from "./lib/r2";
 import { runJobWatchdogOnce } from "./lib/job-watchdog";
 import { selectReextractCandidates } from "./lib/reextract-selection";
 import { assertSchema } from "./lib/schema-check";
-import { computeChunkRangeForPage, probeHttpStatus } from "./lib/r2-probe";
+import { computeChunkRangeForPage } from "./lib/r2-probe";
 
 let didWarnUploadDirFallback = false;
 
@@ -197,6 +197,37 @@ import { enqueuePersistedJob } from "./lib/job-enqueue";
 console.info(
 	`VISUAL_EXTRACTION_FLAG: ENABLE_VISUAL_EXTRACTION=${process.env.ENABLE_VISUAL_EXTRACTION || "(unset)"}`
 );
+
+// Log the resolved vision service URL once at startup (helps catch accidental localhost wiring in production).
+try {
+	const cfg = getVisionExtractorConfig();
+	console.log(
+		JSON.stringify({
+			event: "VISION_SERVICE_URL_RESOLVED",
+			vision_service_url: cfg.visionWorkerUrl,
+			vision_enabled: cfg.enabled,
+			extractor_version: cfg.extractorVersion,
+		})
+	);
+} catch {
+	// ignore
+}
+
+function formatRenderedPageKey(params: { prefix: string; format?: string | null; pageIndex: number }): string {
+	const safePrefix = String(params.prefix ?? "").trim().replace(/\/$/, "");
+	const idx = Number.isFinite(params.pageIndex) ? Math.max(0, Math.floor(params.pageIndex)) : 0;
+	const raw = typeof params.format === "string" ? params.format.trim() : "";
+	const fmt = raw && !raw.includes("/") ? raw : "page_%04d.png";
+	if (fmt === "page_%04d.png") return r2RenderedPageKey(safePrefix, idx);
+	const m = fmt.match(/%0(\d+)d/);
+	if (m) {
+		const width = Number.parseInt(m[1], 10);
+		const padded = String(idx).padStart(Number.isFinite(width) ? Math.max(1, width) : 4, "0");
+		return `${safePrefix}/${fmt.replace(m[0], padded)}`;
+	}
+	if (fmt.includes("%d")) return `${safePrefix}/${fmt.replace("%d", String(idx))}`;
+	return r2RenderedPageKey(safePrefix, idx);
+}
 
 // Polyfill Promise.withResolvers for Node runtimes that don't provide it yet (Node < 22)
 if (typeof (Promise as any).withResolvers !== "function") {
@@ -1514,7 +1545,7 @@ async function ingestDocumentProcessor(job: Job) {
 					const chunkSize = persistCfg.maxPages;
 					const totalPages = finalPageCountForLog || pageCount || 0;
 					const r2Bucket = (process.env.R2_BUCKET || "").trim();
-					const prefix = `deals/${dealIdSafe}/documents/${docId}/pages`;
+					const prefix = `deals/${dealIdSafe}/documents/${docId}/rendered_pages`;
 					if (r2Bucket && totalPages > 0) {
 						renderedPagesR2ForLog = { bucket: r2Bucket, prefix };
 						await mergeDocumentExtractionMetadata({
@@ -1882,7 +1913,7 @@ registerWorker("render_document_pages", async (job: Job) => {
 
 	// Upload just this chunk to R2.
 	const r2Bucket = (process.env.R2_BUCKET || "").trim();
-	const prefix = `deals/${(dealIdResolved || dealIdSafe || "unknown")}/documents/${docId}/pages`;
+	const prefix = `deals/${(dealIdResolved || dealIdSafe || "unknown")}/documents/${docId}/rendered_pages`;
 	if (r2Bucket && res.rendered_pages_dir) {
 		try {
 			const chunkStart = pageStart;
@@ -2427,57 +2458,6 @@ registerWorker("extract_visuals", async (job: Job) => {
 				? Math.min(Math.max(pageStart, requestedPageEnd), totalPages)
 				: Math.min(pageStart + chunkSize, totalPages);
 
-		// Defensive: if R2-signed page URLs exist but the objects are not actually present yet,
-		// enqueue the missing render chunk and throw so BullMQ retries.
-		if (uris.length > 0) {
-			const probeIndex = pageStart;
-			const probeUri = uris[probeIndex];
-			if (typeof probeUri === "string" && (probeUri.startsWith("http://") || probeUri.startsWith("https://"))) {
-				const probe = await probeHttpStatus(probeUri, { timeoutMs: 7000, method: "HEAD" });
-				if (probe.status === 404) {
-					const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
-					const renderChunkSize = persistCfg.maxPages;
-					const range = computeChunkRangeForPage({ pageIndex: probeIndex, totalPages, chunkSize: renderChunkSize });
-					const dealIdForRender = dealId ?? (typeof (docMeta as any)?.deal_id === "string" ? String((docMeta as any).deal_id) : undefined);
-					try {
-						console.log(
-							JSON.stringify({
-								event: "R2_PROBE_404_TRIGGER_RENDER",
-								document_id: docId,
-								deal_id: dealIdForRender ?? null,
-								probe_page_index: probeIndex,
-								probe_status: probe.status,
-								render_chunk: range,
-								parent_job_id: job.id ? String(job.id) : null,
-							})
-						);
-					} catch {
-						// ignore
-					}
-
-					if (dealIdForRender) {
-						try {
-							const q = getQueue("render_document_pages");
-							await q.add(
-								"render_document_pages",
-								{ deal_id: dealIdForRender, document_id: docId, page_start: range.start, page_end: range.end },
-								{ jobId: `render_document_pages:${docId}:${range.start}-${range.end}`, removeOnComplete: true, removeOnFail: false }
-							);
-						} catch (err) {
-							const msg = err instanceof Error ? err.message : String(err);
-							if (!msg.toLowerCase().includes("exists")) {
-								console.warn(`[extract_visuals] render enqueue on 404 failed doc=${docId}: ${msg}`);
-							}
-						}
-					}
-
-					throw new Error(
-						`RETRYABLE_R2_404: missing rendered page (doc=${docId} page=${probeIndex}) - render enqueued`
-					);
-				}
-			}
-		}
-
 		// If this doc has more pages than we can safely process in one job, enqueue follow-up chunk jobs.
 		if (!isChunkJob && totalPages > chunkSize) {
 			try {
@@ -2657,8 +2637,8 @@ registerWorker("extract_visuals", async (job: Job) => {
 						const r2Bucket = (process.env.R2_BUCKET || "").trim();
 						const dealIdForPrefix = dealId ?? (typeof docMeta?.deal_id === "string" ? docMeta.deal_id : null);
 						const prefix = dealIdForPrefix
-							? `deals/${dealIdForPrefix}/documents/${docId}/pages`
-							: `documents/${docId}/pages`;
+							? `deals/${dealIdForPrefix}/documents/${docId}/rendered_pages`
+							: `documents/${docId}/rendered_pages`;
 						if (r2Bucket && renderRes.rendered_pages_dir) {
 							let names: string[] = [];
 							try {
@@ -3052,6 +3032,65 @@ registerWorker("extract_visuals", async (job: Job) => {
 		});
 
 		for (let i = pageStart; i < pageEndExclusive; i += 1) {
+			// Defensive: for R2-backed rendered pages, verify the object exists before calling vision.
+			// If missing, enqueue the render chunk and throw so BullMQ retries after render completes.
+			const renderedR2 =
+				docMeta?.extraction_metadata && typeof (docMeta.extraction_metadata as any)?.rendered_pages_r2 === "object"
+					? ((docMeta.extraction_metadata as any).rendered_pages_r2 as any)
+					: null;
+			if (renderedR2) {
+				const resolvedBucket =
+					typeof renderedR2.bucket === "string" && renderedR2.bucket.trim()
+						? renderedR2.bucket.trim()
+						: (process.env.R2_BUCKET || "").trim() || null;
+				const resolvedPrefix = typeof renderedR2.prefix === "string" ? renderedR2.prefix.trim().replace(/\/$/, "") : "";
+				const resolvedKey = resolvedPrefix ? formatRenderedPageKey({ prefix: resolvedPrefix, format: renderedR2.format, pageIndex: i }) : "";
+
+				if (resolvedBucket && resolvedKey) {
+					const exists = await r2ObjectExists({ bucket: resolvedBucket, key: resolvedKey, env: process.env });
+					if (!exists) {
+						const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
+						const renderChunkSize = persistCfg.maxPages;
+						const totalForChunk = typeof docPageCount === "number" && docPageCount > 0 ? docPageCount : totalPages;
+						const range = computeChunkRangeForPage({ pageIndex: i, totalPages: totalForChunk, chunkSize: renderChunkSize });
+						const dealIdForRender = dealId ?? (typeof (docMeta as any)?.deal_id === "string" ? String((docMeta as any).deal_id) : undefined);
+
+						console.log(
+							JSON.stringify({
+								event: "VISION_PAGE_MISSING_TRIGGER_RENDER",
+								document_id: docId,
+								page_index: i,
+								resolved_bucket: resolvedBucket,
+								resolved_prefix: resolvedPrefix,
+								resolved_key: resolvedKey,
+								vision_service_url: config.visionWorkerUrl,
+								render_chunk: range,
+								parent_job_id: job.id ? String(job.id) : null,
+								deal_id: dealIdForRender ?? null,
+							})
+						);
+
+						if (dealIdForRender) {
+							try {
+								const q = getQueue("render_document_pages");
+								await q.add(
+									"render_document_pages",
+									{ deal_id: dealIdForRender, document_id: docId, page_start: range.start, page_end: range.end },
+									{ jobId: `render_document_pages:${docId}:${range.start}-${range.end}`, removeOnComplete: true, removeOnFail: false }
+								);
+							} catch (err) {
+								const msg = err instanceof Error ? err.message : String(err);
+								if (!msg.toLowerCase().includes("exists")) {
+									console.warn(`[extract_visuals] render enqueue on missing page failed doc=${docId}: ${msg}`);
+								}
+							}
+						}
+
+						throw new Error(`RETRYABLE_VISION_PAGE_MISSING: missing rendered page (doc=${docId} page=${i}) - render enqueued`);
+					}
+				}
+			}
+
 			const image_uri = uris[i];
 			const image_b64 = await tryReadImageB64ForVision(image_uri, process.env);
 			const safe_image_uri =
@@ -3102,6 +3141,17 @@ registerWorker("extract_visuals", async (job: Job) => {
 				image_b64: image_b64 ?? undefined,
 				extractor_version: extractorVersion,
 			});
+			if (!response) {
+				console.warn(
+					JSON.stringify({
+						event: "VISION_CALL_FAILED",
+						document_id: docId,
+						page_index: i,
+						vision_service_url: config.visionWorkerUrl,
+						extractor_version: extractorVersion,
+					})
+				);
+			}
 
 			if (!response || !Array.isArray(response.assets) || response.assets.length === 0) {
 				console.warn(`[extract_visuals] Vision worker returned no assets for doc=${docId} page=${i}, persisting fallback`);

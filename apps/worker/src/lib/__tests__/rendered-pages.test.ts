@@ -86,8 +86,8 @@ describe("rendered pages", () => {
 			{ page_start: 10, page_end: 15 },
 		]);
 
-		const keys = Array.from({ length: 15 }, (_, i) => r2RenderedPageKey("deals/d/documents/x/pages", i));
-		expect(keys).toContain("deals/d/documents/x/pages/page_0014.png");
+		const keys = Array.from({ length: 15 }, (_, i) => r2RenderedPageKey("deals/d/documents/x/rendered_pages", i));
+		expect(keys).toContain("deals/d/documents/x/rendered_pages/page_0014.png");
 	});
 
 	it("copies from /tmp debug dir when present", async () => {

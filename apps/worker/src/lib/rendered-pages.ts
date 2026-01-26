@@ -368,11 +368,16 @@ export async function persistRenderedPageImages(params: {
 	};
 }
 
+type OfficePdfConversionResult = {
+	pdf: Buffer | null;
+	reason?: string;
+};
+
 async function convertOfficeToPdfBuffer(params: {
 	buffer: Buffer;
 	ext: "pptx" | "ppt" | "docx" | "doc" | "xlsx" | "xls";
 	logger?: LogLike;
-}): Promise<Buffer | null> {
+}): Promise<OfficePdfConversionResult> {
 	const logger = params.logger ?? console;
 	let tmpDir: string | null = null;
 	try {
@@ -385,30 +390,35 @@ async function convertOfficeToPdfBuffer(params: {
 				timeout: 20000,
 			});
 		} catch (err) {
+			const code = (err as any)?.code;
+			if (code === "ENOENT") {
+				logger.warn(`[rendered_pages] soffice missing (ENOENT) ext=${params.ext}`);
+				return { pdf: null, reason: "soffice_missing" };
+			}
 			logger.warn(
 				`[rendered_pages] soffice conversion failed ext=${params.ext}: ${
 					err instanceof Error ? err.message : String(err)
 				}`
 			);
-			return null;
+			return { pdf: null, reason: "soffice_failed" };
 		}
 
 		try {
 			const pdf = await fs.readFile(outputPath);
-			if (pdf && pdf.length > 0) return pdf;
+			if (pdf && pdf.length > 0) return { pdf };
 		} catch (err) {
 			logger.warn(
 				`[rendered_pages] soffice produced no pdf ext=${params.ext}: ${
 					err instanceof Error ? err.message : String(err)
 				}`
 			);
-			return null;
+			return { pdf: null, reason: "soffice_no_pdf" };
 		}
 	} catch (err) {
 		logger.warn(
 			`[rendered_pages] office conversion setup failed: ${err instanceof Error ? err.message : String(err)}`
 		);
-		return null;
+		return { pdf: null, reason: "conversion_setup_failed" };
 	} finally {
 		if (tmpDir) {
 			try {
@@ -419,7 +429,7 @@ async function convertOfficeToPdfBuffer(params: {
 		}
 	}
 
-	return null;
+	return { pdf: null, reason: "unknown" };
 }
 
 export async function renderNonPdfToPageImages(params: {
@@ -438,11 +448,11 @@ export async function renderNonPdfToPageImages(params: {
 		return { ok: true, reason: "unsupported_extension" };
 	}
 
-	const pdfBuffer = await convertOfficeToPdfBuffer({ buffer: params.buffer, ext: ext as any, logger: params.logger });
-	if (!pdfBuffer) return { ok: true, reason: "conversion_failed" };
+	const conversion = await convertOfficeToPdfBuffer({ buffer: params.buffer, ext: ext as any, logger: params.logger });
+	if (!conversion.pdf) return { ok: true, reason: conversion.reason ?? "conversion_failed" };
 
 	return persistRenderedPageImages({
-		buffer: pdfBuffer,
+		buffer: conversion.pdf,
 		documentId: params.documentId,
 		pageCount: params.pageCount,
 		uploadDir: params.uploadDir,

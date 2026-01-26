@@ -2,6 +2,7 @@ import type { Job } from "bullmq";
 import { randomUUID, createHash } from "crypto";
 import path from "path";
 import fs from "fs/promises";
+import { execSync } from "child_process";
 import type { JobProgressEventV1, JobStatus, JobStatusDetail } from "@dealdecision/contracts";
 import {
 	sanitizeText,
@@ -2138,6 +2139,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 	let docsHadPageCountMissing = 0;
 	let docsRenderedViaPdf = 0;
 	let docsRenderedViaLibreoffice = 0;
+	let docsSofficeMissing = 0;
 	let docsSyntheticAssetsUsed = 0;
 	let docsPdfTextRegionAssetsUsed = 0;
 	let docsExcelSkippedVision = 0;
@@ -2430,9 +2432,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 					docsMissingOriginalBytesIds.push(docId);
 				}
 
-				const uploadDir = process.env.UPLOAD_DIR
-					? path.resolve(process.env.UPLOAD_DIR)
-					: path.resolve(process.cwd(), "uploads");
+				const uploadDir = await resolveWritableUploadDir(process.env);
 				const persistCfg = getVisualPageImagePersistConfig();
 
 				// PDF rendering fallback
@@ -2459,10 +2459,85 @@ registerWorker("extract_visuals", async (job: Job) => {
 						docsRenderedViaPdf += 1;
 					}
 
+					// Best-effort: store count/timestamp even if we ultimately rely on R2 URLs.
+					try {
+						await mergeDocumentExtractionMetadata({
+							documentId: docId,
+							patch: {
+								rendered_pages_count: renderRes.rendered_pages_count,
+								rendered_pages_created_at: renderRes.rendered_pages_created_at,
+								rendered_pages_max_pages: renderRes.rendered_pages_max_pages,
+								rendered_pages_format: renderRes.rendered_pages_format,
+							},
+						});
+					} catch {
+						// best-effort
+					}
+
 					if (!existingPageCount && renderRes.page_count_detected && renderRes.page_count_detected > 0) {
 						await pool.query(
 							"UPDATE documents SET page_count = $2, updated_at = now() WHERE id = $1 AND (page_count IS NULL OR page_count <= 0)",
 							[docId, renderRes.page_count_detected]
+						);
+					}
+
+					// Critical for separated API+worker deployments: persist rendered pages to R2 so both services
+					// can access page images via HTTP(S) URLs.
+					try {
+						const r2Bucket = (process.env.R2_BUCKET || "").trim();
+						const dealIdForPrefix = dealId ?? (typeof docMeta?.deal_id === "string" ? docMeta.deal_id : null);
+						const prefix = dealIdForPrefix
+							? `deals/${dealIdForPrefix}/documents/${docId}/pages`
+							: `documents/${docId}/pages`;
+						if (r2Bucket && renderRes.rendered_pages_dir) {
+							let names: string[] = [];
+							try {
+								names = await fs.readdir(renderRes.rendered_pages_dir);
+							} catch {
+								names = [];
+							}
+
+							const pageFiles = names
+								.map((n) => {
+									const m = n.match(/^page_(\d{3})\.png$/);
+									if (!m) return null;
+									const pageIndex = Number.parseInt(m[1], 10);
+									if (!Number.isFinite(pageIndex)) return null;
+									return { name: n, pageIndex };
+								})
+								.filter(Boolean) as Array<{ name: string; pageIndex: number }>;
+
+							pageFiles.sort((a, b) => a.pageIndex - b.pageIndex);
+							for (const f of pageFiles) {
+								const localPath = path.join(renderRes.rendered_pages_dir, f.name);
+								const bytes = await fs.readFile(localPath);
+								if (!bytes || bytes.length === 0) continue;
+								const key = `${prefix}/page_${String(f.pageIndex).padStart(4, "0")}.png`;
+								await uploadToR2({
+									bucket: r2Bucket,
+									key,
+									body: bytes,
+									contentType: "image/png",
+									env: process.env,
+								});
+							}
+
+							await mergeDocumentExtractionMetadata({
+								documentId: docId,
+								patch: {
+									rendered_pages_r2: {
+										bucket: r2Bucket,
+										prefix,
+										format: "page_%04d.png",
+									},
+								},
+							});
+						}
+					} catch (err) {
+						console.warn(
+							`[extract_visuals] rendered page R2 upload failed doc=${docId}: ${
+								err instanceof Error ? err.message : String(err)
+							}`
 						);
 					}
 
@@ -2530,6 +2605,27 @@ registerWorker("extract_visuals", async (job: Job) => {
 						});
 					}
 
+					// If LibreOffice isn't installed (soffice missing), treat Office rendering as a skipped path
+					// with an explicit reason so jobs don't silently do nothing.
+					if (renderRes.reason === "soffice_missing" && docKind === "excel") {
+						docsSofficeMissing += 1;
+						try {
+							await mergeDocumentExtractionMetadata({
+								documentId: docId,
+								patch: {
+									visual_extraction: {
+										status: "skipped",
+										reason: "soffice_missing",
+										at: new Date().toISOString(),
+										file_ext: fileExt,
+									},
+								},
+							});
+						} catch {
+							// best-effort
+						}
+					}
+
 					uris = await resolvePageImageUris(pool, docId, { env: process.env, logger: console });
 				}
 
@@ -2582,6 +2678,20 @@ registerWorker("extract_visuals", async (job: Job) => {
 
 				docsMissingPageImages += 1;
 				docsMissingPageImagesIds.push(docId);
+				try {
+					await mergeDocumentExtractionMetadata({
+						documentId: docId,
+						patch: {
+							visual_extraction: {
+								status: "skipped",
+								reason: "NO_PAGE_IMAGES_AVAILABLE",
+								at: new Date().toISOString(),
+							},
+						},
+					});
+				} catch {
+					// best-effort
+				}
 				docsSkipped += 1;
 				continue;
 			}
@@ -2925,6 +3035,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 		docs_missing_page_images: docsMissingPageImages,
 		docs_rendered_via_pdf: docsRenderedViaPdf,
 		docs_rendered_via_libreoffice: docsRenderedViaLibreoffice,
+		docs_soffice_missing: docsSofficeMissing,
 		docs_synthetic_assets_used: docsSyntheticAssetsUsed,
 		docs_pdf_text_region_assets_used: docsPdfTextRegionAssetsUsed,
 		docs_excel_skipped_vision: docsExcelSkippedVision,
@@ -2947,24 +3058,25 @@ registerWorker("extract_visuals", async (job: Job) => {
 		};
 		await updateJob(
 			job,
-			"failed",
-			`No page images available for visual extraction. Diagnostics: ${JSON.stringify(diag)}. Fix: if original_file_tables_ok=false, run migration infra/migrations/2025-12-22-002-add-document-original-files.sql and re-ingest. If original_bytes_missing>0, re-upload/re-ingest so document_files is populated. Otherwise ensure rendered pages exist under UPLOAD_DIR (uploads/rendered_pages/<documentId>/page_000.png, etc).`,
+			"succeeded_with_warnings",
+			`Visual extraction produced no page assets (NO_PAGE_IMAGES_AVAILABLE). Skipped with diagnostics=${JSON.stringify(diag)}.`,
 			100
 		);
 		devLog("worker_extract_visuals_finish", {
 			job_id: job.id ? String(job.id) : null,
 			deal_id: dealId ?? null,
 			guard_triggered: false,
-			status: "failed",
+			status: "succeeded_with_warnings",
 			...jobCounters,
 		});
-		return { ok: false, persisted, docs_processed: docsProcessed, docs_skipped: docsSkipped, job_counters: jobCounters };
+		return { ok: true, persisted, docs_processed: docsProcessed, docs_skipped: docsSkipped, job_counters: jobCounters, status: "succeeded_with_warnings" };
 	}
 
-	const finalStatus = docsBlocked > 0 ? "succeeded_with_warnings" : "succeeded";
+	const hadWarnings = docsBlocked > 0 || docsMissingPageImages > 0 || docsMissingOriginalBytes > 0;
+	const finalStatus = hadWarnings ? "succeeded_with_warnings" : "succeeded";
 	const finalMessage =
-		docsBlocked > 0
-			? `Visual extraction succeeded with warnings (blocked=${docsBlocked}, processed=${docsProcessed}, skipped=${docsSkipped}, pages_skipped_existing=${pagesSkippedExisting}) counters=${JSON.stringify(jobCounters)}`
+		hadWarnings
+			? `Visual extraction succeeded with warnings (blocked=${docsBlocked}, processed=${docsProcessed}, skipped=${docsSkipped}, pages_skipped_existing=${pagesSkippedExisting}, missing_page_images=${docsMissingPageImages}, missing_original_bytes=${docsMissingOriginalBytes}) counters=${JSON.stringify(jobCounters)}`
 			: `Visual extraction complete (persisted=${persisted}, docs_processed=${docsProcessed}, docs_skipped=${docsSkipped}, pages_skipped_existing=${pagesSkippedExisting}) counters=${JSON.stringify(jobCounters)}`;
 
 	let dealIdForAudit: string | null = dealId ?? null;
@@ -4939,6 +5051,26 @@ registerWorker("generate_ingestion_report", async (job: Job) => {
 
 
 logWorkerQueueConfig("worker", Array.from(new Set(registeredWorkers)));
+
+// Optional: log LibreOffice presence for debugging Render deployments.
+// Must not crash the worker if `soffice` isn't installed.
+try {
+	const v = execSync("soffice --version").toString().trim();
+	console.log(
+		JSON.stringify({
+			event: "soffice_version",
+			service: "worker",
+			version: v,
+		})
+	);
+} catch {
+	console.warn(
+		JSON.stringify({
+			event: "soffice_missing",
+			service: "worker",
+		})
+	);
+}
 
 // One-time DB fingerprint + schema assertion.
 // - Do NOT log credentials or DATABASE_URL.

@@ -307,7 +307,22 @@ function candidateArtifactDirs(params: {
 	const metaObj = params.meta && typeof params.meta === "object" ? (params.meta as any) : null;
 	for (const key of ["debug_dir", "debugDir", "artifacts_dir", "artifactsDir", "rendered_pages_dir", "renderedPagesDir"]) {
 		const v = metaObj?.[key];
-		if (typeof v === "string" && v.trim()) dirs.push(v.trim());
+		if (typeof v !== "string" || !v.trim()) continue;
+		const trimmed = v.trim();
+		// In a separated API+worker setup (e.g. Render), documents.extraction_metadata may contain
+		// an absolute path from the API service filesystem. The worker must not depend on that path.
+		// Only consider absolute paths that live under the worker's UPLOAD_DIR.
+		if (path.isAbsolute(trimmed)) {
+			try {
+				const abs = path.resolve(trimmed);
+				const rel = path.relative(uploadDir, abs);
+				const isUnderUploadDir = rel && !rel.startsWith("..") && !path.isAbsolute(rel);
+				if (!isUnderUploadDir) continue;
+			} catch {
+				continue;
+			}
+		}
+		dirs.push(trimmed);
 	}
 
 	// Known extractor debug location (only exists if PDF_EXTRACT_DEBUG=1 at extraction time)
@@ -430,9 +445,13 @@ export async function resolvePageImageUris(
 		if (renderedR2) {
 			const bucket = typeof renderedR2.bucket === "string" ? renderedR2.bucket.trim() : null;
 			const prefix = typeof renderedR2.prefix === "string" ? renderedR2.prefix.trim().replace(/\/$/, "") : "";
-			if (prefix && pageCount && pageCount > 0) {
+			const metaRenderedCount = typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count)
+				? metaObj.rendered_pages_count
+				: 0;
+			const effectiveCount = pageCount && pageCount > 0 ? pageCount : metaRenderedCount;
+			if (prefix && effectiveCount && effectiveCount > 0) {
 				const urls: string[] = [];
-				for (let i = 0; i < pageCount; i += 1) {
+				for (let i = 0; i < effectiveCount; i += 1) {
 					const key = `${prefix}/page_${String(i).padStart(4, "0")}.png`;
 					try {
 						const url = await getR2ObjectUrl({ bucket, key, env: options?.env });
@@ -447,7 +466,7 @@ export async function resolvePageImageUris(
 							event: "PAGE_IMAGE_URIS_FROM_RENDERED_PAGES_R2",
 							document_id: documentId,
 							count: urls.length,
-							page_count: pageCount,
+							page_count: effectiveCount,
 						})
 					);
 					return urls;

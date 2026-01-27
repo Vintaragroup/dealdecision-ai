@@ -210,9 +210,54 @@ describe('DealWorkspace Job Center (live mode)', () => {
     await waitFor(() => {
       expect(apiGetJob).toHaveBeenCalled();
       expect(screen.getByText(/42% complete/i)).toBeInTheDocument();
+      expect(screen.getByText(/^Currently processing:/i)).toBeInTheDocument();
       // Message can appear in multiple UI locations.
       expect(screen.getAllByText(/^Crunching signals$/i).length).toBeGreaterThan(0);
     });
+  });
+
+  test('stall detection prefers progress heartbeat timestamp over updated_at', async () => {
+    const { apiPostAnalyze } = await import('../lib/apiClient');
+
+    const nowMs = new Date('2024-01-04T00:02:00.000Z').getTime();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(nowMs);
+
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v4', dioStatus: 'running' } as any);
+    vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-hb-1', status: 'queued' } as any);
+
+    // updated_at is old enough to be considered stalled, but progress.at is recent.
+    vi.mocked(apiGetJob).mockResolvedValue({
+      job_id: 'job-hb-1',
+      type: 'analyze_deal',
+      status: 'running',
+      progress_pct: 50,
+      message: 'Still working',
+      updated_at: '2024-01-04T00:00:00.000Z',
+      status_detail: {
+        progress: {
+          at: '2024-01-04T00:01:30.000Z',
+          stage: 'running',
+          message: 'Heartbeat tick',
+          percent: 50,
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-hb' });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Job Center/i)).toBeInTheDocument();
+    });
+
+    const [headerRunButton] = screen.getAllByRole('button', { name: /Run Analysis/i });
+    await userEvent.click(headerRunButton);
+
+    await waitFor(() => {
+      expect(apiGetJob).toHaveBeenCalled();
+      expect(screen.queryByText(/Running \(stalled\)/i)).not.toBeInTheDocument();
+    });
+
+    nowSpy.mockRestore();
   });
 
   test('renders Job Center even when backend mode is not live', async () => {

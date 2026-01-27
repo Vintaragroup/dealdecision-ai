@@ -1621,6 +1621,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     updatedAt: jobUpdatedAt,
     createdAt: jobCreatedAt,
     startedAt: jobStartedAt,
+    heartbeatAt: jobProgressSnapshot?.at ?? null,
     reason: jobReason,
     message: jobMessage,
     queuedSeconds: jobQueuedSeconds,
@@ -1787,6 +1788,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const progressMessage = jobProgressSnapshot?.message ?? jobMessage;
   const progressStageLabel = jobProgressSnapshot?.stage ? (stageLabelMap[jobProgressSnapshot.stage] ?? jobProgressSnapshot.stage) : null;
   const progressTimestamp = jobProgressSnapshot?.at ?? jobUpdatedAt;
+
+  const currentlyProcessingLine = (() => {
+    const snapshotMsg = typeof jobProgressSnapshot?.message === 'string' ? jobProgressSnapshot.message.trim() : '';
+    if (snapshotMsg) return snapshotMsg;
+    const jobMsg = typeof jobMessage === 'string' ? jobMessage.trim() : '';
+    if (jobMsg) return jobMsg;
+    return progressStageLabel ?? (jobStatus ? jobDisplay.label : null);
+  })();
 
   const removeToast = (id: string) => {
     setToasts(prev => prev.filter(toast => toast.id !== id));
@@ -2185,6 +2194,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     updatedAt?: string | null;
     createdAt?: string | null;
     startedAt?: string | null;
+    heartbeatAt?: string | null;
     reason?: string | null;
     message?: string | null;
     queuedSeconds?: number;
@@ -2197,15 +2207,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const runningThresholdSec = import.meta.env.DEV ? 30 : 90;
 
     const nowMs = Date.now();
+    const heartbeatMs = parseIso(meta.heartbeatAt);
     const updatedMs = parseIso(meta.updatedAt);
     const startedMs = parseIso(meta.startedAt);
     const createdMs = parseIso(meta.createdAt);
     const ageSeconds = (refMs: number | null) => (refMs == null ? null : Math.max(0, Math.floor((nowMs - refMs) / 1000)));
 
-    const updatedAge = ageSeconds(updatedMs);
+    // Prefer worker heartbeat timestamp when available.
+    const activityAge = ageSeconds(heartbeatMs ?? updatedMs);
     const createdAge = ageSeconds(createdMs);
     const startedAge = ageSeconds(startedMs);
-    const bestQueuedAge = updatedAge ?? createdAge ?? startedAge ?? (typeof meta.queuedSeconds === 'number' ? meta.queuedSeconds : null);
+    const bestQueuedAge = activityAge ?? createdAge ?? startedAge ?? (typeof meta.queuedSeconds === 'number' ? meta.queuedSeconds : null);
 
     let severity: JobSeverity = 'info';
     let label = 'Idle';
@@ -2258,9 +2270,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         sublabel = reason || message || `No worker update for ${bestQueuedAge}s`;
       }
 
-      if (['running', 'retrying'].includes(status) && updatedAge != null && updatedAge >= runningThresholdSec) {
+      if (['running', 'retrying'].includes(status) && activityAge != null && activityAge >= runningThresholdSec) {
         setLabelAndSeverity('Running (stalled)', 'warning');
-        sublabel = reason || message || `No progress update for ${updatedAge}s`;
+        sublabel = reason || message || `No progress update for ${activityAge}s`;
       }
     }
 
@@ -3100,10 +3112,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     <div className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                       {progressPercent}% complete
                     </div>
+                    {currentlyProcessingLine && (
+                      <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        Currently processing: {currentlyProcessingLine}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    {progressMessage || jobDisplay.sublabel || 'Waiting for worker update...'}
+                    {currentlyProcessingLine
+                      ? `Currently processing: ${currentlyProcessingLine}`
+                      : (progressMessage || jobDisplay.sublabel || 'Waiting for worker update...')}
                   </div>
                 )}
                 {progressMessage && (

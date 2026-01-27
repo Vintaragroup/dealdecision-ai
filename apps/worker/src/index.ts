@@ -894,7 +894,9 @@ type HeartbeatHandle = { stop: () => void };
 function startHeartbeat(
 	job: Job,
 	options: {
-		stage: JobProgressEventV1["stage"];
+		// Allow arbitrary stages so long-running jobs (e.g. analyze_deal) can emit
+		// generic heartbeat updates without expanding the shared contract.
+		stage: string;
 		dealId?: string;
 		documentId?: string;
 		startPercent?: number;
@@ -918,11 +920,11 @@ function startHeartbeat(
 				job_id: job.id ? String(job.id) : "",
 				deal_id: options.dealId,
 				document_id: options.documentId,
-				stage: options.stage,
+				stage: options.stage as any,
 				percent,
 				message: msg,
 				meta: { heartbeat: true },
-			});
+			} as any);
 		} catch (err) {
 			console.warn(
 				`[heartbeat] progress emit failed job=${job.id ?? job.name}: ${err instanceof Error ? err.message : String(err)}`
@@ -3615,6 +3617,10 @@ registerWorker("extract_visuals", async (job: Job) => {
 			},
 		});
 
+		let pagesCompletedInJob = 0;
+		let lastReportedCompleted = 0;
+		let lastSkipReportMs = 0;
+
 		for (let i = pageStart; i < pageEndExclusive; i += 1) {
 			// Defensive: for R2-backed rendered pages, verify the object exists before calling vision.
 			// If missing, enqueue the render chunk and throw so BullMQ retries after render completes.
@@ -3736,6 +3742,31 @@ registerWorker("extract_visuals", async (job: Job) => {
 					);
 					if ((rows?.length ?? 0) > 0) {
 						pagesSkippedExisting += 1;
+						pagesCompletedInJob += 1;
+						const nowMs = Date.now();
+						const shouldReport =
+							(pagesCompletedInJob - lastReportedCompleted) >= 3 ||
+							lastSkipReportMs === 0 ||
+							nowMs - lastSkipReportMs >= 1500 ||
+							pagesCompletedInJob >= pagesInJob;
+						if (shouldReport) {
+							lastReportedCompleted = pagesCompletedInJob;
+							lastSkipReportMs = nowMs;
+							await updateJobProgress(job, {
+								stage: "extract_visual_assets",
+								current: Math.min(pagesInJob, pagesCompletedInJob),
+								total: pagesInJob,
+								message: `Skipping existing page ${i + 1}/${totalPages}`,
+								page_start: pageStart,
+								page_end: pageEndExclusive,
+								meta: {
+									document_id: docId,
+									page_index: i,
+									skipped_existing: true,
+									range: { start: pageStart, end: pageEndExclusive },
+								},
+							});
+						}
 						continue;
 					}
 				} catch (err) {
@@ -3812,9 +3843,10 @@ registerWorker("extract_visuals", async (job: Job) => {
 				persisted += pCount;
 				docPersisted += pCount;
 				docPersistedWithImageUri += withImageUri;
+				pagesCompletedInJob += 1;
 				await updateJobProgress(job, {
 					stage: "extract_visual_assets",
-					current: Math.min(pagesInJob, (i - pageStart) + 1),
+					current: Math.min(pagesInJob, pagesCompletedInJob),
 					total: pagesInJob,
 					message: `Extracted page ${i + 1}/${totalPages}`,
 					page_start: pageStart,
@@ -5318,19 +5350,33 @@ registerWorker("analyze_deal", async (job: Job) => {
 			);
 		}
 
-		const result = await orchestrator.analyze({
-			deal_id: dealId,
-			analysis_cycle: 1,
-			input_data: {
-				documents: documentsForAnalyzers,
-				dio_context,
-				phase1_deal_overview_v2,
-				phase1_business_archetype_v1,
-				phase1_update_report_v1,
-				phase1_deal_summary_v2,
-				llm_calls,
-			},
+		const heartbeat = startHeartbeat(job, {
+			stage: "running",
+			dealId,
+			startPercent: 42,
+			maxPercent: 95,
+			intervalMs: 20000,
+			message: "Running analysis (heartbeat)",
 		});
+
+		let result: Awaited<ReturnType<typeof orchestrator.analyze>>;
+		try {
+			result = await orchestrator.analyze({
+				deal_id: dealId,
+				analysis_cycle: 1,
+				input_data: {
+					documents: documentsForAnalyzers,
+					dio_context,
+					phase1_deal_overview_v2,
+					phase1_business_archetype_v1,
+					phase1_update_report_v1,
+					phase1_deal_summary_v2,
+					llm_calls,
+				},
+			});
+		} finally {
+			heartbeat.stop();
+		}
 
 		if (!result.success || !result.storage_result) {
 			await updateJob(job, "failed", result.error || "Analysis failed", 100);

@@ -273,6 +273,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
         type: 'analyze_deal',
         status: 'failed',
         message: 'No extracted documents available for analysis',
+        parent_job_id: 'job-222',
         created_at: '2024-01-03T00:00:00.000Z',
         updated_at: '2024-01-03T00:00:00.000Z',
       },
@@ -344,6 +345,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     await waitFor(() => {
       expect(screen.getByText(/Full process completed/i)).toBeInTheDocument();
       expect(screen.getByText(/job job-new-ok/i)).toBeInTheDocument();
+      expect(screen.getAllByText(/Completed newer analysis/i).length).toBeGreaterThan(0);
     });
   });
 

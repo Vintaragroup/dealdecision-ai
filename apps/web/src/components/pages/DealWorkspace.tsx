@@ -137,6 +137,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
 
   const [fullProcessUi, setFullProcessUi] = useState<FullProcessUiState | null>(null);
+  const [fullProcessExtractJobId, setFullProcessExtractJobId] = useState<string | null>(null);
   const [sseReady, setSseReady] = useState(false);
   const [evidence, setEvidence] = useState<Array<{ evidence_id: string; deal_id: string; document_id?: string; visual_asset_id?: string; source: string; kind: string; text: string; confidence?: number; created_at?: string }>>([]);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
@@ -194,20 +195,31 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return msg.includes(NO_EXTRACTED_DOCS_ANALYZE_ERROR.toLowerCase());
   };
 
-  const pickBestAnalyzeJob = (rows: DealJobRowV2[], opts?: { preferParentJobId?: string | null }): DealJobRowV2 | null => {
+  const selectBestAnalyzeJob = (rows: DealJobRowV2[], pinnedAnalyzeJobId?: string | null): DealJobRowV2 | null => {
     const analyzeJobs = rows.filter((r) => (r.type ?? '') === 'analyze_deal');
     if (analyzeJobs.length === 0) return null;
 
-    const preferParent = opts?.preferParentJobId ? analyzeJobs.filter((r) => r.parent_job_id === opts.preferParentJobId) : [];
-    const inScope = preferParent.length > 0 ? preferParent : analyzeJobs;
+    const sorted = [...analyzeJobs].sort((a, b) => parseJobSortTs(b) - parseJobSortTs(a));
+    const newestSucceeded = sorted.find((r) => isSucceededJobStatus(r.status)) ?? null;
+    const newestAny = sorted[0] ?? null;
 
-    const succeeded = inScope.filter((r) => isSucceededJobStatus(r.status));
-    const pool = succeeded.length > 0 ? succeeded : inScope;
+    const pinned = pinnedAnalyzeJobId ? sorted.find((r) => r.job_id === pinnedAnalyzeJobId) ?? null : null;
+    if (pinned && isSupersedableAnalyzeFailure(pinned) && newestSucceeded && parseJobSortTs(newestSucceeded) > parseJobSortTs(pinned)) {
+      return newestSucceeded;
+    }
 
-    return pool.reduce<DealJobRowV2 | null>((best, row) => {
-      if (!best) return row;
-      return parseJobSortTs(row) > parseJobSortTs(best) ? row : best;
-    }, null);
+    if (newestSucceeded) return newestSucceeded;
+    return newestAny;
+  };
+
+  const selectAnalyzeChildForRun = (rows: DealJobRowV2[], parentJobId: string | null | undefined): DealJobRowV2 | null => {
+    if (!parentJobId) return null;
+    const candidates = rows.filter((r) => (r.type ?? '') === 'analyze_deal' && (r.parent_job_id ?? null) === parentJobId);
+    if (candidates.length === 0) return null;
+
+    const sorted = [...candidates].sort((a, b) => parseJobSortTs(b) - parseJobSortTs(a));
+    const newestSucceeded = sorted.find((r) => isSucceededJobStatus(r.status)) ?? null;
+    return newestSucceeded ?? (sorted[0] ?? null);
   };
 
   const dealJobsById = useMemo(() => {
@@ -216,32 +228,72 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return map;
   }, [dealJobs]);
 
-  const bestAnalyzeJob = useMemo(() => {
-    const preferParentJobId = fullProcessUi?.steps?.extract_visuals?.job_id ?? null;
-    return pickBestAnalyzeJob(dealJobs, { preferParentJobId });
-  }, [dealJobs, fullProcessUi]);
+  const pinnedJobRow = useMemo(() => {
+    if (!jobId) return null;
+    return dealJobsById.get(jobId) ?? null;
+  }, [dealJobsById, jobId]);
 
-  const supersedingSucceededAnalyzeJob = useMemo(() => {
-    const pinned = jobId ? dealJobsById.get(jobId) : null;
-    if (!isSupersedableAnalyzeFailure(pinned)) return null;
-    const pinnedTs = pinned ? parseJobSortTs(pinned) : 0;
-    const succeeded = dealJobs.filter((r) => (r.type ?? '') === 'analyze_deal' && isSucceededJobStatus(r.status));
-    const newerSucceeded = succeeded.filter((r) => parseJobSortTs(r) > pinnedTs);
-    if (newerSucceeded.length === 0) return null;
-    return newerSucceeded.reduce<DealJobRowV2 | null>((best, row) => {
-      if (!best) return row;
-      return parseJobSortTs(row) > parseJobSortTs(best) ? row : best;
-    }, null);
-  }, [dealJobs, dealJobsById, jobId]);
+  const fullProcessRunExtractJobId = fullProcessExtractJobId ?? fullProcessUi?.steps?.extract_visuals?.job_id ?? null;
 
-  const activeJobId = supersedingSucceededAnalyzeJob?.job_id ?? jobId;
+  const derivedAnalyzeJobForRun = useMemo(() => {
+    return fullProcessRunExtractJobId ? selectAnalyzeChildForRun(dealJobs, fullProcessRunExtractJobId) : null;
+  }, [dealJobs, fullProcessRunExtractJobId]);
+
+  const pinnedIsAnalyze = jobType === 'analyze_deal' || (pinnedJobRow?.type ?? null) === 'analyze_deal' || fullProcessUi?.current_step === 'analyze_deal';
+
+  const selectedAnalyzeJobForPinned = useMemo(() => {
+    if (!pinnedIsAnalyze) return null;
+    // During Full process, prefer analyze jobs scoped to the current extract_visuals run.
+    if (fullProcessRunExtractJobId) {
+      return derivedAnalyzeJobForRun ?? selectBestAnalyzeJob(dealJobs, jobId);
+    }
+    return selectBestAnalyzeJob(dealJobs, jobId);
+  }, [dealJobs, derivedAnalyzeJobForRun, fullProcessRunExtractJobId, jobId, pinnedIsAnalyze]);
+
+  const activeJobId = pinnedIsAnalyze ? (selectedAnalyzeJobForPinned?.job_id ?? jobId) : jobId;
 
   useEffect(() => {
+    if (!pinnedIsAnalyze) return;
     if (!jobId) return;
-    if (supersedingSucceededAnalyzeJob?.job_id && supersedingSucceededAnalyzeJob.job_id !== jobId) {
-      setJobId(supersedingSucceededAnalyzeJob.job_id);
+    if (selectedAnalyzeJobForPinned?.job_id && selectedAnalyzeJobForPinned.job_id !== jobId) {
+      setJobId(selectedAnalyzeJobForPinned.job_id);
     }
-  }, [jobId, supersedingSucceededAnalyzeJob?.job_id]);
+  }, [jobId, pinnedIsAnalyze, selectedAnalyzeJobForPinned?.job_id]);
+
+  const fullProcessTrackedJobIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (!fullProcessUi) return ids;
+    const reextractId = fullProcessUi.steps.reextract_documents.job_id;
+    const extractId = fullProcessUi.steps.extract_visuals.job_id;
+    const analyzeId = fullProcessUi.steps.analyze_deal.job_id;
+    if (reextractId) ids.add(reextractId);
+    if (extractId) ids.add(extractId);
+    if (analyzeId) ids.add(analyzeId);
+    return ids;
+  }, [fullProcessUi]);
+
+  useEffect(() => {
+    // Full process UX: when we were tracking the extract_visuals job and it reaches finalize/finished,
+    // switch the active job panel to the newest analyze child for this run.
+    if (!fullProcessRunExtractJobId) return;
+    if (!fullProcessUi) return;
+    if (!jobId) return;
+    if (jobId !== fullProcessRunExtractJobId) return;
+    if (!fullProcessTrackedJobIds.has(jobId)) return;
+    if (!derivedAnalyzeJobForRun?.job_id) return;
+    if (derivedAnalyzeJobForRun.job_id === jobId) return;
+
+    const stage = String(jobProgressSnapshot?.stage ?? '').toLowerCase();
+    const shouldSwitch =
+      stage === 'should_finalize' ||
+      stage === 'finalize' ||
+      stage === 'finished' ||
+      (jobStatus != null && ['succeeded', 'succeeded_with_warnings'].includes(String(jobStatus).toLowerCase()));
+
+    if (shouldSwitch) {
+      setJobId(derivedAnalyzeJobForRun.job_id);
+    }
+  }, [derivedAnalyzeJobForRun?.job_id, fullProcessRunExtractJobId, fullProcessTrackedJobIds, fullProcessUi, jobId, jobProgressSnapshot?.stage, jobStatus]);
   const shownToastKeysRef = useRef<Set<string>>(new Set());
   const lastProgressKeyRef = useRef<string | null>(null);
   const reportMissingRef = useRef<boolean>(false);
@@ -1366,6 +1418,39 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         } else {
           clearPollTimer();
           setAnalyzing(false);
+
+          // If an analyze_deal job fails but a newer succeeded analyze exists for the current Full process run,
+          // follow that job instead of pinning the UI to the stale failure.
+          if (job.type === 'analyze_deal' && normalizedStatus === 'failed') {
+            if (fullProcessRunExtractJobId) {
+              const bestForRun = selectAnalyzeChildForRun(dealJobs, fullProcessRunExtractJobId);
+              if (
+                bestForRun &&
+                bestForRun.job_id !== job.job_id &&
+                isSucceededJobStatus(bestForRun.status) &&
+                parseJobSortTs(bestForRun) > parseJobSortTs({ created_at: (job as any)?.created_at, updated_at: (job as any)?.updated_at })
+              ) {
+                setJobId(bestForRun.job_id);
+                return;
+              }
+            }
+
+            // Legacy/compat: if a known analyze failure has been superseded by a newer succeeded analyze job,
+            // don't show the failure toast; follow the succeeded job instead.
+            if (isSupersedableAnalyzeFailure({ status: normalizedStatus, message: job.message })) {
+              const best = selectBestAnalyzeJob(dealJobs, job.job_id);
+              if (
+                best &&
+                best.job_id !== job.job_id &&
+                isSucceededJobStatus(best.status) &&
+                parseJobSortTs(best) > parseJobSortTs({ created_at: (job as any)?.created_at, updated_at: (job as any)?.updated_at })
+              ) {
+                setJobId(best.job_id);
+                return;
+              }
+            }
+          }
+
           addToastOnce(
             `analysis-complete:${activeJobId}:${normalizedStatus}`,
             normalizedStatus === 'succeeded' ? 'success' : normalizedStatus === 'succeeded_with_warnings' ? 'warning' : 'error',
@@ -1938,6 +2023,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const runFullProcess = async () => {
     if (!dealId) return;
 
+    setFullProcessExtractJobId(null);
     setAnalyzing(true);
     setJobProgress(null);
     setJobMessage(null);
@@ -2027,6 +2113,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       setJobType('extract_visuals');
       setFullProcessUi((prev) => (prev ? { ...prev, current_step: 'extract_visuals' } : prev));
       const extractRes = await apiPostExtractVisuals(dealId);
+      setFullProcessExtractJobId(extractRes.job_id);
       setJobId(extractRes.job_id);
       setJobStatus(extractRes.status);
       addToast('info', 'Extract visuals queued', `Job ${extractRes.job_id}`);
@@ -2096,59 +2183,50 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         return;
       }
       if (analyzeDone.normalizedStatus !== 'succeeded' && analyzeDone.normalizedStatus !== 'succeeded_with_warnings') {
-        const failureMsg = analyzeDone.job.message || analyzeDone.normalizedStatus;
-        const isNoDocsFailure = String(failureMsg ?? '').toLowerCase().includes(NO_EXTRACTED_DOCS_ANALYZE_ERROR.toLowerCase());
-        if (isNoDocsFailure) {
-          try {
-            const rows = await apiGetDealJobs(dealId, { limit: 200, type: 'analyze_deal' });
-            const pinnedTs = parseJobSortTs({ updated_at: (analyzeDone.job as any)?.updated_at, created_at: (analyzeDone.job as any)?.created_at });
-            const newerSucceeded = (Array.isArray(rows) ? rows : [])
-              .filter((r) => (r.type ?? '') === 'analyze_deal' && isSucceededJobStatus(r.status))
-              .filter((r) => parseJobSortTs(r) > pinnedTs);
-            const best = newerSucceeded.reduce<DealJobRowV2 | null>((bestRow, row) => {
-              if (!bestRow) return row;
-              return parseJobSortTs(row) > parseJobSortTs(bestRow) ? row : bestRow;
-            }, null);
-            if (best) {
-              updateFullStep('analyze_deal', {
-                status: String(best.status ?? 'succeeded') as any,
-                job_id: best.job_id,
-                progress_pct: typeof best.progress_pct === 'number' ? best.progress_pct : 100,
-                message: (best.message ?? best.error ?? 'Analysis completed') as any,
-                updated_at: best.updated_at ?? null,
-              });
-              setJobId(best.job_id);
-              setJobStatus(String(best.status ?? 'succeeded'));
+        // Even if the initially returned analyze job fails, the backend may enqueue additional analyze_deal jobs
+        // for the same run (linked via parent_job_id = extract_visuals job_id). Prefer a newer succeeded child.
+        try {
+          const rows = await apiGetDealJobs(dealId, { limit: 200 });
+          const derived = selectAnalyzeChildForRun(Array.isArray(rows) ? rows : [], extractRes.job_id);
+          if (derived && isSucceededJobStatus(derived.status)) {
+            updateFullStep('analyze_deal', {
+              status: String(derived.status ?? 'succeeded') as any,
+              job_id: derived.job_id,
+              progress_pct: typeof derived.progress_pct === 'number' ? derived.progress_pct : 100,
+              message: (derived.message ?? derived.error ?? 'Analysis completed') as any,
+              updated_at: derived.updated_at ?? null,
+            });
+            setJobId(derived.job_id);
+            setJobStatus(String(derived.status ?? 'succeeded'));
 
-              // Post-analysis refresh (same as success path)
-              apiGetDeal(dealId)
-                .then((deal) => {
-                  setDealFromApi(deal);
-                  setDioMeta({
-                    dioVersionId: (deal as any).dioVersionId,
-                    dioStatus: (deal as any).dioStatus,
-                    lastAnalyzedAt: (deal as any).lastAnalyzedAt,
-                    dioRunCount: (deal as any).dioRunCount,
-                    dioAnalysisVersion: (deal as any).dioAnalysisVersion,
-                  });
-                })
-                .catch(() => {});
+            // Post-analysis refresh (same as success path)
+            apiGetDeal(dealId)
+              .then((deal) => {
+                setDealFromApi(deal);
+                setDioMeta({
+                  dioVersionId: (deal as any).dioVersionId,
+                  dioStatus: (deal as any).dioStatus,
+                  lastAnalyzedAt: (deal as any).lastAnalyzedAt,
+                  dioRunCount: (deal as any).dioRunCount,
+                  dioAnalysisVersion: (deal as any).dioAnalysisVersion,
+                });
+              })
+              .catch(() => {});
 
-              reportMissingRef.current = false;
-              loadReport({ force: true });
-              loadEvidence();
+            reportMissingRef.current = false;
+            loadReport({ force: true });
+            loadEvidence();
 
-              addToast('success', 'Full process completed', 'Documents, visuals, and analysis refreshed');
-              setFullProcessUi((prev) => (prev ? { ...prev, ok: true, error: null } : prev));
-              setAnalyzing(false);
-              return;
-            }
-          } catch {
-            // fall through to default failure handling
+            addToast('success', 'Full process completed', 'Documents, visuals, and analysis refreshed');
+            setFullProcessUi((prev) => (prev ? { ...prev, ok: true, error: null } : prev));
+            setAnalyzing(false);
+            return;
           }
+        } catch {
+          // fall through to default failure handling
         }
 
-        addToast('error', 'Analyze deal failed', failureMsg);
+        addToast('error', 'Analyze deal failed', analyzeDone.job.message || analyzeDone.normalizedStatus);
         updateFullStep('analyze_deal', { status: analyzeDone.normalizedStatus as any, message: analyzeDone.job.message ?? null });
         setFullProcessUi((prev) => (prev ? { ...prev, ok: false, error: 'Analyze deal failed' } : prev));
         setAnalyzing(false);
@@ -2192,7 +2270,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     setJobCreatedAt(null);
     setJobStartedAt(null);
     setJobReason(null);
-    addToast('info', 'Visual extraction started', 'Queued extract visuals job...');
+    reportMissingRef.current = false;
+    lastReportAttemptAtRef.current = 0;
+    addToast('info', 'Visual extraction started', 'Queued visual extraction job...');
     try {
       const res = await apiPostExtractVisuals(dealId);
       setJobId(res.job_id);
@@ -2200,44 +2280,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       addToast('info', 'Job queued', `Job ${res.job_id}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
-
-      // Surface backend diagnostics for missing originals/rendered pages.
-      // Example: "No page images available... Diagnostics: {"docs_targeted":1,...}".
-      const diagMatch = typeof message === 'string' ? message.match(/Diagnostics:\s*(\{.*\})/) : null;
-      const diagnostics = (() => {
-        if (!diagMatch) return null;
-        try {
-          return JSON.parse(diagMatch[1]);
-        } catch {
-          return null;
-        }
-      })();
-
-      if (diagnostics) {
-        const missingOriginals = diagnostics.original_bytes_missing ?? 0;
-        const missingRendered = diagnostics.page_images_missing ?? 0;
-        const missingDocIds = diagnostics.missing_page_images_doc_ids ?? diagnostics.missing_original_bytes_doc_ids;
-        const docList = Array.isArray(missingDocIds) && missingDocIds.length > 0 ? missingDocIds.join(', ') : '—';
-
-        addToast(
-          'error',
-          'Visual extraction blocked (missing source files)',
-          `Docs targeted=${diagnostics.docs_targeted ?? '?'} · missing originals=${missingOriginals} · missing renders=${missingRendered} · docIds=${docList}`
-        );
-
-        // Provide remediation guidance inline so users can self-serve.
-        addToast(
-          'info',
-          'Fix extraction inputs',
-          diagnostics.original_file_tables_ok === false
-            ? 'Run migration infra/migrations/2025-12-22-002-add-document-original-files.sql then re-ingest documents.'
-            : missingOriginals > 0
-              ? 'Re-upload/re-ingest the document so document_files.original_bytes is populated; then rerun extraction.'
-              : 'Ensure rendered page images exist under uploads/rendered_pages/<docId>/page_0000.png and rerun extraction.'
-        );
-      } else {
-        addToast('error', 'Visual extraction failed to start', message);
-      }
+      addToast('error', 'Visual extraction failed to start', message);
       setAnalyzing(false);
       return;
     }
@@ -3397,11 +3440,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               {fullProcessUi && (
                 <div className={`mt-4 p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
                   {(() => {
-                    const analyzeStep = fullProcessUi.steps.analyze_deal;
-                    const analyzeRow = analyzeStep?.job_id ? dealJobsById.get(analyzeStep.job_id) : null;
-                    const isSuperseded = isSupersedableAnalyzeFailure(analyzeRow) && bestAnalyzeJob && isSucceededJobStatus(bestAnalyzeJob.status) && parseJobSortTs(bestAnalyzeJob) > parseJobSortTs(analyzeRow ?? { created_at: null, updated_at: null });
-                    const derivedOk = isSuperseded ? true : fullProcessUi.ok;
-                    const derivedError = isSuperseded ? null : fullProcessUi.error;
+                    const extractJobIdForRun = fullProcessRunExtractJobId;
+                    const derivedAnalyze = extractJobIdForRun ? selectAnalyzeChildForRun(dealJobs, extractJobIdForRun) : null;
+                    const derivedOk =
+                      fullProcessUi.ok === false && derivedAnalyze && isSucceededJobStatus(derivedAnalyze.status)
+                        ? true
+                        : fullProcessUi.ok;
+                    const derivedError = derivedOk === true ? null : fullProcessUi.error;
 
                     return (
                       <>
@@ -3415,19 +3460,19 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     {(['reextract_documents', 'extract_visuals', 'analyze_deal'] as const).map((k) => {
                       const baseStep = fullProcessUi.steps[k];
                       const step =
-                        k === 'analyze_deal' && bestAnalyzeJob
+                        k === 'analyze_deal' && derivedAnalyze
                           ? {
                               ...baseStep,
-                              status: String(bestAnalyzeJob.status ?? baseStep.status) as any,
-                              job_id: bestAnalyzeJob.job_id,
+                              status: String(derivedAnalyze.status ?? baseStep.status) as any,
+                              job_id: derivedAnalyze.job_id,
                               progress_pct:
-                                typeof bestAnalyzeJob.progress_pct === 'number'
-                                  ? bestAnalyzeJob.progress_pct
+                                typeof derivedAnalyze.progress_pct === 'number'
+                                  ? derivedAnalyze.progress_pct
                                   : typeof baseStep.progress_pct === 'number'
                                     ? baseStep.progress_pct
                                     : null,
-                              message: (bestAnalyzeJob.message ?? bestAnalyzeJob.error ?? baseStep.message ?? null) as any,
-                              updated_at: bestAnalyzeJob.updated_at ?? baseStep.updated_at ?? null,
+                              message: (derivedAnalyze.message ?? derivedAnalyze.error ?? baseStep.message ?? null) as any,
+                              updated_at: derivedAnalyze.updated_at ?? baseStep.updated_at ?? null,
                             }
                           : baseStep;
                       const sev = fullProcessStepSeverity(step?.status);

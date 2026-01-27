@@ -3,7 +3,14 @@ import { sanitizeDeep, sanitizeText } from "@dealdecision/core";
 
 import { getPool } from "./db";
 
-export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "retrying" | "cancelled";
+export type JobStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "succeeded_with_warnings"
+  | "failed"
+  | "retrying"
+  | "cancelled";
 
 export type JobProgressPayload = {
   stage?: string;
@@ -219,7 +226,11 @@ export async function updateJobProgress(job: Job, input: UpdateJobProgressInput)
   // Postgres write (debounced): keep UI progress across reloads.
   const atIso = new Date().toISOString();
   const progressPct = computeProgressPct(current, total);
-  const isTerminal = input.status === "succeeded" || input.status === "failed" || input.status === "cancelled";
+  const isTerminal =
+    input.status === "succeeded" ||
+    input.status === "succeeded_with_warnings" ||
+    input.status === "failed" ||
+    input.status === "cancelled";
   const startedAt = input.status === "running" ? atIso : null;
   const finishedAt = isTerminal ? atIso : null;
 

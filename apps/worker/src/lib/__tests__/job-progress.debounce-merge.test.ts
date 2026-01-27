@@ -25,9 +25,9 @@ describe("updateJobProgress debounced DB writes", () => {
 			updateProgress: vi.fn(async () => undefined),
 		} as any;
 
-		// First call sets a terminal-ish status (e.g. succeeded) via updateJob().
+		// First call sets a terminal status (e.g. succeeded_with_warnings) via updateJob().
 		await updateJobProgress(job, {
-			status: "succeeded" as any,
+			status: "succeeded_with_warnings" as any,
 			stage: "status_update",
 			current: 100,
 			total: 100,
@@ -52,8 +52,10 @@ describe("updateJobProgress debounced DB writes", () => {
 		const lastParams = (query as any).mock.calls.at(-1)?.[1] as any[] | undefined;
 		expect(Array.isArray(lastParams)).toBe(true);
 		// $2 is status in the UPDATE query.
-		expect(lastParams?.[1]).toBe("succeeded");
+		expect(lastParams?.[1]).toBe("succeeded_with_warnings");
 		// $3 is stage.
 		expect(lastParams?.[2]).toBe("finalize");
+		// $11 is finished_at in the UPDATE query.
+		expect(typeof lastParams?.[10]).toBe("string");
 	});
 });

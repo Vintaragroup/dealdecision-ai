@@ -4256,6 +4256,16 @@ registerWorker("extract_visuals", async (job: Job) => {
 		status: finalStatus,
 		...jobCounters,
 	});
+
+	// IMPORTANT: Make the parent job terminal at the very end, with stage=finalize.
+	// This avoids debounce ordering or later progress-only updates leaving the job stuck as running.
+	await updateJobProgress(job, {
+		status: finalStatus as any,
+		stage: "finalize",
+		current: 100,
+		total: 100,
+		message: finalMessage,
+	});
 	return {
 		ok: true,
 		persisted,

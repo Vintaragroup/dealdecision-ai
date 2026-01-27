@@ -61,6 +61,22 @@ function getDbDebounceMs(): number {
 
 const perJobState = new Map<string, JobWriteState>();
 
+function mergePendingDbWrites(prev: PendingDbWrite, next: PendingDbWrite): PendingDbWrite {
+  // Preserve already-known status and timestamps unless the newer payload explicitly sets them.
+  // This prevents a progress-only update from clobbering a just-scheduled status transition
+  // when DB writes are debounced.
+  return {
+    ...prev,
+    ...next,
+    status: next.status ?? prev.status,
+    startedAt: next.startedAt ?? prev.startedAt,
+    finishedAt: next.finishedAt ?? prev.finishedAt,
+    parentJobId: next.parentJobId ?? prev.parentJobId,
+    pageStart: typeof next.pageStart === "number" ? next.pageStart : prev.pageStart,
+    pageEnd: typeof next.pageEnd === "number" ? next.pageEnd : prev.pageEnd,
+  };
+}
+
 function computeProgressPct(current: number | undefined, total: number | undefined): number | null {
   if (typeof current !== "number" || typeof total !== "number") return null;
   if (!Number.isFinite(current) || !Number.isFinite(total) || total <= 0) return null;
@@ -143,7 +159,7 @@ function scheduleDbWrite(jobId: string, pending: PendingDbWrite): void {
   const now = Date.now();
 
   const state: JobWriteState = perJobState.get(jobId) ?? { lastDbWriteAt: 0, timer: null, pending: null };
-  state.pending = pending;
+  state.pending = state.pending ? mergePendingDbWrites(state.pending, pending) : pending;
 
   const elapsed = now - state.lastDbWriteAt;
   const delay = elapsed >= debounceMs ? 0 : debounceMs - elapsed;

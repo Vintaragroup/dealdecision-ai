@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Tabs, Tab } from '../ui/tabs';
 import { Accordion, AccordionItem } from '../ui/accordion';
 import { Button } from '../ui/button';
@@ -168,6 +168,80 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [showProfileEditor, setShowProfileEditor] = useState(false);
   const lastEventIdRef = useRef<string | undefined>(undefined);
   const handledTerminalJobKeysRef = useRef<Set<string>>(new Set());
+
+  const NO_EXTRACTED_DOCS_ANALYZE_ERROR = 'No extracted documents available for analysis';
+
+  const parseJobSortTs = (row: { updated_at?: string | null; created_at?: string | null }): number => {
+    const ts = row.updated_at || row.created_at;
+    if (!ts) return 0;
+    const n = Date.parse(ts);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const isSucceededJobStatus = (status: unknown): boolean => {
+    const s = String(status ?? '').toLowerCase();
+    return s === 'succeeded' || s === 'succeeded_with_warnings';
+  };
+
+  const isFailedJobStatus = (status: unknown): boolean => {
+    return String(status ?? '').toLowerCase() === 'failed';
+  };
+
+  const isSupersedableAnalyzeFailure = (row: { status?: unknown; message?: unknown; error?: unknown } | null | undefined): boolean => {
+    if (!row) return false;
+    if (!isFailedJobStatus(row.status)) return false;
+    const msg = String(row.message ?? row.error ?? '').toLowerCase();
+    return msg.includes(NO_EXTRACTED_DOCS_ANALYZE_ERROR.toLowerCase());
+  };
+
+  const pickBestAnalyzeJob = (rows: DealJobRowV2[], opts?: { preferParentJobId?: string | null }): DealJobRowV2 | null => {
+    const analyzeJobs = rows.filter((r) => (r.type ?? '') === 'analyze_deal');
+    if (analyzeJobs.length === 0) return null;
+
+    const preferParent = opts?.preferParentJobId ? analyzeJobs.filter((r) => r.parent_job_id === opts.preferParentJobId) : [];
+    const inScope = preferParent.length > 0 ? preferParent : analyzeJobs;
+
+    const succeeded = inScope.filter((r) => isSucceededJobStatus(r.status));
+    const pool = succeeded.length > 0 ? succeeded : inScope;
+
+    return pool.reduce<DealJobRowV2 | null>((best, row) => {
+      if (!best) return row;
+      return parseJobSortTs(row) > parseJobSortTs(best) ? row : best;
+    }, null);
+  };
+
+  const dealJobsById = useMemo(() => {
+    const map = new Map<string, DealJobRowV2>();
+    for (const row of dealJobs) map.set(row.job_id, row);
+    return map;
+  }, [dealJobs]);
+
+  const bestAnalyzeJob = useMemo(() => {
+    const preferParentJobId = fullProcessUi?.steps?.extract_visuals?.job_id ?? null;
+    return pickBestAnalyzeJob(dealJobs, { preferParentJobId });
+  }, [dealJobs, fullProcessUi]);
+
+  const supersedingSucceededAnalyzeJob = useMemo(() => {
+    const pinned = jobId ? dealJobsById.get(jobId) : null;
+    if (!isSupersedableAnalyzeFailure(pinned)) return null;
+    const pinnedTs = pinned ? parseJobSortTs(pinned) : 0;
+    const succeeded = dealJobs.filter((r) => (r.type ?? '') === 'analyze_deal' && isSucceededJobStatus(r.status));
+    const newerSucceeded = succeeded.filter((r) => parseJobSortTs(r) > pinnedTs);
+    if (newerSucceeded.length === 0) return null;
+    return newerSucceeded.reduce<DealJobRowV2 | null>((best, row) => {
+      if (!best) return row;
+      return parseJobSortTs(row) > parseJobSortTs(best) ? row : best;
+    }, null);
+  }, [dealJobs, dealJobsById, jobId]);
+
+  const activeJobId = supersedingSucceededAnalyzeJob?.job_id ?? jobId;
+
+  useEffect(() => {
+    if (!jobId) return;
+    if (supersedingSucceededAnalyzeJob?.job_id && supersedingSucceededAnalyzeJob.job_id !== jobId) {
+      setJobId(supersedingSucceededAnalyzeJob.job_id);
+    }
+  }, [jobId, supersedingSucceededAnalyzeJob?.job_id]);
   const shownToastKeysRef = useRef<Set<string>>(new Set());
   const lastProgressKeyRef = useRef<string | null>(null);
   const reportMissingRef = useRef<boolean>(false);
@@ -1201,7 +1275,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, [dealId]);
 
   useEffect(() => {
-    if (!jobId || jobStatus !== 'queued') {
+    if (!activeJobId || jobStatus !== 'queued') {
       setJobQueuedSeconds(0);
       return;
     }
@@ -1214,10 +1288,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return () => {
       window.clearInterval(id);
     };
-  }, [jobId, jobStatus]);
+  }, [activeJobId, jobStatus]);
 
   useEffect(() => {
-    if (!jobId) return;
+    if (!activeJobId) return;
     let cancelled = false;
     let pollTimer: number | undefined;
     let consecutiveErrors = 0;
@@ -1255,8 +1329,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const poll = async () => {
       if (cancelled) return;
       try {
-        jobsLog('poll:getJob:start', { jobId, sseReady });
-        const job = await apiGetJob(jobId);
+        jobsLog('poll:getJob:start', { jobId: activeJobId, sseReady });
+        const job = await apiGetJob(activeJobId);
         if (cancelled) return;
         consecutiveErrors = 0;
 
@@ -1293,7 +1367,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           clearPollTimer();
           setAnalyzing(false);
           addToastOnce(
-            `analysis-complete:${jobId}:${normalizedStatus}`,
+            `analysis-complete:${activeJobId}:${normalizedStatus}`,
             normalizedStatus === 'succeeded' ? 'success' : normalizedStatus === 'succeeded_with_warnings' ? 'warning' : 'error',
             'Analysis completed',
             job.message || normalizedStatus || 'completed'
@@ -1331,7 +1405,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         setJobStatus('failed');
         setJobMessage(message);
         setJobUpdatedAt(new Date().toISOString());
-        addToastOnce(`job-poll-failed:${jobId}`, 'error', 'Job polling failed', message);
+        addToastOnce(`job-poll-failed:${activeJobId}`, 'error', 'Job polling failed', message);
         // Stop further polling to avoid noisy loops; user can re-run the job to restart tracking.
         cancelled = true;
       }
@@ -1342,7 +1416,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       cancelled = true;
       clearPollTimer();
     };
-  }, [jobId, sseReady]);
+  }, [activeJobId, sseReady]);
 
   useEffect(() => {
     if (!dealId) {
@@ -1402,7 +1476,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       onJobUpdated: (job: JobUpdatedEvent) => {
         if (cancelled) return;
         if (job.deal_id && dealId && job.deal_id !== dealId) return;
-        if (job.type !== 'fetch_evidence' && jobId && job.job_id !== jobId) return;
+        if (job.type !== 'fetch_evidence' && activeJobId && job.job_id !== activeJobId) return;
         setSseReady(true);
         if (job.updated_at) {
           lastEventIdRef.current = job.updated_at;
@@ -1476,7 +1550,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       cancelled = true;
       unsubscribe();
     };
-  }, [dealId, jobId]);
+  }, [dealId, activeJobId]);
 
   const tabs: Tab[] = [
     { id: 'overview', label: 'Overview', icon: <BarChart3 className="w-4 h-4" /> },
@@ -2022,7 +2096,59 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         return;
       }
       if (analyzeDone.normalizedStatus !== 'succeeded' && analyzeDone.normalizedStatus !== 'succeeded_with_warnings') {
-        addToast('error', 'Analyze deal failed', analyzeDone.job.message || analyzeDone.normalizedStatus);
+        const failureMsg = analyzeDone.job.message || analyzeDone.normalizedStatus;
+        const isNoDocsFailure = String(failureMsg ?? '').toLowerCase().includes(NO_EXTRACTED_DOCS_ANALYZE_ERROR.toLowerCase());
+        if (isNoDocsFailure) {
+          try {
+            const rows = await apiGetDealJobs(dealId, { limit: 200, type: 'analyze_deal' });
+            const pinnedTs = parseJobSortTs({ updated_at: (analyzeDone.job as any)?.updated_at, created_at: (analyzeDone.job as any)?.created_at });
+            const newerSucceeded = (Array.isArray(rows) ? rows : [])
+              .filter((r) => (r.type ?? '') === 'analyze_deal' && isSucceededJobStatus(r.status))
+              .filter((r) => parseJobSortTs(r) > pinnedTs);
+            const best = newerSucceeded.reduce<DealJobRowV2 | null>((bestRow, row) => {
+              if (!bestRow) return row;
+              return parseJobSortTs(row) > parseJobSortTs(bestRow) ? row : bestRow;
+            }, null);
+            if (best) {
+              updateFullStep('analyze_deal', {
+                status: String(best.status ?? 'succeeded') as any,
+                job_id: best.job_id,
+                progress_pct: typeof best.progress_pct === 'number' ? best.progress_pct : 100,
+                message: (best.message ?? best.error ?? 'Analysis completed') as any,
+                updated_at: best.updated_at ?? null,
+              });
+              setJobId(best.job_id);
+              setJobStatus(String(best.status ?? 'succeeded'));
+
+              // Post-analysis refresh (same as success path)
+              apiGetDeal(dealId)
+                .then((deal) => {
+                  setDealFromApi(deal);
+                  setDioMeta({
+                    dioVersionId: (deal as any).dioVersionId,
+                    dioStatus: (deal as any).dioStatus,
+                    lastAnalyzedAt: (deal as any).lastAnalyzedAt,
+                    dioRunCount: (deal as any).dioRunCount,
+                    dioAnalysisVersion: (deal as any).dioAnalysisVersion,
+                  });
+                })
+                .catch(() => {});
+
+              reportMissingRef.current = false;
+              loadReport({ force: true });
+              loadEvidence();
+
+              addToast('success', 'Full process completed', 'Documents, visuals, and analysis refreshed');
+              setFullProcessUi((prev) => (prev ? { ...prev, ok: true, error: null } : prev));
+              setAnalyzing(false);
+              return;
+            }
+          } catch {
+            // fall through to default failure handling
+          }
+        }
+
+        addToast('error', 'Analyze deal failed', failureMsg);
         updateFullStep('analyze_deal', { status: analyzeDone.normalizedStatus as any, message: analyzeDone.job.message ?? null });
         setFullProcessUi((prev) => (prev ? { ...prev, ok: false, error: 'Analyze deal failed' } : prev));
         setAnalyzing(false);
@@ -3270,15 +3396,40 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
               {fullProcessUi && (
                 <div className={`mt-4 p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
+                  {(() => {
+                    const analyzeStep = fullProcessUi.steps.analyze_deal;
+                    const analyzeRow = analyzeStep?.job_id ? dealJobsById.get(analyzeStep.job_id) : null;
+                    const isSuperseded = isSupersedableAnalyzeFailure(analyzeRow) && bestAnalyzeJob && isSucceededJobStatus(bestAnalyzeJob.status) && parseJobSortTs(bestAnalyzeJob) > parseJobSortTs(analyzeRow ?? { created_at: null, updated_at: null });
+                    const derivedOk = isSuperseded ? true : fullProcessUi.ok;
+                    const derivedError = isSuperseded ? null : fullProcessUi.error;
+
+                    return (
+                      <>
                   <div className="flex items-center justify-between gap-3">
                     <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Full process</div>
                     <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                      {fullProcessUi.ok === true ? 'Completed' : fullProcessUi.ok === false ? 'Failed' : 'Running'}
+                      {derivedOk === true ? 'Completed' : derivedOk === false ? 'Failed' : 'Running'}
                     </div>
                   </div>
                   <div className="mt-3 space-y-2">
                     {(['reextract_documents', 'extract_visuals', 'analyze_deal'] as const).map((k) => {
-                      const step = fullProcessUi.steps[k];
+                      const baseStep = fullProcessUi.steps[k];
+                      const step =
+                        k === 'analyze_deal' && bestAnalyzeJob
+                          ? {
+                              ...baseStep,
+                              status: String(bestAnalyzeJob.status ?? baseStep.status) as any,
+                              job_id: bestAnalyzeJob.job_id,
+                              progress_pct:
+                                typeof bestAnalyzeJob.progress_pct === 'number'
+                                  ? bestAnalyzeJob.progress_pct
+                                  : typeof baseStep.progress_pct === 'number'
+                                    ? baseStep.progress_pct
+                                    : null,
+                              message: (bestAnalyzeJob.message ?? bestAnalyzeJob.error ?? baseStep.message ?? null) as any,
+                              updated_at: bestAnalyzeJob.updated_at ?? baseStep.updated_at ?? null,
+                            }
+                          : baseStep;
                       const sev = fullProcessStepSeverity(step?.status);
                       const pct = typeof step?.progress_pct === 'number' ? step.progress_pct : null;
                       return (
@@ -3307,9 +3458,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                       );
                     })}
                   </div>
-                  {fullProcessUi.error ? (
-                    <div className={`mt-3 text-xs ${darkMode ? 'text-red-300' : 'text-red-700'}`}>{fullProcessUi.error}</div>
+                  {derivedError ? (
+                    <div className={`mt-3 text-xs ${darkMode ? 'text-red-300' : 'text-red-700'}`}>{derivedError}</div>
                   ) : null}
+                      </>
+                    );
+                  })()}
                 </div>
               )}
 

@@ -260,6 +260,93 @@ describe('DealWorkspace Job Center (live mode)', () => {
     nowSpy.mockRestore();
   });
 
+  test('does not pin to stale failed analyze when newer succeeded exists', async () => {
+    const { apiGetDealJobs, apiPostAnalyze, apiPostExtractVisuals, apiPostReextractDocuments } = await import('../lib/apiClient');
+
+    vi.mocked(apiPostReextractDocuments).mockResolvedValue({ job_id: 'job-111', status: 'queued' } as any);
+    vi.mocked(apiPostExtractVisuals).mockResolvedValue({ job_id: 'job-222', status: 'queued' } as any);
+    vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-333', status: 'queued' } as any);
+
+    vi.mocked(apiGetDealJobs).mockResolvedValue([
+      {
+        job_id: 'job-333',
+        type: 'analyze_deal',
+        status: 'failed',
+        message: 'No extracted documents available for analysis',
+        created_at: '2024-01-03T00:00:00.000Z',
+        updated_at: '2024-01-03T00:00:00.000Z',
+      },
+      {
+        job_id: 'job-new-ok',
+        type: 'analyze_deal',
+        status: 'succeeded',
+        message: 'Completed newer analysis',
+        parent_job_id: 'job-222',
+        progress_pct: 100,
+        created_at: '2024-01-04T00:00:00.000Z',
+        updated_at: '2024-01-04T00:00:00.000Z',
+      },
+    ] as any);
+
+    vi.mocked(apiGetJob).mockImplementation(async (jobId: string) => {
+      if (jobId === 'job-111') {
+        return {
+          job_id: 'job-111',
+          type: 'reextract_documents',
+          status: 'succeeded',
+          progress_pct: 100,
+          message: 'ok',
+          updated_at: '2024-01-02T00:00:00.000Z',
+          created_at: '2024-01-02T00:00:00.000Z',
+        };
+      }
+      if (jobId === 'job-222') {
+        return {
+          job_id: 'job-222',
+          type: 'extract_visuals',
+          status: 'succeeded',
+          progress_pct: 100,
+          message: 'ok',
+          updated_at: '2024-01-02T00:00:00.000Z',
+          created_at: '2024-01-02T00:00:00.000Z',
+        };
+      }
+      if (jobId === 'job-333') {
+        return {
+          job_id: 'job-333',
+          type: 'analyze_deal',
+          status: 'failed',
+          progress_pct: 100,
+          message: 'No extracted documents available for analysis',
+          updated_at: '2024-01-03T00:00:00.000Z',
+          created_at: '2024-01-03T00:00:00.000Z',
+        };
+      }
+      return {
+        job_id: jobId,
+        type: 'analyze_deal',
+        status: 'succeeded',
+        progress_pct: 100,
+        message: 'ok',
+        updated_at: '2024-01-04T00:00:00.000Z',
+        created_at: '2024-01-04T00:00:00.000Z',
+      };
+    });
+
+    renderWorkspace({ dealId: 'deal-supersede', dealData: null as any });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /run full process/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Analyze deal failed/i)).not.toBeInTheDocument();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Full process completed/i)).toBeInTheDocument();
+      expect(screen.getByText(/job job-new-ok/i)).toBeInTheDocument();
+    });
+  });
+
   test('renders Job Center even when backend mode is not live', async () => {
     const { isLiveBackend } = await import('../lib/apiClient');
     vi.mocked(isLiveBackend).mockReturnValue(false);

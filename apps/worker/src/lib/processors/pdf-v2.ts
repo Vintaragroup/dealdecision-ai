@@ -78,11 +78,33 @@ type PdfV2UnifiedPage = {
 		skippedRegions: number;
 		usedFullPageFallback: boolean;
 	};
+	// Non-fatal OCR errors (shadow/primary should continue). These preserve context for debugging.
+	ocr_error?: {
+		stage: "pdf_v2_ocr_v1";
+		page_index: number;
+		timeout_ms: number;
+		errorMessage: string;
+	};
+	ocr_v2_error?: {
+		stage: "pdf_v2_ocr_v2";
+		page_index: number;
+		timeout_ms: number;
+		errorMessage: string;
+	};
 	final: {
 		method: "native" | "ocr" | "hybrid";
 		text: string;
 	};
 };
+
+const OCR_TIMEOUT_MS_FALLBACK = 120000;
+
+function parseTimeoutMsFromErrorMessage(msg: string): number {
+	const m = String(msg || "").match(/after\s+(\d+)ms/i);
+	if (!m) return OCR_TIMEOUT_MS_FALLBACK;
+	const n = Number(m[1]);
+	return Number.isFinite(n) && n > 0 ? n : OCR_TIMEOUT_MS_FALLBACK;
+}
 
 export type PdfV2ShadowArtifacts = {
 	status: "ok" | "error";
@@ -422,8 +444,18 @@ export async function extractPDFContentV2Shadow(
 						},
 					});
 					continue;
-				} catch {
-					// best-effort
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					unifiedPages.push({
+						...base,
+						ocr_v2_error: {
+							stage: "pdf_v2_ocr_v2",
+							page_index: p.page_index,
+							timeout_ms: parseTimeoutMsFromErrorMessage(msg),
+							errorMessage: msg,
+						},
+					});
+					continue;
 				}
 			}
 			unifiedPages.push(base);
@@ -444,6 +476,7 @@ export async function extractPDFContentV2Shadow(
 			else nativeOnlyPages += 1;
 
 			let ocrV2: PdfV2UnifiedPage["ocr_v2"] | undefined;
+			let ocrV2Error: PdfV2UnifiedPage["ocr_v2_error"] | undefined;
 			if (shouldRunOcrV2(ocrMode, classification)) {
 				try {
 					const ocr2: OcrV2Result = await ocrPdfPageV2(page, p.page_index + 1, false);
@@ -462,8 +495,14 @@ export async function extractPDFContentV2Shadow(
 						skippedRegions: ocr2.skippedRegions,
 						usedFullPageFallback: ocr2.usedFullPageFallback,
 					};
-				} catch {
-					// best-effort
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					ocrV2Error = {
+						stage: "pdf_v2_ocr_v2",
+						page_index: p.page_index,
+						timeout_ms: parseTimeoutMsFromErrorMessage(msg),
+						errorMessage: msg,
+					};
 				}
 			}
 
@@ -477,14 +516,16 @@ export async function extractPDFContentV2Shadow(
 					bbox_units: "pixels",
 				},
 				...(ocrV2 ? { ocr_v2: ocrV2 } : {}),
+				...(ocrV2Error ? { ocr_v2_error: ocrV2Error } : {}),
 				final: {
 					method,
 					text: finalText,
 				},
 			});
-		} catch {
+		} catch (err) {
 			// Shadow mode: if OCR fails, fall back to native.
 			nativeOnlyPages += 1;
+			const msg = err instanceof Error ? err.message : String(err);
 			// Still attempt OCR v2 for scanned/hybrid pages when enabled.
 			if (shouldRunOcrV2(ocrMode, classification)) {
 				try {
@@ -492,6 +533,12 @@ export async function extractPDFContentV2Shadow(
 					const ocr2: OcrV2Result = await ocrPdfPageV2(page, p.page_index + 1, false);
 					unifiedPages.push({
 						...base,
+						ocr_error: {
+							stage: "pdf_v2_ocr_v1",
+							page_index: p.page_index,
+							timeout_ms: parseTimeoutMsFromErrorMessage(msg),
+							errorMessage: msg,
+						},
 						ocr_v2: {
 							provider: ocr2.provider,
 							version: ocr2.version,
@@ -509,11 +556,35 @@ export async function extractPDFContentV2Shadow(
 						},
 					});
 					continue;
-				} catch {
-					// ignore
+				} catch (err2) {
+					const msg2 = err2 instanceof Error ? err2.message : String(err2);
+					unifiedPages.push({
+						...base,
+						ocr_error: {
+							stage: "pdf_v2_ocr_v1",
+							page_index: p.page_index,
+							timeout_ms: parseTimeoutMsFromErrorMessage(msg),
+							errorMessage: msg,
+						},
+						ocr_v2_error: {
+							stage: "pdf_v2_ocr_v2",
+							page_index: p.page_index,
+							timeout_ms: parseTimeoutMsFromErrorMessage(msg2),
+							errorMessage: msg2,
+						},
+					});
+					continue;
 				}
 			}
-			unifiedPages.push(base);
+			unifiedPages.push({
+				...base,
+				ocr_error: {
+					stage: "pdf_v2_ocr_v1",
+					page_index: p.page_index,
+					timeout_ms: parseTimeoutMsFromErrorMessage(msg),
+					errorMessage: msg,
+				},
+			});
 		}
 	}
 

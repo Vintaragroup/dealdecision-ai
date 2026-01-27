@@ -1,4 +1,4 @@
-import { extractPDFContent, type PDFContent } from "./pdf";
+import { extractPDFContent, type PDFContent, type PdfTextProbeCallback } from "./pdf";
 import { extractPDFContentV2Primary, extractPDFContentV2Shadow } from "./pdf-v2";
 import { applySlideUnderstandingV1Shadow } from "../pdf_v2/slide-understanding-v1";
 import { defaultPdfExtractMode, defaultShadowFeatureMode } from "../pipeline-policy";
@@ -66,7 +66,8 @@ export async function processDocument(
   buffer: Buffer,
   fileName: string,
   documentId: string,
-  dealId: string
+  dealId: string,
+  hooks: { onPdfTextProbe?: PdfTextProbeCallback } = {}
 ): Promise<DocumentAnalysis> {
   const startTime = Date.now();
   const fileType = detectFileType(fileName);
@@ -119,7 +120,7 @@ export async function processDocument(
             }
           }
 
-          const v1 = await extractPDFContent(buffer, { docId: documentId });
+          const v1 = await extractPDFContent(buffer, { docId: documentId, onTextProbe: hooks.onPdfTextProbe });
 
           if (mode === "v2_shadow") {
             try {

@@ -62,6 +62,7 @@ import { remediateStructuredData } from "./lib/remediation";
 import { persistPdfV2TextRegionAssetsV1Shadow } from "./lib/pdf_v2/pdf-text-region-assets-v1";
 import os from "os";
 import { loadOriginalBytesFromDocumentStorage } from "./lib/ingest/from-storage";
+import { decideIngestOutcomeForError, isOcrishError } from "./lib/ingest/ocrish-error-semantics";
 import { getR2ObjectUrl, r2ObjectExists, uploadToR2 } from "./lib/r2";
 import { runJobWatchdogOnce } from "./lib/job-watchdog";
 import { selectReextractCandidates } from "./lib/reextract-selection";
@@ -1343,12 +1344,24 @@ async function ingestDocumentProcessor(job: Job) {
 				decoded_bytes: decodedBytes,
 			});
 			await yieldToEventLoop();
-			analysis = await processDocument(
-				buffer,
-				fileNameSafe,
-				docId,
-				dealIdSafe
-			);
+			analysis = await processDocument(buffer, fileNameSafe, docId, dealIdSafe, {
+				onPdfTextProbe: async (probe) => {
+					// Persist the decision BEFORE any OCR starts, so crashes/restarts still leave evidence.
+					try {
+						await mergeDocumentExtractionMetadata({
+							documentId: docId,
+							patch: {
+								needsOcr: probe.needsOcr,
+								pdf_text_probe: probe,
+								pageOcr: { attempted: false },
+								ocrDecisionPersistedAt: probe.decided_at,
+							},
+						});
+					} catch {
+						// best-effort; never fail ingestion due to metadata persistence
+					}
+				},
+			});
 		} finally {
 			heartbeat.stop();
 		}
@@ -1393,6 +1406,13 @@ async function ingestDocumentProcessor(job: Job) {
 		});
 
 		const completeness = computeCompleteness(analysis);
+		const pdfSummary =
+			analysis.contentType === "pdf" && analysis.content && typeof (analysis.content as any)?.summary === "object"
+				? ((analysis.content as any).summary as any)
+				: null;
+		const pdfNeedsOcr = typeof pdfSummary?.needsOcr === "boolean" ? Boolean(pdfSummary.needsOcr) : false;
+		const pdfTextProbe = pdfSummary?.textProbe ?? null;
+		const pdfPageOcr = pdfSummary?.pageOcr ?? null;
 		const extractorNameByKind: Record<string, string> = {
 			pdf: "worker.pdf",
 			excel: "worker.excel",
@@ -1431,12 +1451,17 @@ async function ingestDocumentProcessor(job: Job) {
 			summaryLength: analysis.structuredData.textSummary?.length ?? 0,
 			completeness,
 			errorMessage: analysis.metadata.errorMessage,
-			needsOcr: false,
+			needsOcr: analysis.contentType === "pdf" ? pdfNeedsOcr : false,
+			textProbe: analysis.contentType === "pdf" ? pdfTextProbe : null,
+			pageOcr: analysis.contentType === "pdf" ? pdfPageOcr : null,
 		};
 
 		if (!analysis.metadata.extractionSuccess) {
 			const message = analysis.metadata.errorMessage || "Extraction failed";
-			const needsOcr = message.toLowerCase().includes("no text extracted") || message.toLowerCase().includes("image-only");
+			const needsOcr =
+				analysis.contentType === "pdf"
+					? /no\s+text\s+extracted/i.test(message) || /even\s+after\s+ocr/i.test(message)
+					: message.toLowerCase().includes("no text extracted") || message.toLowerCase().includes("image-only");
 			extractionMetadata.needsOcr = needsOcr;
 			const fullText = extractFullText(analysis.content, analysis.contentType);
 			const pageCount = getPageCount(analysis.content, analysis.contentType);
@@ -1765,26 +1790,104 @@ async function ingestDocumentProcessor(job: Job) {
 		}
 		return { ok: true, analysis };
 	} catch (err) {
-		const message = err instanceof Error ? err.message : "Unknown error";
-		const needsOcr = typeof message === "string" && (message.toLowerCase().includes("no text extracted") || message.toLowerCase().includes("image-only"));
+		const message = err instanceof Error ? err.message : typeof err === "string" ? err : "Unknown error";
+		const nowIso = new Date().toISOString();
+		const isOcrish = isOcrishError(err);
+
+		// Default heuristic only used if we haven't persisted a deterministic needsOcr decision.
+		const needsOcrHeuristic =
+			typeof message === "string" &&
+			(message.toLowerCase().includes("no text extracted") || message.toLowerCase().includes("image-only"));
+
+		let persistedNeedsOcr: boolean | null = null;
+		let existingWarnings: unknown[] = [];
+		let existingTextLen = 0;
+		try {
+			if (documentId) {
+				const pool = getPool();
+				const { rows } = await pool.query<{
+					extraction_metadata: unknown | null;
+					full_text: string | null;
+					structured_data: unknown | null;
+				}>(
+					"SELECT extraction_metadata, full_text, structured_data FROM documents WHERE id = $1 LIMIT 1",
+					[sanitizeText(documentId)]
+				);
+				const metaObj = rows?.[0]?.extraction_metadata && typeof rows[0].extraction_metadata === "object" ? (rows[0].extraction_metadata as any) : null;
+				persistedNeedsOcr = typeof metaObj?.needsOcr === "boolean" ? Boolean(metaObj.needsOcr) : null;
+				existingWarnings = Array.isArray(metaObj?.warnings) ? metaObj.warnings : [];
+				existingTextLen = typeof rows?.[0]?.full_text === "string" ? rows[0].full_text.length : 0;
+				// If we have structured data but no full_text, still treat it as “some extraction exists”.
+				if (existingTextLen <= 0 && rows?.[0]?.structured_data && typeof rows[0].structured_data === "object") {
+					existingTextLen = 1;
+				}
+			}
+		} catch {
+			// best-effort
+		}
+
+		const needsOcr = persistedNeedsOcr ?? needsOcrHeuristic;
+		const minTextThresholdChars = Number.isFinite(Number(process.env.PDF_MIN_TEXT_THRESHOLD_CHARS))
+			? Number(process.env.PDF_MIN_TEXT_THRESHOLD_CHARS)
+			: 800;
+
+		if (documentId && isOcrish) {
+			const outcome = decideIngestOutcomeForError({
+				err,
+				needsOcr,
+				existingTextLen,
+				minTextThresholdChars,
+				nowIso,
+			});
+
+			if (outcome.kind === "succeeded_with_warnings") {
+				// Do NOT clobber existing outputs. Record warning, clear top-level errorMessage,
+				// and ensure document is not marked failed.
+				const appendedWarnings = Array.isArray(existingWarnings)
+					? [...existingWarnings, ...(Array.isArray((outcome.extractionMetadataPatch as any).warnings) ? (outcome.extractionMetadataPatch as any).warnings : [])]
+					: Array.isArray((outcome.extractionMetadataPatch as any).warnings)
+						? (outcome.extractionMetadataPatch as any).warnings
+						: [];
+
+				await mergeDocumentExtractionMetadata({
+					documentId,
+					patch: {
+						...outcome.extractionMetadataPatch,
+						needsOcr,
+						warnings: appendedWarnings,
+						ocrish_nonfatal: true,
+					},
+				});
+
+				// Only flip the document out of "processing" if we already have content.
+				if (existingTextLen > 0) {
+					await updateDocumentStatus(documentId, "completed");
+				}
+				await updateJob(job, "succeeded", `Succeeded with warnings: ${message}`, 100);
+				console.warn(`[ingest_document] non-fatal OCR-ish error doc=${documentId} needsOcr=${needsOcr}: ${message}`);
+				return { ok: true };
+			}
+		}
+
+		// Default: treat as failure.
 		if (documentId) {
-			await updateDocumentAnalysis({
+			await mergeDocumentExtractionMetadata({
 				documentId,
-				extractionMetadata: {
+				patch: {
 					doc_kind: fileName?.toLowerCase().split(".").pop() ?? null,
 					extractor_name: "worker.unknown",
 					extractor_version: process.env.DOC_EXTRACTOR_VERSION || "1.0.0",
-					started_at: null,
-					finished_at: new Date().toISOString(),
+					finished_at: nowIso,
 					status: "failed",
 					contentType: fileName?.toLowerCase().split(".").pop() ?? null,
 					attempt,
 					errorMessage: message,
 					needsOcr,
+					...(isOcrish ? { ocrish_error: true } : {}),
 				},
-				fullTextAbsentReason: "extraction_failed",
 			});
-			await updateDocumentStatus(documentId, needsOcr ? "needs_ocr" : "failed");
+			await updateDocumentAnalysis({ documentId, fullTextAbsentReason: "extraction_failed" });
+			await updateDocumentStatus(documentId, "failed");
 		}
 		await updateJob(job, "failed", `Document extraction failed: ${message}`, 100);
 		console.error(`[ingest_document] error:`, err);

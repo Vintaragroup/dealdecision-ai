@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs/promises";
 import crypto from "crypto";
 import Tesseract from "tesseract.js";
+import { createRequire } from "module";
 
 import { logMemory } from "../memory";
 
@@ -493,12 +494,44 @@ export interface PDFContent {
     keyNumbers: Array<{ value: string; context: string }>;
     textItems: number;
     ocrUsed?: boolean;
+
+    // Text-probe decision: this decides whether OCR is required as a fallback.
+    // Optional to preserve existing callers.
+    needsOcr?: boolean;
+    textProbe?: {
+      min_text_threshold_chars: number;
+      char_count: number;
+      word_count: number;
+      pages_with_text: number;
+      pages_probed: number;
+      decision: "text_ok_skip_ocr" | "text_sparse_needs_ocr";
+      decided_at: string;
+    };
+    pageOcr?: {
+      attempted: boolean;
+      pages_attempted: number;
+      failed_pages: number[];
+      errors: Array<{ page: number; message: string }>;
+    };
   };
 
   // PDF Extraction v2 (shadow mode) artifacts. Additive only.
   // Kept optional to preserve v1 callers and downstream contracts.
   pdf_v2?: unknown;
 }
+
+export type PdfTextProbe = {
+  min_text_threshold_chars: number;
+  char_count: number;
+  word_count: number;
+  pages_with_text: number;
+  pages_probed: number;
+  decision: "text_ok_skip_ocr" | "text_sparse_needs_ocr";
+  needsOcr: boolean;
+  decided_at: string;
+};
+
+export type PdfTextProbeCallback = (probe: PdfTextProbe) => Promise<void> | void;
 
 // Exported for PDF v2 OCR fallback reuse.
 // V2 will call this only for pages that are classified as scanned or have insufficient native text.
@@ -899,6 +932,22 @@ async function extractWithTextThenOcr(worker: pdfjs.PDFDocumentProxy, processedP
   let usedOcr = false;
   const debugRecords: DebugPageMeta[] = [];
 
+  const pageOcrErrors: Array<{
+    // Back-compat keys
+    page: number;
+    message: string;
+    // New structured keys
+    page_index: number;
+    stage: "pdf_v1_ocr";
+    timeout_ms: number;
+    errorMessage: string;
+  }> = [];
+  const failedPages: number[] = [];
+
+  // Probe counters for a deterministic OCR decision.
+  let pageTextCharCount = 0;
+  let pagesWithText = 0;
+
   for (let i = 1; i <= processedPages; i++) {
     const page = await withTimeout(worker.getPage(i), `pdf page ${i}`);
     const [, , , pageHeight] = page.view;
@@ -928,6 +977,11 @@ async function extractWithTextThenOcr(worker: pdfjs.PDFDocumentProxy, processedP
 
     textItemsCount += words.length;
     const pageText = words.map((w) => w.text).join(" ");
+    const trimmed = pageText.trim();
+    if (trimmed.length > 0) {
+      pagesWithText += 1;
+      pageTextCharCount += trimmed.length;
+    }
     const cleanTokens = pageText.split(/\s+/).filter(Boolean);
     allWords.push(...cleanTokens);
 
@@ -951,8 +1005,36 @@ async function extractWithTextThenOcr(worker: pdfjs.PDFDocumentProxy, processedP
     });
   }
 
-  const hasText = allWords.length >= 20 || textItemsCount >= 20;
-  if (!hasText) {
+  // --- Text-probe decision (before any OCR work) ---
+  const minTextThresholdCharsRaw = Number(process.env.PDF_MIN_TEXT_THRESHOLD_CHARS ?? process.env.PDF_MIN_TEXT_THRESHOLD ?? 800);
+  const minTextThresholdChars = Number.isFinite(minTextThresholdCharsRaw) && minTextThresholdCharsRaw > 0 ? minTextThresholdCharsRaw : 800;
+
+  const decidedAt = new Date().toISOString();
+  const needsOcr = pageTextCharCount < minTextThresholdChars;
+  const textProbe: PdfTextProbe = {
+    min_text_threshold_chars: minTextThresholdChars,
+    char_count: pageTextCharCount,
+    word_count: allWords.length,
+    pages_with_text: pagesWithText,
+    pages_probed: processedPages,
+    decision: needsOcr ? "text_sparse_needs_ocr" : "text_ok_skip_ocr",
+    needsOcr,
+    decided_at: decidedAt,
+  };
+
+  // NOTE: extractPDFContent can pass a callback to persist this decision before OCR starts.
+  // We stash it on the worker object (best-effort) to avoid widening this internal function's signature.
+  const onTextProbe = (worker as any)?.__onTextProbe as PdfTextProbeCallback | undefined;
+  if (onTextProbe) {
+    try {
+      await onTextProbe(textProbe);
+    } catch {
+      // best-effort; never fail extraction due to metadata persistence
+    }
+  }
+
+  // If we have sufficient native text, OCR is not required and should not run.
+  if (needsOcr) {
     const ocrPages = Math.min(processedPages, PDF_OCR_MAX_PAGES);
     pages.length = 0;
     allWords.length = 0;
@@ -962,7 +1044,25 @@ async function extractWithTextThenOcr(worker: pdfjs.PDFDocumentProxy, processedP
 
     for (let i = 1; i <= ocrPages; i++) {
       const page = await withTimeout(worker.getPage(i), `pdf page ${i}`);
-      const ocr = await ocrPage(page, i, DEBUG_ENABLED);
+      let ocr: Awaited<ReturnType<typeof ocrPdfPageV1>> | null = null;
+      try {
+        // Allow injection for tests; otherwise use the default implementation.
+        const ocrFn = (worker as any)?.__ocrPdfPageV1 as typeof ocrPdfPageV1 | undefined;
+        ocr = await (ocrFn ?? ocrPdfPageV1)(page, i, DEBUG_ENABLED);
+      } catch (err) {
+        failedPages.push(i);
+        const msg = err instanceof Error ? err.message : String(err);
+        pageOcrErrors.push({
+          page: i,
+          message: msg,
+          page_index: i - 1,
+          stage: "pdf_v1_ocr",
+          timeout_ms: OCR_TIMEOUT_MS,
+          errorMessage: msg,
+        });
+        // Continue: OCR is best-effort per-page. We'll decide success based on the aggregate.
+        continue;
+      }
       const tokens = ocr.text.split(/\s+/).filter(Boolean);
       allWords.push(...tokens);
       textItemsCount += ocr.words.length;
@@ -1038,7 +1138,9 @@ async function extractWithTextThenOcr(worker: pdfjs.PDFDocumentProxy, processedP
     }
 
     if (allWords.length === 0) {
-      throw new Error("No text extracted from PDF even after OCR");
+      const firstErr = pageOcrErrors[0]?.message;
+      const suffix = firstErr ? ` (first_ocr_error=${firstErr})` : "";
+      throw new Error(`No text extracted from PDF even after OCR${suffix}`);
     }
   } else if (DEBUG_ENABLED && debugDir) {
     // Debug images even when text extraction worked (helps compare OCR preprocessing).
@@ -1194,6 +1296,22 @@ const filteredNumbers = (() => {
       mainHeadings: filteredHeadings,
       keyNumbers: filteredNumbers.slice(0, 20),
       textItems: textItemsCount,
+      needsOcr: textProbe.needsOcr,
+      textProbe: {
+        min_text_threshold_chars: textProbe.min_text_threshold_chars,
+        char_count: textProbe.char_count,
+        word_count: textProbe.word_count,
+        pages_with_text: textProbe.pages_with_text,
+        pages_probed: textProbe.pages_probed,
+        decision: textProbe.decision,
+        decided_at: textProbe.decided_at,
+      },
+      pageOcr: {
+        attempted: usedOcr,
+        pages_attempted: usedOcr ? Math.min(processedPages, PDF_OCR_MAX_PAGES) : 0,
+        failed_pages: failedPages,
+        errors: pageOcrErrors,
+      },
     },
     usedOcr,
     debugRecords,
@@ -1205,7 +1323,10 @@ type OCRResult = {
   words: Array<{ text: string; x: number; y: number; width: number; height: number; conf: number }>;
 };
 
-export async function extractPDFContent(buffer: Buffer, options: { docId?: string } = {}): Promise<PDFContent> {
+export async function extractPDFContent(
+  buffer: Buffer,
+  options: { docId?: string; onTextProbe?: PdfTextProbeCallback; ocrPageV1?: typeof ocrPdfPageV1 } = {}
+): Promise<PDFContent> {
   logMemory("pdf_v1:before_pdf_load", { doc_id: options.docId ?? null, bytes: buffer.length });
   const data = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
@@ -1220,9 +1341,24 @@ export async function extractPDFContent(buffer: Buffer, options: { docId?: strin
     await fs.mkdir(debugDir, { recursive: true }).catch(() => {});
   }
 
-  const standardFontDataUrl = path.join(path.dirname(require.resolve("pdfjs-dist/package.json")), "standard_fonts/");
+  // Vitest executes TS as ESM, where `require` may not exist.
+  // Use a resolver that works in both ESM and CJS.
+  const requireForResolve =
+    typeof require !== "undefined" ? require : createRequire(path.join(process.cwd(), "__require_stub__.js"));
+  const standardFontDataUrl = path.join(
+    path.dirname(requireForResolve.resolve("pdfjs-dist/package.json")),
+    "standard_fonts/"
+  );
 
   const worker = await withTimeout(pdfjs.getDocument({ data, standardFontDataUrl }).promise, "pdf load");
+  if (options.onTextProbe) {
+    // Best-effort stash so extractWithTextThenOcr can call it before OCR begins.
+    (worker as any).__onTextProbe = options.onTextProbe;
+  }
+  if (options.ocrPageV1) {
+    // Test-only injection to avoid invoking real OCR.
+    (worker as any).__ocrPdfPageV1 = options.ocrPageV1;
+  }
   logMemory("pdf_v1:after_pdf_load", { doc_id: options.docId ?? null, num_pages: worker.numPages });
   const processedPages = Math.min(worker.numPages, PDF_MAX_PAGES);
   const metadata = await worker.getMetadata().catch(() => ({}));
@@ -1271,6 +1407,9 @@ export async function extractPDFContent(buffer: Buffer, options: { docId?: strin
       keyNumbers: summary.keyNumbers,
       textItems: summary.textItems,
       ocrUsed: usedOcr,
+      needsOcr: summary.needsOcr,
+      textProbe: summary.textProbe,
+      pageOcr: summary.pageOcr,
     },
   };
 }

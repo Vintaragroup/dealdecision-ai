@@ -418,6 +418,7 @@ export async function getDocumentsForDealWithVerification(dealId: string): Promi
             uploaded_at, updated_at
        FROM documents
       WHERE deal_id = $1
+        AND deleted_at IS NULL
       ORDER BY uploaded_at DESC
       LIMIT 200`,
     [sanitizeText(dealId)]

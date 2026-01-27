@@ -109,7 +109,7 @@ export function DealExtractionReportModal({ dealId, darkMode, onClose }: DealExt
     if (!dealId) return;
     setActionBusy(true);
     try {
-      await apiPostReextractDocuments(dealId, { include_warnings: true });
+      await apiPostReextractDocuments(dealId, { include_warnings: true, force: true });
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to enqueue re-extraction');

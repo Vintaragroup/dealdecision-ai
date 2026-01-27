@@ -1477,7 +1477,12 @@ export async function registerDocumentRoutes(
       document_ids?: string[];
       threshold_low?: number;
       include_warnings?: boolean;
+		force?: boolean;
+		mode?: string;
     };
+
+		const mode = typeof body.mode === "string" ? body.mode : undefined;
+		const force = Boolean(body.force) || String(mode ?? "").toLowerCase() === "manual";
 
     const job = await enqueue(
       {
@@ -1488,6 +1493,8 @@ export async function registerDocumentRoutes(
           document_ids: Array.isArray(body.document_ids) ? body.document_ids : undefined,
           threshold_low: typeof body.threshold_low === "number" ? body.threshold_low : undefined,
           include_warnings: Boolean(body.include_warnings),
+				force,
+				mode,
         },
       },
       { dedupe: { by: "deal" } }

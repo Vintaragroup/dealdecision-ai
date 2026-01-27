@@ -500,6 +500,8 @@ export function apiPostReextractDocuments(
     document_ids?: string[];
     threshold_low?: number;
     include_warnings?: boolean;
+		force?: boolean;
+		mode?: string;
   }
 ) {
   return request<{ ok: boolean; job_id: string; status?: string }>(`/api/v1/deals/${dealId}/documents/re-extract`, {

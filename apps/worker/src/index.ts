@@ -5178,6 +5178,9 @@ registerWorker("reextract_documents", async (job: Job) => {
 	const documentIds = (job.data as { document_ids?: string[] } | undefined)?.document_ids;
 	const thresholdLow = Number((job.data as { threshold_low?: number } | undefined)?.threshold_low ?? 0.75);
 	const includeWarnings = Boolean((job.data as { include_warnings?: boolean } | undefined)?.include_warnings);
+	const force =
+		Boolean((job.data as { force?: boolean } | undefined)?.force) ||
+		String((job.data as { mode?: string } | undefined)?.mode ?? "").toLowerCase() === "manual";
 
 	if (!dealId) {
 		await updateJob(job, "failed", "Missing deal_id");
@@ -5187,19 +5190,50 @@ registerWorker("reextract_documents", async (job: Job) => {
 	try {
 		await updateJob(job, "running", "Scanning documents for re-extraction", 5);
 
-		const sourceDocs = Array.isArray(documentIds) && documentIds.length > 0
-			? await getDocumentsByIds(documentIds)
-			: await getDocumentsForDealWithVerification(dealId);
 		const explicitDocIds = Array.isArray(documentIds) && documentIds.length > 0;
+		const sourceDocs = explicitDocIds ? await getDocumentsByIds(documentIds) : await getDocumentsForDealWithVerification(dealId);
 
-		const candidates = selectReextractCandidates(sourceDocs, {
-			dealId,
-			explicitDocIds,
-			thresholdLow,
-			includeWarnings,
-		});
+		const candidates = force && !explicitDocIds
+			? sourceDocs.filter((d) => d.deal_id === dealId)
+			: selectReextractCandidates(sourceDocs, {
+				dealId,
+				explicitDocIds,
+				thresholdLow,
+				includeWarnings,
+			});
+
+		if (force && !explicitDocIds) {
+			console.log(
+				JSON.stringify({
+					event: "REEXTRACT_FORCE_ALL",
+					deal_id: dealId,
+					doc_count: candidates.length,
+					job_id: job.id ? String(job.id) : null,
+				})
+			);
+		}
 
 		if (candidates.length === 0) {
+			if (force && !explicitDocIds) {
+				try {
+					await enqueueAnalyzeDeal({
+						dealId,
+						reason: "reextract_documents_force_no_documents",
+						triggerJobId: job.id ? String(job.id) : null,
+						shouldEnqueue: false,
+						skipReason: "no_documents_for_deal",
+						extra: {
+							explicit_doc_ids: explicitDocIds,
+							force,
+						},
+					});
+				} catch {
+					// never block completion
+				}
+				await updateJob(job, "succeeded", "No documents found for deal", 100);
+				return { ok: true, reextracted: 0 };
+			}
+
 			try {
 				await enqueueAnalyzeDeal({
 					dealId,
@@ -5211,6 +5245,7 @@ registerWorker("reextract_documents", async (job: Job) => {
 						explicit_doc_ids: explicitDocIds,
 						threshold_low: thresholdLow,
 						include_warnings: includeWarnings,
+						force,
 					},
 				});
 			} catch {

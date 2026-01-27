@@ -1902,7 +1902,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       // Step 1: reextract_documents
       setJobType('reextract_documents');
       setFullProcessUi((prev) => ({ ...(prev ?? initFullProcess()), current_step: 'reextract_documents' }));
-      const reextractRes = await apiPostReextractDocuments(dealId, { include_warnings: true });
+      const reextractRes = await apiPostReextractDocuments(dealId, { include_warnings: true, force: true });
       setJobId(reextractRes.job_id);
       setJobStatus((reextractRes as any).status ?? 'queued');
       addToast('info', 'Re-extract documents queued', `Job ${reextractRes.job_id}`);

@@ -67,6 +67,7 @@ describe("reextractDocumentsProcessor", () => {
 
 		expect(res).toEqual({ status: "enqueued", docs: 2 });
 		expect(getQueue).toHaveBeenCalledWith("ingest_documents");
+		expect(getQueue).not.toHaveBeenCalledWith("extract_visuals");
 		expect(add).toHaveBeenCalledTimes(2);
 		expect(childJob.waitUntilFinished).not.toHaveBeenCalled();
 		expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ stage: "complete" }));

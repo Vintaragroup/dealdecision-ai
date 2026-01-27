@@ -570,6 +570,22 @@ export async function resolvePageImageUris(
 				typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count)
 					? metaObj.rendered_pages_count
 					: 0;
+			const metaRenderedSoFar =
+				typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered)
+					? metaObj.rendered_pages_rendered
+					: null;
+			if (metaRenderedCount > 0 && metaRenderedSoFar != null && metaRenderedSoFar < metaRenderedCount) {
+				logger.log(
+					JSON.stringify({
+						event: "RENDERED_PAGES_R2_NOT_READY",
+						document_id: documentId,
+						rendered_pages_count: metaRenderedCount,
+						rendered_pages_rendered: metaRenderedSoFar,
+						reason: "render_incomplete",
+					})
+				);
+				return [];
+			}
 			const effectiveCount = pageCount && pageCount > 0 ? pageCount : metaRenderedCount;
 			if (prefix && effectiveCount && effectiveCount > 0) {
 				try {

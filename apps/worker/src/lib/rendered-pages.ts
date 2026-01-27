@@ -201,6 +201,27 @@ async function renderPdfToPngFiles(params: {
 	// End is exclusive (0-based page index). If omitted, renders up to maxPages pages.
 	pageEnd?: number;
 }): Promise<number> {
+	const withTimeout = async <T,>(promise: Promise<T>, ms: number, context: Record<string, unknown>): Promise<T> => {
+		let timeout: NodeJS.Timeout | null = null;
+		try {
+			return await new Promise<T>((resolve, reject) => {
+				timeout = setTimeout(() => {
+					const stage = typeof context.stage === "string" ? context.stage : "unknown";
+					const docId = typeof context.document_id === "string" ? context.document_id : "";
+					const pageIndex = typeof context.page_index === "number" ? context.page_index : null;
+					reject(
+						new Error(
+							`TIMEOUT stage=${stage} doc_id=${docId}${pageIndex == null ? "" : ` page_index=${pageIndex}`} ms=${ms} context=${JSON.stringify(context)}`
+						)
+					);
+				}, ms);
+				promise.then(resolve, reject);
+			});
+		} finally {
+			if (timeout) clearTimeout(timeout);
+		}
+	};
+
 	const data = new Uint8Array(params.buffer.buffer, params.buffer.byteOffset, params.buffer.byteLength);
 	const standardFontDataUrl = path.join(path.dirname(require.resolve("pdfjs-dist/package.json")), "standard_fonts/");
 
@@ -258,7 +279,11 @@ async function renderPdfToPngFiles(params: {
 
 			const canvas = createCanvas(w || 1, h || 1);
 			const context = canvas.getContext("2d");
-			await page.render({ canvasContext: context as any, viewport } as any).promise;
+			await withTimeout(
+				page.render({ canvasContext: context as any, viewport } as any).promise,
+				120_000,
+				{ stage: "render_page", document_id: params.documentId, page_index: pageIndex }
+			);
 			const png = canvas.toBuffer("image/png");
 			const outPath = path.join(params.outDir, stableRenderedPageFilename(pageIndex, params.format));
 			await params.fsImpl.writeFile(outPath, png);

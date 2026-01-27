@@ -89,7 +89,14 @@ export function createWorker(
     const concurrency = options?.concurrency ?? envConcurrency;
 
     // NOTE: lockDuration must cover long-running CPU-heavy extraction loops.
-    const heavyQueues = new Set(["ingest_documents", "render_document_pages", "extract_visuals", "deep_scan_visuals"]);
+    // Keep reextract_documents here: it can run full document re-processing + enqueue downstream work.
+    const heavyQueues = new Set([
+      "ingest_documents",
+      "render_document_pages",
+      "extract_visuals",
+      "deep_scan_visuals",
+      "reextract_documents",
+    ]);
     const lockDuration =
       options?.lockDuration ?? (heavyQueues.has(name) ? 10 * 60 * 1000 : 2 * 60 * 1000);
 

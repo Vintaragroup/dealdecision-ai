@@ -68,6 +68,7 @@ import { selectReextractCandidates } from "./lib/reextract-selection";
 import { assertSchema } from "./lib/schema-check";
 import { computeChunkRangeForPage } from "./lib/r2-probe";
 import { makeJobId } from "./lib/job-id";
+import { reextractDocumentsProcessor } from "./jobs/reextract-documents";
 
 async function countVisualAssetsForDeal(pool: ReturnType<typeof getPool>, dealId: string): Promise<number | null> {
 	try {
@@ -1931,6 +1932,25 @@ registerWorker("render_document_pages", async (job: Job) => {
 	const pageEndRaw = (data as any).page_end;
 	const pageStart = typeof pageStartRaw === "number" && Number.isFinite(pageStartRaw) ? Math.max(0, Math.floor(pageStartRaw)) : 0;
 	const pageEnd = typeof pageEndRaw === "number" && Number.isFinite(pageEndRaw) ? Math.max(pageStart, Math.floor(pageEndRaw)) : undefined;
+	const jobId = job.id ? String(job.id) : null;
+
+	const withTimeout = async <T,>(promise: Promise<T>, ms: number, context: Record<string, unknown>): Promise<T> => {
+		let timeout: NodeJS.Timeout | null = null;
+		try {
+			return await new Promise<T>((resolve, reject) => {
+				timeout = setTimeout(() => {
+					const stage = typeof context.stage === "string" ? context.stage : "unknown";
+					const documentId = typeof context.document_id === "string" ? context.document_id : "";
+					const pageIndex = typeof context.page_index === "number" ? context.page_index : null;
+					const msg = `TIMEOUT stage=${stage} doc_id=${documentId}${pageIndex == null ? "" : ` page_index=${pageIndex}`}`;
+					reject(new Error(`${msg} ms=${ms} context=${JSON.stringify(context)}`));
+				}, ms);
+				promise.then(resolve, reject);
+			});
+		} finally {
+			if (timeout) clearTimeout(timeout);
+		}
+	};
 
 	if (!docId) {
 		await updateJob(job, "failed", "Missing document_id", 100);
@@ -1943,6 +1963,40 @@ registerWorker("render_document_pages", async (job: Job) => {
 	let dealIdResolved: string | null = dealIdSafe || null;
 	let pageCount: number = 0;
 	let renderedPagesPrefixFromMeta: string | null = null;
+	const logStage = (stage: string, extra: Record<string, unknown> = {}) => {
+		console.log(
+			JSON.stringify({
+				event: "REEXTRACT_STAGE",
+				job_id: jobId,
+				deal_id: (dealIdResolved || dealIdSafe || null),
+				stage,
+				...extra,
+			})
+		);
+	};
+
+	logStage("job_start", {
+		document_id: docId,
+		page_start: pageStart,
+		page_end: pageEnd ?? null,
+	});
+	try {
+		await updateJobProgress(job, {
+			stage: "docs_selected",
+			current: 0,
+			total: 0,
+			message: "Starting render",
+			meta: {
+				idx: 0,
+				total: 0,
+				document_id: docId,
+				page_start: pageStart,
+				page_end: pageEnd ?? null,
+			},
+		});
+	} catch {
+		// Best-effort progress update.
+	}
 	try {
 		const { rows } = await pool.query<{ page_count: number | null; extraction_metadata: unknown | null; deal_id: string | null }>(
 			"SELECT page_count, extraction_metadata, deal_id FROM documents WHERE id = $1 LIMIT 1",
@@ -1969,7 +2023,12 @@ registerWorker("render_document_pages", async (job: Job) => {
 	// Fetch original bytes so we can render without relying on API filesystem.
 	let original: any = null;
 	try {
-		original = await getDocumentOriginalFile(docId);
+		logStage("pdf_load_start", { document_id: docId });
+		original = await withTimeout(
+			getDocumentOriginalFile(docId),
+			10 * 60_000,
+			{ stage: "pdf_load", document_id: docId }
+		);
 	} catch (err) {
 		await updateJob(job, "failed", err instanceof Error ? err.message : "missing original bytes", 100);
 		return { ok: false, reason: "missing_original_bytes" };
@@ -1979,20 +2038,37 @@ registerWorker("render_document_pages", async (job: Job) => {
 		await updateJob(job, "failed", "missing original bytes", 100);
 		return { ok: false, reason: "missing_original_bytes" };
 	}
+	logStage("pdf_load_done", { document_id: docId, bytes: buffer.length });
 
 	const uploadDir = await resolveWritableUploadDir(process.env);
 	const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
 
 	const renderStarted = Date.now();
-	const res = await persistRenderedPageImages({
-		buffer,
-		documentId: docId,
-		pageCount: pageCount || 0,
-		uploadDir,
-		config: persistCfg,
-		logger: console,
-		pageStart,
-		pageEnd,
+	logStage("render_start", {
+		document_id: docId,
+		page_start: pageStart,
+		page_end: pageEnd ?? null,
+		page_count_hint: pageCount || null,
+	});
+	const res = await withTimeout(
+		persistRenderedPageImages({
+			buffer,
+			documentId: docId,
+			pageCount: pageCount || 0,
+			uploadDir,
+			config: persistCfg,
+			logger: console,
+			pageStart,
+			pageEnd,
+		}),
+		10 * 60_000,
+		{ stage: "render", document_id: docId, page_start: pageStart, page_end: pageEnd ?? null }
+	);
+	logStage("render_done", {
+		document_id: docId,
+		rendered_pages_written: res.rendered_pages_count ?? 0,
+		rendered_pages_dir: res.rendered_pages_dir ?? null,
+		duration_ms: Date.now() - renderStarted,
 	});
 
 	const totalPages = Math.max(pageCount || 0, res.page_count_detected || 0);
@@ -2038,6 +2114,13 @@ registerWorker("render_document_pages", async (job: Job) => {
 		try {
 			const chunkStart = pageStart;
 			const chunkEnd = pageEnd ?? (pageCount > 0 ? Math.min(pageCount, pageStart + persistCfg.maxPages) : pageStart + persistCfg.maxPages);
+			const chunkTotal = Math.max(0, chunkEnd - chunkStart);
+			logStage("upload_start", {
+				document_id: docId,
+				bucket: r2Bucket,
+				prefix,
+				page_range: { start: chunkStart, end: chunkEnd },
+			});
 			for (let i = chunkStart; i < chunkEnd; i += 1) {
 				const localName = `page_${String(i).padStart(4, "0")}.png`;
 				const localPath = path.join(res.rendered_pages_dir, localName);
@@ -2048,7 +2131,33 @@ registerWorker("render_document_pages", async (job: Job) => {
 					continue;
 				}
 				if (!bytes || bytes.length === 0) continue;
-				await uploadToR2({ bucket: r2Bucket, key: r2RenderedPageKey(prefix, i), body: bytes, contentType: "image/png", env: process.env });
+				// Throttle UI progress: update every ~2 pages (plus last page).
+				if (((i - chunkStart) % 2 === 0) || i === chunkEnd - 1) {
+					try {
+						await updateJobProgress(job, {
+							stage: "render_page",
+							current: Math.min(chunkTotal, (i - chunkStart) + 1),
+							total: chunkTotal,
+							message: `Rendering page ${i + 1}`,
+							meta: {
+								page_index: i,
+								total_pages: totalPages || pageCount || null,
+								page_start: chunkStart,
+								page_end: chunkEnd,
+								document_id: docId,
+							},
+						});
+					} catch {
+						// Best-effort progress update.
+					}
+				}
+				logStage("render_page_start", { document_id: docId, page_index: i, bytes: bytes.length });
+				await withTimeout(
+					uploadToR2({ bucket: r2Bucket, key: r2RenderedPageKey(prefix, i), body: bytes, contentType: "image/png", env: process.env }),
+					120_000,
+					{ stage: "upload_page", document_id: docId, page_index: i, bucket: r2Bucket, prefix }
+				);
+				logStage("render_page_done", { document_id: docId, page_index: i });
 			}
 
 			// Post-upload verification: ensure a representative mid-document key exists.
@@ -2061,23 +2170,38 @@ registerWorker("render_document_pages", async (job: Job) => {
 				}
 			}
 
-			await mergeDocumentExtractionMetadata({
-				documentId: docId,
-				patch: {
-					rendered_pages_r2: { bucket: r2Bucket, prefix, format: "page_%04d.png" },
-					// Required: total PDF pages (not just this chunk).
-					rendered_pages_count: totalPages || pageCount || 0,
-					// Optional: progress (best-effort).
-					rendered_pages_rendered: Math.min(totalPages || pageCount || 0, chunkStart + (res.rendered_pages_count ?? 0)),
-					rendered_pages_last_chunk: { page_start: chunkStart, page_end: chunkEnd },
-				},
+			logStage("ingest_start", {
+				document_id: docId,
+				rendered_pages_count: totalPages || pageCount || 0,
 			});
+			await withTimeout(
+				mergeDocumentExtractionMetadata({
+					documentId: docId,
+					patch: {
+						rendered_pages_r2: { bucket: r2Bucket, prefix, format: "page_%04d.png" },
+						// Required: total PDF pages (not just this chunk).
+						rendered_pages_count: totalPages || pageCount || 0,
+						// Optional: progress (best-effort).
+						rendered_pages_rendered: Math.min(totalPages || pageCount || 0, chunkStart + (res.rendered_pages_count ?? 0)),
+						rendered_pages_last_chunk: { page_start: chunkStart, page_end: chunkEnd },
+					},
+				}),
+				10 * 60_000,
+				{ stage: "ingest", document_id: docId }
+			);
+			logStage("ingest_done", { document_id: docId });
+			logStage("upload_done", { document_id: docId });
 		} catch (err) {
 			console.warn(
 				`[render_document_pages] R2 upload failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
 			);
 		}
 	}
+
+	logStage("enqueue_followups_start", {
+		document_id: docId,
+		page_range: { start: pageStart, end: pageEnd ?? null },
+	});
 
 	// Schedule the next chunk (serializes work to avoid OOM).
 	const chunkSize = persistCfg.maxPages;
@@ -2138,8 +2262,14 @@ registerWorker("render_document_pages", async (job: Job) => {
 			}
 		}
 	}
+	logStage("enqueue_followups_done", { document_id: docId });
 
 	await updateJob(job, "succeeded", `Rendered pages chunk (${res.rendered_pages_count ?? 0})`, 100);
+	logStage("job_complete", {
+		document_id: docId,
+		rendered: res.rendered_pages_count ?? 0,
+		total_pages: total,
+	});
 	return { ok: true, rendered: res.rendered_pages_count ?? 0, total_pages: total };
 });
 
@@ -5194,427 +5324,7 @@ registerWorker("remediate_extraction", async (job: Job) => {
  * - Else: re-extract documents that are failed OR have overall_score < threshold_low.
  */
 registerWorker("reextract_documents", async (job: Job) => {
-	const dealId = (job.data as { deal_id?: string } | undefined)?.deal_id;
-	const documentIds = (job.data as { document_ids?: string[] } | undefined)?.document_ids;
-	const thresholdLow = Number((job.data as { threshold_low?: number } | undefined)?.threshold_low ?? 0.75);
-	const includeWarnings = Boolean((job.data as { include_warnings?: boolean } | undefined)?.include_warnings);
-	const force =
-		Boolean((job.data as { force?: boolean } | undefined)?.force) ||
-		String((job.data as { mode?: string } | undefined)?.mode ?? "").toLowerCase() === "manual";
-
-	if (!dealId) {
-		await updateJob(job, "failed", "Missing deal_id");
-		return { ok: false };
-	}
-
-	try {
-		await updateJob(job, "running", "Scanning documents for re-extraction", 5);
-
-		const explicitDocIds = Array.isArray(documentIds) && documentIds.length > 0;
-		const sourceDocs = explicitDocIds ? await getDocumentsByIds(documentIds) : await getDocumentsForDealWithVerification(dealId);
-
-		const candidates = force && !explicitDocIds
-			? sourceDocs.filter((d) => d.deal_id === dealId)
-			: selectReextractCandidates(sourceDocs, {
-				dealId,
-				explicitDocIds,
-				thresholdLow,
-				includeWarnings,
-			});
-
-		if (force && !explicitDocIds) {
-			console.log(
-				JSON.stringify({
-					event: "REEXTRACT_FORCE_ALL",
-					deal_id: dealId,
-					doc_count: candidates.length,
-					job_id: job.id ? String(job.id) : null,
-				})
-			);
-		}
-
-		if (candidates.length === 0) {
-			if (force && !explicitDocIds) {
-				try {
-					await enqueueAnalyzeDeal({
-						dealId,
-						reason: "reextract_documents_force_no_documents",
-						triggerJobId: job.id ? String(job.id) : null,
-						shouldEnqueue: false,
-						skipReason: "no_documents_for_deal",
-						extra: {
-							explicit_doc_ids: explicitDocIds,
-							force,
-						},
-					});
-				} catch {
-					// never block completion
-				}
-				await updateJob(job, "succeeded", "No documents found for deal", 100);
-				return { ok: true, reextracted: 0 };
-			}
-
-			try {
-				await enqueueAnalyzeDeal({
-					dealId,
-					reason: "reextract_documents_no_candidates",
-					triggerJobId: job.id ? String(job.id) : null,
-					shouldEnqueue: false,
-					skipReason: "no_documents_matched_reextraction_criteria",
-					extra: {
-						explicit_doc_ids: explicitDocIds,
-						threshold_low: thresholdLow,
-						include_warnings: includeWarnings,
-						force,
-					},
-				});
-			} catch {
-				// never block completion
-			}
-			await updateJob(job, "succeeded", "No documents matched re-extraction criteria", 100);
-			return { ok: true, reextracted: 0 };
-		}
-
-		await updateJob(job, "running", `Re-extracting ${candidates.length} document(s)`, 10);
-		let reextracted = 0;
-		let skippedNoFile = 0;
-
-		for (let i = 0; i < candidates.length; i++) {
-			const doc = candidates[i];
-			const progressPct = Math.round((i / candidates.length) * 80) + 10;
-
-			const original = await getDocumentOriginalFile(doc.id);
-			if (!original) {
-				skippedNoFile += 1;
-				await updateJob(
-					job,
-					"running",
-					`Skipping ${doc.title}: no stored original file bytes`,
-					progressPct
-				);
-				continue;
-			}
-
-			await insertDocumentExtractionAudit({
-				documentId: doc.id,
-				dealId: doc.deal_id,
-				structuredData: doc.structured_data ?? null,
-				extractionMetadata: doc.extraction_metadata ?? null,
-				fullContent: doc.full_content ?? null,
-				fullText: doc.full_text ?? null,
-				verificationStatus: doc.verification_status ?? null,
-				verificationResult: doc.verification_result ?? null,
-				reason: "reextract_documents",
-				triggeredByJobId: job.id?.toString(),
-			});
-
-			await updateDocumentStatus(doc.id, "processing");
-			await updateJob(job, "running", `Re-extracting ${doc.title}`, progressPct);
-
-			// Clear prior extraction evidence for this document to avoid duplicates.
-			await deleteExtractionEvidenceForDocument({ documentId: doc.id });
-
-			const buffer = original.bytes;
-			const fileName = original.file_name ?? doc.title;
-
-			const analysis: DocumentAnalysis = await processDocument(
-				buffer,
-				fileName,
-				doc.id,
-				doc.deal_id
-			);
-
-			devLog("reextract_documents.classification", {
-				dealId: doc.deal_id,
-				documentId: doc.id,
-				fileName,
-				fileExt: path.extname(fileName).toLowerCase(),
-				analysisContentType: analysis.contentType,
-				bufferBytes: buffer.length,
-			});
-
-			// Normalization (parity with ingest): ensure structured_data.canonical.* exists.
-			const normalized = normalizeToCanonical({
-				contentType: analysis.contentType,
-				content: analysis.content,
-				structuredData: analysis.structuredData,
-			});
-			analysis.structuredData = normalized.structuredData;
-			const structuredDataToPersist = normalized.structuredData;
-			const canonicalMetrics = (structuredDataToPersist as any)?.canonical?.financials?.canonical_metrics;
-			devLog("reextract_documents.normalized", {
-				dealId: doc.deal_id,
-				documentId: doc.id,
-				analysisContentType: analysis.contentType,
-				hasCanonicalMetrics: canonicalMetrics != null,
-				nonNullCanonicalMetricCount: canonicalMetrics
-					? Object.values(canonicalMetrics as Record<string, unknown>).filter((v) => v != null).length
-					: 0,
-			});
-
-			const decodedBytes = buffer.length;
-			const completeness = computeCompleteness(analysis);
-			const prevMeta = (doc.extraction_metadata && typeof doc.extraction_metadata === "object")
-				? (doc.extraction_metadata as Record<string, unknown>)
-				: {};
-			const history = Array.isArray((prevMeta as any).reextraction_history)
-				? ([...(prevMeta as any).reextraction_history] as unknown[])
-				: [];
-			history.push({
-				at: new Date().toISOString(),
-				type: "reextract_from_original",
-				sha256: original.sha256,
-				result: {
-					contentType: analysis.contentType,
-					score: completeness.score,
-					reason: completeness.reason,
-				},
-			});
-
-			const extractionMetadata = {
-				...prevMeta,
-				contentType: analysis.contentType,
-				fileSizeBytes: decodedBytes,
-				processingTimeMs: analysis.metadata.processingTimeMs,
-				reextraction_history: history,
-				completeness,
-				errorMessage: analysis.metadata.errorMessage,
-			};
-
-			if (!analysis.metadata.extractionSuccess) {
-				const message = analysis.metadata.errorMessage || "Re-extraction failed";
-				const fullText = extractFullText(analysis.content, analysis.contentType);
-				const pageCount = getPageCount(analysis.content, analysis.contentType);
-				await updateDocumentAnalysis({
-					documentId: doc.id,
-					structuredData: structuredDataToPersist,
-					extractionMetadata,
-					fullContent: analysis.content,
-					fullText: fullText || undefined,
-					pageCount: pageCount || undefined,
-				});
-
-				if (devLogEnabled) {
-					const pool = getPool();
-					const { rows } = await pool.query<{ cm: unknown }>(
-						"SELECT structured_data #> '{canonical,financials,canonical_metrics}' AS cm FROM documents WHERE id = $1",
-						[doc.id]
-					);
-					devLog("reextract_documents.persist_check", {
-						dealId: doc.deal_id,
-						documentId: doc.id,
-						hasCanonicalMetricsAfterPersist: rows?.[0]?.cm != null,
-					});
-				}
-
-				// Evidence emission (parity with ingest): canonical metrics with pointers.
-				for (const ev of normalized.canonicalEvidence) {
-					await insertEvidence({
-						deal_id: doc.deal_id,
-						document_id: doc.id,
-						source: "extraction",
-						kind: "canonical_metric",
-						text: `${ev.metric_key}: ${ev.value} • ${ev.source_pointer}`,
-						confidence: 0.9,
-					});
-				}
-
-				await updateDocumentStatus(doc.id, "failed");
-				await updateJob(job, "running", `Failed ${doc.title}: ${message}`, progressPct);
-				continue;
-			}
-
-			// Persist extracted content
-			const fullText = extractFullText(analysis.content, analysis.contentType);
-			const pageCount = getPageCount(analysis.content, analysis.contentType);
-			await updateDocumentAnalysis({
-				documentId: doc.id,
-				status: "completed",
-				structuredData: structuredDataToPersist,
-				extractionMetadata,
-				fullContent: analysis.content,
-				fullText: fullText || undefined,
-				pageCount: pageCount || undefined,
-			});
-
-			// Render-first for PDFs: enqueue render_document_pages and do NOT enqueue extract_visuals until rendering completes.
-			if (analysis.contentType === "pdf") {
-				try {
-					const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
-					const chunkSize = persistCfg.maxPages;
-					const totalPages = pageCount || 0;
-					const r2Bucket = (process.env.R2_BUCKET || "").trim();
-					// Canonical location: rendered_pages/ (never legacy pages/)
-					let prefix = `deals/${doc.deal_id}/documents/${doc.id}/rendered_pages`;
-					// Cleanup guard: if metadata already points at rendered_pages (or misconfigured legacy /pages), reuse/upgrade it.
-					try {
-						const pool = getPool();
-						const { rows } = await pool.query<{ extraction_metadata: unknown | null }>(
-							"SELECT extraction_metadata FROM documents WHERE id = $1 LIMIT 1",
-							[sanitizeText(doc.id)]
-						);
-						const metaObj = rows?.[0]?.extraction_metadata && typeof rows[0].extraction_metadata === "object" ? (rows[0].extraction_metadata as any) : null;
-						const renderedR2 = metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === "object" ? (metaObj.rendered_pages_r2 as any) : null;
-						const existingPrefix = typeof renderedR2?.prefix === "string" ? renderedR2.prefix.trim().replace(/\/$/, "") : "";
-						if (existingPrefix) {
-							// If previous metadata mistakenly used /pages, upgrade to /rendered_pages.
-							prefix = existingPrefix.endsWith("/pages") && !existingPrefix.endsWith("/rendered_pages")
-								? existingPrefix.replace(/\/pages$/, "/rendered_pages")
-								: existingPrefix;
-						}
-					} catch {
-						// best-effort
-					}
-					if (r2Bucket && totalPages > 0) {
-						await mergeDocumentExtractionMetadata({
-							documentId: doc.id,
-							patch: {
-								rendered_pages_r2: { bucket: r2Bucket, prefix, format: "page_%04d.png" },
-								rendered_pages_count: totalPages,
-								rendered_pages_rendered: 0,
-							},
-						});
-
-						const renderQueue = getQueue("render_document_pages");
-						const firstEnd = Math.min(totalPages, chunkSize);
-						await renderQueue.add(
-							"render_document_pages",
-							{ deal_id: doc.deal_id, document_id: doc.id, page_start: 0, page_end: firstEnd },
-							{ jobId: makeJobId("render_document_pages", [doc.id, `0-${firstEnd}`]), removeOnComplete: true, removeOnFail: false }
-						);
-
-						console.log(
-							JSON.stringify({
-								event: "RENDER_DOC_ENQUEUED",
-								deal_id: doc.deal_id,
-								document_id: doc.id,
-								total_pages: totalPages,
-								chunk_size: chunkSize,
-								first_chunk: { start: 0, end: firstEnd },
-								reason: "reextract_documents",
-								parent_job_id: job.id ? String(job.id) : null,
-							})
-						);
-					}
-				} catch (err) {
-					console.warn(
-						`[reextract_documents] enqueue render_document_pages failed doc=${doc.id}: ${err instanceof Error ? err.message : String(err)}`
-					);
-				}
-			} else {
-				// Non-PDF: best-effort enqueue extract_visuals immediately (parity with ingest).
-				const visionCfg = getVisionExtractorConfig();
-				if (visionCfg.enabled) {
-					try {
-						const visualsQueue = getQueue("extract_visuals");
-						await enqueueExtractVisualsIfPossible({
-							pool: getPool(),
-							queue: visualsQueue,
-							config: visionCfg,
-							documentId: doc.id,
-							dealId: doc.deal_id,
-						});
-					} catch (err) {
-						console.warn(
-							`[reextract_documents] visual extraction enqueue failed doc=${doc.id}: ${err instanceof Error ? err.message : String(err)}`
-						);
-					}
-				}
-			}
-
-			if (devLogEnabled) {
-				const pool = getPool();
-				const { rows } = await pool.query<{ cm: unknown }>(
-					"SELECT structured_data #> '{canonical,financials,canonical_metrics}' AS cm FROM documents WHERE id = $1",
-					[doc.id]
-				);
-				devLog("reextract_documents.persist_check", {
-					dealId: doc.deal_id,
-					documentId: doc.id,
-					hasCanonicalMetricsAfterPersist: rows?.[0]?.cm != null,
-				});
-			}
-
-			// Evidence emission (parity with ingest): canonical metrics with pointers.
-			for (const ev of normalized.canonicalEvidence) {
-				await insertEvidence({
-					deal_id: doc.deal_id,
-					document_id: doc.id,
-					source: "extraction",
-					kind: "canonical_metric",
-					text: `${ev.metric_key}: ${ev.value} • ${ev.source_pointer}`,
-					confidence: 0.9,
-				});
-			}
-
-			// Re-insert evidence for metrics/headings/summary
-			for (const metric of analysis.structuredData.keyMetrics) {
-				await insertEvidence({
-					deal_id: doc.deal_id,
-					document_id: doc.id,
-					source: "extraction",
-					kind: "metric",
-					text: String(metric.key),
-					confidence: 0.8,
-				});
-			}
-			for (const heading of analysis.structuredData.mainHeadings) {
-				await insertEvidence({
-					deal_id: doc.deal_id,
-					document_id: doc.id,
-					source: "extraction",
-					kind: "section",
-					text: heading,
-					confidence: 0.9,
-				});
-			}
-			if (analysis.structuredData.textSummary) {
-				await insertEvidence({
-					deal_id: doc.deal_id,
-					document_id: doc.id,
-					source: "extraction",
-					kind: "summary",
-					text: analysis.structuredData.textSummary,
-					confidence: 0.85,
-				});
-			}
-
-			// Re-verify after re-extraction
-			const verifyQueue = getQueue("verify_documents");
-			await verifyQueue.add(
-				"verify_documents",
-				{ deal_id: doc.deal_id, document_ids: [doc.id] },
-				{ removeOnComplete: true, removeOnFail: false, delay: 500 }
-			);
-
-			reextracted += 1;
-		}
-
-		const message = `Re-extraction complete: reextracted=${reextracted}, skipped_no_file=${skippedNoFile}`;
-		try {
-			await enqueueAnalyzeDeal({
-				dealId,
-				reason: "reextract_documents_complete",
-				triggerJobId: job.id ? String(job.id) : null,
-				shouldEnqueue: true,
-				extra: {
-					reextracted,
-					skipped_no_file: skippedNoFile,
-					candidates: candidates.length,
-				},
-			});
-		} catch {
-			// never block completion
-		}
-		await updateJob(job, "succeeded", message, 100);
-		console.log(`[reextract_documents] deal=${dealId} ${message}`);
-		return { ok: true, reextracted, skippedNoFile };
-	} catch (err) {
-		const message = err instanceof Error ? err.message : "Re-extraction failed";
-		await updateJob(job, "failed", message);
-		console.error(`[reextract_documents] error:`, err);
-		throw err;
-	}
+	return await reextractDocumentsProcessor(job);
 });
 
 /**

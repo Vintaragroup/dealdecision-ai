@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { vi } from 'vitest';
@@ -265,31 +265,39 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
     vi.mocked(apiPostReextractDocuments).mockResolvedValue({ job_id: 'job-111', status: 'queued' } as any);
     vi.mocked(apiPostExtractVisuals).mockResolvedValue({ job_id: 'job-222', status: 'queued' } as any);
-    vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-333', status: 'queued' } as any);
 
-    vi.mocked(apiGetDealJobs).mockResolvedValue([
-      {
-        job_id: 'job-333',
-        type: 'analyze_deal',
-        status: 'failed',
-        message: 'No extracted documents available for analysis',
-        parent_job_id: 'job-222',
-        created_at: '2024-01-03T00:00:00.000Z',
-        updated_at: '2024-01-03T00:00:00.000Z',
-      },
-      {
-        job_id: 'job-new-ok',
-        type: 'analyze_deal',
-        status: 'succeeded',
-        message: 'Completed newer analysis',
-        parent_job_id: 'job-222',
-        progress_pct: 100,
-        created_at: '2024-01-04T00:00:00.000Z',
-        updated_at: '2024-01-04T00:00:00.000Z',
-      },
-    ] as any);
+    // Full process should NOT enqueue analyze_deal directly.
+    vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-should-not-be-called', status: 'queued' } as any);
+
+    let allowAnalyze = false;
+    vi.mocked(apiGetDealJobs).mockImplementation(async () => {
+      // Initially: analyze job hasn't been enqueued yet.
+      if (!allowAnalyze) return [] as any;
+      return [
+        {
+          job_id: 'job-333',
+          type: 'analyze_deal',
+          status: 'failed',
+          message: 'No extracted documents available for analysis',
+          created_at: '2024-01-02T00:01:00.000Z',
+          updated_at: '2024-01-02T00:01:10.000Z',
+        },
+        {
+          job_id: 'job-new-ok',
+          type: 'analyze_deal',
+          status: 'succeeded',
+          message: 'Completed newer analysis',
+          progress_pct: 100,
+          created_at: '2024-01-02T00:02:00.000Z',
+          updated_at: '2024-01-02T00:02:20.000Z',
+        },
+      ] as any;
+    });
 
     vi.mocked(apiGetJob).mockImplementation(async (jobId: string) => {
+      let extractPoll = (vi.mocked(apiGetJob) as any).__extractPollCount ?? 0;
+      (vi.mocked(apiGetJob) as any).__extractPollCount = extractPoll;
+
       if (jobId === 'job-111') {
         return {
           job_id: 'job-111',
@@ -302,14 +310,28 @@ describe('DealWorkspace Job Center (live mode)', () => {
         };
       }
       if (jobId === 'job-222') {
+        extractPoll = ((vi.mocked(apiGetJob) as any).__extractPollCount ?? 0) + 1;
+        (vi.mocked(apiGetJob) as any).__extractPollCount = extractPoll;
+        if (extractPoll === 1) {
+          return {
+            job_id: 'job-222',
+            type: 'extract_visuals',
+            status: 'running',
+            progress_pct: 10,
+            message: 'Working',
+            updated_at: '2024-01-02T00:00:00.000Z',
+            created_at: '2024-01-02T00:00:00.000Z',
+          };
+        }
         return {
           job_id: 'job-222',
           type: 'extract_visuals',
           status: 'succeeded',
           progress_pct: 100,
           message: 'ok',
-          updated_at: '2024-01-02T00:00:00.000Z',
           created_at: '2024-01-02T00:00:00.000Z',
+          finished_at: '2024-01-02T00:00:30.000Z',
+          updated_at: '2024-01-02T00:00:30.000Z',
         };
       }
       if (jobId === 'job-333') {
@@ -319,8 +341,19 @@ describe('DealWorkspace Job Center (live mode)', () => {
           status: 'failed',
           progress_pct: 100,
           message: 'No extracted documents available for analysis',
-          updated_at: '2024-01-03T00:00:00.000Z',
-          created_at: '2024-01-03T00:00:00.000Z',
+          updated_at: '2024-01-02T00:01:10.000Z',
+          created_at: '2024-01-02T00:01:00.000Z',
+        };
+      }
+      if (jobId === 'job-new-ok') {
+        return {
+          job_id: 'job-new-ok',
+          type: 'analyze_deal',
+          status: 'succeeded',
+          progress_pct: 100,
+          message: 'Completed newer analysis',
+          updated_at: '2024-01-02T00:02:20.000Z',
+          created_at: '2024-01-02T00:02:00.000Z',
         };
       }
       return {
@@ -336,17 +369,39 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
     renderWorkspace({ dealId: 'deal-supersede', dealData: null as any });
     const user = userEvent.setup();
+
+    // This mock is used by other tests in this file; clear history so we only assert on this scenario.
+    vi.mocked(apiPostAnalyze).mockClear();
+
     await user.click(screen.getByRole('button', { name: /run full process/i }));
 
+    // Analyze should not be enqueued directly by the UI.
+    expect(apiPostAnalyze).not.toHaveBeenCalled();
+
+    // While extraction is still running/finalizing and no analyze job exists yet, the Analyze step should have no job id.
+    const analyzeStep = await screen.findByTestId('full-process-step-analyze_deal');
     await waitFor(() => {
-      expect(screen.queryByText(/Analyze deal failed/i)).not.toBeInTheDocument();
+      expect(within(analyzeStep).getByText(/job\s+—/i)).toBeInTheDocument();
     });
 
-    await waitFor(() => {
-      expect(screen.getByText(/Full process completed/i)).toBeInTheDocument();
-      expect(screen.getByText(/job job-new-ok/i)).toBeInTheDocument();
-      expect(screen.getAllByText(/Completed newer analysis/i).length).toBeGreaterThan(0);
-    });
+    // Now simulate the backend enqueueing analyze jobs tied to the extract run.
+    allowAnalyze = true;
+
+    await waitFor(
+      () => {
+        expect(screen.queryByText(/Analyze deal failed/i)).not.toBeInTheDocument();
+      },
+      { timeout: 7000 }
+    );
+
+    await waitFor(
+      () => {
+        expect(screen.getByText(/Full process completed/i)).toBeInTheDocument();
+        expect(screen.getByText(/job job-new-ok/i)).toBeInTheDocument();
+        expect(screen.getAllByText(/Completed newer analysis/i).length).toBeGreaterThan(0);
+      },
+      { timeout: 7000 }
+    );
   });
 
   test('renders Job Center even when backend mode is not live', async () => {

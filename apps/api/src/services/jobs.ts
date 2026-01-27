@@ -115,12 +115,6 @@ export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOption
     ...(input.document_id ? { document_id: input.document_id } : {}),
   };
 
-  const bullJob = await queue.add(input.type, bullPayload, {
-    jobId,
-    removeOnComplete: true,
-    removeOnFail: false,
-  });
-
   // Persist a non-null payload for debugging and filtering.
   // Include identifiers even if the caller didn't supply them in payload.
   const persistedPayload = sanitizeDeep({
@@ -131,6 +125,8 @@ export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOption
     type: input.type,
   }) as Record<string, unknown>;
 
+  // Insert DB row first to avoid a race where the worker updates progress/status
+  // before the job row exists (UI polls Postgres jobs table).
   const { rows } = await pool.query(
     `INSERT INTO jobs (job_id, deal_id, document_id, type, queue, status, payload)
      VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
@@ -145,6 +141,25 @@ export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOption
       JSON.stringify(persistedPayload ?? {}),
     ]
   );
+
+  try {
+    await queue.add(input.type, bullPayload, {
+      jobId,
+      removeOnComplete: true,
+      removeOnFail: false,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await pool.query(
+      `UPDATE jobs
+          SET status = 'failed',
+              message = $2,
+              updated_at = now()
+        WHERE job_id = $1`,
+      [sanitizeText(jobId), sanitizeText(message)]
+    );
+    throw err;
+  }
 
   return rows[0];
 }

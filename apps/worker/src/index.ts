@@ -126,30 +126,38 @@ async function enqueueAnalyzeDeal(params: {
 		return { enqueued: false, jobId: null };
 	}
 
-	const q = getQueue("analyze_deal");
-	const jobId = makeJobId("analyze_deal", [dealId, Date.now()]);
+	// IMPORTANT: jobs are tracked in Postgres via job_id. Persist before BullMQ picks up.
+	// Use enqueuePersistedJob so the same job_id is used for both DB and BullMQ.
 	try {
 		const pool = getPool();
 		const visualAssetsTotal = await countVisualAssetsForDeal(pool, dealId);
 		const prereq = { ...mergedExtra, visual_assets_total: visualAssetsTotal };
 
-		const forwarded = await q.add(
-			"analyze_deal",
-			{ deal_id: dealId, reason: params.reason, parent_job_id: params.triggerJobId ?? null },
-			{ jobId, removeOnComplete: true, removeOnFail: false, delay: 250 }
-		);
+		const payload = {
+			deal_id: dealId,
+			reason: params.reason,
+			...(params.triggerJobId ? { parent_job_id: params.triggerJobId } : {}),
+			prereq,
+		};
+
+		const persisted = await enqueuePersistedJob({
+			type: "analyze_deal",
+			deal_id: dealId,
+			parent_job_id: params.triggerJobId ?? null,
+			payload,
+		});
 
 		console.log(
 			JSON.stringify({
 				event: "ANALYZE_DEAL_ENQUEUED",
 				deal_id: dealId,
 				reason: params.reason,
-				job_id: forwarded?.id ? String(forwarded.id) : jobId,
+				job_id: persisted.job_id,
 				trigger_job_id: params.triggerJobId ?? null,
 				prereq,
 			})
 		);
-		return { enqueued: true, jobId: forwarded?.id ? String(forwarded.id) : jobId };
+		return { enqueued: true, jobId: persisted.job_id };
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		if (msg.toLowerCase().includes("exists") || msg.toLowerCase().includes("already exists")) {

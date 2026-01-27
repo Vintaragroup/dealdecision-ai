@@ -272,6 +272,8 @@ describe('DealWorkspace Job Center (live mode)', () => {
   test('does not pin to stale failed analyze when newer succeeded exists', async () => {
     const { apiGetDealJobs, apiPostAnalyze, apiPostExtractVisuals, apiPostReextractDocuments } = await import('../lib/apiClient');
 
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2024-01-02T00:00:35.000Z'));
+
     vi.mocked(apiPostReextractDocuments).mockResolvedValue({ job_id: 'job-111', status: 'queued' } as any);
     vi.mocked(apiPostExtractVisuals).mockResolvedValue({ job_id: 'job-222', status: 'queued' } as any);
 
@@ -279,9 +281,24 @@ describe('DealWorkspace Job Center (live mode)', () => {
     vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-should-not-be-called', status: 'queued' } as any);
 
     let allowAnalyze = false;
+    let dealJobsPollCount = 0;
     vi.mocked(apiGetDealJobs).mockImplementation(async () => {
       // Initially: analyze job hasn't been enqueued yet.
       if (!allowAnalyze) return [] as any;
+
+      dealJobsPollCount += 1;
+      if (dealJobsPollCount === 1) {
+        return [
+          {
+            job_id: 'job-333',
+            type: 'analyze_deal',
+            status: 'failed',
+            message: 'No extracted documents available for analysis',
+            created_at: '2024-01-02T00:01:00.000Z',
+            updated_at: '2024-01-02T00:01:10.000Z',
+          },
+        ] as any;
+      }
       return [
         {
           job_id: 'job-333',
@@ -297,8 +314,8 @@ describe('DealWorkspace Job Center (live mode)', () => {
           status: 'succeeded',
           message: 'Completed newer analysis',
           progress_pct: 100,
-          created_at: '2024-01-02T00:02:00.000Z',
-          updated_at: '2024-01-02T00:02:20.000Z',
+          created_at: '2024-01-02T00:01:20.000Z',
+          updated_at: '2024-01-02T00:01:25.000Z',
         },
       ] as any;
     });
@@ -396,6 +413,16 @@ describe('DealWorkspace Job Center (live mode)', () => {
     // Now simulate the backend enqueueing analyze jobs tied to the extract run.
     allowAnalyze = true;
 
+    // The first observed analyze job fails quickly, but during the run grace window we should *not* flash Failed.
+    await waitFor(
+      () => {
+        const step = screen.getByTestId('full-process-step-analyze_deal');
+        expect(within(step).queryByText(/failed/i)).not.toBeInTheDocument();
+        expect(within(step).getAllByText(/Preparing analysis/i).length).toBeGreaterThan(0);
+      },
+      { timeout: 7000 }
+    );
+
     await waitFor(
       () => {
         expect(screen.queryByText(/Analyze deal failed/i)).not.toBeInTheDocument();
@@ -411,6 +438,8 @@ describe('DealWorkspace Job Center (live mode)', () => {
       },
       { timeout: 7000 }
     );
+
+    nowSpy.mockRestore();
   });
 
   test('renders Job Center even when backend mode is not live', async () => {

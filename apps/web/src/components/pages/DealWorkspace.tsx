@@ -197,6 +197,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return { startMs, endMs: endBaseMs + 5 * 60_000 };
   };
 
+  const isFullProcessActive = useMemo(() => {
+    // `ok` is set only when the full process completes (true) or errors (false).
+    return !!fullProcessUi && typeof fullProcessUi.ok === 'undefined';
+  }, [fullProcessUi]);
+
   const splitVerboseMessage = (raw: string): { summary: string; details: string | null } => {
     const msg = String(raw ?? '');
     if (!msg) return { summary: '', details: null };
@@ -270,6 +275,23 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return String(status ?? '').toLowerCase() === 'failed';
   };
 
+  const isRunningOrRetryingJobStatus = (status: unknown): boolean => {
+    const s = String(status ?? '').toLowerCase();
+    return s === 'running' || s === 'retrying' || s === 'queued';
+  };
+
+  const shouldTreatRunAnalyzeFailureAsPending = (opts: {
+    extractFinishedAt: string | null;
+    nowMs?: number;
+  }): boolean => {
+    // If extraction is still running/finalizing OR it finished very recently, allow a grace window
+    // so a fast-failing analyze attempt doesn't flash a red failure before a retry succeeds.
+    const nowMs = typeof opts.nowMs === 'number' ? opts.nowMs : Date.now();
+    const finishedMs = parseIsoMs(opts.extractFinishedAt);
+    if (finishedMs == null) return true;
+    return nowMs - finishedMs <= 15_000;
+  };
+
   const isSupersedableAnalyzeFailure = (row: { status?: unknown; message?: unknown; error?: unknown } | null | undefined): boolean => {
     if (!row) return false;
     if (!isFailedJobStatus(row.status)) return false;
@@ -304,8 +326,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     if (candidates.length === 0) return null;
 
     const sorted = [...candidates].sort((a, b) => parseJobSortTs(b) - parseJobSortTs(a));
+
+    // Precedence: newest succeeded > newest running/retrying/queued > newest (usually failed).
     const newestSucceeded = sorted.find((r) => isSucceededJobStatus(r.status)) ?? null;
-    return newestSucceeded ?? (sorted[0] ?? null);
+    if (newestSucceeded) return newestSucceeded;
+    const newestActive = sorted.find((r) => isRunningOrRetryingJobStatus(r.status)) ?? null;
+    return newestActive ?? (sorted[0] ?? null);
   };
 
   const dealJobsById = useMemo(() => {
@@ -321,12 +347,23 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const fullProcessRunExtractJobId = fullProcessExtractJobId ?? fullProcessUi?.steps?.extract_visuals?.job_id ?? null;
 
-  const derivedAnalyzeJobForRun = useMemo(() => {
-    if (!fullProcessRunExtractJobId) return null;
+  const derivedAnalyzeForRun = useMemo(() => {
+    if (!fullProcessRunExtractJobId) return { job: null as DealJobRowV2 | null, treatFailedAsPending: false };
     const window = getFullProcessRunWindowMs();
-    if (!window) return null;
-    return selectAnalyzeJobInWindow(dealJobs, window);
-  }, [dealJobs, fullProcessExtractCreatedAt, fullProcessExtractFinishedAt, fullProcessRunExtractJobId, jobUpdatedAt]);
+    if (!window) return { job: null as DealJobRowV2 | null, treatFailedAsPending: false };
+
+    const job = selectAnalyzeJobInWindow(dealJobs, window);
+    if (!job) return { job: null as DealJobRowV2 | null, treatFailedAsPending: false };
+
+    const treatFailedAsPending =
+      isFullProcessActive &&
+      (job.type ?? '') === 'analyze_deal' &&
+      isFailedJobStatus(job.status) &&
+      // Only treat as pending when there's no active/succeeded job already selected.
+      shouldTreatRunAnalyzeFailureAsPending({ extractFinishedAt: fullProcessExtractFinishedAt ?? null });
+
+    return { job, treatFailedAsPending };
+  }, [dealJobs, fullProcessExtractCreatedAt, fullProcessExtractFinishedAt, fullProcessRunExtractJobId, isFullProcessActive, jobUpdatedAt]);
 
   const pinnedIsAnalyze = jobType === 'analyze_deal' || (pinnedJobRow?.type ?? null) === 'analyze_deal';
 
@@ -335,15 +372,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     // During Full process, only override pinned failed analyzes when a succeeded analyze exists within the run window.
     if (fullProcessRunExtractJobId) {
       const pinned = pinnedJobRow;
-      if (pinned && isFailedJobStatus(pinned.status) && derivedAnalyzeJobForRun && isSucceededJobStatus(derivedAnalyzeJobForRun.status)) {
-        if (parseJobSortTs(derivedAnalyzeJobForRun) > parseJobSortTs(pinned)) {
-          return derivedAnalyzeJobForRun;
+      if (pinned && isFailedJobStatus(pinned.status) && derivedAnalyzeForRun.job && isSucceededJobStatus(derivedAnalyzeForRun.job.status)) {
+        if (parseJobSortTs(derivedAnalyzeForRun.job) > parseJobSortTs(pinned)) {
+          return derivedAnalyzeForRun.job;
         }
       }
       return selectBestAnalyzeJob(dealJobs, jobId);
     }
     return selectBestAnalyzeJob(dealJobs, jobId);
-  }, [dealJobs, derivedAnalyzeJobForRun, fullProcessRunExtractJobId, jobId, pinnedIsAnalyze, pinnedJobRow]);
+  }, [dealJobs, derivedAnalyzeForRun.job, fullProcessRunExtractJobId, jobId, pinnedIsAnalyze, pinnedJobRow]);
 
   const activeJobId = pinnedIsAnalyze ? (selectedAnalyzeJobForPinned?.job_id ?? jobId) : jobId;
 
@@ -379,7 +416,93 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       await new Promise<void>((resolve) => globalThis.setTimeout(resolve, pollMs));
     }
   };
+
   const shownToastKeysRef = useRef<Set<string>>(new Set());
+  const delayedAnalyzeFailureToastTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const dealJobsRef = useRef<DealJobRowV2[]>([]);
+  const fullProcessRunWindowRef = useRef<{ startMs: number; endMs: number } | null>(null);
+
+  useEffect(() => {
+    dealJobsRef.current = dealJobs;
+  }, [dealJobs]);
+
+  useEffect(() => {
+    if (!fullProcessRunExtractJobId) {
+      fullProcessRunWindowRef.current = null;
+      return;
+    }
+    fullProcessRunWindowRef.current = getFullProcessRunWindowMs();
+  }, [fullProcessExtractCreatedAt, fullProcessExtractFinishedAt, fullProcessRunExtractJobId, jobUpdatedAt]);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of delayedAnalyzeFailureToastTimersRef.current.values()) {
+        globalThis.clearTimeout(timer);
+      }
+      delayedAnalyzeFailureToastTimersRef.current.clear();
+    };
+  }, []);
+
+  const hasSucceededAnalyzeSoonAfterFailure = (opts: {
+    rows: DealJobRowV2[];
+    window: { startMs: number; endMs: number };
+    failedCreatedMs: number;
+    withinMs: number;
+  }): boolean => {
+    const cutoffMs = opts.failedCreatedMs + opts.withinMs;
+    for (const row of opts.rows) {
+      if ((row.type ?? '') !== 'analyze_deal') continue;
+      if (!isSucceededJobStatus(row.status)) continue;
+      const createdMs = parseIsoMs(row.created_at ?? null);
+      if (createdMs == null) continue;
+      if (createdMs < opts.window.startMs || createdMs > opts.window.endMs) continue;
+      if (createdMs > opts.failedCreatedMs && createdMs <= cutoffMs) return true;
+    }
+    return false;
+  };
+
+  const scheduleAnalyzeFailureToastIfNoQuickSuccess = (opts: {
+    toastKey: string;
+    toastMessage: string;
+    failedCreatedAt: string | null | undefined;
+  }): boolean => {
+    if (!isFullProcessActive) return false;
+    const runWindow = fullProcessRunWindowRef.current;
+    if (!runWindow) return false;
+
+    const failedCreatedMs = parseIsoMs(opts.failedCreatedAt ?? null);
+    if (failedCreatedMs == null) return false;
+    if (failedCreatedMs < runWindow.startMs || failedCreatedMs > runWindow.endMs) return false;
+
+    // If we already see a succeeding analyze shortly after, suppress immediately.
+    if (hasSucceededAnalyzeSoonAfterFailure({ rows: dealJobsRef.current, window: runWindow, failedCreatedMs, withinMs: 30_000 })) {
+      return true;
+    }
+
+    if (delayedAnalyzeFailureToastTimersRef.current.has(opts.toastKey)) {
+      return true;
+    }
+
+    const timer = globalThis.setTimeout(async () => {
+      delayedAnalyzeFailureToastTimersRef.current.delete(opts.toastKey);
+      try {
+        if (!dealId) return;
+        const rows = await apiGetDealJobs(dealId, { limit: 200 });
+        const arr = Array.isArray(rows) ? (rows as DealJobRowV2[]) : [];
+        const latestWindow = fullProcessRunWindowRef.current ?? runWindow;
+        const ok = hasSucceededAnalyzeSoonAfterFailure({ rows: arr, window: latestWindow, failedCreatedMs, withinMs: 30_000 });
+        if (ok) return;
+
+        addToastOnce(opts.toastKey, 'error', 'Analysis completed', opts.toastMessage);
+      } catch {
+        // If we can't verify a succeeding analyze, fall back to surfacing the failure.
+        addToastOnce(opts.toastKey, 'error', 'Analysis completed', opts.toastMessage);
+      }
+    }, 30_000);
+
+    delayedAnalyzeFailureToastTimersRef.current.set(opts.toastKey, timer);
+    return true;
+  };
   const lastProgressKeyRef = useRef<string | null>(null);
   const reportMissingRef = useRef<boolean>(false);
   const lastReportAttemptAtRef = useRef<number>(0);
@@ -1537,12 +1660,25 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             }
           }
 
-          addToastOnce(
-            `analysis-complete:${activeJobId}:${normalizedStatus}`,
-            normalizedStatus === 'succeeded' ? 'success' : normalizedStatus === 'succeeded_with_warnings' ? 'warning' : 'error',
-            'Analysis completed',
-            job.message || normalizedStatus || 'completed'
-          );
+          const analysisToastKey = `analysis-complete:${activeJobId}:${normalizedStatus}`;
+          const analysisToastMessage = job.message || normalizedStatus || 'completed';
+          const delayAnalyzeFailureToast =
+            job.type === 'analyze_deal' &&
+            normalizedStatus === 'failed' &&
+            scheduleAnalyzeFailureToastIfNoQuickSuccess({
+              toastKey: analysisToastKey,
+              toastMessage: analysisToastMessage,
+              failedCreatedAt: (job as any)?.created_at ?? null,
+            });
+
+          if (!delayAnalyzeFailureToast) {
+            addToastOnce(
+              analysisToastKey,
+              normalizedStatus === 'succeeded' ? 'success' : normalizedStatus === 'succeeded_with_warnings' ? 'warning' : 'error',
+              'Analysis completed',
+              analysisToastMessage
+            );
+          }
           if ((normalizedStatus === 'succeeded' || normalizedStatus === 'succeeded_with_warnings') && dealId) {
             apiGetDeal(dealId)
               .then((deal) => {
@@ -1681,7 +1817,26 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           if (handledTerminalJobKeysRef.current.has(terminalKey)) return;
           handledTerminalJobKeysRef.current.add(terminalKey);
           setAnalyzing(false);
-          addToastOnce(`analysis-complete:${job.job_id}:${normalizedStatus}`, normalizedStatus === "succeeded" ? "success" : normalizedStatus === 'succeeded_with_warnings' ? 'warning' : "error", "Analysis completed", job.message || (normalizedStatus ?? ''));
+
+          const analysisToastKey = `analysis-complete:${job.job_id}:${normalizedStatus}`;
+          const analysisToastMessage = job.message || (normalizedStatus ?? '');
+          const delayAnalyzeFailureToast =
+            job.type === 'analyze_deal' &&
+            normalizedStatus === 'failed' &&
+            scheduleAnalyzeFailureToastIfNoQuickSuccess({
+              toastKey: analysisToastKey,
+              toastMessage: analysisToastMessage,
+              failedCreatedAt: (job as any)?.created_at ?? null,
+            });
+
+          if (!delayAnalyzeFailureToast) {
+            addToastOnce(
+              analysisToastKey,
+              normalizedStatus === 'succeeded' ? 'success' : normalizedStatus === 'succeeded_with_warnings' ? 'warning' : 'error',
+              'Analysis completed',
+              analysisToastMessage
+            );
+          }
           if (normalizedStatus === 'succeeded' || normalizedStatus === 'succeeded_with_warnings') {
             if (job.type === 'analyze_deal') {
               reportMissingRef.current = false;
@@ -2273,21 +2428,125 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         status: 'pending',
         job_id: null,
         progress_pct: null,
-        message: 'Waiting for extraction to finalize…',
+        message: 'Preparing analysis…',
         updated_at: new Date().toISOString(),
       });
 
-      const derivedAnalyze = await waitForAnalyzeInRunWindow(dealId, runWindow, {
-        onPoll: () => {
+      // Keep polling for an analyze job within the run window. A fast-failing analyze attempt can occur
+      // before the worker has all extracted docs; treat early failures as pending for a short grace period.
+      const analyzeLoopStartedMs = Date.now();
+      const analyzeTimeoutMs = 10 * 60_000;
+      const analyzePollMs = 2000;
+
+      let analyzeTerminal: { job: any; normalizedStatus: string; timedOut?: boolean } | null = null;
+      while (true) {
+        if (Date.now() - analyzeLoopStartedMs > analyzeTimeoutMs) {
+          analyzeTerminal = { job: null, normalizedStatus: 'failed', timedOut: true };
+          break;
+        }
+
+        const rows = await apiGetDealJobs(dealId, { limit: 200 });
+        const best = selectAnalyzeJobInWindow(Array.isArray(rows) ? rows : [], runWindow);
+
+        if (!best) {
           updateFullStep('analyze_deal', {
             status: 'pending',
-            message: 'Waiting for extraction to finalize…',
+            job_id: null,
+            progress_pct: null,
+            message: 'Preparing analysis…',
             updated_at: new Date().toISOString(),
           });
-        },
-      });
+          await new Promise<void>((resolve) => window.setTimeout(resolve, analyzePollMs));
+          continue;
+        }
 
-      if (!derivedAnalyze) {
+        const bestStatus = normalizeJobStatus(best.status as any);
+
+        // Succeeded in-window: we're done.
+        if (bestStatus === 'succeeded' || bestStatus === 'succeeded_with_warnings') {
+          setJobId(best.job_id);
+          updateFullStep('analyze_deal', {
+            status: bestStatus as any,
+            job_id: best.job_id,
+            progress_pct: typeof best.progress_pct === 'number' ? best.progress_pct : null,
+            message: (best.message ?? best.error ?? null) as any,
+            updated_at: best.updated_at ?? new Date().toISOString(),
+          });
+          analyzeTerminal = { job: best, normalizedStatus: bestStatus };
+          break;
+        }
+
+        // Running/retrying/queued in-window: follow it to terminal with progress updates.
+        if (bestStatus === 'queued' || bestStatus === 'running' || bestStatus === 'retrying') {
+          setJobId(best.job_id);
+          updateFullStep('analyze_deal', {
+            status: bestStatus as any,
+            job_id: best.job_id,
+            progress_pct: typeof best.progress_pct === 'number' ? best.progress_pct : null,
+            message: (best.message ?? best.error ?? null) as any,
+            updated_at: best.updated_at ?? new Date().toISOString(),
+          });
+
+          const done = await waitForJobTerminal(best.job_id, {
+            onPoll: (job, normalizedStatus) => {
+              const pct = (job as any)?.status_detail?.progress?.percent;
+              const msg = (job as any)?.status_detail?.progress?.message ?? job.message;
+              const st = (normalizedStatus ?? job.status ?? 'running') as any;
+              updateFullStep('analyze_deal', {
+                status: st,
+                progress_pct: typeof pct === 'number' ? pct : typeof job.progress_pct === 'number' ? job.progress_pct : null,
+                message: typeof msg === 'string' ? msg : null,
+                updated_at: job.updated_at ?? null,
+              });
+            },
+          });
+
+          if (done.timedOut) {
+            analyzeTerminal = { job: done.job, normalizedStatus: done.normalizedStatus, timedOut: true };
+            break;
+          }
+
+          if (done.normalizedStatus === 'succeeded' || done.normalizedStatus === 'succeeded_with_warnings') {
+            analyzeTerminal = { job: done.job, normalizedStatus: done.normalizedStatus };
+            break;
+          }
+
+          // Failed/cancelled: if extraction finished very recently, keep waiting within the run window.
+          if (shouldTreatRunAnalyzeFailureAsPending({ extractFinishedAt: fullProcessExtractFinishedAt ?? null })) {
+            updateFullStep('analyze_deal', {
+              status: 'pending',
+              job_id: null,
+              progress_pct: null,
+              message: 'Preparing analysis…',
+              updated_at: new Date().toISOString(),
+            });
+            await new Promise<void>((resolve) => window.setTimeout(resolve, analyzePollMs));
+            continue;
+          }
+
+          analyzeTerminal = { job: done.job, normalizedStatus: done.normalizedStatus };
+          break;
+        }
+
+        // Only failed exists (or a failed is currently best): respect grace window.
+        if (bestStatus === 'failed' && shouldTreatRunAnalyzeFailureAsPending({ extractFinishedAt: fullProcessExtractFinishedAt ?? null })) {
+          updateFullStep('analyze_deal', {
+            status: 'pending',
+            job_id: null,
+            progress_pct: null,
+            message: 'Preparing analysis…',
+            updated_at: new Date().toISOString(),
+          });
+          await new Promise<void>((resolve) => window.setTimeout(resolve, analyzePollMs));
+          continue;
+        }
+
+        // Anything else: treat as terminal.
+        analyzeTerminal = { job: best, normalizedStatus: bestStatus ?? (best.status as any) };
+        break;
+      }
+
+      if (!analyzeTerminal || analyzeTerminal.timedOut) {
         addToast('error', 'Analyze did not start', 'Timed out waiting for backend to enqueue analyze job');
         updateFullStep('analyze_deal', { status: 'failed', message: 'Timed out waiting for analyze to start' });
         setFullProcessUi((prev) => (prev ? { ...prev, ok: false, error: 'Analyze did not start' } : prev));
@@ -2295,39 +2554,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         return;
       }
 
-      updateFullStep('analyze_deal', {
-        status: (normalizeJobStatus(derivedAnalyze.status as any) ?? 'queued') as any,
-        job_id: derivedAnalyze.job_id,
-        progress_pct: typeof derivedAnalyze.progress_pct === 'number' ? derivedAnalyze.progress_pct : null,
-        message: (derivedAnalyze.message ?? derivedAnalyze.error ?? null) as any,
-        updated_at: derivedAnalyze.updated_at ?? new Date().toISOString(),
-      });
-
-      const analyzeDone = await waitForJobTerminal(derivedAnalyze.job_id, {
-        onPoll: (job, normalizedStatus) => {
-          const pct = (job as any)?.status_detail?.progress?.percent;
-          const msg = (job as any)?.status_detail?.progress?.message ?? job.message;
-          const st = (normalizedStatus ?? job.status ?? 'running') as any;
-          updateFullStep('analyze_deal', {
-            status: st,
-            progress_pct: typeof pct === 'number' ? pct : typeof job.progress_pct === 'number' ? job.progress_pct : null,
-            message: typeof msg === 'string' ? msg : null,
-            updated_at: job.updated_at ?? null,
-          });
-        },
-      });
-
-      if (analyzeDone.timedOut) {
-        addToast('error', 'Analyze deal timed out', 'Full process may still be running');
-        updateFullStep('analyze_deal', { status: 'failed', message: 'Timed out' });
-        setFullProcessUi((prev) => (prev ? { ...prev, ok: false, error: 'Analyze deal timed out' } : prev));
-        setAnalyzing(false);
-        return;
-      }
-
-      if (analyzeDone.normalizedStatus !== 'succeeded' && analyzeDone.normalizedStatus !== 'succeeded_with_warnings') {
-        addToast('error', 'Analyze deal failed', analyzeDone.job.message || analyzeDone.normalizedStatus);
-        updateFullStep('analyze_deal', { status: analyzeDone.normalizedStatus as any, message: analyzeDone.job.message ?? null });
+      if (analyzeTerminal.normalizedStatus !== 'succeeded' && analyzeTerminal.normalizedStatus !== 'succeeded_with_warnings') {
+        addToast('error', 'Analyze deal failed', analyzeTerminal.job?.message || analyzeTerminal.normalizedStatus);
+        updateFullStep('analyze_deal', { status: analyzeTerminal.normalizedStatus as any, message: analyzeTerminal.job?.message ?? null });
         setFullProcessUi((prev) => (prev ? { ...prev, ok: false, error: 'Analyze deal failed' } : prev));
         setAnalyzing(false);
         return;

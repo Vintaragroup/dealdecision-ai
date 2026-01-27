@@ -1461,6 +1461,31 @@ export async function registerDocumentRoutes(
     const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
     const forceResegment = Boolean((request.body as any)?.force_resegment);
 
+    const { rows } = await pool.query<{ extraction_metadata: unknown | null }>(
+      "SELECT extraction_metadata FROM documents WHERE id = $1 AND deal_id = $2 LIMIT 1",
+      [document_id, deal_id]
+    );
+    if (rows.length === 0) {
+      return reply.status(404).send({ ok: false, error: "Document not found" });
+    }
+    const metaObj = rows[0]?.extraction_metadata && typeof rows[0].extraction_metadata === "object" ? (rows[0].extraction_metadata as any) : null;
+    const renderedR2 = metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === "object" ? (metaObj.rendered_pages_r2 as any) : null;
+    const count = typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count) ? metaObj.rendered_pages_count : 0;
+    const rendered = typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered) ? metaObj.rendered_pages_rendered : null;
+    if (!renderedR2 || !count || count <= 0 || rendered == null || rendered < count) {
+      return reply.status(409).send({
+        ok: false,
+        error: "rendered_pages_not_ready",
+        message: "Rendered page images are not ready yet. Wait for rendering to complete, then retry.",
+        document_id: document_id,
+        diagnostics: {
+          rendered_pages_r2_present: Boolean(renderedR2),
+          rendered_pages_count: count,
+          rendered_pages_rendered: rendered,
+        },
+      });
+    }
+
     const job = await enqueue(
       {
         deal_id,

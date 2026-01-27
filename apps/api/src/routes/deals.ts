@@ -8436,7 +8436,44 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       return reply.status(404).send({ error: "Deal not found" });
     }
 
-    // Single job; the worker resolves deal documents + rendered page image URIs.
+    const { rows: docs } = await pool.query<{ id: string; extraction_metadata: unknown | null }>(
+      "SELECT id, extraction_metadata FROM documents WHERE deal_id = $1 AND deleted_at IS NULL",
+      [dealId]
+    );
+
+    const readyDocIds: string[] = [];
+    const blocked: Array<{ document_id: string; reason: string; rendered_pages_count?: number; rendered_pages_rendered?: number | null }> = [];
+
+    for (const d of docs ?? []) {
+      const metaObj = d?.extraction_metadata && typeof d.extraction_metadata === "object" ? (d.extraction_metadata as any) : null;
+      const renderedR2 = metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === "object" ? (metaObj.rendered_pages_r2 as any) : null;
+      const count = typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count) ? metaObj.rendered_pages_count : 0;
+      const rendered = typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered) ? metaObj.rendered_pages_rendered : null;
+
+      if (!renderedR2) {
+        blocked.push({ document_id: d.id, reason: "rendered_pages_r2_missing" });
+        continue;
+      }
+      if (!count || count <= 0) {
+        blocked.push({ document_id: d.id, reason: "rendered_pages_count_missing", rendered_pages_count: count, rendered_pages_rendered: rendered });
+        continue;
+      }
+      if (rendered == null || rendered < count) {
+        blocked.push({ document_id: d.id, reason: "render_incomplete", rendered_pages_count: count, rendered_pages_rendered: rendered });
+        continue;
+      }
+      readyDocIds.push(d.id);
+    }
+
+    if (readyDocIds.length === 0) {
+      return reply.status(409).send({
+        error: "rendered_pages_not_ready",
+        message: "No documents have completed rendered page images yet. Run re-extract / wait for rendering, then retry.",
+        blocked_documents: blocked,
+      });
+    }
+
+    // Single job; scope to only the ready docs to avoid ingest_not_complete guard failures.
     // force_resegment updates segment_key for existing structured synthetic assets (pptx/docx/xlsx)
     // before extracting visuals.
     const job = await enqueueJob(
@@ -8444,6 +8481,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         deal_id: dealId,
         type: "extract_visuals",
         payload: {
+          document_ids: readyDocIds,
           force_resegment: forceResegment,
           force_reextract: forceReextract,
           enqueue_deep_scan: enqueueDeepScan,
@@ -8451,7 +8489,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       },
       { dedupe: { by: "deal" } }
     );
-    return reply.status(202).send({ job_id: job.job_id, status: job.status });
+    return reply.status(202).send({ job_id: job.job_id, status: job.status, ready_documents: readyDocIds, blocked_documents: blocked });
   });
 
   // Enqueue a deep scan pass for visuals in the deal.

@@ -3735,6 +3735,11 @@ export async function enqueueExtractVisualsIfPossible(params: {
 	logger?: LogLike;
 	resolveOptions?: { fsImpl?: FsLike; env?: NodeJS.ProcessEnv };
 	imageUrisOverride?: string[];
+	/**
+	 * When true, requires rendered_pages_r2 metadata to exist and be complete before enqueueing.
+	 * Defaults to true in production.
+	 */
+	requireRenderedPagesR2?: boolean;
 }): Promise<boolean> {
 	const logger = params.logger ?? console;
 	if (!params.config.enabled) {
@@ -3749,8 +3754,81 @@ export async function enqueueExtractVisualsIfPossible(params: {
 		return false;
 	}
 
-	const imageUris = Array.isArray(params.imageUrisOverride)
-		? params.imageUrisOverride
+	const envNode = (params.resolveOptions?.env?.NODE_ENV ?? process.env.NODE_ENV ?? "").trim().toLowerCase();
+	const requireRenderedPagesR2 =
+		typeof params.requireRenderedPagesR2 === "boolean" ? params.requireRenderedPagesR2 : envNode === "production";
+
+	const imageUrisOverride = Array.isArray(params.imageUrisOverride)
+		? params.imageUrisOverride.filter((u) => typeof u === "string" && u.length > 0)
+		: null;
+
+	// Hard guardrail: in production (or when explicitly required), only enqueue visuals when rendered_pages_r2 is present and complete.
+	// This prevents enqueueing extract_visuals too early (before render_document_pages finishes writing page images).
+	if (requireRenderedPagesR2 && !imageUrisOverride) {
+		try {
+			const { rows } = await params.pool.query<{ extraction_metadata: unknown | null }>(
+				"SELECT extraction_metadata FROM documents WHERE id = $1 LIMIT 1",
+				[sanitizeText(params.documentId)]
+			);
+			const metaObj = rows?.[0]?.extraction_metadata && typeof rows[0].extraction_metadata === "object" ? (rows[0].extraction_metadata as any) : null;
+			const renderedR2 =
+				metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === "object" ? (metaObj.rendered_pages_r2 as any) : null;
+			if (!renderedR2) {
+				logger.log(
+					JSON.stringify({
+						event: "extract_visuals_enqueue_skipped",
+						document_id: params.documentId,
+						reason: "rendered_pages_r2_missing",
+					})
+				);
+				return false;
+			}
+			const renderedCount =
+				typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count)
+					? metaObj.rendered_pages_count
+					: 0;
+			const renderedSoFar =
+				typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered)
+					? metaObj.rendered_pages_rendered
+					: null;
+			if (!renderedCount || renderedCount <= 0) {
+				logger.log(
+					JSON.stringify({
+						event: "extract_visuals_enqueue_skipped",
+						document_id: params.documentId,
+						reason: "rendered_pages_count_missing",
+						rendered_pages_count: renderedCount,
+						rendered_pages_rendered: renderedSoFar,
+					})
+				);
+				return false;
+			}
+			if (renderedSoFar == null || renderedSoFar < renderedCount) {
+				logger.log(
+					JSON.stringify({
+						event: "extract_visuals_enqueue_skipped",
+						document_id: params.documentId,
+						reason: "render_incomplete",
+						rendered_pages_count: renderedCount,
+						rendered_pages_rendered: renderedSoFar,
+					})
+				);
+				return false;
+			}
+		} catch (err) {
+			logger.warn(
+				JSON.stringify({
+					event: "extract_visuals_enqueue_guard_failed",
+					document_id: params.documentId,
+					error: err instanceof Error ? err.message : String(err),
+				})
+			);
+			return false;
+		}
+	}
+
+	const imageUris = imageUrisOverride
+		? imageUrisOverride
 		: await resolvePageImageUris(params.pool, params.documentId, {
 				logger,
 				fsImpl: params.resolveOptions?.fsImpl,

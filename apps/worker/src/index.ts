@@ -2275,6 +2275,7 @@ registerWorker("render_document_pages", async (job: Job) => {
 					config: visionCfg,
 					documentId: docId,
 					dealId: dealIdForEnqueue || "unknown",
+					requireRenderedPagesR2: true,
 				});
 				if (enqueued) {
 					console.log(

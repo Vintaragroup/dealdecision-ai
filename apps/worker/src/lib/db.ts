@@ -2,22 +2,55 @@ import { Pool } from "pg";
 import { sanitizeText, sanitizeDeep } from "@dealdecision/core";
 import { randomUUID } from "crypto";
 
-const connectionString = process.env.DATABASE_URL;
+const envConnectionString = process.env.DATABASE_URL;
 
-if (!connectionString) {
+if (!envConnectionString) {
   throw new Error("DATABASE_URL is required for worker DB access");
 }
 
+// After this guard, the connection string is guaranteed to be defined.
+const connectionString: string = envConnectionString;
+
 let pool: Pool | null = null;
+
+// Render Postgres (and many managed PG providers) require SSL.
+// pg supports SSL via connection string params (e.g., ?sslmode=require) but we also
+// explicitly enable TLS when PGSSLMODE=require or sslmode=require is present.
+function shouldUseSsl(cs: string): boolean {
+  const lower = cs.toLowerCase();
+  return (
+    process.env.PGSSLMODE === "require" ||
+    lower.includes("sslmode=require") ||
+    lower.includes("ssl=true")
+  );
+}
+
+let shuttingDown = false;
+
+export function markDbShuttingDown() {
+  shuttingDown = true;
+}
 
 export function getPool() {
   if (!pool) {
-    pool = new Pool({ connectionString });
+    const useSsl = shouldUseSsl(connectionString);
+    pool = new Pool({
+      connectionString,
+      // Common for managed Postgres where local CA chain isn't present in the container.
+      // This still encrypts traffic; it only disables CA verification.
+      ...(useSsl ? { ssl: { rejectUnauthorized: false } } : {}),
+    });
   }
   return pool;
 }
 
+// IMPORTANT: This is a long-lived worker. Never close the shared pool during normal
+// execution. Only close it as part of an explicit process shutdown.
 export async function closePool() {
+  if (!shuttingDown) {
+    console.warn("[db] closePool() called while not shutting down; ignoring to avoid breaking active jobs");
+    return;
+  }
   if (pool) {
     await pool.end();
     pool = null;

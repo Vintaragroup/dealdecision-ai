@@ -410,17 +410,70 @@ export async function getDocumentsByIds(documentIds: string[]): Promise<Document
   return rows;
 }
 
+type PoolLike = {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: any[] }>;
+};
+
+let cachedDocumentsDeletedAtExists: boolean | null = null;
+let cachedDocumentsDeletedAtExistsPromise: Promise<boolean> | null = null;
+
+export function __resetDocumentsDeletedAtExistsCacheForTests() {
+  cachedDocumentsDeletedAtExists = null;
+  cachedDocumentsDeletedAtExistsPromise = null;
+}
+
+export async function hasDocumentsDeletedAtColumn(pool: PoolLike): Promise<boolean> {
+  if (cachedDocumentsDeletedAtExists !== null) return cachedDocumentsDeletedAtExists;
+  if (cachedDocumentsDeletedAtExistsPromise) return cachedDocumentsDeletedAtExistsPromise;
+
+  cachedDocumentsDeletedAtExistsPromise = (async () => {
+    try {
+      const { rows } = await pool.query(
+        `SELECT 1 AS ok
+           FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'documents'
+            AND column_name = 'deleted_at'
+          LIMIT 1;`
+      );
+      cachedDocumentsDeletedAtExists = Array.isArray(rows) && rows.length > 0;
+      return cachedDocumentsDeletedAtExists;
+    } catch {
+      // Best-effort: if we can't query information_schema, do not reference deleted_at.
+      cachedDocumentsDeletedAtExists = false;
+      return false;
+    } finally {
+      cachedDocumentsDeletedAtExistsPromise = null;
+    }
+  })();
+
+  return cachedDocumentsDeletedAtExistsPromise;
+}
+
+export function buildGetDocumentsForDealWithVerificationSql(input: { hasDeletedAt: boolean }): string {
+  return `SELECT d.id, d.deal_id, d.title, d.type, d.status, d.verification_status, d.verification_result,
+            d.structured_data, d.extraction_metadata, d.full_content, d.full_text, d.page_count,
+            d.uploaded_at, d.updated_at
+       FROM documents d
+      WHERE d.deal_id = $1${input.hasDeletedAt ? "\n        AND d.deleted_at IS NULL" : ""}
+      ORDER BY d.uploaded_at DESC
+      LIMIT 200`;
+}
+
+export async function __getDocumentsForDealWithVerificationWithPoolForTests(
+  pool: PoolLike,
+  dealId: string
+): Promise<DocumentWithVerification[]> {
+  const hasDeletedAt = await hasDocumentsDeletedAtColumn(pool);
+  const { rows } = await pool.query(buildGetDocumentsForDealWithVerificationSql({ hasDeletedAt }), [sanitizeText(dealId)]);
+  return rows as DocumentWithVerification[];
+}
+
 export async function getDocumentsForDealWithVerification(dealId: string): Promise<DocumentWithVerification[]> {
   const currentPool = getPool();
+  const hasDeletedAt = await hasDocumentsDeletedAtColumn(currentPool as unknown as PoolLike);
   const { rows } = await currentPool.query<DocumentWithVerification>(
-    `SELECT id, deal_id, title, type, status, verification_status, verification_result,
-            structured_data, extraction_metadata, full_content, full_text, page_count,
-            uploaded_at, updated_at
-       FROM documents
-      WHERE deal_id = $1
-        AND deleted_at IS NULL
-      ORDER BY uploaded_at DESC
-      LIMIT 200`,
+    buildGetDocumentsForDealWithVerificationSql({ hasDeletedAt }),
     [sanitizeText(dealId)]
   );
   return rows;

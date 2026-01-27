@@ -290,7 +290,7 @@ import { parseIngestDocumentsJobData, validateIngestDocumentsPayload } from "./l
 import { buildPhase1DealOverviewV2, buildPhase1DealUnderstandingV1, buildPhase1UpdateReportV1 } from "./lib/phase1/dealOverviewV2";
 import { computeVisualQualityAuditForDeal } from "./lib/visual-quality-audit";
 import { buildPhase1BusinessArchetypeV1 } from "./lib/phase1/businessArchetypeV1";
-import { getVisualPageImagePersistConfig, persistRenderedPageImages, persistImagePage, renderNonPdfToPageImages, r2RenderedPageKey } from "./lib/rendered-pages";
+import { getVisualPageImagePersistConfig, persistRenderedPageImages, persistImagePage, renderNonPdfToPageImages, r2RenderedPageKey, convertOfficeToPdfBuffer } from "./lib/rendered-pages";
 import type { DocumentAnalysis, ExtractedContent } from "./lib/processors";
 import type { VerificationResult } from "./lib/verification";
 import { OpenAIGPT4oProvider } from "./lib/llm/providers/openai-provider";
@@ -1649,30 +1649,44 @@ async function ingestDocumentProcessor(job: Job) {
 			}
 
 			// Render page images in chunks to R2 (best-effort; does not block ingestion).
-			if (analysis.contentType === "pdf") {
+			// For Office (e.g. XLSX), render_document_pages converts to PDF via LibreOffice first.
+			if (analysis.contentType === "pdf" || analysis.contentType === "excel") {
 				try {
 					const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
 					const chunkSize = persistCfg.maxPages;
-					const totalPages = finalPageCountForLog || pageCount || 0;
+					const totalPages = analysis.contentType === "pdf" ? (finalPageCountForLog || pageCount || 0) : 0;
 					const r2Bucket = (process.env.R2_BUCKET || "").trim();
 					const prefix = `deals/${dealIdSafe}/documents/${docId}/rendered_pages`;
-					if (r2Bucket && totalPages > 0) {
+					if (r2Bucket) {
 						renderedPagesR2ForLog = { bucket: r2Bucket, prefix };
 						await mergeDocumentExtractionMetadata({
 							documentId: docId,
 							patch: {
 								rendered_pages_r2: { bucket: r2Bucket, prefix, format: "page_%04d.png" },
+								// For PDFs we know total pages; for Office docs, render_document_pages will fill this in.
 								rendered_pages_count: totalPages,
 								rendered_pages_rendered: 0,
 						},
 						});
 
 						const renderQueue = getQueue("render_document_pages");
-						const firstEnd = Math.min(totalPages, chunkSize);
+						const firstEnd = analysis.contentType === "pdf" && totalPages > 0 ? Math.min(totalPages, chunkSize) : chunkSize;
+						const renderJobId = makeJobId("render_document_pages", [docId, `0-${firstEnd}`]);
+						console.log(
+							JSON.stringify({
+								event: "INGEST_ENQUEUED_RENDER_DOCUMENT_PAGES",
+								deal_id: dealIdSafe,
+								document_id: docId,
+								job_id: renderJobId,
+								page_start: 0,
+								page_end: firstEnd,
+								content_type: analysis.contentType,
+							})
+						);
 						await renderQueue.add(
 							"render_document_pages",
 							{ deal_id: dealIdSafe, document_id: docId, page_start: 0, page_end: firstEnd },
-							{ jobId: makeJobId("render_document_pages", [docId, `0-${firstEnd}`]), removeOnComplete: true, removeOnFail: false }
+							{ jobId: renderJobId, removeOnComplete: true, removeOnFail: false }
 						);
 					}
 				} catch (err) {
@@ -1704,6 +1718,15 @@ async function ingestDocumentProcessor(job: Job) {
 			// Queue verification job for this document
 			const verifyQueue = getQueue("verify_documents");
 			try {
+				const verifyJobId = makeJobId("verify_documents", [docId]);
+				console.log(
+					JSON.stringify({
+						event: "INGEST_ENQUEUED_VERIFY_DOCUMENTS",
+						deal_id: dealIdSafe,
+						document_id: docId,
+						job_id: verifyJobId,
+					})
+				);
 				await verifyQueue.add(
 					"verify_documents",
 					{
@@ -1711,7 +1734,7 @@ async function ingestDocumentProcessor(job: Job) {
 						document_ids: [docId],
 					},
 					{
-						jobId: makeJobId("verify_documents", [docId]),
+						jobId: verifyJobId,
 						removeOnComplete: true,
 						removeOnFail: false,
 						delay: 500,
@@ -1725,31 +1748,8 @@ async function ingestDocumentProcessor(job: Job) {
 				}
 			}
 
-			// Optional: queue visual extraction (best-effort, never blocks ingestion)
-			const visionCfg = getVisionExtractorConfig();
-			if (visionCfg.enabled) {
-				try {
-					const visualsQueue = getQueue("extract_visuals");
-					const enqueued = await enqueueExtractVisualsIfPossible({
-						pool: getPool(),
-						queue: visualsQueue,
-						config: visionCfg,
-						documentId: docId,
-						dealId: dealIdSafe,
-					});
-					if (!enqueued) {
-						console.log(
-							`[ingest_document] visual extraction skipped doc=${docId} (NO_PAGE_IMAGES_AVAILABLE)`
-						);
-					}
-				} catch (err) {
-					console.warn(
-						`[ingest_document] visual extraction enqueue failed doc=${docId}: ${
-							err instanceof Error ? err.message : String(err)
-						}`
-					);
-				}
-			}
+			// NOTE: Do not enqueue extract_visuals here. It is triggered only after rendered pages are complete
+			// (final chunk in render_document_pages), to avoid ingest_not_complete races.
 		}
 		return { ok: true, analysis };
 	} catch (err) {
@@ -2040,6 +2040,38 @@ registerWorker("render_document_pages", async (job: Job) => {
 	}
 	logStage("pdf_load_done", { document_id: docId, bytes: buffer.length });
 
+	const looksLikePdf = (b: Buffer) => b.length >= 5 && b.slice(0, 5).toString("utf8") === "%PDF-";
+	let renderBuffer: Buffer = buffer;
+	if (!looksLikePdf(renderBuffer)) {
+		const name = typeof original?.file_name === "string" ? original.file_name : "";
+		const mt = typeof original?.mime_type === "string" ? original.mime_type : "";
+		const ext = name.toLowerCase().split(".").pop() ?? "";
+		const officeExt = (["xlsx", "xls", "pptx", "ppt", "docx", "doc"] as const).includes(ext as any)
+			? (ext as any)
+			: mt.toLowerCase().includes("spreadsheet")
+				? ("xlsx" as const)
+				: mt.toLowerCase().includes("presentation")
+					? ("pptx" as const)
+					: mt.toLowerCase().includes("word")
+						? ("docx" as const)
+						: null;
+		if (officeExt) {
+			logStage("office_convert_start", { document_id: docId, ext: officeExt, file_name: name || null, mime_type: mt || null });
+			const conv = await withTimeout(
+				convertOfficeToPdfBuffer({ buffer: renderBuffer, ext: officeExt, logger: console }),
+				10 * 60_000,
+				{ stage: "office_convert", document_id: docId, ext: officeExt }
+			);
+			if (!conv.pdf || conv.pdf.length === 0) {
+				await updateJob(job, "failed", `office_to_pdf_failed: ${conv.reason ?? "unknown"}`, 100);
+				logStage("office_convert_failed", { document_id: docId, reason: conv.reason ?? null });
+				return { ok: false, reason: "office_to_pdf_failed" };
+			}
+			renderBuffer = conv.pdf;
+			logStage("office_convert_done", { document_id: docId, bytes: conv.pdf.length });
+		}
+	}
+
 	const uploadDir = await resolveWritableUploadDir(process.env);
 	const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
 
@@ -2052,7 +2084,7 @@ registerWorker("render_document_pages", async (job: Job) => {
 	});
 	const res = await withTimeout(
 		persistRenderedPageImages({
-			buffer,
+			buffer: renderBuffer,
 			documentId: docId,
 			pageCount: pageCount || 0,
 			uploadDir,

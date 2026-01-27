@@ -681,6 +681,18 @@ export async function resolvePageImageUris(
 		}
 
 		const dirs = candidateArtifactDirs({ documentId, meta: row?.extraction_metadata, env: options?.env });
+		const envNode = (options?.env?.NODE_ENV ?? process.env.NODE_ENV ?? "").trim().toLowerCase();
+		if (envNode === "production") {
+			logger.log(
+				JSON.stringify({
+					event: "NO_PAGE_IMAGES_AVAILABLE",
+					document_id: documentId,
+					reason: "rendered_pages_missing_prod",
+					searched_dirs: [],
+				})
+			);
+			return [];
+		}
 		for (const dir of dirs) {
 			if (!(await dirExists(fsImpl, dir))) continue;
 			let files: string[] = [];
@@ -3744,7 +3756,16 @@ export async function enqueueExtractVisualsIfPossible(params: {
 				fsImpl: params.resolveOptions?.fsImpl,
 				env: params.resolveOptions?.env,
 		  });
-	if (imageUris.length === 0) return false;
+	if (imageUris.length === 0) {
+		logger.log(
+			JSON.stringify({
+				event: "extract_visuals_enqueue_skipped",
+				document_id: params.documentId,
+				reason: "no_page_images_available",
+			})
+		);
+		return false;
+	}
 
 	try {
 		const safeJobId = sanitizeJobId(makeJobId("extract_visuals", [params.documentId]));

@@ -420,7 +420,7 @@ type OfficePdfConversionResult = {
 	reason?: string;
 };
 
-async function convertOfficeToPdfBuffer(params: {
+export async function convertOfficeToPdfBuffer(params: {
 	buffer: Buffer;
 	ext: "pptx" | "ppt" | "docx" | "doc" | "xlsx" | "xls";
 	logger?: LogLike;

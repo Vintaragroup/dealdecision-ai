@@ -69,6 +69,11 @@ describe("reextractDocumentsProcessor", () => {
 		expect(getQueue).toHaveBeenCalledWith("ingest_documents");
 		expect(getQueue).not.toHaveBeenCalledWith("extract_visuals");
 		expect(add).toHaveBeenCalledTimes(2);
+		const opts0 = (add as any).mock.calls[0][2];
+		const opts1 = (add as any).mock.calls[1][2];
+		expect(String(opts0?.jobId)).toContain("ingest_documents__");
+		expect(String(opts1?.jobId)).toContain("ingest_documents__");
+		expect(String(opts0?.jobId)).not.toEqual(String(opts1?.jobId));
 		expect(childJob.waitUntilFinished).not.toHaveBeenCalled();
 		expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ stage: "complete" }));
 	});

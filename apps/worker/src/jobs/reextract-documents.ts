@@ -1,6 +1,7 @@
 import type { Job } from "bullmq";
 
 import { getQueue } from "../lib/queue";
+import { sanitizeJobId } from "../lib/job-id";
 import { updateJobProgress } from "../lib/job-progress";
 import {
 	deleteExtractionEvidenceForDocument,
@@ -153,18 +154,42 @@ export async function reextractDocumentsProcessor(job: Job): Promise<ReextractDo
 			// best-effort
 		}
 
-		await ingestQueue.add(
-			"ingest_documents",
-			{
+		const enqueueIdRaw = `ingest_documents__${dealId}__${doc.id}__${jobId ?? "reextract"}__${i}`;
+		const ingestJobId = sanitizeJobId(enqueueIdRaw);
+		try {
+			const created: any = await ingestQueue.add(
+				"ingest_documents",
+				{
+					document_id: doc.id,
+					deal_id: doc.deal_id,
+					file_name: typeof doc.title === "string" && doc.title.trim() ? doc.title : `${doc.id}`,
+					mode: "from_storage",
+					attempt: 1,
+					parent_job_id: jobId,
+				},
+				{ jobId: ingestJobId, removeOnComplete: true, removeOnFail: false }
+			);
+			console.log(
+				JSON.stringify({
+					event: "REEXTRACT_ENQUEUED_INGEST",
+					deal_id: doc.deal_id,
+					document_id: doc.id,
+					ingest_job_id: ingestJobId,
+					bullmq_job_id: created?.id ? String(created.id) : null,
+					parent_job_id: jobId,
+				})
+			);
+		} catch (err) {
+			console.warn(
+				`[reextract_documents] failed to enqueue ingest_documents doc=${doc.id}: ${err instanceof Error ? err.message : String(err)}`
+			);
+			logStage("enqueue_ingest_failed", {
 				document_id: doc.id,
-				deal_id: doc.deal_id,
-				file_name: typeof doc.title === "string" && doc.title.trim() ? doc.title : `${doc.id}`,
-				mode: "from_storage",
-				attempt: 1,
-				parent_job_id: jobId,
-			},
-			{ removeOnComplete: true, removeOnFail: false }
-		);
+				ingest_job_id: ingestJobId,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			continue;
+		}
 	}
 
 	logStage("enqueue_followups_done", { docs: candidates.length });

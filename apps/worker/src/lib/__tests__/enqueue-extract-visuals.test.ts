@@ -67,4 +67,48 @@ describe("enqueueExtractVisualsIfPossible", () => {
 		expect(ok).toBe(false);
 		expect(queue.add).not.toHaveBeenCalled();
 	});
+
+	it("in production, does not scan local dirs when rendered_pages_r2 is missing", async () => {
+		const queue = {
+			add: vi.fn().mockResolvedValue({}),
+		};
+		const fsImpl = {
+			readdir: vi.fn(async () => {
+				throw new Error("should_not_readdir");
+			}),
+			stat: vi.fn(async () => {
+				throw new Error("should_not_stat");
+			}),
+		};
+		const pool = {
+			query: vi.fn().mockResolvedValue({
+				rows: [
+					{
+						page_count: 0,
+						extraction_metadata: null,
+					},
+				],
+			}),
+		} as any;
+
+		const ok = await enqueueExtractVisualsIfPossible({
+			pool,
+			queue,
+			config: {
+				enabled: true,
+				visionWorkerUrl: "http://localhost:8000",
+				extractorVersion: "v1",
+				timeoutMs: 10_000,
+				maxPages: 50,
+			},
+			documentId: "doc_prod_missing",
+			dealId: "deal1",
+			resolveOptions: { fsImpl: fsImpl as any, env: { NODE_ENV: "production", UPLOAD_DIR: "/app/apps/worker/uploads" } as any },
+		});
+
+		expect(ok).toBe(false);
+		expect(queue.add).not.toHaveBeenCalled();
+		expect(fsImpl.readdir).not.toHaveBeenCalled();
+		expect(fsImpl.stat).not.toHaveBeenCalled();
+	});
 });

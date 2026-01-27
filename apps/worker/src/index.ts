@@ -2823,86 +2823,6 @@ registerWorker("extract_visuals", async (job: Job) => {
 					`[extract_visuals] pdf page understanding failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
 				);
 			}
-
-			// Persist a coarse page segmentation summary (ranges + labels) for UI/graph grouping.
-			// Stored as stable metadata and references rendered_pages_r2 keys (no signed URLs).
-			try {
-				const fullContent = docMeta?.full_content ?? {};
-				const pdfV2 =
-					(fullContent as any)?.pdf_v2 && typeof (fullContent as any).pdf_v2 === "object"
-						? (fullContent as any).pdf_v2
-						: fullContent;
-				const pages = Array.isArray((pdfV2 as any)?.pages) ? ((pdfV2 as any).pages as any[]) : [];
-				const renderedPagesR2 = (docMeta?.extraction_metadata as any)?.rendered_pages_r2 ?? null;
-				const mapSlideTypeToSegmentKey = (slideTypeRaw: unknown): string => {
-					const s = typeof slideTypeRaw === "string" ? slideTypeRaw.trim().toLowerCase() : "";
-					if (!s || s === "other") return "unknown";
-					if (s === "go_to_market") return "distribution";
-					if (s === "use_of_funds") return "raise_terms";
-					return s;
-				};
-				const ordered = pages
-					.map((p) => {
-						const pageIndex = typeof p?.page_index === "number" && Number.isFinite(p.page_index) ? p.page_index : null;
-						if (pageIndex == null || pageIndex < 0) return null;
-						const u = p?.understanding_v1;
-						const slideType = typeof u?.slide_type === "string" ? String(u.slide_type) : "other";
-						const slideTypeConf = typeof u?.slide_type_confidence === "number" && Number.isFinite(u.slide_type_confidence)
-							? u.slide_type_confidence
-							: null;
-						const title = typeof u?.title === "string" ? String(u.title) : "";
-						const segmentKey = mapSlideTypeToSegmentKey(slideType);
-						return { page_index: pageIndex, slide_type: slideType, slide_type_confidence: slideTypeConf, title, segment_key: segmentKey };
-					})
-					.filter(Boolean)
-					.sort((a: any, b: any) => a.page_index - b.page_index);
-
-				if (ordered.length > 0) {
-					const segments: any[] = [];
-					let cur: any | null = null;
-					for (const p of ordered as any[]) {
-						const key = typeof p.segment_key === "string" && p.segment_key.trim() ? p.segment_key : "unknown";
-						if (!cur || cur.segment_key !== key) {
-							if (cur) segments.push(cur);
-							cur = {
-								segment_index: segments.length,
-								segment_key: key,
-								segment_label: key.replace(/_/g, " "),
-								page_start: p.page_index,
-								page_end: p.page_index,
-								title_hint: p.title || null,
-								avg_confidence: p.slide_type_confidence,
-								pages: 1,
-							};
-						} else {
-							cur.page_end = p.page_index;
-							cur.pages += 1;
-							if (typeof p.slide_type_confidence === "number") {
-								const prev = typeof cur.avg_confidence === "number" ? cur.avg_confidence : 0;
-								cur.avg_confidence = (prev * (cur.pages - 1) + p.slide_type_confidence) / cur.pages;
-							}
-							if (!cur.title_hint && p.title) cur.title_hint = p.title;
-						}
-					}
-					if (cur) segments.push(cur);
-
-					await mergeDocumentExtractionMetadata({
-						documentId: docId,
-						patch: {
-							page_segments_v1: {
-								version: "page_segments_v1",
-								generated_at: new Date().toISOString(),
-								rendered_pages_r2: renderedPagesR2,
-								segments,
-							},
-						},
-					});
-				}
-			} catch (err) {
-				console.warn(
-					`[extract_visuals] page segment summary failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
-				);
-			}
 		}
 		await updateJob(
 			job,
@@ -3900,18 +3820,186 @@ registerWorker("extract_visuals", async (job: Job) => {
 		},
 	});
 
-	// Follow-up: enqueue analyze_deal when extract_visuals completes and no further chunk jobs are pending.
+	const shouldFinalize = (!isChunkJob) || chunkJobIsLastChunk === true;
+
+	// Finalize: write page_segments_v1 once (idempotent) when this job is the finalizing job.
+	// Stored as stable metadata and references rendered_pages_r2 keys (no signed URLs).
+	if (shouldFinalize) {
+		for (const docId of targetDocumentIds) {
+			try {
+				const { rows } = await pool.query(
+					"SELECT deal_id, type, extraction_metadata, full_content, page_count FROM documents WHERE id = $1 LIMIT 1",
+					[sanitizeText(docId)]
+				);
+				const row = rows?.[0] as any;
+				const existing = row?.extraction_metadata && typeof row.extraction_metadata === "object" ? row.extraction_metadata : null;
+				if (existing && (existing as any)?.page_segments_v1) {
+					console.log(
+						JSON.stringify({
+							event: "PAGE_SEGMENTS_V1_SKIP",
+							document_id: docId,
+							deal_id: (typeof row?.deal_id === "string" ? row.deal_id : null) ?? null,
+							reason: "already_present",
+							should_finalize: true,
+						})
+					);
+					continue;
+				}
+
+				const renderedPagesR2 = existing && typeof (existing as any)?.rendered_pages_r2 === "object" ? (existing as any).rendered_pages_r2 : null;
+				const renderedPagesR2Ref = renderedPagesR2
+					? {
+							bucket:
+								typeof renderedPagesR2.bucket === "string" && renderedPagesR2.bucket.trim()
+									? renderedPagesR2.bucket.trim()
+									: (process.env.R2_BUCKET || "").trim() || null,
+							prefix: typeof renderedPagesR2.prefix === "string" ? renderedPagesR2.prefix : null,
+							format: typeof renderedPagesR2.format === "string" ? renderedPagesR2.format : null,
+							page_count:
+								typeof row?.page_count === "number" && Number.isFinite(row.page_count) && row.page_count > 0
+									? row.page_count
+									: typeof (existing as any)?.rendered_pages_count === "number" && Number.isFinite((existing as any).rendered_pages_count)
+										? (existing as any).rendered_pages_count
+										: null,
+						}
+					: null;
+
+				const fullContent = row?.full_content ?? {};
+				const pdfV2 =
+					(fullContent as any)?.pdf_v2 && typeof (fullContent as any).pdf_v2 === "object"
+						? (fullContent as any).pdf_v2
+						: fullContent;
+				const wrapper = {
+					pages: Array.isArray((fullContent as any)?.pages) ? (fullContent as any).pages : [],
+					pdf_v2: pdfV2,
+				};
+				try {
+					applySlideUnderstandingV1Shadow(wrapper as any);
+				} catch {
+					// best-effort
+				}
+				const pages = Array.isArray((pdfV2 as any)?.pages) ? ((pdfV2 as any).pages as any[]) : [];
+
+				const mapSlideTypeToSegmentKey = (slideTypeRaw: unknown): string => {
+					const s = typeof slideTypeRaw === "string" ? slideTypeRaw.trim().toLowerCase() : "";
+					if (!s || s === "other") return "unknown";
+					if (s === "go_to_market") return "distribution";
+					if (s === "use_of_funds") return "raise_terms";
+					return s;
+				};
+
+				const ordered = pages
+					.map((p) => {
+						const pageIndex = typeof p?.page_index === "number" && Number.isFinite(p.page_index) ? p.page_index : null;
+						if (pageIndex == null || pageIndex < 0) return null;
+						const u = p?.understanding_v1;
+						const slideType = typeof u?.slide_type === "string" ? String(u.slide_type) : "other";
+						const slideTypeConf =
+							typeof u?.slide_type_confidence === "number" && Number.isFinite(u.slide_type_confidence)
+								? u.slide_type_confidence
+								: null;
+						const title = typeof u?.title === "string" ? String(u.title) : "";
+						const segmentKey = mapSlideTypeToSegmentKey(slideType);
+						return {
+							page_index: pageIndex,
+							slide_type: slideType,
+							slide_type_confidence: slideTypeConf,
+							title,
+							segment_key: segmentKey,
+						};
+					})
+					.filter(Boolean)
+					.sort((a: any, b: any) => a.page_index - b.page_index);
+
+				if (ordered.length === 0) {
+					console.log(
+						JSON.stringify({
+							event: "PAGE_SEGMENTS_V1_SKIP",
+							document_id: docId,
+							deal_id: (typeof row?.deal_id === "string" ? row.deal_id : null) ?? null,
+							reason: "no_pages_with_understanding",
+							should_finalize: true,
+						})
+					);
+					continue;
+				}
+
+				const segments: any[] = [];
+				let cur: any | null = null;
+				for (const p of ordered as any[]) {
+					const key = typeof p.segment_key === "string" && p.segment_key.trim() ? p.segment_key : "unknown";
+					if (!cur || cur.segment_key !== key) {
+						if (cur) segments.push(cur);
+						cur = {
+							segment_index: segments.length,
+							segment_key: key,
+							segment_label: key.replace(/_/g, " "),
+							page_start: p.page_index,
+							page_end: p.page_index,
+							title_hint: p.title || null,
+							avg_confidence: p.slide_type_confidence,
+							pages: 1,
+						};
+					} else {
+						cur.page_end = p.page_index;
+						cur.pages += 1;
+						if (typeof p.slide_type_confidence === "number") {
+							const prev = typeof cur.avg_confidence === "number" ? cur.avg_confidence : 0;
+							cur.avg_confidence = (prev * (cur.pages - 1) + p.slide_type_confidence) / cur.pages;
+						}
+						if (!cur.title_hint && p.title) cur.title_hint = p.title;
+					}
+				}
+				if (cur) segments.push(cur);
+
+				await mergeDocumentExtractionMetadata({
+					documentId: docId,
+					patch: {
+						page_segments_v1: {
+							version: "page_segments_v1",
+							generated_at: new Date().toISOString(),
+							rendered_pages_r2: renderedPagesR2Ref,
+							segments,
+						},
+					},
+				});
+				console.log(
+					JSON.stringify({
+						event: "PAGE_SEGMENTS_V1_WRITTEN",
+						document_id: docId,
+						deal_id: (typeof row?.deal_id === "string" ? row.deal_id : null) ?? null,
+						segments_count: segments.length,
+						should_finalize: true,
+					})
+				);
+			} catch (err) {
+				console.warn(
+					`[extract_visuals] page_segments_v1 finalize write failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+				);
+			}
+		}
+	} else {
+		console.log(
+			JSON.stringify({
+				event: "PAGE_SEGMENTS_V1_SKIP",
+				document_id: targetDocumentIds.length === 1 ? targetDocumentIds[0] : null,
+				deal_id: dealIdForAudit ?? null,
+				reason: "not_finalizing",
+				should_finalize: false,
+			})
+		);
+	}
+
+	// Follow-up: enqueue analyze_deal when extract_visuals completes and this job is the finalizing job.
 	// This is intentionally best-effort, but should emit clear ENQUEUED/SKIPPED logs for production debugging.
 	try {
 		const dealIdForAnalyze = dealIdForAudit;
 		const triggerJobId = job.id ? String(job.id) : null;
 		const skipReason = !dealIdForAnalyze
 			? "missing_deal_id"
-			: chunksEnqueuedAny
-				? "extract_visuals_chunks_enqueued"
-				: isChunkJob && chunkJobIsLastChunk === false
-					? "extract_visuals_not_last_chunk"
-					: null;
+			: !shouldFinalize
+				? "extract_visuals_not_finalizing"
+				: null;
 		await enqueueAnalyzeDeal({
 			dealId: dealIdForAnalyze ?? "",
 			reason: "extract_visuals_complete",
@@ -3925,6 +4013,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 					chunk_is_last: chunkJobIsLastChunk,
 					chunk_total_pages: chunkJobTotalPages,
 					chunks_enqueued_any: chunksEnqueuedAny,
+					should_finalize: shouldFinalize,
 					persisted_assets: persisted,
 					docs_processed: docsProcessed,
 					docs_skipped: docsSkipped,

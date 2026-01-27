@@ -1,19 +1,50 @@
 export type VisualDocReadinessInput = {
 	id: string;
 	status: string | null;
-	hasExtractionMetadata: boolean;
-	pageCount: number | null;
-	hasRenderedPages: boolean;
-	hasOriginalBytes: boolean;
+	deletedAt: string | null;
+	metaStatus: string | null;
+	/**
+	 * Explicitly ignored: guard must not depend on jobs table state.
+	 * Present for test coverage / future-proofing.
+	 */
+	jobStatus?: string | null;
 };
+
+export type VisualIngestBlockReason =
+	| "deleted"
+	| "status_not_ready"
+	| "meta_status_missing"
+	| "meta_status_not_succeeded";
+
+export function getVisualIngestBlockReason(input: {
+	status: string | null;
+	deletedAt: string | null;
+	metaStatus: string | null;
+	jobStatus?: string | null;
+}): VisualIngestBlockReason | null {
+	// Source of truth is documents table only.
+	void input.jobStatus;
+	if (input.deletedAt != null) return "deleted";
+	if (input.status !== "ready_for_analysis") return "status_not_ready";
+	if (input.metaStatus == null) return "meta_status_missing";
+	if (input.metaStatus !== "succeeded") return "meta_status_not_succeeded";
+	return null;
+}
+
+export function isIngestCompleteForVisuals(input: {
+	status: string | null;
+	deletedAt: string | null;
+	metaStatus: string | null;
+	jobStatus?: string | null;
+}): boolean {
+	return getVisualIngestBlockReason(input) == null;
+}
 
 export function evaluateVisualDocReadiness(
 	input: VisualDocReadinessInput
-): { blocked: boolean; reason: "status_not_ready" | "missing_extraction_metadata" | "no_page_images" | null } {
-	const statusReady = input.status === "completed" || input.status === "ready_for_analysis";
-	if (!statusReady) return { blocked: true, reason: "status_not_ready" };
-	if (!input.hasExtractionMetadata) return { blocked: true, reason: "missing_extraction_metadata" };
-	const pageCountMissing = input.pageCount == null || input.pageCount <= 0;
-	if (pageCountMissing && !input.hasRenderedPages) return { blocked: true, reason: "no_page_images" };
+	): { blocked: boolean; reason: "ingest_not_complete" | "deleted" | null } {
+	const blockReason = getVisualIngestBlockReason(input);
+	if (blockReason === "deleted") return { blocked: true, reason: "deleted" };
+	if (blockReason != null) return { blocked: true, reason: "ingest_not_complete" };
 	return { blocked: false, reason: null };
 }

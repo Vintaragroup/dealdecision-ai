@@ -17,7 +17,7 @@ import {
 	RiskAssessmentEngine,
 } from "@dealdecision/core";
 import { createWorker, getQueue, logWorkerQueueConfig } from "./lib/queue";
-import { evaluateVisualDocReadiness } from "./lib/visual-readiness";
+import { evaluateVisualDocReadiness, getVisualIngestBlockReason } from "./lib/visual-readiness";
 import {
 	getPool,
 	closePool,
@@ -1615,8 +1615,13 @@ async function ingestDocumentProcessor(job: Job) {
 			await updateDocumentStatus(docId, "pending");
 			await updateJob(job, "failed", message, 100);
 			console.warn(`[ingest_document] low content, requeuing attempt ${attempt + 1}`);
-			const ingestQueue = getQueue("ingest_documents");
-			await ingestQueue.add("ingest_documents", { ...job.data, attempt: attempt + 1 }, { removeOnComplete: true, removeOnFail: false });
+			await enqueuePersistedJob({
+				type: "ingest_documents",
+				deal_id: dealIdSafe,
+				document_id: docId,
+				payload: { ...((job.data as any) ?? {}), attempt: attempt + 1 },
+				parent_job_id: job.id ? String(job.id) : null,
+			});
 			return { ok: false, analysis, completeness };
 		} else if (lowContent) {
 			const message = `Low-content extraction after retries (${completeness.reason})`;
@@ -2023,11 +2028,13 @@ registerWorker("reconcile_ingest", async (job: Job) => {
 		await failLatestIngestJob(doc.id);
 		await updateDocumentStatus(doc.id, "pending");
 		const name = typeof doc.file_name === "string" && doc.file_name.trim() ? doc.file_name : `${doc.id}.pdf`;
-		await ingestQueue.add(
-			"ingest_documents",
-			{ document_id: doc.id, deal_id: doc.deal_id, file_name: name, mode: "from_storage", attempt: 1 },
-			{ removeOnComplete: true, removeOnFail: false }
-		);
+		await enqueuePersistedJob({
+			type: "ingest_documents",
+			deal_id: doc.deal_id,
+			document_id: doc.id,
+			payload: { document_id: doc.id, deal_id: doc.deal_id, file_name: name, mode: "from_storage", attempt: 1 },
+			parent_job_id: job.id ? String(job.id) : null,
+		});
 		reconciled += 1;
 	}
 
@@ -2597,8 +2604,13 @@ registerWorker("extract_visuals", async (job: Job) => {
 	const blockedDocs: {
 		document_id: string;
 		title: string | null;
+		deleted_at: string | null;
 		type: string | null;
 		status: string | null;
+		documents_meta_status: string | null;
+		extraction_metadata_status: string | null;
+		derived_ingest_complete: boolean;
+		block_reason: "deleted" | "status_not_ready" | "meta_status_missing" | "meta_status_not_succeeded";
 		page_count: number | null;
 		has_extraction_metadata: boolean;
 		has_original_bytes: boolean;
@@ -2606,9 +2618,11 @@ registerWorker("extract_visuals", async (job: Job) => {
 		reason?: string | null;
 	}[] = [];
 
+	const blockedReasonsCount: Record<string, number> = {};
+
 	try {
 		const { rows: metaRows } = await pool.query(
-			"SELECT id, deal_id, title, type, status, page_count, extraction_metadata FROM documents WHERE id = ANY($1)",
+			"SELECT id, deal_id, title, type, status, meta_status, page_count, extraction_metadata, deleted_at FROM documents WHERE id = ANY($1)",
 			[targetDocumentIds]
 		);
 		const metaMap = new Map<string, any>();
@@ -2617,7 +2631,20 @@ registerWorker("extract_visuals", async (job: Job) => {
 		for (const docId of targetDocumentIds) {
 			const meta = metaMap.get(docId) ?? {};
 			const status = typeof meta.status === "string" ? meta.status : null;
-			const hasExtractionMetadata = !!meta.extraction_metadata;
+			const deletedAt = meta.deleted_at != null ? String(meta.deleted_at) : null;
+			const extractionMetadataStatus = (() => {
+				const em = meta.extraction_metadata;
+				if (!em || typeof em !== "object") return null;
+				const raw = (em as any).status;
+				return typeof raw === "string" ? raw : null;
+			})();
+			const documentsMetaStatus = (() => {
+				const raw = (meta as any).meta_status;
+				return typeof raw === "string" ? raw : null;
+			})();
+			// Source of truth: documents.meta_status; fallback: extraction_metadata.status
+			const metaStatus = documentsMetaStatus ?? extractionMetadataStatus;
+
 			const pageCountRaw = meta.page_count;
 			const pageCount = typeof pageCountRaw === "number" && Number.isFinite(pageCountRaw) ? pageCountRaw : null;
 			let hasRenderedPages = false;
@@ -2643,20 +2670,36 @@ registerWorker("extract_visuals", async (job: Job) => {
 			const readiness = evaluateVisualDocReadiness({
 				id: docId,
 				status,
-				hasExtractionMetadata,
-				pageCount,
-				hasRenderedPages,
-				hasOriginalBytes,
+				deletedAt,
+				metaStatus,
 			});
 			if (readiness.blocked) {
+				const blockReason = getVisualIngestBlockReason({
+					status,
+					deletedAt,
+					metaStatus,
+				});
+				const derivedIngestComplete = blockReason == null;
+				const br = (blockReason ?? "meta_status_missing") as
+					| "deleted"
+					| "status_not_ready"
+					| "meta_status_missing"
+					| "meta_status_not_succeeded";
+				blockedReasonsCount[br] = (blockedReasonsCount[br] ?? 0) + 1;
+
 				docsBlockedPending += 1;
 				blockedDocs.push({
 					document_id: docId,
 					title: typeof meta.title === "string" ? meta.title : null,
+					deleted_at: deletedAt,
 					type: typeof meta.type === "string" ? meta.type : null,
 					status,
+					documents_meta_status: documentsMetaStatus,
+					extraction_metadata_status: extractionMetadataStatus,
+					derived_ingest_complete: derivedIngestComplete,
+					block_reason: br,
 					page_count: pageCount,
-					has_extraction_metadata: hasExtractionMetadata,
+					has_extraction_metadata: meta.extraction_metadata != null,
 					has_original_bytes: hasOriginalBytes,
 					has_rendered_pages: hasRenderedPages,
 					reason: readiness.reason,
@@ -2676,14 +2719,23 @@ registerWorker("extract_visuals", async (job: Job) => {
 	docsBlockedPending = docsBlocked;
 	targetDocumentIds = readyDocumentIds;
 
+	const maxDebugDocs = 50;
+	const blockedDocsDebug = blockedDocs.slice(0, maxDebugDocs);
+	const docsTruncated = blockedDocs.length > maxDebugDocs;
+	const blockedDocumentIds = blockedDocs.map((d) => d.document_id);
+	const blockedDocumentIdsTruncated = blockedDocumentIds.slice(0, maxDebugDocs);
+
 	if (docsReady === 0) {
 		const guardPayload = {
 			reason: "INGEST_NOT_COMPLETE",
-			blocked_docs: blockedDocs,
-			blocked_document_ids: blockedDocs.map((d) => d.document_id),
+			blocked_docs: blockedDocsDebug,
+			blocked_document_ids: blockedDocumentIdsTruncated,
+			blocked_document_ids_total: blockedDocumentIds.length,
 			docs_total: docsTotal,
 			docs_ready: docsReady,
 			docs_blocked: docsBlocked,
+			docs_truncated: docsTruncated,
+			blocked_reasons_count: blockedReasonsCount,
 			suggested_action:
 				"run reconcile-ingest or wait for ingest_documents to complete, then re-run extract_visuals",
 			diagnostics: {
@@ -2703,7 +2755,20 @@ registerWorker("extract_visuals", async (job: Job) => {
 					docs_total: docsTotal,
 					docs_blocked: docsBlocked,
 					docs_ready: docsReady,
-					blocked_document_ids: blockedDocs.map((d) => d.document_id),
+					blocked_document_ids: blockedDocumentIdsTruncated,
+					blocked_document_ids_total: blockedDocumentIds.length,
+					docs_truncated: docsTruncated,
+					blocked_reasons_count: blockedReasonsCount,
+					blocked_docs_debug: blockedDocsDebug.map((d) => ({
+						document_id: d.document_id,
+						title: d.title,
+						deleted_at: d.deleted_at,
+						documents_status: d.status,
+						documents_meta_status: d.documents_meta_status,
+						extraction_metadata_status: d.extraction_metadata_status,
+						derived_ingest_complete: d.derived_ingest_complete,
+						block_reason: d.block_reason,
+					})),
 				},
 			});
 		} catch {

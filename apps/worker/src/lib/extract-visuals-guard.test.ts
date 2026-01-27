@@ -5,24 +5,31 @@ describe("evaluateVisualDocReadiness", () => {
 	it("allows ready docs to proceed while isolating blocked docs", () => {
 		const ready = evaluateVisualDocReadiness({
 			id: "ready-1",
-			status: "completed",
-			hasExtractionMetadata: true,
-			pageCount: 4,
-			hasRenderedPages: true,
-			hasOriginalBytes: true,
+			status: "ready_for_analysis",
+			deletedAt: null,
+			metaStatus: "succeeded",
 		});
 
 		const blocked = evaluateVisualDocReadiness({
 			id: "blocked-1",
 			status: "processing",
-			hasExtractionMetadata: false,
-			pageCount: 0,
-			hasRenderedPages: false,
-			hasOriginalBytes: true,
+			deletedAt: null,
+			metaStatus: null,
 		});
 
 		expect(ready.blocked).toBe(false);
 		expect(blocked.blocked).toBe(true);
-		expect(blocked.reason).toBe("status_not_ready");
+		expect(blocked.reason).toBe("ingest_not_complete");
+	});
+
+	it("does not block based on stale jobs-table state", () => {
+		const readyEvenIfJobFailed = evaluateVisualDocReadiness({
+			id: "ready-2",
+			status: "ready_for_analysis",
+			deletedAt: null,
+			metaStatus: "succeeded",
+			jobStatus: "failed",
+		});
+		expect(readyEvenIfJobFailed.blocked).toBe(false);
 	});
 });

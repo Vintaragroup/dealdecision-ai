@@ -1,8 +1,8 @@
 import type { Job } from "bullmq";
 
-import { getQueue } from "../lib/queue";
 import { sanitizeJobId } from "../lib/job-id";
 import { updateJobProgress } from "../lib/job-progress";
+import { enqueuePersistedJob } from "../lib/job-enqueue";
 import {
 	deleteExtractionEvidenceForDocument,
 	getDocumentsByIds,
@@ -107,7 +107,6 @@ export async function reextractDocumentsProcessor(job: Job): Promise<ReextractDo
 		return { status: "enqueued", docs: 0 };
 	}
 
-	const ingestQueue = getQueue("ingest_documents");
 	for (let i = 0; i < candidates.length; i += 1) {
 		const doc = candidates[i];
 		logStage("doc_start", {
@@ -157,9 +156,13 @@ export async function reextractDocumentsProcessor(job: Job): Promise<ReextractDo
 		const enqueueIdRaw = `ingest_documents__${dealId}__${doc.id}__${jobId ?? "reextract"}__${i}`;
 		const ingestJobId = sanitizeJobId(enqueueIdRaw);
 		try {
-			const created: any = await ingestQueue.add(
-				"ingest_documents",
-				{
+			await enqueuePersistedJob({
+				job_id: ingestJobId,
+				type: "ingest_documents",
+				deal_id: doc.deal_id,
+				document_id: doc.id,
+				parent_job_id: jobId,
+				payload: {
 					document_id: doc.id,
 					deal_id: doc.deal_id,
 					file_name: typeof doc.title === "string" && doc.title.trim() ? doc.title : `${doc.id}`,
@@ -167,15 +170,14 @@ export async function reextractDocumentsProcessor(job: Job): Promise<ReextractDo
 					attempt: 1,
 					parent_job_id: jobId,
 				},
-				{ jobId: ingestJobId, removeOnComplete: true, removeOnFail: false }
-			);
+			});
 			console.log(
 				JSON.stringify({
 					event: "REEXTRACT_ENQUEUED_INGEST",
 					deal_id: doc.deal_id,
 					document_id: doc.id,
 					ingest_job_id: ingestJobId,
-					bullmq_job_id: created?.id ? String(created.id) : null,
+					bullmq_job_id: ingestJobId,
 					parent_job_id: jobId,
 				})
 			);

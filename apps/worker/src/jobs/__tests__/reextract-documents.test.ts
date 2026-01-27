@@ -7,9 +7,7 @@ const deleteExtractionEvidenceForDocument = vi.fn(async () => undefined);
 const insertDocumentExtractionAudit = vi.fn(async () => undefined);
 const updateDocumentStatus = vi.fn(async () => undefined);
 
-const childJob = { id: "child", waitUntilFinished: vi.fn(async () => undefined) };
-const add = vi.fn(async () => childJob);
-const getQueue = vi.fn(() => ({ add }));
+const enqueuePersistedJob = vi.fn(async (input: any) => ({ job_id: String(input?.job_id ?? "job") }));
 
 vi.mock("../../lib/job-progress", () => ({ updateJobProgress }));
 vi.mock("../../lib/db", () => ({
@@ -19,7 +17,7 @@ vi.mock("../../lib/db", () => ({
 	insertDocumentExtractionAudit,
 	updateDocumentStatus,
 }));
-vi.mock("../../lib/queue", () => ({ getQueue }));
+vi.mock("../../lib/job-enqueue", () => ({ enqueuePersistedJob }));
 
 describe("reextractDocumentsProcessor", () => {
 	beforeEach(() => {
@@ -66,15 +64,14 @@ describe("reextractDocumentsProcessor", () => {
 		const res = await reextractDocumentsProcessor(job);
 
 		expect(res).toEqual({ status: "enqueued", docs: 2 });
-		expect(getQueue).toHaveBeenCalledWith("ingest_documents");
-		expect(getQueue).not.toHaveBeenCalledWith("extract_visuals");
-		expect(add).toHaveBeenCalledTimes(2);
-		const opts0 = (add as any).mock.calls[0][2];
-		const opts1 = (add as any).mock.calls[1][2];
-		expect(String(opts0?.jobId)).toContain("ingest_documents__");
-		expect(String(opts1?.jobId)).toContain("ingest_documents__");
-		expect(String(opts0?.jobId)).not.toEqual(String(opts1?.jobId));
-		expect(childJob.waitUntilFinished).not.toHaveBeenCalled();
+		expect(enqueuePersistedJob).toHaveBeenCalledTimes(2);
+		const c0 = (enqueuePersistedJob as any).mock.calls[0][0];
+		const c1 = (enqueuePersistedJob as any).mock.calls[1][0];
+		expect(c0.type).toBe("ingest_documents");
+		expect(c1.type).toBe("ingest_documents");
+		expect(String(c0.job_id)).toContain("ingest_documents__");
+		expect(String(c1.job_id)).toContain("ingest_documents__");
+		expect(String(c0.job_id)).not.toEqual(String(c1.job_id));
 		expect(job.updateProgress).toHaveBeenCalledWith(expect.objectContaining({ stage: "complete" }));
 	});
 });

@@ -6,6 +6,7 @@ import { getPool } from "./db";
 import { getQueue } from "./queue";
 
 export type EnqueuePersistedJobInput = {
+	job_id?: string;
   type:
     | "ingest_documents"
     | "extract_visuals"
@@ -31,7 +32,7 @@ export async function enqueuePersistedJob(input: EnqueuePersistedJobInput): Prom
 
   // Defensive: BullMQ job ids must not contain ':' or other reserved separators.
   // UUIDs are already safe, but sanitize to harden against any future changes.
-  const jobId = sanitizeJobId(randomUUID());
+  const jobId = sanitizeJobId(input.job_id ? String(input.job_id) : randomUUID());
 
   const payload = sanitizeDeep({
     ...(input.payload ?? {}),

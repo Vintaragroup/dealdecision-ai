@@ -140,6 +140,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [fullProcessExtractJobId, setFullProcessExtractJobId] = useState<string | null>(null);
   const [fullProcessExtractCreatedAt, setFullProcessExtractCreatedAt] = useState<string | null>(null);
   const [fullProcessExtractFinishedAt, setFullProcessExtractFinishedAt] = useState<string | null>(null);
+  const [expandedJobMessageKeys, setExpandedJobMessageKeys] = useState<Record<string, boolean>>({});
   const [sseReady, setSseReady] = useState(false);
   const [evidence, setEvidence] = useState<Array<{ evidence_id: string; deal_id: string; document_id?: string; visual_asset_id?: string; source: string; kind: string; text: string; confidence?: number; created_at?: string }>>([]);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
@@ -194,6 +195,70 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const finishedMs = parseIsoMs(fullProcessExtractFinishedAt);
     const endBaseMs = finishedMs ?? Date.now();
     return { startMs, endMs: endBaseMs + 5 * 60_000 };
+  };
+
+  const splitVerboseMessage = (raw: string): { summary: string; details: string | null } => {
+    const msg = String(raw ?? '');
+    if (!msg) return { summary: '', details: null };
+
+    const idxCounters = msg.indexOf('counters=');
+    if (idxCounters >= 0) {
+      const summary = msg.slice(0, idxCounters).trim();
+      const details = msg.slice(idxCounters).trim();
+      return { summary: summary || 'Details available', details: details || null };
+    }
+
+    const hasJsonLike = msg.includes('{') && msg.includes('}');
+    if (hasJsonLike && msg.length > 120) {
+      const idx = msg.indexOf('{');
+      const summary = idx > 0 ? msg.slice(0, idx).trim() : 'Details available';
+      const details = msg.slice(idx >= 0 ? idx : 0).trim();
+      return { summary: summary || 'Details available', details: details || null };
+    }
+
+    return { summary: msg, details: null };
+  };
+
+  const renderSafeJobMessage = (key: string, message: string | null | undefined, opts?: { testId?: string }) => {
+    if (!message) return null;
+    const { summary, details } = splitVerboseMessage(message);
+    const expanded = !!expandedJobMessageKeys[key];
+
+    return (
+      <div className="min-w-0">
+        <div
+          data-testid={opts?.testId}
+          className={`text-xs break-words whitespace-pre-wrap overflow-hidden line-clamp-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}
+        >
+          {summary}
+        </div>
+        {details ? (
+          <div className="mt-1">
+            <button
+              type="button"
+              className={`text-[11px] underline ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+              onClick={() =>
+                setExpandedJobMessageKeys((prev) => ({
+                  ...prev,
+                  [key]: !prev[key],
+                }))
+              }
+            >
+              {expanded ? 'Hide details' : 'View details'}
+            </button>
+            {expanded ? (
+              <pre
+                className={`mt-2 max-h-48 overflow-auto text-xs break-words whitespace-pre-wrap rounded-lg border px-3 py-2 ${
+                  darkMode ? 'bg-white/5 border-white/10 text-gray-200' : 'bg-white border-gray-200 text-gray-800'
+                }`}
+              >
+                {details}
+              </pre>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    );
   };
 
   const isSucceededJobStatus = (status: unknown): boolean => {
@@ -3249,14 +3314,16 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <div className={`backdrop-blur-xl border rounded-2xl p-4 sm:p-6 ${
+        <div className="w-full max-w-full">
+          <div
+            data-testid="job-center"
+            className={`w-full max-w-full min-w-0 backdrop-blur-xl border rounded-2xl p-4 sm:p-6 ${
             darkMode
               ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
               : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
           }`}>
-            <div className="flex items-center justify-between gap-3">
-              <div>
+            <div className="flex items-center justify-between gap-3 min-w-0">
+              <div className="min-w-0">
                 <div className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>Job Center</div>
                 <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                   Track analyze jobs and backend progress. Polling runs while a job is active.
@@ -3265,7 +3332,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   <p className="text-xs text-amber-600 mt-1">Report not generated yet. Run analysis to create it.</p>
                 )}
               </div>
-              <div className="flex flex-col items-end gap-1">
+              <div className="flex flex-col items-end gap-1 shrink-0">
                 <span className={`px-3 py-1 rounded-full border text-xs font-medium ${severityBadgeClass(jobDisplay.severity)}`}>
                   {jobStatus ? jobDisplay.label : 'Idle'}
                 </span>
@@ -3277,10 +3344,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               </div>
             </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4 w-full max-w-full">
                 <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
                   <div className={`text-xs mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Active job</div>
-                  <div className={`text-sm font-mono break-all ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                  <div className={`text-sm font-mono break-all overflow-hidden ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                     {jobId || 'None yet'}
                   </div>
                 </div>
@@ -3293,7 +3360,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 </div>
               </div>
 
-              <div className={`mt-4 p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
+              <div className={`mt-4 p-3 rounded-lg border w-full max-w-full min-w-0 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
                 <div className="flex items-center justify-between mb-2">
                   <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Status detail</div>
                   {progressTimestamp && (
@@ -3317,20 +3384,25 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                       {progressPercent}% complete
                     </div>
                     {currentlyProcessingLine && (
-                      <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                        Currently processing: {currentlyProcessingLine}
+                      <div className="min-w-0">
+                        <div className={`text-xs break-words whitespace-pre-wrap overflow-hidden line-clamp-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          Currently processing: {currentlyProcessingLine}
+                        </div>
                       </div>
                     )}
                   </div>
                 ) : (
-                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    {currentlyProcessingLine
-                      ? `Currently processing: ${currentlyProcessingLine}`
-                      : (progressMessage || jobDisplay.sublabel || 'Waiting for worker update...')}
+                  <div className="min-w-0">
+                    {currentlyProcessingLine ? (
+                      <div className={`text-xs break-words whitespace-pre-wrap overflow-hidden line-clamp-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        Currently processing: {currentlyProcessingLine}
+                      </div>
+                    ) : (
+                      renderSafeJobMessage('job-center-status-message', progressMessage || jobDisplay.sublabel || 'Waiting for worker update...', {
+                        testId: 'job-center-status-message',
+                      })
+                    )}
                   </div>
-                )}
-                {progressMessage && (
-                  <div className={`text-xs mt-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{progressMessage}</div>
                 )}
                 {jobStatus === 'queued' && jobQueuedSeconds >= queuedWarningThresholdSec && (
                   <div
@@ -3459,7 +3531,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                   ) : null}
 
                                   {detail ? (
-                                    <div className={`mt-1 text-[11px] truncate ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{detail}</div>
+                                    <div className="mt-1">
+                                      {renderSafeJobMessage(`recent-job:${row.job_id}`, String(detail))}
+                                    </div>
                                   ) : null}
                                 </div>
                               );
@@ -3545,7 +3619,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                             ) : null}
                           </div>
                           {step?.message ? (
-                            <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{step.message}</div>
+                            <div className="mt-1">
+                              {renderSafeJobMessage(`full-process:${k}`, String(step.message))}
+                            </div>
                           ) : null}
                         </div>
                       );

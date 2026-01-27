@@ -75,11 +75,20 @@ describe('DealWorkspace Job Center (live mode)', () => {
     });
 
     expect(screen.getByText(/Job Center/i)).toBeInTheDocument();
+
+    const jobCenter = screen.getByTestId('job-center');
+    expect(jobCenter.className).toMatch(/\bw-full\b/);
+    expect(jobCenter.className).toMatch(/\bmax-w-full\b/);
+
     // Avoid matching both "Active job" and "No active job".
     expect(screen.getByText(/^Active job$/i)).toBeInTheDocument();
     expect(screen.getByText(/None yet/i)).toBeInTheDocument();
     expect(screen.getByText(/idle/i)).toBeInTheDocument();
-    expect(screen.getByText(/Waiting for worker update/i)).toBeInTheDocument();
+
+    const statusMsg = screen.getByTestId('job-center-status-message');
+    expect(statusMsg.textContent || '').toMatch(/Waiting for worker update/i);
+    expect(statusMsg.className).toMatch(/\boverflow-hidden\b/);
+    expect(statusMsg.className).toMatch(/\bwhitespace-pre-wrap\b/);
   });
 
   test('AI Assistant button is gated without DIO in live mode', async () => {

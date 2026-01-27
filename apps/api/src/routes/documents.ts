@@ -209,9 +209,6 @@ async function persistUploadMetadata(pool: ReturnType<typeof getPool>, args: {
         uploadPatch.bucket = args.upload.bucket;
         uploadPatch.key = args.upload.key;
         if (args.upload.endpoint) uploadPatch.endpoint = args.upload.endpoint;
-        if (args.upload.url) uploadPatch.url = args.upload.url;
-        if (args.upload.signed_url) uploadPatch.signed_url = args.upload.signed_url;
-        if (typeof args.upload.signed_url_ttl_seconds === "number") uploadPatch.signed_url_ttl_seconds = args.upload.signed_url_ttl_seconds;
         if (args.upload.etag) uploadPatch.etag = args.upload.etag;
         uploadPatch.uploaded_at = new Date().toISOString();
       }
@@ -230,11 +227,7 @@ async function persistUploadMetadata(pool: ReturnType<typeof getPool>, args: {
         (patch as any).fileSizeBytes = args.sizeBytes;
       }
 
-      // Compatibility: worker fallback probes for these keys.
-      if (args.upload?.signed_url) {
-        (patch as any).r2_signed_url = args.upload.signed_url;
-        (patch as any).r2 = { signed_url: args.upload.signed_url, bucket: args.upload.bucket, key: args.upload.key };
-      }
+
 
       await pool.query(
         `UPDATE documents

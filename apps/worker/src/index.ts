@@ -62,7 +62,7 @@ import { remediateStructuredData } from "./lib/remediation";
 import { persistPdfV2TextRegionAssetsV1Shadow } from "./lib/pdf_v2/pdf-text-region-assets-v1";
 import os from "os";
 import { loadOriginalBytesFromDocumentStorage } from "./lib/ingest/from-storage";
-import { r2ObjectExists, uploadToR2 } from "./lib/r2";
+import { getR2ObjectUrl, r2ObjectExists, uploadToR2 } from "./lib/r2";
 import { runJobWatchdogOnce } from "./lib/job-watchdog";
 import { selectReextractCandidates } from "./lib/reextract-selection";
 import { assertSchema } from "./lib/schema-check";
@@ -214,7 +214,7 @@ async function resolveWritableUploadDir(env: NodeJS.ProcessEnv, logger: Pick<Con
 	return configured;
 }
 
-function pickDownloadUrlFromExtractionMetadata(meta: unknown): string | null {
+async function pickDownloadUrlFromExtractionMetadata(meta: unknown): Promise<string | null> {
 	if (!meta || typeof meta !== "object") return null;
 	const m = meta as any;
 	const candidates: unknown[] = [
@@ -240,6 +240,17 @@ function pickDownloadUrlFromExtractionMetadata(meta: unknown): string | null {
 		if (typeof c !== "string") continue;
 		const s = c.trim();
 		if (s.startsWith("http://") || s.startsWith("https://")) return s;
+	}
+
+	// Stable R2 reference case: mint a signed URL on demand.
+	try {
+		const bucket = typeof m?.upload?.bucket === "string" ? m.upload.bucket.trim() : "";
+		const key = typeof m?.upload?.key === "string" ? m.upload.key.trim() : "";
+		if (key) {
+			return await getR2ObjectUrl({ bucket: bucket || null, key, env: process.env });
+		}
+	} catch {
+		// ignore
 	}
 	return null;
 }
@@ -286,6 +297,7 @@ async function tryReadImageB64ForVision(imageUri: string, env: NodeJS.ProcessEnv
 	}
 }
 import { persistPdfPageUnderstandingV1Shadow } from "./lib/pdf_v2/page-understanding-v1";
+import { applySlideUnderstandingV1Shadow } from "./lib/pdf_v2/slide-understanding-v1";
 import { parseIngestDocumentsJobData, validateIngestDocumentsPayload } from "./lib/ingest/ingest-payload";
 import { buildPhase1DealOverviewV2, buildPhase1DealUnderstandingV1, buildPhase1UpdateReportV1 } from "./lib/phase1/dealOverviewV2";
 import { computeVisualQualityAuditForDeal } from "./lib/visual-quality-audit";
@@ -1068,7 +1080,7 @@ async function ingestDocumentProcessor(job: Job) {
 			if (!storedMimeType) storedMimeType = rows?.[0]?.mime_type ?? null;
 
 			if (meta) {
-				const url = pickDownloadUrlFromExtractionMetadata(meta);
+				const url = await pickDownloadUrlFromExtractionMetadata(meta);
 				if (url) {
 					try {
 						const controller = new AbortController();
@@ -2740,8 +2752,34 @@ registerWorker("extract_visuals", async (job: Job) => {
 		}
 
 		// PDF-only synthetic assets: stable text region nodes built from pdf_v2 slide-understanding regions.
-		// Shadow-only in this PR: persists assets for future lineage/scoring adoption without changing analyzers.
-		if (docKind === "pdf") {
+		// IMPORTANT: only do this work in the coordinator job (non-chunk) to avoid duplicate writes.
+		if (docKind === "pdf" && !isChunkJob) {
+			// Ensure pdf_v2.pages[*].understanding_v1 exists; persist helpers require it.
+			try {
+				const fullContent = docMeta?.full_content ?? {};
+				const pdfV2 =
+					(fullContent as any)?.pdf_v2 && typeof (fullContent as any).pdf_v2 === "object"
+						? (fullContent as any).pdf_v2
+						: fullContent;
+				const wrapper = {
+					pages: Array.isArray((fullContent as any)?.pages) ? (fullContent as any).pages : [],
+					pdf_v2: pdfV2,
+				};
+				const applied = applySlideUnderstandingV1Shadow(wrapper as any);
+				if (applied.applied) {
+					console.log(
+						JSON.stringify({
+							event: "PDF_SLIDE_UNDERSTANDING_APPLIED",
+							document_id: docId,
+						})
+					);
+				}
+			} catch (err) {
+				console.warn(
+					`[extract_visuals] pdf slide understanding apply failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+				);
+			}
+
 			try {
 				pdfTextRegionPersisted = await persistPdfV2TextRegionAssetsV1Shadow({
 					pool,
@@ -2783,6 +2821,86 @@ registerWorker("extract_visuals", async (job: Job) => {
 			} catch (err) {
 				console.warn(
 					`[extract_visuals] pdf page understanding failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+				);
+			}
+
+			// Persist a coarse page segmentation summary (ranges + labels) for UI/graph grouping.
+			// Stored as stable metadata and references rendered_pages_r2 keys (no signed URLs).
+			try {
+				const fullContent = docMeta?.full_content ?? {};
+				const pdfV2 =
+					(fullContent as any)?.pdf_v2 && typeof (fullContent as any).pdf_v2 === "object"
+						? (fullContent as any).pdf_v2
+						: fullContent;
+				const pages = Array.isArray((pdfV2 as any)?.pages) ? ((pdfV2 as any).pages as any[]) : [];
+				const renderedPagesR2 = (docMeta?.extraction_metadata as any)?.rendered_pages_r2 ?? null;
+				const mapSlideTypeToSegmentKey = (slideTypeRaw: unknown): string => {
+					const s = typeof slideTypeRaw === "string" ? slideTypeRaw.trim().toLowerCase() : "";
+					if (!s || s === "other") return "unknown";
+					if (s === "go_to_market") return "distribution";
+					if (s === "use_of_funds") return "raise_terms";
+					return s;
+				};
+				const ordered = pages
+					.map((p) => {
+						const pageIndex = typeof p?.page_index === "number" && Number.isFinite(p.page_index) ? p.page_index : null;
+						if (pageIndex == null || pageIndex < 0) return null;
+						const u = p?.understanding_v1;
+						const slideType = typeof u?.slide_type === "string" ? String(u.slide_type) : "other";
+						const slideTypeConf = typeof u?.slide_type_confidence === "number" && Number.isFinite(u.slide_type_confidence)
+							? u.slide_type_confidence
+							: null;
+						const title = typeof u?.title === "string" ? String(u.title) : "";
+						const segmentKey = mapSlideTypeToSegmentKey(slideType);
+						return { page_index: pageIndex, slide_type: slideType, slide_type_confidence: slideTypeConf, title, segment_key: segmentKey };
+					})
+					.filter(Boolean)
+					.sort((a: any, b: any) => a.page_index - b.page_index);
+
+				if (ordered.length > 0) {
+					const segments: any[] = [];
+					let cur: any | null = null;
+					for (const p of ordered as any[]) {
+						const key = typeof p.segment_key === "string" && p.segment_key.trim() ? p.segment_key : "unknown";
+						if (!cur || cur.segment_key !== key) {
+							if (cur) segments.push(cur);
+							cur = {
+								segment_index: segments.length,
+								segment_key: key,
+								segment_label: key.replace(/_/g, " "),
+								page_start: p.page_index,
+								page_end: p.page_index,
+								title_hint: p.title || null,
+								avg_confidence: p.slide_type_confidence,
+								pages: 1,
+							};
+						} else {
+							cur.page_end = p.page_index;
+							cur.pages += 1;
+							if (typeof p.slide_type_confidence === "number") {
+								const prev = typeof cur.avg_confidence === "number" ? cur.avg_confidence : 0;
+								cur.avg_confidence = (prev * (cur.pages - 1) + p.slide_type_confidence) / cur.pages;
+							}
+							if (!cur.title_hint && p.title) cur.title_hint = p.title;
+						}
+					}
+					if (cur) segments.push(cur);
+
+					await mergeDocumentExtractionMetadata({
+						documentId: docId,
+						patch: {
+							page_segments_v1: {
+								version: "page_segments_v1",
+								generated_at: new Date().toISOString(),
+								rendered_pages_r2: renderedPagesR2,
+								segments,
+							},
+						},
+					});
+				}
+			} catch (err) {
+				console.warn(
+					`[extract_visuals] page segment summary failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
 				);
 			}
 		}
@@ -2886,7 +3004,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 
 				// If DB blob is missing (common in prod setups), attempt to fetch bytes from a URL stored in extraction_metadata.
 				if ((!originalBytes || originalBytes.length === 0) && docMeta?.extraction_metadata) {
-					const url = pickDownloadUrlFromExtractionMetadata(docMeta.extraction_metadata);
+					const url = await pickDownloadUrlFromExtractionMetadata(docMeta.extraction_metadata);
 					if (url) {
 						try {
 							const controller = new AbortController();

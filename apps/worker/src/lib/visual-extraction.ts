@@ -191,6 +191,26 @@ function coerceSegmentKey(value: unknown): SegmentKey | null {
 	return (SEGMENT_KEYS as readonly string[]).includes(trimmed) ? (trimmed as SegmentKey) : null;
 }
 
+function mapSlideTypeToSegmentKey(slideTypeRaw: unknown): SegmentKey | null {
+	const s = typeof slideTypeRaw === "string" ? slideTypeRaw.trim().toLowerCase() : "";
+	if (!s) return null;
+	// slide_understanding_v1 types -> platform segment keys
+	if (s === "problem") return "problem";
+	if (s === "solution") return "solution";
+	if (s === "product") return "product";
+	if (s === "traction") return "traction";
+	if (s === "market") return "market";
+	if (s === "business_model") return "business_model";
+	if (s === "competition") return "competition";
+	if (s === "team") return "team";
+	if (s === "financials") return "financials";
+	if (s === "raise_terms" || s === "use_of_funds") return "raise_terms";
+	if (s === "risks") return "risks";
+	if (s === "go_to_market") return "distribution";
+	// Unknown/other -> no mapping
+	return null;
+}
+
 function coerceJsonObject(value: unknown): Record<string, unknown> {
 	if (!value) return {};
 	if (typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
@@ -1188,6 +1208,27 @@ export async function persistVisionResponse(
 		return ["1", "true", "yes", "on"].includes(String(raw).trim().toLowerCase());
 	})();
 
+	// Optional: enrich segment assignment from per-page understanding (PDF-only).
+	let pageUnderstanding: any | null = null;
+	try {
+		const res = await pool.query(
+			"SELECT payload FROM document_page_understanding WHERE document_id = $1 AND page_index = $2 AND version = 'page_understanding_v1' LIMIT 1",
+			[sanitizeText(response.document_id), response.page_index]
+		);
+		pageUnderstanding = (res as any)?.rows?.[0]?.payload ?? null;
+	} catch {
+		pageUnderstanding = null;
+	}
+	const pageUnderstandingTitle =
+		pageUnderstanding && typeof pageUnderstanding === "object" && typeof (pageUnderstanding as any).resolved_title === "string"
+			? String((pageUnderstanding as any).resolved_title)
+			: "";
+	const pageUnderstandingSlideType =
+		pageUnderstanding && typeof pageUnderstanding === "object" && typeof (pageUnderstanding as any).resolved_slide_type === "string"
+			? String((pageUnderstanding as any).resolved_slide_type)
+			: "";
+	const pageUnderstandingSeg = mapSlideTypeToSegmentKey(pageUnderstandingSlideType);
+
 	for (const asset of response.assets ?? []) {
 		const normalizedAssetImageUri = normalizeImageUriForDb(asset.image_uri ?? null, env) ?? pageImageUriNormalized;
 		const assetBBox = coerceBBox((asset as any)?.bbox);
@@ -1209,7 +1250,13 @@ export async function persistVisionResponse(
 		const titleFromVision = typeof vuObj?.title === "string" ? String(vuObj.title) : "";
 		const visionConfidence =
 			typeof vuObj?.confidence === "number" && Number.isFinite(vuObj.confidence) ? vuObj.confidence : null;
-		const hasAnyTextSignal = Boolean(titleFromLabels.trim() || titleFromStructured.trim() || (ocrText && ocrText.trim()));
+		const hasAnyTextSignal = Boolean(
+			titleFromLabels.trim() ||
+			titleFromStructured.trim() ||
+			titleFromVision.trim() ||
+			pageUnderstandingTitle.trim() ||
+			(ocrText && ocrText.trim())
+		);
 
 		// Persist a stable segment assignment for vision assets (PDF/images).
 		// Resolution order: quality_flags.segment_key -> structured_json.segment_key -> infer from OCR/labels.
@@ -1217,9 +1264,19 @@ export async function persistVisionResponse(
 		const existingFromStructured = coerceSegmentKey((structuredJson as any)?.segment_key);
 		let segmentKey: SegmentKey | null = existingFromQuality ?? existingFromStructured;
 		let segmentWasInferred = false;
+		let segmentSourceHint: string | null = null;
 		let unknownReasonCode: string | null = null;
 		if (!segmentKey) {
-			const combined = [titleFromLabels, titleFromStructured, ocrText].filter(Boolean).join("\n");
+			const combined = [
+				titleFromLabels,
+				titleFromStructured,
+				titleFromVision,
+				pageUnderstandingTitle,
+				pageUnderstandingSlideType,
+				ocrText,
+			]
+				.filter(Boolean)
+				.join("\n");
 			segmentKey = classifySegmentKeyFromText(combined, "unknown");
 			segmentWasInferred = true;
 			if (segmentKey === "unknown") {
@@ -1227,6 +1284,14 @@ export async function persistVisionResponse(
 			}
 		} else if (segmentKey === "unknown") {
 			unknownReasonCode = hasAnyTextSignal ? "LOW_SIGNAL" : "NO_TEXT";
+		}
+
+		// Prefer deterministic segmenting from page_understanding_v1 when present.
+		if ((!segmentKey || segmentKey === "unknown") && pageUnderstandingSeg && !existingFromQuality) {
+			segmentKey = pageUnderstandingSeg;
+			segmentWasInferred = true;
+			segmentSourceHint = "page_understanding_v1";
+			unknownReasonCode = null;
 		}
 
 		// For XLSX-derived page images, treat the segment assignment as a structured pipeline output.
@@ -1262,7 +1327,9 @@ export async function persistVisionResponse(
 		}
 		if (segmentKey && !existingFromQuality) {
 			qualityFlagsWithSeg.segment_key = segmentKey;
-			if (segmentWasInferred && (typeof qualityFlagsWithSeg.segment_source !== "string" || !qualityFlagsWithSeg.segment_source.trim())) {
+			if (segmentSourceHint && (typeof qualityFlagsWithSeg.segment_source !== "string" || !qualityFlagsWithSeg.segment_source.trim())) {
+				qualityFlagsWithSeg.segment_source = segmentSourceHint;
+			} else if (segmentWasInferred && (typeof qualityFlagsWithSeg.segment_source !== "string" || !qualityFlagsWithSeg.segment_source.trim())) {
 				qualityFlagsWithSeg.segment_source = "inferred_ocr_v1";
 			}
 		}

@@ -99,7 +99,12 @@ export async function resolveVisualAssetImageUriForApi(stored: string | null): P
 	if (!s) return null;
 
 	// Local/static uploads are served directly by the API.
-	if (s.startsWith("/uploads/")) return stripQueryAndHash(s);
+	if (s.startsWith("/uploads/")) {
+		// In production deployments the worker and API are typically separated, so the API
+		// cannot reliably serve the worker's local filesystem paths.
+		if (process.env.NODE_ENV === "production") return null;
+		return stripQueryAndHash(s);
+	}
 
 	// If a caller has an absolute local path (legacy/dev-only), do not attempt to sign it.
 	// R2 object keys are expected to be relative (no leading slash).

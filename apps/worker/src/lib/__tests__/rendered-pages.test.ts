@@ -121,7 +121,7 @@ describe("rendered pages", () => {
 		expect(res.rendered_pages_dir).toBe("/data/uploads/rendered_pages/doc_1");
 		expect(res.rendered_pages_count).toBe(2);
 		expect(res.rendered_pages_created_at).toBe("2025-01-01T00:00:00.000Z");
-		expect(fs.has("/data/uploads/rendered_pages/doc_1/page_000.png")).toBe(true);
-		expect(fs.has("/data/uploads/rendered_pages/doc_1/page_001.png")).toBe(true);
+		expect(fs.has("/data/uploads/rendered_pages/doc_1/page_0000.png")).toBe(true);
+		expect(fs.has("/data/uploads/rendered_pages/doc_1/page_0001.png")).toBe(true);
 	});
 });

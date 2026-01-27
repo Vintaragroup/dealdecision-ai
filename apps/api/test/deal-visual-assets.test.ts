@@ -21,7 +21,7 @@ test("GET /api/v1/deals/:deal_id/visual-assets returns 200 with array for existi
 			deal_id: "deal-1",
 			page_index: 0,
 			bbox: { x: 0, y: 0, w: 1, h: 1 },
-			image_uri: "/uploads/rendered_pages/doc-1/page_000.png",
+			image_uri: "/uploads/rendered_pages/doc-1/page_0000.png",
 			image_hash: null,
 			created_at: now,
 			asset_type: "image_text",

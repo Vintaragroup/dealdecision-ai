@@ -139,14 +139,14 @@ test("upsertVisualAsset backfills empty image_uri on conflict", async () => {
 		pageIndex: 0,
 		assetType: "image_text",
 		bbox: { x: 0, y: 0, w: 1, h: 1 },
-		imageUri: "/uploads/rendered_pages/doc/page_001.png",
+			imageUri: "/uploads/rendered_pages/doc/page_0001.png",
 		imageHash: null,
 		extractorVersion,
 		confidence: 0.5,
 		qualityFlags: {},
 	});
 
-	expect(rowsByKey.get(key)?.image_uri).toBe("/uploads/rendered_pages/doc/page_001.png");
+	expect(rowsByKey.get(key)?.image_uri).toBe("/uploads/rendered_pages/doc/page_0001.png");
 });
 
 test("persistVisionResponse writes assets + extraction + evidence link", async () => {
@@ -700,13 +700,13 @@ test("backfillVisualAssetImageUris updates missing image_uri when page image exi
 	const res = await backfillVisualAssetImageUris({
 		pool,
 		documentId: "doc-1",
-		pageImageUris: ["/app/uploads/rendered_pages/doc-1/page_000.png", "/tmp/unknown.png"],
+			pageImageUris: ["/app/uploads/rendered_pages/doc-1/page_0000.png", "/tmp/unknown.png"],
 		env,
 	});
 
 	expect(res.updated).toBe(1);
 	expect(calls[0].params[0]).toBe("doc-1");
 	expect(calls[0].params[1]).toBe(0);
-	expect(calls[0].params[2]).toBe("/uploads/rendered_pages/doc-1/page_000.png");
+	expect(calls[0].params[2]).toBe("/uploads/rendered_pages/doc-1/page_0000.png");
 	expect(calls.length).toBe(1);
 });

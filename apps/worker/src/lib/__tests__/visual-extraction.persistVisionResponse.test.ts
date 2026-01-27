@@ -62,12 +62,14 @@ describe("persistVisionResponse", () => {
 			],
 		};
 
-		const pageImageUri = "https://r2.example/bucket/key.png";
+		process.env.R2_ENDPOINT = "https://r2.example";
+		process.env.R2_BUCKET = "bucket";
+		const pageImageUri = "https://r2.example/bucket/key.png?X-Amz-Signature=deadbeef";
 		const res = await persistVisionResponse(pool, response, { pageImageUri, env: process.env });
 
 		expect(res.persisted).toBe(1);
 		expect(res.withImageUri).toBe(1);
 		expect(observedImageUris.length).toBe(1);
-		expect(observedImageUris[0]).toBe(pageImageUri);
+		expect(observedImageUris[0]).toBe("key.png");
 	});
 });

@@ -114,3 +114,76 @@ test("GET /api/v1/deals/:deal_id/documents/:document_id/visual-assets returns as
 
 	await app.close();
 });
+
+test("GET /api/v1/deals/:deal_id/documents/:document_id/visual-assets signs R2 keys on demand", async () => {
+	const prev = { ...process.env };
+	process.env.R2_ENDPOINT = "https://r2.example";
+	process.env.R2_BUCKET = "bucket";
+	process.env.R2_ACCESS_KEY_ID = "AKIA_TEST";
+	process.env.R2_SECRET_ACCESS_KEY = "SECRET_TEST";
+	process.env.R2_REGION = "auto";
+	delete process.env.R2_PUBLIC_BASE_URL;
+
+	const now = new Date("2026-01-05T00:00:00.000Z").toISOString();
+	const rows = [
+		{
+			id: "asset-1",
+			page_index: 0,
+			asset_type: "chart",
+			bbox: { x: 0, y: 0, w: 1, h: 1 },
+			image_uri: "rendered_pages/doc-1/page_0000.png",
+			image_hash: null,
+			extractor_version: "vision_v1",
+			confidence: "0.8",
+			quality_flags: {},
+			created_at: now,
+			extraction_id: null,
+			ocr_text: null,
+			ocr_blocks: [],
+			structured_json: {},
+			units: null,
+			labels: {},
+			model_version: null,
+			extraction_confidence: null,
+			extraction_created_at: null,
+			evidence_count: 0,
+			evidence_sample_snippets: [],
+		},
+	];
+
+	const mockPool = {
+		query: async (sql: string, params: unknown[]) => {
+			if (sql.includes("FROM documents") && sql.includes("WHERE deal_id = $1") && sql.includes("AND id = $2")) {
+				assert.equal(params[0], "deal-1");
+				assert.equal(params[1], "doc-1");
+				return { rows: [{ id: "doc-1" }] };
+			}
+			if (sql.includes("to_regclass")) {
+				return { rows: [{ oid: "ok" }] };
+			}
+			if (sql.includes("FROM visual_assets")) {
+				return { rows };
+			}
+			throw new Error("Unexpected query");
+		},
+	} as any;
+
+	const app = Fastify();
+	await registerDocumentRoutes(app, mockPool);
+
+	const res = await app.inject({
+		method: "GET",
+		url: "/api/v1/deals/deal-1/documents/doc-1/visual-assets?include_images=true",
+	});
+
+	assert.equal(res.statusCode, 200);
+	const body = res.json();
+	assert.equal(body.assets.length, 1);
+	const uri = body.assets[0].image_uri;
+	assert.equal(typeof uri, "string");
+	assert.ok(uri.includes("X-Amz-Signature="), "expected signed URL");
+	assert.notEqual(uri, "rendered_pages/doc-1/page_0000.png");
+
+	await app.close();
+	process.env = prev;
+});

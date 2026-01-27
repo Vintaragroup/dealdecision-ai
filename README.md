@@ -92,7 +92,7 @@ The web app is a Vite build, so any runtime configuration must be provided at **
 - Confirm extraction produces R2-backed page images (no API filesystem paths):
   - `documents.extraction_metadata.rendered_pages_r2` populated
   - `documents.extraction_metadata.rendered_pages_count` populated
-  - page keys under `deals/<dealId>/documents/<docId>/pages/page_%04d.png`
+  - page keys under `deals/<dealId>/documents/<docId>/rendered_pages/page_%04d.png`
 - Smoke-test end-to-end document types (upload → ingest → extract visuals → Analyst nodes render):
   - PDF (scanned + editable), PNG/JPG, XLSX/XLS, DOCX/DOC, PPTX/PPT
   - verify `visual_assets.image_uri` is non-null for persisted assets

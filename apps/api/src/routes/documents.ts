@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "crypto";
 import { z } from "zod";
 import type { Document } from "@dealdecision/contracts";
 import { sanitizeText } from "@dealdecision/core";
+import { resolveVisualAssetImageUriForApi } from "../lib/visual-asset-image-uri";
 import { getPool } from "../lib/db";
 import { inferDocumentTypeFromName } from "../lib/document-type-inference";
 import { deleteFromR2, getPublicUrlForKey, getR2Config, getSignedDownloadUrl, uploadToR2 } from "../lib/r2";
@@ -701,7 +702,7 @@ export async function registerDocumentRoutes(
         })
       : false;
 
-    const assets = rows.map((r) => {
+    const assetsBase = rows.map((r) => {
       const createdAt = new Date(r.created_at).toISOString();
       const extractionCreatedAt = r.extraction_created_at ? new Date(r.extraction_created_at).toISOString() : null;
       const confidence = Number(r.confidence);
@@ -744,6 +745,13 @@ export async function registerDocumentRoutes(
         },
       };
     });
+
+    const assets = await Promise.all(
+      assetsBase.map(async (a) => ({
+        ...a,
+        image_uri: a.image_uri ? await resolveVisualAssetImageUriForApi(a.image_uri) : null,
+      }))
+    );
 
     request.log.info(
       {

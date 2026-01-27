@@ -283,6 +283,115 @@ test('GET /api/deals/:dealId/lineage returns visuals + evidence aggregate nodes'
   await app.close();
 });
 
+test('GET /api/v1/deals/:dealId/lineage signs image_uri when stored value is an R2 key', async () => {
+  const dealId = 'deal-sign-1';
+
+  // Configure R2 signing (dummy creds are fine; signing is local).
+  process.env.R2_ENDPOINT = process.env.R2_ENDPOINT || 'https://example.r2.cloudflarestorage.com';
+  process.env.R2_BUCKET = process.env.R2_BUCKET || 'test-bucket';
+  process.env.R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || 'test-access-key';
+  process.env.R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY || 'test-secret-key';
+  process.env.R2_REGION = process.env.R2_REGION || 'auto';
+  process.env.R2_SIGNED_URL_TTL_SECONDS = process.env.R2_SIGNED_URL_TTL_SECONDS || '60';
+
+  const mockPool = {
+    query: async (sql: string, params?: unknown[]) => {
+      const q = String(sql);
+      const p0 = Array.isArray(params) ? params[0] : undefined;
+
+      if (q.includes('to_regclass')) {
+        return { rows: [{ oid: 'ok' }] };
+      }
+
+      if (q.includes('information_schema.columns')) {
+        // Feature detection via hasColumn(...)
+        return { rows: [{ ok: 1 }] };
+      }
+
+      if (q.includes('FROM deals') && q.includes('WHERE id = $1')) {
+        assert.equal(p0, dealId);
+        return { rows: [{ id: dealId, name: 'Signed Deal', lifecycle_status: 'in_diligence', score: 75 }] };
+      }
+
+      if (q.includes('FROM documents') && q.includes('WHERE deal_id = $1')) {
+        assert.equal(p0, dealId);
+        return {
+          rows: [
+            {
+              id: 'doc-sign-1',
+              title: 'Deck',
+              type: 'pitch_deck',
+              page_count: 2,
+              uploaded_at: '2026-01-01T00:00:00.000Z',
+              updated_at: '2026-01-02T00:00:00.000Z',
+              mime_type: 'application/pdf',
+              filename: 'deck.pdf',
+              extraction_metadata: {},
+            },
+          ],
+        };
+      }
+
+      if (q.includes('FROM visual_assets')) {
+        assert.equal(p0, dealId);
+        return {
+          rows: [
+            {
+              id: 'va-sign-1',
+              document_id: 'doc-sign-1',
+              page_index: 0,
+              asset_type: 'chart',
+              bbox: { x: 0, y: 0, w: 1, h: 1 },
+              // Stored as an R2 key (no leading slash)
+              image_uri: 'deals/deal-sign-1/documents/doc-sign-1/rendered_pages/page_0000.png',
+              image_hash: null,
+              extractor_version: 'vision_v1',
+              confidence: '0.7',
+              quality_flags: {},
+              created_at: '2026-01-05T00:00:00.000Z',
+              evidence_count: 0,
+              evidence_sample_snippets: [],
+              extraction_created_at: '2026-01-05T00:00:00.000Z',
+              ocr_text: null,
+              ocr_blocks: null,
+              structured_json: null,
+              structured_summary: null,
+              units: null,
+              extraction_confidence: null,
+              structured_kind: null,
+            },
+          ],
+        };
+      }
+
+      throw new Error(`Unexpected query: ${q}`);
+    },
+  } as any;
+
+  const app = Fastify();
+  await registerDealRoutes(app, mockPool);
+
+  const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/lineage` });
+  assert.equal(res.statusCode, 200);
+  const body = res.json() as any;
+
+  const visualNodes = Array.isArray(body.nodes)
+    ? body.nodes.filter((n: any) => n && typeof n === 'object' && n.node_type === 'VISUAL_ASSET')
+    : [];
+  assert.ok(visualNodes.length >= 1, 'expected at least one VISUAL_ASSET node');
+
+  const imageUris = visualNodes
+    .map((n: any) => n?.data?.image_uri)
+    .filter((v: any) => typeof v === 'string') as string[];
+  assert.ok(imageUris.length >= 1, 'expected at least one image_uri');
+  assert.ok(
+    imageUris.some((u) => u.includes('X-Amz-Signature=')),
+    `expected a signed URL; got: ${JSON.stringify(imageUris.slice(0, 3))}`
+  );
+
+  await app.close();
+});
+
 test('GET /api/deals/:dealId/lineage builds page_understanding from PPTX structured_json when OCR is missing', async () => {
   const dealId = 'deal-pptx-understanding';
 

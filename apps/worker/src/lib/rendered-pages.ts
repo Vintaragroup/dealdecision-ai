@@ -122,7 +122,8 @@ function stableRenderedPagesDir(params: { uploadDir: string; documentId: string 
 }
 
 function stableRenderedPageFilename(pageIndex: number, format: "png"): string {
-	return `page_${String(pageIndex).padStart(3, "0")}.${format}`;
+	// Canonical for both local + R2: page_%04d.png
+	return `page_${String(pageIndex).padStart(4, "0")}.${format}`;
 }
 
 async function bufferToPng(params: { buffer: Buffer; logger: LogLike }): Promise<Buffer | null> {

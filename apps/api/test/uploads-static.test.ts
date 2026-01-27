@@ -15,12 +15,12 @@ test("GET /uploads/* serves files from UPLOAD_DIR", async () => {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "ddai-uploads-"));
   process.env.UPLOAD_DIR = tempRoot;
 
-  const relativeUrlPath = "/uploads/rendered_pages/113ec3d4-70c0-4e59-80cb-6c478b355930/page_004.png";
+  const relativeUrlPath = "/uploads/rendered_pages/113ec3d4-70c0-4e59-80cb-6c478b355930/page_0004.png";
   const diskPath = path.join(
     tempRoot,
     "rendered_pages",
     "113ec3d4-70c0-4e59-80cb-6c478b355930",
-    "page_004.png",
+    "page_0004.png",
   );
 
   const app = Fastify({ logger: false });

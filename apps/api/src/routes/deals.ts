@@ -5,6 +5,7 @@ import fs from "fs";
 import path from "path";
 import { fetchPhaseBVisualsFromDb } from "../lib/phaseb-visuals";
 import { getPool } from "../lib/db";
+import { resolveVisualAssetImageUriForApi } from "../lib/visual-asset-image-uri";
 import type { Deal } from "@dealdecision/contracts";
 import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
@@ -5276,7 +5277,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       "deal.lineage"
     );
 
-    return reply.send({
+    const payload: any = {
       deal_id: dealId,
       nodes,
       edges,
@@ -5677,7 +5678,44 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
             })(),
           }
         : {}),
-    });
+
+    };
+
+    // Ensure any stored R2 keys (or legacy public URLs) are converted to fresh signed URLs.
+    // This intentionally targets only fields named `image_uri` anywhere in the payload.
+    const resolveImageUrisInPlace = async (root: unknown): Promise<void> => {
+      type Ref = { obj: Record<string, any>; key: string; value: string };
+      const refs: Ref[] = [];
+      const stack: unknown[] = [root];
+
+      while (stack.length > 0) {
+        const cur = stack.pop();
+        if (!cur || typeof cur !== "object") continue;
+
+        if (Array.isArray(cur)) {
+          for (const item of cur) stack.push(item);
+          continue;
+        }
+
+        const obj = cur as Record<string, any>;
+        for (const [k, v] of Object.entries(obj)) {
+          if (k === "image_uri" && typeof v === "string" && v.trim().length > 0) {
+            refs.push({ obj, key: k, value: v });
+            continue;
+          }
+          if (v && typeof v === "object") stack.push(v);
+        }
+      }
+
+      await Promise.all(
+        refs.map(async (r) => {
+          r.obj[r.key] = await resolveVisualAssetImageUriForApi(r.value);
+        })
+      );
+    };
+
+    await resolveImageUrisInPlace(payload);
+    return reply.send(payload);
   });
 
   // DEV-only: promote computed segments into persisted segment_key.
@@ -7753,6 +7791,16 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           if (!isPageFallback(a)) return true;
           return !hasNonFallbackByKey.get(k);
         }) as any;
+      }
+
+      // Never return persisted signed URLs; mint fresh R2 signed URLs per request.
+      if (includeImagesRequested && visualAssets.length > 0) {
+        visualAssets = await Promise.all(
+          (visualAssets as any[]).map(async (v: any) => ({
+            ...v,
+            image_uri: typeof v?.image_uri === "string" && v.image_uri.trim() ? await resolveVisualAssetImageUriForApi(v.image_uri) : null,
+          }))
+        );
       }
 
       return reply.send({

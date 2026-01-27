@@ -257,6 +257,131 @@ function normalizeImageUriForApi(imageUri: string | null, env: NodeJS.ProcessEnv
 	return null;
 }
 
+function stripUrlQueryAndHash(input: string): string {
+	const s = String(input ?? "").trim();
+	if (!s) return "";
+	if (!(s.startsWith("http://") || s.startsWith("https://"))) {
+		return s.split("?")[0]?.split("#")[0] ?? s;
+	}
+	try {
+		const u = new URL(s);
+		u.search = "";
+		u.hash = "";
+		return u.toString();
+	} catch {
+		return s.split("?")[0]?.split("#")[0] ?? s;
+	}
+}
+
+function tryExtractR2KeyFromUrl(input: string, env: NodeJS.ProcessEnv = process.env): string | null {
+	const raw = String(input ?? "").trim();
+	if (!(raw.startsWith("http://") || raw.startsWith("https://"))) return null;
+
+	let parsed: URL;
+	try {
+		parsed = new URL(raw);
+	} catch {
+		return null;
+	}
+
+	// Public base URL (CDN / public bucket) case.
+	const publicBase = typeof env.R2_PUBLIC_BASE_URL === "string" ? env.R2_PUBLIC_BASE_URL.trim().replace(/\/$/, "") : "";
+	if (publicBase) {
+		try {
+			const base = new URL(publicBase);
+			if (parsed.origin === base.origin && parsed.pathname.startsWith(base.pathname.replace(/\/$/, "") + "/")) {
+				const prefix = base.pathname.replace(/\/$/, "") + "/";
+				const remainder = parsed.pathname.slice(prefix.length);
+				const key = remainder
+					.split("/")
+					.filter(Boolean)
+					.map((seg) => {
+						try {
+							return decodeURIComponent(seg);
+						} catch {
+							return seg;
+						}
+					})
+					.join("/");
+				return key || null;
+			}
+		} catch {
+			// ignore
+		}
+	}
+
+	// Signed URL / endpoint (path-style: /<bucket>/<key>) case.
+	const endpointRaw = typeof env.R2_ENDPOINT === "string" ? env.R2_ENDPOINT.trim() : "";
+	const bucket = typeof env.R2_BUCKET === "string" ? env.R2_BUCKET.trim() : "";
+	if (!endpointRaw || !bucket) return null;
+
+	try {
+		const endpoint = new URL(endpointRaw);
+		if (parsed.origin !== endpoint.origin) return null;
+
+		const endpointPath = endpoint.pathname.replace(/\/$/, "");
+		let pathRemainder = parsed.pathname;
+		if (endpointPath && endpointPath !== "/") {
+			const prefix = endpointPath + "/";
+			if (!pathRemainder.startsWith(prefix)) return null;
+			pathRemainder = pathRemainder.slice(prefix.length);
+		} else {
+			pathRemainder = pathRemainder.replace(/^\//, "");
+		}
+
+		const parts = pathRemainder.split("/").filter(Boolean);
+		if (parts.length < 2) return null;
+		if (parts[0] !== bucket) return null;
+		const key = parts
+			.slice(1)
+			.map((seg) => {
+				try {
+					return decodeURIComponent(seg);
+				} catch {
+					return seg;
+				}
+			})
+			.join("/");
+		return key || null;
+	} catch {
+		return null;
+	}
+}
+
+function normalizeImageUriForDb(imageUri: string | null, env: NodeJS.ProcessEnv = process.env): string | null {
+	if (!imageUri) return null;
+	const trimmed = String(imageUri).trim();
+	if (!trimmed) return null;
+
+	// Already a key (preferred storage format).
+	if (!trimmed.startsWith("/") && !(trimmed.startsWith("http://") || trimmed.startsWith("https://"))) {
+		return trimmed;
+	}
+
+	// Preserve /uploads URLs, but never persist query strings.
+	if (trimmed.startsWith("/uploads/")) return stripUrlQueryAndHash(trimmed) || null;
+
+	// Best-effort: map absolute file paths under UPLOAD_DIR to an API-relative URL under /uploads.
+	const uploadDir = env.UPLOAD_DIR ? path.resolve(env.UPLOAD_DIR) : null;
+	if (uploadDir && trimmed.startsWith("/")) {
+		try {
+			const rel = path.relative(uploadDir, trimmed);
+			if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
+				return `/uploads/${rel.split(path.sep).join("/")}`;
+			}
+		} catch {
+			// fall through
+		}
+	}
+
+	// For HTTP(S): prefer extracting the R2 object key; otherwise strip query so we never persist signed URLs.
+	if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+		return tryExtractR2KeyFromUrl(trimmed, env) ?? (stripUrlQueryAndHash(trimmed) || null);
+	}
+
+	return null;
+}
+
 function parseBool(input: string | undefined | null): boolean {
 	if (!input) return false;
 	return ["1", "true", "yes", "on"].includes(input.trim().toLowerCase());
@@ -424,7 +549,21 @@ export async function resolvePageImageUris(
 			metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === "object" ? (metaObj.rendered_pages_r2 as any) : null;
 		if (renderedR2) {
 			const bucket = typeof renderedR2.bucket === "string" ? renderedR2.bucket.trim() : null;
-			const prefix = typeof renderedR2.prefix === "string" ? renderedR2.prefix.trim().replace(/\/$/, "") : "";
+			let prefix = typeof renderedR2.prefix === "string" ? renderedR2.prefix.trim().replace(/\/$/, "") : "";
+			// Cleanup guard: older workers accidentally wrote /pages as the prefix.
+			// Treat rendered_pages/ as canonical and auto-upgrade the prefix for reads.
+			if (prefix.endsWith("/pages") && !prefix.endsWith("/rendered_pages")) {
+				const upgraded = prefix.replace(/\/pages$/, "/rendered_pages");
+				logger.warn(
+					JSON.stringify({
+						event: "RENDERED_PAGES_R2_PREFIX_CANONICALIZED",
+						document_id: documentId,
+						from: prefix,
+						to: upgraded,
+					})
+				);
+				prefix = upgraded;
+			}
 			const formatRaw = typeof renderedR2.format === "string" ? renderedR2.format.trim() : "";
 			const format = formatRaw && !formatRaw.includes("/") ? formatRaw : "page_%04d.png";
 			const metaRenderedCount =
@@ -630,7 +769,7 @@ export async function backfillVisualAssetImageUris(params: {
 	let updated = 0;
 
 	for (let i = 0; i < params.pageImageUris.length; i += 1) {
-		const normalized = normalizeImageUriForApi(params.pageImageUris[i], env);
+		const normalized = normalizeImageUriForDb(params.pageImageUris[i], env);
 		if (!normalized) continue;
 		try {
 			const res = await params.pool.query<{ rowCount?: number }>(
@@ -991,7 +1130,7 @@ export async function persistVisionResponse(
 	let withImageUri = 0;
 	const env = options?.env ?? process.env;
 	const pageImageUri = options?.pageImageUri ?? null;
-	const pageImageUriNormalized = normalizeImageUriForApi(pageImageUri, env);
+	const pageImageUriNormalized = normalizeImageUriForDb(pageImageUri, env);
 
 	const docKind = await (async () => {
 		try {
@@ -1022,7 +1161,7 @@ export async function persistVisionResponse(
 	})();
 
 	for (const asset of response.assets ?? []) {
-		const normalizedAssetImageUri = normalizeImageUriForApi(asset.image_uri ?? null, env) ?? pageImageUriNormalized;
+		const normalizedAssetImageUri = normalizeImageUriForDb(asset.image_uri ?? null, env) ?? pageImageUriNormalized;
 		const assetBBox = coerceBBox((asset as any)?.bbox);
 		const assetQualityFlags = coerceJsonObject((asset as any)?.quality_flags) ?? {};
 		const extractionObj = (asset as any)?.extraction;

@@ -2098,7 +2098,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             ? 'Run migration infra/migrations/2025-12-22-002-add-document-original-files.sql then re-ingest documents.'
             : missingOriginals > 0
               ? 'Re-upload/re-ingest the document so document_files.original_bytes is populated; then rerun extraction.'
-              : 'Ensure rendered page images exist under uploads/rendered_pages/<docId>/page_000.png and rerun extraction.'
+              : 'Ensure rendered page images exist under uploads/rendered_pages/<docId>/page_0000.png and rerun extraction.'
         );
       } else {
         addToast('error', 'Visual extraction failed to start', message);

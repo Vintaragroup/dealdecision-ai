@@ -299,6 +299,7 @@ import { materializePhaseBVisualEvidenceForDeal } from "./lib/phaseb/materialize
 import { logMemory, yieldToEventLoop } from "./lib/memory";
 import { updateJobProgress } from "./lib/job-progress";
 import { enqueuePersistedJob } from "./lib/job-enqueue";
+import { planChunkEnqueues } from "./lib/page-chunks";
 
 // Deterministic startup log for Docker verification.
 // Do not log secrets; only the explicit flag value.
@@ -1941,6 +1942,7 @@ registerWorker("render_document_pages", async (job: Job) => {
 	const pool = getPool();
 	let dealIdResolved: string | null = dealIdSafe || null;
 	let pageCount: number = 0;
+	let renderedPagesPrefixFromMeta: string | null = null;
 	try {
 		const { rows } = await pool.query<{ page_count: number | null; extraction_metadata: unknown | null; deal_id: string | null }>(
 			"SELECT page_count, extraction_metadata, deal_id FROM documents WHERE id = $1 LIMIT 1",
@@ -1950,6 +1952,15 @@ registerWorker("render_document_pages", async (job: Job) => {
 		pageCount = stored > 0 ? stored : 0;
 		if (!dealIdResolved && typeof rows?.[0]?.deal_id === "string" && rows[0].deal_id.trim()) {
 			dealIdResolved = rows[0].deal_id.trim();
+		}
+		const metaObj = rows?.[0]?.extraction_metadata && typeof rows[0].extraction_metadata === "object" ? (rows[0].extraction_metadata as any) : null;
+		const renderedR2 = metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === "object" ? (metaObj.rendered_pages_r2 as any) : null;
+		const prefixRaw = typeof renderedR2?.prefix === "string" ? renderedR2.prefix.trim().replace(/\/$/, "") : "";
+		if (prefixRaw) {
+			// Cleanup guard: if old metadata used /pages, upgrade it for all future writes.
+			renderedPagesPrefixFromMeta = prefixRaw.endsWith("/pages") && !prefixRaw.endsWith("/rendered_pages")
+				? prefixRaw.replace(/\/pages$/, "/rendered_pages")
+				: prefixRaw;
 		}
 	} catch {
 		pageCount = 0;
@@ -2021,13 +2032,14 @@ registerWorker("render_document_pages", async (job: Job) => {
 
 	// Upload just this chunk to R2.
 	const r2Bucket = (process.env.R2_BUCKET || "").trim();
-	const prefix = `deals/${(dealIdResolved || dealIdSafe || "unknown")}/documents/${docId}/rendered_pages`;
+	const prefix =
+		renderedPagesPrefixFromMeta ?? `deals/${(dealIdResolved || dealIdSafe || "unknown")}/documents/${docId}/rendered_pages`;
 	if (r2Bucket && res.rendered_pages_dir) {
 		try {
 			const chunkStart = pageStart;
 			const chunkEnd = pageEnd ?? (pageCount > 0 ? Math.min(pageCount, pageStart + persistCfg.maxPages) : pageStart + persistCfg.maxPages);
 			for (let i = chunkStart; i < chunkEnd; i += 1) {
-				const localName = `page_${String(i).padStart(3, "0")}.png`;
+				const localName = `page_${String(i).padStart(4, "0")}.png`;
 				const localPath = path.join(res.rendered_pages_dir, localName);
 				let bytes: Buffer;
 				try {
@@ -2653,15 +2665,15 @@ registerWorker("extract_visuals", async (job: Job) => {
 			try {
 				const parentJobId = job.id ? String(job.id) : null;
 				chunksEnqueuedAny = true;
-				for (let start = chunkSize; start < totalPages; start += chunkSize) {
-					const end = Math.min(start + chunkSize, totalPages);
+				const planned = planChunkEnqueues({ totalPages, chunkSize });
+				for (const range of planned.ranges) {
 					await enqueuePersistedJob({
 						type: "extract_visuals",
 						deal_id: dealId ?? (typeof docMeta?.deal_id === "string" ? docMeta.deal_id : undefined),
 						document_id: docId,
 						parent_job_id: parentJobId,
-						page_start: start,
-						page_end: end,
+						page_start: range.start,
+						page_end: range.end,
 						payload: {
 							extractor_version: extractorVersion,
 							force_resegment: forceResegment,
@@ -2675,9 +2687,13 @@ registerWorker("extract_visuals", async (job: Job) => {
 						document_id: docId,
 						total_pages: totalPages,
 						chunk_size: chunkSize,
-						chunks_enqueued: Math.ceil(totalPages / chunkSize) - 1,
+						chunks_enqueued: planned.chunks_enqueued,
 					})
 				);
+
+				// Coordinator job: avoid double-processing the first chunk.
+				docsProcessed += 1;
+				continue;
 			} catch (err) {
 				console.warn(
 					`[extract_visuals] failed to enqueue chunk jobs doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
@@ -2970,7 +2986,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 					uris = await resolvePageImageUris(pool, docId, { env: process.env, logger: console });
 				}
 
-				// Image docs: normalize into rendered_pages/page_000.png
+				// Image docs: normalize into rendered_pages/page_0000.png
 				if (originalBytes && docKind === "image") {
 					const res = await persistImagePage({
 						buffer: originalBytes,
@@ -3813,15 +3829,15 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 		if (!isChunkJob && totalPages > chunkSize) {
 			try {
 				const parentJobId = job.id ? String(job.id) : null;
-				for (let start = chunkSize; start < totalPages; start += chunkSize) {
-					const end = Math.min(start + chunkSize, totalPages);
+				const planned = planChunkEnqueues({ totalPages, chunkSize });
+				for (const range of planned.ranges) {
 					await enqueuePersistedJob({
 						type: "deep_scan_visuals",
 						deal_id: dealId,
 						document_id: docId,
 						parent_job_id: parentJobId,
-						page_start: start,
-						page_end: end,
+						page_start: range.start,
+						page_end: range.end,
 						payload: {
 							deal_id: dealId,
 							document_ids: [docId],
@@ -3836,9 +3852,13 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 						document_id: docId,
 						total_pages: totalPages,
 						chunk_size: chunkSize,
-						chunks_enqueued: Math.ceil(totalPages / chunkSize) - 1,
+						chunks_enqueued: planned.chunks_enqueued,
 					})
 				);
+
+				// Coordinator job: avoid double-processing the first chunk.
+				docsProcessed += 1;
+				continue;
 			} catch (err) {
 				console.warn(
 					`[deep_scan_visuals] failed to enqueue chunk jobs doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
@@ -5424,7 +5444,27 @@ registerWorker("reextract_documents", async (job: Job) => {
 					const chunkSize = persistCfg.maxPages;
 					const totalPages = pageCount || 0;
 					const r2Bucket = (process.env.R2_BUCKET || "").trim();
-					const prefix = `deals/${doc.deal_id}/documents/${doc.id}/pages`;
+					// Canonical location: rendered_pages/ (never legacy pages/)
+					let prefix = `deals/${doc.deal_id}/documents/${doc.id}/rendered_pages`;
+					// Cleanup guard: if metadata already points at rendered_pages (or misconfigured legacy /pages), reuse/upgrade it.
+					try {
+						const pool = getPool();
+						const { rows } = await pool.query<{ extraction_metadata: unknown | null }>(
+							"SELECT extraction_metadata FROM documents WHERE id = $1 LIMIT 1",
+							[sanitizeText(doc.id)]
+						);
+						const metaObj = rows?.[0]?.extraction_metadata && typeof rows[0].extraction_metadata === "object" ? (rows[0].extraction_metadata as any) : null;
+						const renderedR2 = metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === "object" ? (metaObj.rendered_pages_r2 as any) : null;
+						const existingPrefix = typeof renderedR2?.prefix === "string" ? renderedR2.prefix.trim().replace(/\/$/, "") : "";
+						if (existingPrefix) {
+							// If previous metadata mistakenly used /pages, upgrade to /rendered_pages.
+							prefix = existingPrefix.endsWith("/pages") && !existingPrefix.endsWith("/rendered_pages")
+								? existingPrefix.replace(/\/pages$/, "/rendered_pages")
+								: existingPrefix;
+						}
+					} catch {
+						// best-effort
+					}
 					if (r2Bucket && totalPages > 0) {
 						await mergeDocumentExtractionMetadata({
 							documentId: doc.id,

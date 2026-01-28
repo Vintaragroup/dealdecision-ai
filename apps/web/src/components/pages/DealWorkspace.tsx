@@ -3476,13 +3476,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
             {/* Score Driver Tile */}
             <div
-              className={`md:col-span-2 backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}
+              className={`col-span-1 md:col-span-2 md:col-start-1 md:col-end-3 backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}
             >
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Score drivers</div>
+                  <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Coverage & readiness</div>
                   <div className={`mt-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                    {executiveSummaryV2 || executiveSummaryV1 ? 'Phase 1 coverage by category' : 'Run analysis to populate score drivers.'}
+                    {executiveSummaryV2 || executiveSummaryV1 ? 'Coverage by category and open items' : 'Run analysis to populate coverage and readiness.'}
                   </div>
                 </div>
               </div>
@@ -3609,7 +3609,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   })()}
 
                   <div className="mt-4">
-                    <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Missing</div>
+                    <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Open items (detail)</div>
                     {missingChips.length > 0 ? (
                       <>
                         <div className="flex flex-wrap gap-2">
@@ -3651,11 +3651,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         )}
                       </>
                     ) : (
-                      <div className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No missing sections flagged.</div>
+                        <div className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No open items flagged.</div>
                     )}
                   </div>
 
-                  {scoreBreakdownSections.length > 0 && (
+                  {isAnalyst && scoreBreakdownSections.length > 0 && (
                     <>
                       <div className="mt-6" ref={scoreBreakdownAnchorRef}>
                         <div className="flex items-center justify-between gap-3">

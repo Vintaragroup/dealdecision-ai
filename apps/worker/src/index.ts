@@ -6092,9 +6092,56 @@ try {
 // One-time DB fingerprint + schema assertion.
 // - Do NOT log credentials or DATABASE_URL.
 // - If schema is missing required columns, log schema_check_failed once and exit non-zero.
+// - If DB is unreachable, retry briefly and exit non-zero (unless explicitly allowed).
 void (async () => {
+	const allowWithoutDbRaw = process.env.WORKER_ALLOW_START_WITHOUT_DB;
+	const allowWithoutDb = allowWithoutDbRaw === "1" || allowWithoutDbRaw === "true";
+	const maxWaitMsRaw = process.env.WORKER_DB_CONNECT_TIMEOUT_MS;
+	const maxWaitMs = Number.isFinite(Number(maxWaitMsRaw)) ? Math.max(0, Number(maxWaitMsRaw)) : 60_000;
+	const startedAt = Date.now();
+	let attempt = 0;
+
 	try {
 		const pool = getPool();
+		// Wait briefly for Postgres to become reachable (common during boot / cold starts).
+		while (true) {
+			try {
+				attempt += 1;
+				await pool.query("SELECT 1 AS ok");
+				break;
+			} catch (err) {
+				const elapsed = Date.now() - startedAt;
+				const msg = err instanceof Error ? err.message : String(err);
+				if (elapsed >= maxWaitMs) {
+					console.log(
+						JSON.stringify({
+							event: "db_connect_failed",
+							service: "worker",
+							attempt,
+							elapsed_ms: elapsed,
+							err: msg,
+						})
+					);
+					if (!allowWithoutDb) {
+						process.exit(1);
+					}
+					break;
+				}
+				if (attempt === 1 || attempt % 5 === 0) {
+					console.warn(
+						JSON.stringify({
+							event: "db_connect_retry",
+							service: "worker",
+							attempt,
+							elapsed_ms: elapsed,
+							err: msg,
+						})
+					);
+				}
+				await new Promise((r) => setTimeout(r, 1000));
+			}
+		}
+
 		const { rows } = await pool.query<{ db: string; ip: string | null; port: number | null }>(
 			`SELECT
 				current_database() AS db,
@@ -6138,6 +6185,9 @@ void (async () => {
 				err: err instanceof Error ? err.message : String(err),
 			})
 		);
+		if (!(process.env.WORKER_ALLOW_START_WITHOUT_DB === "1" || process.env.WORKER_ALLOW_START_WITHOUT_DB === "true")) {
+			process.exit(1);
+		}
 	}
 })();
 

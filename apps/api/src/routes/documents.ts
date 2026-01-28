@@ -6,7 +6,7 @@ import { getDocumentCapabilities, sanitizeText } from "@dealdecision/core";
 import { resolveVisualAssetImageUriForApi } from "../lib/visual-asset-image-uri";
 import { getPool } from "../lib/db";
 import { inferDocumentTypeFromName } from "../lib/document-type-inference";
-import { deleteFromR2, getPublicUrlForKey, getR2Config, getSignedDownloadUrl, uploadToR2 } from "../lib/r2";
+import { deleteFromR2, getPublicUrlForKey, getR2Config, getSignedDownloadUrl, objectExistsInR2, uploadToR2 } from "../lib/r2";
 import { insertEvidence } from "../services/evidence";
 import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
@@ -487,6 +487,7 @@ export async function registerDocumentRoutes(
       deleteFromR2: typeof deleteFromR2;
       getR2Config: typeof getR2Config;
       getPublicUrlForKey: typeof getPublicUrlForKey;
+      objectExistsInR2?: typeof objectExistsInR2;
     };
   }
 ) {
@@ -498,6 +499,7 @@ export async function registerDocumentRoutes(
     deleteFromR2,
     getR2Config,
     getPublicUrlForKey,
+    objectExistsInR2,
   };
   app.get(
     "/api/v1/deals/:deal_id/documents/:document_id/visual-assets",
@@ -1493,7 +1495,62 @@ export async function registerDocumentRoutes(
     const renderedR2 = metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === "object" ? (metaObj.rendered_pages_r2 as any) : null;
     const count = typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count) ? metaObj.rendered_pages_count : 0;
     const rendered = typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered) ? metaObj.rendered_pages_rendered : null;
-    if (!renderedR2 || !count || count <= 0 || rendered == null || rendered < count) {
+
+    const pad4 = (n: number) => String(Math.max(0, Math.trunc(n))).padStart(4, "0");
+    const renderedPageKeyForIndex = (renderedR2Obj: any, pageIndex: number): string | null => {
+      const prefix = typeof renderedR2Obj?.prefix === "string" ? renderedR2Obj.prefix : null;
+      const fmt =
+        typeof renderedR2Obj?.format === "string" && renderedR2Obj.format.trim().length > 0 ? renderedR2Obj.format.trim() : "page_%04d.png";
+      if (!prefix) return null;
+      const cleanPrefix = prefix.replace(/^\/+/, "").replace(/\/+$/, "");
+      let fileName = fmt;
+      if (fileName.includes("%04d")) fileName = fileName.replace("%04d", pad4(pageIndex));
+      else if (fileName.includes("%d")) fileName = fileName.replace("%d", String(pageIndex));
+      else fileName = `page_${pad4(pageIndex)}.png`;
+      return `${cleanPrefix}/${fileName}`;
+    };
+
+    let r2Probe:
+      | {
+          attempted: boolean;
+          skipped_reason?: string;
+          key_checked?: string;
+          exists?: boolean;
+          error?: { name: string; message: string; statusCode?: number | null };
+        }
+      | null = null;
+    let r2ProbeOverrideReady = false;
+    const r2ProbeOverrides: Array<{
+      document_id: string;
+      key_checked: string;
+      exists: boolean;
+      error?: { name: string; message: string; statusCode?: number | null };
+    }> = [];
+
+    if (renderedR2 && count > 0 && (rendered == null || rendered < count)) {
+      const lastIndex = Math.max(0, count - 1);
+      const key = renderedPageKeyForIndex(renderedR2, lastIndex);
+      if (key) {
+        try {
+          const res = await (r2.objectExistsInR2 ?? objectExistsInR2)({ key });
+          r2Probe = { attempted: true, key_checked: key, exists: res.exists, error: res.error };
+          r2ProbeOverrideReady = res.exists;
+          if (res.exists) r2ProbeOverrides.push({ document_id, key_checked: key, exists: true, error: res.error });
+        } catch (err) {
+          const e = err as any;
+          r2Probe = {
+            attempted: false,
+            skipped_reason: "r2_not_configured_or_unavailable",
+            error: {
+              name: typeof e?.name === "string" ? e.name : "R2ProbeError",
+              message: typeof e?.message === "string" ? e.message : String(err),
+            },
+          };
+        }
+      }
+    }
+
+    if ((!renderedR2 || !count || count <= 0 || rendered == null || rendered < count) && !r2ProbeOverrideReady) {
       // Best-effort self-heal: enqueue render_document_pages when applicable (deduped per document).
       const parseIntWithDefault = (input: unknown, fallback: number): number => {
         const v = Number.parseInt(String(input ?? ""), 10);
@@ -1526,6 +1583,7 @@ export async function registerDocumentRoutes(
         error: "rendered_pages_not_ready",
         message: "Rendered page images are not ready yet. Wait for rendering to complete, then retry.",
         document_id: document_id,
+        readiness_reason: "blocked_by_render_readiness",
         failure_reason: !renderedR2
           ? "rendered_pages_r2_missing"
           : !count || count <= 0
@@ -1538,6 +1596,7 @@ export async function registerDocumentRoutes(
           rendered_pages_count: count,
           rendered_pages_rendered: rendered,
         },
+        ...(r2Probe ? { r2_probe: r2Probe } : {}),
         render_job_enqueued: renderJob,
       });
     }
@@ -1552,7 +1611,14 @@ export async function registerDocumentRoutes(
       { dedupe: { by: "document" } }
     );
 
-    return reply.status(202).send({ ok: true, job_id: job.job_id });
+    return reply.status(202).send({
+      ok: true,
+      job_id: job.job_id,
+      readiness_reason: r2ProbeOverrideReady ? "r2_probe_overrode_metadata" : "metadata_ready",
+      r2_probe_summary: { attempted: r2Probe?.attempted ? 1 : 0, overrides: r2ProbeOverrides.length, max_attempted: 1 },
+      r2_probe_overrides: r2ProbeOverrides,
+      ...(r2Probe ? { r2_probe: r2Probe } : {}),
+    });
   });
 
   /**

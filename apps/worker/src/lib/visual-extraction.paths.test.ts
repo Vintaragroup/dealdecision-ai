@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 vi.mock("./r2", () => {
   return {
     getR2ObjectUrl: vi.fn(async ({ bucket, key }: any) => `https://r2.example/${bucket}/${encodeURIComponent(key)}`),
+		r2ObjectExists: vi.fn(async () => false),
   };
 });
 
@@ -90,5 +91,51 @@ describe("resolvePageImageUris path safety", () => {
     // And ensure we did NOT fall back to legacy /documents/<doc>/pages paths.
     expect(decodeURIComponent(uris[idx])).not.toContain("/documents/doc_r2/pages/");
   }
+  });
+
+  it("backfills rendered_pages_rendered when last R2 page exists", async () => {
+    const r2 = await import("./r2");
+    // Simulate that the last page object exists in R2.
+    (r2 as any).r2ObjectExists = vi.fn(async ({ key }: any) => {
+      return String(key).includes("page_0004.png");
+    });
+
+    const { resolvePageImageUris } = await import("./visual-extraction.js");
+
+    const pool = {
+      query: vi
+        .fn()
+        .mockResolvedValueOnce({
+          rows: [
+            {
+              page_count: 0,
+              extraction_metadata: {
+                rendered_pages_r2: { bucket: "b", prefix: "deals/d/documents/x/rendered_pages", format: "page_%04d.png" },
+                rendered_pages_count: 5,
+                rendered_pages_rendered: 0,
+              },
+            },
+          ],
+        })
+        .mockResolvedValueOnce({ rows: [] }),
+    } as any;
+
+    const fsImpl = {
+      stat: async () => {
+        throw new Error("ENOENT");
+      },
+      readdir: async () => [],
+    } as any;
+
+    const uris = await resolvePageImageUris(pool, "doc_r2_backfill", {
+      fsImpl,
+      env: process.env,
+      logger: { log() {}, warn() {}, error() {} } as any,
+    });
+
+    expect(uris.length).toBe(5);
+    expect((pool.query as any).mock.calls.length).toBeGreaterThanOrEqual(2);
+    // Second query is the backfill UPDATE.
+    expect(String((pool.query as any).mock.calls[1][0])).toContain("UPDATE documents SET extraction_metadata");
   });
 });

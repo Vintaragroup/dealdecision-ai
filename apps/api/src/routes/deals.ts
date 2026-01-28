@@ -15,6 +15,7 @@ import { getNodeEvidenceGateForDeal } from "../services/nodeEvidenceGateForDeal"
 import { normalizeDealName } from "../lib/normalize-deal-name";
 import { buildDocumentsDigest } from "../lib/documents-digest";
 import type { DocumentsDigestV1 } from "../lib/documents-digest";
+import { objectExistsInR2 } from "../lib/r2";
 import {
   purgeDealCascade,
   isPurgeDealNotFoundError,
@@ -2309,8 +2310,19 @@ function mapDeal(
 	return out as Deal;
 }
 
-export async function registerDealRoutes(app: FastifyInstance, poolOverride?: any) {
+export async function registerDealRoutes(
+  app: FastifyInstance,
+  poolOverride?: any,
+  deps?: {
+    enqueueJob?: typeof enqueueJob;
+    r2?: {
+      objectExistsInR2?: typeof objectExistsInR2;
+    };
+  }
+) {
   const pool = (poolOverride ?? getPool()) as DealRoutesPool;
+  const enqueue = deps?.enqueueJob ?? enqueueJob;
+  const r2 = deps?.r2 ?? { objectExistsInR2 };
   const debugRoutesEnabled = process.env.DEBUG_ROUTES === "1" || process.env.NODE_ENV !== "production";
 
   if (debugRoutesEnabled) {
@@ -8515,6 +8527,13 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       failure_reason: string;
       next_action: string;
       retryable: boolean;
+      r2_probe?: {
+        attempted: boolean;
+        skipped_reason?: string;
+        key_checked?: string;
+        exists?: boolean;
+        error?: { name: string; message: string; statusCode?: number | null };
+      };
       render_state: {
         rendered_pages_r2_present: boolean;
         rendered_pages_count: number;
@@ -8530,6 +8549,30 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     const toEnqueueRender = new Map<string, { count: number; rendered: number | null }>();
 
     let visualCandidates = 0;
+
+    const pad4 = (n: number) => String(Math.max(0, Math.trunc(n))).padStart(4, "0");
+    const renderedPageKeyForIndex = (renderedR2: any, pageIndex: number): string | null => {
+      const prefix = typeof renderedR2?.prefix === "string" ? renderedR2.prefix : null;
+      const fmt = typeof renderedR2?.format === "string" && renderedR2.format.trim().length > 0 ? renderedR2.format.trim() : "page_%04d.png";
+      if (!prefix) return null;
+
+      const cleanPrefix = prefix.replace(/^\/+/, "").replace(/\/+$/, "");
+      let fileName = fmt;
+      if (fileName.includes("%04d")) fileName = fileName.replace("%04d", pad4(pageIndex));
+      else if (fileName.includes("%d")) fileName = fileName.replace("%d", String(pageIndex));
+      else fileName = `page_${pad4(pageIndex)}.png`;
+
+      return `${cleanPrefix}/${fileName}`;
+    };
+
+    const maxR2Probes = 10;
+    let r2ProbesUsed = 0;
+    const r2ProbeOverrides: Array<{
+      document_id: string;
+      key_checked: string;
+      exists: boolean;
+      error?: { name: string; message: string; statusCode?: number | null };
+    }> = [];
 
     for (const d of docs ?? []) {
       const caps = getDocumentCapabilities({
@@ -8567,12 +8610,53 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         continue;
       }
       if (rendered == null || rendered < count) {
+        // Cheap R2 probe: if the last expected page exists, treat rendering as effectively complete.
+        // This prevents stale rendered_pages_rendered metadata from forcing persistent 409s.
+        let r2Probe:
+          | {
+              attempted: boolean;
+              skipped_reason?: string;
+              key_checked?: string;
+              exists?: boolean;
+              error?: { name: string; message: string; statusCode?: number | null };
+            }
+          | undefined;
+        if (r2ProbesUsed < maxR2Probes) {
+          const lastIndex = Math.max(0, count - 1);
+          const key = renderedPageKeyForIndex(renderedR2, lastIndex);
+          if (key) {
+            r2ProbesUsed += 1;
+            try {
+              const res = await (r2.objectExistsInR2 ?? objectExistsInR2)({ key });
+              r2Probe = { attempted: true, key_checked: key, exists: res.exists, error: res.error };
+              if (res.exists) {
+                readyDocIds.push(d.id);
+                r2ProbeOverrides.push({ document_id: d.id, key_checked: key, exists: true, error: res.error });
+                continue;
+              }
+            } catch (err) {
+              const e = err as any;
+              r2Probe = {
+                attempted: false,
+                skipped_reason: "r2_not_configured_or_unavailable",
+                error: {
+                  name: typeof e?.name === "string" ? e.name : "R2ProbeError",
+                  message: typeof e?.message === "string" ? e.message : String(err),
+                },
+              };
+            }
+          }
+        } else {
+          r2Probe = { attempted: false, skipped_reason: "probe_limit_reached" };
+        }
+
         blocked.push({
           document_id: d.id,
           failure_reason: "render_incomplete",
           next_action: "enqueue_render_document_pages",
           retryable: true,
           render_state: { rendered_pages_r2_present: true, rendered_pages_count: count, rendered_pages_rendered: rendered },
+          ...(r2Probe ? { r2_probe: r2Probe } : {}),
         });
         if (caps.supports_page_rendering) toEnqueueRender.set(d.id, { count, rendered });
         continue;
@@ -8595,7 +8679,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
             const pageStart = 0;
             const pageEnd = Math.max(1, count > 0 ? Math.min(count, renderChunkSize) : renderChunkSize);
 
-            const job = await enqueueJob(
+            const job = await enqueue(
               {
                 deal_id: dealId,
                 document_id: documentId,
@@ -8623,8 +8707,12 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       return reply.status(409).send({
         error: "rendered_pages_not_ready",
         message: "No documents have completed rendered page images yet. Run re-extract / wait for rendering, then retry.",
+        readiness_reason: "blocked_by_render_readiness",
+        next_action: "wait_or_enqueue_render_document_pages",
         render_state: { visual_documents_total: visualCandidates, ready_documents: 0, blocked_documents: blocked.length },
         blocked_documents: blocked,
+        r2_probe_summary: { attempted: r2ProbesUsed, overrides: r2ProbeOverrides.length, max_attempted: maxR2Probes },
+        r2_probe_overrides: r2ProbeOverrides,
         render_jobs_enqueued: renderEnqueueResults,
       });
     }
@@ -8632,7 +8720,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     // Single job; scope to only the ready docs to avoid ingest_not_complete guard failures.
     // force_resegment updates segment_key for existing structured synthetic assets (pptx/docx/xlsx)
     // before extracting visuals.
-    const job = await enqueueJob(
+    const job = await enqueue(
       {
         deal_id: dealId,
         type: "extract_visuals",
@@ -8648,8 +8736,11 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     return reply.status(202).send({
       job_id: job.job_id,
       status: job.status,
+      readiness_reason: r2ProbeOverrides.length > 0 ? "r2_probe_overrode_metadata" : "metadata_ready",
       ready_documents: readyDocIds,
       blocked_documents: blocked,
+      r2_probe_summary: { attempted: r2ProbesUsed, overrides: r2ProbeOverrides.length, max_attempted: maxR2Probes },
+      r2_probe_overrides: r2ProbeOverrides,
       render_jobs_enqueued: renderEnqueueResults,
     });
   });

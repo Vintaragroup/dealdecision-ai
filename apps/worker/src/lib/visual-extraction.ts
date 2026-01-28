@@ -4,7 +4,7 @@ import path from "path";
 import fs from "fs/promises";
 import { createHash } from "crypto";
 import { defaultVisualExtractionEnabled } from "./pipeline-policy";
-import { getR2ObjectUrl } from "./r2";
+import { getR2ObjectUrl, r2ObjectExists } from "./r2";
 import { makeJobId, sanitizeJobId } from "./job-id";
 
 export type VisionExtractorConfig = {
@@ -720,6 +720,18 @@ export async function resolvePageImageUris(
 			}
 			const formatRaw = typeof renderedR2.format === "string" ? renderedR2.format.trim() : "";
 			const format = formatRaw && !formatRaw.includes("/") ? formatRaw : "page_%04d.png";
+			const formatFilename = (pageIndex: number) => {
+				const idx = Number.isFinite(pageIndex) ? Math.max(0, Math.floor(pageIndex)) : 0;
+				const m = format.match(/%0(\d+)d/);
+				if (m) {
+					const width = Number.parseInt(m[1], 10);
+					const padded = String(idx).padStart(Number.isFinite(width) ? Math.max(1, width) : 4, "0");
+					return format.replace(m[0], padded);
+				}
+				if (format.includes("%d")) return format.replace("%d", String(idx));
+				return `page_${String(idx).padStart(4, "0")}.png`;
+			};
+
 			const metaRenderedCount =
 				typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count)
 					? metaObj.rendered_pages_count
@@ -738,7 +750,60 @@ export async function resolvePageImageUris(
 						reason: "render_incomplete",
 					})
 				);
-				return [];
+
+				// R2-aware backfill: if the last expected page exists, treat as ready and patch metadata.
+				if (prefix) {
+					const lastIndex = Math.max(0, metaRenderedCount - 1);
+					const lastKey = `${prefix}/${formatFilename(lastIndex)}`;
+					try {
+						const exists = await r2ObjectExists({ bucket, key: lastKey, env: options?.env });
+						if (exists) {
+							logger.log(
+								JSON.stringify({
+									event: "RENDERED_PAGES_R2_PROBE_OVERRIDE",
+									document_id: documentId,
+									key_checked: lastKey,
+									rendered_pages_count: metaRenderedCount,
+									rendered_pages_rendered_previous: metaRenderedSoFar,
+								})
+							);
+							try {
+								await pool.query(
+									"UPDATE documents SET extraction_metadata = COALESCE(extraction_metadata, '{}'::jsonb) || $2::jsonb WHERE id = $1",
+									[
+										sanitizeText(documentId),
+										JSON.stringify({
+											rendered_pages_rendered: metaRenderedCount,
+											rendered_pages_count: metaRenderedCount,
+										}),
+									]
+								);
+							} catch (err) {
+								logger.warn(
+									JSON.stringify({
+										event: "RENDERED_PAGES_R2_BACKFILL_FAILED",
+										document_id: documentId,
+										error: err instanceof Error ? err.message : String(err),
+									})
+								);
+							}
+						} else {
+							return [];
+						}
+					} catch (err) {
+						logger.warn(
+							JSON.stringify({
+								event: "RENDERED_PAGES_R2_PROBE_FAILED",
+								document_id: documentId,
+								key_checked: lastKey,
+								error: err instanceof Error ? err.message : String(err),
+							})
+						);
+						return [];
+					}
+				} else {
+					return [];
+				}
 			}
 			const effectiveCount = pageCount && pageCount > 0 ? pageCount : metaRenderedCount;
 			if (prefix && effectiveCount && effectiveCount > 0) {
@@ -753,17 +818,6 @@ export async function resolvePageImageUris(
 						);
 					}
 
-					const formatFilename = (pageIndex: number) => {
-						const idx = Number.isFinite(pageIndex) ? Math.max(0, Math.floor(pageIndex)) : 0;
-						const m = format.match(/%0(\d+)d/);
-						if (m) {
-							const width = Number.parseInt(m[1], 10);
-							const padded = String(idx).padStart(Number.isFinite(width) ? Math.max(1, width) : 4, "0");
-							return format.replace(m[0], padded);
-						}
-						if (format.includes("%d")) return format.replace("%d", String(idx));
-						return `page_${String(idx).padStart(4, "0")}.png`;
-					};
 					const exampleKey0 = `${prefix}/${formatFilename(0)}`;
 					const exampleKey10 = `${prefix}/${formatFilename(10)}`;
 					logger.log(

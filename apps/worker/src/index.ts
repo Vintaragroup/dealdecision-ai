@@ -344,6 +344,16 @@ console.log(
 		legacy_env_vision_worker_url_set: Boolean(process.env.VISION_WORKER_URL && !process.env.VISION_BASE_URL),
 	})
 );
+if (typeof visionCfg.visionWorkerUrl === "string" && visionCfg.visionWorkerUrl.includes("dealdecision-vision.onrender.com")) {
+	console.warn(
+		JSON.stringify({
+			event: "VISION_SERVICE_URL_LEGACY_ORIGIN",
+			service: "worker",
+			message: "Vision base URL appears to be the legacy origin; verify VISION_BASE_URL is set to the v2 service.",
+			vision_base_url: visionCfg.visionWorkerUrl,
+		})
+	);
+}
 if (process.env.VISION_WORKER_URL && !process.env.VISION_BASE_URL) {
 	console.warn(
 		JSON.stringify({
@@ -4737,6 +4747,43 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 				details: visionVerification,
 			})
 		);
+
+		// Persist a deterministic skip marker in document metadata before failing the deep scan job.
+		try {
+			let docIds: string[] = [];
+			if (explicitDocumentIds.length > 0) {
+				docIds = explicitDocumentIds;
+			} else {
+				const docs = await getDocumentsForDeal(dealId);
+				docIds = (docs as any[])
+					.map((d: any) => d?.document_id)
+					.filter((id: any) => typeof id === "string" && id.trim().length > 0);
+			}
+			const nowIso = new Date().toISOString();
+			await Promise.all(
+				docIds.slice(0, 100).map(async (docId) => {
+					try {
+						await mergeDocumentExtractionMetadata({
+							documentId: docId,
+							patch: {
+								deep_scan_visuals: {
+									status: "skipped",
+									reason: "vision_unavailable",
+									at: nowIso,
+									vision_base_url: config.visionWorkerUrl,
+									verification: visionVerification,
+								},
+							},
+						});
+					} catch {
+						// best-effort
+					}
+				})
+			);
+		} catch {
+			// best-effort
+		}
+
 		throw new Error(`VISION_UNAVAILABLE: ${visionVerification.reason ?? "unknown"}`);
 	}
 

@@ -167,3 +167,35 @@ export async function deleteFromR2(args: { key: string }): Promise<void> {
     })
   );
 }
+
+export async function objectExistsInR2(args: { key: string }): Promise<{
+  exists: boolean;
+  bucket?: string;
+  key: string;
+  error?: { name: string; message: string; statusCode?: number | null };
+}> {
+  const cfg = getR2Config();
+  const client = getR2Client();
+
+  try {
+    await client.send(
+      new HeadObjectCommand({
+        Bucket: cfg.bucket,
+        Key: args.key,
+      })
+    );
+    return { exists: true, bucket: cfg.bucket, key: args.key };
+  } catch (err) {
+    const e = err as any;
+    const name = typeof e?.name === "string" ? e.name : "HeadObjectError";
+    const message = typeof e?.message === "string" ? e.message : String(err);
+    const statusCode = typeof e?.$metadata?.httpStatusCode === "number" ? e.$metadata.httpStatusCode : null;
+
+    return {
+      exists: false,
+      bucket: cfg.bucket,
+      key: args.key,
+      error: { name, message, statusCode },
+    };
+  }
+}

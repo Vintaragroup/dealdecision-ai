@@ -1117,6 +1117,92 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const decisionMissing = missingChips.slice(0, 4);
 
+  // Decision tile (investor-facing): keep copy formal and avoid internal process terms.
+  // The Decision tile is intentionally scoped to a single score source (fundamentals) to avoid confusing users.
+  const decisionTileScore0_100: number | null = fundamentalsScore0_100;
+  const decisionTileLabel: 'PASS' | 'CONSIDER' | 'FUND' | '—' =
+    decisionTileScore0_100 != null ? scoreToWorkspaceDecision(decisionTileScore0_100) : '—';
+  const decisionTileAccent = decisionTileLabel === 'FUND'
+    ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
+    : decisionTileLabel === 'CONSIDER'
+      ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
+      : decisionTileLabel === 'PASS'
+        ? 'bg-red-500/10 border-red-500/40 text-red-200'
+        : (darkMode ? 'bg-white/5 border-white/10 text-gray-300' : 'bg-white/60 border-gray-200 text-gray-700');
+
+  const normalizeDecisionHighlight = (value: unknown): string | null => {
+    if (typeof value !== 'string') return null;
+    const s = value.trim();
+    if (!s) return null;
+    // Strip common label prefixes to read naturally in a sentence.
+    const stripped = s
+      .replace(/^Product:\s*/i, '')
+      .replace(/^ICP:\s*/i, '')
+      .replace(/^Market:\s*/i, '')
+      .replace(/^Raise\/terms:\s*/i, '')
+      .replace(/^Business model:\s*/i, '')
+      .replace(/^Traction:\s*/i, '')
+      .replace(/^Risks:\s*/i, '');
+    const out = stripped.trim();
+    if (!out) return null;
+    // Keep short, sentence-friendly fragments.
+    return out.length > 120 ? `${out.slice(0, 117).trim()}…` : out;
+  };
+
+  const formatOpenItemLabel = (value: unknown): string | null => {
+    if (typeof value !== 'string') return null;
+    const raw = value.trim();
+    if (!raw) return null;
+
+    const key = raw.toLowerCase().trim();
+    const mapped: Record<string, string> = {
+      'risk_assessment': 'risk assessment',
+      'risks': 'risk assessment',
+      'risk': 'risk assessment',
+      'roadmap': '12-month execution roadmap',
+      '12_month_roadmap': '12-month execution roadmap',
+      'twelve_month_roadmap': '12-month execution roadmap',
+      'operating_plan': '12-month operating plan',
+      'financials': 'financial performance and runway',
+      'runway': 'runway and burn profile',
+      'burn': 'burn and cash usage',
+      'unit_economics': 'unit economics',
+      'team': 'team depth and execution capacity',
+      'market': 'market sizing and ICP definition',
+      'product': 'product differentiation and roadmap',
+      'traction': 'traction and retention metrics',
+    };
+
+    const direct = mapped[key];
+    if (direct) return direct;
+
+    // Fallback: humanize snake_case and similar keys.
+    const human = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+    return human.length > 80 ? `${human.slice(0, 77).trim()}…` : human;
+  };
+
+  const decisionTileStrengths = [
+    normalizeDecisionHighlight(decisionHighlights[0]),
+    normalizeDecisionHighlight(decisionHighlights[1]),
+  ].filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
+
+  const decisionTileOpenItemsAll = missingChips.map(formatOpenItemLabel).filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
+  const decisionTileOpenItems = decisionTileOpenItemsAll.slice(0, 2);
+  const decisionTileOpenItemsCount = decisionTileOpenItemsAll.length;
+
+  const decisionTileRationale = (() => {
+    if (decisionTileLabel === '—' || decisionTileScore0_100 == null) {
+      return 'Recommendation pending. Score will appear once sufficient information is available.';
+    }
+
+    const strengthA = decisionTileStrengths[0] ?? 'a credible product narrative';
+    const strengthB = decisionTileStrengths[1] ?? 'an experienced team';
+    const openA = decisionTileOpenItems[0] ?? 'key diligence inputs';
+    const openB = decisionTileOpenItems[1] ?? 'a forward execution plan';
+
+    return `Recommendation: ${decisionTileLabel} (${decisionTileScore0_100}/100). The materials support ${strengthA} and ${strengthB}; however, conviction is constrained by ${openA} and ${openB}.`;
+  })();
+
   const toFiniteNumber = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
   const toRatioPct = (value: unknown): number | null => {
     const num = toFiniteNumber(value);
@@ -3119,25 +3205,22 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Decision</div>
-                  <div className={`mt-2 text-3xl sm:text-4xl font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{decisionLabel}</div>
+                  <div className={`mt-2 text-3xl sm:text-4xl font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{decisionTileLabel}</div>
                   <div className={`mt-2 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                    {displayScore != null ? `${displayScoreLabel}: ${Math.round(displayScore)}/100` : '—'}
+                    {decisionTileScore0_100 != null ? `Score: ${decisionTileScore0_100}/100` : '—'}
                   </div>
-                  {hasPhase1Signals && (phase1Score != null || phase1ConfidenceLabel) && (
-                    <div className={`mt-1 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      Phase 1: {phase1Score != null ? `${phase1Score}/100` : '—'}{phase1ConfidenceLabel ? ` · ${phase1ConfidenceLabel}` : ''}
-                    </div>
-                  )}
-                  {blockersCount != null && (
+
+                  {decisionTileOpenItemsCount > 0 ? (
                     <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      {blockersCount} blocker{blockersCount === 1 ? '' : 's'}
+                      Open items: {decisionTileOpenItemsCount}{decisionMissing.length > 0 ? ` · ${decisionMissing.map(formatOpenItemLabel).filter(Boolean).slice(0, 3).join(' • ')}` : ''}
                     </div>
-                  )}
-                  <p className={`mt-3 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    Decision uses Phase 1 signals when available; score is fundamentals-only (presentation diagnostics do not affect it).
+                  ) : null}
+
+                  <p className={`mt-3 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    {decisionTileRationale}
                   </p>
                 </div>
-                <span className={`px-3 py-1 rounded-full border text-xs font-medium ${decisionAccent}`}>
+                <span className={`px-3 py-1 rounded-full border text-xs font-medium ${decisionTileAccent}`}>
                   Deal snapshot
                 </span>
               </div>

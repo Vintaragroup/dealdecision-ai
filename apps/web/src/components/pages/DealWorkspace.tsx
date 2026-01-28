@@ -3476,7 +3476,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
             {/* Score Driver Tile */}
             <div
-              className={`col-span-1 md:col-span-2 md:col-start-1 md:col-end-3 backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}
+              className={`col-span-full backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}
             >
               <div className="flex items-start justify-between gap-3">
                 <div>

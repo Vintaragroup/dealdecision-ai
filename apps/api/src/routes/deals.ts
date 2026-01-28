@@ -1511,6 +1511,13 @@ async function getEvidenceByIds(pool: DealRoutesPool, ids: string[]): Promise<Ev
   const hasEvidenceTable = await hasTable(pool, "evidence");
   if (!hasEvidenceTable) return [];
 
+  const [hasId, hasEvidenceId] = await Promise.all([
+    hasColumn(pool, "evidence", "id"),
+    hasColumn(pool, "evidence", "evidence_id"),
+  ]);
+  const evidenceIdColumn = hasId ? "id" : hasEvidenceId ? "evidence_id" : null;
+  if (!evidenceIdColumn) return [];
+
   const [hasDocumentId, hasPage, hasPageNumber, hasValue, hasVisualAssetId] = await Promise.all([
     hasColumn(pool, "evidence", "document_id"),
     hasColumn(pool, "evidence", "page"),
@@ -1519,7 +1526,7 @@ async function getEvidenceByIds(pool: DealRoutesPool, ids: string[]): Promise<Ev
     hasColumn(pool, "evidence", "visual_asset_id"),
   ]);
 
-  const idType = await getColumnDataType(pool, "evidence", "id");
+  const idType = await getColumnDataType(pool, "evidence", evidenceIdColumn);
   const useUuidIds = idType === "uuid";
   const queryIds = useUuidIds ? ids.filter(isUuid) : ids;
   if (queryIds.length === 0) return [];
@@ -1531,7 +1538,7 @@ async function getEvidenceByIds(pool: DealRoutesPool, ids: string[]): Promise<Ev
   const visualAssetIdExpr = hasVisualAssetId ? "visual_asset_id" : "NULL::text AS visual_asset_id";
 
   const { rows } = await pool.query<EvidenceRow & { page_number?: number | null }>(
-    `SELECT id,
+    `SELECT ${evidenceIdColumn} AS id,
       ${documentIdExpr},
       ${visualAssetIdExpr},
       source,
@@ -1542,7 +1549,7 @@ async function getEvidenceByIds(pool: DealRoutesPool, ids: string[]): Promise<Ev
       created_at,
       ${pageExpr}
      FROM evidence
-    WHERE id = ANY($1::${anyCast}[])`,
+    WHERE ${evidenceIdColumn} = ANY($1::${anyCast}[])`,
     [queryIds]
   );
 
@@ -1600,6 +1607,13 @@ async function fetchEvidenceSamplesBySection(params: {
     const hasDealId = hasEvidenceTable ? await hasColumn(pool, "evidence", "deal_id") : false;
     if (!hasEvidenceTable || !hasDealId) return {};
 
+    const [hasId, hasEvidenceId] = await Promise.all([
+      hasColumn(pool, "evidence", "id"),
+      hasColumn(pool, "evidence", "evidence_id"),
+    ]);
+    const evidenceIdColumn = hasId ? "id" : hasEvidenceId ? "evidence_id" : null;
+    if (!evidenceIdColumn) return {};
+
     const hasDioId = await hasColumn(pool, "evidence", "dio_id");
     const hasSectionKey = await hasColumn(pool, "evidence", "section_key");
     const hasExcerpt = await hasColumn(pool, "evidence", "excerpt");
@@ -1629,15 +1643,15 @@ async function fetchEvidenceSamplesBySection(params: {
       const snippetExpr = hasExcerpt ? "excerpt" : hasText ? "text" : "NULL::text";
 
       const query = hasSectionKey
-        ? `SELECT id, document_id${key === "business_model" ? `, ${snippetExpr} AS snippet` : ""}
+        ? `SELECT ${evidenceIdColumn} AS id, document_id${key === "business_model" ? `, ${snippetExpr} AS snippet` : ""}
              FROM evidence
             WHERE ${where.join(" AND ")}
-            ORDER BY (document_id IS NULL), created_at DESC NULLS LAST, id DESC
+            ORDER BY (document_id IS NULL), created_at DESC NULLS LAST, ${evidenceIdColumn} DESC
             LIMIT ${effectiveLimit}`
-        : `SELECT id, source, kind, text, document_id
+        : `SELECT ${evidenceIdColumn} AS id, source, kind, text, document_id
            FROM evidence
           WHERE ${where.join(" AND ")}
-          ORDER BY (document_id IS NULL), created_at DESC NULLS LAST, id DESC
+          ORDER BY (document_id IS NULL), created_at DESC NULLS LAST, ${evidenceIdColumn} DESC
           LIMIT ${effectiveLimit}`;
 
       const { rows } = await pool.query<any>(query, paramsArr);
@@ -1749,23 +1763,40 @@ async function ensureEvidenceLinksForClaims(params: {
   const evidenceTableExists = await hasTable(params.pool, "evidence");
   if (!evidenceTableExists) return claims;
 
-  const [hasDealId, hasDocumentId, hasSource, hasKind, hasConfidence, hasPage, hasPageNumber, hasExcerpt, hasText, hasDioId, hasSectionKey] =
-    await Promise.all([
-      hasColumn(params.pool, "evidence", "deal_id"),
-      hasColumn(params.pool, "evidence", "document_id"),
-      hasColumn(params.pool, "evidence", "source"),
-      hasColumn(params.pool, "evidence", "kind"),
-      hasColumn(params.pool, "evidence", "confidence"),
-      hasColumn(params.pool, "evidence", "page"),
-      hasColumn(params.pool, "evidence", "page_number"),
-      hasColumn(params.pool, "evidence", "excerpt"),
-      hasColumn(params.pool, "evidence", "text"),
-      hasColumn(params.pool, "evidence", "dio_id"),
-      hasColumn(params.pool, "evidence", "section_key"),
-    ]);
+  const [
+    hasDealId,
+    hasDocumentId,
+    hasSource,
+    hasKind,
+    hasConfidence,
+    hasPage,
+    hasPageNumber,
+    hasExcerpt,
+    hasText,
+    hasDioId,
+    hasSectionKey,
+    hasId,
+    hasEvidenceId,
+  ] = await Promise.all([
+    hasColumn(params.pool, "evidence", "deal_id"),
+    hasColumn(params.pool, "evidence", "document_id"),
+    hasColumn(params.pool, "evidence", "source"),
+    hasColumn(params.pool, "evidence", "kind"),
+    hasColumn(params.pool, "evidence", "confidence"),
+    hasColumn(params.pool, "evidence", "page"),
+    hasColumn(params.pool, "evidence", "page_number"),
+    hasColumn(params.pool, "evidence", "excerpt"),
+    hasColumn(params.pool, "evidence", "text"),
+    hasColumn(params.pool, "evidence", "dio_id"),
+    hasColumn(params.pool, "evidence", "section_key"),
+    hasColumn(params.pool, "evidence", "id"),
+    hasColumn(params.pool, "evidence", "evidence_id"),
+  ]);
+
+  const evidenceIdColumn = hasId ? "id" : hasEvidenceId ? "evidence_id" : null;
 
   const textColumn = hasExcerpt ? "excerpt" : hasText ? "text" : null;
-  if (!hasDealId || !textColumn) return claims;
+  if (!hasDealId || !textColumn || !evidenceIdColumn) return claims;
 
   const existingCache = new Map<string, string>();
 
@@ -1783,7 +1814,7 @@ async function ensureEvidenceLinksForClaims(params: {
     }
 
     const { rows } = await params.pool.query<{ id: string }>(
-      `SELECT id
+      `SELECT ${evidenceIdColumn} AS id
          FROM evidence
         WHERE ${where.join(" AND ")}
         ORDER BY created_at DESC NULLS LAST
@@ -1863,7 +1894,7 @@ async function ensureEvidenceLinksForClaims(params: {
       const evidenceId = existingId ?? randomUUID();
 
       if (!existingId) {
-        const cols: string[] = ["id", "deal_id", textColumn];
+        const cols: string[] = [evidenceIdColumn, "deal_id", textColumn];
         const values: Array<string | number | null> = [evidenceId, params.dealId, snippet];
 
         if (hasDocumentId) {
@@ -1897,7 +1928,7 @@ async function ensureEvidenceLinksForClaims(params: {
 
         const placeholders = cols.map((_, idx) => `$${idx + 1}`);
         await params.pool.query(
-          `INSERT INTO evidence (${cols.join(", ")}) VALUES (${placeholders.join(", ")}) ON CONFLICT (id) DO NOTHING`,
+          `INSERT INTO evidence (${cols.join(", ")}) VALUES (${placeholders.join(", ")}) ON CONFLICT (${evidenceIdColumn}) DO NOTHING`,
           values
         );
         stats.insertedNew += 1;
@@ -8112,7 +8143,22 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     let sectionEvidenceSamples: Partial<Record<ScoreBreakdownSectionKey, string[]>> | undefined;
 
     if (dioRows[0]) {
+      let evidencePkColumn: string | null = null;
       try {
+        try {
+          const hasEvidenceTable = await hasTable(pool, "evidence");
+          if (hasEvidenceTable) {
+            const [hasId, hasEvidenceId] = await Promise.all([
+              hasColumn(pool, "evidence", "id"),
+              hasColumn(pool, "evidence", "evidence_id"),
+            ]);
+            evidencePkColumn = hasId ? "id" : hasEvidenceId ? "evidence_id" : null;
+          }
+        } catch {
+          // best-effort only; do not block deal detail response
+          evidencePkColumn = null;
+        }
+
         const execV2 = (dioRows[0] as any).executive_summary_v2;
         let claims = Array.isArray((dioRows[0] as any).phase1_claims) ? (dioRows[0] as any).phase1_claims : [];
 
@@ -8279,6 +8325,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       } catch (err) {
         request.log?.info?.({
           deal_id: dealId,
+          evidence_pk_column: evidencePkColumn,
           error: err instanceof Error ? err.message : String(err),
         }, "deal.score_evidence.fail_open");
       }

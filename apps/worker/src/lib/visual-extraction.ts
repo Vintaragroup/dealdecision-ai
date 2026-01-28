@@ -1053,6 +1053,66 @@ export async function callVisionWorker(
 		  }
 		| undefined = fetch
 ): Promise<VisionExtractResponse | null> {
+	const attempted = await callVisionWorkerAttempt(config, request, fetchImplOrOptions);
+	return attempted.response;
+}
+
+type VisionAttemptErrorKind = "http" | "timeout" | "abort" | "network" | "unknown";
+
+export type VisionAttemptMeta = {
+	attempt: number;
+	timeout_ms: number;
+	elapsed_ms: number;
+	status_code: number | null;
+	error: string | null;
+	error_kind: VisionAttemptErrorKind;
+};
+
+type VisionAttemptResult = {
+	response: VisionExtractResponse | null;
+	meta: VisionAttemptMeta;
+};
+
+function classifyVisionErrorKind(args: { err: unknown; elapsedMs: number; timeoutMs: number }): VisionAttemptErrorKind {
+	const e = args.err as any;
+	const name = typeof e?.name === "string" ? e.name : "";
+	const msg = typeof e?.message === "string" ? e.message : String(args.err);
+	if (name === "AbortError") return "abort";
+	// Node's undici + AbortController often yields this message.
+	if (msg.toLowerCase().includes("aborted") || msg.toLowerCase().includes("abort")) return "abort";
+	if (args.elapsedMs >= Math.max(0, args.timeoutMs - 5)) return "timeout";
+	if (msg.toLowerCase().includes("fetch") || msg.toLowerCase().includes("network") || msg.toLowerCase().includes("socket")) return "network";
+	return "unknown";
+}
+
+function sleepMs(ms: number): Promise<void> {
+	const dur = Number.isFinite(ms) ? Math.max(0, Math.floor(ms)) : 0;
+	return new Promise((resolve) => setTimeout(resolve, dur));
+}
+
+function withJitter(baseMs: number, jitterPct = 0.2): number {
+	const base = Number.isFinite(baseMs) ? Math.max(0, Math.floor(baseMs)) : 0;
+	if (base <= 0) return 0;
+	const pct = Number.isFinite(jitterPct) ? Math.max(0, Math.min(1, jitterPct)) : 0.2;
+	const span = base * pct;
+	return Math.max(0, Math.floor(base + (Math.random() * 2 - 1) * span));
+}
+
+async function callVisionWorkerAttempt(
+	config: VisionExtractorConfig,
+	request: VisionExtractRequest,
+	fetchImplOrOptions:
+		| typeof fetch
+		| {
+				fetchImpl?: typeof fetch;
+				timeoutMs?: number;
+				logger?: LogLike | null;
+				logMeta?: Record<string, unknown>;
+				attempt?: number;
+				runtime?: VisionJobRuntime;
+		  }
+		| undefined
+): Promise<VisionAttemptResult> {
 	const options =
 		typeof fetchImplOrOptions === "function"
 			? { fetchImpl: fetchImplOrOptions, timeoutMs: undefined }
@@ -1069,8 +1129,19 @@ export async function callVisionWorker(
 
 	if (runtime) {
 		const ok = await runtime.ensureReady({ fetchImpl, timeoutMs, logger, logMeta });
-		if (!ok) return null;
-		if (runtime.disabled) return null;
+		if (!ok || runtime.disabled) {
+			return {
+				response: null,
+				meta: {
+					attempt,
+					timeout_ms: timeoutMs,
+					elapsed_ms: 0,
+					status_code: null,
+					error: "VISION_DISABLED",
+					error_kind: "unknown",
+				},
+			};
+		}
 	}
 
 	const controller = new AbortController();
@@ -1106,6 +1177,8 @@ export async function callVisionWorker(
 			runtime.disable("VISION_DISABLED_NO_SERVER", { where: "extract-visuals", status_code: res.status });
 		}
 
+		const elapsedMs = Date.now() - startedAt;
+		const error = res.ok ? null : `HTTP_${res.status}`;
 		if (logger) {
 			logger.log(
 				JSON.stringify({
@@ -1117,8 +1190,8 @@ export async function callVisionWorker(
 					url,
 					attempt,
 					status_code: res.status,
-					elapsed_ms: Date.now() - startedAt,
-					error: res.ok ? null : `HTTP_${res.status}`,
+					elapsed_ms: elapsedMs,
+					error,
 					extractor_version: request.extractor_version,
 					...logMeta,
 				})
@@ -1126,14 +1199,47 @@ export async function callVisionWorker(
 		}
 
 		if (!res.ok) {
-			return null;
+			return {
+				response: null,
+				meta: {
+					attempt,
+					timeout_ms: timeoutMs,
+					elapsed_ms: elapsedMs,
+					status_code: res.status,
+					error,
+					error_kind: "http",
+				},
+			};
 		}
 
 		const json = (await res.json()) as VisionExtractResponse;
-		if (!json || typeof json !== "object") return null;
-		if (!Array.isArray((json as any).assets)) return null;
-		return json;
+		if (!json || typeof json !== "object" || !Array.isArray((json as any).assets)) {
+			return {
+				response: null,
+				meta: {
+					attempt,
+					timeout_ms: timeoutMs,
+					elapsed_ms: elapsedMs,
+					status_code: res.status,
+					error: "INVALID_RESPONSE",
+					error_kind: "unknown",
+				},
+			};
+		}
+		return {
+			response: json,
+			meta: {
+				attempt,
+				timeout_ms: timeoutMs,
+				elapsed_ms: elapsedMs,
+				status_code: res.status,
+				error: null,
+				error_kind: "unknown",
+			},
+		};
 	} catch (err) {
+		const elapsedMs = Date.now() - startedAt;
+		const errorKind = classifyVisionErrorKind({ err, elapsedMs, timeoutMs });
 		if (logger) {
 			logger.warn(
 				JSON.stringify({
@@ -1145,17 +1251,166 @@ export async function callVisionWorker(
 					url,
 					attempt,
 					status_code: null,
-					elapsed_ms: Date.now() - startedAt,
+					elapsed_ms: elapsedMs,
 					error: err instanceof Error ? err.message : String(err),
 					extractor_version: request.extractor_version,
 					...logMeta,
 				})
 			);
 		}
-		return null;
+		return {
+			response: null,
+			meta: {
+				attempt,
+				timeout_ms: timeoutMs,
+				elapsed_ms: elapsedMs,
+				status_code: null,
+				error: err instanceof Error ? err.message : String(err),
+				error_kind: errorKind,
+			},
+		};
 	} finally {
 		clearTimeout(timer);
 	}
+}
+
+export type VisionRetryOptions = {
+	logger?: LogLike | null;
+	logMeta?: Record<string, unknown>;
+	runtime?: VisionJobRuntime;
+	fetchImpl?: typeof fetch;
+	timeoutsMs: number[];
+	backoffMs?: number[];
+	jitterPct?: number;
+};
+
+export async function callVisionWorkerWithRetries(
+	config: VisionExtractorConfig,
+	request: VisionExtractRequest,
+	options: VisionRetryOptions
+): Promise<{ response: VisionExtractResponse | null; attempts: VisionAttemptMeta[] } > {
+	const logger = options.logger === null ? undefined : (options.logger ?? console);
+	const logMeta: Record<string, unknown> = options.logMeta && typeof options.logMeta === "object" ? options.logMeta : {};
+	const timeouts = Array.isArray(options.timeoutsMs) ? options.timeoutsMs.filter((n) => typeof n === "number" && Number.isFinite(n) && n > 0) : [];
+	const backoff = Array.isArray(options.backoffMs) ? options.backoffMs : [500, 1500];
+	const jitterPct = typeof options.jitterPct === "number" && Number.isFinite(options.jitterPct) ? options.jitterPct : 0.2;
+	const attempts: VisionAttemptMeta[] = [];
+
+	const isRetryable = (meta: VisionAttemptMeta): { retryable: boolean; reason: string } => {
+		if (meta.error_kind === "timeout" || meta.error_kind === "abort") return { retryable: true, reason: meta.error_kind };
+		if (meta.error_kind === "network") return { retryable: true, reason: "network" };
+		if (meta.error_kind === "http") {
+			const sc = meta.status_code ?? 0;
+			if (sc === 429) return { retryable: true, reason: "http_429" };
+			if (sc >= 500 && sc <= 599) return { retryable: true, reason: "http_5xx" };
+		}
+		return { retryable: false, reason: meta.error ?? "non_retryable" };
+	};
+
+	for (let idx = 0; idx < timeouts.length; idx += 1) {
+		const attempt = idx + 1;
+		const timeoutMs = timeouts[idx];
+		const attempted = await callVisionWorkerAttempt(config, request, {
+			fetchImpl: options.fetchImpl,
+			timeoutMs,
+			logger,
+			logMeta,
+			attempt,
+			runtime: options.runtime,
+		});
+		attempts.push(attempted.meta);
+		if (attempted.response) return { response: attempted.response, attempts };
+
+		const retry = isRetryable(attempted.meta);
+		const hasNext = idx < timeouts.length - 1;
+		if (!hasNext || !retry.retryable) break;
+
+		const nextTimeoutMs = timeouts[idx + 1];
+		if (logger) {
+			logger.log(
+				JSON.stringify({
+					event: "VISION_REQUEST_RETRY",
+					deal_id: (logMeta as any)?.deal_id ?? null,
+					document_id: request.document_id,
+					page_index: request.page_index,
+					attempt,
+					next_timeout_ms: nextTimeoutMs,
+					reason: retry.reason,
+					...logMeta,
+				})
+			);
+		}
+
+		const delayBase = typeof backoff[idx] === "number" && Number.isFinite(backoff[idx]) ? backoff[idx] : backoff[backoff.length - 1] ?? 500;
+		await sleepMs(withJitter(delayBase, jitterPct));
+	}
+
+	return { response: null, attempts };
+}
+
+export type DeepScanPageFailureV1 = {
+	page_index: number;
+	reason: string;
+	attempts_used: number;
+	elapsed_ms?: number;
+	status_code?: number | null;
+};
+
+export type DeepScanPageSummaryV1 = {
+	version: 1;
+	attempted: number;
+	succeeded: number;
+	failed: number;
+	failures: DeepScanPageFailureV1[];
+	completed_at: string;
+};
+
+export type DeepScanOutcomeStatus = "succeeded" | "succeeded_with_warnings" | "failed";
+
+export function computeDeepScanOutcomeStatus(params: {
+	attempted: number;
+	succeeded: number;
+	fatal?: boolean;
+}): DeepScanOutcomeStatus {
+	if (params.fatal) return "failed";
+	if (params.attempted > 0 && params.succeeded === 0) return "failed";
+	if (params.attempted === 0) return "failed";
+	return params.succeeded < params.attempted ? "succeeded_with_warnings" : "succeeded";
+}
+
+export function buildDeepScanPageSummaryV1(params: {
+	attempted: number;
+	succeeded: number;
+	failures: DeepScanPageFailureV1[];
+	completedAt?: string;
+}): DeepScanPageSummaryV1 {
+	const attempted = Number.isFinite(params.attempted) ? Math.max(0, Math.floor(params.attempted)) : 0;
+	const succeeded = Number.isFinite(params.succeeded) ? Math.max(0, Math.floor(params.succeeded)) : 0;
+	const failed = Math.max(0, attempted - succeeded);
+	return {
+		version: 1,
+		attempted,
+		succeeded,
+		failed,
+		failures: Array.isArray(params.failures) ? params.failures : [],
+		completed_at: params.completedAt ?? new Date().toISOString(),
+	};
+}
+
+export function buildDeepScanExtractionMetadataPatch(params: {
+	existingVisualExtraction: Record<string, unknown> | null | undefined;
+	summary: DeepScanPageSummaryV1;
+	status: DeepScanOutcomeStatus;
+}): Record<string, unknown> {
+	const existing = params.existingVisualExtraction && typeof params.existingVisualExtraction === "object" ? params.existingVisualExtraction : {};
+	return {
+		visual_extraction: {
+			...existing,
+			deep_scan_status: params.status,
+			deep_scan_page_summary_v1: params.summary,
+			deep_scan_completed_at: params.summary.completed_at,
+		},
+	};
 }
 
 type ExcelXlsxExtractRequest = {

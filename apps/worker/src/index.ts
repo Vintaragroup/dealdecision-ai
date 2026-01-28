@@ -45,9 +45,13 @@ import {
 import { deriveEvidenceDrafts } from "./lib/evidence";
 import {
 	callVisionWorker,
+	callVisionWorkerWithRetries,
 	createVisionJobRuntime,
 	enqueueExtractVisualsIfPossible,
 	getVisionExtractorConfig,
+	buildDeepScanExtractionMetadataPatch,
+	buildDeepScanPageSummaryV1,
+	computeDeepScanOutcomeStatus,
 	hasTable,
 	persistVisionResponse,
 	resolvePageImageUris,
@@ -3110,6 +3114,10 @@ registerWorker("extract_visuals", async (job: Job) => {
 	let docsPdfTextRegionAssetsUsed = 0;
 	let docsExcelSkippedVision = 0;
 	let docsExcelPyAssetsUsed = 0;
+	let pagesVisionAttempted = 0;
+	let pagesVisionSucceeded = 0;
+	let pagesVisionFailed = 0;
+	let docsWithVisionFailures = 0;
 	let imageUrisBackfilled = 0;
 	const docsMissingOriginalBytesIds: string[] = [];
 	const docsMissingPageImagesIds: string[] = [];
@@ -3986,6 +3994,19 @@ registerWorker("extract_visuals", async (job: Job) => {
 			},
 		});
 
+		const derivedDealId =
+			typeof docMeta?.deal_id === "string" && docMeta.deal_id.trim().length > 0
+				? docMeta.deal_id.trim()
+				: (dealId ?? null);
+		const existingVisualExtraction = (() => {
+			const em = docMeta?.extraction_metadata;
+			const ve = em && typeof em === "object" ? (em as any).visual_extraction : null;
+			return ve && typeof ve === "object" ? ve : {};
+		})();
+		let docVisionAttempted = 0;
+		let docVisionSucceeded = 0;
+		const docVisionFailures: Array<{ page_index: number; reason: string; attempts: any[] }> = [];
+
 		let pagesCompletedInJob = 0;
 		let lastReportedCompleted = 0;
 		let lastSkipReportMs = 0;
@@ -4149,7 +4170,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 			const visionLogMeta = {
 				stage: "extract_visual_assets",
 				job_id: job.id ? String(job.id) : null,
-				deal_id: dealId ?? null,
+				deal_id: derivedDealId,
 				vision_base_url: config.visionWorkerUrl,
 				image_url_prefix_kind: signedUrlPrefixKind,
 				image_url_prefix: signedUrlPrefix,
@@ -4193,7 +4214,10 @@ registerWorker("extract_visuals", async (job: Job) => {
 					);
 				}
 			}
-			let response = await callVisionWorker(
+			docVisionAttempted += 1;
+			pagesVisionAttempted += 1;
+			const timeoutsMs = docKind === "powerpoint" ? [20_000, 60_000, 90_000] : [20_000, 60_000];
+			const { response, attempts } = await callVisionWorkerWithRetries(
 				config,
 				{
 					document_id: docId,
@@ -4202,9 +4226,10 @@ registerWorker("extract_visuals", async (job: Job) => {
 					image_b64: image_b64 ?? undefined,
 					extractor_version: extractorVersion,
 				},
-				{ logger: console, attempt: 1, logMeta: visionLogMeta, runtime: visionRuntime }
+				{ logger: console, logMeta: visionLogMeta, runtime: visionRuntime, timeoutsMs, backoffMs: [500, 1500] }
 			);
-			if (!response) {
+			let resolvedResponse = response;
+			if (!resolvedResponse) {
 				console.warn(
 					JSON.stringify({
 						event: "VISION_CALL_FAILED",
@@ -4212,13 +4237,25 @@ registerWorker("extract_visuals", async (job: Job) => {
 						page_index: i,
 						vision_service_url: config.visionWorkerUrl,
 						extractor_version: extractorVersion,
+						attempts,
 					})
 				);
 			}
 
-			if (!response || !Array.isArray(response.assets) || response.assets.length === 0) {
+			if (!resolvedResponse || !Array.isArray(resolvedResponse.assets) || resolvedResponse.assets.length === 0) {
+				const last = Array.isArray(attempts) && attempts.length > 0 ? attempts[attempts.length - 1] : null;
+				const reason =
+					(typeof last?.error === "string" && last.error.trim().length > 0)
+						? last.error
+						: (typeof last?.status_code === "number" && Number.isFinite(last.status_code))
+							? `HTTP_${last.status_code}`
+							: (typeof last?.error_kind === "string" && last.error_kind)
+								? String(last.error_kind)
+								: "VISION_NO_ASSETS";
+				docVisionFailures.push({ page_index: i, reason, attempts });
+				pagesVisionFailed += 1;
 				console.warn(`[extract_visuals] Vision worker returned no assets for doc=${docId} page=${i}, persisting fallback`);
-				response = {
+				resolvedResponse = {
 					document_id: docId,
 					page_index: i,
 					extractor_version: extractorVersion,
@@ -4242,10 +4279,13 @@ registerWorker("extract_visuals", async (job: Job) => {
 						},
 					],
 				};
+			} else {
+				docVisionSucceeded += 1;
+				pagesVisionSucceeded += 1;
 			}
 
 			try {
-				const { persisted: pCount, withImageUri } = await persistVisionResponse(pool, response, { pageImageUri: image_uri });
+				const { persisted: pCount, withImageUri } = await persistVisionResponse(pool, resolvedResponse, { pageImageUri: image_uri });
 				persisted += pCount;
 				docPersisted += pCount;
 				docPersistedWithImageUri += withImageUri;
@@ -4295,6 +4335,52 @@ registerWorker("extract_visuals", async (job: Job) => {
 			await yieldToEventLoop();
 		}
 
+		const docVisionFailed = Math.max(0, docVisionAttempted - docVisionSucceeded);
+		const docSummary = {
+			pages_attempted: docVisionAttempted,
+			pages_succeeded: docVisionSucceeded,
+			pages_failed: docVisionFailed,
+			failures: docVisionFailures.slice(0, 50),
+			page_range: { start: pageStart, end: pageEndExclusive },
+			extractor_version: extractorVersion,
+			updated_at: new Date().toISOString(),
+		};
+		if (docVisionFailed > 0) docsWithVisionFailures += 1;
+		const docStatus =
+			docVisionAttempted === 0
+				? "skipped"
+				: docVisionSucceeded === 0
+					? "failed"
+					: docVisionFailed > 0
+						? "succeeded_with_warnings"
+						: "succeeded";
+		try {
+			await mergeDocumentExtractionMetadata({
+				documentId: docId,
+				patch: {
+					visual_extraction: {
+						...existingVisualExtraction,
+						status: (existingVisualExtraction as any)?.status ?? docStatus,
+						at: new Date().toISOString(),
+						extractor_version: extractorVersion,
+						page_summary_v1: docSummary,
+					},
+				},
+			});
+		} catch {
+			// best-effort
+		}
+		console.log(
+			JSON.stringify({
+				event: "EXTRACT_VISUALS_SUMMARY",
+				stage: "extract_visual_assets",
+				job_id: job.id ? String(job.id) : null,
+				deal_id: derivedDealId,
+				document_id: docId,
+				...docSummary,
+			})
+		);
+
 		console.log(
 			JSON.stringify({
 				event: "VISUAL_IMAGE_URI_DIAG",
@@ -4314,6 +4400,10 @@ registerWorker("extract_visuals", async (job: Job) => {
 		docs_ready: targetDocumentIds.length,
 		docs_processed: docsProcessed,
 		pages_skipped_existing: pagesSkippedExisting,
+		pages_vision_attempted: pagesVisionAttempted,
+		pages_vision_succeeded: pagesVisionSucceeded,
+		pages_vision_failed: pagesVisionFailed,
+		docs_with_vision_failures: docsWithVisionFailures,
 		docs_blocked_pending: docsBlockedPending,
 		docs_missing_original_bytes: docsMissingOriginalBytes,
 		docs_missing_page_images: docsMissingPageImages,
@@ -4379,12 +4469,20 @@ registerWorker("extract_visuals", async (job: Job) => {
 		return { ok: true, persisted, docs_processed: docsProcessed, docs_skipped: docsSkipped, job_counters: jobCounters, status: "succeeded_with_warnings" };
 	}
 
-	const hadWarnings = docsBlocked > 0 || docsMissingPageImages > 0 || docsMissingOriginalBytes > 0;
-	const finalStatus = hadWarnings ? "succeeded_with_warnings" : "succeeded";
+	const visionFullyDown = pagesVisionAttempted > 0 && pagesVisionSucceeded === 0;
+	const hadWarnings =
+		docsBlocked > 0 ||
+		docsMissingPageImages > 0 ||
+		docsMissingOriginalBytes > 0 ||
+		pagesVisionFailed > 0 ||
+		docsWithVisionFailures > 0;
+	const finalStatus = visionFullyDown ? "failed" : hadWarnings ? "succeeded_with_warnings" : "succeeded";
 	const finalMessage =
-		hadWarnings
-			? `Visual extraction succeeded with warnings (blocked=${docsBlocked}, processed=${docsProcessed}, skipped=${docsSkipped}, pages_skipped_existing=${pagesSkippedExisting}, missing_page_images=${docsMissingPageImages}, missing_original_bytes=${docsMissingOriginalBytes}) counters=${JSON.stringify(jobCounters)}`
-			: `Visual extraction complete (persisted=${persisted}, docs_processed=${docsProcessed}, docs_skipped=${docsSkipped}, pages_skipped_existing=${pagesSkippedExisting}) counters=${JSON.stringify(jobCounters)}`;
+		visionFullyDown
+			? `Visual extraction failed (vision attempted but returned no successful pages). counters=${JSON.stringify(jobCounters)}`
+			: hadWarnings
+				? `Visual extraction succeeded with warnings (blocked=${docsBlocked}, processed=${docsProcessed}, skipped=${docsSkipped}, pages_skipped_existing=${pagesSkippedExisting}, missing_page_images=${docsMissingPageImages}, missing_original_bytes=${docsMissingOriginalBytes}, pages_vision_failed=${pagesVisionFailed}) counters=${JSON.stringify(jobCounters)}`
+				: `Visual extraction complete (persisted=${persisted}, docs_processed=${docsProcessed}, docs_skipped=${docsSkipped}, pages_skipped_existing=${pagesSkippedExisting}) counters=${JSON.stringify(jobCounters)}`;
 
 	if (!dealIdForAudit) {
 		try {
@@ -4695,7 +4793,7 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 		page_start?: number;
 		page_end?: number;
 	};
-	const dealId = typeof data.deal_id === "string" ? data.deal_id : undefined;
+	let dealId = typeof data.deal_id === "string" ? data.deal_id : undefined;
 	const explicitDocumentIds = Array.isArray(data.document_ids)
 		? data.document_ids.filter((id) => typeof id === "string" && id.trim().length > 0)
 		: [];
@@ -4708,6 +4806,19 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 	const requestedPageEnd =
 		typeof pageEndRaw === "number" && Number.isFinite(pageEndRaw) ? Math.max(0, Math.floor(pageEndRaw)) : undefined;
 
+	const pool = getPool();
+	if (!dealId && explicitDocumentIds.length > 0) {
+		try {
+			const { rows } = await pool.query<{ deal_id: string | null }>(
+				"SELECT deal_id FROM documents WHERE id = $1 LIMIT 1",
+				[sanitizeText(explicitDocumentIds[0])]
+			);
+			const derived = rows?.[0]?.deal_id;
+			dealId = typeof derived === "string" && derived.trim().length > 0 ? derived.trim() : undefined;
+		} catch {
+			dealId = undefined;
+		}
+	}
 	if (!dealId) {
 		await updateJob(job, "failed", "Missing deal_id", 100);
 		return { ok: false, reason: "missing_deal_id" };
@@ -4787,7 +4898,6 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 		throw new Error(`VISION_UNAVAILABLE: ${visionVerification.reason ?? "unknown"}`);
 	}
 
-	const pool = getPool();
 	const tablesOk = (await hasTable(pool, "visual_assets")) && (await hasTable(pool, "visual_extractions"));
 	if (!tablesOk) {
 		await updateJob(job, "failed", "Visual tables missing (run DB migrations)", 100);
@@ -4860,9 +4970,26 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 	let pagesUpdated = 0;
 	let pagesErrored = 0;
 	let persistedAssets = 0;
+	let pagesSucceeded = 0;
+	let pagesFailed = 0;
+	const perDocSummaries: Array<{ document_id: string; attempted: number; succeeded: number; failed: number; failures: any[] }> = [];
 
 	for (let docIndex = 0; docIndex < targetDocumentIds.length; docIndex += 1) {
 		const docId = targetDocumentIds[docIndex];
+		let derivedDealId: string | null = dealId;
+		let existingVisualExtraction: Record<string, unknown> | null = null;
+		try {
+			const { rows } = await pool.query<{ deal_id: string | null; extraction_metadata: any }>(
+				"SELECT deal_id, extraction_metadata FROM documents WHERE id = $1 LIMIT 1",
+				[sanitizeText(docId)]
+			);
+			const row = rows?.[0];
+			if (typeof row?.deal_id === "string" && row.deal_id.trim().length > 0) derivedDealId = row.deal_id.trim();
+			const ve = row?.extraction_metadata && typeof row.extraction_metadata === "object" ? (row.extraction_metadata as any).visual_extraction : null;
+			existingVisualExtraction = ve && typeof ve === "object" ? ve : null;
+		} catch {
+			// best-effort
+		}
 		let uris: string[] = [];
 		try {
 			uris = await resolvePageImageUris(pool, docId, { env: process.env, logger: console });
@@ -4871,6 +4998,20 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 		}
 
 		if (uris.length === 0) {
+			// Persist fatal marker for UI/debugging.
+			try {
+				const summary = buildDeepScanPageSummaryV1({ attempted: 0, succeeded: 0, failures: [], completedAt: new Date().toISOString() });
+				await mergeDocumentExtractionMetadata({
+					documentId: docId,
+					patch: buildDeepScanExtractionMetadataPatch({
+						existingVisualExtraction,
+						summary,
+						status: "failed",
+					}),
+				});
+			} catch {
+				// best-effort
+			}
 			docsProcessed += 1;
 			continue;
 		}
@@ -4939,6 +5080,9 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 			},
 		});
 
+		let docAttempted = 0;
+		let docSucceeded = 0;
+		const docFailures: any[] = [];
 		for (let pageIndex = pageStart; pageIndex < pageEndExclusive; pageIndex += 1) {
 			pagesConsidered += 1;
 			const image_uri = uris[pageIndex];
@@ -4951,6 +5095,7 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 			}
 
 			pagesAttempted += 1;
+			docAttempted += 1;
 			const pct = Math.min(
 				98,
 				Math.round(((pagesAttempted / Math.max(1, targetDocumentIds.length * config.maxPages)) * 95) + 3)
@@ -4998,7 +5143,16 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 					);
 				}
 			}
-			let response = await callVisionWorker(
+			const logMeta = {
+				stage: "deep_scan_visuals",
+				job_id: job.id ? String(job.id) : null,
+				deal_id: derivedDealId,
+				document_id: docId,
+				page_index: pageIndex,
+				vision_base_url: config.visionWorkerUrl,
+			};
+			const timeoutsMs = [20_000, 60_000, 90_000];
+			const { response, attempts } = await callVisionWorkerWithRetries(
 				config,
 				{
 					document_id: docId,
@@ -5010,20 +5164,31 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 				{
 					logger: console,
 					runtime: visionRuntime,
-					attempt: 1,
-					logMeta: {
-						stage: "deep_scan_visuals",
-						job_id: job.id ? String(job.id) : null,
-						deal_id: dealId,
-						document_id: docId,
-						page_index: pageIndex,
-						vision_base_url: config.visionWorkerUrl,
-					},
+					logMeta,
+					timeoutsMs,
+					backoffMs: [500, 1500],
 				}
 			);
 
 			if (!response || !Array.isArray((response as any).assets) || response.assets.length === 0) {
 				pagesErrored += 1;
+				pagesFailed += 1;
+				const last = Array.isArray(attempts) && attempts.length > 0 ? attempts[attempts.length - 1] : null;
+				const reason =
+					(typeof last?.error === "string" && last.error.trim().length > 0)
+						? last.error
+						: (typeof last?.status_code === "number" && Number.isFinite(last.status_code))
+							? `HTTP_${last.status_code}`
+							: (typeof last?.error_kind === "string" && last.error_kind)
+								? String(last.error_kind)
+								: "VISION_NO_ASSETS";
+				docFailures.push({
+					page_index: pageIndex,
+					reason,
+					attempts_used: Array.isArray(attempts) ? attempts.length : 1,
+					elapsed_ms: typeof last?.elapsed_ms === "number" ? last.elapsed_ms : undefined,
+					status_code: typeof last?.status_code === "number" ? last.status_code : null,
+				});
 				continue;
 			}
 
@@ -5034,6 +5199,8 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 				const { persisted } = await persistVisionResponse(pool, response, { pageImageUri: image_uri });
 				persistedAssets += persisted;
 				pagesUpdated += 1;
+				pagesSucceeded += 1;
+				docSucceeded += 1;
 				await updateJobProgress(job, {
 					stage: "deep_scan_visuals",
 					current: Math.min(pagesInJob, (pageIndex - pageStart) + 1),
@@ -5051,10 +5218,28 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 						page_range: { start: pageStart, end: pageEndExclusive },
 					});
 				}
-			} catch {
+			} catch (err) {
 				pagesErrored += 1;
+				pagesFailed += 1;
+				docFailures.push({
+					page_index: pageIndex,
+					reason: err instanceof Error ? err.message : String(err),
+					attempts_used: 0,
+				});
 			}
 			await yieldToEventLoop();
+		}
+
+		const summary = buildDeepScanPageSummaryV1({ attempted: docAttempted, succeeded: docSucceeded, failures: docFailures });
+		const status = computeDeepScanOutcomeStatus({ attempted: summary.attempted, succeeded: summary.succeeded, fatal: false });
+		perDocSummaries.push({ document_id: docId, attempted: summary.attempted, succeeded: summary.succeeded, failed: summary.failed, failures: summary.failures });
+		try {
+			await mergeDocumentExtractionMetadata({
+				documentId: docId,
+				patch: buildDeepScanExtractionMetadataPatch({ existingVisualExtraction, summary, status }),
+			});
+		} catch {
+			// best-effort
 		}
 
 		docsProcessed += 1;
@@ -5105,6 +5290,8 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 		assetTypeCounts = {};
 	}
 
+	const status = computeDeepScanOutcomeStatus({ attempted: pagesAttempted, succeeded: pagesSucceeded, fatal: pagesAttempted === 0 });
+	const finishedWithWarnings = status === "succeeded_with_warnings";
 	const summary = {
 		deal_id: dealId,
 		extractor_version: baseExtractorVersion,
@@ -5117,21 +5304,56 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 		pages_updated: pagesUpdated,
 		pages_skipped_existing: pagesSkippedExisting,
 		pages_errored: pagesErrored,
+		pages_succeeded: pagesSucceeded,
+		pages_failed: pagesFailed,
 		persisted_assets: persistedAssets,
 		asset_type_counts: assetTypeCounts,
+		status,
+		per_document: perDocSummaries.slice(0, 25),
 	};
 
-	await updateJob(job, "succeeded", `Deep scan complete (pages_updated=${pagesUpdated}, pages_errored=${pagesErrored})`, 100);
+	console.log(
+		JSON.stringify({
+			event: "DEEP_SCAN_VISUALS_SUMMARY",
+			deal_id: dealId,
+			document_ids_total: targetDocumentIds.length,
+			document_ids: targetDocumentIds.slice(0, 50),
+			attempted: pagesAttempted,
+			succeeded: pagesSucceeded,
+			failed: pagesFailed,
+			failed_pages: perDocSummaries.flatMap((d) => (d.failures ?? []).map((f: any) => ({ document_id: d.document_id, page_index: f.page_index })) ).slice(0, 50),
+			extractor_version: baseExtractorVersion,
+			vision_base_url: config.visionWorkerUrl,
+			finished_with_warnings: finishedWithWarnings,
+			status,
+		})
+	);
+
+	await updateJob(
+		job,
+		status,
+		status === "failed"
+			? `Deep scan failed (attempted=${pagesAttempted}, succeeded=${pagesSucceeded}, failed=${pagesFailed})`
+			: status === "succeeded_with_warnings"
+				? `Deep scan complete with warnings (pages_updated=${pagesUpdated}, pages_errored=${pagesErrored})`
+				: `Deep scan complete (pages_updated=${pagesUpdated}, pages_errored=${pagesErrored})`,
+		100
+	);
 	await emitJobProgress(job, {
 		job_id: job.id ? String(job.id) : "",
 		deal_id: dealId,
 		stage: "finalize",
 		percent: 100,
-		message: "Deep scan complete",
+		message:
+			status === "failed"
+				? "Deep scan failed"
+				: status === "succeeded_with_warnings"
+					? "Deep scan complete with warnings"
+					: "Deep scan complete",
 		meta: summary,
 	});
 
-	return { ok: true, summary };
+	return { ok: status !== "failed", summary };
 });
 registerWorker("fetch_evidence", async (job: Job) => {
 	const dealId = (job.data as { deal_id?: string } | undefined)?.deal_id;

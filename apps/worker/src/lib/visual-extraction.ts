@@ -1122,10 +1122,21 @@ async function callVisionWorkerAttempt(
 	const loggerOption = (options as any).logger;
 	const logger: LogLike | undefined =
 		typeof fetchImplOrOptions === "function" ? undefined : loggerOption === null ? undefined : (loggerOption ?? console);
-	const logMeta: Record<string, unknown> = (options as any).logMeta && typeof (options as any).logMeta === "object" ? (options as any).logMeta : {};
+	const rawLogMeta = (options as any).logMeta;
+	const logMeta: Record<string, unknown> = rawLogMeta && typeof rawLogMeta === "object" ? rawLogMeta : {};
 	const attempt = typeof (options as any).attempt === "number" && Number.isFinite((options as any).attempt) ? (options as any).attempt : 1;
 	const runtime = (options as any).runtime as VisionJobRuntime | undefined;
 	const url = `${config.visionWorkerUrl}/extract-visuals`;
+
+	if (logger && !(rawLogMeta && typeof rawLogMeta === "object")) {
+		logger.warn(
+			JSON.stringify({
+				event: "VISION_LOGMETA_MISSING",
+				document_id: request.document_id,
+				page_index: request.page_index,
+			})
+		);
+	}
 
 	if (runtime) {
 		const ok = await runtime.ensureReady({ fetchImpl, timeoutMs, logger, logMeta });
@@ -1292,11 +1303,12 @@ export async function callVisionWorkerWithRetries(
 	request: VisionExtractRequest,
 	options: VisionRetryOptions
 ): Promise<{ response: VisionExtractResponse | null; attempts: VisionAttemptMeta[] } > {
-	const logger = options.logger === null ? undefined : (options.logger ?? console);
-	const logMeta: Record<string, unknown> = options.logMeta && typeof options.logMeta === "object" ? options.logMeta : {};
-	const timeouts = Array.isArray(options.timeoutsMs) ? options.timeoutsMs.filter((n) => typeof n === "number" && Number.isFinite(n) && n > 0) : [];
-	const backoff = Array.isArray(options.backoffMs) ? options.backoffMs : [500, 1500];
-	const jitterPct = typeof options.jitterPct === "number" && Number.isFinite(options.jitterPct) ? options.jitterPct : 0.2;
+	const { logger: loggerOpt, logMeta: logMetaOpt, runtime, timeoutsMs, backoffMs, jitterPct: jitterPctOpt, fetchImpl } = options;
+	const logger = loggerOpt === null ? undefined : (loggerOpt ?? console);
+	const logMeta: Record<string, unknown> = logMetaOpt && typeof logMetaOpt === "object" ? logMetaOpt : {};
+	const timeouts = Array.isArray(timeoutsMs) ? timeoutsMs.filter((n) => typeof n === "number" && Number.isFinite(n) && n > 0) : [];
+	const backoff = Array.isArray(backoffMs) ? backoffMs : [500, 1500];
+	const jitterPct = typeof jitterPctOpt === "number" && Number.isFinite(jitterPctOpt) ? jitterPctOpt : 0.2;
 	const attempts: VisionAttemptMeta[] = [];
 
 	const isRetryable = (meta: VisionAttemptMeta): { retryable: boolean; reason: string } => {
@@ -1314,12 +1326,12 @@ export async function callVisionWorkerWithRetries(
 		const attempt = idx + 1;
 		const timeoutMs = timeouts[idx];
 		const attempted = await callVisionWorkerAttempt(config, request, {
-			fetchImpl: options.fetchImpl,
+			fetchImpl,
 			timeoutMs,
 			logger,
 			logMeta,
 			attempt,
-			runtime: options.runtime,
+			runtime,
 		});
 		attempts.push(attempted.meta);
 		if (attempted.response) return { response: attempted.response, attempts };

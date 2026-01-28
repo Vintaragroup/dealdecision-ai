@@ -10,6 +10,7 @@ import {
 	toTextLoose,
 	inferSegmentKeyFromStructured,
 	persistSyntheticVisualAssets,
+	computeVisionRoutingDecisionV1,
 } from "./visual-extraction";
 
 function makePoolMock() {
@@ -75,6 +76,68 @@ test("getVisionExtractorConfig defaults are production-safe (disabled)", () => {
 	expect(cfg.timeoutMs).toBe(8000);
 	// Default aligns with rendered-pages config to stay bounded under low-memory worker environments.
 	expect(cfg.maxPages).toBe(10);
+});
+
+test("computeVisionRoutingDecisionV1: office docs are disallowed", () => {
+	const res = computeVisionRoutingDecisionV1({
+		doc_kind: "excel",
+		extraction_metadata: { needsOcr: true, pageOcr: { attempted: true } },
+		full_text_len: 0,
+		min_text_threshold_chars: 800,
+	});
+	expect(res.vision_fallback_allowed).toBe(false);
+	expect(res.reason).toBe("office_disallowed");
+});
+
+test("computeVisionRoutingDecisionV1: images are allowed", () => {
+	const res = computeVisionRoutingDecisionV1({
+		doc_kind: "image",
+		extraction_metadata: {},
+		full_text_len: 0,
+		min_text_threshold_chars: 800,
+	});
+	expect(res.vision_fallback_allowed).toBe(true);
+	expect(res.reason).toBe("image_allowed");
+});
+
+test("computeVisionRoutingDecisionV1: editable PDFs are disallowed", () => {
+	const res = computeVisionRoutingDecisionV1({
+		doc_kind: "pdf",
+		extraction_metadata: { needsOcr: false },
+		full_text_len: 5000,
+		min_text_threshold_chars: 800,
+	});
+	expect(res.vision_fallback_allowed).toBe(false);
+	expect(res.reason).toBe("pdf_text_ok");
+});
+
+test("computeVisionRoutingDecisionV1: image-only PDFs allow vision only after OCR attempted and low text", () => {
+	const allowed = computeVisionRoutingDecisionV1({
+		doc_kind: "pdf",
+		extraction_metadata: { needsOcr: true, pageOcr: { attempted: true } },
+		full_text_len: 100,
+		min_text_threshold_chars: 800,
+	});
+	expect(allowed.vision_fallback_allowed).toBe(true);
+	expect(allowed.reason).toBe("pdf_image_only_low_text_after_ocr");
+
+	const blockedNoOcr = computeVisionRoutingDecisionV1({
+		doc_kind: "pdf",
+		extraction_metadata: { needsOcr: true, pageOcr: { attempted: false } },
+		full_text_len: 0,
+		min_text_threshold_chars: 800,
+	});
+	expect(blockedNoOcr.vision_fallback_allowed).toBe(false);
+	expect(blockedNoOcr.reason).toBe("pdf_ocr_not_attempted");
+
+	const blockedAbove = computeVisionRoutingDecisionV1({
+		doc_kind: "pdf",
+		extraction_metadata: { needsOcr: true, pageOcr: { attempted: true } },
+		full_text_len: 900,
+		min_text_threshold_chars: 800,
+	});
+	expect(blockedAbove.vision_fallback_allowed).toBe(false);
+	expect(blockedAbove.reason).toBe("pdf_text_above_threshold_after_ocr");
 });
 
 test("upsertVisualAsset uses null-hash conflict target when image_hash is null", async () => {

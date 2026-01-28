@@ -64,6 +64,7 @@ import {
 	resegmentStructuredSyntheticAssets,
 	applyVisionHintsToStructuredPowerpointSlides,
 	callXlsxWorker,
+	computeVisionRoutingDecisionV1,
 } from "./lib/visual-extraction";
 import { normalizeToCanonical } from "./lib/normalization";
 import { processDocument } from "./lib/processors";
@@ -288,22 +289,9 @@ function resolveLocalImagePath(imageUri: string, env: NodeJS.ProcessEnv = proces
 }
 
 async function tryReadImageB64ForVision(imageUri: string, env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+	// Policy: NEVER embed base64 for HTTP(S) URIs; always prefer image_uri-only.
 	const trimmed = String(imageUri || "").trim();
-	if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-		try {
-			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), 15000);
-			const res = await fetch(trimmed, { signal: controller.signal });
-			clearTimeout(timer);
-			if (!res.ok) return null;
-			const ab = await res.arrayBuffer();
-			const bytes = Buffer.from(ab);
-			if (!bytes || bytes.length === 0) return null;
-			return bytes.toString("base64");
-		} catch {
-			return null;
-		}
-	}
+	if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return null;
 
 	const localPath = resolveLocalImagePath(imageUri, env);
 	if (!localPath) return null;
@@ -314,6 +302,68 @@ async function tryReadImageB64ForVision(imageUri: string, env: NodeJS.ProcessEnv
 	} catch {
 		return null;
 	}
+}
+
+function getMinPdfTextThresholdChars(env: NodeJS.ProcessEnv = process.env): number {
+	const v = Number(env.PDF_MIN_TEXT_THRESHOLD_CHARS);
+	return Number.isFinite(v) ? Math.max(0, Math.floor(v)) : 800;
+}
+
+async function computeAndPersistVisionRoutingV1(params: {
+	pool: ReturnType<typeof getPool>;
+	documentId: string;
+	stage: "render_document_pages" | "extract_visuals" | "deep_scan_visuals";
+	jobId: string | null;
+}): Promise<{
+	doc_kind: string;
+	full_text_len: number;
+	decision: ReturnType<typeof computeVisionRoutingDecisionV1>;
+}> {
+	const minTextThresholdChars = getMinPdfTextThresholdChars(process.env);
+	let docKind = "unknown";
+	let extractionMetadata: any = null;
+	let docType: string | null = null;
+	let fullTextLen = 0;
+	try {
+		const { rows } = await params.pool.query<{ extraction_metadata: any; type: string | null; full_text_len: number }>(
+			"SELECT extraction_metadata, type, length(coalesce(full_text,''))::int AS full_text_len FROM documents WHERE id = $1 LIMIT 1",
+			[sanitizeText(params.documentId)]
+		);
+		extractionMetadata = rows?.[0]?.extraction_metadata ?? null;
+		docType = typeof rows?.[0]?.type === "string" ? rows[0].type : null;
+		fullTextLen = typeof rows?.[0]?.full_text_len === "number" ? rows[0].full_text_len : 0;
+		docKind = deduceDocKind({ extraction_metadata: extractionMetadata, type: docType });
+	} catch {
+		// best-effort
+	}
+
+	const decision = computeVisionRoutingDecisionV1({
+		doc_kind: docKind,
+		extraction_metadata: extractionMetadata,
+		full_text_len: fullTextLen,
+		min_text_threshold_chars: minTextThresholdChars,
+	});
+
+	try {
+		await mergeDocumentExtractionMetadata({
+			documentId: params.documentId,
+			patch: {
+				vision_routing_v1: {
+					decided_at: new Date().toISOString(),
+					doc_kind: docKind,
+					vision_fallback_allowed: decision.vision_fallback_allowed,
+					reason: decision.reason,
+					inputs: {
+						...decision.inputs,
+					},
+				},
+			},
+		});
+	} catch {
+		// best-effort
+	}
+
+	return { doc_kind: docKind, full_text_len: fullTextLen, decision };
 }
 import { persistPdfPageUnderstandingV1Shadow } from "./lib/pdf_v2/page-understanding-v1";
 import { applySlideUnderstandingV1Shadow } from "./lib/pdf_v2/slide-understanding-v1";
@@ -2624,27 +2674,62 @@ registerWorker("render_document_pages", async (job: Job) => {
 				const visualsQueue = getQueue("extract_visuals");
 				const effectiveDealId = (dealIdResolved || dealIdSafe || "").trim();
 				const dealIdForEnqueue = effectiveDealId || (typeof (job.data as any)?.deal_id === "string" ? String((job.data as any).deal_id) : "");
-				const enqueued = await enqueueExtractVisualsIfPossible({
-					pool: getPool(),
-					queue: visualsQueue,
-					config: visionCfg,
+
+				// Policy gate: vision worker is last-resort only.
+				const routing = await computeAndPersistVisionRoutingV1({
+					pool,
 					documentId: docId,
-					dealId: dealIdForEnqueue || "unknown",
-					// Verification-only: bypass existing-page skip so at least one real vision call occurs,
-					// allowing us to validate VISION_REQUEST_* logging (deal_id/job_id).
-					jobDataOverride: { force_reextract: true },
-					requireRenderedPagesR2: true,
+					stage: "render_document_pages",
+					jobId: job.id ? String(job.id) : null,
 				});
-				if (enqueued) {
+				if (routing.doc_kind === "pdf" && !routing.decision.vision_fallback_allowed) {
+					const nowIso = new Date().toISOString();
+					try {
+						await mergeDocumentExtractionMetadata({
+							documentId: docId,
+							patch: {
+								extract_visuals_policy_v1: {
+									status: "skipped_policy",
+									at: nowIso,
+									vision_fallback_allowed: false,
+									reason: routing.decision.reason,
+								},
+							},
+						});
+					} catch {
+						// best-effort
+					}
 					console.log(
 						JSON.stringify({
-							event: "RENDER_COMPLETE_TRIGGERED_EXTRACTION",
+							event: "RENDER_COMPLETE_SKIPPED_EXTRACT_VISUALS_POLICY",
 							document_id: docId,
 							deal_id: dealIdForEnqueue || null,
-							page_count_total: total,
-							extract_visuals_enqueued: true,
+							doc_kind: routing.doc_kind,
+							full_text_len: routing.full_text_len,
+							reason: routing.decision.reason,
 						})
 					);
+					// Skip enqueue.
+				} else {
+					const enqueued = await enqueueExtractVisualsIfPossible({
+						pool: getPool(),
+						queue: visualsQueue,
+						config: visionCfg,
+						documentId: docId,
+						dealId: dealIdForEnqueue || "unknown",
+						requireRenderedPagesR2: true,
+					});
+					if (enqueued) {
+						console.log(
+							JSON.stringify({
+								event: "RENDER_COMPLETE_TRIGGERED_EXTRACTION",
+								document_id: docId,
+								deal_id: dealIdForEnqueue || null,
+								page_count_total: total,
+								extract_visuals_enqueued: true,
+							})
+						);
+					}
 				}
 			} catch (err) {
 				console.warn(
@@ -3133,6 +3218,8 @@ registerWorker("extract_visuals", async (job: Job) => {
 	let pagesVisionAttempted = 0;
 	let pagesVisionSucceeded = 0;
 	let pagesVisionFailed = 0;
+	let pagesSkippedPolicy = 0;
+	let docsVisionSkippedPolicy = 0;
 	let docsWithVisionFailures = 0;
 	let imageUrisBackfilled = 0;
 	const docsMissingOriginalBytesIds: string[] = [];
@@ -4031,6 +4118,33 @@ registerWorker("extract_visuals", async (job: Job) => {
 				})
 			);
 		}
+
+		const routing = await computeAndPersistVisionRoutingV1({
+			pool,
+			documentId: docId,
+			stage: "extract_visuals",
+			jobId: job.id ? String(job.id) : null,
+		});
+		const visionFallbackAllowedForDoc = routing.decision.vision_fallback_allowed;
+		if (!visionFallbackAllowedForDoc) {
+			docsVisionSkippedPolicy += 1;
+			try {
+				await mergeDocumentExtractionMetadata({
+					documentId: docId,
+					patch: {
+						extract_visuals_policy_v1: {
+							status: "vision_disallowed",
+							at: new Date().toISOString(),
+							vision_fallback_allowed: false,
+							reason: routing.decision.reason,
+						},
+					},
+				});
+			} catch {
+				// best-effort
+			}
+		}
+
 		const pagesInJob = Math.max(0, pageEndExclusive - pageStart);
 		console.log(
 			JSON.stringify({
@@ -4075,6 +4189,37 @@ registerWorker("extract_visuals", async (job: Job) => {
 		let lastSkipReportMs = 0;
 
 		for (let i = pageStart; i < pageEndExclusive; i += 1) {
+			if (!visionFallbackAllowedForDoc) {
+				pagesSkippedPolicy += 1;
+				docPagesSkippedExisting += 1;
+				pagesCompletedInJob += 1;
+				const nowMs = Date.now();
+				const shouldReport =
+					(pagesCompletedInJob - lastReportedCompleted) >= 3 ||
+					lastSkipReportMs === 0 ||
+					nowMs - lastSkipReportMs >= 1500 ||
+					pagesCompletedInJob >= pagesInJob;
+				if (shouldReport) {
+					lastReportedCompleted = pagesCompletedInJob;
+					lastSkipReportMs = nowMs;
+					await updateJobProgress(job, {
+						stage: "extract_visual_assets",
+						current: Math.min(pagesInJob, pagesCompletedInJob),
+						total: pagesInJob,
+						message: `Skipping by policy page ${i + 1}/${totalPages}`,
+						page_start: pageStart,
+						page_end: pageEndExclusive,
+						meta: {
+							document_id: docId,
+							page_index: i,
+							skipped_policy: true,
+							reason: routing.decision.reason,
+							range: { start: pageStart, end: pageEndExclusive },
+						},
+					});
+				}
+				continue;
+			}
 			// Defensive: for R2-backed rendered pages, verify the object exists before calling vision.
 			// If missing, enqueue the render chunk and throw so BullMQ retries after render completes.
 			const renderedR2 =
@@ -4516,9 +4661,11 @@ registerWorker("extract_visuals", async (job: Job) => {
 		docs_ready: targetDocumentIds.length,
 		docs_processed: docsProcessed,
 		pages_skipped_existing: pagesSkippedExisting,
+		pages_skipped_policy: pagesSkippedPolicy,
 		pages_vision_attempted: pagesVisionAttempted,
 		pages_vision_succeeded: pagesVisionSucceeded,
 		pages_vision_failed: pagesVisionFailed,
+		docs_vision_skipped_policy: docsVisionSkippedPolicy,
 		docs_with_vision_failures: docsWithVisionFailures,
 		docs_blocked_pending: docsBlockedPending,
 		docs_missing_original_bytes: docsMissingOriginalBytes,
@@ -5150,6 +5297,7 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 	let persistedAssets = 0;
 	let pagesSucceeded = 0;
 	let pagesFailed = 0;
+	let docsSkippedPolicy = 0;
 	const perDocSummaries: Array<{ document_id: string; attempted: number; succeeded: number; failed: number; failures: any[] }> = [];
 
 	for (let docIndex = 0; docIndex < targetDocumentIds.length; docIndex += 1) {
@@ -5168,6 +5316,44 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 		} catch {
 			// best-effort
 		}
+
+		const routing = await computeAndPersistVisionRoutingV1({
+			pool,
+			documentId: docId,
+			stage: "deep_scan_visuals",
+			jobId: job.id ? String(job.id) : null,
+		});
+		if (!routing.decision.vision_fallback_allowed) {
+			docsSkippedPolicy += 1;
+			try {
+				await mergeDocumentExtractionMetadata({
+					documentId: docId,
+					patch: {
+						deep_scan_policy_v1: {
+							status: "skipped_policy",
+							at: new Date().toISOString(),
+							vision_fallback_allowed: false,
+							reason: routing.decision.reason,
+						},
+					},
+				});
+			} catch {
+				// best-effort
+			}
+			console.log(
+				JSON.stringify({
+					event: "DEEP_SCAN_SKIPPED_POLICY",
+					job_id: job.id ? String(job.id) : null,
+					deal_id: derivedDealId,
+					document_id: docId,
+					doc_kind: routing.doc_kind,
+					reason: routing.decision.reason,
+				})
+			);
+			docsProcessed += 1;
+			continue;
+		}
+
 		let uris: string[] = [];
 		try {
 			uris = await resolvePageImageUris(pool, docId, { env: process.env, logger: console });
@@ -5475,6 +5661,7 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 		extractor_version: baseExtractorVersion,
 		docs_total: targetDocumentIds.length,
 		docs_processed: docsProcessed,
+		docs_skipped_policy: docsSkippedPolicy,
 		pages_total: pagesTotal,
 		pages_with_vision_understanding_v1: pagesWithVu,
 		pages_considered: pagesConsidered,

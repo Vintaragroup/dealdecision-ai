@@ -7,6 +7,19 @@ process.env.ENABLE_VISUAL_EXTRACTION = "1";
 let extractVisualsProcessor: ((job: any) => Promise<any>) | null = null;
 let callVisionWorkerWithRetriesSpy: ((...args: any[]) => Promise<any>) | null = null;
 
+const mockedDocState: {
+	deal_id: string;
+	type: string;
+	extraction_metadata: any;
+	full_text_len: number;
+} = {
+	deal_id: "deal-from-doc",
+	type: "application/pdf",
+	// Default: make PDF eligible for last-resort vision fallback.
+	extraction_metadata: { doc_kind: "pdf", needsOcr: true, pageOcr: { attempted: true } },
+	full_text_len: 0,
+};
+
 const originalFetch: any = (globalThis as any).fetch;
 
 // Capture the processor that index.ts registers.
@@ -57,19 +70,31 @@ vi.mock("pg", () => {
 	class MockPool {
 		async query(sql: string, params?: any[]) {
 			const q = String(sql);
+			// computeAndPersistVisionRoutingV1 query
+			if (q.includes("length(coalesce(full_text,''))") && q.includes("FROM documents WHERE id = $1")) {
+				return {
+					rows: [
+						{
+							extraction_metadata: mockedDocState.extraction_metadata,
+							type: mockedDocState.type,
+							full_text_len: mockedDocState.full_text_len,
+						},
+					],
+				};
+			}
 			// Guard precheck: documents WHERE id = ANY($1)
 			if (q.includes("FROM documents WHERE id = ANY")) {
 				const ids = ((params as any)?.[0] ?? []) as string[];
 				return {
 					rows: ids.map((id) => ({
 						id,
-						deal_id: "deal-from-doc",
+						deal_id: mockedDocState.deal_id,
 						title: "Doc",
-						type: "application/pdf",
+						type: mockedDocState.type,
 						status: "ready_for_analysis",
 						meta_status: "succeeded",
 						page_count: 1,
-						extraction_metadata: { doc_kind: "pdf" },
+						extraction_metadata: mockedDocState.extraction_metadata,
 						deleted_at: null,
 					})),
 				};
@@ -79,10 +104,10 @@ vi.mock("pg", () => {
 				return {
 					rows: [
 						{
-							deal_id: "deal-from-doc",
-							type: "application/pdf",
+							deal_id: mockedDocState.deal_id,
+							type: mockedDocState.type,
 							title: "Doc",
-							extraction_metadata: { doc_kind: "pdf" },
+							extraction_metadata: mockedDocState.extraction_metadata,
 							structured_data: {},
 							full_content: {},
 							page_count: 1,
@@ -109,6 +134,7 @@ describe("extract_visuals vision logs include deal_id", () => {
 	});
 
 	beforeEach(() => {
+		(callVisionWorkerWithRetriesSpy as any)?.mockClear?.();
 		// Deterministic network for: verifyVisionServiceForJob + extract-visuals + image HEAD.
 		(globalThis as any).fetch = vi.fn(async (url: any, init?: any) => {
 			const u = String(url ?? "");
@@ -151,6 +177,10 @@ describe("extract_visuals vision logs include deal_id", () => {
 	});
 
 	it("VISION_REQUEST_START.deal_id is non-null when job payload lacks deal_id but docMeta has it", async () => {
+		mockedDocState.type = "application/pdf";
+		mockedDocState.extraction_metadata = { doc_kind: "pdf", needsOcr: true, pageOcr: { attempted: true } };
+		mockedDocState.full_text_len = 0;
+
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined as any);
 
 		// Chunk-style job: omit deal_id; DB docMeta provides it.
@@ -180,6 +210,27 @@ describe("extract_visuals vision logs include deal_id", () => {
 		expect(starts[0].job_id).toBe("job-vision-deal-id");
 		expect(callVisionWorkerWithRetriesSpy).toBeTruthy();
 		expect((callVisionWorkerWithRetriesSpy as any).mock.calls.length).toBeGreaterThan(0);
+
+		logSpy.mockRestore();
+	});
+
+	it("policy blocks vision calls for editable PDFs", async () => {
+		// Editable PDF case: needsOcr=false => never call vision.
+		mockedDocState.type = "application/pdf";
+		mockedDocState.extraction_metadata = { doc_kind: "pdf", needsOcr: false, pageOcr: { attempted: false } };
+		mockedDocState.full_text_len = 5000;
+
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined as any);
+
+		await extractVisualsProcessor!(
+			makeJob({
+				document_id: "doc-1",
+				page_start: 0,
+				page_end: 1,
+			})
+		);
+
+		expect((callVisionWorkerWithRetriesSpy as any).mock.calls.length).toBe(0);
 
 		logSpy.mockRestore();
 	});

@@ -1100,6 +1100,11 @@ export async function callVisionWorker(
 
 	// Normalize the vision request image_uri for the worker.
 	request = await normalizeVisionRequestImageUri(request, process.env);
+	// Policy: never embed base64 when a fetchable image_uri exists (prefer image_uri-only).
+	// Only allow image_b64 as a last resort when image_uri cannot be normalized/resolved.
+	if (typeof request.image_uri === "string" && request.image_uri.trim().length > 0) {
+		request = { ...request, image_b64: undefined };
+	}
 
 	const attempted = await callVisionWorkerAttempt(config, request, normalized);
 	return attempted.response;
@@ -2060,6 +2065,109 @@ export function deduceDocKind(meta: { extraction_metadata?: any; type?: string |
 	if (kindRaw.includes("word") || kindRaw.includes("doc")) return "word";
 	if (kindRaw.includes("image")) return "image";
 	return kindRaw || "unknown";
+}
+
+export type VisionRoutingDecisionV1 = {
+	vision_fallback_allowed: boolean;
+	reason: string;
+	inputs: {
+		needs_ocr: boolean | null;
+		page_ocr_attempted: boolean | null;
+		full_text_len: number | null;
+		min_text_threshold_chars: number;
+	};
+};
+
+function coerceBoolOrNull(v: unknown): boolean | null {
+	if (typeof v === "boolean") return v;
+	return null;
+}
+
+function readNeedsOcrFromExtractionMetadata(extractionMetadata: unknown): boolean | null {
+	const m = extractionMetadata && typeof extractionMetadata === "object" ? (extractionMetadata as any) : null;
+	// Prefer the canonical persisted field.
+	const direct = coerceBoolOrNull(m?.needsOcr);
+	if (direct != null) return direct;
+	// Older/alternate shapes.
+	const probe = coerceBoolOrNull(m?.pdf_text_probe?.needsOcr);
+	if (probe != null) return probe;
+	const probe2 = coerceBoolOrNull(m?.textProbe?.needsOcr);
+	if (probe2 != null) return probe2;
+	return null;
+}
+
+function readPageOcrAttemptedFromExtractionMetadata(extractionMetadata: unknown): boolean | null {
+	const m = extractionMetadata && typeof extractionMetadata === "object" ? (extractionMetadata as any) : null;
+	const attempted = coerceBoolOrNull(m?.pageOcr?.attempted);
+	if (attempted != null) return attempted;
+	// Fallback: if we ever persist a different summary key, tolerate it.
+	return coerceBoolOrNull(m?.page_ocr_attempted);
+}
+
+/**
+ * Computes whether vision-worker fallback is allowed for this document.
+ * Policy:
+ * - Office docs (excel/powerpoint/word): NEVER
+ * - Editable PDFs: NEVER
+ * - Image-only PDFs: ONLY if local OCR was attempted and full_text remains below threshold
+ * - Images: allowed
+ */
+export function computeVisionRoutingDecisionV1(params: {
+	doc_kind: string;
+	extraction_metadata: unknown;
+	full_text_len: number;
+	min_text_threshold_chars: number;
+}): VisionRoutingDecisionV1 {
+	const docKind = String(params.doc_kind || "unknown").trim().toLowerCase();
+	const minTextThresholdChars = Number.isFinite(params.min_text_threshold_chars)
+		? Math.max(0, Math.floor(params.min_text_threshold_chars))
+		: 800;
+	const fullTextLen = Number.isFinite(params.full_text_len) ? Math.max(0, Math.floor(params.full_text_len)) : 0;
+
+	const isOffice = docKind === "excel" || docKind === "powerpoint" || docKind === "word";
+	const isPdf = docKind === "pdf";
+	const isImage = docKind === "image";
+
+	const needsOcr = readNeedsOcrFromExtractionMetadata(params.extraction_metadata);
+	const pageOcrAttempted = readPageOcrAttemptedFromExtractionMetadata(params.extraction_metadata);
+
+	let visionFallbackAllowed = false;
+	let reason = "unknown_disallowed";
+	if (isOffice) {
+		visionFallbackAllowed = false;
+		reason = "office_disallowed";
+	} else if (isImage) {
+		visionFallbackAllowed = true;
+		reason = "image_allowed";
+	} else if (isPdf) {
+		if (needsOcr !== true) {
+			visionFallbackAllowed = false;
+			reason = "pdf_text_ok";
+		} else if (pageOcrAttempted !== true) {
+			visionFallbackAllowed = false;
+			reason = "pdf_ocr_not_attempted";
+		} else if (fullTextLen >= minTextThresholdChars) {
+			visionFallbackAllowed = false;
+			reason = "pdf_text_above_threshold_after_ocr";
+		} else {
+			visionFallbackAllowed = true;
+			reason = "pdf_image_only_low_text_after_ocr";
+		}
+	} else {
+		visionFallbackAllowed = false;
+		reason = "unsupported_kind_disallowed";
+	}
+
+	return {
+		vision_fallback_allowed: visionFallbackAllowed,
+		reason,
+		inputs: {
+			needs_ocr: needsOcr,
+			page_ocr_attempted: pageOcrAttempted,
+			full_text_len: fullTextLen,
+			min_text_threshold_chars: minTextThresholdChars,
+		},
+	};
 }
 
 type SyntheticAssetBuild = {

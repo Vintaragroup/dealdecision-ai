@@ -4357,6 +4357,11 @@ export async function enqueueExtractVisualsIfPossible(params: {
 	resolveOptions?: { fsImpl?: FsLike; env?: NodeJS.ProcessEnv };
 	imageUrisOverride?: string[];
 	/**
+	 * Optional override/extra fields to include in the enqueued extract_visuals job payload.
+	 * Intended for one-off debugging/verification without changing default behavior.
+	 */
+	jobDataOverride?: Record<string, unknown>;
+	/**
 	 * When true, requires rendered_pages_r2 metadata to exist and be complete before enqueueing.
 	 * Defaults to true in production.
 	 */
@@ -4471,6 +4476,7 @@ export async function enqueueExtractVisualsIfPossible(params: {
 		await params.queue.add(
 			"extract_visuals",
 			{
+				...(params.jobDataOverride && typeof params.jobDataOverride === "object" ? params.jobDataOverride : {}),
 				document_id: params.documentId,
 				deal_id: params.dealId,
 				extractor_version: params.config.extractorVersion,

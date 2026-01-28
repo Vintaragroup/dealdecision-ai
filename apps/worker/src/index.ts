@@ -2630,6 +2630,9 @@ registerWorker("render_document_pages", async (job: Job) => {
 					config: visionCfg,
 					documentId: docId,
 					dealId: dealIdForEnqueue || "unknown",
+					// Verification-only: bypass existing-page skip so at least one real vision call occurs,
+					// allowing us to validate VISION_REQUEST_* logging (deal_id/job_id).
+					jobDataOverride: { force_reextract: true },
 					requireRenderedPagesR2: true,
 				});
 				if (enqueued) {

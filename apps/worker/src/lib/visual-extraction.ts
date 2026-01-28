@@ -1142,13 +1142,19 @@ async function callVisionWorkerAttempt(
 	const loggerOption = (options as any).logger;
 	const logger: LogLike | undefined =
 		typeof fetchImplOrOptions === "function" ? undefined : loggerOption === null ? undefined : (loggerOption ?? console);
+
+	// Only warn when the caller genuinely *omitted* logMeta (not when it is present-but-empty or normalized upstream).
+	const hasLogMetaProp =
+		typeof fetchImplOrOptions === "function"
+			? false
+			: Boolean(options && typeof options === "object" && Object.prototype.hasOwnProperty.call(options as any, "logMeta"));
 	const rawLogMeta = (options as any).logMeta;
 	const logMeta: Record<string, unknown> = rawLogMeta && typeof rawLogMeta === "object" ? rawLogMeta : {};
 	const attempt = typeof (options as any).attempt === "number" && Number.isFinite((options as any).attempt) ? (options as any).attempt : 1;
 	const runtime = (options as any).runtime as VisionJobRuntime | undefined;
 	const url = `${config.visionWorkerUrl}/extract-visuals`;
 
-	if (logger && !(rawLogMeta && typeof rawLogMeta === "object")) {
+	if (logger && !hasLogMetaProp) {
 		logger.warn(
 			JSON.stringify({
 				event: "VISION_LOGMETA_MISSING",
@@ -1325,7 +1331,16 @@ export async function callVisionWorkerWithRetries(
 ): Promise<{ response: VisionExtractResponse | null; attempts: VisionAttemptMeta[] } > {
 	const { logger: loggerOpt, logMeta: logMetaOpt, runtime, timeoutsMs, backoffMs, jitterPct: jitterPctOpt, fetchImpl } = options;
 	const logger = loggerOpt === null ? undefined : (loggerOpt ?? console);
-	const logMeta: Record<string, unknown> = logMetaOpt && typeof logMetaOpt === "object" ? logMetaOpt : {};
+	const logMeta: Record<string, unknown> =
+		logMetaOpt && typeof logMetaOpt === "object"
+			? logMetaOpt
+			: logger
+				? {
+					stage: "call_vision_worker_with_retries",
+					deal_id: null,
+					job_id: null,
+				}
+				: {};
 	const timeouts = Array.isArray(timeoutsMs) ? timeoutsMs.filter((n) => typeof n === "number" && Number.isFinite(n) && n > 0) : [];
 	const backoff = Array.isArray(backoffMs) ? backoffMs : [500, 1500];
 	const jitterPct = typeof jitterPctOpt === "number" && Number.isFinite(jitterPctOpt) ? jitterPctOpt : 0.2;

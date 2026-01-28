@@ -5,6 +5,7 @@ process.env.REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 process.env.ENABLE_VISUAL_EXTRACTION = "1";
 
 let extractVisualsProcessor: ((job: any) => Promise<any>) | null = null;
+let callVisionWorkerWithRetriesSpy: ((...args: any[]) => Promise<any>) | null = null;
 
 const originalFetch: any = (globalThis as any).fetch;
 
@@ -31,8 +32,10 @@ vi.mock("../lib/job-progress", () => ({
 // but stub persistence helpers to keep the test hermetic.
 vi.mock("../lib/visual-extraction", async (importOriginal) => {
 	const actual: any = await importOriginal();
+	callVisionWorkerWithRetriesSpy = vi.fn(async (...args: any[]) => actual.callVisionWorkerWithRetries(...args));
 	return {
 		...actual,
+		callVisionWorkerWithRetries: callVisionWorkerWithRetriesSpy,
 		getVisionExtractorConfig: () => ({
 			enabled: true,
 			visionWorkerUrl: "http://vision",
@@ -102,6 +105,7 @@ describe("extract_visuals vision logs include deal_id", () => {
 	beforeAll(async () => {
 		await import("../index");
 		expect(extractVisualsProcessor).toBeTypeOf("function");
+		expect(callVisionWorkerWithRetriesSpy).toBeTypeOf("function");
 	});
 
 	beforeEach(() => {
@@ -173,6 +177,9 @@ describe("extract_visuals vision logs include deal_id", () => {
 		const starts = events.filter((e: any) => e.event === "VISION_REQUEST_START");
 		expect(starts.length).toBeGreaterThan(0);
 		expect(starts[0].deal_id).toBe("deal-from-doc");
+		expect(starts[0].job_id).toBe("job-vision-deal-id");
+		expect(callVisionWorkerWithRetriesSpy).toBeTruthy();
+		expect((callVisionWorkerWithRetriesSpy as any).mock.calls.length).toBeGreaterThan(0);
 
 		logSpy.mockRestore();
 	});

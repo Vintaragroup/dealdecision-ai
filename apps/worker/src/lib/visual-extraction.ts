@@ -1151,7 +1151,9 @@ async function callVisionWorkerAttempt(
 		logger.log(
 			JSON.stringify({
 				event: "VISION_REQUEST_START",
+				...logMeta,
 				deal_id: (logMeta as any)?.deal_id ?? null,
+				job_id: (logMeta as any)?.job_id ?? null,
 				document_id: request.document_id,
 				page_index: request.page_index,
 				vision_base_url: config.visionWorkerUrl,
@@ -1159,7 +1161,6 @@ async function callVisionWorkerAttempt(
 				attempt,
 				timeout_ms: timeoutMs,
 				extractor_version: request.extractor_version,
-				...logMeta,
 			})
 		);
 	}
@@ -1183,7 +1184,9 @@ async function callVisionWorkerAttempt(
 			logger.log(
 				JSON.stringify({
 					event: "VISION_REQUEST_DONE",
+					...logMeta,
 					deal_id: (logMeta as any)?.deal_id ?? null,
+					job_id: (logMeta as any)?.job_id ?? null,
 					document_id: request.document_id,
 					page_index: request.page_index,
 					vision_base_url: config.visionWorkerUrl,
@@ -1193,7 +1196,6 @@ async function callVisionWorkerAttempt(
 					elapsed_ms: elapsedMs,
 					error,
 					extractor_version: request.extractor_version,
-					...logMeta,
 				})
 			);
 		}
@@ -1244,7 +1246,9 @@ async function callVisionWorkerAttempt(
 			logger.warn(
 				JSON.stringify({
 					event: "VISION_REQUEST_DONE",
+					...logMeta,
 					deal_id: (logMeta as any)?.deal_id ?? null,
+					job_id: (logMeta as any)?.job_id ?? null,
 					document_id: request.document_id,
 					page_index: request.page_index,
 					vision_base_url: config.visionWorkerUrl,
@@ -1254,7 +1258,6 @@ async function callVisionWorkerAttempt(
 					elapsed_ms: elapsedMs,
 					error: err instanceof Error ? err.message : String(err),
 					extractor_version: request.extractor_version,
-					...logMeta,
 				})
 			);
 		}
@@ -1330,13 +1333,14 @@ export async function callVisionWorkerWithRetries(
 			logger.log(
 				JSON.stringify({
 					event: "VISION_REQUEST_RETRY",
+					...logMeta,
 					deal_id: (logMeta as any)?.deal_id ?? null,
+					job_id: (logMeta as any)?.job_id ?? null,
 					document_id: request.document_id,
 					page_index: request.page_index,
 					attempt,
 					next_timeout_ms: nextTimeoutMs,
 					reason: retry.reason,
-					...logMeta,
 				})
 			);
 		}

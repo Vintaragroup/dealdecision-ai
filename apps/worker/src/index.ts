@@ -4228,10 +4228,17 @@ registerWorker("extract_visuals", async (job: Job) => {
 				}
 			}
 
+				const dealIdForVision: string | null =
+					(typeof dealId === "string" && dealId.trim().length > 0)
+						? dealId.trim()
+						: (typeof docMeta?.deal_id === "string" && docMeta.deal_id.trim().length > 0)
+							? docMeta.deal_id.trim()
+							: derivedDealId;
+
 			const visionLogMeta = {
 				stage: "extract_visual_assets",
 				job_id: job.id ? String(job.id) : null,
-				deal_id: derivedDealId,
+				deal_id: dealIdForVision,
 				vision_base_url: config.visionWorkerUrl,
 				image_url_prefix_kind: signedUrlPrefixKind,
 				image_url_prefix: signedUrlPrefix,
@@ -4247,7 +4254,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 				console.log(
 					JSON.stringify({
 						event: "VISION_IMAGE_URI_FETCH_DIAG",
-						deal_id: derivedDealId,
+						deal_id: dealIdForVision,
 						document_id: docId,
 						page_index: i,
 						image_uri: uriToCheck,
@@ -4295,7 +4302,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 				console.warn(
 					JSON.stringify({
 						event: "VISION_CALL_FAILED",
-						deal_id: derivedDealId,
+						deal_id: dealIdForVision,
 						document_id: docId,
 						page_index: i,
 						vision_service_url: config.visionWorkerUrl,

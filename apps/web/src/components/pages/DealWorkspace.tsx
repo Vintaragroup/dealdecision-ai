@@ -24,6 +24,15 @@ import { derivePhaseBInsights } from '../../lib/phaseb-findings';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { useScoreSource } from '../../contexts/ScoreSourceContext';
 import { extractFundabilityScore0_100 } from '../../lib/dealScore';
+import {
+  PolarAngleAxis,
+  PolarGrid,
+  PolarRadiusAxis,
+  Radar,
+  RadarChart,
+  ResponsiveContainer,
+  Tooltip as RechartsTooltip,
+} from 'recharts';
 import { 
   FileText, 
   TrendingUp, 
@@ -1202,6 +1211,130 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     return `Recommendation: ${decisionTileLabel} (${decisionTileScore0_100}/100). The materials support ${strengthA} and ${strengthB}; however, conviction is constrained by ${openA} and ${openB}.`;
   })();
+
+  type DecisionRadarDatum = {
+    key: 'market' | 'team' | 'documents' | 'financial_health' | 'risk_assessment';
+    label: string;
+    weightPct: number;
+    score: number;
+    scoreRaw: number | null;
+    weightedContribution: number | null;
+    status: string | null;
+    reason: string | null;
+  };
+
+  const decisionScoreExplanation = (reportFromApi as any)?.metadata?.score_explanation as any;
+
+  const bandToIndicatorScore0_100 = (band: 'high' | 'med' | 'low' | 'unknown'): number => {
+    if (band === 'high') return 80;
+    if (band === 'med') return 60;
+    if (band === 'low') return 40;
+    return 50;
+  };
+
+  const decisionRadarData: DecisionRadarDatum[] | null = (() => {
+    if (!decisionScoreExplanation || typeof decisionScoreExplanation !== 'object') return null;
+    const weightsObj = decisionScoreExplanation?.aggregation?.weights && typeof decisionScoreExplanation.aggregation.weights === 'object'
+      ? decisionScoreExplanation.aggregation.weights
+      : null;
+    const compsObj = decisionScoreExplanation?.components && typeof decisionScoreExplanation.components === 'object'
+      ? decisionScoreExplanation.components
+      : null;
+    if (!compsObj) return null;
+
+    const decisionKeys: Array<'financial_health' | 'risk_assessment'> = ['financial_health', 'risk_assessment'];
+    const rows: Array<{ key: 'financial_health' | 'risk_assessment'; weightRaw: number; scoreEff: number | null; status: string | null; reason: string | null }> = [];
+
+    for (const key of decisionKeys) {
+      const comp = compsObj[key];
+      const used = typeof comp?.used_score === 'number' && Number.isFinite(comp.used_score) ? comp.used_score : null;
+      const penalty = typeof comp?.penalty === 'number' && Number.isFinite(comp.penalty) ? comp.penalty : 0;
+      const eff = used == null ? null : Math.max(0, Math.min(100, used - penalty));
+      const weight = weightsObj && typeof weightsObj[key] === 'number' && Number.isFinite(weightsObj[key]) ? weightsObj[key] : 1;
+      const status = typeof comp?.status === 'string' ? comp.status : null;
+      const reason = typeof comp?.reason === 'string' && comp.reason.trim().length > 0 ? comp.reason.trim() : null;
+      rows.push({ key, weightRaw: weight, scoreEff: eff, status, reason });
+    }
+
+    const totalW = rows.reduce((s, r) => s + (Number.isFinite(r.weightRaw) ? r.weightRaw : 0), 0);
+    const rawPct = rows.map((r) => ({ key: r.key, pct: totalW > 0 ? (r.weightRaw / totalW) * 100 : 50 }));
+    const roundedPct = rawPct.map((r) => ({ key: r.key, pct: Math.round(r.pct) }));
+    const sumPct = roundedPct.reduce((s, r) => s + r.pct, 0);
+    const diff = 100 - sumPct;
+    if (diff !== 0 && roundedPct.length > 0) {
+      roundedPct[0] = { ...roundedPct[0], pct: roundedPct[0].pct + diff };
+    }
+
+    const pctByKey = new Map(roundedPct.map((r) => [r.key, r.pct]));
+
+    const fundamentalsLabel = (k: 'financial_health' | 'risk_assessment'): string => {
+      if (k === 'financial_health') return 'Financial health';
+      return 'Risk profile';
+    };
+
+    const fundamentalsRows: DecisionRadarDatum[] = rows.map((r) => {
+      const weightPct = pctByKey.get(r.key) ?? 0;
+      const scoreRaw = r.scoreEff;
+      const score = scoreRaw == null ? 0 : Math.round(scoreRaw);
+      const weightedContribution = scoreRaw == null ? null : Math.round((scoreRaw * weightPct) / 100);
+      return {
+        key: r.key,
+        label: `${fundamentalsLabel(r.key)} (${weightPct}%)`,
+        weightPct,
+        score,
+        scoreRaw: scoreRaw == null ? null : Math.round(scoreRaw),
+        weightedContribution,
+        status: r.status,
+        reason: r.reason,
+      };
+    });
+
+    // Investor-facing indicator axes (0% weight): informative, but not part of the fundamentals score today.
+    const marketBand = getBandForCategory('Market/ICP');
+    const teamBand = getBandForCategory('Team');
+    const marketIndicator = bandToIndicatorScore0_100(marketBand);
+    const teamIndicator = bandToIndicatorScore0_100(teamBand);
+    const docsIndicatorRaw = typeof reportFromApi?.completeness === 'number' && Number.isFinite(reportFromApi.completeness)
+      ? Math.round(Math.max(0, Math.min(100, reportFromApi.completeness)))
+      : 50;
+
+    const indicatorRows: DecisionRadarDatum[] = [
+      {
+        key: 'market',
+        label: `Market (${0}%)`,
+        weightPct: 0,
+        score: marketIndicator,
+        scoreRaw: marketIndicator,
+        weightedContribution: 0,
+        status: marketBand === 'unknown' ? 'insufficient_data' : 'indicator',
+        reason: marketBand === 'unknown' ? 'Coverage signal unavailable; neutral indicator shown.' : 'Indicator derived from coverage confidence.'
+      },
+      {
+        key: 'team',
+        label: `Team (${0}%)`,
+        weightPct: 0,
+        score: teamIndicator,
+        scoreRaw: teamIndicator,
+        weightedContribution: 0,
+        status: teamBand === 'unknown' ? 'insufficient_data' : 'indicator',
+        reason: teamBand === 'unknown' ? 'Coverage signal unavailable; neutral indicator shown.' : 'Indicator derived from coverage confidence.'
+      },
+      {
+        key: 'documents',
+        label: `Documentation readiness (${0}%)`,
+        weightPct: 0,
+        score: docsIndicatorRaw,
+        scoreRaw: docsIndicatorRaw,
+        weightedContribution: 0,
+        status: typeof reportFromApi?.completeness === 'number' ? 'indicator' : 'insufficient_data',
+        reason: typeof reportFromApi?.completeness === 'number' ? 'Indicator derived from analysis completeness.' : 'Completeness signal unavailable; neutral indicator shown.'
+      },
+    ];
+
+    return [...indicatorRows, ...fundamentalsRows];
+  })();
+
+  const decisionRadarReady = Array.isArray(decisionRadarData) && decisionRadarData.length >= 5;
 
   const toFiniteNumber = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
   const toRatioPct = (value: unknown): number | null => {
@@ -3199,9 +3332,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           </div>
 
           {/* Score Cards */}
-          <div className="grid grid-cols-1 gap-6 items-start">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
             {/* Decision Tile */}
-            <div className={`backdrop-blur-xl border rounded-xl p-6 w-full max-w-md ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
+            <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Decision</div>
@@ -3226,9 +3359,92 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               </div>
             </div>
 
+            {/* Decision Breakdown (Radar) */}
+            <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Decision breakdown</div>
+                  <div className={`mt-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    Fundamentals components and indicator signals (hover for details).
+                  </div>
+                </div>
+              </div>
+
+              {decisionRadarReady ? (
+                <div className="mt-4">
+                  <ResponsiveContainer width="100%" height={260}>
+                    <RadarChart data={decisionRadarData ?? []}>
+                      <PolarGrid stroke={darkMode ? '#ffffff20' : '#00000020'} />
+                      <PolarAngleAxis
+                        dataKey="label"
+                        stroke={darkMode ? '#ffffff60' : '#00000060'}
+                        tick={{ fill: darkMode ? '#ffffff80' : '#00000080' }}
+                      />
+                      <PolarRadiusAxis angle={90} domain={[0, 100]} stroke={darkMode ? '#ffffff40' : '#00000040'} />
+                      <Radar
+                        name="Decision"
+                        dataKey="score"
+                        stroke={darkMode ? '#60a5fa' : '#2563eb'}
+                        fill={darkMode ? '#60a5fa' : '#2563eb'}
+                        fillOpacity={0.18}
+                        strokeWidth={2}
+                      />
+                      <RechartsTooltip
+                        content={({ active, payload }) => {
+                          if (!active || !payload || payload.length === 0) return null;
+                          const row = (payload[0] as any)?.payload as DecisionRadarDatum | undefined;
+                          if (!row) return null;
+                          const scoreText = row.scoreRaw == null ? 'N/A' : `${row.scoreRaw}/100`;
+                          const contribText =
+                            row.weightPct === 0
+                              ? '— (indicator only)'
+                              : row.weightedContribution == null
+                                ? 'N/A'
+                                : `${row.weightedContribution}/100`;
+                          return (
+                            <div
+                              style={{
+                                backgroundColor: darkMode ? '#27272a' : '#ffffff',
+                                border: `1px solid ${darkMode ? '#ffffff20' : '#e5e7eb'}`,
+                                borderRadius: '8px',
+                                padding: '10px 12px',
+                                color: darkMode ? '#ffffff' : '#000000',
+                                maxWidth: 260,
+                              }}
+                            >
+                              <div style={{ fontSize: 12, opacity: 0.9, marginBottom: 6 }}>{row.label}</div>
+                              <div style={{ fontSize: 13, fontWeight: 600 }}>Score: {scoreText}</div>
+                              <div style={{ fontSize: 12, opacity: 0.85, marginTop: 2 }}>Weight: {row.weightPct}%</div>
+                              <div style={{ fontSize: 12, opacity: 0.85, marginTop: 2 }}>Contribution: {contribText}</div>
+                              {row.status ? (
+                                <div style={{ fontSize: 12, opacity: 0.75, marginTop: 6 }}>Status: {row.status}</div>
+                              ) : null}
+                              {row.reason ? (
+                                <div style={{ fontSize: 12, opacity: 0.85, marginTop: 6, lineHeight: 1.35 }}>{row.reason}</div>
+                              ) : null}
+                            </div>
+                          );
+                        }}
+                      />
+                    </RadarChart>
+                  </ResponsiveContainer>
+
+                  <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    Only non-zero weights contribute to the displayed score.
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-4">
+                  <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    Run analysis to populate the decision breakdown.
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Score Driver Tile */}
             <div
-              className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}
+              className={`md:col-span-2 backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}
             >
               <div className="flex items-start justify-between gap-3">
                 <div>

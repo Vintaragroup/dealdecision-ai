@@ -1795,8 +1795,13 @@ async function ensureEvidenceLinksForClaims(params: {
 
   const evidenceIdColumn = hasId ? "id" : hasEvidenceId ? "evidence_id" : null;
 
-  const textColumn = hasExcerpt ? "excerpt" : hasText ? "text" : null;
-  if (!hasDealId || !textColumn || !evidenceIdColumn) return claims;
+  // Some DBs have BOTH excerpt + text, and may enforce NOT NULL on text.
+  // Prefer text for matching, and insert into both when present.
+  const primaryTextColumn = hasText ? "text" : hasExcerpt ? "excerpt" : null;
+  const insertTextColumns: Array<"text" | "excerpt"> = [];
+  if (hasText) insertTextColumns.push("text");
+  if (hasExcerpt) insertTextColumns.push("excerpt");
+  if (!hasDealId || !primaryTextColumn || !evidenceIdColumn) return claims;
 
   const existingCache = new Map<string, string>();
 
@@ -1804,7 +1809,7 @@ async function ensureEvidenceLinksForClaims(params: {
     const key = `${docId ?? "null"}:${snippet}`;
     if (existingCache.has(key)) return existingCache.get(key) ?? null;
 
-    const where: string[] = ["deal_id = $1", `${textColumn} = $2`];
+    const where: string[] = ["deal_id = $1", `${primaryTextColumn} = $2`];
     const paramsArr: Array<string | null> = [params.dealId, snippet];
     let idx = 3;
     if (hasDocumentId) {
@@ -1894,8 +1899,8 @@ async function ensureEvidenceLinksForClaims(params: {
       const evidenceId = existingId ?? randomUUID();
 
       if (!existingId) {
-        const cols: string[] = [evidenceIdColumn, "deal_id", textColumn];
-        const values: Array<string | number | null> = [evidenceId, params.dealId, snippet];
+        const cols: string[] = [evidenceIdColumn, "deal_id", ...insertTextColumns];
+        const values: Array<string | number | null> = [evidenceId, params.dealId, ...insertTextColumns.map(() => snippet)];
 
         if (hasDocumentId) {
           cols.push("document_id");
@@ -8517,6 +8522,13 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       };
     }> = [];
 
+    const parseIntWithDefault = (input: unknown, fallback: number): number => {
+      const v = Number.parseInt(String(input ?? ""), 10);
+      return Number.isFinite(v) ? v : fallback;
+    };
+    const renderChunkSize = Math.max(1, Math.min(1000, parseIntWithDefault(process.env.VISUAL_PAGE_IMAGE_MAX_PAGES, 10)));
+    const toEnqueueRender = new Map<string, { count: number; rendered: number | null }>();
+
     let visualCandidates = 0;
 
     for (const d of docs ?? []) {
@@ -8540,29 +8552,65 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           retryable: true,
           render_state: { rendered_pages_r2_present: false, rendered_pages_count: count, rendered_pages_rendered: rendered },
         });
+        toEnqueueRender.set(d.id, { count, rendered });
         continue;
       }
       if (!count || count <= 0) {
         blocked.push({
           document_id: d.id,
           failure_reason: "rendered_pages_count_missing",
-          next_action: "wait_for_render_document_pages",
+          next_action: "enqueue_render_document_pages",
           retryable: true,
           render_state: { rendered_pages_r2_present: true, rendered_pages_count: count, rendered_pages_rendered: rendered },
         });
+        toEnqueueRender.set(d.id, { count, rendered });
         continue;
       }
       if (rendered == null || rendered < count) {
         blocked.push({
           document_id: d.id,
           failure_reason: "render_incomplete",
-          next_action: "wait_for_render_document_pages",
+          next_action: "enqueue_render_document_pages",
           retryable: true,
           render_state: { rendered_pages_r2_present: true, rendered_pages_count: count, rendered_pages_rendered: rendered },
         });
+        toEnqueueRender.set(d.id, { count, rendered });
         continue;
       }
       readyDocIds.push(d.id);
+    }
+
+    // Best-effort: if render isn't ready, kick render jobs now (idempotent via per-document dedupe).
+    // This helps avoid deals getting stuck when upstream enqueue didn't happen (or workers restarted mid-flight).
+    const renderEnqueueResults: Array<{ document_id: string; job_id: string; status: string }> = [];
+    if (toEnqueueRender.size > 0) {
+      // Guardrail: don't spam Redis if a deal has a huge document set.
+      const maxDocs = 25;
+      const candidates = Array.from(toEnqueueRender.entries()).slice(0, maxDocs);
+
+      await Promise.all(
+        candidates.map(async ([documentId, state]) => {
+          try {
+            const count = state.count;
+            const pageStart = 0;
+            const pageEnd = Math.max(1, count > 0 ? Math.min(count, renderChunkSize) : renderChunkSize);
+
+            const job = await enqueueJob(
+              {
+                deal_id: dealId,
+                document_id: documentId,
+                type: "render_document_pages",
+                payload: { page_start: pageStart, page_end: pageEnd },
+              },
+              { dedupe: { by: "document" } }
+            );
+
+            renderEnqueueResults.push({ document_id: documentId, job_id: job.job_id, status: job.status });
+          } catch {
+            // Best-effort: keep API response deterministic even if Redis is briefly unavailable.
+          }
+        })
+      );
     }
 
     if (readyDocIds.length === 0) {
@@ -8577,6 +8625,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
         message: "No documents have completed rendered page images yet. Run re-extract / wait for rendering, then retry.",
         render_state: { visual_documents_total: visualCandidates, ready_documents: 0, blocked_documents: blocked.length },
         blocked_documents: blocked,
+        render_jobs_enqueued: renderEnqueueResults,
       });
     }
 
@@ -8596,7 +8645,13 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       },
       { dedupe: { by: "deal" } }
     );
-    return reply.status(202).send({ job_id: job.job_id, status: job.status, ready_documents: readyDocIds, blocked_documents: blocked });
+    return reply.status(202).send({
+      job_id: job.job_id,
+      status: job.status,
+      ready_documents: readyDocIds,
+      blocked_documents: blocked,
+      render_jobs_enqueued: renderEnqueueResults,
+    });
   });
 
   // Enqueue a deep scan pass for visuals in the deal.

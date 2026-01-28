@@ -45,6 +45,10 @@ export const connection = new IORedis(redisUrl, {
 });
 
 export const ingestQueue = new Queue("ingest_documents", { connection });
+export const renderDocumentPagesQueue = new Queue("render_document_pages", {
+  connection,
+  defaultJobOptions: { attempts: 3, backoff: { type: "exponential", delay: 10_000 } },
+});
 export const extractVisualsQueue = new Queue("extract_visuals", {
   connection,
   defaultJobOptions: { attempts: 5, backoff: { type: "exponential", delay: 10_000 } },
@@ -65,6 +69,7 @@ if (process.env.NODE_ENV !== "production") {
     const safeUrl = `${parsed.protocol}//${user}${host}:${port}${parsed.pathname}`;
     const queues = [
       "ingest_documents",
+      "render_document_pages",
       "extract_visuals",
       "deep_scan_visuals",
       "fetch_evidence",
@@ -89,6 +94,7 @@ if (process.env.NODE_ENV !== "production") {
 export async function closeQueues() {
   await Promise.allSettled([
     ingestQueue.close(),
+    renderDocumentPagesQueue.close(),
     extractVisualsQueue.close(),
     deepScanVisualsQueue.close(),
     fetchEvidenceQueue.close(),

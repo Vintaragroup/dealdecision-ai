@@ -17,6 +17,7 @@ function getQueueForType(type: JobType): QueueLike {
 
   const queueMap: Record<JobType, QueueLike> = {
     ingest_documents: q.ingestQueue,
+    render_document_pages: q.renderDocumentPagesQueue,
     extract_visuals: q.extractVisualsQueue,
     deep_scan_visuals: q.deepScanVisualsQueue,
     fetch_evidence: q.fetchEvidenceQueue,

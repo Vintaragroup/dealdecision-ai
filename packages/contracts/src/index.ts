@@ -117,6 +117,7 @@ export interface Document {
 
 export type JobType =
 	| 'ingest_documents'
+	| 'render_document_pages'
 	| 'extract_visuals'
 	| 'deep_scan_visuals'
 	| 'fetch_evidence'

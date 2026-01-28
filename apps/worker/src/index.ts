@@ -18,7 +18,7 @@ import {
 	FinancialHealthCalculator,
 	RiskAssessmentEngine,
 } from "@dealdecision/core";
-import { createWorker, getQueue, logWorkerQueueConfig } from "./lib/queue";
+import { connection, createWorker, getQueue, logWorkerQueueConfig } from "./lib/queue";
 import { evaluateVisualDocReadiness, getVisualIngestBlockReason } from "./lib/visual-readiness";
 import {
 	getPool,
@@ -2673,9 +2673,20 @@ registerWorker("extract_visuals", async (job: Job) => {
 		enqueue_deep_scan?: boolean;
 		page_start?: number;
 		page_end?: number;
+		chunk?: { page_start?: number; page_end?: number };
 	};
 	const documentId = typeof data.document_id === "string" ? data.document_id : undefined;
 	const dealId = typeof data.deal_id === "string" ? data.deal_id : undefined;
+	const payload: any = data as any;
+	if (!payload.chunk || typeof payload.chunk !== "object") {
+		const ps = (payload as any).page_start;
+		const pe = (payload as any).page_end;
+		if (ps != null && pe != null) {
+			payload.chunk = { page_start: ps, page_end: pe };
+		}
+	}
+	const isChunkJob = Boolean(payload.chunk && payload.chunk.page_start != null && payload.chunk.page_end != null);
+	const isCoordinator = !isChunkJob;
 	let dealIdForAudit: string | undefined = typeof dealId === "string" && dealId.trim().length > 0 ? dealId.trim() : undefined;
 	if (!dealIdForAudit) {
 		const payloadDealId = typeof (data as any)?.deal_id === "string" ? String((data as any).deal_id).trim() : "";
@@ -2686,9 +2697,8 @@ registerWorker("extract_visuals", async (job: Job) => {
 	const forceResegment = Boolean((data as any).force_resegment);
 	const forceReextract = Boolean((data as any).force_reextract);
 	const enqueueDeepScan = Boolean((data as any).enqueue_deep_scan);
-	const pageStartRaw = (data as any).page_start;
-	const pageEndRaw = (data as any).page_end;
-	const isChunkJob = pageStartRaw != null || pageEndRaw != null;
+	const pageStartRaw = payload?.chunk?.page_start;
+	const pageEndRaw = payload?.chunk?.page_end;
 	const requestedPageStart =
 		typeof pageStartRaw === "number" && Number.isFinite(pageStartRaw) ? Math.max(0, Math.floor(pageStartRaw)) : 0;
 	const requestedPageEnd =
@@ -3124,6 +3134,8 @@ registerWorker("extract_visuals", async (job: Job) => {
 	let imageUrisBackfilled = 0;
 	const docsMissingOriginalBytesIds: string[] = [];
 	const docsMissingPageImagesIds: string[] = [];
+	let chunksEnqueued = false;
+	let chunksEnqueuedCount = 0;
 	let chunksEnqueuedAny = false;
 	let chunkJobIsLastChunk: boolean | null = null;
 	let chunkJobTotalPages: number | null = null;
@@ -3156,6 +3168,71 @@ registerWorker("extract_visuals", async (job: Job) => {
 		}
 		if (!dealIdForAudit && typeof docMeta?.deal_id === "string" && docMeta.deal_id.trim().length > 0) {
 			dealIdForAudit = docMeta.deal_id.trim();
+		}
+
+		// Resolve page image URIs early so coordinator runs can enqueue chunks and exit without
+		// performing any persistence or vision calls.
+		let uris: string[] = [];
+		if (targetDocumentIds.length === 1 && Array.isArray(imageUris)) {
+			uris = imageUris.filter((u) => typeof u === "string" && u.length > 0);
+		}
+		if (uris.length === 0) {
+			uris = await resolvePageImageUris(pool, docId, { env: process.env, logger: console });
+		}
+
+		const docPageCount =
+			typeof docMeta?.page_count === "number" && Number.isFinite(docMeta.page_count) ? docMeta.page_count : null;
+		const chunkSize = config.maxPages;
+		const totalPages = uris.length;
+		const totalPagesForChunking = Math.max(totalPages, typeof docPageCount === "number" ? docPageCount : 0);
+
+		// Coordinator behavior: only enqueue chunk jobs and exit without processing pages or finalizing.
+		if (isCoordinator) {
+			try {
+				const parentJobId = job.id ? String(job.id) : null;
+				chunksEnqueuedAny = true;
+				chunksEnqueued = true;
+				const planned = planChunkEnqueues({
+					totalPages: totalPagesForChunking > 0 ? totalPagesForChunking : chunkSize,
+					chunkSize,
+				});
+				chunksEnqueuedCount += planned.chunks_enqueued;
+				for (const range of planned.ranges) {
+					await enqueuePersistedJob({
+						type: "extract_visuals",
+						deal_id: dealId ?? (typeof docMeta?.deal_id === "string" ? docMeta.deal_id : undefined),
+						document_id: docId,
+						parent_job_id: parentJobId,
+						page_start: range.start,
+						page_end: range.end,
+						payload: {
+							extractor_version: extractorVersionOverride,
+							force_resegment: forceResegment,
+							force_reextract: forceReextract,
+							chunk: { page_start: range.start, page_end: range.end },
+						},
+					});
+				}
+				console.log(
+					JSON.stringify({
+						event: "EXTRACT_VISUALS_CHUNK_ENQUEUED",
+						document_id: docId,
+						total_pages: totalPagesForChunking,
+						chunk_size: chunkSize,
+						chunks_enqueued: planned.chunks_enqueued,
+					})
+				);
+
+				// Coordinator job: never process pages.
+				docsProcessed += 1;
+				continue;
+			} catch (err) {
+				console.warn(
+					`[extract_visuals] coordinator failed to enqueue chunk jobs doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+				);
+				await updateJob(job, "failed", `Failed to enqueue chunk jobs for doc=${docId}`, 100);
+				return { ok: false };
+			}
 		}
 
 		// Optional maintenance: recompute segment_key for existing structured synthetic assets.
@@ -3200,7 +3277,8 @@ registerWorker("extract_visuals", async (job: Job) => {
 			docsSkipped += 1;
 			continue;
 		}
-		const docPageCount = typeof docMeta?.page_count === "number" && Number.isFinite(docMeta.page_count) ? docMeta.page_count : null;
+		// From here on, this execution is a chunk job (page-range processing).
+		// Note: for non-chunk legacy jobs, coordinator logic above should have enqueued a chunk job instead.
 		let syntheticPersisted = 0;
 		let pdfTextRegionPersisted = 0;
 		// Always persist structured synthetic assets for Office docs when available.
@@ -3321,67 +3399,17 @@ registerWorker("extract_visuals", async (job: Job) => {
 			message: `Extracting visuals (doc ${docIndex + 1}/${targetDocumentIds.length})`,
 		});
 
-		// Use explicit image_uris only for single-document jobs; otherwise resolve from rendered pages.
-			let uris: string[] = [];
-		if (targetDocumentIds.length === 1 && Array.isArray(imageUris)) {
-			uris = imageUris.filter((u) => typeof u === "string" && u.length > 0);
-		}
-		if (uris.length === 0) {
-			uris = await resolvePageImageUris(pool, docId, { env: process.env, logger: console });
-		}
-
-		const chunkSize = config.maxPages;
-		const totalPages = uris.length;
-		const pageStart = isChunkJob ? Math.min(requestedPageStart, Math.max(0, totalPages - 1)) : 0;
+		const pageStart = Math.min(requestedPageStart, Math.max(0, totalPages - 1));
 		const pageEndExclusive =
 			typeof requestedPageEnd === "number"
 				? Math.min(Math.max(pageStart, requestedPageEnd), totalPages)
 				: Math.min(pageStart + chunkSize, totalPages);
 
-		if (isChunkJob && targetDocumentIds.length === 1) {
-			chunkJobTotalPages = totalPages;
-			chunkJobIsLastChunk = pageEndExclusive >= totalPages;
-		}
-
-		// If this doc has more pages than we can safely process in one job, enqueue follow-up chunk jobs.
-		if (!isChunkJob && totalPages > chunkSize) {
-			try {
-				const parentJobId = job.id ? String(job.id) : null;
-				chunksEnqueuedAny = true;
-				const planned = planChunkEnqueues({ totalPages, chunkSize });
-				for (const range of planned.ranges) {
-					await enqueuePersistedJob({
-						type: "extract_visuals",
-						deal_id: dealId ?? (typeof docMeta?.deal_id === "string" ? docMeta.deal_id : undefined),
-						document_id: docId,
-						parent_job_id: parentJobId,
-						page_start: range.start,
-						page_end: range.end,
-						payload: {
-							extractor_version: extractorVersion,
-							force_resegment: forceResegment,
-							force_reextract: forceReextract,
-						},
-					});
-				}
-				console.log(
-					JSON.stringify({
-						event: "EXTRACT_VISUALS_CHUNK_ENQUEUED",
-						document_id: docId,
-						total_pages: totalPages,
-						chunk_size: chunkSize,
-						chunks_enqueued: planned.chunks_enqueued,
-					})
-				);
-
-				// Coordinator job: avoid double-processing the first chunk.
-				docsProcessed += 1;
-				continue;
-			} catch (err) {
-				console.warn(
-					`[extract_visuals] failed to enqueue chunk jobs doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
-				);
-			}
+		if (targetDocumentIds.length === 1) {
+			chunkJobTotalPages = totalPagesForChunking;
+			chunkJobIsLastChunk = typeof requestedPageEnd === "number" && Number.isFinite(requestedPageEnd)
+				? requestedPageEnd >= totalPagesForChunking
+				: pageEndExclusive >= totalPagesForChunking;
 		}
 
 		if (uris.length === 0) {
@@ -3969,10 +3997,15 @@ registerWorker("extract_visuals", async (job: Job) => {
 			continue;
 		}
 
+		const derivedDealId =
+			typeof dealId === "string" && dealId.trim().length > 0
+				? dealId.trim()
+				: (typeof docMeta?.deal_id === "string" && docMeta.deal_id.trim().length > 0 ? docMeta.deal_id.trim() : null);
 		const pagesInJob = Math.max(0, pageEndExclusive - pageStart);
 		console.log(
 			JSON.stringify({
 				event: "VISION_REQUEST_DOC_START",
+				deal_id: derivedDealId,
 				document_id: docId,
 				doc_kind: docKind,
 				pages_in_job: pagesInJob,
@@ -3997,10 +4030,6 @@ registerWorker("extract_visuals", async (job: Job) => {
 			},
 		});
 
-		const derivedDealId =
-			typeof docMeta?.deal_id === "string" && docMeta.deal_id.trim().length > 0
-				? docMeta.deal_id.trim()
-				: (dealId ?? null);
 		const existingVisualExtraction = (() => {
 			const em = docMeta?.extraction_metadata;
 			const ve = em && typeof em === "object" ? (em as any).visual_extraction : null;
@@ -4041,11 +4070,12 @@ registerWorker("extract_visuals", async (job: Job) => {
 						const renderChunkSize = persistCfg.maxPages;
 						const totalForChunk = typeof docPageCount === "number" && docPageCount > 0 ? docPageCount : totalPages;
 						const range = computeChunkRangeForPage({ pageIndex: i, totalPages: totalForChunk, chunkSize: renderChunkSize });
-						const dealIdForRender = dealId ?? (typeof (docMeta as any)?.deal_id === "string" ? String((docMeta as any).deal_id) : undefined);
+						const dealIdForRender = derivedDealId ?? undefined;
 
 						console.log(
 							JSON.stringify({
 								event: "VISION_PAGE_MISSING_TRIGGER_RENDER",
+								deal_id: dealIdForRender ?? null,
 								document_id: docId,
 								page_index: i,
 								resolved_bucket: resolvedBucket,
@@ -4054,7 +4084,6 @@ registerWorker("extract_visuals", async (job: Job) => {
 								vision_service_url: config.visionWorkerUrl,
 								render_chunk: range,
 								parent_job_id: job.id ? String(job.id) : null,
-								deal_id: dealIdForRender ?? null,
 							})
 						);
 
@@ -4191,6 +4220,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 				console.log(
 					JSON.stringify({
 						event: "VISION_IMAGE_URI_FETCH_DIAG",
+						deal_id: derivedDealId,
 						document_id: docId,
 						page_index: i,
 						image_uri: uriToCheck,
@@ -4238,6 +4268,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 				console.warn(
 					JSON.stringify({
 						event: "VISION_CALL_FAILED",
+						deal_id: derivedDealId,
 						document_id: docId,
 						page_index: i,
 						vision_service_url: config.visionWorkerUrl,
@@ -4412,6 +4443,37 @@ registerWorker("extract_visuals", async (job: Job) => {
 		);
 	}
 
+	// Coordinator: this execution is only responsible for enqueuing chunk jobs.
+	// It must never finalize nor enqueue analyze_deal.
+	if (isCoordinator && chunksEnqueued) {
+		const msg = `Enqueued ${chunksEnqueuedCount} extract_visuals chunk job(s) (coordinator complete)`;
+		await updateJob(job, "succeeded", msg, 100);
+		await emitJobProgress(job, {
+			job_id: job.id ? String(job.id) : "",
+			deal_id: dealIdForAudit ?? undefined,
+			stage: "finalize",
+			percent: 100,
+			message: msg,
+			meta: {
+				coordinator: true,
+				chunks_enqueued: chunksEnqueuedCount,
+			},
+		});
+		await updateJobProgress(job, {
+			status: "succeeded" as any,
+			stage: "finalize",
+			current: 100,
+			total: 100,
+			message: msg,
+		});
+		return {
+			ok: true,
+			status: "succeeded",
+			coordinator: true,
+			chunks_enqueued: chunksEnqueuedCount,
+		};
+	}
+
 	const jobCounters = {
 		docs_total: docsTotal,
 		docs_ready: targetDocumentIds.length,
@@ -4564,11 +4626,64 @@ registerWorker("extract_visuals", async (job: Job) => {
 		},
 	});
 
-	const shouldFinalize = (!isChunkJob) || chunkJobIsLastChunk === true;
+	const chunkIsLast = chunkJobIsLastChunk === true;
+	const shouldFinalize = isChunkJob && chunkIsLast === true;
+
+	// Optional safety: ensure finalization/analyze happens exactly once per (deal, document) for a short window.
+	// This prevents duplicate final-chunk jobs (retries, concurrent runs) from racing.
+	let finalizeLockAcquired = true;
+	if (shouldFinalize && dealIdForAudit) {
+		const lockKey = `extract_visuals:finalized:${dealIdForAudit}:${targetDocumentIds.length === 1 ? targetDocumentIds[0] : "multi"}`;
+		try {
+			const triggerJobId = job.id ? String(job.id) : "";
+			const res = await (connection as any).set(lockKey, triggerJobId || "1", "NX", "EX", 1800);
+			finalizeLockAcquired = res === "OK";
+		} catch {
+			finalizeLockAcquired = true;
+		}
+		if (!finalizeLockAcquired) {
+			console.log(
+				JSON.stringify({
+					event: "EXTRACT_VISUALS_FINALIZE_LOCK_SKIP",
+					deal_id: dealIdForAudit ?? null,
+					document_id: targetDocumentIds.length === 1 ? targetDocumentIds[0] : null,
+					reason: "lock_already_held",
+					should_finalize: true,
+				})
+			);
+		}
+	}
+
+	const shouldRunFinalize = shouldFinalize && finalizeLockAcquired;
 
 	// Finalize: write page_segments_v1 once (idempotent) when this job is the finalizing job.
 	// Stored as stable metadata and references rendered_pages_r2 keys (no signed URLs).
-	if (shouldFinalize) {
+	if (isCoordinator) {
+		console.log(
+			JSON.stringify({
+				event: "PAGE_SEGMENTS_V1_SKIP",
+				document_id: targetDocumentIds.length === 1 ? targetDocumentIds[0] : null,
+				deal_id: dealIdForAudit ?? null,
+				reason: "coordinator",
+				should_finalize: false,
+			})
+		);
+		// Belt + suspenders: coordinator must never finalize or enqueue analyze.
+		return {
+			ok: true,
+			persisted,
+			docs_processed: docsProcessed,
+			docs_skipped: docsSkipped,
+			job_counters: jobCounters,
+			status: finalStatus,
+			docs_blocked: docsBlocked,
+			blocked_document_ids: blockedDocs.map((d) => d.document_id),
+			docs_ready: targetDocumentIds.length,
+			docs_total: docsTotal,
+		};
+	}
+
+	if (shouldRunFinalize) {
 		for (const docId of targetDocumentIds) {
 			try {
 				const { rows } = await pool.query(
@@ -4728,7 +4843,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 				event: "PAGE_SEGMENTS_V1_SKIP",
 				document_id: targetDocumentIds.length === 1 ? targetDocumentIds[0] : null,
 				deal_id: dealIdForAudit ?? null,
-				reason: "not_finalizing",
+				reason: shouldFinalize ? "finalize_lock_not_acquired" : "not_finalizing",
 				should_finalize: false,
 			})
 		);
@@ -4736,37 +4851,31 @@ registerWorker("extract_visuals", async (job: Job) => {
 
 	// Follow-up: enqueue analyze_deal when extract_visuals completes and this job is the finalizing job.
 	// This is intentionally best-effort, but should emit clear ENQUEUED/SKIPPED logs for production debugging.
-	try {
-		const dealIdForAnalyze = dealIdForAudit;
-		const triggerJobId = job.id ? String(job.id) : null;
-		const skipReason = !dealIdForAnalyze
-			? "missing_deal_id"
-			: !shouldFinalize
-				? "extract_visuals_not_finalizing"
-				: null;
-		await enqueueAnalyzeDeal({
-			dealId: dealIdForAnalyze ?? "",
-			reason: "extract_visuals_complete",
-			triggerJobId,
-			shouldEnqueue: skipReason == null,
-			skipReason,
-			extra: {
-				extract_visuals: {
-					status: finalStatus,
-					is_chunk_job: isChunkJob,
-					chunk_is_last: chunkJobIsLastChunk,
-					chunk_total_pages: chunkJobTotalPages,
-					chunks_enqueued_any: chunksEnqueuedAny,
-					should_finalize: shouldFinalize,
-					persisted_assets: persisted,
-					docs_processed: docsProcessed,
-					docs_skipped: docsSkipped,
-					docs_blocked: docsBlocked,
+	if (shouldRunFinalize && !isCoordinator) {
+		try {
+			await enqueueAnalyzeDeal({
+				dealId: dealIdForAudit ?? "",
+				reason: "extract_visuals_complete",
+				triggerJobId: job.id ? String(job.id) : null,
+				shouldEnqueue: true,
+				extra: {
+					extract_visuals: {
+						status: finalStatus,
+						is_chunk_job: isChunkJob,
+						chunk_is_last: chunkJobIsLastChunk,
+						chunk_total_pages: chunkJobTotalPages,
+						chunks_enqueued_any: chunksEnqueuedAny,
+						should_finalize: shouldFinalize,
+						persisted_assets: persisted,
+						docs_processed: docsProcessed,
+						docs_skipped: docsSkipped,
+						docs_blocked: docsBlocked,
+					},
 				},
-			},
-		});
-	} catch {
-		// never block extraction completion
+			});
+		} catch {
+			// never block extraction completion
+		}
 	}
 
 	// Optional follow-up: enqueue a deep scan pass to force vision-understanding hints.
@@ -6706,7 +6815,18 @@ try {
 // - Do NOT log credentials or DATABASE_URL.
 // - If schema is missing required columns, log schema_check_failed once and exit non-zero.
 // - If DB is unreachable, retry briefly and exit non-zero (unless explicitly allowed).
-void (async () => {
+
+const __isWorkerEntrypoint = (() => {
+	try {
+		// CommonJS entrypoint guard: avoids starting long-running intervals when imported by unit tests.
+		return typeof require !== "undefined" && typeof module !== "undefined" && require.main === module;
+	} catch {
+		return false;
+	}
+})();
+
+if (__isWorkerEntrypoint) {
+	void (async () => {
 	const allowWithoutDbRaw = process.env.WORKER_ALLOW_START_WITHOUT_DB;
 	const allowWithoutDb = allowWithoutDbRaw === "1" || allowWithoutDbRaw === "true";
 	const maxWaitMsRaw = process.env.WORKER_DB_CONNECT_TIMEOUT_MS;
@@ -6806,7 +6926,9 @@ void (async () => {
 
 // Job watchdog: mark stale running jobs as failed so new work can proceed.
 // Enabled by default; can be disabled by setting JOB_WATCHDOG_ENABLED=0.
-void (async () => {
+	// Job watchdog: mark stale running jobs as failed so new work can proceed.
+	// Enabled by default; can be disabled by setting JOB_WATCHDOG_ENABLED=0.
+	void (async () => {
 	const enabled = process.env.JOB_WATCHDOG_ENABLED;
 	if (enabled === "0" || enabled === "false") return;
 
@@ -6841,17 +6963,18 @@ void (async () => {
 	setInterval(() => void tick(), safeIntervalMs);
 })();
 
-const shutdown = async () => {
-	await closePool();
-	process.exit(0);
-};
+	const shutdown = async () => {
+		await closePool();
+		process.exit(0);
+	};
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+	process.on("SIGINT", shutdown);
+	process.on("SIGTERM", shutdown);
 
-console.log("DealDecision worker started");
+	console.log("DealDecision worker started");
 
-// Keep-alive interval to ensure process doesn't exit
-setInterval(() => {
-	// Just keep the process alive
-}, 30000);
+	// Keep-alive interval to ensure process doesn't exit
+	setInterval(() => {
+		// Just keep the process alive
+	}, 30000);
+}

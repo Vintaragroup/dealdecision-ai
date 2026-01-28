@@ -280,14 +280,13 @@ describe('DealWorkspace Job Center (live mode)', () => {
     // Full process should NOT enqueue analyze_deal directly.
     vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-should-not-be-called', status: 'queued' } as any);
 
-    let allowAnalyze = false;
-    let dealJobsPollCount = 0;
+    let allowFailedAnalyze = false;
+    let allowSucceededAnalyze = false;
     vi.mocked(apiGetDealJobs).mockImplementation(async () => {
       // Initially: analyze job hasn't been enqueued yet.
-      if (!allowAnalyze) return [] as any;
+      if (!allowFailedAnalyze) return [] as any;
 
-      dealJobsPollCount += 1;
-      if (dealJobsPollCount === 1) {
+      if (!allowSucceededAnalyze) {
         return [
           {
             job_id: 'job-333',
@@ -411,7 +410,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     });
 
     // Now simulate the backend enqueueing analyze jobs tied to the extract run.
-    allowAnalyze = true;
+    allowFailedAnalyze = true;
 
     // The first observed analyze job fails quickly, but during the run grace window we should *not* flash Failed.
     await waitFor(
@@ -422,6 +421,9 @@ describe('DealWorkspace Job Center (live mode)', () => {
       },
       { timeout: 7000 }
     );
+
+    // Now allow the newer succeeded analyze to appear.
+    allowSucceededAnalyze = true;
 
     await waitFor(
       () => {
@@ -440,7 +442,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     );
 
     nowSpy.mockRestore();
-  });
+  }, 15000);
 
   test('renders Job Center even when backend mode is not live', async () => {
     const { isLiveBackend } = await import('../lib/apiClient');

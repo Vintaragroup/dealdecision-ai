@@ -1763,8 +1763,34 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       try {
         const rows = await apiGetDealJobs(dealId, { limit: 200 });
         if (cancelled) return;
-        setDealJobs(Array.isArray(rows) ? rows : []);
+        const normalizedRows = Array.isArray(rows) ? rows : [];
+        setDealJobs(normalizedRows);
         setDealJobsError(null);
+
+        // Full process UX: keep following the run-scoped analyze job even if the pinned extract_visuals job
+        // has already reached a terminal status (and job polling/SSE quiets down).
+        if (isFullProcessActive) {
+          const runWindow = fullProcessRunWindowRef.current;
+          const trackingThisRunExtract =
+            !!fullProcessRunExtractJobId &&
+            !!activeJobId &&
+            (activeJobId === fullProcessRunExtractJobId || jobType === 'extract_visuals');
+
+          if (runWindow && trackingThisRunExtract) {
+            const best = selectAnalyzeJobInWindow(normalizedRows, runWindow);
+            if (best?.job_id && best.job_id !== activeJobId) {
+              const treatFailedAsPending =
+                (best.type ?? '') === 'analyze_deal' &&
+                isFailedJobStatus(best.status) &&
+                isSupersedableAnalyzeFailure(best) &&
+                (isFullProcessActive || shouldTreatRunAnalyzeFailureAsPending({ extractFinishedAt: fullProcessExtractFinishedAt ?? null }));
+
+              if (!treatFailedAsPending) {
+                setJobId(best.job_id);
+              }
+            }
+          }
+        }
       } catch (err) {
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : 'Failed to load jobs';
@@ -1781,7 +1807,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       cancelled = true;
       clearTimer();
     };
-  }, [dealId, isFullProcessActive, jobStatus]);
+  }, [activeJobId, dealId, fullProcessExtractFinishedAt, fullProcessRunExtractJobId, isFullProcessActive, jobStatus, jobType]);
 
   useEffect(() => {
     if (!dealId || typeof EventSource === 'undefined') {
@@ -3818,15 +3844,18 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   {(() => {
                     const extractJobIdForRun = fullProcessRunExtractJobId;
                     const window = extractJobIdForRun ? getFullProcessRunWindowMs() : null;
-                    const derivedAnalyze = window ? selectAnalyzeJobInWindow(dealJobs, window) : null;
+                    const derivedAnalyze = window ? derivedAnalyzeForRun.job : null;
+                    const treatAnalyzeAsPending = !!derivedAnalyze && derivedAnalyzeForRun.treatFailedAsPending;
                     const extractStep = fullProcessUi.steps.extract_visuals;
                     const extractStatus = String(extractStep?.status ?? '').toLowerCase();
                     const extractionInProgress = extractStatus === 'queued' || extractStatus === 'running' || extractStatus === 'retrying';
                     const derivedOk =
-                      fullProcessUi.ok === false && derivedAnalyze && isSucceededJobStatus(derivedAnalyze.status)
-                        ? true
-                        : fullProcessUi.ok;
-                    const derivedError = derivedOk === true ? null : fullProcessUi.error;
+                      fullProcessUi.ok === false && treatAnalyzeAsPending
+                        ? undefined
+                        : fullProcessUi.ok === false && derivedAnalyze && isSucceededJobStatus(derivedAnalyze.status)
+                          ? true
+                          : fullProcessUi.ok;
+                    const derivedError = derivedOk === true || treatAnalyzeAsPending ? null : fullProcessUi.error;
 
                     return (
                       <>
@@ -3841,19 +3870,28 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                       const baseStep = fullProcessUi.steps[k];
                       const step =
                         k === 'analyze_deal' && derivedAnalyze
-                          ? {
-                              ...baseStep,
-                              status: String(derivedAnalyze.status ?? baseStep.status) as any,
-                              job_id: derivedAnalyze.job_id,
-                              progress_pct:
-                                typeof derivedAnalyze.progress_pct === 'number'
-                                  ? derivedAnalyze.progress_pct
-                                  : typeof baseStep.progress_pct === 'number'
-                                    ? baseStep.progress_pct
-                                    : null,
-                              message: (derivedAnalyze.message ?? derivedAnalyze.error ?? baseStep.message ?? null) as any,
-                              updated_at: derivedAnalyze.updated_at ?? baseStep.updated_at ?? null,
-                            }
+                          ? treatAnalyzeAsPending
+                            ? {
+                                ...baseStep,
+                                status: 'pending' as any,
+                                job_id: null,
+                                progress_pct: null,
+                                message: 'Preparing analysis…',
+                                updated_at: derivedAnalyze.updated_at ?? baseStep.updated_at ?? null,
+                              }
+                            : {
+                                ...baseStep,
+                                status: String(derivedAnalyze.status ?? baseStep.status) as any,
+                                job_id: derivedAnalyze.job_id,
+                                progress_pct:
+                                  typeof derivedAnalyze.progress_pct === 'number'
+                                    ? derivedAnalyze.progress_pct
+                                    : typeof baseStep.progress_pct === 'number'
+                                      ? baseStep.progress_pct
+                                      : null,
+                                message: (derivedAnalyze.message ?? derivedAnalyze.error ?? baseStep.message ?? null) as any,
+                                updated_at: derivedAnalyze.updated_at ?? baseStep.updated_at ?? null,
+                              }
                           : k === 'analyze_deal' && !derivedAnalyze && extractionInProgress
                             ? {
                                 ...baseStep,

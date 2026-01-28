@@ -16,6 +16,7 @@ export * from "./services/prompt-generator";
 
 // Export utilities
 export * from "./lib/sanitize";
+export * from "./lib/document-capabilities";
 export * from './config/segment-thresholds';
 export * from './scoring/segment-coverage';
 export * from './scoring/scoring-input-v0';

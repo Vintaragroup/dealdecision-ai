@@ -1455,11 +1455,22 @@ export async function registerDocumentRoutes(
     const forceResegment = Boolean((request.body as any)?.force_resegment);
 
     const hasMimeType = await hasColumn(pool as any, "documents", "mime_type");
+    const canJoinOriginalFile = await hasTable(pool as any, "document_files");
     const { rows } = await pool.query<{ extraction_metadata: unknown | null; file_name: string | null; mime_type?: string | null }>(
-      `SELECT extraction_metadata, file_name${hasMimeType ? ", mime_type" : ", NULL::text AS mime_type"}
-         FROM documents
-        WHERE id = $1 AND deal_id = $2
-        LIMIT 1`,
+      canJoinOriginalFile
+        ? `SELECT d.extraction_metadata,
+                  df.file_name AS file_name
+                  ${hasMimeType ? ", d.mime_type" : ", NULL::text AS mime_type"}
+             FROM documents d
+             LEFT JOIN document_files df ON df.document_id = d.id
+            WHERE d.id = $1 AND d.deal_id = $2
+            LIMIT 1`
+        : `SELECT extraction_metadata,
+                  NULL::text AS file_name
+                  ${hasMimeType ? ", mime_type" : ", NULL::text AS mime_type"}
+             FROM documents
+            WHERE id = $1 AND deal_id = $2
+            LIMIT 1`,
       [document_id, deal_id]
     );
     if (rows.length === 0) {

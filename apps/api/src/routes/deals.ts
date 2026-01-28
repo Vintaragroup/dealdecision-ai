@@ -8438,10 +8438,22 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
     }
 
     const hasMimeType = await hasColumn(pool as any, "documents", "mime_type");
+    const canJoinOriginalFile = await hasTable(pool as any, "document_files");
     const { rows: docs } = await pool.query<{ id: string; file_name: string | null; mime_type?: string | null; extraction_metadata: unknown | null }>(
-      `SELECT id, file_name${hasMimeType ? ", mime_type" : ", NULL::text AS mime_type"}, extraction_metadata
-         FROM documents
-        WHERE deal_id = $1 AND deleted_at IS NULL`,
+      canJoinOriginalFile
+        ? `SELECT d.id,
+                  df.file_name AS file_name
+                  ${hasMimeType ? ", d.mime_type" : ", NULL::text AS mime_type"},
+                  d.extraction_metadata
+             FROM documents d
+             LEFT JOIN document_files df ON df.document_id = d.id
+            WHERE d.deal_id = $1 AND d.deleted_at IS NULL`
+        : `SELECT id,
+                  NULL::text AS file_name
+                  ${hasMimeType ? ", mime_type" : ", NULL::text AS mime_type"},
+                  extraction_metadata
+             FROM documents
+            WHERE deal_id = $1 AND deleted_at IS NULL`,
       [dealId]
     );
 

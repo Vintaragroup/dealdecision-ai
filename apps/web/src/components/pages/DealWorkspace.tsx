@@ -3361,6 +3361,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           </div>
 
           {/* Score Cards */}
+          <div className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
             {/* Decision Tile */}
             <div className={`backdrop-blur-xl border rounded-xl p-6 w-full h-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}> 
@@ -3474,10 +3475,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               )}
             </div>
 
-            {/* Score Driver Tile */}
-            <div
-              className={`col-span-full backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}
-            >
+          </div>
+
+          {/* Coverage & readiness */}
+          <div
+            className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}
+          >
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Coverage & readiness</div>

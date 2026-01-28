@@ -1711,12 +1711,24 @@ async function ingestDocumentProcessor(job: Job) {
 			}
 
 			// Render page images in chunks to R2 (best-effort; does not block ingestion).
-			// For Office (e.g. XLSX), render_document_pages converts to PDF via LibreOffice first.
-			if (analysis.contentType === "pdf" || analysis.contentType === "excel") {
+			// For Office docs (XLSX/DOCX/PPTX), render_document_pages converts to PDF via LibreOffice first.
+			// For images, render_document_pages persists a single page image.
+			if (
+				analysis.contentType === "pdf" ||
+				analysis.contentType === "excel" ||
+				analysis.contentType === "powerpoint" ||
+				analysis.contentType === "word" ||
+				analysis.contentType === "image"
+			) {
 				try {
 					const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
 					const chunkSize = persistCfg.maxPages;
-					const totalPages = analysis.contentType === "pdf" ? (finalPageCountForLog || pageCount || 0) : 0;
+					const totalPages =
+						analysis.contentType === "pdf"
+							? (finalPageCountForLog || pageCount || 0)
+							: analysis.contentType === "image"
+								? 1
+								: 0;
 					const r2Bucket = (process.env.R2_BUCKET || "").trim();
 					const prefix = `deals/${dealIdSafe}/documents/${docId}/rendered_pages`;
 					if (r2Bucket) {
@@ -1732,7 +1744,7 @@ async function ingestDocumentProcessor(job: Job) {
 						});
 
 						const renderQueue = getQueue("render_document_pages");
-						const firstEnd = analysis.contentType === "pdf" && totalPages > 0 ? Math.min(totalPages, chunkSize) : chunkSize;
+						const firstEnd = totalPages > 0 ? Math.min(totalPages, chunkSize) : chunkSize;
 						const renderJobId = makeJobId("render_document_pages", [docId, `0-${firstEnd}`]);
 						console.log(
 							JSON.stringify({
@@ -1749,6 +1761,16 @@ async function ingestDocumentProcessor(job: Job) {
 							"render_document_pages",
 							{ deal_id: dealIdSafe, document_id: docId, page_start: 0, page_end: firstEnd },
 							{ jobId: renderJobId, removeOnComplete: true, removeOnFail: false }
+						);
+					} else {
+						console.warn(
+							JSON.stringify({
+								event: "INGEST_SKIP_RENDER_DOCUMENT_PAGES",
+								reason: "missing_r2_bucket",
+								deal_id: dealIdSafe,
+								document_id: docId,
+								content_type: analysis.contentType,
+							})
 						);
 					}
 				} catch (err) {

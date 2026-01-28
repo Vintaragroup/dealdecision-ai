@@ -1,3 +1,28 @@
+// Normalize vision request image_uri for the vision worker: convert R2 keys to HTTP URLs, treat empty as missing.
+async function normalizeVisionRequestImageUri(
+	request: VisionExtractRequest,
+	env: NodeJS.ProcessEnv = process.env
+): Promise<VisionExtractRequest> {
+	const raw = typeof request.image_uri === "string" ? request.image_uri.trim() : "";
+	// Treat empty string as missing.
+	if (!raw) return { ...request, image_uri: undefined };
+	// Already acceptable for API.
+	if (raw.startsWith("http://") || raw.startsWith("https://") || raw.startsWith("/uploads/")) return request;
+
+	// If the caller provided an R2 object key (preferred DB format), convert it to a fetchable URL.
+	// This is required because the vision worker can only fetch via HTTP(S), and our preflight
+	// reachability checks expect HTTP(S).
+	const bucket = typeof env.R2_BUCKET === "string" && env.R2_BUCKET.trim() ? env.R2_BUCKET.trim() : null;
+	if (!bucket) return { ...request, image_uri: undefined };
+
+	try {
+		const key = raw.replace(/^\//, "");
+		const url = await getR2ObjectUrl({ bucket, key, env });
+		return { ...request, image_uri: url };
+	} catch {
+		return { ...request, image_uri: undefined };
+	}
+}
 import { sanitizeDeep, sanitizeText } from "@dealdecision/core";
 import type { Pool } from "pg";
 import path from "path";
@@ -1073,6 +1098,9 @@ export async function callVisionWorker(
 		}
 	}
 
+	// Normalize the vision request image_uri for the worker.
+	request = await normalizeVisionRequestImageUri(request, process.env);
+
 	const attempted = await callVisionWorkerAttempt(config, request, normalized);
 	return attempted.response;
 }
@@ -1345,6 +1373,9 @@ export async function callVisionWorkerWithRetries(
 	const backoff = Array.isArray(backoffMs) ? backoffMs : [500, 1500];
 	const jitterPct = typeof jitterPctOpt === "number" && Number.isFinite(jitterPctOpt) ? jitterPctOpt : 0.2;
 	const attempts: VisionAttemptMeta[] = [];
+
+	// Normalize the vision request image_uri once before retry loop.
+	request = await normalizeVisionRequestImageUri(request, process.env);
 
 	const isRetryable = (meta: VisionAttemptMeta): { retryable: boolean; reason: string } => {
 		if (meta.error_kind === "timeout" || meta.error_kind === "abort") return { retryable: true, reason: meta.error_kind };

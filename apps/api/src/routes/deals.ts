@@ -8552,7 +8552,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           retryable: true,
           render_state: { rendered_pages_r2_present: false, rendered_pages_count: count, rendered_pages_rendered: rendered },
         });
-        toEnqueueRender.set(d.id, { count, rendered });
+        if (caps.supports_page_rendering) toEnqueueRender.set(d.id, { count, rendered });
         continue;
       }
       if (!count || count <= 0) {
@@ -8563,7 +8563,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           retryable: true,
           render_state: { rendered_pages_r2_present: true, rendered_pages_count: count, rendered_pages_rendered: rendered },
         });
-        toEnqueueRender.set(d.id, { count, rendered });
+        if (caps.supports_page_rendering) toEnqueueRender.set(d.id, { count, rendered });
         continue;
       }
       if (rendered == null || rendered < count) {
@@ -8574,7 +8574,7 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
           retryable: true,
           render_state: { rendered_pages_r2_present: true, rendered_pages_count: count, rendered_pages_rendered: rendered },
         });
-        toEnqueueRender.set(d.id, { count, rendered });
+        if (caps.supports_page_rendering) toEnqueueRender.set(d.id, { count, rendered });
         continue;
       }
       readyDocIds.push(d.id);

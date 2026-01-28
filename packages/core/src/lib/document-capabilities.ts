@@ -8,8 +8,19 @@ export type DocumentKind =
 	| "text"
 	| "unknown";
 
+export type RenderSource = "pdf" | "office" | "image" | null;
+
 export type DocumentCapabilities = {
 	kind: DocumentKind;
+
+	// Authoritative capability registry (do not infer ad-hoc in pipeline code)
+	supports_text_extraction: boolean;
+	supports_page_rendering: boolean;
+	supports_visual_extraction: boolean;
+	requires_ocr: boolean;
+	render_source: RenderSource;
+
+	// Legacy compatibility fields (derived)
 	visualExtractable: boolean;
 	renderedPages: {
 		required: boolean;
@@ -54,15 +65,39 @@ export function getDocumentCapabilities(input: {
 }): DocumentCapabilities {
 	const kind = inferDocumentKind(input);
 
-	const visualExtractable = kind === "pdf" || kind === "excel" || kind === "powerpoint" || kind === "word" || kind === "image";
+	const supports_visual_extraction =
+		kind === "pdf" || kind === "excel" || kind === "powerpoint" || kind === "word" || kind === "image";
+
+	const supports_page_rendering = supports_visual_extraction;
+
+	const render_source: RenderSource =
+		kind === "pdf"
+			? "pdf"
+			: kind === "image"
+				? "image"
+				: kind === "excel" || kind === "powerpoint" || kind === "word"
+					? "office"
+					: null;
+
+	const supports_text_extraction =
+		kind === "pdf" || kind === "excel" || kind === "powerpoint" || kind === "word" || kind === "csv" || kind === "text" || kind === "image";
+
+	// Images require OCR to obtain text; other types may use OCR selectively, but do not require it.
+	const requires_ocr = kind === "image";
 
 	// Policy: for any doc we plan to run vision-based visual extraction on,
-	// we require rendered page images to exist in R2 under rendered_pages/page_%04d.png.
-	const renderedPagesSupported = visualExtractable;
-	const renderedPagesRequired = visualExtractable;
+	// we require rendered page images to exist (typically in R2) under rendered_pages/page_%04d.png.
+	const renderedPagesSupported = supports_page_rendering;
+	const renderedPagesRequired = supports_visual_extraction && supports_page_rendering;
+	const visualExtractable = supports_visual_extraction;
 
 	return {
 		kind,
+		supports_text_extraction,
+		supports_page_rendering,
+		supports_visual_extraction,
+		requires_ocr,
+		render_source,
 		visualExtractable,
 		renderedPages: {
 			required: renderedPagesRequired,

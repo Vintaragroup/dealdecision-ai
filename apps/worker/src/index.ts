@@ -354,6 +354,105 @@ if (process.env.VISION_WORKER_URL && !process.env.VISION_BASE_URL) {
 	);
 }
 
+type VisionServiceVerification = {
+	ok: boolean;
+	reason?: string;
+	health?: { status: number; body_ok: boolean; duration_ms: number };
+	openapi?: { status: number; has_extract_visuals: boolean; duration_ms: number };
+};
+
+async function fetchWithTimeout(url: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
+	const timeoutMs = typeof init.timeoutMs === "number" && Number.isFinite(init.timeoutMs) ? Math.max(100, init.timeoutMs) : 5000;
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const { timeoutMs: _ignored, ...rest } = init as any;
+		return await fetch(url, { ...rest, signal: controller.signal });
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+async function verifyVisionServiceForJob(baseUrl: string): Promise<VisionServiceVerification> {
+	const base = String(baseUrl || "").trim().replace(/\/$/, "");
+	if (!base) return { ok: false, reason: "missing_vision_base_url" };
+
+	const healthUrl = `${base}/health`;
+	const openapiUrl = `${base}/openapi.json`;
+
+	try {
+		const healthStarted = Date.now();
+		const healthRes = await fetchWithTimeout(healthUrl, { method: "GET", timeoutMs: 5000 });
+		const healthBodyText = await healthRes.text().catch(() => "");
+		let bodyOk = false;
+		try {
+			const parsed = JSON.parse(healthBodyText || "{}") as any;
+			bodyOk = parsed?.status === "ok";
+		} catch {
+			bodyOk = false;
+		}
+		const health = { status: healthRes.status, body_ok: bodyOk, duration_ms: Date.now() - healthStarted };
+		if (!healthRes.ok || !bodyOk) {
+			return { ok: false, reason: "vision_health_check_failed", health };
+		}
+
+		const openapiStarted = Date.now();
+		const openapiRes = await fetchWithTimeout(openapiUrl, { method: "GET", timeoutMs: 5000 });
+		const openapiText = await openapiRes.text().catch(() => "");
+		let hasExtract = false;
+		try {
+			const spec = JSON.parse(openapiText || "{}") as any;
+			hasExtract = Boolean(spec?.paths?.["/extract-visuals"]?.post) || Boolean(spec?.paths?.["/extract_visuals"]?.post);
+		} catch {
+			hasExtract = false;
+		}
+		const openapi = { status: openapiRes.status, has_extract_visuals: hasExtract, duration_ms: Date.now() - openapiStarted };
+		if (!openapiRes.ok || !hasExtract) {
+			return { ok: false, reason: "vision_openapi_check_failed", health, openapi };
+		}
+
+		return { ok: true, health, openapi };
+	} catch (err) {
+		return { ok: false, reason: err instanceof Error ? err.message : "vision_check_error" };
+	}
+}
+
+type HeadCheckResult = { ok: boolean; status: number | null; content_type: string | null; duration_ms: number; method: "HEAD" | "GET"; error?: string };
+
+async function headCheckImageUri(uri: string): Promise<HeadCheckResult> {
+	const u = String(uri || "").trim();
+	if (!u.startsWith("http://") && !u.startsWith("https://")) {
+		return { ok: false, status: null, content_type: null, duration_ms: 0, method: "HEAD", error: "non_http_uri" };
+	}
+	const started = Date.now();
+	try {
+		const headRes = await fetchWithTimeout(u, { method: "HEAD", timeoutMs: 5000 });
+		const ct = headRes.headers.get("content-type");
+		if (headRes.status === 405 || headRes.status === 501) {
+			// Some object stores don't allow HEAD; fall back to a tiny ranged GET.
+			const getRes = await fetchWithTimeout(u, { method: "GET", headers: { Range: "bytes=0-0" }, timeoutMs: 5000 });
+			const ct2 = getRes.headers.get("content-type");
+			return {
+				ok: getRes.ok,
+				status: getRes.status,
+				content_type: ct2,
+				duration_ms: Date.now() - started,
+				method: "GET",
+			};
+		}
+		return { ok: headRes.ok, status: headRes.status, content_type: ct, duration_ms: Date.now() - started, method: "HEAD" };
+	} catch (err) {
+		return {
+			ok: false,
+			status: null,
+			content_type: null,
+			duration_ms: Date.now() - started,
+			method: "HEAD",
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
+
 function formatRenderedPageKey(params: { prefix: string; format?: string | null; pageIndex: number }): string {
 	const safePrefix = String(params.prefix ?? "").trim().replace(/\/$/, "");
 	const idx = Number.isFinite(params.pageIndex) ? Math.max(0, Math.floor(params.pageIndex)) : 0;
@@ -2655,6 +2754,31 @@ registerWorker("extract_visuals", async (job: Job) => {
 		},
 	});
 
+	const visionVerification = await verifyVisionServiceForJob(config.visionWorkerUrl);
+	const visionEnabledForJob = config.enabled && visionVerification.ok;
+	if (!visionVerification.ok) {
+		console.warn(
+			JSON.stringify({
+				event: "VISION_SERVICE_VERIFICATION_FAILED",
+				job_id: job.id ? String(job.id) : null,
+				deal_id: dealId ?? null,
+				vision_base_url: config.visionWorkerUrl,
+				reason: visionVerification.reason ?? "unknown",
+				details: visionVerification,
+			})
+		);
+	} else {
+		console.log(
+			JSON.stringify({
+				event: "VISION_SERVICE_VERIFICATION_OK",
+				job_id: job.id ? String(job.id) : null,
+				deal_id: dealId ?? null,
+				vision_base_url: config.visionWorkerUrl,
+				details: visionVerification,
+			})
+		);
+	}
+
 	const extractorVersion = typeof extractorVersionOverride === "string" && extractorVersionOverride.trim()
 		? extractorVersionOverride.trim()
 		: config.extractorVersion;
@@ -3034,6 +3158,27 @@ registerWorker("extract_visuals", async (job: Job) => {
 		}
 
 		const docKind = deduceDocKind({ extraction_metadata: docMeta?.extraction_metadata, type: docMeta?.type ?? null });
+		const caps = getDocumentCapabilities({ kindHint: docKind });
+		if (!caps.supports_visual_extraction) {
+			// Explicitly record why this doc is not processed (avoid silent success).
+			try {
+				await mergeDocumentExtractionMetadata({
+					documentId: docId,
+					patch: {
+						visual_extraction: {
+							status: "skipped",
+							reason: "capability_visual_not_supported",
+							at: new Date().toISOString(),
+							kind: caps.kind,
+						},
+					},
+				});
+			} catch {
+				// best-effort
+			}
+			docsSkipped += 1;
+			continue;
+		}
 		const docPageCount = typeof docMeta?.page_count === "number" && Number.isFinite(docMeta.page_count) ? docMeta.page_count : null;
 		let syntheticPersisted = 0;
 		let pdfTextRegionPersisted = 0;
@@ -3550,6 +3695,44 @@ registerWorker("extract_visuals", async (job: Job) => {
 					continue;
 				}
 
+				// Self-heal: if this doc supports rendering, enqueue render_document_pages and retry later.
+				if (caps.supports_page_rendering) {
+					try {
+						const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
+						const range = getInitialRenderedPagesChunk({
+							capabilities: caps,
+							maxPagesPerChunk: persistCfg.maxPages,
+							totalPagesHint: docPageCount,
+						});
+						const dealIdForRender = dealId ?? (typeof (docMeta as any)?.deal_id === "string" ? String((docMeta as any).deal_id) : undefined);
+						if (range && dealIdForRender) {
+							const q = getQueue("render_document_pages");
+							await q.add(
+								"render_document_pages",
+								{ deal_id: dealIdForRender, document_id: docId, page_start: range.page_start, page_end: range.page_end },
+								{
+									jobId: makeJobId("render_document_pages", [docId, `${range.page_start}-${range.page_end}`]),
+									removeOnComplete: true,
+									removeOnFail: false,
+								}
+							);
+						}
+						await mergeDocumentExtractionMetadata({
+							documentId: docId,
+							patch: {
+								visual_extraction: {
+									status: "blocked",
+									reason: "render_enqueued_missing_pages",
+									at: new Date().toISOString(),
+								},
+							},
+						});
+					} catch {
+						// best-effort
+					}
+					throw new Error(`RETRYABLE_NO_PAGE_IMAGES_AVAILABLE: render enqueued (doc=${docId})`);
+				}
+
 				docsMissingPageImages += 1;
 				docsMissingPageImagesIds.push(docId);
 				try {
@@ -3741,7 +3924,43 @@ registerWorker("extract_visuals", async (job: Job) => {
 			continue;
 		}
 
+		// If vision is unavailable for this job, skip vision calls but still keep the pipeline explicit.
+		if (!visionEnabledForJob) {
+			try {
+				await mergeDocumentExtractionMetadata({
+					documentId: docId,
+					patch: {
+						visual_extraction: {
+							status: "skipped",
+							reason: "vision_unavailable",
+							at: new Date().toISOString(),
+							vision_base_url: config.visionWorkerUrl,
+							verification: visionVerification,
+						},
+					},
+				});
+			} catch {
+				// best-effort
+			}
+			if ((syntheticPersisted + pdfTextRegionPersisted) <= 0) {
+				docsSkipped += 1;
+			}
+			continue;
+		}
+
 		const pagesInJob = Math.max(0, pageEndExclusive - pageStart);
+		console.log(
+			JSON.stringify({
+				event: "VISION_REQUEST_DOC_START",
+				document_id: docId,
+				doc_kind: docKind,
+				pages_in_job: pagesInJob,
+				total_pages: totalPages,
+				sample_image_uri: uris[pageStart] ?? null,
+				vision_base_url: config.visionWorkerUrl,
+				extractor_version: extractorVersion,
+			})
+		);
 		await updateJobProgress(job, {
 			status: "running" as any,
 			stage: "extract_visual_assets",
@@ -3927,6 +4146,43 @@ registerWorker("extract_visuals", async (job: Job) => {
 				r2_bucket: resolvedR2Bucket,
 				r2_key: resolvedR2Key,
 			};
+
+			// Image URI fetchability guarantee: validate reachability before sending to vision.
+			// To keep overhead bounded, we only probe the first page in this chunk.
+			if (i === pageStart) {
+				const uriToCheck = typeof safe_image_uri === "string" ? safe_image_uri : "";
+				const diag = await headCheckImageUri(uriToCheck);
+				console.log(
+					JSON.stringify({
+						event: "VISION_IMAGE_URI_FETCH_DIAG",
+						document_id: docId,
+						page_index: i,
+						image_uri: uriToCheck,
+						diag,
+					})
+				);
+				if (!diag.ok) {
+					try {
+						await mergeDocumentExtractionMetadata({
+							documentId: docId,
+							patch: {
+								visual_extraction: {
+									status: "blocked",
+									reason: "image_uri_unreachable",
+									at: new Date().toISOString(),
+									page_index: i,
+									diag,
+								},
+							},
+						});
+					} catch {
+						// best-effort
+					}
+					throw new Error(
+						`RETRYABLE_IMAGE_URI_UNREACHABLE: doc=${docId} page=${i} status=${diag.status ?? "null"} method=${diag.method}`
+					);
+				}
+			}
 			let response = await callVisionWorker(
 				config,
 				{
@@ -4468,6 +4724,22 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 		},
 	});
 
+	const visionVerification = await verifyVisionServiceForJob(config.visionWorkerUrl);
+	if (!visionVerification.ok) {
+		console.warn(
+			JSON.stringify({
+				event: "VISION_SERVICE_VERIFICATION_FAILED",
+				job_id: job.id ? String(job.id) : null,
+				deal_id: dealId,
+				stage: "deep_scan_visuals",
+				vision_base_url: config.visionWorkerUrl,
+				reason: visionVerification.reason ?? "unknown",
+				details: visionVerification,
+			})
+		);
+		throw new Error(`VISION_UNAVAILABLE: ${visionVerification.reason ?? "unknown"}`);
+	}
+
 	const pool = getPool();
 	const tablesOk = (await hasTable(pool, "visual_assets")) && (await hasTable(pool, "visual_extractions"));
 	if (!tablesOk) {
@@ -4660,6 +4932,25 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 				image_b64 && (image_uri.startsWith("http://") || image_uri.startsWith("https://"))
 					? undefined
 					: image_uri;
+			if (pageIndex === pageStart) {
+				const uriToCheck = typeof safe_image_uri === "string" ? safe_image_uri : "";
+				const diag = await headCheckImageUri(uriToCheck);
+				console.log(
+					JSON.stringify({
+						event: "VISION_IMAGE_URI_FETCH_DIAG",
+						stage: "deep_scan_visuals",
+						document_id: docId,
+						page_index: pageIndex,
+						image_uri: uriToCheck,
+						diag,
+					})
+				);
+				if (!diag.ok) {
+					throw new Error(
+						`RETRYABLE_IMAGE_URI_UNREACHABLE: doc=${docId} page=${pageIndex} status=${diag.status ?? "null"} method=${diag.method}`
+					);
+				}
+			}
 			let response = await callVisionWorker(
 				config,
 				{

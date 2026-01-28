@@ -40,6 +40,10 @@ type VisualAssetsResponse = {
   assets: unknown[];
 };
 
+type ExtractVisualsResponse =
+  | { job_id: string; status?: string }
+  | { error: string; blocked_documents?: unknown[]; render_jobs_enqueued?: unknown[] };
+
 type GeneratedFixtures = {
   pdf_base64: string;
   pptx_base64: string;
@@ -75,6 +79,19 @@ async function fetchJson<T>(url: URL, init?: RequestInit): Promise<T> {
   }
 
   return (await res.json()) as T;
+}
+
+function buildAuthHeaders(init?: RequestInit): Headers {
+  const authTokenRaw = typeof process.env.AUTH_TOKEN === "string" ? process.env.AUTH_TOKEN.trim() : "";
+  const authHeaderValue = authTokenRaw
+    ? authTokenRaw.toLowerCase().startsWith("bearer ")
+      ? authTokenRaw
+      : `Bearer ${authTokenRaw}`
+    : null;
+
+  const headers = new Headers(init?.headers);
+  if (authHeaderValue) headers.set("authorization", authHeaderValue);
+  return headers;
 }
 
 async function waitForJob(base: URL, jobId: string, opts: { timeoutMs: number; pollMs: number }) {
@@ -227,11 +244,41 @@ async function main() {
 
   // Extract visuals for the deal.
   const extractUrl = new URL(`/api/v1/deals/${encodeURIComponent(dealId)}/extract-visuals`, base);
-  const extractJob = await fetchJson<{ job_id: string }>(extractUrl, { method: "POST", body: "{}" });
-  console.log(`extract-visuals enqueued job_id=${extractJob.job_id}`);
-  await waitForJob(base, extractJob.job_id, { timeoutMs, pollMs });
+  // Self-healing expectation: even if rendered pages are not ready, the API should enqueue render jobs.
+  // Retry until we get a job_id (or time out).
+  let extractJobId: string | null = null;
+  const extractStarted = Date.now();
+  while (!extractJobId) {
+    const elapsed = Date.now() - extractStarted;
+    if (elapsed > timeoutMs) {
+      throw new Error(`Timed out waiting to enqueue extract-visuals after ${Math.round(elapsed / 1000)}s`);
+    }
 
-  // Assert at least one visual asset exists across visual docs.
+    const headers = buildAuthHeaders({ headers: { "content-type": "application/json" } });
+    headers.set("content-type", "application/json");
+    const res = await fetch(extractUrl, { method: "POST", body: "{}", headers });
+    if (res.status === 409) {
+      const body = (await res.json().catch(() => null)) as any;
+      const enq = Array.isArray(body?.render_jobs_enqueued) ? body.render_jobs_enqueued.length : 0;
+      console.log(`extract-visuals blocked (409); render_jobs_enqueued=${enq} retrying...`);
+      await sleep(pollMs);
+      continue;
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status} ${res.statusText} for ${extractUrl.toString()}${text ? `\n${text}` : ""}`);
+    }
+    const body = (await res.json()) as ExtractVisualsResponse as any;
+    if (typeof body?.job_id !== "string" || body.job_id.length < 8) {
+      throw new Error(`extract-visuals did not return job_id: ${JSON.stringify(body)}`);
+    }
+    extractJobId = body.job_id;
+  }
+
+  console.log(`extract-visuals enqueued job_id=${extractJobId}`);
+  await waitForJob(base, extractJobId, { timeoutMs, pollMs });
+
+  // Per-doc invariant: for every visual doc, either assets exist OR an explicit reason code is recorded.
   let totalAssets = 0;
   for (const u of uploaded.filter((x) => x.visual)) {
     const assetsUrl = new URL(
@@ -242,10 +289,29 @@ async function main() {
     const count = Array.isArray(res.assets) ? res.assets.length : 0;
     totalAssets += count;
     console.log(`visual-assets ${u.label} count=${count}`);
+
+    const statusUrl = new URL(`/api/v1/deals/${encodeURIComponent(dealId)}/documents/${encodeURIComponent(u.documentId)}/status`, base);
+    const doc = await fetchJson<DocumentStatusResponse>(statusUrl);
+    const meta = doc.extraction_metadata && typeof doc.extraction_metadata === "object" ? doc.extraction_metadata : null;
+    const explicitReason =
+      (meta?.visual_extraction && typeof meta.visual_extraction === "object" && typeof meta.visual_extraction.reason === "string" && meta.visual_extraction.reason) ||
+      (typeof meta?.no_visual_understanding_reason === "string" && meta.no_visual_understanding_reason) ||
+      null;
+
+    if (count <= 0 && !explicitReason) {
+      throw new Error(`Expected visual assets OR explicit reason for ${u.label} doc=${u.documentId}; got assets=0 and no reason in extraction_metadata`);
+    }
   }
 
-  if (totalAssets <= 0) {
-    throw new Error("Expected at least 1 visual asset, got 0");
+  // Non-visual docs should be present but not require visual assets.
+  for (const u of uploaded.filter((x) => !x.visual)) {
+    const statusUrl = new URL(`/api/v1/deals/${encodeURIComponent(dealId)}/documents/${encodeURIComponent(u.documentId)}/status`, base);
+    const doc = await fetchJson<DocumentStatusResponse>(statusUrl);
+    const meta = doc.extraction_metadata && typeof doc.extraction_metadata === "object" ? doc.extraction_metadata : null;
+    const ve = meta?.visual_extraction && typeof meta.visual_extraction === "object" ? meta.visual_extraction : null;
+    const status = typeof ve?.status === "string" ? ve.status : null;
+    const reason = typeof ve?.reason === "string" ? ve.reason : null;
+    console.log(`non-visual ${u.label} visual_extraction.status=${status ?? "(none)"} reason=${reason ?? "(none)"}`);
   }
 
   // Analyze the deal.

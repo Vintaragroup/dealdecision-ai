@@ -1494,6 +1494,33 @@ export async function registerDocumentRoutes(
     const count = typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count) ? metaObj.rendered_pages_count : 0;
     const rendered = typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered) ? metaObj.rendered_pages_rendered : null;
     if (!renderedR2 || !count || count <= 0 || rendered == null || rendered < count) {
+      // Best-effort self-heal: enqueue render_document_pages when applicable (deduped per document).
+      const parseIntWithDefault = (input: unknown, fallback: number): number => {
+        const v = Number.parseInt(String(input ?? ""), 10);
+        return Number.isFinite(v) ? v : fallback;
+      };
+      const renderChunkSize = Math.max(1, Math.min(1000, parseIntWithDefault(process.env.VISUAL_PAGE_IMAGE_MAX_PAGES, 10)));
+      const pageStart = 0;
+      const pageEnd = Math.max(1, count > 0 ? Math.min(count, renderChunkSize) : renderChunkSize);
+
+      let renderJob: { job_id: string; status: string } | null = null;
+      if (caps.supports_page_rendering) {
+        try {
+          const job = await enqueue(
+            {
+              deal_id,
+              document_id,
+              type: "render_document_pages",
+              payload: { page_start: pageStart, page_end: pageEnd },
+            },
+            { dedupe: { by: "document" } }
+          );
+          renderJob = { job_id: job.job_id, status: job.status };
+        } catch {
+          // Best-effort: keep deterministic 409 response even if Redis is temporarily unavailable.
+        }
+      }
+
       return reply.status(409).send({
         ok: false,
         error: "rendered_pages_not_ready",
@@ -1504,13 +1531,14 @@ export async function registerDocumentRoutes(
           : !count || count <= 0
             ? "rendered_pages_count_missing"
             : "render_incomplete",
-        next_action: !renderedR2 ? "enqueue_render_document_pages" : "wait_for_render_document_pages",
+        next_action: caps.supports_page_rendering ? "enqueue_render_document_pages" : "skip_not_renderable",
         retryable: true,
         render_state: {
           rendered_pages_r2_present: Boolean(renderedR2),
           rendered_pages_count: count,
           rendered_pages_rendered: rendered,
         },
+        render_job_enqueued: renderJob,
       });
     }
 

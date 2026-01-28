@@ -1199,6 +1199,35 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const decisionTileOpenItems = decisionTileOpenItemsAll.slice(0, 2);
   const decisionTileOpenItemsCount = decisionTileOpenItemsAll.length;
 
+  const decisionTileConfidenceBand: 'high' | 'med' | 'low' | 'unknown' = (() => {
+    const fromOverall = toBand(phase1ConfidenceRaw);
+    if (fromOverall !== 'unknown') return fromOverall;
+    const bands = [
+      getBandForCategory('Product'),
+      getBandForCategory('Market/ICP'),
+      getBandForCategory('Team'),
+      getBandForCategory('Risks'),
+    ].filter((b): b is 'high' | 'med' | 'low' => b !== 'unknown');
+    if (bands.length === 0) return 'unknown';
+    if (bands.includes('low')) return 'low';
+    if (bands.includes('med')) return 'med';
+    return 'high';
+  })();
+
+  const decisionTileConfidenceLabelShort = (() => {
+    if (decisionTileConfidenceBand === 'high') return 'High';
+    if (decisionTileConfidenceBand === 'med') return 'Med';
+    if (decisionTileConfidenceBand === 'low') return 'Low';
+    return 'Pending';
+  })();
+
+  const bandToBadgeClasses = (band: 'high' | 'med' | 'low' | 'unknown') => {
+    if (band === 'high') return darkMode ? 'bg-emerald-500/10 text-emerald-200 border-emerald-500/20' : 'bg-emerald-50 text-emerald-700 border-emerald-200';
+    if (band === 'med') return darkMode ? 'bg-amber-500/10 text-amber-200 border-amber-500/20' : 'bg-amber-50 text-amber-700 border-amber-200';
+    if (band === 'low') return darkMode ? 'bg-red-500/10 text-red-200 border-red-500/20' : 'bg-red-50 text-red-700 border-red-200';
+    return darkMode ? 'bg-white/5 text-gray-200 border-white/10' : 'bg-gray-50 text-gray-700 border-gray-200';
+  };
+
   const decisionTileRationale = (() => {
     if (decisionTileLabel === '—' || decisionTileScore0_100 == null) {
       return 'Recommendation pending. Score will appear once sufficient information is available.';
@@ -3332,9 +3361,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           </div>
 
           {/* Score Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
             {/* Decision Tile */}
-            <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
+            <div className={`backdrop-blur-xl border rounded-xl p-6 w-full h-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}> 
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Decision</div>
@@ -3343,11 +3372,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     {decisionTileScore0_100 != null ? `Score: ${decisionTileScore0_100}/100` : '—'}
                   </div>
 
-                  {decisionTileOpenItemsCount > 0 ? (
-                    <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      Open items: {decisionTileOpenItemsCount}{decisionMissing.length > 0 ? ` · ${decisionMissing.map(formatOpenItemLabel).filter(Boolean).slice(0, 3).join(' • ')}` : ''}
-                    </div>
-                  ) : null}
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <span className={`px-2 py-1 rounded-full border text-xs ${bandToBadgeClasses(decisionTileOpenItemsCount > 0 ? 'med' : 'high')}`}>
+                      Open items: {decisionTileOpenItemsCount}
+                    </span>
+                    <span className={`px-2 py-1 rounded-full border text-xs ${bandToBadgeClasses(decisionTileConfidenceBand)}`}>
+                      Confidence: {decisionTileConfidenceLabelShort}
+                    </span>
+                  </div>
 
                   <p className={`mt-3 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                     {decisionTileRationale}
@@ -3360,7 +3392,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             </div>
 
             {/* Decision Breakdown (Radar) */}
-            <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
+            <div className={`backdrop-blur-xl border rounded-xl p-6 w-full h-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}> 
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Decision breakdown</div>

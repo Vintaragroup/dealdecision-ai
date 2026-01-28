@@ -1053,7 +1053,27 @@ export async function callVisionWorker(
 		  }
 		| undefined = fetch
 ): Promise<VisionExtractResponse | null> {
-	const attempted = await callVisionWorkerAttempt(config, request, fetchImplOrOptions);
+	// If a caller provides a logger but forgets logMeta, inject a minimal object so
+	// VISION_REQUEST_* logs still have a stable meta shape and we avoid noisy
+	// VISION_LOGMETA_MISSING warnings.
+	let normalized = fetchImplOrOptions;
+	if (normalized && typeof normalized === "object") {
+		const anyOpt = normalized as any;
+		const loggerProvided = anyOpt.logger != null;
+		const logMetaProvided = anyOpt.logMeta && typeof anyOpt.logMeta === "object";
+		if (loggerProvided && !logMetaProvided) {
+			normalized = {
+				...anyOpt,
+				logMeta: {
+					stage: "call_vision_worker",
+					deal_id: null,
+					job_id: null,
+				},
+			};
+		}
+	}
+
+	const attempted = await callVisionWorkerAttempt(config, request, normalized);
 	return attempted.response;
 }
 

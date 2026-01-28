@@ -35,6 +35,136 @@ export type VisionOcrBlock = {
 	confidence?: number | null;
 };
 
+export type VisionJobRuntime = {
+	visionBaseUrl: string;
+	disabled: boolean;
+	disabledEvent: string | null;
+	disable: (event: string, payload: Record<string, unknown>) => void;
+	ensureReady: (options: {
+		fetchImpl: typeof fetch;
+		logger?: LogLike;
+		logMeta?: Record<string, unknown>;
+		timeoutMs: number;
+	}) => Promise<boolean>;
+};
+
+function isRenderNoServer(res: { headers?: { get?: (key: string) => string | null } } | null | undefined): boolean {
+	try {
+		const v = res?.headers?.get?.("x-render-routing");
+		return typeof v === "string" && v.trim().toLowerCase() === "no-server";
+	} catch {
+		return false;
+	}
+}
+
+async function fetchWithTimeout(fetchImpl: typeof fetch, url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		return await fetchImpl(url, { ...init, signal: controller.signal });
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+export function createVisionJobRuntime(params: {
+	config: VisionExtractorConfig;
+	logger?: LogLike;
+	logMeta?: Record<string, unknown>;
+}): VisionJobRuntime {
+	const logger = params.logger ?? console;
+	const baseUrl = params.config.visionWorkerUrl;
+	const logMeta = params.logMeta ?? {};
+	const logged = new Set<string>();
+	let readyPromise: Promise<boolean> | null = null;
+	let ready = false;
+	let disabled = false;
+	let disabledEvent: string | null = null;
+
+	const logOnce = (event: string, payload: Record<string, unknown>) => {
+		if (logged.has(event)) return;
+		logged.add(event);
+		try {
+			logger.warn(JSON.stringify({ event, vision_base_url: baseUrl, ...logMeta, ...payload }));
+		} catch {
+			// ignore
+		}
+	};
+
+	const disable = (event: string, payload: Record<string, unknown>) => {
+		if (disabled) return;
+		disabled = true;
+		disabledEvent = event;
+		logOnce(event, payload);
+	};
+
+	const ensureReady = async (options: { fetchImpl: typeof fetch; timeoutMs: number; logger?: LogLike; logMeta?: Record<string, unknown> }) => {
+		if (disabled) return false;
+		if (ready) return true;
+		if (readyPromise) return readyPromise;
+
+		const fetchImpl = options.fetchImpl;
+		const timeoutMs = Math.max(1000, Math.min(10_000, options.timeoutMs));
+		readyPromise = (async () => {
+			// Health check
+			try {
+				const res = await fetchWithTimeout(fetchImpl, `${baseUrl}/health`, { method: "GET" }, timeoutMs);
+				if (isRenderNoServer(res) || res.status === 404) {
+					disable("VISION_DISABLED_NO_SERVER", { where: "health", status_code: res.status });
+					return false;
+				}
+				if (!res.ok) {
+					disable("VISION_DISABLED_HEALTH_CHECK_FAILED", { where: "health", status_code: res.status });
+					return false;
+				}
+			} catch (err) {
+				disable("VISION_DISABLED_HEALTH_CHECK_FAILED", { where: "health", error: err instanceof Error ? err.message : String(err) });
+				return false;
+			}
+
+			// OpenAPI route verification
+			try {
+				const res = await fetchWithTimeout(fetchImpl, `${baseUrl}/openapi.json`, { method: "GET" }, timeoutMs);
+				if (isRenderNoServer(res) || res.status === 404) {
+					disable("VISION_DISABLED_NO_SERVER", { where: "openapi", status_code: res.status });
+					return false;
+				}
+				if (!res.ok) {
+					disable("VISION_DISABLED_OPENAPI_CHECK_FAILED", { where: "openapi", status_code: res.status });
+					return false;
+				}
+				const json = (await res.json()) as any;
+				const paths = json && typeof json === "object" ? (json as any).paths : null;
+				const extractVisuals = paths && typeof paths === "object" ? (paths as any)["/extract-visuals"] : null;
+				const hasPost = extractVisuals && typeof extractVisuals === "object" ? Boolean((extractVisuals as any).post) : false;
+				if (!hasPost) {
+					disable("VISION_DISABLED_OPENAPI_MISSING_ROUTE", { where: "openapi", missing: "POST /extract-visuals" });
+					return false;
+				}
+			} catch (err) {
+				disable("VISION_DISABLED_OPENAPI_CHECK_FAILED", { where: "openapi", error: err instanceof Error ? err.message : String(err) });
+				return false;
+			}
+
+			ready = true;
+			return true;
+		})();
+		return readyPromise;
+	};
+
+	return {
+		visionBaseUrl: baseUrl,
+		get disabled() {
+			return disabled;
+		},
+		get disabledEvent() {
+			return disabledEvent;
+		},
+		disable,
+		ensureReady,
+	};
+}
+
 function cleanSnippetText(value: string): string {
 	return value.replace(/\s+/g, " ").trim();
 }
@@ -417,9 +547,13 @@ let didWarnVisualExtractionDisabled = false;
 export function getVisionExtractorConfig(env: NodeJS.ProcessEnv = process.env): VisionExtractorConfig {
 	const enabledRaw = env.ENABLE_VISUAL_EXTRACTION;
 	const enabled = enabledRaw == null ? defaultVisualExtractionEnabled(env) : parseBool(enabledRaw);
+	const envUrlRaw = (env.VISION_BASE_URL || env.VISION_WORKER_URL || "").trim();
+	if (enabled && env.NODE_ENV === "production" && !envUrlRaw) {
+		throw new Error("VISION_BASE_URL is required when ENABLE_VISUAL_EXTRACTION=1 (set VISION_BASE_URL to your vision service origin)");
+	}
 	return {
 		enabled,
-		visionWorkerUrl: (env.VISION_WORKER_URL || "http://localhost:8000").replace(/\/$/, ""),
+		visionWorkerUrl: (envUrlRaw || "http://localhost:8000").replace(/\/$/, ""),
 		extractorVersion: env.VISION_EXTRACTOR_VERSION || "vision_v1",
 		timeoutMs: parseIntWithDefault(env.VISION_TIMEOUT_MS, 8000),
 		// Default small to keep memory bounded; larger documents are processed via page-range sub-jobs.
@@ -861,6 +995,7 @@ export async function callVisionWorker(
 				logger?: LogLike | null;
 				logMeta?: Record<string, unknown>;
 				attempt?: number;
+				runtime?: VisionJobRuntime;
 		  }
 		| undefined = fetch
 ): Promise<VisionExtractResponse | null> {
@@ -875,7 +1010,14 @@ export async function callVisionWorker(
 		typeof fetchImplOrOptions === "function" ? undefined : loggerOption === null ? undefined : (loggerOption ?? console);
 	const logMeta: Record<string, unknown> = (options as any).logMeta && typeof (options as any).logMeta === "object" ? (options as any).logMeta : {};
 	const attempt = typeof (options as any).attempt === "number" && Number.isFinite((options as any).attempt) ? (options as any).attempt : 1;
+	const runtime = (options as any).runtime as VisionJobRuntime | undefined;
 	const url = `${config.visionWorkerUrl}/extract-visuals`;
+
+	if (runtime) {
+		const ok = await runtime.ensureReady({ fetchImpl, timeoutMs, logger, logMeta });
+		if (!ok) return null;
+		if (runtime.disabled) return null;
+	}
 
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -904,6 +1046,11 @@ export async function callVisionWorker(
 			body: JSON.stringify(request),
 			signal: controller.signal,
 		});
+
+		if (runtime && (isRenderNoServer(res as any) || res.status === 404)) {
+			// Render may route to a no-server shard and return a fast 404; disable to avoid spamming.
+			runtime.disable("VISION_DISABLED_NO_SERVER", { where: "extract-visuals", status_code: res.status });
+		}
 
 		if (logger) {
 			logger.log(
@@ -3011,6 +3158,7 @@ export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 	pageImageUris: string[];
 	structuredExtractorVersion?: string;
 	visionConfig: VisionExtractorConfig;
+	visionRuntime?: VisionJobRuntime;
 	env?: NodeJS.ProcessEnv;
 	logger?: LogLike;
 }): Promise<{
@@ -3032,7 +3180,7 @@ export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 	})();
 
 	const enableStructuredVisionHints = parseBool(
-		env.ENABLE_STRUCTURED_VISION_HINTS ?? (env.VISION_WORKER_URL && String(env.VISION_WORKER_URL).trim() ? "1" : "0")
+		env.ENABLE_STRUCTURED_VISION_HINTS ?? ((env.VISION_BASE_URL || env.VISION_WORKER_URL) && String(env.VISION_BASE_URL || env.VISION_WORKER_URL).trim() ? "1" : "0")
 	);
 	if (!enableStructuredVisionHints) {
 		return { attempted: 0, updated: 0, skipped_no_uri: 0, skipped_has_text: 0, skipped_has_segment: 0, errors: 0 };
@@ -3114,7 +3262,7 @@ export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 					image_uri: pageImageUri,
 					extractor_version: `${params.visionConfig.extractorVersion}_force_vu`,
 				},
-				{ timeoutMs: 20_000 }
+				{ timeoutMs: 20_000, runtime: params.visionRuntime, logger }
 			);
 
 			const bestVu = (() => {
@@ -3610,13 +3758,14 @@ export async function persistSyntheticVisualAssets(params: {
 	structuredData: any;
 	fullContent: any;
 	extractorVersion?: string;
+	visionRuntime?: VisionJobRuntime;
 	env?: NodeJS.ProcessEnv;
 }): Promise<number> {
 	const env = params.env ?? process.env;
 	const extractorVersion = params.extractorVersion ?? "structured_native_v1";
 
 	const enableStructuredVisionHints = parseBool(
-		env.ENABLE_STRUCTURED_VISION_HINTS ?? (env.VISION_WORKER_URL && String(env.VISION_WORKER_URL).trim() ? "1" : "0")
+		env.ENABLE_STRUCTURED_VISION_HINTS ?? ((env.VISION_BASE_URL || env.VISION_WORKER_URL) && String(env.VISION_BASE_URL || env.VISION_WORKER_URL).trim() ? "1" : "0")
 	);
 
 	const pageImageUris = await (async (): Promise<string[]> => {
@@ -3629,6 +3778,14 @@ export async function persistSyntheticVisualAssets(params: {
 	})();
 
 	const visionConfig = enableStructuredVisionHints ? getVisionExtractorConfig(env) : null;
+	const visionRuntime = visionConfig
+		? (params.visionRuntime ??
+				createVisionJobRuntime({
+					config: visionConfig,
+					logger: console,
+					logMeta: { stage: "persist_synthetic_visual_assets", document_id: params.documentId },
+				}))
+		: null;
 
 	const cleanupStaleExcelSheetSummaries = async (): Promise<void> => {
 		if (params.docKind !== "excel") return;
@@ -3718,6 +3875,7 @@ export async function persistSyntheticVisualAssets(params: {
 							image_uri: pageImageUri,
 							extractor_version: visionConfig.extractorVersion,
 						},
+						{ runtime: visionRuntime ?? undefined }
 					);
 
 					const bestVu = (() => {

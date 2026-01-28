@@ -52,7 +52,7 @@ Key knobs:
 - `PIPELINE_AUTOMATION_MODE=off|shadow|primary` (worker)
   - Production defaults to `off`.
   - Set to `shadow` to run the newer pipelines additively without changing legacy results.
-- `VISION_WORKER_URL` (worker)
+- `VISION_BASE_URL` (worker)
   - Required for visual extraction; `infra/docker-compose.deploy.yml` includes an optional `vision_worker` service.
 - `UPLOAD_DIR` (api + worker)
   - Used for temporary local artifacts.

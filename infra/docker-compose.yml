@@ -87,7 +87,7 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/dealdecision
       REDIS_URL: redis://redis:6379
       UPLOAD_DIR: /app/uploads
-      VISION_WORKER_URL: http://vision_worker:8000
+      VISION_BASE_URL: http://vision_worker:8000
       ENABLE_VISUAL_EXTRACTION: ${ENABLE_VISUAL_EXTRACTION:-1}
       DDAI_ENABLE_PHASEB_VISUAL_EVIDENCE: "1"
       # PDF extraction rollout flags (safe defaults)

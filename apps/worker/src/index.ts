@@ -43,6 +43,7 @@ import {
 import { deriveEvidenceDrafts } from "./lib/evidence";
 import {
 	callVisionWorker,
+	createVisionJobRuntime,
 	enqueueExtractVisualsIfPossible,
 	getVisionExtractorConfig,
 	hasTable,
@@ -330,18 +331,25 @@ console.info(
 );
 
 // Log the resolved vision service URL once at startup (helps catch accidental localhost wiring in production).
-try {
-	const cfg = getVisionExtractorConfig();
-	console.log(
+const visionCfg = getVisionExtractorConfig();
+console.log(
+	JSON.stringify({
+		event: "VISION_SERVICE_URL_RESOLVED",
+		service: "worker",
+		vision_base_url: visionCfg.visionWorkerUrl,
+		vision_enabled: visionCfg.enabled,
+		extractor_version: visionCfg.extractorVersion,
+		legacy_env_vision_worker_url_set: Boolean(process.env.VISION_WORKER_URL && !process.env.VISION_BASE_URL),
+	})
+);
+if (process.env.VISION_WORKER_URL && !process.env.VISION_BASE_URL) {
+	console.warn(
 		JSON.stringify({
-			event: "VISION_SERVICE_URL_RESOLVED",
-			vision_service_url: cfg.visionWorkerUrl,
-			vision_enabled: cfg.enabled,
-			extractor_version: cfg.extractorVersion,
+			event: "VISION_WORKER_URL_DEPRECATED",
+			service: "worker",
+			message: "VISION_WORKER_URL is deprecated; prefer VISION_BASE_URL",
 		})
 	);
-} catch {
-	// ignore
 }
 
 function formatRenderedPageKey(params: { prefix: string; format?: string | null; pageIndex: number }): string {
@@ -2538,6 +2546,16 @@ registerWorker("extract_visuals", async (job: Job) => {
 		return { ok: false, skipped: true, reason: "disabled" };
 	}
 
+	const visionRuntime = createVisionJobRuntime({
+		config,
+		logger: console,
+		logMeta: {
+			job_id: job.id ? String(job.id) : null,
+			deal_id: dealId ?? null,
+			stage: "extract_visuals",
+		},
+	});
+
 	const extractorVersion = typeof extractorVersionOverride === "string" && extractorVersionOverride.trim()
 		? extractorVersionOverride.trim()
 		: config.extractorVersion;
@@ -3464,6 +3482,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 				pageImageUris: uris,
 				structuredExtractorVersion: structuredExtractorVersion,
 				visionConfig: config,
+				visionRuntime,
 				env: process.env,
 				logger: console,
 			});
@@ -3574,6 +3593,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 							structuredData: docMeta?.structured_data ?? {},
 							fullContent: docMeta?.full_content ?? {},
 							extractorVersion: structuredExtractorVersion,
+							visionRuntime,
 							env: process.env,
 						});
 						if (syntheticPersisted > 0) {
@@ -3796,7 +3816,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 					image_b64: image_b64 ?? undefined,
 					extractor_version: extractorVersion,
 				},
-				{ logger: console, attempt: 1, logMeta: visionLogMeta }
+				{ logger: console, attempt: 1, logMeta: visionLogMeta, runtime: visionRuntime }
 			);
 			if (!response) {
 				console.warn(
@@ -4318,6 +4338,16 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 		return { ok: false, skipped: true, reason: "disabled" };
 	}
 
+	const visionRuntime = createVisionJobRuntime({
+		config,
+		logger: console,
+		logMeta: {
+			job_id: job.id ? String(job.id) : null,
+			deal_id: dealId,
+			stage: "deep_scan_visuals",
+		},
+	});
+
 	const pool = getPool();
 	const tablesOk = (await hasTable(pool, "visual_assets")) && (await hasTable(pool, "visual_extractions"));
 	if (!tablesOk) {
@@ -4510,13 +4540,29 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 				image_b64 && (image_uri.startsWith("http://") || image_uri.startsWith("https://"))
 					? undefined
 					: image_uri;
-			let response = await callVisionWorker(config, {
-				document_id: docId,
-				page_index: pageIndex,
-				image_uri: safe_image_uri,
-				image_b64: image_b64 ?? undefined,
-				extractor_version: forceExtractorVersion,
-			});
+			let response = await callVisionWorker(
+				config,
+				{
+					document_id: docId,
+					page_index: pageIndex,
+					image_uri: safe_image_uri,
+					image_b64: image_b64 ?? undefined,
+					extractor_version: forceExtractorVersion,
+				},
+				{
+					logger: console,
+					runtime: visionRuntime,
+					attempt: 1,
+					logMeta: {
+						stage: "deep_scan_visuals",
+						job_id: job.id ? String(job.id) : null,
+						deal_id: dealId,
+						document_id: docId,
+						page_index: pageIndex,
+						vision_base_url: config.visionWorkerUrl,
+					},
+				}
+			);
 
 			if (!response || !Array.isArray((response as any).assets) || response.assets.length === 0) {
 				pagesErrored += 1;

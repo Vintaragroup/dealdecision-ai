@@ -61,7 +61,7 @@ services:
         value: "1"
       - key: WORKER_CONCURRENCY
         value: "1"
-      - key: VISION_WORKER_URL
+      - key: VISION_BASE_URL
         value: "https://dealdecision-vision-v2.onrender.com"
       - key: R2_ACCOUNT_ID
         sync: false

@@ -5,7 +5,7 @@ Usage:
   pnpm -C apps/worker tsx src/scripts/pdf-v2-compare.ts /path/to/file.pdf --doc-id <uuid>
 
 Notes:
-- Requires vision_worker to be running (VISION_WORKER_URL) for v2 native extraction.
+- Requires vision_worker to be running (VISION_BASE_URL) for v2 native extraction.
 - Does NOT write to DB.
 */
 

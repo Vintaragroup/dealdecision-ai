@@ -84,7 +84,7 @@ services:
       # Pipeline automation policy (prod default is "off"; set to "shadow" for set-and-forget).
       PIPELINE_AUTOMATION_MODE: ${PIPELINE_AUTOMATION_MODE:-off}
       # Visual extraction uses the vision worker (can be an internal service or external URL).
-      VISION_WORKER_URL: ${VISION_WORKER_URL:-http://vision_worker:8000}
+      VISION_BASE_URL: ${VISION_BASE_URL:-http://vision_worker:8000}
       # Analysis Foundation (Fundability) flags (default OFF; set to 1 to enable)
       FUNDABILITY_SHADOW_MODE: ${FUNDABILITY_SHADOW_MODE:-0}
       FUNDABILITY_SOFT_CAPS: ${FUNDABILITY_SOFT_CAPS:-0}
@@ -101,7 +101,7 @@ services:
     restart: unless-stopped
 
   # Optional: co-locate the vision worker for visual extraction.
-  # If you run it elsewhere, set VISION_WORKER_URL and remove this service.
+  # If you run it elsewhere, set VISION_BASE_URL and remove this service.
   vision_worker:
     build:
       context: ../services/vision_worker

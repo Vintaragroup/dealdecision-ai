@@ -41,7 +41,7 @@ async function main() {
 	if (args.help || !args.file) {
 		console.log("Usage: tsx src/scripts/pdf-slide-understanding-v1.ts <file.pdf> [--doc-id <id>] [--out <path.json>]");
 		console.log("Env:");
-		console.log("  VISION_WORKER_URL=http://127.0.0.1:8000");
+		console.log("  VISION_BASE_URL=http://127.0.0.1:8000");
 		console.log("  PDF_EXTRACT_MODE=v2_shadow|v2_primary (default v1)");
 		console.log("  PDF_SLIDE_UNDERSTANDING_MODE=shadow (default off)");
 		process.exit(0);

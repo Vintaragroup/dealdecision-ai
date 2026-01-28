@@ -97,6 +97,17 @@ The web app is a Vite build, so any runtime configuration must be provided at **
   - PDF (scanned + editable), PNG/JPG, XLSX/XLS, DOCX/DOC, PPTX/PPT
   - verify `visual_assets.image_uri` is non-null for persisted assets
 
+### E2E doc pipeline smoke script
+
+Run a generated-fixtures smoke test (creates a temporary deal, uploads PDF/PPTX/DOCX/XLSX/PNG/CSV, waits for rendered pages, runs visual extraction + analysis):
+
+- `API_BASE_URL=http://localhost:9000 pnpm verify:doc-pipeline:e2e`
+
+Auth notes:
+
+- If your API requires auth, provide `AUTH_TOKEN` (Bearer token).
+- For local/dev docker, you can set `DISABLE_CLERK_AUTH=1` (non-production only).
+
 ---
 
 ## Analysis Phases (Conceptual)

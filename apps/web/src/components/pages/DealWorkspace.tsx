@@ -289,7 +289,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const nowMs = typeof opts.nowMs === 'number' ? opts.nowMs : Date.now();
     const finishedMs = parseIsoMs(opts.extractFinishedAt);
     if (finishedMs == null) return true;
-    return nowMs - finishedMs <= 15_000;
+    return nowMs - finishedMs <= 60_000;
   };
 
   const isSupersedableAnalyzeFailure = (row: { status?: unknown; message?: unknown; error?: unknown } | null | undefined): boolean => {
@@ -356,11 +356,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     if (!job) return { job: null as DealJobRowV2 | null, treatFailedAsPending: false };
 
     const treatFailedAsPending =
-      isFullProcessActive &&
       (job.type ?? '') === 'analyze_deal' &&
       isFailedJobStatus(job.status) &&
-      // Only treat as pending when there's no active/succeeded job already selected.
-      shouldTreatRunAnalyzeFailureAsPending({ extractFinishedAt: fullProcessExtractFinishedAt ?? null });
+      // Only suppress the known fast-fail during the run.
+      isSupersedableAnalyzeFailure(job) &&
+      // Treat as pending while Full process is active, or shortly after extraction finishes.
+      (isFullProcessActive || shouldTreatRunAnalyzeFailureAsPending({ extractFinishedAt: fullProcessExtractFinishedAt ?? null }));
 
     return { job, treatFailedAsPending };
   }, [dealJobs, fullProcessExtractCreatedAt, fullProcessExtractFinishedAt, fullProcessRunExtractJobId, isFullProcessActive, jobUpdatedAt]);
@@ -1617,6 +1618,20 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         }
         setJobCreatedAt((job as any)?.created_at || null);
         setJobStartedAt((job as any)?.started_at || null);
+
+        // Full process UX: if we're currently tracking the extract_visuals job, automatically follow
+        // the run-scoped analyze_deal job as soon as it exists (avoid staying pinned on extract or a fast-fail).
+        if (isFullProcessActive && (job as any)?.type === 'extract_visuals') {
+          const runWindow = getFullProcessRunWindowMs();
+          if (runWindow) {
+            const best = selectAnalyzeJobInWindow(dealJobsRef.current, runWindow);
+            if (best && best.job_id && best.job_id !== job.job_id) {
+              setJobId(best.job_id);
+              return;
+            }
+          }
+        }
+
         const reason = (job as any)?.result?.reason || (job as any)?.status_detail?.reason || (job as any)?.reason || null;
         setJobReason(typeof reason === 'string' && reason.trim().length > 0 ? reason.trim() : null);
         if (normalizedStatus === 'queued' || normalizedStatus === 'running' || normalizedStatus === 'retrying') {
@@ -1665,6 +1680,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           const delayAnalyzeFailureToast =
             job.type === 'analyze_deal' &&
             normalizedStatus === 'failed' &&
+            isSupersedableAnalyzeFailure({ status: normalizedStatus, message: job.message }) &&
             scheduleAnalyzeFailureToastIfNoQuickSuccess({
               toastKey: analysisToastKey,
               toastMessage: analysisToastMessage,
@@ -1755,7 +1771,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         setDealJobsError(msg);
       } finally {
         if (cancelled) return;
-        const isActive = jobStatus === 'queued' || jobStatus === 'running' || jobStatus === 'retrying';
+        const isActive = isFullProcessActive || jobStatus === 'queued' || jobStatus === 'running' || jobStatus === 'retrying';
         pollTimer = window.setTimeout(poll, isActive ? 2500 : 15000);
       }
     };
@@ -1765,7 +1781,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       cancelled = true;
       clearTimer();
     };
-  }, [dealId, jobStatus]);
+  }, [dealId, isFullProcessActive, jobStatus]);
 
   useEffect(() => {
     if (!dealId || typeof EventSource === 'undefined') {
@@ -1802,6 +1818,20 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         }
         setJobCreatedAt((job as any)?.created_at ?? null);
         setJobStartedAt((job as any)?.started_at ?? null);
+
+        // Full process UX: if we're currently tracking the extract_visuals job, automatically follow
+        // the run-scoped analyze_deal job as soon as it exists.
+        if (isFullProcessActive && job.type === 'extract_visuals') {
+          const runWindow = getFullProcessRunWindowMs();
+          if (runWindow) {
+            const best = selectAnalyzeJobInWindow(dealJobsRef.current, runWindow);
+            if (best && best.job_id && activeJobId && best.job_id !== activeJobId) {
+              setJobId(best.job_id);
+              return;
+            }
+          }
+        }
+
         const reason = (job as any)?.result?.reason || (job as any)?.status_detail?.reason || (job as any)?.reason || null;
         setJobReason(typeof reason === 'string' && reason.trim().length > 0 ? reason.trim() : null);
         if (job.type === 'fetch_evidence' && (normalizedStatus === 'succeeded' || normalizedStatus === 'succeeded_with_warnings')) {
@@ -1823,6 +1853,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           const delayAnalyzeFailureToast =
             job.type === 'analyze_deal' &&
             normalizedStatus === 'failed' &&
+            isSupersedableAnalyzeFailure({ status: normalizedStatus, message: job.message }) &&
             scheduleAnalyzeFailureToastIfNoQuickSuccess({
               toastKey: analysisToastKey,
               toastMessage: analysisToastMessage,
@@ -2511,8 +2542,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             break;
           }
 
-          // Failed/cancelled: if extraction finished very recently, keep waiting within the run window.
-          if (shouldTreatRunAnalyzeFailureAsPending({ extractFinishedAt: fullProcessExtractFinishedAt ?? null })) {
+          // Failed/cancelled: only suppress the known fast-fail during the run (or shortly after extraction finishes).
+          if (
+            isSupersedableAnalyzeFailure({ status: done.normalizedStatus, message: done.job?.message, error: (done.job as any)?.error }) &&
+            (isFullProcessActive || shouldTreatRunAnalyzeFailureAsPending({ extractFinishedAt: fullProcessExtractFinishedAt ?? null }))
+          ) {
             updateFullStep('analyze_deal', {
               status: 'pending',
               job_id: null,
@@ -2528,8 +2562,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           break;
         }
 
-        // Only failed exists (or a failed is currently best): respect grace window.
-        if (bestStatus === 'failed' && shouldTreatRunAnalyzeFailureAsPending({ extractFinishedAt: fullProcessExtractFinishedAt ?? null })) {
+        // Only failed exists (or a failed is currently best): only suppress the known fast-fail during the run.
+        if (
+          bestStatus === 'failed' &&
+          isSupersedableAnalyzeFailure({ status: bestStatus, message: (best as any)?.message, error: (best as any)?.error }) &&
+          (isFullProcessActive || shouldTreatRunAnalyzeFailureAsPending({ extractFinishedAt: fullProcessExtractFinishedAt ?? null }))
+        ) {
           updateFullStep('analyze_deal', {
             status: 'pending',
             job_id: null,

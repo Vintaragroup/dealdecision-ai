@@ -2739,9 +2739,30 @@ registerWorker("extract_visuals", async (job: Job) => {
 
 	const blockedReasonsCount: Record<string, number> = {};
 
+	const hasDocumentsMetaStatusColumn = async (): Promise<boolean> => {
+		try {
+			const { rows } = await pool.query(
+				`SELECT 1 as ok
+				   FROM information_schema.columns
+				  WHERE table_schema = 'public'
+				    AND table_name = 'documents'
+				    AND column_name = 'meta_status'
+				  LIMIT 1`,
+				[]
+			);
+			return Array.isArray(rows) && rows.length > 0;
+		} catch {
+			return false;
+		}
+	};
+
+	const documentsMetaStatusOk = await hasDocumentsMetaStatusColumn();
+
 	try {
 		const { rows: metaRows } = await pool.query(
-			"SELECT id, deal_id, title, type, status, meta_status, page_count, extraction_metadata, deleted_at FROM documents WHERE id = ANY($1)",
+			documentsMetaStatusOk
+				? "SELECT id, deal_id, title, type, status, meta_status, page_count, extraction_metadata, deleted_at FROM documents WHERE id = ANY($1)"
+				: "SELECT id, deal_id, title, type, status, NULL::text AS meta_status, page_count, extraction_metadata, deleted_at FROM documents WHERE id = ANY($1)",
 			[targetDocumentIds]
 		);
 		const metaMap = new Map<string, any>();

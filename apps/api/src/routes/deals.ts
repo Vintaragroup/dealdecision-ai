@@ -19,6 +19,7 @@ import {
   purgeDealCascade,
   isPurgeDealNotFoundError,
   sanitizeText,
+  getDocumentCapabilities,
   buildDealScoringInputV0FromLineage,
   getSegmentConfidenceThresholds,
   detectContentArchetypeTags,
@@ -8436,39 +8437,86 @@ export async function registerDealRoutes(app: FastifyInstance, poolOverride?: an
       return reply.status(404).send({ error: "Deal not found" });
     }
 
-    const { rows: docs } = await pool.query<{ id: string; extraction_metadata: unknown | null }>(
-      "SELECT id, extraction_metadata FROM documents WHERE deal_id = $1 AND deleted_at IS NULL",
+    const hasMimeType = await hasColumn(pool as any, "documents", "mime_type");
+    const { rows: docs } = await pool.query<{ id: string; file_name: string | null; mime_type?: string | null; extraction_metadata: unknown | null }>(
+      `SELECT id, file_name${hasMimeType ? ", mime_type" : ", NULL::text AS mime_type"}, extraction_metadata
+         FROM documents
+        WHERE deal_id = $1 AND deleted_at IS NULL`,
       [dealId]
     );
 
     const readyDocIds: string[] = [];
-    const blocked: Array<{ document_id: string; reason: string; rendered_pages_count?: number; rendered_pages_rendered?: number | null }> = [];
+    const blocked: Array<{
+      document_id: string;
+      failure_reason: string;
+      next_action: string;
+      retryable: boolean;
+      render_state: {
+        rendered_pages_r2_present: boolean;
+        rendered_pages_count: number;
+        rendered_pages_rendered: number | null;
+      };
+    }> = [];
+
+    let visualCandidates = 0;
 
     for (const d of docs ?? []) {
+      const caps = getDocumentCapabilities({
+        fileName: typeof d?.file_name === "string" ? d.file_name : null,
+        mimeType: typeof (d as any)?.mime_type === "string" ? String((d as any).mime_type) : null,
+      });
+      if (!caps.visualExtractable) continue;
+      visualCandidates += 1;
+
       const metaObj = d?.extraction_metadata && typeof d.extraction_metadata === "object" ? (d.extraction_metadata as any) : null;
       const renderedR2 = metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === "object" ? (metaObj.rendered_pages_r2 as any) : null;
       const count = typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count) ? metaObj.rendered_pages_count : 0;
       const rendered = typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered) ? metaObj.rendered_pages_rendered : null;
 
       if (!renderedR2) {
-        blocked.push({ document_id: d.id, reason: "rendered_pages_r2_missing" });
+        blocked.push({
+          document_id: d.id,
+          failure_reason: "rendered_pages_r2_missing",
+          next_action: "enqueue_render_document_pages",
+          retryable: true,
+          render_state: { rendered_pages_r2_present: false, rendered_pages_count: count, rendered_pages_rendered: rendered },
+        });
         continue;
       }
       if (!count || count <= 0) {
-        blocked.push({ document_id: d.id, reason: "rendered_pages_count_missing", rendered_pages_count: count, rendered_pages_rendered: rendered });
+        blocked.push({
+          document_id: d.id,
+          failure_reason: "rendered_pages_count_missing",
+          next_action: "wait_for_render_document_pages",
+          retryable: true,
+          render_state: { rendered_pages_r2_present: true, rendered_pages_count: count, rendered_pages_rendered: rendered },
+        });
         continue;
       }
       if (rendered == null || rendered < count) {
-        blocked.push({ document_id: d.id, reason: "render_incomplete", rendered_pages_count: count, rendered_pages_rendered: rendered });
+        blocked.push({
+          document_id: d.id,
+          failure_reason: "render_incomplete",
+          next_action: "wait_for_render_document_pages",
+          retryable: true,
+          render_state: { rendered_pages_r2_present: true, rendered_pages_count: count, rendered_pages_rendered: rendered },
+        });
         continue;
       }
       readyDocIds.push(d.id);
     }
 
     if (readyDocIds.length === 0) {
+      if (visualCandidates === 0) {
+        return reply.status(422).send({
+          error: "no_visual_documents",
+          message: "No visual-extractable documents found for this deal.",
+        });
+      }
       return reply.status(409).send({
         error: "rendered_pages_not_ready",
         message: "No documents have completed rendered page images yet. Run re-extract / wait for rendering, then retry.",
+        render_state: { visual_documents_total: visualCandidates, ready_documents: 0, blocked_documents: blocked.length },
         blocked_documents: blocked,
       });
     }

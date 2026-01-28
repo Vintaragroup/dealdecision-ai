@@ -20,6 +20,7 @@
     "validate:llm": "tsx scripts/validate-llm-config.ts",
     "rerun:analysis:all": "tsx scripts/rerun-analysis-all-deals.ts",
     "verify:documents:all": "tsx scripts/verify-documents-all-deals.ts",
+    "verify:doc-pipeline:e2e": "tsx apps/worker/src/scripts/verify-doc-pipeline-e2e.ts",
     "reprocess:extraction:all": "tsx scripts/reprocess-extraction-all-deals.ts",
     "rebuild:deals": "tsx scripts/rebuild-deals.ts",
     "smoke:analyst-evidence": "tsx apps/api/scripts/smoke-test-analyst-evidence.ts",

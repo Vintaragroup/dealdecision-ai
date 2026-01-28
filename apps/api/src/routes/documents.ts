@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { createHash, randomUUID } from "crypto";
 import { z } from "zod";
 import type { Document } from "@dealdecision/contracts";
-import { sanitizeText } from "@dealdecision/core";
+import { getDocumentCapabilities, sanitizeText } from "@dealdecision/core";
 import { resolveVisualAssetImageUriForApi } from "../lib/visual-asset-image-uri";
 import { getPool } from "../lib/db";
 import { inferDocumentTypeFromName } from "../lib/document-type-inference";
@@ -1454,12 +1454,29 @@ export async function registerDocumentRoutes(
     const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
     const forceResegment = Boolean((request.body as any)?.force_resegment);
 
-    const { rows } = await pool.query<{ extraction_metadata: unknown | null }>(
-      "SELECT extraction_metadata FROM documents WHERE id = $1 AND deal_id = $2 LIMIT 1",
+    const hasMimeType = await hasColumn(pool as any, "documents", "mime_type");
+    const { rows } = await pool.query<{ extraction_metadata: unknown | null; file_name: string | null; mime_type?: string | null }>(
+      `SELECT extraction_metadata, file_name${hasMimeType ? ", mime_type" : ", NULL::text AS mime_type"}
+         FROM documents
+        WHERE id = $1 AND deal_id = $2
+        LIMIT 1`,
       [document_id, deal_id]
     );
     if (rows.length === 0) {
       return reply.status(404).send({ ok: false, error: "Document not found" });
+    }
+
+    const caps = getDocumentCapabilities({
+      fileName: typeof rows[0]?.file_name === "string" ? rows[0].file_name : null,
+      mimeType: typeof (rows[0] as any)?.mime_type === "string" ? String((rows[0] as any).mime_type) : null,
+    });
+    if (!caps.visualExtractable) {
+      return reply.status(422).send({
+        ok: false,
+        error: "document_not_visual_extractable",
+        message: "This document type is not eligible for visual extraction.",
+        document_id,
+      });
     }
     const metaObj = rows[0]?.extraction_metadata && typeof rows[0].extraction_metadata === "object" ? (rows[0].extraction_metadata as any) : null;
     const renderedR2 = metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === "object" ? (metaObj.rendered_pages_r2 as any) : null;
@@ -1471,7 +1488,14 @@ export async function registerDocumentRoutes(
         error: "rendered_pages_not_ready",
         message: "Rendered page images are not ready yet. Wait for rendering to complete, then retry.",
         document_id: document_id,
-        diagnostics: {
+        failure_reason: !renderedR2
+          ? "rendered_pages_r2_missing"
+          : !count || count <= 0
+            ? "rendered_pages_count_missing"
+            : "render_incomplete",
+        next_action: !renderedR2 ? "enqueue_render_document_pages" : "wait_for_render_document_pages",
+        retryable: true,
+        render_state: {
           rendered_pages_r2_present: Boolean(renderedR2),
           rendered_pages_count: count,
           rendered_pages_rendered: rendered,

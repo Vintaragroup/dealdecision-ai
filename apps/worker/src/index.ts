@@ -6,6 +6,8 @@ import { execSync } from "child_process";
 import type { JobProgressEventV1, JobStatus, JobStatusDetail } from "@dealdecision/contracts";
 import {
 	sanitizeText,
+	getDocumentCapabilities,
+	getInitialRenderedPagesChunk,
 	generatePhase1DIOV1,
 	DealOrchestrator,
 	DIOStorageImpl,
@@ -2182,10 +2184,85 @@ registerWorker("render_document_pages", async (job: Job) => {
 
 	const looksLikePdf = (b: Buffer) => b.length >= 5 && b.slice(0, 5).toString("utf8") === "%PDF-";
 	let renderBuffer: Buffer = buffer;
-	if (!looksLikePdf(renderBuffer)) {
-		const name = typeof original?.file_name === "string" ? original.file_name : "";
-		const mt = typeof original?.mime_type === "string" ? original.mime_type : "";
-		const ext = name.toLowerCase().split(".").pop() ?? "";
+	const name = typeof original?.file_name === "string" ? original.file_name : "";
+	const mt = typeof original?.mime_type === "string" ? original.mime_type : "";
+	const ext = name.toLowerCase().split(".").pop() ?? "";
+	const isImage = mt.toLowerCase().startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "tif", "tiff", "bmp"].includes(ext);
+	const isPdfLike = looksLikePdf(renderBuffer) || ext === "pdf" || mt.toLowerCase().includes("application/pdf");
+
+	// Images: normalize into a single rendered page and upload as page_0000.png.
+	if (isImage) {
+		const uploadDir = await resolveWritableUploadDir(process.env);
+		const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
+
+		const effectiveStart = 0;
+		const effectiveEnd = 1;
+		await updateJob(job, "running", `Rendering image page start=${effectiveStart} end=${effectiveEnd}`, 10);
+		logStage("render_start", {
+			document_id: docId,
+			page_start: effectiveStart,
+			page_end: effectiveEnd,
+			page_count_hint: 1,
+		});
+		const resImg = await withTimeout(
+			persistImagePage({ buffer: renderBuffer, documentId: docId, uploadDir, config: persistCfg, logger: console }),
+			10 * 60_000,
+			{ stage: "render_image", document_id: docId }
+		);
+		const totalPages = 1;
+		// Upload page_0000.png to R2 and persist metadata using the existing common path.
+		const r2Bucket = (process.env.R2_BUCKET || "").trim();
+		const prefix =
+			renderedPagesPrefixFromMeta ?? `deals/${(dealIdResolved || dealIdSafe || "unknown")}/documents/${docId}/rendered_pages`;
+		if (r2Bucket && resImg.rendered_pages_dir) {
+			try {
+				const localName = `page_${String(0).padStart(4, "0")}.png`;
+				const localPath = path.join(resImg.rendered_pages_dir, localName);
+				const bytes = await fs.readFile(localPath);
+				if (bytes && bytes.length > 0) {
+					await withTimeout(
+						uploadToR2({
+							bucket: r2Bucket,
+							key: r2RenderedPageKey(prefix, 0),
+							body: bytes,
+							contentType: "image/png",
+							env: process.env,
+						}),
+						120_000,
+						{ stage: "upload_page", document_id: docId, page_index: 0, bucket: r2Bucket, prefix }
+					);
+				}
+
+				await withTimeout(
+					mergeDocumentExtractionMetadata({
+						documentId: docId,
+						patch: {
+							rendered_pages_r2: { bucket: r2Bucket, prefix, format: "page_%04d.png" },
+							rendered_pages_count: totalPages,
+							rendered_pages_rendered: 1,
+							rendered_pages_last_chunk: { page_start: 0, page_end: 1 },
+						},
+					}),
+					10 * 60_000,
+					{ stage: "ingest", document_id: docId }
+				);
+			} catch (err) {
+				console.warn(
+					`[render_document_pages] image R2 upload failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+				);
+			}
+		}
+
+		await updateJob(job, "succeeded", `Rendered image page (1)`, 100);
+		logStage("job_complete", {
+			document_id: docId,
+			rendered: 1,
+			total_pages: 1,
+		});
+		return { ok: true, rendered: 1, total_pages: 1 };
+	}
+
+	if (!isPdfLike) {
 		const officeExt = (["xlsx", "xls", "pptx", "ppt", "docx", "doc"] as const).includes(ext as any)
 			? (ext as any)
 			: mt.toLowerCase().includes("spreadsheet")

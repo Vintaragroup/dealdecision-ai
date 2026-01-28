@@ -4,7 +4,7 @@ import React from 'react';
 import { vi } from 'vitest';
 import { DealWorkspace } from '../components/pages/DealWorkspace';
 import { ScoreSourceProvider } from '../contexts/ScoreSourceContext';
-import { apiGetDeal, apiGetJob } from '../lib/apiClient';
+import { apiGetDeal, apiGetDealJobs, apiGetJob } from '../lib/apiClient';
 
 vi.mock('../contexts/UserRoleContext', () => ({
   useUserRole: () => ({ isAnalyst: true, isInvestor: false }),
@@ -453,6 +453,60 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/Job Center/i)).toBeInTheDocument();
+    });
+  });
+
+  test('Recent jobs aggregates mixed chunk outcomes as Done (warn), not Failed', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v5', dioStatus: 'ready', lastAnalyzedAt: null } as any);
+
+    const now = new Date().toISOString();
+    vi.mocked(apiGetDealJobs).mockResolvedValue([
+      {
+        job_id: 'parent-1',
+        queue: 'extract_visuals',
+        type: 'extract_visuals',
+        status: 'failed',
+        progress_pct: 100,
+        created_at: now,
+        updated_at: now,
+        deal_id: 'deal-8',
+      },
+      {
+        job_id: 'child-1',
+        queue: 'extract_visuals',
+        type: 'extract_visuals',
+        status: 'failed',
+        progress_pct: 100,
+        parent_job_id: 'parent-1',
+        created_at: now,
+        updated_at: now,
+        deal_id: 'deal-8',
+      },
+      {
+        job_id: 'child-2',
+        queue: 'extract_visuals',
+        type: 'extract_visuals',
+        status: 'succeeded',
+        progress_pct: 100,
+        parent_job_id: 'parent-1',
+        created_at: now,
+        updated_at: now,
+        deal_id: 'deal-8',
+      },
+    ] as any);
+
+    renderWorkspace({ dealId: 'deal-8' });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Job Center/i)).toBeInTheDocument();
+    });
+
+    // Expand accordion
+    const recentJobs = screen.getByText(/Recent jobs/i);
+    await userEvent.click(recentJobs);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Done \(warn\)/i)).toBeInTheDocument();
     });
   });
 });

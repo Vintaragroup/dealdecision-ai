@@ -1413,6 +1413,89 @@ export function buildDeepScanExtractionMetadataPatch(params: {
 	};
 }
 
+export type ExtractVisualsPageFailureV1 = {
+	page_index: number;
+	reason: string;
+	attempts_used: number;
+	elapsed_ms?: number;
+	status_code?: number | null;
+};
+
+export type ExtractVisualsPageSummaryV1 = {
+	version: 1;
+	attempted: number;
+	succeeded: number;
+	failed: number;
+	failures: ExtractVisualsPageFailureV1[];
+	completed_at: string;
+	skipped_existing?: number;
+};
+
+export type ExtractVisualsOutcomeStatus = "succeeded" | "succeeded_with_warnings" | "failed";
+
+export function computeExtractVisualsOutcomeStatusV1(params: {
+	visionAttempted: number;
+	visionSucceeded: number;
+	skippedExisting?: number;
+	fatal?: boolean;
+}): ExtractVisualsOutcomeStatus {
+	if (params.fatal) return "failed";
+	const skippedExisting = Number.isFinite(params.skippedExisting) ? Math.max(0, Math.floor(params.skippedExisting ?? 0)) : 0;
+	const visionAttempted = Number.isFinite(params.visionAttempted) ? Math.max(0, Math.floor(params.visionAttempted)) : 0;
+	const visionSucceeded = Number.isFinite(params.visionSucceeded) ? Math.max(0, Math.floor(params.visionSucceeded)) : 0;
+	const effectiveAttempted = visionAttempted + skippedExisting;
+	const effectiveSucceeded = visionSucceeded + skippedExisting;
+	if (visionAttempted > 0 && effectiveSucceeded === 0) return "failed";
+	return effectiveSucceeded < effectiveAttempted ? "succeeded_with_warnings" : "succeeded";
+}
+
+export function buildExtractVisualsPageSummaryV1(params: {
+	visionAttempted: number;
+	visionSucceeded: number;
+	skippedExisting?: number;
+	failures: ExtractVisualsPageFailureV1[];
+	completedAt?: string;
+}): ExtractVisualsPageSummaryV1 {
+	const skippedExisting = Number.isFinite(params.skippedExisting) ? Math.max(0, Math.floor(params.skippedExisting ?? 0)) : 0;
+	const visionAttempted = Number.isFinite(params.visionAttempted) ? Math.max(0, Math.floor(params.visionAttempted)) : 0;
+	const visionSucceeded = Number.isFinite(params.visionSucceeded) ? Math.max(0, Math.floor(params.visionSucceeded)) : 0;
+	const attempted = visionAttempted + skippedExisting;
+	const succeeded = visionSucceeded + skippedExisting;
+	const failed = Math.max(0, visionAttempted - visionSucceeded);
+	return {
+		version: 1,
+		attempted,
+		succeeded,
+		failed,
+		failures: Array.isArray(params.failures) ? params.failures : [],
+		completed_at: params.completedAt ?? new Date().toISOString(),
+		...(skippedExisting > 0 ? { skipped_existing: skippedExisting } : {}),
+	};
+}
+
+export function buildExtractVisualsExtractionMetadataPatchV1(params: {
+	existingVisualExtraction: Record<string, unknown> | null | undefined;
+	summary: ExtractVisualsPageSummaryV1;
+	status: ExtractVisualsOutcomeStatus;
+	extractorVersion?: string;
+}): Record<string, unknown> {
+	const existing = params.existingVisualExtraction && typeof params.existingVisualExtraction === "object" ? params.existingVisualExtraction : {};
+	return {
+		visual_extraction: {
+			...existing,
+			// Canonical fields (do not preserve stale failures across reruns)
+			extract_visuals_status: params.status,
+			extract_visuals_page_summary_v1: params.summary,
+			extract_visuals_completed_at: params.summary.completed_at,
+			// Back-compat fields used by older UI/rollups
+			status: params.status,
+			page_summary_v1: params.summary,
+			at: params.summary.completed_at,
+			...(params.extractorVersion ? { extractor_version: params.extractorVersion } : {}),
+		},
+	};
+}
+
 type ExcelXlsxExtractRequest = {
 	document_id: string;
 	xlsx_b64: string;

@@ -2984,6 +2984,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const normalized = rawStatus.trim().toLowerCase();
     const aliasMap: Record<string, string> = {
       success: 'succeeded',
+	  completed: 'succeeded',
+	  done: 'succeeded',
     };
     const mapped = aliasMap[normalized] ?? normalized;
     const known = new Set([
@@ -4097,14 +4099,21 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                 const totalSum = totals.reduce((acc, t) => acc + (typeof t.total === 'number' ? t.total : 0), 0);
 
                                 const status = (() => {
-                                  const st = totals.map((t) => String(t.status ?? '').toLowerCase());
-                                  if (st.some((s) => s === 'failed')) return 'failed';
-                                  if (st.every((s) => s === 'succeeded' || s === 'succeeded_with_warnings')) {
-                                    return st.some((s) => s === 'succeeded_with_warnings') ? 'succeeded_with_warnings' : 'succeeded';
-                                  }
-                                  if (st.some((s) => s === 'running' || s === 'retrying')) return 'running';
-                                  if (st.some((s) => s === 'queued')) return 'queued';
-                                  return row.status;
+                const st = totals
+                  .map((t) => normalizeJobStatus(String(t.status ?? '')) ?? String(t.status ?? '').toLowerCase())
+                  .filter(Boolean);
+                const hasFailed = st.some((s) => s === 'failed');
+                const hasSucceeded = st.some((s) => s === 'succeeded');
+                const hasWarnings = st.some((s) => s === 'succeeded_with_warnings');
+                if (st.length > 0 && st.every((s) => s === 'succeeded' || s === 'succeeded_with_warnings')) {
+                  return hasWarnings ? 'succeeded_with_warnings' : 'succeeded';
+                }
+                // Key semantics: any successful chunk + any failed chunk => overall warnings, not failed.
+                if (hasFailed && (hasSucceeded || hasWarnings)) return 'succeeded_with_warnings';
+                if (hasFailed) return 'failed';
+                if (st.some((s) => s === 'running' || s === 'retrying')) return 'running';
+                if (st.some((s) => s === 'queued')) return 'queued';
+                return row.status;
                                 })();
 
                                 return {
@@ -4138,7 +4147,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                         <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>{ts}</div>
                                       ) : null}
                                       <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass(sev)}`}>
-                                        {agg.status && String(agg.status).toLowerCase() === 'succeeded' ? 'Done' : agg.status && String(agg.status).toLowerCase() === 'failed' ? 'Failed' : running ? 'Running' : fullProcessStepLabel(agg.status)}
+                    {agg.status && String(agg.status).toLowerCase() === 'succeeded'
+                      ? 'Done'
+                      : agg.status && String(agg.status).toLowerCase() === 'succeeded_with_warnings'
+                        ? 'Done (warn)'
+                        : agg.status && String(agg.status).toLowerCase() === 'failed'
+                          ? 'Failed'
+                          : running
+                            ? 'Running'
+                            : fullProcessStepLabel(agg.status)}
                                       </span>
                                       {running && pct != null ? (
                                         <div className={`text-[11px] font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{pct}%</div>

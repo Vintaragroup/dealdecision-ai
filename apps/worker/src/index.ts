@@ -49,6 +49,9 @@ import {
 	createVisionJobRuntime,
 	enqueueExtractVisualsIfPossible,
 	getVisionExtractorConfig,
+	buildExtractVisualsExtractionMetadataPatchV1,
+	buildExtractVisualsPageSummaryV1,
+	computeExtractVisualsOutcomeStatusV1,
 	buildDeepScanExtractionMetadataPatch,
 	buildDeepScanPageSummaryV1,
 	computeDeepScanOutcomeStatus,
@@ -4005,6 +4008,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 		})();
 		let docVisionAttempted = 0;
 		let docVisionSucceeded = 0;
+		let docPagesSkippedExisting = 0;
 		const docVisionFailures: Array<{ page_index: number; reason: string; attempts: any[] }> = [];
 
 		let pagesCompletedInJob = 0;
@@ -4132,6 +4136,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 					);
 					if ((rows?.length ?? 0) > 0) {
 						pagesSkippedExisting += 1;
+						docPagesSkippedExisting += 1;
 						pagesCompletedInJob += 1;
 						const nowMs = Date.now();
 						const shouldReport =
@@ -4336,36 +4341,45 @@ registerWorker("extract_visuals", async (job: Job) => {
 		}
 
 		const docVisionFailed = Math.max(0, docVisionAttempted - docVisionSucceeded);
-		const docSummary = {
-			pages_attempted: docVisionAttempted,
-			pages_succeeded: docVisionSucceeded,
-			pages_failed: docVisionFailed,
-			failures: docVisionFailures.slice(0, 50),
-			page_range: { start: pageStart, end: pageEndExclusive },
-			extractor_version: extractorVersion,
-			updated_at: new Date().toISOString(),
-		};
 		if (docVisionFailed > 0) docsWithVisionFailures += 1;
-		const docStatus =
-			docVisionAttempted === 0
-				? "skipped"
-				: docVisionSucceeded === 0
-					? "failed"
-					: docVisionFailed > 0
-						? "succeeded_with_warnings"
-						: "succeeded";
+
+		const completedAt = new Date().toISOString();
+		const summary = buildExtractVisualsPageSummaryV1({
+			visionAttempted: docVisionAttempted,
+			visionSucceeded: docVisionSucceeded,
+			skippedExisting: docPagesSkippedExisting,
+			failures: docVisionFailures
+				.slice(0, 50)
+				.map((f) => {
+					const attempts = Array.isArray(f.attempts) ? f.attempts : [];
+					const last = attempts.length > 0 ? attempts[attempts.length - 1] : null;
+					const statusCode = typeof (last as any)?.status_code === "number" ? Number((last as any).status_code) : null;
+					const elapsedMs = typeof (last as any)?.elapsed_ms === "number" ? Number((last as any).elapsed_ms) : undefined;
+					return {
+						page_index: f.page_index,
+						reason: f.reason,
+						attempts_used: attempts.length,
+						...(elapsedMs != null ? { elapsed_ms: elapsedMs } : {}),
+						status_code: statusCode,
+					};
+				}),
+			completedAt,
+		});
+
+		const docStatus = computeExtractVisualsOutcomeStatusV1({
+			visionAttempted: docVisionAttempted,
+			visionSucceeded: docVisionSucceeded,
+			skippedExisting: docPagesSkippedExisting,
+		});
 		try {
 			await mergeDocumentExtractionMetadata({
 				documentId: docId,
-				patch: {
-					visual_extraction: {
-						...existingVisualExtraction,
-						status: (existingVisualExtraction as any)?.status ?? docStatus,
-						at: new Date().toISOString(),
-						extractor_version: extractorVersion,
-						page_summary_v1: docSummary,
-					},
-				},
+				patch: buildExtractVisualsExtractionMetadataPatchV1({
+					existingVisualExtraction,
+					summary,
+					status: docStatus,
+					extractorVersion,
+				}),
 			});
 		} catch {
 			// best-effort
@@ -4377,7 +4391,10 @@ registerWorker("extract_visuals", async (job: Job) => {
 				job_id: job.id ? String(job.id) : null,
 				deal_id: derivedDealId,
 				document_id: docId,
-				...docSummary,
+				extract_visuals_status: docStatus,
+				extract_visuals_page_summary_v1: summary,
+				page_range: { start: pageStart, end: pageEndExclusive },
+				extractor_version: extractorVersion,
 			})
 		);
 
@@ -4469,7 +4486,8 @@ registerWorker("extract_visuals", async (job: Job) => {
 		return { ok: true, persisted, docs_processed: docsProcessed, docs_skipped: docsSkipped, job_counters: jobCounters, status: "succeeded_with_warnings" };
 	}
 
-	const visionFullyDown = pagesVisionAttempted > 0 && pagesVisionSucceeded === 0;
+	const effectiveSucceeded = pagesVisionSucceeded + pagesSkippedExisting;
+	const visionFullyDown = pagesVisionAttempted > 0 && effectiveSucceeded === 0;
 	const hadWarnings =
 		docsBlocked > 0 ||
 		docsMissingPageImages > 0 ||
@@ -4509,12 +4527,26 @@ registerWorker("extract_visuals", async (job: Job) => {
 	}
 
 	await updateJob(job, finalStatus, finalMessage, 100);
+	try {
+		console.log(
+			JSON.stringify({
+				event: "EXTRACT_VISUALS_JOB_SUMMARY",
+				job_id: job.id ? String(job.id) : null,
+				deal_id: dealId ?? null,
+				status: finalStatus,
+				completed_at: new Date().toISOString(),
+				counters: jobCounters,
+			})
+		);
+	} catch {
+		// ignore
+	}
 	await emitJobProgress(job, {
 		job_id: job.id ? String(job.id) : "",
 		deal_id: dealId ?? undefined,
 		stage: "finalize",
 		percent: 100,
-		message: docsBlocked > 0
+		message: finalStatus === "succeeded_with_warnings"
 			? `Visual extraction succeeded with warnings (blocked=${docsBlocked}, processed=${docsProcessed})`
 			: `Visual extraction complete (persisted=${persisted}, docs_processed=${docsProcessed}, docs_skipped=${docsSkipped})`,
 		reason: docsBlocked > 0 ? "INGEST_NOT_COMPLETE" : undefined,

@@ -3997,10 +3997,37 @@ registerWorker("extract_visuals", async (job: Job) => {
 			continue;
 		}
 
-		const derivedDealId =
+		let derivedDealId: string | null =
 			typeof dealId === "string" && dealId.trim().length > 0
 				? dealId.trim()
 				: (typeof docMeta?.deal_id === "string" && docMeta.deal_id.trim().length > 0 ? docMeta.deal_id.trim() : null);
+		if (!derivedDealId && typeof dealIdForAudit === "string" && dealIdForAudit.trim().length > 0) {
+			derivedDealId = dealIdForAudit.trim();
+		}
+		if (!derivedDealId) {
+			// Last-resort: ensure we can still log deal_id even if docMeta fetch failed earlier.
+			try {
+				const { rows } = await pool.query<{ deal_id: string | null }>(
+					"SELECT deal_id FROM documents WHERE id = $1 LIMIT 1",
+					[sanitizeText(docId)]
+				);
+				const rowDealId = rows?.[0]?.deal_id;
+				if (typeof rowDealId === "string" && rowDealId.trim().length > 0) derivedDealId = rowDealId.trim();
+			} catch {
+				// best-effort
+			}
+		}
+		if (!derivedDealId) {
+			console.warn(
+				JSON.stringify({
+					event: "VISION_REQUEST_MISSING_DEAL_ID",
+					job_id: job.id ? String(job.id) : null,
+					document_id: docId,
+					job_deal_id: typeof dealId === "string" ? dealId : null,
+					doc_meta: docMeta && typeof docMeta === "object" ? docMeta : null,
+				})
+			);
+		}
 		const pagesInJob = Math.max(0, pageEndExclusive - pageStart);
 		console.log(
 			JSON.stringify({

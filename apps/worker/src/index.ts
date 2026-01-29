@@ -3920,6 +3920,8 @@ registerWorker("extract_visuals", async (job: Job) => {
 		try {
 			const res = await applyVisionHintsToStructuredPowerpointSlides({
 				pool,
+				dealId: String(dealId ?? ""),
+				jobId: String(job.id ?? ""),
 				documentId: docId,
 				pageImageUris: uris,
 				structuredExtractorVersion: structuredExtractorVersion,
@@ -3927,6 +3929,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 				visionRuntime,
 				env: process.env,
 				logger: console,
+				forceReextract,
 			});
 			if (res.attempted > 0 || res.updated > 0 || res.errors > 0) {
 				console.log(

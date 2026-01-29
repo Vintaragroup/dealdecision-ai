@@ -3748,6 +3748,8 @@ export async function resegmentStructuredSyntheticAssets(params: {
 
 export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 	pool: Pool;
+	dealId?: string;
+	jobId?: string;
 	documentId: string;
 	pageImageUris: string[];
 	structuredExtractorVersion?: string;
@@ -3755,9 +3757,12 @@ export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 	visionRuntime?: VisionJobRuntime;
 	env?: NodeJS.ProcessEnv;
 	logger?: LogLike;
+	forceReextract?: boolean;
+	callVisionWorkerWithRetries?: typeof callVisionWorkerWithRetries;
 }): Promise<{
 	attempted: number;
 	updated: number;
+	skipped_existing: number;
 	skipped_no_uri: number;
 	skipped_has_text: number;
 	skipped_has_segment: number;
@@ -3765,7 +3770,15 @@ export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 }> {
 	const env = params.env ?? process.env;
 	const logger = params.logger ?? console;
+	const dealId = typeof params.dealId === "string" ? params.dealId : "";
+	const jobId = typeof params.jobId === "string" ? params.jobId : "";
+	const forceReextract = Boolean(params.forceReextract);
+	const callVisionWithRetries = params.callVisionWorkerWithRetries ?? callVisionWorkerWithRetries;
 	const structuredExtractorVersion = params.structuredExtractorVersion ?? "structured_native_v1";
+	// Force-vu is request-mode only; all canonical/dedupe is done on baseExtractorVersion.
+	const baseExtractorVersion = String(params.visionConfig?.extractorVersion ?? "").replace(/_force_vu$/, "");
+	const forcedExtractorVersion = `${baseExtractorVersion}_force_vu`;
+	const extractorVersionsForDedupe = [baseExtractorVersion, forcedExtractorVersion].filter(Boolean);
 	const persistSegmentMinConf = (() => {
 		const raw = env.STRUCTURED_VISION_HINT_PERSIST_MIN_CONFIDENCE;
 		const parsed = typeof raw === "string" ? Number(raw) : Number.NaN;
@@ -3777,13 +3790,13 @@ export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 		env.ENABLE_STRUCTURED_VISION_HINTS ?? ((env.VISION_BASE_URL || env.VISION_WORKER_URL) && String(env.VISION_BASE_URL || env.VISION_WORKER_URL).trim() ? "1" : "0")
 	);
 	if (!enableStructuredVisionHints) {
-		return { attempted: 0, updated: 0, skipped_no_uri: 0, skipped_has_text: 0, skipped_has_segment: 0, errors: 0 };
+		return { attempted: 0, updated: 0, skipped_existing: 0, skipped_no_uri: 0, skipped_has_text: 0, skipped_has_segment: 0, errors: 0 };
 	}
 	if (!params.visionConfig?.enabled) {
-		return { attempted: 0, updated: 0, skipped_no_uri: 0, skipped_has_text: 0, skipped_has_segment: 0, errors: 0 };
+		return { attempted: 0, updated: 0, skipped_existing: 0, skipped_no_uri: 0, skipped_has_text: 0, skipped_has_segment: 0, errors: 0 };
 	}
 	if (!Array.isArray(params.pageImageUris) || params.pageImageUris.length === 0) {
-		return { attempted: 0, updated: 0, skipped_no_uri: 0, skipped_has_text: 0, skipped_has_segment: 0, errors: 0 };
+		return { attempted: 0, updated: 0, skipped_existing: 0, skipped_no_uri: 0, skipped_has_text: 0, skipped_has_segment: 0, errors: 0 };
 	}
 
 	// Candidates: structured_powerpoint synthetic assets with unknown segment and no prior vision_understanding_v1.
@@ -3819,6 +3832,7 @@ export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 
 	let attempted = 0;
 	let updated = 0;
+	let skippedExisting = 0;
 	let skippedNoUri = 0;
 	let skippedHasText = 0;
 	let skippedHasSegment = 0;
@@ -3843,20 +3857,71 @@ export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 		const sj = (row.structured_json ?? {}) as any;
 		const kind = typeof sj?.kind === "string" ? sj.kind : "";
 		if (kind !== "powerpoint_slide") continue;
+		const alreadyHasVu = Boolean(sj && typeof sj === "object" && (sj as any).vision_understanding_v1 != null);
+		const alreadyHasSlideTypeHint = (() => {
+			const st = (sj as any).resolved_slide_type ?? (sj as any).slide_type ?? (sj as any).slide_type_hint;
+			return typeof st === "string" && st.trim().length > 0;
+		})();
+		const sjSegment = coerceSegmentKey(typeof (sj as any).segment_key === "string" ? (sj as any).segment_key : null);
+		const alreadyHasSegmentHint = Boolean(sjSegment && sjSegment !== "unknown");
+		if (!forceReextract && (alreadyHasVu || alreadyHasSlideTypeHint || alreadyHasSegmentHint)) {
+			skippedExisting += 1;
+			continue;
+		}
 		// Intentionally do not gate on having title/bullets/text: if deterministic structured classification
 		// still produced segment_key=unknown, try vision-understanding as a rescue signal.
 
+		// Strict rerun guard: if the per-page vision extraction already exists (either base or forced
+		// version), do not call the vision worker again.
+		if (!forceReextract) {
+			try {
+				const { rows: existing } = await params.pool.query(
+					`
+						SELECT 1
+						  FROM visual_assets
+						 WHERE document_id = $1
+						   AND page_index = $2
+						   AND extractor_version = ANY($3::text[])
+						 LIMIT 1
+					`,
+					[sanitizeText(params.documentId), pageIndex, extractorVersionsForDedupe]
+				);
+				if ((existing?.length ?? 0) > 0) {
+					skippedExisting += 1;
+					continue;
+				}
+			} catch {
+				// best-effort; if the guard query fails, continue with the vision call.
+			}
+		}
+
 		attempted += 1;
 		try {
-			const visionResp = await callVisionWorker(
+			const { response: visionResp } = await callVisionWithRetries(
 				params.visionConfig,
 				{
 					document_id: params.documentId,
 					page_index: pageIndex,
 					image_uri: pageImageUri,
-					extractor_version: `${params.visionConfig.extractorVersion}_force_vu`,
+					// Request-mode only; do not treat this as a canonical persisted extractor version.
+					extractor_version: forcedExtractorVersion,
 				},
-				{ timeoutMs: 20_000, runtime: params.visionRuntime, logger }
+				{
+					timeoutsMs: [20_000],
+					runtime: params.visionRuntime,
+					logger,
+					logMeta: {
+						caller: "structured_ppt_vision_hints",
+						stage: "structured_powerpoint_vision_hints",
+						deal_id: String(dealId ?? ""),
+						job_id: String(jobId ?? ""),
+						document_id: String(params.documentId ?? ""),
+						page_index: pageIndex,
+						structured_extractor_version: String(structuredExtractorVersion ?? ""),
+						base_extractor_version: String(baseExtractorVersion ?? ""),
+						forced_extractor_version: String(forcedExtractorVersion ?? ""),
+					},
+				}
 			);
 
 			const bestVu = (() => {
@@ -3876,11 +3941,18 @@ export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 				}
 				return best;
 			})();
+			const vuToPersist: any = (() => {
+				if (bestVu && typeof bestVu === "object") return { ...bestVu, extractor_version: baseExtractorVersion };
+				return {
+					segment_hint: "unknown",
+					confidence: 0,
+					note: "no_vision_understanding_v1_found",
+					extractor_version: baseExtractorVersion,
+				};
+			})();
 
-			if (!bestVu || typeof bestVu !== "object") continue;
-
-			const hintSeg = coerceSegmentKey(typeof (bestVu as any).segment_hint === "string" ? (bestVu as any).segment_hint : null);
-			const hintConfRaw = (bestVu as any).confidence;
+			const hintSeg = coerceSegmentKey(typeof vuToPersist.segment_hint === "string" ? vuToPersist.segment_hint : null);
+			const hintConfRaw = vuToPersist.confidence;
 			const hintConf = typeof hintConfRaw === "number" && Number.isFinite(hintConfRaw) ? hintConfRaw : null;
 			const persistSegment = Boolean(hintSeg && hintSeg !== "unknown" && hintConf != null && hintConf >= persistSegmentMinConf);
 
@@ -3891,7 +3963,7 @@ export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 					   SET structured_json = jsonb_set(COALESCE(structured_json, '{}'::jsonb), '{vision_understanding_v1}', $2::jsonb, true)
 					 WHERE id = $1
 				`,
-				[sanitizeText(row.visual_extraction_id), JSON.stringify(bestVu)]
+				[sanitizeText(row.visual_extraction_id), JSON.stringify(vuToPersist)]
 			);
 
 			if (persistSegment) {
@@ -3943,6 +4015,7 @@ export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 	return {
 		attempted,
 		updated,
+		skipped_existing: skippedExisting,
 		skipped_no_uri: skippedNoUri,
 		skipped_has_text: skippedHasText,
 		skipped_has_segment: skippedHasSegment,

@@ -1946,7 +1946,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
         const reason = (job as any)?.result?.reason || (job as any)?.status_detail?.reason || (job as any)?.reason || null;
         setJobReason(typeof reason === 'string' && reason.trim().length > 0 ? reason.trim() : null);
-        if (normalizedStatus === 'queued' || normalizedStatus === 'running' || normalizedStatus === 'retrying') {
+        if (normalizedStatus === 'queued' || normalizedStatus === 'running' || normalizedStatus === 'retrying' || normalizedStatus === 'blocked') {
           // SSE is best-effort; keep polling as a safety net.
           // When SSE is connected, back off to reduce load.
           schedulePoll(sseReady ? 10000 : 2000);
@@ -2000,9 +2000,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             });
 
           if (!delayAnalyzeFailureToast) {
+            const toastSeverity =
+              normalizedStatus === 'succeeded'
+                ? 'success'
+                : normalizedStatus === 'succeeded_with_warnings' || normalizedStatus === 'cancelled' || normalizedStatus === 'blocked'
+                  ? 'warning'
+                  : 'error';
             addToastOnce(
               analysisToastKey,
-              normalizedStatus === 'succeeded' ? 'success' : normalizedStatus === 'succeeded_with_warnings' ? 'warning' : 'error',
+              toastSeverity,
               'Analysis completed',
               analysisToastMessage
             );

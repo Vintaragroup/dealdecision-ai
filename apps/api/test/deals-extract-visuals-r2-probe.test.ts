@@ -11,11 +11,13 @@ test.after(async () => {
 });
 
 test("POST /api/v1/deals/:deal_id/extract-visuals returns 202 when R2 probe overrides stale rendered_pages_rendered", async () => {
+	const dealId = "00000000-0000-0000-0000-0000000000a1";
+
 	const mockPool = {
 		query: async (sql: string, params: unknown[]) => {
 			if (sql.includes("SELECT * FROM deals WHERE id = $1")) {
-				assert.equal(params[0], "deal-1");
-				return { rows: [{ id: "deal-1", deleted_at: null }] };
+				assert.equal(params[0], dealId);
+				return { rows: [{ id: dealId, deleted_at: null }] };
 			}
 			if (sql.includes("SELECT to_regclass")) {
 				// hasTable() checks for document_files.
@@ -33,7 +35,7 @@ test("POST /api/v1/deals/:deal_id/extract-visuals returns 202 when R2 probe over
 							file_name: null,
 							mime_type: "application/pdf",
 							extraction_metadata: {
-								rendered_pages_r2: { bucket: "b", prefix: "deals/deal-1/documents/doc-1/rendered_pages", format: "page_%04d.png" },
+								rendered_pages_r2: { bucket: "b", prefix: `deals/${dealId}/documents/doc-1/rendered_pages`, format: "page_%04d.png" },
 								rendered_pages_count: 5,
 								rendered_pages_rendered: 0,
 							},
@@ -49,7 +51,7 @@ test("POST /api/v1/deals/:deal_id/extract-visuals returns 202 when R2 probe over
 	await registerDealRoutes(app, mockPool, {
 		enqueueJob: async (input: any) => {
 			assert.equal(input.type, "extract_visuals");
-			return { job_id: "job-1", status: "queued" };
+			return { id: 1, job_id: "job-1", status: "queued" };
 		},
 		r2: {
 			objectExistsInR2: async ({ key }: { key: string }) => {
@@ -59,7 +61,7 @@ test("POST /api/v1/deals/:deal_id/extract-visuals returns 202 when R2 probe over
 		},
 	});
 
-	const res = await app.inject({ method: "POST", url: "/api/v1/deals/deal-1/extract-visuals", payload: {} });
+	const res = await app.inject({ method: "POST", url: `/api/v1/deals/${dealId}/extract-visuals`, payload: {} });
 	assert.equal(res.statusCode, 202);
 	const body = res.json() as any;
 	assert.equal(body.readiness_reason, "r2_probe_overrode_metadata");

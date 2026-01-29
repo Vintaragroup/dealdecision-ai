@@ -14,20 +14,21 @@ function getQueueForType(type: JobType): QueueLike {
   // In production, this resolves to BullMQ Queue instances.
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const q = require("../lib/queue") as typeof import("../lib/queue");
+  const queues = q.getQueues();
 
   const queueMap: Record<JobType, QueueLike> = {
-    ingest_documents: q.ingestQueue,
-    render_document_pages: q.renderDocumentPagesQueue,
-    extract_visuals: q.extractVisualsQueue,
-    deep_scan_visuals: q.deepScanVisualsQueue,
-    fetch_evidence: q.fetchEvidenceQueue,
-    analyze_deal: q.analyzeDealQueue,
-    verify_documents: q.verifyDocumentsQueue,
-    remediate_extraction: q.remediateExtractionQueue,
-    reextract_documents: q.reextractDocumentsQueue,
-    generate_report: q.analyzeDealQueue,
-    sync_crm: q.analyzeDealQueue,
-    classify_document: q.ingestQueue,
+    ingest_documents: queues.ingestQueue,
+    render_document_pages: queues.renderDocumentPagesQueue,
+    extract_visuals: queues.extractVisualsQueue,
+    deep_scan_visuals: queues.deepScanVisualsQueue,
+    fetch_evidence: queues.fetchEvidenceQueue,
+    analyze_deal: queues.analyzeDealQueue,
+    verify_documents: queues.verifyDocumentsQueue,
+    remediate_extraction: queues.remediateExtractionQueue,
+    reextract_documents: queues.reextractDocumentsQueue,
+    generate_report: queues.analyzeDealQueue,
+    sync_crm: queues.analyzeDealQueue,
+    classify_document: queues.ingestQueue,
   };
 
   return queueMap[type];
@@ -64,15 +65,22 @@ const DEFAULT_DEDUPE_STATUSES: JobStatus[] = ["queued", "running", "retrying"];
 // dedupe would otherwise keep returning it forever and block new work.
 const DEFAULT_DEDUPE_MAX_AGE_MINUTES = 30;
 
-export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOptions) {
+export type InsertJobRowResult = {
+  id: number;
+  job_id: string;
+  status: JobStatus;
+  bullPayload: Record<string, unknown>;
+};
+
+export async function insertJobRow(input: EnqueueJobInput, opts?: EnqueueJobOptions): Promise<InsertJobRowResult> {
   const pool: DbPoolLike = opts?.deps?.pool ?? getPool();
-  const queue = opts?.deps?.queue ?? getQueueForType(input.type);
 
   // Optional dedupe: if a matching job is already active, return it.
   if (opts?.dedupe?.by && (input.deal_id || input.document_id)) {
-    const statuses = Array.isArray(opts.dedupe.statuses) && opts.dedupe.statuses.length > 0
-      ? opts.dedupe.statuses
-      : DEFAULT_DEDUPE_STATUSES;
+    const statuses =
+      Array.isArray(opts.dedupe.statuses) && opts.dedupe.statuses.length > 0
+        ? opts.dedupe.statuses
+        : DEFAULT_DEDUPE_STATUSES;
     const maxAgeMinutes = DEFAULT_DEDUPE_MAX_AGE_MINUTES;
 
     if (opts.dedupe.by === "deal" && input.deal_id) {
@@ -87,7 +95,14 @@ export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOption
           LIMIT 1`,
         [sanitizeText(input.deal_id), sanitizeText(input.type), statuses, maxAgeMinutes]
       )) as unknown as { rows: Array<{ id: number; job_id: string; status: JobStatus }> };
-      if (existing.rows.length > 0) return existing.rows[0];
+      if (existing.rows.length > 0) {
+        return {
+          id: existing.rows[0]!.id,
+          job_id: existing.rows[0]!.job_id,
+          status: existing.rows[0]!.status,
+          bullPayload: {},
+        };
+      }
     }
 
     if (opts.dedupe.by === "document" && input.document_id) {
@@ -102,7 +117,14 @@ export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOption
           LIMIT 1`,
         [sanitizeText(input.document_id), sanitizeText(input.type), statuses, maxAgeMinutes]
       )) as unknown as { rows: Array<{ id: number; job_id: string; status: JobStatus }> };
-      if (existing.rows.length > 0) return existing.rows[0];
+      if (existing.rows.length > 0) {
+        return {
+          id: existing.rows[0]!.id,
+          job_id: existing.rows[0]!.job_id,
+          status: existing.rows[0]!.status,
+          bullPayload: {},
+        };
+      }
     }
   }
 
@@ -143,12 +165,37 @@ export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOption
     ]
   );
 
+  return { ...rows[0], bullPayload };
+}
+
+export async function enqueueBullmqJob(
+  params: { type: JobType; jobId: string; bullPayload: Record<string, unknown> },
+  opts?: { deps?: { queue?: QueueLike } }
+): Promise<void> {
+  const queue = opts?.deps?.queue ?? getQueueForType(params.type);
+  if (!queue) {
+    throw new Error(`queue_not_found_for_type:${params.type}`);
+  }
+  await queue.add(params.type, params.bullPayload, {
+    jobId: params.jobId,
+    removeOnComplete: true,
+    removeOnFail: false,
+  });
+}
+
+export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOptions) {
+  const pool: DbPoolLike = opts?.deps?.pool ?? getPool();
+  const queue = opts?.deps?.queue;
+
+  const inserted = await insertJobRow(input, opts);
+
   try {
-    await queue.add(input.type, bullPayload, {
-      jobId,
-      removeOnComplete: true,
-      removeOnFail: false,
-    });
+    // If this is running inside an external DB transaction (idempotency wrapper),
+    // callers should prefer calling insertJobRow(...) in-tx and enqueueBullmqJob(...) after commit.
+    await enqueueBullmqJob(
+      { type: input.type, jobId: inserted.job_id, bullPayload: inserted.bullPayload },
+      { deps: { queue } }
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await pool.query(
@@ -157,12 +204,12 @@ export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOption
               message = $2,
               updated_at = now()
         WHERE job_id = $1`,
-      [sanitizeText(jobId), sanitizeText(message)]
+      [sanitizeText(inserted.job_id), sanitizeText(message)]
     );
     throw err;
   }
 
-  return rows[0];
+  return { id: inserted.id, job_id: inserted.job_id, status: inserted.status };
 }
 
 export async function updateJobStatus(

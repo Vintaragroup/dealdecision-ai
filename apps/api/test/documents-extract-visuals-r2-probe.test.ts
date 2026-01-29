@@ -52,7 +52,7 @@ test("POST /api/v1/deals/:deal_id/documents/:document_id/extract-visuals returns
 			assert.equal(input.type, "extract_visuals");
 			assert.equal(input.deal_id, "deal-1");
 			assert.equal(input.document_id, "doc-1");
-			return { job_id: "job-1", status: "queued" };
+			return { id: 1, job_id: "job-1", status: "queued" };
 		},
 		r2: {
 			uploadToR2: async () => {

@@ -90,6 +90,7 @@ type InspectorSelection =
       kind: 'visual_asset_group';
       document_id: string;
       visual_asset_group_id: string;
+      page_index?: number;
       page_label?: string;
       count_members?: number;
       member_visual_asset_ids?: string[];
@@ -190,6 +191,21 @@ function parseNormalizedBbox(bbox: unknown): NormalizedBbox | null {
   if (typeof x !== 'number' || typeof y !== 'number' || typeof w !== 'number' || typeof h !== 'number') return null;
   if (![x, y, w, h].every((v) => Number.isFinite(v))) return null;
   return { x, y, w, h };
+}
+
+function normalizePageIndexCandidate(value: unknown): number | null {
+  const idx = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(idx) || idx < 0) return null;
+  return Math.trunc(idx);
+}
+
+function tryParsePageIndexFromLabel(label: unknown): number | null {
+  if (typeof label !== 'string') return null;
+  const m = label.match(/\bpage\s*(\d+)\b/i);
+  if (!m) return null;
+  const human = Number.parseInt(m[1], 10);
+  if (!Number.isFinite(human) || human <= 0) return null;
+  return Math.max(0, Math.trunc(human - 1));
 }
 
 export function formatBboxLabel(bbox: unknown): string | null {
@@ -2111,12 +2127,25 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
       setPageSnapshotUrl(null);
       setPageSnapshotError(null);
 
-      const docId = String((selectedVisual as any)?.document_id || '').trim();
-      const pageIndex = typeof selectedVisual?.page_index === 'number' && Number.isFinite(selectedVisual.page_index)
+      const pageIndexFromSelection =
+        selection.kind === 'visual_asset_group' || selection.kind === 'visual_asset'
+          ? normalizePageIndexCandidate((selection as any).page_index)
+          : null;
+      const pageIndexFromVisual = typeof selectedVisual?.page_index === 'number' && Number.isFinite(selectedVisual.page_index)
         ? selectedVisual.page_index
         : null;
+      const pageIndexFromLabel =
+        selection.kind === 'visual_asset_group' ? tryParsePageIndexFromLabel(selection.page_label) : null;
+      const pageIndex = pageIndexFromSelection ?? pageIndexFromVisual ?? pageIndexFromLabel;
 
-      if (!selectedVisual || !docId || pageIndex == null) return;
+      const docIdFromSelection =
+        selection.kind === 'visual_asset' || selection.kind === 'visual_asset_group'
+          ? String((selection as any).document_id ?? '').trim()
+          : '';
+      const docIdFromVisual = String((selectedVisual as any)?.document_id || '').trim();
+      const docId = docIdFromSelection || docIdFromVisual;
+
+      if (!docId || pageIndex == null) return;
 
       setPageSnapshotLoading(true);
       try {
@@ -2132,9 +2161,11 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
           docAnalysisCacheRef.current.set(docId, docAnalysis);
         }
 
+        const documentForSnapshot = docAnalysis ?? { deal_id: dealId, document_id: docId, extraction_metadata: null };
+
         const url = await getPageSnapshotUrl({
           dealId,
-          document: docAnalysis,
+          document: documentForSnapshot,
           pageIndex,
           visualAsset: selectedVisual,
         });
@@ -2154,7 +2185,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
     return () => {
       cancelled = true;
     };
-  }, [dealId, selectedVisual?.visual_asset_id, selectedVisual?.page_index]);
+  }, [dealId, selection.kind, (selection as any)?.document_id, (selection as any)?.page_index, (selection as any)?.page_label, selectedVisual?.visual_asset_id, selectedVisual?.page_index]);
 
   useEffect(() => {
     setInspectorImageModal(null);
@@ -3442,10 +3473,16 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                         ? memberIds.length
                         : undefined;
 
+                  const pageIndex =
+                    normalizePageIndexCandidate((data as any).page_index ?? (data as any).pageIndex) ??
+                    tryParsePageIndexFromLabel((data as any).label) ??
+                    tryParsePageIndexFromLabel((data as any).page_label);
+
                   setSelection({
                     kind: 'visual_asset_group',
                     document_id,
                     visual_asset_group_id: groupIdFromNode,
+                    page_index: pageIndex ?? undefined,
                     page_label: typeof data.label === 'string' ? data.label : typeof (data as any).page_label === 'string' ? (data as any).page_label : undefined,
                     count_members: countMembers,
                     member_visual_asset_ids: memberIds,
@@ -3971,6 +4008,51 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                       AI analyze (Analyst)
                     </Button>
                   </div>
+
+                  <div className={`rounded-md border p-2 ${darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'}`}>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className={`text-xs font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Page snapshot</div>
+                        {pageSnapshotUrl ? (
+                          <button
+                            type="button"
+                            className={`text-xs underline-offset-2 hover:underline ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+                            onClick={() => setInspectorImageModal({ src: pageSnapshotUrl, title: 'Page snapshot' })}
+                          >
+                            Open preview
+                          </button>
+                        ) : null}
+                      </div>
+
+                      {pageSnapshotLoading ? (
+                        <div
+                          data-testid="page-snapshot-loading"
+                          className={`h-[140px] w-[240px] max-w-full rounded-md animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`}
+                        />
+                      ) : pageSnapshotUrl ? (
+                        <div className="relative w-[240px] max-w-full">
+                          <button
+                            type="button"
+                            className="block w-full"
+                            onClick={() => setInspectorImageModal({ src: pageSnapshotUrl, title: 'Page snapshot' })}
+                            aria-label="Open page snapshot"
+                          >
+                            <img
+                              data-testid="page-snapshot-img"
+                              src={pageSnapshotUrl}
+                              alt="Page snapshot"
+                              className={`w-full max-h-[180px] object-contain rounded-md border cursor-zoom-in ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
+                            />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                          Snapshot unavailable{pageSnapshotError ? `: ${pageSnapshotError}` : ''}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
                   <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                     For deeper grounding, analyze a member visual asset.
                   </div>
@@ -4471,7 +4553,10 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                                 </div>
 
                                 {pageSnapshotLoading ? (
-                                  <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Loading preview…</div>
+                                  <div
+                                    data-testid="page-snapshot-loading"
+                                    className={`h-[140px] w-[240px] max-w-full rounded-md animate-pulse ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`}
+                                  />
                                 ) : snapshotSrc ? (
                                   <div className="relative w-[240px] max-w-full">
                                     <button
@@ -4481,6 +4566,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                                       aria-label="Open page snapshot"
                                     >
                                       <img
+                                        data-testid="page-snapshot-img"
                                         src={snapshotSrc}
                                         alt="Page snapshot"
                                         className={`w-full max-h-[180px] object-contain rounded-md border cursor-zoom-in ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
@@ -4500,7 +4586,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                                   </div>
                                 ) : (
                                   <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                                    Preview unavailable{pageSnapshotError ? `: ${pageSnapshotError}` : ''}
+                                    Snapshot unavailable{pageSnapshotError ? `: ${pageSnapshotError}` : ''}
                                   </div>
                                 )}
                               </div>

@@ -5,6 +5,12 @@ import {
   type DocumentAnalysisResponse,
 } from './apiClient';
 
+const pageSnapshotUrlCache = new Map<string, string | null>();
+
+export function __clearPageSnapshotUrlCacheForTests() {
+  pageSnapshotUrlCache.clear();
+}
+
 type SnapshotDocumentLike =
   | Pick<DocumentAnalysisResponse, 'deal_id' | 'document_id' | 'extraction_metadata'>
   | { deal_id?: string | null; document_id?: string | null; id?: string | null; extraction_metadata?: any | null }
@@ -93,12 +99,23 @@ export async function getPageSnapshotUrl(params: {
   const documentId = inferDocumentId(params.document);
   const docDealId = inferDealId(params.document);
   const meta = getMeta(params.document);
+  const effectiveDealId = (docDealId || dealId).trim();
+
+  const cacheKey = effectiveDealId && documentId ? `${effectiveDealId}:${documentId}:${idx}` : null;
+  if (cacheKey && pageSnapshotUrlCache.has(cacheKey)) {
+    return pageSnapshotUrlCache.get(cacheKey) ?? null;
+  }
 
   // A) Prefer R2-backed rendered pages (mint fresh URL server-side).
-  if (meta?.rendered_pages_r2 && dealId && documentId) {
+  // Note: safe to try even if extraction_metadata is missing; API will fail if no rendered page exists.
+  if (effectiveDealId && documentId) {
     try {
-      const res = await apiGetRenderedPageSignedUrl(docDealId || dealId, documentId, idx);
-      if (typeof res?.url === 'string' && res.url.trim().length > 0) return res.url.trim();
+      const res = await apiGetRenderedPageSignedUrl(effectiveDealId, documentId, idx);
+      if (typeof res?.url === 'string' && res.url.trim().length > 0) {
+        const url = res.url.trim();
+        if (cacheKey) pageSnapshotUrlCache.set(cacheKey, url);
+        return url;
+      }
     } catch {
       // fall through
     }
@@ -108,7 +125,9 @@ export async function getPageSnapshotUrl(params: {
   const assetUri = typeof params.visualAsset?.image_uri === 'string' ? params.visualAsset.image_uri.trim() : '';
   if (assetUri) {
     const resolved = resolveApiAssetUrl(assetUri);
-    if (resolved) return resolved;
+    const url = resolved || assetUri;
+    if (cacheKey) pageSnapshotUrlCache.set(cacheKey, url);
+    return url;
   }
 
   // C) Fallback: legacy extraction_metadata lists/prefixes for rendered pages.
@@ -116,17 +135,20 @@ export async function getPageSnapshotUrl(params: {
     const listUri = tryMetaList(meta, idx);
     if (listUri) {
       const resolved = resolveApiAssetUrl(listUri);
-      if (resolved) return resolved;
-      return listUri;
+      const url = resolved || listUri;
+      if (cacheKey) pageSnapshotUrlCache.set(cacheKey, url);
+      return url;
     }
 
     const prefixUri = tryMetaPrefix(meta, idx);
     if (prefixUri) {
       const resolved = resolveApiAssetUrl(prefixUri);
-      if (resolved) return resolved;
-      return prefixUri;
+      const url = resolved || prefixUri;
+      if (cacheKey) pageSnapshotUrlCache.set(cacheKey, url);
+      return url;
     }
   }
 
+  if (cacheKey) pageSnapshotUrlCache.set(cacheKey, null);
   return null;
 }

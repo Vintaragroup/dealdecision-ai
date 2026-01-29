@@ -1133,6 +1133,40 @@ export class DealOrchestrator {
 		deal_summary_v2: (input.input_data as any).phase1_deal_summary_v2,
       };
 
+    // Additive: worker-provided disclosures for Phase 1 (code + message).
+    try {
+      const incoming: any[] = Array.isArray((input.input_data as any)?.phase1_disclosures_v1)
+        ? ((input.input_data as any).phase1_disclosures_v1 as any[])
+        : [];
+      const normalizedIncoming = incoming
+        .filter((d: any) => d && typeof d === 'object')
+        .map((d: any) => ({
+          code: typeof d.code === 'string' ? d.code : '',
+          message: typeof d.message === 'string' ? d.message : '',
+        }))
+        .filter((d: any) => d.code.trim() && d.message.trim());
+
+      const existingD: any[] = Array.isArray((phase1WithWorkerExtras as any)?.disclosures_v1)
+        ? ((phase1WithWorkerExtras as any).disclosures_v1 as any[])
+        : [];
+      const combined = [...existingD, ...normalizedIncoming];
+      const seen = new Set<string>();
+      const deduped = [] as any[];
+      for (const d of combined) {
+        const code = typeof d?.code === 'string' ? d.code.trim() : '';
+        const message = typeof d?.message === 'string' ? d.message.trim() : '';
+        if (!code || !message) continue;
+        if (seen.has(code)) continue;
+        seen.add(code);
+        deduped.push({ code, message });
+      }
+      if (deduped.length > 0) {
+        (phase1WithWorkerExtras as any).disclosures_v1 = deduped;
+      }
+    } catch {
+      // Never fail orchestration due to disclosure merge.
+    }
+
       // Additive: deterministic runway disclosure surfacing (no scoring math changes)
       try {
         const fh: any = (dio as any)?.analyzer_results?.financial_health;
@@ -1179,6 +1213,21 @@ export class DealOrchestrator {
             'Runway is not applicable when burn is non-positive; do not treat this as a low-runway signal.'
           );
         }
+
+      // Surface worker-provided Phase 1 disclosures into the investor-readable channels.
+      try {
+        const p1d: any[] = Array.isArray((phase1WithWorkerExtras as any)?.disclosures_v1)
+          ? ((phase1WithWorkerExtras as any).disclosures_v1 as any[])
+          : [];
+        for (const d of p1d) {
+          const code = typeof d?.code === 'string' ? d.code.trim() : '';
+          const message = typeof d?.message === 'string' ? d.message.trim() : '';
+          if (!code || !message) continue;
+          addDisclosureToPhase1(code, message);
+        }
+      } catch {
+        // best-effort
+      }
       } catch {
         // Never fail orchestration due to disclosure surfacing.
       }

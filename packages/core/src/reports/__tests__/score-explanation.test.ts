@@ -431,6 +431,126 @@ describe("score_explanation", () => {
     expect(blob.toLowerCase()).not.toContain("missing runway");
   });
 
+  it("surfaces Phase 1 no_pages_with_understanding disclosure as missing-evidence gaps", () => {
+    const now = new Date().toISOString();
+
+    const dio: any = {
+      schema_version: "1.0.0",
+      dio_id: "00000000-0000-4000-8000-000000009921",
+      deal_id: "00000000-0000-4000-8000-000000009922",
+      created_at: now,
+      updated_at: now,
+      analysis_version: 1,
+      dio_context: {
+        primary_doc_type: "pitch_deck",
+        deal_type: "startup_raise",
+        vertical: "saas",
+        stage: "seed",
+        confidence: 0.9,
+      },
+      inputs: { documents: [], evidence: [], config: { features: {} } },
+      dio: {
+        phase1: {
+          disclosures_v1: [
+            {
+              code: "no_pages_with_understanding",
+              message: "No pitch deck pages contained usable text understanding; slide segmentation unavailable.",
+            },
+          ],
+        },
+      },
+      analyzer_results: {
+        slide_sequence: {
+          analyzer_version: "1.0.0",
+          executed_at: now,
+          status: "insufficient_data",
+          coverage: 0,
+          confidence: 0.3,
+          score: null,
+          pattern_match: "None",
+          sequence_detected: [],
+          expected_sequence: [],
+          deviations: [],
+          evidence_ids: [],
+        },
+        metric_benchmark: {
+          analyzer_version: "1.0.0",
+          executed_at: now,
+          status: "insufficient_data",
+          coverage: 0,
+          confidence: 0.3,
+          overall_score: null,
+          metrics_analyzed: [],
+        },
+        visual_design: {
+          analyzer_version: "1.0.0",
+          executed_at: now,
+          status: "insufficient_data",
+          coverage: 0,
+          confidence: 0.3,
+          design_score: null,
+          proxy_signals: {},
+          strengths: [],
+          weaknesses: [],
+          evidence_ids: [],
+        },
+        narrative_arc: {
+          analyzer_version: "1.0.0",
+          executed_at: now,
+          status: "insufficient_data",
+          coverage: 0,
+          confidence: 0.3,
+          pacing_score: null,
+          archetype: "unknown",
+          archetype_confidence: 0.1,
+          emotional_beats: [],
+          evidence_ids: [],
+        },
+        financial_health: {
+          analyzer_version: "1.0.0",
+          executed_at: now,
+          status: "insufficient_data",
+          coverage: 0,
+          confidence: 0.3,
+          runway_months: null,
+          burn_multiple: null,
+          health_score: null,
+          metrics: { revenue: null, expenses: null, cash_balance: null, burn_rate: null, growth_rate: null },
+          risks: [],
+          evidence_ids: [],
+        },
+        risk_assessment: {
+          analyzer_version: "1.0.0",
+          executed_at: now,
+          status: "insufficient_data",
+          coverage: 0,
+          confidence: 0.3,
+          overall_risk_score: null,
+          risks_by_category: { market: [], team: [], financial: [], execution: [] },
+          total_risks: 0,
+          critical_count: 0,
+          high_count: 0,
+          evidence_ids: [],
+        },
+      },
+      risk_map: [],
+    };
+
+    const explanation = buildScoreExplanationFromDIO(dio);
+
+    const ss: any = (explanation.components as any).slide_sequence;
+    const na: any = (explanation.components as any).narrative_arc;
+    const ra: any = (explanation.components as any).risk_assessment;
+
+    expect(Array.isArray(ss?.gaps) ? ss.gaps : []).toContain("page_understanding_missing");
+    expect(Array.isArray(na?.gaps) ? na.gaps : []).toContain("page_understanding_missing");
+    expect(Array.isArray(ra?.gaps) ? ra.gaps : []).toContain("page_understanding_missing");
+
+    const ssReasons = Array.isArray(ss?.reasons) ? ss.reasons.join("\n") : "";
+    expect(ssReasons).toContain("no_pages_with_understanding");
+    expect(ssReasons).toContain("No pitch deck pages contained usable text understanding");
+  });
+
   it("blends low-confidence included component toward neutral baseline (prevents tanking overall)", () => {
     const now = new Date().toISOString();
 

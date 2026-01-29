@@ -3082,6 +3082,7 @@ export function mergePhase1IntoDIO(dio: any, phase1: Phase1DIOV1): any {
 	const update_report_v1 = (phase1 as any)?.update_report_v1;
 	const executive_summary_v2 = (phase1 as any)?.executive_summary_v2;
 	const deal_summary_v2 = (phase1 as any)?.deal_summary_v2;
+	const disclosures_v1 = (phase1 as any)?.disclosures_v1;
 
 	const coverage = ensurePhase1Coverage(phase1 as any, existingPhase1);
 
@@ -3099,6 +3100,8 @@ export function mergePhase1IntoDIO(dio: any, phase1: Phase1DIOV1): any {
         decision_summary_v1: phase1.decision_summary_v1,
         claims: phase1.claims,
 		coverage,
+
+			...(Array.isArray(disclosures_v1) ? { disclosures_v1 } : {}),
 
 			...(deal_summary_v2 && typeof deal_summary_v2 === "object" ? { deal_summary_v2 } : {}),
 

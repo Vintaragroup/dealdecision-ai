@@ -1522,6 +1522,15 @@ const buildComponentDetail = (params: {
 }): ComponentDetail => {
   const { key, dio, results, status, computed_status, raw_score, used_score, penalty, confidence } = params;
 
+	const phase1DisclosuresV1: any[] = Array.isArray((dio as any)?.dio?.phase1?.disclosures_v1)
+		? ((dio as any).dio.phase1.disclosures_v1 as any[])
+		: [];
+	const noPagesWithUnderstandingDisclosure = phase1DisclosuresV1.find((d: any) => d && d.code === "no_pages_with_understanding");
+	const noPagesWithUnderstandingMessage =
+		noPagesWithUnderstandingDisclosure && typeof noPagesWithUnderstandingDisclosure.message === "string"
+			? noPagesWithUnderstandingDisclosure.message.trim()
+			: "";
+
   const evidence_ids = getEvidenceIdsForComponent(key, dio, results);
   const gaps: string[] = [];
   const red_flags: string[] = [];
@@ -1610,6 +1619,16 @@ const buildComponentDetail = (params: {
       default:
         set("Insufficient data; neutral baseline applied", { gaps: ["insufficient_data"] });
         break;
+    }
+
+    // If Phase 1 detected missing slide-understanding pages, make it explicit in score_explanation.
+    // This does not change the scoring math; it only improves disclosure and missing-evidence visibility.
+    if (
+      noPagesWithUnderstandingMessage &&
+      (key === "slide_sequence" || key === "narrative_arc" || key === "risk_assessment")
+    ) {
+      gaps.push("page_understanding_missing");
+      reasons.push(`[no_pages_with_understanding] ${noPagesWithUnderstandingMessage}`);
     }
   }
 

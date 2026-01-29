@@ -916,6 +916,46 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		expect(out.dio.phase1.update_report_v1.changes).toEqual([]);
 	});
 
+	it("mergePhase1IntoDIO persists disclosures_v1 when provided", () => {
+		const { generatePhase1DIOV1, mergePhase1IntoDIO } = require("../phase1-dio-v1");
+
+		const existing = {
+			dio: {
+				phase1: {
+					executive_summary_v1: { one_liner: "old" },
+				},
+			},
+		};
+		const basePhase1 = generatePhase1DIOV1({
+			deal: { deal_id: "deal-merge-disclosures", name: "MergeDisclosureCo", stage: "intake" },
+			inputDocuments: [
+				{
+					document_id: "doc-merge-disclosures",
+					title: "MergeDisclosureCo Deck",
+					type: "pitch_deck",
+					full_text: "We are building a SaaS platform. Raising $1M seed.",
+				},
+			],
+		});
+		const phase1 = {
+			...basePhase1,
+			disclosures_v1: [
+				{
+					code: "no_pages_with_understanding",
+					message: "No pitch deck pages contained usable text understanding.",
+				},
+			],
+		};
+
+		const out = mergePhase1IntoDIO(existing, phase1);
+		expect(out.dio.phase1.disclosures_v1).toEqual([
+			{
+				code: "no_pages_with_understanding",
+				message: "No pitch deck pages contained usable text understanding.",
+			},
+		]);
+	});
+
 describe("buildPhase1ExecutiveAccountability", () => {
 	it("marks support using coverage missing status and evidence-backed claims", () => {
 		const coverage = {

@@ -94,6 +94,16 @@ export const Phase1DIOV1Schema = z.object({
   claims: z.array(Phase1ClaimV1Schema),
   coverage: Phase1CoverageV1Schema,
 
+  // Additive: structured disclosures (code + message) surfaced for UX and reporting.
+  disclosures_v1: z
+    .array(
+      z.object({
+        code: z.string().min(1),
+        message: z.string().min(1),
+      })
+    )
+    .optional(),
+
   // Additive: deterministic business archetype classification (worker-provided).
   business_archetype_v1: z
     .object({

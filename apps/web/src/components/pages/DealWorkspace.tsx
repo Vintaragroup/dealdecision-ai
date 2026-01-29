@@ -16,7 +16,7 @@ import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
-import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, apiResolveEvidence, subscribeToEvents, type AutoProfileResponse, type DealReport, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2 } from '../../lib/apiClient';
+import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2 } from '../../lib/apiClient';
 import type { JobProgressEventV1 } from '@dealdecision/contracts';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
@@ -181,6 +181,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [showProfileEditor, setShowProfileEditor] = useState(false);
   const lastEventIdRef = useRef<string | undefined>(undefined);
   const handledTerminalJobKeysRef = useRef<Set<string>>(new Set());
+  const fullProcessInFlightRef = useRef(false);
+  const fullProcessRequestIdRef = useRef<string | null>(null);
 
   const NO_EXTRACTED_DOCS_ANALYZE_ERROR = 'No extracted documents available for analysis';
 
@@ -2569,6 +2571,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const runFullProcess = async () => {
     if (!dealId) return;
 
+    if (fullProcessInFlightRef.current) {
+      addToast('warning', 'Full process already running', 'Please wait for the current run to finish');
+      return;
+    }
+    fullProcessInFlightRef.current = true;
+    const requestId = makeClientRequestId();
+    fullProcessRequestIdRef.current = requestId;
+
     setFullProcessExtractJobId(null);
     setFullProcessExtractCreatedAt(null);
     setFullProcessExtractFinishedAt(null);
@@ -2660,7 +2670,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       // Step 2: extract_visuals
       setJobType('extract_visuals');
       setFullProcessUi((prev) => (prev ? { ...prev, current_step: 'extract_visuals' } : prev));
-      const extractRes = await apiPostExtractVisuals(dealId);
+      const extractRes = await apiPostExtractVisuals(dealId, {
+        source: 'job-center/run-full-process',
+        requestId,
+        idempotencyKey: requestId,
+      });
       const extractQueuedAt = new Date().toISOString();
       setFullProcessExtractJobId(extractRes.job_id);
       setFullProcessExtractCreatedAt(extractQueuedAt);
@@ -2899,6 +2913,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       setFullProcessUi((prev) => (prev ? { ...prev, ok: false, error: err instanceof Error ? err.message : 'Unknown error' } : prev));
     } finally {
       setAnalyzing(false);
+      fullProcessInFlightRef.current = false;
+      fullProcessRequestIdRef.current = null;
     }
   };
 

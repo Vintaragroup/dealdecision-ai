@@ -48,6 +48,10 @@ const baseDeal = {
 } as const;
 
 describe('DealWorkspace Job Center (live mode)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   const renderWorkspace = (overrides?: Partial<React.ComponentProps<typeof DealWorkspace>>) => {
     return render(
       <ScoreSourceProvider>
@@ -177,7 +181,41 @@ describe('DealWorkspace Job Center (live mode)', () => {
     const runFullProcessButton = screen.getByRole('button', { name: /Run full process/i });
     await userEvent.click(runFullProcessButton);
 
-    await waitFor(() => expect(apiPostExtractVisuals).toHaveBeenCalledWith('deal-5'));
+    await waitFor(() => expect(apiPostExtractVisuals).toHaveBeenCalled());
+    expect(vi.mocked(apiPostExtractVisuals).mock.calls[0]?.[0]).toBe('deal-5');
+    expect(vi.mocked(apiPostExtractVisuals).mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        source: 'job-center/run-full-process',
+        requestId: expect.any(String),
+        idempotencyKey: expect.any(String),
+      })
+    );
+  });
+
+  test('Run full process does not submit extract-visuals twice on rapid double-click', async () => {
+    const { apiPostAnalyze, apiPostExtractVisuals, apiPostReextractDocuments } = await import('../lib/apiClient');
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v3', dioStatus: 'ready' } as any);
+    vi.mocked(apiPostReextractDocuments).mockResolvedValue({ job_id: 'job-rex-1', status: 'queued' } as any);
+    vi.mocked(apiPostExtractVisuals).mockResolvedValue({ job_id: 'job-viz-1', status: 'queued' } as any);
+    vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-an-1', status: 'queued' } as any);
+
+    vi.mocked(apiGetJob).mockImplementation(async (jobId: string) => {
+      return {
+        job_id: jobId,
+        status: 'succeeded',
+        progress_pct: 100,
+        message: 'Done',
+        updated_at: new Date().toISOString(),
+      } as any;
+    });
+
+    renderWorkspace({ dealId: 'deal-55' });
+
+    const runFullProcessButton = screen.getByRole('button', { name: /Run full process/i });
+    await userEvent.dblClick(runFullProcessButton);
+
+    await waitFor(() => expect(apiPostReextractDocuments).toHaveBeenCalledTimes(1));
+    expect(apiPostExtractVisuals).toHaveBeenCalledTimes(1);
   });
 
   test('Job Center shows progress bar when job reports progress', async () => {

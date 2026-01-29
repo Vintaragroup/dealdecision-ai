@@ -287,6 +287,16 @@ export function resolveApiAssetUrl(path: string | null): string | null {
   return trimmed;
 }
 
+export function makeClientRequestId(): string {
+  try {
+    const c = (globalThis as any)?.crypto;
+    if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+  } catch {
+    // ignore
+  }
+  return `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const debugEnabled = debugApiIsEnabled();
   const method = String(options?.method ?? 'GET').toUpperCase();
@@ -309,6 +319,40 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     ) || t.includes('"exp" claim timestamp check failed') || t.includes('jwt expired');
   };
 
+  const normalizeHeadersInit = (input?: HeadersInit): Record<string, string> => {
+    const out: Record<string, string> = {};
+    try {
+      if (!input) return out;
+      // Headers instance
+      if (typeof (input as any).forEach === 'function') {
+        (input as any).forEach((value: any, key: any) => {
+          if (typeof key === 'string') out[key] = String(value);
+        });
+        return out;
+      }
+      // Array of tuples
+      if (Array.isArray(input)) {
+        for (const entry of input as any[]) {
+          if (Array.isArray(entry) && entry.length >= 2) {
+            const k = entry[0];
+            const v = entry[1];
+            if (typeof k === 'string') out[k] = String(v);
+          }
+        }
+        return out;
+      }
+      // Plain object
+      if (typeof input === 'object') {
+        for (const [k, v] of Object.entries(input as Record<string, any>)) {
+          if (typeof v !== 'undefined' && v !== null) out[k] = String(v);
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return out;
+  };
+
   const doFetch = async (forceRefreshToken: boolean): Promise<Response> => {
     const authHeader = await getAuthHeader({ forceRefresh: forceRefreshToken, refreshWithinSeconds: 30 });
     return await fetch(`${API_BASE_URL}${path}`, {
@@ -316,8 +360,8 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
       headers: {
         ...(isFormData ? {} : hasBody ? { 'Content-Type': 'application/json' } : {}),
         ...authHeader,
-        ...(options?.headers || {})
-      }
+        ...normalizeHeadersInit(options?.headers),
+      },
     });
   };
 
@@ -488,10 +532,26 @@ export function apiPostAnalyze(dealId: string) {
   });
 }
 
-export function apiPostExtractVisuals(dealId: string) {
-	return request<{ job_id: string; status: string }>(`/api/v1/deals/${dealId}/extract-visuals`, {
-		method: 'POST'
-	});
+export function apiPostExtractVisuals(
+  dealId: string,
+  opts?: { source?: string; requestId?: string; idempotencyKey?: string }
+) {
+  const requestId = typeof opts?.requestId === 'string' && opts.requestId.trim().length > 0 ? opts.requestId.trim() : undefined;
+  const source = typeof opts?.source === 'string' && opts.source.trim().length > 0 ? opts.source.trim() : undefined;
+  const idempotencyKey =
+    typeof opts?.idempotencyKey === 'string' && opts.idempotencyKey.trim().length > 0
+      ? opts.idempotencyKey.trim()
+      : requestId;
+
+  const headers: Record<string, string> = {};
+  if (requestId) headers['X-Request-Id'] = requestId;
+  if (source) headers['X-Client-Source'] = source;
+  if (idempotencyKey) headers['X-Idempotency-Key'] = idempotencyKey;
+
+  return request<{ job_id: string; status: string }>(`/api/v1/deals/${dealId}/extract-visuals`, {
+    method: 'POST',
+    headers: Object.keys(headers).length > 0 ? headers : undefined,
+  });
 }
 
 export function apiPostReextractDocuments(

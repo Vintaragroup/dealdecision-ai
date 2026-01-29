@@ -218,6 +218,112 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(apiPostExtractVisuals).toHaveBeenCalledTimes(1);
   });
 
+  test('Extract visuals badge shows Complete when a later retry succeeded', async () => {
+    const { apiGetDealJobs } = await import('../lib/apiClient');
+
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v9', dioStatus: 'ready' } as any);
+
+    vi.mocked(apiGetDealJobs).mockImplementation(async () => {
+      return [
+        {
+          job_id: 'job-ingest-1',
+          type: 'ingest_documents',
+          queue: 'ingest_documents',
+          status: 'succeeded',
+          created_at: '2024-01-02T00:00:00.000Z',
+          updated_at: '2024-01-02T00:00:10.000Z',
+        },
+        {
+          job_id: 'job-extract-old-failed',
+          type: 'extract_visuals',
+          queue: 'extract_visuals',
+          status: 'failed',
+          created_at: '2024-01-02T00:01:00.000Z',
+          updated_at: '2024-01-02T00:01:10.000Z',
+        },
+        {
+          job_id: 'job-extract-new-ok',
+          type: 'extract_visuals',
+          queue: 'extract_visuals',
+          status: 'succeeded',
+          created_at: '2024-01-02T00:02:00.000Z',
+          updated_at: '2024-01-02T00:02:10.000Z',
+        },
+      ] as any;
+    });
+
+    renderWorkspace({ dealId: 'deal-extract-retry' });
+
+    await waitFor(() => {
+      const badge = screen.getByTestId('stage-badge-extract_visuals');
+      expect(badge.textContent || '').toMatch(/Extract visuals:\s*Complete/i);
+    });
+  });
+
+  test('Extract visuals badge shows Complete when latest is succeeded_with_warnings', async () => {
+    const { apiGetDealJobs } = await import('../lib/apiClient');
+
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v10', dioStatus: 'ready' } as any);
+
+    vi.mocked(apiGetDealJobs).mockResolvedValue([
+      {
+        job_id: 'job-ingest-2',
+        type: 'ingest_documents',
+        queue: 'ingest_documents',
+        status: 'succeeded',
+        created_at: '2024-01-03T00:00:00.000Z',
+        updated_at: '2024-01-03T00:00:10.000Z',
+      },
+      {
+        job_id: 'job-extract-warn',
+        type: 'extract_visuals',
+        queue: 'extract_visuals',
+        status: 'succeeded_with_warnings',
+        created_at: '2024-01-03T00:01:00.000Z',
+        updated_at: '2024-01-03T00:01:10.000Z',
+      },
+    ] as any);
+
+    renderWorkspace({ dealId: 'deal-extract-warn' });
+
+    await waitFor(() => {
+      const badge = screen.getByTestId('stage-badge-extract_visuals');
+      expect(badge.textContent || '').toMatch(/Extract visuals:\s*Complete/i);
+    });
+  });
+
+  test('Extract visuals badge shows Failed when latest is failed (post-ingest)', async () => {
+    const { apiGetDealJobs } = await import('../lib/apiClient');
+
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v11', dioStatus: 'ready' } as any);
+
+    vi.mocked(apiGetDealJobs).mockResolvedValue([
+      {
+        job_id: 'job-ingest-3',
+        type: 'ingest_documents',
+        queue: 'ingest_documents',
+        status: 'succeeded',
+        created_at: '2024-01-04T00:00:00.000Z',
+        updated_at: '2024-01-04T00:00:10.000Z',
+      },
+      {
+        job_id: 'job-extract-failed',
+        type: 'extract_visuals',
+        queue: 'extract_visuals',
+        status: 'failed',
+        created_at: '2024-01-04T00:02:00.000Z',
+        updated_at: '2024-01-04T00:02:10.000Z',
+      },
+    ] as any);
+
+    renderWorkspace({ dealId: 'deal-extract-failed' });
+
+    await waitFor(() => {
+      const badge = screen.getByTestId('stage-badge-extract_visuals');
+      expect(badge.textContent || '').toMatch(/Extract visuals:\s*Failed/i);
+    });
+  });
+
   test('Job Center shows progress bar when job reports progress', async () => {
     const { apiPostAnalyze } = await import('../lib/apiClient');
 

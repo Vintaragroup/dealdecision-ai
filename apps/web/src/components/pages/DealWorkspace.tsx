@@ -345,6 +345,68 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return newestActive ?? (sorted[0] ?? null);
   };
 
+  type StageBadgeStatus = 'not_started' | 'running' | 'failed' | 'complete';
+
+  const getLatestStageStatus = (
+    rows: DealJobRowV2[],
+    stageType: string,
+    opts?: {
+      sinceCreatedMs?: number | null;
+      cutoffStageType?: string;
+    }
+  ): { status: StageBadgeStatus; job: DealJobRowV2 | null } => {
+    const desired = String(stageType ?? '').trim().toLowerCase();
+    if (!desired) return { status: 'not_started', job: null };
+
+    const normalizedRows = Array.isArray(rows) ? rows : [];
+    const matchesStage = (r: DealJobRowV2): boolean => {
+      const t = String(r.type ?? '').trim().toLowerCase();
+      const q = String(r.queue ?? '').trim().toLowerCase();
+      return t === desired || q === desired;
+    };
+
+    const cutoffType = opts?.cutoffStageType ? String(opts.cutoffStageType).trim().toLowerCase() : '';
+    const cutoffMsFromJobs = (() => {
+      if (!cutoffType) return null;
+      let best: number | null = null;
+      for (const r of normalizedRows) {
+        const t = String(r.type ?? '').trim().toLowerCase();
+        const q = String(r.queue ?? '').trim().toLowerCase();
+        if (t !== cutoffType && q !== cutoffType) continue;
+        const createdMs = parseIsoMs(r.created_at ?? null) ?? parseIsoMs(r.updated_at ?? null);
+        if (createdMs == null) continue;
+        if (best == null || createdMs > best) best = createdMs;
+      }
+      return best;
+    })();
+
+    const sinceMs = typeof opts?.sinceCreatedMs === 'number' ? opts.sinceCreatedMs : cutoffMsFromJobs;
+
+    const candidates: Array<{ row: DealJobRowV2; createdMs: number }> = [];
+    for (const r of normalizedRows) {
+      if (!matchesStage(r)) continue;
+      const createdMs = parseIsoMs(r.created_at ?? null) ?? parseIsoMs(r.updated_at ?? null);
+      if (createdMs == null) continue;
+      if (typeof sinceMs === 'number' && createdMs < sinceMs) continue;
+      candidates.push({ row: r, createdMs });
+    }
+
+    if (candidates.length === 0) return { status: 'not_started', job: null };
+    candidates.sort((a, b) => b.createdMs - a.createdMs);
+    const latest = candidates[0]?.row ?? null;
+    const normalizedStatus = String(latest?.status ?? '').toLowerCase();
+
+    if (normalizedStatus === 'succeeded' || normalizedStatus === 'succeeded_with_warnings') {
+      return { status: 'complete', job: latest };
+    }
+    if (normalizedStatus === 'failed') return { status: 'failed', job: latest };
+    if (normalizedStatus === 'running' || normalizedStatus === 'queued' || normalizedStatus === 'retrying') {
+      return { status: 'running', job: latest };
+    }
+    // Unknown statuses: treat as running (best-effort) to avoid false “Not started”.
+    return { status: 'running', job: latest };
+  };
+
   const dealJobsById = useMemo(() => {
     const map = new Map<string, DealJobRowV2>();
     for (const row of dealJobs) map.set(row.job_id, row);
@@ -2491,6 +2553,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     });
   })();
 
+  const extractVisualsBadge = useMemo(() => {
+    const derived = getLatestStageStatus(dealJobs, 'extract_visuals', { cutoffStageType: 'ingest_documents' });
+    const label = derived.status === 'complete' ? 'Complete' : derived.status === 'running' ? 'Running' : derived.status === 'failed' ? 'Failed' : 'Not started';
+    const severity: JobSeverity =
+      derived.status === 'complete' ? 'success' : derived.status === 'running' ? 'info' : derived.status === 'failed' ? 'danger' : 'muted';
+    return { ...derived, label, severity };
+  }, [dealJobs]);
+
   const progressPercent = typeof jobProgressSnapshot?.percent === 'number' ? jobProgressSnapshot.percent : jobProgress;
   const progressMessage = jobProgressSnapshot?.message ?? jobMessage;
   const progressStageLabel = jobProgressSnapshot?.stage ? (stageLabelMap[jobProgressSnapshot.stage] ?? jobProgressSnapshot.stage) : null;
@@ -3987,6 +4057,16 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   </span>
                 )}
               </div>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span
+                data-testid="stage-badge-extract_visuals"
+                className={`px-3 py-1 rounded-full border text-xs font-medium ${severityBadgeClass(extractVisualsBadge.severity)}`}
+                title={extractVisualsBadge.job?.job_id ? `job ${extractVisualsBadge.job.job_id}` : undefined}
+              >
+                Extract visuals: {extractVisualsBadge.label}
+              </span>
             </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4 w-full max-w-full">

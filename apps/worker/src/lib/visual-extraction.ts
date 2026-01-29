@@ -1375,7 +1375,11 @@ export async function callVisionWorkerWithRetries(
 				}
 				: {};
 	const timeouts = Array.isArray(timeoutsMs) ? timeoutsMs.filter((n) => typeof n === "number" && Number.isFinite(n) && n > 0) : [];
-	const backoff = Array.isArray(backoffMs) ? backoffMs : [500, 1500];
+	const explicitBackoff = Array.isArray(backoffMs) && backoffMs.length > 0
+		? backoffMs.filter((n) => typeof n === "number" && Number.isFinite(n) && n >= 0)
+		: null;
+	const expBackoffBaseMs = 500;
+	const expBackoffCapMs = 30_000;
 	const jitterPct = typeof jitterPctOpt === "number" && Number.isFinite(jitterPctOpt) ? jitterPctOpt : 0.2;
 	const attempts: VisionAttemptMeta[] = [];
 
@@ -1428,7 +1432,15 @@ export async function callVisionWorkerWithRetries(
 			);
 		}
 
-		const delayBase = typeof backoff[idx] === "number" && Number.isFinite(backoff[idx]) ? backoff[idx] : backoff[backoff.length - 1] ?? 500;
+		const delayBase = (() => {
+			if (explicitBackoff && explicitBackoff.length > 0) {
+				const raw = idx < explicitBackoff.length ? explicitBackoff[idx] : explicitBackoff[explicitBackoff.length - 1];
+				return typeof raw === "number" && Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 0;
+			}
+			// Default: exponential backoff (500ms, 1s, 2s, 4s...) capped.
+			const exp = Math.min(20, Math.max(0, idx));
+			return Math.min(expBackoffCapMs, expBackoffBaseMs * Math.pow(2, exp));
+		})();
 		await sleepMs(withJitter(delayBase, jitterPct));
 	}
 

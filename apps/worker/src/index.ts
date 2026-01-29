@@ -4385,8 +4385,18 @@ registerWorker("extract_visuals", async (job: Job) => {
 
 			const visionLogMeta = {
 				stage: "extract_visual_assets",
-				job_id: job.id ? String(job.id) : null,
-				deal_id: dealIdForVision,
+				job_id: job.id ? String(job.id) : "unknown",
+				deal_id:
+					(typeof dealIdForVision === "string" && dealIdForVision.trim().length > 0)
+						? dealIdForVision
+						: (typeof docMeta?.deal_id === "string" && docMeta.deal_id.trim().length > 0)
+							? docMeta.deal_id.trim()
+							: "unknown",
+				document_id: docId,
+				page_index: i,
+				doc_kind: typeof docKind === "string" && docKind.trim().length > 0 ? docKind : "unknown",
+				page_range: { start: pageStart, end: pageEndExclusive },
+				chunk: { page_start: pageStart, page_end: pageEndExclusive },
 				vision_base_url: config.visionWorkerUrl,
 				image_url_prefix_kind: signedUrlPrefixKind,
 				image_url_prefix: signedUrlPrefix,
@@ -5509,10 +5519,13 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 			}
 			const logMeta = {
 				stage: "deep_scan_visuals",
-				job_id: job.id ? String(job.id) : null,
-				deal_id: derivedDealId,
+				job_id: job.id ? String(job.id) : "unknown",
+				deal_id: typeof derivedDealId === "string" && derivedDealId.trim().length > 0 ? derivedDealId.trim() : "unknown",
 				document_id: docId,
 				page_index: pageIndex,
+				doc_kind: typeof routing.doc_kind === "string" && routing.doc_kind.trim().length > 0 ? routing.doc_kind : "unknown",
+				page_range: { start: pageStart, end: pageEndExclusive },
+				chunk: { page_start: pageStart, page_end: pageEndExclusive },
 				vision_base_url: config.visionWorkerUrl,
 			};
 			const timeoutsMs = [20_000, 60_000, 90_000];
@@ -6193,6 +6206,62 @@ registerWorker("analyze_deal", async (job: Job) => {
 			documents: phase1Documents,
 		});
 
+		// Additive: disclosure when no pages have understanding (PAGE_SEGMENTS_V1_SKIP reason=no_pages_with_understanding).
+		// This is disclosure-only: no scoring math changes.
+		const phase1_disclosures_v1: Array<{ code: string; message: string }> = [];
+		try {
+			const hasUnderstandingPages = (doc: any): boolean => {
+				const fullContent = doc?.full_content ?? {};
+				const pdfV2 =
+					(fullContent as any)?.pdf_v2 && typeof (fullContent as any).pdf_v2 === "object"
+						? (fullContent as any).pdf_v2
+						: fullContent;
+				const wrapper = {
+					pages: Array.isArray((fullContent as any)?.pages) ? (fullContent as any).pages : [],
+					pdf_v2: pdfV2,
+				};
+				try {
+					applySlideUnderstandingV1Shadow(wrapper as any);
+				} catch {
+					// best-effort
+				}
+				const pages = Array.isArray((pdfV2 as any)?.pages) ? ((pdfV2 as any).pages as any[]) : [];
+				const ordered = pages
+					.map((p: any) => {
+						const pageIndex = typeof p?.page_index === "number" && Number.isFinite(p.page_index) ? p.page_index : null;
+						if (pageIndex == null || pageIndex < 0) return null;
+						const u = p?.understanding_v1;
+						const slideType = typeof u?.slide_type === "string" ? String(u.slide_type) : "";
+						if (!slideType) return null;
+						return { page_index: pageIndex };
+					})
+					.filter(Boolean);
+				return ordered.length > 0;
+			};
+
+			const pitchDeckDocs = eligible.filter((doc) => {
+				const structured = (doc.structured_data && typeof doc.structured_data === "object")
+					? (doc.structured_data as Record<string, unknown>)
+					: {};
+				return inferAnalysisDocType({ ...doc, structured_data: structured }) === "pitch_deck";
+			});
+
+			const affected = pitchDeckDocs.filter((doc: any) => {
+				const pageCount = typeof doc?.page_count === "number" && Number.isFinite(doc.page_count) ? doc.page_count : 0;
+				if (pageCount <= 0) return false;
+				return !hasUnderstandingPages(doc);
+			});
+
+			if (affected.length > 0) {
+				phase1_disclosures_v1.push({
+					code: "no_pages_with_understanding",
+					message: `No pitch deck pages contained usable text understanding (${affected.length} document(s)); slide segmentation and narrative signals may be incomplete.`,
+				});
+			}
+		} catch {
+			// Never fail analysis due to disclosure detection.
+		}
+
 		// Deterministic docs fingerprint for change acknowledgement.
 		const docsFingerprint = createHash("sha256")
 			.update(
@@ -6470,6 +6539,7 @@ registerWorker("analyze_deal", async (job: Job) => {
 					dio_context,
 					phase1_deal_overview_v2,
 					phase1_business_archetype_v1,
+					phase1_disclosures_v1,
 					phase1_update_report_v1,
 					phase1_deal_summary_v2,
 					llm_calls,

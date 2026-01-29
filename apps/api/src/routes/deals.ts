@@ -7,7 +7,8 @@ import { fetchPhaseBVisualsFromDb } from "../lib/phaseb-visuals";
 import { getPool } from "../lib/db";
 import { resolveVisualAssetImageUriForApi } from "../lib/visual-asset-image-uri";
 import type { Deal } from "@dealdecision/contracts";
-import { enqueueJob } from "../services/jobs";
+import { enqueueBullmqJob, enqueueJob, insertJobRow } from "../services/jobs";
+import { runIdempotentOperation } from "../lib/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
 import { updateDealPriority, updateAllDealPriorities } from "../services/priorityClassification";
 import { computeNodeEvidenceGateV1 } from "../services/nodeEvidenceGateV1";
@@ -2315,6 +2316,9 @@ export async function registerDealRoutes(
   poolOverride?: any,
   deps?: {
     enqueueJob?: typeof enqueueJob;
+    jobs?: {
+      queue?: any;
+    };
     r2?: {
       objectExistsInR2?: typeof objectExistsInR2;
     };
@@ -8487,10 +8491,51 @@ export async function registerDealRoutes(
   // This does not re-render pages; it only uses already-rendered page images.
   app.post("/api/v1/deals/:deal_id/extract-visuals", async (request, reply) => {
     const dealId = (request.params as { deal_id: string }).deal_id;
+    if (!isUuid(dealId)) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+
     const forceResegment = Boolean((request.body as any)?.force_resegment);
     const forceReextract = Boolean((request.body as any)?.force_reextract);
     const enqueueDeepScanRaw = (request.body as any)?.enqueue_deep_scan;
     const enqueueDeepScan = enqueueDeepScanRaw == null ? true : Boolean(enqueueDeepScanRaw);
+
+    class AfterCommitEnqueueError extends Error {
+      jobId: string;
+      constructor(jobId: string, cause: unknown) {
+        super("after_commit_enqueue_failed");
+        this.name = "AfterCommitEnqueueError";
+        this.jobId = jobId;
+        (this as any).cause = cause;
+      }
+    }
+
+    const requestIdHeader = request.headers['x-request-id'];
+    const sourceHeader = request.headers['x-client-source'];
+    const idempotencyHeader = request.headers['x-idempotency-key'];
+
+    const requestId = typeof requestIdHeader === 'string' && requestIdHeader.trim().length > 0 ? requestIdHeader.trim() : null;
+    const source = typeof sourceHeader === 'string' && sourceHeader.trim().length > 0 ? sourceHeader.trim() : null;
+    const idempotencyKey = typeof idempotencyHeader === 'string' && idempotencyHeader.trim().length > 0 ? idempotencyHeader.trim() : null;
+
+    const auth = (request as any)?.auth as { userId?: string | null; orgId?: string | null } | undefined;
+    const actorUserId = typeof auth?.userId === 'string' && auth.userId ? auth.userId : null;
+    const actorOrgId = typeof auth?.orgId === 'string' && auth.orgId ? auth.orgId : null;
+
+    if (requestId || source || idempotencyKey) {
+      request.log.info(
+        {
+          msg: 'deal.extract_visuals.requested',
+          deal_id: dealId,
+          request_id: requestId,
+          idempotency_key: idempotencyKey,
+          source,
+          actor_user_id: actorUserId,
+          actor_org_id: actorOrgId,
+        },
+        'extract-visuals requested'
+      );
+    }
 
     const { rows } = await pool.query<DealRow>(
       `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
@@ -8720,19 +8765,117 @@ export async function registerDealRoutes(
     // Single job; scope to only the ready docs to avoid ingest_not_complete guard failures.
     // force_resegment updates segment_key for existing structured synthetic assets (pptx/docx/xlsx)
     // before extracting visuals.
-    const job = await enqueue(
-      {
-        deal_id: dealId,
-        type: "extract_visuals",
-        payload: {
-          document_ids: readyDocIds,
-          force_resegment: forceResegment,
-          force_reextract: forceReextract,
-          enqueue_deep_scan: enqueueDeepScan,
+    const payload = {
+      document_ids: readyDocIds,
+      force_resegment: forceResegment,
+      force_reextract: forceReextract,
+      enqueue_deep_scan: enqueueDeepScan,
+      ...(requestId || source || idempotencyKey || actorUserId || actorOrgId
+        ? {
+            request_context: {
+              request_id: requestId,
+              idempotency_key: idempotencyKey,
+              source,
+              actor_user_id: actorUserId,
+              actor_org_id: actorOrgId,
+            },
+          }
+        : {}),
+    };
+
+    let job:
+      | { job_id: string; status: string }
+      | ({ job_id: string; status: string; idempotent?: boolean } & Record<string, any>);
+
+    if (idempotencyKey) {
+      try {
+        job = await runIdempotentOperation({
+          deal_id: dealId,
+          operation: "extract_visuals",
+          idempotency_key: idempotencyKey,
+          poolOverride: pool as any,
+          runDb: async (client) => {
+            const inserted = await insertJobRow(
+              {
+                deal_id: dealId,
+                type: "extract_visuals",
+                payload,
+              },
+              { dedupe: { by: "deal" }, deps: { pool: client as any } }
+            );
+
+            // Return enough information to enqueue after commit.
+            return {
+              job_id: inserted.job_id,
+              status: inserted.status,
+              bullPayload: inserted.bullPayload,
+            };
+          },
+          afterCommit: async (dbResult) => {
+            try {
+              await enqueueBullmqJob(
+                {
+                  type: "extract_visuals",
+                  jobId: String(dbResult.job_id),
+                  bullPayload: (dbResult as any).bullPayload ?? {},
+                },
+                { deps: { queue: deps?.jobs?.queue } }
+              );
+            } catch (err) {
+              const errMsg = err instanceof Error ? err.message : String(err);
+              const message = sanitizeText(`enqueue_failed: ${errMsg}`);
+              const jobId = sanitizeText(String(dbResult.job_id));
+
+              // Ensure deterministic behavior: if Redis enqueue fails after commit, mark the job row failed.
+              // Use the regular pool client (not the transaction client) since we're after COMMIT.
+              try {
+                await pool.query(
+                  `UPDATE jobs
+                      SET status = 'failed',
+                          message = $2,
+                          updated_at = now()
+                    WHERE job_id = $1`,
+                  [jobId, message]
+                );
+              } catch {
+                // Best-effort.
+              }
+
+              // Optional: touch idempotency updated_at to reflect the failure path.
+              try {
+                await pool.query(
+                  `UPDATE job_idempotency
+                      SET updated_at = now()
+                    WHERE deal_id = $1
+                      AND operation = $2
+                      AND idempotency_key = $3`,
+                  [sanitizeText(dealId), sanitizeText("extract_visuals"), sanitizeText(idempotencyKey)]
+                );
+              } catch {
+                // Best-effort.
+              }
+
+              throw new AfterCommitEnqueueError(jobId, err);
+            }
+          },
+        });
+      } catch (err) {
+        if (err instanceof AfterCommitEnqueueError) {
+          job = { job_id: err.jobId, status: "failed" };
+        } else {
+          throw err;
+        }
+      }
+    } else {
+      job = await enqueue(
+        {
+          deal_id: dealId,
+          type: "extract_visuals",
+          payload,
         },
-      },
-      { dedupe: { by: "deal" } }
-    );
+        { dedupe: { by: "deal" } }
+      );
+    }
     return reply.status(202).send({
       job_id: job.job_id,
       status: job.status,

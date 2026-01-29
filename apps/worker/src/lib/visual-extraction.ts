@@ -3762,6 +3762,7 @@ export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 }): Promise<{
 	attempted: number;
 	updated: number;
+	skipped_has_content: number;
 	skipped_existing: number;
 	skipped_no_uri: number;
 	skipped_has_text: number;
@@ -3790,13 +3791,40 @@ export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 		env.ENABLE_STRUCTURED_VISION_HINTS ?? ((env.VISION_BASE_URL || env.VISION_WORKER_URL) && String(env.VISION_BASE_URL || env.VISION_WORKER_URL).trim() ? "1" : "0")
 	);
 	if (!enableStructuredVisionHints) {
-		return { attempted: 0, updated: 0, skipped_existing: 0, skipped_no_uri: 0, skipped_has_text: 0, skipped_has_segment: 0, errors: 0 };
+		return {
+			attempted: 0,
+			updated: 0,
+			skipped_has_content: 0,
+			skipped_existing: 0,
+			skipped_no_uri: 0,
+			skipped_has_text: 0,
+			skipped_has_segment: 0,
+			errors: 0,
+		};
 	}
 	if (!params.visionConfig?.enabled) {
-		return { attempted: 0, updated: 0, skipped_existing: 0, skipped_no_uri: 0, skipped_has_text: 0, skipped_has_segment: 0, errors: 0 };
+		return {
+			attempted: 0,
+			updated: 0,
+			skipped_has_content: 0,
+			skipped_existing: 0,
+			skipped_no_uri: 0,
+			skipped_has_text: 0,
+			skipped_has_segment: 0,
+			errors: 0,
+		};
 	}
 	if (!Array.isArray(params.pageImageUris) || params.pageImageUris.length === 0) {
-		return { attempted: 0, updated: 0, skipped_existing: 0, skipped_no_uri: 0, skipped_has_text: 0, skipped_has_segment: 0, errors: 0 };
+		return {
+			attempted: 0,
+			updated: 0,
+			skipped_has_content: 0,
+			skipped_existing: 0,
+			skipped_no_uri: 0,
+			skipped_has_text: 0,
+			skipped_has_segment: 0,
+			errors: 0,
+		};
 	}
 
 	// Candidates: structured_powerpoint synthetic assets with unknown segment and no prior vision_understanding_v1.
@@ -3832,11 +3860,39 @@ export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 
 	let attempted = 0;
 	let updated = 0;
+	let skippedHasContent = 0;
 	let skippedExisting = 0;
 	let skippedNoUri = 0;
 	let skippedHasText = 0;
 	let skippedHasSegment = 0;
 	let errors = 0;
+
+	const hasMeaningfulContent = (slide: any): boolean => {
+		const sj = (slide ?? {}) as any;
+		const title = typeof sj?.title === "string" ? sj.title.trim() : "";
+		if (title.length >= 3) return true;
+
+		const bullets = Array.isArray(sj?.bullets) ? sj.bullets : [];
+		const bulletCount = bullets.filter((b: any) => typeof b === "string" && b.trim().length >= 3).length;
+		if (bulletCount >= 1) return true;
+
+		const notes = typeof sj?.notes === "string" ? sj.notes.trim() : "";
+		if (notes.length >= 10) return true;
+
+		const snippet = typeof sj?.text_snippet === "string" ? sj.text_snippet.trim() : "";
+		if (snippet.length >= 20) return true;
+
+		// Structured objects: some extractors may include table/image metadata arrays.
+		const hasStructuredObjects = (() => {
+			const candidates: unknown[] = [sj?.tables, sj?.images, sj?.charts, sj?.shapes, sj?.objects, sj?.media];
+			for (const c of candidates) {
+				if (Array.isArray(c) && c.length > 0) return true;
+				if (c && typeof c === "object" && !Array.isArray(c) && Object.keys(c as any).length > 0) return true;
+			}
+			return false;
+		})();
+		return hasStructuredObjects;
+	};
 
 	for (const row of rows ?? []) {
 		const pageIndex = typeof row.page_index === "number" ? row.page_index : -1;
@@ -3866,6 +3922,13 @@ export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 		const alreadyHasSegmentHint = Boolean(sjSegment && sjSegment !== "unknown");
 		if (!forceReextract && (alreadyHasVu || alreadyHasSlideTypeHint || alreadyHasSegmentHint)) {
 			skippedExisting += 1;
+			continue;
+		}
+
+		// Tight gating: we ONLY run vision hints when content is missing.
+		// Do not call vision just because classification is unknown.
+		if (hasMeaningfulContent(sj)) {
+			skippedHasContent += 1;
 			continue;
 		}
 		// Intentionally do not gate on having title/bullets/text: if deterministic structured classification
@@ -4015,6 +4078,7 @@ export async function applyVisionHintsToStructuredPowerpointSlides(params: {
 	return {
 		attempted,
 		updated,
+		skipped_has_content: skippedHasContent,
 		skipped_existing: skippedExisting,
 		skipped_no_uri: skippedNoUri,
 		skipped_has_text: skippedHasText,

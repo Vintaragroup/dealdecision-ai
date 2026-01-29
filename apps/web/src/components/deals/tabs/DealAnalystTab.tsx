@@ -18,6 +18,7 @@ import {
   apiGetDealLineage,
   apiGetDealVisualAssets,
   apiGetDocumentVisualAssets,
+  apiGetDocumentAnalysis,
   apiDeleteVisualAssetSegmentOverride,
   apiPostExtractVisuals,
   apiRetryDocument,
@@ -29,6 +30,8 @@ import {
   type DealLineageResponse,
   type DealVisualAsset,
 } from '../../../lib/apiClient';
+
+import { getPageSnapshotUrl } from '../../../lib/pageSnapshots';
 
 import { layoutGraph } from '../analyst/graph/layout';
 import { FloatingEdge } from '../analyst/graph/FloatingEdge';
@@ -2074,6 +2077,11 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
   const [imageLoadError, setImageLoadError] = useState(false);
   const [showBboxOverlay, setShowBboxOverlay] = useState(false);
 
+  const [pageSnapshotUrl, setPageSnapshotUrl] = useState<string | null>(null);
+  const [pageSnapshotLoading, setPageSnapshotLoading] = useState(false);
+  const [pageSnapshotError, setPageSnapshotError] = useState<string | null>(null);
+  const docAnalysisCacheRef = useRef(new Map<string, any | null>());
+
   const [structuredViewMode, setStructuredViewMode] = useState<StructuredViewMode>('raw');
 
   const tablePreviewModel = useMemo(
@@ -2095,6 +2103,58 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
     setImageLoadError(false);
     setShowBboxOverlay(false);
   }, [selectedVisual?.visual_asset_id]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const run = async () => {
+      setPageSnapshotUrl(null);
+      setPageSnapshotError(null);
+
+      const docId = String((selectedVisual as any)?.document_id || '').trim();
+      const pageIndex = typeof selectedVisual?.page_index === 'number' && Number.isFinite(selectedVisual.page_index)
+        ? selectedVisual.page_index
+        : null;
+
+      if (!selectedVisual || !docId || pageIndex == null) return;
+
+      setPageSnapshotLoading(true);
+      try {
+        let docAnalysis: any | null;
+        if (docAnalysisCacheRef.current.has(docId)) {
+          docAnalysis = docAnalysisCacheRef.current.get(docId) ?? null;
+        } else {
+          try {
+            docAnalysis = await apiGetDocumentAnalysis(dealId, docId);
+          } catch {
+            docAnalysis = null;
+          }
+          docAnalysisCacheRef.current.set(docId, docAnalysis);
+        }
+
+        const url = await getPageSnapshotUrl({
+          dealId,
+          document: docAnalysis,
+          pageIndex,
+          visualAsset: selectedVisual,
+        });
+
+        if (!cancelled) setPageSnapshotUrl(url);
+      } catch (err) {
+        if (!cancelled) {
+          const msg = err instanceof Error ? err.message : 'Failed to load snapshot';
+          setPageSnapshotError(msg);
+        }
+      } finally {
+        if (!cancelled) setPageSnapshotLoading(false);
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [dealId, selectedVisual?.visual_asset_id, selectedVisual?.page_index]);
 
   useEffect(() => {
     setInspectorImageModal(null);
@@ -4389,12 +4449,64 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
 
                         {(() => {
                           const imgSrc = resolveApiAssetUrl(selectedVisual.image_uri ?? null);
+                          const snapshotSrc = pageSnapshotUrl;
                           const bbox = parseNormalizedBbox(selectedVisual.bbox);
                           const bboxLabel = formatBboxLabel(selectedVisual.bbox);
                           const flags = getQualityFlagChips(selectedVisual.quality_flags, { maxChips: 8 });
 
                           return (
                             <div className={`rounded-md border p-2 ${darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'}`}>
+                              <div className="space-y-2">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className={`text-xs font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Page snapshot</div>
+                                  {snapshotSrc ? (
+                                    <button
+                                      type="button"
+                                      className={`text-xs underline-offset-2 hover:underline ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+                                      onClick={() => setInspectorImageModal({ src: snapshotSrc, title: 'Page snapshot' })}
+                                    >
+                                      Open preview
+                                    </button>
+                                  ) : null}
+                                </div>
+
+                                {pageSnapshotLoading ? (
+                                  <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Loading preview…</div>
+                                ) : snapshotSrc ? (
+                                  <div className="relative w-[240px] max-w-full">
+                                    <button
+                                      type="button"
+                                      className="block w-full"
+                                      onClick={() => setInspectorImageModal({ src: snapshotSrc, title: 'Page snapshot' })}
+                                      aria-label="Open page snapshot"
+                                    >
+                                      <img
+                                        src={snapshotSrc}
+                                        alt="Page snapshot"
+                                        className={`w-full max-h-[180px] object-contain rounded-md border cursor-zoom-in ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
+                                      />
+                                    </button>
+                                    {showBboxOverlay && bbox ? (
+                                      <div
+                                        className={`pointer-events-none absolute border-2 ${darkMode ? 'border-red-300/70' : 'border-red-500/70'}`}
+                                        style={{
+                                          left: `${bbox.x * 100}%`,
+                                          top: `${bbox.y * 100}%`,
+                                          width: `${bbox.w * 100}%`,
+                                          height: `${bbox.h * 100}%`,
+                                        }}
+                                      />
+                                    ) : null}
+                                  </div>
+                                ) : (
+                                  <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                                    Preview unavailable{pageSnapshotError ? `: ${pageSnapshotError}` : ''}
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className={`mt-3 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-700'}`}>Asset crop</div>
+
                               {imgSrc && !imageLoadError ? (
                                 <div className="space-y-2">
                                   <div className="flex items-center justify-between gap-2">

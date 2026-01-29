@@ -1332,6 +1332,120 @@ export async function registerDocumentRoutes(
     }
   });
 
+  app.get("/api/v1/deals/:deal_id/documents/:document_id/rendered-pages/:page_index/signed-url", async (request, reply) => {
+    const dealId = sanitizeText((request.params as any)?.deal_id);
+    const documentId = sanitizeText((request.params as any)?.document_id);
+    const pageIndexRaw = (request.params as any)?.page_index;
+
+    if (!dealId) return reply.status(400).send({ error: "deal_id is required" });
+    if (!documentId) return reply.status(400).send({ error: "document_id is required" });
+
+    const pageIndex = Number.parseInt(String(pageIndexRaw ?? ""), 10);
+    if (!Number.isFinite(pageIndex) || pageIndex < 0) {
+      return reply.status(400).send({ error: "invalid_page_index", message: "page_index must be a non-negative integer" });
+    }
+
+    const hasExtractionMetadata = await hasColumn(pool, "documents", "extraction_metadata");
+
+    const { rows } = await pool.query<{
+      extraction_metadata: any | null;
+    }>(
+      `SELECT ${hasExtractionMetadata ? "extraction_metadata" : "NULL::jsonb AS extraction_metadata"}
+         FROM documents
+        WHERE deal_id = $1
+          AND id = $2
+        LIMIT 1`,
+      [dealId, documentId]
+    );
+
+    if (!rows.length) return reply.status(404).send({ error: "Document not found" });
+
+    const meta = rows[0]?.extraction_metadata && typeof rows[0].extraction_metadata === "object" ? rows[0].extraction_metadata : null;
+    const renderedR2 = meta?.rendered_pages_r2 && typeof meta.rendered_pages_r2 === "object" ? (meta.rendered_pages_r2 as any) : null;
+    const count = typeof meta?.rendered_pages_count === "number" && Number.isFinite(meta.rendered_pages_count) ? meta.rendered_pages_count : null;
+
+    if (typeof count === "number" && count > 0 && pageIndex >= count) {
+      return reply
+        .status(416)
+        .send({ error: "page_index_out_of_range", message: "page_index exceeds rendered_pages_count", page_index: pageIndex, rendered_pages_count: count });
+    }
+
+    if (!renderedR2) {
+      return reply.status(404).send({
+        error: "rendered_pages_r2_missing",
+        message: "Document has no rendered_pages_r2 metadata. Render pages first.",
+        deal_id: dealId,
+        document_id: documentId,
+      });
+    }
+
+    const pad4 = (n: number) => String(Math.max(0, Math.trunc(n))).padStart(4, "0");
+    const renderedPageKeyForIndex = (renderedR2Obj: any, idx: number): string | null => {
+      const prefix = typeof renderedR2Obj?.prefix === "string" ? renderedR2Obj.prefix : null;
+      const fmt =
+        typeof renderedR2Obj?.format === "string" && renderedR2Obj.format.trim().length > 0 ? renderedR2Obj.format.trim() : "page_%04d.png";
+      if (!prefix) return null;
+      const cleanPrefix = prefix.replace(/^\/+/g, "").replace(/\/+$/g, "");
+      let fileName = fmt;
+      if (fileName.includes("%04d")) fileName = fileName.replace("%04d", pad4(idx));
+      else if (fileName.includes("%d")) fileName = fileName.replace("%d", String(idx));
+      else fileName = `page_${pad4(idx)}.png`;
+      return `${cleanPrefix}/${fileName}`;
+    };
+
+    const key = renderedPageKeyForIndex(renderedR2, pageIndex);
+    if (!key) {
+      return reply.status(500).send({
+        error: "rendered_page_key_unavailable",
+        message: "rendered_pages_r2 metadata is missing prefix/format",
+        deal_id: dealId,
+        document_id: documentId,
+        page_index: pageIndex,
+      });
+    }
+
+    try {
+      const publicUrl = r2.getPublicUrlForKey(key);
+      if (publicUrl) {
+        return reply.send({
+          deal_id: dealId,
+          document_id: documentId,
+          page_index: pageIndex,
+          provider: "r2",
+          key,
+          url: publicUrl,
+          expires_in_seconds: null,
+        });
+      }
+
+      const ttl = r2.getR2Config().signedUrlTtlSeconds;
+      const signedUrl = await r2.getSignedDownloadUrl({ key, ttlSeconds: ttl });
+      return reply.send({
+        deal_id: dealId,
+        document_id: documentId,
+        page_index: pageIndex,
+        provider: "r2",
+        key,
+        url: signedUrl,
+        expires_in_seconds: ttl,
+      });
+    } catch (error: any) {
+      request.log.error(
+        {
+          event: "rendered_page_signed_url_error",
+          deal_id: dealId,
+          document_id: documentId,
+          page_index: pageIndex,
+          key,
+          err: error,
+          aws: { name: error?.name, message: error?.message, $metadata: error?.$metadata },
+        },
+        "Failed signing rendered page URL"
+      );
+      return reply.status(500).send({ error: "Failed to create signed URL" });
+    }
+  });
+
   app.delete("/api/v1/deals/:deal_id/documents/:document_id", async (request, reply) => {
     const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
 

@@ -3931,15 +3931,18 @@ registerWorker("extract_visuals", async (job: Job) => {
 				logger: console,
 				forceReextract,
 			});
-			if (res.attempted > 0 || res.updated > 0 || res.errors > 0) {
-				console.log(
-					JSON.stringify({
-						event: "STRUCTURED_POWERPOINT_VISION_HINTS",
-						document_id: docId,
-						...res,
-					})
-				);
-			}
+			// Always emit summary log, even if attempted=0.
+			console.log(
+				JSON.stringify({
+					event: "STRUCTURED_POWERPOINT_VISION_HINTS",
+					document_id: docId,
+					attempted: res.attempted,
+					skipped_has_content: (res as any).skipped_has_content ?? 0,
+					skipped_existing: (res as any).skipped_existing ?? 0,
+					updated: res.updated,
+					errors: res.errors,
+				})
+			);
 		} catch (err) {
 			console.warn(
 				`[extract_visuals] structured PowerPoint vision hints pass failed doc=${docId}: ${

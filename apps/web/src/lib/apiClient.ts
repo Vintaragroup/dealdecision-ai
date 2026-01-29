@@ -1110,9 +1110,26 @@ export type DocumentAnalysisResponse = {
   job_progress: number | null;
 };
 
+export type RenderedPageSignedUrlResponse = {
+  deal_id: string;
+  document_id: string;
+  page_index: number;
+  provider: 'r2';
+  key: string;
+  url: string;
+  expires_in_seconds: number | null;
+};
+
 export function apiGetDocumentAnalysis(dealId: string, documentId: string) {
   return request<DocumentAnalysisResponse>(
     `/api/v1/deals/${dealId}/documents/${documentId}/analysis`
+  );
+}
+
+export function apiGetRenderedPageSignedUrl(dealId: string, documentId: string, pageIndex: number) {
+  const idx = Number.isFinite(pageIndex) ? Math.max(0, Math.trunc(pageIndex)) : 0;
+  return request<RenderedPageSignedUrlResponse>(
+    `/api/v1/deals/${dealId}/documents/${documentId}/rendered-pages/${idx}/signed-url`
   );
 }
 

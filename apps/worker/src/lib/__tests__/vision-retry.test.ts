@@ -44,8 +44,8 @@ describe("callVisionWorkerWithRetries", () => {
 		} as any;
 
 		const fetchImpl = vi
-			.fn()
-			.mockImplementationOnce(async (_url: string, init: any) => {
+			.fn<[RequestInfo | URL, RequestInit?], Promise<Response>>()
+			.mockImplementationOnce(async (_url: RequestInfo | URL, init: any) => {
 				return await new Promise((_resolve, reject) => {
 					const signal = init?.signal as AbortSignal | undefined;
 					if (!signal) return reject(new Error("missing signal"));
@@ -56,16 +56,17 @@ describe("callVisionWorkerWithRetries", () => {
 					});
 				});
 			})
-			.mockImplementationOnce(async () => ({
-				ok: true,
-				status: 200,
-				json: async () => ({
-					document_id: "doc_1",
-					page_index: 1,
-					extractor_version: "v2",
-					assets: [{ asset_type: "image_text" }],
-				}),
-			} as any));
+			.mockImplementationOnce(async () =>
+				new Response(
+					JSON.stringify({
+						document_id: "doc_1",
+						page_index: 1,
+						extractor_version: "v2",
+						assets: [{ asset_type: "image_text" }],
+					}),
+					{ status: 200, headers: { "content-type": "application/json" } }
+				)
+			);
 
 		const config = { visionWorkerUrl: "https://vision.example", timeoutMs: 10, extractorVersion: "v2" } as any;
 		const res = await callVisionWorkerWithRetries(
@@ -91,7 +92,7 @@ describe("callVisionWorkerWithRetries", () => {
 
 			const callTimes: number[] = [];
 			let calls = 0;
-			const fetchImpl = vi.fn(async (_url: string, init: any) => {
+			const fetchImpl = vi.fn<[RequestInfo | URL, RequestInit?], Promise<Response>>(async (_url: any, init: any) => {
 				callTimes.push(Date.now());
 				calls += 1;
 				if (calls < 3) {
@@ -105,16 +106,15 @@ describe("callVisionWorkerWithRetries", () => {
 						});
 					});
 				}
-				return {
-					ok: true,
-					status: 200,
-					json: async () => ({
+				return new Response(
+					JSON.stringify({
 						document_id: "doc_1",
 						page_index: 0,
 						extractor_version: "v2",
 						assets: [{ asset_type: "image_text" }],
 					}),
-				} as any;
+					{ status: 200, headers: { "content-type": "application/json" } }
+				);
 			});
 
 			const config = { visionWorkerUrl: "https://vision.example", timeoutMs: 5, extractorVersion: "v2" } as any;

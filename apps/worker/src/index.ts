@@ -4191,7 +4191,6 @@ registerWorker("extract_visuals", async (job: Job) => {
 		for (let i = pageStart; i < pageEndExclusive; i += 1) {
 			if (!visionFallbackAllowedForDoc) {
 				pagesSkippedPolicy += 1;
-				docPagesSkippedExisting += 1;
 				pagesCompletedInJob += 1;
 				const nowMs = Date.now();
 				const shouldReport =
@@ -4322,18 +4321,9 @@ registerWorker("extract_visuals", async (job: Job) => {
 						`
 							SELECT 1
 							  FROM visual_assets va
-							  JOIN visual_extractions ve ON ve.visual_asset_id = va.id
 							 WHERE va.document_id = $1
 							   AND va.page_index = $2
-							   AND ve.extractor_version = $3
-							   AND (
-								(va.quality_flags->>'accepted_v1') = 'true'
-								OR (
-									COALESCE(length(btrim(ve.ocr_text)), 0) > 120
-									OR ve.confidence > 0.55
-									OR (ve.structured_json IS NOT NULL AND ve.structured_json <> '{}'::jsonb)
-								)
-							)
+							   AND va.extractor_version = $3
 							 LIMIT 1
 						`,
 						[sanitizeText(docId), i, sanitizeText(extractorVersion)]
@@ -4385,14 +4375,9 @@ registerWorker("extract_visuals", async (job: Job) => {
 
 			const visionLogMeta = {
 				stage: "extract_visual_assets",
-				job_id: job.id ? String(job.id) : "unknown",
-				deal_id:
-					(typeof dealIdForVision === "string" && dealIdForVision.trim().length > 0)
-						? dealIdForVision
-						: (typeof docMeta?.deal_id === "string" && docMeta.deal_id.trim().length > 0)
-							? docMeta.deal_id.trim()
-							: "unknown",
-				document_id: docId,
+				job_id: job.id ? String(job.id) : "",
+				deal_id: typeof dealIdForVision === "string" && dealIdForVision.trim().length > 0 ? dealIdForVision : "",
+				document_id: typeof docId === "string" ? docId : "",
 				page_index: i,
 				doc_kind: typeof docKind === "string" && docKind.trim().length > 0 ? docKind : "unknown",
 				page_range: { start: pageStart, end: pageEndExclusive },
@@ -5124,6 +5109,7 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 		deal_id?: string;
 		document_ids?: string[];
 		force_refresh?: boolean;
+		force_reextract?: boolean;
 		parent_job_id?: string | null;
 		page_start?: number;
 		page_end?: number;
@@ -5133,6 +5119,7 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 		? data.document_ids.filter((id) => typeof id === "string" && id.trim().length > 0)
 		: [];
 	const forceRefresh = Boolean((data as any).force_refresh);
+	const forceReextract = Boolean((data as any).force_reextract);
 	const pageStartRaw = (data as any).page_start;
 	const pageEndRaw = (data as any).page_end;
 	const isChunkJob = pageStartRaw != null || pageEndRaw != null;
@@ -5460,6 +5447,34 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 		for (let pageIndex = pageStart; pageIndex < pageEndExclusive; pageIndex += 1) {
 			pagesConsidered += 1;
 			const image_uri = uris[pageIndex];
+
+			// Strict rerun guard: if this page already has a visual_assets row for the canonical
+			// extractor version, do not call vision again (unless force_reextract is true).
+			if (!forceReextract) {
+				try {
+					const { rows } = await pool.query(
+						`
+							SELECT 1
+							  FROM visual_assets va
+							 WHERE va.document_id = $1
+							   AND va.page_index = $2
+							   AND va.extractor_version = $3
+							 LIMIT 1
+						`,
+						[sanitizeText(docId), pageIndex, sanitizeText(baseExtractorVersion)]
+					);
+					if ((rows?.length ?? 0) > 0) {
+						pagesSkippedExisting += 1;
+						continue;
+					}
+				} catch (err) {
+					// Best-effort: if precheck fails, proceed with extraction rather than skipping.
+					console.warn(
+						`[deep_scan_visuals] existing-page precheck failed doc=${docId} page=${pageIndex}: ${err instanceof Error ? err.message : String(err)}`
+					);
+				}
+			}
+
 			if (!forceRefresh) {
 				const hasVu = await pageHasVisionUnderstanding(docId, pageIndex);
 				if (hasVu) {
@@ -5519,9 +5534,9 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 			}
 			const logMeta = {
 				stage: "deep_scan_visuals",
-				job_id: job.id ? String(job.id) : "unknown",
-				deal_id: typeof derivedDealId === "string" && derivedDealId.trim().length > 0 ? derivedDealId.trim() : "unknown",
-				document_id: docId,
+				job_id: job.id ? String(job.id) : "",
+				deal_id: typeof derivedDealId === "string" && derivedDealId.trim().length > 0 ? derivedDealId.trim() : "",
+				document_id: typeof docId === "string" ? docId : "",
 				page_index: pageIndex,
 				doc_kind: typeof routing.doc_kind === "string" && routing.doc_kind.trim().length > 0 ? routing.doc_kind : "unknown",
 				page_range: { start: pageStart, end: pageEndExclusive },

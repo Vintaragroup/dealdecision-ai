@@ -138,4 +138,71 @@ describe("persistVisionResponse", () => {
 		expect(Array.isArray(observedBlocks)).toBe(true);
 		expect((observedBlocks ?? []).length).toBe(2);
 	});
+
+	it("supports nested response.ocr.text/response.ocr.blocks", async () => {
+		const { persistVisionResponse } = await import("../visual-extraction.js");
+
+		let observedOcrText: string | null = null;
+		let observedBlocks: any[] | null = null;
+
+		const pool = {
+			query: async (sql: string, params?: any[]) => {
+				const s = String(sql);
+
+				// docKind resolution query
+				if (s.includes("FROM documents") && s.includes("SELECT type")) {
+					return { rows: [{ type: "application/pdf", extraction_metadata: {} }] };
+				}
+
+				// visual_assets insert
+				if (s.includes("INSERT INTO visual_assets")) {
+					return { rows: [{ id: "va_1" }] };
+				}
+
+				// visual_extractions insert/upsert
+				if (s.includes("INSERT INTO visual_extractions")) {
+					observedOcrText = (params ?? [])[1] ?? null;
+					try {
+						observedBlocks = JSON.parse(String((params ?? [])[2] ?? "[]"));
+					} catch {
+						observedBlocks = null;
+					}
+					return { rows: [], rowCount: 1 } as any;
+				}
+
+				return { rows: [], rowCount: 1 } as any;
+			},
+		} as any;
+
+		const response: any = {
+			document_id: "doc_1",
+			page_index: 0,
+			extractor_version: "vision_v1",
+			ocr: {
+				text: "Nested OCR text",
+				blocks: [{ text: "X" }, { text: "Y" }],
+			},
+			assets: [
+				{
+					asset_type: "image_text",
+					bbox: { x: 0, y: 0, w: 10, h: 10 },
+					confidence: 0.9,
+					quality_flags: {},
+					image_uri: null,
+					image_hash: null,
+					extraction: {
+						structured_json: { segment_key: "unit_test" },
+						labels: {},
+						confidence: 0.9,
+					},
+				},
+			],
+		};
+
+		const res = await persistVisionResponse(pool, response, { pageImageUri: null, env: process.env });
+		expect(res.persisted).toBe(1);
+		expect(observedOcrText).toBe("Nested OCR text");
+		expect(Array.isArray(observedBlocks)).toBe(true);
+		expect((observedBlocks ?? []).length).toBe(2);
+	});
 });

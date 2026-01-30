@@ -4,6 +4,7 @@
   "private": true,
   "packageManager": "pnpm@10.28.1",
   "scripts": {
+    "debug:force-ocr": "tsx apps/worker/src/scripts/debug-force-ocr-extract-visuals.ts",
       "report:segments:audit:md": "tsx scripts/segment-classification-audit.ts",
     "report:segments:audit:all": "tsx scripts/segment-classification-audit-all.ts",
     "report:slide-titles:md": "tsx scripts/export-slide-titles-md.ts",

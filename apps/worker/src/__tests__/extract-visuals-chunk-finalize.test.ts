@@ -76,6 +76,13 @@ vi.mock("../lib/visual-extraction", async (importOriginal) => {
 	});
 	getMocks().resolvePageImageUris = resolvePageImageUris;
 	getMocks().callVisionWorkerWithRetries = callVisionWorkerWithRetries;
+	const persistVisionResponse = vi.fn(async (...args: any[]) => {
+		if (getMocks().useRealPersistVisionResponse) {
+			return actual.persistVisionResponse(...args);
+		}
+		return { persisted: 1, withImageUri: 1 };
+	});
+	getMocks().persistVisionResponse = persistVisionResponse;
 	return {
 		...actual,
 		getVisionExtractorConfig: () => ({
@@ -88,7 +95,7 @@ vi.mock("../lib/visual-extraction", async (importOriginal) => {
 		hasTable: vi.fn(async () => true),
 		resolvePageImageUris,
 		persistSyntheticVisualAssets: vi.fn(async () => 0),
-		persistVisionResponse: vi.fn(async () => ({ persisted: 1, withImageUri: 1 })),
+		persistVisionResponse,
 		backfillVisualAssetImageUris: vi.fn(async () => ({ updated: 0 })),
 		callVisionWorkerWithRetries,
 	};
@@ -101,6 +108,8 @@ vi.mock("pg", () => {
 			const m = getMocks();
 			if (!m.pgQueries) m.pgQueries = [];
 			m.pgQueries.push({ sql: String(sql), params });
+			if (!m.visualAssets) m.visualAssets = new Set<string>();
+			if (!m.visualExtractions) m.visualExtractions = [];
 
 			const q = String(sql);
 			// meta_status column exists
@@ -125,8 +134,36 @@ vi.mock("pg", () => {
 					})),
 				};
 			}
+			// computeAndPersistVisionRoutingV1 query (must run before the generic documents LIMIT 1 handler)
+			if (q.includes("length(coalesce(full_text,''))") && q.includes("FROM documents") && q.includes("WHERE id = $1")) {
+				const fullTextOverride = typeof m.docFullTextOverride === "string" ? m.docFullTextOverride : "";
+				const absentReasonOverride =
+					m.docFullTextAbsentReasonOverride === null
+						? null
+						: (typeof m.docFullTextAbsentReasonOverride === "string" ? m.docFullTextAbsentReasonOverride : "no_text_extracted");
+				const needsOcr = absentReasonOverride != null || fullTextOverride.trim().length === 0;
+				return {
+					rows: [
+						{
+							extraction_metadata: {
+								doc_kind: "pdf",
+								pdf_text_probe: { needsOcr },
+								pageOcr: { attempted: true },
+							},
+							type: "application/pdf",
+							full_text_len: fullTextOverride.length,
+						},
+					],
+				};
+			}
 			// documents WHERE id = $1 LIMIT 1
 			if (q.includes("FROM documents WHERE id = $1") && q.includes("LIMIT 1")) {
+				const fullTextOverride = typeof m.docFullTextOverride === "string" ? m.docFullTextOverride : "";
+				const absentReasonOverride =
+					m.docFullTextAbsentReasonOverride === null
+						? null
+						: (typeof m.docFullTextAbsentReasonOverride === "string" ? m.docFullTextAbsentReasonOverride : "no_text_extracted");
+				const needsOcr = absentReasonOverride != null || fullTextOverride.trim().length === 0;
 				return {
 					rows: [
 						{
@@ -135,28 +172,47 @@ vi.mock("pg", () => {
 							title: "Doc",
 							status: "ready_for_analysis",
 							meta_status: "succeeded",
-							extraction_metadata: { doc_kind: "pdf" },
+							extraction_metadata: {
+								doc_kind: "pdf",
+								pdf_text_probe: { needsOcr },
+								pageOcr: { attempted: true },
+							},
 							structured_data: {},
 							full_content: {},
-							full_text: "",
-							full_text_absent_reason: "no_text_extracted",
+							full_text: fullTextOverride,
+							full_text_absent_reason: absentReasonOverride,
 							page_count: 32,
 						},
 					],
 				};
 			}
-			// vision routing query
-			if (q.includes("length(coalesce(full_text,''))") && q.includes("FROM documents") && q.includes("WHERE id = $1")) {
-				return {
-					rows: [
-						{
-							extraction_metadata: { doc_kind: "pdf" },
-							type: "application/pdf",
-							full_text_len: 0,
-						},
-					],
-				};
-			}
+						// extract_visuals skip-existing precheck
+						if (q.includes("FROM visual_assets") && q.includes("WHERE va.document_id") && q.includes("va.page_index") && q.includes("va.extractor_version")) {
+							const docId = String((params as any[])?.[0] ?? "");
+							const pageIndex = Number((params as any[])?.[1] ?? -1);
+							const extractorVersion = String((params as any[])?.[2] ?? "");
+							const key = `${docId}::${pageIndex}::${extractorVersion}`;
+							return { rows: m.visualAssets.has(key) ? [{ ok: 1 }] : [] };
+						}
+						// visual_assets upsert
+						if (q.includes("INSERT INTO visual_assets") && q.includes("RETURNING id")) {
+							const docId = String((params as any[])?.[0] ?? "");
+							const pageIndex = Number((params as any[])?.[1] ?? -1);
+							const extractorVersion = String((params as any[])?.[6] ?? "");
+							const id = `va-${docId}-${pageIndex}-${extractorVersion}`;
+							m.visualAssets.add(`${docId}::${pageIndex}::${extractorVersion}`);
+							return { rows: [{ id }] };
+						}
+						// visual_extractions upsert
+						if (q.includes("INSERT INTO visual_extractions") && q.includes("ON CONFLICT")) {
+							m.visualExtractions.push({ sql: q, params });
+							return { rows: [], rowCount: 1 } as any;
+						}
+						// evidence_links upsert/update
+						if (q.includes("UPDATE evidence_links") || q.includes("INSERT INTO evidence_links")) {
+							return { rows: [], rowCount: 0 } as any;
+						}
+			// (vision routing query handled above)
 			// documents full_text lookup for OCR promotion
 			if (q.includes("SELECT full_text") && q.includes("full_text_absent_reason") && q.includes("FROM documents") && q.includes("LIMIT 1")) {
 				return {
@@ -241,7 +297,13 @@ describe("extract_visuals chunking finalization", () => {
 		getMocks().updateJobProgress?.mockClear?.();
 		getMocks().resolvePageImageUris?.mockClear?.();
 		getMocks().callVisionWorkerWithRetries?.mockClear?.();
+		getMocks().persistVisionResponse?.mockClear?.();
 		getMocks().pgQueries = [];
+		getMocks().visualAssets = new Set<string>();
+		getMocks().visualExtractions = [];
+		getMocks().useRealPersistVisionResponse = false;
+		getMocks().docFullTextOverride = "";
+		getMocks().docFullTextAbsentReasonOverride = "no_text_extracted";
 		const queues = getMocks().queues ?? {};
 		for (const q of Object.values(queues)) {
 			(q as any)?.add?.mockClear?.();
@@ -350,7 +412,6 @@ describe("extract_visuals chunking finalization", () => {
 	});
 
 	it("requests OCR mode for PDF when full_text is missing", async () => {
-		process.env.VISION_OCR_EXTRACTOR_VERSION = "vision_ocr_v1";
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined as any);
 		const m = getMocks();
 
@@ -359,7 +420,7 @@ describe("extract_visuals chunking finalization", () => {
 		expect(m.callVisionWorkerWithRetries).toHaveBeenCalled();
 		const firstCall = (m.callVisionWorkerWithRetries as any).mock.calls?.[0] ?? [];
 		const req = firstCall?.[1] ?? null;
-		expect(req?.extractor_version).toBe("vision_ocr_v1");
+		expect(req?.extractor_version).toBe("test");
 		expect(req?.include_ocr).toBe(true);
 		expect(req?.mode).toBe("ocr");
 		expect(req?.return_blocks).toBe(true);
@@ -379,6 +440,75 @@ describe("extract_visuals chunking finalization", () => {
 		expect(events.some((e: any) => e.event === "OCR_REQUEST_START")).toBe(true);
 		expect(events.some((e: any) => e.event === "OCR_REQUEST_DONE" && (e.ocr_chars ?? 0) > 0)).toBe(true);
 		expect(events.some((e: any) => e.event === "EXTRACT_VISUALS_SUMMARY" && (e.ocr_pages_with_text ?? 0) > 0)).toBe(true);
+
+		logSpy.mockRestore();
+	});
+
+	it("persists OCR text and increments pages_with_ocr when needsOcr=true", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined as any);
+		const m = getMocks();
+		m.useRealPersistVisionResponse = true;
+
+		await extractVisualsProcessor!(makeJob({ deal_id: "deal-1", document_id: "doc-1", page_start: 0, page_end: 1 }));
+
+		// Ensure OCR was requested
+		const firstCall = (m.callVisionWorkerWithRetries as any).mock.calls?.[0] ?? [];
+		const req = firstCall?.[1] ?? null;
+		expect(req?.include_ocr).toBe(true);
+
+		// Ensure OCR was persisted (upsertVisualExtraction parameter $2 is ocr_text)
+		const inserts = Array.isArray(m.visualExtractions) ? m.visualExtractions : [];
+		expect(inserts.length).toBeGreaterThan(0);
+		const firstInsertParams = (inserts[0] as any)?.params ?? [];
+		const persistedOcrText = firstInsertParams?.[1];
+		expect(typeof persistedOcrText).toBe("string");
+		expect(String(persistedOcrText)).toContain("Hello from OCR");
+
+		// Ensure job counters incremented
+		const events = logSpy.mock.calls
+			.map((c) => c[0])
+			.filter((v) => typeof v === "string" && v.trim().startsWith("{"))
+			.map((s) => {
+				try {
+					return JSON.parse(String(s));
+				} catch {
+					return null;
+				}
+			})
+			.filter(Boolean);
+		const jobSummary = events.find((e: any) => e.event === "EXTRACT_VISUALS_JOB_SUMMARY");
+		expect(jobSummary?.counters?.pages_vision_attempted).toBeGreaterThan(0);
+		expect(jobSummary?.counters?.pages_with_ocr).toBeGreaterThan(0);
+
+		logSpy.mockRestore();
+	});
+
+	it("needsOcr=false does not require OCR fields", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined as any);
+		const m = getMocks();
+		m.useRealPersistVisionResponse = true;
+		m.docFullTextOverride = "This PDF has native text.";
+		m.docFullTextAbsentReasonOverride = null;
+
+		await extractVisualsProcessor!(makeJob({ deal_id: "deal-1", document_id: "doc-1", page_start: 0, page_end: 1 }));
+
+		const firstCall = (m.callVisionWorkerWithRetries as any).mock.calls?.[0] ?? [];
+		const req = firstCall?.[1] ?? null;
+		expect(req?.include_ocr ?? false).toBe(false);
+
+		const events = logSpy.mock.calls
+			.map((c) => c[0])
+			.filter((v) => typeof v === "string" && v.trim().startsWith("{"))
+			.map((s) => {
+				try {
+					return JSON.parse(String(s));
+				} catch {
+					return null;
+				}
+			})
+			.filter(Boolean);
+		const jobSummary = events.find((e: any) => e.event === "EXTRACT_VISUALS_JOB_SUMMARY");
+		expect(jobSummary?.counters?.pages_with_ocr ?? 0).toBe(0);
 
 		logSpy.mockRestore();
 	});

@@ -1906,8 +1906,19 @@ export async function persistVisionResponse(
 		const ocrTextFromAsset = typeof extractionObj?.ocr_text === "string" ? extractionObj.ocr_text : null;
 		const ocrBlocksFromAsset = coerceJsonArray<VisionOcrBlock>(extractionObj?.ocr_blocks);
 		// Fallback: some OCR endpoints may return page-level OCR fields instead of per-asset extraction.
-		const ocrTextFromResponse = typeof (response as any)?.ocr_text === "string" ? String((response as any).ocr_text) : null;
-		const ocrBlocksFromResponse = coerceJsonArray<VisionOcrBlock>((response as any)?.ocr_blocks);
+		// Supported shapes:
+		// - response.ocr_text / response.ocr_blocks
+		// - response.ocr.text / response.ocr.blocks
+		const ocrObj = (response as any)?.ocr;
+		const ocrTextFromResponseTop = typeof (response as any)?.ocr_text === "string" ? String((response as any).ocr_text) : null;
+		const ocrBlocksFromResponseTop = coerceJsonArray<VisionOcrBlock>((response as any)?.ocr_blocks);
+		const ocrTextFromResponseNested = typeof ocrObj?.text === "string" ? String(ocrObj.text) : null;
+		const ocrBlocksFromResponseNested = coerceJsonArray<VisionOcrBlock>(ocrObj?.blocks);
+		const ocrTextFromResponse = ocrTextFromResponseTop ?? ocrTextFromResponseNested;
+		const ocrBlocksFromResponse =
+			(ocrBlocksFromResponseTop && ocrBlocksFromResponseTop.length > 0)
+				? ocrBlocksFromResponseTop
+				: ocrBlocksFromResponseNested;
 		const ocrText = ocrTextFromAsset ?? ocrTextFromResponse;
 		const ocrBlocks = (ocrBlocksFromAsset && ocrBlocksFromAsset.length > 0) ? ocrBlocksFromAsset : ocrBlocksFromResponse;
 		const structuredJson = coerceJsonObject(extractionObj?.structured_json);

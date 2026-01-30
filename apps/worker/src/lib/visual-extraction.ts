@@ -50,6 +50,11 @@ export type VisionExtractRequest = {
 	image_uri?: string;
 	image_b64?: string;
 	extractor_version: string;
+	// Optional OCR controls (vision service may ignore unknown fields).
+	include_ocr?: boolean;
+	mode?: string;
+	return_blocks?: boolean;
+	return_structured?: boolean;
 };
 
 export type VisionBBox = { x: number; y: number; w: number; h: number };
@@ -1577,8 +1582,21 @@ export function buildExtractVisualsExtractionMetadataPatchV1(params: {
 	summary: ExtractVisualsPageSummaryV1;
 	status: ExtractVisualsOutcomeStatus;
 	extractorVersion?: string;
+	ocr?:
+		| {
+				pages_with_ocr: number;
+				extractor_version: string;
+				reason?: string | null;
+		  }
+		| null;
 }): Record<string, unknown> {
 	const existing = params.existingVisualExtraction && typeof params.existingVisualExtraction === "object" ? params.existingVisualExtraction : {};
+	const ocrPages =
+		params.ocr && typeof (params.ocr as any).pages_with_ocr === "number" && Number.isFinite((params.ocr as any).pages_with_ocr)
+			? Math.max(0, Math.floor((params.ocr as any).pages_with_ocr))
+			: null;
+	const ocrExtractor = params.ocr && typeof (params.ocr as any).extractor_version === "string" ? String((params.ocr as any).extractor_version) : null;
+	const ocrReason = params.ocr && typeof (params.ocr as any).reason === "string" ? String((params.ocr as any).reason) : null;
 	return {
 		visual_extraction: {
 			...existing,
@@ -1591,6 +1609,19 @@ export function buildExtractVisualsExtractionMetadataPatchV1(params: {
 			page_summary_v1: params.summary,
 			at: params.summary.completed_at,
 			...(params.extractorVersion ? { extractor_version: params.extractorVersion } : {}),
+			...(ocrPages != null && ocrExtractor
+				? {
+					extract_visuals_ocr_summary_v1: {
+						version: 1,
+						pages_with_ocr: ocrPages,
+						extractor_version: ocrExtractor,
+						...(ocrReason ? { reason: ocrReason } : {}),
+						at: params.summary.completed_at,
+					},
+					ocr_pages_with_text: ocrPages,
+					ocr_extractor_version: ocrExtractor,
+				}
+				: {}),
 		},
 	};
 }
@@ -1872,8 +1903,13 @@ export async function persistVisionResponse(
 		const assetBBox = coerceBBox((asset as any)?.bbox);
 		const assetQualityFlags = coerceJsonObject((asset as any)?.quality_flags) ?? {};
 		const extractionObj = (asset as any)?.extraction;
-		const ocrText = typeof extractionObj?.ocr_text === "string" ? extractionObj.ocr_text : null;
-		const ocrBlocks = coerceJsonArray<VisionOcrBlock>(extractionObj?.ocr_blocks);
+		const ocrTextFromAsset = typeof extractionObj?.ocr_text === "string" ? extractionObj.ocr_text : null;
+		const ocrBlocksFromAsset = coerceJsonArray<VisionOcrBlock>(extractionObj?.ocr_blocks);
+		// Fallback: some OCR endpoints may return page-level OCR fields instead of per-asset extraction.
+		const ocrTextFromResponse = typeof (response as any)?.ocr_text === "string" ? String((response as any).ocr_text) : null;
+		const ocrBlocksFromResponse = coerceJsonArray<VisionOcrBlock>((response as any)?.ocr_blocks);
+		const ocrText = ocrTextFromAsset ?? ocrTextFromResponse;
+		const ocrBlocks = (ocrBlocksFromAsset && ocrBlocksFromAsset.length > 0) ? ocrBlocksFromAsset : ocrBlocksFromResponse;
 		const structuredJson = coerceJsonObject(extractionObj?.structured_json);
 		const labels = coerceJsonObject(extractionObj?.labels);
 		const extractionConfidence =

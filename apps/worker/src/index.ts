@@ -3074,6 +3074,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 	const extractorVersion = typeof extractorVersionOverride === "string" && extractorVersionOverride.trim()
 		? extractorVersionOverride.trim()
 		: config.extractorVersion;
+	const ocrExtractorVersion = process.env.VISION_OCR_EXTRACTOR_VERSION || "vision_ocr_v1";
 	const structuredExtractorVersion = process.env.STRUCTURED_VISION_EXTRACTOR_VERSION || "structured_native_v1";
 	const nonPdfRenderEnabled = (() => {
 		const raw = process.env.ENABLE_NONPDF_RENDER_PAGES;
@@ -3543,6 +3544,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 	let pagesVisionAttempted = 0;
 	let pagesVisionSucceeded = 0;
 	let pagesVisionFailed = 0;
+	let pagesWithOcr = 0;
 	let pagesSkippedPolicy = 0;
 	let docsVisionSkippedPolicy = 0;
 	let docsWithVisionFailures = 0;
@@ -3569,12 +3571,14 @@ registerWorker("extract_visuals", async (job: Job) => {
 			extraction_metadata?: unknown;
 			structured_data?: unknown;
 			full_content?: unknown;
+			full_text?: string | null;
+			full_text_absent_reason?: string | null;
 			page_count?: number | null;
 			title?: string | null;
 		} | null = null;
 		try {
 			const { rows } = await pool.query(
-				"SELECT deal_id, type, title, extraction_metadata, structured_data, full_content, page_count FROM documents WHERE id = $1 LIMIT 1",
+				"SELECT deal_id, type, title, extraction_metadata, structured_data, full_content, full_text, full_text_absent_reason, page_count FROM documents WHERE id = $1 LIMIT 1",
 				[sanitizeText(docId)]
 			);
 			docMeta = rows?.[0] ?? null;
@@ -3671,6 +3675,12 @@ registerWorker("extract_visuals", async (job: Job) => {
 		}
 
 		const docKind = deduceDocKind({ extraction_metadata: docMeta?.extraction_metadata, type: docMeta?.type ?? null });
+		const fullTextRaw = typeof docMeta?.full_text === "string" ? docMeta.full_text : "";
+		const fullTextIsEmpty = fullTextRaw.trim().length === 0;
+		const fullTextAbsentReason = typeof docMeta?.full_text_absent_reason === "string" ? docMeta.full_text_absent_reason : null;
+		const shouldRequestOcrForDoc =
+			docKind === "pdf" &&
+			(fullTextAbsentReason === "no_text_extracted" || fullTextAbsentReason === "extraction_failed");
 		const caps = getDocumentCapabilities({ kindHint: docKind });
 		if (!caps.supports_visual_extraction) {
 			// Explicitly record why this doc is not processed (avoid silent success).
@@ -4456,8 +4466,9 @@ registerWorker("extract_visuals", async (job: Job) => {
 			stage: "extract_visuals",
 			jobId: job.id ? String(job.id) : null,
 		});
-		const visionFallbackAllowedForDoc = routing.decision.vision_fallback_allowed;
-		if (!visionFallbackAllowedForDoc) {
+		const baseVisionFallbackAllowedForDoc = routing.decision.vision_fallback_allowed;
+		const visionFallbackAllowedForDoc = baseVisionFallbackAllowedForDoc || shouldRequestOcrForDoc;
+		if (!baseVisionFallbackAllowedForDoc) {
 			docsVisionSkippedPolicy += 1;
 			try {
 				await mergeDocumentExtractionMetadata({
@@ -4474,6 +4485,20 @@ registerWorker("extract_visuals", async (job: Job) => {
 			} catch {
 				// best-effort
 			}
+			if (shouldRequestOcrForDoc) {
+				console.log(
+					JSON.stringify({
+						event: "OCR_POLICY_OVERRIDE",
+						document_id: docId,
+						deal_id: derivedDealId,
+						doc_kind: docKind,
+						policy_reason: routing.decision.reason,
+						full_text_absent_reason: fullTextAbsentReason,
+						full_text_len: fullTextRaw.trim().length,
+						ts: new Date().toISOString(),
+					})
+				);
+			}
 		}
 
 		const pagesInJob = Math.max(0, pageEndExclusive - pageStart);
@@ -4488,6 +4513,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 				sample_image_uri: uris[pageStart] ?? null,
 				vision_base_url: config.visionWorkerUrl,
 				extractor_version: extractorVersion,
+				...(shouldRequestOcrForDoc ? { ocr_mode: true, ocr_extractor_version: ocrExtractorVersion } : {}),
 			})
 		);
 		await updateJobProgress(job, {
@@ -4513,6 +4539,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 		let docVisionAttempted = 0;
 		let docVisionSucceeded = 0;
 		let docPagesSkippedExisting = 0;
+		let docPagesWithOcr = 0;
 		const docVisionFailures: Array<{ page_index: number; reason: string; attempts: any[] }> = [];
 
 		let pagesCompletedInJob = 0;
@@ -4644,6 +4671,8 @@ registerWorker("extract_visuals", async (job: Job) => {
 					? undefined
 					: image_uri;
 
+			const pageExtractorVersion = shouldRequestOcrForDoc ? ocrExtractorVersion : extractorVersion;
+
 			// If we've already extracted this page for this extractor version, don't re-run.
 			// This prevents repeated OCR/vision-understanding passes on the same slide across extractions.
 			if (!forceReextract) {
@@ -4657,7 +4686,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 							   AND va.extractor_version = $3
 							 LIMIT 1
 						`,
-						[sanitizeText(docId), i, sanitizeText(extractorVersion)]
+						[sanitizeText(docId), i, sanitizeText(pageExtractorVersion)]
 					);
 					if ((rows?.length ?? 0) > 0) {
 						pagesSkippedExisting += 1;
@@ -4757,6 +4786,25 @@ registerWorker("extract_visuals", async (job: Job) => {
 					);
 				}
 			}
+			if (shouldRequestOcrForDoc) {
+				try {
+					console.log(
+						JSON.stringify({
+							event: "OCR_REQUEST_START",
+							deal_id: dealIdForVision,
+							document_id: docId,
+							page_index: i,
+							extractor_version: pageExtractorVersion,
+							mode: "ocr",
+							reason: fullTextAbsentReason ?? (fullTextIsEmpty ? "full_text_empty" : "unknown"),
+							ts: new Date().toISOString(),
+						})
+					);
+				} catch {
+					// ignore
+				}
+			}
+
 			docVisionAttempted += 1;
 			pagesVisionAttempted += 1;
 			const timeoutsMs = docKind === "powerpoint" ? [20_000, 60_000, 90_000] : [20_000, 60_000];
@@ -4767,7 +4815,15 @@ registerWorker("extract_visuals", async (job: Job) => {
 					page_index: i,
 					image_uri: safe_image_uri,
 					image_b64: image_b64 ?? undefined,
-					extractor_version: extractorVersion,
+					extractor_version: pageExtractorVersion,
+					...(shouldRequestOcrForDoc
+						? {
+							include_ocr: true,
+							mode: "ocr",
+							return_blocks: true,
+							return_structured: true,
+						}
+						: {}),
 				},
 				{ logger: console, logMeta: visionLogMeta, runtime: visionRuntime, timeoutsMs, backoffMs: [500, 1500] }
 			);
@@ -4780,7 +4836,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 						document_id: docId,
 						page_index: i,
 						vision_service_url: config.visionWorkerUrl,
-						extractor_version: extractorVersion,
+						extractor_version: pageExtractorVersion,
 						attempts,
 					})
 				);
@@ -4802,7 +4858,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 				resolvedResponse = {
 					document_id: docId,
 					page_index: i,
-					extractor_version: extractorVersion,
+					extractor_version: pageExtractorVersion,
 					assets: [
 						{
 							asset_type: "image_text",
@@ -4826,6 +4882,45 @@ registerWorker("extract_visuals", async (job: Job) => {
 			} else {
 				docVisionSucceeded += 1;
 				pagesVisionSucceeded += 1;
+			}
+
+			if (shouldRequestOcrForDoc) {
+				try {
+					const first = Array.isArray(resolvedResponse?.assets) && resolvedResponse.assets.length > 0 ? resolvedResponse.assets[0] : null;
+					const extractionObj = (first as any)?.extraction;
+					const ocrText =
+						typeof extractionObj?.ocr_text === "string"
+							? extractionObj.ocr_text
+							: (typeof (resolvedResponse as any)?.ocr_text === "string" ? String((resolvedResponse as any).ocr_text) : "");
+					const ocrBlocks = Array.isArray(extractionObj?.ocr_blocks)
+						? extractionObj.ocr_blocks
+						: Array.isArray((resolvedResponse as any)?.ocr_blocks)
+							? (resolvedResponse as any).ocr_blocks
+							: [];
+					const structuredJson = extractionObj?.structured_json;
+					const segmentKey = typeof structuredJson?.segment_key === "string" ? structuredJson.segment_key : "unknown";
+					const chars = typeof ocrText === "string" ? ocrText.length : 0;
+					const blocksCount = Array.isArray(ocrBlocks) ? ocrBlocks.length : 0;
+					if (chars > 0) {
+						pagesWithOcr += 1;
+						docPagesWithOcr += 1;
+					}
+					console.log(
+						JSON.stringify({
+							event: "OCR_REQUEST_DONE",
+							deal_id: dealIdForVision,
+							document_id: docId,
+							page_index: i,
+							extractor_version: pageExtractorVersion,
+							ocr_chars: chars,
+							blocks_count: blocksCount,
+							segment_key: segmentKey,
+							ts: new Date().toISOString(),
+						})
+					);
+				} catch {
+					// ignore
+				}
 			}
 
 			try {
@@ -4918,6 +5013,13 @@ registerWorker("extract_visuals", async (job: Job) => {
 					summary,
 					status: docStatus,
 					extractorVersion,
+					ocr: shouldRequestOcrForDoc
+						? {
+							pages_with_ocr: docPagesWithOcr,
+							extractor_version: ocrExtractorVersion,
+							reason: fullTextAbsentReason ?? (fullTextIsEmpty ? "full_text_empty" : null),
+						}
+						: null,
 				}),
 			});
 		} catch {
@@ -4934,6 +5036,13 @@ registerWorker("extract_visuals", async (job: Job) => {
 				extract_visuals_page_summary_v1: summary,
 				page_range: { start: pageStart, end: pageEndExclusive },
 				extractor_version: extractorVersion,
+				...(shouldRequestOcrForDoc
+					? {
+						ocr_pages_with_text: docPagesWithOcr,
+						ocr_extractor_version: ocrExtractorVersion,
+						ocr_reason: fullTextAbsentReason ?? (fullTextIsEmpty ? "full_text_empty" : null),
+					}
+					: {}),
 			})
 		);
 
@@ -4991,6 +5100,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 		pages_vision_attempted: pagesVisionAttempted,
 		pages_vision_succeeded: pagesVisionSucceeded,
 		pages_vision_failed: pagesVisionFailed,
+		pages_with_ocr: pagesWithOcr,
 		docs_vision_skipped_policy: docsVisionSkippedPolicy,
 		docs_with_vision_failures: docsWithVisionFailures,
 		docs_blocked_pending: docsBlockedPending,

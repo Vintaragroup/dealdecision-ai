@@ -46,12 +46,32 @@ vi.mock("../lib/visual-extraction", async (importOriginal) => {
 	const resolvePageImageUris = vi.fn(async (_pool: any, _docId: string) => {
 		return Array.from({ length: 32 }, (_, i) => `https://example.com/page_${i}.png`);
 	});
-	const callVisionWorkerWithRetries = vi.fn(async (params: any) => {
+	const callVisionWorkerWithRetries = vi.fn(async (_config: any, request: any) => {
+		const ocrText = request?.include_ocr ? `Hello from OCR page ${request?.page_index ?? 0}` : null;
 		return {
-			document_id: params?.request?.document_id ?? "doc-1",
-			page_index: params?.request?.page_index ?? 0,
-			extractor_version: params?.request?.extractor_version ?? "test",
-			assets: [],
+			response: {
+				document_id: request?.document_id ?? "doc-1",
+				page_index: request?.page_index ?? 0,
+				extractor_version: request?.extractor_version ?? "test",
+				assets: [
+					{
+						asset_type: "image_text",
+						bbox: { x: 0, y: 0, w: 1, h: 1 },
+						confidence: 0.9,
+						quality_flags: {},
+						image_uri: null,
+						image_hash: null,
+						extraction: {
+							ocr_text: ocrText,
+							ocr_blocks: request?.include_ocr ? [{ text: "Hello" }] : [],
+							structured_json: { segment_key: "unit_test" },
+							labels: {},
+							confidence: 0.9,
+						},
+					},
+				],
+			},
+			attempts: [],
 		};
 	});
 	getMocks().resolvePageImageUris = resolvePageImageUris;
@@ -68,7 +88,7 @@ vi.mock("../lib/visual-extraction", async (importOriginal) => {
 		hasTable: vi.fn(async () => true),
 		resolvePageImageUris,
 		persistSyntheticVisualAssets: vi.fn(async () => 0),
-		persistVisionResponse: vi.fn(async () => 0),
+		persistVisionResponse: vi.fn(async () => ({ persisted: 1, withImageUri: 1 })),
 		backfillVisualAssetImageUris: vi.fn(async () => ({ updated: 0 })),
 		callVisionWorkerWithRetries,
 	};
@@ -118,7 +138,21 @@ vi.mock("pg", () => {
 							extraction_metadata: { doc_kind: "pdf" },
 							structured_data: {},
 							full_content: {},
+							full_text: "",
+							full_text_absent_reason: "no_text_extracted",
 							page_count: 32,
+						},
+					],
+				};
+			}
+			// vision routing query
+			if (q.includes("length(coalesce(full_text,''))") && q.includes("FROM documents") && q.includes("WHERE id = $1")) {
+				return {
+					rows: [
+						{
+							extraction_metadata: { doc_kind: "pdf" },
+							type: "application/pdf",
+							full_text_len: 0,
 						},
 					],
 				};
@@ -311,6 +345,40 @@ describe("extract_visuals chunking finalization", () => {
 
 		expect(events.some((e: any) => e.event === "OCR_TEXT_PROMOTED" && e.promoted === true)).toBe(true);
 		expect(events.some((e: any) => e.event === "SEARCH_INDEX_UPDATED")).toBe(true);
+
+		logSpy.mockRestore();
+	});
+
+	it("requests OCR mode for PDF when full_text is missing", async () => {
+		process.env.VISION_OCR_EXTRACTOR_VERSION = "vision_ocr_v1";
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined as any);
+		const m = getMocks();
+
+		await extractVisualsProcessor!(makeJob({ deal_id: "deal-1", document_id: "doc-1", page_start: 30, page_end: 32 }));
+
+		expect(m.callVisionWorkerWithRetries).toHaveBeenCalled();
+		const firstCall = (m.callVisionWorkerWithRetries as any).mock.calls?.[0] ?? [];
+		const req = firstCall?.[1] ?? null;
+		expect(req?.extractor_version).toBe("vision_ocr_v1");
+		expect(req?.include_ocr).toBe(true);
+		expect(req?.mode).toBe("ocr");
+		expect(req?.return_blocks).toBe(true);
+
+		const events = logSpy.mock.calls
+			.map((c) => c[0])
+			.filter((v) => typeof v === "string" && v.trim().startsWith("{"))
+			.map((s) => {
+				try {
+					return JSON.parse(String(s));
+				} catch {
+					return null;
+				}
+			})
+			.filter(Boolean);
+
+		expect(events.some((e: any) => e.event === "OCR_REQUEST_START")).toBe(true);
+		expect(events.some((e: any) => e.event === "OCR_REQUEST_DONE" && (e.ocr_chars ?? 0) > 0)).toBe(true);
+		expect(events.some((e: any) => e.event === "EXTRACT_VISUALS_SUMMARY" && (e.ocr_pages_with_text ?? 0) > 0)).toBe(true);
 
 		logSpy.mockRestore();
 	});

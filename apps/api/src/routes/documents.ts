@@ -1267,6 +1267,97 @@ export async function registerDocumentRoutes(
     return reply.send({ documents: rows.map(mapDocument) });
   });
 
+  app.get(
+    "/api/v1/deals/:deal_id/documents/search",
+    {
+      schema: {
+        description: "Search within a deal's documents using Postgres full-text search over documents.full_text",
+        tags: ["documents"],
+        params: {
+          type: "object",
+          properties: {
+            deal_id: { type: "string" },
+          },
+          required: ["deal_id"],
+        },
+        querystring: {
+          type: "object",
+          properties: {
+            q: { type: "string" },
+            limit: { type: "string" },
+          },
+          required: ["q"],
+          additionalProperties: true,
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              deal_id: { type: "string" },
+              q: { type: "string" },
+              results: { type: "array", items: { type: "object", additionalProperties: true } },
+            },
+            required: ["deal_id", "q", "results"],
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const dealId = sanitizeText((request.params as any)?.deal_id);
+      const qRaw = (request.query as any)?.q;
+      const q = typeof qRaw === "string" ? qRaw.trim() : "";
+      const limitRaw = (request.query as any)?.limit;
+      const limit = Math.max(
+        1,
+        Math.min(
+          50,
+          typeof limitRaw === "string" && limitRaw.trim() ? Number.parseInt(limitRaw, 10) : 20
+        )
+      );
+
+      if (!dealId) return reply.status(400).send({ error: "deal_id is required" });
+      if (!q || q.length < 2) return reply.status(400).send({ error: "q is required (min 2 chars)" });
+
+      // NOTE: This relies on the expression GIN index created for to_tsvector('english', full_text).
+      // OCR text is promoted into documents.full_text by the worker after visual extraction.
+      const { rows } = await pool.query<{
+        id: string;
+        title: string;
+        type: string;
+        rank: number | null;
+        excerpt: string | null;
+      }>(
+        `
+        SELECT id,
+               title,
+               type,
+               ts_rank_cd(to_tsvector('english', coalesce(full_text, '')), plainto_tsquery('english', $2)) AS rank,
+               ts_headline('english', coalesce(full_text, ''), plainto_tsquery('english', $2), 'MaxWords=40,MinWords=10') AS excerpt
+          FROM documents
+         WHERE deal_id = $1
+           AND deleted_at IS NULL
+           AND full_text IS NOT NULL
+           AND to_tsvector('english', full_text) @@ plainto_tsquery('english', $2)
+         ORDER BY rank DESC NULLS LAST
+         LIMIT $3
+        `,
+        [dealId, q, limit]
+      );
+
+      return reply.send({
+        deal_id: dealId,
+        q,
+        results: rows.map((r) => ({
+          document_id: r.id,
+          title: r.title,
+          type: r.type,
+          rank: typeof r.rank === "number" ? r.rank : null,
+          excerpt: typeof r.excerpt === "string" ? r.excerpt : null,
+        })),
+      });
+    }
+  );
+
   app.get("/api/v1/deals/:deal_id/documents/:document_id/download-url", async (request, reply) => {
     const dealId = sanitizeText((request.params as any)?.deal_id);
     const documentId = sanitizeText((request.params as any)?.document_id);

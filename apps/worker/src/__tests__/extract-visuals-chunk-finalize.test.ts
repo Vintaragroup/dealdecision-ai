@@ -123,6 +123,32 @@ vi.mock("pg", () => {
 					],
 				};
 			}
+			// documents full_text lookup for OCR promotion
+			if (q.includes("SELECT full_text") && q.includes("full_text_absent_reason") && q.includes("FROM documents") && q.includes("LIMIT 1")) {
+				return {
+					rows: [
+						{
+							full_text: "",
+							full_text_absent_reason: "no_text_extracted",
+							extraction_metadata: { doc_kind: "pdf" },
+						},
+					],
+				};
+			}
+			// OCR join query
+			if (q.includes("FROM visual_assets") && q.includes("JOIN visual_extractions") && q.includes("WHERE va.document_id = $1")) {
+				return {
+					rows: [
+						{ page_index: 0, ocr_text: "Hello from OCR" },
+						{ page_index: 1, ocr_text: "Second page OCR" },
+					],
+				};
+			}
+			// documents full_text update
+			if (q.includes("UPDATE documents") && q.includes("SET full_text = $2") && q.includes("full_text_absent_reason")) {
+				m.updatedFullText = (params as any[])?.[1];
+				return { rows: [] };
+			}
 			// visual_assets count query
 			if (q.includes("FROM visual_assets") && q.includes("COUNT")) {
 				return { rows: [{ c: 0 }] };
@@ -258,6 +284,34 @@ describe("extract_visuals chunking finalization", () => {
 			.filter((e: any) => e && e.event === "ANALYZE_DEAL_ENQUEUED");
 
 		expect(analyzeLogs.length).toBe(1);
+		logSpy.mockRestore();
+	});
+
+	it("final chunk promotes OCR into documents.full_text (search index)", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined as any);
+		const m = getMocks();
+
+		await extractVisualsProcessor!(makeJob({ deal_id: "deal-1", document_id: "doc-1", page_start: 30, page_end: 32 }));
+
+		expect(typeof m.updatedFullText).toBe("string");
+		expect(String(m.updatedFullText)).toContain("Hello from OCR");
+		expect(String(m.updatedFullText)).toContain("Second page OCR");
+
+		const events = logSpy.mock.calls
+			.map((c) => c[0])
+			.filter((v) => typeof v === "string" && v.trim().startsWith("{"))
+			.map((s) => {
+				try {
+					return JSON.parse(String(s));
+				} catch {
+					return null;
+				}
+			})
+			.filter(Boolean);
+
+		expect(events.some((e: any) => e.event === "OCR_TEXT_PROMOTED" && e.promoted === true)).toBe(true);
+		expect(events.some((e: any) => e.event === "SEARCH_INDEX_UPDATED")).toBe(true);
+
 		logSpy.mockRestore();
 	});
 

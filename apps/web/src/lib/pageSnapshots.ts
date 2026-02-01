@@ -103,7 +103,12 @@ export async function getPageSnapshotUrl(params: {
 
   const cacheKey = effectiveDealId && documentId ? `${effectiveDealId}:${documentId}:${idx}` : null;
   if (cacheKey && pageSnapshotUrlCache.has(cacheKey)) {
-    return pageSnapshotUrlCache.get(cacheKey) ?? null;
+    const cached = pageSnapshotUrlCache.get(cacheKey) ?? null;
+    if (cached) return cached;
+
+    // If we previously cached a miss (null), still allow a retry when we now have a concrete visual asset URI.
+    const assetUri = typeof params.visualAsset?.image_uri === 'string' ? params.visualAsset.image_uri.trim() : '';
+    if (!assetUri) return null;
   }
 
   // A) Prefer R2-backed rendered pages (mint fresh URL server-side).

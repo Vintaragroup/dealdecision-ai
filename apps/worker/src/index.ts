@@ -314,6 +314,7 @@ async function computeAndPersistVisionRoutingV1(params: {
 	documentId: string;
 	stage: "render_document_pages" | "extract_visuals" | "deep_scan_visuals";
 	jobId: string | null;
+	force_ocr?: boolean;
 }): Promise<{
 	doc_kind: string;
 	full_text_len: number;
@@ -342,6 +343,7 @@ async function computeAndPersistVisionRoutingV1(params: {
 		extraction_metadata: extractionMetadata,
 		full_text_len: fullTextLen,
 		min_text_threshold_chars: minTextThresholdChars,
+		force_ocr: params.force_ocr,
 	});
 
 	try {
@@ -2432,11 +2434,24 @@ registerWorker("render_document_pages", async (job: Job) => {
 		document_id?: string;
 		page_start?: number;
 		page_end?: number;
+		force_ocr?: boolean;
+		payload?: Record<string, unknown>;
 	};
+	// Normalize payload shape (tolerate nested payload wrappers).
+	const normalized: any = (() => {
+		const nested = (data as any)?.payload;
+		if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+			const merged = { ...(nested as any), ...(data as any) };
+			delete (merged as any).payload;
+			return merged;
+		}
+		return data as any;
+	})();
 	const dealIdSafe = typeof data.deal_id === "string" ? data.deal_id : "";
-	const docId = typeof data.document_id === "string" ? data.document_id : "";
-	const pageStartRaw = (data as any).page_start;
-	const pageEndRaw = (data as any).page_end;
+	const docId = typeof normalized.document_id === "string" ? normalized.document_id : "";
+	const pageStartRaw = (normalized as any).page_start;
+	const pageEndRaw = (normalized as any).page_end;
+	const forceOcr = Boolean((normalized as any).force_ocr);
 	const pageStart = typeof pageStartRaw === "number" && Number.isFinite(pageStartRaw) ? Math.max(0, Math.floor(pageStartRaw)) : 0;
 	const pageEnd = typeof pageEndRaw === "number" && Number.isFinite(pageEndRaw) ? Math.max(pageStart, Math.floor(pageEndRaw)) : undefined;
 	const jobId = job.id ? String(job.id) : null;
@@ -2828,7 +2843,7 @@ registerWorker("render_document_pages", async (job: Job) => {
 			const q = getQueue("render_document_pages");
 			await q.add(
 				"render_document_pages",
-				{ deal_id: dealIdSafe, document_id: docId, page_start: nextStart, page_end: nextEnd },
+				{ deal_id: dealIdSafe, document_id: docId, page_start: nextStart, page_end: nextEnd, force_ocr: forceOcr },
 				{
 					jobId: makeJobId("render_document_pages", [docId, `${nextStart}-${nextEnd}`]),
 					removeOnComplete: true,
@@ -2858,6 +2873,7 @@ registerWorker("render_document_pages", async (job: Job) => {
 					documentId: docId,
 					stage: "render_document_pages",
 					jobId: job.id ? String(job.id) : null,
+					force_ocr: forceOcr,
 				});
 				if (routing.doc_kind === "pdf" && !routing.decision.vision_fallback_allowed) {
 					const nowIso = new Date().toISOString();
@@ -2895,6 +2911,7 @@ registerWorker("render_document_pages", async (job: Job) => {
 						documentId: docId,
 						dealId: dealIdForEnqueue || "unknown",
 						requireRenderedPagesR2: true,
+						jobDataOverride: forceOcr ? { force_ocr: true } : undefined,
 					});
 					if (enqueued) {
 						console.log(
@@ -2940,10 +2957,23 @@ registerWorker("extract_visuals", async (job: Job) => {
 		page_start?: number;
 		page_end?: number;
 		chunk?: { page_start?: number; page_end?: number };
+		// Some callers wrap job args inside a nested payload object.
+		payload?: Record<string, unknown>;
 	};
-	const documentId = typeof data.document_id === "string" ? data.document_id : undefined;
-	const dealId = typeof data.deal_id === "string" ? data.deal_id : undefined;
-	const payload: any = data as any;
+	// Normalize payload shape: allow either top-level fields OR nested `payload` fields.
+	// This is important for flags like force_ocr so coordinator-enqueued chunk jobs inherit them.
+	const normalized: any = (() => {
+		const nested = (data as any)?.payload;
+		if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+			const merged = { ...(nested as any), ...(data as any) };
+			delete (merged as any).payload;
+			return merged;
+		}
+		return data as any;
+	})();
+	const documentId = typeof normalized.document_id === "string" ? normalized.document_id : undefined;
+	const dealId = typeof normalized.deal_id === "string" ? normalized.deal_id : undefined;
+	const payload: any = normalized;
 	if (!payload.chunk || typeof payload.chunk !== "object") {
 		const ps = (payload as any).page_start;
 		const pe = (payload as any).page_end;
@@ -2958,12 +2988,12 @@ registerWorker("extract_visuals", async (job: Job) => {
 		const payloadDealId = typeof (data as any)?.deal_id === "string" ? String((data as any).deal_id).trim() : "";
 		dealIdForAudit = payloadDealId.length > 0 ? payloadDealId : undefined;
 	}
-	const imageUris = Array.isArray(data.image_uris) ? data.image_uris : undefined;
-	const extractorVersionOverride = typeof data.extractor_version === "string" ? data.extractor_version : undefined;
-	const forceResegment = Boolean((data as any).force_resegment);
-	const forceReextract = Boolean((data as any).force_reextract);
-	const forceOcr = Boolean((data as any).force_ocr);
-	const enqueueDeepScan = Boolean((data as any).enqueue_deep_scan);
+	const imageUris = Array.isArray(normalized.image_uris) ? normalized.image_uris : undefined;
+	const extractorVersionOverride = typeof normalized.extractor_version === "string" ? normalized.extractor_version : undefined;
+	const forceResegment = Boolean((normalized as any).force_resegment);
+	const forceReextract = Boolean((normalized as any).force_reextract);
+	const forceOcr = Boolean((normalized as any).force_ocr);
+	const enqueueDeepScan = Boolean((normalized as any).enqueue_deep_scan);
 	const pageStartRaw = payload?.chunk?.page_start;
 	const pageEndRaw = payload?.chunk?.page_end;
 	const requestedPageStart =
@@ -2971,8 +3001,8 @@ registerWorker("extract_visuals", async (job: Job) => {
 	const requestedPageEnd =
 		typeof pageEndRaw === "number" && Number.isFinite(pageEndRaw) ? Math.max(0, Math.floor(pageEndRaw)) : undefined;
 
-	const explicitDocumentIds = Array.isArray(data.document_ids)
-		? data.document_ids.filter((id) => typeof id === "string" && id.trim().length > 0)
+	const explicitDocumentIds = Array.isArray(normalized.document_ids)
+		? (normalized.document_ids as any[]).filter((id) => typeof id === "string" && id.trim().length > 0)
 		: [];
 
 	let targetDocumentIds: string[] = [];
@@ -3629,7 +3659,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 							extractor_version: extractorVersionOverride,
 							force_resegment: forceResegment,
 							force_reextract: forceReextract,
-								force_ocr: forceOcr,
+							force_ocr: forceOcr,
 							chunk: { page_start: range.start, page_end: range.end },
 						},
 					});
@@ -4192,7 +4222,13 @@ registerWorker("extract_visuals", async (job: Job) => {
 							const q = getQueue("render_document_pages");
 							await q.add(
 								"render_document_pages",
-								{ deal_id: dealIdForRender, document_id: docId, page_start: range.page_start, page_end: range.page_end },
+								{
+									deal_id: dealIdForRender,
+									document_id: docId,
+									page_start: range.page_start,
+									page_end: range.page_end,
+									force_ocr: forceOcr,
+								},
 								{
 									jobId: makeJobId("render_document_pages", [docId, `${range.page_start}-${range.page_end}`]),
 									removeOnComplete: true,
@@ -4474,6 +4510,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 			documentId: docId,
 			stage: "extract_visuals",
 			jobId: job.id ? String(job.id) : null,
+			force_ocr: forceOcr,
 		});
 		const baseVisionFallbackAllowedForDoc = routing.decision.vision_fallback_allowed;
 		const visionFallbackAllowedForDoc = baseVisionFallbackAllowedForDoc;

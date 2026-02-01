@@ -679,6 +679,84 @@ export type DealLineageResponse = {
   segment_audit_report?: SegmentAuditReport;
 };
 
+export type DeterministicUnderstandingInput = {
+  deal_id: string;
+  documents: Array<{
+    document_id: string;
+    title?: string;
+    page_count?: number;
+    type?: string;
+  }>;
+  pages: Array<{
+    page_id: string;
+    document_id: string;
+    page_index?: number;
+    page_number?: number;
+    raw_ocr_text?: string;
+    structured_extraction?: unknown;
+    evidence?: unknown;
+  }>;
+  segments?: Array<{
+    segment_id: string;
+    label?: string;
+    page_ids: string[];
+  }>;
+};
+
+export type DeterministicUnderstandingPatch = {
+  analysis_version: string;
+  created_at: string;
+  input_hash: string;
+  deal_id: string;
+  pages: Record<
+    string,
+    {
+      page_id: string;
+      document_id: string;
+      page_index?: number;
+      page_label?: string;
+      normalized_text_ref?: string;
+      normalized_text?: string;
+      normalization_flags?: string[];
+      page_type: string;
+      confidence: number;
+      why: string[];
+      evidence: Array<{ snippet: string; score: number; features?: string[]; source_span?: { start: number; end: number } }>;
+      key_numbers: Array<{
+        metric_type: string;
+        value_normalized: number | string;
+        raw_value: string;
+        unit: string;
+        context: string;
+        confidence: number;
+        source_span?: { start: number; end: number };
+      }>;
+      key_entities: Array<{ entity_type: string; text: string; confidence: number; source_span?: { start: number; end: number } }>;
+      quality_flags: string[];
+    }
+  >;
+  documents: Record<
+    string,
+    {
+      document_id: string;
+      document_title?: string;
+      document_summary?: unknown;
+      document_key_points?: unknown;
+      key_points: string[];
+      key_numbers: unknown[];
+      outline: Array<{ label: string; page_ids: string[] }>;
+    }
+  >;
+  segments?: Record<string, unknown>;
+};
+
+export type DealDeterministicUnderstandingResponse = {
+  analysis_version: string;
+  input_hash: string;
+  created_at: string;
+  patch: DeterministicUnderstandingPatch;
+};
+
 export type SegmentAuditReport = {
   deal_id?: string;
   documents: Array<{
@@ -1258,6 +1336,79 @@ export async function apiGetDealReport(dealId: string): Promise<DealReport | nul
       });
     }
   }
+}
+
+export async function apiGetDealDeterministicUnderstanding(dealId: string): Promise<DealDeterministicUnderstandingResponse | null> {
+  const path = `/api/v1/deals/${dealId}/understanding/deterministic`;
+  const debugEnabled = debugApiIsEnabled();
+  const startedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+  let res: Response | undefined;
+  let responseJson: unknown = undefined;
+  let error: unknown = undefined;
+
+  const doFetch = async (forceRefreshToken: boolean): Promise<Response> => {
+    const authHeader = await getAuthHeader({ forceRefresh: forceRefreshToken, refreshWithinSeconds: 30 });
+    return await fetch(`${API_BASE_URL}${path}`, {
+      method: 'GET',
+      headers: {
+        ...authHeader,
+      },
+    });
+  };
+
+  const looksLikeJwtExpFailure = (text: string): boolean => {
+    const t = (text ?? '').toLowerCase();
+    return (
+      t.includes('exp') && t.includes('timestamp') && t.includes('failed')
+    ) || t.includes('"exp" claim timestamp check failed') || t.includes('jwt expired');
+  };
+
+  try {
+    res = await doFetch(false);
+    if (res.status === 404) {
+      return null;
+    }
+    if (!res.ok) {
+      const text = await res.text();
+
+      if (res.status === 401 && looksLikeJwtExpFailure(text || '')) {
+        const refreshed = await doFetch(true);
+        if (refreshed.status === 404) return null;
+        if (refreshed.ok) {
+          res = refreshed;
+          responseJson = await res.json();
+          return responseJson as DealDeterministicUnderstandingResponse;
+        }
+      }
+
+      throw new Error(text || `Request failed with ${res.status}`);
+    }
+    responseJson = await res.json();
+    return responseJson as DealDeterministicUnderstandingResponse;
+  } catch (err) {
+    error = err;
+    throw err;
+  } finally {
+    if (debugEnabled) {
+      const endedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+      debugApiLogCall({
+        method: 'GET',
+        path,
+        dealId,
+        status: typeof res?.status === 'number' ? res.status : 0,
+        duration_ms: endedAt - startedAt,
+        response: responseJson,
+        error,
+      });
+    }
+  }
+}
+
+export function apiPostDealDeterministicUnderstanding(dealId: string, input: DeterministicUnderstandingInput) {
+  return request<DealDeterministicUnderstandingResponse>(`/api/v1/deals/${dealId}/understanding/deterministic`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
 }
 
 export function apiFetchEvidence(dealId: string, filter?: string) {

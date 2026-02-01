@@ -19,9 +19,16 @@ export function defaultExpandedForNode(node: Node): boolean {
   if (t === 'document') return true;
   if (t === 'segment') return true;
   if (t === 'visual_asset') return false;
+  if (t === 'visual_asset_group') return false;
   // Prefer showing the new summary layer + its children by default.
   // This enables: Document -> Segment -> Subsegment (visual_group) -> Structured item.
-  if (t === 'visual_group') return true;
+  if (t === 'visual_group') {
+    const data = ((node as any)?.data ?? {}) as any;
+    // Cluster-generated groups are toggles that *replace* their children;
+    // default collapsed so the first click expands and reveals nodes.
+    if (data?.__isClusterGroup === true) return false;
+    return true;
+  }
   if (t === 'evidence_group') return false;
   return true;
 }

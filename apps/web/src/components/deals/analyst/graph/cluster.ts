@@ -257,6 +257,7 @@ export function projectClusteredGraph(params: {
         __segmentId: segmentId ?? undefined,
         __branchKey: branchKey,
         __node_type: 'visual_group',
+        __isClusterGroup: true,
       },
       selectable: true,
     } as Node;

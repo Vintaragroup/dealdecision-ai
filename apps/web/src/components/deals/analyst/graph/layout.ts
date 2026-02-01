@@ -38,7 +38,10 @@ function normalizeType(node: Node): 'deal' | 'document' | 'segment' | 'visual_gr
   if (t === 'document') return 'document';
   if (t === 'segment') return 'segment';
   if (t === 'visual_group') return 'visual_group';
-  if (t === 'visual_asset' || t === 'visual_asset_group') return 'visual';
+  // `visual_asset_group` is a page-level grouping node; render it on the summary row
+  // so its child visual assets appear on the next row instead of the same horizontal line.
+  if (t === 'visual_asset_group') return 'visual_group';
+  if (t === 'visual_asset') return 'visual';
   if (t === 'evidence' || t === 'evidence_group') return 'evidence';
   return 'default';
 }

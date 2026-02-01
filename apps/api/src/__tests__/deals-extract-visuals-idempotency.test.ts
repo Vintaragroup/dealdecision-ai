@@ -2,6 +2,9 @@ process.env.REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import Fastify from "fastify";
 import { registerDealRoutes } from "../routes/deals";
 import { closeQueues } from "../lib/queue";
@@ -177,6 +180,84 @@ test("POST /api/v1/deals/:deal_id/extract-visuals is idempotent by X-Idempotency
   assert.equal(body2.status, "queued");
 
   await app.close();
+});
+
+test("POST /api/v1/deals/:deal_id/extract-visuals treats local rendered pages as ready when R2 is not configured", async () => {
+  const dealId = "00000000-0000-0000-0000-000000000002";
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ddai-uploads-"));
+  const prevUploadDir = process.env.UPLOAD_DIR;
+  const prevR2 = process.env.R2_BUCKET;
+
+  try {
+    process.env.UPLOAD_DIR = tmp;
+    delete (process.env as any).R2_BUCKET;
+
+    // Worker-local rendered pages layout: UPLOAD_DIR/rendered_pages/<safeDocId>/page_0000.png
+    const renderedDir = path.join(tmp, "rendered_pages", "doc-1");
+    fs.mkdirSync(renderedDir, { recursive: true });
+    fs.writeFileSync(path.join(renderedDir, "page_0000.png"), "x");
+
+    const mockPool = {
+      query: async (sql: string, params?: unknown[]) => {
+        if (sql.includes("SELECT * FROM deals WHERE id = $1")) {
+          return { rows: [{ id: String((params ?? [])[0]), deleted_at: null }] };
+        }
+        if (sql.includes("SELECT to_regclass")) {
+          // hasTable() checks for document_files.
+          return { rows: [{ oid: null }] };
+        }
+        if (sql.includes("information_schema.columns")) {
+          // hasColumn() checks for mime_type.
+          return { rows: [{ ok: 1 }] };
+        }
+        if (sql.includes("FROM documents") && sql.includes("WHERE deal_id = $1")) {
+          return {
+            rows: [
+              {
+                id: "doc-1",
+                file_name: null,
+                mime_type: "application/pdf",
+                extraction_metadata: null,
+              },
+            ],
+          };
+        }
+        throw new Error(`Unexpected query: ${sql}`);
+      },
+    } as any;
+
+    const app = Fastify();
+    await registerDealRoutes(app, mockPool, {
+      enqueueJob: async (job: any) => ({ job_id: "job-1", status: "queued", ...(job ?? {}) }) as any,
+      r2: {
+        objectExistsInR2: async () => ({ exists: false }) as any,
+      },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/v1/deals/${dealId}/extract-visuals`,
+      payload: {},
+    });
+
+    assert.equal(res.statusCode, 202);
+    const json = res.json() as any;
+    assert.equal(json.job_id, "job-1");
+    assert.equal(json.status, "queued");
+    assert.equal(json.readiness_reason, "local_rendered_pages_present");
+    assert.deepEqual(json.ready_documents, ["doc-1"]);
+
+    await app.close();
+  } finally {
+    process.env.UPLOAD_DIR = prevUploadDir;
+    if (prevR2 == null) delete (process.env as any).R2_BUCKET;
+    else process.env.R2_BUCKET = prevR2;
+    try {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  }
 });
 
 test("POST /api/v1/deals/:deal_id/extract-visuals returns 202 failed when afterCommit enqueue fails (no zombie queued job)", async () => {

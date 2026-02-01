@@ -2130,6 +2130,7 @@ export type VisionRoutingDecisionV1 = {
 	vision_fallback_allowed: boolean;
 	reason: string;
 	inputs: {
+		force_ocr?: boolean;
 		needs_ocr: boolean | null;
 		page_ocr_attempted: boolean | null;
 		full_text_len: number | null;
@@ -2176,6 +2177,7 @@ export function computeVisionRoutingDecisionV1(params: {
 	extraction_metadata: unknown;
 	full_text_len: number;
 	min_text_threshold_chars: number;
+	force_ocr?: boolean;
 }): VisionRoutingDecisionV1 {
 	const docKind = String(params.doc_kind || "unknown").trim().toLowerCase();
 	const minTextThresholdChars = Number.isFinite(params.min_text_threshold_chars)
@@ -2186,6 +2188,7 @@ export function computeVisionRoutingDecisionV1(params: {
 	const isOffice = docKind === "excel" || docKind === "powerpoint" || docKind === "word";
 	const isPdf = docKind === "pdf";
 	const isImage = docKind === "image";
+	const forceOcr = Boolean(params.force_ocr);
 
 	const needsOcr = readNeedsOcrFromExtractionMetadata(params.extraction_metadata);
 	const pageOcrAttempted = readPageOcrAttemptedFromExtractionMetadata(params.extraction_metadata);
@@ -2199,7 +2202,10 @@ export function computeVisionRoutingDecisionV1(params: {
 		visionFallbackAllowed = true;
 		reason = "image_allowed";
 	} else if (isPdf) {
-		if (needsOcr !== true) {
+		if (forceOcr) {
+			visionFallbackAllowed = true;
+			reason = "force_ocr";
+		} else if (needsOcr !== true) {
 			visionFallbackAllowed = false;
 			reason = "pdf_text_ok";
 		} else if (pageOcrAttempted !== true) {
@@ -2221,6 +2227,7 @@ export function computeVisionRoutingDecisionV1(params: {
 		vision_fallback_allowed: visionFallbackAllowed,
 		reason,
 		inputs: {
+			force_ocr: forceOcr,
 			needs_ocr: needsOcr,
 			page_ocr_attempted: pageOcrAttempted,
 			full_text_len: fullTextLen,

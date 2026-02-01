@@ -25,6 +25,13 @@ vi.mock('../lib/apiClient', async (importOriginal) => {
     apiGetEvidence: vi.fn(async () => ({ evidence: [] } as any)),
     apiGetDocuments: vi.fn(async () => ({ documents: [] } as any)),
     apiGetDealReport: vi.fn(async () => null as any),
+    apiGetDealDeterministicUnderstanding: vi.fn(async () => null as any),
+    apiPostDealDeterministicUnderstanding: vi.fn(async () => ({
+      analysis_version: 'deterministic_understanding_v1',
+      input_hash: 'test',
+      created_at: new Date(0).toISOString(),
+      patch: { analysis_version: 'deterministic_understanding_v1', created_at: new Date(0).toISOString(), input_hash: 'test', deal_id: 'deal-1', pages: {}, documents: {} },
+    } as any)),
     subscribeToEvents: vi.fn(() => () => undefined),
     apiResolveEvidence: vi.fn(async () => ({ results: [] } as any)),
   };

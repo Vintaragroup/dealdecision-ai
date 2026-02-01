@@ -2746,11 +2746,115 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       // Step 2: extract_visuals
       setJobType('extract_visuals');
       setFullProcessUi((prev) => (prev ? { ...prev, current_step: 'extract_visuals' } : prev));
-      const extractRes = await apiPostExtractVisuals(dealId, {
-        source: 'job-center/run-full-process',
-        requestId,
-        idempotencyKey: requestId,
-      });
+
+      // The API can return 409 rendered_pages_not_ready while it enqueues render_document_pages jobs.
+      // Treat this as a normal intermediate state: wait for those render jobs, then retry enqueueing extract_visuals.
+      const parseExtractVisualsNotReady = (err: unknown): null | {
+        render_jobs_enqueued: Array<{ document_id?: string; job_id?: string; status?: string }>;
+        message?: string;
+      } => {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : typeof (err as any)?.message === 'string'
+              ? String((err as any).message)
+              : String(err ?? '');
+
+        const jsonStart = msg.indexOf('{');
+        const jsonEnd = msg.lastIndexOf('}');
+        if (jsonStart < 0 || jsonEnd < 0 || jsonEnd <= jsonStart) return null;
+
+        const jsonText = msg.slice(jsonStart, jsonEnd + 1).trim();
+        try {
+          const parsed = JSON.parse(jsonText);
+          if (!parsed || typeof parsed !== 'object') return null;
+          if ((parsed as any).error !== 'rendered_pages_not_ready') return null;
+          const jobs = Array.isArray((parsed as any).render_jobs_enqueued) ? (parsed as any).render_jobs_enqueued : [];
+
+          // Lightweight breadcrumb (helps confirm the wait+retry branch is running).
+          console.info('[DDAI][runFullProcess] extract-visuals blocked; waiting for render jobs', {
+            renderJobCount: jobs.length,
+          });
+
+          return {
+            render_jobs_enqueued: jobs,
+            message: typeof (parsed as any).message === 'string' ? (parsed as any).message : undefined,
+          };
+        } catch {
+          return null;
+        }
+      };
+
+      const enqueueExtractVisualsWithRenderWait = async (): Promise<{ job_id: string; status: string }> => {
+        const maxAttempts = 8;
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+          try {
+            return await apiPostExtractVisuals(dealId, {
+              source: 'job-center/run-full-process',
+              requestId,
+              idempotencyKey: requestId,
+            });
+          } catch (err) {
+            const notReady = parseExtractVisualsNotReady(err);
+            if (!notReady) throw err;
+
+            const uniqueJobIds = Array.from(
+              new Set(
+                (notReady.render_jobs_enqueued || [])
+                  .map((j) => (typeof j?.job_id === 'string' ? j.job_id : ''))
+                  .filter((j) => j && j.length > 0)
+              )
+            );
+
+            const label = notReady.message || 'Rendered pages are not ready yet. Waiting for page rendering jobs.';
+            addToast('info', 'Rendering pages', label);
+            updateFullStep('extract_visuals', {
+              status: 'running' as any,
+              job_id: null,
+              progress_pct: null,
+              message: `Waiting for page rendering (${uniqueJobIds.length || '…'} job(s)) before enqueueing visual extraction…`,
+              updated_at: new Date().toISOString(),
+            });
+
+            // If the API gave us render job IDs, wait for them to finish; otherwise sleep briefly and retry.
+            if (uniqueJobIds.length > 0) {
+              for (const rid of uniqueJobIds) {
+                const done = await waitForJobTerminal(rid, {
+                  timeoutMs: 15 * 60_000,
+                  pollMs: 2000,
+                  onPoll: (job) => {
+                    const pct = (job as any)?.status_detail?.progress?.percent;
+                    const msg = (job as any)?.status_detail?.progress?.message ?? job.message;
+                    updateFullStep('extract_visuals', {
+                      status: 'running' as any,
+                      job_id: null,
+                      progress_pct: typeof pct === 'number' ? pct : null,
+                      message: typeof msg === 'string' ? msg : 'Rendering pages…',
+                      updated_at: job.updated_at ?? null,
+                    });
+                  },
+                });
+                if (done.timedOut) {
+                  throw new Error('Timed out waiting for page rendering jobs');
+                }
+                if (done.normalizedStatus !== 'succeeded' && done.normalizedStatus !== 'succeeded_with_warnings') {
+                  throw new Error(done.job?.message || `Page rendering job failed (${done.normalizedStatus})`);
+                }
+              }
+            } else {
+              await new Promise<void>((resolve) => window.setTimeout(resolve, 2000));
+            }
+
+            // Refresh docs view after rendering jobs complete.
+            setDocumentsReloadKey((v) => v + 1);
+            // Retry enqueue.
+            continue;
+          }
+        }
+        throw new Error('Failed to enqueue extract visuals after waiting for rendered pages');
+      };
+
+      const extractRes = await enqueueExtractVisualsWithRenderWait();
       const extractQueuedAt = new Date().toISOString();
       setFullProcessExtractJobId(extractRes.job_id);
       setFullProcessExtractCreatedAt(extractQueuedAt);

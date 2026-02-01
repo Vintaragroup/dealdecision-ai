@@ -1,0 +1,1422 @@
+{
+  "deal_id": "3ice_sample",
+  "documents": [
+    {
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "title": "3ICE",
+      "page_count": 40
+    }
+  ],
+  "pages": [
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p000",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 0,
+      "page_number": 1,
+      "raw_ocr_text": "T H E B E S T P A R T O F H O C K E Y OVERVIEW, MED IA RIGHTS PAC KAGE & FI NANC I ALS",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "7cf93d90-db96-4d96-83cc-0cbd45785d7a",
+            "asset_type": "table",
+            "segment": "financials",
+            "effective_segment": "financials",
+            "structured_kind": "table",
+            "structured_summary": {
+              "table": {
+                "rows": 1,
+                "cols": 1
+              },
+              "method": "grid_lines_v1",
+              "confidence": 0.7
+            },
+            "slide_title": "ony",
+            "slide_title_confidence": 0.866,
+            "ocr_text_snippet": "ony OVERVIEW, \u00e9 \u2018t MEDIA RIGHTS } PACKAGE & FINANCIALS",
+            "structured_json": {
+              "table": {
+                "rows": [
+                  [
+                    "ee\\ 4"
+                  ]
+                ],
+                "notes": "time_budget_exceeded",
+                "method": "grid_lines_v1",
+                "confidence": 0.7
+              },
+              "segment_key": "financials"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p001",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 1,
+      "page_number": 2,
+      "raw_ocr_text": "3ICE GENERAL OVERVIEW \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "7b524dc8-10ad-445e-a9ed-62990d0cd0a2",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "SiGe eNlelie OW lel Hee iy",
+            "slide_title_confidence": 0.677,
+            "ocr_text_snippet": "SiGe eNlelie OW lel Hee iy \u00bb 3ICE is a \u201cnew media\u201d company in the shape of the first ever 3-on-3 professional ice hockey league that capture",
+            "structured_json": {
+              "segment_key": "distribution"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p002",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 2,
+      "page_number": 3,
+      "raw_ocr_text": "IN THEIR OWN WORDS \u201c three-on-three until you die. I think it\u2019s exciting, I do. I have to watch myself. I get caught up watching and I almost forget who\u2019s up next because I\u2019m watching the \u201d three-on-three. I think it\u2019s really good for the game. - John Tortorella Head Coach, Philadelphia Flyers \u201c \u201d It\u2019s overtime all the time. - Craig Patrick NHL Hall of Famer \u201c \u201d It\u2019s fast and I\u2019m impressed with the skill. - Bobby Orr NHL Hall of Famer \u201c \u201d It\u2019s the hockey equivalent of the NFL being100% Red Zone Football. - Unknown Fan",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "fd469696-ad6d-44c4-8b34-f33d1b9eb037",
+            "asset_type": "image_text",
+            "segment": "financials",
+            "effective_segment": "financials",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "INSTEON ORDS",
+            "slide_title_confidence": 0.616,
+            "ocr_text_snippet": "INSTEON ORDS \u201cTHREE-ON-THREE UNTIL YOU DIE. | THINK IT\u2019S EXCITING, | Do. | HAVE TO WATCH MYSELF. | GET CAUGHT UP WATCHING AND | ALMOST FORGE",
+            "structured_json": {
+              "segment_key": "unknown"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p003",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 3,
+      "page_number": 4,
+      "raw_ocr_text": "3ICE TEAM E.J. JOHNSTON CRAIG PATRICK JIM WHITE STEVE BAKER RICH KREZWICK DEBORAH KIME JOHN SCHERMERHORN FOUNDER & CEO COMMISSIONER SVP OF OPERATIONS CHO & CRO-WEST ARENA RELATIONS VP, TICKET SALES CCO & CRO-EAST RODGER SMITH DAVE JACKSON STEVE LATIN DOUG SHEARER GREG SMITH JOYCE WHITE JULION JAYERAJAH JASON HERSHMAN TRANSPORTATION DIRECTOR OF SENIOR EQUIPMENT EQUIPMENT DIRECTOR OF PRODUCTION PLAYER LIAISON SVP, FINANCE COORDINATOR OFFICIATING MANAGER MANAGER SPORTS MEDICINE COORDINATOR EXTENDED TEAM: SPORTSCORP (TRAVEL), UNRIVALED GROUP (MARKETING), IKE RICHMAN (PR), MARCUM (ACCOUNTING), COOLEY (LEGAL), K&L GATES (LEGAL)",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "00ce6bfc-8560-4a73-a342-7921c68a5da0",
+            "asset_type": "image_text",
+            "segment": "team",
+            "effective_segment": "team",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "Sills Wet",
+            "slide_title_confidence": 0.7,
+            "ocr_text_snippet": "Sills Wet E.J. JOHNSTON CRAIG PATRICK FOUNDER & CEO COMMISSIONER STEVE LATIN DOUG SHEARER SENIOR EQUIPMENT EQUIPMENT MANAGER MANAGER JIM WHI",
+            "structured_json": {
+              "segment_key": "team"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p004",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 4,
+      "page_number": 5,
+      "raw_ocr_text": "OUR ON - AIR TALENT TEAM",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "aa6a279e-d2f1-4674-bdd3-d048e991e707",
+            "asset_type": "image_text",
+            "segment": "team",
+            "effective_segment": "team",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "OW ORISA WAGER U let",
+            "slide_title_confidence": 0.718,
+            "ocr_text_snippet": "OW ORISA WAGER U let oY very best in hockey as the on-air talent a ae o for our TV broadcasts. Calling our =a games will be Bob Errey and St",
+            "structured_json": {
+              "segment_key": "unknown"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p005",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 5,
+      "page_number": 6,
+      "raw_ocr_text": "LEGENDARY COACHES PIERRE LARRY MURPHY TURGEON 4x Stanley Cup Winner, 1987 First Overall Pick, 2004 Hockey Hall of RAY BOURQUE Fame Inductee, Studio 4x NHL All-Star,2023 1x Stanley Cup Winner, Analyst for Detroit Red Hockey Hall of Fame 5x Norris Trophy Wings Inductee Winner, 19 NHL All- Star Selections, 2004 Hockey Hall of Fame Inductee JOE MULLEN GUY 3x Stanley Cup Winner, CARBONNEAU 2000 Hockey Hall of 3x Stanley Cup Winner, Fame Inductee, United KEN DANEYKO 3x NHL\u2019s Frank J. Selke States National Team Trophy, 2019 Hockey 3x Stanley Cup Winner, Hall of Fame Inductee Masterton Trophy Winner, 20 NHL Seasons, Color Analyst for New Jersey Devils JOHN LeCLAIR GRANT FUHR 1x Stanley Cup Winner, 5x Stanley Cup Winner, 2022 U.S. Hockey Hall Greatest Goaltender in of Fame inductee, 5x NHL history, 2003 NHL All-Star Hockey Hall of Fame Inductee",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "d3f7ab55-c5eb-4ce8-a2e0-30f12c7dfc27",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "BEC END ARAGORN EES",
+            "slide_title_confidence": 0.704,
+            "ocr_text_snippet": "BEC END ARAGORN EES 7, 2022 And 2023 had all hockey Hall of Famers, this credentialed crew led the charge as the faces and ambassadors of ou",
+            "structured_json": {
+              "segment_key": "traction"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p006",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 6,
+      "page_number": 7,
+      "raw_ocr_text": "ACCESSIBLE PLAYERS Comprised of 30% former NHLers looking to stay involved in the game they love as well as young up-and-comers pros from every top pro league in the world who see 3ICE as the next step in their dream. Average age of the 2023 3ICE Rosters was 30.07 years old (The NHL is 27.4 years old)",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "d8e3d5b2-3a1b-4305-a4ce-9e756ca82e8c",
+            "asset_type": "table",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": "table",
+            "structured_summary": {
+              "table": {
+                "rows": 1,
+                "cols": 2
+              },
+              "method": "grid_lines_v1",
+              "confidence": 0.7
+            },
+            "slide_title": "MEGeS SHB PLAN INS",
+            "slide_title_confidence": 0.79,
+            "ocr_text_snippet": "MEGeS SHB PLAN INS Comprised of 30% former NHLers looking to stay involved in the game they love as well as young up-and-comers pros from ev",
+            "structured_json": {
+              "table": {
+                "rows": [
+                  [
+                    "Lae Se) eee\n:\n\nBRA\n#73 TEAR\nEX-\noe",
+                    "=) SY | Lee Lee,\naS ~~ \u00a7 { ~&\nak qy\n\nadl XN\n\n> we \u2014\nIN PIRRI CHRIS B\nIPATRICK 7 #77 TEAR\nNHL EX-"
+                  ]
+                ],
+                "notes": "time_budget_exceeded",
+                "method": "grid_lines_v1",
+                "confidence": 0.7
+              },
+              "segment_key": "unknown"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p007",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 7,
+      "page_number": 8,
+      "raw_ocr_text": "FROM 3ICE TO THE NHL \u00bb JEREMY BRODEUR OWEN HEADRICK JOHN LeCLAIR BRANDON HALVERSON EDDIE MATSUSHIMA HANK CRONE STEPHEN HIFF MIKE SULLIVAN RYAN BEDNARD",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "02b05caf-3cd5-445a-8675-f5467847a77c",
+            "asset_type": "table",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": "table",
+            "structured_summary": {
+              "table": {
+                "rows": 1,
+                "cols": 6
+              },
+              "method": "grid_lines_v1",
+              "confidence": 0.7
+            },
+            "slide_title": "PWN stele UW Wale Wale",
+            "slide_title_confidence": 0.667,
+            "ocr_text_snippet": "PWN stele UW Wale Wale \u00bb 3ICE Players, Referees and Coaches are going from 3ICE to securing NHL franchise contracts and contracts around the",
+            "structured_json": {
+              "table": {
+                "rows": [
+                  [
+                    "i\n|",
+                    "f",
+                    "-",
+                    "N\nsi\nbe",
+                    "Lee Eh\nE Players, Referees and Coache\ne545\nAe",
+                    "6 PY: dae) re a\n2S are going from 3ICE to s"
+                  ]
+                ],
+                "notes": "time_budget_exceeded",
+                "method": "grid_lines_v1",
+                "confidence": 0.7
+              },
+              "segment_key": "raise_terms"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p008",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 8,
+      "page_number": 9,
+      "raw_ocr_text": "INNOVATIVE RULES TWO 8-MINUTE HALVES NO POWERPLAYS NO TRADITIONAL OVERTIME PACE-INCREASINING PLAY MORE ACTION, LESS TIME",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "87c5490b-c661-46d8-8c6b-d1dee72d89be",
+            "asset_type": "table",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": "table",
+            "structured_summary": {
+              "table": {
+                "rows": 1,
+                "cols": 9
+              },
+              "method": "grid_lines_v1",
+              "confidence": 0.7
+            },
+            "slide_title": "NING ATIVE: RULES",
+            "slide_title_confidence": 0.643,
+            "ocr_text_snippet": "NING ATIVE: RULES TWO 8-MINUTE HALVES \u00bb with a running clock (the clock stops only for penalties and injuries) NO POWERPLAYS \u00bb straight to a",
+            "structured_json": {
+              "table": {
+                "rows": [
+                  [
+                    "7.36\ny for \u2018 N",
+                    "",
+                    "",
+                    "-%\n[DBD",
+                    "my.\n1",
+                    "",
+                    "",
+                    "",
+                    ""
+                  ]
+                ],
+                "notes": "time_budget_exceeded",
+                "method": "grid_lines_v1",
+                "confidence": 0.7
+              },
+              "segment_key": "raise_terms"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p009",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 9,
+      "page_number": 10,
+      "raw_ocr_text": "OVERTIME ALL THE TIME IT\u2019S OVERTIME ALL THE TIME",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "75567324-5df9-4096-b80c-f1f04921ff6c",
+            "asset_type": "table",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": "table",
+            "structured_summary": {
+              "table": {
+                "rows": 4,
+                "cols": 3
+              },
+              "method": "grid_lines_v1",
+              "confidence": 0.7
+            },
+            "slide_title": "OWemiite EMGIG Unite: LEAN",
+            "slide_title_confidence": 0.654,
+            "ocr_text_snippet": "OWemiite EMGIG Unite: LEAN Capturing the excitement of the NHL\u2019s 3-on-3 overtime format as our full- time - IT\u2019S OVERTIME ALL THE TIME",
+            "structured_json": {
+              "table": {
+                "rows": [
+                  [
+                    "} eer FES] be [int] | seeds Crs) (Pe",
+                    "",
+                    "i ef\n- 4"
+                  ],
+                  [
+                    "Sy ASN ||| ED onel eee || \u2014",
+                    "",
+                    ""
+                  ],
+                  [
+                    "SONS I HR LT gi \\",
+                    "",
+                    "=\n-"
+                  ],
+                  [
+                    "-on-3 overtime format as our full-"
+                  ]
+                ],
+                "notes": "time_budget_exceeded",
+                "method": "grid_lines_v1",
+                "confidence": 0.7
+              },
+              "segment_key": "unknown"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p010",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 10,
+      "page_number": 11,
+      "raw_ocr_text": "CUTTING EDGE DIGITAL BRANDING https://vimeo https://vimeo.c .com/756823 om/75682365 598 8",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "9c80cda7-9835-450c-81ca-0c17b5577cfc",
+            "asset_type": "table",
+            "segment": "team",
+            "effective_segment": "team",
+            "structured_kind": "table",
+            "structured_summary": {
+              "table": {
+                "rows": 1,
+                "cols": 1
+              },
+              "method": "grid_lines_v1",
+              "confidence": 0.7
+            },
+            "slide_title": "BRANOIE",
+            "slide_title_confidence": 0.631,
+            "ocr_text_snippet": "CUTTING SUGE pay DIETIAL BRANOIE Px 5 ia) _ _ ~ : 3 3ICE HOCKEY - WEEK 3 POOL PLAY ~ = 3ICE HOCKEY - WEEK 6 POOL PLAY @\u00a9| GB TEAM PMULEEN 1",
+            "structured_json": {
+              "table": {
+                "rows": [
+                  [
+                    "sais\nJ NW"
+                  ]
+                ],
+                "notes": "time_budget_exceeded",
+                "method": "grid_lines_v1",
+                "confidence": 0.7
+              },
+              "segment_key": "unknown"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p011",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 11,
+      "page_number": 12,
+      "raw_ocr_text": "THE FUTURE PRIME TIMING IMPROVED TALENT MORE CONTENT TOP ON-AIR TALENT",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "a275b28c-62ce-4191-a006-6faece06457a",
+            "asset_type": "table",
+            "segment": "distribution",
+            "effective_segment": "distribution",
+            "structured_kind": "table",
+            "structured_summary": {
+              "table": {
+                "rows": 1,
+                "cols": 6
+              },
+              "method": "grid_lines_v1",
+              "confidence": 0.7
+            },
+            "slide_title": "Vine PW Winle",
+            "slide_title_confidence": 0.573,
+            "ocr_text_snippet": "Vine PW Winle PRIME TIMING \u00bb 2023 broadcast were shown in prime-time on weeknights, in 2024 our media partner will be bigger, better and pro",
+            "structured_json": {
+              "table": {
+                "rows": [
+                  [
+                    "US",
+                    "|!",
+                    "",
+                    "E",
+                    "q",
+                    "i"
+                  ]
+                ],
+                "notes": "time_budget_exceeded",
+                "method": "grid_lines_v1",
+                "confidence": 0.7
+              },
+              "segment_key": "raise_terms"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p012",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 12,
+      "page_number": 13,
+      "raw_ocr_text": "PROSPECTIVE 2024 SCHEDULE* DATE LOCATION VENUE 6/12/24 Nashville, TN F&M Bank Arena 6/19/24 Dallas, TX Credit Union of TX Center (ECHL) 6/26/24 Chicago, IL Fox Valley Arena (USHL) 7/3/24 HIATUS NA 7/10/24 Newark, NJ Prudential Center (NHL) 7/17/24 Boston, MA Matthews Arena (NCAA) 7/24/24 Minneapolis, MN 3M Arena at Marriuci (NCAA) 7/31/24 Buffalo^ LECOM Harborcenter (NCAA) 8/7/24 Pittsburgh, PA PPG Paints Arena (NHL) 8/14/24 FINALS: Phoenix, AZ Mullett Arena (NHL)",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "7967377e-cbaf-4ba8-b7c9-d80610c85235",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "PROSPSE IME 2024, SC atewULe*",
+            "slide_title_confidence": 0.668,
+            "ocr_text_snippet": "PROSPSE IME 2024, SC atewULe* DATE LOCATION VENUE 6/ 12/24 NASHVILLE, TN F&M BANH ARENA 6/ 19/24 DALLAS, TX CREDIT UNION OF TX CENTER (ECHL)",
+            "structured_json": {
+              "segment_key": "problem"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p013",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 13,
+      "page_number": 14,
+      "raw_ocr_text": "OUR 2024 MAP WE ARE BORDER TO BORDER & COAST TO COAST IN TOP TV & HOCKEY MARKETS \u201cBIG MARKETS, SMALLER BUILDINGS\u201d BOSTON BUFFALO MINNEAPOLIS/ST. PAUL NYC CHICAGO PITTSBURGH NASHVILLE (CLARKSVILLE) PHOENIX DALLAS",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "4b372a43-6ba5-48fa-9ce4-55db5995e2c6",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "WE ARE BORDER,TO BORDER & COAST TO COAST IN TOP TV & HOCKEY MARKETS",
+            "slide_title_confidence": 0.562,
+            "ocr_text_snippet": "QU REZUZaNAR WE ARE BORDER,TO BORDER & COAST TO COAST IN TOP TV & HOCKEY MARKETS : % BOSTON BIG MARKETS, SMAUCLER BUILDINGS\u201d jaiacapocic/eT",
+            "structured_json": {
+              "segment_key": "market"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p014",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 14,
+      "page_number": 15,
+      "raw_ocr_text": "WEEKLY GAME FORMAT OPENING ROUND TEAM TEAM TEAM TEAM 2 3 4 VS VS CONSOLATION GAME TEAM TEAM 2 4 VS WEEKLY CHAMPIONSHIP TEAM TEAM 3 VS",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "b6bdba8d-f458-41a2-ae9c-eed1dc4bf5f9",
+            "asset_type": "table",
+            "segment": "financials",
+            "effective_segment": "financials",
+            "structured_kind": "table",
+            "structured_summary": {
+              "table": {
+                "rows": 1,
+                "cols": 2
+              },
+              "method": "grid_lines_v1",
+              "confidence": 0.7
+            },
+            "slide_title": "post-game show a 3-hour broadcast",
+            "slide_title_confidence": 0.473,
+            "ocr_text_snippet": "post-game show maliey a 3-hour broadcast OPENING ROUND CONSOLATION GAME WEEHLY CHAMPIONSHIP Loci",
+            "structured_json": {
+              "table": {
+                "rows": [
+                  [
+                    "- vo) ROR secon\n\nee ee, \u2019 \u00bb hey oot haa\n\nats | us Tag\n\ntt ee \" \\ Fa TN mas\n\na By ; \u20ac; = SN\u201c \u00bb Nd Ee se\n\n: ier D >= 1m J SE ESS\n(hi y: 4 os 9. ONE",
+                    "SS\n476"
+                  ]
+                ],
+                "notes": "time_budget_exceeded",
+                "method": "grid_lines_v1",
+                "confidence": 0.7
+              },
+              "segment_key": "raise_terms"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p015",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 15,
+      "page_number": 16,
+      "raw_ocr_text": "Games in 2023 were live on Wednesday nights primetime on CBS, CBS Sports a / ~ Network in the U.S., on TSN, and TVA in Canada and countries across Europe 77 10 B 3, 4 - BJ 3ICE HOCKEY - WEEK 3 POOL PLAY M - 0 rs at or o- @\u00ae &\\W TEAMLECLAIR 0 TEAM FUHR 0 1st 620 \u00a2 3 \u00ae ~ sss chs ~ . N ~ ww, \\ 2 ) B Sy * ) | L& Lo $ eo oC Ry $Y | As l AJ # : ) a. 0 | ee ~~ \u2014 : Ry BE z 5 2 \u2018| YG . \u2014 la i ) CV \u00a2 fe) @\u00a9CBS \u00aeCBSSPORTS No rF=7; \u00b0 Ea hall. .W. B=. 83 a",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "a52fd092-8d3d-459f-9e01-621ea25f056e",
+            "asset_type": "table",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": "table",
+            "structured_summary": {
+              "table": {
+                "rows": 1,
+                "cols": 4
+              },
+              "method": "grid_lines_v1",
+              "confidence": 0.7
+            },
+            "slide_title": "AZ SAS MOAVOICINS 1 PAR HES",
+            "slide_title_confidence": 0.651,
+            "ocr_text_snippet": "AZ SAS MOAVOICINS 1 PAR HES Games in 2023 were live on Wednesday nights primetime on CBS, CBS Sports Network in the U.S., on TSN, and TVA in",
+            "structured_json": {
+              "table": {
+                "rows": [
+                  [
+                    "ST PARTNERS,",
+                    "",
+                    "",
+                    ""
+                  ]
+                ],
+                "notes": "time_budget_exceeded",
+                "method": "grid_lines_v1",
+                "confidence": 0.7
+              },
+              "segment_key": "traction"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p016",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 16,
+      "page_number": 17,
+      "raw_ocr_text": "PHONE-FIRST CONTENT OVER 20M social media impressions https://vimeo .com/75682 https://vimeo.com/manage/video https://vimeo s/778526171?utm_campaign=28 749&utm_campaign=28749&utm 3883 .com/757398 _medium=vimeo-cliptranscode- 201504&utm_medium=vimeo- cliptranscode- 920 201504&utm_source=email&utm _source=email",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "99b40614-300e-48bd-87d6-1d959aefcec3",
+            "asset_type": "table",
+            "segment": "financials",
+            "effective_segment": "financials",
+            "structured_kind": "table",
+            "structured_summary": {
+              "table": {
+                "rows": 2,
+                "cols": 5
+              },
+              "method": "grid_lines_v1",
+              "confidence": 0.7
+            },
+            "slide_title": "PIOWEPUNS U CONAREITT",
+            "slide_title_confidence": 0.801,
+            "ocr_text_snippet": "PIOWEPUNS U CONAREITT SOCIAL MEDIA IMPRESSIONS",
+            "structured_json": {
+              "table": {
+                "rows": [
+                  [
+                    "ST CONVERT I",
+                    "\u00ae,",
+                    "",
+                    "re\n\u2018",
+                    "a\n-\u2014\n\u2014_\u2014"
+                  ],
+                  [
+                    "",
+                    "a\n> *\n- e PS\n. a\nP -\n.\u00bb\u00a7 \u00a9\n2 + 4",
+                    "_\niy\n\u2018s\n\u00ab",
+                    "b\na\n\u2018\n\u00bb",
+                    "ai"
+                  ]
+                ],
+                "notes": "time_budget_exceeded",
+                "method": "grid_lines_v1",
+                "confidence": 0.7
+              },
+              "segment_key": "unknown"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p017",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 17,
+      "page_number": 18,
+      "raw_ocr_text": "3ICE FAN PROFILE \u201cThrill seeking\u201d risk takers who strive for excitement and new stimulating experiences (Hockey Players/Hockey Fans + Hockey Moms) AVERAGE AGE 48 AGE RANGE 25-44 HOUSEHOLD INCOME $110,000+",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "1d18665d-8e56-4bf6-915b-e41bebf67671",
+            "asset_type": "table",
+            "segment": "financials",
+            "effective_segment": "financials",
+            "structured_kind": "table",
+            "structured_summary": {
+              "table": {
+                "rows": 1,
+                "cols": 10
+              },
+              "method": "grid_lines_v1",
+              "confidence": 0.7
+            },
+            "slide_title": "SEs LAIN PAWeuuls",
+            "slide_title_confidence": 0.632,
+            "ocr_text_snippet": "SEs LAIN PAWeuuls \u201cTHRILL SEEHING\u2019 RISK TAKERS WHO STRIVE FOR EXCITEMENT AND NEW STIMULATING EXPERIENCES (HOCKEY PLAYERS/HOCKEY FANS + HocKe",
+            "structured_json": {
+              "table": {
+                "rows": [
+                  [
+                    "AAV SH] |S",
+                    "",
+                    "|",
+                    "7 ANRE\\nN",
+                    "__\n=\noso",
+                    "",
+                    "",
+                    "",
+                    "",
+                    ""
+                  ]
+                ],
+                "notes": "time_budget_exceeded",
+                "method": "grid_lines_v1",
+                "confidence": 0.7
+              },
+              "segment_key": "risks"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p018",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 18,
+      "page_number": 19,
+      "raw_ocr_text": "WHAT THEY\u2019RE SAYING ABOUT 3ICE PITTSBURGH TRIBUNE GRANT FUHR, NHL HALL OF FAMER",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "5bbabea7-9ecd-48f6-a023-fc719f33d137",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "WRAY SAVING NBOUY si(cle",
+            "slide_title_confidence": 0.657,
+            "ocr_text_snippet": "WRAY Unley Wile SAVING NBOUY si(cle NHL TONIGHT SICE DEPUTY COMMISSIONER ED JOHNSTON & CEO E.J. JOHNSTON JOIN THE SHOW Ea EQPrii &6 The firs",
+            "structured_json": {
+              "segment_key": "solution"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p019",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 19,
+      "page_number": 20,
+      "raw_ocr_text": "WHAT THEY\u2019RE SAYING ABOUT 3ICE PITTSBURGH TRIBUNE GRANT FUHR, NHL HALL OF FAMER",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "0dcbe110-9f26-4517-ace5-6f6d6db1d882",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "WHAT THEYRE SEXINE",
+            "slide_title_confidence": 0.686,
+            "ocr_text_snippet": "WHAT THEYRE SEXINE ABOUT RSIEE a Erii 66 The first year of this start-up league has been defined by inventive thinking, creative solutions t",
+            "structured_json": {
+              "segment_key": "solution"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p020",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 20,
+      "page_number": 21,
+      "raw_ocr_text": "EONTANRINEORNARION _ ~ - 2 \u2014&3 .- : i Co f S Wow a ~ f y Al IX N CD VER AOR EN: 3 TA ASRS NR E.J. Johnston S a A Founder & CEO \\.. NG . : YY S 4 3 | ~~ - - +1.917.554.7443 \\ =I Ce - e/ohnston@3ice.com Ce SP 05 \u2014 Ly vo L . hw Rr | 4 % NR SS ws / 9 as a\" \u00a9 - -\u2014 Tas LT",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "542d9f14-7ad0-44a6-812d-c365c0eac039",
+            "asset_type": "image_text",
+            "segment": "team",
+            "effective_segment": "team",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "GIOIA PIS SL Mle a",
+            "slide_title_confidence": 0.809,
+            "ocr_text_snippet": "vA . GIOIA PIS SL Mle a E.J. Johnston Founder & CEO +1.917,554.7443 ejohnston@3ice.com WIZGERA",
+            "structured_json": {
+              "segment_key": "team"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p021",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 21,
+      "page_number": 22,
+      "raw_ocr_text": "ADDENDUM 1: THE BRAND EXTENSIONS & MEDIA RIGHTS PACKAGE",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "c35c8fc7-0bb3-439a-a04e-8e2a294e7e87",
+            "asset_type": "image_text",
+            "segment": "team",
+            "effective_segment": "team",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "ADDENDUM |:",
+            "slide_title_confidence": 0.684,
+            "ocr_text_snippet": "ADDENDUM |: THE BRAND: EXTENSIONS /& MEDIA RIGHTS PACKAGE",
+            "structured_json": {
+              "segment_key": "unknown"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p022",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 22,
+      "page_number": 23,
+      "raw_ocr_text": "MEDIA OVERVIEW \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "a0e5937f-e2f5-43f7-bbf4-0a4dc2156356",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "We DHEA, We WS WH",
+            "slide_title_confidence": 0.585,
+            "ocr_text_snippet": "We DHEA, We WS WH \u00bb Starting in 2024, with 2 successful 3ICE USA seasons under our belts (2022, 2023), we move forward with adding brand ext",
+            "structured_json": {
+              "segment_key": "raise_terms"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p023",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 23,
+      "page_number": 24,
+      "raw_ocr_text": "3ICE USA OVERVIEW \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "3cf5621f-a118-4950-bc4b-de54b584df51",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "SEs WS/ OW EWEN",
+            "slide_title_confidence": 0.615,
+            "ocr_text_snippet": "SEs WS/ OW EWEN \u00bb This ts our current property, currently taking place across the USA in Summers (June/July/August) airing live in prime-tim",
+            "structured_json": {
+              "segment_key": "market"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p024",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 24,
+      "page_number": 25,
+      "raw_ocr_text": "3ICE KIDS OVERVIEW \u00bb \u00bb \u00bb",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "55065be4-2ac8-4002-8fda-acf3f467243d",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "Ee nS. OW el Wie wn",
+            "slide_title_confidence": 0.624,
+            "ocr_text_snippet": "Ee nS. OW el Wie wn \u00bb This made-for-TV event held each Summer and is the equivalent of \u201cBaseball's Little League World Series\u2019 but we have 1",
+            "structured_json": {
+              "segment_key": "financials"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p025",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 25,
+      "page_number": 26,
+      "raw_ocr_text": "3ICE WOMEN OVERVIEW \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "58a87bd7-307e-4011-945b-5e25d78fdb6d",
+            "asset_type": "image_text",
+            "segment": "team",
+            "effective_segment": "team",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "\u00bb This 4-team league launches as an opening act for the 3ICE USA League in 2024 and will take",
+            "slide_title_confidence": 0.683,
+            "ocr_text_snippet": "Ste WUOWUSIN OW ela Wey \u00bb This 4-team league launches as an opening act for the 3ICE USA League in 2024 and will take place in the same Summ",
+            "structured_json": {
+              "segment_key": "market"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p026",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 26,
+      "page_number": 27,
+      "raw_ocr_text": "3ICE CANADA OVERVIEW \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb NOTE: We can explore a USA v CANADA \u201cChampions League\u201d where the winners of both leagues face-off. This is not currently in the Media Rights Offering",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "a72fa9b0-9221-4fc1-9b5b-332d7925e155",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "Ste (C/A NADA OW ela Ween",
+            "slide_title_confidence": 0.665,
+            "ocr_text_snippet": "Ste (C/A NADA OW ela Ween \u00bb This simultaneous league launches in 2025 and will take place in the same Summer season window as 3/ICE USA (Jun",
+            "structured_json": {
+              "segment_key": "market"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p027",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 27,
+      "page_number": 28,
+      "raw_ocr_text": "3ICE WORLD CUP OVERVIEW \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "a1321fe9-4974-44b4-a33a-06d6f85e23ee",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "This ostensibly becomes the 3ICE World Cup with teams referred to 3ICE [Nation Name]",
+            "slide_title_confidence": 0.656,
+            "ocr_text_snippet": "SHES WOLD) (WLP OW teri ble \u00bb This made-for-TV event held on the first weekend in June each year is a global invitational tournament by nati",
+            "structured_json": {
+              "segment_key": "team"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p028",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 28,
+      "page_number": 29,
+      "raw_ocr_text": "3ICE LIVE BREAKAWAY SERIES \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb \u00bb",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "54b535a8-0dc6-4507-b817-3ad7ead8e21f",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "This made-for-TV event is held each game day before the 3ICE USA and 3ICE CANADA game",
+            "slide_title_confidence": 0.686,
+            "ocr_text_snippet": "\u00bb This made-for-TV event is held each game day before the 3ICE USA and 3ICE CANADA game action \u00bb It launches in 2024 for 3ICE USA and in 202",
+            "structured_json": {
+              "segment_key": "financials"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p029",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 29,
+      "page_number": 30,
+      "raw_ocr_text": "3ICE SKATE, SNIPE & SLAP \u00bb \u00bb \u00bb \u00bb \u00bb",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "27f117d1-865d-4358-afd4-37c4f97dce71",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": "table",
+            "structured_summary": {
+              "table": {
+                "rows": 1,
+                "cols": 1
+              },
+              "method": "grid_lines_v1",
+              "confidence": 0.7
+            },
+            "slide_title": "HES SAU, SNIPS Syste",
+            "slide_title_confidence": 0.673,
+            "ocr_text_snippet": "HES SAU, SNIPS Syste \u00bb This made-for-digital competition series is our version of The NFL's PUNT, PASS & KICK or The . - } PGA Tour\u2019s DRIVE,",
+            "structured_json": {
+              "table": {
+                "rows": [
+                  [
+                    "JRMBEL . * ANY Sf WS Sa MRR ON a cial lin a ta"
+                  ]
+                ],
+                "notes": "time_budget_exceeded",
+                "method": "grid_lines_v1",
+                "confidence": 0.7
+              },
+              "segment_key": "competition"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p030",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 30,
+      "page_number": 31,
+      "raw_ocr_text": "",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "9753ef45-1d5c-4ad2-9df4-c1ebfaa8d1f3",
+            "asset_type": "image_text",
+            "segment": "financials",
+            "effective_segment": "financials",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "ADDENDUM 2:",
+            "slide_title_confidence": 0.683,
+            "ocr_text_snippet": "ADDENDUM 2: THE FINANCIALS",
+            "structured_json": {
+              "segment_key": "financials"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p031",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 31,
+      "page_number": 32,
+      "raw_ocr_text": "",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "5d4a2145-d50e-42e3-b60e-7a86e494fa37",
+            "asset_type": "image_text",
+            "segment": "distribution",
+            "effective_segment": "distribution",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "OWI Nie IINW es ORS",
+            "slide_title_confidence": 0.649,
+            "ocr_text_snippet": "OWI Nie IINW es ORS HB:PARTNERS (KEITH BANH)* LEAD INVESTOR ($2M + $2.2M) BILL WHITMORE* WCW INVESTMENTS DOUG SHAMON* DEZONIA SHAMON HOLDING",
+            "structured_json": {
+              "segment_key": "raise_terms"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p032",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 32,
+      "page_number": 33,
+      "raw_ocr_text": "",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "f13fd2eb-842f-4ae2-a214-bd4dd32e970b",
+            "asset_type": "image_text",
+            "segment": "problem",
+            "effective_segment": "problem",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "\u00bb From Day 1 we envisioned methodical phases of success, expansion and driving media-rights value",
+            "slide_title_confidence": 0.539,
+            "ocr_text_snippet": "\u00bb \u00bb \u00bb \u00bb) \u00bb OURGREAN From Day 1 we envisioned methodical phases of success, expansion and driving media-rights value Phase 1 (2021/2022) is n",
+            "structured_json": {
+              "segment_key": "financials"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p033",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 33,
+      "page_number": 34,
+      "raw_ocr_text": "",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "ac6ed4ff-8954-4e57-a5d0-948377675b3a",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "Winer UNOMAIS 6 UN WES Blenislrul",
+            "slide_title_confidence": 0.655,
+            "ocr_text_snippet": "Winer UNOMAIS 6 UN WES Blenislrul Ss We are raising approximately $10M Expanding to a city-based model in 8 US Markets and investors are buy",
+            "structured_json": {
+              "segment_key": "market"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p034",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 34,
+      "page_number": 35,
+      "raw_ocr_text": "",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "0a625fc3-84b6-44a7-96a4-2594d4d0c293",
+            "asset_type": "image_text",
+            "segment": "distribution",
+            "effective_segment": "distribution",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "Woe WP PHWEEswS",
+            "slide_title_confidence": 0.589,
+            "ocr_text_snippet": "Woe WP PHWEEswS In addition to providing the needed runway, the funds allow us to realize the \u201chockey stick moment\u201d of securing that next-le",
+            "structured_json": {
+              "segment_key": "unknown"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p035",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 35,
+      "page_number": 36,
+      "raw_ocr_text": "",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "74cac611-2a12-43eb-9dfe-dddee99e3ce6",
+            "asset_type": "image_text",
+            "segment": "financials",
+            "effective_segment": "financials",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "SGtepW D/A) LUNVAICWAL PinWsketeU OWS",
+            "slide_title_confidence": 0.678,
+            "ocr_text_snippet": "SGtepW D/A) LUNVAICWAL PinWsketeU OWS LINEATEMS. 2023 (Y2) 2024 (Y3) 2025(Y4) 2026 (\u00a55) 2027 (Y6) 2028 (Y7) 2029 (Y8) REVENUES Media Rights",
+            "structured_json": {
+              "segment_key": "financials"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p036",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 36,
+      "page_number": 37,
+      "raw_ocr_text": "",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "f677e4aa-ad95-45b5-bf5a-0f3af6b6e9cf",
+            "asset_type": "image_text",
+            "segment": "financials",
+            "effective_segment": "financials",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "Stef OS. LP URVANKCUA n@tSIGULONS",
+            "slide_title_confidence": 0.804,
+            "ocr_text_snippet": "Stef OS. LP URVANKCUA n@tSIGULONS LINEITEMS REVENUES Entry Fees Media Rights Sponsorships Tickets (ATP = $31) Hotel Rebate Merchandise Sub-t",
+            "structured_json": {
+              "segment_key": "financials"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p037",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 37,
+      "page_number": 38,
+      "raw_ocr_text": "",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "70ceb038-ff35-4241-ba88-a6a81af32e18",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "SS VOMENGINANGIA SPR OveGniGNs",
+            "slide_title_confidence": 0.798,
+            "ocr_text_snippet": "SS VOMENGINANGIA SPR OveGniGNs LINE ITEMS 2026 2027 2028 2029 2030 2031 REVENUES Sponsorships $825,000 $900,000 $1,000,000 $1,100,000 $1,150",
+            "structured_json": {
+              "segment_key": "financials"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p038",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 38,
+      "page_number": 39,
+      "raw_ocr_text": "",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "42af66ec-753c-42e7-8338-42fe5244fc78",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "SES EANAD AA NANGIA Se A OvetGniGNs",
+            "slide_title_confidence": 0.699,
+            "ocr_text_snippet": "SES EANAD AA NANGIA Se A OvetGniGNs LINEITEMS 2026 2027 2028 2029 2030 REVENUES Media Rights $725,000 $2M $2.5M $3.5M S4M Sponsorships $1.3M",
+            "structured_json": {
+              "segment_key": "financials"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    },
+    {
+      "page_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p039",
+      "document_id": "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e",
+      "page_index": 39,
+      "page_number": 40,
+      "raw_ocr_text": "",
+      "structured_extraction": {
+        "assets": [
+          {
+            "visual_asset_id": "dac2f398-144a-4a32-8fb7-ce7f8e6f3c58",
+            "asset_type": "image_text",
+            "segment": "unknown",
+            "effective_segment": "unknown",
+            "structured_kind": null,
+            "structured_summary": null,
+            "slide_title": "GES VO REOIGU P BINANG ASP ROVEEONS",
+            "slide_title_confidence": 0.795,
+            "ocr_text_snippet": "GES VO REOIGU P BINANG ASP ROVEEONS LINE ITEMS 2025 2026 2027 2028 2029 REVENUES Sponsorships $175,000 $210,000 $300,000 $500,000 $550,000 T",
+            "structured_json": {
+              "segment_key": "financials"
+            }
+          }
+        ]
+      },
+      "evidence": []
+    }
+  ],
+  "segments": [
+    {
+      "segment_id": "seg_competition",
+      "label": "competition",
+      "page_ids": [
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p029"
+      ]
+    },
+    {
+      "segment_id": "seg_distribution",
+      "label": "distribution",
+      "page_ids": [
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p001"
+      ]
+    },
+    {
+      "segment_id": "seg_financials",
+      "label": "financials",
+      "page_ids": [
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p000",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p024",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p028",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p030",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p032",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p035",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p036",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p037",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p038",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p039"
+      ]
+    },
+    {
+      "segment_id": "seg_market",
+      "label": "market",
+      "page_ids": [
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p013",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p023",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p025",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p026",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p033"
+      ]
+    },
+    {
+      "segment_id": "seg_problem",
+      "label": "problem",
+      "page_ids": [
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p012"
+      ]
+    },
+    {
+      "segment_id": "seg_raise_terms",
+      "label": "raise_terms",
+      "page_ids": [
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p007",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p008",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p011",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p014",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p022",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p031"
+      ]
+    },
+    {
+      "segment_id": "seg_risks",
+      "label": "risks",
+      "page_ids": [
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p017"
+      ]
+    },
+    {
+      "segment_id": "seg_solution",
+      "label": "solution",
+      "page_ids": [
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p018",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p019"
+      ]
+    },
+    {
+      "segment_id": "seg_team",
+      "label": "team",
+      "page_ids": [
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p003",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p020",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p027"
+      ]
+    },
+    {
+      "segment_id": "seg_traction",
+      "label": "traction",
+      "page_ids": [
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p005",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p015"
+      ]
+    },
+    {
+      "segment_id": "seg_unknown",
+      "label": "unknown",
+      "page_ids": [
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p002",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p004",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p006",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p009",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p010",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p016",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p021",
+        "9e3e15e2-1e9b-4eeb-b8e1-ddcce489ab3e_p034"
+      ]
+    }
+  ]
+}

@@ -140,6 +140,18 @@ test("computeVisionRoutingDecisionV1: image-only PDFs allow vision only after OC
 	expect(blockedAbove.reason).toBe("pdf_text_above_threshold_after_ocr");
 });
 
+test("computeVisionRoutingDecisionV1: force_ocr allows PDF vision fallback", () => {
+	const res = computeVisionRoutingDecisionV1({
+		doc_kind: "pdf",
+		extraction_metadata: {},
+		full_text_len: 0,
+		min_text_threshold_chars: 800,
+		force_ocr: true,
+	});
+	expect(res.vision_fallback_allowed).toBe(true);
+	expect(res.reason).toBe("force_ocr");
+});
+
 test("upsertVisualAsset uses null-hash conflict target when image_hash is null", async () => {
 	const { pool, calls } = makePoolMock();
 	await upsertVisualAsset(pool, {

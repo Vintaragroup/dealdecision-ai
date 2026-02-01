@@ -24,11 +24,14 @@ import {
   apiRetryDocument,
   apiPostDealNodeAiAnalyze,
   apiPostVisualAssetAiAnalyze,
+  apiGetDealDeterministicUnderstanding,
+  apiPostDealDeterministicUnderstanding,
   getWebBackendRuntimeConfig,
   isLiveBackend,
   resolveApiAssetUrl,
   type DealLineageResponse,
   type DealVisualAsset,
+  type DealDeterministicUnderstandingResponse,
 } from '../../../lib/apiClient';
 
 import { getPageSnapshotUrl } from '../../../lib/pageSnapshots';
@@ -61,6 +64,11 @@ import {
   type DevtoolsSelection,
 } from './reactflow-devtools';
 
+import {
+  buildDeterministicUnderstandingInputFromDealVisualAssets,
+  makeUnderstandingPageId,
+} from '../../../lib/deterministicUnderstanding';
+
 const ANALYST_NODE_TYPES = {
   deal: DealNode,
   document: DocumentNode,
@@ -81,6 +89,13 @@ type DealAnalystTabProps = {
   focusNodeId?: string | null;
 };
 
+type DeterministicUnderstandingState = {
+  status: 'idle' | 'loading' | 'ready' | 'missing' | 'error';
+  value: DealDeterministicUnderstandingResponse | null;
+  error: string | null;
+  lastFetchedAt: number | null;
+};
+
 type InspectorSelection =
   | { kind: 'none' }
   | { kind: 'deal'; deal_id: string; name?: string | null }
@@ -90,6 +105,7 @@ type InspectorSelection =
       kind: 'visual_asset_group';
       document_id: string;
       visual_asset_group_id: string;
+      image_uri?: string;
       page_index?: number;
       page_label?: string;
       count_members?: number;
@@ -125,7 +141,7 @@ type InspectorSelection =
 
 type StructuredViewMode = 'preview' | 'raw';
 type ColorMode = 'off' | 'document' | 'segment';
-type SegmentViewMode = 'effective' | 'computed' | 'persisted';
+type SegmentViewMode = 'effective' | 'computed' | 'persisted' | 'content';
 
 const COLOR_MODE_STORAGE_KEY = 'analystColorMode';
 const MINIMAP_SCALE_STORAGE_KEY = 'analystMiniMapScale';
@@ -167,6 +183,35 @@ export type BarChartPreviewModel = {
 };
 
 type NormalizedBbox = { x: number; y: number; w: number; h: number };
+
+function ocrSignalScore(text: unknown): number {
+  if (typeof text !== 'string') return 0;
+  const s = text.replace(/\s+/g, ' ').trim();
+  if (!s) return 0;
+  const max = Math.min(s.length, 4000);
+  let alnum = 0;
+  let printable = 0;
+  for (let i = 0; i < max; i++) {
+    const code = s.charCodeAt(i);
+    // printable ASCII incl. space
+    if (code >= 32 && code <= 126) printable++;
+    // 0-9 A-Z a-z
+    if ((code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122)) alnum++;
+  }
+  if (printable === 0) return 0;
+  const ratio = alnum / printable;
+  // Weight toward longer, higher-alnum OCR.
+  return Math.round(alnum * ratio * 2);
+}
+
+function isLowSignalOcr(text: unknown): boolean {
+  if (typeof text !== 'string') return true;
+  const s = text.replace(/\s+/g, ' ').trim();
+  if (s.length < 40) return true;
+  const score = ocrSignalScore(s);
+  // Conservative: keep typical slide OCR, drop obvious garbage.
+  return score < 60;
+}
 
 export function formatTableTruncationLabel(model: TablePreviewModel): string | null {
   if (!model.truncated) return null;
@@ -543,6 +588,148 @@ function getExcelSheetInspectorModel(structuredJson: unknown): ExcelSheetInspect
   };
 }
 
+type DerivedPageUnderstanding = {
+  summary?: string;
+  key_points?: string[];
+  extracted_signals?: Array<{ type?: string; value?: string; unit?: string; confidence?: number }>;
+  score_contributions?: Array<{ driver?: string; delta?: number; rationale?: string }>;
+};
+
+function derivePageUnderstandingFromNodeData(rfData: any): DerivedPageUnderstanding | null {
+  if (!rfData || typeof rfData !== 'object') return null;
+
+  const effectiveSegment =
+    typeof rfData.effective_segment === 'string'
+      ? rfData.effective_segment
+      : typeof rfData.segment === 'string'
+        ? rfData.segment
+        : typeof rfData.computed_segment === 'string'
+          ? rfData.computed_segment
+          : null;
+  const segmentSource =
+    typeof rfData.segment_source === 'string'
+      ? rfData.segment_source
+      : typeof rfData?.quality_flags?.segment_source === 'string'
+        ? rfData.quality_flags.segment_source
+        : null;
+
+  const takeSummarySnippet = (raw: string, maxChars: number): string | null => {
+    const t = String(raw ?? '').replace(/\r\n?/g, '\n').trim();
+    if (!t) return null;
+    const firstPara = t.split(/\n\s*\n/)[0]?.trim() ?? '';
+    const s = firstPara || t;
+    if (s.length <= maxChars) return s;
+    return `${s.slice(0, Math.max(0, maxChars - 1)).trim()}…`;
+  };
+
+  const summary = (() => {
+    const structuredSummary = typeof rfData.structured_summary === 'string' ? rfData.structured_summary.trim() : '';
+    if (structuredSummary) return structuredSummary;
+
+    const slideTitle = typeof rfData.slide_title === 'string' ? rfData.slide_title.trim() : '';
+    if (slideTitle) return slideTitle;
+
+    const structuredJson = rfData.structured_json as unknown;
+
+    const tryFromStructured = (sj: any): string | null => {
+      if (!sj || typeof sj !== 'object') return null;
+      const candidates: unknown[] = [
+        (sj as any).summary_text_analyst,
+        (sj as any).summary_text_investor,
+        (sj as any).summary,
+        (sj as any).text,
+        (sj as any).captured_text,
+        (sj as any).ocr_text,
+      ];
+      for (const c of candidates) {
+        if (typeof c === 'string' && c.trim()) return takeSummarySnippet(c, 700);
+      }
+      return null;
+    };
+
+    if (Array.isArray(structuredJson)) {
+      // visual_asset_group stores [{visual_asset_id, structured_json, structured_kind}]
+      for (const item of structuredJson) {
+        const sj = (item as any)?.structured_json ?? item;
+        const got = tryFromStructured(sj);
+        if (got) return got;
+      }
+    } else {
+      const got = tryFromStructured(structuredJson);
+      if (got) return got;
+    }
+
+    const ocrText = typeof rfData.ocr_text === 'string' ? rfData.ocr_text : typeof rfData.ocr_text_snippet === 'string' ? rfData.ocr_text_snippet : '';
+    const ocrSnippet = takeSummarySnippet(ocrText, 700);
+    if (ocrSnippet) return ocrSnippet;
+
+    return null;
+  })();
+
+  const keyPoints = (() => {
+    const raw = typeof rfData.ocr_text === 'string' ? rfData.ocr_text : typeof rfData.ocr_text_snippet === 'string' ? rfData.ocr_text_snippet : '';
+    const t = String(raw ?? '').replace(/\r\n?/g, '\n').trim();
+    if (!t) return [];
+
+    const lines = t
+      .split(/\n+/)
+      .map((l) => l.replace(/^[-*•\u2022\u25CF\u25AA\u25A0\u25B6\u25C6\u25C7\s]+/, '').trim())
+      .filter((l) => l.length >= 18 && l.length <= 160);
+
+    const looksLikePoint = (l: string): boolean => {
+      if (/^\d+$/.test(l)) return false;
+      if (/(^|\s)(revenue|arr|mrr|cac|ltv|gross margin|net retention|nrr|burn|runway|customers|pipeline|distribution|growth|unit economics)(\s|$)/i.test(l)) return true;
+      if (/[:]\s+\S+/.test(l)) return true;
+      return /\b\w+\b/.test(l) && l.split(/\s+/).length >= 4;
+    };
+
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const l of lines) {
+      if (!looksLikePoint(l)) continue;
+      const k = l.toLowerCase();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(l);
+      if (out.length >= 8) break;
+    }
+    return out;
+  })();
+
+  const scoreContributions = (() => {
+    const out: Array<{ driver?: string; delta?: number; rationale?: string }> = [];
+
+    if (effectiveSegment && String(effectiveSegment).trim()) {
+      out.push({
+        driver: `Segment: ${String(effectiveSegment)}`,
+        rationale: `This page is grouped under the “${String(effectiveSegment)}” segment${segmentSource ? ` (source: ${segmentSource})` : ''}.`,
+      });
+    }
+
+    const evidenceCount = typeof rfData.evidence_count === 'number' && Number.isFinite(rfData.evidence_count) ? rfData.evidence_count : null;
+    if (evidenceCount != null) {
+      out.push({ driver: 'Evidence', rationale: `Evidence count: ${evidenceCount}.` });
+    }
+
+    return out;
+  })();
+
+  const hasAnything = Boolean((summary && summary.trim()) || keyPoints.length > 0 || scoreContributions.length > 0);
+  if (!hasAnything) return null;
+
+  return {
+    ...(summary ? { summary } : {}),
+    ...(keyPoints.length > 0 ? { key_points: keyPoints } : {}),
+    ...(scoreContributions.length > 0 ? { score_contributions: scoreContributions } : {}),
+  };
+}
+
+function fmtPct(confidence01: unknown): string {
+  if (typeof confidence01 !== 'number' || !Number.isFinite(confidence01)) return '—';
+  const c = confidence01 <= 1 ? confidence01 * 100 : confidence01;
+  return `${Math.max(0, Math.min(100, Math.round(c)))}%`;
+}
+
 function normalizeLineageNodeType(raw: any):
   | 'deal'
   | 'document'
@@ -878,6 +1065,163 @@ function coerceCanonicalSegmentKey(raw: unknown): CanonicalSegmentKey {
   return 'unknown';
 }
 
+function inferSegmentKeyFromExtractedText(raw: unknown): CanonicalSegmentKey {
+  if (typeof raw !== 'string') return 'unknown';
+  const text = raw.toLowerCase();
+  if (!text.trim()) return 'unknown';
+
+  const scoreFor = (patterns: Array<[RegExp, number]>): number => {
+    let score = 0;
+    for (const [re, w] of patterns) {
+      const m = text.match(re);
+      if (!m) continue;
+      score += w * Math.min(3, m.length);
+    }
+    return score;
+  };
+
+  const scores: Array<{ key: CanonicalSegmentKey; score: number }> = [
+    {
+      key: 'raise_terms',
+      score: scoreFor([
+        [/\b(term sheet|terms|pricing|valuation|pre[-\s]?money|post[-\s]?money|cap table|captable|safe|note|convertible|dilution)\b/g, 4],
+        [/\b(raise|round|seed|series\s+[a-z]|use of funds|allocation)\b/g, 3],
+      ]),
+    },
+    {
+      key: 'financials',
+      score: scoreFor([
+        [/\b(financials?|income statement|p&l|balance sheet|cash flow|gross margin|margin|burn|runway|ebitda|opex|expenses|revenue|arr|mrr|gmv|forecast|projection)\b/g, 4],
+        [/\b(cac|ltv|unit economics|payback|retention|churn)\b/g, 3],
+      ]),
+    },
+    {
+      key: 'market',
+      score: scoreFor([
+        [/\b(tam|sam|som|market size|market opportunity|cagr|growing at|total addressable)\b/g, 4],
+        [/\b(segments?|industry|vertical|growth rate|macro)\b/g, 2],
+      ]),
+    },
+    {
+      key: 'traction',
+      score: scoreFor([
+        [/\b(traction|customers?|users?|growth|retention|churn|pipeline|bookings|revenue|arr|mrr|gmv|nps)\b/g, 4],
+        [/\b(month[-\s]?over[-\s]?month|yoy|quarter|q[1-4])\b/g, 2],
+      ]),
+    },
+    {
+      key: 'team',
+      score: scoreFor([
+        [/\b(team|founder|co[-\s]?founder|ceo|cto|cpo|cfo|leadership|advisors?|board)\b/g, 4],
+        [/\b(experience|previous|ex[-\s]?|linkedin|background)\b/g, 2],
+      ]),
+    },
+    {
+      key: 'business_model',
+      score: scoreFor([
+        [/\b(business model|pricing|revenue model|subscriptions?|saas|take rate|gross margin|unit economics|ltv|cac)\b/g, 4],
+        [/\b(upsell|cross[-\s]?sell|arpu|acv)\b/g, 2],
+      ]),
+    },
+    {
+      key: 'distribution',
+      score: scoreFor([
+        [/\b(go[-\s]?to[-\s]?market|gtm|distribution|channels?|sales|marketing|partnerships?)\b/g, 4],
+        [/\b(enterprise|self[-\s]?serve|plg|pipeline|conversion)\b/g, 2],
+      ]),
+    },
+    {
+      key: 'competition',
+      score: scoreFor([
+        [/\b(competition|competitors?|competitive|alternatives?|vs\.?|differentiation|moat)\b/g, 4],
+      ]),
+    },
+    {
+      key: 'risks',
+      score: scoreFor([
+        [/\b(risks?|risk factors?|mitigation|regulatory|compliance|legal|security|privacy)\b/g, 4],
+      ]),
+    },
+    {
+      key: 'problem',
+      score: scoreFor([
+        [/\b(problem|pain point|challenge|why now|status quo)\b/g, 3],
+      ]),
+    },
+    {
+      key: 'solution',
+      score: scoreFor([
+        [/\b(solution|product|platform|how it works|technology|approach)\b/g, 3],
+      ]),
+    },
+    {
+      key: 'exit',
+      score: scoreFor([
+        [/\b(exit|acquisition|ipo|m&a|strategic buyers?|comps?)\b/g, 3],
+      ]),
+    },
+    {
+      key: 'overview',
+      score: scoreFor([
+        [/\b(overview|summary|mission|vision|company|who we are)\b/g, 2],
+      ]),
+    },
+  ];
+
+  scores.sort((a, b) => b.score - a.score);
+  const best = scores[0];
+  if (!best || best.score <= 0) return 'unknown';
+  // Require some minimal confidence to avoid random matches.
+  if (best.score < 4) return 'unknown';
+  return best.key;
+}
+
+function inferSegmentKeyForAsset(args: { visualAsset: DealVisualAsset; segmentViewMode: SegmentViewMode }): CanonicalSegmentKey {
+  const { visualAsset, segmentViewMode } = args;
+
+  const segmentSource = (() => {
+    const s = (visualAsset as any)?.segment_source;
+    return typeof s === 'string' && s.trim().length > 0 ? s : null;
+  })();
+
+  const isOcrInferredSegment = typeof segmentSource === 'string' && segmentSource.toLowerCase().startsWith('inferred_ocr');
+
+  const pick = (...candidates: unknown[]): CanonicalSegmentKey => {
+    for (const c of candidates) {
+      const v = coerceCanonicalSegmentKey(c);
+      if (v !== 'unknown') return v;
+    }
+    return 'unknown';
+  };
+
+  if (segmentViewMode === 'computed') {
+    return pick(
+      (visualAsset as any)?.computed_segment,
+      (visualAsset as any)?.effective_segment,
+      (visualAsset as any)?.segment,
+      (visualAsset as any)?.persisted_segment_key
+    );
+  }
+
+  if (segmentViewMode === 'persisted') {
+    if (isOcrInferredSegment) return pick((visualAsset as any)?.computed_segment);
+    return pick(
+      (visualAsset as any)?.persisted_segment_key,
+      (visualAsset as any)?.effective_segment,
+      (visualAsset as any)?.segment,
+      (visualAsset as any)?.computed_segment
+    );
+  }
+
+  if (isOcrInferredSegment) return pick((visualAsset as any)?.computed_segment);
+  return pick(
+    (visualAsset as any)?.effective_segment,
+    (visualAsset as any)?.segment,
+    (visualAsset as any)?.persisted_segment_key,
+    (visualAsset as any)?.computed_segment
+  );
+}
+
 function inferSegmentKeyForVisual(args: {
   visualNode: Node;
   visualAsset: DealVisualAsset | null;
@@ -885,6 +1229,21 @@ function inferSegmentKeyForVisual(args: {
 }): string {
   const { visualNode, visualAsset, segmentViewMode } = args;
   const data = (visualNode.data ?? {}) as any;
+
+  if (segmentViewMode === 'content') {
+    const rawText = (() => {
+      if (typeof (visualAsset as any)?.ocr_text === 'string' && String((visualAsset as any).ocr_text).trim()) return String((visualAsset as any).ocr_text);
+      const sj = (visualAsset as any)?.structured_json ?? data?.structured_json ?? null;
+      if (sj && typeof sj === 'object') {
+        const t = (sj as any)?.text ?? (sj as any)?.captured_text ?? (sj as any)?.ocr_text;
+        if (typeof t === 'string' && t.trim()) return t;
+      }
+      if (typeof data?.ocr_text === 'string' && data.ocr_text.trim()) return String(data.ocr_text);
+      if (typeof data?.ocr_text_snippet === 'string' && data.ocr_text_snippet.trim()) return String(data.ocr_text_snippet);
+      return null;
+    })();
+    return inferSegmentKeyFromExtractedText(rawText);
+  }
 
   const segmentSource = (() => {
     if (typeof data?.segment_source === 'string' && data.segment_source.trim().length > 0) return String(data.segment_source);
@@ -962,6 +1321,28 @@ function applyDocumentScopedSegmentsGraph(args: {
     if (a?.visual_asset_id) assetsById.set(a.visual_asset_id, a);
   }
 
+  // Page-level segment fallback: if a visual's own segment is unknown, inherit the page's best-known segment.
+  const bestSegmentByDocPage = new Map<string, CanonicalSegmentKey>();
+  if (dealVisualAssets && dealVisualAssets.length > 0) {
+    for (const a of dealVisualAssets) {
+      if (!a?.document_id) continue;
+      if (a.page_index == null || !Number.isFinite(a.page_index)) continue;
+      const seg = inferSegmentKeyForAsset({ visualAsset: a, segmentViewMode });
+      if (seg === 'unknown') continue;
+      // Prefer assets with better OCR signal.
+      const score = ocrSignalScore(a.ocr_text);
+      if (score <= 0) continue;
+      const key = `${a.document_id}:${a.page_index}`;
+      const prev = bestSegmentByDocPage.get(key);
+      if (!prev) {
+        bestSegmentByDocPage.set(key, seg);
+        continue;
+      }
+      // If already set, keep existing; the segment itself is what we care about.
+      // (We are not trying to break ties across two different non-unknown segments.)
+    }
+  }
+
   const segmentNodeIds = new Set<string>();
   const segmentLabelById = new Map<string, string>();
   const segmentDocById = new Map<string, string>();
@@ -987,7 +1368,8 @@ function applyDocumentScopedSegmentsGraph(args: {
   const hasVisualGroupParent = (nodeId: string): boolean => {
     const parents = incomingByTarget.get(nodeId) ?? [];
     for (const pid of parents) {
-      if (nodeTypeById.get(pid) === 'visual_group') return true;
+      const t = nodeTypeById.get(pid);
+      if (t === 'visual_group' || t === 'visual_asset_group') return true;
     }
     return false;
   };
@@ -1016,12 +1398,25 @@ function applyDocumentScopedSegmentsGraph(args: {
     const docNodeId = docsById.get(docId) ?? `document:${docId}`;
     if (!nodeById.has(docNodeId)) continue;
 
-    const segmentKey =
+    let segmentKey =
       nodeType === 'visual_group'
         ? (segmentKeyFromSegmentNodeId((n.data as any)?.segment_id ?? (n.data as any)?.__segmentId) ??
             normalizeSegmentKey((n.data as any)?.segment_key ?? (n.data as any)?.segment ?? (n.data as any)?.segmentId) ??
             'unknown')
         : inferSegmentKeyForVisual({ visualNode: n, visualAsset: asset, segmentViewMode });
+
+    if (segmentKey === 'unknown') {
+      const pageIndex = (() => {
+        const p1 = asset?.page_index;
+        if (typeof p1 === 'number' && Number.isFinite(p1)) return p1;
+        const p2 = (n.data as any)?.page_index;
+        return typeof p2 === 'number' && Number.isFinite(p2) ? p2 : null;
+      })();
+      if (pageIndex != null) {
+        const inherited = bestSegmentByDocPage.get(`${docId}:${pageIndex}`);
+        if (inherited && inherited !== 'unknown') segmentKey = inherited;
+      }
+    }
     const segmentNodeId = `segment:${dealId}:${docId}:${segmentKey}`;
 
     segmentNodeIds.add(segmentNodeId);
@@ -1287,6 +1682,15 @@ function buildCanonicalEdges(args: { nodes: Node[]; rawEdges: RawLineageEdge[]; 
         addEdgeUnique(out, seen, vgParent, n.id, 'visgroup-vis');
         continue;
       }
+
+      // Page-level grouping: visual_asset_group → visual_asset
+      if (t === 'visual_asset') {
+        const vaGroupParent = pickParentOfType(n.id, 'visual_asset_group');
+        if (vaGroupParent) {
+          addEdgeUnique(out, seen, vaGroupParent, n.id, 'visassetgroup-vis');
+          continue;
+        }
+      }
     }
 
     const segParent = pickSegParent(n.id) ?? pickParentOfType(n.id, 'segment');
@@ -1352,9 +1756,116 @@ function buildFullGraphFromLineage(
   const nodes: Node[] = [];
   const edges: Edge[] = [];
 
+  const extraRawEdges: RawLineageEdge[] = [];
+
   const visualAssetsById = new Map<string, DealVisualAsset>();
   for (const a of dealVisualAssets ?? []) {
     if (a?.visual_asset_id) visualAssetsById.set(a.visual_asset_id, a);
+  }
+
+  // PDF-only behavior: page-level grouping and primary-page filtering is intended ONLY for PDFs.
+  // Non-PDF documents (e.g. spreadsheets) should not be forced into Deal→Document→Segment→Page.
+  const looksLikePdfDocType = (v: unknown): boolean => {
+    if (typeof v !== 'string') return false;
+    const s = v.trim().toLowerCase();
+    if (!s) return false;
+    return s === 'pdf' || s.includes('application/pdf') || s.includes('pdf') || s.endsWith('.pdf');
+  };
+
+  const pdfDocIds = new Set<string>();
+  const pageGroupedDocIds = new Set<string>();
+
+  for (const a of dealVisualAssets ?? []) {
+    const docId = typeof a?.document_id === 'string' ? a.document_id : '';
+    if (!docId) continue;
+    const t = (a as any)?.document_type ?? (a as any)?.document?.type ?? (a as any)?.document_title;
+    if (looksLikePdfDocType(t)) pdfDocIds.add(docId);
+    if (typeof a?.page_index === 'number' && Number.isFinite(a.page_index) && a.page_index >= 0) {
+      pageGroupedDocIds.add(docId);
+    }
+  }
+
+  // Fallback: detect PDFs from lineage document nodes.
+  // This covers cases where dealVisualAssets doesn't include a reliable document_type/title.
+  for (const raw of lineage.nodes ?? []) {
+    const nodeType = normalizeLineageNodeType(raw as any);
+    if (nodeType !== 'document') continue;
+
+    const id = getLineageNodeId(raw as any);
+    const docId = (() => {
+      if (typeof id === 'string' && id.startsWith('document:')) return id.slice('document:'.length);
+      const data = ((raw as any)?.data ?? {}) as any;
+      return typeof data?.document_id === 'string' ? data.document_id : null;
+    })();
+    if (!docId) continue;
+
+    const data = ((raw as any)?.data ?? {}) as any;
+    const candidates = [
+      data?.type,
+      data?.mime_type,
+      data?.content_type,
+      data?.title,
+      data?.label,
+      data?.filename,
+      data?.file_name,
+      (raw as any)?.label,
+      id,
+    ];
+    if (candidates.some((c) => looksLikePdfDocType(c))) pdfDocIds.add(String(docId));
+  }
+
+  const isPdfDocId = (docId: unknown): boolean => {
+    if (typeof docId !== 'string' || !docId.trim()) return false;
+    return pdfDocIds.has(docId);
+  };
+
+  const isPageGroupedDocId = (docId: unknown): boolean => {
+    if (typeof docId !== 'string' || !docId.trim()) return false;
+    return pageGroupedDocIds.has(docId);
+  };
+
+  // Page UX: prune the graph so that page-grouped documents only show one node per page.
+  // We keep Deal → Document → Segment → visual_asset_group and remove per-region visual/evidence nodes under those docs.
+  const pruneDocsToPageNodesOnly = (g: { nodes: Node[]; edges: Edge[] }): { nodes: Node[]; edges: Edge[] } => {
+    if (pageGroupedDocIds.size === 0) return g;
+
+    const keepNode = (n: Node): boolean => {
+      const t = nodeTypeOf(n);
+      if (t === 'deal' || t === 'document' || t === 'segment') return true;
+
+      const data = (n.data ?? {}) as any;
+      const docId = data.__docId ?? getDocIdFromData(data);
+      if (!isPageGroupedDocId(docId)) return true;
+
+      // For page-grouped documents, only keep page-level nodes.
+      return t === 'visual_asset_group';
+    };
+
+    const nextNodes = g.nodes.filter(keepNode);
+    const keepIds = new Set(nextNodes.map((n) => n.id));
+    const nextEdges = g.edges.filter((e) => keepIds.has(e.source) && keepIds.has(e.target));
+    return { nodes: nextNodes, edges: nextEdges };
+  };
+
+  // Primary page node selection: for PDF-like decks, show one representative visual per page by default.
+  // This keeps Segment → Page expansion usable and avoids flooding segments with low-signal region nodes.
+  const primaryVisualByDocPage = new Map<string, { visual_asset_id: string; score: number }>();
+  for (const a of dealVisualAssets ?? []) {
+    if (!a?.visual_asset_id || !a?.document_id) continue;
+    if (!isPdfDocId(a.document_id)) continue;
+    if (a.page_index == null || !Number.isFinite(a.page_index)) continue;
+    const bboxArea = (() => {
+      const b = parseNormalizedBbox(a.bbox);
+      if (!b) return 1;
+      const w = Math.max(0, Math.min(1, b.w));
+      const h = Math.max(0, Math.min(1, b.h));
+      return w * h;
+    })();
+    const ocrScore = ocrSignalScore(a.ocr_text);
+    const score = ocrScore + Math.round(bboxArea * 500);
+    const key = `${a.document_id}:${a.page_index}`;
+    const prev = primaryVisualByDocPage.get(key);
+    if (!prev || score > prev.score) primaryVisualByDocPage.set(key, { visual_asset_id: a.visual_asset_id, score });
   }
 
   // DEV-only: verify lineage-enriched visual_asset fields survive mapping into React Flow nodes.
@@ -1375,6 +1886,30 @@ function buildFullGraphFromLineage(
       if (s.startsWith('visual_asset:')) return s.slice('visual_asset:'.length);
       return null;
     })();
+
+    // Filter noisy non-primary page visuals unless they carry evidence or structured content.
+    if (nodeType === 'visual_asset' && visualAssetIdFromNodeId) {
+      const asset = visualAssetsById.get(visualAssetIdFromNodeId) ?? null;
+      const pageIndex = asset?.page_index;
+      const docId = asset?.document_id;
+      if (isPdfDocId(docId)) {
+        // For PDF-like decks, drop low-signal region nodes unless they carry evidence/structured data.
+        const key = docId != null && pageIndex != null ? `${docId}:${pageIndex}` : null;
+        const primary = key ? primaryVisualByDocPage.get(key)?.visual_asset_id ?? null : null;
+
+        const evidenceCount = (() => {
+          const ev = raw?.data?.evidence;
+          const c = ev?.count ?? ev?.evidence_count;
+          return typeof c === 'number' && Number.isFinite(c) ? c : 0;
+        })();
+        const hasStructured = Boolean(raw?.data?.structured_kind || raw?.data?.structured_json);
+        const lowSignal = isLowSignalOcr(asset?.ocr_text ?? raw?.data?.ocr_text ?? raw?.data?.ocr_text_snippet);
+
+        if (primary && visualAssetIdFromNodeId !== primary && evidenceCount === 0 && !hasStructured && lowSignal) {
+          continue;
+        }
+      }
+    }
 
     const inferredDocId = (() => {
       const fromData = getDocIdFromData(raw?.data ?? {});
@@ -1476,6 +2011,319 @@ function buildFullGraphFromLineage(
     if (firstThree.length > 0) console.log('[DealAnalystTab] visual_asset node types', firstThree);
   }
 
+  // Page groups: enforce one visible node per (document,page) by default.
+  // We synthesize a `visual_asset_group` node and parent all page visuals under it.
+  // This prevents PDF region assets (e.g. pdf_text_region_v1) from flooding segments.
+  const existingNodeIds = new Set(nodes.map((n) => String(n.id)));
+  const visualNodeIdByVisualAssetId = new Map<string, string>();
+  const visualNodeByVisualAssetId = new Map<string, Node>();
+  const evidenceCountByVisualAssetId = new Map<string, number>();
+  for (const n of nodes) {
+    if (nodeTypeOf(n) !== 'visual_asset') continue;
+    const nodeId = String(n.id ?? '');
+    const visualAssetId = (() => {
+      if (nodeId.startsWith('visual_asset:')) return nodeId.slice('visual_asset:'.length);
+      const fromData = (n.data as any)?.visual_asset_id;
+      return typeof fromData === 'string' && fromData.trim().length > 0 ? fromData.trim() : null;
+    })();
+    if (!visualAssetId) continue;
+    visualNodeIdByVisualAssetId.set(visualAssetId, nodeId);
+    visualNodeByVisualAssetId.set(visualAssetId, n);
+
+    const ev = (n.data as any)?.evidence;
+    const evCountRaw =
+      typeof (n.data as any)?.evidence_count === 'number'
+        ? (n.data as any).evidence_count
+        : typeof ev?.count === 'number'
+          ? ev.count
+          : typeof ev?.evidence_count === 'number'
+            ? ev.evidence_count
+            : 0;
+    const evCount = typeof evCountRaw === 'number' && Number.isFinite(evCountRaw) ? evCountRaw : 0;
+    evidenceCountByVisualAssetId.set(visualAssetId, evCount);
+  }
+
+  const membersByDocPage = new Map<string, { docId: string; pageIndex: number; memberIds: string[] }>();
+  for (const [visualAssetId] of visualNodeIdByVisualAssetId.entries()) {
+    const asset = visualAssetsById.get(visualAssetId) ?? null;
+    const node = visualNodeByVisualAssetId.get(visualAssetId) ?? null;
+    const data = ((node as any)?.data ?? {}) as any;
+    const docId = String(asset?.document_id ?? data?.__docId ?? getDocIdFromData(data) ?? '').trim();
+    if (!isPageGroupedDocId(docId)) continue;
+    const pageIndex =
+      (asset?.page_index != null ? asset.page_index : null) ??
+      (typeof data?.page_index === 'number' && Number.isFinite(data.page_index) ? data.page_index : null) ??
+      normalizePageIndexCandidate(data?.pageIndex) ??
+      tryParsePageIndexFromLabel(data?.label);
+    if (!docId || pageIndex == null || !Number.isFinite(pageIndex) || pageIndex < 0) continue;
+    const key = `${docId}:${pageIndex}`;
+    const prev = membersByDocPage.get(key);
+    if (!prev) membersByDocPage.set(key, { docId, pageIndex, memberIds: [visualAssetId] });
+    else prev.memberIds.push(visualAssetId);
+  }
+
+  for (const { docId, pageIndex, memberIds } of membersByDocPage.values()) {
+    const groupNodeId = `visual_asset_group:${docId}:${pageIndex}`;
+    if (existingNodeIds.has(groupNodeId)) continue;
+
+    const label = `Page ${pageIndex + 1}`;
+
+    const groupSegmentKey = (() => {
+      const segMode: SegmentViewMode = opts?.segmentViewMode ?? 'effective';
+
+      if (segMode === 'content') {
+        // Derive segment from the page's extracted text/JSON.
+        // Avoid referencing aggregatedPageText here (it is computed later for UI display).
+        const bestText = (() => {
+          let best: string | null = null;
+          let bestScore = -Infinity;
+          const scoreText = (t: string): number => {
+            const len = t.trim().length;
+            if (len <= 0) return -Infinity;
+            // Prefer longer, more informative text.
+            return Math.min(5000, len);
+          };
+          for (const id of memberIds) {
+            const a = visualAssetsById.get(id) ?? null;
+            const node = visualNodeByVisualAssetId.get(id) ?? null;
+            const data = ((node as any)?.data ?? {}) as any;
+
+            const t = (() => {
+              if (typeof (a as any)?.ocr_text === 'string' && (a as any).ocr_text.trim()) return String((a as any).ocr_text);
+              const sj = (a as any)?.structured_json ?? data?.structured_json ?? null;
+              if (sj && typeof sj === 'object') {
+                const v = (sj as any)?.text ?? (sj as any)?.captured_text ?? (sj as any)?.ocr_text;
+                if (typeof v === 'string' && v.trim()) return v;
+              }
+              if (typeof data?.ocr_text === 'string' && data.ocr_text.trim()) return String(data.ocr_text);
+              if (typeof data?.ocr_text_snippet === 'string' && data.ocr_text_snippet.trim()) return String(data.ocr_text_snippet);
+              return null;
+            })();
+
+            if (!t) continue;
+            const s = scoreText(t);
+            if (best == null || s > bestScore) {
+              best = t;
+              bestScore = s;
+            }
+          }
+          return best;
+        })();
+
+        const fromPage = inferSegmentKeyFromExtractedText(bestText);
+        if (fromPage !== 'unknown') return fromPage;
+      }
+
+      for (const id of memberIds) {
+        const node = visualNodeByVisualAssetId.get(id) ?? null;
+        if (!node) continue;
+        const a = visualAssetsById.get(id) ?? null;
+        const seg = inferSegmentKeyForVisual({ visualNode: node, visualAsset: a, segmentViewMode: segMode });
+        if (seg && seg !== 'unknown') return seg;
+      }
+      return null;
+    })();
+
+    const representative = (() => {
+      let best: DealVisualAsset | null = null;
+      let bestScore = -Infinity;
+      for (const id of memberIds) {
+        const a = visualAssetsById.get(id) ?? null;
+        if (!a) continue;
+        const bboxArea = (() => {
+          const b = parseNormalizedBbox(a.bbox);
+          if (!b) return 1;
+          const w = Math.max(0, Math.min(1, b.w));
+          const h = Math.max(0, Math.min(1, b.h));
+          return w * h;
+        })();
+        const score = Math.round(bboxArea * 1000);
+        if (!best || score > bestScore) {
+          best = a;
+          bestScore = score;
+        }
+      }
+      return best;
+    })();
+
+    const representativeFromNode = representative
+      ? null
+      : (() => {
+          let best: { image_uri?: string | null; extractor_version?: string | null } | null = null;
+          let bestScore = -Infinity;
+          for (const id of memberIds) {
+            const node = visualNodeByVisualAssetId.get(id) ?? null;
+            const data = ((node as any)?.data ?? {}) as any;
+            const bboxArea = (() => {
+              const b = parseNormalizedBbox(data?.bbox);
+              if (!b) return 1;
+              const w = Math.max(0, Math.min(1, b.w));
+              const h = Math.max(0, Math.min(1, b.h));
+              return w * h;
+            })();
+            const score = Math.round(bboxArea * 1000);
+            if (!best || score > bestScore) {
+              best = {
+                image_uri: typeof data?.image_uri === 'string' ? data.image_uri : null,
+                extractor_version: typeof data?.extractor_version === 'string' ? data.extractor_version : null,
+              };
+              bestScore = score;
+            }
+          }
+          return best;
+        })();
+
+    const bestOcr = (() => {
+      let best: DealVisualAsset | null = null;
+      let bestScore = -Infinity;
+      for (const id of memberIds) {
+        const a = visualAssetsById.get(id) ?? null;
+        if (!a) continue;
+        const score = ocrSignalScore(a.ocr_text);
+        if (!best || score > bestScore) {
+          best = a;
+          bestScore = score;
+        }
+      }
+      return best;
+    })();
+
+    const bestOcrFromNode = bestOcr
+      ? null
+      : (() => {
+          let best: { ocr_text_snippet?: string | null } | null = null;
+          let bestScore = -Infinity;
+          for (const id of memberIds) {
+            const node = visualNodeByVisualAssetId.get(id) ?? null;
+            const data = ((node as any)?.data ?? {}) as any;
+            const t = data?.ocr_text_snippet ?? data?.ocr_text;
+            const score = ocrSignalScore(t);
+            if (!best || score > bestScore) {
+              best = { ocr_text_snippet: typeof t === 'string' ? t : null };
+              bestScore = score;
+            }
+          }
+          return best;
+        })();
+
+    // Aggregate full OCR/structured text across ALL member visuals for this page.
+    // This is the core PDF UX: clicking the Page node shows all extracted text.
+    const aggregatedPageText = (() => {
+      type Item = { text: string; dedupeKey: string; y: number; x: number };
+      const items: Item[] = [];
+      for (const id of memberIds) {
+        const a = visualAssetsById.get(id) ?? null;
+        const node = visualNodeByVisualAssetId.get(id) ?? null;
+        const data = ((node as any)?.data ?? {}) as any;
+
+        const rawText = (() => {
+          if (typeof (a as any)?.ocr_text === 'string' && (a as any).ocr_text.trim()) return String((a as any).ocr_text);
+          const sj = (a as any)?.structured_json ?? data?.structured_json ?? null;
+          if (sj && typeof sj === 'object') {
+            const t = (sj as any)?.text ?? (sj as any)?.captured_text ?? (sj as any)?.ocr_text;
+            if (typeof t === 'string' && t.trim()) return t;
+          }
+          if (typeof data?.ocr_text === 'string' && data.ocr_text.trim()) return String(data.ocr_text);
+          if (typeof data?.ocr_text_snippet === 'string' && data.ocr_text_snippet.trim()) return String(data.ocr_text_snippet);
+          return null;
+        })();
+
+        if (!rawText) continue;
+        const text = rawText.replace(/\r\n?/g, '\n').trim();
+        if (!text) continue;
+
+        const b = parseNormalizedBbox((a as any)?.bbox ?? data?.bbox);
+        const y = b ? Math.max(0, Math.min(1, b.y)) : 0;
+        const x = b ? Math.max(0, Math.min(1, b.x)) : 0;
+
+        const dedupeKey = text
+          .replace(/\s+/g, ' ')
+          .trim()
+          .toLowerCase();
+        if (!dedupeKey) continue;
+
+        items.push({ text, dedupeKey, y, x });
+      }
+
+      items.sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x));
+
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const it of items) {
+        if (seen.has(it.dedupeKey)) continue;
+        seen.add(it.dedupeKey);
+        out.push(it.text);
+      }
+      return out.length ? out.join('\n\n') : null;
+    })();
+
+    const aggregatedStructuredJson = (() => {
+      // Keep this bounded to avoid inflating the graph payload.
+      // The inspector can still show full raw JSON per-member via API if needed.
+      const items: Array<{ visual_asset_id: string; structured_kind?: string | null; structured_json: unknown }> = [];
+      for (const id of memberIds) {
+        const a = visualAssetsById.get(id) ?? null;
+        const node = visualNodeByVisualAssetId.get(id) ?? null;
+        const data = ((node as any)?.data ?? {}) as any;
+        const sj = (a as any)?.structured_json ?? data?.structured_json;
+        if (sj == null) continue;
+        const kind = typeof data?.structured_kind === 'string' ? data.structured_kind : typeof (a as any)?.structured_kind === 'string' ? (a as any).structured_kind : null;
+        items.push({ visual_asset_id: id, structured_kind: kind, structured_json: sj });
+        if (items.length >= 20) break;
+      }
+      return items.length > 0 ? items : null;
+    })();
+
+    const evidenceCountTotal = memberIds.reduce((sum, id) => sum + (evidenceCountByVisualAssetId.get(id) ?? 0), 0);
+
+    nodes.push({
+      id: groupNodeId,
+      type: 'visual_asset_group',
+      position: { x: 0, y: 0 },
+      data: {
+        label,
+        page_label: label,
+        page_index: pageIndex,
+        asset_type: 'page',
+        document_id: docId,
+        visual_asset_group_id: groupNodeId,
+        count_members: memberIds.length,
+        member_visual_asset_ids: memberIds,
+        evidence_count: evidenceCountTotal,
+        extractor_version: representative?.extractor_version ?? representativeFromNode?.extractor_version,
+        image_uri: representative?.image_uri ?? representativeFromNode?.image_uri,
+        // Full page text (aggregated across member visuals). Renderer shows full text when selected.
+        ocr_text: aggregatedPageText,
+        ocr_text_snippet: bestOcr?.ocr_text ?? bestOcrFromNode?.ocr_text_snippet,
+        structured_json: aggregatedStructuredJson,
+        ...(groupSegmentKey
+          ? {
+              computed_segment: groupSegmentKey,
+              effective_segment: groupSegmentKey,
+              segment: groupSegmentKey,
+              segment_source: (opts?.segmentViewMode ?? 'effective') === 'content' ? 'inferred_page_content' : 'derived_page_group',
+            }
+          : {}),
+        __node_type: 'visual_asset_group',
+        __layer: layerForType('visual_asset_group'),
+        __docId: docId,
+      },
+      selectable: true,
+    } as Node);
+
+    existingNodeIds.add(groupNodeId);
+
+    for (const memberVisualAssetId of memberIds) {
+      const memberNodeId = visualNodeIdByVisualAssetId.get(memberVisualAssetId);
+      if (!memberNodeId) continue;
+      extraRawEdges.push({
+        id: `pagegroup:${groupNodeId}->${memberNodeId}`,
+        source: groupNodeId,
+        target: memberNodeId,
+      });
+    }
+  }
+
   const rawEdges: RawLineageEdge[] = [];
   for (const re of lineage.edges || []) {
     const id = typeof (re as any)?.id === 'string' ? String((re as any).id) : '';
@@ -1485,15 +2333,20 @@ function buildFullGraphFromLineage(
     rawEdges.push({ id: id || `${source}->${target}`, source, target });
   }
 
+  rawEdges.push(...extraRawEdges);
+
   const canonicalEdges = buildCanonicalEdges({ nodes, rawEdges, dealId });
   const inferred = inferBranchMetadata(nodes, canonicalEdges);
   // Enforce Deal→Document→Segment→Visual→Evidence with deal+document-scoped segment ids.
-  return applyDocumentScopedSegmentsGraph({
+  const routed = applyDocumentScopedSegmentsGraph({
     ...inferred,
     dealId,
     dealVisualAssets,
     segmentViewMode: opts?.segmentViewMode ?? 'effective',
   });
+
+  // Final pass: for page-grouped docs, show only page nodes to keep the Analyst graph aligned with “one node per page”.
+  return pruneDocsToPageNodesOnly(routed);
 }
 
 function inferBranchMetadata(nodes: Node[], edges: Edge[]): { nodes: Node[]; edges: Edge[] } {
@@ -1614,7 +2467,9 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
   const [colorMode, setColorMode] = useState<ColorMode>(() => {
     if (typeof window === 'undefined') return 'off';
     const stored = window.localStorage.getItem(COLOR_MODE_STORAGE_KEY);
-    return stored === 'document' || stored === 'segment' ? stored : 'off';
+    if (stored === 'off' || stored === 'document' || stored === 'segment') return stored;
+    // Default to segment coloring so nodes are visually classified out of the box.
+    return 'segment';
   });
 
   const [clusterSlides, setClusterSlides] = useState<boolean>(() => {
@@ -1628,7 +2483,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
   const [segmentViewMode, setSegmentViewMode] = useState<SegmentViewMode>(() => {
     if (typeof window === 'undefined') return 'effective';
     const stored = window.localStorage.getItem(SEGMENT_VIEW_MODE_STORAGE_KEY);
-    return stored === 'computed' || stored === 'persisted' || stored === 'effective' ? stored : 'effective';
+    return stored === 'computed' || stored === 'persisted' || stored === 'effective' || stored === 'content' ? stored : 'content';
   });
 
   const [hoverBranchKey, setHoverBranchKey] = useState<string | null>(null);
@@ -1654,6 +2509,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
 
   // Keep stable per-node expand toggles so node.data does not churn every render.
   const toggleExpandByIdRef = useRef(new Map<string, () => void>());
+  const openUnderstandingByIdRef = useRef(new Map<string, () => void>());
   const fullGraphRef = useRef<typeof fullGraph>(null);
   const clusteredRef = useRef<typeof clustered | null>(null);
   const toggleExpandImplRef = useRef<(id: string) => void>(() => {});
@@ -1672,6 +2528,14 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
   const [visualDetailError, setVisualDetailError] = useState<string | null>(null);
   const [selectedVisual, setSelectedVisual] = useState<DealVisualAsset | null>(null);
   const [dealVisualAssets, setDealVisualAssets] = useState<DealVisualAsset[] | null>(null);
+
+  const [detUnderstanding, setDetUnderstanding] = useState<DeterministicUnderstandingState>({
+    status: 'idle',
+    value: null,
+    error: null,
+    lastFetchedAt: null,
+  });
+  const [detUnderstandingMutating, setDetUnderstandingMutating] = useState(false);
 
   useEffect(() => {
     if (!focusNodeId) return;
@@ -2147,6 +3011,18 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
 
       if (!docId || pageIndex == null) return;
 
+      const visualAssetForSnapshot: Pick<DealVisualAsset, 'image_uri'> | null = (() => {
+        const fromSelected = typeof selectedVisual?.image_uri === 'string' ? selectedVisual.image_uri.trim() : '';
+        if (fromSelected) return { image_uri: fromSelected };
+
+        if (selection.kind === 'visual_asset_group') {
+          const fromSelection = typeof (selection as any)?.image_uri === 'string' ? String((selection as any).image_uri).trim() : '';
+          if (fromSelection) return { image_uri: fromSelection };
+        }
+
+        return null;
+      })();
+
       setPageSnapshotLoading(true);
       try {
         let docAnalysis: any | null;
@@ -2167,7 +3043,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
           dealId,
           document: documentForSnapshot,
           pageIndex,
-          visualAsset: selectedVisual,
+          visualAsset: visualAssetForSnapshot,
         });
 
         if (!cancelled) setPageSnapshotUrl(url);
@@ -2342,7 +3218,14 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
       const lineagePromise = apiGetDealLineage(dealId);
       const assetsPromise = apiGetDealVisualAssets(dealId);
 
-      const [lineageRes, assetsRes] = await Promise.allSettled([lineagePromise, assetsPromise]);
+      // Optional: deterministic understanding patch (may be missing).
+      const understandingPromise = isLiveBackend() ? apiGetDealDeterministicUnderstanding(dealId) : Promise.resolve(null);
+
+      const [lineageRes, assetsRes, understandingRes] = await Promise.allSettled([
+        lineagePromise,
+        assetsPromise,
+        understandingPromise,
+      ]);
 
       if (lineageRes.status !== 'fulfilled') throw lineageRes.reason;
       const res = lineageRes.value;
@@ -2373,6 +3256,23 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
         dealAssetsFetchedRef.current = false;
       }
 
+      if (understandingRes.status === 'fulfilled') {
+        const val = understandingRes.value;
+        setDetUnderstanding({
+          status: val ? 'ready' : 'missing',
+          value: val,
+          error: null,
+          lastFetchedAt: Date.now(),
+        });
+      } else {
+        setDetUnderstanding({
+          status: 'error',
+          value: null,
+          error: understandingRes.reason instanceof Error ? understandingRes.reason.message : 'Failed to load deterministic understanding',
+          lastFetchedAt: Date.now(),
+        });
+      }
+
       // DEV: expose lineage for quick inspection in the browser console.
       // Usage: window.__lineage?.nodes?.find(n => String(n.id).startsWith('visual_asset:'))
       if (typeof window !== 'undefined') {
@@ -2397,8 +3297,51 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
       setLineage(null);
       setWarnings([]);
       setDealVisualAssets(null);
+
+      setDetUnderstanding((prev) => ({
+        status: prev.status === 'ready' ? 'ready' : 'error',
+        value: prev.value,
+        error: prev.error ?? (e instanceof Error ? e.message : 'Failed to load deterministic understanding'),
+        lastFetchedAt: prev.lastFetchedAt ?? Date.now(),
+      }));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const computeDeterministicUnderstanding = async () => {
+    if (!dealId) return;
+
+    if (!isLiveBackend()) {
+      setDetUnderstanding((prev) => ({ ...prev, status: 'error', error: 'Deterministic understanding requires live backend mode.' }));
+      return;
+    }
+
+    if (!dealVisualAssets || dealVisualAssets.length === 0) {
+      setDetUnderstanding((prev) => ({
+        ...prev,
+        status: 'error',
+        error: 'No visual assets loaded yet (cannot compute understanding).',
+      }));
+      return;
+    }
+
+    try {
+      setDetUnderstandingMutating(true);
+      setDetUnderstanding((prev) => ({ ...prev, error: null }));
+      const input = buildDeterministicUnderstandingInputFromDealVisualAssets({ dealId, dealVisualAssets });
+      const res = await apiPostDealDeterministicUnderstanding(dealId, input);
+      setDetUnderstanding({ status: 'ready', value: res, error: null, lastFetchedAt: Date.now() });
+    } catch (e) {
+      setDetUnderstanding((prev) => ({
+        ...prev,
+        status: 'error',
+        value: prev.value,
+        error: e instanceof Error ? e.message : 'Failed to compute deterministic understanding',
+        lastFetchedAt: Date.now(),
+      }));
+    } finally {
+      setDetUnderstandingMutating(false);
     }
   };
 
@@ -2596,18 +3539,63 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
     // Prune handlers for nodes that no longer exist.
     const keep = new Set(clustered.nodes.map((n) => n.id));
     const map = toggleExpandByIdRef.current;
+    const map2 = openUnderstandingByIdRef.current;
     for (const key of map.keys()) {
       if (!keep.has(key)) map.delete(key);
+    }
+    for (const key of map2.keys()) {
+      if (!keep.has(key)) map2.delete(key);
     }
   }, [clustered.nodes]);
 
   const renderedNodesUnlaid = useMemo(() => {
+    const fullById = new Map<string, Node>((fullGraph?.nodes ?? []).map((n) => [n.id, n] as const));
+    const fullTypeById = new Map<string, string>();
+    for (const n of fullGraph?.nodes ?? []) {
+      fullTypeById.set(n.id, String((n as any)?.type ?? (n as any)?.data?.__node_type ?? '').toLowerCase());
+    }
+    const outgoingFull = new Map<string, Edge[]>();
+    for (const e of fullGraph?.edges ?? []) {
+      const list = outgoingFull.get(e.source) ?? [];
+      list.push(e);
+      outgoingFull.set(e.source, list);
+    }
+
     return clustered.nodes.map((n) => {
       const baseNode = fullGraph?.nodes.find((bn) => bn.id === n.id) ?? n;
       const stableType = String((baseNode as any)?.type ?? (n as any)?.type ?? 'default').trim().toLowerCase();
       const expanded = expandedById[n.id] ?? defaultExpandedForNode(n);
       // Use full-graph descendant counts so the toggle stays visible even when children are hidden in the current projection.
       const descendantCount = visible.descendantCountsById[n.id] ?? clustered.descendantCountsById[n.id] ?? 0;
+
+      const childCount = (() => {
+        // Prefer fullGraph outgoing so counts represent the underlying hierarchy.
+        const outs = outgoingFull.get(n.id) ?? [];
+        if (outs.length === 0) return 0;
+        const typeOf = (id: string) => fullTypeById.get(id) ?? String((fullById.get(id) as any)?.type ?? '').toLowerCase();
+
+        if (stableType === 'deal') {
+          return outs.filter((e) => typeOf(e.target) === 'document').length;
+        }
+        if (stableType === 'document') {
+          return outs.filter((e) => typeOf(e.target) === 'segment').length;
+        }
+        if (stableType === 'segment') {
+          // Show the number of direct “page/group” children under the segment.
+          // This aligns with “one node per page” expectation.
+          const allowed = new Set(['visual_asset_group', 'visual_group', 'visual_asset']);
+          return outs.filter((e) => allowed.has(typeOf(e.target))).length;
+        }
+        if (stableType === 'visual_asset_group') {
+          return outs.filter((e) => typeOf(e.target) === 'visual_asset').length;
+        }
+        if (stableType === 'visual_group') {
+          const allowed = new Set(['visual_asset', 'evidence', 'evidence_group']);
+          return outs.filter((e) => allowed.has(typeOf(e.target))).length;
+        }
+
+        return outs.length;
+      })();
       const baseData = (baseNode as any)?.data ?? {};
       const colorKey = (() => {
         if (colorMode === 'off') return null;
@@ -2624,6 +3612,88 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
       if (!onToggleExpand) {
         onToggleExpand = () => toggleExpandImplRef.current(n.id);
         handlers.set(n.id, onToggleExpand);
+      }
+
+      const openHandlers = openUnderstandingByIdRef.current;
+      let onOpenUnderstanding = openHandlers.get(n.id);
+      if (!onOpenUnderstanding) {
+        const stableNodeId = String((baseNode as any)?.id ?? n.id ?? '');
+        const stableData = { ...baseData };
+        const stableTypeForHandler = stableType;
+
+        onOpenUnderstanding = () => {
+          // Always open the inspector (ReactFlow canvas button should still work if inspector was collapsed).
+          setInspectorOpen(true);
+          setSelectedRfNodeId(stableNodeId);
+
+          const nodeId = stableNodeId;
+          const fromPrefix = (prefix: string) => (nodeId.startsWith(prefix) ? nodeId.slice(prefix.length) : '');
+          const documentIdFromNode = fromPrefix('document:') || fromPrefix('document_id:');
+          const visualIdFromNode = fromPrefix('visual_asset:') || fromPrefix('visual:');
+
+          if (stableTypeForHandler === 'visual_asset') {
+            const document_id = String((stableData as any).document_id ?? documentIdFromNode ?? '');
+            const visual_asset_id = String((stableData as any).visual_asset_id ?? visualIdFromNode ?? '');
+            if (!document_id || !visual_asset_id) {
+              setVisualDetailError('Visual asset node missing document_id or visual_asset_id.');
+              setSelectedVisual(null);
+            } else {
+              setSelection({ kind: 'visual_asset', document_id, visual_asset_id });
+              loadVisualDetails(document_id, visual_asset_id);
+            }
+          } else if (stableTypeForHandler === 'visual_asset_group') {
+            const fromPrefixGroup = (prefix: string) => (nodeId.startsWith(prefix) ? nodeId.slice(prefix.length) : '');
+            const groupIdFromNode =
+              fromPrefixGroup('visual_asset_group:') || String((stableData as any).visual_asset_group_id ?? '');
+            const document_id = String((stableData as any).document_id ?? documentIdFromNode ?? (stableData as any).doc_id ?? '');
+            const image_uri = typeof (stableData as any).image_uri === 'string' ? String((stableData as any).image_uri) : undefined;
+            const memberIds = Array.isArray((stableData as any).member_visual_asset_ids)
+              ? (((stableData as any).member_visual_asset_ids as unknown[]).filter((x) => typeof x === 'string') as string[])
+              : undefined;
+            const countMembers =
+              typeof (stableData as any).count_members === 'number'
+                ? (stableData as any).count_members
+                : memberIds
+                  ? memberIds.length
+                  : undefined;
+
+            const pageIndex =
+              normalizePageIndexCandidate((stableData as any).page_index ?? (stableData as any).pageIndex) ??
+              tryParsePageIndexFromLabel((stableData as any).label) ??
+              tryParsePageIndexFromLabel((stableData as any).page_label);
+
+            setSelection({
+              kind: 'visual_asset_group',
+              document_id,
+              visual_asset_group_id: groupIdFromNode,
+              image_uri,
+              page_index: pageIndex ?? undefined,
+              page_label:
+                typeof (stableData as any).label === 'string'
+                  ? (stableData as any).label
+                  : typeof (stableData as any).page_label === 'string'
+                    ? (stableData as any).page_label
+                    : undefined,
+              count_members: countMembers,
+              member_visual_asset_ids: memberIds,
+            });
+            setSelectedVisual(null);
+            setVisualDetailError(null);
+          } else {
+            // Fallback: just open inspector.
+            setSelection((prev) => (prev.kind === 'none' ? prev : prev));
+          }
+
+          // Scroll to understanding section (best-effort).
+          if (typeof window !== 'undefined') {
+            window.setTimeout(() => {
+              const el = document.getElementById('inspector-node-understanding');
+              el?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+            }, 0);
+          }
+        };
+
+        openHandlers.set(n.id, onOpenUnderstanding);
       }
 
       return {
@@ -2643,7 +3713,9 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
           __node_type: stableType,
           expanded,
           descendantCount,
+          childCount,
           onToggleExpand,
+          onOpenUnderstanding,
           __accentColor: accent?.stroke,
           __accentTint: accent?.tint,
         },
@@ -3463,6 +4535,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                   const fromPrefixGroup = (prefix: string) => (nodeId.startsWith(prefix) ? nodeId.slice(prefix.length) : '');
                   const groupIdFromNode = fromPrefixGroup('visual_asset_group:') || String((data as any).visual_asset_group_id ?? '');
                   const document_id = String(data.document_id ?? documentIdFromNode ?? (data as any).doc_id ?? '');
+                  const image_uri = typeof (data as any).image_uri === 'string' ? String((data as any).image_uri) : undefined;
                   const memberIds = Array.isArray((data as any).member_visual_asset_ids)
                     ? ((data as any).member_visual_asset_ids as unknown[]).filter((x) => typeof x === 'string') as string[]
                     : undefined;
@@ -3482,6 +4555,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                     kind: 'visual_asset_group',
                     document_id,
                     visual_asset_group_id: groupIdFromNode,
+                    image_uri,
                     page_index: pageIndex ?? undefined,
                     page_label: typeof data.label === 'string' ? data.label : typeof (data as any).page_label === 'string' ? (data as any).page_label : undefined,
                     count_members: countMembers,
@@ -3616,6 +4690,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                         }}
                         className={`h-7 rounded border px-2 ${darkMode ? 'bg-gray-900 border-gray-700 text-gray-100' : 'bg-white border-gray-300 text-gray-800'}`}
                       >
+                        <option value="content">Content</option>
                         <option value="effective">Effective</option>
                         <option value="computed">Computed</option>
                         <option value="persisted">Persisted</option>
@@ -4053,6 +5128,189 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                     </div>
                   </div>
 
+                  {(() => {
+                    const docId = typeof selection.document_id === 'string' ? selection.document_id : '';
+                    const pageIndex = typeof selection.page_index === 'number' && Number.isFinite(selection.page_index) ? selection.page_index : null;
+                    const detPageId = docId && pageIndex != null ? makeUnderstandingPageId(docId, pageIndex) : null;
+                    const detPatch = detUnderstanding.value?.patch ?? null;
+                    const detPage = detPageId && detPatch?.pages ? (detPatch.pages as any)[detPageId] : null;
+
+                    return (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Deterministic Understanding</div>
+                          <div className="flex items-center gap-2">
+                            {detUnderstanding.status === 'ready' && detUnderstanding.value ? (
+                              <Button
+                                size="sm"
+                                variant={darkMode ? 'secondary' : 'outline'}
+                                darkMode={darkMode}
+                                disabled={detUnderstandingMutating || loading}
+                                onClick={computeDeterministicUnderstanding}
+                              >
+                                Recompute
+                              </Button>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant={darkMode ? 'secondary' : 'outline'}
+                                darkMode={darkMode}
+                                disabled={detUnderstandingMutating || loading}
+                                onClick={computeDeterministicUnderstanding}
+                              >
+                                Compute
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+
+                        {detUnderstandingMutating ? (
+                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Computing…</div>
+                        ) : null}
+
+                        {detUnderstanding.status === 'ready' && detUnderstanding.value ? (
+                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            {detUnderstanding.value.analysis_version} · {detUnderstanding.value.created_at}
+                          </div>
+                        ) : null}
+
+                        {detUnderstanding.error ? (
+                          <div className={`text-xs ${darkMode ? 'text-red-300' : 'text-red-700'}`}>{detUnderstanding.error}</div>
+                        ) : null}
+
+                        {!isLiveBackend() ? (
+                          <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Enable live backend to compute understanding.</div>
+                        ) : null}
+
+                        {!detPageId ? (
+                          <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No page_index available for this group.</div>
+                        ) : !detPatch ? (
+                          <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No deterministic understanding patch loaded yet.</div>
+                        ) : !detPage ? (
+                          <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No understanding available for this page.</div>
+                        ) : (
+                          <div className="space-y-3">
+                            <div className={`rounded-md border p-2 ${darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'}`}>
+                              <div className={`text-xs font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Page Type</div>
+                              <div className={`mt-1 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                {String(detPage.page_type)} · {fmtPct(detPage.confidence)}
+                              </div>
+                              {Array.isArray(detPage.why) && detPage.why.length > 0 ? (
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  {detPage.why.slice(0, 12).map((w: any, idx: number) => (
+                                    <span
+                                      key={`why-${idx}`}
+                                      className={`px-1.5 py-0.5 rounded border text-[11px] ${
+                                        darkMode ? 'border-white/10 text-gray-300 bg-white/5' : 'border-gray-200 text-gray-700 bg-gray-50'
+                                      }`}
+                                    >
+                                      {String(w)}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </div>
+
+                            <div className="space-y-1">
+                              <div className={`text-xs font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Evidence</div>
+                              {Array.isArray(detPage.evidence) && detPage.evidence.length > 0 ? (
+                                <div className="space-y-2">
+                                  {detPage.evidence.slice(0, 5).map((ev: any, idx: number) => (
+                                    <div key={`ev-${idx}`} className={`rounded-md border p-2 ${darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'}`}>
+                                      <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Score: {String(ev?.score ?? '—')}</div>
+                                      <div className={`mt-1 text-xs whitespace-pre-wrap ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{String(ev?.snippet ?? '')}</div>
+                                      {Array.isArray(ev?.features) && ev.features.length > 0 ? (
+                                        <div className="mt-2 flex flex-wrap gap-1">
+                                          {ev.features.slice(0, 12).map((f: any, fIdx: number) => (
+                                            <span
+                                              key={`feat-${idx}-${fIdx}`}
+                                              className={`px-1.5 py-0.5 rounded border text-[11px] ${
+                                                darkMode ? 'border-white/10 text-gray-300 bg-white/5' : 'border-gray-200 text-gray-700 bg-gray-50'
+                                              }`}
+                                            >
+                                              {String(f)}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No evidence ranked for this page.</div>
+                              )}
+                            </div>
+
+                            <div className="space-y-1">
+                              <div className={`text-xs font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Key Numbers</div>
+                              {Array.isArray(detPage.key_numbers) && detPage.key_numbers.length > 0 ? (
+                                <div className={`overflow-auto rounded-md border text-xs ${darkMode ? 'border-white/10 bg-black/10 text-gray-200' : 'border-gray-200 bg-white text-gray-800'}`}>
+                                  <table className="min-w-full text-left">
+                                    <thead className={darkMode ? 'bg-white/5' : 'bg-gray-50'}>
+                                      <tr>
+                                        <th className="px-2 py-1 font-medium">Type</th>
+                                        <th className="px-2 py-1 font-medium">Raw</th>
+                                        <th className="px-2 py-1 font-medium">Unit</th>
+                                        <th className="px-2 py-1 font-medium">Conf</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {detPage.key_numbers.slice(0, 20).map((m: any, idx: number) => (
+                                        <tr key={`m-${idx}`} className={darkMode ? 'border-t border-white/5' : 'border-t border-gray-100'}>
+                                          <td className="px-2 py-1 align-top whitespace-pre-wrap">{String(m?.metric_type ?? '—')}</td>
+                                          <td className="px-2 py-1 align-top whitespace-pre-wrap">{String(m?.raw_value ?? '—')}</td>
+                                          <td className="px-2 py-1 align-top whitespace-pre-wrap">{m?.unit ? String(m.unit) : '—'}</td>
+                                          <td className="px-2 py-1 align-top whitespace-pre-wrap">{fmtPct(m?.confidence)}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              ) : (
+                                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No key numbers extracted.</div>
+                              )}
+                            </div>
+
+                            <div className="space-y-1">
+                              <div className={`text-xs font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Entities</div>
+                              {Array.isArray(detPage.key_entities) && detPage.key_entities.length > 0 ? (
+                                <ul className={`list-disc pl-5 text-xs space-y-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                  {detPage.key_entities.slice(0, 30).map((ent: any, idx: number) => (
+                                    <li key={`ent-${idx}`}>
+                                      <span className="font-medium">{String(ent?.entity_type ?? 'OTHER')}</span>: {String(ent?.text ?? '')} · {fmtPct(ent?.confidence)}
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No entities extracted.</div>
+                              )}
+                            </div>
+
+                            <div className="space-y-1">
+                              <div className={`text-xs font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Quality Flags</div>
+                              {Array.isArray(detPage.quality_flags) && detPage.quality_flags.length > 0 ? (
+                                <div className="flex flex-wrap gap-1">
+                                  {detPage.quality_flags.slice(0, 20).map((q: any, idx: number) => (
+                                    <span
+                                      key={`q-${idx}`}
+                                      className={`px-1.5 py-0.5 rounded border text-[11px] ${
+                                        darkMode ? 'border-white/10 text-gray-300 bg-white/5' : 'border-gray-200 text-gray-700 bg-gray-50'
+                                      }`}
+                                    >
+                                      {String(q)}
+                                    </span>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No quality flags.</div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
                   <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                     For deeper grounding, analyze a member visual asset.
                   </div>
@@ -4341,7 +5599,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                     const rfSlideTitleSource = typeof rfData.slide_title_source === 'string' ? rfData.slide_title_source : '';
                     const rfStructuredKind = typeof rfData.structured_kind === 'string' ? rfData.structured_kind : null;
                     const rfStructuredSummary = rfData.structured_summary as any;
-                    const rfPageUnderstanding = rfData.page_understanding as any;
+                    const rfPageUnderstanding = (rfData.page_understanding ?? derivePageUnderstandingFromNodeData(rfData)) as any;
 
                     const hasRfEnrichment = Boolean(
                       rfImgSrc ||
@@ -4379,37 +5637,41 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
 
                     return (
                       <div className="space-y-2">
-                        <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Lineage (enriched)</div>
+                        {hasRfEnrichment ? (
+                          <>
+                            <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Lineage (enriched)</div>
 
-                        {rfImgSrc ? (
-                          <button
-                            type="button"
-                            className="block"
-                            onClick={() => setInspectorImageModal({ src: rfImgSrc, title: 'Lineage image' })}
-                            aria-label="Open image"
-                          >
-                            <div className="w-[240px] max-w-full">
-                              <img
-                                src={rfImgSrc}
-                                alt="Visual asset"
-                                className={`w-full max-h-[160px] object-contain rounded-md border cursor-zoom-in ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
-                              />
-                            </div>
-                          </button>
-                        ) : null}
+                            {rfImgSrc ? (
+                              <button
+                                type="button"
+                                className="block"
+                                onClick={() => setInspectorImageModal({ src: rfImgSrc, title: 'Lineage image' })}
+                                aria-label="Open image"
+                              >
+                                <div className="w-[240px] max-w-full">
+                                  <img
+                                    src={rfImgSrc}
+                                    alt="Visual asset"
+                                    className={`w-full max-h-[160px] object-contain rounded-md border cursor-zoom-in ${darkMode ? 'border-white/10' : 'border-gray-200'}`}
+                                  />
+                                </div>
+                              </button>
+                            ) : null}
 
-                        {structuredLine ? (
-                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{structuredLine}</div>
-                        ) : null}
+                            {structuredLine ? (
+                              <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{structuredLine}</div>
+                            ) : null}
 
-                        {rfExcelPreview ? (
-                          <pre
-                            className={`whitespace-pre text-[11px] rounded-md p-2 border overflow-auto max-h-[240px] ${
-                              darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
-                            }`}
-                          >
-                            {rfExcelPreview}
-                          </pre>
+                            {rfExcelPreview ? (
+                              <pre
+                                className={`whitespace-pre text-[11px] rounded-md p-2 border overflow-auto max-h-[240px] ${
+                                  darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
+                                }`}
+                              >
+                                {rfExcelPreview}
+                              </pre>
+                            ) : null}
+                          </>
                         ) : null}
 
                         {rfSlideTitle ? (
@@ -5243,17 +6505,22 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
 
                     const isOcrInferred = typeof source === 'string' && source.toLowerCase().startsWith('inferred_ocr');
 
-                    const summary = typeof rfData.structured_summary === 'string' ? rfData.structured_summary : null;
+                    const summary =
+                      typeof rfData.structured_summary === 'string'
+                        ? rfData.structured_summary
+                        : typeof rfData.ocr_text === 'string'
+                          ? rfData.ocr_text
+                          : null;
                     const evidenceSnippets = Array.isArray(rfData.evidence_snippets)
                       ? (rfData.evidence_snippets as unknown[]).filter((s) => typeof s === 'string' && s.trim().length > 0) as string[]
                       : [];
-                    const rfUnderstanding = rfData.page_understanding as any;
+                    const rfUnderstanding = (rfData.page_understanding ?? derivePageUnderstandingFromNodeData(rfData)) as any;
 
                     if (!persisted && !computed && !effective && !summary && evidenceSnippets.length === 0 && rfData.structured_json == null) return null;
 
                     return (
                       <>
-                        <div className="space-y-2">
+                        <div className="space-y-2" id="inspector-node-understanding">
                           <div className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Node Understanding</div>
 
                           {typeof rfUnderstanding?.summary === 'string' && rfUnderstanding.summary.trim() ? (

@@ -19,6 +19,7 @@ import { registerAnalyticsRoutes } from "./routes/analytics";
 import { registerAdminRoutes } from "./routes/admin";
 import { registerVisualAssetRoutes } from "./routes/visual-assets";
 import { registerNodeAiAnalyzeRoutes } from "./routes/node-ai-analyze";
+import { registerUnderstandingRoutes } from "./routes/understanding";
 import { initializeLLM } from "./lib/llm";
 import { getPool } from "./lib/db";
 import { applyPendingMigrations, getMigrationStatus } from "./lib/migrations";
@@ -158,6 +159,7 @@ async function bootstrap() {
   await registerAdminRoutes(app);
   await registerVisualAssetRoutes(app);
   await registerNodeAiAnalyzeRoutes(app);
+  await registerUnderstandingRoutes(app, pool);
 }
 
 async function start() {

@@ -3,7 +3,7 @@ BEGIN;
 
 CREATE TABLE IF NOT EXISTS evidence (
   evidence_id TEXT PRIMARY KEY,
-  deal_id TEXT NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+  deal_id UUID NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
   source TEXT NOT NULL DEFAULT 'ingest',
   kind TEXT NOT NULL DEFAULT 'fact',
   text TEXT NOT NULL,

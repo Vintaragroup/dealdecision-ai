@@ -181,17 +181,19 @@ export class ContextCompressor {
    * Safe: 5-10% reduction
    */
   private static compressWhitespace(text: string): string {
-    return (
-      text
-        // Remove leading/trailing whitespace from lines
-        .split('\n')
-        .map((line) => line.trimRight())
-        .join('\n')
-        // Remove multiple blank lines (keep max 1)
-        .replace(/\n\n\n+/g, '\n\n')
-        // Remove trailing whitespace at end
-        .trim()
-    );
+    const normalizedLines = text
+      .split(/\r?\n/)
+      .map((line) => {
+        const collapsed = line.replace(/[ \t]+/g, ' ').trim();
+        return collapsed;
+      });
+
+    const joined = normalizedLines.join('\n')
+      // Remove runs of 3+ blank lines down to a single blank line
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+
+    return joined;
   }
 
   /**
@@ -224,33 +226,36 @@ export class ContextCompressor {
    * Safe: 2-5% reduction
    */
   private static compressRepeatedContent(text: string): string {
-    // If same phrase appears 3+ times, use abbreviation
     const words = text.split(/\s+/);
-    const phraseFreq = new Map<string, number>();
+    const bigramFreq = new Map<string, number>();
 
-    // Find 3-word phrases that repeat
-    for (let i = 0; i < words.length - 2; i++) {
-      const phrase = words.slice(i, i + 3).join(' ');
-      phraseFreq.set(phrase, (phraseFreq.get(phrase) || 0) + 1);
+    for (let i = 0; i < words.length - 1; i++) {
+      const phrase = `${words[i]} ${words[i + 1]}`.trim();
+      if (!phrase) continue;
+      bigramFreq.set(phrase, (bigramFreq.get(phrase) || 0) + 1);
     }
 
-    let result = text;
-
-    // Replace phrases that appear 3+ times with shorter versions
-    for (const [phrase, count] of Array.from(phraseFreq)) {
-      if (count >= 3 && phrase.length > 20) {
-        // Create abbreviation from first letters
-        const abbr = phrase
-          .split(' ')
-          .slice(0, 2)
-          .map((w) => w[0])
-          .join('')
-          .toUpperCase();
-
-        // Replace all occurrences
-        result = result.replace(new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), abbr);
+    const candidate = Array.from(bigramFreq.entries()).reduce<{ phrase: string; count: number } | null>((best, curr) => {
+      if (curr[1] >= 3 && curr[0].length >= 8) {
+        if (!best || curr[1] > best.count) return { phrase: curr[0], count: curr[1] };
       }
-    }
+      return best;
+    }, null);
+
+    if (!candidate) return text;
+
+    const escaped = candidate.phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const abbr = candidate.phrase
+      .split(' ')
+      .map((w) => w[0])
+      .join('')
+      .toUpperCase();
+
+    let occurrence = 0;
+    const result = text.replace(new RegExp(escaped, 'g'), (match) => {
+      occurrence += 1;
+      return occurrence === 1 ? match : abbr;
+    });
 
     return result;
   }
@@ -263,23 +268,29 @@ export class ContextCompressor {
     if (text.length <= maxLength) {
       return text;
     }
+    const sentences = text.match(/[^.!?\n]+[.!?]?/g) || [text];
+    let truncated = '';
 
-    // Truncate to maxLength, but try to end at sentence boundary
-    let truncated = text.substring(0, maxLength);
-
-    // Find last sentence ending
-    const lastPeriod = truncated.lastIndexOf('.');
-    const lastNewline = truncated.lastIndexOf('\n');
-    const lastStop = Math.max(lastPeriod, lastNewline);
-
-    if (lastStop > maxLength * 0.8) {
-      // Found sentence boundary within 80% of max
-      truncated = truncated.substring(0, lastStop + 1);
+    for (const sentence of sentences) {
+      const trimmed = sentence.trim();
+      if (!trimmed) continue;
+      const candidate = truncated ? `${truncated} ${trimmed}` : trimmed;
+      if (candidate.length > maxLength) break;
+      truncated = candidate;
     }
 
-    // Add ellipsis if truncated
-    if (truncated !== text) {
-      truncated += '\n[... truncated due to length ...]';
+    if (!truncated) {
+      truncated = text.slice(0, maxLength).trimEnd();
+    }
+
+    if (truncated.length < text.length) {
+      const ellipsis = ' [...]';
+      const budget = Math.max(0, maxLength - ellipsis.length);
+      truncated = truncated.slice(0, budget).trimEnd() + ellipsis;
+    }
+
+    if (truncated.length > maxLength) {
+      truncated = truncated.slice(0, maxLength);
     }
 
     return truncated;
@@ -322,8 +333,22 @@ export class ContextCompressor {
 
     // Add last 20%
     result.push(...lines.slice(Math.max(firstCount + sampleCount, lineCount - lastCount)));
+    // Always include first and last lines and trim from the middle if needed
+    const firstLine = lines[0];
+    const lastLine = lines[lines.length - 1];
+    const deduped = Array.from(new Set(result));
 
-    return result.slice(0, maxLines).join('\n');
+    // Remove any existing first/last to avoid duplicates, then re-add in canonical positions
+    const middle = deduped.filter((line) => line !== firstLine && line !== lastLine);
+    const assembled = [firstLine, ...middle, lastLine];
+
+    if (assembled.length > maxLines) {
+      const budget = Math.max(0, maxLines - 2); // leave room for first/last
+      const trimmedMiddle = middle.slice(0, budget);
+      return [firstLine, ...trimmedMiddle, lastLine].join('\n');
+    }
+
+    return assembled.join('\n');
   }
 
   /**

@@ -1,23 +1,32 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { vi } from 'vitest';
 import { DealWorkspace } from '../components/pages/DealWorkspace';
-import { apiGetDeal, apiGetJob } from '../lib/apiClient';
+import { ScoreSourceProvider } from '../contexts/ScoreSourceContext';
+import { apiGetDeal, apiGetDealJobs, apiGetJob } from '../lib/apiClient';
 
 vi.mock('../contexts/UserRoleContext', () => ({
-  useUserRole: () => ({ isFounder: true, isInvestor: false }),
+  useUserRole: () => ({ isAnalyst: true, isInvestor: false }),
 }));
 
-vi.mock('../lib/apiClient', () => {
-  const apiGetDeal = vi.fn();
-  const apiPostAnalyze = vi.fn();
-  const apiGetJob = vi.fn();
+vi.mock('../lib/apiClient', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/apiClient')>();
   return {
-    isLiveBackend: () => true,
-    apiGetDeal,
-    apiPostAnalyze,
-    apiGetJob,
+    ...actual,
+    apiGetDeal: vi.fn(),
+    apiPostAnalyze: vi.fn(),
+    apiPostReextractDocuments: vi.fn(),
+    apiPostExtractVisuals: vi.fn(),
+    apiGetDealJobs: vi.fn(async () => []),
+    apiGetJob: vi.fn(),
+    isLiveBackend: vi.fn(() => true),
+    // Non-critical: keep these as no-ops unless a test asserts on them.
+    apiGetEvidence: vi.fn(async () => ({ evidence: [] } as any)),
+    apiGetDocuments: vi.fn(async () => ({ documents: [] } as any)),
+    apiGetDealReport: vi.fn(async () => null as any),
+    subscribeToEvents: vi.fn(() => () => undefined),
+    apiResolveEvidence: vi.fn(async () => ({ results: [] } as any)),
   };
 });
 
@@ -39,14 +48,20 @@ const baseDeal = {
 } as const;
 
 describe('DealWorkspace Job Center (live mode)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   const renderWorkspace = (overrides?: Partial<React.ComponentProps<typeof DealWorkspace>>) => {
     return render(
-      <DealWorkspace
-        darkMode={false}
-        dealId="deal-1"
-        dealData={baseDeal}
-        {...overrides}
-      />
+      <ScoreSourceProvider>
+        <DealWorkspace
+          darkMode={false}
+          dealId="deal-1"
+          dealData={baseDeal}
+          {...overrides}
+        />
+      </ScoreSourceProvider>
     );
   };
 
@@ -64,10 +79,20 @@ describe('DealWorkspace Job Center (live mode)', () => {
     });
 
     expect(screen.getByText(/Job Center/i)).toBeInTheDocument();
-    expect(screen.getByText(/Active job/i)).toBeInTheDocument();
+
+    const jobCenter = screen.getByTestId('job-center');
+    expect(jobCenter.className).toMatch(/\bw-full\b/);
+    expect(jobCenter.className).toMatch(/\bmax-w-full\b/);
+
+    // Avoid matching both "Active job" and "No active job".
+    expect(screen.getByText(/^Active job$/i)).toBeInTheDocument();
     expect(screen.getByText(/None yet/i)).toBeInTheDocument();
     expect(screen.getByText(/idle/i)).toBeInTheDocument();
-    expect(screen.getByText(/Waiting for worker update/i)).toBeInTheDocument();
+
+    const statusMsg = screen.getByTestId('job-center-status-message');
+    expect(statusMsg.textContent || '').toMatch(/Waiting for worker update/i);
+    expect(statusMsg.className).toMatch(/\boverflow-hidden\b/);
+    expect(statusMsg.className).toMatch(/\bwhitespace-pre-wrap\b/);
   });
 
   test('AI Assistant button is gated without DIO in live mode', async () => {
@@ -133,6 +158,172 @@ describe('DealWorkspace Job Center (live mode)', () => {
     await waitFor(() => expect(apiPostAnalyze).toHaveBeenCalledWith('deal-4'));
   });
 
+  test('Extract visuals button triggers apiPostExtractVisuals', async () => {
+    const { apiPostAnalyze, apiPostExtractVisuals, apiPostReextractDocuments } = await import('../lib/apiClient');
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v3', dioStatus: 'ready' } as any);
+    vi.mocked(apiPostReextractDocuments).mockResolvedValue({ job_id: 'job-rex-1', status: 'queued' } as any);
+    vi.mocked(apiPostExtractVisuals).mockResolvedValue({ job_id: 'job-viz-1', status: 'queued' } as any);
+    vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-an-1', status: 'queued' } as any);
+
+    // Make polling complete immediately for each step.
+    vi.mocked(apiGetJob).mockImplementation(async (jobId: string) => {
+      return {
+        job_id: jobId,
+        status: 'succeeded',
+        progress_pct: 100,
+        message: 'Done',
+        updated_at: new Date().toISOString(),
+      } as any;
+    });
+
+    renderWorkspace({ dealId: 'deal-5' });
+
+    const runFullProcessButton = screen.getByRole('button', { name: /Run full process/i });
+    await userEvent.click(runFullProcessButton);
+
+    await waitFor(() => expect(apiPostExtractVisuals).toHaveBeenCalled());
+    expect(vi.mocked(apiPostExtractVisuals).mock.calls[0]?.[0]).toBe('deal-5');
+    expect(vi.mocked(apiPostExtractVisuals).mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        source: 'job-center/run-full-process',
+        requestId: expect.any(String),
+        idempotencyKey: expect.any(String),
+      })
+    );
+  });
+
+  test('Run full process does not submit extract-visuals twice on rapid double-click', async () => {
+    const { apiPostAnalyze, apiPostExtractVisuals, apiPostReextractDocuments } = await import('../lib/apiClient');
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v3', dioStatus: 'ready' } as any);
+    vi.mocked(apiPostReextractDocuments).mockResolvedValue({ job_id: 'job-rex-1', status: 'queued' } as any);
+    vi.mocked(apiPostExtractVisuals).mockResolvedValue({ job_id: 'job-viz-1', status: 'queued' } as any);
+    vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-an-1', status: 'queued' } as any);
+
+    vi.mocked(apiGetJob).mockImplementation(async (jobId: string) => {
+      return {
+        job_id: jobId,
+        status: 'succeeded',
+        progress_pct: 100,
+        message: 'Done',
+        updated_at: new Date().toISOString(),
+      } as any;
+    });
+
+    renderWorkspace({ dealId: 'deal-55' });
+
+    const runFullProcessButton = screen.getByRole('button', { name: /Run full process/i });
+    await userEvent.dblClick(runFullProcessButton);
+
+    await waitFor(() => expect(apiPostReextractDocuments).toHaveBeenCalledTimes(1));
+    expect(apiPostExtractVisuals).toHaveBeenCalledTimes(1);
+  });
+
+  test('Extract visuals badge shows Complete when a later retry succeeded', async () => {
+    const { apiGetDealJobs } = await import('../lib/apiClient');
+
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v9', dioStatus: 'ready' } as any);
+
+    vi.mocked(apiGetDealJobs).mockImplementation(async () => {
+      return [
+        {
+          job_id: 'job-ingest-1',
+          type: 'ingest_documents',
+          queue: 'ingest_documents',
+          status: 'succeeded',
+          created_at: '2024-01-02T00:00:00.000Z',
+          updated_at: '2024-01-02T00:00:10.000Z',
+        },
+        {
+          job_id: 'job-extract-old-failed',
+          type: 'extract_visuals',
+          queue: 'extract_visuals',
+          status: 'failed',
+          created_at: '2024-01-02T00:01:00.000Z',
+          updated_at: '2024-01-02T00:01:10.000Z',
+        },
+        {
+          job_id: 'job-extract-new-ok',
+          type: 'extract_visuals',
+          queue: 'extract_visuals',
+          status: 'succeeded',
+          created_at: '2024-01-02T00:02:00.000Z',
+          updated_at: '2024-01-02T00:02:10.000Z',
+        },
+      ] as any;
+    });
+
+    renderWorkspace({ dealId: 'deal-extract-retry' });
+
+    await waitFor(() => {
+      const badge = screen.getByTestId('stage-badge-extract_visuals');
+      expect(badge.textContent || '').toMatch(/Extract visuals:\s*Complete/i);
+    });
+  });
+
+  test('Extract visuals badge shows Complete when latest is succeeded_with_warnings', async () => {
+    const { apiGetDealJobs } = await import('../lib/apiClient');
+
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v10', dioStatus: 'ready' } as any);
+
+    vi.mocked(apiGetDealJobs).mockResolvedValue([
+      {
+        job_id: 'job-ingest-2',
+        type: 'ingest_documents',
+        queue: 'ingest_documents',
+        status: 'succeeded',
+        created_at: '2024-01-03T00:00:00.000Z',
+        updated_at: '2024-01-03T00:00:10.000Z',
+      },
+      {
+        job_id: 'job-extract-warn',
+        type: 'extract_visuals',
+        queue: 'extract_visuals',
+        status: 'succeeded_with_warnings',
+        created_at: '2024-01-03T00:01:00.000Z',
+        updated_at: '2024-01-03T00:01:10.000Z',
+      },
+    ] as any);
+
+    renderWorkspace({ dealId: 'deal-extract-warn' });
+
+    await waitFor(() => {
+      const badge = screen.getByTestId('stage-badge-extract_visuals');
+      expect(badge.textContent || '').toMatch(/Extract visuals:\s*Complete/i);
+    });
+  });
+
+  test('Extract visuals badge shows Failed when latest is failed (post-ingest)', async () => {
+    const { apiGetDealJobs } = await import('../lib/apiClient');
+
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v11', dioStatus: 'ready' } as any);
+
+    vi.mocked(apiGetDealJobs).mockResolvedValue([
+      {
+        job_id: 'job-ingest-3',
+        type: 'ingest_documents',
+        queue: 'ingest_documents',
+        status: 'succeeded',
+        created_at: '2024-01-04T00:00:00.000Z',
+        updated_at: '2024-01-04T00:00:10.000Z',
+      },
+      {
+        job_id: 'job-extract-failed',
+        type: 'extract_visuals',
+        queue: 'extract_visuals',
+        status: 'failed',
+        created_at: '2024-01-04T00:02:00.000Z',
+        updated_at: '2024-01-04T00:02:10.000Z',
+      },
+    ] as any);
+
+    renderWorkspace({ dealId: 'deal-extract-failed' });
+
+    await waitFor(() => {
+      const badge = screen.getByTestId('stage-badge-extract_visuals');
+      expect(badge.textContent || '').toMatch(/Extract visuals:\s*Failed/i);
+    });
+  });
+
   test('Job Center shows progress bar when job reports progress', async () => {
     const { apiPostAnalyze } = await import('../lib/apiClient');
 
@@ -172,7 +363,294 @@ describe('DealWorkspace Job Center (live mode)', () => {
     await waitFor(() => {
       expect(apiGetJob).toHaveBeenCalled();
       expect(screen.getByText(/42% complete/i)).toBeInTheDocument();
-      expect(screen.getByText(/Crunching signals/i)).toBeInTheDocument();
+      expect(screen.getByText(/^Currently processing:/i)).toBeInTheDocument();
+      // Message can appear in multiple UI locations.
+      expect(screen.getAllByText(/^Crunching signals$/i).length).toBeGreaterThan(0);
+    });
+  });
+
+  test('stall detection prefers progress heartbeat timestamp over updated_at', async () => {
+    const { apiPostAnalyze } = await import('../lib/apiClient');
+
+    const nowMs = new Date('2024-01-04T00:02:00.000Z').getTime();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(nowMs);
+
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v4', dioStatus: 'running' } as any);
+    vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-hb-1', status: 'queued' } as any);
+
+    // updated_at is old enough to be considered stalled, but progress.at is recent.
+    vi.mocked(apiGetJob).mockResolvedValue({
+      job_id: 'job-hb-1',
+      type: 'analyze_deal',
+      status: 'running',
+      progress_pct: 50,
+      message: 'Still working',
+      updated_at: '2024-01-04T00:00:00.000Z',
+      status_detail: {
+        progress: {
+          at: '2024-01-04T00:01:30.000Z',
+          stage: 'running',
+          message: 'Heartbeat tick',
+          percent: 50,
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-hb' });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Job Center/i)).toBeInTheDocument();
+    });
+
+    const [headerRunButton] = screen.getAllByRole('button', { name: /Run Analysis/i });
+    await userEvent.click(headerRunButton);
+
+    await waitFor(() => {
+      expect(apiGetJob).toHaveBeenCalled();
+      expect(screen.queryByText(/Running \(stalled\)/i)).not.toBeInTheDocument();
+    });
+
+    nowSpy.mockRestore();
+  });
+
+  test('does not pin to stale failed analyze when newer succeeded exists', async () => {
+    const { apiGetDealJobs, apiPostAnalyze, apiPostExtractVisuals, apiPostReextractDocuments } = await import('../lib/apiClient');
+
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2024-01-02T00:00:35.000Z'));
+
+    vi.mocked(apiPostReextractDocuments).mockResolvedValue({ job_id: 'job-111', status: 'queued' } as any);
+    vi.mocked(apiPostExtractVisuals).mockResolvedValue({ job_id: 'job-222', status: 'queued' } as any);
+
+    // Full process should NOT enqueue analyze_deal directly.
+    vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-should-not-be-called', status: 'queued' } as any);
+
+    let allowFailedAnalyze = false;
+    let allowSucceededAnalyze = false;
+    vi.mocked(apiGetDealJobs).mockImplementation(async () => {
+      // Initially: analyze job hasn't been enqueued yet.
+      if (!allowFailedAnalyze) return [] as any;
+
+      if (!allowSucceededAnalyze) {
+        return [
+          {
+            job_id: 'job-333',
+            type: 'analyze_deal',
+            status: 'failed',
+            message: 'No extracted documents available for analysis',
+            created_at: '2024-01-02T00:01:00.000Z',
+            updated_at: '2024-01-02T00:01:10.000Z',
+          },
+        ] as any;
+      }
+      return [
+        {
+          job_id: 'job-333',
+          type: 'analyze_deal',
+          status: 'failed',
+          message: 'No extracted documents available for analysis',
+          created_at: '2024-01-02T00:01:00.000Z',
+          updated_at: '2024-01-02T00:01:10.000Z',
+        },
+        {
+          job_id: 'job-new-ok',
+          type: 'analyze_deal',
+          status: 'succeeded',
+          message: 'Completed newer analysis',
+          progress_pct: 100,
+          created_at: '2024-01-02T00:01:20.000Z',
+          updated_at: '2024-01-02T00:01:25.000Z',
+        },
+      ] as any;
+    });
+
+    vi.mocked(apiGetJob).mockImplementation(async (jobId: string) => {
+      let extractPoll = (vi.mocked(apiGetJob) as any).__extractPollCount ?? 0;
+      (vi.mocked(apiGetJob) as any).__extractPollCount = extractPoll;
+
+      if (jobId === 'job-111') {
+        return {
+          job_id: 'job-111',
+          type: 'reextract_documents',
+          status: 'succeeded',
+          progress_pct: 100,
+          message: 'ok',
+          updated_at: '2024-01-02T00:00:00.000Z',
+          created_at: '2024-01-02T00:00:00.000Z',
+        };
+      }
+      if (jobId === 'job-222') {
+        extractPoll = ((vi.mocked(apiGetJob) as any).__extractPollCount ?? 0) + 1;
+        (vi.mocked(apiGetJob) as any).__extractPollCount = extractPoll;
+        if (extractPoll === 1) {
+          return {
+            job_id: 'job-222',
+            type: 'extract_visuals',
+            status: 'running',
+            progress_pct: 10,
+            message: 'Working',
+            updated_at: '2024-01-02T00:00:00.000Z',
+            created_at: '2024-01-02T00:00:00.000Z',
+          };
+        }
+        return {
+          job_id: 'job-222',
+          type: 'extract_visuals',
+          status: 'succeeded',
+          progress_pct: 100,
+          message: 'ok',
+          created_at: '2024-01-02T00:00:00.000Z',
+          finished_at: '2024-01-02T00:00:30.000Z',
+          updated_at: '2024-01-02T00:00:30.000Z',
+        };
+      }
+      if (jobId === 'job-333') {
+        return {
+          job_id: 'job-333',
+          type: 'analyze_deal',
+          status: 'failed',
+          progress_pct: 100,
+          message: 'No extracted documents available for analysis',
+          updated_at: '2024-01-02T00:01:10.000Z',
+          created_at: '2024-01-02T00:01:00.000Z',
+        };
+      }
+      if (jobId === 'job-new-ok') {
+        return {
+          job_id: 'job-new-ok',
+          type: 'analyze_deal',
+          status: 'succeeded',
+          progress_pct: 100,
+          message: 'Completed newer analysis',
+          updated_at: '2024-01-02T00:02:20.000Z',
+          created_at: '2024-01-02T00:02:00.000Z',
+        };
+      }
+      return {
+        job_id: jobId,
+        type: 'analyze_deal',
+        status: 'succeeded',
+        progress_pct: 100,
+        message: 'ok',
+        updated_at: '2024-01-04T00:00:00.000Z',
+        created_at: '2024-01-04T00:00:00.000Z',
+      };
+    });
+
+    renderWorkspace({ dealId: 'deal-supersede', dealData: null as any });
+    const user = userEvent.setup();
+
+    // This mock is used by other tests in this file; clear history so we only assert on this scenario.
+    vi.mocked(apiPostAnalyze).mockClear();
+
+    await user.click(screen.getByRole('button', { name: /run full process/i }));
+
+    // Analyze should not be enqueued directly by the UI.
+    expect(apiPostAnalyze).not.toHaveBeenCalled();
+
+    // While extraction is still running/finalizing and no analyze job exists yet, the Analyze step should have no job id.
+    const analyzeStep = await screen.findByTestId('full-process-step-analyze_deal');
+    await waitFor(() => {
+      expect(within(analyzeStep).getByText(/job\s+—/i)).toBeInTheDocument();
+    });
+
+    // Now simulate the backend enqueueing analyze jobs tied to the extract run.
+    allowFailedAnalyze = true;
+
+    // The first observed analyze job fails quickly, but during the run grace window we should *not* flash Failed.
+    await waitFor(
+      () => {
+        const step = screen.getByTestId('full-process-step-analyze_deal');
+        expect(within(step).queryByText(/failed/i)).not.toBeInTheDocument();
+        expect(within(step).getAllByText(/Preparing analysis/i).length).toBeGreaterThan(0);
+      },
+      { timeout: 7000 }
+    );
+
+    // Now allow the newer succeeded analyze to appear.
+    allowSucceededAnalyze = true;
+
+    await waitFor(
+      () => {
+        expect(screen.queryByText(/Analyze deal failed/i)).not.toBeInTheDocument();
+      },
+      { timeout: 7000 }
+    );
+
+    await waitFor(
+      () => {
+        expect(screen.getByText(/Full process completed/i)).toBeInTheDocument();
+        expect(screen.getByText(/job job-new-ok/i)).toBeInTheDocument();
+        expect(screen.getAllByText(/Completed newer analysis/i).length).toBeGreaterThan(0);
+      },
+      { timeout: 7000 }
+    );
+
+    nowSpy.mockRestore();
+  }, 15000);
+
+  test('renders Job Center even when backend mode is not live', async () => {
+    const { isLiveBackend } = await import('../lib/apiClient');
+    vi.mocked(isLiveBackend).mockReturnValue(false);
+
+    vi.mocked(apiGetDeal).mockResolvedValue({} as any);
+    renderWorkspace({ dealId: 'deal-8' });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Job Center/i)).toBeInTheDocument();
+    });
+  });
+
+  test('Recent jobs aggregates mixed chunk outcomes as Done (warn), not Failed', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v5', dioStatus: 'ready', lastAnalyzedAt: null } as any);
+
+    const now = new Date().toISOString();
+    vi.mocked(apiGetDealJobs).mockResolvedValue([
+      {
+        job_id: 'parent-1',
+        queue: 'extract_visuals',
+        type: 'extract_visuals',
+        status: 'failed',
+        progress_pct: 100,
+        created_at: now,
+        updated_at: now,
+        deal_id: 'deal-8',
+      },
+      {
+        job_id: 'child-1',
+        queue: 'extract_visuals',
+        type: 'extract_visuals',
+        status: 'failed',
+        progress_pct: 100,
+        parent_job_id: 'parent-1',
+        created_at: now,
+        updated_at: now,
+        deal_id: 'deal-8',
+      },
+      {
+        job_id: 'child-2',
+        queue: 'extract_visuals',
+        type: 'extract_visuals',
+        status: 'succeeded',
+        progress_pct: 100,
+        parent_job_id: 'parent-1',
+        created_at: now,
+        updated_at: now,
+        deal_id: 'deal-8',
+      },
+    ] as any);
+
+    renderWorkspace({ dealId: 'deal-8' });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Job Center/i)).toBeInTheDocument();
+    });
+
+    // Expand accordion
+    const recentJobs = screen.getByText(/Recent jobs/i);
+    await userEvent.click(recentJobs);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Done \(warn\)/i)).toBeInTheDocument();
     });
   });
 });

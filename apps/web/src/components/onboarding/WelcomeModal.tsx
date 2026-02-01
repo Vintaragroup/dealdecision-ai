@@ -11,7 +11,7 @@ interface WelcomeModalProps {
 
 export function WelcomeModal({ darkMode, onGetStarted, onSkip }: WelcomeModalProps) {
   const { settings } = useAppSettings();
-  const { isFounder } = useUserRole();
+  const { isAnalyst } = useUserRole();
   
   const investorFeatures = [
     {
@@ -59,7 +59,7 @@ export function WelcomeModal({ darkMode, onGetStarted, onSkip }: WelcomeModalPro
     }
   ];
 
-  const features = isFounder ? founderFeatures : investorFeatures;
+  const features = investorFeatures;
 
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto bg-black/60 backdrop-blur-sm">
@@ -86,10 +86,7 @@ export function WelcomeModal({ darkMode, onGetStarted, onSkip }: WelcomeModalPro
                 Welcome to DealDecision AI
               </h1>
               <p className={`text-lg ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                {isFounder 
-                  ? 'Your AI-powered fundraising companion'
-                  : 'Your AI-powered investment analysis platform'
-                }
+                Your AI-powered investment analysis platform
               </p>
             </div>
 

@@ -20,6 +20,65 @@ export interface Deal {
 	owner?: string;
 	lastUpdated?: string;
 	evidence_ids?: string[];
+
+	// Additive: Analysis Foundation (Fundability) — stable DTO surface for UI/API.
+	fundability_v1?: FundabilityV1DTO;
+
+	// Latest DIO metadata (derived from versioned DIO history)
+	dioVersionId?: string;
+	// Current DIO status/recommendation (e.g. GO/NO-GO/CONDITIONAL)
+	dioStatus?: string;
+	lastAnalyzedAt?: string;
+	// Number of analysis runs (DIO versions) for this deal
+	dioRunCount?: number;
+	// Latest DIO analysis_version
+	dioAnalysisVersion?: number;
+}
+
+// ============================================================================
+// Analysis Foundation: Fundability (V1)
+// ============================================================================
+
+export type FundabilityCompanyPhaseV1 =
+	| 'IDEA'
+	| 'PRE_SEED'
+	| 'SEED'
+	| 'SEED_PLUS'
+	| 'SERIES_A'
+	| 'SERIES_B';
+
+export type FundabilityGateOutcomeV1 = 'PASS' | 'CONDITIONAL' | 'FAIL';
+
+export interface FundabilityPhaseInferenceV1DTO {
+	company_phase: FundabilityCompanyPhaseV1;
+	confidence: number;
+	supporting_evidence?: Array<{ signal: string; source?: string; note?: string }>;
+	missing_evidence?: string[];
+	rationale?: string[];
+}
+
+export interface FundabilityAssessmentV1DTO {
+	outcome: FundabilityGateOutcomeV1;
+	reasons?: string[];
+	legacy_overall_score_0_100?: number | null;
+	fundability_score_0_100?: number | null;
+	caps?: { max_fundability_score_0_100?: number };
+	fundable_at_phase_if_downgraded?: FundabilityCompanyPhaseV1;
+}
+
+export interface FundabilityDecisionV1DTO {
+	outcome: FundabilityGateOutcomeV1;
+	should_block_investment: boolean;
+	missing_required_signals?: string[];
+	next_requests?: string[];
+}
+
+export interface FundabilityV1DTO {
+	// Version string from the authoritative analysis-foundation spec_versions.
+	spec_version?: string;
+	phase_inference_v1?: FundabilityPhaseInferenceV1DTO;
+	fundability_assessment_v1?: FundabilityAssessmentV1DTO;
+	fundability_decision_v1?: FundabilityDecisionV1DTO;
 }
 
 export interface DealListItem extends Deal {
@@ -58,16 +117,60 @@ export interface Document {
 
 export type JobType =
 	| 'ingest_documents'
+	| 'render_document_pages'
+	| 'extract_visuals'
+	| 'deep_scan_visuals'
 	| 'fetch_evidence'
 	| 'analyze_deal'
+	| 'verify_documents'
+	| 'remediate_extraction'
+	| 'reextract_documents'
 	| 'generate_report'
 	| 'sync_crm'
 	| 'classify_document';
+
+export type JobProgressStage =
+	| 'queued'
+	| 'fetch_original_bytes'
+	| 'extract_text'
+	| 'persist_document'
+	| 'render_pages'
+	| 'collect_image_uris'
+	| 'extract_visual_assets'
+	| 'deep_scan_visuals'
+	| 'ocr'
+	| 'classify_visuals'
+	| 'persist_visual_assets'
+	| 'persist_visual_extractions'
+	| 'finalize'
+	| 'blocked'
+	| 'error';
+
+export interface JobProgressEventV1 {
+	job_id: string;
+	deal_id?: string;
+	document_id?: string;
+	stage: JobProgressStage;
+	percent?: number;
+	completed?: number;
+	total?: number;
+	message?: string;
+	reason?: string;
+	meta?: Record<string, unknown>;
+	at?: string;
+	status?: JobStatus;
+	type?: JobType;
+}
+
+export interface JobStatusDetail {
+	progress?: JobProgressEventV1;
+}
 
 export type JobStatus =
 	| 'queued'
 	| 'running'
 	| 'succeeded'
+	| 'succeeded_with_warnings'
 	| 'failed'
 	| 'cancelled'
 	| 'retrying';
@@ -80,6 +183,8 @@ export interface Job {
 	document_id?: string;
 	created_at?: string;
 	updated_at?: string;
+	started_at?: string | null;
+	status_detail?: JobStatusDetail | null;
 	evidence_ids?: string[];
 }
 
@@ -145,6 +250,73 @@ export interface ReportDTO {
 }
 
 export type ChatRole = 'user' | 'assistant' | 'system';
+
+// ============================================================================
+// Scoring Input Contract (V0)
+// ============================================================================
+
+// V0 goal: provide a stable, auditable input surface for scoring regardless of
+// document type (PDF/DOCX/PPTX/images/etc). Higher-level analyzers can derive
+// domain-specific signals from these items, while retaining citations.
+
+export type ScoringSourceKindV0 = 'structured_native' | 'ocr' | 'hybrid' | 'unknown';
+
+export type ScoringItemKindV0 =
+	| 'deal'
+	| 'document'
+	| 'page'
+	| 'slide'
+	| 'table'
+	| 'chart'
+	| 'text_block'
+	| 'image'
+	| 'unknown';
+
+export interface ScoringEvidenceLocatorV0 {
+	document_id: string;
+	page_index?: number | null;
+	page_label?: string;
+	visual_asset_id?: string;
+	bbox?: unknown;
+	image_uri?: string | null;
+}
+
+export interface ScoringSegmentProvenanceV0 {
+	effective?: string;
+	computed?: string;
+	persisted?: string;
+	is_ocr_hint?: boolean;
+}
+
+export interface ScoringContentItemV0 {
+	// Stable id (prefer lineage node_id if available)
+	id: string;
+	kind: ScoringItemKindV0;
+	source: ScoringSourceKindV0;
+
+	document_id?: string;
+	page_index?: number | null;
+	title?: string;
+
+	// Canonical extracted representation for scoring (best-effort).
+	text?: string;
+	structured_json?: unknown;
+	confidence?: number | null;
+
+	segment?: ScoringSegmentProvenanceV0;
+	evidence_snippets?: string[];
+	locators: ScoringEvidenceLocatorV0[];
+
+	// Optional metadata passthrough (safe for forward evolution).
+	meta?: Record<string, unknown>;
+}
+
+export interface DealScoringInputV0 {
+	deal_id: string;
+	generated_at: string;
+	items: ScoringContentItemV0[];
+	warnings?: string[];
+}
 
 export interface ChatMessage {
 	id: string;

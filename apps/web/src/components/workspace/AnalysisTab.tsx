@@ -29,10 +29,14 @@ import { Button } from '../ui/button';
 import { DealFormData } from '../NewDealModal';
 import { ProfessionalReportGenerator } from '../reports/ProfessionalReportGenerator';
 import { useUserRole } from '../../contexts/UserRoleContext';
+import { ToastContainer } from '../ui/Toast';
+import { useLocalToasts } from '../../lib/useLocalToasts';
 
 interface AnalysisTabProps {
   darkMode: boolean;
   dealData: DealFormData;
+	// Optional hook to trigger the real backend analysis flow (DealWorkspace: apiPostAnalyze + jobs)
+	onRunAnalysis?: () => Promise<void> | void;
 }
 
 interface CategoryScore {
@@ -58,7 +62,8 @@ interface DealAnalysis {
   achievements: { id: string; title: string; unlocked: boolean }[];
 }
 
-export function AnalysisTab({ darkMode, dealData }: AnalysisTabProps) {
+export function AnalysisTab({ darkMode, dealData, onRunAnalysis }: AnalysisTabProps) {
+  const { toasts, addToast, removeToast } = useLocalToasts();
   const [analysis, setAnalysis] = useState<DealAnalysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -81,6 +86,21 @@ export function AnalysisTab({ darkMode, dealData }: AnalysisTabProps) {
     const result = analyzeDeal(dealData);
     setAnalysis(result);
     setAnalyzing(false);
+  };
+
+  const handleReAnalyze = async () => {
+    // Always recompute local UI analysis for immediate feedback, but if a backend analysis hook
+    // is provided (DealWorkspace), also trigger that existing flow.
+    setAnalyzing(true);
+    try {
+      if (onRunAnalysis) {
+        await onRunAnalysis();
+      }
+      const result = analyzeDeal(dealData);
+      setAnalysis(result);
+    } finally {
+      setAnalyzing(false);
+    }
   };
 
   const analyzeDeal = (data: DealFormData): DealAnalysis => {
@@ -527,7 +547,7 @@ export function AnalysisTab({ darkMode, dealData }: AnalysisTabProps) {
               variant="outline"
               size="sm"
               darkMode={darkMode}
-              onClick={runAnalysis}
+              onClick={handleReAnalyze}
               icon={<RefreshCw className="w-4 h-4" />}
             >
               Re-analyze
@@ -1023,7 +1043,11 @@ export function AnalysisTab({ darkMode, dealData }: AnalysisTabProps) {
                 setRunningDeepAnalysis(true);
                 setTimeout(() => {
                   setRunningDeepAnalysis(false);
-                  alert(`Deep analysis complete from ${selectedPerspective} perspective!\n\nThis would show detailed insights, risks, and recommendations from that specific professional viewpoint.`);
+                  addToast(
+                    'info',
+                    'Deep analysis complete',
+                    `Completed from ${selectedPerspective} perspective. (UI-only simulation)`
+                  );
                 }, 2500);
               }}
             >
@@ -1033,8 +1057,10 @@ export function AnalysisTab({ darkMode, dealData }: AnalysisTabProps) {
         </div>
       )}
 
-      {/* CTA Section - For Founders */}
-      {userRole.isFounder && (
+      <ToastContainer toasts={toasts} onClose={removeToast} darkMode={darkMode} />
+
+      {/* CTA Section - For Analysts */}
+      {userRole.isAnalyst && (
         <div className={`p-6 rounded-2xl border bg-gradient-to-r ${
           darkMode
             ? 'from-[#6366f1]/10 to-[#8b5cf6]/10 border-[#6366f1]/30'
@@ -1043,10 +1069,10 @@ export function AnalysisTab({ darkMode, dealData }: AnalysisTabProps) {
           <div className="flex items-center justify-between">
             <div>
               <h3 className={`text-lg mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                Ready to improve your pitch?
+                Ready to move toward a decision?
               </h3>
               <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                Address the recommendations above to increase your pitch readiness score
+                Use the recommendations above to increase confidence and tighten evidence coverage
               </p>
             </div>
             <Button
@@ -1054,7 +1080,7 @@ export function AnalysisTab({ darkMode, dealData }: AnalysisTabProps) {
               darkMode={darkMode}
               icon={<ChevronRight className="w-4 h-4" />}
             >
-              Start Improving
+              Next Steps
             </Button>
           </div>
         </div>

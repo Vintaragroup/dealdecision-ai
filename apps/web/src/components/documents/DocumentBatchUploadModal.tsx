@@ -1,7 +1,8 @@
 import React, { useState, useRef } from 'react';
 import { AlertCircle, CheckCircle, FileText, Upload, X, ChevronDown, ChevronUp } from 'lucide-react';
-import type { DocumentGroup, BatchAnalysisResult, DocumentFile } from '@/lib/documentGrouping';
-import { analyzeFilenamesForGrouping, analyzeBatchDocuments } from '@/lib/documentGrouping';
+import { apiAnalyzeDocumentsBatch, apiBulkAssignDocuments, apiUploadDocument } from '../../lib/apiClient';
+import { ToastContainer } from '../ui/Toast';
+import { useLocalToasts } from '../../lib/useLocalToasts';
 
 interface DocumentBatchUploadProps {
   onClose: () => void;
@@ -9,6 +10,11 @@ interface DocumentBatchUploadProps {
 }
 
 export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUploadProps) {
+  const ACCEPTED_EXTENSIONS = ['.pdf', '.xlsx', '.xls', '.pptx', '.ppt', '.docx', '.doc', '.png', '.jpg', '.jpeg'];
+  const MAX_FILE_SIZE_MB = 25;
+
+  const { toasts, addToast, removeToast } = useLocalToasts();
+
   const [step, setStep] = useState<'select' | 'review' | 'confirm'>('select');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [analysisResult, setAnalysisResult] = useState<any>(null);
@@ -20,8 +26,23 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
       const files = Array.from(e.target.files);
-      setSelectedFiles(files);
-      analyzeFiles(files);
+      const invalid: string[] = [];
+      const filtered = files.filter((file) => {
+        const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
+        const sizeMb = file.size / (1024 * 1024);
+        const ok = ACCEPTED_EXTENSIONS.includes(ext) && sizeMb <= MAX_FILE_SIZE_MB;
+        if (!ok) invalid.push(`${file.name} (${ext || 'unknown'}, ${Math.round(sizeMb)}MB)`);
+        return ok;
+      });
+      if (invalid.length) {
+        addToast(
+          'warning',
+          'Some files skipped',
+          `Skipped ${invalid.length} file(s) due to type/size limits (max ${MAX_FILE_SIZE_MB}MB). First few: ${invalid.slice(0, 5).join('; ')}`
+        );
+      }
+      setSelectedFiles(filtered);
+      if (filtered.length) analyzeFiles(filtered);
     }
   };
 
@@ -30,16 +51,7 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
     try {
       const filenames = files.map((f) => f.name);
 
-      // Call backend to analyze
-      const response = await fetch('/api/v1/documents/analyze-batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filenames }),
-      });
-
-      if (!response.ok) throw new Error('Failed to analyze documents');
-
-      const data = await response.json();
+      const data = await apiAnalyzeDocumentsBatch(filenames);
       setAnalysisResult(data.analysis);
 
       // Initialize user confirmations
@@ -51,7 +63,7 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
 
       setStep('review');
     } catch (error) {
-      alert(`Error analyzing files: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      addToast('error', 'Analyze failed', error instanceof Error ? error.message : 'Unknown error');
     } finally {
       setLoading(false);
     }
@@ -75,71 +87,105 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
     setLoading(true);
     try {
       // Build assignments based on user confirmations
+      // NOTE: We only send one "newDeals" entry per company to avoid duplicate deal creation.
+      // We still upload all files in the group after we resolve the target deal id.
       const assignments = analysisResult.groups
         .filter((group: any) => userConfirmation[group.company] === 'confirm' && group.dealId)
-        .map((group: any) => ({
-          filename: group.files[0],
-          dealId: group.dealId,
-          type: group.documentType,
-        }));
+        .flatMap((group: any) =>
+          (group.files || []).map((filename: string) => ({
+            filename,
+            dealId: group.dealId,
+            type: group.documentType,
+          }))
+        );
 
       const newDeals = analysisResult.groups
         .filter((group: any) => userConfirmation[group.company] === 'newdeal' && !group.dealId)
         .map((group: any) => ({
-          filename: group.files[0],
+          // Keep a representative filename so the backend can echo back a row for this group
+          filename: (group.files || [])[0],
           dealName: group.company,
           type: group.documentType,
-        }));
+        }))
+        .filter((d: any) => !!d.filename);
 
-      // Send to backend
-      const response = await fetch('/api/v1/documents/bulk-assign', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assignments, newDeals }),
-      });
+      const result = await apiBulkAssignDocuments({ assignments, newDeals });
 
-      if (!response.ok) throw new Error('Failed to assign documents');
+      // Resolve deal ids for any newly created/reused deals from the bulk-assign response.
+      // The backend returns { assignments: [{ filename, dealId, dealName, status, ... }, ...] }
+      const createdDealIdsByName = new Map<string, string>();
+      const responseAssignments: any[] = Array.isArray(result?.assignments) ? result.assignments : [];
+      for (const row of responseAssignments) {
+        if (row?.dealName && row?.dealId) {
+          createdDealIdsByName.set(String(row.dealName), String(row.dealId));
+        }
+      }
 
-      const result = await response.json();
+      // Index selected files by filename for quick lookup
+      const fileByName = new Map<string, File>();
+      for (const f of selectedFiles) fileByName.set(f.name, f);
 
-      // Now upload the actual files
-      for (const file of selectedFiles) {
-        const assignment = assignments.find((a: any) => a.filename === file.name);
-        const newDeal = newDeals.find((d: any) => d.filename === file.name);
+      const failures: string[] = [];
+      let successCount = 0;
 
-        if (assignment) {
-          await uploadDocumentToDeal(file, assignment.dealId);
-        } else if (newDeal) {
-          // Find the newly created deal by name
-          const deals = await fetch('/api/v1/deals').then((r) => r.json());
-          const deal = deals.find((d: any) => d.name === newDeal.dealName);
-          if (deal) {
-            await uploadDocumentToDeal(file, deal.id);
+      // Upload every file in each group to its resolved deal
+      for (const group of analysisResult.groups) {
+        const action = userConfirmation[group.company];
+        if (action === 'skip') continue;
+
+        const targetDealId = action === 'confirm'
+          ? group.dealId
+          : createdDealIdsByName.get(group.company);
+
+        if (!targetDealId) {
+          failures.push(`Group ${group.company}: no deal id resolved`);
+          continue;
+        }
+
+        for (const filename of group.files || []) {
+          const file = fileByName.get(filename);
+          if (!file) continue;
+          try {
+            const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
+            const sizeMb = file.size / (1024 * 1024);
+            if (!ACCEPTED_EXTENSIONS.includes(ext) || sizeMb > MAX_FILE_SIZE_MB) {
+              failures.push(`${filename}: type/size rejected`);
+              continue;
+            }
+            await uploadDocumentToDeal(file, targetDealId, group.documentType);
+            successCount += 1;
+          } catch (err) {
+            failures.push(`${filename}: ${err instanceof Error ? err.message : 'upload failed'}`);
           }
         }
       }
 
+      if (failures.length) {
+        addToast(
+          'error',
+          'Upload incomplete',
+          `Uploaded ${successCount} file(s). Failures: ${failures.length}. First few: ${failures.slice(0, 5).join('; ')}`
+        );
+        return;
+      }
+
+      if (successCount === 0) {
+        addToast('warning', 'Nothing uploaded', 'No files were uploaded.');
+        return;
+      }
+
+      addToast('success', 'Upload complete', `Uploaded ${successCount} file(s).`);
       onSuccess?.(result);
       onClose();
     } catch (error) {
-      alert(`Error uploading documents: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      addToast('error', 'Upload failed', error instanceof Error ? error.message : 'Unknown error');
     } finally {
       setLoading(false);
     }
   };
 
-  const uploadDocumentToDeal = async (file: File, dealId: string) => {
-    const formData = new FormData();
-    formData.append('file', file);
-
-    const response = await fetch(`/api/v1/deals/${dealId}/documents`, {
-      method: 'POST',
-      body: formData,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Failed to upload ${file.name}`);
-    }
+  const uploadDocumentToDeal = async (file: File, dealId: string, documentType?: string) => {
+    await apiUploadDocument(dealId, file, documentType || 'other', file.name);
   };
 
   const confirmedCount = analysisResult?.groups.filter((g: any) => userConfirmation[g.company] === 'confirm').length || 0;
@@ -380,6 +426,8 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
           )}
         </div>
       </div>
+
+      <ToastContainer toasts={toasts} onClose={removeToast} darkMode={true} />
     </div>
   );
 }

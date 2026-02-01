@@ -1,12 +1,253 @@
 import type { FastifyInstance } from "fastify";
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { z } from "zod";
 import type { Document } from "@dealdecision/contracts";
-import { sanitizeText } from "@dealdecision/core";
+import { getDocumentCapabilities, sanitizeText } from "@dealdecision/core";
+import { resolveVisualAssetImageUriForApi } from "../lib/visual-asset-image-uri";
 import { getPool } from "../lib/db";
+import { inferDocumentTypeFromName } from "../lib/document-type-inference";
+import { deleteFromR2, getPublicUrlForKey, getR2Config, getSignedDownloadUrl, objectExistsInR2, uploadToR2 } from "../lib/r2";
 import { insertEvidence } from "../services/evidence";
 import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
+import { normalizeDealName } from "../lib/normalize-deal-name";
+import { reconcileIngest } from "../lib/ingest-reconcile";
+
+function parseBoolQ(value: unknown, defaultValue = false): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value !== 0;
+  if (typeof value !== "string") return defaultValue;
+
+  const v = value.trim().toLowerCase();
+  if (!v) return defaultValue;
+  if (v === "1" || v === "true" || v === "on" || v === "yes") return true;
+  if (v === "0" || v === "false" || v === "off" || v === "no") return false;
+  return defaultValue;
+}
+
+async function hasTable(pool: ReturnType<typeof getPool>, table: string) {
+  try {
+    const { rows } = await pool.query<{ oid: string | null }>(
+      "SELECT to_regclass($1) as oid",
+      [table]
+    );
+    return rows[0]?.oid !== null;
+  } catch {
+    return false;
+  }
+}
+
+let hasDocumentsMimeTypeColumn: boolean | null = null;
+let hasDocumentsExtractionMetadataColumn: boolean | null = null;
+let hasDocumentsSizeBytesColumn: boolean | null = null;
+let hasDocumentsStorageProviderColumn: boolean | null = null;
+let hasDocumentsStorageBucketColumn: boolean | null = null;
+let hasDocumentsStorageKeyColumn: boolean | null = null;
+
+async function hasColumn(pool: ReturnType<typeof getPool>, table: string, column: string): Promise<boolean> {
+  try {
+    const { rows } = await pool.query<{ ok: number }>(
+      `SELECT 1 AS ok
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1
+          AND column_name = $2
+        LIMIT 1`,
+      [table, column]
+    );
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function inferDocKindFromUpload(args: { fileName?: string | null; mimeType?: string | null; title?: string | null }): string {
+  const nameRaw = `${args.title ?? ""} ${args.fileName ?? ""}`.trim().toLowerCase();
+  const mime = String(args.mimeType ?? "").toLowerCase();
+  if (mime.includes("spreadsheet") || mime.includes("excel") || mime.includes("xlsx") || nameRaw.includes(".xlsx") || nameRaw.endsWith(".xlsx")) return "excel";
+  if (mime.includes("pdf") || nameRaw.includes(".pdf") || nameRaw.endsWith(".pdf")) return "pdf";
+  if (mime.includes("powerpoint") || mime.includes("ppt") || nameRaw.includes(".ppt") || nameRaw.includes(".pptx")) return "powerpoint";
+  if (mime.includes("word") || mime.includes("doc") || nameRaw.includes(".doc") || nameRaw.includes(".docx")) return "word";
+  if (mime.startsWith("image/") || nameRaw.match(/\.(png|jpg|jpeg|gif|webp)$/)) return "image";
+  return "unknown";
+}
+
+async function persistUploadMetadata(pool: ReturnType<typeof getPool>, args: {
+  documentId: string;
+  fileName: string;
+  mimeType: string | null;
+  title: string;
+  sizeBytes?: number | null;
+  sha256?: string | null;
+  upload?: {
+    provider: string;
+    bucket: string;
+    key: string;
+    endpoint?: string;
+    url?: string | null;
+    signed_url?: string | null;
+    signed_url_ttl_seconds?: number | null;
+    etag?: string | null;
+  };
+  warnings: string[];
+}) {
+  const docKind = inferDocKindFromUpload({ fileName: args.fileName, mimeType: args.mimeType, title: args.title });
+
+  if (hasDocumentsMimeTypeColumn === null) {
+    hasDocumentsMimeTypeColumn = await hasColumn(pool, "documents", "mime_type");
+  }
+  if (hasDocumentsSizeBytesColumn === null) {
+    hasDocumentsSizeBytesColumn = await hasColumn(pool, "documents", "size_bytes");
+  }
+  if (hasDocumentsStorageProviderColumn === null) {
+    hasDocumentsStorageProviderColumn = await hasColumn(pool, "documents", "storage_provider");
+  }
+  if (hasDocumentsStorageBucketColumn === null) {
+    hasDocumentsStorageBucketColumn = await hasColumn(pool, "documents", "storage_bucket");
+  }
+  if (hasDocumentsStorageKeyColumn === null) {
+    hasDocumentsStorageKeyColumn = await hasColumn(pool, "documents", "storage_key");
+  }
+  if (hasDocumentsExtractionMetadataColumn === null) {
+    hasDocumentsExtractionMetadataColumn = await hasColumn(pool, "documents", "extraction_metadata");
+  }
+
+  if (hasDocumentsMimeTypeColumn && args.mimeType) {
+    try {
+      await pool.query(
+        `UPDATE documents
+            SET mime_type = $2,
+                updated_at = now()
+          WHERE id = $1
+            AND (mime_type IS NULL OR mime_type = '')`,
+        [args.documentId, args.mimeType]
+      );
+    } catch (e: any) {
+      args.warnings.push(`failed to persist mime_type for uploaded document: ${e?.message || "unknown error"}`);
+    }
+  }
+
+  if (hasDocumentsSizeBytesColumn && typeof args.sizeBytes === "number" && Number.isFinite(args.sizeBytes) && args.sizeBytes >= 0) {
+    try {
+      await pool.query(
+        `UPDATE documents
+            SET size_bytes = $2,
+                updated_at = now()
+          WHERE id = $1
+            AND (size_bytes IS NULL OR size_bytes = 0)`,
+        [args.documentId, args.sizeBytes]
+      );
+    } catch (e: any) {
+      args.warnings.push(`failed to persist size_bytes for uploaded document: ${e?.message || "unknown error"}`);
+    }
+  }
+
+  if (args.upload && hasDocumentsStorageProviderColumn) {
+    try {
+      await pool.query(
+        `UPDATE documents
+            SET storage_provider = $2,
+                updated_at = now()
+          WHERE id = $1
+            AND (storage_provider IS NULL OR storage_provider = '')`,
+        [args.documentId, args.upload.provider]
+      );
+    } catch (e: any) {
+      args.warnings.push(`failed to persist storage_provider for uploaded document: ${e?.message || "unknown error"}`);
+    }
+  }
+
+  if (args.upload && hasDocumentsStorageBucketColumn) {
+    try {
+      await pool.query(
+        `UPDATE documents
+            SET storage_bucket = $2,
+                updated_at = now()
+          WHERE id = $1
+            AND (storage_bucket IS NULL OR storage_bucket = '')`,
+        [args.documentId, args.upload.bucket]
+      );
+    } catch (e: any) {
+      args.warnings.push(`failed to persist storage_bucket for uploaded document: ${e?.message || "unknown error"}`);
+    }
+  }
+
+  if (args.upload && hasDocumentsStorageKeyColumn) {
+    try {
+      await pool.query(
+        `UPDATE documents
+            SET storage_key = $2,
+                updated_at = now()
+          WHERE id = $1
+            AND (storage_key IS NULL OR storage_key = '')`,
+        [args.documentId, args.upload.key]
+      );
+    } catch (e: any) {
+      args.warnings.push(`failed to persist storage_key for uploaded document: ${e?.message || "unknown error"}`);
+    }
+  }
+
+  if (hasDocumentsExtractionMetadataColumn) {
+    try {
+      const uploadPatch: Record<string, unknown> = {
+        file_name: args.fileName,
+        mime_type: args.mimeType,
+      };
+
+      if (typeof args.sha256 === "string" && args.sha256.trim()) {
+        uploadPatch.sha256 = args.sha256.trim();
+        // Compatibility: other parts of the system probe this key.
+        (uploadPatch as any).original_bytes_sha256 = args.sha256.trim();
+      }
+
+      if (typeof args.sizeBytes === "number" && Number.isFinite(args.sizeBytes) && args.sizeBytes >= 0) {
+        uploadPatch.size_bytes = args.sizeBytes;
+      }
+
+      if (args.upload) {
+        uploadPatch.provider = args.upload.provider;
+        uploadPatch.bucket = args.upload.bucket;
+        uploadPatch.key = args.upload.key;
+        if (args.upload.endpoint) uploadPatch.endpoint = args.upload.endpoint;
+        if (args.upload.etag) uploadPatch.etag = args.upload.etag;
+        uploadPatch.uploaded_at = new Date().toISOString();
+      }
+
+      const patch: Record<string, unknown> = {
+        doc_kind: docKind,
+        upload: uploadPatch,
+      };
+
+      if (typeof args.sha256 === "string" && args.sha256.trim()) {
+        (patch as any).original_bytes_sha256 = args.sha256.trim();
+      }
+
+      // Compatibility: other parts of the system read fileSizeBytes (camel).
+      if (typeof args.sizeBytes === "number" && Number.isFinite(args.sizeBytes) && args.sizeBytes >= 0) {
+        (patch as any).fileSizeBytes = args.sizeBytes;
+      }
+
+
+
+      await pool.query(
+        `UPDATE documents
+            SET extraction_metadata = jsonb_strip_nulls(COALESCE(extraction_metadata, '{}'::jsonb) || $2::jsonb),
+                updated_at = now()
+          WHERE id = $1`,
+        [args.documentId, JSON.stringify(patch)]
+      );
+    } catch (e: any) {
+      args.warnings.push(`failed to persist extraction_metadata for uploaded document: ${e?.message || "unknown error"}`);
+    }
+  }
+}
+
+function sanitizeFileNameForKey(name: string): string {
+  const raw = String(name || "document");
+  const justName = raw.split("/").pop()?.split("\\").pop() || "document";
+  const cleaned = justName.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^[-.]+|[-.]+$/g, "");
+  return cleaned.length > 0 ? cleaned.slice(0, 180) : "document";
+}
 
 const documentTypeSchema = z
   .enum([
@@ -22,7 +263,7 @@ const documentTypeSchema = z
 
 type DocumentRow = {
   id: string;
-  deal_id: string;
+  deal_id: string | null;
   title: string;
   type: Document["type"] | null;
   status: Document["status"];
@@ -32,7 +273,7 @@ type DocumentRow = {
 function mapDocument(row: DocumentRow): Document {
   return {
     document_id: row.id,
-    deal_id: row.deal_id,
+    deal_id: row.deal_id ?? "",
     title: row.title,
     type: row.type ?? "other",
     status: row.status,
@@ -40,16 +281,505 @@ function mapDocument(row: DocumentRow): Document {
   } as Document;
 }
 
-export async function registerDocumentRoutes(app: FastifyInstance, pool = getPool()) {
+async function dealExists(pool: ReturnType<typeof getPool>, dealId: string): Promise<boolean> {
+  const clean = sanitizeText(dealId);
+  if (!clean) return false;
+  try {
+    const { rows } = await pool.query("SELECT 1 FROM deals WHERE id = $1 LIMIT 1", [clean]);
+    return Array.isArray(rows) && rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+type ExtractionRecommendedAction = "proceed" | "remediate" | "re_extract" | "wait";
+type ConfidenceBand = "high" | "medium" | "low" | "unknown";
+
+const EXTRACTION_CONFIDENCE_THRESHOLDS = {
+  high: 0.9,
+  medium: 0.75,
+} as const;
+
+function getOverallScore(verificationResult: any): number | null {
+  const score = verificationResult?.overall_score;
+  return typeof score === "number" && Number.isFinite(score) ? score : null;
+}
+
+function toConfidenceBand(score: number | null): ConfidenceBand {
+  if (score === null) return "unknown";
+  if (score >= EXTRACTION_CONFIDENCE_THRESHOLDS.high) return "high";
+  if (score >= EXTRACTION_CONFIDENCE_THRESHOLDS.medium) return "medium";
+  return "low";
+}
+
+function recommendActionForDocument(args: {
+  verificationStatus: string;
+  score: number | null;
+  hasWarnings: boolean;
+  hasRecommendations: boolean;
+}): { recommended_action: ExtractionRecommendedAction; reason: string } {
+  const { verificationStatus, score } = args;
+
+  if (!verificationStatus || verificationStatus === "pending") {
+    return { recommended_action: "wait", reason: "Verification has not completed" };
+  }
+
+  if (verificationStatus === "failed") {
+    return {
+      recommended_action: "re_extract",
+      reason: "Verification failed; extraction confidence is insufficient",
+    };
+  }
+
+  if (verificationStatus === "warnings") {
+    // Warnings can be acceptable for many documents (e.g., short docs or limited structure).
+    // If the confidence score is at least medium, allow proceeding while still surfacing the warnings.
+    if (score !== null && score >= EXTRACTION_CONFIDENCE_THRESHOLDS.medium) {
+      return {
+        recommended_action: "proceed",
+        reason: `Warnings present but extraction confidence is acceptable (score ${score.toFixed(2)}); proceed`,
+      };
+    }
+
+    return {
+      recommended_action: "remediate",
+      reason: "Verification warnings present; remediate artifacts and re-verify",
+    };
+  }
+
+  if (score === null) {
+    return {
+      recommended_action: "remediate",
+      reason: "Missing confidence score; review or remediate extraction artifacts",
+    };
+  }
+
+  const band = toConfidenceBand(score);
+  if (band === "high" || band === "medium") {
+    return {
+      recommended_action: "proceed",
+      reason: band === "high" ? "High confidence extraction" : `Verified extraction (score ${score.toFixed(2)}); proceed`,
+    };
+  }
+
+  if (band === "low") {
+    return {
+      recommended_action: "re_extract",
+      reason: `Low confidence extraction (score ${score.toFixed(2)}); re-extraction is recommended`,
+    };
+  }
+
+  return {
+    recommended_action: "remediate",
+    reason: "Missing/unknown confidence; remediate artifacts and re-verify",
+  };
+}
+
+function buildDocumentExtractionReport(d: any) {
+  const verificationResult = d.verification_result as any;
+  const score = getOverallScore(verificationResult);
+  const warnings = Array.isArray(verificationResult?.warnings) ? verificationResult.warnings : [];
+  const recommendations = Array.isArray(verificationResult?.recommendations)
+    ? verificationResult.recommendations
+    : [];
+
+  const action = recommendActionForDocument({
+    verificationStatus: d.verification_status || "pending",
+    score,
+    hasWarnings: warnings.length > 0,
+    hasRecommendations: recommendations.length > 0,
+  });
+
+  return {
+    id: d.id,
+    title: d.title,
+    type: d.type,
+    status: d.status,
+    verification_status: d.verification_status || "pending",
+    pages: d.page_count || 0,
+    file_size_bytes: d.extraction_metadata?.fileSizeBytes || 0,
+    extraction_quality_score: score,
+    confidence_band: toConfidenceBand(score),
+    ocr_avg_confidence: verificationResult?.quality_checks?.ocr_confidence?.avg ?? null,
+    verification_warnings: warnings,
+    verification_recommendations: recommendations,
+    recommended_action: action.recommended_action,
+    recommendation_reason: action.reason,
+  };
+}
+
+function buildDealExtractionReport(args: {
+  dealId: string;
+  documents: Array<ReturnType<typeof buildDocumentExtractionReport>>;
+  totalPages: number;
+}) {
+  const { dealId, documents, totalPages } = args;
+
+  const completed = documents.filter((d) => d.verification_status !== "pending");
+  const failed = documents.filter((d) => d.verification_status === "failed");
+  const anyWait = documents.some((d) => d.recommended_action === "wait");
+  const anyReextract = documents.some((d) => d.recommended_action === "re_extract");
+  const anyRemediate = documents.some((d) => d.recommended_action === "remediate");
+
+  const weightedScore = documents.reduce(
+    (acc, d) => {
+      const weight = d.pages > 0 ? d.pages : 1;
+      const score = typeof d.extraction_quality_score === "number" ? d.extraction_quality_score : null;
+      if (score === null) return acc;
+      return { sum: acc.sum + score * weight, weight: acc.weight + weight };
+    },
+    { sum: 0, weight: 0 }
+  );
+
+  const overallScore = weightedScore.weight > 0 ? weightedScore.sum / weightedScore.weight : null;
+  const confidenceBand = toConfidenceBand(overallScore);
+
+  let recommended_action: ExtractionRecommendedAction = "proceed";
+  let recommendation_reason = "High confidence across documents";
+
+  if (anyWait) {
+    recommended_action = "wait";
+    recommendation_reason = "Some documents are still processing";
+  } else if (failed.length > 0 || anyReextract) {
+    recommended_action = "re_extract";
+    recommendation_reason = "At least one document has low confidence or failed verification";
+  } else if (anyRemediate) {
+    recommended_action = "remediate";
+    recommendation_reason = "Some documents have warnings or medium confidence";
+  }
+
+  return {
+    deal_id: dealId,
+    overall_confidence_score: overallScore,
+    confidence_band: confidenceBand,
+    thresholds: {
+      high: EXTRACTION_CONFIDENCE_THRESHOLDS.high,
+      medium: EXTRACTION_CONFIDENCE_THRESHOLDS.medium,
+    },
+    counts: {
+      total_documents: documents.length,
+      completed_verification: completed.length,
+      failed_verification: failed.length,
+      total_pages: totalPages,
+      high_confidence: documents.filter((d) => d.confidence_band === "high").length,
+      medium_confidence: documents.filter((d) => d.confidence_band === "medium").length,
+      low_confidence: documents.filter((d) => d.confidence_band === "low").length,
+      unknown_confidence: documents.filter((d) => d.confidence_band === "unknown").length,
+    },
+    recommended_action,
+    recommendation_reason,
+    note:
+      recommended_action === "re_extract"
+        ? "True re-extraction requires original file bytes or storage keys to be available."
+        : null,
+  };
+}
+
+export async function registerDocumentRoutes(
+  app: FastifyInstance,
+  pool = getPool(),
+  deps?: {
+    enqueueJob?: typeof enqueueJob;
+    autoProgressDealStage?: typeof autoProgressDealStage;
+    r2?: {
+      uploadToR2: typeof uploadToR2;
+      getSignedDownloadUrl: typeof getSignedDownloadUrl;
+      deleteFromR2: typeof deleteFromR2;
+      getR2Config: typeof getR2Config;
+      getPublicUrlForKey: typeof getPublicUrlForKey;
+      objectExistsInR2?: typeof objectExistsInR2;
+    };
+  }
+) {
+  const enqueue = deps?.enqueueJob ?? enqueueJob;
+  const autoProgress = deps?.autoProgressDealStage ?? autoProgressDealStage;
+  const r2 = deps?.r2 ?? {
+    uploadToR2,
+    getSignedDownloadUrl,
+    deleteFromR2,
+    getR2Config,
+    getPublicUrlForKey,
+    objectExistsInR2,
+  };
+  app.get(
+    "/api/v1/deals/:deal_id/documents/:document_id/visual-assets",
+    {
+      schema: {
+        description: "List visual assets extracted for a document (safe no-op if visual tables are missing).",
+        tags: ["documents"],
+        params: {
+          type: "object",
+          properties: {
+            deal_id: { type: "string" },
+            document_id: { type: "string" },
+          },
+          required: ["deal_id", "document_id"],
+        },
+        querystring: {
+          type: "object",
+          properties: {
+            include_ocr: { type: "string" },
+            include_images: { type: "string" },
+          },
+          additionalProperties: true,
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              deal_id: { type: "string" },
+              document_id: { type: "string" },
+              assets: { type: "array", items: { type: "object", additionalProperties: true } },
+              warnings: { type: "array", items: { type: "string" } },
+            },
+            required: ["deal_id", "document_id", "assets", "warnings"],
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+    const dealId = sanitizeText((request.params as any)?.deal_id);
+    const documentId = sanitizeText((request.params as any)?.document_id);
+    const includeOcrRequested = parseBoolQ(((request.query as any) ?? {})?.include_ocr, false);
+    const includeImagesRequested = parseBoolQ(((request.query as any) ?? {})?.include_images, false);
+    const warnings: string[] = [];
+
+    if (!dealId) {
+      return reply.status(400).send({ error: "deal_id is required" });
+    }
+    if (!documentId) {
+      return reply.status(400).send({ error: "document_id is required" });
+    }
+
+    // Enforce scoping consistent with other document endpoints.
+    // Also fetch document metadata to apply structured-first XLSX visibility policy.
+    const hasMimeType = await hasColumn(pool, "documents", "mime_type");
+    const hasFilename = await hasColumn(pool, "documents", "filename");
+
+    const existing = await pool.query<{
+      id: string;
+      title: string;
+      type: string | null;
+      mime_type?: string | null;
+      filename?: string | null;
+    }>(
+      `SELECT id,
+              title,
+              type
+              ${hasMimeType ? ", mime_type" : ", NULL::text AS mime_type"}
+              ${hasFilename ? ", filename" : ", NULL::text AS filename"}
+         FROM documents
+        WHERE deal_id = $1 AND id = $2
+        LIMIT 1`,
+      [dealId, documentId]
+    );
+    if (!existing.rows.length) {
+      return reply.status(404).send({ error: "Document not found" });
+    }
+
+    const existingDoc = existing.rows[0];
+    const isExcelDoc =
+      inferDocKindFromUpload({
+        fileName: typeof (existingDoc as any)?.filename === "string" ? (existingDoc as any).filename : null,
+        mimeType: typeof (existingDoc as any)?.mime_type === "string" ? (existingDoc as any).mime_type : null,
+        title: typeof existingDoc?.title === "string" ? existingDoc.title : null,
+      }) === "excel";
+
+    // Safety: if the visual lane tables are not installed, this endpoint returns an empty response.
+    const assetsOk = await hasTable(pool, "public.visual_assets");
+    const extractionsOk = await hasTable(pool, "public.visual_extractions");
+    const evidenceOk = await hasTable(pool, "public.evidence_links");
+
+    if (!assetsOk || !extractionsOk || !evidenceOk) {
+      warnings.push("visual extraction tables not installed");
+      request.log.info(
+        {
+          request_id: (request as any).id,
+          deal_id: dealId,
+          document_id: documentId,
+          counts: { assets: 0 },
+          warnings_count: warnings.length,
+        },
+        "document.visual_assets"
+      );
+      return reply.send({ deal_id: dealId, document_id: documentId, assets: [], warnings });
+    }
+
+    type Row = {
+      id: string;
+      page_index: number;
+      asset_type: string;
+      bbox: any;
+      image_uri: string | null;
+      image_hash: string | null;
+      extractor_version: string;
+      confidence: number | string;
+      quality_flags: any;
+      created_at: string;
+
+      extraction_id: string | null;
+      ocr_text: string | null;
+      ocr_blocks: any;
+      structured_json: any;
+      units: string | null;
+      labels: any;
+      model_version: string | null;
+      extraction_confidence: number | string | null;
+      extraction_created_at: string | null;
+
+      evidence_count: number;
+      evidence_sample_snippets: string[] | null;
+    };
+
+    // Simplest stable behavior: return a single "latest_extraction" per visual asset
+    // (latest by visual_extractions.created_at), regardless of extractor_version.
+    const { rows } = await pool.query<Row>(
+      `WITH latest_extractions AS (
+         SELECT
+           ve.*,
+           ROW_NUMBER() OVER (PARTITION BY ve.visual_asset_id ORDER BY ve.created_at DESC) AS rn
+         FROM visual_extractions ve
+       )
+       SELECT
+         va.id,
+         va.page_index,
+         va.asset_type,
+         va.bbox,
+         va.image_uri,
+         va.image_hash,
+         va.extractor_version,
+         va.confidence,
+         va.quality_flags,
+         va.created_at,
+         le.id AS extraction_id,
+         le.ocr_text,
+         le.ocr_blocks,
+         le.structured_json,
+         le.units,
+         le.labels,
+         le.model_version,
+         le.confidence AS extraction_confidence,
+         le.created_at AS extraction_created_at,
+         COALESCE(ev.count, 0) AS evidence_count,
+         COALESCE(ev.sample_snippets, ARRAY[]::text[]) AS evidence_sample_snippets
+       FROM visual_assets va
+       LEFT JOIN latest_extractions le
+         ON le.visual_asset_id = va.id AND le.rn = 1
+       LEFT JOIN LATERAL (
+         SELECT
+           COUNT(*)::int AS count,
+           ARRAY(
+             SELECT LEFT(el2.snippet, 200)
+             FROM evidence_links el2
+             WHERE el2.visual_asset_id = va.id
+               AND el2.snippet IS NOT NULL
+               AND el2.snippet <> ''
+             ORDER BY el2.created_at DESC
+             LIMIT 3
+           ) AS sample_snippets
+         FROM evidence_links el
+         WHERE el.visual_asset_id = va.id
+       ) ev ON true
+       JOIN documents d ON d.id = va.document_id
+       WHERE d.deal_id = $1
+         AND va.document_id = $2
+       ORDER BY va.page_index ASC, va.created_at ASC`,
+      [dealId, documentId]
+    );
+
+    const hasStructuredExcel = !includeOcrRequested
+      ? rows.some((r) => {
+          const extractorVersion = typeof r?.extractor_version === "string" ? r.extractor_version : "";
+          const kindRaw = typeof (r as any)?.structured_json?.kind === "string" ? String((r as any).structured_json.kind) : "";
+          const kind = kindRaw.toLowerCase();
+          const qfSource = typeof (r as any)?.quality_flags?.source === "string" ? String((r as any).quality_flags.source) : "";
+          return extractorVersion.startsWith("excel_py_") || kind.startsWith("excel_") || qfSource === "structured_excel_py";
+        })
+      : false;
+
+    const assetsBase = rows.map((r) => {
+      const createdAt = new Date(r.created_at).toISOString();
+      const extractionCreatedAt = r.extraction_created_at ? new Date(r.extraction_created_at).toISOString() : null;
+      const confidence = Number(r.confidence);
+      const extractionConfidence = r.extraction_confidence == null ? null : Number(r.extraction_confidence);
+
+      // XLSX policy:
+      // - Hide OCR by default when we have structured Excel (opt-in via ?include_ocr=true)
+      // - Hide image previews by default for Excel docs (opt-in via ?include_images=true)
+      const suppressOcr = Boolean(isExcelDoc && hasStructuredExcel);
+      const suppressImages = Boolean(isExcelDoc && !includeImagesRequested);
+
+      return {
+        id: r.id,
+        page_index: r.page_index,
+        asset_type: r.asset_type,
+        bbox: r.bbox ?? {},
+        image_uri: suppressImages ? null : r.image_uri,
+        image_hash: suppressImages ? null : r.image_hash,
+        extractor_version: r.extractor_version,
+        confidence: Number.isFinite(confidence) ? confidence : 0,
+        quality_flags: r.quality_flags ?? {},
+        created_at: createdAt,
+        latest_extraction: r.extraction_id
+          ? {
+              id: r.extraction_id,
+              ocr_text: suppressOcr ? null : r.ocr_text,
+              ocr_blocks: suppressOcr ? [] : (r.ocr_blocks ?? []),
+              structured_json: r.structured_json ?? {},
+              units: r.units,
+              labels: r.labels ?? {},
+              model_version: r.model_version,
+              confidence: extractionConfidence != null && Number.isFinite(extractionConfidence) ? extractionConfidence : 0,
+              created_at: extractionCreatedAt,
+              ...(suppressOcr ? { ocr_suppressed: true } : {}),
+            }
+          : null,
+        evidence: {
+          count: Number.isFinite(r.evidence_count) ? r.evidence_count : 0,
+          sample_snippets: Array.isArray(r.evidence_sample_snippets) ? r.evidence_sample_snippets : [],
+        },
+      };
+    });
+
+    const assets = await Promise.all(
+      assetsBase.map(async (a) => ({
+        ...a,
+        image_uri: a.image_uri ? await resolveVisualAssetImageUriForApi(a.image_uri) : null,
+      }))
+    );
+
+    request.log.info(
+      {
+        request_id: (request as any).id,
+        deal_id: dealId,
+        document_id: documentId,
+        counts: { assets: assets.length },
+        warnings_count: warnings.length,
+      },
+      "document.visual_assets"
+    );
+
+    return reply.send({ deal_id: dealId, document_id: documentId, assets, warnings });
+  });
+
   // JSON upload helper for automated tests (accepts base64 payload)
   app.post("/api/v1/deals/:deal_id/documents/upload", async (request, reply) => {
-    const dealId = (request.params as { deal_id: string }).deal_id;
+    const dealId = sanitizeText((request.params as any)?.deal_id);
     const payload = request.body as {
       file_buffer?: string;
       file_name?: string;
       type?: string;
       title?: string;
+      mime_type?: string;
     };
+
+    if (!dealId) {
+      return reply.status(400).send({ error: "deal_id is required" });
+    }
+
+    if (!(await dealExists(pool, dealId))) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
 
     if (!payload?.file_buffer) {
       return reply.status(400).send({ error: "file_buffer is required" });
@@ -58,11 +788,25 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
     try {
       const fileBufferB64 = payload.file_buffer;
       const fileName = payload.file_name ?? "document";
-      const docType = payload.type ?? "other";
       const titleValue = payload.title ?? fileName;
+      request.log.info({
+        event: "upload_json_start",
+        deal_id: dealId,
+        file_name: fileName,
+        mime_type: payload.mime_type ?? null,
+        buffer_b64_len: fileBufferB64.length,
+        doc_type: payload.type ?? null,
+      });
 
-      const parsedType = documentTypeSchema.safeParse(docType);
-      const finalType = parsedType.success ? parsedType.data : "other";
+      const inferredType = inferDocumentTypeFromName({
+        title: titleValue,
+        fileName,
+        mimeType: payload.mime_type ?? null,
+      });
+
+      const parsedExplicit = documentTypeSchema.safeParse(payload.type);
+      const finalType: Document["type"] =
+        parsedExplicit.success && parsedExplicit.data ? parsedExplicit.data : inferredType;
 
       // Check if document with this title already exists in this deal
       const { rows: existingDocs } = await pool.query<DocumentRow>(
@@ -88,89 +832,51 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
         [dealId, titleValue, finalType, "pending"]
       );
 
+      const warnings: string[] = [];
       const documentId = rows[0].id;
-
-      const job = await enqueueJob({
+      request.log.info({
+        event: "upload_json_document_inserted",
         deal_id: dealId,
         document_id: documentId,
-        type: "ingest_document",
-        payload: {
-          document_id: documentId,
-          deal_id: dealId,
-          file_buffer: fileBufferB64,
-            file_name: fileName,
-            attempt: 1,
-        },
+        title: titleValue,
+        type: finalType,
+        inferred_type: inferredType,
       });
 
-      const progressionResult = await autoProgressDealStage(pool, dealId);
+	  await persistUploadMetadata(pool, {
+		  documentId,
+		  fileName,
+		  mimeType: payload.mime_type ?? null,
+		  title: titleValue,
+		  warnings,
+	  });
 
-      return reply.status(202).send({
-        document_id: documentId,
-        document: mapDocument(rows[0]),
-        job_status: "queued",
-        job_id: job.job_id,
-        stage_progression: progressionResult.progressed
-          ? { progressed: true, newStage: progressionResult.newStage }
-          : { progressed: false },
-      });
-    } catch (error: any) {
-      console.error("Document upload error:", error);
-      return reply.status(500).send({
-        error: "Failed to upload document",
-        message: error?.message || "Unknown error",
-      });
-    }
-  });
-
-  app.post("/api/v1/deals/:deal_id/documents", async (request, reply) => {
-    const dealId = (request.params as { deal_id: string }).deal_id;
-    let fileBuffer: Buffer | null = null;
-    let fileName = "document";
-    let docType: any = "other";
-    let titleValue = "document";
-
-    try {
-      // Parse multipart form data
-      const parts = request.parts();
-      for await (const part of parts) {
-        if (part.type === "file") {
-          fileBuffer = await part.toBuffer();
-          fileName = part.filename || "document";
-        } else if (part.type === "field") {
-          const fieldValue = part.value;
-          if (part.fieldname === "type") {
-            docType = fieldValue;
-          } else if (part.fieldname === "title") {
-            titleValue = fieldValue;
+      // Safety: if the row comes back unlinked, repair best-effort.
+      if (!rows[0]?.deal_id || rows[0].deal_id !== dealId) {
+        try {
+          const repaired = await pool.query<{ deal_id: string | null }>(
+            `UPDATE documents
+                SET deal_id = $1
+              WHERE id = $2
+              RETURNING deal_id`,
+            [dealId, documentId]
+          );
+          const repairedDealId = repaired.rows?.[0]?.deal_id ?? null;
+          if (repairedDealId !== dealId) {
+            warnings.push("uploaded document was not linked to deal; repair attempt did not confirm linkage");
+          } else {
+            rows[0].deal_id = dealId;
+            warnings.push("uploaded document required linkage repair");
           }
+        } catch (e: any) {
+          warnings.push(`uploaded document linkage repair failed: ${e?.message || "unknown error"}`);
         }
       }
 
-      if (!fileBuffer) {
-        return reply.status(400).send({ error: "file is required" });
-      }
-
-      // Validate document type
-      const parsedType = documentTypeSchema.safeParse(docType);
-      const finalType = parsedType.success ? parsedType.data : "other";
-
-      const fileBufferB64 = fileBuffer.toString("base64");
-
-      const { rows } = await pool.query<DocumentRow>(
-        `INSERT INTO documents (deal_id, title, type, status)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, deal_id, title, type, status, uploaded_at`,
-        [dealId, titleValue, finalType, "pending"]
-      );
-
-      const documentId = rows[0].id;
-
-      // Queue document processing job with file buffer
-      const job = await enqueueJob({
+      const job = await enqueue({
         deal_id: dealId,
         document_id: documentId,
-        type: "ingest_document",
+        type: "ingest_documents",
         payload: {
           document_id: documentId,
           deal_id: dealId,
@@ -179,14 +885,345 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
           attempt: 1,
         },
       });
+      request.log.info({
+        event: "upload_json_enqueued",
+        deal_id: dealId,
+        document_id: documentId,
+        job_id: job.job_id,
+      });
 
-      // Auto-check if deal should progress based on document count
-      const progressionResult = await autoProgressDealStage(pool, dealId);
+      const progressionResult = await autoProgress(pool, dealId);
 
       return reply.status(202).send({
+        document_id: documentId,
         document: mapDocument(rows[0]),
         job_status: "queued",
         job_id: job.job_id,
+        warnings,
+        stage_progression: progressionResult.progressed
+          ? { progressed: true, newStage: progressionResult.newStage }
+          : { progressed: false },
+      });
+    } catch (error: any) {
+      request.log.error({ event: "upload_json_error", deal_id: dealId, err: error }, "Document upload error");
+      return reply.status(500).send({
+        error: "Failed to upload document",
+        message: error?.message || "Unknown error",
+      });
+    }
+  });
+
+  app.post("/api/v1/deals/:deal_id/documents", async (request, reply) => {
+    const dealId = sanitizeText((request.params as any)?.deal_id);
+    const documentId = randomUUID();
+    const useR2 =
+      !!process.env.R2_ENDPOINT &&
+      !!process.env.R2_BUCKET &&
+      !!process.env.R2_ACCESS_KEY_ID &&
+      !!process.env.R2_SECRET_ACCESS_KEY;
+
+    let legacyFileBuffer: Buffer | null = null;
+    let uploadedKey: string | null = null;
+    let uploadedBucket: string | null = null;
+    let uploadedEtag: string | null = null;
+    let uploadedSizeBytes: number | null = null;
+    let uploadedSha256: string | null = null;
+
+    let fileName = "document";
+    let mimeType: string | null = null;
+    let docType: any = "other";
+    let titleValue = "document";
+
+    if (!dealId) {
+      return reply.status(400).send({ error: "deal_id is required" });
+    }
+
+    if (!(await dealExists(pool, dealId))) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    try {
+      // Parse multipart form data
+      const parts = (request as any).parts();
+      for await (const part of parts) {
+        if (part.type === "file") {
+          if (!useR2) {
+            const buf = await part.toBuffer();
+            legacyFileBuffer = buf;
+            fileName = part.filename || "document";
+            mimeType = typeof part.mimetype === "string" ? part.mimetype : null;
+            uploadedSizeBytes = buf.length;
+            continue;
+          }
+
+          if (uploadedKey) {
+            // Drain any unexpected additional file parts.
+            try {
+              for await (const _ of part.file) {
+                // no-op
+              }
+            } catch {
+              // best-effort
+            }
+            continue;
+          }
+
+          fileName = part.filename || "document";
+          mimeType = typeof part.mimetype === "string" ? part.mimetype : null;
+          const safeName = sanitizeFileNameForKey(fileName);
+          const key = `deals/${dealId}/documents/${documentId}/${safeName}`;
+          const cfg = r2.getR2Config();
+
+          // Buffer-first upload for R2: avoids S3 streaming/chunked edge cases that can produce
+          // invalid/undefined decoded length headers on some S3-compatible providers.
+          const buf = await part.toBuffer();
+          uploadedSizeBytes = buf.length;
+          uploadedSha256 = createHash("sha256").update(buf).digest("hex");
+
+          request.log.info(
+            {
+              event: "upload_r2_start",
+              deal_id: dealId,
+              document_id: documentId,
+              bucket: cfg.bucket,
+              key,
+              file_name: fileName,
+              content_type: mimeType,
+            },
+            "Uploading document to R2"
+          );
+
+          try {
+            const res = await r2.uploadToR2({
+              key,
+              body: buf,
+              contentType: mimeType,
+            });
+            uploadedKey = res.key;
+            uploadedBucket = res.bucket;
+            uploadedEtag = res.etag;
+            uploadedSizeBytes = res.size_bytes;
+
+            request.log.info(
+              {
+                event: "upload_r2_done",
+                deal_id: dealId,
+                document_id: documentId,
+                bucket: res.bucket,
+                key: res.key,
+                etag: res.etag,
+                size_bytes: res.size_bytes,
+              },
+              "Uploaded document to R2"
+            );
+          } catch (error: any) {
+            request.log.error(
+              {
+                event: "upload_r2_error",
+                deal_id: dealId,
+                document_id: documentId,
+                key,
+                err: error,
+                aws: {
+                  name: error?.name,
+                  message: error?.message,
+                  $metadata: error?.$metadata,
+                },
+              },
+              "Failed uploading document to R2"
+            );
+            throw error;
+          }
+        } else if (part.type === "field") {
+          const fieldValue = typeof part.value === "string" ? part.value : String(part.value ?? "");
+          if (part.fieldname === "type") {
+            docType = fieldValue;
+          } else if (part.fieldname === "title") {
+            titleValue = fieldValue;
+          }
+        }
+      }
+
+      if (!legacyFileBuffer && (!uploadedKey || !uploadedBucket || uploadedSizeBytes === null)) {
+        return reply.status(400).send({ error: "file is required" });
+      }
+
+      const inferredType = inferDocumentTypeFromName({
+        title: titleValue,
+        fileName,
+        mimeType,
+      });
+
+      // Validate document type (if provided); otherwise infer.
+      const parsedType = documentTypeSchema.safeParse(docType);
+      const finalType: Document["type"] =
+        parsedType.success && parsedType.data ? parsedType.data : inferredType;
+
+      if (titleValue === "document" && fileName && fileName !== "document") {
+        titleValue = fileName;
+      }
+
+      request.log.info({
+        event: "upload_multipart_parsed",
+        deal_id: dealId,
+        file_name: fileName,
+        mime_type: mimeType,
+        size_bytes: uploadedSizeBytes,
+        doc_type: docType,
+        title: titleValue,
+      });
+
+      // Generate a signed download URL for the worker to fetch immediately.
+      const signedUrlTtl = useR2 ? r2.getR2Config().signedUrlTtlSeconds : null;
+      const signedUrl = useR2 && uploadedKey ? await r2.getSignedDownloadUrl({ key: uploadedKey, ttlSeconds: signedUrlTtl! }) : null;
+      const publicUrl =
+        useR2 && uploadedKey
+          ? (() => {
+              try {
+                return r2.getPublicUrlForKey(uploadedKey);
+              } catch {
+                return null;
+              }
+            })()
+          : null;
+
+      // Insert DB row only after upload succeeds.
+      let rows: DocumentRow[] = [];
+      try {
+        await pool.query("BEGIN");
+        const inserted = await pool.query<DocumentRow>(
+          `INSERT INTO documents (id, deal_id, title, type, status)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id, deal_id, title, type, status, uploaded_at`,
+          [documentId, dealId, titleValue, finalType, "pending"]
+        );
+        rows = inserted.rows;
+        await pool.query("COMMIT");
+      } catch (dbErr: any) {
+        try {
+          await pool.query("ROLLBACK");
+        } catch {
+          // ignore
+        }
+
+        // Best-effort cleanup to avoid orphaned objects.
+        if (useR2 && uploadedKey) {
+          try {
+            await r2.deleteFromR2({ key: uploadedKey });
+          } catch {
+            // ignore
+          }
+        }
+        throw dbErr;
+      }
+
+      const warnings: string[] = [];
+      request.log.info({
+        event: "upload_multipart_document_inserted",
+        deal_id: dealId,
+        document_id: documentId,
+        title: titleValue,
+        type: finalType,
+        inferred_type: inferredType,
+      });
+
+
+      await persistUploadMetadata(pool, {
+        documentId,
+        fileName,
+        mimeType,
+        title: titleValue,
+        sizeBytes: uploadedSizeBytes,
+        sha256: uploadedSha256,
+        upload:
+          useR2 && uploadedKey && uploadedBucket
+            ? {
+                provider: "r2",
+                bucket: uploadedBucket,
+                key: uploadedKey,
+                endpoint: process.env.R2_ENDPOINT,
+                url: publicUrl,
+                signed_url: signedUrl,
+                signed_url_ttl_seconds: signedUrlTtl,
+                etag: uploadedEtag,
+              }
+            : undefined,
+        warnings,
+      });
+
+      request.log.info({
+        event: "upload_multipart_metadata_persisted",
+        deal_id: dealId,
+        document_id: documentId,
+        storage_provider: useR2 ? "r2" : "local",
+        storage_bucket: uploadedBucket,
+        storage_key: uploadedKey,
+        size_bytes: uploadedSizeBytes,
+        sha256: uploadedSha256,
+        mime_type: mimeType,
+      });
+
+      if (!rows[0]?.deal_id || rows[0].deal_id !== dealId) {
+        try {
+          const repaired = await pool.query<{ deal_id: string | null }>(
+            `UPDATE documents
+                SET deal_id = $1
+              WHERE id = $2
+              RETURNING deal_id`,
+            [dealId, documentId]
+          );
+          const repairedDealId = repaired.rows?.[0]?.deal_id ?? null;
+          if (repairedDealId !== dealId) {
+            warnings.push("uploaded document was not linked to deal; repair attempt did not confirm linkage");
+          } else {
+            rows[0].deal_id = dealId;
+            warnings.push("uploaded document required linkage repair");
+          }
+        } catch (e: any) {
+          warnings.push(`uploaded document linkage repair failed: ${e?.message || "unknown error"}`);
+        }
+      }
+
+      // Queue document processing job.
+      const job = await enqueue({
+        deal_id: dealId,
+        document_id: documentId,
+        type: "ingest_documents",
+        payload: {
+          document_id: documentId,
+          deal_id: dealId,
+          mode: useR2 ? "from_storage" : "upload",
+          file_name: fileName,
+          file_buffer: useR2 ? undefined : legacyFileBuffer?.toString("base64"),
+          attempt: 1,
+        },
+      });
+      request.log.info({
+        event: "upload_multipart_enqueued",
+        deal_id: dealId,
+        document_id: documentId,
+        job_id: job.job_id,
+        storage_provider: useR2 ? "r2" : "local",
+        storage_bucket: uploadedBucket,
+        storage_key: uploadedKey,
+        size_bytes: uploadedSizeBytes,
+      });
+
+      // Auto-check if deal should progress based on document count
+      const progressionResult = await autoProgress(pool, dealId);
+
+      return reply.status(202).send({
+        document: mapDocument(rows[0]),
+        upload: {
+          provider: useR2 ? "r2" : "local",
+          bucket: uploadedBucket,
+          key: uploadedKey,
+          size_bytes: uploadedSizeBytes,
+          mime_type: mimeType,
+        },
+        job_status: "queued",
+        job_id: job.job_id,
+        warnings,
         stage_progression: progressionResult.progressed
           ? {
               progressed: true,
@@ -197,7 +1234,7 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
             },
       });
     } catch (error: any) {
-      console.error("Document upload error:", error);
+      request.log.error({ event: "upload_multipart_error", deal_id: dealId, err: error }, "Document upload error");
       return reply.status(500).send({
         error: "Failed to upload document",
         message: error?.message || "Unknown error",
@@ -206,7 +1243,9 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
   });
 
   app.get("/api/v1/deals/:deal_id/documents", async (request, reply) => {
+    const startTs = Date.now();
     const dealId = (request.params as { deal_id: string }).deal_id;
+    request.log.info({ msg: "deal.documents.start", deal_id: dealId, start_ts: new Date(startTs).toISOString() });
     const { rows } = await pool.query<DocumentRow>(
       `SELECT id, deal_id, title, type, status, uploaded_at
        FROM documents
@@ -215,7 +1254,338 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
       [dealId]
     );
 
+    const endTs = Date.now();
+    request.log.info({
+      msg: "deal.documents.done",
+      deal_id: dealId,
+      count: rows.length,
+      start_ts: new Date(startTs).toISOString(),
+      end_ts: new Date(endTs).toISOString(),
+      duration_ms: endTs - startTs,
+    });
+
     return reply.send({ documents: rows.map(mapDocument) });
+  });
+
+  app.get(
+    "/api/v1/deals/:deal_id/documents/search",
+    {
+      schema: {
+        description: "Search within a deal's documents using Postgres full-text search over documents.full_text",
+        tags: ["documents"],
+        params: {
+          type: "object",
+          properties: {
+            deal_id: { type: "string" },
+          },
+          required: ["deal_id"],
+        },
+        querystring: {
+          type: "object",
+          properties: {
+            q: { type: "string" },
+            limit: { type: "string" },
+          },
+          required: ["q"],
+          additionalProperties: true,
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              deal_id: { type: "string" },
+              q: { type: "string" },
+              results: { type: "array", items: { type: "object", additionalProperties: true } },
+            },
+            required: ["deal_id", "q", "results"],
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const dealId = sanitizeText((request.params as any)?.deal_id);
+      const qRaw = (request.query as any)?.q;
+      const q = typeof qRaw === "string" ? qRaw.trim() : "";
+      const limitRaw = (request.query as any)?.limit;
+      const limit = Math.max(
+        1,
+        Math.min(
+          50,
+          typeof limitRaw === "string" && limitRaw.trim() ? Number.parseInt(limitRaw, 10) : 20
+        )
+      );
+
+      if (!dealId) return reply.status(400).send({ error: "deal_id is required" });
+      if (!q || q.length < 2) return reply.status(400).send({ error: "q is required (min 2 chars)" });
+
+      // NOTE: This relies on the expression GIN index created for to_tsvector('english', full_text).
+      // OCR text is promoted into documents.full_text by the worker after visual extraction.
+      const { rows } = await pool.query<{
+        id: string;
+        title: string;
+        type: string;
+        rank: number | null;
+        excerpt: string | null;
+      }>(
+        `
+        SELECT id,
+               title,
+               type,
+               ts_rank_cd(to_tsvector('english', coalesce(full_text, '')), plainto_tsquery('english', $2)) AS rank,
+               ts_headline('english', coalesce(full_text, ''), plainto_tsquery('english', $2), 'MaxWords=40,MinWords=10') AS excerpt
+          FROM documents
+         WHERE deal_id = $1
+           AND deleted_at IS NULL
+           AND full_text IS NOT NULL
+           AND to_tsvector('english', full_text) @@ plainto_tsquery('english', $2)
+         ORDER BY rank DESC NULLS LAST
+         LIMIT $3
+        `,
+        [dealId, q, limit]
+      );
+
+      return reply.send({
+        deal_id: dealId,
+        q,
+        results: rows.map((r) => ({
+          document_id: r.id,
+          title: r.title,
+          type: r.type,
+          rank: typeof r.rank === "number" ? r.rank : null,
+          excerpt: typeof r.excerpt === "string" ? r.excerpt : null,
+        })),
+      });
+    }
+  );
+
+  app.get("/api/v1/deals/:deal_id/documents/:document_id/download-url", async (request, reply) => {
+    const dealId = sanitizeText((request.params as any)?.deal_id);
+    const documentId = sanitizeText((request.params as any)?.document_id);
+
+    if (!dealId) return reply.status(400).send({ error: "deal_id is required" });
+    if (!documentId) return reply.status(400).send({ error: "document_id is required" });
+
+    const hasStorageBucket = await hasColumn(pool, "documents", "storage_bucket");
+    const hasStorageKey = await hasColumn(pool, "documents", "storage_key");
+    const hasExtractionMetadata = await hasColumn(pool, "documents", "extraction_metadata");
+
+    const { rows } = await pool.query<{
+      id: string;
+      storage_bucket: string | null;
+      storage_key: string | null;
+      extraction_metadata: any | null;
+    }>(
+      `SELECT id
+              ${hasStorageBucket ? ", storage_bucket" : ", NULL::text AS storage_bucket"}
+              ${hasStorageKey ? ", storage_key" : ", NULL::text AS storage_key"}
+              ${hasExtractionMetadata ? ", extraction_metadata" : ", NULL::jsonb AS extraction_metadata"}
+         FROM documents
+        WHERE deal_id = $1
+          AND id = $2
+        LIMIT 1`,
+      [dealId, documentId]
+    );
+
+    if (!rows.length) return reply.status(404).send({ error: "Document not found" });
+
+    const row = rows[0];
+    const meta = row.extraction_metadata && typeof row.extraction_metadata === "object" ? row.extraction_metadata : null;
+    const bucketFromMeta = meta?.upload?.bucket ?? meta?.r2?.bucket ?? null;
+    const keyFromMeta = meta?.upload?.key ?? meta?.r2?.key ?? null;
+
+    const bucket = row.storage_bucket ?? bucketFromMeta;
+    const key = row.storage_key ?? keyFromMeta;
+
+    if (!key) {
+      return reply.status(404).send({ error: "Document storage key not found" });
+    }
+
+    const ttl = r2.getR2Config().signedUrlTtlSeconds;
+    request.log.info({ event: "document_download_url_start", deal_id: dealId, document_id: documentId, key }, "Signing R2 download URL");
+
+    try {
+      const signed_url = await r2.getSignedDownloadUrl({ key, ttlSeconds: ttl });
+      return reply.send({
+        deal_id: dealId,
+        document_id: documentId,
+        provider: "r2",
+        bucket: bucket ?? r2.getR2Config().bucket,
+        key,
+        signed_url,
+        expires_in_seconds: ttl,
+      });
+    } catch (error: any) {
+      request.log.error(
+        { event: "document_download_url_error", deal_id: dealId, document_id: documentId, key, err: error, aws: { name: error?.name, message: error?.message, $metadata: error?.$metadata } },
+        "Failed signing R2 download URL"
+      );
+      return reply.status(500).send({ error: "Failed to create signed URL" });
+    }
+  });
+
+  app.get("/api/v1/deals/:deal_id/documents/:document_id/rendered-pages/:page_index/signed-url", async (request, reply) => {
+    const dealId = sanitizeText((request.params as any)?.deal_id);
+    const documentId = sanitizeText((request.params as any)?.document_id);
+    const pageIndexRaw = (request.params as any)?.page_index;
+
+    if (!dealId) return reply.status(400).send({ error: "deal_id is required" });
+    if (!documentId) return reply.status(400).send({ error: "document_id is required" });
+
+    const pageIndex = Number.parseInt(String(pageIndexRaw ?? ""), 10);
+    if (!Number.isFinite(pageIndex) || pageIndex < 0) {
+      return reply.status(400).send({ error: "invalid_page_index", message: "page_index must be a non-negative integer" });
+    }
+
+    const hasExtractionMetadata = await hasColumn(pool, "documents", "extraction_metadata");
+
+    const { rows } = await pool.query<{
+      extraction_metadata: any | null;
+    }>(
+      `SELECT ${hasExtractionMetadata ? "extraction_metadata" : "NULL::jsonb AS extraction_metadata"}
+         FROM documents
+        WHERE deal_id = $1
+          AND id = $2
+        LIMIT 1`,
+      [dealId, documentId]
+    );
+
+    if (!rows.length) return reply.status(404).send({ error: "Document not found" });
+
+    const meta = rows[0]?.extraction_metadata && typeof rows[0].extraction_metadata === "object" ? rows[0].extraction_metadata : null;
+    const renderedR2 = meta?.rendered_pages_r2 && typeof meta.rendered_pages_r2 === "object" ? (meta.rendered_pages_r2 as any) : null;
+    const count = typeof meta?.rendered_pages_count === "number" && Number.isFinite(meta.rendered_pages_count) ? meta.rendered_pages_count : null;
+
+    if (typeof count === "number" && count > 0 && pageIndex >= count) {
+      return reply
+        .status(416)
+        .send({ error: "page_index_out_of_range", message: "page_index exceeds rendered_pages_count", page_index: pageIndex, rendered_pages_count: count });
+    }
+
+    if (!renderedR2) {
+      return reply.status(404).send({
+        error: "rendered_pages_r2_missing",
+        message: "Document has no rendered_pages_r2 metadata. Render pages first.",
+        deal_id: dealId,
+        document_id: documentId,
+      });
+    }
+
+    const pad4 = (n: number) => String(Math.max(0, Math.trunc(n))).padStart(4, "0");
+    const renderedPageKeyForIndex = (renderedR2Obj: any, idx: number): string | null => {
+      const prefix = typeof renderedR2Obj?.prefix === "string" ? renderedR2Obj.prefix : null;
+      const fmt =
+        typeof renderedR2Obj?.format === "string" && renderedR2Obj.format.trim().length > 0 ? renderedR2Obj.format.trim() : "page_%04d.png";
+      if (!prefix) return null;
+      const cleanPrefix = prefix.replace(/^\/+/g, "").replace(/\/+$/g, "");
+      let fileName = fmt;
+      if (fileName.includes("%04d")) fileName = fileName.replace("%04d", pad4(idx));
+      else if (fileName.includes("%d")) fileName = fileName.replace("%d", String(idx));
+      else fileName = `page_${pad4(idx)}.png`;
+      return `${cleanPrefix}/${fileName}`;
+    };
+
+    const key = renderedPageKeyForIndex(renderedR2, pageIndex);
+    if (!key) {
+      return reply.status(500).send({
+        error: "rendered_page_key_unavailable",
+        message: "rendered_pages_r2 metadata is missing prefix/format",
+        deal_id: dealId,
+        document_id: documentId,
+        page_index: pageIndex,
+      });
+    }
+
+    try {
+      const publicUrl = r2.getPublicUrlForKey(key);
+      if (publicUrl) {
+        return reply.send({
+          deal_id: dealId,
+          document_id: documentId,
+          page_index: pageIndex,
+          provider: "r2",
+          key,
+          url: publicUrl,
+          expires_in_seconds: null,
+        });
+      }
+
+      const ttl = r2.getR2Config().signedUrlTtlSeconds;
+      const signedUrl = await r2.getSignedDownloadUrl({ key, ttlSeconds: ttl });
+      return reply.send({
+        deal_id: dealId,
+        document_id: documentId,
+        page_index: pageIndex,
+        provider: "r2",
+        key,
+        url: signedUrl,
+        expires_in_seconds: ttl,
+      });
+    } catch (error: any) {
+      request.log.error(
+        {
+          event: "rendered_page_signed_url_error",
+          deal_id: dealId,
+          document_id: documentId,
+          page_index: pageIndex,
+          key,
+          err: error,
+          aws: { name: error?.name, message: error?.message, $metadata: error?.$metadata },
+        },
+        "Failed signing rendered page URL"
+      );
+      return reply.status(500).send({ error: "Failed to create signed URL" });
+    }
+  });
+
+  app.delete("/api/v1/deals/:deal_id/documents/:document_id", async (request, reply) => {
+    const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
+
+    const existing = await pool.query<{ id: string }>(
+      `SELECT id
+         FROM documents
+        WHERE deal_id = $1 AND id = $2
+        LIMIT 1`,
+      [deal_id, document_id]
+    );
+
+    if (!existing.rows.length) {
+      return reply.status(404).send({ error: "Document not found" });
+    }
+
+    try {
+      await pool.query("BEGIN");
+
+      // Evidence rows don't FK to documents; clean up best-effort by document id.
+      await pool.query(
+        `DELETE FROM evidence
+          WHERE deal_id = $1
+            AND document_id = $2`,
+        [deal_id, document_id]
+      );
+
+      const deleted = await pool.query<{ id: string }>(
+        `DELETE FROM documents
+          WHERE deal_id = $1 AND id = $2
+          RETURNING id`,
+        [deal_id, document_id]
+      );
+
+      await pool.query("COMMIT");
+
+      if (!deleted.rows.length) {
+        return reply.status(404).send({ error: "Document not found" });
+      }
+
+      return reply.send({ ok: true, deal_id, document_id: deleted.rows[0].id });
+    } catch (error: any) {
+      try {
+        await pool.query("ROLLBACK");
+      } catch {
+        // ignore rollback errors
+      }
+      console.error("Document delete error:", error);
+      return reply.status(500).send({ error: "Failed to delete document", message: error?.message || "Unknown error" });
+    }
   });
 
   // Fetch stored analysis/structured data for a document
@@ -271,14 +1641,253 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
       [deal_id, document_id]
     );
 
-    await enqueueJob({
-      deal_id,
-      document_id,
-      type: "ingest_documents",
-      payload: { document_id },
-    });
+    // Retry now uses persisted original bytes (stored during initial ingestion).
+    const job = await enqueue(
+      {
+        deal_id,
+        document_id,
+        type: "reextract_documents",
+        payload: { deal_id, document_ids: [document_id] },
+      },
+      { dedupe: { by: "document" } }
+    );
 
-    return reply.status(202).send({ ok: true });
+    return reply.status(202).send({ ok: true, job_id: job.job_id });
+  });
+
+  // Enqueue a best-effort visual extraction pass for a single document.
+  // Optional: force_resegment recomputes segment_key for existing structured synthetic assets.
+  app.post("/api/v1/deals/:deal_id/documents/:document_id/extract-visuals", async (request, reply) => {
+    const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
+    const forceResegment = Boolean((request.body as any)?.force_resegment);
+
+    const hasMimeType = await hasColumn(pool as any, "documents", "mime_type");
+    const canJoinOriginalFile = await hasTable(pool as any, "document_files");
+    const { rows } = await pool.query<{ extraction_metadata: unknown | null; file_name: string | null; mime_type?: string | null }>(
+      canJoinOriginalFile
+        ? `SELECT d.extraction_metadata,
+                  df.file_name AS file_name
+                  ${hasMimeType ? ", d.mime_type" : ", NULL::text AS mime_type"}
+             FROM documents d
+             LEFT JOIN document_files df ON df.document_id = d.id
+            WHERE d.id = $1 AND d.deal_id = $2
+            LIMIT 1`
+        : `SELECT extraction_metadata,
+                  NULL::text AS file_name
+                  ${hasMimeType ? ", mime_type" : ", NULL::text AS mime_type"}
+             FROM documents
+            WHERE id = $1 AND deal_id = $2
+            LIMIT 1`,
+      [document_id, deal_id]
+    );
+    if (rows.length === 0) {
+      return reply.status(404).send({ ok: false, error: "Document not found" });
+    }
+
+    const caps = getDocumentCapabilities({
+      fileName: typeof rows[0]?.file_name === "string" ? rows[0].file_name : null,
+      mimeType: typeof (rows[0] as any)?.mime_type === "string" ? String((rows[0] as any).mime_type) : null,
+    });
+    if (!caps.visualExtractable) {
+      return reply.status(422).send({
+        ok: false,
+        error: "document_not_visual_extractable",
+        message: "This document type is not eligible for visual extraction.",
+        document_id,
+      });
+    }
+    const metaObj = rows[0]?.extraction_metadata && typeof rows[0].extraction_metadata === "object" ? (rows[0].extraction_metadata as any) : null;
+    const renderedR2 = metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === "object" ? (metaObj.rendered_pages_r2 as any) : null;
+    const count = typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count) ? metaObj.rendered_pages_count : 0;
+    const rendered = typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered) ? metaObj.rendered_pages_rendered : null;
+
+    const pad4 = (n: number) => String(Math.max(0, Math.trunc(n))).padStart(4, "0");
+    const renderedPageKeyForIndex = (renderedR2Obj: any, pageIndex: number): string | null => {
+      const prefix = typeof renderedR2Obj?.prefix === "string" ? renderedR2Obj.prefix : null;
+      const fmt =
+        typeof renderedR2Obj?.format === "string" && renderedR2Obj.format.trim().length > 0 ? renderedR2Obj.format.trim() : "page_%04d.png";
+      if (!prefix) return null;
+      const cleanPrefix = prefix.replace(/^\/+/, "").replace(/\/+$/, "");
+      let fileName = fmt;
+      if (fileName.includes("%04d")) fileName = fileName.replace("%04d", pad4(pageIndex));
+      else if (fileName.includes("%d")) fileName = fileName.replace("%d", String(pageIndex));
+      else fileName = `page_${pad4(pageIndex)}.png`;
+      return `${cleanPrefix}/${fileName}`;
+    };
+
+    let r2Probe:
+      | {
+          attempted: boolean;
+          skipped_reason?: string;
+          key_checked?: string;
+          exists?: boolean;
+          error?: { name: string; message: string; statusCode?: number | null };
+        }
+      | null = null;
+    let r2ProbeOverrideReady = false;
+    const r2ProbeOverrides: Array<{
+      document_id: string;
+      key_checked: string;
+      exists: boolean;
+      error?: { name: string; message: string; statusCode?: number | null };
+    }> = [];
+
+    if (renderedR2 && count > 0 && (rendered == null || rendered < count)) {
+      const lastIndex = Math.max(0, count - 1);
+      const key = renderedPageKeyForIndex(renderedR2, lastIndex);
+      if (key) {
+        try {
+          const res = await (r2.objectExistsInR2 ?? objectExistsInR2)({ key });
+          r2Probe = { attempted: true, key_checked: key, exists: res.exists, error: res.error };
+          r2ProbeOverrideReady = res.exists;
+          if (res.exists) r2ProbeOverrides.push({ document_id, key_checked: key, exists: true, error: res.error });
+        } catch (err) {
+          const e = err as any;
+          r2Probe = {
+            attempted: false,
+            skipped_reason: "r2_not_configured_or_unavailable",
+            error: {
+              name: typeof e?.name === "string" ? e.name : "R2ProbeError",
+              message: typeof e?.message === "string" ? e.message : String(err),
+            },
+          };
+        }
+      }
+    }
+
+    if ((!renderedR2 || !count || count <= 0 || rendered == null || rendered < count) && !r2ProbeOverrideReady) {
+      // Best-effort self-heal: enqueue render_document_pages when applicable (deduped per document).
+      const parseIntWithDefault = (input: unknown, fallback: number): number => {
+        const v = Number.parseInt(String(input ?? ""), 10);
+        return Number.isFinite(v) ? v : fallback;
+      };
+      const renderChunkSize = Math.max(1, Math.min(1000, parseIntWithDefault(process.env.VISUAL_PAGE_IMAGE_MAX_PAGES, 10)));
+      const pageStart = 0;
+      const pageEnd = Math.max(1, count > 0 ? Math.min(count, renderChunkSize) : renderChunkSize);
+
+      let renderJob: { job_id: string; status: string } | null = null;
+      if (caps.supports_page_rendering) {
+        try {
+          const job = await enqueue(
+            {
+              deal_id,
+              document_id,
+              type: "render_document_pages",
+              payload: { page_start: pageStart, page_end: pageEnd },
+            },
+            { dedupe: { by: "document" } }
+          );
+          renderJob = { job_id: job.job_id, status: job.status };
+        } catch {
+          // Best-effort: keep deterministic 409 response even if Redis is temporarily unavailable.
+        }
+      }
+
+      return reply.status(409).send({
+        ok: false,
+        error: "rendered_pages_not_ready",
+        message: "Rendered page images are not ready yet. Wait for rendering to complete, then retry.",
+        document_id: document_id,
+        readiness_reason: "blocked_by_render_readiness",
+        failure_reason: !renderedR2
+          ? "rendered_pages_r2_missing"
+          : !count || count <= 0
+            ? "rendered_pages_count_missing"
+            : "render_incomplete",
+        next_action: caps.supports_page_rendering ? "enqueue_render_document_pages" : "skip_not_renderable",
+        retryable: true,
+        render_state: {
+          rendered_pages_r2_present: Boolean(renderedR2),
+          rendered_pages_count: count,
+          rendered_pages_rendered: rendered,
+        },
+        ...(r2Probe ? { r2_probe: r2Probe } : {}),
+        render_job_enqueued: renderJob,
+      });
+    }
+
+    const job = await enqueue(
+      {
+        deal_id,
+        document_id,
+        type: "extract_visuals",
+        payload: { force_resegment: forceResegment },
+      },
+      { dedupe: { by: "document" } }
+    );
+
+    return reply.status(202).send({
+      ok: true,
+      job_id: job.job_id,
+      readiness_reason: r2ProbeOverrideReady ? "r2_probe_overrode_metadata" : "metadata_ready",
+      r2_probe_summary: { attempted: r2Probe?.attempted ? 1 : 0, overrides: r2ProbeOverrides.length, max_attempted: 1 },
+      r2_probe_overrides: r2ProbeOverrides,
+      ...(r2Probe ? { r2_probe: r2Probe } : {}),
+    });
+  });
+
+  /**
+   * True re-extraction from persisted original bytes.
+   *
+   * If document_ids omitted, re-extracts only failed/low-confidence documents.
+   */
+  app.post("/api/v1/deals/:deal_id/documents/re-extract", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    const body = (request.body ?? {}) as {
+      document_ids?: string[];
+      threshold_low?: number;
+      include_warnings?: boolean;
+		force?: boolean;
+		mode?: string;
+    };
+
+		const mode = typeof body.mode === "string" ? body.mode : undefined;
+		const force = Boolean(body.force) || String(mode ?? "").toLowerCase() === "manual";
+
+    const job = await enqueue(
+      {
+        deal_id: dealId,
+        type: "reextract_documents",
+        payload: {
+          deal_id: dealId,
+          document_ids: Array.isArray(body.document_ids) ? body.document_ids : undefined,
+          threshold_low: typeof body.threshold_low === "number" ? body.threshold_low : undefined,
+          include_warnings: Boolean(body.include_warnings),
+				force,
+				mode,
+        },
+      },
+      { dedupe: { by: "deal" } }
+    );
+
+    return reply.status(202).send({ ok: true, job_id: job.job_id });
+  });
+
+  app.post("/api/v1/deals/:deal_id/documents/reconcile-ingest", async (request, reply) => {
+    const dealId = sanitizeText((request.params as { deal_id: string }).deal_id);
+    const limitRaw = (request.query as { limit?: string | number } | undefined)?.limit;
+    const limit = limitRaw !== undefined ? Number(limitRaw) : undefined;
+
+    const reconcileEnabled = process.env.NODE_ENV !== "production" || process.env.ENABLE_INGEST_RECONCILE === "true";
+    if (!reconcileEnabled) {
+      return reply.status(403).send({ error: "reconcile ingest endpoint is disabled" });
+    }
+
+    if (!dealId) {
+      return reply.status(400).send({ error: "deal_id is required" });
+    }
+
+    if (!(await dealExists(pool, dealId))) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    try {
+      const summary = await reconcileIngest({ dealId, limit, pool, enqueue });
+      return reply.status(202).send(summary);
+    } catch (err: any) {
+      request.log.error({ err, deal_id: dealId }, "reconcile_ingest.failed");
+      return reply.status(500).send({ error: "Failed to reconcile ingest", message: err?.message || "unknown" });
+    }
   });
 
   /**
@@ -286,14 +1895,24 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
    * Accepts FormData with files and returns grouping suggestions
    */
   app.post("/api/v1/documents/analyze-batch", async (request, reply) => {
+    const userId = (request as any)?.auth?.userId as string | undefined;
+    if (!userId) {
+      return reply.status(401).send({ error: "Unauthorized" });
+    }
+
     // Get all deals for matching
     const dealsResult = await pool.query<{ id: string; name: string }>(
-      `SELECT id, name FROM deals ORDER BY name`,
+      `SELECT id, name
+         FROM deals
+        WHERE deleted_at IS NULL
+          AND created_by_user_id = $1
+        ORDER BY name`,
+      [userId]
     );
     const deals = dealsResult.rows;
 
     // Parse multipart form data
-    const parts = request.file();
+    const parts = (request as any).file();
     const filenames: string[] = [];
 
     // Unfortunately Fastify's file() returns a single file iterator
@@ -321,6 +1940,11 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
    * Handles document grouping, creates new deals if needed, and queues processing
    */
   app.post("/api/v1/documents/bulk-assign", async (request, reply) => {
+    const userId = (request as any)?.auth?.userId as string | undefined;
+    if (!userId) {
+      return reply.status(401).send({ error: "Unauthorized" });
+    }
+
     const body = request.body as {
       assignments: Array<{
         filename: string;
@@ -334,9 +1958,11 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
       }>;
     };
 
-    if (!body.assignments || body.assignments.length === 0) {
+    const hasAssignments = Array.isArray(body.assignments) && body.assignments.length > 0;
+    const hasNewDeals = Array.isArray(body.newDeals) && body.newDeals.length > 0;
+    if (!hasAssignments && !hasNewDeals) {
       return reply.status(400).send({
-        error: "assignments are required",
+        error: "assignments or newDeals are required",
       });
     }
 
@@ -344,32 +1970,59 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
 
     // Note: Actual file upload and processing would happen in a separate step
     // This endpoint just records the assignments in the database
-    for (const assignment of body.assignments) {
-      results.push({
-        filename: assignment.filename,
-        dealId: assignment.dealId,
-        status: "assigned",
-        message: `File will be uploaded to deal ${assignment.dealId}`,
-      });
+    if (hasAssignments) {
+      for (const assignment of body.assignments) {
+        results.push({
+          filename: assignment.filename,
+          dealId: assignment.dealId,
+          status: "assigned",
+          message: `File will be uploaded to deal ${assignment.dealId}`,
+        });
+      }
     }
 
     // Handle new deals if requested
     if (body.newDeals && body.newDeals.length > 0) {
+      const { rows: existingDeals } = await pool.query<{ id: string; name: string }>(
+        `SELECT id, name
+           FROM deals
+          WHERE deleted_at IS NULL
+            AND created_by_user_id = $1`,
+        [userId]
+      );
+
       for (const newDeal of body.newDeals) {
-        const dealId = randomUUID();
+        const normalized = normalizeDealName(newDeal.dealName);
+        const match = normalized
+          ? existingDeals.find((d) => normalizeDealName(d.name) === normalized)
+          : undefined;
+
+        const dealId = match?.id ?? randomUUID();
         try {
-          await pool.query(
-            `INSERT INTO deals (id, name, stage, priority, updated_at)
-             VALUES ($1, $2, $3, $4, $5)`,
-            [sanitizeText(dealId), sanitizeText(newDeal.dealName), "intake", "medium", new Date().toISOString()],
-          );
+          if (!match) {
+            const createdByUserId = userId;
+            await pool.query(
+              `INSERT INTO deals (id, name, stage, priority, updated_at, created_by_user_id)
+               VALUES ($1, $2, $3, $4, $5, $6)`,
+              [
+                sanitizeText(dealId),
+                sanitizeText(newDeal.dealName),
+                "intake",
+                "medium",
+                new Date().toISOString(),
+                createdByUserId,
+              ],
+            );
+          }
 
           results.push({
             filename: newDeal.filename,
             dealId,
             dealName: newDeal.dealName,
-            status: "deal_created",
-            message: `New deal "${newDeal.dealName}" created`,
+            status: match ? "deal_reused" : "deal_created",
+            message: match
+              ? `Matched existing deal "${match.name}" (${match.id})`
+              : `New deal "${newDeal.dealName}" created`,
           });
         } catch (error) {
           results.push({
@@ -433,6 +2086,9 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
       // Calculate aggregate metrics
       const totalPages = (documents as any[]).reduce((sum: number, d: any) => sum + (d.page_count || 0), 0);
 
+      const documentReports = (documents as any[]).map((d: any) => buildDocumentExtractionReport(d));
+      const dealReport = buildDealExtractionReport({ dealId, documents: documentReports, totalPages });
+
       return reply.send({
         deal_id: dealId,
         ingestion_status: {
@@ -447,25 +2103,125 @@ export async function registerDocumentRoutes(app: FastifyInstance, pool = getPoo
           overall_readiness: overallReadiness,
           readiness_details: readinessDetails,
         },
-        documents: (documents as any[]).map((d: any) => ({
-          id: d.id,
-          title: d.title,
-          type: d.type,
-          status: d.status,
-          verification_status: d.verification_status || "pending",
-          pages: d.page_count || 0,
-          file_size_bytes: d.extraction_metadata?.fileSizeBytes || 0,
-          extraction_quality_score: (d.verification_result as any)?.overall_score || null,
-          ocr_avg_confidence: (d.verification_result as any)?.quality_checks?.ocr_confidence?.avg || null,
-          verification_warnings: (d.verification_result as any)?.warnings || [],
-          verification_recommendations: (d.verification_result as any)?.recommendations || [],
-        })),
+        extraction_report: dealReport,
+        documents: documentReports,
         last_updated: new Date().toISOString(),
       });
     } catch (error: any) {
       console.error("Ingestion status error:", error);
       return reply.status(500).send({
         error: "Failed to get ingestion status",
+        message: error?.message || "Unknown error",
+      });
+    }
+  });
+
+  /**
+   * Get an extraction report + confidence-based recommendations for a deal.
+   * This is a pure read endpoint built from stored verification results.
+   */
+  app.get("/api/v1/deals/:deal_id/documents/extraction-report", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+
+    try {
+      const { rows: documents } = await pool.query(
+        `SELECT id, title, type, status, verification_status, verification_result,
+                page_count, extraction_metadata
+           FROM documents
+           WHERE deal_id = $1
+           ORDER BY uploaded_at DESC`,
+        [dealId]
+      );
+
+      if (documents.length === 0) {
+        return reply.status(404).send({ error: "No documents found for this deal" });
+      }
+
+      const totalPages = (documents as any[]).reduce((sum: number, d: any) => sum + (d.page_count || 0), 0);
+      const documentReports = (documents as any[]).map((d: any) => buildDocumentExtractionReport(d));
+      const dealReport = buildDealExtractionReport({ dealId, documents: documentReports, totalPages });
+
+      return reply.send({
+        deal_id: dealId,
+        extraction_report: dealReport,
+        documents: documentReports,
+        last_updated: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      console.error("Extraction report error:", error);
+      return reply.status(500).send({
+        error: "Failed to get extraction report",
+        message: error?.message || "Unknown error",
+      });
+    }
+  });
+
+  /**
+   * Enqueue verification for documents in a deal.
+   *
+   * If document_ids omitted, verifies up to the most recent 200 documents in the deal.
+   */
+  app.post("/api/v1/deals/:deal_id/documents/verify", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    const body = (request.body ?? {}) as { document_ids?: string[] };
+
+    try {
+      const requestedIds = Array.isArray(body.document_ids) ? body.document_ids.filter(Boolean) : null;
+
+      let documentIds: string[] = [];
+
+      if (requestedIds && requestedIds.length > 0) {
+        const { rows } = await pool.query<{ id: string }>(
+          `SELECT id
+             FROM documents
+            WHERE deal_id = $1
+              AND id = ANY($2::uuid[])
+            ORDER BY uploaded_at DESC`,
+          [dealId, requestedIds]
+        );
+
+        documentIds = rows.map((r) => r.id);
+
+        if (documentIds.length !== requestedIds.length) {
+          return reply.status(400).send({
+            error: "Some document_ids do not belong to this deal",
+            requested: requestedIds.length,
+            found: documentIds.length,
+          });
+        }
+      } else {
+        const { rows } = await pool.query<{ id: string }>(
+          `SELECT id
+             FROM documents
+            WHERE deal_id = $1
+            ORDER BY uploaded_at DESC
+            LIMIT 200`,
+          [dealId]
+        );
+        documentIds = rows.map((r) => r.id);
+      }
+
+      if (documentIds.length === 0) {
+        return reply.status(404).send({ error: "No documents found for this deal" });
+      }
+
+      const job = await enqueue({
+        deal_id: dealId,
+        type: "verify_documents",
+        payload: { deal_id: dealId, document_ids: documentIds },
+      });
+
+      return reply.status(202).send({
+        ok: true,
+        deal_id: dealId,
+        job_id: job.job_id,
+        status: job.status,
+        document_count: documentIds.length,
+      });
+    } catch (error: any) {
+      console.error("Verify documents enqueue error:", error);
+      return reply.status(500).send({
+        error: "Failed to enqueue verification",
         message: error?.message || "Unknown error",
       });
     }

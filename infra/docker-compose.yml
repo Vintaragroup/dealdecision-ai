@@ -48,17 +48,27 @@ services:
       context: ..
       dockerfile: apps/api/Dockerfile.dev
     command: ["pnpm", "--filter", "api", "dev"]
+    env_file:
+      - ../.env
+      - ../apps/api/.env
     environment:
       API_PORT: "9000"
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/dealdecision
       REDIS_URL: redis://redis:6379
+      UPLOAD_DIR: /app/uploads
+      DISABLE_CLERK_AUTH: ${DISABLE_CLERK_AUTH:-0}
     ports:
       - "9000:9000"
     volumes:
       - ../apps/api/src:/app/apps/api/src
       - ../apps/api/package.json:/app/apps/api/package.json
+      - ../packages/core/dist:/app/packages/core/dist
+      - ../packages/core/package.json:/app/packages/core/package.json
+      - ../packages/contracts/dist:/app/packages/contracts/dist
+      - ../packages/contracts/package.json:/app/packages/contracts/package.json
       - ../tsconfig.base.json:/app/tsconfig.base.json
       - ../pnpm-lock.yaml:/app/pnpm-lock.yaml
+      - dealdecision_uploads:/app/uploads
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -72,14 +82,45 @@ services:
       context: ..
       dockerfile: apps/worker/Dockerfile.dev
     command: ["pnpm", "--filter", "worker", "dev"]
+    env_file:
+      - ../.env
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/dealdecision
       REDIS_URL: redis://redis:6379
+      UPLOAD_DIR: /app/uploads
+      VISION_BASE_URL: http://vision_worker:8000
+      ENABLE_VISUAL_EXTRACTION: ${ENABLE_VISUAL_EXTRACTION:-1}
+      DDAI_ENABLE_PHASEB_VISUAL_EVIDENCE: "1"
+      # PDF extraction rollout flags (safe defaults)
+      PDF_EXTRACT_MODE: ${PDF_EXTRACT_MODE:-v1}
+      PDF_SLIDE_UNDERSTANDING_MODE: ${PDF_SLIDE_UNDERSTANDING_MODE:-off}
+      PDF_V2_OCR_MODE: ${PDF_V2_OCR_MODE:-off}
+      PDF_V2_TEXT_REGION_ASSETS_MODE: ${PDF_V2_TEXT_REGION_ASSETS_MODE:-off}
+      PDF_PAGE_UNDERSTANDING_MODE: ${PDF_PAGE_UNDERSTANDING_MODE:-off}
+      # Analysis Foundation (Fundability) flags
+      # - Shadow mode is additive (does not change legacy scoring).
+      # - Soft caps computes a UI-friendly `fundability_score_0_100` derived from legacy score + caps.
+      # Override in `.env` or your shell if needed.
+      FUNDABILITY_SHADOW_MODE: ${FUNDABILITY_SHADOW_MODE:-1}
+      FUNDABILITY_SOFT_CAPS: ${FUNDABILITY_SOFT_CAPS:-1}
+      FUNDABILITY_HARD_GATES: ${FUNDABILITY_HARD_GATES:-0}
+      # Phase 1 DealOverviewV2 debug logs (candidate scoring + selection):
+      # - Set to "1" to enable
+      # - Set to "0" or remove to disable
+      # Verify:
+      #   docker compose -f infra/docker-compose.yml up -d worker
+      #   docker compose -f infra/docker-compose.yml logs -f --tail=200 worker
+      DEBUG_PHASE1_OVERVIEW_V2: "1"
     volumes:
       - ../apps/worker/src:/app/apps/worker/src
       - ../apps/worker/package.json:/app/apps/worker/package.json
+      - ../packages/core/dist:/app/packages/core/dist
+      - ../packages/core/package.json:/app/packages/core/package.json
+      - ../packages/contracts/dist:/app/packages/contracts/dist
+      - ../packages/contracts/package.json:/app/packages/contracts/package.json
       - ../tsconfig.base.json:/app/tsconfig.base.json
       - ../pnpm-lock.yaml:/app/pnpm-lock.yaml
+      - dealdecision_uploads:/app/uploads
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -87,27 +128,58 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      vision_worker:
+        condition: service_healthy
+
+  vision_worker:
+    build:
+      context: ../services/vision_worker
+      dockerfile: Dockerfile
+      args:
+        ENABLE_VISION_UNDERSTANDING: ${ENABLE_VISION_UNDERSTANDING:-0}
+    environment:
+      PYTHONUNBUFFERED: "1"
+      ENABLE_VISION_UNDERSTANDING: ${ENABLE_VISION_UNDERSTANDING:-0}
+      VISION_UNDERSTANDING_CACHE_DIR: /app/.cache/vision_understanding
+      # Cache locations for downloaded model assets (if any)
+      XDG_CACHE_HOME: /app/.cache
+      HF_HOME: /app/.cache/huggingface
+    volumes:
+      - dealdecision_uploads:/app/uploads
+      - vision_worker_cache:/app/.cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   web:
     build:
       context: ..
       dockerfile: apps/web/Dockerfile.dev
-    command: ["pnpm", "--filter", "web", "dev"]
+    command:
+      - sh
+      - -lc
+      - |
+        if [ ! -f /app/node_modules/@xyflow/react/dist/style.css ] || [ ! -d /app/node_modules/@dagrejs/dagre ] || [ ! -d /app/node_modules/@clerk/clerk-react ] || [ ! -d /app/node_modules/react-router-dom ] || [ ! -d /app/node_modules/@microsoft/fetch-event-source ]; then
+          CI=true pnpm install --frozen-lockfile
+        fi
+        pnpm --filter web dev -- --host 0.0.0.0 --port 5173
+    env_file:
+      - ../.env
+      - ../apps/web/.env
     environment:
       VITE_API_BASE_URL: http://localhost:9000
       VITE_BACKEND_MODE: live
       CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "200"
       WATCHPACK_POLLING: "true"
     ports:
       - "5199:5173"
     volumes:
-      - ../apps/web/src:/app/apps/web/src
-      - ../apps/web/package.json:/app/apps/web/package.json
-      - ../apps/web/vite.config.ts:/app/apps/web/vite.config.ts
-      - ../apps/web/index.html:/app/apps/web/index.html
-      - ../apps/web/tsconfig.json:/app/apps/web/tsconfig.json
-      - ../tsconfig.base.json:/app/tsconfig.base.json
-      - ../pnpm-lock.yaml:/app/pnpm-lock.yaml
+      - ..:/app
+      - /app/node_modules
+      - /app/apps/web/node_modules
     depends_on:
       api:
         condition: service_started
@@ -115,3 +187,5 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  dealdecision_uploads:
+  vision_worker_cache:

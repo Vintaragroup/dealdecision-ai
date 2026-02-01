@@ -1,0 +1,734 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import os
+import shutil
+import subprocess
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Tuple
+
+import requests
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from app.vision_understanding import infer_vision_understanding
+from PIL import Image
+
+from .extractors.layout import detect_layout_assets
+from .extractors.ocr import run_ocr_lite
+from .extractors.chart_bar import detect_bar_chart, extract_bar_chart
+from .extractors.table import detect_table, extract_table
+from .models import (
+    BBox,
+    ExtractVisualsRequest,
+    ExtractVisualsResponse,
+    VisualAsset,
+    ExtractXlsxRequest,
+    ExtractXlsxResponse,
+    ExtractPdfV2Request,
+    ExtractPdfV2Response,
+)
+
+from .extractors.xlsx_structured import extract_xlsx_structured_pages
+from .extractors.pdf_v2 import extract_pdf_v2_native_pages
+
+
+logger = logging.getLogger("vision_worker")
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+
+app = FastAPI(title="vision_worker", version="1.0.0")
+
+
+def _iso_utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+@app.on_event("startup")
+def _startup_log() -> None:
+    tesseract_path = shutil.which("tesseract")
+    logger.info(
+        "vision_worker:startup tesseract_available=%s tesseract_path=%s",
+        bool(tesseract_path),
+        tesseract_path,
+    )
+    if tesseract_path:
+        try:
+            proc = subprocess.run(
+                ["tesseract", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            first_line = (proc.stdout or proc.stderr or "").splitlines()[:1]
+            if first_line:
+                logger.info("vision_worker:tesseract_version %s", first_line[0].strip())
+        except Exception:
+            pass
+
+
+def _log_event(event: str, payload: Dict[str, Any]) -> None:
+    # Basic structured logging without extra dependencies.
+    logger.info("%s %s", event, json.dumps(payload, sort_keys=True, default=str))
+
+
+def _sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _read_image_bytes(image_uri: str, *, timeout_s: float = 5.0) -> Tuple[Optional[bytes], Dict[str, Any]]:
+    flags: Dict[str, Any] = {}
+
+    def _normalize_local_path(p: str) -> str:
+        # In the Node worker/API we store image URIs like "/uploads/...".
+        # In this container, uploads are mounted at "/app/uploads" by default.
+        # Normalize so local reads succeed without requiring callers to know container paths.
+        try:
+            if p.startswith("/uploads/"):
+                upload_dir = os.environ.get("UPLOAD_DIR", "/app/uploads").rstrip("/") or "/app/uploads"
+                return upload_dir + p[len("/uploads") :]
+        except Exception:
+            pass
+        return p
+
+    if image_uri.startswith("http://") or image_uri.startswith("https://"):
+        try:
+            resp = requests.get(image_uri, timeout=timeout_s)
+            resp.raise_for_status()
+            return resp.content, flags
+        except Exception as e:
+            flags["image_load"] = "download_failed"
+            flags["image_load_error"] = str(e)
+            return None, flags
+
+    # Local path
+    try:
+        local_path = _normalize_local_path(image_uri)
+        with open(local_path, "rb") as f:
+            return f.read(), flags
+    except Exception as e:
+        flags["image_load"] = "file_read_failed"
+        flags["image_load_error"] = str(e)
+        return None, flags
+
+
+def _open_image(image_bytes: bytes) -> Tuple[Optional[Image.Image], Dict[str, Any]]:
+    flags: Dict[str, Any] = {}
+    try:
+        img = Image.open(io := _BytesIO(image_bytes))  # type: ignore
+        img.load()
+        return img, flags
+    except Exception as e:
+        flags["image_decode"] = "failed"
+        flags["image_decode_error"] = str(e)
+        return None, flags
+    finally:
+        try:
+            io.close()  # type: ignore
+        except Exception:
+            pass
+
+
+class _BytesIO:  # tiny local BytesIO to avoid importing io in hot path
+    def __init__(self, b: bytes):
+        import io
+
+        self._io = io.BytesIO(b)
+
+    def __getattr__(self, name: str):
+        return getattr(self._io, name)
+
+
+@app.get("/health")
+def health() -> Dict[str, Any]:
+    tesseract_path = shutil.which("tesseract")
+    return {
+        "status": "ok",
+        "service": "vision_worker",
+        "timestamp": _iso_utc_now(),
+        "tesseract_available": bool(tesseract_path),
+        "tesseract_path": tesseract_path,
+    }
+
+
+@app.get("/")
+def root() -> Dict[str, Any]:
+    return {"status": "ok"}
+
+
+@app.post("/extract-xlsx")
+def extract_xlsx(req: ExtractXlsxRequest) -> JSONResponse:
+    started = time.perf_counter()
+    base_log = {
+        "document_id": req.document_id,
+        "extractor_version": req.extractor_version,
+    }
+    try:
+        pages = extract_xlsx_structured_pages(
+            document_id=req.document_id,
+            xlsx_b64=req.xlsx_b64,
+            extractor_version=req.extractor_version,
+            max_sheets=req.max_sheets,
+            max_tables_per_sheet=req.max_tables_per_sheet,
+        )
+        out = ExtractXlsxResponse(document_id=req.document_id, extractor_version=req.extractor_version, pages=pages)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        _log_event(
+            "extract_xlsx",
+            {
+                **base_log,
+                "elapsed_ms": elapsed_ms,
+                "status": "ok",
+                "sheets": len(out.pages),
+                "assets": sum(len(p.assets) for p in out.pages),
+            },
+        )
+        return JSONResponse(status_code=200, content=out.model_dump())
+    except Exception as e:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        _log_event(
+            "extract_xlsx",
+            {
+                **base_log,
+                "elapsed_ms": elapsed_ms,
+                "status": "error",
+                "error": str(e),
+            },
+        )
+        return JSONResponse(
+            status_code=200,
+            content=ExtractXlsxResponse(document_id=req.document_id, extractor_version=req.extractor_version, pages=[]).model_dump(),
+        )
+
+
+@app.post("/extract-pdf-v2")
+def extract_pdf_v2(req: ExtractPdfV2Request) -> JSONResponse:
+    started = time.perf_counter()
+    base_log = {
+        "document_id": req.document_id,
+        "extractor_version": req.extractor_version,
+    }
+    try:
+        pages = extract_pdf_v2_native_pages(
+            document_id=req.document_id,
+            pdf_b64=req.pdf_b64,
+            max_pages=req.max_pages,
+        )
+        out = ExtractPdfV2Response(document_id=req.document_id, extractor_version=req.extractor_version, pages=pages)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        _log_event(
+            "extract_pdf_v2",
+            {
+                **base_log,
+                "elapsed_ms": elapsed_ms,
+                "status": "ok",
+                "pages": len(out.pages),
+            },
+        )
+        return JSONResponse(status_code=200, content=out.model_dump())
+    except Exception as e:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        _log_event(
+            "extract_pdf_v2",
+            {
+                **base_log,
+                "elapsed_ms": elapsed_ms,
+                "status": "error",
+                "error": str(e),
+            },
+        )
+        return JSONResponse(
+            status_code=200,
+            content=ExtractPdfV2Response(document_id=req.document_id, extractor_version=req.extractor_version, pages=[]).model_dump(),
+        )
+
+
+@app.post("/extract-visuals")
+def extract_visuals(req: ExtractVisualsRequest) -> JSONResponse:
+    started = time.perf_counter()
+    # Soft time budget for table extraction so we never block the worker.
+    table_budget_s = float(os.getenv("TABLE_TIME_BUDGET_S", "4.0"))
+    table_deadline = started + table_budget_s
+    chart_budget_s = float(os.getenv("CHART_TIME_BUDGET_S", "4.0"))
+    chart_deadline = started + chart_budget_s
+
+    base_log = {
+        "document_id": req.document_id,
+        "page_index": req.page_index,
+        "extractor_version": req.extractor_version,
+    }
+
+    debug_logs = os.getenv("VISION_DEBUG_LOGS", "").strip().lower() in {"1", "true", "yes", "on"}
+    if debug_logs:
+        has_inline = bool(getattr(req, "image_b64", None))
+        image_uri_val = (req.image_uri or "") if getattr(req, "image_uri", None) else ""
+        image_uri_kind = "inline" if has_inline else ("http" if image_uri_val.startswith(("http://", "https://")) else "file")
+        local_exists = None
+        if image_uri_kind == "file" and image_uri_val:
+            try:
+                local_exists = bool(os.path.exists(image_uri_val))
+            except Exception:
+                local_exists = None
+        _log_event(
+            "extract_visuals_debug",
+            {
+                **base_log,
+                "image_uri_kind": image_uri_kind,
+                "image_uri": req.image_uri,
+                "image_b64_len": len(req.image_b64) if getattr(req, "image_b64", None) else 0,
+                "local_exists": local_exists,
+                "crop_saved": False,
+                "note": "vision_v1 does not write per-asset crops; assets.image_uri will be null",
+            },
+        )
+
+    try:
+        load_flags: Dict[str, Any] = {}
+        image_bytes: Optional[bytes] = None
+
+        if getattr(req, "image_b64", None):
+            try:
+                import base64
+
+                image_bytes = base64.b64decode(req.image_b64)
+                load_flags["image_load"] = "inline_b64"
+                load_flags["image_b64_len"] = len(req.image_b64)
+            except Exception as e:
+                load_flags["image_load"] = "inline_b64_decode_failed"
+                load_flags["image_load_error"] = str(e)
+                image_bytes = None
+
+        if image_bytes is None:
+            image_uri = req.image_uri or ""
+            image_bytes, uri_flags = _read_image_bytes(image_uri)
+            load_flags.update(uri_flags)
+
+        if not image_bytes:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            _log_event(
+                "extract_visuals",
+                {
+                    **base_log,
+                    "elapsed_ms": elapsed_ms,
+                    "status": "ok",
+                    "assets": 1,
+                    "flags": load_flags,
+                },
+            )
+
+            # Return a stable shape with a synthetic asset containing the error.
+            asset = VisualAsset(
+                asset_type="unknown",
+                bbox=BBox(x=0.0, y=0.0, w=1.0, h=1.0),
+                confidence=0.0,
+                quality_flags={"error": "image_load_failed", **load_flags},
+                image_uri=None,
+                image_hash=None,
+            )
+            out = ExtractVisualsResponse(
+                document_id=req.document_id,
+                page_index=req.page_index,
+                extractor_version=req.extractor_version,
+                assets=[asset],
+            )
+            return JSONResponse(status_code=200, content=out.model_dump())
+
+        image_hash = _sha256_hex(image_bytes)
+
+        # Open image
+        try:
+            from io import BytesIO
+
+            img = Image.open(BytesIO(image_bytes))
+            img.load()
+        except Exception as e:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            flags = {"image_decode": "failed", "image_decode_error": str(e)}
+            _log_event(
+                "extract_visuals",
+                {**base_log, "elapsed_ms": elapsed_ms, "status": "ok", "assets": 1, "flags": flags},
+            )
+            asset = VisualAsset(
+                asset_type="unknown",
+                bbox=BBox(x=0.0, y=0.0, w=1.0, h=1.0),
+                confidence=0.0,
+                quality_flags={"error": "image_decode_failed", **flags},
+                image_uri=None,
+                image_hash=image_hash,
+            )
+            out = ExtractVisualsResponse(
+                document_id=req.document_id,
+                page_index=req.page_index,
+                extractor_version=req.extractor_version,
+                assets=[asset],
+            )
+            return JSONResponse(status_code=200, content=out.model_dump())
+
+        # Layout-lite
+        assets = detect_layout_assets(
+            extractor_version=req.extractor_version,
+            image_width=img.size[0],
+            image_height=img.size[1],
+        )
+
+        def _parse_bool(v: Optional[str]) -> Optional[bool]:
+            if v is None:
+                return None
+            s = v.strip().lower()
+            if s in {"1", "true", "yes", "on"}:
+                return True
+            if s in {"0", "false", "no", "off"}:
+                return False
+            return None
+
+        tesseract_path = shutil.which("tesseract")
+        tesseract_available = bool(tesseract_path)
+        ocr_enabled_env = _parse_bool(os.getenv("VISION_OCR_ENABLED"))
+        ocr_enabled = tesseract_available if ocr_enabled_env is None else bool(ocr_enabled_env)
+
+        def _crop_by_bbox(page: Image.Image, bbox: BBox) -> Image.Image:
+            try:
+                w, h = page.size
+                x0 = int(max(0.0, min(1.0, float(bbox.x))) * w)
+                y0 = int(max(0.0, min(1.0, float(bbox.y))) * h)
+                x1 = int(max(0.0, min(1.0, float(bbox.x + bbox.w))) * w)
+                y1 = int(max(0.0, min(1.0, float(bbox.y + bbox.h))) * h)
+                if x1 <= x0 or y1 <= y0:
+                    return page
+                return page.crop((x0, y0, x1, y1))
+            except Exception:
+                return page
+
+        # OCR-lite on each asset (v1: full-page only)
+        table_summary: Dict[str, Any] = {
+            "table_detected": False,
+            "table_method": None,
+            "table_rows": 0,
+            "table_cols": 0,
+        }
+
+        chart_summary: Dict[str, Any] = {
+            "bar_detected": False,
+            "bar_count": 0,
+            "axis_mapping_succeeded": False,
+            "values_normalized": False,
+        }
+
+        # Optional vision understanding (CLIP-style) for no-text/low-signal pages.
+        vu_enabled = os.environ.get("ENABLE_VISION_UNDERSTANDING", "0").strip().lower() in ("1", "true", "yes", "on")
+        vu_cache_dir = os.environ.get("VISION_UNDERSTANDING_CACHE_DIR", "/tmp/vision_understanding_cache")
+        try:
+            vu_min_conf = float(os.environ.get("VISION_UNDERSTANDING_MIN_CONFIDENCE", "0.45"))
+        except Exception:
+            vu_min_conf = 0.45
+        try:
+            vu_min_conf_force = float(os.environ.get("VISION_UNDERSTANDING_MIN_CONFIDENCE_FORCE", "0.35"))
+        except Exception:
+            vu_min_conf_force = 0.35
+
+        def _ocr_looks_low_quality(text: Optional[str], conf: float) -> bool:
+            s = (text or "").strip()
+            if not s:
+                return True
+
+            def _letters_only(word: str) -> str:
+                return "".join(ch for ch in (word or "") if ch.isalpha())
+
+            def _case_transitions(word: str) -> int:
+                w = _letters_only(word)
+                if len(w) < 2:
+                    return 0
+                transitions = 0
+                prev_upper = None
+                for ch in w:
+                    is_upper = ch.isupper()
+                    if prev_upper is not None and is_upper != prev_upper:
+                        transitions += 1
+                    prev_upper = is_upper
+                return transitions
+
+            def _max_consonant_run(word: str) -> int:
+                w = _letters_only(word).lower()
+                if not w:
+                    return 0
+                vowels = set("aeiouy")
+                run = 0
+                best = 0
+                for ch in w:
+                    if ch in vowels:
+                        run = 0
+                        continue
+                    run += 1
+                    best = max(best, run)
+                return best
+
+            def _looks_random_mixed_case(word: str) -> bool:
+                w = _letters_only(word)
+                if len(w) < 6:
+                    return False
+                if not any(ch.islower() for ch in w):
+                    return False
+                if not any(ch.isupper() for ch in w):
+                    return False
+                return _case_transitions(w) >= 3
+
+            def _looks_unpronounceable(word: str) -> bool:
+                w = _letters_only(word)
+                if len(w) < 7:
+                    return False
+                return _max_consonant_run(w) >= 5
+
+            try:
+                if float(conf) < 0.25:
+                    return True
+            except Exception:
+                pass
+
+            collapsed = "".join(ch for ch in s if ch not in ("\n", "\r"))
+            if not collapsed:
+                return True
+
+            alpha = sum(1 for ch in collapsed if ch.isalpha())
+            alpha_ratio = alpha / max(1, len(collapsed))
+            if alpha_ratio < 0.45:
+                return True
+
+            non_alnum = sum(1 for ch in collapsed if not (ch.isalnum() or ch.isspace()))
+            non_alnum_ratio = non_alnum / max(1, len(collapsed))
+            if non_alnum_ratio > 0.30:
+                return True
+
+            words = [w for w in s.split() if w]
+            if not words:
+                return True
+            single_char = sum(1 for w in words if len(w) == 1)
+            if single_char >= int(len(words) * 0.6):
+                return True
+
+            # Heuristic: OCR garbage often creates long tokens with no vowels.
+            if len(words) >= 6:
+                vowel_set = set("aeiou")
+                long_no_vowel = 0
+                for w in words:
+                    if len(w) >= 12:
+                        lw = w.lower()
+                        if not any(ch in vowel_set for ch in lw):
+                            long_no_vowel += 1
+                if long_no_vowel >= int(len(words) * 0.2):
+                    return True
+
+            # Heuristic: OCR gibberish can still be alphabetic but contains many unpronounceable or
+            # random-mixed-case tokens (e.g. "atewULe", "PIOWEPUNS").
+            if len(words) >= 6:
+                weird = 0
+                for w in words:
+                    if _looks_unpronounceable(w) or _looks_random_mixed_case(w):
+                        weird += 1
+                if weird >= int(len(words) * 0.25):
+                    return True
+
+            return False
+
+        for a in assets:
+            ocr_flags: Dict[str, Any] = {}
+            if ocr_enabled:
+                # OCR should run at least for image_text and table; in v1 we OCR all regions.
+                ocr_img = _crop_by_bbox(img, a.bbox)
+                extraction, ocr_flags = run_ocr_lite(ocr_img)
+                a.extraction.ocr_text = extraction.ocr_text
+                a.extraction.ocr_blocks = extraction.ocr_blocks
+                a.extraction.confidence = extraction.confidence
+            else:
+                a.extraction.ocr_text = None
+                a.extraction.ocr_blocks = []
+                a.extraction.confidence = 0.0
+                ocr_flags["ocr"] = "disabled"
+                ocr_flags["tesseract_available"] = tesseract_available
+
+            # Attach URI/hash metadata (no crop in v1)
+            a.image_uri = None
+            a.image_hash = image_hash
+            if ocr_flags:
+                a.quality_flags.update(ocr_flags)
+
+            # Per-asset OCR log line for debugging in Docker.
+            try:
+                _log_event(
+                    "asset_ocr",
+                    {
+                        **base_log,
+                        "asset_type": a.asset_type,
+                        "ocr_ran": bool(ocr_enabled),
+                        "ocr_len": len(a.extraction.ocr_text or ""),
+                        "tesseract_available": tesseract_available,
+                        "tesseract_path": tesseract_path,
+                    },
+                )
+            except Exception:
+                pass
+
+            # Table detection/extraction (full-page only in v1)
+            detect_res, table_detect_flags = detect_table(img, deadline=table_deadline)
+            if table_detect_flags:
+                a.quality_flags.update(table_detect_flags)
+
+            if detect_res.detected:
+                a.asset_type = "table"
+                structured, table_flags = extract_table(
+                    img,
+                    detect=detect_res,
+                    ocr_blocks=a.extraction.ocr_blocks,
+                    deadline=table_deadline,
+                )
+                if table_flags:
+                    a.quality_flags.update(table_flags)
+
+                a.extraction.structured_json = structured
+
+                try:
+                    rows = structured.get("table", {}).get("rows", [])
+                    table_rows = len(rows) if isinstance(rows, list) else 0
+                    table_cols = len(rows[0]) if table_rows and isinstance(rows[0], list) else 0
+                except Exception:
+                    table_rows = 0
+                    table_cols = 0
+
+                table_conf = float(structured.get("table", {}).get("confidence", 0.0) or 0.0)
+                table_method = structured.get("table", {}).get("method")
+                table_summary = {
+                    "table_detected": True,
+                    "table_method": table_method,
+                    "table_rows": table_rows,
+                    "table_cols": table_cols,
+                }
+
+                a.extraction.confidence = max(a.extraction.confidence, table_conf)
+                a.confidence = max(a.confidence, table_conf)
+            else:
+                # Chart detection/extraction (full-page only in v1)
+                chart_res, chart_detect_flags = detect_bar_chart(img, deadline=chart_deadline)
+                if chart_detect_flags:
+                    a.quality_flags.update(chart_detect_flags)
+
+                if chart_res.detected:
+                    a.asset_type = "chart"
+                    structured, chart_flags = extract_bar_chart(
+                        img,
+                        detect=chart_res,
+                        ocr_blocks=a.extraction.ocr_blocks,
+                        deadline=chart_deadline,
+                    )
+                    if chart_flags:
+                        a.quality_flags.update(chart_flags)
+
+                    a.extraction.structured_json = structured
+
+                    chart_conf = float(structured.get("chart", {}).get("confidence", 0.0) or 0.0)
+                    a.extraction.confidence = max(a.extraction.confidence, chart_conf)
+                    a.confidence = max(a.confidence, chart_conf)
+
+                    try:
+                        series = structured.get("chart", {}).get("series", [])
+                        values_norm = bool(series and series[0].get("values_are_normalized") is True)
+                    except Exception:
+                        values_norm = False
+
+                    chart_summary = {
+                        "bar_detected": True,
+                        "bar_count": int(chart_res.bar_count),
+                        "axis_mapping_succeeded": bool(a.quality_flags.get("axis_mapping_succeeded") is True),
+                        "values_normalized": bool(values_norm),
+                    }
+
+            # Vision understanding: by default run only when we still have low text signal AND no table/chart structured output.
+            # Override: if extractor_version contains "force_vu", run anyway (best-effort) so callers can request
+            # cheap per-page semantic hints without burning LLM tokens.
+            try:
+                vu_force = "force_vu" in (req.extractor_version or "").strip().lower()
+                ocr_text = a.extraction.ocr_text or ""
+                ocr_len = len(ocr_text)
+                has_structured_payload = bool(a.extraction.structured_json and isinstance(a.extraction.structured_json, dict))
+                ocr_low_quality = _ocr_looks_low_quality(ocr_text, float(a.extraction.confidence or 0.0))
+                allow_understanding = vu_enabled and (
+                    (
+                        vu_force
+                        and a.asset_type in ("unknown", "image_text", "table")
+                    )
+                    or (
+                        (not vu_force)
+                        and a.asset_type in ("unknown", "image_text")
+                        and not has_structured_payload
+                        and (ocr_len < 20 or ocr_low_quality)
+                    )
+                )
+                if allow_understanding:
+                    vu_payload, vu_flags = infer_vision_understanding(
+                        image=img,
+                        image_hash=image_hash,
+                        enable=True,
+                        cache_dir=vu_cache_dir,
+                        min_confidence=(vu_min_conf_force if vu_force else vu_min_conf),
+                    )
+                    if vu_flags:
+                        a.quality_flags.update(vu_flags)
+                    if vu_payload and isinstance(vu_payload, dict):
+                        if not a.extraction.structured_json or not isinstance(a.extraction.structured_json, dict):
+                            a.extraction.structured_json = {}
+                        a.extraction.structured_json.update(vu_payload)
+            except Exception:
+                try:
+                    a.quality_flags["vision_understanding"] = "error"
+                except Exception:
+                    pass
+
+            # If OCR text exists, bump confidence a bit
+            if a.extraction.ocr_text:
+                a.confidence = max(a.confidence, a.extraction.confidence)
+            else:
+                a.confidence = min(a.confidence, 0.25)
+
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        _log_event(
+            "extract_visuals",
+            {
+                **base_log,
+                "elapsed_ms": elapsed_ms,
+                "status": "ok",
+                "assets": len(assets),
+                **table_summary,
+                **chart_summary,
+            },
+        )
+
+        out = ExtractVisualsResponse(
+            document_id=req.document_id,
+            page_index=req.page_index,
+            extractor_version=req.extractor_version,
+            assets=assets,
+        )
+        return JSONResponse(status_code=200, content=out.model_dump())
+
+    except Exception as e:  # ultimate fail-safe
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        _log_event(
+            "extract_visuals",
+            {**base_log, "elapsed_ms": elapsed_ms, "status": "ok", "assets": 1, "error": str(e)},
+        )
+
+        asset = VisualAsset(
+            asset_type="unknown",
+            bbox=BBox(x=0.0, y=0.0, w=1.0, h=1.0),
+            confidence=0.0,
+            quality_flags={"error": "uncaught_exception", "error_detail": str(e)},
+            image_uri=None,
+            image_hash=None,
+        )
+        out = ExtractVisualsResponse(
+            document_id=req.document_id,
+            page_index=req.page_index,
+            extractor_version=req.extractor_version,
+            assets=[asset],
+        )
+        return JSONResponse(status_code=200, content=out.model_dump())

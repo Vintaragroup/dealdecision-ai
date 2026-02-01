@@ -1,0 +1,128 @@
+name: doc-pipeline-e2e
+
+on:
+  workflow_dispatch:
+    inputs:
+      require_r2:
+        description: "Require rendered_pages_r2 readiness (needs R2_* secrets)"
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  doc-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install deps
+        run: pnpm -w install --frozen-lockfile
+
+      - name: Assert R2 secrets present (when required)
+        if: ${{ inputs.require_r2 }}
+        shell: bash
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_REGION: ${{ secrets.R2_REGION }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for v in R2_ENDPOINT R2_BUCKET R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
+            if [ -z "${!v:-}" ]; then
+              echo "Missing required secret: $v" >&2
+              missing=1
+            fi
+          done
+          if [ "$missing" = "1" ]; then
+            echo "\nTo run this workflow with require_r2=true, add R2_* secrets in the repo settings." >&2
+            exit 1
+          fi
+
+      - name: Write runtime .env for docker compose
+        shell: bash
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_REGION: ${{ secrets.R2_REGION }}
+          R2_SIGNED_URL_TTL_SECONDS: ${{ secrets.R2_SIGNED_URL_TTL_SECONDS }}
+          R2_PUBLIC_BASE_URL: ${{ secrets.R2_PUBLIC_BASE_URL }}
+        run: |
+          set -euo pipefail
+          {
+            echo "NODE_ENV=development"
+            echo "DISABLE_CLERK_AUTH=1"
+            if [ "${{ inputs.require_r2 }}" = "true" ]; then
+              echo "R2_ENDPOINT=${R2_ENDPOINT}"
+              echo "R2_BUCKET=${R2_BUCKET}"
+              echo "R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}"
+              echo "R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}"
+              echo "R2_REGION=${R2_REGION:-auto}"
+              echo "R2_SIGNED_URL_TTL_SECONDS=${R2_SIGNED_URL_TTL_SECONDS:-3600}"
+              if [ -n "${R2_PUBLIC_BASE_URL:-}" ]; then
+                echo "R2_PUBLIC_BASE_URL=${R2_PUBLIC_BASE_URL}"
+              fi
+              echo "R2_VERIFY_UPLOAD=1"
+            fi
+          } > .env
+
+      - name: Start services
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f infra/docker-compose.yml up -d postgres redis vision_worker
+          docker compose -f infra/docker-compose.yml up -d migrate
+          docker compose -f infra/docker-compose.yml up -d api worker
+
+      - name: Wait for API health
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Waiting for http://127.0.0.1:9000/healthz ..."
+          for i in $(seq 1 60); do
+            if curl -fsS --max-time 2 http://127.0.0.1:9000/healthz >/dev/null; then
+              echo "API healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "API did not become healthy in time" >&2
+          docker compose -f infra/docker-compose.yml logs --tail=200 api || true
+          exit 1
+
+      - name: Run e2e doc pipeline
+        env:
+          API_BASE_URL: http://127.0.0.1:9000
+          REQUIRE_RENDERED_PAGES_R2: ${{ inputs.require_r2 && '1' || '0' }}
+          TIMEOUT_MS: "900000"
+          POLL_INTERVAL_MS: "2000"
+        run: pnpm verify:doc-pipeline:e2e
+
+      - name: Logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          docker compose -f infra/docker-compose.yml logs --tail=300 api worker vision_worker || true
+
+      - name: Shutdown
+        if: always()
+        shell: bash
+        run: |
+          docker compose -f infra/docker-compose.yml down -v || true

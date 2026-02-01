@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Button } from '../ui/button';
-import { Briefcase, FileText, DollarSign, Users, TrendingUp, Rocket, Upload, X } from 'lucide-react';
-import { useUserRole } from '../../contexts/UserRoleContext';
+import { Briefcase, FileText, DollarSign, Users, TrendingUp, Upload, X } from 'lucide-react';
 
 interface FirstDealGuideProps {
   darkMode: boolean;
@@ -19,7 +18,6 @@ export interface DealData {
 }
 
 export function FirstDealGuide({ darkMode, onComplete, onSkip }: FirstDealGuideProps) {
-  const { isFounder } = useUserRole();
   const [formData, setFormData] = useState<DealData>({
     companyName: '',
     stage: '',
@@ -157,16 +155,13 @@ export function FirstDealGuide({ darkMode, onComplete, onSkip }: FirstDealGuideP
             {/* Header */}
             <div className="text-center mb-8">
               <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-[#6366f1] to-[#8b5cf6] flex items-center justify-center">
-                {isFounder ? <Rocket className="w-8 h-8 text-white" /> : <Briefcase className="w-8 h-8 text-white" />}
+                <Briefcase className="w-8 h-8 text-white" />
               </div>
               <h2 className={`text-2xl mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                {isFounder ? 'Set up your company profile' : 'Create your first deal'}
+                Create your first deal
               </h2>
               <p className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                {isFounder 
-                  ? 'Start building your pitch with your company details'
-                  : 'Start analyzing with a real or sample deal'
-                }
+                Start analyzing with a real or sample deal
               </p>
             </div>
 
@@ -177,16 +172,14 @@ export function FirstDealGuide({ darkMode, onComplete, onSkip }: FirstDealGuideP
                   Company Name
                 </label>
                 <div className="relative">
-                  {isFounder ? <Rocket className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${
+                  <Briefcase className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${
                     darkMode ? 'text-gray-500' : 'text-gray-400'
-                  }`} /> : <Briefcase className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${
-                    darkMode ? 'text-gray-500' : 'text-gray-400'
-                  }`} />}
+                  }`} />
                   <input
                     type="text"
                     value={formData.companyName}
                     onChange={(e) => setFormData({ ...formData, companyName: e.target.value })}
-                    placeholder={isFounder ? "e.g., Your Startup Name" : "e.g., CloudScale SaaS"}
+                    placeholder="e.g., CloudScale SaaS"
                     className={`w-full pl-10 pr-4 py-2.5 rounded-lg border transition-all ${
                       darkMode
                         ? 'bg-white/5 border-white/10 text-white placeholder-gray-500 focus:border-[#6366f1]'
@@ -232,7 +225,7 @@ export function FirstDealGuide({ darkMode, onComplete, onSkip }: FirstDealGuideP
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className={`block text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                    {isFounder ? 'Funding Target' : 'Deal Amount'}
+                    Deal Amount
                   </label>
                   <div className="relative">
                     <DollarSign className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${
@@ -242,7 +235,7 @@ export function FirstDealGuide({ darkMode, onComplete, onSkip }: FirstDealGuideP
                       type="text"
                       value={formData.amount}
                       onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
-                      placeholder={isFounder ? "e.g., $500K - $2M" : "e.g., $2M"}
+                      placeholder="e.g., $2M"
                       className={`w-full pl-10 pr-4 py-2.5 rounded-lg border transition-all ${
                         darkMode
                           ? 'bg-white/5 border-white/10 text-white placeholder-gray-500 focus:border-[#6366f1]'
@@ -287,7 +280,7 @@ export function FirstDealGuide({ darkMode, onComplete, onSkip }: FirstDealGuideP
               {/* Document Upload Section */}
               <div>
                 <label className={`block text-sm mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  {isFounder ? 'Upload Documents (Optional)' : 'Upload Deal Documents'}
+                  Upload Deal Documents
                 </label>
                 
                 {/* Drag & Drop Area */}
@@ -326,10 +319,7 @@ export function FirstDealGuide({ darkMode, onComplete, onSkip }: FirstDealGuideP
                         <span className="text-[#6366f1]">Click to upload</span> or drag and drop
                       </div>
                       <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                        {isFounder 
-                          ? 'Pitch deck, financials, business plan (PDF, DOC, XLS, PPT)'
-                          : 'Pitch deck, financials, due diligence docs (PDF, DOC, XLS, PPT)'
-                        }
+                        Pitch deck, financials, due diligence docs (PDF, DOC, XLS, PPT)
                       </div>
                     </div>
                   </div>
@@ -396,10 +386,7 @@ export function FirstDealGuide({ darkMode, onComplete, onSkip }: FirstDealGuideP
                       💡 Pro Tip
                     </div>
                     <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      {isFounder 
-                        ? 'Don\'t have a pitch deck yet? No problem! Our AI Studio can help you create a compelling pitch from scratch.'
-                        : 'Don\'t have documents yet? No problem! Our AI Studio can help you generate everything you need.'
-                      }
+                      Don't have documents yet? No problem! Document Studio can help you generate what you need.
                     </div>
                   </div>
                 </div>
@@ -420,7 +407,7 @@ export function FirstDealGuide({ darkMode, onComplete, onSkip }: FirstDealGuideP
                   disabled={!isValid}
                   className="flex-1"
                 >
-                  {isFounder ? 'Create Profile' : 'Create Deal'}
+                  Create Deal
                 </Button>
               </div>
             </form>

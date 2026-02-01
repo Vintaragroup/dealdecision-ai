@@ -3,8 +3,19 @@ import type { DealPriority, DealStage, DealTrend, Deal } from '@dealdecision/con
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Select } from '../ui/select';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 import { ExportDealsModal } from '../ExportDealsModal';
-import { apiGetDeals, apiGetDocuments, apiAutoProgressDeal, isLiveBackend } from '../../lib/apiClient';
+import { apiGetDeals, apiGetDocuments, apiAutoProgressDeal, apiDeleteDeal } from '../../lib/apiClient';
+import { Modal } from '../ui/Modal';
+import { useScoreSource } from '../../contexts/ScoreSourceContext';
+import { getDisplayScoreForDeal } from '../../lib/dealScore';
+import { useAuth } from '@clerk/clerk-react';
 import { 
   Search,
   Plus,
@@ -21,6 +32,7 @@ import {
   Edit,
   Trash2,
   MoreVertical,
+  ChevronRight,
   Calendar,
   Users,
   Target,
@@ -33,14 +45,15 @@ interface DealData {
   id: string;
   name: string;
   stage: DealStage;
-  score: number;
+  score: number | null;
+  scoreSourceUsed?: 'legacy' | 'fundability_v1';
   lastUpdated: string;
   documents: number;
-  completeness: number;
+  completeness: number | null;
   fundingTarget: string;
   trend: DealTrend;
   priority: DealPriority;
-  views: number;
+  views: number | null;
   owner: string;
 }
 
@@ -53,6 +66,18 @@ interface DealsListProps {
 }
 
 export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, createdDeal }: DealsListProps) {
+  const { isLoaded: authLoaded, isSignedIn, orgId } = useAuth();
+  const { scoreSource } = useScoreSource();
+  const debugDealsList = useMemo(() => {
+    try {
+      if (typeof window === 'undefined') return false;
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('debugDealsList') === '1') return true;
+      return window.localStorage.getItem('ddai:debugDealsList') === '1';
+    } catch {
+      return false;
+    }
+  }, []);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [searchQuery, setSearchQuery] = useState('');
   const [stageFilter, setStageFilter] = useState('all');
@@ -65,8 +90,21 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
   const [liveDeals, setLiveDeals] = useState<Deal[]>([]);
   const [progressionNotification, setProgressionNotification] = useState<{ dealId: string; oldStage: string; newStage: string } | null>(null);
 
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deletingDealId, setDeletingDealId] = useState<string | null>(null);
+
   useEffect(() => {
-    if (!isLiveBackend()) return;
+    if (!authLoaded) return;
+
+    // Do not call the API until an active org exists.
+    if (!isSignedIn || !orgId) {
+      setLoading(false);
+      setError(null);
+      setLiveDeals([]);
+      return;
+    }
 
     let isMounted = true;
     setLoading(true);
@@ -76,6 +114,14 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
       try {
         const deals = await apiGetDeals();
         if (!isMounted) return;
+
+        if (debugDealsList) {
+          console.info('[DDAI][DealsList] apiGetDeals resolved', {
+            orgId,
+            count: Array.isArray(deals) ? deals.length : null,
+            first: Array.isArray(deals) && deals.length > 0 ? deals[0] : null,
+          });
+        }
 
         // Fetch documents for each deal
         const documentCounts: Record<string, number> = {};
@@ -97,6 +143,14 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
 
         if (!isMounted) return;
         setLiveDeals(dealsWithDocuments);
+
+        if (debugDealsList) {
+          console.info('[DDAI][DealsList] setLiveDeals', {
+            count: dealsWithDocuments.length,
+            firstId: dealsWithDocuments[0]?.id,
+            firstName: dealsWithDocuments[0]?.name,
+          });
+        }
       } catch (err) {
         if (!isMounted) return;
         setError(err instanceof Error ? err.message : 'Failed to load deals');
@@ -111,9 +165,96 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [authLoaded, isSignedIn, orgId]);
+
+  const openDeleteModal = (deal: { id: string; name: string }) => {
+    setError(null);
+    setDeleteTarget({ id: deal.id, name: deal.name });
+    setDeleteConfirmText('');
+    setDeleteModalOpen(true);
+  };
+
+  const closeDeleteModal = () => {
+    if (deletingDealId) return;
+    setDeleteModalOpen(false);
+    setDeleteTarget(null);
+    setDeleteConfirmText('');
+  };
+
+  const isDeleteConfirmed = (() => {
+    const typed = deleteConfirmText.trim();
+    if (!deleteTarget) return false;
+    if (typed === 'DELETE') return true;
+    return typed === deleteTarget.name;
+  })();
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    if (!isDeleteConfirmed) return;
+
+    setDeletingDealId(deleteTarget.id);
+    setError(null);
+    try {
+      await apiDeleteDeal(deleteTarget.id, { purge: true });
+      setLiveDeals((prev) => prev.filter((d) => d.id !== deleteTarget.id));
+      setSelectedDeals((prev) => prev.filter((id) => id !== deleteTarget.id));
+      setDeleteModalOpen(false);
+      setDeleteTarget(null);
+      setDeleteConfirmText('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete deal');
+    } finally {
+      setDeletingDealId(null);
+    }
+  };
 
   const deals: DealData[] = useMemo(() => {
+    const toNonEmptyString = (value: unknown): string | null => {
+      if (typeof value !== 'string') return null;
+      const s = value.trim();
+      return s.length > 0 ? s : null;
+    };
+
+    const extractFundingTarget = (deal: any): string => {
+      const direct = toNonEmptyString(deal?.fundingTarget);
+      if (direct) return direct;
+
+      const overview = deal?.ui?.overviewV2 ?? deal?.ui?.dealOverviewV2 ?? deal?.deal_overview_v2 ?? deal?.phase1?.deal_overview_v2;
+      const raise = toNonEmptyString(overview?.raise);
+      return raise ?? '';
+    };
+
+    const computeCompleteness = (deal: any): number | null => {
+      const existing = typeof deal?.completeness === 'number' && Number.isFinite(deal.completeness) ? deal.completeness : null;
+      if (existing != null) return Math.max(0, Math.min(100, Math.round(existing)));
+
+      const overview = deal?.ui?.overviewV2 ?? deal?.ui?.dealOverviewV2 ?? deal?.deal_overview_v2 ?? deal?.phase1?.deal_overview_v2;
+      if (!overview || typeof overview !== 'object') return null;
+
+      const fields: Array<unknown> = [
+        overview?.product_solution,
+        overview?.market_icp,
+        overview?.deal_type,
+        overview?.raise,
+        overview?.business_model,
+      ];
+      const filledScalar = fields.filter((v) => typeof v === 'string' && v.trim().length > 0).length;
+      const tractionFilled = Array.isArray(overview?.traction_signals) && overview.traction_signals.filter((x: any) => typeof x === 'string' && x.trim().length > 0).length > 0 ? 1 : 0;
+      const total = fields.length + 1;
+      const filled = filledScalar + tractionFilled;
+      return Math.round((filled / total) * 100);
+    };
+
+    const normalizeViews = (deal: any): number | null => {
+      const v = deal?.views;
+      return typeof v === 'number' && Number.isFinite(v) ? v : null;
+    };
+
+    const normalizeScore = (deal: any): { score: number | null; sourceUsed: 'legacy' | 'fundability_v1' } => {
+      const { score, sourceUsed } = getDisplayScoreForDeal(deal as any, scoreSource);
+      return { score, sourceUsed };
+    };
+
     // Deduplicate deals by name, keeping the most recent one
     const deduplicatedDeals = new Map<string, typeof liveDeals[0]>();
     for (const deal of liveDeals) {
@@ -123,24 +264,27 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
       }
     }
 
-    return Array.from(deduplicatedDeals.values()).map((deal) => ({
+    return Array.from(deduplicatedDeals.values()).map((deal) => {
+      const normalized = normalizeScore(deal as any);
+      return ({
       id: deal.id,
       name: deal.name,
       stage: deal.stage,
-      score: deal.score ?? 0,
+      score: normalized.score,
+      scoreSourceUsed: normalized.sourceUsed,
       lastUpdated: deal.lastUpdated ?? deal.id, // fallback to keep stable display
       documents: (deal as any).documents ?? 0,
-      completeness: (deal as any).completeness ?? 0,
-      fundingTarget: (deal as any).fundingTarget ?? '',
+      completeness: computeCompleteness(deal as any),
+      fundingTarget: extractFundingTarget(deal as any),
       trend: (deal.trend as DealTrend) ?? 'stable',
       priority: deal.priority ?? 'medium',
-      views: (deal as any).views ?? 0,
+      views: normalizeViews(deal as any),
       owner: deal.owner ?? 'Unassigned'
-    }));
-  }, [liveDeals]);
+      });
+    });
+  }, [liveDeals, scoreSource]);
 
   useEffect(() => {
-    if (!isLiveBackend()) return;
     if (!createdDeal) return;
     setLiveDeals((prev) => {
       const exists = prev.some((d) => d.id === createdDeal.id);
@@ -148,6 +292,41 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
       return [createdDeal, ...prev];
     });
   }, [createdDeal]);
+
+  const filteredDeals = deals.filter(deal => {
+    const matchesSearch = deal.name.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesStage = stageFilter === 'all' || deal.stage === stageFilter;
+    const matchesPriority = priorityFilter === 'all' || deal.priority === priorityFilter;
+    return matchesSearch && matchesStage && matchesPriority;
+  });
+
+  useEffect(() => {
+    if (!debugDealsList) return;
+    try {
+      if (typeof window !== 'undefined') {
+        (window as any).__ddaiDealsListDebug = {
+          ts: Date.now(),
+          orgId,
+          liveDeals: liveDeals.length,
+          deals: deals.length,
+          filteredDeals: filteredDeals.length,
+          searchQuery,
+          stageFilter,
+          priorityFilter,
+        };
+      }
+    } catch {
+      // ignore
+    }
+    console.info('[DDAI][DealsList] post-filter', {
+      liveDeals: liveDeals.length,
+      deals: deals.length,
+      filteredDeals: filteredDeals.length,
+      searchQuery,
+      stageFilter,
+      priorityFilter,
+    });
+  }, [debugDealsList, orgId, liveDeals.length, deals.length, filteredDeals.length, searchQuery, stageFilter, priorityFilter]);
 
   if (loading) {
     return (
@@ -207,18 +386,30 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
     }
   };
 
-  const filteredDeals = deals.filter(deal => {
-    const matchesSearch = deal.name.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStage = stageFilter === 'all' || deal.stage === stageFilter;
-    const matchesPriority = priorityFilter === 'all' || deal.priority === priorityFilter;
-    return matchesSearch && matchesStage && matchesPriority;
-  });
+  const formatPercent = (value: number | null) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+    return `${Math.round(value)}%`;
+  };
+
+  const formatMaybeNumber = (value: number | null) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+    return String(Math.round(value));
+  };
+
+  const formatLastUpdated = (value: string) => {
+    const d = new Date(value);
+    return Number.isFinite(d.getTime()) ? d.toLocaleString() : value;
+  };
 
   const summaryStats = {
     total: deals.length,
     ready: deals.filter(d => d.stage === 'ready_decision').length,
-    avgScore: Math.round(deals.reduce((sum, d) => sum + d.score, 0) / deals.length),
-    totalViews: deals.reduce((sum, d) => sum + d.views, 0)
+		avgScore: deals.length > 0
+			? Math.round(
+				deals.reduce((sum, d) => sum + (typeof d.score === 'number' ? d.score : 0), 0) / deals.length
+			)
+			: 0,
+		totalViews: deals.reduce((sum, d) => sum + (typeof d.views === 'number' ? d.views : 0), 0)
   };
 
   const toggleDealSelection = (dealId: string) => {
@@ -239,6 +430,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
     try {
       const result = await apiAutoProgressDeal(dealId);
       if (result.progressed && result.newStage) {
+        setError(null);
         setProgressionNotification({
           dealId,
           oldStage: '',
@@ -249,9 +441,12 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
         setLiveDeals(updatedDeals);
         // Clear notification after 4 seconds
         setTimeout(() => setProgressionNotification(null), 4000);
+      } else {
+        setError(result.message || 'Deal does not meet conditions for stage progression');
       }
     } catch (error) {
       console.error('Failed to check stage progression:', error);
+      setError(error instanceof Error ? error.message : 'Failed to check stage progression');
     }
   };
 
@@ -590,8 +785,15 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                       <td className="p-4">
                         <div className="flex items-center gap-2">
                           <span className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                            {deal.score}%
+							{formatPercent(deal.score)}
                           </span>
+                          {deal.scoreSourceUsed === 'fundability_v1' && (
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                              darkMode ? 'bg-[#6366f1]/20 text-[#a5b4fc]' : 'bg-[#6366f1]/10 text-[#4f46e5]'
+                            }`} title="Using fundability score">
+                              F
+                            </span>
+                          )}
                           {deal.trend === 'up' && <TrendingUp className="w-3 h-3 text-emerald-400" />}
                           {deal.trend === 'down' && <TrendingDown className="w-3 h-3 text-red-400" />}
                         </div>
@@ -603,11 +805,11 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                           }`}>
                             <div
                               className="h-full bg-gradient-to-r from-[#6366f1] to-[#8b5cf6]"
-                              style={{ width: `${deal.completeness}%` }}
+							style={{ width: `${typeof deal.completeness === 'number' ? deal.completeness : 0}%` }}
                             />
                           </div>
                           <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                            {deal.completeness}%
+							{formatPercent(deal.completeness)}
                           </span>
                         </div>
                       </td>
@@ -619,7 +821,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                       <td className="p-4">
                         <span className={`text-xs flex items-center gap-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                           <Clock className="w-3 h-3" />
-                          {deal.lastUpdated}
+							{formatLastUpdated(deal.lastUpdated)}
                         </span>
                       </td>
                       <td className="p-4">
@@ -631,39 +833,71 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                       <td className="p-4">
                         <span className={`text-xs flex items-center gap-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                           <Eye className="w-3 h-3" />
-                          {deal.views}
+							{formatMaybeNumber(deal.views)}
                         </span>
                       </td>
                       <td className="p-4" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex items-center gap-1">
-                          <Button 
-                            variant="ghost" 
-                            size="icon" 
-                            aria-label="View" 
-                            className={`!text-gray-400 hover:!text-gray-300`}
-                            onClick={() => onDealClick?.(deal.id)}
-                          >
-                            <Eye className="w-4 h-4" />
-                          </Button>
-                          <Button 
-                            variant="ghost" 
-                            size="icon" 
-                            aria-label="Edit" 
-                            className={`!text-gray-400 hover:!text-gray-300`}
-                            onClick={() => onDealClick?.(deal.id)}
-                          >
-                            <Edit className="w-4 h-4" />
-                          </Button>
-                          <Button 
-                            variant="ghost" 
-                            size="icon" 
-                            aria-label="Check Stage Progression" 
-                            className={`!text-gray-400 hover:!text-amber-400`}
-                            title="Check if deal can advance to next stage"
-                            onClick={() => handleAutoProgressDeal(deal.id)}
-                          >
-                            <ArrowRight className="w-4 h-4" />
-                          </Button>
+                        <div className="flex justify-end">
+                          <DropdownMenu>
+                            <DropdownMenuTrigger
+                              aria-label="Actions"
+                              className="dd-btn-base dd-btn-icon-only hover:bg-accent text-muted-foreground hover:text-foreground"
+                              onClick={(e) => e.stopPropagation()}
+                              type="button"
+                            >
+                              <MoreVertical className="w-4 h-4" />
+                            </DropdownMenuTrigger>
+
+                            <DropdownMenuContent
+                              align="end"
+                              sideOffset={6}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <DropdownMenuItem
+                                onSelect={(e) => {
+                                  e.preventDefault();
+                                  onDealClick?.(deal.id);
+                                }}
+                              >
+                                <Eye />
+                                View
+                              </DropdownMenuItem>
+
+                              <DropdownMenuItem
+                                onSelect={(e) => {
+                                  e.preventDefault();
+                                  onDealClick?.(deal.id);
+                                }}
+                              >
+                                <Edit />
+                                Edit
+                              </DropdownMenuItem>
+
+                              <DropdownMenuItem
+                                onSelect={(e) => {
+                                  e.preventDefault();
+                                  handleAutoProgressDeal(deal.id);
+                                }}
+                              >
+                                <ChevronRight />
+                                Check stage progression
+                              </DropdownMenuItem>
+
+                              <DropdownMenuSeparator />
+
+                              <DropdownMenuItem
+                                variant="destructive"
+                                onSelect={(e) => {
+                                  e.preventDefault();
+                                  openDeleteModal({ id: deal.id, name: deal.name });
+                                }}
+                                disabled={deletingDealId === deal.id}
+                              >
+                                <Trash2 />
+                                {deletingDealId === deal.id ? 'Deleting…' : 'Delete'}
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
                       </td>
                     </tr>
@@ -735,7 +969,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                     </span>
                     <div className="flex items-center gap-1">
                       <span className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                        {deal.score}%
+						{formatPercent(deal.score)}
                       </span>
                       {deal.trend === 'up' && <TrendingUp className="w-3 h-3 text-emerald-400" />}
                       {deal.trend === 'down' && <TrendingDown className="w-3 h-3 text-red-400" />}
@@ -747,14 +981,14 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                   }`}>
                     <div
                       className="h-full bg-gradient-to-r from-[#6366f1] to-[#8b5cf6]"
-                      style={{ width: `${deal.completeness}%` }}
+						style={{ width: `${typeof deal.completeness === 'number' ? deal.completeness : 0}%` }}
                     />
                   </div>
 
                   <div className="flex items-center justify-between text-xs">
                     <span className={`flex items-center gap-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                       <Clock className="w-3 h-3" />
-                      {deal.lastUpdated}
+						{formatLastUpdated(deal.lastUpdated)}
                     </span>
                     <span className={`flex items-center gap-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                       <FileText className="w-3 h-3" />
@@ -762,7 +996,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                     </span>
                     <span className={`flex items-center gap-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                       <Eye className="w-3 h-3" />
-                      {deal.views}
+						{formatMaybeNumber(deal.views)}
                     </span>
                   </div>
                 </div>
@@ -788,10 +1022,67 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
         <ExportDealsModal
           isOpen={showExportModal}
           darkMode={darkMode}
-          deals={filteredDeals}
+          deals={filteredDeals.map((d) => ({
+            id: d.id,
+            name: d.name,
+            stage: d.stage,
+            priority: d.priority,
+            trend: d.trend,
+            score: d.score ?? undefined,
+            owner: d.owner || undefined,
+            lastUpdated: d.lastUpdated || undefined,
+            documents: d.documents,
+            completeness: d.completeness ?? undefined,
+            fundingTarget: d.fundingTarget || undefined,
+            views: d.views ?? undefined,
+          }))}
           onClose={() => setShowExportModal(false)}
         />
       )}
+
+      <Modal isOpen={deleteModalOpen} onClose={closeDeleteModal} size="md" darkMode={darkMode}>
+        <div className="space-y-4">
+          <div>
+            <h2 className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>Delete Deal</h2>
+            <p className={`text-sm mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+              This permanently deletes the deal and all related data. This action is irreversible.
+            </p>
+          </div>
+
+          {deleteTarget && (
+            <div className={`rounded-lg p-3 text-sm ${darkMode ? 'bg-red-500/10 text-red-200' : 'bg-red-50 text-red-800'}`}>
+              <div className="font-medium">You are deleting:</div>
+              <div className="mt-1 break-words">{deleteTarget.name}</div>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+              Type <span className="font-semibold">{deleteTarget?.name || 'DELETE'}</span> or <span className="font-semibold">DELETE</span> to confirm.
+            </p>
+            <Input
+              value={deleteConfirmText}
+              onChange={(e) => setDeleteConfirmText(e.target.value)}
+              placeholder={deleteTarget?.name || 'DELETE'}
+              disabled={Boolean(deletingDealId)}
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={closeDeleteModal} disabled={Boolean(deletingDealId)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleConfirmDelete}
+              disabled={!isDeleteConfirmed || Boolean(deletingDealId)}
+              loading={Boolean(deletingDealId)}
+            >
+              Delete permanently
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -2,22 +2,36 @@ import { useEffect, useState } from 'react';
 import { Button } from '../ui/button';
 import { DocumentUpload } from './DocumentUpload';
 import { DocumentLibrary } from './DocumentLibrary';
-import { Upload, Sparkles } from 'lucide-react';
-import { apiGetDocuments, apiRetryDocument, isLiveBackend } from '../../lib/apiClient';
+import { Upload, Sparkles, FileText } from 'lucide-react';
+import { apiGetDocuments, apiRetryDocument } from '../../lib/apiClient';
 import type { Document } from '@dealdecision/contracts';
+import { ExtractionReportModal } from './ExtractionReportModal';
+import { ToastContainer, type ToastType } from '../ui/Toast';
 
 interface DocumentsTabProps {
   dealId: string;
   darkMode?: boolean;
+  reloadKey?: number;
 }
 
-export function DocumentsTab({ dealId, darkMode = true }: DocumentsTabProps) {
+export function DocumentsTab({ dealId, darkMode = true, reloadKey = 0 }: DocumentsTabProps) {
   const [showUpload, setShowUpload] = useState(false);
+  const [showExtractionReport, setShowExtractionReport] = useState(false);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(false);
+  const [toasts, setToasts] = useState<Array<{ id: string; type: ToastType; title: string; message?: string }>>([]);
+
+  const addToast = (type: ToastType, title: string, message?: string) => {
+    const id = Math.random().toString(36).slice(2);
+    setToasts((prev) => [...prev, { id, type, title, message }]);
+  };
+
+  const removeToast = (id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
 
   const loadDocuments = async () => {
-    if (!dealId || !isLiveBackend()) return;
+    if (!dealId) return;
     setLoading(true);
     try {
       const res = await apiGetDocuments(dealId);
@@ -28,7 +42,7 @@ export function DocumentsTab({ dealId, darkMode = true }: DocumentsTabProps) {
       }));
       setDocuments(normalized);
     } catch (err) {
-      console.error(err);
+      addToast('error', 'Failed to load documents', err instanceof Error ? err.message : 'Unknown error');
     } finally {
       setLoading(false);
     }
@@ -36,12 +50,16 @@ export function DocumentsTab({ dealId, darkMode = true }: DocumentsTabProps) {
 
   useEffect(() => {
     loadDocuments();
-  }, [dealId]);
+  }, [dealId, reloadKey]);
 
   const handleRetry = async (documentId: string) => {
-    if (!dealId || !isLiveBackend()) return;
-    await apiRetryDocument(dealId, documentId);
-    await loadDocuments();
+    if (!dealId) return;
+    try {
+      await apiRetryDocument(dealId, documentId);
+      await loadDocuments();
+    } catch (err) {
+      addToast('error', 'Retry failed', err instanceof Error ? err.message : 'Unknown error');
+    }
   };
 
   return (
@@ -56,14 +74,24 @@ export function DocumentsTab({ dealId, darkMode = true }: DocumentsTabProps) {
             AI-Powered Extraction
           </span>
         </div>
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={() => setShowUpload(!showUpload)}
-        >
-          <Upload className="w-4 h-4" />
-          {showUpload ? 'Close Upload' : 'Upload'}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setShowExtractionReport(true)}
+          >
+            <FileText className="w-4 h-4" />
+            Extraction Report
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => setShowUpload(!showUpload)}
+          >
+            <Upload className="w-4 h-4" />
+            {showUpload ? 'Close Upload' : 'Upload'}
+          </Button>
+        </div>
       </div>
 
       {/* Upload Section */}
@@ -78,11 +106,11 @@ export function DocumentsTab({ dealId, darkMode = true }: DocumentsTabProps) {
           <DocumentUpload
             darkMode={darkMode}
             dealId={dealId}
-            enableAIExtraction={!isLiveBackend()}
+            enableAIExtraction={true}
             onUploaded={async () => {
               await loadDocuments();
             }}
-            onError={(message) => console.error(message)}
+            onError={(message) => addToast('error', 'Upload failed', message)}
           />
         </div>
       )}
@@ -90,10 +118,22 @@ export function DocumentsTab({ dealId, darkMode = true }: DocumentsTabProps) {
       {/* Document Library */}
       <DocumentLibrary
         darkMode={darkMode}
+        dealId={dealId}
         documents={documents}
         loading={loading}
         onRetry={handleRetry}
+        onDeleted={loadDocuments}
       />
+
+      {showExtractionReport && (
+        <ExtractionReportModal
+          dealId={dealId}
+          darkMode={darkMode}
+          onClose={() => setShowExtractionReport(false)}
+        />
+      )}
+
+      <ToastContainer toasts={toasts} onClose={removeToast} darkMode={darkMode} />
     </div>
   );
 }

@@ -29,7 +29,7 @@ interface Message {
 }
 
 export function ChatAssistant({ darkMode }: ChatAssistantProps) {
-  const { isFounder } = useUserRole();
+  const { isInvestor } = useUserRole();
   const [isOpen, setIsOpen] = useState(false);
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
@@ -92,9 +92,7 @@ export function ChatAssistant({ darkMode }: ChatAssistantProps) {
     setTimeout(() => {
       const aiResponse: Message = {
         id: (Date.now() + 1).toString(),
-        text: isFounder 
-          ? "I can help you with pitch decks, financial projections, investor outreach, and more. What would you like to work on?"
-          : "I can assist with due diligence analysis, deal evaluation, market research, and investment memos. How can I help you today?",
+        text: "I can assist with due diligence analysis, deal evaluation, market research, and investment memos. How can I help you today?",
         sender: 'assistant',
         timestamp: new Date()
       };
@@ -117,18 +115,18 @@ export function ChatAssistant({ darkMode }: ChatAssistantProps) {
     setActiveTab('messages');
   };
 
-  const quickActions = isFounder
+  const quickActions = isInvestor
     ? [
-        { label: 'Help with my pitch deck', icon: <FileText className="w-4 h-4" /> },
-        { label: 'Analyze my market size', icon: <Target className="w-4 h-4" /> },
-        { label: 'Review financial projections', icon: <BarChart3 className="w-4 h-4" /> },
-        { label: 'Improve executive summary', icon: <Sparkles className="w-4 h-4" /> }
-      ]
-    : [
         { label: 'Run due diligence analysis', icon: <FileText className="w-4 h-4" /> },
         { label: 'Evaluate market opportunity', icon: <Target className="w-4 h-4" /> },
         { label: 'Assess financial metrics', icon: <BarChart3 className="w-4 h-4" /> },
         { label: 'Generate investment memo', icon: <Sparkles className="w-4 h-4" /> }
+      ]
+    : [
+        { label: 'Summarize score drivers', icon: <TrendingUp className="w-4 h-4" /> },
+        { label: 'Fetch evidence for my deal', icon: <FileText className="w-4 h-4" /> },
+        { label: 'Assess financial metrics', icon: <BarChart3 className="w-4 h-4" /> },
+        { label: 'Draft investment memo', icon: <Sparkles className="w-4 h-4" /> }
       ];
 
   const helpLinks = [
@@ -206,7 +204,7 @@ export function ChatAssistant({ darkMode }: ChatAssistantProps) {
                     }`}
                   />
                   <button
-                    onClick={handleSend}
+                    onClick={() => handleSend()}
                     className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6366f1] hover:text-[#8b5cf6] transition-colors"
                   >
                     <Send className="w-5 h-5" />
@@ -363,7 +361,7 @@ export function ChatAssistant({ darkMode }: ChatAssistantProps) {
                       }`}
                     />
                     <button
-                      onClick={handleSend}
+                      onClick={() => handleSend()}
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6366f1] hover:text-[#8b5cf6] transition-colors"
                     >
                       <Send className="w-5 h-5" />

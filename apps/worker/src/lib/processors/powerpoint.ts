@@ -41,7 +41,7 @@ export async function extractPowerPointContent(buffer: Buffer): Promise<PowerPoi
     };
 
     // Parse slide files
-    const slideFiles = directory.files.filter((f) => f.path.match(/ppt\/slides\/slide\d+\.xml$/));
+    const slideFiles = directory.files.filter((f: any) => f.path.match(/ppt\/slides\/slide\d+\.xml$/));
     metadata.totalSlides = slideFiles.length;
 
     for (let i = 0; i < slideFiles.length; i++) {

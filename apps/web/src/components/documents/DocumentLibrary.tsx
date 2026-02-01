@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { DocumentPreviewModal } from './DocumentPreviewModal';
@@ -20,22 +20,45 @@ import {
   List,
   SortAsc
 } from 'lucide-react';
+import { ToastContainer, ToastType } from '../ui/Toast';
 import type { Document as ApiDocument } from '@dealdecision/contracts';
-import { apiGetDocuments, isLiveBackend } from '../../lib/apiClient';
+import { apiDeleteDocument } from '../../lib/apiClient';
 
 interface DocumentLibraryProps {
   darkMode: boolean;
+  dealId?: string;
   documents?: ApiDocument[];
   loading?: boolean;
   onRetry?: (documentId: string) => void;
+  onDeleted?: () => void;
+  focusSearchSignal?: number;
 }
 
-export function DocumentLibrary({ darkMode, documents: initialDocuments, loading, onRetry }: DocumentLibraryProps) {
+export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments, loading, onRetry, onDeleted, focusSearchSignal }: DocumentLibraryProps) {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [selectedDocument, setSelectedDocument] = useState<LibraryDoc | null>(null);
   const [showPreview, setShowPreview] = useState(false);
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
+  const [deleteTargets, setDeleteTargets] = useState<string[] | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [toasts, setToasts] = useState<Array<{ id: string; type: ToastType; title: string; message?: string }>>([]);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  const addToast = (type: ToastType, title: string, message?: string) => {
+    const newToast = {
+      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      type,
+      title,
+      message
+    };
+    setToasts((prev) => [...prev, newToast]);
+  };
+
+  const removeToast = (id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
 
   type LibraryDoc = {
     id: string;
@@ -63,15 +86,27 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
         uploadedAt: doc.uploaded_at ? new Date(doc.uploaded_at) : new Date(),
         uploadedBy: 'System',
         tags: [],
-        url: '#',
-        aiExtracted: false,
+        url: '',
+        aiExtracted: doc.status === 'completed',
         status: doc.status,
       }));
     }
     return []; // Return empty instead of mock data
   }, [initialDocuments]);
 
-  const categories = ['all', 'Pitch Decks', 'Financial Models', 'Legal', 'Media', 'Research', 'Data'];
+  const categories = useMemo(() => {
+    const unique = new Set<string>();
+    for (const d of documents) {
+      if (typeof d.category === 'string' && d.category.trim().length > 0) unique.add(d.category);
+    }
+    return ['all', ...Array.from(unique).sort((a, b) => a.localeCompare(b))];
+  }, [documents]);
+
+  const labelCategory = (raw: string) => {
+    if (raw === 'all') return 'All';
+    const normalized = raw.replace(/_/g, ' ').trim();
+    return normalized.length > 0 ? normalized.replace(/\b\w/g, (c) => c.toUpperCase()) : raw;
+  };
 
   const getFileIcon = (type: string) => {
     if (type.includes('pdf')) return <FileText className="w-6 h-6 text-red-500" />;
@@ -104,19 +139,58 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
     return matchesSearch && matchesCategory;
   });
 
+  useEffect(() => {
+    if (typeof focusSearchSignal !== 'number') return;
+    // Focus search when signaled from parent (e.g. "Smart Organization" card).
+    searchInputRef.current?.focus();
+  }, [focusSearchSignal]);
+
   const handlePreview = (doc: LibraryDoc) => {
     setSelectedDocument(doc);
     setShowPreview(true);
   };
 
+  const toggleSelected = (documentId: string) => {
+    setSelectedDocumentIds((prev) => (prev.includes(documentId) ? prev.filter((id) => id !== documentId) : [...prev, documentId]));
+  };
+
+  const requestDelete = (documentIds: string[]) => {
+    if (!dealId) return;
+    if (documentIds.length === 0) return;
+    setDeleteTargets(documentIds);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTargets || deleteTargets.length === 0) return;
+    if (!dealId) return;
+    setDeleting(true);
+    try {
+      for (const documentId of deleteTargets) {
+        await apiDeleteDocument(dealId, documentId);
+      }
+      setDeleteTargets(null);
+      setSelectedDocumentIds([]);
+      setShowPreview(false);
+      setSelectedDocument(null);
+      onDeleted?.();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to delete document(s)';
+      console.error(err);
+      addToast('error', 'Delete failed', message);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const stats = {
     total: documents.length,
-    aiProcessed: documents.filter(d => d.aiExtracted).length,
-    totalSize: documents.reduce((sum, d) => sum + d.size, 0)
+    completed: documents.filter((d) => d.status === 'completed').length,
+    inProgress: documents.filter((d) => d.status === 'processing' || d.status === 'pending').length,
   };
 
   return (
     <div className="space-y-6">
+      <ToastContainer toasts={toasts} onClose={removeToast} darkMode={darkMode} />
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4">
         <div
@@ -150,10 +224,10 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
             <Sparkles className="w-5 h-5 text-purple-500" />
             <div>
               <div className={`text-2xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                {stats.aiProcessed}
+                {stats.completed}
               </div>
               <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                AI Processed
+                Completed
               </div>
             </div>
           </div>
@@ -170,10 +244,10 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
             <FileText className="w-5 h-5 text-emerald-500" />
             <div>
               <div className={`text-2xl mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                {formatFileSize(stats.totalSize)}
+                {stats.inProgress}
               </div>
               <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                Total Storage
+                In Progress
               </div>
             </div>
           </div>
@@ -185,6 +259,7 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
         <div className="flex-1 relative">
           <Search className={`absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
           <Input
+            ref={searchInputRef}
             placeholder="Search documents..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -194,6 +269,20 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
         </div>
 
         <div className="flex items-center gap-2">
+          {selectedDocumentIds.length > 0 && (
+            <button
+              onClick={() => requestDelete(selectedDocumentIds)}
+              className={`px-3 py-2 rounded-lg text-sm transition-colors text-red-500 ${
+                darkMode ? 'bg-red-500/10 hover:bg-red-500/20' : 'bg-red-50 hover:bg-red-100'
+              }`}
+              title={`Delete ${selectedDocumentIds.length} document${selectedDocumentIds.length === 1 ? '' : 's'}`}
+            >
+              <div className="flex items-center gap-2">
+                <Trash2 className="w-4 h-4" />
+                Delete ({selectedDocumentIds.length})
+              </div>
+            </button>
+          )}
           <button
             onClick={() => setViewMode('grid')}
             className={`p-2 rounded-lg transition-colors ${
@@ -235,7 +324,7 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
                 : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
             }`}
           >
-            {category.charAt(0).toUpperCase() + category.slice(1)}
+            {labelCategory(category)}
           </button>
         ))}
       </div>
@@ -254,6 +343,14 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
               onClick={() => handlePreview(doc)}
             >
               <div className="flex flex-col items-center text-center">
+                <div className="w-full flex justify-end mb-1">
+                  <input
+                    type="checkbox"
+                    checked={selectedDocumentIds.includes(doc.id)}
+                    onChange={() => toggleSelected(doc.id)}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </div>
                 <div className={`w-16 h-16 rounded-lg flex items-center justify-center mb-3 ${
                   darkMode ? 'bg-white/10' : 'bg-gray-100'
                 }`}>
@@ -306,8 +403,13 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
                       e.stopPropagation();
                       onRetry?.(doc.id);
                     }}
+                    disabled={!onRetry}
                     className={`p-1.5 rounded-lg transition-colors ${
-                      darkMode ? 'hover:bg-white/10 text-amber-300' : 'hover:bg-gray-100 text-amber-600'
+                      !onRetry
+                        ? 'opacity-50 cursor-not-allowed'
+                        : darkMode
+                          ? 'hover:bg-white/10 text-amber-300'
+                          : 'hover:bg-gray-100 text-amber-600'
                     }`}
                   >
                     <Sparkles className="w-4 h-4" />
@@ -323,6 +425,10 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
                     className={`p-1.5 rounded-lg transition-colors text-red-500 ${
                       darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
                     }`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      requestDelete([doc.id]);
+                    }}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -344,6 +450,12 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
               onClick={() => handlePreview(doc)}
             >
               <div className="flex items-center gap-4">
+                <input
+                  type="checkbox"
+                  checked={selectedDocumentIds.includes(doc.id)}
+                  onChange={() => toggleSelected(doc.id)}
+                  onClick={(e) => e.stopPropagation()}
+                />
                 {getFileIcon(doc.type)}
 
                 <div className="flex-1 min-w-0">
@@ -410,8 +522,13 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
                       e.stopPropagation();
                       onRetry?.(doc.id);
                     }}
+                    disabled={!onRetry}
                     className={`p-2 rounded-lg transition-colors ${
-                      darkMode ? 'hover:bg-white/10 text-amber-300' : 'hover:bg-gray-100 text-amber-600'
+                      !onRetry
+                        ? 'opacity-50 cursor-not-allowed'
+                        : darkMode
+                          ? 'hover:bg-white/10 text-amber-300'
+                          : 'hover:bg-gray-100 text-amber-600'
                     }`}
                   >
                     <Sparkles className="w-4 h-4" />
@@ -427,6 +544,10 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
                     className={`p-2 rounded-lg transition-colors text-red-500 ${
                       darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
                     }`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      requestDelete([doc.id]);
+                    }}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -460,7 +581,52 @@ export function DocumentLibrary({ darkMode, documents: initialDocuments, loading
           document={selectedDocument}
           darkMode={darkMode}
           onClose={() => setShowPreview(false)}
+          onRequestDelete={() => requestDelete([selectedDocument.id])}
         />
+      )}
+
+      {/* Delete Confirm Modal */}
+      {deleteTargets && (
+        <div
+          className="fixed inset-0 z-50 bg-black/50"
+          style={{ zIndex: 1000 }}
+          onMouseDown={() => (deleting ? undefined : setDeleteTargets(null))}
+        >
+          <div className="min-h-screen flex items-center justify-center p-4">
+            <div
+              className={`w-full max-w-md rounded-xl border p-4 ${
+                darkMode ? 'bg-[#18181b] border-white/10' : 'bg-white border-gray-200'
+              }`}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className={`text-base mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                Delete {deleteTargets.length === 1 ? 'document' : 'documents'}?
+              </div>
+              <div className={`text-sm mb-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                This will permanently remove {deleteTargets.length === 1 ? 'this document' : `these ${deleteTargets.length} documents`}.
+              </div>
+              <div className="flex items-center justify-end gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  darkMode={darkMode}
+                  onClick={() => setDeleteTargets(null)}
+                >
+                  Cancel
+                </Button>
+                <button
+                  disabled={deleting}
+                  onClick={confirmDelete}
+                  className={`px-3 py-2 rounded-lg text-sm text-white ${
+                    deleting ? 'opacity-60' : ''
+                  } bg-red-600`}
+                >
+                  {deleting ? 'Deleting…' : 'Delete'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

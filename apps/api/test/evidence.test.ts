@@ -24,7 +24,7 @@ test('POST /api/v1/evidence/fetch validates payload and queues job', async () =>
 
   const enqueue = async (input: any) => {
     enqueuedPayload = input;
-    return { job_id: 'job-123', status: 'queued' };
+    return { id: 1, job_id: 'job-123', status: 'queued' as const };
   };
 
   const app = Fastify();
@@ -57,7 +57,7 @@ test('POST /api/v1/evidence/fetch rejects invalid or missing deal', async () => 
   } as any;
 
   const app = Fastify();
-  await registerEvidenceRoutes(app, mockPool, async () => ({ job_id: 'job-1', status: 'queued' }));
+  await registerEvidenceRoutes(app, mockPool, async () => ({ id: 1, job_id: 'job-1', status: 'queued' as const }));
 
   const badBody = await app.inject({ method: 'POST', url: '/api/v1/evidence/fetch', payload: { deal_id: '' } });
   assert.equal(badBody.statusCode, 400);

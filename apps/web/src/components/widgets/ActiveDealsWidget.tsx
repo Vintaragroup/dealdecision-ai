@@ -1,4 +1,6 @@
 import { TrendingUp, TrendingDown, ArrowRight, Circle } from 'lucide-react';
+import { useScoreSource } from '../../contexts/ScoreSourceContext';
+import { getDisplayScoreForDeal } from '../../lib/dealScore';
 
 interface Deal {
   id: string;
@@ -9,6 +11,9 @@ interface Deal {
   stage: string;
   lastUpdated: string;
   trend: 'up' | 'down' | 'neutral';
+
+	// Additive: Analysis Foundation (Fundability) summary for list cards.
+	fundability_v1?: any;
 }
 
 interface ActiveDealsWidgetProps {
@@ -18,6 +23,7 @@ interface ActiveDealsWidgetProps {
 }
 
 export function ActiveDealsWidget({ darkMode, deals, onDealClick }: ActiveDealsWidgetProps) {
+  const { scoreSource } = useScoreSource();
   const getStatusConfig = (status: string) => {
     switch (status) {
       case 'go':
@@ -66,7 +72,12 @@ export function ActiveDealsWidget({ darkMode, deals, onDealClick }: ActiveDealsW
 
       <div className="space-y-3">
         {deals.map((deal) => {
-          const statusConfig = getStatusConfig(deal.status);
+          const { score: displayScore, sourceUsed } = getDisplayScoreForDeal(deal as any, scoreSource);
+          const scoreLabel = displayScore == null ? '—' : String(Math.round(displayScore));
+          const statusKey = displayScore != null
+            ? (displayScore >= 75 ? 'go' : displayScore >= 50 ? 'hold' : 'no-go')
+            : deal.status;
+          const statusConfig = getStatusConfig(statusKey);
           
           return (
             <div
@@ -94,6 +105,22 @@ export function ActiveDealsWidget({ darkMode, deals, onDealClick }: ActiveDealsW
                   <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                     {deal.company} • {deal.stage}
                   </p>
+
+          {deal.fundability_v1 && typeof deal.fundability_v1 === 'object' && (
+            <p className={`text-[11px] mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+              Fundability: {String(
+                (deal.fundability_v1 as any)?.fundability_decision_v1?.outcome ??
+                  (deal.fundability_v1 as any)?.fundability_assessment_v1?.outcome ??
+                  '—'
+              )}
+              {(deal.fundability_v1 as any)?.phase_inference_v1?.company_phase
+                ? ` · ${(deal.fundability_v1 as any).phase_inference_v1.company_phase}`
+                : ''}
+              {typeof (deal.fundability_v1 as any)?.fundability_assessment_v1?.fundability_score_0_100 === 'number'
+                ? ` · ${Math.round((deal.fundability_v1 as any).fundability_assessment_v1.fundability_score_0_100)}/100`
+                : ''}
+            </p>
+          )}
                 </div>
                 <ArrowRight className={`w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity ${
                   darkMode ? 'text-gray-400' : 'text-gray-600'
@@ -120,13 +147,13 @@ export function ActiveDealsWidget({ darkMode, deals, onDealClick }: ActiveDealsW
                         stroke="url(#scoreGradient)"
                         strokeWidth="3"
                         fill="none"
-                        strokeDasharray={`${(deal.score / 100) * 100} 100`}
+                        strokeDasharray={`${(((displayScore ?? deal.score) / 100) * 100)} 100`}
                         strokeLinecap="round"
                       />
                     </svg>
                     <div className="absolute inset-0 flex items-center justify-center">
                       <span className={`text-xs ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                        {deal.score}
+                        {scoreLabel}
                       </span>
                     </div>
                     <svg width="0" height="0">
@@ -140,7 +167,7 @@ export function ActiveDealsWidget({ darkMode, deals, onDealClick }: ActiveDealsW
                   </div>
                   <div>
                     <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      DD Score
+                      Score{sourceUsed === 'fundability_v1' ? ' (F)' : ''}
                     </div>
                     <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                       {deal.lastUpdated}

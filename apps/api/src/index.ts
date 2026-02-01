@@ -1,5 +1,7 @@
 import fastify from "fastify";
 import { registerCors } from "./plugins/cors";
+import { registerUploadsStatic } from "./plugins/uploads-static";
+import { registerClerkAuth } from "./plugins/clerk-auth";
 import multipart from "@fastify/multipart";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
@@ -8,13 +10,21 @@ import { registerDealRoutes } from "./routes/deals";
 import { registerJobRoutes } from "./routes/jobs";
 import { registerEventRoutes } from "./routes/events";
 import { registerDocumentRoutes } from "./routes/documents";
+import { registerOrchestrationRoutes } from "./routes/orchestration";
+import { registerReportRoutes } from "./routes/reports";
+import { registerDashboardRoutes } from "./routes/dashboard";
 import { registerChatRoutes } from "./routes/chat";
 import { registerEvidenceRoutes } from "./routes/evidence";
 import { registerAnalyticsRoutes } from "./routes/analytics";
 import { registerAdminRoutes } from "./routes/admin";
+import { registerVisualAssetRoutes } from "./routes/visual-assets";
+import { registerNodeAiAnalyzeRoutes } from "./routes/node-ai-analyze";
 import { initializeLLM } from "./lib/llm";
+import { getPool } from "./lib/db";
+import { applyPendingMigrations, getMigrationStatus } from "./lib/migrations";
 import "./lib/queue";
 import dotenv from "dotenv";
+import { createHash } from "crypto";
 
 dotenv.config();
 
@@ -26,11 +36,91 @@ const app = fastify({
   bodyLimit: 50 * 1024 * 1024, // 50MB limit for request body
 });
 
-const port = Number(process.env.API_PORT) || 9000;
+const port = Number(process.env.PORT ?? process.env.API_PORT) || 9000;
 const host = "0.0.0.0";
 
 async function bootstrap() {
   await registerCors(app);
+  await registerClerkAuth(app);
+  await registerUploadsStatic(app);
+  const pool = getPool();
+
+  // Startup verification: DB fingerprint + basic schema presence check.
+  // Do NOT log DATABASE_URL or credentials.
+  try {
+    const { rows } = await pool.query(
+      `SELECT current_database() as db, current_user as db_user, version() as version, inet_server_addr() as host, inet_server_port() as port`
+    );
+    const row = (rows?.[0] ?? {}) as any;
+    const fingerprintSource = JSON.stringify({
+      db: row.db ?? null,
+      db_user: row.db_user ?? null,
+      host: row.host ?? null,
+      port: row.port ?? null,
+      version: typeof row.version === "string" ? row.version.slice(0, 80) : null,
+    });
+    const dbFingerprint = createHash("sha256").update(fingerprintSource, "utf8").digest("hex").slice(0, 16);
+    app.log.info({
+      event: "db_fingerprint",
+      service: "api",
+      db: row.db ?? null,
+      host: row.host ?? null,
+      port: row.port ?? null,
+      fingerprint: dbFingerprint,
+    });
+  } catch (err) {
+    app.log.warn({ event: "db_fingerprint_failed", service: "api", err }, "Failed to fingerprint DB");
+  }
+
+  try {
+    const requiredTables = ["deals", "documents", "jobs", "document_files", "document_file_blobs", "visual_assets", "visual_extractions"];
+    const missing: string[] = [];
+    for (const t of requiredTables) {
+      const res = await pool.query<{ oid: string | null }>("SELECT to_regclass($1) as oid", [t]);
+      if (res.rows?.[0]?.oid == null) missing.push(t);
+    }
+    if (missing.length === 0) {
+      app.log.info({ event: "schema_check_ok", service: "api", required_tables: requiredTables.length });
+    } else {
+      app.log.warn({ event: "schema_check_failed", service: "api", missing_tables: missing }, "Database schema missing required tables");
+    }
+  } catch (err) {
+    app.log.warn({ event: "schema_check_failed", service: "api", err }, "Failed checking schema");
+  }
+
+  // Schema drift guardrail: log migration status on startup.
+  // Optionally apply pending migrations when explicitly enabled.
+  try {
+    const status = await getMigrationStatus(pool);
+    app.log.info({
+      event: "db.migrations.status",
+      applied: status.applied.length,
+      pending: status.pending.length,
+      latest_applied: status.latestApplied,
+      migrations_dir: status.migrationsDir,
+    });
+
+    if (process.env.AUTO_MIGRATE === "1" && status.pending.length > 0) {
+      app.log.warn({ event: "db.migrations.auto_apply", pending: status.pending.length }, "AUTO_MIGRATE=1 applying pending migrations");
+      const after = await applyPendingMigrations(pool);
+      app.log.info({
+        event: "db.migrations.applied",
+        applied: after.applied.length,
+        pending: after.pending.length,
+        latest_applied: after.latestApplied,
+      });
+    } else if (status.pending.length > 0) {
+      app.log.warn({
+        event: "db.migrations.pending",
+        pending: status.pending.length,
+        latest_applied: status.latestApplied,
+        next_pending: status.pending.slice(0, 5),
+      }, "Database has pending migrations (run apps/api db:migrate)");
+    }
+  } catch (err) {
+    app.log.error({ event: "db.migrations.status_error", err }, "Failed reading migration status");
+  }
+
   await app.register(swagger, {
     openapi: {
       info: {
@@ -59,10 +149,15 @@ async function bootstrap() {
   await registerJobRoutes(app);
   await registerEventRoutes(app);
   await registerDocumentRoutes(app);
+  await registerOrchestrationRoutes(app, pool);
+  await registerReportRoutes(app, pool);
+  await registerDashboardRoutes(app);
   await registerChatRoutes(app);
   await registerEvidenceRoutes(app);
   await registerAnalyticsRoutes(app);
   await registerAdminRoutes(app);
+  await registerVisualAssetRoutes(app);
+  await registerNodeAiAnalyzeRoutes(app);
 }
 
 async function start() {

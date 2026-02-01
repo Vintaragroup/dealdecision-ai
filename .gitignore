@@ -24,6 +24,11 @@ pnpm-debug.log*
 artifacts/
 scripts/experimental/
 
+# local dev artifacts (do not commit)
+apps/api/tmp_*.cjs
+apps/worker/*.traineddata
+services/
+
 # internal documentation (keep tracked files, ignore new additions)
 docs/
 

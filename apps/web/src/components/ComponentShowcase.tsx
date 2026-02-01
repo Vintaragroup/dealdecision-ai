@@ -94,20 +94,14 @@ export function ComponentShowcase({ darkMode }: ComponentShowcaseProps) {
 
   return (
     <div className="p-6 space-y-8">
-      <div className={`backdrop-blur-xl border rounded-2xl p-6 ${
-        darkMode
-          ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
-          : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
-      }`}>
-        <h2 className={`mb-6 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+      <div className="dd-surface-glass rounded-2xl p-6">
+        <h2 className="mb-6 text-foreground">
           Component Library Showcase
         </h2>
         
         {/* Buttons Section */}
         <div className="mb-8">
-          <h3 className={`text-sm mb-4 ${
-            darkMode ? 'text-gray-400' : 'text-gray-600'
-          }`}>
+          <h3 className="text-sm mb-4 text-muted-foreground">
             Buttons
           </h3>
           
@@ -161,9 +155,7 @@ export function ComponentShowcase({ darkMode }: ComponentShowcaseProps) {
         
         {/* Inputs Section */}
         <div className="mb-8">
-          <h3 className={`text-sm mb-4 ${
-            darkMode ? 'text-gray-400' : 'text-gray-600'
-          }`}>
+          <h3 className="text-sm mb-4 text-muted-foreground">
             Inputs
           </h3>
           
@@ -205,9 +197,7 @@ export function ComponentShowcase({ darkMode }: ComponentShowcaseProps) {
         
         {/* Textarea Section */}
         <div className="mb-8">
-          <h3 className={`text-sm mb-4 ${
-            darkMode ? 'text-gray-400' : 'text-gray-600'
-          }`}>
+          <h3 className="text-sm mb-4 text-muted-foreground">
             Textarea
           </h3>
           
@@ -237,9 +227,7 @@ export function ComponentShowcase({ darkMode }: ComponentShowcaseProps) {
         
         {/* Select Section */}
         <div className="mb-8">
-          <h3 className={`text-sm mb-4 ${
-            darkMode ? 'text-gray-400' : 'text-gray-600'
-          }`}>
+          <h3 className="text-sm mb-4 text-muted-foreground">
             Select
           </h3>
           
@@ -279,9 +267,7 @@ export function ComponentShowcase({ darkMode }: ComponentShowcaseProps) {
 
         {/* Tabs Section */}
         <div className="mb-8">
-          <h3 className={`text-sm mb-4 ${
-            darkMode ? 'text-gray-400' : 'text-gray-600'
-          }`}>
+          <h3 className="text-sm mb-4 text-muted-foreground">
             Tabs
           </h3>
           
@@ -292,10 +278,8 @@ export function ComponentShowcase({ darkMode }: ComponentShowcaseProps) {
             darkMode={darkMode}
           />
           
-          <div className={`mt-4 p-4 rounded-lg ${
-            darkMode ? 'bg-white/5' : 'bg-gray-100/50'
-          }`}>
-            <p className={darkMode ? 'text-gray-400' : 'text-gray-600'}>
+          <div className="dd-surface-muted mt-4 p-4 rounded-lg">
+            <p className="text-sm text-muted-foreground">
               Content for {tabs.find(t => t.id === activeTab)?.label} tab
             </p>
           </div>
@@ -303,9 +287,7 @@ export function ComponentShowcase({ darkMode }: ComponentShowcaseProps) {
 
         {/* Circular Progress Section */}
         <div className="mb-8">
-          <h3 className={`text-sm mb-4 ${
-            darkMode ? 'text-gray-400' : 'text-gray-600'
-          }`}>
+          <h3 className="text-sm mb-4 text-muted-foreground">
             Circular Progress
           </h3>
           
@@ -334,9 +316,7 @@ export function ComponentShowcase({ darkMode }: ComponentShowcaseProps) {
 
         {/* Accordion Section */}
         <div className="mb-8">
-          <h3 className={`text-sm mb-4 ${
-            darkMode ? 'text-gray-400' : 'text-gray-600'
-          }`}>
+          <h3 className="text-sm mb-4 text-muted-foreground">
             Accordion
           </h3>
           
@@ -350,9 +330,7 @@ export function ComponentShowcase({ darkMode }: ComponentShowcaseProps) {
 
         {/* Toast Notification Section */}
         <div className="mb-8">
-          <h3 className={`text-sm mb-4 ${
-            darkMode ? 'text-gray-400' : 'text-gray-600'
-          }`}>
+          <h3 className="text-sm mb-4 text-muted-foreground">
             Toast Notifications
           </h3>
           
@@ -374,9 +352,7 @@ export function ComponentShowcase({ darkMode }: ComponentShowcaseProps) {
         
         {/* Modal Section */}
         <div>
-          <h3 className={`text-sm mb-4 ${
-            darkMode ? 'text-gray-400' : 'text-gray-600'
-          }`}>
+          <h3 className="text-sm mb-4 text-muted-foreground">
             Modal
           </h3>
           

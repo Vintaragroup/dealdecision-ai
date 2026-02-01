@@ -8,7 +8,6 @@ import { FinancialModelPreview } from '../template-previews/FinancialModelPrevie
 import { TermSheetPreview } from '../template-previews/TermSheetPreview';
 import { OnePagerPreview } from '../template-previews/OnePagerPreview';
 import { templateRegistry } from '../report-templates/TemplateRegistry';
-import { useUserRole } from '../../contexts/UserRoleContext';
 import { 
   FileText, 
   Search, 
@@ -52,7 +51,6 @@ interface Template {
 }
 
 export function Templates({ darkMode }: TemplatesProps) {
-  const { isFounder } = useUserRole();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [showReportPreview, setShowReportPreview] = useState(false);
@@ -279,25 +277,17 @@ export function Templates({ darkMode }: TemplatesProps) {
     }
   ];
 
-  const templates = isFounder ? founderTemplates : investorTemplates;
+  const templates = investorTemplates;
 
-  const categories = isFounder
-    ? [
-        { id: 'all', label: 'All Templates', count: templates.length },
-        { id: 'pitch', label: 'Pitch Materials', count: templates.filter(t => t.category === 'pitch').length },
-        { id: 'financial', label: 'Financial', count: templates.filter(t => t.category === 'financial').length },
-        { id: 'legal', label: 'Legal', count: templates.filter(t => t.category === 'legal').length },
-        { id: 'research', label: 'Research', count: templates.filter(t => t.category === 'research').length }
-      ]
-    : [
-        { id: 'all', label: 'All Templates', count: templates.length },
-        { id: 'due-diligence', label: 'Due Diligence', count: templates.filter(t => t.category === 'due-diligence').length },
-        { id: 'investment', label: 'Investment Analysis', count: templates.filter(t => t.category === 'investment').length },
-        { id: 'portfolio', label: 'Portfolio Management', count: templates.filter(t => t.category === 'portfolio').length },
-        { id: 'legal', label: 'Legal', count: templates.filter(t => t.category === 'legal').length },
-        { id: 'research', label: 'Market Research', count: templates.filter(t => t.category === 'research').length },
-        { id: 'reports', label: 'Reports', count: templates.filter(t => t.category === 'reports').length }
-      ];
+  const categories = [
+    { id: 'all', label: 'All Templates', count: templates.length },
+    { id: 'due-diligence', label: 'Due Diligence', count: templates.filter(t => t.category === 'due-diligence').length },
+    { id: 'investment', label: 'Investment Analysis', count: templates.filter(t => t.category === 'investment').length },
+    { id: 'portfolio', label: 'Portfolio Management', count: templates.filter(t => t.category === 'portfolio').length },
+    { id: 'legal', label: 'Legal', count: templates.filter(t => t.category === 'legal').length },
+    { id: 'research', label: 'Market Research', count: templates.filter(t => t.category === 'research').length },
+    { id: 'reports', label: 'Reports', count: templates.filter(t => t.category === 'reports').length }
+  ];
 
   const filteredTemplates = templates.filter(template => {
     const matchesSearch = template.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -323,10 +313,7 @@ export function Templates({ darkMode }: TemplatesProps) {
                 Document Templates
               </h1>
               <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                {isFounder 
-                  ? 'Professional templates to accelerate your fundraising journey'
-                  : 'Professional templates to streamline your investment analysis and due diligence'
-                }
+                Professional templates to streamline your investment analysis and due diligence
               </p>
             </div>
             <Button
@@ -437,7 +424,7 @@ export function Templates({ darkMode }: TemplatesProps) {
               <div className="flex items-center gap-2 mb-4">
                 <Sparkles className="w-5 h-5 text-purple-400" />
                 <h2 className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  {isFounder ? 'AI-Powered Document Sections' : 'AI-Powered Report Sections'}
+                  AI-Powered Report Sections
                 </h2>
                 <span className={`px-2 py-1 rounded-full text-xs ${
                   darkMode ? 'bg-purple-500/20 text-purple-400' : 'bg-purple-100 text-purple-700'

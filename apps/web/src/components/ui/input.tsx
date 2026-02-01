@@ -10,11 +10,15 @@ interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   darkMode?: boolean;
 }
 
-function Input({ className, type, label, helperText, error, leftIcon, darkMode, ...props }: InputProps) {
+const Input = React.forwardRef<HTMLInputElement, InputProps>(function Input(
+  { className, type, label, helperText, error, leftIcon, darkMode, ...props },
+  ref,
+) {
   const inputField = (
     <div className="relative flex items-center">
       {leftIcon && <span className="pointer-events-none absolute left-3 text-muted-foreground">{leftIcon}</span>}
       <input
+        ref={ref}
         type={type}
         data-slot="input"
         className={cn(
@@ -44,6 +48,8 @@ function Input({ className, type, label, helperText, error, leftIcon, darkMode, 
   ) : (
     inputField
   );
-}
+});
+
+Input.displayName = "Input";
 
 export { Input };

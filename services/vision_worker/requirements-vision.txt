@@ -1,0 +1,6 @@
+# Optional heavy dependencies for local vision understanding (CLIP-style)
+# Enabled only when building vision_worker with ENABLE_VISION_UNDERSTANDING=1
+
+open_clip_torch>=2.24.0
+# CPU wheels are fine for local/dev. Use CUDA wheels if you explicitly want GPU.
+torch>=2.2.0

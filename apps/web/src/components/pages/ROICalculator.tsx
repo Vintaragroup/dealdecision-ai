@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Button } from '../ui/button';
 import { AnimatedCounter } from '../AnimatedCounter';
-import { useUserRole } from '../../contexts/UserRoleContext';
 import { useAppSettings } from '../../contexts/AppSettingsContext';
 import { 
   DollarSign,
@@ -28,7 +27,6 @@ interface ROICalculatorProps {
 }
 
 export function ROICalculator({ darkMode }: ROICalculatorProps) {
-  const { isFounder } = useUserRole();
   const { settings } = useAppSettings();
   const [timeframe, setTimeframe] = useState<'week' | 'month' | 'all'>('all');
 
@@ -41,91 +39,48 @@ export function ROICalculator({ darkMode }: ROICalculatorProps) {
   };
 
   // Breakdown by category
-  const savingsBreakdown = isFounder
-    ? [
-        {
-          category: 'Legal Fees Saved',
-          icon: <FileText className="w-5 h-5" />,
-          amount: 45600,
-          hours: 142,
-          description: 'Term sheets, contracts, incorporation docs',
-          color: 'from-blue-500 to-blue-600',
-          bgColor: darkMode ? 'bg-blue-500/20' : 'bg-blue-100',
-          textColor: darkMode ? 'text-blue-400' : 'text-blue-700'
-        },
-        {
-          category: 'Consultant Fees Saved',
-          icon: <Users className="w-5 h-5" />,
-          amount: 38200,
-          hours: 156,
-          description: 'Market research, pitch deck design, strategy',
-          color: 'from-purple-500 to-purple-600',
-          bgColor: darkMode ? 'bg-purple-500/20' : 'bg-purple-100',
-          textColor: darkMode ? 'text-purple-400' : 'text-purple-700'
-        },
-        {
-          category: 'Research Time Saved',
-          icon: <Target className="w-5 h-5" />,
-          amount: 28450,
-          hours: 124,
-          description: 'Market sizing, competitor analysis, investor research',
-          color: 'from-emerald-500 to-emerald-600',
-          bgColor: darkMode ? 'bg-emerald-500/20' : 'bg-emerald-100',
-          textColor: darkMode ? 'text-emerald-400' : 'text-emerald-700'
-        },
-        {
-          category: 'Design & Formatting',
-          icon: <Sparkles className="w-5 h-5" />,
-          amount: 15200,
-          hours: 64,
-          description: 'Pitch decks, executive summaries, one-pagers',
-          color: 'from-amber-500 to-amber-600',
-          bgColor: darkMode ? 'bg-amber-500/20' : 'bg-amber-100',
-          textColor: darkMode ? 'text-amber-400' : 'text-amber-700'
-        }
-      ]
-    : [
-        {
-          category: 'Legal Fees Saved',
-          icon: <FileText className="w-5 h-5" />,
-          amount: 45600,
-          hours: 142,
-          description: 'Due diligence docs, deal terms, NDA reviews',
-          color: 'from-blue-500 to-blue-600',
-          bgColor: darkMode ? 'bg-blue-500/20' : 'bg-blue-100',
-          textColor: darkMode ? 'text-blue-400' : 'text-blue-700'
-        },
-        {
-          category: 'Analyst Fees Saved',
-          icon: <Users className="w-5 h-5" />,
-          amount: 38200,
-          hours: 156,
-          description: 'Market research, competitive analysis, industry reports',
-          color: 'from-purple-500 to-purple-600',
-          bgColor: darkMode ? 'bg-purple-500/20' : 'bg-purple-100',
-          textColor: darkMode ? 'text-purple-400' : 'text-purple-700'
-        },
-        {
-          category: 'Due Diligence Time Saved',
-          icon: <Target className="w-5 h-5" />,
-          amount: 28450,
-          hours: 124,
-          description: 'Financial analysis, market validation, risk assessment',
-          color: 'from-emerald-500 to-emerald-600',
-          bgColor: darkMode ? 'bg-emerald-500/20' : 'bg-emerald-100',
-          textColor: darkMode ? 'text-emerald-400' : 'text-emerald-700'
-        },
-        {
-          category: 'Report Generation',
-          icon: <Sparkles className="w-5 h-5" />,
-          amount: 15200,
-          hours: 64,
-          description: 'Investment memos, IC presentations, deal summaries',
-          color: 'from-amber-500 to-amber-600',
-          bgColor: darkMode ? 'bg-amber-500/20' : 'bg-amber-100',
-          textColor: darkMode ? 'text-amber-400' : 'text-amber-700'
-        }
-      ];
+  const savingsBreakdown = [
+    {
+      category: 'Legal Fees Saved',
+      icon: <FileText className="w-5 h-5" />,
+      amount: 45600,
+      hours: 142,
+      description: 'Due diligence docs, deal terms, NDA reviews',
+      color: 'from-blue-500 to-blue-600',
+      bgColor: darkMode ? 'bg-blue-500/20' : 'bg-blue-100',
+      textColor: darkMode ? 'text-blue-400' : 'text-blue-700'
+    },
+    {
+      category: 'Analyst Fees Saved',
+      icon: <Users className="w-5 h-5" />,
+      amount: 38200,
+      hours: 156,
+      description: 'Market research, competitive analysis, industry reports',
+      color: 'from-purple-500 to-purple-600',
+      bgColor: darkMode ? 'bg-purple-500/20' : 'bg-purple-100',
+      textColor: darkMode ? 'text-purple-400' : 'text-purple-700'
+    },
+    {
+      category: 'Due Diligence Time Saved',
+      icon: <Target className="w-5 h-5" />,
+      amount: 28450,
+      hours: 124,
+      description: 'Financial analysis, market validation, risk assessment',
+      color: 'from-emerald-500 to-emerald-600',
+      bgColor: darkMode ? 'bg-emerald-500/20' : 'bg-emerald-100',
+      textColor: darkMode ? 'text-emerald-400' : 'text-emerald-700'
+    },
+    {
+      category: 'Report Generation',
+      icon: <Sparkles className="w-5 h-5" />,
+      amount: 15200,
+      hours: 64,
+      description: 'Investment memos, IC presentations, deal summaries',
+      color: 'from-amber-500 to-amber-600',
+      bgColor: darkMode ? 'bg-amber-500/20' : 'bg-amber-100',
+      textColor: darkMode ? 'text-amber-400' : 'text-amber-700'
+    }
+  ];
 
   // Historical savings over time
   const savingsOverTime = [
@@ -146,10 +101,10 @@ export function ROICalculator({ darkMode }: ROICalculatorProps) {
   ];
 
   const pieData = [
-    { name: isFounder ? 'Legal Fees' : 'Legal Fees', value: 45600, color: '#3b82f6' },
-    { name: isFounder ? 'Consultants' : 'Analysts', value: 38200, color: '#a855f7' },
-    { name: isFounder ? 'Research' : 'Due Diligence', value: 28450, color: '#10b981' },
-    { name: isFounder ? 'Design' : 'Reports', value: 15200, color: '#f59e0b' }
+    { name: 'Legal Fees', value: 45600, color: '#3b82f6' },
+    { name: 'Analysts', value: 38200, color: '#a855f7' },
+    { name: 'Due Diligence', value: 28450, color: '#10b981' },
+    { name: 'Reports', value: 15200, color: '#f59e0b' }
   ];
 
   // Milestones
@@ -189,19 +144,12 @@ export function ROICalculator({ darkMode }: ROICalculatorProps) {
   ];
 
   // What the savings represent
-  const savingsEquivalents = isFounder
-    ? [
-        { label: 'Junior Developer Salaries', value: '2 full years', icon: <Users className="w-5 h-5" /> },
-        { label: 'Office Space Rent', value: '18 months', icon: <Target className="w-5 h-5" /> },
-        { label: 'Marketing Budget', value: '$127K campaign', icon: <TrendingUp className="w-5 h-5" /> },
-        { label: 'Time Back', value: '486 hours = 12 work weeks', icon: <Clock className="w-5 h-5" /> }
-      ]
-    : [
-        { label: 'Junior Analyst Salaries', value: '2 full years', icon: <Users className="w-5 h-5" /> },
-        { label: 'Research Subscriptions', value: '3 years of data', icon: <Target className="w-5 h-5" /> },
-        { label: 'Due Diligence Outsourcing', value: '42 full DD reports', icon: <TrendingUp className="w-5 h-5" /> },
-        { label: 'Time Back', value: '486 hours = 12 work weeks', icon: <Clock className="w-5 h-5" /> }
-      ];
+  const savingsEquivalents = [
+    { label: 'Junior Analyst Salaries', value: '2 full years', icon: <Users className="w-5 h-5" /> },
+    { label: 'Research Subscriptions', value: '3 years of data', icon: <Target className="w-5 h-5" /> },
+    { label: 'Due Diligence Outsourcing', value: '42 full DD reports', icon: <TrendingUp className="w-5 h-5" /> },
+    { label: 'Time Back', value: '486 hours = 12 work weeks', icon: <Clock className="w-5 h-5" /> }
+  ];
 
   const getMotivationalMessage = () => {
     if (totalSavings.money >= 100000) {
@@ -707,10 +655,7 @@ export function ROICalculator({ darkMode }: ROICalculatorProps) {
                 {settings.gamificationEnabled ? 'Keep The Momentum Going! 🚀' : 'Continue Optimizing Your Workflow'}
               </h3>
               <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                {isFounder 
-                  ? 'Every deal you create saves you thousands. Start your next deal now!'
-                  : 'Every deal you evaluate saves you thousands. Start your next analysis now!'
-                }
+                Every deal you evaluate saves you thousands. Start your next analysis now!
               </p>
             </div>
             <Button
@@ -719,7 +664,7 @@ export function ROICalculator({ darkMode }: ROICalculatorProps) {
               icon={<ArrowUpRight className="w-4 h-4" />}
               size="lg"
             >
-              {isFounder ? 'Create New Deal' : 'Evaluate New Deal'}
+              Analyze New Deal
             </Button>
           </div>
         </div>

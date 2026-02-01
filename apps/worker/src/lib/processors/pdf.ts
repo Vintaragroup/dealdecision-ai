@@ -4,8 +4,11 @@ import path from "path";
 import fs from "fs/promises";
 import crypto from "crypto";
 import Tesseract from "tesseract.js";
+import { createRequire } from "module";
 
-pdfjs.GlobalWorkerOptions.disableWorker = true;
+import { logMemory } from "../memory";
+
+(pdfjs as any).GlobalWorkerOptions.disableWorker = true;
 
 // pdf.js render needs ImageData in the Node runtime
 if (typeof (global as any).ImageData === "undefined") {
@@ -491,7 +494,255 @@ export interface PDFContent {
     keyNumbers: Array<{ value: string; context: string }>;
     textItems: number;
     ocrUsed?: boolean;
+
+    // Text-probe decision: this decides whether OCR is required as a fallback.
+    // Optional to preserve existing callers.
+    needsOcr?: boolean;
+    textProbe?: {
+      min_text_threshold_chars: number;
+      char_count: number;
+      word_count: number;
+      pages_with_text: number;
+      pages_probed: number;
+      decision: "text_ok_skip_ocr" | "text_sparse_needs_ocr";
+      decided_at: string;
+    };
+    pageOcr?: {
+      attempted: boolean;
+      pages_attempted: number;
+      failed_pages: number[];
+      errors: Array<{ page: number; message: string }>;
+    };
   };
+
+  // PDF Extraction v2 (shadow mode) artifacts. Additive only.
+  // Kept optional to preserve v1 callers and downstream contracts.
+  pdf_v2?: unknown;
+}
+
+export type PdfTextProbe = {
+  min_text_threshold_chars: number;
+  char_count: number;
+  word_count: number;
+  pages_with_text: number;
+  pages_probed: number;
+  decision: "text_ok_skip_ocr" | "text_sparse_needs_ocr";
+  needsOcr: boolean;
+  decided_at: string;
+};
+
+export type PdfTextProbeCallback = (probe: PdfTextProbe) => Promise<void> | void;
+
+// Exported for PDF v2 OCR fallback reuse.
+// V2 will call this only for pages that are classified as scanned or have insufficient native text.
+export async function ocrPdfPageV1(
+  page: pdfjs.PDFPageProxy,
+  pageNumber: number,
+  captureDebug = false
+): Promise<
+  OCRResult & {
+    rawPng?: Buffer;
+    prePng?: Buffer;
+    regions?: Region[];
+    scale: number;
+    provider: "tesseract";
+    imageWidth: number;
+    imageHeight: number;
+    skippedRegions: number;
+  }
+> {
+  return ocrPage(page, pageNumber, captureDebug);
+}
+
+export type OcrV2Block = {
+  text: string;
+  bbox: { x: number; y: number; w: number; h: number };
+  bbox_units: "pixels";
+  confidence: number; // 0..1
+};
+
+export type OcrV2Result = {
+  provider: "tesseract";
+  version: "ocr_v2";
+  text: string;
+  blocks: OcrV2Block[];
+  avg_confidence: number; // 0..1
+  bbox_units: "pixels";
+  preproc: { mode: "basic"; contrast: number; threshold: number };
+  scale: number;
+  imageWidth: number;
+  imageHeight: number;
+  regions: Array<{ x: number; y: number; w: number; h: number }>;
+  skippedRegions: number;
+  usedFullPageFallback: boolean;
+};
+
+// OCR v2: deterministic region selection + deterministic reading order + line/word blocks.
+// Used by PDF v2 shadow artifacts only (additive under pdf_v2.pages[i].ocr_v2).
+export async function ocrPdfPageV2(
+  page: pdfjs.PDFPageProxy,
+  pageNumber: number,
+  captureDebug = false
+): Promise<OcrV2Result> {
+  const scale = computeOcrScale(page);
+  const { canvas, imageData } = await renderPageToCanvas(page, scale, "basic", captureDebug);
+
+  const regions = detectTextRegions(imageData, canvas.width, canvas.height);
+  const selected = selectRegionsForOcrV2(regions);
+
+  const blocks: OcrV2Block[] = [];
+  const textParts: string[] = [];
+  let skippedRegions = 0;
+  let usedFullPageFallback = false;
+
+  const pushBlocks = (newBlocks: OcrV2Block[]) => {
+    for (const b of newBlocks) {
+      const t = (b.text || "").replace(/\s+/g, " ").trim();
+      if (!t) continue;
+      blocks.push({ ...b, text: t });
+      textParts.push(t);
+    }
+  };
+
+  const ocrPng = async (png: Buffer, label: string) => {
+    const { data } = await withTimeout(
+      withSilencedTesseractNoise(() => Tesseract.recognize(png, "eng", { logger: () => {} })),
+      label,
+      OCR_TIMEOUT_MS
+    );
+    return data;
+  };
+
+  const blocksFromTesseract = (data: any, offsetX = 0, offsetY = 0): OcrV2Block[] => {
+  const minConf = 25;
+    const out: OcrV2Block[] = [];
+    const lines = Array.isArray(data?.lines) ? data.lines : [];
+    if (lines.length) {
+      for (const l of lines) {
+        const text = (l?.text || "").trim();
+        const conf = normalizeConfidence(l?.confidence ?? l?.conf ?? 0);
+        const bbox = l?.bbox;
+        if (!text) continue;
+        if (conf < minConf) continue;
+        const x0 = Number(bbox?.x0 ?? 0) + offsetX;
+        const y0 = Number(bbox?.y0 ?? 0) + offsetY;
+        const x1 = Number(bbox?.x1 ?? 0) + offsetX;
+        const y1 = Number(bbox?.y1 ?? 0) + offsetY;
+        const w = Math.max(0, x1 - x0);
+        const h = Math.max(0, y1 - y0);
+        if (w <= 0 || h <= 0) continue;
+        out.push({
+          text,
+          bbox: { x: x0, y: y0, w, h },
+          bbox_units: "pixels",
+          confidence: Math.max(0, Math.min(1, conf / 100)),
+        });
+      }
+    } else {
+      const words = Array.isArray(data?.words) ? data.words : [];
+      for (const w of words) {
+        const text = (w?.text || "").trim();
+        const conf = normalizeConfidence(w?.confidence ?? w?.conf ?? 0);
+        const bbox = w?.bbox;
+        if (!text) continue;
+        if (conf < minConf) continue;
+        const x0 = Number(bbox?.x0 ?? 0) + offsetX;
+        const y0 = Number(bbox?.y0 ?? 0) + offsetY;
+        const x1 = Number(bbox?.x1 ?? 0) + offsetX;
+        const y1 = Number(bbox?.y1 ?? 0) + offsetY;
+        const ww = Math.max(0, x1 - x0);
+        const hh = Math.max(0, y1 - y0);
+        if (ww <= 0 || hh <= 0) continue;
+        out.push({
+          text,
+          bbox: { x: x0, y: y0, w: ww, h: hh },
+          bbox_units: "pixels",
+          confidence: Math.max(0, Math.min(1, conf / 100)),
+        });
+      }
+    }
+
+    // Deterministic reading order for blocks.
+    out.sort((a, b) => {
+      const yDiff = a.bbox.y - b.bbox.y;
+      if (Math.abs(yDiff) > 2) return yDiff;
+      return a.bbox.x - b.bbox.x;
+    });
+
+    return out;
+  };
+
+  if (selected.length === 0) {
+    const fullPng = canvas.toBuffer("image/png");
+    const data = await ocrPng(fullPng, `ocr_v2 page ${pageNumber}`);
+    pushBlocks(blocksFromTesseract(data, 0, 0));
+  } else {
+    // 1) Region OCR pass
+    for (const region of selected) {
+      if (region.w < 60 || region.h < 25) {
+        skippedRegions++;
+        continue;
+      }
+      if (region.w / Math.max(1, region.h) > 25 && region.y >= canvas.height * 0.25) {
+        skippedRegions++;
+        continue;
+      }
+      const crop = createCanvas(region.w, region.h);
+      const ctx = crop.getContext("2d");
+      ctx.drawImage(canvas, region.x, region.y, region.w, region.h, 0, 0, region.w, region.h);
+      const png = crop.toBuffer("image/png");
+      const data = await ocrPng(png, `ocr_v2 page ${pageNumber} region`);
+      pushBlocks(blocksFromTesseract(data, region.x, region.y));
+    }
+
+    // 2) Full-page OCR pass (maximization): for scanned/hybrid pages, region OCR can miss text.
+    // We run full-page OCR once and deterministically pick the better result.
+    const regionText = textParts.join(" ").replace(/\s+/g, " ").trim();
+    const fullPng = canvas.toBuffer("image/png");
+    const fullData = await ocrPng(fullPng, `ocr_v2 page ${pageNumber} full`);
+    const fullBlocks = blocksFromTesseract(fullData, 0, 0);
+    const fullText = fullBlocks.map((b) => b.text).join(" ").replace(/\s+/g, " ").trim();
+
+    // Choose full-page OCR if it yields materially more text.
+    if (fullText.length > regionText.length + 40) {
+      usedFullPageFallback = true;
+      blocks.length = 0;
+      textParts.length = 0;
+      pushBlocks(fullBlocks);
+    }
+  }
+
+  const confs = blocks.map((b) => b.confidence).filter((n) => Number.isFinite(n));
+  const avg_confidence = confs.length ? Math.max(0, Math.min(1, confs.reduce((a, b) => a + b, 0) / confs.length)) : 0;
+
+  return {
+    provider: "tesseract",
+    version: "ocr_v2",
+    text: textParts.join(" ").replace(/\s+/g, " ").trim(),
+    blocks,
+    avg_confidence,
+    bbox_units: "pixels",
+    preproc: { mode: "basic", contrast: OCR_CONTRAST, threshold: OCR_THRESHOLD },
+    scale,
+    imageWidth: canvas.width,
+    imageHeight: canvas.height,
+    regions: selected.map((r) => ({ x: r.x, y: r.y, w: r.w, h: r.h })),
+    skippedRegions,
+    usedFullPageFallback,
+  };
+}
+
+function selectRegionsForOcrV2(regions: Array<{ x: number; y: number; w: number; h: number }>): Array<{ x: number; y: number; w: number; h: number }> {
+  if (!Array.isArray(regions) || regions.length === 0) return [];
+  const topByArea = [...regions]
+    .sort((a, b) => b.w * b.h - a.w * a.h)
+    .slice(0, 12);
+  // Deterministic reading order: top-to-bottom, left-to-right.
+  return topByArea.sort((a, b) => {
+    const yDiff = a.y - b.y;
+    if (Math.abs(yDiff) > 2) return yDiff;
+    return a.x - b.x;
+  });
 }
 
 type PreprocessMode = "none" | "basic";
@@ -586,7 +837,10 @@ async function ocrPage(
           conf,
         };
       })
-      .filter((w) => w.text.length > 0 && w.width > 0 && w.height > 0 && w.height >= 8 && w.conf >= 50);
+      .filter(
+        (w: { text: string; width: number; height: number; conf: number }) =>
+          w.text.length > 0 && w.width > 0 && w.height > 0 && w.height >= 8 && w.conf >= 50
+      );
 
     aggregateWords.push(...words);
     if (data.text) textParts.push(data.text);
@@ -678,13 +932,35 @@ async function extractWithTextThenOcr(worker: pdfjs.PDFDocumentProxy, processedP
   let usedOcr = false;
   const debugRecords: DebugPageMeta[] = [];
 
+  const pageOcrErrors: Array<{
+    // Back-compat keys
+    page: number;
+    message: string;
+    // New structured keys
+    page_index: number;
+    stage: "pdf_v1_ocr";
+    timeout_ms: number;
+    errorMessage: string;
+  }> = [];
+  const failedPages: number[] = [];
+
+  // Probe counters for a deterministic OCR decision.
+  let pageTextCharCount = 0;
+  let pagesWithText = 0;
+
   for (let i = 1; i <= processedPages; i++) {
     const page = await withTimeout(worker.getPage(i), `pdf page ${i}`);
     const [, , , pageHeight] = page.view;
     const textContent = await withTimeout(page.getTextContent(), `pdf text ${i}`);
 
-    const words = textContent.items
-      .filter((item): item is pdfjs.TextItem => "str" in item)
+    const words = (textContent.items as Array<any>)
+      .filter(
+        (item): item is { str: string; transform: number[]; width: number; height: number } =>
+          typeof item?.str === "string" &&
+          Array.isArray(item?.transform) &&
+          typeof item?.width === "number" &&
+          typeof item?.height === "number"
+      )
       .map((item) => ({
         text: item.str,
         x: item.transform[4],
@@ -701,6 +977,11 @@ async function extractWithTextThenOcr(worker: pdfjs.PDFDocumentProxy, processedP
 
     textItemsCount += words.length;
     const pageText = words.map((w) => w.text).join(" ");
+    const trimmed = pageText.trim();
+    if (trimmed.length > 0) {
+      pagesWithText += 1;
+      pageTextCharCount += trimmed.length;
+    }
     const cleanTokens = pageText.split(/\s+/).filter(Boolean);
     allWords.push(...cleanTokens);
 
@@ -724,8 +1005,36 @@ async function extractWithTextThenOcr(worker: pdfjs.PDFDocumentProxy, processedP
     });
   }
 
-  const hasText = allWords.length >= 20 || textItemsCount >= 20;
-  if (!hasText) {
+  // --- Text-probe decision (before any OCR work) ---
+  const minTextThresholdCharsRaw = Number(process.env.PDF_MIN_TEXT_THRESHOLD_CHARS ?? process.env.PDF_MIN_TEXT_THRESHOLD ?? 800);
+  const minTextThresholdChars = Number.isFinite(minTextThresholdCharsRaw) && minTextThresholdCharsRaw > 0 ? minTextThresholdCharsRaw : 800;
+
+  const decidedAt = new Date().toISOString();
+  const needsOcr = pageTextCharCount < minTextThresholdChars;
+  const textProbe: PdfTextProbe = {
+    min_text_threshold_chars: minTextThresholdChars,
+    char_count: pageTextCharCount,
+    word_count: allWords.length,
+    pages_with_text: pagesWithText,
+    pages_probed: processedPages,
+    decision: needsOcr ? "text_sparse_needs_ocr" : "text_ok_skip_ocr",
+    needsOcr,
+    decided_at: decidedAt,
+  };
+
+  // NOTE: extractPDFContent can pass a callback to persist this decision before OCR starts.
+  // We stash it on the worker object (best-effort) to avoid widening this internal function's signature.
+  const onTextProbe = (worker as any)?.__onTextProbe as PdfTextProbeCallback | undefined;
+  if (onTextProbe) {
+    try {
+      await onTextProbe(textProbe);
+    } catch {
+      // best-effort; never fail extraction due to metadata persistence
+    }
+  }
+
+  // If we have sufficient native text, OCR is not required and should not run.
+  if (needsOcr) {
     const ocrPages = Math.min(processedPages, PDF_OCR_MAX_PAGES);
     pages.length = 0;
     allWords.length = 0;
@@ -735,7 +1044,25 @@ async function extractWithTextThenOcr(worker: pdfjs.PDFDocumentProxy, processedP
 
     for (let i = 1; i <= ocrPages; i++) {
       const page = await withTimeout(worker.getPage(i), `pdf page ${i}`);
-      const ocr = await ocrPage(page, i, DEBUG_ENABLED);
+      let ocr: Awaited<ReturnType<typeof ocrPdfPageV1>> | null = null;
+      try {
+        // Allow injection for tests; otherwise use the default implementation.
+        const ocrFn = (worker as any)?.__ocrPdfPageV1 as typeof ocrPdfPageV1 | undefined;
+        ocr = await (ocrFn ?? ocrPdfPageV1)(page, i, DEBUG_ENABLED);
+      } catch (err) {
+        failedPages.push(i);
+        const msg = err instanceof Error ? err.message : String(err);
+        pageOcrErrors.push({
+          page: i,
+          message: msg,
+          page_index: i - 1,
+          stage: "pdf_v1_ocr",
+          timeout_ms: OCR_TIMEOUT_MS,
+          errorMessage: msg,
+        });
+        // Continue: OCR is best-effort per-page. We'll decide success based on the aggregate.
+        continue;
+      }
       const tokens = ocr.text.split(/\s+/).filter(Boolean);
       allWords.push(...tokens);
       textItemsCount += ocr.words.length;
@@ -811,7 +1138,9 @@ async function extractWithTextThenOcr(worker: pdfjs.PDFDocumentProxy, processedP
     }
 
     if (allWords.length === 0) {
-      throw new Error("No text extracted from PDF even after OCR");
+      const firstErr = pageOcrErrors[0]?.message;
+      const suffix = firstErr ? ` (first_ocr_error=${firstErr})` : "";
+      throw new Error(`No text extracted from PDF even after OCR${suffix}`);
     }
   } else if (DEBUG_ENABLED && debugDir) {
     // Debug images even when text extraction worked (helps compare OCR preprocessing).
@@ -967,6 +1296,22 @@ const filteredNumbers = (() => {
       mainHeadings: filteredHeadings,
       keyNumbers: filteredNumbers.slice(0, 20),
       textItems: textItemsCount,
+      needsOcr: textProbe.needsOcr,
+      textProbe: {
+        min_text_threshold_chars: textProbe.min_text_threshold_chars,
+        char_count: textProbe.char_count,
+        word_count: textProbe.word_count,
+        pages_with_text: textProbe.pages_with_text,
+        pages_probed: textProbe.pages_probed,
+        decision: textProbe.decision,
+        decided_at: textProbe.decided_at,
+      },
+      pageOcr: {
+        attempted: usedOcr,
+        pages_attempted: usedOcr ? Math.min(processedPages, PDF_OCR_MAX_PAGES) : 0,
+        failed_pages: failedPages,
+        errors: pageOcrErrors,
+      },
     },
     usedOcr,
     debugRecords,
@@ -978,7 +1323,11 @@ type OCRResult = {
   words: Array<{ text: string; x: number; y: number; width: number; height: number; conf: number }>;
 };
 
-export async function extractPDFContent(buffer: Buffer, options: { docId?: string } = {}): Promise<PDFContent> {
+export async function extractPDFContent(
+  buffer: Buffer,
+  options: { docId?: string; onTextProbe?: PdfTextProbeCallback; ocrPageV1?: typeof ocrPdfPageV1 } = {}
+): Promise<PDFContent> {
+  logMemory("pdf_v1:before_pdf_load", { doc_id: options.docId ?? null, bytes: buffer.length });
   const data = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 
   if (data.byteLength === 0) {
@@ -992,13 +1341,34 @@ export async function extractPDFContent(buffer: Buffer, options: { docId?: strin
     await fs.mkdir(debugDir, { recursive: true }).catch(() => {});
   }
 
-  const standardFontDataUrl = path.join(path.dirname(require.resolve("pdfjs-dist/package.json")), "standard_fonts/");
+  // Vitest executes TS as ESM, where `require` may not exist.
+  // Use a resolver that works in both ESM and CJS.
+  const requireForResolve =
+    typeof require !== "undefined" ? require : createRequire(path.join(process.cwd(), "__require_stub__.js"));
+  const standardFontDataUrl = path.join(
+    path.dirname(requireForResolve.resolve("pdfjs-dist/package.json")),
+    "standard_fonts/"
+  );
 
   const worker = await withTimeout(pdfjs.getDocument({ data, standardFontDataUrl }).promise, "pdf load");
+  if (options.onTextProbe) {
+    // Best-effort stash so extractWithTextThenOcr can call it before OCR begins.
+    (worker as any).__onTextProbe = options.onTextProbe;
+  }
+  if (options.ocrPageV1) {
+    // Test-only injection to avoid invoking real OCR.
+    (worker as any).__ocrPdfPageV1 = options.ocrPageV1;
+  }
+  logMemory("pdf_v1:after_pdf_load", { doc_id: options.docId ?? null, num_pages: worker.numPages });
   const processedPages = Math.min(worker.numPages, PDF_MAX_PAGES);
   const metadata = await worker.getMetadata().catch(() => ({}));
 
   const { pages, summary, usedOcr, debugRecords } = await extractWithTextThenOcr(worker, processedPages, debugDir);
+  logMemory("pdf_v1:after_extract", {
+    doc_id: options.docId ?? null,
+    processed_pages: summary.processedPages,
+    ocr_used: usedOcr,
+  });
 
   if (DEBUG_ENABLED && debugDir) {
     await writeDebugSummary(debugDir, {
@@ -1011,6 +1381,14 @@ export async function extractPDFContent(buffer: Buffer, options: { docId?: strin
       pageDebug: debugRecords,
     });
   }
+
+  try {
+    await (worker as any).destroy?.();
+  } catch {
+    // ignore
+  }
+
+  logMemory("pdf_v1:after_destroy", { doc_id: options.docId ?? null });
 
   return {
     metadata: {
@@ -1029,6 +1407,9 @@ export async function extractPDFContent(buffer: Buffer, options: { docId?: strin
       keyNumbers: summary.keyNumbers,
       textItems: summary.textItems,
       ocrUsed: usedOcr,
+      needsOcr: summary.needsOcr,
+      textProbe: summary.textProbe,
+      pageOcr: summary.pageOcr,
     },
   };
 }

@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Trophy, Sparkles, Zap } from 'lucide-react';
 import { useAppSettings } from '../../contexts/AppSettingsContext';
-import { useUserRole } from '../../contexts/UserRoleContext';
 import { Button } from '../ui/button';
 
 interface CelebrationModalProps {
@@ -12,7 +11,6 @@ interface CelebrationModalProps {
 export function CelebrationModal({ darkMode, onComplete }: CelebrationModalProps) {
   const [showConfetti, setShowConfetti] = useState(true);
   const { settings } = useAppSettings();
-  const { isFounder } = useUserRole();
 
   useEffect(() => {
     // Hide confetti after 3 seconds
@@ -93,9 +91,7 @@ export function CelebrationModal({ darkMode, onComplete }: CelebrationModalProps
             <p className={`text-lg mb-6 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
               {settings.gamificationEnabled 
                 ? `Welcome to DealDecision AI! You've earned your first achievement and +250 XP`
-                : isFounder
-                  ? "Welcome to DealDecision AI! You're all set to start building your pitch."
-                  : "Welcome to DealDecision AI! You're all set to start analyzing deals."}
+                : "Welcome to DealDecision AI! You're all set to start analyzing deals."}
             </p>
 
             {/* Rewards Grid - Only show if gamification enabled */}
@@ -176,10 +172,7 @@ export function CelebrationModal({ darkMode, onComplete }: CelebrationModalProps
                 <li className="flex items-start gap-2">
                   <span className="text-green-500 flex-shrink-0">✓</span>
                   <span>
-                    {isFounder 
-                      ? 'Check your dashboard for pitch refinement insights'
-                      : 'Check your dashboard for AI-powered insights'
-                    }
+                    Check your dashboard for AI-powered insights
                   </span>
                 </li>
                 {settings.gamificationEnabled && (
@@ -191,10 +184,7 @@ export function CelebrationModal({ darkMode, onComplete }: CelebrationModalProps
                 <li className="flex items-start gap-2">
                   <span className="text-green-500 flex-shrink-0">✓</span>
                   <span>
-                    {isFounder
-                      ? 'Use AI Studio to generate pitch materials instantly'
-                      : 'Use AI Studio to generate documents instantly'
-                    }
+                    Use Document Studio to generate documents instantly
                   </span>
                 </li>
                 {settings.gamificationEnabled && (
@@ -209,7 +199,7 @@ export function CelebrationModal({ darkMode, onComplete }: CelebrationModalProps
             {/* CTA */}
             <Button onClick={onComplete} className="w-full gap-2 py-3">
               <Zap className="w-4 h-4" />
-              {isFounder ? 'Start Building Your Pitch' : 'Start Analyzing Deals'}
+              Start Analyzing Deals
             </Button>
           </div>
         </div>

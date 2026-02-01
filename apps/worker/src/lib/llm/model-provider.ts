@@ -31,6 +31,7 @@ export abstract class BaseLLMProvider extends EventEmitter implements ILLMProvid
   private analytics: LLMAnalyticsEvent[] = [];
   private analyticsBuffer: LLMAnalyticsEvent[] = [];
   private analyticsFlushed: number = 0;
+  private readonly analyticsStoreLimit = 1000;
 
   constructor(config: ProviderConfig, type: ProviderType) {
     super();
@@ -98,6 +99,10 @@ export abstract class BaseLLMProvider extends EventEmitter implements ILLMProvid
     };
 
     this.analyticsBuffer.push(fullEvent);
+    this.analytics.push(fullEvent);
+    if (this.analytics.length > this.analyticsStoreLimit) {
+      this.analytics.splice(0, this.analytics.length - this.analyticsStoreLimit);
+    }
     this.emit('analytics', fullEvent);
 
     // Flush if buffer exceeds 100 events
@@ -149,6 +154,15 @@ export abstract class BaseLLMProvider extends EventEmitter implements ILLMProvid
       return this.analytics.slice(-limit);
     }
     return [...this.analytics];
+  }
+
+  /**
+   * Reset analytics buffers (useful for tests)
+   */
+  resetAnalytics(): void {
+    this.analytics = [];
+    this.analyticsBuffer = [];
+    this.analyticsFlushed = 0;
   }
 
   /**

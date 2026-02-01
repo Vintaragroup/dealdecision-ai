@@ -1,7 +1,18 @@
-import { Search, Bell, Grid3x3, Sun, Moon, RotateCcw, Home, ChevronRight, Menu, X } from 'lucide-react';
-import { UserProfile } from './ui/UserProfile';
+import { Search, Bell, Grid3x3, Sun, Moon, RotateCcw, Home, ChevronRight, Menu, X, LogOut, Settings as SettingsIcon, Users, User as UserIcon } from 'lucide-react';
 import { useState } from 'react';
 import { useUserRole } from '../contexts/UserRoleContext';
+import { useScoreSource } from '../contexts/ScoreSourceContext';
+import { Switch } from './ui/switch';
+import { useClerk, useUser } from '@clerk/clerk-react';
+import type { PageView } from './Sidebar';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu';
 
 interface HeaderProps {
   darkMode: boolean;
@@ -11,29 +22,37 @@ interface HeaderProps {
   currentPage?: string;
   mobileMenuOpen?: boolean;
   setMobileMenuOpen?: (value: boolean) => void;
+  onNavigate?: (page: PageView) => void;
+  onOpenCommandPalette?: () => void;
 }
 
-export function Header({ darkMode, setDarkMode, rightSidebarOpen, setRightSidebarOpen, currentPage = 'Dashboard', mobileMenuOpen, setMobileMenuOpen }: HeaderProps) {
+export function Header({ darkMode, setDarkMode, rightSidebarOpen, setRightSidebarOpen, currentPage = 'Dashboard', mobileMenuOpen, setMobileMenuOpen, onNavigate, onOpenCommandPalette }: HeaderProps) {
   const [searchFocused, setSearchFocused] = useState(false);
-  const { isFounder } = useUserRole();
+  const { isAnalyst } = useUserRole();
+  const { scoreSource, setScoreSource } = useScoreSource();
+  const prefersFundability = scoreSource === 'fundability_v1';
+  const { isLoaded: userLoaded, user } = useUser();
+  const clerk = useClerk();
+
+  const displayName = user?.fullName || [user?.firstName, user?.lastName].filter(Boolean).join(' ') || 'Account';
+  const avatarUrl = user?.imageUrl;
 
   const getPageTitle = (page: string) => {
     const pageTitles: Record<string, string> = {
       dashboard: 'Dashboard',
-      dealsList: isFounder ? 'My Companies' : 'Deal Pipeline',
-      analytics: isFounder ? 'Fundraising Analytics' : 'Portfolio Analytics',
-      documents: isFounder ? 'Pitch Materials' : 'Documents',
-      aiStudio: 'Document Studio',
+      dealsList: 'Deal Pipeline',
+      analytics: 'Analytics',
+      documents: 'Documents',
+      aiStudio: isAnalyst ? 'Document Studio' : 'AI Studio',
       dueDiligence: 'Due Diligence Report',
       dealComparison: 'Deal Comparison',
-      gamification: 'Achievements & Progress',
       componentShowcase: 'Component Library',
-      team: isFounder ? 'Founding Team' : 'Investment Team',
+      team: 'Team',
       templates: 'Templates',
       profile: 'Profile',
       roiCalculator: 'ROI Calculator',
       settings: 'Settings',
-      dealWorkspace: isFounder ? 'Pitch Builder' : 'Deal Workspace'
+      dealWorkspace: 'Deal Workspace'
     };
     return pageTitles[page] || 'Dashboard';
   };
@@ -97,8 +116,13 @@ export function Header({ darkMode, setDarkMode, rightSidebarOpen, setRightSideba
           <input
             type="text"
             placeholder="Search deals, documents, investors..."
-            onFocus={() => setSearchFocused(true)}
+            readOnly
+            onFocus={() => {
+              setSearchFocused(true);
+              onOpenCommandPalette?.();
+            }}
             onBlur={() => setSearchFocused(false)}
+            onClick={() => onOpenCommandPalette?.()}
             className={`w-[280px] h-9 pl-10 pr-12 backdrop-blur-xl border rounded-lg text-sm focus:outline-none transition-all ${
               darkMode 
                 ? 'bg-white/5 text-gray-300 placeholder-gray-500' 
@@ -119,22 +143,121 @@ export function Header({ darkMode, setDarkMode, rightSidebarOpen, setRightSideba
         </div>
 
         {/* Mobile Search Icon */}
-        <button className={`lg:hidden p-2 rounded-lg transition-colors ${
+        <button
+          type="button"
+          onClick={() => onOpenCommandPalette?.()}
+          className={`lg:hidden p-2 rounded-lg transition-colors ${
           darkMode ? 'hover:bg-white/5' : 'hover:bg-gray-100/80'
-        }`}>
+        }`}
+        >
           <Search className={`w-4 h-4 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
         </button>
 
-        {/* User Profile - Hidden on small mobile */}
-        <div className="hidden sm:block">
-          <UserProfile
-            name="Sarah Chen"
-            level={12}
-            currentXP={2850}
-            maxXP={5000}
-            darkMode={darkMode}
-          />
-        </div>
+        {/* User menu */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label="Open account menu"
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-colors focus:outline-none ${
+                darkMode ? 'hover:bg-white/5' : 'hover:bg-gray-100/50'
+              }`}
+            >
+              <div className="relative">
+                <div
+                  className={`w-8 h-8 rounded-full flex items-center justify-center overflow-hidden ${
+                    avatarUrl ? '' : 'bg-gradient-to-br from-[#6366f1] to-[#8b5cf6]'
+                  }`}
+                >
+                  {avatarUrl ? (
+                    <img src={avatarUrl} alt={displayName} className="w-full h-full object-cover" />
+                  ) : (
+                    <UserIcon className="w-4 h-4 text-white" />
+                  )}
+                </div>
+              </div>
+
+              <div className="hidden sm:flex flex-col items-start leading-tight">
+                <span className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                  {userLoaded ? displayName : 'Loading…'}
+                </span>
+                <span className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                  Account
+                </span>
+              </div>
+            </button>
+          </DropdownMenuTrigger>
+
+          <DropdownMenuContent align="end" sideOffset={8}>
+            <DropdownMenuLabel>
+              <div className="flex flex-col">
+                <span className="text-sm font-medium">{userLoaded ? displayName : 'Loading…'}</span>
+                <span className="text-xs text-muted-foreground">{user?.primaryEmailAddress?.emailAddress ?? ''}</span>
+              </div>
+            </DropdownMenuLabel>
+
+            <DropdownMenuSeparator />
+
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                onNavigate?.('profile');
+              }}
+            >
+              <UserIcon />
+              Profile
+            </DropdownMenuItem>
+
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                onNavigate?.('team');
+              }}
+            >
+              <Users />
+              Team
+            </DropdownMenuItem>
+
+            <DropdownMenuItem
+              onSelect={(e) => {
+                e.preventDefault();
+                onNavigate?.('settings');
+              }}
+            >
+              <SettingsIcon />
+              Settings
+            </DropdownMenuItem>
+
+            <DropdownMenuSeparator />
+
+            <div className="px-2 py-2">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-sm">Score source</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">{prefersFundability ? 'Fundability' : 'Fundamentals'}</span>
+                  <Switch
+                    checked={prefersFundability}
+                    onCheckedChange={(checked) => setScoreSource(checked ? 'fundability_v1' : 'legacy')}
+                    aria-label="Toggle score source"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <DropdownMenuSeparator />
+
+            <DropdownMenuItem
+              variant="destructive"
+              onSelect={(e) => {
+                e.preventDefault();
+                void clerk.signOut({ redirectUrl: '/' });
+              }}
+            >
+              <LogOut />
+              Logout
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         {/* Theme Toggle */}
         <button 

@@ -3,7 +3,7 @@
  * /api/v1/analysis - HRM-DD analysis endpoints
  */
 
-import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import type { FastifyInstance } from "fastify";
 import type { Pool } from "pg";
 import {
   initializeAnalysis,
@@ -30,7 +30,7 @@ export async function registerAnalysisRoutes(
    */
   app.post<{ Body: AnalysisRequest }>(
     "/api/v1/analysis/start",
-    async (request: FastifyRequest, reply: FastifyReply) => {
+    async (request, reply) => {
       const { deal_id, max_cycles = 3, analysis_mode = "full" } = request.body;
 
       // Validate
@@ -118,7 +118,7 @@ export async function registerAnalysisRoutes(
    */
   app.get<{ Params: { deal_id: string } }>(
     "/api/v1/analysis/:deal_id/progress",
-    async (request: FastifyRequest, reply: FastifyReply) => {
+    async (request, reply) => {
       const { deal_id } = request.params;
 
       try {
@@ -161,7 +161,7 @@ export async function registerAnalysisRoutes(
    */
   app.get<{ Params: { deal_id: string } }>(
     "/api/v1/analysis/:deal_id/result",
-    async (request: FastifyRequest, reply: FastifyReply) => {
+    async (request, reply) => {
       const { deal_id } = request.params;
 
       try {
@@ -179,7 +179,7 @@ export async function registerAnalysisRoutes(
           decision_recommendation: analysisState.decision_pack.go_no_go,
           executive_summary: analysisState.decision_pack.executive_summary,
           key_findings: [], // Extract from decision_pack
-          risks_identified: analysisState.decision_pack.risk_map.map((r) => r.risk),
+          risks_identified: analysisState.decision_pack.risk_map.map((r: any) => r.risk),
           next_steps: analysisState.decision_pack.what_to_verify,
           confidence_score: calculateConfidence(analysisState),
           completed_at: new Date().toISOString(),
@@ -199,7 +199,7 @@ export async function registerAnalysisRoutes(
    */
   app.post<{ Params: { deal_id: string; cycle: string } }>(
     "/api/v1/analysis/:deal_id/cycle/:cycle",
-    async (request: FastifyRequest, reply: FastifyReply) => {
+    async (request, reply) => {
       const { deal_id, cycle: cycleStr } = request.params;
       const cycle = parseInt(cycleStr, 10);
 
@@ -246,7 +246,7 @@ export async function registerAnalysisRoutes(
    */
   app.post<{ Params: { deal_id: string } }>(
     "/api/v1/analysis/:deal_id/synthesize",
-    async (request: FastifyRequest, reply: FastifyReply) => {
+    async (request, reply) => {
       const { deal_id } = request.params;
 
       try {

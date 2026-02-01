@@ -1,0 +1,89 @@
+# Render Blueprint
+#
+# Goal: Docker-based deployment for both API + worker that matches local Docker dev.
+# - No shared filesystem assumptions between services.
+# - Worker image includes system tools for PDF/Office/image/OCR processing.
+
+services:
+  - type: web
+    name: dealdecision-api
+    runtime: docker
+    plan: starter
+    dockerfilePath: apps/api/Dockerfile
+    dockerContext: .
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "9000"
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false
+      - key: R2_S3_ENDPOINT
+        sync: false
+
+  - type: worker
+    name: dealdecision-worker
+    runtime: docker
+    plan: starter
+    dockerfilePath: apps/worker/Dockerfile
+    dockerContext: .
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: ENABLE_VISUAL_EXTRACTION
+        value: "1"
+      - key: VISUAL_PAGE_IMAGE_PERSIST
+        value: "1"
+      - key: WORKER_CONCURRENCY
+        value: "1"
+      - key: VISION_BASE_URL
+        value: "https://dealdecision-vision-v2.onrender.com"
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
+        sync: false
+      - key: R2_S3_ENDPOINT
+        sync: false
+
+  - type: web
+    name: dealdecision-vision-v2
+    runtime: docker
+    plan: starter
+    dockerfilePath: services/vision_worker/Dockerfile
+    dockerContext: services/vision_worker
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: LOG_LEVEL
+        value: INFO

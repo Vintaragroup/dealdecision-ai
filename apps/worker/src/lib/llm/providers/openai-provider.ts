@@ -147,7 +147,8 @@ export class OpenAIGPT4oProvider extends BaseLLMProvider {
           this.makeRequest({
             model: model as string,
             messages,
-            temperature: request.temperature || this.config.timeout || 0.7,
+            // Allow explicit temperature=0; never fall back to timeout (ms).
+            temperature: request.temperature ?? 0.7,
             max_tokens: request.max_tokens || 2000,
             top_p: request.top_p || 1,
             stop: request.stop,
@@ -239,7 +240,8 @@ export class OpenAIGPT4oProvider extends BaseLLMProvider {
       const stream = await this.makeStreamRequest({
         model: model as string,
         messages,
-        temperature: request.temperature || 0.7,
+        // Allow explicit temperature=0
+        temperature: request.temperature ?? 0.7,
         max_tokens: request.max_tokens || 2000,
         top_p: request.top_p || 1,
         stop: request.stop,
@@ -316,7 +318,7 @@ export class OpenAIGPT4oProvider extends BaseLLMProvider {
    * Get supported models
    */
   getSupportedModels(): ModelName[] {
-    return ['gpt-4o'];
+    return ['gpt-4o', 'gpt-4o-mini'];
   }
 
   /**
@@ -354,12 +356,12 @@ export class OpenAIGPT4oProvider extends BaseLLMProvider {
     });
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
+      const errorData = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
       const message = errorData.error?.message || `OpenAI API error: ${response.status}`;
       throw new Error(message);
     }
 
-    return response.json();
+    return (await response.json()) as OpenAICompletionResponse;
   }
 
   /**
@@ -381,7 +383,7 @@ export class OpenAIGPT4oProvider extends BaseLLMProvider {
     });
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
+      const errorData = (await response.json().catch(() => ({}))) as { error?: { message?: string } };
       const message = errorData.error?.message || `OpenAI API error: ${response.status}`;
       throw new Error(message);
     }

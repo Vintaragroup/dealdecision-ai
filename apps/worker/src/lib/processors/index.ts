@@ -1,4 +1,7 @@
-import { extractPDFContent, type PDFContent } from "./pdf";
+import { extractPDFContent, type PDFContent, type PdfTextProbeCallback } from "./pdf";
+import { extractPDFContentV2Primary, extractPDFContentV2Shadow } from "./pdf-v2";
+import { applySlideUnderstandingV1Shadow } from "../pdf_v2/slide-understanding-v1";
+import { defaultPdfExtractMode, defaultShadowFeatureMode } from "../pipeline-policy";
 import { extractExcelContent, type ExcelContent } from "./excel";
 import { extractPowerPointContent, type PowerPointContent } from "./powerpoint";
 import { extractWordContent, type WordContent } from "./word";
@@ -27,8 +30,8 @@ export interface DocumentAnalysis {
     errorMessage?: string;
   };
   structuredData: {
-    keyFinancialMetrics?: Record<string, unknown>;
     keyMetrics: Array<{ key: string; value: unknown; source: string }>;
+    keyFinancialMetrics?: Record<string, unknown>;
     mainHeadings: string[];
     textSummary: string;
     entities: Array<{ type: string; value: string }>;
@@ -63,7 +66,8 @@ export async function processDocument(
   buffer: Buffer,
   fileName: string,
   documentId: string,
-  dealId: string
+  dealId: string,
+  hooks: { onPdfTextProbe?: PdfTextProbeCallback } = {}
 ): Promise<DocumentAnalysis> {
   const startTime = Date.now();
   const fileType = detectFileType(fileName);
@@ -76,7 +80,75 @@ export async function processDocument(
     switch (contentType) {
       case "pdf": {
         try {
-          extractedContent = await extractPDFContent(buffer, { docId: documentId });
+          // PDF Extraction v2 rollout modes:
+          // - v1 (default): only v1 extractor
+          // - v2_shadow: run v2 best-effort and persist artifacts, but keep v1 outputs authoritative
+          // - v2_primary: (future) use v2 outputs as authoritative
+          const mode = String(process.env.PDF_EXTRACT_MODE || defaultPdfExtractMode(process.env))
+            .trim()
+            .toLowerCase();
+
+          const slideUnderstandingMode = String(
+            process.env.PDF_SLIDE_UNDERSTANDING_MODE || defaultShadowFeatureMode(process.env)
+          )
+            .trim()
+            .toLowerCase();
+
+          if (mode === "v2_primary") {
+            try {
+              const pdfContent = await extractPDFContentV2Primary(buffer, {
+                docId: documentId,
+                fileName,
+              });
+
+              // Slide Understanding v1 (PDF-only). Shadow mode attaches additive artifacts under content.pdf_v2.pages[i].understanding_v1.
+              // Must not modify structured_data/full_text in this mode.
+              if (slideUnderstandingMode === "shadow") {
+                try {
+                  applySlideUnderstandingV1Shadow(pdfContent as any);
+                } catch {
+                  // best-effort; never fail ingestion
+                }
+              }
+
+              extractedContent = pdfContent;
+              extractionSuccess = true;
+              break;
+            } catch {
+              // Safety: never block ingestion; fall back to v1.
+              // We'll still attach v2 error artifacts below via shadow block if enabled.
+            }
+          }
+
+          const v1 = await extractPDFContent(buffer, { docId: documentId, onTextProbe: hooks.onPdfTextProbe });
+
+          if (mode === "v2_shadow") {
+            try {
+              const v2 = await extractPDFContentV2Shadow(buffer, {
+                docId: documentId,
+                fileName,
+              });
+              (v1 as unknown as { pdf_v2?: unknown }).pdf_v2 = v2;
+            } catch (err) {
+              // Shadow mode must never fail ingestion; attach error for observability.
+              (v1 as unknown as { pdf_v2?: unknown }).pdf_v2 = {
+                status: "error",
+                error: err instanceof Error ? err.message : String(err),
+              };
+            }
+          }
+
+          // Slide Understanding v1 (PDF-only). Shadow mode attaches additive artifacts under content.pdf_v2.pages[i].understanding_v1.
+          // Must not modify structured_data/full_text in this mode.
+          if (slideUnderstandingMode === "shadow") {
+            try {
+              applySlideUnderstandingV1Shadow(v1 as any);
+            } catch {
+              // best-effort; never fail ingestion
+            }
+          }
+
+          extractedContent = v1;
           extractionSuccess = true;
         } catch (pdfErr) {
           const errMsg = pdfErr instanceof Error ? pdfErr.message : String(pdfErr);

@@ -20,12 +20,9 @@ export interface ImageContent {
  */
 export async function extractImageContent(buffer: Buffer): Promise<ImageContent> {
   try {
-    // Convert buffer to base64 data URL for Tesseract
-    const base64Data = buffer.toString("base64");
-    const dataUrl = `data:image/png;base64,${base64Data}`;
-
     // Run OCR
-    const result = await Tesseract.recognize(dataUrl, "eng", {
+    // NOTE: Passing Buffer avoids large base64 strings in memory.
+    const result = await Tesseract.recognize(buffer as any, "eng", {
       logger: (m) => {
         // Suppress verbose logging
         if (m.status === "recognizing text") {

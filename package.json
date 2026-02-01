@@ -2,25 +2,61 @@
   "name": "dealdecision-ai",
   "version": "0.0.0",
   "private": true,
-  "packageManager": "pnpm@9.12.0",
+  "packageManager": "pnpm@10.28.1",
   "scripts": {
+    "debug:force-ocr": "tsx apps/worker/src/scripts/debug-force-ocr-extract-visuals.ts",
+      "report:segments:audit:md": "tsx scripts/segment-classification-audit.ts",
+    "report:segments:audit:all": "tsx scripts/segment-classification-audit-all.ts",
+    "report:slide-titles:md": "tsx scripts/export-slide-titles-md.ts",
+    "report:unknowns:hotspots": "tsx scripts/unknown-hotspots.ts",
+    "report:unknowns:kb": "tsx scripts/unknown-knowledgebase.ts",
     "dev": "pnpm --filter api dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
+    "style:drift": "tsx scripts/check-style-drift.ts",
+    "style:drift:update": "tsx scripts/check-style-drift.ts --update",
     "infra:up": "docker compose -f infra/docker-compose.yml up -d",
     "infra:down": "docker compose -f infra/docker-compose.yml down",
     "db:migrate": "pnpm --filter api db:migrate",
-    "validate:llm": "tsx scripts/validate-llm-config.ts"
+    "validate:llm": "tsx scripts/validate-llm-config.ts",
+    "rerun:analysis:all": "tsx scripts/rerun-analysis-all-deals.ts",
+    "verify:documents:all": "tsx scripts/verify-documents-all-deals.ts",
+    "verify:doc-pipeline:e2e": "tsx apps/worker/src/scripts/verify-doc-pipeline-e2e.ts",
+    "reprocess:extraction:all": "tsx scripts/reprocess-extraction-all-deals.ts",
+    "rebuild:deals": "tsx scripts/rebuild-deals.ts",
+    "smoke:analyst-evidence": "tsx apps/api/scripts/smoke-test-analyst-evidence.ts",
+    "smoke:analyst-evidence:docker": "pnpm smoke:analyst-evidence --api-base-url http://localhost:9000",
+    "refresh:extraction:analysis:all": "tsx scripts/refresh-extraction-analysis-all-deals.ts",
+    "segment:audit": "tsx scripts/segment-audit-export.ts",
+    "audit:unknown-segments": "tsx scripts/audit-unknown-segments.ts",
+    "backfill:document-metadata": "tsx scripts/backfill-document-metadata.ts",
+    "report:fundability:compare": "tsx scripts/compare-fundability-v1.ts",
+    "report:fundability:compare:md": "tsx scripts/compare-fundability-v1.ts --format md --out-md docs/Active/audit/analizer-debug/fundability-compare.md"
   },
   "devDependencies": {
+    "@jest/globals": "^30.2.0",
+    "@types/cli-progress": "^3.11.6",
     "@types/node": "^20.10.0",
+    "@types/pg": "^8.15.5",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3"
   },
   "dependencies": {
-    "form-data": "^4.0.5"
+    "@dagrejs/dagre": "^1.1.8",
+    "@xyflow/react": "^12.10.0",
+    "cli-progress": "^3.12.0",
+    "form-data": "^4.0.5",
+    "pg": "^8.16.3"
   },
   "pnpm": {
+    "onlyBuiltDependencies": [
+      "@clerk/shared",
+      "@swc/core",
+      "core-js",
+      "esbuild",
+      "msgpackr-extract",
+      "tesseract.js"
+    ],
     "overrides": {
       "canvas": "npm:@napi-rs/canvas@0.1.84"
     }

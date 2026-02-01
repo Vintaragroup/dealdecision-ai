@@ -1,0 +1,87 @@
+name: vision-smoke
+
+"on":
+  pull_request:
+    paths:
+      - 'services/vision_worker/**'
+      - 'render.yaml'
+      - '.github/workflows/**'
+  push:
+    branches:
+      - main
+      - 'feature/**'
+    paths:
+      - 'services/vision_worker/**'
+      - 'render.yaml'
+      - '.github/workflows/**'
+
+jobs:
+  vision-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build vision image (local)
+        uses: docker/build-push-action@v6
+        with:
+          context: services/vision_worker
+          file: services/vision_worker/Dockerfile
+          load: true
+          tags: dealdecision-vision:ci
+
+      - name: Run container
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name vision-smoke --rm \
+            -e PORT=8000 \
+            -p 8000:8000 \
+            dealdecision-vision:ci
+
+      - name: Wait for /health and assert payload
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cleanup() {
+            if [ "${TEST_FAILED:-0}" = "1" ]; then
+              echo "--- vision-smoke container logs (failure) ---"
+              docker logs vision-smoke || true
+              echo "--- end logs ---"
+            fi
+            docker rm -f vision-smoke >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          TEST_FAILED=1
+
+          echo "Polling http://127.0.0.1:8000/health for up to ~30s..."
+          body=""
+          for i in $(seq 1 30); do
+            if body=$(curl -fsS --max-time 2 http://127.0.0.1:8000/health); then
+              echo "Health responded on attempt ${i}."
+              break
+            fi
+            sleep 1
+          done
+
+          if [ -z "$body" ]; then
+            echo "ERROR: /health did not return successfully within timeout."
+            exit 1
+          fi
+
+          export VISION_HEALTH_BODY="$body"
+          python3 -c 'import os,json; d=json.loads(os.environ["VISION_HEALTH_BODY"]); assert d.get("status")=="ok"; assert d.get("service")=="vision_worker"; assert d.get("tesseract_available") is True; print("Health payload OK")'
+          TEST_FAILED=0
+
+      - name: Stop container
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f vision-smoke >/dev/null 2>&1 || true

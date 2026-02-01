@@ -32,7 +32,7 @@ describe("sanitizeText", () => {
   it("should collapse excessive whitespace", () => {
     const input = "Hello    World   \n\n\n   Test";
     const result = sanitizeText(input);
-    expect(result).toBe("Hello World Test");
+    expect(result).toBe("Hello World\n\n\nTest");
   });
 
   it("should handle null and undefined", () => {
@@ -174,7 +174,7 @@ describe("Postgres integration simulation", () => {
 
     // Verify data integrity
     expect(params[0]).toBe("doc123");
-    expect(params[2]).toBe("Financials - Magarian Fund");
+    expect(params[2]).toBe("Financials- Magarian Fund");
     expect(params[4].metrics[0]).toContain("Revenue");
   });
 

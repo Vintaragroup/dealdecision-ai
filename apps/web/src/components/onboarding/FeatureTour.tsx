@@ -20,7 +20,7 @@ interface FeatureTourProps {
 export function FeatureTour({ darkMode, onComplete, onSkip }: FeatureTourProps) {
   const [currentStep, setCurrentStep] = useState(0);
   const { settings } = useAppSettings();
-  const { isFounder } = useUserRole();
+  const { isAnalyst } = useUserRole();
 
   const investorTourSteps: TourStep[] = [
     {
@@ -92,7 +92,7 @@ export function FeatureTour({ darkMode, onComplete, onSkip }: FeatureTourProps) 
     }
   ];
 
-  const tourSteps = isFounder ? founderTourSteps : investorTourSteps;
+  const tourSteps = investorTourSteps;
 
   const currentTour = tourSteps[currentStep];
   const isFirstStep = currentStep === 0;

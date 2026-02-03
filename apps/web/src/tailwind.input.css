@@ -1,0 +1,16 @@
+/*
+  Tailwind input used to generate `src/index.css` (checked-in output).
+
+  Why `@source` globs exist:
+  - Tailwind v4 only emits utilities it can "see" in scanned source files.
+  - We include workspace components so responsive layout utilities like
+    `md:grid-cols-12`, `md:col-span-4`, and `md:col-span-8` are generated.
+*/
+
+@import "tailwindcss";
+
+/* Broad scan for the Vite web app */
+@source "./src/**/*.{ts,tsx,js,jsx,html}";
+
+/* Explicit: Deal workspace components (keeps this from regressing) */
+@source "./src/components/workspace/**/*.{ts,tsx}";

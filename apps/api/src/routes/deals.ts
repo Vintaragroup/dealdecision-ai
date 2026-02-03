@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import fs from "fs";
 import path from "path";
 import { fetchPhaseBVisualsFromDb } from "../lib/phaseb-visuals";
+import { getUploadsRootDir } from "../plugins/uploads-static";
 import { getPool } from "../lib/db";
 import { resolveVisualAssetImageUriForApi } from "../lib/visual-asset-image-uri";
 import type { Deal } from "@dealdecision/contracts";
@@ -8596,6 +8597,25 @@ export async function registerDealRoutes(
     let visualCandidates = 0;
 
     const pad4 = (n: number) => String(Math.max(0, Math.trunc(n))).padStart(4, "0");
+
+    // Local-dev fallback: when R2 is not configured, treat locally-rendered pages under UPLOAD_DIR as ready.
+    // Worker writes page images to `${UPLOAD_DIR}/rendered_pages/<safeDocumentId>/page_%04d.png`.
+    const uploadsRootDir = getUploadsRootDir();
+    const r2BucketConfigured = (process.env.R2_BUCKET || "").trim().length > 0;
+    const safeDocIdForPath = (documentId: string) => String(documentId || "").replace(/[^a-zA-Z0-9_\-]/g, "_");
+    const localRenderedPagesDirForDoc = (documentId: string) =>
+      path.resolve(uploadsRootDir, "rendered_pages", safeDocIdForPath(documentId));
+    const hasLocalRenderedPages = (documentId: string): { ok: boolean; count: number } => {
+      try {
+        const dir = localRenderedPagesDirForDoc(documentId);
+        const names = fs.readdirSync(dir);
+        const count = (names || []).filter((n) => /^page_\d{4}\.png$/i.test(String(n))).length;
+        return { ok: count > 0, count };
+      } catch {
+        return { ok: false, count: 0 };
+      }
+    };
+
     const renderedPageKeyForIndex = (renderedR2: any, pageIndex: number): string | null => {
       const prefix = typeof renderedR2?.prefix === "string" ? renderedR2.prefix : null;
       const fmt = typeof renderedR2?.format === "string" && renderedR2.format.trim().length > 0 ? renderedR2.format.trim() : "page_%04d.png";
@@ -8633,6 +8653,14 @@ export async function registerDealRoutes(
       const rendered = typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered) ? metaObj.rendered_pages_rendered : null;
 
       if (!renderedR2) {
+        // If R2 isn't configured (typical local dev), allow local rendered pages to satisfy readiness.
+        if (!r2BucketConfigured) {
+          const local = hasLocalRenderedPages(d.id);
+          if (local.ok) {
+            readyDocIds.push(d.id);
+            continue;
+          }
+        }
         blocked.push({
           document_id: d.id,
           failure_reason: "rendered_pages_r2_missing",
@@ -8879,7 +8907,12 @@ export async function registerDealRoutes(
     return reply.status(202).send({
       job_id: job.job_id,
       status: job.status,
-      readiness_reason: r2ProbeOverrides.length > 0 ? "r2_probe_overrode_metadata" : "metadata_ready",
+      readiness_reason:
+        r2ProbeOverrides.length > 0
+          ? "r2_probe_overrode_metadata"
+          : !r2BucketConfigured
+            ? "local_rendered_pages_present"
+            : "metadata_ready",
       ready_documents: readyDocIds,
       blocked_documents: blocked,
       r2_probe_summary: { attempted: r2ProbesUsed, overrides: r2ProbeOverrides.length, max_attempted: maxR2Probes },

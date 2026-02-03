@@ -2,5 +2,6 @@
   "typescript.tsdk": "node_modules/typescript/lib",
   "eslint.workingDirectories": [
     { "mode": "auto" }
-  ]
+  ],
+  "tailwindCSS.lint.suggestCanonicalClasses": "ignore"
 }

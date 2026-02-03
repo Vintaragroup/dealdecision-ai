@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { createHash, randomUUID } from "crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 import type { Document } from "@dealdecision/contracts";
 import { getDocumentCapabilities, sanitizeText } from "@dealdecision/core";
@@ -7,6 +9,7 @@ import { resolveVisualAssetImageUriForApi } from "../lib/visual-asset-image-uri"
 import { getPool } from "../lib/db";
 import { inferDocumentTypeFromName } from "../lib/document-type-inference";
 import { deleteFromR2, getPublicUrlForKey, getR2Config, getSignedDownloadUrl, objectExistsInR2, uploadToR2 } from "../lib/r2";
+import { getUploadsRootDir } from "../plugins/uploads-static";
 import { insertEvidence } from "../services/evidence";
 import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
@@ -1701,6 +1704,21 @@ export async function registerDocumentRoutes(
     const count = typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count) ? metaObj.rendered_pages_count : 0;
     const rendered = typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered) ? metaObj.rendered_pages_rendered : null;
 
+    // Local-dev fallback: if R2 isn't configured, accept locally rendered pages under UPLOAD_DIR.
+    const r2BucketConfigured = (process.env.R2_BUCKET || "").trim().length > 0;
+    const uploadsRootDir = getUploadsRootDir();
+    const safeDocIdForPath = (id: string) => String(id || "").replace(/[^a-zA-Z0-9_\-]/g, "_");
+    const localRenderedPagesDir = path.resolve(uploadsRootDir, "rendered_pages", safeDocIdForPath(document_id));
+    const localReady = (() => {
+      if (r2BucketConfigured) return false;
+      try {
+        const names = fs.readdirSync(localRenderedPagesDir);
+        return (names || []).some((n) => /^page_\d{4}\.png$/i.test(String(n)));
+      } catch {
+        return false;
+      }
+    })();
+
     const pad4 = (n: number) => String(Math.max(0, Math.trunc(n))).padStart(4, "0");
     const renderedPageKeyForIndex = (renderedR2Obj: any, pageIndex: number): string | null => {
       const prefix = typeof renderedR2Obj?.prefix === "string" ? renderedR2Obj.prefix : null;
@@ -1755,7 +1773,7 @@ export async function registerDocumentRoutes(
       }
     }
 
-    if ((!renderedR2 || !count || count <= 0 || rendered == null || rendered < count) && !r2ProbeOverrideReady) {
+    if ((!renderedR2 || !count || count <= 0 || rendered == null || rendered < count) && !r2ProbeOverrideReady && !localReady) {
       // Best-effort self-heal: enqueue render_document_pages when applicable (deduped per document).
       const parseIntWithDefault = (input: unknown, fallback: number): number => {
         const v = Number.parseInt(String(input ?? ""), 10);
@@ -1819,7 +1837,7 @@ export async function registerDocumentRoutes(
     return reply.status(202).send({
       ok: true,
       job_id: job.job_id,
-      readiness_reason: r2ProbeOverrideReady ? "r2_probe_overrode_metadata" : "metadata_ready",
+      readiness_reason: localReady ? "local_rendered_pages_present" : r2ProbeOverrideReady ? "r2_probe_overrode_metadata" : "metadata_ready",
       r2_probe_summary: { attempted: r2Probe?.attempted ? 1 : 0, overrides: r2ProbeOverrides.length, max_attempted: 1 },
       r2_probe_overrides: r2ProbeOverrides,
       ...(r2Probe ? { r2_probe: r2Probe } : {}),

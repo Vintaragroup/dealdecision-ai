@@ -22,6 +22,7 @@ type BaseNodeData = {
 
   expanded?: boolean;
   descendantCount?: number;
+  childCount?: number;
   onToggleExpand?: () => void;
 
   isIntersecting?: boolean;
@@ -67,6 +68,8 @@ type BaseNodeData = {
       evidence_ref_ids: string[];
     }>;
   } | null;
+  // Optional UI actions (injected by parent tab)
+  onOpenUnderstanding?: () => void;
 
   // Visual group enrichment
   count_slides?: number;
@@ -145,11 +148,12 @@ function ExpandToggle(props: { data: BaseNodeData; darkMode: boolean }) {
   const { data, darkMode } = props;
   const hasToggle = typeof data.onToggleExpand === 'function';
   // Some graph states may not provide descendantCount yet; allow toggling whenever a toggle handler exists.
-  const canToggle = hasToggle && (data.descendantCount == null || (data.descendantCount ?? 0) > 0);
+  const effectiveCount = data.childCount ?? data.descendantCount;
+  const canToggle = hasToggle && (effectiveCount == null || (effectiveCount ?? 0) > 0);
   if (!canToggle) return null;
 
   const expanded = Boolean(data.expanded);
-  const count = Math.max(0, Math.floor(data.descendantCount ?? 0));
+  const count = Math.max(0, Math.floor(effectiveCount ?? 0));
 
   return (
     <button
@@ -421,7 +425,14 @@ export function VisualAssetNode({ id, data, selected }: NodeProps) {
   })();
   const structuredSummary = cleanSnippet((d as any)?.structured_summary ?? structuredJson?.structured_summary ?? structuredJson?.summary, 220);
   const structuredTitle = cleanSnippet(structuredJson?.title, 160);
-  const structuredTextSnippet = cleanSnippet(structuredJson?.text_snippet, 200);
+  const structuredTextSnippet = cleanSnippet(
+    structuredJson?.text_snippet ??
+      // Synthetic PDF region assets (pdf_text_region_v1) store text as `structured_json.text`.
+      structuredJson?.text ??
+      // Some grouping/structured pipelines use `captured_text`.
+      structuredJson?.captured_text,
+    200
+  );
   const structuredParagraphs = (() => {
     const paras = structuredJson?.paragraphs;
     if (!Array.isArray(paras)) return null;
@@ -522,7 +533,36 @@ export function VisualAssetNode({ id, data, selected }: NodeProps) {
               </div>
             ) : null}
           </div>
-          <ExpandToggle data={d} darkMode={darkMode} />
+          <div className="flex items-start gap-2">
+            {typeof d.onOpenUnderstanding === 'function' ? (
+              <button
+                type="button"
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                }}
+                onMouseDown={(e) => {
+                  e.stopPropagation();
+                }}
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  d.onOpenUnderstanding?.();
+                }}
+                className={`nodrag nopan pointer-events-auto relative z-[1000] inline-flex items-center rounded-md text-xs select-none px-2 py-1 cursor-pointer ${
+                  darkMode ? 'bg-white/5 hover:bg-white/10 text-gray-200' : 'bg-gray-50 hover:bg-gray-100 text-gray-700'
+                }`}
+                style={{ minHeight: 36 }}
+                aria-label="Open understanding"
+                title="Open understanding"
+                data-testid={`open-understanding-${String(id ?? '')}`}
+              >
+                Understanding
+              </button>
+            ) : null}
+            <ExpandToggle data={d} darkMode={darkMode} />
+          </div>
         </div>
 
         <div className="mt-2 flex gap-2">
@@ -546,6 +586,77 @@ export function VisualAssetNode({ id, data, selected }: NodeProps) {
               <div>Evidence: {evidenceCount}</div>
               <div>Conf: {confDisplay}</div>
             </div>
+          </div>
+        </div>
+      </div>
+    </NodeShell>
+  );
+}
+
+export function VisualAssetGroupNode({ data, selected }: NodeProps) {
+  const d = (data ?? {}) as BaseNodeData;
+  const darkMode = Boolean(d.__darkMode);
+  const thumb = resolveApiAssetUrl(typeof d.image_uri === 'string' ? d.image_uri : null);
+
+  const pageIndex = typeof (d as any)?.page_index === 'number' && Number.isFinite((d as any).page_index) ? (d as any).page_index : null;
+  const title = typeof d.label === 'string' && d.label.trim().length > 0 ? d.label : `Page ${pageIndex != null ? pageIndex + 1 : '—'}`;
+
+  const evidenceCount = typeof (d as any)?.evidence_count === 'number' && Number.isFinite((d as any).evidence_count) ? (d as any).evidence_count : 0;
+  const memberCount = typeof (d as any)?.count_members === 'number' && Number.isFinite((d as any).count_members) ? (d as any).count_members : null;
+
+  const clean = (value: unknown): string | null => {
+    if (typeof value !== 'string') return null;
+    const normalized = value.replace(/\r\n?/g, '\n').trim();
+    return normalized ? normalized : null;
+  };
+
+  const fullText = clean((d as any)?.ocr_text);
+  const snippet = (() => {
+    const base = clean((d as any)?.ocr_text_snippet ?? (d as any)?.ocr_text);
+    if (!base) return null;
+    return base.length > 240 ? `${base.slice(0, 240).trimEnd()}…` : base;
+  })();
+
+  return (
+    <NodeShell darkMode={darkMode} selected={selected} isIntersecting={Boolean(d.isIntersecting)} accentColor={d.__accentColor} accentTint={d.__accentTint}>
+      <div className="px-3 py-2" style={{ width: 440, maxWidth: 440 }}>
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="text-xs uppercase tracking-wide opacity-70">Page</div>
+            <div className="text-sm font-medium leading-snug line-clamp-1">{title}</div>
+            <div className="text-xs opacity-70 mt-1">
+              Evidence: {evidenceCount}
+              {memberCount != null ? ` · Regions: ${memberCount}` : ''}
+            </div>
+          </div>
+          <ExpandToggle data={d} darkMode={darkMode} />
+        </div>
+
+        <div className="mt-2 flex gap-2">
+          {thumb ? (
+            <div
+              className={`rounded border overflow-hidden ${
+                darkMode ? 'border-white/10 bg-black/20' : 'border-gray-200 bg-gray-50'
+              }`}
+              style={{ width: selected ? 160 : 96, height: selected ? 160 : 96 }}
+            >
+              <img src={thumb} alt="" className="h-full w-full object-cover" loading="lazy" />
+            </div>
+          ) : null}
+
+          <div className="min-w-0 flex-1">
+            {!selected ? (
+              <div className="text-xs opacity-90 whitespace-pre-line line-clamp-4">{snippet ?? 'Click to view full OCR text'}</div>
+            ) : (
+              <div
+                className={`text-xs whitespace-pre-wrap rounded border p-2 overflow-auto ${
+                  darkMode ? 'border-white/10 bg-black/20' : 'border-gray-200 bg-white'
+                }`}
+                style={{ maxHeight: 260 }}
+              >
+                {fullText ?? 'No OCR text available for this page yet.'}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -662,6 +773,9 @@ export const analystNodeTypes = {
 
   VISUAL_ASSET: VisualAssetNode,
   visual_asset: VisualAssetNode,
+
+  VISUAL_ASSET_GROUP: VisualAssetGroupNode,
+  visual_asset_group: VisualAssetGroupNode,
 
   VISUAL_GROUP: VisualGroupNode,
   visual_group: VisualGroupNode,

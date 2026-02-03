@@ -24,6 +24,11 @@ pnpm-debug.log*
 artifacts/
 scripts/experimental/
 
+# local dev artifacts (do not commit)
+apps/api/tmp_*.cjs
+apps/worker/*.traineddata
+services/
+
 # internal documentation
 # Keep the bulk of docs ignored (trace runs can be large), but allow committing
 # curated human-readable docs.
@@ -64,7 +69,6 @@ docs/Active/**/*.7z
 docs/trace_audit/**
 !docs/trace_audit/ROLLUP.md
 
-# Optional: keep cleanup control docs tracked (uncomment if desired)
 # Cleanup control docs (tracked)
 !docs/DOCS_CLEANUP_MANIFEST.md
 !docs/DOCS_WEB_SRC_MD_MANIFEST.md
@@ -84,9 +88,6 @@ docs/trace_audit/**
 # coverage
 coverage/
 
-
-*.traineddata
-
 # python bytecode / caches
 __pycache__/
 *.py[cod]
@@ -99,6 +100,3 @@ packages/**/docs/.vscode/
 # Python bytecode
 __pycache__/
 *.pyc
-
-# local debug
-apps/api/tmp_parity_debug.cjs

@@ -25,6 +25,13 @@ vi.mock('../lib/apiClient', async (importOriginal) => {
     apiGetEvidence: vi.fn(async () => ({ evidence: [] } as any)),
     apiGetDocuments: vi.fn(async () => ({ documents: [] } as any)),
     apiGetDealReport: vi.fn(async () => null as any),
+    apiGetDealDeterministicUnderstanding: vi.fn(async () => null as any),
+    apiPostDealDeterministicUnderstanding: vi.fn(async () => ({
+      analysis_version: 'deterministic_understanding_v1',
+      input_hash: 'test',
+      created_at: new Date(0).toISOString(),
+      patch: { analysis_version: 'deterministic_understanding_v1', created_at: new Date(0).toISOString(), input_hash: 'test', deal_id: 'deal-1', pages: {}, documents: {} },
+    } as any)),
     subscribeToEvents: vi.fn(() => () => undefined),
     apiResolveEvidence: vi.fn(async () => ({ results: [] } as any)),
   };
@@ -52,6 +59,10 @@ describe('DealWorkspace Job Center (live mode)', () => {
     vi.clearAllMocks();
   });
 
+  const openJobsTab = async () => {
+    await userEvent.click(screen.getByRole('tab', { name: /^jobs$/i }));
+  };
+
   const renderWorkspace = (overrides?: Partial<React.ComponentProps<typeof DealWorkspace>>) => {
     return render(
       <ScoreSourceProvider>
@@ -77,6 +88,8 @@ describe('DealWorkspace Job Center (live mode)', () => {
     await waitFor(() => {
       expect(screen.getByText(/DIO: v1.0.0/i)).toBeInTheDocument();
     });
+
+    await openJobsTab();
 
     expect(screen.getByText(/Job Center/i)).toBeInTheDocument();
 
@@ -104,13 +117,9 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
     renderWorkspace({ dealId: 'deal-2' });
 
-    // Wait for fetch to settle
     await waitFor(() => {
-      expect(screen.getByText(/DIO: Not generated/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /AI Assistant/i })).toBeDisabled();
     });
-
-    const aiButton = screen.getByRole('button', { name: /AI Assistant/i });
-    expect(aiButton).toBeDisabled();
   });
 
   test('AI Assistant button enables when DIO exists', async () => {
@@ -123,30 +132,41 @@ describe('DealWorkspace Job Center (live mode)', () => {
     renderWorkspace({ dealId: 'deal-3' });
 
     await waitFor(() => {
-      expect(screen.getByText(/DIO: v2.0.0/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /AI Assistant/i })).not.toBeDisabled();
     });
-
-    const aiButton = screen.getByRole('button', { name: /AI Assistant/i });
-    expect(aiButton).not.toBeDisabled();
   });
 
   test('Run Analysis button (header) does not call api when dealId missing', async () => {
-    const { apiPostAnalyze } = await import('../lib/apiClient');
+    const { apiPostReextractDocuments } = await import('../lib/apiClient');
     vi.mocked(apiGetDeal).mockResolvedValue({} as any);
-    vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-x', status: 'queued' } as any);
+    vi.mocked(apiPostReextractDocuments).mockResolvedValue({ job_id: 'job-x', status: 'queued' } as any);
 
     renderWorkspace({ dealId: undefined });
 
     const [headerRunButton] = screen.getAllByRole('button', { name: /Run Analysis/i });
     await userEvent.click(headerRunButton);
 
-    expect(apiPostAnalyze).not.toHaveBeenCalled();
+    expect(apiPostReextractDocuments).not.toHaveBeenCalled();
   });
 
-  test('Run Analysis triggers apiPostAnalyze and shows loading state', async () => {
-    const { apiPostAnalyze } = await import('../lib/apiClient');
+  test('Run Analysis triggers full process (starts with apiPostReextractDocuments)', async () => {
+    const { apiPostReextractDocuments, apiPostExtractVisuals } = await import('../lib/apiClient');
     vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v3', dioStatus: 'ready' } as any);
-    vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-99', status: 'queued' } as any);
+
+    vi.mocked(apiPostReextractDocuments).mockResolvedValue({ job_id: 'job-rex', status: 'queued' } as any);
+    vi.mocked(apiPostExtractVisuals).mockResolvedValue({ job_id: 'job-viz', status: 'queued' } as any);
+
+    // Make polling complete immediately for any job we start.
+    vi.mocked(apiGetJob).mockImplementation(async (jobId: string) => {
+      return {
+        job_id: jobId,
+        status: 'succeeded',
+        progress_pct: 100,
+        message: 'Done',
+        updated_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+      } as any;
+    });
 
     renderWorkspace({ dealId: 'deal-4' });
 
@@ -155,15 +175,19 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
     await userEvent.click(headerRunButton);
 
-    await waitFor(() => expect(apiPostAnalyze).toHaveBeenCalledWith('deal-4'));
+    await waitFor(() =>
+      expect(apiPostReextractDocuments).toHaveBeenCalledWith(
+        'deal-4',
+        expect.objectContaining({ include_warnings: true, force: true })
+      )
+    );
   });
 
   test('Extract visuals button triggers apiPostExtractVisuals', async () => {
-    const { apiPostAnalyze, apiPostExtractVisuals, apiPostReextractDocuments } = await import('../lib/apiClient');
+    const { apiPostExtractVisuals, apiPostReextractDocuments } = await import('../lib/apiClient');
     vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v3', dioStatus: 'ready' } as any);
     vi.mocked(apiPostReextractDocuments).mockResolvedValue({ job_id: 'job-rex-1', status: 'queued' } as any);
     vi.mocked(apiPostExtractVisuals).mockResolvedValue({ job_id: 'job-viz-1', status: 'queued' } as any);
-    vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-an-1', status: 'queued' } as any);
 
     // Make polling complete immediately for each step.
     vi.mocked(apiGetJob).mockImplementation(async (jobId: string) => {
@@ -178,8 +202,8 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
     renderWorkspace({ dealId: 'deal-5' });
 
-    const runFullProcessButton = screen.getByRole('button', { name: /Run full process/i });
-    await userEvent.click(runFullProcessButton);
+    const [headerRunButton] = screen.getAllByRole('button', { name: /Run Analysis/i });
+    await userEvent.click(headerRunButton);
 
     await waitFor(() => expect(apiPostExtractVisuals).toHaveBeenCalled());
     expect(vi.mocked(apiPostExtractVisuals).mock.calls[0]?.[0]).toBe('deal-5');
@@ -193,11 +217,10 @@ describe('DealWorkspace Job Center (live mode)', () => {
   });
 
   test('Run full process does not submit extract-visuals twice on rapid double-click', async () => {
-    const { apiPostAnalyze, apiPostExtractVisuals, apiPostReextractDocuments } = await import('../lib/apiClient');
+    const { apiPostExtractVisuals, apiPostReextractDocuments } = await import('../lib/apiClient');
     vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v3', dioStatus: 'ready' } as any);
     vi.mocked(apiPostReextractDocuments).mockResolvedValue({ job_id: 'job-rex-1', status: 'queued' } as any);
     vi.mocked(apiPostExtractVisuals).mockResolvedValue({ job_id: 'job-viz-1', status: 'queued' } as any);
-    vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-an-1', status: 'queued' } as any);
 
     vi.mocked(apiGetJob).mockImplementation(async (jobId: string) => {
       return {
@@ -211,8 +234,8 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
     renderWorkspace({ dealId: 'deal-55' });
 
-    const runFullProcessButton = screen.getByRole('button', { name: /Run full process/i });
-    await userEvent.dblClick(runFullProcessButton);
+    const [headerRunButton] = screen.getAllByRole('button', { name: /Run Analysis/i });
+    await userEvent.dblClick(headerRunButton);
 
     await waitFor(() => expect(apiPostReextractDocuments).toHaveBeenCalledTimes(1));
     expect(apiPostExtractVisuals).toHaveBeenCalledTimes(1);
@@ -254,6 +277,8 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
     renderWorkspace({ dealId: 'deal-extract-retry' });
 
+    await openJobsTab();
+
     await waitFor(() => {
       const badge = screen.getByTestId('stage-badge-extract_visuals');
       expect(badge.textContent || '').toMatch(/Extract visuals:\s*Complete/i);
@@ -285,6 +310,8 @@ describe('DealWorkspace Job Center (live mode)', () => {
     ] as any);
 
     renderWorkspace({ dealId: 'deal-extract-warn' });
+
+    await openJobsTab();
 
     await waitFor(() => {
       const badge = screen.getByTestId('stage-badge-extract_visuals');
@@ -318,6 +345,8 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
     renderWorkspace({ dealId: 'deal-extract-failed' });
 
+    await openJobsTab();
+
     await waitFor(() => {
       const badge = screen.getByTestId('stage-badge-extract_visuals');
       expect(badge.textContent || '').toMatch(/Extract visuals:\s*Failed/i);
@@ -325,7 +354,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
   });
 
   test('Job Center shows progress bar when job reports progress', async () => {
-    const { apiPostAnalyze } = await import('../lib/apiClient');
+    const { apiPostExtractVisuals, apiPostReextractDocuments } = await import('../lib/apiClient');
 
     vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: 'v4',
@@ -333,7 +362,8 @@ describe('DealWorkspace Job Center (live mode)', () => {
       lastAnalyzedAt: '2024-01-04T00:00:00.000Z',
     } as any);
 
-    vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-777', status: 'queued' } as any);
+    vi.mocked(apiPostReextractDocuments).mockResolvedValue({ job_id: 'job-777', status: 'queued' } as any);
+    vi.mocked(apiPostExtractVisuals).mockResolvedValue({ job_id: 'job-viz-777', status: 'queued' } as any);
 
     vi.mocked(apiGetJob)
       .mockResolvedValueOnce({
@@ -354,7 +384,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     renderWorkspace({ dealId: 'deal-7' });
 
     await waitFor(() => {
-      expect(screen.getByText(/DIO: v4/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /AI Assistant/i })).not.toBeDisabled();
     });
 
     const [headerRunButton] = screen.getAllByRole('button', { name: /Run Analysis/i });
@@ -362,21 +392,21 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
     await waitFor(() => {
       expect(apiGetJob).toHaveBeenCalled();
-      expect(screen.getByText(/42% complete/i)).toBeInTheDocument();
-      expect(screen.getByText(/^Currently processing:/i)).toBeInTheDocument();
-      // Message can appear in multiple UI locations.
-      expect(screen.getAllByText(/^Crunching signals$/i).length).toBeGreaterThan(0);
+      expect(screen.getByTestId('analysis-progress-feed')).toBeInTheDocument();
+      expect(screen.getByText(/42%/i)).toBeInTheDocument();
+      expect(screen.getAllByText(/Crunching signals/i).length).toBeGreaterThan(0);
     });
   });
 
   test('stall detection prefers progress heartbeat timestamp over updated_at', async () => {
-    const { apiPostAnalyze } = await import('../lib/apiClient');
+    const { apiPostExtractVisuals, apiPostReextractDocuments } = await import('../lib/apiClient');
 
     const nowMs = new Date('2024-01-04T00:02:00.000Z').getTime();
     const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(nowMs);
 
     vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v4', dioStatus: 'running' } as any);
-    vi.mocked(apiPostAnalyze).mockResolvedValue({ job_id: 'job-hb-1', status: 'queued' } as any);
+    vi.mocked(apiPostReextractDocuments).mockResolvedValue({ job_id: 'job-hb-1', status: 'queued' } as any);
+    vi.mocked(apiPostExtractVisuals).mockResolvedValue({ job_id: 'job-viz-hb', status: 'queued' } as any);
 
     // updated_at is old enough to be considered stalled, but progress.at is recent.
     vi.mocked(apiGetJob).mockResolvedValue({
@@ -398,9 +428,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
     renderWorkspace({ dealId: 'deal-hb' });
 
-    await waitFor(() => {
-      expect(screen.getByText(/Job Center/i)).toBeInTheDocument();
-    });
+    await openJobsTab();
 
     const [headerRunButton] = screen.getAllByRole('button', { name: /Run Analysis/i });
     await userEvent.click(headerRunButton);
@@ -542,7 +570,10 @@ describe('DealWorkspace Job Center (live mode)', () => {
     // This mock is used by other tests in this file; clear history so we only assert on this scenario.
     vi.mocked(apiPostAnalyze).mockClear();
 
-    await user.click(screen.getByRole('button', { name: /run full process/i }));
+    const [headerRunButton] = screen.getAllByRole('button', { name: /Run Analysis/i });
+    await user.click(headerRunButton);
+
+    await openJobsTab();
 
     // Analyze should not be enqueued directly by the UI.
     expect(apiPostAnalyze).not.toHaveBeenCalled();
@@ -595,6 +626,8 @@ describe('DealWorkspace Job Center (live mode)', () => {
     vi.mocked(apiGetDeal).mockResolvedValue({} as any);
     renderWorkspace({ dealId: 'deal-8' });
 
+    await openJobsTab();
+
     await waitFor(() => {
       expect(screen.getByText(/Job Center/i)).toBeInTheDocument();
     });
@@ -640,6 +673,8 @@ describe('DealWorkspace Job Center (live mode)', () => {
     ] as any);
 
     renderWorkspace({ dealId: 'deal-8' });
+
+    await openJobsTab();
 
     await waitFor(() => {
       expect(screen.getByText(/Job Center/i)).toBeInTheDocument();

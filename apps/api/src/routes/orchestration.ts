@@ -32,6 +32,7 @@ import {
   MockEvidenceService,
   MockLLMService,
   createDefaultMCPConfig,
+  CanonicalEvidenceServiceImpl,
 } from "@dealdecision/core";
 
 // ============================================================================
@@ -113,7 +114,7 @@ function createPipeline(pool: Pool, orchestrator: DealOrchestrator): AnalysisPip
   const mcpConfig = createDefaultMCPConfig();
   const mcpClient = new MockMCPClient(mcpConfig);
   
-  const evidenceService = new MockEvidenceService();
+  const evidenceService = new CanonicalEvidenceServiceImpl(pool);
   const llmService = new MockLLMService();
   
   return new AnalysisPipeline(
@@ -133,6 +134,25 @@ function createPipeline(pool: Pool, orchestrator: DealOrchestrator): AnalysisPip
       debug: process.env.PIPELINE_DEBUG === 'true',
     }
   );
+}
+
+async function enrichInputWithEvidence(pool: Pool, deal_id: string, input_data: Record<string, unknown>, purpose: string) {
+  const evidenceService = new CanonicalEvidenceServiceImpl(pool);
+  try {
+    await evidenceService.ingestExistingArtifacts(deal_id);
+  } catch {
+    // fail open
+  }
+  try {
+    const packet = await evidenceService.getEvidencePacket(deal_id, purpose);
+    return {
+      ...input_data,
+      evidence_packet: packet,
+      evidence: evidenceService.toLegacyEvidence(packet.selected),
+    };
+  } catch {
+    return input_data;
+  }
 }
 
 // ============================================================================
@@ -177,11 +197,13 @@ export async function registerOrchestrationRoutes(
         // Create orchestrator
         const orchestrator = createOrchestrator(pool);
         
+        const enrichedInput = await enrichInputWithEvidence(pool, deal_id, input_data, `orchestration:cycle:${analysis_cycle}`);
+
         // Run analysis
         const result = await orchestrator.analyze({
           deal_id,
           analysis_cycle,
-          input_data,
+          input_data: enrichedInput,
           config,
         });
         
@@ -246,6 +268,14 @@ export async function registerOrchestrationRoutes(
         const orchestrator = createOrchestrator(pool);
         const pipeline = createPipeline(pool, orchestrator);
         
+        // Run pipeline (pipeline selects per-cycle packets; ingest once here too)
+        try {
+			const ev = new CanonicalEvidenceServiceImpl(pool);
+			await ev.ingestExistingArtifacts(deal_id);
+		} catch {
+			// fail open
+		}
+
         // Run pipeline
         const result: PipelineResult = await pipeline.run({
           deal_id,

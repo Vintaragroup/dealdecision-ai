@@ -20,7 +20,7 @@ import type {
   DealIntelligenceObject,
 } from '../types/dio.js';
 import type { DealOrchestrator, OrchestrationInput, OrchestrationResult } from './orchestrator.js';
-import type { EvidenceService, Evidence } from '../services/evidence/service.js';
+import type { CanonicalEvidenceService, EvidenceItem, EvidencePacketSelectionConfig } from '../services/evidence/canonical-evidence.js';
 import type { LLMService } from '../services/llm/service.js';
 import type { DIOStorage } from '../services/dio-storage.js';
 
@@ -81,8 +81,8 @@ export const PipelineStateSchema = z.object({
   /** All DIOs generated across cycles */
   dios: z.array(z.custom<DealIntelligenceObject>()),
   
-  /** Evidence collected */
-  evidence: z.array(z.custom<Evidence>()),
+  /** Evidence selected across cycles */
+  evidence: z.array(z.custom<EvidenceItem>()),
   
   /** Generated queries */
   queries: z.array(z.string()),
@@ -159,7 +159,7 @@ export class AnalysisPipeline {
   
   constructor(
     private orchestrator: DealOrchestrator,
-    private evidenceService: EvidenceService,
+    private evidenceService: CanonicalEvidenceService,
     private llmService: LLMService,
     private storage: DIOStorage,
     config?: Partial<PipelineConfig>
@@ -188,6 +188,13 @@ export class AnalysisPipeline {
         deal_id: input.deal_id,
         max_cycles: this.config.max_cycles,
       });
+
+    // Best-effort ingest of existing artifacts into canonical evidence
+    try {
+      await this.evidenceService.ingestExistingArtifacts(input.deal_id);
+    } catch {
+      // Fail open
+    }
       
       // Run cycles
       for (let cycle = 1; cycle <= this.config.max_cycles; cycle++) {
@@ -196,7 +203,7 @@ export class AnalysisPipeline {
         this.log(`Starting Cycle ${cycle}`, { cycle });
         
         // Run orchestrator for this cycle
-        const result = await this.runCycle(input, cycle);
+        const result = await this.runCycle(input, cycle, state);
         
         if (!result.success || !result.dio) {
           throw new PipelineError(`Cycle ${cycle} failed: ${result.error}`);
@@ -222,13 +229,7 @@ export class AnalysisPipeline {
           break;
         }
         
-        // Collect evidence for next cycle
-        if (cycle < this.config.max_cycles && this.config.collect_evidence) {
-          const evidence = await this.collectEvidence(result.dio, state);
-          state.evidence.push(...evidence);
-          
-          this.log(`Collected ${evidence.length} evidence items`, { cycle });
-        }
+        // Evidence is selected per-cycle via EvidencePackets.
         
         // Generate queries for gaps
         if (cycle < this.config.max_cycles && this.config.auto_generate_queries) {
@@ -296,11 +297,46 @@ export class AnalysisPipeline {
    */
   private async runCycle(
     input: Omit<OrchestrationInput, 'analysis_cycle'>,
-    cycle: number
+    cycle: number,
+    state: PipelineState
   ): Promise<OrchestrationResult> {
+    let packetConfig: EvidencePacketSelectionConfig | undefined = undefined;
+    if (cycle === 1) {
+      packetConfig = {
+        minConfidence: 0.5,
+        maxItems: this.config.max_evidence_per_cycle,
+        preferTags: ["document", "financial", "traction", "market", "team"],
+        maxOmissions: 50,
+      };
+    } else if (cycle === 2) {
+      packetConfig = {
+        minConfidence: 0.55,
+        maxItems: this.config.max_evidence_per_cycle,
+        preferTags: ["financial", "metrics", "traction", "unit_economics", "market"],
+        maxOmissions: 50,
+      };
+    } else {
+      packetConfig = {
+        minConfidence: 0.5,
+        maxItems: this.config.max_evidence_per_cycle,
+        preferTags: [],
+        maxOmissions: 50,
+      };
+    }
+
+    const packet = await this.evidenceService.getEvidencePacket(input.deal_id, `pipeline:cycle:${cycle}`, packetConfig);
+    state.evidence.push(...packet.selected);
+
+    const enrichedInputData = {
+      ...(input.input_data as any),
+      evidence_packet: packet,
+      evidence: this.evidenceService.toLegacyEvidence(packet.selected),
+    };
+
     return this.orchestrator.analyze({
       ...input,
       analysis_cycle: cycle,
+      input_data: enrichedInputData,
     });
   }
   

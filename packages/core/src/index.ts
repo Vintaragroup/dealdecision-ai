@@ -17,6 +17,8 @@ export * from "./services/prompt-generator";
 // Export utilities
 export * from "./lib/sanitize";
 export * from "./lib/document-capabilities";
+export * from "./lib/stable-uuid";
+export * from "./lib/stable-json";
 export * from './config/segment-thresholds';
 export * from './scoring/segment-coverage';
 export * from './scoring/scoring-input-v0';
@@ -113,6 +115,17 @@ export {
 	EvidenceServiceImpl,
 } from "./services/evidence/service";
 export type { EvidenceService } from "./services/evidence/service";
+
+export {
+	CanonicalEvidenceServiceImpl,
+	EvidenceItemSchema,
+	EvidencePacketSchema,
+	computeEvidenceId,
+	computePacketId,
+	selectEvidenceForPacket,
+	sha256Hex,
+} from "./services/evidence/canonical-evidence";
+export type { CanonicalEvidenceService, EvidenceItem, EvidencePacket } from "./services/evidence/canonical-evidence";
 
 export {
 	LLMServiceError,

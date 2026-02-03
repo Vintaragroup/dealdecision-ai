@@ -1,5 +1,6 @@
 import { Worker, Queue, type Job, type Processor } from "bullmq";
 import IORedis from "ioredis";
+import { wrapBullmqProcessorWithRunLedger } from "./pipeline-run-ledger";
 
 function installBullmqEvictionPolicyWarningDeduper() {
   const originalWarn = console.warn;
@@ -61,50 +62,51 @@ export function createWorker(
     | "remediate_extraction"
     | "reextract_documents"
     | "generate_ingestion_report"
-    | "generate_ingestion_report"
     | "reconcile_ingest"
     | "orchestration",
-    processor: Processor<any, any, string>,
-    options?: {
-      concurrency?: number;
-      lockDuration?: number;
-    }
+  processor: Processor<any, any, string>,
+  options?: {
+    concurrency?: number;
+    lockDuration?: number;
+  }
 ) {
   console.log(`[queue] Creating worker for queue: ${name}`);
 
-    const readPositiveIntEnv = (key: string, fallback: number) => {
-      const raw = process.env[key];
-      if (raw == null || raw.trim() === "") return fallback;
-      const parsed = Number(raw);
-      if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 1) {
-        console.warn(`[queue] Invalid ${key}=${raw}; using ${fallback}`);
-        return fallback;
-      }
-      return parsed;
-    };
+  const readPositiveIntEnv = (key: string, fallback: number) => {
+    const raw = process.env[key];
+    if (raw == null || raw.trim() === "") return fallback;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 1) {
+      console.warn(`[queue] Invalid ${key}=${raw}; using ${fallback}`);
+      return fallback;
+    }
+    return parsed;
+  };
 
-    // Global concurrency cap (Render OOM prevention).
-    // Default is 1 unless explicitly overridden per-queue.
-    const envConcurrency = readPositiveIntEnv("WORKER_CONCURRENCY", 1);
-    const concurrency = options?.concurrency ?? envConcurrency;
+  // Global concurrency cap (Render OOM prevention).
+  // Default is 1 unless explicitly overridden per-queue.
+  const envConcurrency = readPositiveIntEnv("WORKER_CONCURRENCY", 1);
+  const concurrency = options?.concurrency ?? envConcurrency;
 
-    // NOTE: lockDuration must cover long-running CPU-heavy extraction loops.
-    // Keep reextract_documents here: it can run full document re-processing + enqueue downstream work.
-    const heavyQueues = new Set([
-      "ingest_documents",
-      "render_document_pages",
-      "extract_visuals",
-      "deep_scan_visuals",
-      "reextract_documents",
-    ]);
-    const lockDuration =
-      options?.lockDuration ?? (heavyQueues.has(name) ? 10 * 60 * 1000 : 2 * 60 * 1000);
+  // NOTE: lockDuration must cover long-running CPU-heavy extraction loops.
+  // Keep reextract_documents here: it can run full document re-processing + enqueue downstream work.
+  const heavyQueues = new Set([
+    "ingest_documents",
+    "render_document_pages",
+    "extract_visuals",
+    "deep_scan_visuals",
+    "reextract_documents",
+  ]);
+  const lockDuration =
+    options?.lockDuration ?? (heavyQueues.has(name) ? 10 * 60 * 1000 : 2 * 60 * 1000);
 
   const heartbeatMsRaw = process.env.JOB_HEARTBEAT_INTERVAL_MS;
   const heartbeatMs = heartbeatMsRaw == null ? 60000 : Number(heartbeatMsRaw);
 
-  const wrappedProcessor: Processor<any, any, string> = async (job, token) => {
-    const intervalMs = Number.isFinite(heartbeatMs) ? Math.max(5000, Math.floor(heartbeatMs)) : 60000;
+  const processorWithHeartbeat: Processor<any, any, string> = async (job, token) => {
+    const intervalMs = Number.isFinite(heartbeatMs)
+      ? Math.max(5000, Math.floor(heartbeatMs))
+      : 60000;
     let stopped = false;
 
     const timer = setInterval(() => {
@@ -127,7 +129,17 @@ export function createWorker(
     }
   };
 
-  const worker = new Worker(name, wrappedProcessor, {
+  const processorWithLedger = wrapBullmqProcessorWithRunLedger(
+    () => {
+      // Lazy DB import so unit tests that only validate worker options don't need DATABASE_URL.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { getPool } = require("./db") as typeof import("./db");
+      return getPool();
+    },
+    processorWithHeartbeat
+  );
+
+  const worker = new Worker(name, processorWithLedger, {
     connection,
     concurrency,
     lockDuration,

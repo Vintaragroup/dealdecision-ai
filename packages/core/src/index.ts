@@ -19,9 +19,12 @@ export * from "./lib/sanitize";
 export * from "./lib/document-capabilities";
 export * from "./lib/stable-uuid";
 export * from "./lib/stable-json";
+export * from "./queue-names";
 export * from './config/segment-thresholds';
 export * from './scoring/segment-coverage';
 export * from './scoring/scoring-input-v0';
+export * from './scoring/score-bands-v2';
+export * from './scoring/decision-v1';
 export * from './classification/content-archetypes';
 
 // ============================================================================

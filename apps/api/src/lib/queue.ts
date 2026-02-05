@@ -33,6 +33,7 @@ export type ApiQueues = {
   renderDocumentPagesQueue: Queue;
   extractVisualsQueue: Queue;
   deepScanVisualsQueue: Queue;
+  documentIntelligenceExtractQueue: Queue;
   fetchEvidenceQueue: Queue;
   analyzeDealQueue: Queue;
   verifyDocumentsQueue: Queue;
@@ -130,6 +131,7 @@ export function getQueues(): ApiQueues {
       defaultJobOptions: { attempts: 5, backoff: { type: "exponential", delay: 10_000 } },
     }),
     deepScanVisualsQueue: new Queue("deep_scan_visuals", { connection }),
+    documentIntelligenceExtractQueue: new Queue("document_intelligence_extract", { connection }),
     fetchEvidenceQueue: new Queue("fetch_evidence", { connection }),
     analyzeDealQueue: new Queue("analyze_deal", { connection }),
     verifyDocumentsQueue: new Queue("verify_documents", { connection }),
@@ -151,6 +153,7 @@ export function getQueues(): ApiQueues {
         "render_document_pages",
         "extract_visuals",
         "deep_scan_visuals",
+        "document_intelligence_extract",
         "fetch_evidence",
         "analyze_deal",
         "verify_documents",
@@ -193,6 +196,7 @@ export async function closeQueues() {
       queues.renderDocumentPagesQueue.close(),
       queues.extractVisualsQueue.close(),
       queues.deepScanVisualsQueue.close(),
+      queues.documentIntelligenceExtractQueue.close(),
       queues.fetchEvidenceQueue.close(),
       queues.analyzeDealQueue.close(),
       queues.verifyDocumentsQueue.close(),

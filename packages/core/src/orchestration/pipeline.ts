@@ -23,6 +23,7 @@ import type { DealOrchestrator, OrchestrationInput, OrchestrationResult } from '
 import type { CanonicalEvidenceService, EvidenceItem, EvidencePacketSelectionConfig } from '../services/evidence/canonical-evidence.js';
 import type { LLMService } from '../services/llm/service.js';
 import type { DIOStorage } from '../services/dio-storage.js';
+import type { Evidence } from '../types/hrmdd.js';
 
 // ==================== Pipeline Configuration ====================
 

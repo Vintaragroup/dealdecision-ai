@@ -127,6 +127,9 @@ export {
 } from "./services/evidence/canonical-evidence";
 export type { CanonicalEvidenceService, EvidenceItem, EvidencePacket } from "./services/evidence/canonical-evidence";
 
+// Document Intelligence (signals-only)
+export * from "./services/document-intelligence/document-intelligence";
+
 export {
 	LLMServiceError,
 	LLMTimeoutError,
@@ -139,7 +142,7 @@ export type { LLMService } from "./services/llm/service";
 export * from "./services/purge-deal-cascade";
 
 // Reports
-export { compileDIOToReport } from "./reports/compiler-simple";
+export { compileDIOToReport, compileDIOToReportWithPromotedFacts } from "./reports/compiler-simple";
 export { buildScoreExplanationFromDIO, buildScoringDiagnosticsFromDIO } from "./reports/score-explanation";
 export type { ScoreExplanation } from "./reports/score-explanation";
 export type { ScoringDiagnosticsV1 } from "./types/dio";

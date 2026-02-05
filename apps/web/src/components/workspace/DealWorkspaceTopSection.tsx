@@ -5,13 +5,23 @@ export type DealWorkspaceTopSectionProps = {
   score: number; // 0-100
   scoreLabel?: string;
   dealSummary: string;
+  dealSummaryTitle?: string;
+  dealSummarySource?: 'canonical' | 'legacy';
   strengths: string[];
   weaknesses: string[];
   raise: string;
   revenue: string;
+  revenueLabel?: string | null;
+  revenueTooltip?: string | null;
   growth: string;
+  growthLabel?: string | null;
+  growthNote?: string | null;
+  growthTooltip?: string | null;
   customers: string;
+  customersLabel?: string | null;
+  customersTooltip?: string | null;
   businessModel: string;
+  businessModelLabel?: string | null;
   dealType: string;
   confidence: 'High' | 'Medium' | 'Low';
   verified?: boolean;
@@ -49,17 +59,43 @@ export function DealWorkspaceTopSection({
   score,
   scoreLabel = 'Fundamentals score',
   dealSummary,
+  dealSummaryTitle = 'Deal Summary',
+  dealSummarySource = 'legacy',
   strengths,
   weaknesses,
   raise,
   revenue,
+  revenueLabel = null,
+  revenueTooltip = null,
   growth,
+  growthLabel = null,
+  growthNote = null,
+  growthTooltip = null,
   customers,
+  customersLabel = null,
+  customersTooltip = null,
   businessModel,
+  businessModelLabel = null,
   dealType,
   confidence,
   verified = false,
 }: DealWorkspaceTopSectionProps) {
+  const summaryParagraphs = (() => {
+    const raw = typeof dealSummary === 'string' ? dealSummary : '';
+    const normalized = raw
+      // Convert literal backslash-n sequences into real newlines.
+      .replace(/\\r\\n/g, '\n')
+      .replace(/\\n/g, '\n')
+      .replace(/\r\n/g, '\n')
+      .trim();
+    if (!normalized) return [];
+    return normalized
+      .split(/\n{2,}/g)
+      .map((p) => p.split(/\n+/g).join(' ').trim())
+      .filter(Boolean)
+      .slice(0, 6);
+  })();
+
   const score0_100 = clampScore0_100(score);
   const tone = scoreTone(score0_100);
 
@@ -73,12 +109,33 @@ export function DealWorkspaceTopSection({
   const extraStrengths = Math.max(0, (Array.isArray(strengths) ? strengths : []).filter(Boolean).length - visibleStrengths.length);
   const weaknessList = (Array.isArray(weaknesses) ? weaknesses : []).filter(Boolean);
 
-  const metricCards: Array<{ label: string; value: string; note: string; noteClass: string }> = [
+  const metricCards: Array<{ label: string; value: string; note: string; noteClass: string; tooltip?: string | null; badge?: string | null }> = [
     { label: 'Raise', value: raise, note: 'Target', noteClass: 'text-emerald-400' },
-    { label: 'Revenue', value: revenue, note: 'Annual', noteClass: 'text-blue-400' },
-    { label: 'Growth', value: growth, note: 'YoY', noteClass: 'text-emerald-400' },
-    { label: 'Customers', value: customers, note: 'Active', noteClass: 'text-zinc-400' },
-    { label: 'Business Model', value: businessModel, note: 'Recurring', noteClass: 'text-blue-400' },
+    {
+      label: 'Revenue',
+      value: revenue,
+      note: 'Annual',
+      noteClass: 'text-blue-400',
+      tooltip: revenueTooltip,
+      badge: revenueLabel,
+    },
+    {
+      label: 'Growth',
+      value: growth,
+      note: growthNote || 'YoY',
+      noteClass: 'text-emerald-400',
+      tooltip: growthTooltip,
+      badge: growthLabel,
+    },
+    {
+      label: 'Customers',
+      value: customers,
+      note: 'Active',
+      noteClass: 'text-zinc-400',
+      tooltip: customersTooltip,
+      badge: customersLabel,
+    },
+    { label: 'Business Model', value: businessModel, note: 'Recurring', noteClass: 'text-blue-400', badge: businessModelLabel },
     { label: 'Deal Type', value: dealType, note: 'Equity', noteClass: 'text-amber-400' },
   ];
 
@@ -141,10 +198,17 @@ export function DealWorkspaceTopSection({
             <h3 className="sr-only">Key metrics</h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
               {metricCards.map((m) => (
-                <div key={m.label} className={`${insetClass} p-4`}>
+                <div key={m.label} className={`${insetClass} p-4`} title={m.tooltip || undefined}>
                   <div className="text-xs text-zinc-500 mb-1">{m.label}</div>
                   <div className="text-2xl text-white mb-0.5 break-words">{m.value}</div>
-                  <div className={`text-xs ${m.noteClass}`}>{m.note}</div>
+                  <div className="flex items-center gap-2">
+                    <div className={`text-xs ${m.noteClass}`}>{m.note}</div>
+                    {m.badge ? (
+                      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-white/5 text-zinc-200 border border-white/10">
+                        {m.badge}
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
               ))}
             </div>
@@ -156,8 +220,30 @@ export function DealWorkspaceTopSection({
       <div className={`${cardClass} p-4`}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
           <div className="h-full min-h-[160px]">
-            <h3 className="text-sm text-zinc-300 mb-3">Deal Summary</h3>
-            <p className="text-zinc-200 leading-relaxed">{dealSummary}</p>
+            <div className="flex items-center gap-2 mb-3">
+              <h3 className="text-sm text-zinc-300">{dealSummaryTitle}</h3>
+              {dealSummarySource === 'canonical' ? (
+                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/15 text-emerald-200 border border-emerald-500/25">
+                  Canonical
+                </span>
+              ) : (
+                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-white/5 text-zinc-200 border border-white/10">
+                  Legacy
+                </span>
+              )}
+            </div>
+
+            {summaryParagraphs.length > 0 ? (
+              <div className="space-y-2">
+                {summaryParagraphs.map((p) => (
+                  <p key={p} className="text-zinc-200 leading-relaxed">
+                    {p}
+                  </p>
+                ))}
+              </div>
+            ) : (
+              <p className="text-zinc-200 leading-relaxed">—</p>
+            )}
           </div>
 
           <div className={`${insetClass} p-4 h-full min-h-[160px] flex flex-col justify-between`}>

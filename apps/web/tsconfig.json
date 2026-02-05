@@ -5,9 +5,14 @@
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
     "allowSyntheticDefaultImports": true,
+    "baseUrl": ".",
+    "paths": {
+      "vitest": ["./node_modules/vitest"],
+      "vitest/*": ["./node_modules/vitest/*"]
+    },
     "rootDir": ".",
     "outDir": "dist",
-    "types": ["node", "vite/client", "vitest/globals", "@testing-library/jest-dom"],
+    "types": ["node", "@testing-library/jest-dom"],
     "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
   "include": ["src", "vite.config.ts", "index.html"]

@@ -590,6 +590,7 @@ function getExcelSheetInspectorModel(structuredJson: unknown): ExcelSheetInspect
 
 type DerivedPageUnderstanding = {
   summary?: string;
+  summary_source?: string;
   key_points?: string[];
   extracted_signals?: Array<{ type?: string; value?: string; unit?: string; confidence?: number }>;
   score_contributions?: Array<{ driver?: string; delta?: number; rationale?: string }>;
@@ -622,46 +623,82 @@ function derivePageUnderstandingFromNodeData(rfData: any): DerivedPageUnderstand
     return `${s.slice(0, Math.max(0, maxChars - 1)).trim()}…`;
   };
 
-  const summary = (() => {
-    const structuredSummary = typeof rfData.structured_summary === 'string' ? rfData.structured_summary.trim() : '';
-    if (structuredSummary) return structuredSummary;
-
-    const slideTitle = typeof rfData.slide_title === 'string' ? rfData.slide_title.trim() : '';
-    if (slideTitle) return slideTitle;
-
-    const structuredJson = rfData.structured_json as unknown;
-
-    const tryFromStructured = (sj: any): string | null => {
+  const summaryInfo = (() => {
+    const tryFromStructured = (sj: any): { summary: string; source: string } | null => {
       if (!sj || typeof sj !== 'object') return null;
-      const candidates: unknown[] = [
-        (sj as any).summary_text_analyst,
-        (sj as any).summary_text_investor,
-        (sj as any).summary,
-        (sj as any).text,
-        (sj as any).captured_text,
-        (sj as any).ocr_text,
+      const candidates: Array<[string, unknown]> = [
+        ['summary_text_analyst', (sj as any).summary_text_analyst],
+        ['summary_text_investor', (sj as any).summary_text_investor],
+        ['summary', (sj as any).summary],
+        ['text', (sj as any).text],
+        ['captured_text', (sj as any).captured_text],
+        ['ocr_text', (sj as any).ocr_text],
       ];
-      for (const c of candidates) {
-        if (typeof c === 'string' && c.trim()) return takeSummarySnippet(c, 700);
+      for (const [k, c] of candidates) {
+        if (typeof c === 'string' && c.trim()) {
+          const s = takeSummarySnippet(c, 700);
+          if (!s) continue;
+          return { summary: s, source: `structured.${k}` };
+        }
       }
       return null;
     };
+
+    const structuredSummaryRaw = (rfData as any).structured_summary as unknown;
+    if (typeof structuredSummaryRaw === 'string') {
+      const structuredSummary = structuredSummaryRaw.trim();
+      if (structuredSummary) return { summary: structuredSummary, source: 'structured_summary' };
+    } else {
+      // Some extractors store summary metadata as an object (e.g. {summary_text_analyst,...}).
+      const got = tryFromStructured(structuredSummaryRaw);
+      if (got) return { summary: got.summary, source: `structured_summary.${got.source}` };
+    }
+
+    const slideTitle = typeof rfData.slide_title === 'string' ? rfData.slide_title.trim() : '';
+    if (slideTitle) return { summary: slideTitle, source: 'slide_title' };
+
+    const structuredJson = rfData.structured_json as unknown;
+
+    // Special-case: Excel sheet structured output often stores summaries under sheet-level keys.
+    // This lets spreadsheet page nodes show an immediate human summary.
+    const excelModel = (() => {
+      const direct = getExcelSheetInspectorModel(structuredJson);
+      if (direct) return direct;
+      if (Array.isArray(structuredJson)) {
+        for (const item of structuredJson) {
+          const sj = (item as any)?.structured_json ?? item;
+          const m = getExcelSheetInspectorModel(sj);
+          if (m) return m;
+        }
+      }
+      return null;
+    })();
+    if (excelModel) {
+      const got = excelModel.summaryAnalyst ?? excelModel.summaryInvestor;
+      if (got) {
+        const s = takeSummarySnippet(got, 700);
+        if (s) return { summary: s, source: excelModel.summaryAnalyst ? 'excel_sheet.summary_text_analyst' : 'excel_sheet.summary_text_investor' };
+      }
+    }
 
     if (Array.isArray(structuredJson)) {
       // visual_asset_group stores [{visual_asset_id, structured_json, structured_kind}]
       for (const item of structuredJson) {
         const sj = (item as any)?.structured_json ?? item;
         const got = tryFromStructured(sj);
-        if (got) return got;
+        if (got) return { summary: got.summary, source: got.source };
       }
     } else {
       const got = tryFromStructured(structuredJson);
-      if (got) return got;
+      if (got) return { summary: got.summary, source: got.source };
     }
 
     const ocrText = typeof rfData.ocr_text === 'string' ? rfData.ocr_text : typeof rfData.ocr_text_snippet === 'string' ? rfData.ocr_text_snippet : '';
     const ocrSnippet = takeSummarySnippet(ocrText, 700);
-    if (ocrSnippet) return ocrSnippet;
+    if (ocrSnippet) {
+      const src = typeof rfData.ocr_text === 'string' && rfData.ocr_text.trim().length > 0 ? 'ocr_text' : 'ocr_text_snippet';
+      return { summary: ocrSnippet, source: src };
+    }
 
     return null;
   })();
@@ -714,11 +751,15 @@ function derivePageUnderstandingFromNodeData(rfData: any): DerivedPageUnderstand
     return out;
   })();
 
+  const summary = summaryInfo?.summary ?? null;
+  const summarySource = summaryInfo?.source ?? null;
+
   const hasAnything = Boolean((summary && summary.trim()) || keyPoints.length > 0 || scoreContributions.length > 0);
   if (!hasAnything) return null;
 
   return {
     ...(summary ? { summary } : {}),
+    ...(summarySource ? { summary_source: summarySource } : {}),
     ...(keyPoints.length > 0 ? { key_points: keyPoints } : {}),
     ...(scoreContributions.length > 0 ? { score_contributions: scoreContributions } : {}),
   };
@@ -2274,6 +2315,72 @@ function buildFullGraphFromLineage(
       return items.length > 0 ? items : null;
     })();
 
+    const aggregatedPageUnderstanding = (() => {
+      // Prefer member-derived page understandings so page-level nodes have a useful summary even
+      // when aggregated OCR text is missing or too noisy.
+      const seenPoints = new Set<string>();
+      const mergedKeyPoints: string[] = [];
+
+      const isNonEmpty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+
+      let best: DerivedPageUnderstanding | null = null;
+      let bestScore = -Infinity;
+
+      for (const id of memberIds) {
+        const node = visualNodeByVisualAssetId.get(id) ?? null;
+        const data = ((node as any)?.data ?? {}) as any;
+        const u = (data?.page_understanding ?? derivePageUnderstandingFromNodeData(data)) as any;
+        if (!u || typeof u !== 'object') continue;
+
+        const summary = isNonEmpty(u.summary) ? String(u.summary).trim() : '';
+        const keyPoints = Array.isArray(u.key_points)
+          ? (u.key_points as unknown[])
+              .filter((kp): kp is string => typeof kp === 'string' && kp.trim().length > 0)
+              .map((kp) => kp.trim())
+          : [];
+
+        for (const kp of keyPoints) {
+          const k = kp.toLowerCase();
+          if (seenPoints.has(k)) continue;
+          seenPoints.add(k);
+          mergedKeyPoints.push(kp);
+          if (mergedKeyPoints.length >= 12) break;
+        }
+
+        const score = (summary ? Math.min(2000, summary.length) : 0) + keyPoints.length * 25;
+        if (score > bestScore) {
+          bestScore = score;
+          best = {
+            ...(summary ? { summary } : {}),
+            ...(keyPoints.length > 0 ? { key_points: keyPoints } : {}),
+            ...(Array.isArray(u.extracted_signals) ? { extracted_signals: u.extracted_signals } : {}),
+            ...(Array.isArray(u.score_contributions) ? { score_contributions: u.score_contributions } : {}),
+          };
+        }
+      }
+
+      if (!best) return null;
+
+      const scoreContributions: Array<{ driver?: string; delta?: number; rationale?: string }> = [];
+      if (Array.isArray(best.score_contributions)) {
+        for (const sc of best.score_contributions) scoreContributions.push(sc);
+      }
+      scoreContributions.push({
+        driver: 'Page group',
+        rationale: `Aggregated from ${memberIds.length} visual regions on this page.`,
+      });
+
+      return {
+        ...(isNonEmpty(best.summary) ? { summary: best.summary!.trim() } : {}),
+        ...(isNonEmpty(best.summary) ? { summary_source: 'aggregated_members' } : {}),
+        ...(mergedKeyPoints.length > 0 ? { key_points: mergedKeyPoints.slice(0, 8) } : {}),
+        ...(Array.isArray(best.extracted_signals) && best.extracted_signals.length > 0
+          ? { extracted_signals: best.extracted_signals.slice(0, 12) }
+          : {}),
+        ...(scoreContributions.length > 0 ? { score_contributions: scoreContributions.slice(0, 10) } : {}),
+      } satisfies DerivedPageUnderstanding;
+    })();
+
     const evidenceCountTotal = memberIds.reduce((sum, id) => sum + (evidenceCountByVisualAssetId.get(id) ?? 0), 0);
 
     nodes.push({
@@ -2296,6 +2403,7 @@ function buildFullGraphFromLineage(
         ocr_text: aggregatedPageText,
         ocr_text_snippet: bestOcr?.ocr_text ?? bestOcrFromNode?.ocr_text_snippet,
         structured_json: aggregatedStructuredJson,
+        page_understanding: aggregatedPageUnderstanding,
         ...(groupSegmentKey
           ? {
               computed_segment: groupSegmentKey,
@@ -6528,6 +6636,27 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                           ) : (
                             <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No summary available</div>
                           )}
+
+                          {(() => {
+                            const src =
+                              typeof rfUnderstanding?.summary_source === 'string' && rfUnderstanding.summary_source.trim().length > 0
+                                ? rfUnderstanding.summary_source.trim()
+                                : rfData?.page_understanding && typeof rfUnderstanding?.summary === 'string' && rfUnderstanding.summary.trim().length > 0
+                                  ? 'backend'
+                                  : null;
+                            if (!src) return null;
+                            return (
+                              <div>
+                                <span
+                                  className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                    darkMode ? 'bg-sky-500/15 text-sky-200' : 'bg-sky-50 text-sky-700'
+                                  }`}
+                                >
+                                  Source: {src}
+                                </span>
+                              </div>
+                            );
+                          })()}
 
                           {Array.isArray(rfUnderstanding?.key_points) && rfUnderstanding.key_points.length > 0 ? (
                             <div className="space-y-1">

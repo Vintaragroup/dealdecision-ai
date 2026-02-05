@@ -5,7 +5,9 @@ export type AnalystSegment =
   | "market"
   | "traction"
   | "business_model"
+  | "go_to_market"
   | "distribution"
+  | "operations"
   | "team"
   | "competition"
   | "risks"
@@ -25,7 +27,9 @@ export const canonicalSegments: AnalystSegment[] = [
   "market",
   "traction",
   "business_model",
+  "go_to_market",
   "distribution",
+  "operations",
   "team",
   "competition",
   "risks",
@@ -838,12 +842,12 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       { term: "property information", re: /\bproperty\s+information\b/i, segment: "market" },
       { term: "aerials", re: /\baerials?\b/i, segment: "market" },
       { term: "distribution", re: /\bdistribution\b/i, segment: "distribution" },
-      { term: "go-to-market", re: /\bgo\s*(?:-|\s)to\s*(?:-|\s)market\b/i, segment: "distribution" },
-      { term: "go to market", re: /\bgo\s+to\s+market\b/i, segment: "distribution" },
-      { term: "gtm", re: /\bgtm\b/i, segment: "distribution" },
-      { term: "route to market", re: /\broute\s+to\s+market\b/i, segment: "distribution" },
-      { term: "marketing strategy", re: /\bmarketing\s+strategy\b/i, segment: "distribution" },
-      { term: "sales and marketing", re: /\bsales\s+(?:and|&)\s+marketing\b/i, segment: "distribution" },
+      { term: "go-to-market", re: /\bgo\s*(?:-|\s)to\s*(?:-|\s)market\b/i, segment: "go_to_market" },
+      { term: "go to market", re: /\bgo\s+to\s+market\b/i, segment: "go_to_market" },
+      { term: "gtm", re: /\bgtm\b/i, segment: "go_to_market" },
+      { term: "route to market", re: /\broute\s+to\s+market\b/i, segment: "go_to_market" },
+      { term: "marketing strategy", re: /\bmarketing\s+strategy\b/i, segment: "go_to_market" },
+      { term: "sales and marketing", re: /\bsales\s+(?:and|&)\s+marketing\b/i, segment: "go_to_market" },
       { term: "business model", re: /\bbusiness\s+model\b/i, segment: "business_model" },
       { term: "financial strategy", re: /\bfinancial\s+strategy\b/i, segment: "financials" },
       { term: "financials", re: /\bfinancials\b/i, segment: "financials" },
@@ -994,6 +998,19 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       { term: "arpu" },
       { term: "take rate" },
     ],
+    go_to_market: [
+      { term: "go-to-market" },
+      { term: "go to market" },
+      { term: "gtm" },
+      { term: "route to market", weight: 2 },
+      { term: "marketing" },
+      { term: "sales" },
+      { term: "acquisition", weight: 2 },
+      { term: "growth strategy", weight: 2 },
+      { term: "channels" },
+      { term: "channel" },
+      { term: "partnerships" },
+    ],
     distribution: [
       { term: "distribution" },
       { term: "go-to-market" },
@@ -1008,6 +1025,19 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       { term: "sales" },
       { term: "marketing" },
       { term: "partnerships" },
+    ],
+    operations: [
+      { term: "operations" },
+      { term: "operational", weight: 2 },
+      { term: "equipment" },
+      { term: "inventory" },
+      { term: "logistics" },
+      { term: "supply chain" },
+      { term: "manufacturing" },
+      { term: "fulfillment" },
+      { term: "quality control", weight: 2 },
+      { term: "process", weight: 1.5 },
+      { term: "efficiency", weight: 1.5 },
     ],
     team: [
       { term: "team" },
@@ -1138,7 +1168,9 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       "inputs",
     ],
     raise_terms: ["use of funds", "use of proceeds", "term sheet", "valuation", "cap table", "capitalization table", "round", "ownership"],
+    go_to_market: ["go to market", "go-to-market", "gtm", "route to market"],
     distribution: ["go to market", "go-to-market", "gtm", "distribution"],
+    operations: ["operations", "operational", "equipment", "logistics", "supply chain", "inventory"],
     team: ["team"],
     competition: ["competition", "competitors"],
     risks: ["risks", "risk"],
@@ -1348,7 +1380,9 @@ export function classifySegment(input: SegmentClassifierInput): SegmentClassifie
       market: "Market",
       traction: "Traction",
       business_model: "Business Model",
+      go_to_market: "Go-To-Market",
       distribution: "Go-To-Market",
+      operations: "Operations",
       team: "Team",
       competition: "Competition",
       risks: "Risks",

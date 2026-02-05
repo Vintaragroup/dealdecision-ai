@@ -38,6 +38,7 @@ import {
 } from "../lib/slide-title";
 import { buildClassificationText, buildSegmentFeatures, classifySegment, normalizeAnalystSegment, type AnalystSegment, type SegmentClassifierInput } from "../lib/analyst-segment";
 import { groupWordVisualAssetsByDocument, groupWordVisualAssetsByDocumentWithStats, type WordGroupingStats } from "../lib/word-visual-grouping";
+import { fetchPageUnderstandingReadinessForDeal } from "../lib/deal-page-understanding-readiness";
 
 export { computeNodeEvidenceGateV1 };
 
@@ -8466,6 +8467,15 @@ export async function registerDealRoutes(
 
   app.post("/api/v1/deals/:deal_id/analyze", async (request, reply) => {
     const dealId = (request.params as { deal_id: string }).deal_id;
+		if (!isUuid(dealId)) {
+			return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+		}
+    const requirePageUnderstanding = Boolean((request.body as any)?.require_page_understanding);
+    const pageUnderstandingVersionRaw = (request.body as any)?.page_understanding_version;
+    const pageUnderstandingVersion =
+      typeof pageUnderstandingVersionRaw === "string" && pageUnderstandingVersionRaw.trim().length > 0
+        ? pageUnderstandingVersionRaw.trim()
+        : "page_understanding_v1";
 
     const { rows } = await pool.query<DealRow>(
       `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
@@ -8476,16 +8486,143 @@ export async function registerDealRoutes(
       return reply.status(404).send({ error: "Deal not found" });
     }
 
-    const job = await enqueueJob(
-      { deal_id: dealId, type: "analyze_deal" },
-      { dedupe: { by: "deal" } }
-    );
+    if (requirePageUnderstanding) {
+      try {
+        const readiness = await fetchPageUnderstandingReadinessForDeal(pool as any, dealId, pageUnderstandingVersion);
+        request.log.info(
+          {
+            event: "READINESS_CHECK",
+            deal_id: dealId,
+            version: readiness.version,
+            expected_pages_total: readiness.expected_pages_total,
+            dpu_rows_total: readiness.dpu_rows_total,
+            missing_pages_total: readiness.missing_pages_total,
+            ready: readiness.ready,
+          },
+          "deal.page_understanding.readiness"
+        );
+
+        if (!readiness.ready) {
+          const missingDocIds = readiness.documents
+            .filter((d) => Array.isArray(d.missing_pages) && d.missing_pages.length > 0)
+            .map((d) => d.document_id);
+
+          try {
+            // Best-effort: enqueue extract_visuals for docs missing page understanding.
+            // Worker-side DPU population is deterministic (per-chunk upserts), so this re-drive is safe.
+            await enqueueJob(
+              {
+                deal_id: dealId,
+                type: "extract_visuals_deal",
+						queue: "extract_visuals",
+                payload: {
+                  document_ids: missingDocIds,
+                  enqueue_deep_scan: true,
+                },
+              },
+              { dedupe: { by: "deal" } }
+            );
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            request.log.error(
+              { event: "extract_visuals.enqueue_failed", deal_id: dealId, err: message },
+              "Failed to enqueue extract_visuals for DPU gaps"
+            );
+            return reply.status(503).send({
+              error: "page_understanding_not_ready",
+              message:
+                "Page understanding is not ready and the system could not enqueue the required extraction job. Queue/Redis may be unavailable.",
+              ...(process.env.NODE_ENV === "production" ? {} : { detail: message, readiness }),
+            });
+          }
+
+          // Don't enqueue analysis yet; caller should poll readiness and retry when ready.
+          return reply.status(409).send({
+            error: "page_understanding_not_ready",
+            message: "Page understanding is not complete yet. Extraction has been enqueued; retry analysis once readiness is true.",
+            readiness,
+          });
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        request.log.error(
+          { event: "READINESS_CHECK_FAILED", deal_id: dealId, err: message },
+          "Failed to compute page understanding readiness"
+        );
+        return reply.status(500).send({
+          error: "readiness_check_failed",
+          message: "Failed to compute page understanding readiness.",
+          ...(process.env.NODE_ENV === "production" ? {} : { detail: message }),
+        });
+      }
+    }
+
+    let job: { job_id: string; status: string };
+    try {
+      job = await enqueueJob(
+        {
+          deal_id: dealId,
+          type: "analyze_deal",
+          payload: {
+            require_page_understanding: requirePageUnderstanding,
+            page_understanding_version: pageUnderstandingVersion,
+          },
+        },
+        { dedupe: { by: "deal" } }
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      request.log.error(
+        { event: "analyze_deal.enqueue_failed", deal_id: dealId, err: message },
+        "Failed to enqueue analyze_deal"
+      );
+      return reply.status(503).send({
+        error: "queue_unavailable",
+        message:
+          "Failed to enqueue analysis job. Queue/Redis may be unavailable. Check REDIS_URL and that Redis is running (for local: pnpm local:up).",
+        ...(process.env.NODE_ENV === "production" ? {} : { detail: message }),
+      });
+    }
 
     // After analysis job is enqueued, mark it so we can auto-progress when complete
     // (This would typically happen in a background worker after job completes)
     // For now, we queue the job and the worker will handle stage progression
 
     return reply.status(202).send({ job_id: job.job_id, status: job.status });
+  });
+
+  app.get("/api/v1/deals/:deal_id/readiness", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    if (!isUuid(dealId)) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+
+    const versionRaw = (request.query as any)?.page_understanding_version;
+    const version = typeof versionRaw === "string" && versionRaw.trim().length > 0 ? versionRaw.trim() : "page_understanding_v1";
+
+    const { rows } = await pool.query<DealRow>(
+      `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+      [dealId]
+    );
+    if (rows.length === 0) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    const readiness = await fetchPageUnderstandingReadinessForDeal(pool as any, dealId, version);
+    request.log.info(
+      {
+        event: "READINESS_CHECK",
+        deal_id: dealId,
+        version: readiness.version,
+        expected_pages_total: readiness.expected_pages_total,
+        dpu_rows_total: readiness.dpu_rows_total,
+        missing_pages_total: readiness.missing_pages_total,
+        ready: readiness.ready,
+      },
+      "deal.page_understanding.readiness"
+    );
+
+    return reply.send(readiness);
   });
 
   // Enqueue a best-effort visual extraction pass for all documents in the deal.
@@ -8826,7 +8963,8 @@ export async function registerDealRoutes(
             const inserted = await insertJobRow(
               {
                 deal_id: dealId,
-                type: "extract_visuals",
+					type: "extract_visuals_deal",
+					queue: "extract_visuals",
                 payload,
               },
               { dedupe: { by: "deal" }, deps: { pool: client as any } }
@@ -8843,7 +8981,7 @@ export async function registerDealRoutes(
             try {
               await enqueueBullmqJob(
                 {
-                  type: "extract_visuals",
+						type: "extract_visuals_deal",
                   jobId: String(dbResult.job_id),
                   bullPayload: (dbResult as any).bullPayload ?? {},
                 },
@@ -8898,7 +9036,8 @@ export async function registerDealRoutes(
       job = await enqueue(
         {
           deal_id: dealId,
-          type: "extract_visuals",
+				type: "extract_visuals_deal",
+				queue: "extract_visuals",
           payload,
         },
         { dedupe: { by: "deal" } }

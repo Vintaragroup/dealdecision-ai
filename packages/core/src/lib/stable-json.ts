@@ -10,10 +10,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function normalize(value: unknown): JsonValue {
 	if (value === null) return null;
-	const t = typeof value;
-	if (t === "boolean") return value;
-	if (t === "number") return Number.isFinite(value as number) ? (value as number) : String(value) as any;
-	if (t === "string") return value;
+	if (typeof value === "boolean") return value;
+	if (typeof value === "number") return Number.isFinite(value) ? value : (String(value) as any);
+	if (typeof value === "string") return value;
 
 	if (Array.isArray(value)) return value.map((v) => normalize(v));
 

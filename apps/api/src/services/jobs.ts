@@ -20,7 +20,9 @@ function getQueueForType(type: JobType): QueueLike {
     ingest_documents: queues.ingestQueue,
     render_document_pages: queues.renderDocumentPagesQueue,
     extract_visuals: queues.extractVisualsQueue,
+    extract_visuals_deal: queues.extractVisualsQueue,
     deep_scan_visuals: queues.deepScanVisualsQueue,
+    document_intelligence_extract: queues.documentIntelligenceExtractQueue,
     fetch_evidence: queues.fetchEvidenceQueue,
     analyze_deal: queues.analyzeDealQueue,
     verify_documents: queues.verifyDocumentsQueue,
@@ -39,6 +41,14 @@ export interface EnqueueJobInput {
   document_id?: string;
   type: JobType;
   payload?: Record<string, unknown>;
+  /**
+   * Optional override for the persisted `queue` column.
+   * Useful when a logical job `type` differs from the actual BullMQ queue name.
+   */
+  queue?: string;
+  parent_job_id?: string | null;
+  page_start?: number;
+  page_end?: number;
 }
 
 export interface EnqueueJobOptions {
@@ -74,6 +84,17 @@ export type InsertJobRowResult = {
 
 export async function insertJobRow(input: EnqueueJobInput, opts?: EnqueueJobOptions): Promise<InsertJobRowResult> {
   const pool: DbPoolLike = opts?.deps?.pool ?? getPool();
+
+  // Guardrails: prevent invalid job rows that break deterministic debugging.
+  if (input.type === "extract_visuals") {
+    const docId = typeof input.document_id === "string" ? input.document_id.trim() : "";
+    if (!docId) {
+      throw new Error("invalid_extract_visuals_job:missing_document_id");
+    }
+    if (typeof input.page_start !== "number" || typeof input.page_end !== "number") {
+      throw new Error("invalid_extract_visuals_job:missing_page_range");
+    }
+  }
 
   // Optional dedupe: if a matching job is already active, return it.
   if (opts?.dedupe?.by && (input.deal_id || input.document_id)) {
@@ -144,24 +165,32 @@ export async function insertJobRow(input: EnqueueJobInput, opts?: EnqueueJobOpti
     ...(input.payload ?? {}),
     ...(input.deal_id ? { deal_id: input.deal_id } : {}),
     ...(input.document_id ? { document_id: input.document_id } : {}),
+		...(input.parent_job_id ? { parent_job_id: input.parent_job_id } : {}),
+		...(typeof input.page_start === "number" ? { page_start: input.page_start } : {}),
+		...(typeof input.page_end === "number" ? { page_end: input.page_end } : {}),
     job_id: jobId,
     type: input.type,
   }) as Record<string, unknown>;
 
   // Insert DB row first to avoid a race where the worker updates progress/status
   // before the job row exists (UI polls Postgres jobs table).
+  const queueName = typeof input.queue === "string" && input.queue.trim().length > 0 ? input.queue.trim() : input.type;
+
   const { rows } = await pool.query(
-    `INSERT INTO jobs (job_id, deal_id, document_id, type, queue, status, payload)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+    `INSERT INTO jobs (job_id, deal_id, document_id, type, queue, status, payload, parent_job_id, page_start, page_end)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
      RETURNING id, job_id, status`,
     [
       sanitizeText(jobId),
       input.deal_id ? sanitizeText(input.deal_id) : null,
       input.document_id ? sanitizeText(input.document_id) : null,
       sanitizeText(input.type),
-      sanitizeText(input.type),
+      sanitizeText(queueName),
       "queued",
       JSON.stringify(persistedPayload ?? {}),
+			input.parent_job_id ? sanitizeText(input.parent_job_id) : null,
+			typeof input.page_start === "number" ? Math.max(0, Math.floor(input.page_start)) : null,
+			typeof input.page_end === "number" ? Math.max(0, Math.floor(input.page_end)) : null,
     ]
   );
 

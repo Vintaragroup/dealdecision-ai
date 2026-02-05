@@ -50,7 +50,7 @@ test("POST /api/v1/deals/:deal_id/extract-visuals returns 202 when R2 probe over
 	const app = Fastify();
 	await registerDealRoutes(app, mockPool, {
 		enqueueJob: async (input: any) => {
-			assert.equal(input.type, "extract_visuals");
+			assert.equal(input.type, "extract_visuals_deal");
 			return { id: 1, job_id: "job-1", status: "queued" };
 		},
 		r2: {

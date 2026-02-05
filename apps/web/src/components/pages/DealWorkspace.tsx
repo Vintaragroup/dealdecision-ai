@@ -18,7 +18,7 @@ import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { DealWorkspaceTopSection } from '../workspace/DealWorkspaceTopSection';
 import { DealWorkspaceOverviewComp } from '../workspace/dealworkspace_overview_comp';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
-import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2 } from '../../lib/apiClient';
+import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness } from '../../lib/apiClient';
 import type { JobProgressEventV1 } from '@dealdecision/contracts';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
@@ -131,7 +131,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [dealJobs, setDealJobs] = useState<DealJobRowV2[]>([]);
   const [dealJobsError, setDealJobsError] = useState<string | null>(null);
   type FullProcessStepKey = 'reextract_documents' | 'extract_visuals' | 'analyze_deal';
-  type FullProcessStepStatus = 'pending' | 'queued' | 'running' | 'succeeded' | 'succeeded_with_warnings' | 'failed' | 'cancelled';
+  type FullProcessStepStatus = 'pending' | 'queued' | 'running' | 'blocked' | 'succeeded' | 'succeeded_with_warnings' | 'failed' | 'cancelled';
   type FullProcessStepUi = {
     key: FullProcessStepKey;
     label: string;
@@ -155,6 +155,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [fullProcessExtractFinishedAt, setFullProcessExtractFinishedAt] = useState<string | null>(null);
   const [expandedJobMessageKeys, setExpandedJobMessageKeys] = useState<Record<string, boolean>>({});
   const [sseReady, setSseReady] = useState(false);
+  const [fullProcessLocked, setFullProcessLocked] = useState(false);
   const [evidence, setEvidence] = useState<Array<{ evidence_id: string; deal_id: string; document_id?: string; visual_asset_id?: string; source: string; kind: string; text: string; confidence?: number; created_at?: string }>>([]);
   const [evidenceLoading, setEvidenceLoading] = useState(false);
 
@@ -164,6 +165,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [dealFromApi, setDealFromApi] = useState<any>(null);
   const [reportFromApi, setReportFromApi] = useState<DealReport | null>(null);
   const [reportMissing, setReportMissing] = useState<boolean>(false);
+  const [reportEnvelope, setReportEnvelope] = useState<DealReportEnvelope | null>(null);
   const [analystReloadKey, setAnalystReloadKey] = useState(0);
   const [analystFocusNodeId, setAnalystFocusNodeId] = useState<string | null>(null);
   const [documentsReloadKey, setDocumentsReloadKey] = useState(0);
@@ -643,29 +645,86 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const loadReport = async (opts?: { force?: boolean }) => {
     if (!dealId) {
       setReportFromApi(null);
+      setReportEnvelope(null);
       return;
     }
     const now = Date.now();
-    if (!opts?.force && reportMissingRef.current) return;
     if (!opts?.force && now - lastReportAttemptAtRef.current < 8000) return;
     lastReportAttemptAtRef.current = now;
     try {
-      const report = await apiGetDealReport(dealId);
-      reportMissingRef.current = false;
-      setReportMissing(!report);
-      setReportFromApi(report);
-      if (typeof report?.overallScore === 'number' && Number.isFinite(report.overallScore)) {
-        setInvestorScore(Math.round(report.overallScore));
+      const envelope = await apiGetDealReport(dealId);
+      setReportEnvelope(envelope);
+
+      const ready = Boolean((envelope as any)?.ready);
+      const report = ready
+        ? ((envelope as any)?.report && typeof (envelope as any).report === 'object' ? (envelope as any).report : (envelope as any))
+        : null;
+
+      // Treat { ready:false } as normal intermediate state.
+      // Keep polling behavior driven by job state (not /report errors).
+      reportMissingRef.current = !ready;
+      setReportMissing(!ready);
+      setReportFromApi((report && typeof report === 'object') ? (report as DealReport) : null);
+
+      if (ready && typeof (report as any)?.overallScore === 'number' && Number.isFinite((report as any).overallScore)) {
+        setInvestorScore(Math.round((report as any).overallScore));
       }
     } catch (err: any) {
-      const status = err?.status ?? err?.response?.status;
-      if (status === 404) {
-        reportMissingRef.current = true; // suppress noisy retries until a job succeeds
-        setReportMissing(true);
-      }
+      // Network / auth / server errors: keep report null but don't treat as "missing report".
       setReportFromApi(null);
     }
   };
+
+  const reportReady = Boolean((reportEnvelope as any)?.ready);
+  const reportVersion = (() => {
+    const v = (reportEnvelope as any)?.version;
+    return typeof v === 'number' && Number.isFinite(v) ? v : (dioMeta?.dioAnalysisVersion ?? null);
+  })();
+
+  const lastReportReadyRef = useRef<boolean | null>(null);
+  const lastReportVersionRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!dealId) return;
+
+    const prevReady = lastReportReadyRef.current;
+    const prevVersion = lastReportVersionRef.current;
+    const nextReady = reportReady;
+    const nextVersion = typeof reportVersion === 'number' ? reportVersion : null;
+
+    if (prevReady === false && nextReady === true) {
+      console.info('[DDAI][report]', { event: 'ready_transition', dealId, version: nextVersion });
+    }
+    if (prevVersion != null && nextVersion != null && prevVersion !== nextVersion) {
+      console.info('[DDAI][report]', { event: 'version_change', dealId, from: prevVersion, to: nextVersion });
+    }
+
+    lastReportReadyRef.current = nextReady;
+    lastReportVersionRef.current = nextVersion;
+  }, [dealId, reportReady, reportVersion]);
+
+  const reportArtifact = (reportEnvelope as any)?.artifact as any;
+  const reportEvidenceIds = useMemo(() => {
+    const sections = (reportFromApi as any)?.sections;
+    if (!Array.isArray(sections)) return [] as string[];
+    const ids = sections
+      .flatMap((s: any) => (Array.isArray(s?.evidence_ids) ? s.evidence_ids : []))
+      .filter((v: any): v is string => typeof v === 'string' && v.trim().length > 0)
+      .map((v: string) => v.trim());
+    return Array.from(new Set(ids)).slice(0, 50);
+  }, [reportFromApi]);
+
+  const reportCycleNumber = useMemo(() => {
+    const meta = (reportFromApi as any)?.metadata;
+    if (!meta || typeof meta !== 'object') return null;
+    const raw = (meta as any)?.cycle_number ?? (meta as any)?.cycleNumber ?? (meta as any)?.cycle;
+    const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN;
+    return Number.isFinite(n) ? n : null;
+  }, [reportFromApi]);
+
+  const lastAnalyzeJob = useMemo(() => {
+    const rows = Array.isArray(dealJobs) ? dealJobs : [];
+    return selectBestAnalyzeJob(rows, pinnedIsAnalyze ? jobId : null);
+  }, [dealJobs, jobId, pinnedIsAnalyze]);
   // Fetch the actual deal from API
   useEffect(() => {
     if (!dealId) {
@@ -673,6 +732,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       setReportFromApi(null);
       return;
     }
+
+    // Avoid showing stale report-derived tiles when switching deals.
+    setReportFromApi(null);
+    setReportEnvelope(null);
+    setReportMissing(false);
+    reportMissingRef.current = false;
+    lastReportAttemptAtRef.current = 0;
+
     let active = true;
     apiGetDeal(dealId)
       .then((deal) => {
@@ -1761,6 +1828,33 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return out.slice(0, 6);
   })();
 
+  // Deterministic deal_summary_v1 from /report (derived from segmented DPU nodes).
+  // UI rule: use canonical only when deal_summary.ready=true; otherwise show legacy and label it.
+  const canonicalDealSummaryV1 = reportReady
+    ? ((reportFromApi as any)?.deal_summary ?? (reportFromApi as any)?.report?.deal_summary ?? null)
+    : null;
+  const canonicalDealSummaryReady = canonicalDealSummaryV1 && typeof canonicalDealSummaryV1 === 'object' && (canonicalDealSummaryV1 as any).ready === true;
+
+  const canonicalDealOneLiner = canonicalDealSummaryReady ? safeText((canonicalDealSummaryV1 as any)?.one_liner?.text) : '';
+  const canonicalProduct = canonicalDealSummaryReady ? safeText((canonicalDealSummaryV1 as any)?.product?.text) : '';
+  const canonicalMarket = canonicalDealSummaryReady ? safeText((canonicalDealSummaryV1 as any)?.market?.text) : '';
+  const canonicalParagraphs: string[] = canonicalDealSummaryReady && Array.isArray((canonicalDealSummaryV1 as any)?.paragraphs)
+    ? (canonicalDealSummaryV1 as any).paragraphs.map((p: any) => safeText(p?.text)).filter((s: string) => s.length > 0).slice(0, 6)
+    : [];
+
+  const canonicalCitations = canonicalDealSummaryReady
+    ? {
+        one_liner: Array.isArray((canonicalDealSummaryV1 as any)?.one_liner?.sources) ? (canonicalDealSummaryV1 as any).one_liner.sources : [],
+        product: Array.isArray((canonicalDealSummaryV1 as any)?.product?.sources) ? (canonicalDealSummaryV1 as any).product.sources : [],
+        market: Array.isArray((canonicalDealSummaryV1 as any)?.market?.sources) ? (canonicalDealSummaryV1 as any).market.sources : [],
+        paragraphs: Array.isArray((canonicalDealSummaryV1 as any)?.paragraphs)
+          ? (canonicalDealSummaryV1 as any).paragraphs
+              .flatMap((p: any) => (Array.isArray(p?.sources) ? p.sources : []))
+              .slice(0, 12)
+          : [],
+      }
+    : null;
+
   const EvidenceCoverageSection = (sectionProps: {
     documentsReviewedCount: number;
     productBand: 'high' | 'med' | 'low' | 'unknown';
@@ -1890,6 +1984,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
 
   const pickMoney = (): string => {
+    if (reportReady) {
+      const fromReport = safeText((reportFromApi as any)?.structured_summary?.raise?.value);
+      if (fromReport) return fromReport;
+    }
     const direct = safeText(overviewV2?.raise);
     if (direct) return direct;
     // Look for $ amounts (supports $11.7M, $46.7MM, $1,200,000)
@@ -1994,8 +2092,187 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const topSectionCustomers = looksRealEstate
     ? pickValue(/\bterm\b[^\d]{0,24}(\d{1,3})\s*(months|month|mos|years|year|yrs)\b/i, (m) => `${m[1]} ${m[2]}`)
     : pickValue(/\b(\d[\d,]*)\s*(customers|users|teams|clients)\b/i, (m) => `${m[1]} ${m[2]}`);
-  const topSectionBusinessModel = safeText(overviewV2?.business_model) || safeText(executiveSummaryV1?.business_model) || '—';
+  const topSectionBusinessModel =
+    safeText((reportFromApi as any)?.structured_summary?.business_model_summary?.value) ||
+    safeText((reportFromApi as any)?.structured_summary?.business_model?.value) ||
+    safeText(overviewV2?.business_model) ||
+    safeText(executiveSummaryV1?.business_model) ||
+    '—';
   const topSectionDealType = safeText(overviewV2?.deal_type) || safeText(executiveSummaryV1?.deal_type) || '—';
+
+  const reportView = useMemo(() => {
+    const fallbackScore = (() => {
+      if (typeof displayScore === 'number' && Number.isFinite(displayScore)) return Math.round(displayScore);
+      const fromDealInfo = (dealInfo as any)?.score;
+      if (typeof fromDealInfo === 'number' && Number.isFinite(fromDealInfo)) return Math.round(fromDealInfo);
+      if (typeof investorScore === 'number' && Number.isFinite(investorScore)) return Math.round(investorScore);
+      return 0;
+    })();
+
+    const ctx = decisionScoreExplanation && typeof decisionScoreExplanation === 'object' ? decisionScoreExplanation?.context : null;
+    const ctxStageRaw = typeof ctx?.stage === 'string' ? ctx.stage.trim() : '';
+    const fallbackStageRaw = typeof (dealFromApi as any)?.stage === 'string' ? String((dealFromApi as any).stage).trim() : '';
+    const stageRaw = (ctxStageRaw || fallbackStageRaw) || null;
+
+    const stageLabel = (() => {
+      if (!stageRaw) return null;
+      const map: Record<string, string> = {
+        intake: 'Intake',
+        under_review: 'Under review',
+        in_diligence: 'In diligence',
+        ready_decision: 'Ready decision',
+        pitched: 'Pitched',
+      };
+      return map[stageRaw] ?? stageRaw.replace(/_/g, ' ');
+    })();
+
+    const reportScore = reportReady && typeof (reportFromApi as any)?.overallScore === 'number' && Number.isFinite((reportFromApi as any).overallScore)
+      ? Math.round((reportFromApi as any).overallScore)
+      : null;
+
+    const sections = Array.isArray((reportFromApi as any)?.sections) ? (reportFromApi as any).sections : [];
+    const structuredSummary = (reportFromApi as any)?.structured_summary;
+    const executiveSummaryFromReport = (() => {
+      const byId = sections.find((s: any) => typeof s?.id === 'string' && ['executive-summary', 'executive_summary', 'executiveSummary'].includes(s.id));
+      const byTitle = sections.find((s: any) => typeof s?.title === 'string' && /executive\s+summary/i.test(s.title));
+      const content = safeText((byId ?? byTitle)?.content);
+      return content || null;
+    })();
+
+    const legacySummary = executiveSummaryFromReport ?? topSectionDealSummary;
+    const canonicalTopSummary = canonicalDealSummaryReady ? canonicalDealOneLiner : '';
+    const showCanonicalTopSummary = Boolean(canonicalTopSummary);
+
+    const businessModelSynthesized = safeText(structuredSummary?.business_model_summary?.value);
+    const businessModelPromoted = safeText(structuredSummary?.business_model?.value);
+    const businessModelFromReport = businessModelSynthesized || businessModelPromoted || safeText(ctx?.business_model);
+    const businessModelLabelFromReport = businessModelSynthesized ? 'Synthesized' : null;
+    const dealTypeFromReport = safeText(ctx?.deal_type);
+    const raiseFromReport = safeText(structuredSummary?.raise?.value) || safeText(ctx?.raise);
+
+    const revenueFromReport = (() => {
+      const v = structuredSummary?.revenue?.value;
+      if (!v || typeof v !== 'object') return null;
+      const raw = safeText((v as any).raw);
+      if (raw) return raw;
+      const amount = (v as any).amount;
+      const currency = safeText((v as any).currency);
+      const period = safeText((v as any).period);
+      if (typeof amount === 'number' && Number.isFinite(amount)) {
+        const prefix = currency === 'USD' ? '$' : '';
+        const formatted = `${prefix}${Math.round(amount).toLocaleString()}`;
+        return period ? `${formatted} ${period}` : formatted;
+      }
+      return null;
+    })();
+
+    const customersFromReport = (() => {
+      const v = structuredSummary?.customers?.value;
+      if (!v || typeof v !== 'object') return null;
+      const raw = safeText((v as any).raw);
+      if (raw) return raw;
+      const count = (v as any).count;
+      const kind = safeText((v as any).kind) || 'customers';
+      if (typeof count === 'number' && Number.isFinite(count)) {
+        return `${Math.round(count).toLocaleString()} ${kind}`;
+      }
+      return null;
+    })();
+
+    const recommendation =
+      safeText((reportFromApi as any)?.recommendation) ||
+      safeText(reportArtifact?.recommendation) ||
+      null;
+
+    return {
+      applied: reportReady && !!reportFromApi,
+      score: reportScore ?? fallbackScore,
+      recommendation,
+      stageRaw,
+      stageLabel,
+      dealSummary: showCanonicalTopSummary ? canonicalTopSummary : legacySummary,
+      dealSummaryTitle: showCanonicalTopSummary ? 'Deal Summary' : 'Executive Summary',
+      dealSummarySource: showCanonicalTopSummary ? 'canonical' : 'legacy',
+      businessModel: businessModelFromReport || topSectionBusinessModel,
+      businessModelLabel: businessModelLabelFromReport,
+      dealType: dealTypeFromReport || topSectionDealType,
+      raise: raiseFromReport || topSectionRaise,
+      revenue: revenueFromReport || topSectionRevenue,
+      customers: customersFromReport || topSectionCustomers,
+      source: reportReady ? 'report' : 'fallback',
+    } as const;
+  }, [
+    reportReady,
+    reportFromApi,
+    reportArtifact,
+    decisionScoreExplanation,
+    displayScore,
+    investorScore,
+    dealInfo,
+    dealFromApi,
+    canonicalDealSummaryReady,
+    canonicalDealOneLiner,
+    topSectionDealSummary,
+    topSectionBusinessModel,
+    topSectionDealType,
+    topSectionRaise,
+    topSectionRevenue,
+    topSectionCustomers,
+  ]);
+
+  const lastReportBindingsLogRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    if (!reportView.applied) return;
+    const key = `${dealId ?? ''}|${reportVersion ?? 'na'}|${reportView.score}|${reportView.stageRaw ?? ''}|${reportView.dealType}`;
+    if (lastReportBindingsLogRef.current === key) return;
+    lastReportBindingsLogRef.current = key;
+    console.log('[DDAI][report_bindings]', reportView);
+  }, [dealId, reportVersion, reportView]);
+
+  const reportStructuredRaise = safeText((reportFromApi as any)?.structured_summary?.raise?.value);
+  const reportStructuredBusinessModelSynthesized = safeText((reportFromApi as any)?.structured_summary?.business_model_summary?.value);
+  const reportStructuredBusinessModelPromoted = safeText((reportFromApi as any)?.structured_summary?.business_model?.value);
+  const reportStructuredBusinessModel = reportStructuredBusinessModelSynthesized || reportStructuredBusinessModelPromoted;
+  const reportStructuredBusinessModelLabel = reportStructuredBusinessModelSynthesized ? 'Synthesized' : null;
+  const reportStructuredRevenueLabel = safeText((reportFromApi as any)?.structured_summary?.revenue?.label);
+  const reportStructuredCustomersLabel = safeText((reportFromApi as any)?.structured_summary?.customers?.label);
+  const reportStructuredGrowthLabel = safeText((reportFromApi as any)?.structured_summary?.growth?.label);
+
+  const reportStructuredRevenueTooltip = safeText((reportFromApi as any)?.structured_summary?.revenue?.sources?.[0]?.note_snippet);
+  const reportStructuredCustomersTooltip = safeText((reportFromApi as any)?.structured_summary?.customers?.sources?.[0]?.note_snippet);
+  const reportStructuredGrowthTooltip = safeText((reportFromApi as any)?.structured_summary?.growth?.sources?.[0]?.note_snippet);
+
+  const reportStructuredGrowthValue = (() => {
+    const growth = (reportFromApi as any)?.structured_summary?.growth;
+    const raw = safeText(growth?.value?.raw);
+    const pct = growth?.value?.percent;
+    const label = safeText(growth?.label);
+    if (typeof pct === 'number' && Number.isFinite(pct)) return `${pct}%`;
+    if (label === 'Forecast' && raw) {
+      const money = raw.match(/\$\s*[\d,.]+\s*[kKmMbB]?/);
+      if (money?.[0]) return money[0].replace(/\s+/g, '');
+    }
+    return raw;
+  })();
+
+  const reportStructuredGrowthNote = (() => {
+    const growth = (reportFromApi as any)?.structured_summary?.growth;
+    const year = growth?.value?.year;
+    if (typeof year === 'number' && Number.isFinite(year)) return String(year);
+    return null;
+  })();
+
+  const overviewDealOneLinerCanonical = canonicalDealSummaryReady && canonicalDealOneLiner ? canonicalDealOneLiner : overviewDealOneLiner;
+  const overviewProductCanonical = canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : overviewProduct;
+  const overviewMarketIcpCanonical = canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : overviewMarketIcp;
+  const overviewBusinessModelCanonical = reportStructuredBusinessModel || (reportView.applied ? reportView.businessModel : overviewBusinessModel);
+  const overviewRaiseTermsCanonical = reportStructuredRaise || (reportView.applied ? reportView.raise : overviewRaiseTerms);
+  const overviewDealSummaryParagraphsCanonical: string[] = canonicalDealSummaryReady && canonicalParagraphs.length > 0
+    ? canonicalParagraphs
+    : overviewDealSummaryParagraphs;
+
+  const dealSummarySourceLabel = canonicalDealSummaryReady ? 'Canonical' : 'Legacy';
 
   useEffect(() => {
     if (!debugApiIsEnabled()) return;
@@ -2524,18 +2801,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     addToast(type, title, message);
   };
 
-  const dealStageRaw = typeof (dealFromApi as any)?.stage === 'string' ? String((dealFromApi as any).stage) : null;
-  const dealStageLabel = (() => {
-    const s = dealStageRaw ?? '';
-    const map: Record<string, string> = {
-      intake: 'Intake',
-      under_review: 'Under review',
-      in_diligence: 'In diligence',
-      ready_decision: 'Ready decision',
-      pitched: 'Pitched',
-    };
-    return map[s] ?? (s ? s.replace(/_/g, ' ') : '—');
-  })();
+  const dealStageRaw = reportView.stageRaw;
+  const dealStageLabel = reportView.stageLabel ?? '—';
 
   const parseApiErrorMessage = (err: unknown): string => {
     if (err instanceof Error) {
@@ -2643,7 +2910,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     if (s === 'succeeded_with_warnings') return 'warning';
     if (s === 'failed') return 'danger';
     if (s === 'cancelled') return 'warning';
-    if (s === 'running' || s === 'retrying') return 'info';
+    if (s === 'running' || s === 'retrying' || s === 'blocked') return 'info';
     if (s === 'queued' || s === 'pending') return 'muted';
     return 'muted';
   };
@@ -2653,6 +2920,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     if (s === 'pending') return 'Pending';
     if (s === 'queued') return 'Queued';
     if (s === 'running' || s === 'retrying') return 'Running';
+    if (s === 'blocked') return 'Waiting';
     if (s === 'succeeded') return 'Done';
     if (s === 'succeeded_with_warnings') return 'Done (warn)';
     if (s === 'failed') return 'Failed';
@@ -2807,6 +3075,179 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     setToasts(prev => prev.filter(toast => toast.id !== id));
   };
 
+  const [pageUnderstandingGate, setPageUnderstandingGate] = useState<{
+    status: 'idle' | 'preparing' | 'ready' | 'timeout' | 'error';
+    version: string;
+    readiness: PageUnderstandingReadiness | null;
+    startedAtMs: number | null;
+    lastPolledAtMs: number | null;
+    error: string | null;
+  }>({ status: 'idle', version: 'page_understanding_v1', readiness: null, startedAtMs: null, lastPolledAtMs: null, error: null });
+  const [showPageUnderstandingDetails, setShowPageUnderstandingDetails] = useState(false);
+  const readinessPollRef = useRef<{ token: number; timerId: number | null }>({ token: 0, timerId: null });
+
+  useEffect(() => {
+    return () => {
+      try {
+        if (readinessPollRef.current.timerId != null) window.clearTimeout(readinessPollRef.current.timerId);
+      } catch {
+        // ignore
+      }
+    };
+  }, []);
+
+  const runAnalysisWithReadinessGate = async (dealId: string, version = 'page_understanding_v1') => {
+    const dev = !!(import.meta as any)?.env?.DEV;
+    const logDev = (msg: string, meta?: any) => {
+      if (!dev) return;
+      try {
+        console.info('[DDAI][readiness]', msg, meta ?? '');
+      } catch {
+        // ignore
+      }
+    };
+
+    let lastReady: boolean | null = null;
+
+    readinessPollRef.current.token += 1;
+    const token = readinessPollRef.current.token;
+    if (readinessPollRef.current.timerId != null) {
+      try {
+        window.clearTimeout(readinessPollRef.current.timerId);
+      } catch {
+        // ignore
+      }
+      readinessPollRef.current.timerId = null;
+    }
+
+    const startedAtMs = Date.now();
+    setPageUnderstandingGate({ status: 'idle', version, readiness: null, startedAtMs, lastPolledAtMs: null, error: null });
+
+    const tryAnalyze = async (): Promise<{ job_id: string; status: string } | null> => {
+      logDev('analyze_attempt', { version, require_page_understanding: true });
+      const res = await apiPostAnalyzeWithStatus(dealId, {
+        require_page_understanding: true,
+        page_understanding_version: version,
+      });
+
+      logDev('analyze_response', { ok: res.ok, status: res.status, json: res.json ?? null, text: res.text ?? null });
+
+      if (res.ok && res.json && typeof (res.json as any).job_id === 'string') {
+        return { job_id: String((res.json as any).job_id), status: String((res.json as any).status ?? 'queued') };
+      }
+
+      if (res.status === 409 && res.json && (res.json as any).error === 'page_understanding_not_ready') {
+        const readiness = (res.json as any).readiness as PageUnderstandingReadiness | undefined;
+        const missingTotal = typeof readiness?.missing_pages_total === 'number' ? readiness.missing_pages_total : null;
+        logDev('preflight_not_ready', { missing_pages_total: missingTotal, version });
+        addToast('info', 'Preparing documents…', typeof missingTotal === 'number' ? `Missing ${missingTotal} page(s)` : 'Waiting for page understanding');
+        setPageUnderstandingGate({
+          status: 'preparing',
+          version,
+          readiness: readiness ?? null,
+          startedAtMs,
+          lastPolledAtMs: Date.now(),
+          error: null,
+        });
+        lastReady = typeof readiness?.ready === 'boolean' ? readiness.ready : null;
+        return null;
+      }
+
+      const message =
+        (res.json && typeof (res.json as any)?.message === 'string' ? String((res.json as any).message) : null) ??
+        (typeof res.text === 'string' && res.text.trim() ? res.text.trim() : null) ??
+        `HTTP ${res.status}`;
+      throw new Error(message);
+    };
+
+    const pollReadiness = async (): Promise<void> => {
+      if (readinessPollRef.current.token !== token) return;
+      const elapsedMs = Date.now() - startedAtMs;
+      const pollMs = elapsedMs > 30_000 ? 5_000 : 2_000;
+
+      if (elapsedMs > 180_000) {
+        logDev('poll_timeout', { elapsed_ms: elapsedMs, version });
+        setPageUnderstandingGate((prev) => ({
+          ...prev,
+          status: 'timeout',
+          lastPolledAtMs: Date.now(),
+          error: 'Still preparing — check worker logs',
+        }));
+        return;
+      }
+
+      let readiness: PageUnderstandingReadiness | null = null;
+      try {
+        readiness = await apiGetDealReadiness(dealId, version);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        logDev('poll_failed', { err: msg });
+        setPageUnderstandingGate((prev) => ({
+          ...prev,
+          status: 'error',
+          error: msg,
+          lastPolledAtMs: Date.now(),
+        }));
+        return;
+      }
+
+      const ready = !!readiness?.ready;
+      const missingPagesTotal = typeof readiness?.missing_pages_total === 'number' ? readiness.missing_pages_total : null;
+
+      setPageUnderstandingGate((prev) => ({
+        ...prev,
+        status: ready ? 'ready' : 'preparing',
+        readiness,
+        lastPolledAtMs: Date.now(),
+        error: null,
+      }));
+      logDev('poll_payload', readiness);
+      logDev('poll', { ready, missing_pages_total: missingPagesTotal, expected_pages_total: readiness?.expected_pages_total, dpu_rows_total: readiness?.dpu_rows_total });
+
+      if (lastReady === false && ready === true) {
+        logDev('ready_flip_false_to_true', { version });
+      }
+      lastReady = ready;
+
+      if (ready) {
+        logDev('ready_transition', { version });
+        try {
+          const job = await tryAnalyze();
+          if (job) {
+            setPageUnderstandingGate((prev) => ({ ...prev, status: 'idle', readiness: null, error: null }));
+            setJobId(job.job_id);
+            setJobStatus(job.status);
+            addToast('info', 'Job queued', `Job ${job.job_id}`);
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setPageUnderstandingGate((prev) => ({ ...prev, status: 'ready', error: msg }));
+          addToast('error', 'Analysis failed to start', msg);
+        }
+        return;
+      }
+
+      readinessPollRef.current.timerId = window.setTimeout(() => {
+        pollReadiness().catch(() => {
+          // ignore
+        });
+      }, pollMs);
+    };
+
+    const job = await tryAnalyze();
+    if (job) {
+      setJobId(job.job_id);
+      setJobStatus(job.status);
+      addToast('info', 'Job queued', `Job ${job.job_id}`);
+      return;
+    }
+
+    // Not ready => start polling immediately (preflight started).
+    pollReadiness().catch(() => {
+      // ignore
+    });
+  };
+
   const runAIAnalysis = async () => {
     if (!dealId) return;
     setAnalyzing(true);
@@ -2818,12 +3259,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     setJobReason(null);
     reportMissingRef.current = false;
     lastReportAttemptAtRef.current = 0;
-    addToast('info', 'Deal Analysis Started', 'Queued analysis job...');
+    addToast('info', 'Starting analysis…', 'Checking page understanding readiness');
     try {
-      const res = await apiPostAnalyze(dealId);
-      setJobId(res.job_id);
-      setJobStatus(res.status);
-      addToast('info', 'Job queued', `Job ${res.job_id}`);
+      await runAnalysisWithReadinessGate(dealId, 'page_understanding_v1');
     } catch (err) {
       addToast('error', 'Analysis failed to start', err instanceof Error ? err.message : 'Unknown error');
       setAnalyzing(false);
@@ -2870,11 +3308,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const runFullProcess = async () => {
     if (!dealId) return;
 
-    if (fullProcessInFlightRef.current) {
+    if (fullProcessInFlightRef.current || fullProcessLocked) {
       addToast('warning', 'Full process already running', 'Please wait for the current run to finish');
       return;
     }
     fullProcessInFlightRef.current = true;
+    setFullProcessLocked(true);
     const requestId = makeClientRequestId();
     fullProcessRequestIdRef.current = requestId;
 
@@ -2974,6 +3413,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       // Treat this as a normal intermediate state: wait for those render jobs, then retry enqueueing extract_visuals.
       const parseExtractVisualsNotReady = (err: unknown): null | {
         render_jobs_enqueued: Array<{ document_id?: string; job_id?: string; status?: string }>;
+        blocked_documents?: Array<{ document_id?: string; failure_reason?: string; next_action?: string }>;
+        render_state?: Record<string, any>;
         message?: string;
       } => {
         const msg =
@@ -2993,6 +3434,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           if (!parsed || typeof parsed !== 'object') return null;
           if ((parsed as any).error !== 'rendered_pages_not_ready') return null;
           const jobs = Array.isArray((parsed as any).render_jobs_enqueued) ? (parsed as any).render_jobs_enqueued : [];
+          const blocked = Array.isArray((parsed as any).blocked_documents) ? (parsed as any).blocked_documents : undefined;
+          const renderState = (parsed as any).render_state && typeof (parsed as any).render_state === 'object' ? (parsed as any).render_state : undefined;
 
           // Lightweight breadcrumb (helps confirm the wait+retry branch is running).
           console.info('[DDAI][runFullProcess] extract-visuals blocked; waiting for render jobs', {
@@ -3001,6 +3444,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
           return {
             render_jobs_enqueued: jobs,
+            blocked_documents: blocked,
+            render_state: renderState,
             message: typeof (parsed as any).message === 'string' ? (parsed as any).message : undefined,
           };
         } catch {
@@ -3009,8 +3454,123 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       };
 
       const enqueueExtractVisualsWithRenderWait = async (): Promise<{ job_id: string; status: string }> => {
-        const maxAttempts = 8;
-        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
+        // Guardrails: keep the UI responsive, avoid retry storms, and rely on backend job ledger truth.
+        const maxTotalWaitMs = 20 * 60_000;
+        const startedAt = Date.now();
+        let retryBackoffMs = 5000;
+
+        const isActiveStatus = (s: unknown) => ['queued', 'running', 'retrying', 'blocked'].includes(String(s ?? '').toLowerCase());
+        const isTerminalStatus = (s: unknown) => ['succeeded', 'succeeded_with_warnings', 'failed', 'cancelled'].includes(String(s ?? '').toLowerCase());
+
+        const waitForRenderJobsToSettle = async (opts: {
+          blockedDocIds: string[];
+          renderJobIds: string[];
+          hintMessage?: string;
+        }) => {
+          const waitStartedAt = Date.now();
+          const maxRenderWaitMs = 15 * 60_000;
+          let pollMs = 2500;
+          const blockedSet = new Set((opts.blockedDocIds || []).filter((d) => typeof d === 'string' && d.trim().length > 0));
+          const initialJobIds = Array.from(new Set((opts.renderJobIds || []).filter((j) => typeof j === 'string' && j.trim().length > 0)));
+
+          const computeMsgFromCounts = (done: number, total: number, active: number): string => {
+            if (total <= 0) return 'Waiting for page rendering to start…';
+            if (active > 0) return `Rendering pages… (${done}/${total} job(s) done)`;
+            return 'Page rendering completed. Verifying readiness…';
+          };
+
+          while (Date.now() - waitStartedAt < maxRenderWaitMs) {
+            let relevant: DealJobRowV2[] = [];
+            try {
+              const rows = await apiGetDealJobs(dealId, { type: 'render_document_pages', limit: 200 });
+              relevant = (rows || []).filter((r) => {
+                const t = String(r.type ?? r.queue ?? '').toLowerCase();
+                if (t !== 'render_document_pages') return false;
+                if (blockedSet.size === 0) return true;
+                const docId = String(r.document_id ?? '');
+                return !!docId && blockedSet.has(docId);
+              });
+            } catch {
+              relevant = [];
+            }
+
+            if (relevant.length === 0 && initialJobIds.length > 0) {
+              // Fallback when the deal jobs list is empty/limited: directly poll the explicit render job IDs.
+              const results = await Promise.all(
+                initialJobIds.map(async (jid) => {
+                  try {
+                    return await apiGetJob(jid);
+                  } catch {
+                    return null;
+                  }
+                })
+              );
+              const statuses = results.map((j) => String((j as any)?.status ?? '').toLowerCase());
+              const failed = statuses.filter((s) => s === 'failed' || s === 'cancelled').length;
+              const active = statuses.filter((s) => isActiveStatus(s)).length;
+              const done = statuses.filter((s) => isTerminalStatus(s)).length;
+              const total = initialJobIds.length;
+              const pct = total > 0 ? Math.round((done / total) * 100) : null;
+
+              const lastMsg = results
+                .map((j) => ((j as any)?.status_detail?.progress?.message ?? (j as any)?.message) as any)
+                .reverse()
+                .find((m) => typeof m === 'string' && m.trim().length > 0) as string | undefined;
+
+              updateFullStep('extract_visuals', {
+                status: 'blocked' as any,
+                job_id: null,
+                progress_pct: pct,
+                message: lastMsg ?? opts.hintMessage ?? computeMsgFromCounts(done, total, active),
+                updated_at: new Date().toISOString(),
+              });
+
+              // If any rendering job actually failed/cancelled, stop here (retrying extract_visuals will just loop on 409).
+              if (failed > 0) {
+                throw new Error('Page rendering failed (one or more render jobs did not complete successfully)');
+              }
+
+              // Only consider rendering "settled" once all tracked jobs are terminal.
+              // If we can’t see any job statuses yet (nulls), keep waiting instead of immediately retrying extract_visuals.
+              if (done >= total && total > 0) return;
+
+              await sleep(pollMs);
+              pollMs = Math.min(10_000, Math.round(pollMs * 1.25));
+              continue;
+            }
+
+            const failed = relevant.filter((r) => ['failed', 'cancelled'].includes(String(r.status ?? '').toLowerCase())).length;
+            const active = relevant.filter((r) => isActiveStatus(r.status)).length;
+            const done = relevant.filter((r) => isTerminalStatus(r.status)).length;
+            const total = relevant.length;
+            const pct = total > 0 ? Math.round((done / total) * 100) : null;
+
+            updateFullStep('extract_visuals', {
+              status: 'blocked' as any,
+              job_id: null,
+              progress_pct: pct,
+              message: opts.hintMessage ?? computeMsgFromCounts(done, total, active),
+              updated_at: new Date().toISOString(),
+            });
+
+            if (failed > 0) {
+              throw new Error('Page rendering failed (one or more render jobs did not complete successfully)');
+            }
+
+            // Only proceed once there are no active jobs and at least one job exists (i.e. rendering work is observable).
+            if (total > 0 && active === 0) return;
+
+            // If we can't see any jobs, keep polling briefly, but don't hammer extract_visuals.
+            await sleep(pollMs);
+            pollMs = Math.min(10_000, Math.round(pollMs * 1.25));
+          }
+
+          throw new Error('Timed out waiting for page rendering to complete');
+        };
+
+        while (Date.now() - startedAt < maxTotalWaitMs) {
           try {
             return await apiPostExtractVisuals(dealId, {
               source: 'job-center/run-full-process',
@@ -3021,60 +3581,47 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             const notReady = parseExtractVisualsNotReady(err);
             if (!notReady) throw err;
 
-            const uniqueJobIds = Array.from(
+            const renderJobIds = Array.from(
               new Set(
                 (notReady.render_jobs_enqueued || [])
                   .map((j) => (typeof j?.job_id === 'string' ? j.job_id : ''))
                   .filter((j) => j && j.length > 0)
               )
             );
+            const blockedDocIds = Array.from(
+              new Set(
+                (notReady.blocked_documents || [])
+                  .map((d) => (typeof d?.document_id === 'string' ? d.document_id : ''))
+                  .filter((d) => d && d.length > 0)
+              )
+            );
 
-            const label = notReady.message || 'Rendered pages are not ready yet. Waiting for page rendering jobs.';
-            addToast('info', 'Rendering pages', label);
+            addToast('info', 'Waiting for rendering', notReady.message || 'Rendered pages are not ready yet.');
             updateFullStep('extract_visuals', {
-              status: 'running' as any,
+              status: 'blocked' as any,
               job_id: null,
               progress_pct: null,
-              message: `Waiting for page rendering (${uniqueJobIds.length || '…'} job(s)) before enqueueing visual extraction…`,
+              message:
+                renderJobIds.length > 0
+                  ? `Waiting for page rendering (${renderJobIds.length} job(s)) before enqueueing visual extraction…`
+                  : 'Waiting for page rendering before enqueueing visual extraction…',
               updated_at: new Date().toISOString(),
             });
 
-            // If the API gave us render job IDs, wait for them to finish; otherwise sleep briefly and retry.
-            if (uniqueJobIds.length > 0) {
-              for (const rid of uniqueJobIds) {
-                const done = await waitForJobTerminal(rid, {
-                  timeoutMs: 15 * 60_000,
-                  pollMs: 2000,
-                  onPoll: (job) => {
-                    const pct = (job as any)?.status_detail?.progress?.percent;
-                    const msg = (job as any)?.status_detail?.progress?.message ?? job.message;
-                    updateFullStep('extract_visuals', {
-                      status: 'running' as any,
-                      job_id: null,
-                      progress_pct: typeof pct === 'number' ? pct : null,
-                      message: typeof msg === 'string' ? msg : 'Rendering pages…',
-                      updated_at: job.updated_at ?? null,
-                    });
-                  },
-                });
-                if (done.timedOut) {
-                  throw new Error('Timed out waiting for page rendering jobs');
-                }
-                if (done.normalizedStatus !== 'succeeded' && done.normalizedStatus !== 'succeeded_with_warnings') {
-                  throw new Error(done.job?.message || `Page rendering job failed (${done.normalizedStatus})`);
-                }
-              }
-            } else {
-              await new Promise<void>((resolve) => window.setTimeout(resolve, 2000));
-            }
+            await waitForRenderJobsToSettle({
+              blockedDocIds,
+              renderJobIds,
+              hintMessage: notReady.message,
+            });
 
-            // Refresh docs view after rendering jobs complete.
             setDocumentsReloadKey((v) => v + 1);
-            // Retry enqueue.
+            await sleep(Math.min(15_000, Math.max(3000, retryBackoffMs)));
+            retryBackoffMs = Math.min(60_000, Math.round(retryBackoffMs * 1.5));
             continue;
           }
         }
-        throw new Error('Failed to enqueue extract visuals after waiting for rendered pages');
+
+        throw new Error('Timed out waiting for rendered pages to become ready for visual extraction');
       };
 
       const extractRes = await enqueueExtractVisualsWithRenderWait();
@@ -3318,6 +3865,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       setAnalyzing(false);
       fullProcessInFlightRef.current = false;
       fullProcessRequestIdRef.current = null;
+      setFullProcessLocked(false);
     }
   };
 
@@ -3586,6 +4134,162 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             
             {/* Streamlined Action Buttons - 3 Main + More Menu */}
             <div className="flex items-center gap-2 relative">
+              {(pageUnderstandingGate.status !== 'idle' || pageUnderstandingGate.readiness) && (
+                <div className={`mr-2 rounded-2xl border px-3 py-2 text-xs max-w-[420px] ${darkMode ? 'border-white/10 bg-white/5 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-700'}`}>
+                  {(() => {
+                    const readiness = pageUnderstandingGate.readiness;
+                    const ready = !!readiness?.ready;
+                    const expectedPagesTotal = typeof readiness?.expected_pages_total === 'number' ? readiness.expected_pages_total : null;
+                    const missingPagesTotal = typeof readiness?.missing_pages_total === 'number' ? readiness.missing_pages_total : null;
+                    const dpuRowsTotal = typeof readiness?.dpu_rows_total === 'number' ? readiness.dpu_rows_total : null;
+
+                    const startedAtMs = pageUnderstandingGate.startedAtMs;
+                    const lastPolledAtMs = pageUnderstandingGate.lastPolledAtMs;
+                    const elapsedMs = typeof startedAtMs === 'number' && typeof lastPolledAtMs === 'number' ? Math.max(0, lastPolledAtMs - startedAtMs) : null;
+                    const elapsedSec = typeof elapsedMs === 'number' ? Math.round(elapsedMs / 1000) : null;
+
+                    const hasExtractVisualsJobSinceGate = (() => {
+                      if (typeof startedAtMs !== 'number') return false;
+                      const sinceMs = startedAtMs - 2_000;
+                      for (const row of dealJobs) {
+                        const t = String(row.type ?? row.queue ?? '').trim().toLowerCase();
+                        if (t !== 'extract_visuals') continue;
+                        const createdMs = parseIsoMs(row.created_at ?? null) ?? parseIsoMs(row.updated_at ?? null);
+                        if (createdMs != null && createdMs >= sinceMs) return true;
+                      }
+                      return false;
+                    })();
+
+                    const showNoExtractHint =
+                      pageUnderstandingGate.status === 'preparing' &&
+                      (missingPagesTotal ?? 0) > 0 &&
+                      typeof elapsedSec === 'number' &&
+                      elapsedSec >= 30 &&
+                      !hasExtractVisualsJobSinceGate;
+
+                    const statusLabel =
+                      pageUnderstandingGate.status === 'timeout'
+                        ? 'Still preparing'
+                        : pageUnderstandingGate.status === 'error'
+                          ? 'Error'
+                          : ready
+                            ? 'Ready'
+                            : 'Preparing';
+
+                    return (
+                      <div>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="font-medium">Page Understanding Status</div>
+                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-500'} text-[11px]`}
+                            >
+                              Version: {pageUnderstandingGate.version} · ready: {String(ready)} · {statusLabel}
+                              {typeof elapsedSec === 'number' ? ` · ${elapsedSec}s` : ''}
+                            </div>
+                          </div>
+                          {readiness?.documents?.length ? (
+                            <button
+                              className={`${darkMode ? 'text-gray-300 hover:text-white' : 'text-gray-600 hover:text-gray-900'} underline text-[11px]`}
+                              onClick={() => setShowPageUnderstandingDetails((v) => !v)}
+                            >
+                              {showPageUnderstandingDetails ? 'Hide' : 'Details'}
+                            </button>
+                          ) : null}
+                        </div>
+
+                        <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+                          <div className={`rounded-lg border px-2 py-1 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
+                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>expected</div>
+                            <div className="font-mono">{expectedPagesTotal ?? '—'}</div>
+                          </div>
+                          <div className={`rounded-lg border px-2 py-1 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
+                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>missing</div>
+                            <div className={`font-mono ${!ready && (missingPagesTotal ?? 0) > 0 ? (darkMode ? 'text-amber-300' : 'text-amber-700') : ''}`}>{missingPagesTotal ?? '—'}</div>
+                          </div>
+                          <div className={`rounded-lg border px-2 py-1 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
+                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>dpu rows</div>
+                            <div className="font-mono">{dpuRowsTotal ?? '—'}</div>
+                          </div>
+                        </div>
+
+                        {showPageUnderstandingDetails && readiness?.documents?.length ? (
+                          <div className="mt-2">
+                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-500'} text-[11px] mb-1`}>Per-document</div>
+                            <div className={`rounded-lg border overflow-hidden ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
+                              <div className="max-h-40 overflow-auto">
+                                <table className="w-full text-[11px]">
+                                  <thead className={`${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                    <tr className={`${darkMode ? 'bg-white/5' : 'bg-gray-50'}`}>
+                                      <th className="text-left font-medium px-2 py-1">Title</th>
+                                      <th className="text-right font-medium px-2 py-1">Pages</th>
+                                      <th className="text-right font-medium px-2 py-1">DPU</th>
+                                      <th className="text-right font-medium px-2 py-1">Missing</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {readiness.documents.map((d) => {
+                                      const title = typeof d.title === 'string' && d.title.trim().length > 0 ? d.title.trim() : d.document_id;
+                                      const missingCount = Array.isArray(d.missing_pages) ? d.missing_pages.length : 0;
+                                      return (
+                                        <tr key={d.document_id} className={`${darkMode ? 'border-t border-white/10' : 'border-t border-gray-100'}`}>
+                                          <td className="px-2 py-1 max-w-[240px] truncate" title={title}>{title}</td>
+                                          <td className="px-2 py-1 text-right font-mono">{typeof d.page_count === 'number' ? d.page_count : '—'}</td>
+                                          <td className="px-2 py-1 text-right font-mono">{typeof d.dpu_rows === 'number' ? d.dpu_rows : '—'}</td>
+                                          <td className={`px-2 py-1 text-right font-mono ${missingCount > 0 ? (darkMode ? 'text-amber-300' : 'text-amber-700') : ''}`}>{missingCount}</td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {(pageUnderstandingGate.status === 'timeout' || pageUnderstandingGate.status === 'error') && pageUnderstandingGate.error ? (
+                          <div className={`mt-2 ${darkMode ? 'text-amber-200' : 'text-amber-800'} text-[11px]`}>{pageUnderstandingGate.error}</div>
+                        ) : null}
+
+                        {showNoExtractHint ? (
+                          <div className={`mt-2 ${darkMode ? 'text-amber-200' : 'text-amber-800'} text-[11px]`}>
+                            Missing pages detected but no extract_visuals job observed. Check worker logs for POPULATE_DOCUMENT_PAGE_UNDERSTANDING and Redis connectivity.
+                          </div>
+                        ) : null}
+
+                        {(pageUnderstandingGate.status === 'timeout') && dealId ? (
+                          <div className="mt-2 flex items-center gap-2">
+                            <button
+                              className={`px-2 py-1 rounded-md border text-[11px] ${darkMode ? 'border-white/10 hover:bg-white/10' : 'border-gray-200 hover:bg-gray-100'}`}
+                              onClick={() => {
+                                runAnalysisWithReadinessGate(dealId, pageUnderstandingGate.version).catch(() => {
+                                  // errors handled by toasts/state
+                                });
+                              }}
+                            >
+                              Retry
+                            </button>
+                          </div>
+                        ) : null}
+
+                        {((pageUnderstandingGate.status === 'ready') || (pageUnderstandingGate.status === 'error')) && !jobId && dealId ? (
+                          <div className="mt-2">
+                            <button
+                              className={`px-2 py-1 rounded-md border text-[11px] ${darkMode ? 'border-white/10 hover:bg-white/10' : 'border-gray-200 hover:bg-gray-100'}`}
+                              onClick={() => {
+                                runAnalysisWithReadinessGate(dealId, pageUnderstandingGate.version).catch(() => {
+                                  // errors handled by toasts/state
+                                });
+                              }}
+                            >
+                              Continue Analysis
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
               {/* AI Assistant Button - New Feature! */}
               <Button 
                 variant="primary" 
@@ -3602,10 +4306,19 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 variant="secondary" 
                 darkMode={darkMode}
                 icon={<Sparkles className="w-4 h-4" />}
-                onClick={runFullProcess}
+                onClick={runAIAnalysis}
                 loading={analyzing}
+                disabled={!dealId || stageActionLoading || fullProcessLocked}
               >
-                {analyzing ? 'Analyzing...' : 'Run Analysis'}
+                {pageUnderstandingGate.status === 'preparing'
+                  ? 'Preparing documents…'
+                  : pageUnderstandingGate.status === 'timeout'
+                  ? 'Still preparing…'
+                  : analyzing
+                  ? String(fullProcessUi?.steps?.extract_visuals?.status ?? '').toLowerCase() === 'blocked'
+                    ? 'Waiting…'
+                    : 'Running…'
+                  : 'Run Analysis'}
               </Button>
 
               {/* More Actions Dropdown */}
@@ -3635,6 +4348,20 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         : 'bg-white border-gray-200'
                     }`}>
                       <div className="p-2 space-y-1">
+                        <button
+                          onClick={() => {
+                            setShowMoreActions(false);
+                            runFullProcess();
+                          }}
+                          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+                            darkMode
+                              ? 'hover:bg-white/10 text-gray-300'
+                              : 'hover:bg-gray-100 text-gray-700'
+                          }`}
+                        >
+                          <Sparkles className="w-4 h-4" />
+                          Run Full Process
+                        </button>
                         <button
                           onClick={() => {
                             setShowMoreActions(false);
@@ -3766,7 +4493,45 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           </div>
 
           {/* Space below action buttons (analysis progress feed aligns right, does not squeeze title column) */}
-          {fullProcessUi && fullProcessUi.ok !== true && (
+          {(() => {
+            const showFullProcess = !!fullProcessUi && fullProcessUi.ok !== true;
+            const normalized = normalizeJobStatus(jobStatus);
+            const isActive = normalized ? ['queued', 'running', 'retrying', 'blocked'].includes(normalized) : false;
+            const showReadiness = pageUnderstandingGate.status !== 'idle';
+            const show = showFullProcess || analyzing || showReadiness || (!!jobId && isActive);
+            if (!show) return null;
+
+            const statusLabel = (() => {
+              if (showFullProcess) return fullProcessUi?.ok === false ? 'Failed' : 'Running';
+              if (pageUnderstandingGate.status === 'preparing') return 'Preparing';
+              if (pageUnderstandingGate.status === 'timeout') return 'Timed out';
+              if (pageUnderstandingGate.status === 'error') return 'Error';
+              if (!normalized) return analyzing ? 'Running' : 'Idle';
+              if (['succeeded', 'succeeded_with_warnings'].includes(normalized)) return 'Done';
+              if (['failed', 'cancelled'].includes(normalized)) return 'Failed';
+              return isActive ? 'Running' : 'Idle';
+            })();
+
+            const analyzeStatusPill = (() => {
+              if (pageUnderstandingGate.status === 'preparing') return { sev: 'info' as const, label: 'Preparing' };
+              if (pageUnderstandingGate.status === 'timeout') return { sev: 'warning' as const, label: 'Timed out' };
+              if (pageUnderstandingGate.status === 'error') return { sev: 'danger' as const, label: 'Error' };
+              const s = normalized;
+              if (s === 'succeeded') return { sev: 'success' as const, label: 'Done' };
+              if (s === 'succeeded_with_warnings') return { sev: 'warning' as const, label: 'Done (warn)' };
+              if (s === 'failed') return { sev: 'danger' as const, label: 'Failed' };
+              if (s === 'cancelled') return { sev: 'warning' as const, label: 'Cancelled' };
+              if (s === 'blocked') return { sev: 'warning' as const, label: 'Waiting' };
+              if (s === 'queued') return { sev: 'muted' as const, label: 'Queued' };
+              if (s === 'running' || s === 'retrying') return { sev: 'info' as const, label: 'Running' };
+              return { sev: 'muted' as const, label: 'Idle' };
+            })();
+
+            const readinessMissing = typeof pageUnderstandingGate.readiness?.missing_pages_total === 'number'
+              ? pageUnderstandingGate.readiness?.missing_pages_total
+              : null;
+
+            return (
             <div className="mt-3 flex justify-start sm:justify-end">
               <div
                 data-testid="analysis-progress-feed"
@@ -3775,53 +4540,110 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 <div className="flex items-center justify-between gap-3">
                   <div className={`text-xs font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Analysis progress</div>
                   <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                    {fullProcessUi.ok === false ? 'Failed' : 'Running'}
+                    {statusLabel}
                   </div>
                 </div>
 
-                <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  {(['reextract_documents', 'extract_visuals', 'analyze_deal'] as const).map((k) => {
-                    const step = fullProcessUi.steps[k];
-                    const sev = fullProcessStepSeverity(step?.status);
-                    const status = String(step?.status ?? '').toLowerCase();
-                    const pct = typeof step?.progress_pct === 'number' ? Math.round(step.progress_pct) : null;
-                    const icon =
-                      status === 'succeeded' || status === 'succeeded_with_warnings' ? (
-                        <CheckCircle className={`w-3.5 h-3.5 ${darkMode ? 'text-emerald-300' : 'text-emerald-600'}`} />
-                      ) : status === 'failed' ? (
-                        <XCircle className={`w-3.5 h-3.5 ${darkMode ? 'text-red-300' : 'text-red-600'}`} />
-                      ) : status === 'queued' || status === 'running' || status === 'retrying' ? (
-                        <Loader2 className={`w-3.5 h-3.5 animate-spin ${darkMode ? 'text-amber-300' : 'text-amber-600'}`} />
-                      ) : (
-                        <Clock className={`w-3.5 h-3.5 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
-                      );
+                {showFullProcess ? (
+                  <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {(['reextract_documents', 'extract_visuals', 'analyze_deal'] as const).map((k) => {
+                      const step = fullProcessUi.steps[k];
+                      const sev = fullProcessStepSeverity(step?.status);
+                      const status = String(step?.status ?? '').toLowerCase();
+                      const pct = typeof step?.progress_pct === 'number' ? Math.round(step.progress_pct) : null;
+                      const icon =
+                        status === 'succeeded' || status === 'succeeded_with_warnings' ? (
+                          <CheckCircle className={`w-3.5 h-3.5 ${darkMode ? 'text-emerald-300' : 'text-emerald-600'}`} />
+                        ) : status === 'failed' ? (
+                          <XCircle className={`w-3.5 h-3.5 ${darkMode ? 'text-red-300' : 'text-red-600'}`} />
+                        ) : status === 'queued' || status === 'running' || status === 'retrying' ? (
+                          <Loader2 className={`w-3.5 h-3.5 animate-spin ${darkMode ? 'text-amber-300' : 'text-amber-600'}`} />
+                        ) : (
+                          <Clock className={`w-3.5 h-3.5 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
+                        );
 
-                    return (
-                      <div
-                        key={k}
-                        className={`rounded-lg border px-2.5 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="min-w-0 flex items-center gap-1.5">
-                            {icon}
-                            <div className={`text-[11px] font-medium truncate ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{step?.label ?? k}</div>
+                      return (
+                        <div
+                          key={k}
+                          className={`rounded-lg border px-2.5 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0 flex items-center gap-1.5">
+                              {icon}
+                              <div className={`text-[11px] font-medium truncate ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{step?.label ?? k}</div>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              {pct != null ? (
+                                <span className={`text-[10px] font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{pct}%</span>
+                              ) : null}
+                              <span className={`px-2 py-0.5 rounded-full border text-[10px] ${severityBadgeClass(sev)}`}>{fullProcessStepLabel(step?.status)}</span>
+                            </div>
                           </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            {pct != null ? (
-                              <span className={`text-[10px] font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{pct}%</span>
-                            ) : null}
-                            <span className={`px-2 py-0.5 rounded-full border text-[10px] ${severityBadgeClass(sev)}`}>{fullProcessStepLabel(step?.status)}</span>
-                          </div>
+                          {step?.message ? (
+                            <div className="mt-1">
+                              {renderSafeJobMessage(`analysis-progress-feed:${k}`, String(step.message))}
+                            </div>
+                          ) : null}
                         </div>
-                        {step?.message ? (
-                          <div className="mt-1">
-                            {renderSafeJobMessage(`analysis-progress-feed:${k}`, String(step.message))}
-                          </div>
-                        ) : null}
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="mt-2 grid grid-cols-1 gap-2">
+                    <div className={`rounded-lg border px-2.5 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0 flex items-center gap-1.5">
+                          {analyzeStatusPill.label === 'Done' ? (
+                            <CheckCircle className={`w-3.5 h-3.5 ${darkMode ? 'text-emerald-300' : 'text-emerald-600'}`} />
+                          ) : analyzeStatusPill.sev === 'danger' ? (
+                            <XCircle className={`w-3.5 h-3.5 ${darkMode ? 'text-red-300' : 'text-red-600'}`} />
+                          ) : analyzeStatusPill.sev === 'warning' ? (
+                            <AlertTriangle className={`w-3.5 h-3.5 ${darkMode ? 'text-amber-300' : 'text-amber-600'}`} />
+                          ) : analyzeStatusPill.sev === 'info' ? (
+                            <Loader2 className={`w-3.5 h-3.5 animate-spin ${darkMode ? 'text-amber-300' : 'text-amber-600'}`} />
+                          ) : (
+                            <Clock className={`w-3.5 h-3.5 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
+                          )}
+                          <div className={`text-[11px] font-medium truncate ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Analyze deal</div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {typeof progressPercent === 'number' ? (
+                            <span className={`text-[10px] font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{Math.round(progressPercent)}%</span>
+                          ) : null}
+                          <span className={`px-2 py-0.5 rounded-full border text-[10px] ${severityBadgeClass(analyzeStatusPill.sev)}`}>{analyzeStatusPill.label}</span>
+                        </div>
                       </div>
-                    );
-                  })}
-                </div>
+
+                      {pageUnderstandingGate.status === 'preparing' ? (
+                        <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          Preparing documents…{readinessMissing != null ? ` Missing ${readinessMissing} page(s)` : ''}
+                        </div>
+                      ) : null}
+                      {pageUnderstandingGate.status === 'timeout' ? (
+                        <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          Still preparing page understanding — check worker logs.
+                        </div>
+                      ) : null}
+                      {pageUnderstandingGate.status === 'error' ? (
+                        <div className={`mt-1 text-[11px] ${darkMode ? 'text-red-300' : 'text-red-700'}`}>
+                          {pageUnderstandingGate.error || 'Readiness polling failed'}
+                        </div>
+                      ) : null}
+
+                      {jobId ? (
+                        <div className={`mt-1 text-[10px] font-mono ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                          job {jobId.slice(0, 8)}…
+                        </div>
+                      ) : null}
+
+                      {progressMessage ? (
+                        <div className="mt-1">
+                          {renderSafeJobMessage('analysis-progress-feed:analyze', String(progressMessage))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                )}
 
                 {typeof progressPercent === 'number' ? (
                   <div className="mt-2 space-y-2">
@@ -3845,22 +4667,33 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 ) : null}
               </div>
             </div>
-          )}
+            );
+          })()}
 
           <div className="mt-6">
             <DealWorkspaceTopSection
               darkMode={darkMode}
-              score={displayScore ?? 0}
+              score={reportView.score}
               scoreLabel={displayScoreLabel}
-              dealSummary={topSectionDealSummary}
+              dealSummary={reportView.dealSummary}
+              dealSummaryTitle={reportView.dealSummaryTitle}
+              dealSummarySource={reportView.dealSummarySource}
               strengths={topSectionStrengths}
               weaknesses={topSectionWeaknesses}
-              raise={topSectionRaise}
-              revenue={topSectionRevenue}
-              growth={topSectionGrowth}
-              customers={topSectionCustomers}
-              businessModel={topSectionBusinessModel}
-              dealType={topSectionDealType}
+              raise={reportView.raise}
+              revenue={reportView.revenue}
+              revenueLabel={reportStructuredRevenueLabel}
+              revenueTooltip={reportStructuredRevenueTooltip}
+              growth={reportStructuredGrowthValue || topSectionGrowth}
+              growthLabel={reportStructuredGrowthLabel}
+              growthNote={reportStructuredGrowthNote}
+              growthTooltip={reportStructuredGrowthTooltip}
+              customers={reportView.customers}
+              customersLabel={reportStructuredCustomersLabel}
+              customersTooltip={reportStructuredCustomersTooltip}
+              businessModel={reportView.businessModel}
+              businessModelLabel={reportStructuredBusinessModelLabel || reportView.businessModelLabel}
+              dealType={reportView.dealType}
               confidence={topSectionConfidence}
               verified={decisionTileConfidenceBand === 'high'}
             />
@@ -3991,6 +4824,30 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                       </span>
                     </div>
 
+                    <div className={`mt-4 p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
+                      <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Analysis Output Status</div>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div>
+                          <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Last analyze job</div>
+                          <div className={`text-xs font-mono break-all ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                            {lastAnalyzeJob?.job_id ? `${lastAnalyzeJob.job_id} · ${String(lastAnalyzeJob.status ?? 'unknown')}` : 'None yet'}
+                          </div>
+                        </div>
+                        <div>
+                          <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Analysis version</div>
+                          <div className={`text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                            {reportVersion != null ? `v${reportVersion}` : '—'}
+                          </div>
+                        </div>
+                        <div>
+                          <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Report readiness</div>
+                          <div className={`text-xs font-medium ${reportReady ? (darkMode ? 'text-emerald-200' : 'text-emerald-700') : (darkMode ? 'text-amber-200' : 'text-amber-700')}`}>
+                            {reportReady ? 'Ready' : 'Generating'}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4 w-full max-w-full">
                       <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
                         <div className={`text-xs mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Active job</div>
@@ -4075,6 +4932,190 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         >
                           Still queued after {jobQueuedSeconds}s. If this persists, the worker may not be running or may be pointed at a different
                           Redis/DB.
+                        </div>
+                      )}
+                    </div>
+
+                    <div
+                      data-testid="analysis-output-panel"
+                      className={`w-full max-w-full min-w-0 backdrop-blur-xl border rounded-2xl p-4 sm:p-6 mt-4 ${
+                        darkMode
+                          ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
+                          : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3 min-w-0">
+                        <div className="min-w-0">
+                          <div className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>Analysis Output</div>
+                          <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            Rendered from the persisted report artifact returned by /report.
+                          </p>
+                        </div>
+                        <div className="shrink-0">
+                          {reportReady ? (
+                            <span
+                              className={`px-3 py-1 rounded-full text-xs font-medium ${
+                                darkMode
+                                  ? 'bg-emerald-500/15 text-emerald-200 border border-emerald-500/30'
+                                  : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                              }`}
+                            >
+                              Analysis complete
+                            </span>
+                          ) : (
+                            <span
+                              className={`px-3 py-1 rounded-full text-xs font-medium ${
+                                darkMode
+                                  ? 'bg-amber-500/15 text-amber-200 border border-amber-500/30'
+                                  : 'bg-amber-50 text-amber-800 border border-amber-200'
+                              }`}
+                            >
+                              Preparing analysis…
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {!reportReady ? (
+                        <div className={`mt-4 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                          Preparing analysis…
+                          <div className={`mt-1 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            This is normal while analysis is running or before the first successful run.
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-4 space-y-4">
+                          <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
+                            <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Analysis metadata</div>
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                              <div>
+                                <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Version</div>
+                                <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                  {reportVersion != null ? `v${reportVersion}` : '—'}
+                                </div>
+                              </div>
+                              <div>
+                                <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Cycle</div>
+                                <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                  {reportCycleNumber != null ? String(reportCycleNumber) : '—'}
+                                </div>
+                              </div>
+                              <div>
+                                <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Generated</div>
+                                <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                  {typeof (reportFromApi as any)?.generatedAt === 'string'
+                                    ? new Date((reportFromApi as any).generatedAt).toLocaleString()
+                                    : typeof reportArtifact?.updated_at === 'string'
+                                      ? new Date(reportArtifact.updated_at).toLocaleString()
+                                      : '—'}
+                                </div>
+                              </div>
+                            </div>
+                            <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                              {typeof reportArtifact?.dio_id === 'string' ? `Artifact: DIO ${reportArtifact.dio_id}` : 'Artifact: —'}
+                            </div>
+                          </div>
+
+                          <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
+                            <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Findings / insights</div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              {typeof (reportFromApi as any)?.recommendation === 'string' ? (
+                                <span
+                                  className={`px-2 py-1 rounded-full text-xs border ${
+                                    darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
+                                  }`}
+                                >
+                                  Recommendation: {(reportFromApi as any).recommendation}
+                                </span>
+                              ) : null}
+                              {typeof (reportFromApi as any)?.grade === 'string' ? (
+                                <span
+                                  className={`px-2 py-1 rounded-full text-xs border ${
+                                    darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
+                                  }`}
+                                >
+                                  Grade: {(reportFromApi as any).grade}
+                                </span>
+                              ) : null}
+                              {typeof (reportFromApi as any)?.overallScore === 'number' ? (
+                                <span
+                                  className={`px-2 py-1 rounded-full text-xs border ${
+                                    darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
+                                  }`}
+                                >
+                                  Score: {Math.round((reportFromApi as any).overallScore)}
+                                </span>
+                              ) : null}
+                            </div>
+
+                            {Array.isArray((reportFromApi as any)?.greenFlags) && (reportFromApi as any).greenFlags.length > 0 ? (
+                              <ul className={`mt-3 list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                {(reportFromApi as any).greenFlags.slice(0, 8).map((g: any, idx: number) => (
+                                  <li key={`green-${idx}`}>{String(g)}</li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <div className={`mt-3 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No highlights available yet.</div>
+                            )}
+
+                            {Array.isArray((reportFromApi as any)?.sections) && (reportFromApi as any).sections.length > 0 ? (
+                              <div className="mt-4 space-y-3">
+                                {(reportFromApi as any).sections.slice(0, 8).map((s: any) => {
+                                  const sectionTitle =
+                                    typeof s?.title === 'string' && s.title.trim().length > 0 ? s.title.trim() : 'Section';
+                                  const content = typeof s?.content === 'string' ? s.content : '';
+                                  const evidenceIds = Array.isArray(s?.evidence_ids) ? s.evidence_ids : [];
+                                  return (
+                                    <div
+                                      key={String(s?.id ?? sectionTitle)}
+                                      className={`rounded-lg border p-3 ${
+                                        darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'
+                                      }`}
+                                    >
+                                      <div className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>{sectionTitle}</div>
+                                      {content ? (
+                                        <div className={`mt-1 text-sm whitespace-pre-wrap ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{content}</div>
+                                      ) : (
+                                        <div className={`mt-1 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No content.</div>
+                                      )}
+                                      {Array.isArray(evidenceIds) && evidenceIds.length > 0 ? (
+                                        <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                          Evidence IDs: {evidenceIds.slice(0, 6).join(', ')}{evidenceIds.length > 6 ? '…' : ''}
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
+                            <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Evidence / signals</div>
+                            <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                              {reportEvidenceIds.length > 0
+                                ? `${reportEvidenceIds.length} evidence id(s) referenced`
+                                : 'No evidence IDs referenced in report sections.'}
+                            </div>
+                            {reportEvidenceIds.length > 0 ? (
+                              <div className={`mt-2 text-xs font-mono break-all ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                {reportEvidenceIds.join(' · ')}
+                              </div>
+                            ) : null}
+                            {Array.isArray((reportFromApi as any)?.redFlags) && (reportFromApi as any).redFlags.length > 0 ? (
+                              <div className="mt-3">
+                                <div className={`text-xs mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Red flags</div>
+                                <ul className={`space-y-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                  {(reportFromApi as any).redFlags.slice(0, 6).map((rf: any, idx: number) => (
+                                    <li key={`rf-${idx}`}>
+                                      <span className="font-medium">{String(rf?.severity ?? 'unknown')}</span>: {String(rf?.message ?? '')}
+                                      {rf?.action ? ` (Action: ${String(rf.action)})` : ''}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            ) : null}
+                          </div>
                         </div>
                       )}
                     </div>
@@ -4353,12 +5394,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               <div className="space-y-6">
                 <DealWorkspaceOverviewComp
                   darkMode={darkMode}
-                  dealOneLiner={overviewDealOneLiner}
-                  product={overviewProduct}
-                  marketIcp={overviewMarketIcp}
-                  businessModel={overviewBusinessModel}
-                  raiseTerms={overviewRaiseTerms}
-                  dealSummaryParagraphs={overviewDealSummaryParagraphs}
+                  dealOneLiner={overviewDealOneLinerCanonical}
+                  product={overviewProductCanonical}
+                  marketIcp={overviewMarketIcpCanonical}
+                  businessModel={overviewBusinessModelCanonical}
+                  raiseTerms={overviewRaiseTermsCanonical}
+                  dealSummaryParagraphs={overviewDealSummaryParagraphsCanonical}
+                  dealSummarySourceLabel={dealSummarySourceLabel}
+                  dealSummaryCitations={canonicalCitations ?? undefined}
                   score0_100={decisionTileScore0_100 ?? displayScore ?? investorScore}
                   decisionLabel={decisionTileLabel}
                   confidenceLabel={`${decisionTileConfidenceLabelShort} confidence`}

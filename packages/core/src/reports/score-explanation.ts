@@ -35,6 +35,9 @@ export type ScoreExplanation = {
   totals: {
     overall_score: number | null;
     unadjusted_overall_score: number | null;
+    unadjusted_pinned?: boolean;
+    unadjusted_reason?: string | null;
+    unadjusted_missing_inputs?: string[];
     coverage_ratio: number;
     confidence_score: number;
     evidence_factor: number;
@@ -2035,7 +2038,7 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
 
   const unadjustedSum = Object.values(contributions)
     .reduce((sum: number, v) => sum + (isFiniteNumber(v) ? v : 0), 0);
-  const unadjustedOverall = totalWeight > 0
+  const unadjustedOverallComputed = totalWeight > 0
     ? Math.round(unadjustedSum + 1e-9)
     : null;
 
@@ -2051,6 +2054,53 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   const weightedKeys = componentsInOrder
     .filter(k => ((weights as any)[k] as number) > 0)
     .filter(k => (enabledByPolicy ? enabledByPolicy.has(k as any) : true));
+
+  // If none of the score-bearing analyzers produced usable outputs, treat the baseline as missing.
+  // In that case:
+  // - unadjusted_overall_score = null (do not silently pin to 50)
+  // - overall_score = 50 (safe neutral)
+  const hasBaselineSignal = weightedKeys.length > 0 && weightedKeys.some((k) => {
+    const status = statuses[k];
+    const rawScore = raw[k as ScoreComponentKey];
+    if (k === "risk_assessment" && riskLooksLikeNoSignal) return false;
+    return status === "ok" && isFiniteNumber(rawScore);
+  });
+
+  const unadjusted_pinned = !hasBaselineSignal;
+  const unadjusted_missing_inputs = (() => {
+    if (!unadjusted_pinned) return [];
+    const missing: string[] = [];
+    if (weightedKeys.length === 0) {
+      missing.push("score_bearing_weights=0");
+      return missing;
+    }
+    for (const k of weightedKeys) {
+      const metaStatus = componentMeta[k].status;
+      const computedStatus = statuses[k];
+      const rawScore = raw[k as ScoreComponentKey];
+
+      if (k === "risk_assessment" && riskLooksLikeNoSignal) {
+        missing.push("risk_map (no_signal: overall_risk_score=0 and empty risk_map)");
+      }
+
+      if (metaStatus == null) missing.push(`analyzer_results.${k} missing`);
+      else if (metaStatus !== "ok") missing.push(`analyzer_results.${k}.status=${metaStatus}`);
+
+      if (!isFiniteNumber(rawScore)) missing.push(`analyzer_results.${k}.score missing`);
+      if (computedStatus && computedStatus.startsWith("penalized_")) missing.push(`${k}.penalized=${computedStatus}`);
+    }
+    return uniqueStrings(missing);
+  })();
+
+  const unadjusted_reason = unadjusted_pinned
+    ? (
+        weightedKeys.length === 0
+          ? "Pinned: no score-bearing components (weights sum to 0)."
+          : "Pinned: no score-bearing analyzer outputs were usable; overall_score set to neutral baseline (50)."
+      )
+    : null;
+
+  const unadjustedOverall = unadjusted_pinned ? null : unadjustedOverallComputed;
 
   const coverageValues = weightedKeys.map((k) => {
     if (statuses[k] === "ok") return isFiniteNumber(componentMeta[k].coverage) ? (componentMeta[k].coverage as number) : 0;
@@ -2152,11 +2202,11 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   const adjustmentFactor = clamp01(evidenceFactor * dueDiligenceFactor);
 
   let overall = unadjustedOverall === null
-    ? null
+    ? 50
     : Math.round(unadjustedOverall * adjustmentFactor + 50 * (1 - adjustmentFactor));
 
   // Policy rubric caps: if critical red flags are present, cap overall below the "75+" threshold.
-  if (overall !== null && rubricEval && Array.isArray(rubricEval.red_flags_triggered) && rubricEval.red_flags_triggered.length > 0) {
+  if (!unadjusted_pinned && rubricEval && Array.isArray(rubricEval.red_flags_triggered) && rubricEval.red_flags_triggered.length > 0) {
     const cap = 70;
     if (overall > cap) {
       overall = cap;
@@ -2167,7 +2217,7 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   // Policy semantics: operating_startup_revenue_v1
   // - Revenue alone cannot exceed 70
   // - >75 requires strong execution signals + acceptable risk
-  if (classificationSelectedPolicy === "operating_startup_revenue_v1") {
+  if (!unadjusted_pinned && classificationSelectedPolicy === "operating_startup_revenue_v1") {
     const riskInvestmentScore = effectiveScores.risk_assessment ?? null;
     const capResult = computeOperatingStartupRevenueV1Caps({
       dio,
@@ -2176,13 +2226,11 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
       adjustmentFactor,
       riskInvestmentScore,
     });
-    if (capResult.capped_overall !== overall) {
-      const cap = capResult.capped_overall;
-      if (typeof cap === "number") {
-        notes.metric_benchmark.push(`operating_startup_revenue_v1: policy cap applied -> overall_score=${cap}`);
-      }
+    const capped = capResult.capped_overall;
+    if (typeof capped === "number" && capped !== overall) {
+      notes.metric_benchmark.push(`operating_startup_revenue_v1: policy cap applied -> overall_score=${capped}`);
+      overall = capped;
     }
-    overall = capResult.capped_overall;
     for (const d of capResult.diagnostics) {
       // Keep deterministic breadcrumbs in component notes for auditability.
       if (d.bucket === "coverage_gaps") notes.metric_benchmark.push(d.text);
@@ -2194,7 +2242,7 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   // - Revenue alone cannot exceed 70
   // - >75 requires adoption/volume evidence + acceptable risk
   // - Unmitigated regulatory/fraud risk caps final score <=70
-  if (classificationSelectedPolicy === "consumer_fintech_platform_v1") {
+  if (!unadjusted_pinned && classificationSelectedPolicy === "consumer_fintech_platform_v1") {
     const riskInvestmentScore = effectiveScores.risk_assessment ?? null;
     const metricInvestmentScore = effectiveScores.metric_benchmark ?? null;
     const capResult = computeConsumerFintechPlatformV1Caps({
@@ -2205,13 +2253,11 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
       riskInvestmentScore,
       metricInvestmentScore,
     });
-    if (capResult.capped_overall !== overall) {
-      const cap = capResult.capped_overall;
-      if (typeof cap === "number") {
-        notes.metric_benchmark.push(`consumer_fintech_platform_v1: policy cap applied -> overall_score=${cap}`);
-      }
+    const capped = capResult.capped_overall;
+    if (typeof capped === "number" && capped !== overall) {
+      notes.metric_benchmark.push(`consumer_fintech_platform_v1: policy cap applied -> overall_score=${capped}`);
+      overall = capped;
     }
-    overall = capResult.capped_overall;
     for (const d of capResult.diagnostics) {
       if (d.bucket === "coverage_gaps") notes.metric_benchmark.push(d.text);
       if (d.bucket === "positive_signals") notes.metric_benchmark.push(d.text);
@@ -2222,7 +2268,7 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   // - 75+ requires strong unit economics (LTV:CAC + margins) AND acceptable risk
   // - missing core unit economics KPIs caps score near neutral
   // - policy gating caps must not populate rubric.red_flags_triggered (handled in diagnostics)
-  if (classificationSelectedPolicy === "consumer_ecommerce_brand_v1") {
+  if (!unadjusted_pinned && classificationSelectedPolicy === "consumer_ecommerce_brand_v1") {
     const riskInvestmentScore = effectiveScores.risk_assessment ?? null;
     const metricInvestmentScore = effectiveScores.metric_benchmark ?? null;
     const capResult = computeConsumerEcommerceBrandV1Caps({
@@ -2233,13 +2279,11 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
       riskInvestmentScore,
       metricInvestmentScore,
     });
-    if (capResult.capped_overall !== overall) {
-      const cap = capResult.capped_overall;
-      if (typeof cap === "number") {
-        notes.metric_benchmark.push(`consumer_ecommerce_brand_v1: policy cap applied -> overall_score=${cap}`);
-      }
+    const capped = capResult.capped_overall;
+    if (typeof capped === "number" && capped !== overall) {
+      notes.metric_benchmark.push(`consumer_ecommerce_brand_v1: policy cap applied -> overall_score=${capped}`);
+      overall = capped;
     }
-    overall = capResult.capped_overall;
     for (const d of capResult.diagnostics) {
       if (d.bucket === "coverage_gaps") notes.metric_benchmark.push(d.text);
       if (d.bucket === "positive_signals") notes.metric_benchmark.push(d.text);
@@ -2250,20 +2294,18 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   // - Revenue-only cannot exceed 70
   // - Bad retention caps at 60
   // - >75 requires 3 quality signals (retention + unit economics + sales motion)
-  if (classificationSelectedPolicy === "enterprise_saas_b2b_v1") {
+  if (!unadjusted_pinned && classificationSelectedPolicy === "enterprise_saas_b2b_v1") {
     const capResult = computeEnterpriseSaasB2BV1Caps({
       dio,
       overall,
       unadjustedOverall,
       adjustmentFactor,
     });
-    if (capResult.capped_overall !== overall) {
-      const cap = capResult.capped_overall;
-      if (typeof cap === "number") {
-        notes.metric_benchmark.push(`enterprise_saas_b2b_v1: policy cap applied -> overall_score=${cap}`);
-      }
+    const capped = capResult.capped_overall;
+    if (typeof capped === "number" && capped !== overall) {
+      notes.metric_benchmark.push(`enterprise_saas_b2b_v1: policy cap applied -> overall_score=${capped}`);
+      overall = capped;
     }
-    overall = capResult.capped_overall;
     for (const d of capResult.diagnostics) {
       if (d.bucket === "coverage_gaps") notes.metric_benchmark.push(d.text);
       if (d.bucket === "positive_signals") notes.metric_benchmark.push(d.text);
@@ -2274,20 +2316,18 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   // - >75 requires clear regulatory path + validation + team credibility + realistic timeline/costs
   // - Regulatory path unclear caps at 60 (explicit diagnostic)
   // - Safety/ethics risk caps at 50 (red_flags bucket)
-  if (classificationSelectedPolicy === "healthcare_biotech_v1") {
+  if (!unadjusted_pinned && classificationSelectedPolicy === "healthcare_biotech_v1") {
     const capResult = computeHealthcareBiotechV1Caps({
       dio,
       overall,
       unadjustedOverall,
       adjustmentFactor,
     });
-    if (capResult.capped_overall !== overall) {
-      const cap = capResult.capped_overall;
-      if (typeof cap === "number") {
-        notes.metric_benchmark.push(`healthcare_biotech_v1: policy cap applied -> overall_score=${cap}`);
-      }
+    const capped = capResult.capped_overall;
+    if (typeof capped === "number" && capped !== overall) {
+      notes.metric_benchmark.push(`healthcare_biotech_v1: policy cap applied -> overall_score=${capped}`);
+      overall = capped;
     }
-    overall = capResult.capped_overall;
     for (const d of capResult.diagnostics) {
       if (d.bucket === "coverage_gaps") notes.metric_benchmark.push(d.text);
       if (d.bucket === "positive_signals") notes.metric_benchmark.push(d.text);
@@ -2299,20 +2339,18 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   // - >75 requires verifiable rights + (distribution/MG/pre-sales OR (strong attachments + financing + completion bond))
   // - Missing revenue acceptable if contracts/attachments are strong and structure is financeable
   // - Red flags cap at 60 (rights unclear, no distribution path, aggressive assumptions w/o comps, waterfall/recoupment unclear)
-  if (classificationSelectedPolicy === "media_entertainment_ip_v1") {
+  if (!unadjusted_pinned && classificationSelectedPolicy === "media_entertainment_ip_v1") {
     const capResult = computeMediaEntertainmentIpV1Caps({
       dio,
       overall,
       unadjustedOverall,
       adjustmentFactor,
     });
-    if (capResult.capped_overall !== overall) {
-      const cap = capResult.capped_overall;
-      if (typeof cap === "number") {
-        notes.metric_benchmark.push(`media_entertainment_ip_v1: policy cap applied -> overall_score=${cap}`);
-      }
+    const capped = capResult.capped_overall;
+    if (typeof capped === "number" && capped !== overall) {
+      notes.metric_benchmark.push(`media_entertainment_ip_v1: policy cap applied -> overall_score=${capped}`);
+      overall = capped;
     }
-    overall = capResult.capped_overall;
     for (const d of capResult.diagnostics) {
       if (d.bucket === "coverage_gaps") notes.metric_benchmark.push(d.text);
       if (d.bucket === "positive_signals") notes.metric_benchmark.push(d.text);
@@ -2324,20 +2362,18 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   // - >75 requires: strong GM + repeat/velocity + distribution traction OR signed distribution agreements + working capital plan
   // - Missing revenue is acceptable when execution-ready distribution is present (diagnostic only)
   // - Policy-local red flag caps for negative margins / severe chargebacks / unclear TTB compliance / no distribution path
-  if (classificationSelectedPolicy === "physical_product_cpg_spirits_v1") {
+  if (!unadjusted_pinned && classificationSelectedPolicy === "physical_product_cpg_spirits_v1") {
     const capResult = computePhysicalProductCpgSpiritsV1Caps({
       dio,
       overall,
       unadjustedOverall,
       adjustmentFactor,
     });
-    if (capResult.capped_overall !== overall) {
-      const cap = capResult.capped_overall;
-      if (typeof cap === "number") {
-        notes.metric_benchmark.push(`physical_product_cpg_spirits_v1: policy cap applied -> overall_score=${cap}`);
-      }
+    const capped = capResult.capped_overall;
+    if (typeof capped === "number" && capped !== overall) {
+      notes.metric_benchmark.push(`physical_product_cpg_spirits_v1: policy cap applied -> overall_score=${capped}`);
+      overall = capped;
     }
-    overall = capResult.capped_overall;
     for (const d of capResult.diagnostics) {
       if (d.bucket === "coverage_gaps") notes.metric_benchmark.push(d.text);
       if (d.bucket === "positive_signals") notes.metric_benchmark.push(d.text);
@@ -2402,6 +2438,9 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
     totals: {
       overall_score: overall,
       unadjusted_overall_score: unadjustedOverall,
+      unadjusted_pinned,
+      unadjusted_reason,
+      unadjusted_missing_inputs,
       coverage_ratio: coverageRatio,
       confidence_score: confidenceScore,
       evidence_factor: evidenceFactor,

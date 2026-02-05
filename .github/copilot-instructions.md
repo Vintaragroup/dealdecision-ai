@@ -240,43 +240,44 @@ $END$
 - Explain your OBSERVATIONS clearly, then provide REASONING to identify the exact issue. Add console logs when needed to gather more information.
 
 
-The system implements a comprehensive investment analysis and due diligence platform with several key business components:
+The system implements a comprehensive investment analysis platform with several key business domains:
 
-## Deal Analysis Core (Importance: 95/100)
-Located in apps/web/src/components/report-templates/sections:
-- Financial health assessment with custom scoring algorithms
-- Risk evaluation across market, team, financial dimensions
-- Deal terms analysis with waterfall calculations
-- ROI analysis with traditional vs AI method comparisons
+1. Deal Analysis Core (90/100)
+Path: packages/core/src/analyzers/
+- Multi-dimensional deal scoring across market fit, team capability, financials 
+- Custom confidence calculation algorithms with weighted factors
+- Industry-specific metric validation rules
+- Risk severity classification system
 
-## Document Intelligence Pipeline (Importance: 90/100)
-Located in apps/worker/src/lib/processors:
-- Multi-stage document classification system
-- Financial metric extraction from spreadsheets
-- Sophisticated OCR confidence scoring
-- Business-specific content pattern recognition
+2. Document Intelligence (85/100)
+Path: packages/core/src/orchestration/
+- Sophisticated document classification for investment materials
+- Evidence extraction with confidence scoring
+- Custom grouping algorithms for deal documentation
+- Version tracking and duplicate detection
 
-## Due Diligence Framework (Importance: 85/100)
-Located in packages/core/src/fundability:
-- Three-tier gate system (PASS/CONDITIONAL/FAIL)
-- Evidence-based assessment model
-- Phase inference with confidence thresholds
-- Investment blocking conditions
+3. Investment Workflow Engine (85/100)
+Path: apps/web/src/components/report-templates/
+- Structured investment analysis pipeline
+- Multi-stage due diligence workflow
+- Deal progression tracking with validation gates
+- Custom report generation with investment-specific templates
 
-## Investment Workflow Engine (Importance: 85/100)
-Located in packages/core/src/orchestration:
-- Deal stage progression logic
-- Multi-cycle analysis coordination
-- Evidence collection orchestration
-- Decision pack generation
+4. Financial Health Analytics (80/100)
+Path: packages/core/src/analyzers/financial-health.ts
+- Runway calculation and burn rate assessment
+- Industry-specific benchmark comparisons
+- Risk signal detection and severity mapping
+- Custom financial health scoring algorithms
 
-## Financial Analysis System (Importance: 80/100)
-- Custom financial health metrics
-- Runway analysis with burn rate categorization
-- Industry-specific KPI benchmarking
-- Deal archetype classification
+5. Risk Assessment Framework (75/100)
+Path: apps/web/src/components/report-templates/sections/
+- Multi-category risk analysis (market, execution, financial, team)
+- Risk severity classification with weighted impacts
+- Mitigation strategy mapping
+- Evidence-based risk validation
 
-The platform uses a hierarchical analysis model with progressive confidence thresholds, requiring 70% confidence for "Ready for Decision" stage. Each component implements specialized scoring algorithms and validation rules specific to investment analysis.
+The platform organizes these components into a cohesive investment analysis system, with each domain handling specific aspects of deal evaluation and due diligence. The business logic emphasizes evidence-based decision making with sophisticated scoring algorithms and industry-specific validation rules.
 
 $END$
 

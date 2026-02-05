@@ -1,3 +1,4 @@
+import { QUEUE_NAMES, type QueueName } from "@dealdecision/core";
 import type { JobType, JobStatus } from "@dealdecision/contracts";
 import { randomUUID } from "crypto";
 import { sanitizeDeep, sanitizeText } from "@dealdecision/core";
@@ -8,6 +9,43 @@ type QueueLike = {
 };
 
 type DbPoolLike = Pick<ReturnType<typeof getPool>, "query">;
+
+export function getQueueNameForJobType(type: JobType): QueueName {
+  switch (type) {
+    case "ingest_documents":
+      return QUEUE_NAMES.ingest_documents;
+    case "render_document_pages":
+      return QUEUE_NAMES.render_document_pages;
+    case "extract_visuals":
+    case "extract_visuals_deal":
+      return QUEUE_NAMES.extract_visuals;
+    case "populate_document_page_understanding":
+      return QUEUE_NAMES.populate_document_page_understanding;
+    case "deep_scan_visuals":
+      return QUEUE_NAMES.deep_scan_visuals;
+    case "document_intelligence_extract":
+      return QUEUE_NAMES.document_intelligence_extract;
+    case "fetch_evidence":
+      return QUEUE_NAMES.fetch_evidence;
+    case "analyze_deal":
+      return QUEUE_NAMES.analyze_deal;
+    case "verify_documents":
+      return QUEUE_NAMES.verify_documents;
+    case "remediate_extraction":
+      return QUEUE_NAMES.remediate_extraction;
+    case "reextract_documents":
+      return QUEUE_NAMES.reextract_documents;
+    case "generate_report":
+    case "sync_crm":
+      return QUEUE_NAMES.analyze_deal;
+    case "classify_document":
+      return QUEUE_NAMES.ingest_documents;
+    default: {
+      const _exhaustive: never = type;
+      return _exhaustive;
+    }
+  }
+}
 
 function getQueueForType(type: JobType): QueueLike {
   // Lazily require queues so unit tests can import this module without REDIS_URL.
@@ -21,6 +59,7 @@ function getQueueForType(type: JobType): QueueLike {
     render_document_pages: queues.renderDocumentPagesQueue,
     extract_visuals: queues.extractVisualsQueue,
     extract_visuals_deal: queues.extractVisualsQueue,
+	populate_document_page_understanding: queues.populateDocumentPageUnderstandingQueue,
     deep_scan_visuals: queues.deepScanVisualsQueue,
     document_intelligence_extract: queues.documentIntelligenceExtractQueue,
     fetch_evidence: queues.fetchEvidenceQueue,

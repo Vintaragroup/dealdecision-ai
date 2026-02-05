@@ -24,6 +24,7 @@ vi.mock("../lib/queue", () => {
 			if (!queues[name]) queues[name] = { add: vi.fn(async () => undefined) };
 			return queues[name];
 		},
+		getBullmqRuntimeInfo: () => ({ version: "test", resolved: "mock" }),
 		logWorkerQueueConfig: vi.fn(),
 	};
 });

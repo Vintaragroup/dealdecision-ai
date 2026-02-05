@@ -18,7 +18,7 @@ This is designed to reduce "missing title" + "NO_TEXT" cases without burning LLM
 
 ### Enable in Docker Compose (recommended)
 
-1) In your repo `.env`, set:
+1) In your repo `.env.docker.local`, set:
 
 ```bash
 ENABLE_VISUAL_EXTRACTION=1
@@ -28,13 +28,13 @@ ENABLE_VISION_UNDERSTANDING=1
 2) Rebuild the vision worker (required once, because torch/open_clip are optional deps installed via build arg):
 
 ```bash
-ENABLE_VISION_UNDERSTANDING=1 docker compose -f infra/docker-compose.yml build vision_worker
+ENABLE_VISION_UNDERSTANDING=1 docker compose -f docker-compose.local.yml build vision_worker
 ```
 
 3) Start the services:
 
 ```bash
-docker compose -f infra/docker-compose.yml up -d vision_worker worker
+docker compose -f docker-compose.local.yml --profile prod up -d vision_worker worker
 ```
 
 Notes:

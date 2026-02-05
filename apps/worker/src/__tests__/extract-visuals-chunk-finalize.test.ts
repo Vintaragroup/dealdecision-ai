@@ -29,6 +29,7 @@ vi.mock("../lib/queue", () => {
 			if (!queues[name]) queues[name] = { add: vi.fn(async () => undefined) };
 			return queues[name];
 		},
+		getBullmqRuntimeInfo: () => ({ version: "test", resolved: "mock" }),
 		logWorkerQueueConfig: vi.fn(),
 	};
 });
@@ -342,7 +343,11 @@ describe("extract_visuals chunking finalization", () => {
 			})
 			.filter(Boolean);
 
-		expect(events.some((e: any) => e.event === "EXTRACT_VISUALS_CHUNK_ENQUEUED")).toBe(true);
+		expect(
+			events.some(
+				(e: any) => e.event === "EXTRACT_VISUALS_ENQUEUE" || e.event === "EXTRACT_VISUALS_CHUNK_ENQUEUED"
+			)
+		).toBe(true);
 
 		// 32 pages at chunkSize=10 => 4 chunks
 		const inserts = (m.pgQueries ?? []).filter((q: any) => String(q?.sql ?? "").includes("INSERT INTO jobs"));

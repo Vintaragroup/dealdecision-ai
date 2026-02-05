@@ -920,7 +920,8 @@ export async function resolvePageImageUris(
 
 		const dirs = candidateArtifactDirs({ documentId, meta: row?.extraction_metadata, env: options?.env });
 		const envNode = (options?.env?.NODE_ENV ?? process.env.NODE_ENV ?? "").trim().toLowerCase();
-		if (envNode === "production") {
+		const r2BucketConfigured = ((options?.env?.R2_BUCKET ?? process.env.R2_BUCKET ?? "") as string).trim().length > 0;
+		if (envNode === "production" && r2BucketConfigured) {
 			logger.log(
 				JSON.stringify({
 					event: "NO_PAGE_IMAGES_AVAILABLE",

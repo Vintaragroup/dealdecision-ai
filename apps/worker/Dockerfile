@@ -21,6 +21,9 @@ COPY apps/worker ./apps/worker
 
 RUN pnpm install --frozen-lockfile
 
+# Sanity check: BullMQ must be available at worker runtime.
+RUN node -e 'process.chdir("apps/worker"); require("bullmq"); console.log("bullmq_ok")'
+
 # ----------------------
 # build: compile worker
 # ----------------------

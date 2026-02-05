@@ -1,6 +1,51 @@
-import { Worker, Queue, type Job, type Processor } from "bullmq";
+import type { Job, Processor } from "bullmq";
 import IORedis from "ioredis";
 import { wrapBullmqProcessorWithRunLedger } from "./pipeline-run-ledger";
+
+let BullMQ: typeof import("bullmq");
+
+const injectedBullmq = (globalThis as any).__DEALDECISION_BULLMQ as
+  | { Worker: any; Queue: any }
+  | undefined;
+
+if (injectedBullmq?.Worker && injectedBullmq?.Queue) {
+  BullMQ = injectedBullmq as any;
+} else {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    BullMQ = require("bullmq");
+  } catch (err) {
+    const error = err instanceof Error ? { message: err.message, stack: err.stack } : { message: String(err) };
+    console.error(
+      JSON.stringify({
+        event: "FATAL_MISSING_BULLMQ",
+        service: "worker",
+        error,
+      })
+    );
+    process.exit(1);
+  }
+}
+
+const { Worker, Queue } = BullMQ;
+
+export function getBullmqRuntimeInfo(): { version: string | null; resolved: string | null } {
+  let version: string | null = null;
+  let resolved: string | null = null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    version = require("bullmq/package.json")?.version ?? null;
+  } catch {
+    version = null;
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    resolved = require.resolve("bullmq");
+  } catch {
+    resolved = null;
+  }
+  return { version, resolved };
+}
 
 function installBullmqEvictionPolicyWarningDeduper() {
   const originalWarn = console.warn;
@@ -35,7 +80,34 @@ if (!redisUrl) {
   throw new Error("REDIS_URL is required for worker queues");
 }
 
-console.log(`[queue] Connecting to Redis: ${redisUrl}`);
+function safeRedisUrl(raw: string): string {
+  try {
+    const parsed = new URL(raw);
+    const host = parsed.hostname;
+    const port = parsed.port || "6379";
+    const user = parsed.username ? `${parsed.username}@` : "";
+    return `${parsed.protocol}//${user}${host}:${port}${parsed.pathname}`;
+  } catch {
+    return "<invalid_redis_url>";
+  }
+}
+
+console.log(`[queue] Connecting to Redis: ${safeRedisUrl(redisUrl)}`);
+
+function safeDbTarget(raw: string | undefined): string {
+  if (!raw) return "<missing_database_url>";
+  try {
+    const parsed = new URL(raw);
+    const host = parsed.hostname;
+    const port = parsed.port || "5432";
+    const db = parsed.pathname?.startsWith("/") ? parsed.pathname.slice(1) : parsed.pathname;
+    return `${host}:${port}/${db || "<unknown_db>"}`;
+  } catch {
+    return "<invalid_database_url>";
+  }
+}
+
+console.log(`[queue] DB target: ${safeDbTarget(process.env.DATABASE_URL)}`);
 
 export const connection = new IORedis(redisUrl, {
   maxRetriesPerRequest: null,
@@ -56,6 +128,7 @@ export function createWorker(
     | "render_document_pages"
     | "extract_visuals"
     | "deep_scan_visuals"
+    | "document_intelligence_extract"
     | "fetch_evidence"
     | "analyze_deal"
     | "verify_documents"
@@ -189,6 +262,7 @@ export function getQueue(
     | "render_document_pages"
     | "extract_visuals"
     | "deep_scan_visuals"
+    | "document_intelligence_extract"
     | "fetch_evidence"
     | "analyze_deal"
     | "verify_documents"

@@ -2,6 +2,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 let lastWorkerOptions: any | null = null;
 
+class MockWorker {
+  constructor(_name: string, _processor: any, opts: any) {
+    lastWorkerOptions = opts;
+  }
+  on(_event: string, _handler: (...args: any[]) => void) {
+    return this;
+  }
+}
+
+class MockQueue {
+  constructor(_name: string, _opts: any) {}
+}
+
 vi.mock("ioredis", () => {
   class MockRedis {
     // Keep signature compatible with `new IORedis(url, opts)`
@@ -14,23 +27,6 @@ vi.mock("ioredis", () => {
   return { default: MockRedis };
 });
 
-vi.mock("bullmq", () => {
-  class MockWorker {
-    constructor(_name: string, _processor: any, opts: any) {
-      lastWorkerOptions = opts;
-    }
-    on(_event: string, _handler: (...args: any[]) => void) {
-      return this;
-    }
-  }
-
-  class MockQueue {
-    constructor(_name: string, _opts: any) {}
-  }
-
-  return { Worker: MockWorker, Queue: MockQueue };
-});
-
 describe("createWorker concurrency", () => {
   const originalEnv = { ...process.env };
 
@@ -39,10 +35,12 @@ describe("createWorker concurrency", () => {
     process.env = { ...originalEnv };
     process.env.REDIS_URL = "redis://localhost:6379";
     delete process.env.WORKER_CONCURRENCY;
+    (globalThis as any).__DEALDECISION_BULLMQ = { Worker: MockWorker, Queue: MockQueue };
     vi.resetModules();
   });
 
   afterEach(() => {
+    delete (globalThis as any).__DEALDECISION_BULLMQ;
     process.env = { ...originalEnv };
   });
 

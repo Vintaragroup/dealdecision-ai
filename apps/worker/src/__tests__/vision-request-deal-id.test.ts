@@ -35,6 +35,7 @@ vi.mock("../lib/queue", () => {
 			return {};
 		},
 		getQueue: (_name: string) => ({ add: vi.fn(async () => undefined) }),
+		getBullmqRuntimeInfo: () => ({ version: "test", resolved: "mock" }),
 		logWorkerQueueConfig: vi.fn(),
 	};
 });

@@ -17,6 +17,10 @@ function stableUuid(seed: string): string {
 	return `${a}-${b}-${c}-${d}-${e}`;
 }
 
+export function stableLedgerUuid(seed: string): string {
+	return stableUuid(seed);
+}
+
 function stableJsonStringify(value: unknown): string {
 	const seen = new WeakSet<object>();
 
@@ -89,12 +93,262 @@ function isMissingTableError(err: any): boolean {
 	return code === "42P01";
 }
 
+type PipelineRunFinalStatus = "succeeded" | "failed";
+
+type RunFinalizeStats = {
+	total_steps: number;
+	nonterminal_steps: number;
+	failed_steps: number;
+	max_finished_at: string | null;
+};
+
+async function finalizePipelineRunIfTerminalWithClient(
+	client: { query: (sql: string, params?: any[]) => Promise<any> },
+	opts: {
+		run_id: string;
+		source: string;
+		step_run_id?: string | null;
+		step_status?: string | null;
+		triggerShape: { runs: boolean; steps: boolean };
+	}
+): Promise<{ finalized: boolean; status: PipelineRunFinalStatus | null; stats: RunFinalizeStats | null }> {
+	// Lock the run row so only one finalizer can decide at a time.
+	const runRes = await client.query(
+		`SELECT status
+		   FROM pipeline_runs
+		  WHERE run_id = $1
+		  FOR UPDATE`,
+		[opts.run_id]
+	);
+
+	const runStatus = String(runRes?.rows?.[0]?.status ?? "").toLowerCase();
+	if (runStatus !== "running") {
+		return { finalized: false, status: null, stats: null };
+	}
+
+	const aggRes = await client.query(
+		`SELECT
+			COUNT(*)::int AS total_steps,
+			COUNT(*) FILTER (WHERE status IN ('running','blocked'))::int AS nonterminal_steps,
+			COUNT(*) FILTER (WHERE status = 'failed')::int AS failed_steps,
+			MAX(finished_at)::text AS max_finished_at
+		   FROM pipeline_step_runs
+		  WHERE run_id = $1`,
+		[opts.run_id]
+	);
+
+	const stats: RunFinalizeStats = {
+		total_steps: Number(aggRes?.rows?.[0]?.total_steps ?? 0),
+		nonterminal_steps: Number(aggRes?.rows?.[0]?.nonterminal_steps ?? 0),
+		failed_steps: Number(aggRes?.rows?.[0]?.failed_steps ?? 0),
+		max_finished_at: (aggRes?.rows?.[0]?.max_finished_at as any) ?? null,
+	};
+
+	if (!(stats.total_steps > 0)) {
+		return { finalized: false, status: null, stats };
+	}
+	if (stats.nonterminal_steps > 0) {
+		// blocked is non-terminal by requirement.
+		return { finalized: false, status: null, stats };
+	}
+
+	const finalStatus: PipelineRunFinalStatus = stats.failed_steps > 0 ? "failed" : "succeeded";
+
+	let failedStepError: unknown | null = null;
+	if (finalStatus === "failed") {
+		const errRes = await client.query(
+			`SELECT error
+			   FROM pipeline_step_runs
+			  WHERE run_id = $1 AND status = 'failed'
+			  ORDER BY finished_at DESC NULLS LAST, updated_at DESC
+			  LIMIT 1`,
+			[opts.run_id]
+		);
+		failedStepError = errRes?.rows?.[0]?.error ?? null;
+	}
+
+	const finalizedReason = {
+		by: "step_terminality",
+		source: opts.source,
+		step_run_id: opts.step_run_id ?? null,
+		step_status: opts.step_status ?? null,
+		stats: {
+			total_steps: stats.total_steps,
+			nonterminal_steps: stats.nonterminal_steps,
+			failed_steps: stats.failed_steps,
+			max_finished_at: stats.max_finished_at,
+		},
+		final_status: finalStatus,
+		finalized_at: new Date().toISOString(),
+	};
+
+	const updateRes = await client.query(
+		`UPDATE pipeline_runs
+			SET status = $2,
+				finished_at = COALESCE($3::timestamptz, now()),
+				summary = summary || jsonb_build_object('finalized_reason', $4::jsonb),
+				error = CASE WHEN $2 = 'failed' AND error IS NULL THEN $5::jsonb ELSE error END${
+					opts.triggerShape.runs ? "" : ",\n\t\t\t\tupdated_at = now()"
+				}
+		  WHERE run_id = $1 AND status = 'running'`,
+		[
+			opts.run_id,
+			finalStatus,
+			stats.max_finished_at,
+			JSON.stringify(finalizedReason),
+			failedStepError ? JSON.stringify(failedStepError) : null,
+		]
+	);
+
+	const finalized = Number(updateRes?.rowCount ?? 0) > 0;
+	return { finalized, status: finalized ? finalStatus : null, stats };
+}
+
+export async function finalizePipelineRunIfTerminal(
+	pool: Pool,
+	opts: { run_id: string; source: string; step_run_id?: string | null; step_status?: string | null }
+): Promise<{ finalized: boolean; status: PipelineRunFinalStatus | null }> {
+	const triggerShape = await getLedgerUpdatedAtTriggerShape(pool);
+	let client: any = null;
+	try {
+		client = await (pool as any).connect();
+		await client.query("BEGIN");
+		const res = await finalizePipelineRunIfTerminalWithClient(client, {
+			run_id: opts.run_id,
+			source: opts.source,
+			step_run_id: opts.step_run_id ?? null,
+			step_status: opts.step_status ?? null,
+			triggerShape,
+		});
+		await client.query("COMMIT");
+		return { finalized: res.finalized, status: res.status };
+	} catch (err: any) {
+		try {
+			if (client) await client.query("ROLLBACK");
+		} catch {
+			// ignore
+		}
+		if (isMissingTableError(err)) return { finalized: false, status: null };
+		return { finalized: false, status: null };
+	} finally {
+		try {
+			if (client) client.release();
+		} catch {
+			// ignore
+		}
+	}
+}
+
+export async function reconcileStuckPipelineRuns(
+	pool: Pool,
+	opts?: { batchSize?: number }
+): Promise<{ scanned: number; finalized: number; succeeded: number; failed: number }> {
+	const batchSize = typeof opts?.batchSize === "number" ? Math.max(1, Math.floor(opts.batchSize)) : 25;
+	const triggerShape = await getLedgerUpdatedAtTriggerShape(pool);
+	let client: any = null;
+	try {
+		client = await (pool as any).connect();
+		await client.query("BEGIN");
+
+		// Lock candidate runs so multiple reconcilers don't dogpile.
+		const candidates = await client.query(
+			`SELECT r.run_id
+			   FROM pipeline_runs r
+			  WHERE r.status = 'running'
+				AND EXISTS (SELECT 1 FROM pipeline_step_runs s WHERE s.run_id = r.run_id)
+				AND NOT EXISTS (
+					SELECT 1
+					  FROM pipeline_step_runs s
+					 WHERE s.run_id = r.run_id
+					   AND s.status IN ('running','blocked')
+				)
+			  ORDER BY r.started_at ASC
+			  LIMIT $1
+			  FOR UPDATE SKIP LOCKED`,
+			[batchSize]
+		);
+
+		const runIds = ((candidates?.rows ?? []) as Array<{ run_id?: unknown }>).
+			map((r) => String(r?.run_id ?? "")).
+			filter(Boolean);
+		let finalized = 0;
+		let succeeded = 0;
+		let failed = 0;
+		for (const runId of runIds) {
+			const res = await finalizePipelineRunIfTerminalWithClient(client, {
+				run_id: runId,
+				source: "reconciler",
+				triggerShape,
+			});
+			if (res.finalized) {
+				finalized += 1;
+				if (res.status === "failed") failed += 1;
+				if (res.status === "succeeded") succeeded += 1;
+			}
+		}
+
+		await client.query("COMMIT");
+		return { scanned: runIds.length, finalized, succeeded, failed };
+	} catch (err: any) {
+		try {
+			if (client) await client.query("ROLLBACK");
+		} catch {
+			// ignore
+		}
+		if (isMissingTableError(err)) return { scanned: 0, finalized: 0, succeeded: 0, failed: 0 };
+		return { scanned: 0, finalized: 0, succeeded: 0, failed: 0 };
+	} finally {
+		try {
+			if (client) client.release();
+		} catch {
+			// ignore
+		}
+	}
+}
+
 export function computeInputHash(job: Pick<Job, "name" | "data">): string {
 	return sha256Hex(stableJsonStringify({ name: job.name, data: job.data }));
 }
 
 export function computeOutputHash(output: unknown): string {
 	return sha256Hex(stableJsonStringify(output));
+}
+
+export function computeNamedStepInputHash(stepName: string, input: unknown): string {
+	return sha256Hex(stableJsonStringify({ step_name: stepName, input }));
+}
+
+export function makeNamedStepRunId(stepName: string, jobId: string): string {
+	return stableUuid(`pipeline-step-run:${stepName}:${String(jobId ?? "")}`);
+}
+
+export async function startNamedStepRunLedger(
+	pool: Pool,
+	opts: {
+		run_id: string;
+		step_name: string;
+		job_id: string | null;
+		input?: unknown;
+	}
+): Promise<StepLedgerIds | null> {
+	const step_run_id = makeNamedStepRunId(opts.step_name, opts.job_id ?? "");
+	const input_hash = computeNamedStepInputHash(opts.step_name, opts.input);
+	const triggerShape = await getLedgerUpdatedAtTriggerShape(pool);
+
+	try {
+		await pool.query(
+			`INSERT INTO pipeline_step_runs (step_run_id, run_id, step_name, job_id, input_hash, status)
+			 VALUES ($1, $2, $3, $4, $5, 'running')
+			 ON CONFLICT (step_run_id) DO UPDATE SET
+				status = 'running',
+				input_hash = EXCLUDED.input_hash${triggerShape.steps ? "" : ",\n\t\t\t\tupdated_at = now()"}`,
+			[step_run_id, opts.run_id, opts.step_name, opts.job_id, input_hash]
+		);
+		return { run_id: opts.run_id, step_run_id };
+	} catch (err: any) {
+		if (isMissingTableError(err)) return null;
+		return null;
+	}
 }
 
 export async function startStepRunLedger(
@@ -168,6 +422,17 @@ export async function finishStepRunLedger(
 			 WHERE run_id = $1`,
 			[ids.run_id, status]
 		);
+
+		// Immediate finalization: if all steps are terminal (blocked is non-terminal), finalize run.
+		// Never rely on jobs/trigger ids; pipeline_step_runs is the source of truth.
+		if (status === "succeeded") {
+			await finalizePipelineRunIfTerminal(pool, {
+				run_id: ids.run_id,
+				source: "finish_step",
+				step_run_id: ids.step_run_id,
+				step_status: status,
+			});
+		}
 	} catch (err: any) {
 		if (isMissingTableError(err)) return;
 		return;
@@ -187,7 +452,11 @@ export function wrapProcessorWithRunLedger<T>(pool: Pool, processor: (job: Job<T
 
 		try {
 			const output = await processor(job);
-			if (ids) await finishStepRunLedger(pool, ids, "succeeded", { output, summary: { ok: true } });
+			const summary =
+				output && typeof output === "object" && (output as any).__step_summary != null
+					? (output as any).__step_summary
+					: { ok: true };
+			if (ids) await finishStepRunLedger(pool, ids, "succeeded", { output, summary });
 			return output;
 		} catch (err: any) {
 			if (ids) await finishStepRunLedger(pool, ids, "failed", { error: { message: err?.message ?? String(err) } });
@@ -222,7 +491,11 @@ export function wrapBullmqProcessorWithRunLedger(
 		}
 		try {
 			const output = await processor(job, token);
-			if (ids) await finishStepRunLedger(pool, ids, "succeeded", { output, summary: { ok: true } });
+			const summary =
+				output && typeof output === "object" && (output as any).__step_summary != null
+					? (output as any).__step_summary
+					: { ok: true };
+			if (ids) await finishStepRunLedger(pool, ids, "succeeded", { output, summary });
 			return output;
 		} catch (err: any) {
 			if (ids)

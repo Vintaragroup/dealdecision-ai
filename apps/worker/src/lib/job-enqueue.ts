@@ -11,6 +11,7 @@ export type EnqueuePersistedJobInput = {
     | "ingest_documents"
     | "extract_visuals"
     | "deep_scan_visuals"
+    | "document_intelligence_extract"
     | "fetch_evidence"
     | "analyze_deal"
     | "verify_documents"

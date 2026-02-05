@@ -7,8 +7,10 @@ import { getQueue } from "./queue";
 
 export type EnqueuePersistedJobInput = {
 	job_id?: string;
+	idempotent?: boolean;
   type:
     | "ingest_documents"
+    | "render_document_pages"
     | "extract_visuals"
     | "deep_scan_visuals"
     | "document_intelligence_extract"
@@ -45,29 +47,58 @@ export async function enqueuePersistedJob(input: EnqueuePersistedJobInput): Prom
   }) as Record<string, unknown>;
 
   // Insert DB row first to avoid a race where the job starts before the row exists.
-  await pool.query(
-    `INSERT INTO jobs (job_id, deal_id, document_id, type, queue, status, payload, parent_job_id, page_start, page_end)
-     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)`,
-    [
-      sanitizeText(jobId),
-      input.deal_id ? sanitizeText(input.deal_id) : null,
-      input.document_id ? sanitizeText(input.document_id) : null,
-      sanitizeText(input.type),
-      sanitizeText(input.type),
-      "queued",
-      JSON.stringify(payload),
-      input.parent_job_id ? sanitizeText(input.parent_job_id) : null,
-      typeof input.page_start === "number" ? Math.max(0, Math.floor(input.page_start)) : null,
-      typeof input.page_end === "number" ? Math.max(0, Math.floor(input.page_end)) : null,
-    ]
-  );
+  if (input.idempotent) {
+    await pool.query(
+      `INSERT INTO jobs (job_id, deal_id, document_id, type, queue, status, payload, parent_job_id, page_start, page_end)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
+       ON CONFLICT (job_id) DO NOTHING`,
+      [
+        sanitizeText(jobId),
+        input.deal_id ? sanitizeText(input.deal_id) : null,
+        input.document_id ? sanitizeText(input.document_id) : null,
+        sanitizeText(input.type),
+        sanitizeText(input.type),
+        "queued",
+        JSON.stringify(payload),
+        input.parent_job_id ? sanitizeText(input.parent_job_id) : null,
+        typeof input.page_start === "number" ? Math.max(0, Math.floor(input.page_start)) : null,
+        typeof input.page_end === "number" ? Math.max(0, Math.floor(input.page_end)) : null,
+      ]
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO jobs (job_id, deal_id, document_id, type, queue, status, payload, parent_job_id, page_start, page_end)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)`,
+      [
+        sanitizeText(jobId),
+        input.deal_id ? sanitizeText(input.deal_id) : null,
+        input.document_id ? sanitizeText(input.document_id) : null,
+        sanitizeText(input.type),
+        sanitizeText(input.type),
+        "queued",
+        JSON.stringify(payload),
+        input.parent_job_id ? sanitizeText(input.parent_job_id) : null,
+        typeof input.page_start === "number" ? Math.max(0, Math.floor(input.page_start)) : null,
+        typeof input.page_end === "number" ? Math.max(0, Math.floor(input.page_end)) : null,
+      ]
+    );
+  }
 
-  await queue.add(input.type, payload, {
-    jobId,
-    removeOnComplete: true,
-    removeOnFail: false,
-    delay: 250,
-  });
+  try {
+    await queue.add(input.type, payload, {
+      jobId,
+      removeOnComplete: true,
+      removeOnFail: false,
+      delay: 250,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (input.idempotent && msg.toLowerCase().includes("exists")) {
+      // Already enqueued (or currently running). Treat as idempotent success.
+    } else {
+      throw err;
+    }
+  }
 
   return { job_id: jobId };
 }

@@ -1,6 +1,7 @@
 import type { Job, Processor } from "bullmq";
 import IORedis from "ioredis";
 import { wrapBullmqProcessorWithRunLedger } from "./pipeline-run-ledger";
+import type { QueueName } from "@dealdecision/contracts";
 
 let BullMQ: typeof import("bullmq");
 
@@ -124,16 +125,7 @@ connection.on('error', (err) => {
 
 export function createWorker(
   name:
-    | "ingest_documents"
-    | "render_document_pages"
-    | "extract_visuals"
-    | "deep_scan_visuals"
-    | "document_intelligence_extract"
-    | "fetch_evidence"
-    | "analyze_deal"
-    | "verify_documents"
-    | "remediate_extraction"
-    | "reextract_documents"
+    | QueueName
     | "generate_ingestion_report"
     | "reconcile_ingest"
     | "orchestration",
@@ -169,6 +161,7 @@ export function createWorker(
     "extract_visuals",
     "deep_scan_visuals",
     "reextract_documents",
+    "populate_document_page_understanding",
   ]);
   const lockDuration =
     options?.lockDuration ?? (heavyQueues.has(name) ? 10 * 60 * 1000 : 2 * 60 * 1000);
@@ -258,17 +251,7 @@ export function createWorker(
 
 export function getQueue(
   name:
-    | "ingest_documents"
-    | "render_document_pages"
-    | "extract_visuals"
-    | "deep_scan_visuals"
-    | "document_intelligence_extract"
-    | "fetch_evidence"
-    | "analyze_deal"
-    | "verify_documents"
-    | "remediate_extraction"
-    | "reextract_documents"
-    | "generate_ingestion_report"
+    | QueueName
     | "generate_ingestion_report"
     | "reconcile_ingest"
     | "orchestration"

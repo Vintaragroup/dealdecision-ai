@@ -5,6 +5,7 @@ import fs from "fs/promises";
 import { execSync } from "child_process";
 import type { JobProgressEventV1, JobStatus, JobStatusDetail } from "@dealdecision/contracts";
 import {
+	QUEUE_NAMES,
 	sanitizeText,
 	getDocumentCapabilities,
 	getInitialRenderedPagesChunk,
@@ -395,6 +396,7 @@ import { materializePhaseBVisualEvidenceForDeal } from "./lib/phaseb/materialize
 import { logMemory, yieldToEventLoop } from "./lib/memory";
 import { updateJobProgress } from "./lib/job-progress";
 import { enqueuePersistedJob } from "./lib/job-enqueue";
+import { decideLowContentOutcome } from "./lib/ingest-low-content";
 import { planChunkEnqueues } from "./lib/page-chunks";
 
 // Deterministic startup log for Docker verification.
@@ -1968,12 +1970,23 @@ async function ingestDocumentProcessor(job: Job) {
 		}
 		
 		const lowContent = completeness.score < contentThreshold;
-		
-		if (lowContent && attempt < 2) {
-			const message = `Low-content extraction (${completeness.reason}); retrying`;
-			extractionMetadata.errorMessage = message;
+
+		if (lowContent) {
+			const decision = decideLowContentOutcome({
+				contentType: analysis.contentType,
+				attempt,
+				completenessReason: completeness.reason,
+			});
+			const message = decision.message;
+			if (decision.kind === "needs_ocr") {
+				(extractionMetadata as any).errorMessage = null;
+			} else {
+				extractionMetadata.errorMessage = message;
+			}
+
 			await updateDocumentAnalysis({
 				documentId: docId,
+				status: decision.kind === "needs_ocr" ? "needs_ocr" : undefined,
 				structuredData: analysis.structuredData,
 				extractionMetadata,
 				fullContent: analysis.content,
@@ -1981,34 +1994,186 @@ async function ingestDocumentProcessor(job: Job) {
 				fullTextAbsentReason: fullTextAbsentReason ?? undefined,
 				pageCount: pageCount || undefined,
 			});
-			await updateDocumentStatus(docId, "pending");
-			await updateJob(job, "failed", message, 100);
-			console.warn(`[ingest_document] low content, requeuing attempt ${attempt + 1}`);
-			await enqueuePersistedJob({
-				type: "ingest_documents",
-				deal_id: dealIdSafe,
-				document_id: docId,
-				payload: { ...((job.data as any) ?? {}), attempt: attempt + 1 },
-				parent_job_id: job.id ? String(job.id) : null,
-			});
-			return { ok: false, analysis, completeness };
-		} else if (lowContent) {
-			const message = `Low-content extraction after retries (${completeness.reason})`;
-			extractionMetadata.errorMessage = message;
-			await updateDocumentAnalysis({
-				documentId: docId,
-				structuredData: analysis.structuredData,
-				extractionMetadata,
-				fullContent: analysis.content,
-				fullText: fullText || undefined,
-				fullTextAbsentReason: fullTextAbsentReason ?? undefined,
-				pageCount: pageCount || undefined,
-			});
-			await updateDocumentStatus(docId, "failed");
-			await updateJob(job, "failed", message, 100);
+
+			if (decision.kind === "retry") {
+				await updateDocumentStatus(docId, decision.docStatus);
+				await updateJob(job, decision.jobStatus, message, 100);
+				console.warn(`[ingest_document] low content, requeuing attempt ${decision.nextAttempt}`);
+				await enqueuePersistedJob({
+					type: "ingest_documents",
+					deal_id: dealIdSafe,
+					document_id: docId,
+					payload: { ...((job.data as any) ?? {}), attempt: decision.nextAttempt },
+					parent_job_id: job.id ? String(job.id) : null,
+				});
+				return { ok: false, analysis, completeness };
+			}
+
+			if (decision.kind === "needs_ocr") {
+				(extractionMetadata as any).needsOcr = true;
+				await updateDocumentStatus(docId, decision.docStatus);
+
+				try {
+					const ocrNowIso = new Date().toISOString();
+					const diJobId = makeJobId("document_intelligence_extract", [docId, "low_content_pdf", "v1"]);
+					const renderJobId = makeJobId("render_document_pages", [docId, "low_content_pdf", "force_ocr", "v1"]);
+
+					let existingFlow: any = null;
+					try {
+						const { rows } = await getPool().query<{ extraction_metadata: unknown | null }>(
+							"SELECT extraction_metadata FROM documents WHERE id = $1 LIMIT 1",
+							[sanitizeText(docId)]
+						);
+						const metaObj = rows?.[0]?.extraction_metadata && typeof rows[0].extraction_metadata === "object"
+							? (rows[0].extraction_metadata as any)
+							: null;
+						existingFlow =
+							metaObj?.needs_ocr_flow && typeof metaObj.needs_ocr_flow === "object" ? metaObj.needs_ocr_flow : null;
+					} catch {
+						existingFlow = null;
+					}
+
+					const existingState = typeof existingFlow?.state === "string" ? String(existingFlow.state) : "";
+					const preserveTerminalState = existingState === "completed" || existingState === "reextract_enqueued";
+					const requestedAt = typeof existingFlow?.requested_at === "string" ? existingFlow.requested_at : ocrNowIso;
+					const triggerJobId =
+						typeof existingFlow?.trigger_job_id === "string"
+							? existingFlow.trigger_job_id
+							: job.id
+								? String(job.id)
+								: null;
+
+					const persistCfg = { ...getVisualPageImagePersistConfig(process.env, { forceEnable: true }), enabled: true, persist: true };
+					const chunkSize = persistCfg.maxPages;
+					const totalPages = finalPageCountForLog || pageCount || 0;
+					const r2Bucket = (process.env.R2_BUCKET || "").trim();
+					const prefix = `deals/${dealIdSafe}/documents/${docId}/rendered_pages`;
+					if (r2Bucket && totalPages > 0) {
+						renderedPagesR2ForLog = { bucket: r2Bucket, prefix };
+						await mergeDocumentExtractionMetadata({
+							documentId: docId,
+							patch: {
+								rendered_pages_r2: { bucket: r2Bucket, prefix, format: "page_%04d.png" },
+								rendered_pages_count: totalPages,
+								rendered_pages_rendered: 0,
+								needs_ocr_flow: {
+									...(existingFlow && typeof existingFlow === "object" ? existingFlow : {}),
+									state: preserveTerminalState ? existingState : existingState || "requested",
+									reason: completeness.reason,
+									requested_at: requestedAt,
+									trigger_job_id: triggerJobId,
+									document_intelligence_job_id:
+										typeof existingFlow?.document_intelligence_job_id === "string"
+											? existingFlow.document_intelligence_job_id
+											: diJobId,
+									render_job_id:
+										typeof existingFlow?.render_job_id === "string" ? existingFlow.render_job_id : renderJobId,
+								},
+							},
+						});
+
+						try {
+							await enqueuePersistedJob({
+								job_id: diJobId,
+								idempotent: true,
+								type: "document_intelligence_extract",
+								deal_id: dealIdSafe,
+								document_id: docId,
+								payload: { deal_id: dealIdSafe, document_id: docId, reason: "low_content_pdf" },
+								parent_job_id: job.id ? String(job.id) : null,
+							});
+						} catch (err) {
+							console.warn(
+								`[ingest_document] enqueue document_intelligence_extract failed doc=${docId}: ${
+									err instanceof Error ? err.message : String(err)
+								}`
+							);
+						}
+
+						const firstEnd = Math.min(totalPages, chunkSize);
+						try {
+							await enqueuePersistedJob({
+								job_id: renderJobId,
+								idempotent: true,
+								type: "render_document_pages",
+								deal_id: dealIdSafe,
+								document_id: docId,
+								page_start: 0,
+								page_end: firstEnd,
+								payload: {
+									deal_id: dealIdSafe,
+									document_id: docId,
+									page_start: 0,
+									page_end: firstEnd,
+									force_ocr: true,
+								},
+								parent_job_id: job.id ? String(job.id) : null,
+							});
+						} catch (err) {
+							console.warn(
+								`[ingest_document] enqueue render_document_pages(force_ocr) failed doc=${docId}: ${
+									err instanceof Error ? err.message : String(err)
+								}`
+							);
+						}
+
+						// Mark OCR flow as enqueued (do not downgrade if already in a terminal state).
+						const enqueuedIso = new Date().toISOString();
+						const flowState = preserveTerminalState ? existingState : "enqueued";
+						await mergeDocumentExtractionMetadata({
+							documentId: docId,
+							patch: {
+								needs_ocr_flow: {
+									...(existingFlow && typeof existingFlow === "object" ? existingFlow : {}),
+									state: flowState,
+									reason: completeness.reason,
+									requested_at: requestedAt,
+									enqueued_at:
+										typeof existingFlow?.enqueued_at === "string" ? existingFlow.enqueued_at : enqueuedIso,
+									trigger_job_id: triggerJobId,
+									document_intelligence_job_id:
+										typeof existingFlow?.document_intelligence_job_id === "string"
+											? existingFlow.document_intelligence_job_id
+											: diJobId,
+									render_job_id:
+										typeof existingFlow?.render_job_id === "string" ? existingFlow.render_job_id : renderJobId,
+									trigger_enqueued_by_job_id: job.id ? String(job.id) : null,
+								},
+							},
+						});
+					} else {
+						console.warn(
+							JSON.stringify({
+								event: "INGEST_SKIP_RENDER_DOCUMENT_PAGES",
+								reason: !r2Bucket ? "missing_r2_bucket" : "missing_pages",
+								deal_id: dealIdSafe,
+								document_id: docId,
+								content_type: analysis.contentType,
+								force_ocr: true,
+							})
+						);
+					}
+				} catch (err) {
+					console.warn(
+						`[ingest_document] needs_ocr_flow enqueue/setup failed doc=${docId}: ${
+							err instanceof Error ? err.message : String(err)
+						}`
+					);
+				}
+
+				await updateJob(job, decision.jobStatus, message, 100);
+				console.warn(`[ingest_document] pdf needs_ocr after low content documentId=${docId}`);
+				return { ok: false, analysis, completeness };
+			}
+
+			// decision.kind === "fail"
+			await updateDocumentStatus(docId, decision.docStatus);
+			await updateJob(job, decision.jobStatus, message, 100);
 			console.warn(`[ingest_document] low content after retries documentId=${docId}`);
 			return { ok: false, analysis, completeness };
-		} else {
+		}
+
+		{
 			await updateDocumentAnalysis({
 				documentId: docId,
 				status: "completed",
@@ -2316,6 +2481,49 @@ const registerWorker = (
 	registeredWorkers.push(name);
 	return createWorker(name, processor);
 };
+
+function assertQueueNamesRuntimeExport() {
+	if (!QUEUE_NAMES || typeof QUEUE_NAMES !== "object") {
+		throw new Error(
+			"QUEUE_NAMES is missing at runtime. Ensure worker imports QUEUE_NAMES from @dealdecision/core (runtime export), not a type-only path."
+		);
+	}
+
+	const requiredKeys = ["populate_document_page_understanding"] as const;
+	for (const key of requiredKeys) {
+		if (!(key in QUEUE_NAMES)) {
+			throw new Error(`QUEUE_NAMES is missing required key: ${key}`);
+		}
+	}
+}
+
+assertQueueNamesRuntimeExport();
+
+function assertRequiredQueuesRegistered() {
+	const required = Object.values(QUEUE_NAMES);
+	const registered = new Set(registeredWorkers.map((w) => String(w)));
+	const missing = required.filter((q) => !registered.has(q));
+	if (missing.length === 0) return;
+
+	const payload = {
+		event: "WORKER_QUEUE_MISMATCH",
+		service: "worker",
+		missing,
+		required,
+		registered: Array.from(registered),
+	};
+
+	try {
+		console.error(JSON.stringify(payload));
+	} catch {
+		// ignore
+	}
+
+	// Fail fast in dev/test to prevent readiness deadlocks.
+	if (process.env.NODE_ENV !== "production") {
+		throw new Error(`Worker missing queue processors: ${missing.join(", ")}`);
+	}
+}
 
 registerWorker("reconcile_ingest", async (job: Job) => {
 	const data = (job.data ?? {}) as { deal_id?: string; document_ids?: string[] };
@@ -2872,6 +3080,36 @@ registerWorker("render_document_pages", async (job: Job) => {
 
 	// If this was the final chunk, trigger visual extraction (best-effort).
 	if (total > 0 && thisEnd >= total) {
+		// If this render run was part of a needs_ocr flow, mark it completed.
+		if (forceOcr) {
+			try {
+				const { rows } = await pool.query<{ status: string | null; extraction_metadata: unknown | null }>(
+					"SELECT status, extraction_metadata FROM documents WHERE id = $1 LIMIT 1",
+					[sanitizeText(docId)]
+				);
+				const status = typeof rows?.[0]?.status === "string" ? rows[0].status.toLowerCase() : "";
+				const metaObj = rows?.[0]?.extraction_metadata && typeof rows[0].extraction_metadata === "object" ? (rows[0].extraction_metadata as any) : null;
+				const flow = metaObj?.needs_ocr_flow && typeof metaObj.needs_ocr_flow === "object" ? metaObj.needs_ocr_flow : null;
+				const flowState = typeof flow?.state === "string" ? String(flow.state) : "";
+				const alreadyTerminal = flowState === "completed" || flowState === "reextract_enqueued";
+				if (status === "needs_ocr" && flow && !alreadyTerminal) {
+					await mergeDocumentExtractionMetadata({
+						documentId: docId,
+						patch: {
+							needs_ocr_flow: {
+								...(flow && typeof flow === "object" ? flow : {}),
+								state: "completed",
+								completed_at: new Date().toISOString(),
+								render_completed_job_id: job.id ? String(job.id) : null,
+							},
+						},
+					});
+				}
+			} catch {
+				// best-effort
+			}
+		}
+
 		const visionCfg = getVisionExtractorConfig();
 		if (visionCfg.enabled) {
 			try {
@@ -2954,6 +3192,78 @@ registerWorker("render_document_pages", async (job: Job) => {
 		total_pages: total,
 	});
 	return { ok: true, rendered: res.rendered_pages_count ?? 0, total_pages: total };
+});
+
+registerWorker(QUEUE_NAMES.populate_document_page_understanding, async (job: Job) => {
+	const data = (job.data ?? {}) as {
+		deal_id?: string;
+		document_id?: string;
+		page_understanding_version?: string;
+		version?: string;
+	};
+
+	const dealId = typeof data.deal_id === "string" ? data.deal_id.trim() : "";
+	const docId = typeof data.document_id === "string" ? data.document_id.trim() : "";
+	const versionRaw =
+		typeof (data as any).page_understanding_version === "string"
+			? String((data as any).page_understanding_version)
+			: typeof (data as any).version === "string"
+				? String((data as any).version)
+				: "page_understanding_v1";
+	const version = versionRaw.trim() || "page_understanding_v1";
+
+	if (!dealId && !docId) {
+		await updateJob(job, "failed", "Missing deal_id or document_id", 100);
+		return { ok: false, reason: "missing_identifiers" };
+	}
+
+	await updateJob(job, "running", "Populating document page understanding", 5);
+
+	const pool = getPool();
+	let resolvedDealId: string | null = dealId || null;
+	let pageCount: number | null = null;
+
+	if (docId) {
+		try {
+			const { rows } = await pool.query<{ deal_id: string | null; page_count: number | null }>(
+				"SELECT deal_id, page_count FROM documents WHERE id = $1 LIMIT 1",
+				[docId]
+			);
+			resolvedDealId = resolvedDealId || rows?.[0]?.deal_id || null;
+			pageCount = typeof rows?.[0]?.page_count === "number" && Number.isFinite(rows[0].page_count)
+				? Math.max(0, Math.floor(rows[0].page_count))
+				: null;
+		} catch {
+			pageCount = null;
+		}
+	}
+
+	try {
+		const res = docId
+			? await populateDocumentPageUnderstandingFromVisualExtractions(pool as any, {
+				documentId: docId,
+				...(resolvedDealId ? { dealId: resolvedDealId } : {}),
+				pageStart: 0,
+				pageEnd: Math.max(1, pageCount ?? 0),
+				version,
+			})
+			: await populateDocumentPageUnderstandingFromVisualExtractions(pool as any, {
+				dealId: resolvedDealId || dealId,
+				version,
+			});
+
+		await updateJob(
+			job,
+			"succeeded",
+			`Populated document_page_understanding (upserted=${res.upserted}, empty=${res.page_text_empty}, version=${version})`,
+			100
+		);
+		return { ok: true, ...res, version };
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		await updateJob(job, "failed", `populate_document_page_understanding failed: ${msg}`, 100);
+		throw err;
+	}
 });
 
 registerWorker("extract_visuals", async (job: Job) => {
@@ -5855,6 +6165,86 @@ registerWorker("extract_visuals", async (job: Job) => {
 			}
 		}
 
+		// If any docs were marked needs_ocr during ingest, OCR promotion + DI batch should now be done (or timed out).
+		// Re-drive ingest from storage to rebuild structured extraction (metrics/headings/summary) from OCR-promoted text.
+		try {
+			if (dealIdForAudit && targetDocumentIds.length > 0) {
+				const { rows } = await pool.query<{
+					id: string;
+					status: string | null;
+					full_text: string | null;
+					extraction_metadata: unknown | null;
+				}>(
+					"SELECT id, status, full_text, extraction_metadata FROM documents WHERE id = ANY($1::text[])",
+					[targetDocumentIds.map((d) => sanitizeText(d))]
+				);
+
+				for (const r of rows ?? []) {
+					const docId = typeof r?.id === "string" ? r.id : "";
+					if (!docId) continue;
+					if (String(r?.status ?? "").toLowerCase() !== "needs_ocr") continue;
+
+					const meta = r?.extraction_metadata && typeof r.extraction_metadata === "object" ? (r.extraction_metadata as any) : null;
+					const flow = meta?.needs_ocr_flow && typeof meta.needs_ocr_flow === "object" ? meta.needs_ocr_flow : null;
+					const alreadyEnqueued = typeof flow?.reextract_enqueued_at === "string" && flow.reextract_enqueued_at.trim().length > 0;
+					if (alreadyEnqueued) continue;
+
+					const searchIndex = meta?.search_index && typeof meta.search_index === "object" ? meta.search_index : null;
+					const ocrChars = typeof searchIndex?.visual_ocr_char_count === "number" ? searchIndex.visual_ocr_char_count : 0;
+					const fullTextLen = typeof r?.full_text === "string" ? r.full_text.length : 0;
+					const hasEnoughText = Math.max(ocrChars, fullTextLen) >= 200;
+					if (!hasEnoughText) continue;
+
+					await mergeDocumentExtractionMetadata({
+						documentId: docId,
+						patch: {
+							needs_ocr_flow: {
+								...(flow && typeof flow === "object" ? flow : {}),
+								state: "reextract_enqueued",
+								reextract_enqueued_at: new Date().toISOString(),
+								reextract_trigger_job_id: job.id ? String(job.id) : null,
+							},
+						},
+					});
+
+					const reextractJobId = makeJobId("reextract_documents", [dealIdForAudit, docId, "needs_ocr"]);
+					try {
+						await enqueuePersistedJob({
+							job_id: reextractJobId,
+							type: "reextract_documents",
+							deal_id: dealIdForAudit,
+							payload: {
+								deal_id: dealIdForAudit,
+								document_ids: [docId],
+								mode: "needs_ocr",
+								force: true,
+							},
+							parent_job_id: job.id ? String(job.id) : null,
+						});
+						console.log(
+							JSON.stringify({
+								event: "NEEDS_OCR_ENQUEUED_REEXTRACT",
+								deal_id: dealIdForAudit,
+								document_id: docId,
+								reextract_job_id: reextractJobId,
+								trigger_job_id: job.id ? String(job.id) : null,
+								ts: new Date().toISOString(),
+							})
+						);
+					} catch (err) {
+						const msg = err instanceof Error ? err.message : String(err);
+						if (!msg.toLowerCase().includes("duplicate") && !msg.toLowerCase().includes("already exists")) {
+							console.warn(`[extract_visuals] reextract_documents enqueue failed doc=${docId}: ${msg}`);
+						}
+					}
+				}
+			}
+		} catch (err) {
+			console.warn(
+				`[extract_visuals] needs_ocr reextract follow-up failed: ${err instanceof Error ? err.message : String(err)}`
+			);
+		}
+
 		if (!diGateOk) {
 			analysisBlockedBy = "document_intelligence_batch";
 		} else {
@@ -8124,6 +8514,8 @@ registerWorker("generate_ingestion_report", async (job: Job) => {
 
 
 logWorkerQueueConfig("worker", Array.from(new Set(registeredWorkers)));
+
+assertRequiredQueuesRegistered();
 
 console.log(
 	JSON.stringify({

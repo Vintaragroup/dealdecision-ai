@@ -28,7 +28,7 @@ scripts/experimental/
 # local dev artifacts (do not commit)
 apps/api/tmp_*.cjs
 apps/worker/*.traineddata
-services/
+/services/
 
 # internal documentation
 # Keep the bulk of docs ignored (trace runs can be large), but allow committing

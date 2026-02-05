@@ -652,6 +652,7 @@ export type PageUnderstandingReadiness = {
   dpu_rows_total: number;
   missing_pages_total: number;
   ready: boolean;
+  blocked_reason?: string | null;
 };
 
 export function apiGetDealReadiness(dealId: string, version: string) {

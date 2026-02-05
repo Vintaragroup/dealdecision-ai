@@ -4139,6 +4139,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   {(() => {
                     const readiness = pageUnderstandingGate.readiness;
                     const ready = !!readiness?.ready;
+                    const blockedReasonRaw = (readiness as any)?.blocked_reason;
+                    const blockedReason = typeof blockedReasonRaw === 'string' && blockedReasonRaw.trim().length > 0 ? blockedReasonRaw.trim() : null;
+                    const showOcrRequiredHint = blockedReason === 'INGEST_PENDING_OCR';
                     const expectedPagesTotal = typeof readiness?.expected_pages_total === 'number' ? readiness.expected_pages_total : null;
                     const missingPagesTotal = typeof readiness?.missing_pages_total === 'number' ? readiness.missing_pages_total : null;
                     const dpuRowsTotal = typeof readiness?.dpu_rows_total === 'number' ? readiness.dpu_rows_total : null;
@@ -4165,7 +4168,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                       (missingPagesTotal ?? 0) > 0 &&
                       typeof elapsedSec === 'number' &&
                       elapsedSec >= 30 &&
-                      !hasExtractVisualsJobSinceGate;
+                      !hasExtractVisualsJobSinceGate &&
+                      !showOcrRequiredHint;
 
                     const statusLabel =
                       pageUnderstandingGate.status === 'timeout'
@@ -4248,6 +4252,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
                         {(pageUnderstandingGate.status === 'timeout' || pageUnderstandingGate.status === 'error') && pageUnderstandingGate.error ? (
                           <div className={`mt-2 ${darkMode ? 'text-amber-200' : 'text-amber-800'} text-[11px]`}>{pageUnderstandingGate.error}</div>
+                        ) : null}
+
+                        {showOcrRequiredHint ? (
+                          <div className={`mt-2 ${darkMode ? 'text-amber-200' : 'text-amber-800'} text-[11px]`}>
+                            OCR required for one or more PDFs. Pages will be rendered and OCR extracted before analysis can start.
+                          </div>
                         ) : null}
 
                         {showNoExtractHint ? (
@@ -4671,32 +4681,47 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           })()}
 
           <div className="mt-6">
-            <DealWorkspaceTopSection
-              darkMode={darkMode}
-              score={reportView.score}
-              scoreLabel={displayScoreLabel}
-              dealSummary={reportView.dealSummary}
-              dealSummaryTitle={reportView.dealSummaryTitle}
-              dealSummarySource={reportView.dealSummarySource}
-              strengths={topSectionStrengths}
-              weaknesses={topSectionWeaknesses}
-              raise={reportView.raise}
-              revenue={reportView.revenue}
-              revenueLabel={reportStructuredRevenueLabel}
-              revenueTooltip={reportStructuredRevenueTooltip}
-              growth={reportStructuredGrowthValue || topSectionGrowth}
-              growthLabel={reportStructuredGrowthLabel}
-              growthNote={reportStructuredGrowthNote}
-              growthTooltip={reportStructuredGrowthTooltip}
-              customers={reportView.customers}
-              customersLabel={reportStructuredCustomersLabel}
-              customersTooltip={reportStructuredCustomersTooltip}
-              businessModel={reportView.businessModel}
-              businessModelLabel={reportStructuredBusinessModelLabel || reportView.businessModelLabel}
-              dealType={reportView.dealType}
-              confidence={topSectionConfidence}
-              verified={decisionTileConfidenceBand === 'high'}
-            />
+            {(() => {
+              const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
+                ? (reportFromApi as any).metadata
+                : ((reportEnvelope as any)?.report?.metadata && typeof (reportEnvelope as any).report.metadata === 'object')
+                  ? (reportEnvelope as any).report.metadata
+                  : null;
+
+              return (
+                <DealWorkspaceTopSection
+                  darkMode={darkMode}
+                  score={reportView.score}
+                  scoreLabel={displayScoreLabel}
+                  scoreBandLabel={safeText((reportMeta as any)?.score_band_v2?.label)}
+                  hardPassGuardrailTriggered={Boolean((reportMeta as any)?.hard_pass_guardrail_v2?.triggered)}
+                  hardPassGuardrailNote={safeText((reportMeta as any)?.hard_pass_guardrail_v2?.note)}
+                  hardPassGuardrailCriteriaSnapshot={(reportMeta as any)?.hard_pass_guardrail_v2?.criteria_snapshot ?? null}
+                  decisionV1={(reportMeta as any)?.decision_v1 ?? null}
+                  dealSummary={reportView.dealSummary}
+                  dealSummaryTitle={reportView.dealSummaryTitle}
+                  dealSummarySource={reportView.dealSummarySource}
+                  strengths={topSectionStrengths}
+                  weaknesses={topSectionWeaknesses}
+                  raise={reportView.raise}
+                  revenue={reportView.revenue}
+                  revenueLabel={reportStructuredRevenueLabel}
+                  revenueTooltip={reportStructuredRevenueTooltip}
+                  growth={reportStructuredGrowthValue || topSectionGrowth}
+                  growthLabel={reportStructuredGrowthLabel}
+                  growthNote={reportStructuredGrowthNote}
+                  growthTooltip={reportStructuredGrowthTooltip}
+                  customers={reportView.customers}
+                  customersLabel={reportStructuredCustomersLabel}
+                  customersTooltip={reportStructuredCustomersTooltip}
+                  businessModel={reportView.businessModel}
+                  businessModelLabel={reportStructuredBusinessModelLabel || reportView.businessModelLabel}
+                  dealType={reportView.dealType}
+                  confidence={topSectionConfidence}
+                  verified={decisionTileConfidenceBand === 'high'}
+                />
+              );
+            })()}
           </div>
 
         </div>
@@ -5019,15 +5044,68 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                           <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
                             <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Findings / insights</div>
                             <div className="flex flex-wrap items-center gap-2">
-                              {typeof (reportFromApi as any)?.recommendation === 'string' ? (
-                                <span
-                                  className={`px-2 py-1 rounded-full text-xs border ${
-                                    darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
-                                  }`}
-                                >
-                                  Recommendation: {(reportFromApi as any).recommendation}
-                                </span>
-                              ) : null}
+                              {(() => {
+                                const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
+                                  ? (reportFromApi as any).metadata
+                                  : null;
+
+                                const decisionLabel = safeText((reportMeta as any)?.decision_v1?.label);
+                                const legacyRecommendation = safeText((reportMeta as any)?.legacy_recommendation_v0);
+                                const legacyGrade = safeText((reportMeta as any)?.legacy_grade_v0);
+                                const showLegacy = Boolean(legacyRecommendation || legacyGrade);
+
+                                return (
+                                  <>
+                                    {decisionLabel ? (
+                                      <span
+                                        className={`px-2 py-1 rounded-full text-xs border ${
+                                          darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
+                                        }`}
+                                      >
+                                        Decision: {decisionLabel}
+                                      </span>
+                                    ) : null}
+
+                                    {typeof (reportFromApi as any)?.recommendation === 'string' ? (
+                                      <span
+                                        className={`px-2 py-1 rounded-full text-xs border ${
+                                          darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
+                                        }`}
+                                      >
+                                        Recommendation: {(reportFromApi as any).recommendation}
+                                      </span>
+                                    ) : null}
+
+                                    {showLegacy ? (
+                                      <details className="px-2 py-1">
+                                        <summary className={`cursor-pointer select-none text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                          Legacy
+                                        </summary>
+                                        <div className={`mt-2 flex flex-wrap items-center gap-2 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                          {legacyRecommendation ? (
+                                            <span
+                                              className={`px-2 py-1 rounded-full text-xs border ${
+                                                darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
+                                              }`}
+                                            >
+                                              Legacy recommendation: {legacyRecommendation}
+                                            </span>
+                                          ) : null}
+                                          {legacyGrade ? (
+                                            <span
+                                              className={`px-2 py-1 rounded-full text-xs border ${
+                                                darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
+                                              }`}
+                                            >
+                                              Legacy grade: {legacyGrade}
+                                            </span>
+                                          ) : null}
+                                        </div>
+                                      </details>
+                                    ) : null}
+                                  </>
+                                );
+                              })()}
                               {typeof (reportFromApi as any)?.grade === 'string' ? (
                                 <span
                                   className={`px-2 py-1 rounded-full text-xs border ${
@@ -5046,6 +5124,33 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                   Score: {Math.round((reportFromApi as any).overallScore)}
                                 </span>
                               ) : null}
+
+                              {(() => {
+                                const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
+                                  ? (reportFromApi as any).metadata
+                                  : null;
+                                const baseline = reportMeta && typeof reportMeta === 'object'
+                                  ? (reportMeta as any)?.deterministic_score_preview_v1?.baseline
+                                  : null;
+                                const pinned = Boolean(baseline && typeof baseline === 'object' && (baseline as any).unadjusted_pinned === true);
+                                if (!pinned) return null;
+                                const reasonRaw = (baseline && typeof baseline === 'object' && typeof (baseline as any).unadjusted_pin_reason === 'string')
+                                  ? String((baseline as any).unadjusted_pin_reason).trim()
+                                  : '';
+                                const reason = reasonRaw.length > 0 ? reasonRaw : null;
+                                const label = (() => {
+                                  if (!reason) return null;
+                                  if (reason === 'low_coverage') return 'coverage_too_low';
+                                  if (reason === 'low_confidence') return 'confidence_too_low';
+                                  return reason;
+                                })();
+
+                                return (
+                                  <span className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                    {label ? `Pinned (${label})` : 'Pinned'}
+                                  </span>
+                                );
+                              })()}
                             </div>
 
                             {Array.isArray((reportFromApi as any)?.greenFlags) && (reportFromApi as any).greenFlags.length > 0 ? (

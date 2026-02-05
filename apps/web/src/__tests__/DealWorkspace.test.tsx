@@ -152,7 +152,12 @@ describe('DealWorkspace Job Center (live mode)', () => {
         recommendation: 'yes',
         greenFlags: ['Strong early signal'],
         sections: [{ id: 's1', title: 'Overview', content: 'Test content', evidence_ids: ['ev-1'] }],
-        metadata: { cycle_number: 1 },
+        metadata: {
+          cycle_number: 1,
+          deterministic_score_preview_v1: {
+            baseline: { unadjusted_pinned: true, unadjusted_pin_reason: 'low_coverage' },
+          },
+        },
       },
     } as any);
 
@@ -162,6 +167,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
       expect(screen.getByTestId('analysis-output-panel')).toBeInTheDocument();
     });
     expect(within(screen.getByTestId('analysis-output-panel')).getByText(/Analysis complete/i)).toBeInTheDocument();
+    expect(within(screen.getByTestId('analysis-output-panel')).getByText(/Pinned \(coverage_too_low\)/i)).toBeInTheDocument();
   });
 
   test('binds top summary tiles to ready report payload (score + executive summary + stage + structured tiles)', async () => {
@@ -199,6 +205,9 @@ describe('DealWorkspace Job Center (live mode)', () => {
               deal_type: 'Primary equity',
             },
           },
+          score_band_v2: { key: 'consider_caution', label: 'Consider (Caution)', overall_score: 50, thresholds_version: 'v2' },
+          hard_pass_guardrail_v2: { triggered: false, reason: null, note: null, criteria_snapshot: null },
+          decision_v1: { recommendation_key: 'consider', label: 'Consider (Caution)', severity: 'warn', reasons: ['band:consider_caution'] },
         },
       },
     } as any);
@@ -214,6 +223,9 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
     // Gauge uses /report overallScore.
     expect(screen.getByRole('img', { name: /50 out of 100/i })).toBeInTheDocument();
+
+    // Score band badge should render in the top section.
+    expect(within(top).getAllByText(/Consider \(Caution\)/i).length).toBeGreaterThan(0);
 
     // Top summary uses executive-summary section content when canonical deal_summary_v1 is not ready.
     expect(within(top).getAllByText(exec).length).toBeGreaterThan(0);
@@ -257,6 +269,59 @@ describe('DealWorkspace Job Center (live mode)', () => {
     const overviewBusinessModelRow = overviewBusinessModelLabel.closest('div');
     expect(overviewBusinessModelRow).not.toBeNull();
     expect(within(overviewBusinessModelRow as HTMLElement).getByText(/Usage-based SaaS/i)).toBeInTheDocument();
+  });
+
+  test('renders hard pass guardrail badge + note in DealWorkspace top section', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v1.0.0',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-01-02T00:00:00.000Z',
+    } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    const exec = 'Executive summary for guardrail deal.';
+    const note = 'Hard Pass guardrail: overall score is below 45 despite strong coverage and KPI presence.';
+
+    vi.mocked(apiGetDealReport).mockResolvedValueOnce({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-guardrail', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-rpt-guardrail-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 10,
+        recommendation: 'no',
+        sections: [{ id: 'executive-summary', title: 'Executive Summary', content: exec, evidence_ids: [] }],
+        structured_summary: {
+          raise: { value: '$2M Seed', confidence: 0.9, sources: [] },
+          business_model: { value: 'Usage-based SaaS', confidence: 0.9, sources: [] },
+          revenue: { value: { raw: '$1.2M', currency: 'USD', period: 'ARR', amount: null }, confidence: 0.8, sources: [] },
+          customers: { value: { count: 450, kind: 'customers', raw: null }, confidence: 0.7, sources: [] },
+        },
+        metadata: {
+          score_explanation: {
+            context: {
+              stage: 'in_diligence',
+              deal_type: 'Primary equity',
+            },
+          },
+          score_band_v2: { key: 'hard_pass', label: 'Hard Pass', overall_score: 10, thresholds_version: 'v2' },
+          hard_pass_guardrail_v2: { triggered: true, reason: 'low_score_despite_full_coverage', note, criteria_snapshot: { overall_score: 10 } },
+          decision_v1: { recommendation_key: 'hard_pass', label: 'Hard Pass', severity: 'danger', reasons: ['guardrail:hard_pass'] },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-rpt-guardrail-1' });
+
+    await waitFor(() => {
+      expect(screen.getAllByText(exec).length).toBeGreaterThan(0);
+    });
+
+    const top = screen.getByLabelText('Deal top summary');
+    expect(within(top).getByText(/Hard Pass \(Full Coverage\)/i)).toBeInTheDocument();
+    expect(within(top).getByText(note)).toBeInTheDocument();
   });
 
   test('Business Model tile prefers synthesized business_model_summary when report.ready=true (shows Synthesized badge)', async () => {

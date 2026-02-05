@@ -4,6 +4,16 @@ export type DealWorkspaceTopSectionProps = {
   darkMode: boolean;
   score: number; // 0-100
   scoreLabel?: string;
+  scoreBandLabel?: string | null;
+  hardPassGuardrailTriggered?: boolean;
+  hardPassGuardrailNote?: string | null;
+  hardPassGuardrailCriteriaSnapshot?: any | null;
+  decisionV1?: {
+    recommendation_key?: string;
+    label?: string;
+    severity?: 'danger' | 'warn' | 'info' | 'success';
+    reasons?: string[];
+  } | null;
   dealSummary: string;
   dealSummaryTitle?: string;
   dealSummarySource?: 'canonical' | 'legacy';
@@ -58,6 +68,11 @@ export function DealWorkspaceTopSection({
   darkMode,
   score,
   scoreLabel = 'Fundamentals score',
+  scoreBandLabel = null,
+  hardPassGuardrailTriggered = false,
+  hardPassGuardrailNote = null,
+  hardPassGuardrailCriteriaSnapshot = null,
+  decisionV1 = null,
   dealSummary,
   dealSummaryTitle = 'Deal Summary',
   dealSummarySource = 'legacy',
@@ -98,6 +113,13 @@ export function DealWorkspaceTopSection({
 
   const score0_100 = clampScore0_100(score);
   const tone = scoreTone(score0_100);
+
+  const decisionLabel = typeof decisionV1?.label === 'string' && decisionV1.label.trim() ? decisionV1.label.trim() : null;
+  const decisionReasons = Array.isArray(decisionV1?.reasons) ? decisionV1!.reasons!.filter((r) => typeof r === 'string' && r.trim()).slice(0, 12) : [];
+  const guardrailNote = typeof hardPassGuardrailNote === 'string' && hardPassGuardrailNote.trim() ? hardPassGuardrailNote.trim() : null;
+  const bandLabel = typeof scoreBandLabel === 'string' && scoreBandLabel.trim() ? scoreBandLabel.trim() : null;
+
+  const showDecisionDetails = Boolean(decisionLabel || decisionReasons.length > 0 || hardPassGuardrailCriteriaSnapshot);
 
   // SVG ring math (match story: r=85, viewBox 220)
   const radius = 85;
@@ -151,10 +173,40 @@ export function DealWorkspaceTopSection({
         <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-stretch">
           {/* Left: score donut (1/3 on desktop) */}
           <div className="md:col-span-4 flex items-center justify-center">
-            <div
-              className="relative w-full max-w-[260px] flex items-center justify-center"
-              aria-label={`${scoreLabel}: ${score0_100} out of 100`}
-            >
+            <div className="w-full max-w-[300px]">
+              {/* Deterministic band/guardrail badges */}
+              {(bandLabel || hardPassGuardrailTriggered) ? (
+                <div className="flex flex-wrap items-center justify-center gap-2 mb-3">
+                  {bandLabel ? (
+                    <span
+                      className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold border ${
+                        darkMode
+                          ? 'bg-white/5 text-zinc-200 border-white/10'
+                          : 'bg-white text-zinc-800 border-gray-200'
+                      }`}
+                    >
+                      {bandLabel}
+                    </span>
+                  ) : null}
+
+                  {hardPassGuardrailTriggered ? (
+                    <span className="inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold bg-red-500/15 text-red-200 border border-red-500/30">
+                      Hard Pass (Full Coverage)
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {hardPassGuardrailTriggered && guardrailNote ? (
+                <div className="text-xs text-center text-red-200/90 mb-3">
+                  {guardrailNote}
+                </div>
+              ) : null}
+
+              <div
+                className="relative w-full max-w-[260px] mx-auto flex items-center justify-center"
+                aria-label={`${scoreLabel}: ${score0_100} out of 100`}
+              >
               <svg
                 width="220"
                 height="220"
@@ -190,6 +242,44 @@ export function DealWorkspaceTopSection({
                 </div>
                 <div className="text-xs text-zinc-400 mt-2">{scoreLabel}</div>
               </div>
+            </div>
+
+            {showDecisionDetails ? (
+              <details className="mt-3">
+                <summary className={`cursor-pointer select-none text-xs ${darkMode ? 'text-zinc-300' : 'text-zinc-700'}`}>
+                  Details
+                </summary>
+                <div className={`mt-2 text-xs space-y-2 ${darkMode ? 'text-zinc-200' : 'text-zinc-800'}`}>
+                  {decisionLabel ? (
+                    <div>
+                      <span className="text-zinc-400">Recommendation:</span> <span className="font-semibold">{decisionLabel}</span>
+                    </div>
+                  ) : null}
+
+                  {decisionReasons.length > 0 ? (
+                    <div>
+                      <div className="text-zinc-400">Reasons</div>
+                      <ul className="list-disc pl-5 space-y-1">
+                        {decisionReasons.map((r) => (
+                          <li key={r}>{r}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  {hardPassGuardrailCriteriaSnapshot ? (
+                    <div>
+                      <div className="text-zinc-400">Guardrail snapshot</div>
+                      <div className={`mt-1 border rounded-lg p-2 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
+                        <pre className="whitespace-pre-wrap break-words text-[11px] leading-snug">
+                          {JSON.stringify(hardPassGuardrailCriteriaSnapshot, null, 2)}
+                        </pre>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </details>
+            ) : null}
             </div>
           </div>
 

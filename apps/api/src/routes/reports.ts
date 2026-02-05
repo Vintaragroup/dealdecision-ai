@@ -13,6 +13,7 @@ import type { Pool } from 'pg';
 import { z } from 'zod';
 import { compileDIOToReport, compileDIOToReportWithPromotedFacts } from '@dealdecision/core';
 import { buildDeterministicScoreInputsV1 } from '@dealdecision/core';
+import { computeDecisionV1, computeHardPassGuardrailV2, getScoreBandV2 } from '@dealdecision/core';
 import { loadPromotedFactsForDeal } from '../lib/promoted-facts';
 import { derivePromotedFactsFromDpuForDeal } from '../lib/promoted-facts-from-dpu';
 import { compileDealSummaryV1 } from '../lib/deal-summary-v1';
@@ -22,6 +23,7 @@ import { compileStructuredSummaryExtras } from '../lib/structured-summary-extras
 import { buildBusinessModelSummaryV1 } from '../lib/reports/business-model-summary';
 import { computeArchetypeSegmentDriftV1 } from '../lib/archetype-segment-drift-v1';
 import { computeOverrideQualityV1 } from '../lib/override-quality-v1';
+import { computeDeterministicModifierV1, computeDeterministicScorePreviewV1Diagnostics, shouldPinUnadjusted } from '../lib/deterministic-score-preview-v1';
 
 const isUuid = (value: unknown): value is string => z.string().uuid().safeParse(value).success;
 
@@ -32,38 +34,182 @@ const envFlagEnabled = (v: unknown): boolean => {
 
 const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
 
-function computeDeterministicModifierV1(inputs: any): { modifier: number; signal_strength: number; notes: string[] } {
-  const notes: string[] = [];
+const asFiniteNumber = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
-  const counts = (inputs && inputs.segments && inputs.segments.counts && typeof inputs.segments.counts === 'object')
-    ? inputs.segments.counts
-    : {};
-  const keySegments = ['market', 'product', 'traction', 'financials', 'team', 'go_to_market'];
-  const covered = keySegments.filter((k) => Number((counts as any)[k] ?? 0) > 0).length;
-  const segmentCoverage = keySegments.length > 0 ? covered / keySegments.length : 0;
+type ReportRecommendationV0 = 'strong_yes' | 'yes' | 'consider' | 'pass';
+type ReportGradeV0 = 'Excellent' | 'Good' | 'Fair' | 'Needs Improvement' | 'Insufficient Information';
 
-  const kpis: any[] = Array.isArray(inputs?.kpis) ? inputs.kpis : [];
-  const kpiCount = kpis.filter((k) => typeof k?.key === 'string').length;
-  const kpiAvgConf = kpis.length > 0
-    ? clamp01(kpis.reduce((sum, k) => sum + (typeof k?.confidence === 'number' ? k.confidence : 0), 0) / kpis.length)
-    : 0;
-  const kpiPresenceScore = clamp01(Math.min(1, kpiCount / 3) * (kpiAvgConf / 0.85));
-
-  const overrideRatio = (typeof inputs?.segments?.override_ratio === 'number') ? inputs.segments.override_ratio : null;
-  const overridePenalty = overrideRatio != null ? clamp01(overrideRatio) : 0;
-
-  const signalStrength = clamp01(0.6 * segmentCoverage + 0.4 * kpiPresenceScore - 0.2 * overridePenalty);
-
-  let modifier = 0.9 + 0.2 * signalStrength; // [0.9, 1.1]
-  if (overrideRatio != null && overrideRatio >= 0.25 && modifier > 1.0) {
-    modifier = 1.0;
-    notes.push('override_ratio>=0.25: boost capped to 1.0');
+function mapDecisionV1ToReportRecommendation(decisionKey: unknown): ReportRecommendationV0 | null {
+  if (typeof decisionKey !== 'string') return null;
+  switch (decisionKey) {
+    case 'hard_pass':
+      return 'pass';
+    case 'consider':
+      return 'consider';
+    case 'strong_consider':
+      return 'consider';
+    case 'fund_caution':
+      return 'yes';
+    case 'fund_track':
+      return 'yes';
+    case 'fund_confident':
+      return 'strong_yes';
+    default:
+      return null;
   }
+}
 
-  notes.push(`signal_strength=${signalStrength.toFixed(3)}`);
-  notes.push(`modifier=${modifier.toFixed(3)}`);
+function mapDecisionV1ToReportGrade(decisionKey: unknown): ReportGradeV0 | null {
+  if (typeof decisionKey !== 'string') return null;
+  switch (decisionKey) {
+    case 'hard_pass':
+      return 'Needs Improvement';
+    case 'consider':
+      return 'Fair';
+    case 'strong_consider':
+      return 'Good';
+    case 'fund_caution':
+      return 'Good';
+    case 'fund_track':
+      return 'Excellent';
+    case 'fund_confident':
+      return 'Excellent';
+    default:
+      return null;
+  }
+}
 
-  return { modifier, signal_strength: signalStrength, notes };
+function alignReportFieldsToDecisionV1(args: {
+  nextMetadata: any;
+  report: any;
+}): void {
+  try {
+    const meta = args.nextMetadata && typeof args.nextMetadata === 'object' ? args.nextMetadata : null;
+    const report = args.report && typeof args.report === 'object' ? args.report : null;
+    if (!meta || !report) return;
+
+    if (meta.decision_v1_report_alignment_v1 === true) return;
+
+    const decision = meta.decision_v1 && typeof meta.decision_v1 === 'object' ? meta.decision_v1 : null;
+    const decisionKey = (decision as any)?.recommendation_key;
+
+    const mappedRec = mapDecisionV1ToReportRecommendation(decisionKey);
+    const mappedGrade = mapDecisionV1ToReportGrade(decisionKey);
+    if (!mappedRec && !mappedGrade) return;
+
+    const existingRecommendation = typeof report.recommendation === 'string' ? (report.recommendation as string) : null;
+    const existingGrade = typeof report.grade === 'string' ? (report.grade as string) : null;
+
+    if (meta.legacy_recommendation_v0 == null && existingRecommendation) meta.legacy_recommendation_v0 = existingRecommendation;
+    if (meta.legacy_grade_v0 == null && existingGrade) meta.legacy_grade_v0 = existingGrade;
+
+    if (mappedRec) report.recommendation = mappedRec;
+    if (mappedGrade) report.grade = mappedGrade;
+
+    meta.decision_v1_report_alignment_v1 = true;
+  } catch {
+    // ignore
+  }
+}
+
+function attachScoreBandAndGuardrailV2(args: {
+  nextMetadata: any;
+  report: any;
+}): void {
+  try {
+    const meta = args.nextMetadata && typeof args.nextMetadata === 'object' ? args.nextMetadata : {};
+    const scoreExp = args.report?.metadata?.score_explanation ?? null;
+    const totals = scoreExp && scoreExp.totals ? scoreExp.totals : null;
+
+    const overall = asFiniteNumber(totals?.overall_score) ?? asFiniteNumber(args.report?.overallScore);
+    if (overall == null) return;
+
+    const band = getScoreBandV2(overall);
+    meta.score_band_v2 = {
+      key: band.key,
+      label: band.label,
+      overall_score: overall,
+      thresholds_version: 'v2',
+    };
+
+    const coverageRatio = asFiniteNumber(totals?.coverage_ratio);
+    const unadjusted = asFiniteNumber(totals?.unadjusted_overall_score);
+
+    const inputs = meta?.deterministic_score_inputs_v1 ?? null;
+    const kpisRaw: any[] = Array.isArray(inputs?.kpis) ? inputs.kpis : [];
+    const kpis = kpisRaw
+      .map((k) => ({
+        key: typeof k?.key === 'string' ? k.key : 'unknown',
+        confidence: asFiniteNumber(k?.confidence) ?? 0,
+        value_raw: (typeof k?.value_raw === 'string' ? k.value_raw : null),
+      }))
+      .filter((k) => typeof k.key === 'string');
+
+    const driftAssessment = (() => {
+      const drift = meta?.archetype_segment_drift_v1?.overall_assessment;
+      const a = typeof drift === 'string' && drift.trim() ? drift.trim() : null;
+      if (a) return a;
+      const fromInputs = inputs?.deck?.drift_assessment;
+      return (typeof fromInputs === 'string' && fromInputs.trim()) ? fromInputs.trim() : 'unknown';
+    })();
+
+    const guardrail = computeHardPassGuardrailV2({
+      overall_score: overall,
+      coverage_ratio: coverageRatio,
+      unadjusted_overall_score: unadjusted,
+      kpis,
+      drift_assessment: driftAssessment,
+    });
+
+    meta.hard_pass_guardrail_v2 = {
+      triggered: guardrail.triggered,
+      reason: guardrail.reason,
+      note: guardrail.note,
+      criteria_snapshot: guardrail.criteria_snapshot,
+    };
+
+    // Derived decision_v1: stable UI contract.
+    try {
+      const preview = meta?.deterministic_score_preview_v1 ?? null;
+      const blockedByDrift = Boolean(preview?.gate?.blocked_by_drift_misaligned);
+      const blockedByPinned = Boolean(preview?.gate?.blocked_by_unadjusted_pinned);
+
+      const overrideQuality = meta?.override_quality ?? null;
+      const overrideAssessment = typeof overrideQuality?.assessment === 'string' ? String(overrideQuality.assessment) : null;
+      const overrideRatio = asFiniteNumber(overrideQuality?.override_ratio);
+
+      const unadjustedPinned = Boolean((totals as any)?.unadjusted_pinned === true);
+      const unadjustedReason = (totals && typeof (totals as any).unadjusted_reason === 'string' && String((totals as any).unadjusted_reason).trim())
+        ? String((totals as any).unadjusted_reason).trim()
+        : null;
+
+      meta.decision_v1 = computeDecisionV1({
+        score_band_key: band.key,
+        score_band_label: band.label,
+        hard_pass_guardrail_triggered: guardrail.triggered,
+        hard_pass_guardrail_reason: guardrail.reason,
+        hard_pass_guardrail_note: guardrail.note,
+        drift_assessment: driftAssessment,
+        override_quality_assessment: overrideAssessment,
+        override_ratio: overrideRatio,
+        unadjusted_pinned: unadjustedPinned,
+        unadjusted_reason: unadjustedReason,
+        coverage_ratio: coverageRatio,
+        blocked_by_drift_misaligned: blockedByDrift,
+        blocked_by_unadjusted_pinned: blockedByPinned,
+      });
+    } catch {
+      // ignore
+    }
+
+    // Prompt 15: decision_v1 is the single source of truth for recommendation/grade.
+    // Preserve legacy values in metadata and ensure idempotency.
+    alignReportFieldsToDecisionV1({ nextMetadata: meta, report: args.report });
+
+    args.nextMetadata = meta;
+  } catch {
+    // Best-effort: never fail /report for metadata enrichment.
+  }
 }
 
 interface ReportParams {
@@ -271,21 +417,61 @@ export async function registerReportRoutes(
               const baseEvidence = (totals && typeof totals.evidence_factor === 'number') ? totals.evidence_factor : null;
               const baseDD = (totals && typeof totals.due_diligence_factor === 'number') ? totals.due_diligence_factor : null;
               const baseAdj = (totals && typeof totals.adjustment_factor === 'number') ? totals.adjustment_factor : null;
+              const coverageRatio = (totals && typeof (totals as any).coverage_ratio === 'number') ? (totals as any).coverage_ratio : null;
+              const scoreConfidence = (totals && typeof (totals as any).confidence_score === 'number') ? (totals as any).confidence_score : null;
+              const baseUnadjustedReason = (totals && typeof (totals as any).unadjusted_reason === 'string' && String((totals as any).unadjusted_reason).trim())
+                ? String((totals as any).unadjusted_reason).trim()
+                : null;
+              const baseUnadjustedMissing = (totals && Array.isArray((totals as any).unadjusted_missing_inputs))
+                ? ((totals as any).unadjusted_missing_inputs as any[]).map((x) => String(x)).filter((s) => s.trim())
+                : [];
               const baseUnadjusted = (totals && typeof totals.unadjusted_overall_score === 'number') ? totals.unadjusted_overall_score : null;
               const baseOverall = (totals && typeof totals.overall_score === 'number') ? totals.overall_score : (typeof (report as any)?.overallScore === 'number' ? (report as any).overallScore : null);
 
               const mod = computeDeterministicModifierV1(inputs);
 
-              const detEvidence = baseEvidence == null ? null : clamp01(baseEvidence * mod.modifier);
-              const detAdj = (detEvidence == null || baseDD == null) ? null : clamp01(detEvidence * baseDD);
-              const detOverall = (baseUnadjusted == null || detAdj == null)
+              const kpis: any[] = Array.isArray(inputs?.kpis) ? inputs.kpis : [];
+              const kpiCount = kpis.filter((k) => typeof k?.key === 'string' && k.key.trim()).length;
+
+              const pin = shouldPinUnadjusted({
+                coverageRatio,
+                kpiCount,
+                driftAssessment,
+                scoreConfidence,
+              });
+              const baseUnadjustedPinned = Boolean(pin.pinned || ((totals as any)?.unadjusted_pinned === true));
+              const baseUnadjustedPinReason = (pin.reason ?? null);
+
+              // When baseline unadjusted is pinned (low-signal), we keep the deterministic preview frozen to baseline.
+              // This prevents the preview from suggesting a score move that cannot be applied.
+              let detEvidence = baseEvidence == null ? null : clamp01(baseEvidence * mod.modifier);
+              let detAdj = (detEvidence == null || baseDD == null) ? null : clamp01(detEvidence * baseDD);
+              let detOverall = (baseUnadjusted == null || detAdj == null)
                 ? null
                 : Math.round(baseUnadjusted * detAdj + 50 * (1 - detAdj));
 
-              const canApply = Boolean(enabled && !driftMisaligned && detOverall != null && scoreExp && totals);
+              if (baseUnadjustedPinned) {
+                detEvidence = baseEvidence;
+                detAdj = baseAdj;
+                detOverall = baseOverall;
+              }
+
+              const deltaOverallScore = (baseOverall != null && detOverall != null) ? (detOverall - baseOverall) : null;
+
+              const canApply = Boolean(enabled && !driftMisaligned && !baseUnadjustedPinned && detOverall != null && scoreExp && totals);
               const appliedParts = canApply
                 ? ['score_explanation.totals.evidence_factor', 'score_explanation.totals.adjustment_factor', 'score_explanation.totals.overall_score', 'report.overallScore']
                 : [];
+
+              const deltaDiagnostics = computeDeterministicScorePreviewV1Diagnostics({
+                applied: canApply,
+                delta_overall_score: deltaOverallScore,
+                base_unadjusted_overall_score: baseUnadjusted,
+                base_adjustment_factor: baseAdj,
+                det_adjustment_factor: detAdj,
+                base_evidence_factor: baseEvidence,
+                det_evidence_factor: detEvidence,
+              });
 
               (nextMetadata as any).deterministic_score_inputs_v1 = inputs;
               (nextMetadata as any).deterministic_score_preview_v1 = {
@@ -294,7 +480,9 @@ export async function registerReportRoutes(
                 gate: {
                   drift_assessment: driftAssessment,
                   blocked_by_drift_misaligned: driftMisaligned,
+                  blocked_by_unadjusted_pinned: baseUnadjustedPinned,
                 },
+                notes: baseUnadjustedPinned ? ['pinned_unadjusted'] : [],
                 inputs_hash: inputs.inputs_hash,
                 modifier_v1: {
                   signal_strength: mod.signal_strength,
@@ -304,6 +492,10 @@ export async function registerReportRoutes(
                 baseline: {
                   overall_score: baseOverall,
                   unadjusted_overall_score: baseUnadjusted,
+                  unadjusted_pinned: baseUnadjustedPinned,
+                  unadjusted_pin_reason: baseUnadjustedPinReason,
+                  unadjusted_reason: baseUnadjustedReason,
+                  unadjusted_missing_inputs: baseUnadjustedMissing,
                   evidence_factor: baseEvidence,
                   due_diligence_factor: baseDD,
                   adjustment_factor: baseAdj,
@@ -313,7 +505,11 @@ export async function registerReportRoutes(
                   evidence_factor: detEvidence,
                   adjustment_factor: detAdj,
                 },
-                delta_overall_score: (baseOverall != null && detOverall != null) ? (detOverall - baseOverall) : null,
+                delta_overall_score: deltaOverallScore,
+                delta_unrounded_overall: deltaDiagnostics.delta_unrounded_overall,
+                delta_adjustment_factor: deltaDiagnostics.delta_adjustment_factor,
+                delta_evidence_factor: deltaDiagnostics.delta_evidence_factor,
+                rounding_note: deltaDiagnostics.rounding_note,
                 applied: canApply,
                 applied_parts: appliedParts,
               };
@@ -338,11 +534,26 @@ export async function registerReportRoutes(
               request.log.warn({ event: 'deal.report.deterministic_score_inputs_failed', deal_id, dio_id: row.dio_id, err }, 'deterministic score inputs v1 failed');
             }
 
+            // Score bands v2 + hard-pass guardrail v2 (metadata only; does not alter score).
+            attachScoreBandAndGuardrailV2({ nextMetadata, report });
+
             (payload as any).metadata = nextMetadata;
             if (report && typeof report === 'object') (report as any).metadata = nextMetadata;
           }
         } catch (err) {
           request.log.warn({ event: 'deal.report.deck_archetype_failed', deal_id, dio_id: row.dio_id, err }, 'deck_archetype_v1 inference failed');
+        }
+
+        // Always attach score band v2 + guardrail v2 when a score exists (best-effort).
+        try {
+          if (report && typeof report === 'object') {
+            const nextMetadata = { ...((report as any)?.metadata ?? (payload as any)?.metadata ?? {}) };
+            attachScoreBandAndGuardrailV2({ nextMetadata, report });
+            (payload as any).metadata = nextMetadata;
+            (report as any).metadata = nextMetadata;
+          }
+        } catch {
+          // ignore
         }
 
         if (Array.isArray(promotedFacts) && promotedFacts.length > 0) {
@@ -459,10 +670,35 @@ export async function registerReportRoutes(
               structured_summary: (report as any)?.structured_summary ?? null,
             });
             nextMetadata.override_quality = computeOverrideQualityV1(segmented.nodes as any);
+
+            // Best-effort: also attach deterministic score inputs v1 (for KPIs/drift) so guardrail can be evaluated.
+            try {
+              const inputs = buildDeterministicScoreInputsV1({
+                structured_summary: (report as any)?.structured_summary ?? null,
+                segmented_nodes: segmented.nodes as any,
+                metadata: nextMetadata,
+              });
+              (nextMetadata as any).deterministic_score_inputs_v1 = inputs;
+            } catch {
+              // ignore
+            }
+
+            attachScoreBandAndGuardrailV2({ nextMetadata, report });
             (report as any).metadata = nextMetadata;
           }
         } catch (err) {
           request.log.warn({ event: 'deal.report.version.deck_archetype_failed', deal_id, version: versionNum, err }, 'deck_archetype_v1 inference failed (versioned)');
+        }
+
+        // Always attach score band v2 + guardrail v2 when a score exists (best-effort).
+        try {
+          if (report && typeof report === 'object') {
+            const nextMetadata = { ...((report as any)?.metadata ?? {}) };
+            attachScoreBandAndGuardrailV2({ nextMetadata, report });
+            (report as any).metadata = nextMetadata;
+          }
+        } catch {
+          // ignore
         }
         
         const endTs = Date.now();

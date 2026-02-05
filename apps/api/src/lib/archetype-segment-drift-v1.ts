@@ -47,6 +47,22 @@ function severityFromDelta(delta: number): "info" | "warn" | "critical" {
   return "critical";
 }
 
+function kpiEvidencePresent(structured_summary: any): boolean {
+  const ss = structured_summary && typeof structured_summary === "object" ? structured_summary : null;
+  if (!ss) return false;
+
+  const hasValue = (field: any): boolean => {
+    if (!field || typeof field !== "object") return false;
+    const direct = typeof field.value === "string" ? field.value.trim() : "";
+    const raw = typeof field.value?.raw === "string" ? field.value.raw.trim() : "";
+    return Boolean(direct || raw);
+  };
+
+  // Deterministic interpretation: "KPI evidence" here means the structured_summary
+  // contains a non-empty revenue or customers value (promoted or derived).
+  return hasValue(ss.revenue) || hasValue(ss.customers);
+}
+
 function hasSynthesisBackedBusinessModel(structured_summary: any): { ok: boolean; confidence: number } {
   const structured = structured_summary && typeof structured_summary === "object" ? structured_summary : null;
   const bm = structured
@@ -85,6 +101,8 @@ export function computeArchetypeSegmentDriftV1(input: {
   const expected = getDeckArchetypeExpectedSegmentsV1(deck.key);
   const segment_counts = deck.segment_counts ?? {};
 
+  const coreSegments: AnalystSegment[] = ["product", "market", "traction"];
+
   const segment_analysis: ArchetypeSegmentDriftV1["segment_analysis"] = expected.map((e) => {
     const observed = countFor(segment_counts, e.segment);
     const status = computeStatus({ observed, expected_min: e.expected_min, expected_max: e.expected_max });
@@ -97,6 +115,20 @@ export function computeArchetypeSegmentDriftV1(input: {
       status: status.status,
       severity,
     };
+  });
+
+  const rowBySegment = new Map<string, (typeof segment_analysis)[number]>();
+  for (const row of segment_analysis) rowBySegment.set(row.segment_key, row);
+
+  const coreMissing = coreSegments.some((s) => {
+    const row = rowBySegment.get(s);
+    if (!row) return true;
+    return row.observed_count < row.expected_min;
+  });
+  const corePresent = coreSegments.every((s) => {
+    const row = rowBySegment.get(s);
+    if (!row) return false;
+    return row.observed_count >= Math.max(1, row.expected_min);
   });
 
   const compensating_patterns: ArchetypeSegmentDriftV1["compensating_patterns"] = [];
@@ -117,8 +149,69 @@ export function computeArchetypeSegmentDriftV1(input: {
           : "Archetype diagnostics indicate business_model was satisfied by synthesis under strict rules.",
       });
       structural_notes.push("Business model coverage is structurally light, but compensated by a synthesized, provenance-backed business model summary.");
+
+      // Deterministic severity dampening: compensated required segment should not remain critical.
+      if (businessModelRow.severity === "critical") businessModelRow.severity = "warn";
     } else {
       structural_notes.push("Business model coverage is structurally light and not compensated by synthesis.");
+    }
+  }
+
+  // Archetype-aware severity overrides (consumer_apparel_dtc only).
+  if (deck.key === "consumer_apparel_dtc") {
+    const teamRow = rowBySegment.get("team") ?? null;
+    if (teamRow && teamRow.status === "overrepresented") {
+      const over = Math.max(0, teamRow.observed_count - teamRow.expected_max);
+      if (over <= 4) {
+        teamRow.severity = "warn";
+      } else {
+        teamRow.severity = coreMissing ? "critical" : "warn";
+      }
+    }
+
+    const finRow = rowBySegment.get("financials") ?? null;
+    if (finRow && finRow.status === "overrepresented") {
+      const over = Math.max(0, finRow.observed_count - finRow.expected_max);
+      if (over <= 1) {
+        finRow.severity = "warn";
+      } else {
+        const marketMissing = (rowBySegment.get("market")?.observed_count ?? 0) < (rowBySegment.get("market")?.expected_min ?? 1);
+        const tractionMissing = (rowBySegment.get("traction")?.observed_count ?? 0) < (rowBySegment.get("traction")?.expected_min ?? 1);
+        finRow.severity = (over >= 2 && (marketMissing || tractionMissing)) ? "critical" : "warn";
+      }
+    }
+  }
+
+  // Explicit compensation patterns (deterministic, consumer_apparel_dtc only).
+  if (deck.key === "consumer_apparel_dtc") {
+    const teamRow = rowBySegment.get("team") ?? null;
+    if (teamRow && teamRow.status === "overrepresented" && corePresent) {
+      compensating_patterns.push({
+        missing_segment: "team_overrep_compensated_by_core_segments",
+        compensated_by: coreSegments,
+        rationale: "Team coverage exceeds typical expectations, but product/market/traction are present. This is common in hiring-forward consumer decks.",
+      });
+      if (teamRow.severity === "critical") teamRow.severity = "warn";
+
+      const hasKpis = kpiEvidencePresent(input.structured_summary);
+      structural_notes.push(
+        hasKpis
+          ? "Team coverage exceeds typical expectations for consumer_apparel_dtc decks; however, required segments (product, market, traction) are present and KPI evidence is available. This pattern is common for hiring-forward decks and does not indicate structural misalignment."
+          : "Team coverage exceeds typical expectations for consumer_apparel_dtc decks; however, required segments (product, market, traction) are present. This pattern is common for hiring-forward decks and does not indicate structural misalignment."
+      );
+    }
+
+    const marketRow = rowBySegment.get("market") ?? null;
+    const tractionRow = rowBySegment.get("traction") ?? null;
+    const hasKpis = kpiEvidencePresent(input.structured_summary);
+    if (marketRow && marketRow.status === "overrepresented" && (tractionRow?.observed_count ?? 0) >= 1 && hasKpis) {
+      compensating_patterns.push({
+        missing_segment: "market_overrep_compensated_by_traction_and_kpis",
+        compensated_by: ["traction", "kpi:revenue_or_customers"],
+        rationale: "Market coverage exceeds typical expectations, but traction is present and KPI evidence exists (revenue or customers).",
+      });
+      if (marketRow.severity === "critical") marketRow.severity = "warn";
+      structural_notes.push("Market coverage is heavy, but compensated by traction presence and KPI evidence (revenue/customers). This does not indicate structural misalignment.");
     }
   }
 
@@ -136,22 +229,61 @@ export function computeArchetypeSegmentDriftV1(input: {
     }
   }
 
-  // Overall assessment: penalize warn=1, critical=2, but reduce penalty for compensated gaps.
-  let penalty = 0;
-  let hasCritical = false;
-  for (const row of segment_analysis) {
-    if (row.severity === "warn") penalty += 1;
-    if (row.severity === "critical") {
-      penalty += 2;
-      hasCritical = true;
-    }
-  }
-  for (const cp of compensating_patterns) {
-    if (cp.missing_segment === "business_model") penalty = Math.max(0, penalty - 1);
-  }
+  const requiredSegments = expected
+    .filter((e) => e.expected_min > 0)
+    .map((e) => String(e.segment));
 
-  const overall_assessment: ArchetypeSegmentDriftV1["overall_assessment"] =
-    hasCritical ? "misaligned" : penalty === 0 ? "aligned" : penalty <= 2 ? "mostly_aligned" : "misaligned";
+  const productMissing = (rowBySegment.get("product")?.observed_count ?? 0) < (rowBySegment.get("product")?.expected_min ?? 1);
+  const marketMissing = (rowBySegment.get("market")?.observed_count ?? 0) < (rowBySegment.get("market")?.expected_min ?? 1);
+  const tractionMissing = (rowBySegment.get("traction")?.observed_count ?? 0) < (rowBySegment.get("traction")?.expected_min ?? 1);
+
+  const unknownRow = rowBySegment.get("unknown") ?? null;
+  const unknownHardCritical = Boolean(
+    unknownRow &&
+    unknownRow.status === "overrepresented" &&
+    (unknownRow.observed_count - unknownRow.expected_max) >= 2
+  );
+
+  const raiseTermsRow = rowBySegment.get("raise_terms") ?? null;
+  const raiseTermsHardCritical = Boolean(
+    raiseTermsRow &&
+    raiseTermsRow.status === "overrepresented" &&
+    (productMissing || tractionMissing)
+  );
+
+  // Preserve strictness for compliance archetype: extreme operations dominance is a structural blocker.
+  const operationsRow = rowBySegment.get("operations") ?? null;
+  const complianceOpsHardCritical = Boolean(
+    deck.key === "enterprise_saas_compliance" &&
+    operationsRow &&
+    operationsRow.status === "overrepresented" &&
+    (operationsRow.observed_count - operationsRow.expected_max) >= 2
+  );
+
+  const hasHardCritical =
+    productMissing ||
+    marketMissing ||
+    tractionMissing ||
+    unknownHardCritical ||
+    raiseTermsHardCritical ||
+    complianceOpsHardCritical;
+
+  const criticalRequiredCount = segment_analysis.filter(
+    (r) => r.severity === "critical" && requiredSegments.includes(String(r.segment_key))
+  ).length;
+
+  const hasCritical = segment_analysis.some((r) => r.severity === "critical");
+  const hasWarn = segment_analysis.some((r) => r.severity === "warn");
+
+  const overall_assessment: ArchetypeSegmentDriftV1["overall_assessment"] = hasHardCritical
+    ? "misaligned"
+    : criticalRequiredCount >= 2
+      ? "misaligned"
+      : hasCritical
+        ? "mostly_aligned"
+        : hasWarn
+          ? "mostly_aligned"
+          : "aligned";
 
   // Ensure deterministic ordering, de-dupe notes.
   const notes = Array.from(new Set(structural_notes)).slice(0, 32);

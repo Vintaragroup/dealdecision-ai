@@ -12,6 +12,8 @@ import { classifyBusinessModelEvidenceFromDpuSlide } from "../lib/promoted-facts
 import { inferSegmentFromTitleRuleId, segmentDpuPage } from "../lib/segment-dpu-page";
 import { normalizeAnalystSegment } from "../lib/analyst-segment";
 import { getDeckArchetypeExpectedSegmentsV1 } from "../lib/deck-archetypes";
+import { buildUiPreviewV1 } from "../lib/ui-preview-v1";
+import { detectDeterministicScoreV1EnvSource, isDockerRuntime, registerDashboardDebugEnvRoutes } from "./dashboard-debug-env";
 import type { Pool } from "pg";
 import { z } from "zod";
 
@@ -323,6 +325,8 @@ function buildInclusionDecisions(scoreExplanation: any) {
 }
 
 export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool = getPool()) {
+	// Lightweight, no-DB debug route for verifying container runtime env.
+	await registerDashboardDebugEnvRoutes(app);
 
   /**
    * Main Dashboard HTML Page
@@ -2071,6 +2075,18 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           + '</div>';
       }
 
+      // Browser-safe helper: never throws. The dashboard HTML runs in the browser,
+      // so it must not depend on Node-only globals like process.env.
+      function detectDeterministicScoreV1EnvSource(preview) {
+        try {
+          if (!preview || typeof preview !== 'object') return 'missing';
+          if (typeof preview.enabled !== 'boolean') return 'missing';
+          return 'process.env';
+        } catch {
+          return 'missing';
+        }
+      }
+
       function renderDeterministicScoreInputsPanel() {
         const meta = payload && payload.report && payload.report.metadata ? payload.report.metadata : null;
         const inputs = meta && meta.deterministic_score_inputs_v1 ? meta.deterministic_score_inputs_v1 : null;
@@ -2092,6 +2108,9 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         const blocked = Boolean(preview && preview.gate && preview.gate.blocked_by_drift_misaligned);
         const applied = Boolean(preview && preview.applied);
 
+        const envSource = detectDeterministicScoreV1EnvSource(preview);
+        const envDisplay = enabled ? 'true' : 'false';
+
         const badge = (() => {
           if (applied) return '<span class="badge badge-success">applied</span>';
           if (!enabled) return '<span class="badge badge-muted">disabled</span>';
@@ -2107,9 +2126,42 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         const baseline = preview && preview.baseline ? preview.baseline : {};
         const det = preview && preview.deterministic ? preview.deterministic : {};
         const delta = (preview && typeof preview.delta_overall_score === 'number') ? preview.delta_overall_score : null;
+        const deltaUnrounded = (preview && typeof preview.delta_unrounded_overall === 'number') ? preview.delta_unrounded_overall : null;
+        const deltaEvidence = (preview && typeof preview.delta_evidence_factor === 'number') ? preview.delta_evidence_factor : null;
+        const deltaAdj = (preview && typeof preview.delta_adjustment_factor === 'number') ? preview.delta_adjustment_factor : null;
+        const roundingNote = (preview && typeof preview.rounding_note === 'string' && preview.rounding_note.trim()) ? preview.rounding_note.trim() : null;
+
+        const baselineUnadjusted = (baseline && typeof baseline.unadjusted_overall_score === 'number') ? baseline.unadjusted_overall_score : null;
+        const baselinePinned = Boolean(
+          (baseline && baseline.unadjusted_pinned === true)
+          || (preview && preview.gate && preview.gate.blocked_by_unadjusted_pinned)
+          || (Array.isArray(preview?.notes) && preview.notes.includes('pinned_unadjusted'))
+        );
+        const showPinnedBadge = baselinePinned;
+        const unadjustedReason = (baseline && typeof baseline.unadjusted_reason === 'string' && baseline.unadjusted_reason.trim()) ? baseline.unadjusted_reason.trim() : null;
+        const unadjustedPinReason = (baseline && typeof baseline.unadjusted_pin_reason === 'string' && baseline.unadjusted_pin_reason.trim()) ? baseline.unadjusted_pin_reason.trim() : null;
+
+        const scoreBand = meta && meta.score_band_v2 ? meta.score_band_v2 : null;
+        const scoreBandLabel = (scoreBand && typeof scoreBand.label === 'string' && scoreBand.label.trim()) ? scoreBand.label.trim() : null;
+        const scoreBandKey = (scoreBand && typeof scoreBand.key === 'string' && scoreBand.key.trim()) ? scoreBand.key.trim() : null;
+        const scoreBandBadgeClass = (() => {
+          if (scoreBandKey === 'hard_pass') return 'badge-danger';
+          if (scoreBandKey === 'consider_caution') return 'badge-warn';
+          if (scoreBandKey === 'strong_consider') return 'badge-warn';
+          if (scoreBandKey === 'fund_caution') return 'badge-warn';
+          if (scoreBandKey === 'fund_track') return 'badge-success';
+          if (scoreBandKey === 'fund_confident') return 'badge-success';
+          return 'badge-muted';
+        })();
+
+        const guardrail = meta && meta.hard_pass_guardrail_v2 ? meta.hard_pass_guardrail_v2 : null;
+        const guardrailTriggered = Boolean(guardrail && guardrail.triggered === true);
+        const guardrailNote = (guardrail && typeof guardrail.note === 'string' && guardrail.note.trim()) ? guardrail.note.trim() : null;
 
         const fmt = (v) => (typeof v === 'number' && Number.isFinite(v)) ? String(v) : '-';
         const fmt2 = (v) => (typeof v === 'number' && Number.isFinite(v)) ? v.toFixed(2) : '-';
+        const fmt3 = (v) => (typeof v === 'number' && Number.isFinite(v)) ? v.toFixed(3) : '-';
+        const fmtSigned3 = (v) => (typeof v === 'number' && Number.isFinite(v)) ? ((v > 0 ? '+' : '') + v.toFixed(3)) : '-';
 
         const kpis = Array.isArray(inputs.kpis) ? inputs.kpis : [];
         const kpiRows = kpis.length === 0
@@ -2130,20 +2182,50 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
                 + '</tr>';
             }).join('');
 
-        const envLine = '<div class="muted">DETERMINISTIC_SCORE_V1_ENABLED=<span class="mono">' + escapeHtml(enabled ? 'true' : 'false') + '</span></div>';
+        const envLine = '<div class="muted">DETERMINISTIC_SCORE_V1_ENABLED=<span class="mono">' + escapeHtml(envDisplay) + '</span></div>';
+        const envSourceLine = '<div class="muted">env_source=<span class="mono">' + escapeHtml(envSource) + '</span></div>';
         const driftLine = '<div class="muted">drift=<span class="mono">' + escapeHtml(drift) + '</span></div>';
         const hashLine = '<div class="muted">inputs_hash=<span class="mono">' + escapeHtml(inputsHash ? inputsHash.slice(0, 16) + '…' : '-') + '</span></div>';
         const nodesLine = '<div class="muted">total_nodes=<span class="mono">' + escapeHtml(totalNodes != null ? String(totalNodes) : '-') + '</span></div>';
         const overrideLine = '<div class="muted">override_ratio=<span class="mono">' + escapeHtml(overrideRatio != null ? overrideRatio.toFixed(2) : '-') + '</span></div>';
 
+        const missingInsideContainerLine = envSource === 'missing'
+          ? '<div class="muted" style="margin-top:0.25rem;">Flag is not set inside container. Add to <span class="mono">.env.docker.local</span> and recreate <span class="mono">api_dev</span>.</div>'
+          : '';
+
         const scoreLine = ''
+          + '<div class="muted" style="margin-top:0.5rem;">'
+          + (scoreBandLabel
+            ? ('<div style="margin-bottom:0.25rem;"><span class="badge ' + escapeHtml(scoreBandBadgeClass) + '">Score band: ' + escapeHtml(scoreBandLabel) + '</span></div>')
+            : '')
+          + (guardrailTriggered
+            ? ('<div class="badge badge-danger" style="margin-bottom:0.25rem;">Hard Pass guardrail triggered</div>'
+              + (guardrailNote ? ('<div class="muted" style="margin-top:0.1rem;">' + escapeHtml(guardrailNote) + '</div>') : '')
+            )
+            : '')
+          + 'baseline_unadjusted=<span class="mono">' + escapeHtml(baselineUnadjusted != null ? String(baselineUnadjusted) : '-') + '</span>'
+          + '</div>'
+          + (showPinnedBadge
+            ? '<div class="badge badge-danger" style="margin-top:0.5rem;">Pinned: baseline unadjusted score is not trusted' + (unadjustedPinReason ? (' (' + escapeHtml(unadjustedPinReason) + ')') : '') + '</div>'
+            : '')
+          + (unadjustedReason
+            ? ('<div class="muted" style="margin-top:0.25rem;">' + escapeHtml(unadjustedReason) + '</div>')
+            : '')
           + '<div class="muted" style="margin-top:0.5rem;">'
           + 'baseline_overall=<span class="mono">' + escapeHtml(fmt(baseline.overall_score)) + '</span>'
           + ' → deterministic_overall=<span class="mono">' + escapeHtml(fmt(det.overall_score)) + '</span>'
           + (delta != null ? (' <span class="pill">Δ ' + escapeHtml(String(delta)) + '</span>') : '')
           + '</div>'
-          + '<div class="muted">baseline_adjustment=<span class="mono">' + escapeHtml(fmt2(baseline.adjustment_factor)) + '</span>'
-          + ' → deterministic_adjustment=<span class="mono">' + escapeHtml(fmt2(det.adjustment_factor)) + '</span></div>';
+          + '<div class="muted">baseline_evidence=<span class="mono">' + escapeHtml(fmt3(baseline.evidence_factor)) + '</span>'
+          + ' → deterministic_evidence=<span class="mono">' + escapeHtml(fmt3(det.evidence_factor)) + '</span>'
+          + (deltaEvidence != null ? (' <span class="pill">Δ ' + escapeHtml(fmtSigned3(deltaEvidence)) + '</span>') : '')
+          + '</div>'
+          + '<div class="muted">baseline_adjustment=<span class="mono">' + escapeHtml(fmt3(baseline.adjustment_factor)) + '</span>'
+          + ' → deterministic_adjustment=<span class="mono">' + escapeHtml(fmt3(det.adjustment_factor)) + '</span>'
+          + (deltaAdj != null ? (' <span class="pill">Δ ' + escapeHtml(fmtSigned3(deltaAdj)) + '</span>') : '')
+          + '</div>'
+          + '<div class="muted">delta_unrounded_overall=<span class="mono">' + escapeHtml(fmtSigned3(deltaUnrounded)) + '</span></div>'
+          + (roundingNote ? ('<div class="muted" style="margin-top:0.25rem;">' + escapeHtml(roundingNote) + '</div>') : '');
 
         const blockedWarn = blocked
           ? '<div class="badge badge-danger" style="margin-top:0.5rem;">Blocked: drift misaligned</div>'
@@ -2156,8 +2238,9 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           +     badge
           +   '</div>'
           +   '<div style="display:flex; gap:0.75rem; flex-wrap:wrap; align-items:baseline; margin-top:0.25rem;">'
-          +     envLine + driftLine + hashLine + nodesLine + overrideLine
+          +     envLine + envSourceLine + driftLine + hashLine + nodesLine + overrideLine
           +   '</div>'
+          +   missingInsideContainerLine
           +   blockedWarn
           +   scoreLine
           +   '<div class="muted" style="margin-top:0.75rem;">KPIs (from structured_summary)</div>'
@@ -2165,6 +2248,178 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           +     '<thead><tr><th>kpi</th><th>confidence</th><th>page</th><th>value_raw</th></tr></thead>'
           +     '<tbody>' + kpiRows + '</tbody>'
           +   '</table>'
+          + '</div>';
+      }
+
+      function renderUiPreviewV1Panel() {
+        const meta = payload && payload.report && payload.report.metadata ? payload.report.metadata : null;
+        const ui = meta && meta.ui_preview_v1 ? meta.ui_preview_v1 : null;
+        const title = '<div><strong>UI Preview (v1)</strong></div>';
+
+        if (!ui || typeof ui !== 'object') {
+          return ''
+            + '<div style="border-top: 1px solid #e2e8f0; padding-top: 0.75rem; margin-top: 0.75rem;">'
+            +   '<div style="display:flex; gap:0.75rem; flex-wrap:wrap; align-items:baseline;">'
+            +     title
+            +     '<div class="muted">No report.metadata.ui_preview_v1 present.</div>'
+            +   '</div>'
+            + '</div>';
+        }
+
+        const tiles = ui.header_tiles && typeof ui.header_tiles === 'object' ? ui.header_tiles : {};
+        const score = ui.score && typeof ui.score === 'object' ? ui.score : {};
+        const summaries = ui.summaries && typeof ui.summaries === 'object' ? ui.summaries : {};
+        const citations = ui.citations && typeof ui.citations === 'object' ? ui.citations : {};
+
+        const badge = (kind) => {
+          const k = String(kind || '');
+          if (k === 'synthesized') return '<span class="badge badge-info">synthesized</span>';
+          if (k === 'promoted') return '<span class="badge badge-warn">promoted</span>';
+          if (k === 'none') return '<span class="badge badge-muted">none</span>';
+          return '<span class="badge badge-muted">-</span>';
+        };
+
+        const scoreBadge = (() => {
+          const enabled = Boolean(score.enabled);
+          const applied = Boolean(score.applied);
+          const blocked = Boolean(score.blocked_by_drift_misaligned);
+          if (applied) return '<span class="badge badge-success">applied</span>';
+          if (!enabled) return '<span class="badge badge-muted">disabled</span>';
+          if (blocked) return '<span class="badge badge-danger">blocked</span>';
+          return '<span class="badge badge-warn">preview</span>';
+        })();
+
+        const tileCard = (label, value, right) => {
+          return ''
+            + '<div style="border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.5rem 0.6rem; min-width: 220px;">'
+            +   '<div class="muted" style="display:flex; justify-content:space-between; gap:0.5rem;">'
+            +     '<span>' + escapeHtml(String(label || '')) + '</span>'
+            +     (right ? ('<span>' + right + '</span>') : '')
+            +   '</div>'
+            +   '<div style="margin-top:0.2rem; font-weight:600;">' + escapeHtml(String(value || '-')) + '</div>'
+            + '</div>';
+        };
+
+        const fmt = (v) => (typeof v === 'number' && Number.isFinite(v)) ? String(v) : '-';
+        const fmt2 = (v) => (typeof v === 'number' && Number.isFinite(v)) ? v.toFixed(2) : '-';
+
+        const raise = tiles.raise && typeof tiles.raise === 'object' ? tiles.raise : {};
+        const revenue = tiles.revenue && typeof tiles.revenue === 'object' ? tiles.revenue : {};
+        const growth = tiles.growth && typeof tiles.growth === 'object' ? tiles.growth : {};
+        const customers = tiles.customers && typeof tiles.customers === 'object' ? tiles.customers : {};
+        const bm = tiles.business_model && typeof tiles.business_model === 'object' ? tiles.business_model : {};
+        const dealType = tiles.deal_type && typeof tiles.deal_type === 'object' ? tiles.deal_type : {};
+        const conf = tiles.confidence && typeof tiles.confidence === 'object' ? tiles.confidence : {};
+
+        const bmTrace = bm.selection_trace && typeof bm.selection_trace === 'object' ? bm.selection_trace : {};
+        const bmRight = badge(bm.badge);
+        const bmValue = bm.value != null ? String(bm.value) : '-';
+        const bmTraceLine = ''
+          + '<div class="muted" style="margin-top:0.15rem;">'
+          +   '<span class="mono">selected_from</span>=' + escapeHtml(String(bmTrace.selected_from || '-'))
+          +   ' <span class="mono">reason</span>=' + escapeHtml(String(bmTrace.reason || '-'))
+          + '</div>';
+
+        const confidenceRight = (() => {
+          const verified = Boolean(conf.verified);
+          return verified ? '<span class="badge badge-success">verified</span>' : '<span class="badge badge-muted">unverified</span>';
+        })();
+
+        const tilesHtml = ''
+          + '<div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.5rem;">'
+          + tileCard('Raise', raise.value, null)
+          + tileCard('Revenue', revenue.value, null)
+          + tileCard('Growth', growth.value, null)
+          + tileCard('Customers', customers.value, null)
+          + '<div style="border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.5rem 0.6rem; min-width: 320px;">'
+          +   '<div class="muted" style="display:flex; justify-content:space-between; gap:0.5rem;">'
+          +     '<span>Business model</span>'
+          +     '<span>' + bmRight + '</span>'
+          +   '</div>'
+          +   '<div style="margin-top:0.2rem; font-weight:600;">' + escapeHtml(bmValue) + '</div>'
+          +   bmTraceLine
+          + '</div>'
+          + tileCard('Deal type', dealType.value, null)
+          + tileCard('Confidence', conf.value, confidenceRight)
+          + '</div>';
+
+        const scoreLine = ''
+          + '<div class="muted" style="margin-top:0.35rem;">'
+          + 'baseline_overall=<span class="mono">' + escapeHtml(fmt(score.baseline && score.baseline.overall_score)) + '</span>'
+          + ' → deterministic_overall=<span class="mono">' + escapeHtml(fmt(score.deterministic && score.deterministic.overall_score)) + '</span>'
+          + ' <span class="pill">Δ ' + escapeHtml(fmt(score.delta_overall_score)) + '</span>'
+          + '</div>'
+          + '<div class="muted">baseline_adjustment=<span class="mono">' + escapeHtml(fmt2(score.baseline && score.baseline.adjustment_factor)) + '</span>'
+          + ' → deterministic_adjustment=<span class="mono">' + escapeHtml(fmt2(score.deterministic && score.deterministic.adjustment_factor)) + '</span></div>';
+
+        const gateLine = ''
+          + '<div style="display:flex; gap:0.75rem; flex-wrap:wrap; align-items:baseline; margin-top:0.25rem;">'
+          +   '<div class="muted">enabled=<span class="mono">' + escapeHtml(Boolean(score.enabled) ? 'true' : 'false') + '</span></div>'
+          +   '<div class="muted">applied=<span class="mono">' + escapeHtml(Boolean(score.applied) ? 'true' : 'false') + '</span></div>'
+          +   '<div class="muted">drift=<span class="mono">' + escapeHtml(String(score.drift_assessment || 'unknown')) + '</span></div>'
+          +   '<div class="muted">blocked=<span class="mono">' + escapeHtml(Boolean(score.blocked_by_drift_misaligned) ? 'true' : 'false') + '</span></div>'
+          +   '<div class="muted">inputs_hash=<span class="mono">' + escapeHtml(typeof score.inputs_hash === 'string' ? (score.inputs_hash.slice(0, 16) + '…') : '-') + '</span></div>'
+          + '</div>';
+
+        const dealSummary = summaries.deal_summary && typeof summaries.deal_summary === 'object' ? summaries.deal_summary : {};
+        const productSummary = summaries.product_summary && typeof summaries.product_summary === 'object' ? summaries.product_summary : null;
+        const marketSummary = summaries.market_summary && typeof summaries.market_summary === 'object' ? summaries.market_summary : null;
+        const gtmSummary = summaries.gtm_summary && typeof summaries.gtm_summary === 'object' ? summaries.gtm_summary : null;
+
+        const summaryBlock = (label, s) => {
+          const v = s && s.value != null ? String(s.value) : '';
+          return ''
+            + '<div style="margin-top:0.5rem;">'
+            +   '<div class="muted" style="font-weight:600;">' + escapeHtml(label) + '</div>'
+            +   '<div style="margin-top:0.25rem;">' + escapeHtml(v || '-') + '</div>'
+            + '</div>';
+        };
+
+        const citationsLine = (() => {
+          const counts = citations.counts && typeof citations.counts === 'object' ? citations.counts : {};
+          const available = Boolean(citations.available);
+          const total = (typeof counts.total_sources === 'number') ? counts.total_sources : null;
+          const uniq = (typeof counts.unique_pages === 'number') ? counts.unique_pages : null;
+          return '<div class="muted" style="margin-top:0.5rem;">citations_available=<span class="mono">' + escapeHtml(available ? 'true' : 'false') + '</span>'
+            + ' total_sources=<span class="mono">' + escapeHtml(total != null ? String(total) : '-') + '</span>'
+            + ' unique_pages=<span class="mono">' + escapeHtml(uniq != null ? String(uniq) : '-') + '</span>'
+            + '</div>';
+        })();
+
+        const rawJson = (() => {
+          try {
+            return JSON.stringify(ui, null, 2);
+          } catch {
+            return null;
+          }
+        })();
+
+        const rawDetails = rawJson
+          ? ''
+            + '<details style="margin-top:0.75rem;">'
+            +   '<summary class="muted">ui_preview_v1 (raw)</summary>'
+            +   '<pre style="margin-top:0.5rem;">' + escapeHtml(rawJson) + '</pre>'
+            + '</details>'
+          : '';
+
+        return ''
+          + '<div style="border-top: 1px solid #e2e8f0; padding-top: 0.75rem; margin-top: 0.75rem;">'
+          +   '<div style="display:flex; gap:0.75rem; flex-wrap:wrap; align-items:baseline;">'
+          +     title
+          +     scoreBadge
+          +     '<div class="muted">Mirrors DealWorkspace overview inputs (no new inference)</div>'
+          +   '</div>'
+          +   tilesHtml
+          +   '<div class="muted" style="margin-top:0.75rem; font-weight:600;">Score preview</div>'
+          +   gateLine
+          +   scoreLine
+          +   citationsLine
+          +   '<div class="muted" style="margin-top:0.75rem; font-weight:600;">Summaries</div>'
+          +   summaryBlock('Deal summary', dealSummary)
+          +   (productSummary ? summaryBlock('Product summary', productSummary) : '')
+          +   (marketSummary ? summaryBlock('Market summary', marketSummary) : '')
+          +   (gtmSummary ? summaryBlock('GTM summary', gtmSummary) : '')
+          +   rawDetails
           + '</div>';
       }
 
@@ -2178,7 +2433,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         + '<div class="muted" style="margin-top: 0.75rem;">Raw report.structured_summary fields (debug view)</div>'
         + keys.map((k) => renderStructuredField(k, ss[k])).join('');
 
-      el.innerHTML = renderDeckArchetypePanel() + renderArchetypeAlignmentPanel() + renderOverrideQualityPanel() + renderDeterministicScoreInputsPanel() + banner + synthesized + promoted + otherFields;
+      el.innerHTML = renderDeckArchetypePanel() + renderArchetypeAlignmentPanel() + renderOverrideQualityPanel() + renderDeterministicScoreInputsPanel() + renderUiPreviewV1Panel() + banner + synthesized + promoted + otherFields;
 
       // Wire the Open Node Inspector helper button (if present).
       try {
@@ -3342,7 +3597,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
                 <td>\${r.version}</td>
                 <td><span class="stat-value" style="font-size: 1.25rem">\${r.overallScore}</span></td>
                 <td><span class="badge badge-\${r.grade === 'Excellent' ? 'success' : r.grade === 'Good' ? 'info' : 'warning'}">\${r.grade}</span></td>
-                <td><span class="badge badge-\${r.recommendation === 'yes' ? 'success' : 'warning'}">\${r.recommendation}</span></td>
+                <td><span class="badge badge-\${r.recommendation === 'yes' ? 'success' : 'warning'}">\${(r.metadata && r.metadata.decision_v1 && r.metadata.decision_v1.label) ? r.metadata.decision_v1.label : r.recommendation}</span></td>
                 <td>\${r.categories.length} categories</td>
                 <td>
                   <button onclick="inspectReport('\${r.dealId}', \${r.version})" class="btn btn-small">Inspect</button>
@@ -5314,13 +5569,39 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
     // Contract: ensure deterministic.report.metadata includes deck archetype + diagnostics keys.
     // (Null-safe, no throw if metadata missing.)
     const reportMeta = reportPayload?.metadata && typeof reportPayload.metadata === 'object' ? reportPayload.metadata : null;
-    const normalizedReportMeta = {
+    const normalizedReportMetaBase = {
       ...(reportMeta ?? {}),
       deck_archetype: reportMeta && reportMeta.deck_archetype != null ? reportMeta.deck_archetype : null,
       archetype_diagnostics: reportMeta && Array.isArray(reportMeta.archetype_diagnostics) ? reportMeta.archetype_diagnostics : null,
       archetype_segment_drift_v1: reportMeta && reportMeta.archetype_segment_drift_v1 != null ? reportMeta.archetype_segment_drift_v1 : null,
       override_quality: reportMeta && reportMeta.override_quality != null ? reportMeta.override_quality : null,
     };
+
+    // Build a canonical, diagnostics-only UI DTO that mirrors the web app header/overview top section.
+    // Best-effort: never fail the endpoint if this builder changes.
+    let uiPreviewV1: any = null;
+    try {
+      const reportForUi = reportPayload && typeof reportPayload === 'object'
+        ? { ...reportPayload, metadata: normalizedReportMetaBase }
+        : reportPayload;
+
+      uiPreviewV1 = buildUiPreviewV1({
+        report: reportForUi,
+        segmented_nodes: [],
+        env: {
+          DETERMINISTIC_SCORE_V1_ENABLED: process.env.DETERMINISTIC_SCORE_V1_ENABLED ?? "",
+        },
+      });
+    } catch (err) {
+      request.log.error({ event: "dashboard.deterministic.ui_preview_v1_failed", deal_id, err }, "Failed building ui_preview_v1");
+      uiPreviewV1 = null;
+    }
+
+    const normalizedReportMeta = {
+      ...normalizedReportMetaBase,
+      ui_preview_v1: uiPreviewV1,
+    };
+
     const reportNormalized = reportPayload && typeof reportPayload === 'object'
       ? { ...reportPayload, metadata: normalizedReportMeta }
       : reportPayload;

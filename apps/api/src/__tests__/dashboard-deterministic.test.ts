@@ -121,6 +121,12 @@ test("GET /api/dashboard/deals/:deal_id/deterministic returns header_canonical f
   assert.equal(body.ids?.dio_id, "dio-1");
   assert.equal(body.ids?.analysis_version, 7);
 
+  // UI Preview (v1) DTO should be attached (best-effort) under report.metadata
+  assert.ok(body.report?.metadata?.ui_preview_v1);
+  assert.equal(body.report.metadata.ui_preview_v1.version, "ui_preview_v1");
+  assert.equal(body.report.metadata.ui_preview_v1.header_tiles?.business_model?.badge, "promoted");
+  assert.equal(body.report.metadata.ui_preview_v1.header_tiles?.business_model?.value, "SaaS");
+
   await app.close();
 });
 

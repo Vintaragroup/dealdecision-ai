@@ -8,6 +8,8 @@ import { getUploadsRootDir } from "../plugins/uploads-static";
 import { getPool } from "../lib/db";
 import { resolveVisualAssetImageUriForApi } from "../lib/visual-asset-image-uri";
 import type { Deal } from "@dealdecision/contracts";
+import type { JobStatus, JobType } from "@dealdecision/contracts";
+import { QUEUE_NAMES } from "@dealdecision/core";
 import { enqueueBullmqJob, enqueueJob, insertJobRow } from "../services/jobs";
 import { runIdempotentOperation } from "../lib/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
@@ -117,6 +119,145 @@ function stripEvidenceFromClaims(claims: any): any[] {
 function parseDealApiMode(request: FastifyRequest | any): DealApiMode {
   const modeRaw = (request?.query as any)?.mode ?? (request as any)?.mode;
   return typeof modeRaw === "string" && modeRaw.toLowerCase() === "phase1" ? "phase1" : "full";
+}
+
+async function bestEffortReadinessJobPresenceCheck(args: {
+  pool: DealRoutesPool;
+  dealId: string;
+  version: string;
+}): Promise<{ hasRequiredJob: boolean; blocked_reason: string | null; checked: boolean }> {
+  const { pool, dealId } = args;
+  const requiredTypes: JobType[] = [
+    "render_document_pages",
+    "extract_visuals",
+    "extract_visuals_deal",
+    "populate_document_page_understanding",
+  ];
+  const activeStatuses: JobStatus[] = ["queued", "running", "retrying"];
+
+  let rows: Array<{ job_id: string; type: string; queue: string | null }> = [];
+  try {
+    const res = await pool.query(
+      `SELECT job_id, type, queue
+         FROM jobs
+        WHERE deal_id = $1
+          AND type = ANY($2::text[])
+          AND status = ANY($3::text[])
+          AND created_at >= (now() - interval '2 hours')
+        ORDER BY created_at DESC
+        LIMIT 25`,
+      [dealId, requiredTypes, activeStatuses]
+    );
+    rows = (res as any)?.rows ?? [];
+  } catch {
+    // If jobs table isn't available in this context, we can't confirm.
+    return { hasRequiredJob: false, blocked_reason: null, checked: false };
+  }
+
+  const hasInDb = rows.length > 0;
+  if (!hasInDb) {
+    try {
+      const ocrRes = await pool.query(
+        "SELECT 1 FROM documents WHERE deal_id = $1 AND status = 'needs_ocr' LIMIT 1",
+        [dealId]
+      );
+      const hasNeedsOcr = Array.isArray((ocrRes as any)?.rows) && (ocrRes as any).rows.length > 0;
+      if (hasNeedsOcr) {
+        return { hasRequiredJob: false, blocked_reason: "INGEST_PENDING_OCR", checked: true };
+      }
+    } catch {
+      // ignore: fall through to legacy blocked reason
+    }
+    return { hasRequiredJob: false, blocked_reason: "INGEST_BLOCKED_NO_JOBS", checked: true };
+  }
+
+  // In tests, avoid requiring Redis. Treat DB presence as sufficient.
+  if (process.env.NODE_ENV === "test") {
+    return { hasRequiredJob: true, blocked_reason: null, checked: true };
+  }
+
+  // Best-effort: verify at least one job ID exists in BullMQ/Redis.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { Queue } = require("bullmq") as typeof import("bullmq");
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const qmod = require("../lib/queue") as typeof import("../lib/queue");
+    const connection = qmod.getConnection();
+
+    const queueCache = new Map<string, any>();
+    for (const r of rows) {
+      const jobId = typeof r.job_id === "string" ? r.job_id : "";
+      if (!jobId) continue;
+      const queueName = typeof r.queue === "string" && r.queue.trim().length > 0 ? r.queue.trim() : String(r.type || "");
+      if (!queueName) continue;
+      let q = queueCache.get(queueName);
+      if (!q) {
+        q = new Queue(queueName, { connection });
+        queueCache.set(queueName, q);
+      }
+      const found = await q.getJob(jobId);
+      if (found) return { hasRequiredJob: true, blocked_reason: null, checked: true };
+    }
+
+    try {
+      const ocrRes = await pool.query(
+        "SELECT 1 FROM documents WHERE deal_id = $1 AND status = 'needs_ocr' LIMIT 1",
+        [dealId]
+      );
+      const hasNeedsOcr = Array.isArray((ocrRes as any)?.rows) && (ocrRes as any).rows.length > 0;
+      if (hasNeedsOcr) {
+        return { hasRequiredJob: false, blocked_reason: "INGEST_PENDING_OCR", checked: true };
+      }
+    } catch {
+      // ignore
+    }
+    return { hasRequiredJob: false, blocked_reason: "INGEST_BLOCKED_NO_JOBS", checked: true };
+  } catch {
+    // If Redis/BullMQ is unavailable, fall back to DB presence.
+    return { hasRequiredJob: true, blocked_reason: null, checked: true };
+  }
+}
+
+async function enqueuePopulateDpuJobIdempotent(args: {
+  pool: DealRoutesPool;
+  dealId: string;
+  documentId: string;
+  version: string;
+  parentJobId?: string | null;
+}) {
+  const { pool, dealId, documentId, version, parentJobId } = args;
+  const operation = "populate_document_page_understanding";
+  const idempotencyKey = `${dealId}__${documentId}__${version}`;
+
+  return runIdempotentOperation({
+    deal_id: dealId,
+    operation,
+    idempotency_key: idempotencyKey,
+    poolOverride: pool as any,
+    runDb: async (client) => {
+      const inserted = await insertJobRow(
+        {
+          deal_id: dealId,
+          document_id: documentId,
+          type: "populate_document_page_understanding",
+          queue: QUEUE_NAMES.populate_document_page_understanding,
+          parent_job_id: parentJobId ?? null,
+          payload: {
+            page_understanding_version: version,
+          },
+        },
+        { deps: { pool: client as any } }
+      );
+      return { job_id: inserted.job_id, status: inserted.status, bullPayload: inserted.bullPayload };
+    },
+    afterCommit: async (dbResult) => {
+      await enqueueBullmqJob({
+        type: "populate_document_page_understanding",
+        jobId: dbResult.job_id,
+        bullPayload: (dbResult as any).bullPayload ?? { deal_id: dealId, document_id: documentId, page_understanding_version: version },
+      });
+    },
+  });
 }
 
 function parseBoolQ(value: unknown, defaultValue = false): boolean {
@@ -8489,6 +8630,28 @@ export async function registerDealRoutes(
     if (requirePageUnderstanding) {
       try {
         const readiness = await fetchPageUnderstandingReadinessForDeal(pool as any, dealId, pageUnderstandingVersion);
+        if (
+          readiness.expected_pages_total > 0 &&
+          readiness.missing_pages_total > 0 &&
+          readiness.dpu_rows_total === 0
+        ) {
+          const presence = await bestEffortReadinessJobPresenceCheck({ pool: pool as any, dealId, version: pageUnderstandingVersion });
+          (readiness as any).blocked_reason = presence.blocked_reason;
+          if (presence.blocked_reason) {
+            request.log.error(
+              {
+                event: "INGEST_BLOCKED_NO_JOBS",
+                deal_id: dealId,
+                version: pageUnderstandingVersion,
+                expected_pages_total: readiness.expected_pages_total,
+                dpu_rows_total: readiness.dpu_rows_total,
+                missing_pages_total: readiness.missing_pages_total,
+                checked: presence.checked,
+              },
+              "Readiness is blocked: no required jobs observed"
+            );
+          }
+        }
         request.log.info(
           {
             event: "READINESS_CHECK",
@@ -8506,6 +8669,28 @@ export async function registerDealRoutes(
           const missingDocIds = readiness.documents
             .filter((d) => Array.isArray(d.missing_pages) && d.missing_pages.length > 0)
             .map((d) => d.document_id);
+
+        if (readiness.dpu_rows_total === 0 && missingDocIds.length > 0) {
+          // Best-effort: enqueue a direct DPU population job per doc.
+          // This is idempotent by (deal_id, document_id, page_understanding_version).
+          for (const docId of missingDocIds.slice(0, 50)) {
+            try {
+              await enqueuePopulateDpuJobIdempotent({
+                pool: pool as any,
+                dealId,
+                documentId: docId,
+                version: pageUnderstandingVersion,
+                parentJobId: null,
+              });
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              request.log.warn(
+                { event: "populate_document_page_understanding.enqueue_failed", deal_id: dealId, document_id: docId, err: message },
+                "Failed to enqueue populate_document_page_understanding"
+              );
+            }
+          }
+        }
 
           try {
             // Best-effort: enqueue extract_visuals for docs missing page understanding.
@@ -8609,6 +8794,28 @@ export async function registerDealRoutes(
     }
 
     const readiness = await fetchPageUnderstandingReadinessForDeal(pool as any, dealId, version);
+    if (
+      readiness.expected_pages_total > 0 &&
+      readiness.missing_pages_total > 0 &&
+      readiness.dpu_rows_total === 0
+    ) {
+      const presence = await bestEffortReadinessJobPresenceCheck({ pool: pool as any, dealId, version });
+      (readiness as any).blocked_reason = presence.blocked_reason;
+      if (presence.blocked_reason) {
+        request.log.error(
+          {
+            event: "INGEST_BLOCKED_NO_JOBS",
+            deal_id: dealId,
+            version,
+            expected_pages_total: readiness.expected_pages_total,
+            dpu_rows_total: readiness.dpu_rows_total,
+            missing_pages_total: readiness.missing_pages_total,
+            checked: presence.checked,
+          },
+          "Readiness is blocked: no required jobs observed"
+        );
+      }
+    }
     request.log.info(
       {
         event: "READINESS_CHECK",

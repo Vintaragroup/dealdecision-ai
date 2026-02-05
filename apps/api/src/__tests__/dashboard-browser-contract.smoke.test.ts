@@ -34,6 +34,9 @@ test("dashboard browser contract smoke: HTML shell contains load-bearing strings
   assert.ok(html.includes("Archetype ↔ Segment Alignment"));
   assert.ok(html.includes("Override Quality (v1)"));
   assert.ok(html.includes("Score Inputs (v1)"));
+  assert.ok(html.includes("function detectDeterministicScoreV1EnvSource"));
+  assert.ok(!html.includes("process.env.DETERMINISTIC_SCORE_V1_ENABLED"));
+  assert.ok(html.includes("UI Preview (v1)"));
   assert.ok(html.includes("Expected segments"));
   assert.ok(html.includes("deck_type"));
 
@@ -108,6 +111,10 @@ test("dashboard browser contract smoke: deterministic JSON endpoint returns cano
           baseline: { overall_score: 67, unadjusted_overall_score: 80, evidence_factor: 0.55, due_diligence_factor: 1, adjustment_factor: 0.55 },
           deterministic: { overall_score: 68, evidence_factor: 0.561, adjustment_factor: 0.561 },
           delta_overall_score: 1,
+          delta_unrounded_overall: 0.08,
+          delta_adjustment_factor: 0.011,
+          delta_evidence_factor: 0.011,
+          rounding_note: null,
           applied: false,
           applied_parts: [],
         },
@@ -212,6 +219,12 @@ test("dashboard browser contract smoke: deterministic JSON endpoint returns cano
   assert.equal(typeof body.report.metadata.deterministic_score_inputs_v1.inputs_hash, "string");
   assert.ok(body.report.metadata.deterministic_score_preview_v1);
   assert.equal(body.report.metadata.deterministic_score_preview_v1.version, "deterministic_score_preview_v1");
+  assert.ok("delta_unrounded_overall" in body.report.metadata.deterministic_score_preview_v1);
+  assert.ok("delta_adjustment_factor" in body.report.metadata.deterministic_score_preview_v1);
+  assert.ok("delta_evidence_factor" in body.report.metadata.deterministic_score_preview_v1);
+  assert.ok("rounding_note" in body.report.metadata.deterministic_score_preview_v1);
+  assert.ok(body.report.metadata.ui_preview_v1);
+  assert.equal(body.report.metadata.ui_preview_v1.version, "ui_preview_v1");
   assert.equal(body.report.metadata.override_quality.assessment, "moderate");
   assert.equal(body.report.metadata.override_quality.total_nodes, 10);
   assert.equal(body.report.metadata.override_quality.overridden_nodes, 2);

@@ -15,6 +15,11 @@ export type PageUnderstandingReadiness = {
   expected_pages_total: number;
   dpu_rows_total: number;
   missing_pages_total: number;
+  /**
+   * When readiness indicates missing pages but the pipeline has no work enqueued,
+   * this field explains why readiness may not be progressing.
+   */
+  blocked_reason?: string | null;
   ready: boolean;
 };
 
@@ -88,6 +93,7 @@ export function computePageUnderstandingReadiness(args: {
     expected_pages_total: expectedPagesTotal,
     dpu_rows_total: dpuRowsTotal,
     missing_pages_total: missingPagesTotal,
+    blocked_reason: null,
     ready: missingPagesTotal === 0,
   };
 }

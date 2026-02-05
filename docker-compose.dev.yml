@@ -60,6 +60,7 @@ services:
       - sh
       - -lc
       - |
+        pnpm --filter @dealdecision/core build
         pnpm --filter api db:migrate
         pnpm --filter api dev
     env_file:
@@ -92,7 +93,12 @@ services:
     build:
       context: .
       dockerfile: apps/worker/Dockerfile.dev
-    command: ["pnpm", "--filter", "worker", "dev"]
+    command:
+      - sh
+      - -lc
+      - |
+        pnpm --filter @dealdecision/core build
+        pnpm --filter worker dev
     env_file:
       - .env.docker.local
     environment:

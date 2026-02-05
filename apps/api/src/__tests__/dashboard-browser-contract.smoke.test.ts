@@ -33,6 +33,7 @@ test("dashboard browser contract smoke: HTML shell contains load-bearing strings
   assert.ok(html.includes("Deck Archetype (v1)"));
   assert.ok(html.includes("Archetype ↔ Segment Alignment"));
   assert.ok(html.includes("Override Quality (v1)"));
+  assert.ok(html.includes("Score Inputs (v1)"));
   assert.ok(html.includes("Expected segments"));
   assert.ok(html.includes("deck_type"));
 
@@ -81,6 +82,34 @@ test("dashboard browser contract smoke: deterministic JSON endpoint returns cano
           assessment: "moderate",
           notes: ["Overrides concentrated in GTM-related slides"],
           by_override_rule_segments: { "segmenter:override:gtm.intent.customers_distribution": ["go_to_market"] },
+        },
+        deterministic_score_inputs_v1: {
+          version: "deterministic_score_inputs_v1",
+          inputs_hash: "a".repeat(64),
+          segments: {
+            total_nodes: 10,
+            counts: { product: 2, market: 2, traction: 1 },
+            override_ratio: 0.2,
+            overridden_nodes: 2,
+          },
+          deck: { deck_archetype_key: "consumer_apparel_dtc", drift_assessment: "mostly_aligned" },
+          kpis: [
+            { key: "revenue", confidence: 0.8, sources: [{ document_id: "doc-1", page_index: 2 }], value_raw: "$1M ARR" },
+            { key: "customers", confidence: 0.7, sources: [{ document_id: "doc-1", page_index: 4 }], value_raw: "100 customers" },
+            { key: "growth", confidence: 0.6, sources: [{ document_id: "doc-1", page_index: 3 }], value_raw: "20% MoM" },
+          ],
+        },
+        deterministic_score_preview_v1: {
+          version: "deterministic_score_preview_v1",
+          enabled: false,
+          gate: { drift_assessment: "mostly_aligned", blocked_by_drift_misaligned: false },
+          inputs_hash: "a".repeat(64),
+          modifier_v1: { signal_strength: 0.7, modifier: 1.02, notes: ["signal_strength=0.700", "modifier=1.020"] },
+          baseline: { overall_score: 67, unadjusted_overall_score: 80, evidence_factor: 0.55, due_diligence_factor: 1, adjustment_factor: 0.55 },
+          deterministic: { overall_score: 68, evidence_factor: 0.561, adjustment_factor: 0.561 },
+          delta_overall_score: 1,
+          applied: false,
+          applied_parts: [],
         },
       },
       artifact: {
@@ -178,6 +207,11 @@ test("dashboard browser contract smoke: deterministic JSON endpoint returns cano
   assert.equal(body.report.metadata.archetype_diagnostics[0].kind, "overrepresentation");
 
   assert.ok(body.report.metadata.override_quality);
+  assert.ok(body.report.metadata.deterministic_score_inputs_v1);
+  assert.equal(body.report.metadata.deterministic_score_inputs_v1.version, "deterministic_score_inputs_v1");
+  assert.equal(typeof body.report.metadata.deterministic_score_inputs_v1.inputs_hash, "string");
+  assert.ok(body.report.metadata.deterministic_score_preview_v1);
+  assert.equal(body.report.metadata.deterministic_score_preview_v1.version, "deterministic_score_preview_v1");
   assert.equal(body.report.metadata.override_quality.assessment, "moderate");
   assert.equal(body.report.metadata.override_quality.total_nodes, 10);
   assert.equal(body.report.metadata.override_quality.overridden_nodes, 2);

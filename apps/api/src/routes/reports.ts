@@ -12,6 +12,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Pool } from 'pg';
 import { z } from 'zod';
 import { compileDIOToReport, compileDIOToReportWithPromotedFacts } from '@dealdecision/core';
+import { buildDeterministicScoreInputsV1 } from '@dealdecision/core';
 import { loadPromotedFactsForDeal } from '../lib/promoted-facts';
 import { derivePromotedFactsFromDpuForDeal } from '../lib/promoted-facts-from-dpu';
 import { compileDealSummaryV1 } from '../lib/deal-summary-v1';
@@ -23,6 +24,47 @@ import { computeArchetypeSegmentDriftV1 } from '../lib/archetype-segment-drift-v
 import { computeOverrideQualityV1 } from '../lib/override-quality-v1';
 
 const isUuid = (value: unknown): value is string => z.string().uuid().safeParse(value).success;
+
+const envFlagEnabled = (v: unknown): boolean => {
+  const s = String(v ?? '').trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes' || s === 'on';
+};
+
+const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
+
+function computeDeterministicModifierV1(inputs: any): { modifier: number; signal_strength: number; notes: string[] } {
+  const notes: string[] = [];
+
+  const counts = (inputs && inputs.segments && inputs.segments.counts && typeof inputs.segments.counts === 'object')
+    ? inputs.segments.counts
+    : {};
+  const keySegments = ['market', 'product', 'traction', 'financials', 'team', 'go_to_market'];
+  const covered = keySegments.filter((k) => Number((counts as any)[k] ?? 0) > 0).length;
+  const segmentCoverage = keySegments.length > 0 ? covered / keySegments.length : 0;
+
+  const kpis: any[] = Array.isArray(inputs?.kpis) ? inputs.kpis : [];
+  const kpiCount = kpis.filter((k) => typeof k?.key === 'string').length;
+  const kpiAvgConf = kpis.length > 0
+    ? clamp01(kpis.reduce((sum, k) => sum + (typeof k?.confidence === 'number' ? k.confidence : 0), 0) / kpis.length)
+    : 0;
+  const kpiPresenceScore = clamp01(Math.min(1, kpiCount / 3) * (kpiAvgConf / 0.85));
+
+  const overrideRatio = (typeof inputs?.segments?.override_ratio === 'number') ? inputs.segments.override_ratio : null;
+  const overridePenalty = overrideRatio != null ? clamp01(overrideRatio) : 0;
+
+  const signalStrength = clamp01(0.6 * segmentCoverage + 0.4 * kpiPresenceScore - 0.2 * overridePenalty);
+
+  let modifier = 0.9 + 0.2 * signalStrength; // [0.9, 1.1]
+  if (overrideRatio != null && overrideRatio >= 0.25 && modifier > 1.0) {
+    modifier = 1.0;
+    notes.push('override_ratio>=0.25: boost capped to 1.0');
+  }
+
+  notes.push(`signal_strength=${signalStrength.toFixed(3)}`);
+  notes.push(`modifier=${modifier.toFixed(3)}`);
+
+  return { modifier, signal_strength: signalStrength, notes };
+}
 
 interface ReportParams {
   deal_id: string;
@@ -209,6 +251,93 @@ export async function registerReportRoutes(
               structured_summary: (report as any)?.structured_summary ?? null,
             });
             nextMetadata.override_quality = computeOverrideQualityV1(segmentedNodes!.nodes as any);
+
+            // Prompt 14: Deterministic Segmentation → Scoring Bridge (v1)
+            // Diagnostics-first: always attach inputs + preview; apply to score only when env-flag enabled and drift not misaligned.
+            try {
+              const inputs = buildDeterministicScoreInputsV1({
+                structured_summary: (report as any)?.structured_summary ?? null,
+                segmented_nodes: segmentedNodes!.nodes as any,
+                metadata: nextMetadata,
+              });
+
+              const enabled = envFlagEnabled(process.env.DETERMINISTIC_SCORE_V1_ENABLED);
+              const driftAssessment = String((nextMetadata as any)?.archetype_segment_drift_v1?.overall_assessment ?? 'unknown');
+              const driftMisaligned = driftAssessment === 'misaligned';
+
+              const scoreExp = (report as any)?.metadata?.score_explanation ?? null;
+              const totals = scoreExp && scoreExp.totals ? scoreExp.totals : null;
+
+              const baseEvidence = (totals && typeof totals.evidence_factor === 'number') ? totals.evidence_factor : null;
+              const baseDD = (totals && typeof totals.due_diligence_factor === 'number') ? totals.due_diligence_factor : null;
+              const baseAdj = (totals && typeof totals.adjustment_factor === 'number') ? totals.adjustment_factor : null;
+              const baseUnadjusted = (totals && typeof totals.unadjusted_overall_score === 'number') ? totals.unadjusted_overall_score : null;
+              const baseOverall = (totals && typeof totals.overall_score === 'number') ? totals.overall_score : (typeof (report as any)?.overallScore === 'number' ? (report as any).overallScore : null);
+
+              const mod = computeDeterministicModifierV1(inputs);
+
+              const detEvidence = baseEvidence == null ? null : clamp01(baseEvidence * mod.modifier);
+              const detAdj = (detEvidence == null || baseDD == null) ? null : clamp01(detEvidence * baseDD);
+              const detOverall = (baseUnadjusted == null || detAdj == null)
+                ? null
+                : Math.round(baseUnadjusted * detAdj + 50 * (1 - detAdj));
+
+              const canApply = Boolean(enabled && !driftMisaligned && detOverall != null && scoreExp && totals);
+              const appliedParts = canApply
+                ? ['score_explanation.totals.evidence_factor', 'score_explanation.totals.adjustment_factor', 'score_explanation.totals.overall_score', 'report.overallScore']
+                : [];
+
+              (nextMetadata as any).deterministic_score_inputs_v1 = inputs;
+              (nextMetadata as any).deterministic_score_preview_v1 = {
+                version: 'deterministic_score_preview_v1',
+                enabled,
+                gate: {
+                  drift_assessment: driftAssessment,
+                  blocked_by_drift_misaligned: driftMisaligned,
+                },
+                inputs_hash: inputs.inputs_hash,
+                modifier_v1: {
+                  signal_strength: mod.signal_strength,
+                  modifier: mod.modifier,
+                  notes: mod.notes,
+                },
+                baseline: {
+                  overall_score: baseOverall,
+                  unadjusted_overall_score: baseUnadjusted,
+                  evidence_factor: baseEvidence,
+                  due_diligence_factor: baseDD,
+                  adjustment_factor: baseAdj,
+                },
+                deterministic: {
+                  overall_score: detOverall,
+                  evidence_factor: detEvidence,
+                  adjustment_factor: detAdj,
+                },
+                delta_overall_score: (baseOverall != null && detOverall != null) ? (detOverall - baseOverall) : null,
+                applied: canApply,
+                applied_parts: appliedParts,
+              };
+
+              if (canApply) {
+                // Mutate the compiled report view only (reversible; does not persist into DB).
+                try {
+                  scoreExp.totals.evidence_factor = detEvidence;
+                  scoreExp.totals.adjustment_factor = detAdj;
+                  scoreExp.totals.overall_score = detOverall;
+                  (report as any).overallScore = detOverall;
+
+                  // Ensure explainability reflects the deterministic bridge.
+                  if (scoreExp?.components?.metric_benchmark?.notes && Array.isArray(scoreExp.components.metric_benchmark.notes)) {
+                    scoreExp.components.metric_benchmark.notes.push(`deterministic_score_v1 applied (inputs_hash=${inputs.inputs_hash.slice(0, 12)}…, modifier=${mod.modifier.toFixed(3)})`);
+                  }
+                } catch {
+                  // If score explanation shape changes, do not fail /report.
+                }
+              }
+            } catch (err) {
+              request.log.warn({ event: 'deal.report.deterministic_score_inputs_failed', deal_id, dio_id: row.dio_id, err }, 'deterministic score inputs v1 failed');
+            }
+
             (payload as any).metadata = nextMetadata;
             if (report && typeof report === 'object') (report as any).metadata = nextMetadata;
           }

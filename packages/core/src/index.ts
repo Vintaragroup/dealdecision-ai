@@ -147,5 +147,9 @@ export { buildScoreExplanationFromDIO, buildScoringDiagnosticsFromDIO } from "./
 export type { ScoreExplanation } from "./reports/score-explanation";
 export type { ScoringDiagnosticsV1 } from "./types/dio";
 
+// Deterministic score bridge (API-side gating)
+export { buildDeterministicScoreInputsV1 } from "./scoring/score-inputs-v1";
+export type { ScoreInputsV1 } from "./scoring/score-inputs-v1";
+
 // Phase 1 deterministic composer (used by worker for change acknowledgement)
 export { generatePhase1DIOV1 } from "./phase1/phase1-dio-v1";

@@ -2071,6 +2071,103 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           + '</div>';
       }
 
+      function renderDeterministicScoreInputsPanel() {
+        const meta = payload && payload.report && payload.report.metadata ? payload.report.metadata : null;
+        const inputs = meta && meta.deterministic_score_inputs_v1 ? meta.deterministic_score_inputs_v1 : null;
+        const preview = meta && meta.deterministic_score_preview_v1 ? meta.deterministic_score_preview_v1 : null;
+        const title = '<div><strong>Score Inputs (v1)</strong></div>';
+
+        if (!inputs || !preview) {
+          return ''
+            + '<div style="border-top: 1px solid #e2e8f0; padding-top: 0.75rem; margin-top: 0.75rem;">'
+            +   '<div style="display:flex; gap:0.75rem; flex-wrap:wrap; align-items:baseline;">'
+            +     title
+            +     '<div class="muted">No report.metadata.deterministic_score_inputs_v1 present.</div>'
+            +   '</div>'
+            + '</div>';
+        }
+
+        const enabled = Boolean(preview && preview.enabled);
+        const drift = preview && preview.gate ? String(preview.gate.drift_assessment || 'unknown') : 'unknown';
+        const blocked = Boolean(preview && preview.gate && preview.gate.blocked_by_drift_misaligned);
+        const applied = Boolean(preview && preview.applied);
+
+        const badge = (() => {
+          if (applied) return '<span class="badge badge-success">applied</span>';
+          if (!enabled) return '<span class="badge badge-muted">disabled</span>';
+          if (blocked) return '<span class="badge badge-danger">blocked</span>';
+          return '<span class="badge badge-warn">preview</span>';
+        })();
+
+        const inputsHash = typeof inputs.inputs_hash === 'string' ? inputs.inputs_hash : null;
+
+        const totalNodes = (inputs && inputs.segments && typeof inputs.segments.total_nodes === 'number') ? inputs.segments.total_nodes : null;
+        const overrideRatio = (inputs && inputs.segments && typeof inputs.segments.override_ratio === 'number') ? inputs.segments.override_ratio : null;
+
+        const baseline = preview && preview.baseline ? preview.baseline : {};
+        const det = preview && preview.deterministic ? preview.deterministic : {};
+        const delta = (preview && typeof preview.delta_overall_score === 'number') ? preview.delta_overall_score : null;
+
+        const fmt = (v) => (typeof v === 'number' && Number.isFinite(v)) ? String(v) : '-';
+        const fmt2 = (v) => (typeof v === 'number' && Number.isFinite(v)) ? v.toFixed(2) : '-';
+
+        const kpis = Array.isArray(inputs.kpis) ? inputs.kpis : [];
+        const kpiRows = kpis.length === 0
+          ? '<tr><td colspan="4" class="muted">No KPIs present.</td></tr>'
+          : kpis.map((k) => {
+              const key = k && k.key ? String(k.key) : '-';
+              const conf = (k && typeof k.confidence === 'number') ? k.confidence : null;
+              const src0 = (k && Array.isArray(k.sources) && k.sources.length > 0) ? k.sources[0] : null;
+              const doc = src0 && src0.document_id ? String(src0.document_id) : '-';
+              const pi = (src0 && typeof src0.page_index === 'number') ? src0.page_index : null;
+              const page = (pi != null) ? (pi + 1) : null;
+              const raw = (k && typeof k.value_raw === 'string' && k.value_raw.trim()) ? k.value_raw.trim() : '';
+              return '<tr>'
+                + '<td class="mono">' + escapeHtml(key) + '</td>'
+                + '<td class="mono">' + escapeHtml(conf != null ? conf.toFixed(3) : '-') + '</td>'
+                + '<td class="mono">' + escapeHtml(page != null ? String(page) : '-') + '</td>'
+                + '<td class="muted">' + escapeHtml(raw) + '</td>'
+                + '</tr>';
+            }).join('');
+
+        const envLine = '<div class="muted">DETERMINISTIC_SCORE_V1_ENABLED=<span class="mono">' + escapeHtml(enabled ? 'true' : 'false') + '</span></div>';
+        const driftLine = '<div class="muted">drift=<span class="mono">' + escapeHtml(drift) + '</span></div>';
+        const hashLine = '<div class="muted">inputs_hash=<span class="mono">' + escapeHtml(inputsHash ? inputsHash.slice(0, 16) + '…' : '-') + '</span></div>';
+        const nodesLine = '<div class="muted">total_nodes=<span class="mono">' + escapeHtml(totalNodes != null ? String(totalNodes) : '-') + '</span></div>';
+        const overrideLine = '<div class="muted">override_ratio=<span class="mono">' + escapeHtml(overrideRatio != null ? overrideRatio.toFixed(2) : '-') + '</span></div>';
+
+        const scoreLine = ''
+          + '<div class="muted" style="margin-top:0.5rem;">'
+          + 'baseline_overall=<span class="mono">' + escapeHtml(fmt(baseline.overall_score)) + '</span>'
+          + ' → deterministic_overall=<span class="mono">' + escapeHtml(fmt(det.overall_score)) + '</span>'
+          + (delta != null ? (' <span class="pill">Δ ' + escapeHtml(String(delta)) + '</span>') : '')
+          + '</div>'
+          + '<div class="muted">baseline_adjustment=<span class="mono">' + escapeHtml(fmt2(baseline.adjustment_factor)) + '</span>'
+          + ' → deterministic_adjustment=<span class="mono">' + escapeHtml(fmt2(det.adjustment_factor)) + '</span></div>';
+
+        const blockedWarn = blocked
+          ? '<div class="badge badge-danger" style="margin-top:0.5rem;">Blocked: drift misaligned</div>'
+          : '';
+
+        return ''
+          + '<div style="border-top: 1px solid #e2e8f0; padding-top: 0.75rem; margin-top: 0.75rem;">'
+          +   '<div style="display:flex; gap:0.75rem; flex-wrap:wrap; align-items:baseline;">'
+          +     title
+          +     badge
+          +   '</div>'
+          +   '<div style="display:flex; gap:0.75rem; flex-wrap:wrap; align-items:baseline; margin-top:0.25rem;">'
+          +     envLine + driftLine + hashLine + nodesLine + overrideLine
+          +   '</div>'
+          +   blockedWarn
+          +   scoreLine
+          +   '<div class="muted" style="margin-top:0.75rem;">KPIs (from structured_summary)</div>'
+          +   '<table style="margin-top:0.25rem;">'
+          +     '<thead><tr><th>kpi</th><th>confidence</th><th>page</th><th>value_raw</th></tr></thead>'
+          +     '<tbody>' + kpiRows + '</tbody>'
+          +   '</table>'
+          + '</div>';
+      }
+
       const banner = '<div class="badge badge-info" style="margin-bottom:0.75rem;">Synthesized business model is multi-node and not tied to a single slide.</div>';
 
       const synthesized = renderBusinessModelSynthesizedPanel(ss.business_model_summary);
@@ -2081,7 +2178,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         + '<div class="muted" style="margin-top: 0.75rem;">Raw report.structured_summary fields (debug view)</div>'
         + keys.map((k) => renderStructuredField(k, ss[k])).join('');
 
-      el.innerHTML = renderDeckArchetypePanel() + renderArchetypeAlignmentPanel() + renderOverrideQualityPanel() + banner + synthesized + promoted + otherFields;
+      el.innerHTML = renderDeckArchetypePanel() + renderArchetypeAlignmentPanel() + renderOverrideQualityPanel() + renderDeterministicScoreInputsPanel() + banner + synthesized + promoted + otherFields;
 
       // Wire the Open Node Inspector helper button (if present).
       try {

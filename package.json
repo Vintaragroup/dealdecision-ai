@@ -29,6 +29,10 @@
     "rerun:analysis:all": "tsx scripts/rerun-analysis-all-deals.ts",
     "verify:documents:all": "tsx scripts/verify-documents-all-deals.ts",
     "verify:doc-pipeline:e2e": "tsx apps/worker/src/scripts/verify-doc-pipeline-e2e.ts",
+    "prove:run-analysis:dev": "tsx scripts/prove-run-analysis-parity.ts --mode dev",
+    "prove:run-analysis:prodlike": "tsx scripts/prove-run-analysis-parity.ts --mode prodlike",
+    "prove:run-analysis:parity": "bash scripts/prove-run-analysis-parity.sh",
+    "test:prove": "node --test --import tsx scripts/__tests__/prove-run-analysis-parity.test.ts",
     "reprocess:extraction:all": "tsx scripts/reprocess-extraction-all-deals.ts",
     "rebuild:deals": "tsx scripts/rebuild-deals.ts",
     "smoke:analyst-evidence": "tsx apps/api/scripts/smoke-test-analyst-evidence.ts",
@@ -53,7 +57,10 @@
     "@xyflow/react": "^12.10.0",
     "cli-progress": "^3.12.0",
     "form-data": "^4.0.5",
-    "pg": "^8.16.3"
+    "jszip": "^3.10.1",
+    "pdf-lib": "^1.17.1",
+    "pg": "^8.16.3",
+    "pngjs": "^7.0.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

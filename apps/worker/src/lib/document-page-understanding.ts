@@ -15,6 +15,95 @@ function isMissingTableError(err: any): boolean {
 	return code === "42P01";
 }
 
+async function backfillMissingDpuPlaceholdersForDocumentRange(
+	pool: Pool,
+	args: {
+		documentId: string;
+		pageStart: number;
+		pageEnd: number;
+		version: string;
+	}
+): Promise<number> {
+	const documentId = args.documentId;
+	const pageStart = Math.max(0, Math.floor(args.pageStart));
+	const pageEnd = Math.max(pageStart, Math.floor(args.pageEnd));
+	const version = args.version;
+
+	if (!documentId || pageEnd <= pageStart) return 0;
+
+	const sql = `WITH doc AS (
+		SELECT id AS document_id, deal_id, status
+		  FROM public.documents
+		 WHERE id = $1::uuid
+		 LIMIT 1
+	),
+	expected AS (
+		SELECT generate_series($2::int, ($3::int) - 1) AS page_index
+	),
+	missing AS (
+		SELECT e.page_index
+		  FROM expected e
+		  LEFT JOIN public.document_page_understanding dpu
+		    ON dpu.document_id = $1::uuid
+		   AND dpu.page_index = e.page_index
+		   AND dpu.version = $4::text
+		 WHERE dpu.page_index IS NULL
+	),
+	ins AS (
+		INSERT INTO public.document_page_understanding (document_id, deal_id, page_index, version, payload)
+		SELECT
+			$1::uuid AS document_id,
+			(SELECT deal_id FROM doc) AS deal_id,
+			m.page_index AS page_index,
+			$4::text AS version,
+			jsonb_build_object(
+				'metadata', jsonb_build_object(
+					'is_placeholder', true,
+					'placeholder_reason', 'missing_visual_extraction',
+					'placeholder_created_at', now()
+				),
+				'source', jsonb_build_object(
+					'document_id', $1::text,
+					'deal_id', COALESCE((SELECT deal_id::text FROM doc), NULL),
+					'page_index', m.page_index,
+					'visual_asset_id', NULL,
+					'image_uri', NULL,
+					'extractor', NULL,
+					'model_version', NULL,
+					'extracted_at', NULL
+				),
+				'page_type', 'no_visual_extraction',
+				'confidence', 0,
+				'page_text', '',
+				'normalized_text', '',
+				'text_blocks', jsonb_build_object(
+					'title', NULL,
+					'bullets', NULL,
+					'notes', NULL,
+					'text_snippet', NULL,
+					'ocr_text', NULL
+				),
+				'structured', NULL,
+				'labels', NULL,
+				'quality_flags', jsonb_build_object(
+					'missing_visual_extraction', true,
+					'page_text_empty', true,
+					'is_placeholder', true
+				)
+			) AS payload
+		  FROM missing m
+		 WHERE (SELECT status FROM doc) = 'ready_for_analysis'
+		ON CONFLICT (document_id, page_index, version) DO NOTHING
+		RETURNING 1
+	)
+	SELECT COUNT(*)::bigint AS inserted FROM ins;`;
+
+	const { rows } = await pool.query<{ inserted: string | number }>(sql, [documentId, pageStart, pageEnd, version]);
+	const raw = rows?.[0]?.inserted ?? 0;
+	const n = typeof raw === "string" ? Number.parseInt(raw, 10) : Number(raw);
+	return Number.isFinite(n) ? n : 0;
+}
+
 /**
  * Populate public.document_page_understanding from visual_extractions for PPTX documents.
  *
@@ -519,6 +608,33 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 				);
 			} catch {
 				// ignore
+			}
+		}
+
+		if (hasDocument) {
+			try {
+				const inserted = await backfillMissingDpuPlaceholdersForDocumentRange(pool, {
+					documentId,
+					pageStart,
+					pageEnd,
+					version,
+				});
+				if (inserted > 0) {
+					console.log(
+						JSON.stringify({
+							event: "POPULATE_DOCUMENT_PAGE_UNDERSTANDING_PLACEHOLDERS",
+							document_id: documentId,
+							deal_id: dealId || null,
+							page_start: pageStart,
+							page_end: pageEnd,
+							version,
+							inserted,
+							ts: new Date().toISOString(),
+						})
+					)
+				}
+			} catch {
+				// ignore: placeholders are best-effort
 			}
 		}
 

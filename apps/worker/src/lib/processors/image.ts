@@ -1,4 +1,4 @@
-import Tesseract from "tesseract.js";
+import { safeTesseractRecognizeBuffer } from "../ocr/safe-tesseract";
 
 export interface ImageContent {
   metadata: {
@@ -20,22 +20,15 @@ export interface ImageContent {
  */
 export async function extractImageContent(buffer: Buffer): Promise<ImageContent> {
   try {
-    // Run OCR
-    // NOTE: Passing Buffer avoids large base64 strings in memory.
-    const result = await Tesseract.recognize(buffer as any, "eng", {
-      logger: (m) => {
-        // Suppress verbose logging
-        if (m.status === "recognizing text") {
-          // Only log major milestones
-          if (Math.round(m.progress * 100) % 25 === 0) {
-            console.log(`[image-ocr] Progress: ${Math.round(m.progress * 100)}%`);
-          }
-        }
-      },
+    // Run OCR in a child process so native aborts can't crash the worker.
+    const data = await safeTesseractRecognizeBuffer({
+      buffer,
+      lang: "eng",
+      timeoutMs: 120000,
     });
 
-    const text = result.data.text || "";
-    const confidence = result.data.confidence || 0;
+    const text = data.text || "";
+    const confidence = data.confidence || 0;
 
     // Extract basic metrics
     const words = text.split(/\s+/).filter((w) => w.length > 0);

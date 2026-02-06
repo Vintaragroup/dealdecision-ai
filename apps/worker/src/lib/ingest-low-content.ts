@@ -9,7 +9,7 @@ export type LowContentDecisionInput = {
 export type LowContentDecision =
 	| {
 		kind: "retry";
-		docStatus: "pending";
+		docStatus: "pending" | "completed";
 		jobStatus: JobStatus;
 		message: string;
 		nextAttempt: number;
@@ -38,19 +38,26 @@ export function decideLowContentOutcome(input: LowContentDecisionInput): LowCont
 		? input.completenessReason.trim()
 		: "unknown";
 
+	const isPdf = contentType === "pdf" || contentType === "application/pdf" || contentType.endsWith("/pdf");
+
 	// Existing behavior: first 2 attempts retry.
 	if (attempt < 2) {
 		return {
 			kind: "retry",
-			docStatus: "pending",
-			jobStatus: "retrying",
-			message: `Low-content extraction (${reason}); retrying`,
+			// Treat the doc as ingested (with warnings) so downstream pipeline steps can proceed.
+			// A follow-up ingest attempt is enqueued to try to improve extraction quality.
+			docStatus: "completed",
+			// Important: we enqueue a follow-up ingest job, but this job must reach a terminal status.
+			// Leaving the original job in `retrying` causes API clients (and our e2e harness)
+			// to block forever because the follow-up has a different job_id.
+			jobStatus: "succeeded_with_warnings",
+			message: `Low-content extraction (${reason}); scheduled retry`,
 			nextAttempt: attempt + 1,
 		};
 	}
 
 	// New behavior: PDFs never hard-fail solely due to low-content. Require OCR/DI.
-	if (contentType === "pdf") {
+	if (isPdf) {
 		return {
 			kind: "needs_ocr",
 			docStatus: "needs_ocr",

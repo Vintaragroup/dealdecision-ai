@@ -229,7 +229,19 @@ export function createWorker(
   });
   
   worker.on('failed', (job, err) => {
-    console.error(`[worker] Job failed: ${job?.id} - ${name}`, err?.message);
+    const payload = {
+      event: "worker_job_failed",
+      queue: name,
+      job_id: job?.id ?? null,
+      err_message: err?.message ?? null,
+      err_code: (err as any)?.code ?? null,
+      err_stack: err?.stack ?? null,
+    };
+    try {
+      console.error(JSON.stringify(payload));
+    } catch {
+      console.error(`[worker] Job failed: ${job?.id} - ${name}`, err?.message);
+    }
   });
   
   worker.on('error', (err) => {

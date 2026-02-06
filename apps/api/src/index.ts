@@ -27,6 +27,7 @@ import "./lib/queue";
 import { getConnection } from "./lib/queue";
 import dotenv from "dotenv";
 import { createHash } from "crypto";
+import { assertProductionStorageContract } from "./lib/storage-contract";
 
 dotenv.config();
 
@@ -210,6 +211,19 @@ async function bootstrap() {
 async function start() {
   try {
     assertRequiredEnvVars();
+
+    const storage = assertProductionStorageContract(process.env);
+    app.log.info(
+      {
+        event: "storage_backend",
+        service: "api",
+        driver: storage.storage_driver,
+        r2_bucket: storage.r2_bucket,
+        r2_endpoint: storage.r2_endpoint,
+      },
+      "Storage backend"
+    );
+
     await bootstrap();
     await app.listen({ port, host });
     app.log.info(`API listening on http://${host}:${port}`);

@@ -74,7 +74,7 @@ import { remediateStructuredData } from "./lib/remediation";
 import { persistPdfV2TextRegionAssetsV1Shadow } from "./lib/pdf_v2/pdf-text-region-assets-v1";
 import os from "os";
 import { loadOriginalBytesFromDocumentStorage } from "./lib/ingest/from-storage";
-import { getDocumentStorageMode, getR2BucketIfEnabled } from "./lib/document-storage-mode";
+import { assertProductionStorageContract, getDocumentStorageMode, getR2BucketIfEnabled, resolveR2Endpoint } from "./lib/document-storage-mode";
 import { decideIngestOutcomeForError, isOcrishError } from "./lib/ingest/ocrish-error-semantics";
 import { getR2ObjectUrl, r2ObjectExists, uploadToR2 } from "./lib/r2";
 import { runJobWatchdogOnce } from "./lib/job-watchdog";
@@ -8823,6 +8823,33 @@ console.log(
 		registered_queues: Array.from(new Set(registeredWorkers)),
 	})
 );
+
+// Storage contract: in production, never silently fall back to local disk.
+// Also emit a single boot log line with active backend + endpoint + bucket.
+try {
+	const contract = assertProductionStorageContract(process.env);
+	console.log(
+		JSON.stringify({
+			event: "storage_backend",
+			service: "worker",
+			storage_mode: contract.storage_mode,
+			r2_bucket: contract.r2_bucket,
+			r2_endpoint: contract.r2_endpoint,
+		})
+	);
+} catch (err) {
+	console.error(
+		JSON.stringify({
+			event: "storage_backend_invalid",
+			service: "worker",
+			err: err instanceof Error ? err.message : String(err),
+			storage_mode: getDocumentStorageMode(process.env),
+			r2_bucket: getR2BucketIfEnabled(process.env),
+			r2_endpoint: resolveR2Endpoint(process.env),
+		})
+	);
+	process.exit(1);
+}
 
 // Optional: log LibreOffice presence for debugging Render deployments.
 // Must not crash the worker if `soffice` isn't installed.

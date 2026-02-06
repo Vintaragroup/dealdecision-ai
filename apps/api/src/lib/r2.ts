@@ -32,10 +32,15 @@ function readEnv(name: string): string | null {
   return typeof v === "string" && v.trim().length > 0 ? v.trim() : null;
 }
 
+function readR2Endpoint(): string | null {
+	// Canonical: R2_ENDPOINT. Back-compat: R2_S3_ENDPOINT (older Render templates).
+	return readEnv("R2_ENDPOINT") ?? readEnv("R2_S3_ENDPOINT");
+}
+
 export function getR2Config(): R2Config {
   if (cachedConfig) return cachedConfig;
 
-  const endpoint = readEnv("R2_ENDPOINT");
+  const endpoint = readR2Endpoint();
   const bucket = readEnv("R2_BUCKET");
   const accessKeyId = readEnv("R2_ACCESS_KEY_ID");
   const secretAccessKey = readEnv("R2_SECRET_ACCESS_KEY");
@@ -46,7 +51,7 @@ export function getR2Config(): R2Config {
 
   if (!endpoint || !bucket || !accessKeyId || !secretAccessKey) {
     throw new Error(
-      "Missing R2 configuration env vars. Required: R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY"
+      "Missing R2 configuration env vars. Required: R2_ENDPOINT (or R2_S3_ENDPOINT), R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY"
     );
   }
   if (!Number.isFinite(signedUrlTtlSeconds)) {

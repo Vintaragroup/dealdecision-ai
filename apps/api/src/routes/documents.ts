@@ -9,6 +9,7 @@ import { resolveVisualAssetImageUriForApi } from "../lib/visual-asset-image-uri"
 import { getPool } from "../lib/db";
 import { inferDocumentTypeFromName } from "../lib/document-type-inference";
 import { deleteFromR2, getPublicUrlForKey, getR2Config, getSignedDownloadUrl, objectExistsInR2, uploadToR2 } from "../lib/r2";
+import { getStorageDriver } from "../lib/storage-contract";
 import { getUploadsRootDir } from "../plugins/uploads-static";
 import { insertEvidence } from "../services/evidence";
 import { enqueueJob } from "../services/jobs";
@@ -923,11 +924,7 @@ export async function registerDocumentRoutes(
   app.post("/api/v1/deals/:deal_id/documents", async (request, reply) => {
     const dealId = sanitizeText((request.params as any)?.deal_id);
     const documentId = randomUUID();
-    const useR2 =
-      !!process.env.R2_ENDPOINT &&
-      !!process.env.R2_BUCKET &&
-      !!process.env.R2_ACCESS_KEY_ID &&
-      !!process.env.R2_SECRET_ACCESS_KEY;
+    const useR2 = getStorageDriver(process.env) === "r2";
 
     let legacyFileBuffer: Buffer | null = null;
     let uploadedKey: string | null = null;
@@ -1714,13 +1711,13 @@ export async function registerDocumentRoutes(
     const count = typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count) ? metaObj.rendered_pages_count : 0;
     const rendered = typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered) ? metaObj.rendered_pages_rendered : null;
 
-    // Local-dev fallback: if R2 isn't configured, accept locally rendered pages under UPLOAD_DIR.
-    const r2BucketConfigured = (process.env.R2_BUCKET || "").trim().length > 0;
+    // Local-dev fallback: only when storage driver is local, accept locally rendered pages under UPLOAD_DIR.
+    const r2Enabled = getStorageDriver(process.env) === "r2";
     const uploadsRootDir = getUploadsRootDir();
     const safeDocIdForPath = (id: string) => String(id || "").replace(/[^a-zA-Z0-9_\-]/g, "_");
     const localRenderedPagesDir = path.resolve(uploadsRootDir, "rendered_pages", safeDocIdForPath(document_id));
     const localRenderedPagesCount = (() => {
-      if (r2BucketConfigured) return 0;
+      if (r2Enabled) return 0;
       try {
         const names = fs.readdirSync(localRenderedPagesDir);
         const matches = (names || []).filter((n) => /^page_\d{4}\.png$/i.test(String(n)));

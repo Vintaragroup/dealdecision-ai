@@ -23,7 +23,7 @@ function readEnv(name: string, env: NodeJS.ProcessEnv = process.env): string | n
 export function getR2Config(env: NodeJS.ProcessEnv = process.env): R2Config {
 	if (cachedConfig) return cachedConfig;
 
-	const endpoint = readEnv("R2_ENDPOINT", env);
+	const endpoint = readEnv("R2_ENDPOINT", env) ?? readEnv("R2_S3_ENDPOINT", env);
 	const accessKeyId = readEnv("R2_ACCESS_KEY_ID", env);
 	const secretAccessKey = readEnv("R2_SECRET_ACCESS_KEY", env);
 	const region = readEnv("R2_REGION", env) ?? "auto";
@@ -34,7 +34,7 @@ export function getR2Config(env: NodeJS.ProcessEnv = process.env): R2Config {
 
 	if (!endpoint || !accessKeyId || !secretAccessKey) {
 		throw new Error(
-			"Missing R2 configuration env vars. Required: R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY"
+			"Missing R2 configuration env vars. Required: R2_ENDPOINT (or R2_S3_ENDPOINT), R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY"
 		);
 	}
 	if (!Number.isFinite(signedUrlTtlSeconds)) {

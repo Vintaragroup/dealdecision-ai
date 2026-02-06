@@ -12,6 +12,7 @@ import type { JobStatus, JobType } from "@dealdecision/contracts";
 import { QUEUE_NAMES } from "@dealdecision/core";
 import { enqueueBullmqJob, enqueueJob, insertJobRow } from "../services/jobs";
 import { runIdempotentOperation } from "../lib/jobs";
+import { getStorageDriver } from "../lib/storage-contract";
 import { autoProgressDealStage } from "../services/stageProgression";
 import { updateDealPriority, updateAllDealPriorities } from "../services/priorityClassification";
 import { computeNodeEvidenceGateV1 } from "../services/nodeEvidenceGateV1";
@@ -9017,10 +9018,10 @@ export async function registerDealRoutes(
 
     const pad4 = (n: number) => String(Math.max(0, Math.trunc(n))).padStart(4, "0");
 
-    // Local-dev fallback: when R2 is not configured, treat locally-rendered pages under UPLOAD_DIR as ready.
+    // Local-dev fallback: when storage driver is local, treat locally-rendered pages under UPLOAD_DIR as ready.
     // Worker writes page images to `${UPLOAD_DIR}/rendered_pages/<safeDocumentId>/page_%04d.png`.
     const uploadsRootDir = getUploadsRootDir();
-    const r2BucketConfigured = (process.env.R2_BUCKET || "").trim().length > 0;
+    const r2Enabled = getStorageDriver(process.env) === "r2";
     const safeDocIdForPath = (documentId: string) => String(documentId || "").replace(/[^a-zA-Z0-9_\-]/g, "_");
     const localRenderedPagesDirForDoc = (documentId: string) =>
       path.resolve(uploadsRootDir, "rendered_pages", safeDocIdForPath(documentId));
@@ -9072,8 +9073,8 @@ export async function registerDealRoutes(
       const rendered = typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered) ? metaObj.rendered_pages_rendered : null;
 
       if (!renderedR2) {
-        // If R2 isn't configured (typical local dev), allow local rendered pages to satisfy readiness.
-        if (!r2BucketConfigured) {
+        // If storage driver is local (typical local dev), allow local rendered pages to satisfy readiness.
+        if (!r2Enabled) {
           const local = hasLocalRenderedPages(d.id);
           if (local.ok) {
             readyDocIds.push(d.id);
@@ -9331,7 +9332,7 @@ export async function registerDealRoutes(
       readiness_reason:
         r2ProbeOverrides.length > 0
           ? "r2_probe_overrode_metadata"
-          : !r2BucketConfigured
+          : !r2Enabled
             ? "local_rendered_pages_present"
             : "metadata_ready",
       ready_documents: readyDocIds,

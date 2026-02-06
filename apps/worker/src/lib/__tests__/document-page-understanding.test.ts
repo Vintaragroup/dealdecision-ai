@@ -29,6 +29,9 @@ describe("document_page_understanding population", () => {
 		const pool: any = {
 			query: async (sql: string, params?: any[]) => {
 				queries.push({ sql: String(sql), params });
+				if (String(sql).includes("COUNT(*)::bigint AS inserted")) {
+					return { rows: [{ inserted: "9" }], rowCount: 1 };
+				}
 				return { rows: [{ upserted: "31", page_text_empty: "0" }], rowCount: 1 };
 			},
 		};
@@ -53,6 +56,17 @@ describe("document_page_understanding population", () => {
 		expect(q0?.sql.includes("ILIKE '%powerpoint%'")).toBe(false);
 		expect(q0?.sql.includes("ILIKE '%presentationml%'")).toBe(false);
 		expect(q0?.params).toEqual([
+			"22222222-2222-2222-2222-222222222222",
+			10,
+			20,
+			"page_understanding_v1",
+		]);
+
+		const q1 = queries[1];
+		expect(q1?.sql.includes("generate_series($2::int, ($3::int) - 1)")).toBe(true);
+		expect(q1?.sql.includes("missing_visual_extraction")).toBe(true);
+		expect(q1?.sql.includes("ON CONFLICT (document_id, page_index, version) DO NOTHING")).toBe(true);
+		expect(q1?.params).toEqual([
 			"22222222-2222-2222-2222-222222222222",
 			10,
 			20,

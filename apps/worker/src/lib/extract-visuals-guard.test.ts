@@ -32,4 +32,15 @@ describe("evaluateVisualDocReadiness", () => {
 		});
 		expect(readyEvenIfJobFailed.blocked).toBe(false);
 	});
+
+	it("allows needs_ocr docs when ingest meta succeeded", () => {
+		const res = evaluateVisualDocReadiness({
+			id: "needs-ocr-1",
+			status: "needs_ocr",
+			deletedAt: null,
+			metaStatus: "succeeded",
+		});
+		expect(res.blocked).toBe(false);
+		expect(res.reason).toBe(null);
+	});
 });

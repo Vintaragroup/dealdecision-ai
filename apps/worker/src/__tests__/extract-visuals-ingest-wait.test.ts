@@ -114,6 +114,7 @@ describe("extract_visuals ingest_not_complete wait", () => {
 		// NOTE: worker clamps poll interval to >=250ms.
 		process.env.EXTRACT_VISUALS_WAIT_INGEST_MAX_MS = "2000";
 		process.env.EXTRACT_VISUALS_WAIT_INGEST_POLL_MS = "250";
+		process.env.EXTRACT_VISUALS_ALLOW_RENDERED_PAGES_FALLBACK = "0";
 	});
 
 	it("waits for ingest readiness instead of failing immediately", async () => {
@@ -149,7 +150,7 @@ describe("extract_visuals ingest_not_complete wait", () => {
 			expect(extractVisualsProcessor).toBeTruthy();
 
 			const job = {
-				id: "job-1",
+				id: `job-${Math.random().toString(16).slice(2)}`,
 				name: "extract_visuals",
 				data: { deal_id: "deal-1", document_ids: ["doc-1"] },
 				updateProgress: vi.fn(async () => undefined),

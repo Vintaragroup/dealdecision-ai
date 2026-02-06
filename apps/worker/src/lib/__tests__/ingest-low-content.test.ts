@@ -10,7 +10,8 @@ describe("decideLowContentOutcome", () => {
 			completenessReason: "summary=10 chars, headings=0, metrics=0, score=0.00",
 		});
 		expect(retry.kind).toBe("retry");
-		expect(retry.jobStatus).toBe("retrying");
+		expect(retry.jobStatus).toBe("succeeded_with_warnings");
+		expect(retry.docStatus).toBe("completed");
 		expect(retry.nextAttempt).toBe(1);
 
 		const needsOcr = decideLowContentOutcome({
@@ -23,6 +24,16 @@ describe("decideLowContentOutcome", () => {
 		expect(needsOcr.docStatus).toBe("needs_ocr");
 		expect(needsOcr.enqueue.document_intelligence_extract).toBe(true);
 		expect(needsOcr.enqueue.render_document_pages).toEqual({ force_ocr: true });
+	});
+
+	it("application/pdf is treated as pdf for low-content handling", () => {
+		const res = decideLowContentOutcome({
+			contentType: "application/pdf",
+			attempt: 2,
+			completenessReason: "summary=500 chars, headings=0, metrics=0, score=0.40",
+		});
+		expect(res.kind).toBe("needs_ocr");
+		expect(res.docStatus).toBe("needs_ocr");
 	});
 
 	it("non-pdf low-content after retries fails", () => {

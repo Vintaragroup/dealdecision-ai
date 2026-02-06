@@ -413,6 +413,11 @@ describe("extract_visuals chunking finalization", () => {
 		expect(events.some((e: any) => e.event === "OCR_TEXT_PROMOTED" && e.promoted === true)).toBe(true);
 		expect(events.some((e: any) => e.event === "SEARCH_INDEX_UPDATED")).toBe(true);
 
+		// New OCR promotion should trigger a follow-up DPU rebuild job.
+		const queues = (m.queues ?? {}) as Record<string, any>;
+		expect(typeof queues.populate_document_page_understanding?.add).toBe("function");
+		expect(queues.populate_document_page_understanding.add).toHaveBeenCalled();
+
 		logSpy.mockRestore();
 	});
 

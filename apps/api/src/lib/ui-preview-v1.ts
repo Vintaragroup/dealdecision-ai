@@ -4,7 +4,7 @@ export type UiPreviewV1 = {
   // What the web app will render
   header_tiles: {
     raise: { value: string | null; label?: string | null; confidence?: number | null; sources?: any[] };
-    revenue: { value: string | null; label?: string | null; confidence?: number | null; sources?: any[] };
+    revenue: { value: string | null; label?: string | null; scope_label?: string | null; selection_reason?: string | null; confidence?: number | null; sources?: any[] };
     growth: { value: string | null; label?: string | null; confidence?: number | null; sources?: any[] };
     customers: { value: string | null; label?: string | null; confidence?: number | null; sources?: any[] };
     business_model: {
@@ -88,6 +88,34 @@ function fieldFromStructuredRaw(structured: any, key: string): { value: string |
   const valueDirect = asNonEmptyString(f?.value);
   const value = valueRaw ?? valueDirect ?? null;
   return { value, label: label ?? null, confidence, sources };
+}
+
+function revenueTileFromStructured(structured: any): UiPreviewV1["header_tiles"]["revenue"] {
+  const ss = asObject(structured) as any;
+  const f = ss ? ss.revenue : null;
+
+  const label = asNonEmptyString(f?.label);
+  const scopeLabel = asNonEmptyString(f?.scope_label);
+  const selectionReason = asNonEmptyString(f?.selection_reason);
+  const confidence = asFiniteNumber(f?.confidence);
+  const sources = Array.isArray(f?.sources) ? (f.sources as any[]) : undefined;
+
+  // New canonical field: structured_summary.revenue.value_raw
+  const canonicalValueRaw = asNonEmptyString(f?.value_raw);
+
+  // Back-compat: previously the UI used structured_summary.revenue.value.raw
+  const legacyValueRaw = asNonEmptyString(f?.value?.raw);
+  const legacyValueDirect = asNonEmptyString(f?.value);
+
+  const value = canonicalValueRaw ?? legacyValueRaw ?? legacyValueDirect ?? null;
+  return {
+    value,
+    label: (label ?? scopeLabel) ?? null,
+    scope_label: scopeLabel ?? null,
+    selection_reason: selectionReason ?? null,
+    confidence,
+    sources,
+  };
 }
 
 function businessModelTileFromStructured(structured: any): UiPreviewV1["header_tiles"]["business_model"] {
@@ -265,35 +293,71 @@ function dealSummaryFromReport(reportPayload: any): {
     ? (reportPayload?.deal_summary ?? reportPayload?.report?.deal_summary ?? null)
     : null;
 
-  const canonicalReady = canonical && typeof canonical === "object" && (canonical as any).ready === true;
-  if (canonicalReady) {
-    const one = (canonical as any)?.one_liner;
-    const prod = (canonical as any)?.product;
-    const market = (canonical as any)?.market;
-    return {
-      deal_summary: {
-        value: asNonEmptyString(one?.text),
-        sources: Array.isArray(one?.sources) ? (one.sources as any[]) : undefined,
-      },
-      product_summary: {
-        value: asNonEmptyString(prod?.text),
-        sources: Array.isArray(prod?.sources) ? (prod.sources as any[]) : undefined,
-      },
-      market_summary: {
-        value: asNonEmptyString(market?.text),
-        sources: Array.isArray(market?.sources) ? (market.sources as any[]) : undefined,
-      },
-    };
-  }
+  // New preferred surfaces (tiered/canonical):
+  // - deal_summary: report.deal_summary.tiers.hero
+  // - product_summary: report.deal_summary.product.product_definition (or .text back-compat)
+  // - market_summary: report.deal_summary.market_target.text (optionally append market_context)
+  const heroTier = asNonEmptyString((canonical as any)?.tiers?.hero);
+  const productDef = asNonEmptyString((canonical as any)?.product?.product_definition) ?? asNonEmptyString((canonical as any)?.product?.text);
+  const productSources = Array.isArray((canonical as any)?.product?.sources) ? ((canonical as any).product.sources as any[]) : undefined;
 
-  // Web fallback (when canonical not ready): use Executive Summary section content when present.
-  const legacy = findExecutiveSummaryFromSections(reportPayload);
-  return {
+  const marketTargetText = asNonEmptyString((canonical as any)?.market_target?.text) ?? asNonEmptyString((canonical as any)?.market_target);
+  const marketTargetSources = Array.isArray((canonical as any)?.market_target?.sources) ? ((canonical as any).market_target.sources as any[]) : undefined;
+  const marketContextText = asNonEmptyString((canonical as any)?.market_context?.text) ?? asNonEmptyString((canonical as any)?.market_context);
+
+  const structuredSummary = reportPayload?.structured_summary ?? reportPayload?.report?.structured_summary ?? null;
+  const ss = asObject(structuredSummary) as any;
+
+  const legacyDeal = ss?.deal_summary_v1;
+  const legacyDealValue = asNonEmptyString(legacyDeal?.value);
+  const legacyDealSources = Array.isArray(legacyDeal?.sources) ? (legacyDeal.sources as any[]) : undefined;
+
+  const legacyProduct = ss?.product_summary_v1;
+  const legacyProductValue = asNonEmptyString(legacyProduct?.value);
+  const legacyProductSources = Array.isArray(legacyProduct?.sources) ? (legacyProduct.sources as any[]) : undefined;
+
+  const legacyMarket = ss?.market_summary_v1;
+  const legacyMarketValue = asNonEmptyString(legacyMarket?.value);
+  const legacyMarketSources = Array.isArray(legacyMarket?.sources) ? (legacyMarket.sources as any[]) : undefined;
+
+  const dealSummaryValue = heroTier ?? legacyDealValue ?? null;
+  const dealSummarySources = heroTier ? undefined : legacyDealSources;
+
+  const out: {
+    deal_summary: { value: string | null; sources?: any[] };
+    product_summary?: { value: string | null; sources?: any[] };
+    market_summary?: { value: string | null; sources?: any[] };
+  } = {
     deal_summary: {
-      value: legacy,
-      sources: undefined,
+      value: dealSummaryValue,
+      sources: dealSummarySources,
     },
   };
+
+  if (productDef) {
+    out.product_summary = { value: productDef, sources: productSources };
+  } else if (legacyProductValue) {
+    out.product_summary = { value: legacyProductValue, sources: legacyProductSources };
+  }
+
+  if (marketTargetText) {
+    const combined = marketContextText
+      ? `Target market: ${marketTargetText} Market context: ${marketContextText}`
+      : marketTargetText;
+    out.market_summary = { value: combined, sources: marketTargetSources };
+  } else if (legacyMarketValue) {
+    out.market_summary = { value: legacyMarketValue, sources: legacyMarketSources };
+  }
+
+  // If tiers missing and legacy missing, fall back further to Executive Summary.
+  if (!out.deal_summary.value) {
+    const legacy = findExecutiveSummaryFromSections(reportPayload);
+    out.deal_summary.value = legacy;
+  }
+
+  return out;
+
+  // Note: product/market intentionally do not fall back to Executive Summary.
 }
 
 function countCitations(ui: UiPreviewV1): { total_sources: number; unique_pages: number } {
@@ -357,7 +421,7 @@ export function buildUiPreviewV1(input: {
     return { value, label: label ?? null, confidence, sources };
   })();
 
-  const revenue = fieldFromStructuredRaw(structuredSummary, "revenue");
+  const revenue = revenueTileFromStructured(structuredSummary);
   const growth = fieldFromStructuredRaw(structuredSummary, "growth");
   const customers = fieldFromStructuredRaw(structuredSummary, "customers");
   const business_model = businessModelTileFromStructured(structuredSummary);

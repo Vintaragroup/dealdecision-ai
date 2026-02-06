@@ -37,7 +37,10 @@ test('deal_summary_v1 is claim-gated and Palm-like (identity + product + audienc
       source_document_id: 'doc-1',
       page_index: 1,
       slide_title: 'Market',
-      bullets: ['Golf participation is growing, supporting premium apparel demand.'],
+      bullets: [
+        'ICP: core 18–34 male golfers, expanding into women and youth. Sells via DTC and wholesale to green grass courses, retailers, and pro shops.',
+        'Golf participation is growing, supporting premium apparel demand.',
+      ],
       segment_key: 'market',
       segment_reason: { source: 'deterministic' },
     },
@@ -52,6 +55,7 @@ test('deal_summary_v1 is claim-gated and Palm-like (identity + product + audienc
   });
 
   assert.ok(out && out.value);
+  assert.ok(out && out.tiers);
   assert.equal(Array.isArray(out.claims) && out.claims.length, 4);
   assert.deepEqual(out.claims, ['what_the_company_is', 'what_it_sells', 'who_it_serves', 'why_it_wins']);
 
@@ -60,12 +64,34 @@ test('deal_summary_v1 is claim-gated and Palm-like (identity + product + audienc
   assert.match(out.value, /wholesale/i);
   assert.match(out.value, /traction|conversion|accounts/i);
 
+  assert.ok(out.market_target);
+  assert.match(out.market_target, /18\s*[-–]\s*34/i);
+  assert.match(out.market_target, /male/i);
+  assert.match(out.market_target, /women/i);
+  assert.match(out.market_target, /youth/i);
+  assert.match(out.market_target, /DTC/i);
+  assert.match(out.market_target, /wholesale/i);
+  assert.match(out.market_target, /green\s*grass|retailers|pro\s*shops/i);
+
+  assert.ok(out.market_context);
+  assert.match(out.market_context, /participation|growing|growth/i);
+
   assert.deepEqual(out.derived_from.product_pages, [12]);
   assert.deepEqual(out.derived_from.traction_pages, [8]);
   assert.deepEqual(out.derived_from.market_pages ?? [], [1]);
 
   assert.ok(out.supporting_nodes.length > 0);
   assert.ok(out.supporting_nodes.length <= 6);
+
+  // Tiered summaries: deterministic, non-identical, and length-ordered.
+  assert.match(out.tiers.hero, /golf apparel and accessories/i);
+  assert.match(out.tiers.hero, /DTC/i);
+  assert.match(out.tiers.hero, /wholesale/i);
+
+  assert.ok(out.tiers.overview.length > out.tiers.hero.length);
+  assert.ok(out.tiers.deep.length > out.tiers.overview.length);
+  assert.notEqual(out.tiers.hero, out.tiers.overview);
+  assert.notEqual(out.tiers.overview, out.tiers.deep);
 });
 
 test('deal_summary_v1 returns null when required claims are missing', () => {

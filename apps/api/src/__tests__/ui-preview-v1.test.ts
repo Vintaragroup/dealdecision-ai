@@ -65,7 +65,14 @@ test("buildUiPreviewV1 degrades gracefully when deterministic_score_preview_v1 m
         context: { deal_type: "seed" },
       },
     },
-    structured_summary: {},
+    structured_summary: {
+      // New behavior: when no tiers exist, fall back to legacy canonical summaries before sections.
+      deal_summary_v1: {
+        value: "Legacy canonical deal summary.",
+        confidence: 0.8,
+        sources: [{ document_id: "doc-1", page_index: 1, slide_title: "Overview", snippet: "..." }],
+      },
+    },
     sections: [{ id: "executive-summary", content: "Legacy executive summary." }],
   };
 
@@ -79,5 +86,41 @@ test("buildUiPreviewV1 degrades gracefully when deterministic_score_preview_v1 m
   assert.equal(dto.score.applied, false);
   assert.equal(dto.score.deterministic.overall_score, null);
   assert.equal(dto.score.baseline.overall_score, 42);
-  assert.equal(dto.summaries.deal_summary.value, "Legacy executive summary.");
+  assert.equal(dto.summaries.deal_summary.value, "Legacy canonical deal summary.");
+});
+
+test("plumbs revenue scope_label + selection_reason", () => {
+  const report = {
+    ready: true,
+    metadata: {
+      score_explanation: { totals: { confidence_score: 0.7 } },
+    },
+    structured_summary: {
+      revenue: {
+        value_raw: "$2.476M",
+        scope_label: "Revenue (2024)",
+        selection_reason: "financial_table_preferred",
+        sources: [{ page: 19, slide_title: "The Financials." }],
+      },
+    },
+    deal_summary: {
+      tiers: {
+        hero: "Palm is a golf apparel and accessories company with DTC + wholesale distribution.",
+      },
+    },
+  };
+
+  const dto = buildUiPreviewV1({
+    report,
+    segmented_nodes: [],
+    env: { DETERMINISTIC_SCORE_V1_ENABLED: "false" },
+  });
+
+  assert.equal(dto.header_tiles.revenue.value, "$2.476M");
+  assert.equal(dto.header_tiles.revenue.label, "Revenue (2024)");
+  assert.equal(dto.header_tiles.revenue.scope_label, "Revenue (2024)");
+  assert.equal(dto.header_tiles.revenue.selection_reason, "financial_table_preferred");
+  assert.ok(Array.isArray(dto.header_tiles.revenue.sources));
+  assert.equal(dto.header_tiles.revenue.sources?.length, 1);
+  assert.equal(dto.header_tiles.revenue.sources?.[0]?.slide_title, "The Financials.");
 });

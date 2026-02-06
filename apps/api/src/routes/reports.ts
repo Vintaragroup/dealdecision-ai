@@ -405,6 +405,9 @@ export async function registerReportRoutes(
                 structured_summary: (report as any)?.structured_summary ?? null,
                 segmented_nodes: segmentedNodes!.nodes as any,
                 metadata: nextMetadata,
+        input_documents: Array.isArray((row as any)?.dio_data?.inputs?.documents)
+          ? (((row as any).dio_data.inputs.documents as any[]) ?? [])
+          : [],
               });
 
               const enabled = envFlagEnabled(process.env.DETERMINISTIC_SCORE_V1_ENABLED);
@@ -677,6 +680,9 @@ export async function registerReportRoutes(
                 structured_summary: (report as any)?.structured_summary ?? null,
                 segmented_nodes: segmented.nodes as any,
                 metadata: nextMetadata,
+				input_documents: Array.isArray((dioRows[0] as any)?.dio_data?.inputs?.documents)
+					? (((dioRows[0] as any).dio_data.inputs.documents as any[]) ?? [])
+					: [],
               });
               (nextMetadata as any).deterministic_score_inputs_v1 = inputs;
             } catch {

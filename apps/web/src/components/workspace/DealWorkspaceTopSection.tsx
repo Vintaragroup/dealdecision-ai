@@ -131,12 +131,20 @@ export function DealWorkspaceTopSection({
   const extraStrengths = Math.max(0, (Array.isArray(strengths) ? strengths : []).filter(Boolean).length - visibleStrengths.length);
   const weaknessList = (Array.isArray(weaknesses) ? weaknesses : []).filter(Boolean);
 
+  const revenueNote = (() => {
+    const b = String(revenueLabel ?? '').trim().toLowerCase();
+    if (!b) return 'Annual';
+    if (b.includes('attributed')) return 'Attributed';
+    if (b.includes('ytd')) return 'YTD';
+    return 'Annual';
+  })();
+
   const metricCards: Array<{ label: string; value: string; note: string; noteClass: string; tooltip?: string | null; badge?: string | null }> = [
     { label: 'Raise', value: raise, note: 'Target', noteClass: 'text-emerald-400' },
     {
       label: 'Revenue',
       value: revenue,
-      note: 'Annual',
+      note: revenueNote,
       noteClass: 'text-blue-400',
       tooltip: revenueTooltip,
       badge: revenueLabel,

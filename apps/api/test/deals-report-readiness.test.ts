@@ -446,11 +446,17 @@ test("GET /api/v1/deals/:deal_id/report surfaces labeled KPI fallbacks derived f
     assert.equal(body.ready, true);
     assert.ok(body.structured_summary);
 
-    assert.equal(body.structured_summary.revenue?.value?.raw, "$800k");
-    assert.equal(body.structured_summary.revenue?.label, "Attributed");
-    assert.equal(body.structured_summary.revenue?.sources?.[0]?.page_index, 8);
-    assert.notEqual(body.structured_summary.revenue?.sources?.[0]?.page_index, 27);
-    assert.notEqual(body.structured_summary.revenue?.sources?.[0]?.page_index, 28);
+    // Channel-attributed revenue must not be treated as canonical company revenue.
+    assert.equal(body.structured_summary.revenue?.value ?? null, null);
+    assert.equal(body.structured_summary.revenue?.label ?? null, null);
+    assert.equal(Array.isArray(body.structured_summary.revenue?.sources) ? body.structured_summary.revenue.sources.length : 0, 0);
+
+    // Instead, it should be surfaced under marketing_metrics for inspection/UI.
+    assert.equal(body.structured_summary.marketing_metrics?.attributed_revenue?.value_raw, "$800k");
+    assert.equal(body.structured_summary.marketing_metrics?.attributed_revenue?.channel, "email_sms");
+    assert.equal(body.structured_summary.marketing_metrics?.attributed_revenue?.sources?.[0]?.page_index, 8);
+    assert.notEqual(body.structured_summary.marketing_metrics?.attributed_revenue?.sources?.[0]?.page_index, 27);
+    assert.notEqual(body.structured_summary.marketing_metrics?.attributed_revenue?.sources?.[0]?.page_index, 28);
 
     assert.equal(body.structured_summary.growth?.label, "Forecast");
     assert.equal(body.structured_summary.growth?.value?.raw, "Forecast: $4.5M (2026)");

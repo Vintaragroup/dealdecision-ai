@@ -242,6 +242,82 @@ test("GET /api/dashboard/deals/:deal_id/deterministic ready=false uses Phase 1 o
   await app.close();
 });
 
+test("Palm renders diligence_open_items count >= 4 (score_explanation.understanding_v1)", async () => {
+  const dealId = "00000000-0000-0000-0000-00000000d333";
+
+  const reportPayload = {
+    ready: true,
+    version: 1,
+    artifact: {
+      kind: "deal_intelligence_object",
+      dio_id: "dio-palm-understanding",
+      analysis_version: 1,
+      updated_at: "2026-02-06T00:00:00.000Z",
+    },
+    metadata: {
+      score_explanation: {
+        context: { primary_doc_type: "pitch_deck" },
+        understanding_v1: {
+          summary: "Palm-like: diligence items populated.",
+          strengths: [],
+          execution_dependencies: [],
+          diligence_open_items: [
+            { text: "Validate revenue quality and cohort retention.", evidence_ids: [], component_keys: ["financial_health"] },
+            { text: "Confirm inventory turns and gross margin by SKU.", evidence_ids: [], component_keys: ["financial_health"] },
+            { text: "Assess wholesale expansion plan and unit economics.", evidence_ids: [], component_keys: ["metric_benchmark"] },
+            { text: "Review customer concentration by channel.", evidence_ids: [], component_keys: ["risk_assessment"] },
+          ],
+        },
+      },
+    },
+    structured_summary: {
+      raise: { value: "$10M", label: "Raise", sources: [{ document_id: "doc-1", page_range: [1, 1] }] },
+      business_model: { value: "DTC", label: "Business model", sources: [{ document_id: "doc-1", page_range: [2, 2] }] },
+    },
+  };
+
+  const mockPool = {
+    query: async (sql: string, params: unknown[] = []) => {
+      if (sql.includes("FROM deals d") && sql.includes("deal_intelligence_objects") && sql.includes("LEFT JOIN LATERAL")) {
+        const id = String(params[0] ?? "");
+        return {
+          rows: [
+            {
+              deal_id: id,
+              deal_name: "Palm",
+              stage: "intake",
+              priority: "normal",
+              dio_id: "dio-from-db",
+              analysis_version: 1,
+              dio_updated_at: "2026-02-06T00:00:00.000Z",
+              dio_data: { phase1: { deal_overview_v2: { raise: "Phase1Raise", business_model: "Phase1Model" } } },
+            },
+          ],
+        };
+      }
+
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as any;
+
+  const app = Fastify();
+  app.get("/api/v1/deals/:deal_id/report", async () => reportPayload);
+  await registerDashboardRoutes(app, mockPool);
+
+  const res = await app.inject({ method: "GET", url: `/api/dashboard/deals/${dealId}/deterministic` });
+  assert.equal(res.statusCode, 200);
+  const body = res.json() as any;
+
+  assert.ok(Array.isArray(body.field_presence_matrix));
+  const rows = body.field_presence_matrix as Array<{ path: string; status: string; preview: string }>;
+  const diligenceRow = rows.find((r) => r && r.path === "score_explanation.understanding_v1.diligence_items_count");
+  assert.ok(diligenceRow, "expected diligence_items_count row");
+  assert.equal(diligenceRow.status, "present");
+  assert.ok(Number(diligenceRow.preview) >= 4, `expected diligence count >= 4, got ${diligenceRow.preview}`);
+
+  await app.close();
+});
+
 test("GET /api/dashboard HTML includes deterministic auto-fill on deal select", async () => {
   const app = Fastify();
 
@@ -276,6 +352,12 @@ test("GET /api/dashboard HTML includes deterministic auto-fill on deal select", 
   assert.ok(html.includes("setNodeInspectorDealId(dealId);"));
   assert.ok(html.includes("🧩 Node Inspector"));
 
+  // Deterministic: Report Fingerprint panel contract
+  assert.ok(html.includes("Report Fingerprint"));
+  assert.ok(html.includes("deterministic-fingerprint"));
+  assert.ok(html.includes("generated_at="));
+  assert.ok(html.includes("inputs_hash="));
+
   // Deterministic -> Node Inspector bridge
   assert.ok(html.includes("View in Node Inspector"));
   assert.ok(html.includes("deterministic-view-nodeinspector-btn"));
@@ -291,6 +373,9 @@ test("GET /api/dashboard HTML includes deterministic auto-fill on deal select", 
 
   // Node Inspector report/nodes diff panel
   assert.ok(html.includes("Report ↔ Nodes Diff"));
+
+  // Inspector/debug renderer contract: Product Summary (v1) shows product_validation under "Social proof".
+  assert.ok(html.includes("Social proof"));
 
   await app.close();
 });

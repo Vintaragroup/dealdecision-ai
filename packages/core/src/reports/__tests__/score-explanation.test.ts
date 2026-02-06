@@ -160,9 +160,151 @@ describe("score_explanation", () => {
       expect(typeof c.weighted_contribution).toBe("number");
     }
 
-    // Deterministic expectation: all-missing baseline should land below neutral.
-    expect(explanation.totals.unadjusted_overall_score).toBeLessThan(50);
-    expect(explanation.totals.overall_score).toBeLessThan(50);
+    // Deterministic expectation: when no score-bearing analyzer outputs are usable,
+    // the baseline is pinned and overall_score is set to neutral (50).
+    expect(explanation.totals.unadjusted_pinned).toBe(true);
+    expect(explanation.totals.unadjusted_overall_score).toBeNull();
+    expect(explanation.totals.overall_score).toBe(50);
+  });
+
+  it("adds understanding_v1 with concrete diligence items for neutral baseline (consumer ecommerce)", () => {
+    const now = new Date().toISOString();
+
+    const dio: any = {
+      schema_version: "1.0.0",
+      dio_id: "00000000-0000-4000-8000-000000009001",
+      deal_id: "00000000-0000-4000-8000-000000009002",
+      created_at: now,
+      updated_at: now,
+      analysis_version: 1,
+      dio_context: {
+        primary_doc_type: "pitch_deck",
+        deal_type: "startup_raise",
+        vertical: "consumer",
+        stage: "seed",
+        confidence: 0.8,
+      },
+      dio: {
+        deal_classification_v1: {
+          selected_policy: "consumer_ecommerce_brand_v1",
+        },
+        phase1: {
+          executive_summary_v1: {
+            title: "Palm",
+            one_liner: "Consumer brand",
+            deal_type: "startup_raise",
+            raise: "TBD",
+            business_model: "DTC + wholesale",
+            traction_signals: [],
+            key_risks_detected: [],
+            unknowns: [],
+            confidence: { overall: "med" },
+            evidence: [],
+          },
+          decision_summary_v1: {
+            score: 50,
+            recommendation: "CONSIDER",
+            reasons: [],
+            blockers: [],
+            next_requests: [],
+            confidence: "med",
+          },
+          claims: [],
+          coverage: {
+            sections: {
+              product: "present",
+              market: "present",
+              traction: "partial",
+              team: "missing",
+              terms: "missing",
+              risk: "partial",
+              other: "missing",
+            },
+          },
+        },
+      },
+      inputs: {
+        documents: [
+          {
+            id: "doc-1",
+            type: "pitch_deck",
+            page_count: 12,
+            metrics: [],
+          },
+        ],
+        evidence: [],
+        config: {
+          analyzer_versions: {
+            slide_sequence: "1.0.0",
+            metric_benchmark: "1.0.0",
+            visual_design: "1.0.0",
+            narrative_arc: "1.0.0",
+            financial_health: "1.0.0",
+            risk_assessment: "1.0.0",
+          },
+          features: {
+            tavily_enabled: false,
+            mcp_enabled: false,
+            llm_synthesis_enabled: false,
+          },
+          parameters: {
+            max_cycles: 3,
+            depth_threshold: 2,
+            min_confidence: 0.7,
+          },
+        },
+      },
+      analyzer_results: {
+        metric_benchmark: {
+          analyzer_version: "1.0.0",
+          executed_at: now,
+          status: "insufficient_data",
+          coverage: 0,
+          confidence: 0,
+          overall_score: null,
+          metrics_analyzed: [],
+        },
+        financial_health: {
+          analyzer_version: "1.0.0",
+          executed_at: now,
+          status: "insufficient_data",
+          coverage: 0,
+          confidence: 0,
+          health_score: null,
+          metrics: {},
+        },
+        risk_assessment: {
+          analyzer_version: "1.0.0",
+          executed_at: now,
+          status: "insufficient_data",
+          coverage: 0,
+          confidence: 0,
+          overall_risk_score: null,
+          total_risks: 0,
+        },
+      },
+      risk_map: [],
+    };
+
+    const explanation = buildScoreExplanationFromDIO(dio);
+    expect(explanation.totals.overall_score).toBe(50);
+
+    expect(explanation.understanding_v1).toBeTruthy();
+    expect(Array.isArray(explanation.understanding_v1?.diligence_open_items)).toBe(true);
+
+    const diligence = explanation.understanding_v1?.diligence_open_items?.map((i) => i.text) ?? [];
+
+    // Must surface diligence/open items when score is neutral.
+    expect(diligence.length).toBeGreaterThanOrEqual(4);
+
+    expect(diligence).toEqual(
+      expect.arrayContaining([
+        "Margin by channel (DTC vs wholesale) and contribution margin.",
+        "Inventory and working capital requirements for wholesale growth.",
+        "CAC and unit economics at scaled spend (LTV/CAC, payback), not just current efficiency.",
+        "Confirm multi-year financial tables and accounting basis (cash vs accrual) used for reported figures.",
+      ])
+    );
   });
 
   it("includes non-ok components with neutral baseline + penalty (no skipping)", () => {

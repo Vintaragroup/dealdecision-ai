@@ -20,6 +20,28 @@ type ReportDTO = {
       confidence: number;
       sources: Array<Record<string, any>>;
       label?: string | null;
+      selection_reason?: string | null;
+      candidates?: Array<{
+        selected?: boolean;
+        score?: number;
+        scope?: string | null;
+        subtype?: string | null;
+        year?: number | null;
+        value_raw?: string | null;
+        amount?: number | null;
+        currency?: string | null;
+        confidence?: number | null;
+        sources?: Array<Record<string, any>>;
+      }>;
+    };
+
+    marketing_metrics?: {
+      attributed_revenue?: {
+        value_raw: string | null;
+        channel: string | null;
+        confidence: number;
+        sources: Array<Record<string, any>>;
+      };
     };
     customers: {
       value: { count: number | null; kind: string | null; raw: string | null } | null;
@@ -153,6 +175,7 @@ function buildStructuredSummary(
     revenue: emptyField<{ amount: number | null; currency: string | null; period: string | null; raw: string | null }>(),
     customers: emptyField<{ count: number | null; kind: string | null; raw: string | null }>(),
     growth: emptyField<{ percent: number | null; year: number | null; raw: string | null }>(),
+    marketing_metrics: {},
     issues: [],
     strengths: [],
     recommendations: [],
@@ -401,6 +424,33 @@ function buildStructuredSummary(
   const overview = phase1?.deal_overview_v2;
   const exec = phase1?.executive_summary_v1;
 
+  const hasPrimaryCitation = (sources: Array<Record<string, any>>): boolean => {
+    if (!Array.isArray(sources) || sources.length === 0) return false;
+    return sources.some((s: any) => {
+      if (!s || typeof s !== 'object') return false;
+      const doc = typeof s.document_id === 'string' && s.document_id.trim()
+        ? s.document_id.trim()
+        : (typeof s.source_document_id === 'string' && s.source_document_id.trim() ? s.source_document_id.trim() : null);
+      const page = typeof s.page === 'number' && Number.isFinite(s.page)
+        ? s.page
+        : (typeof s.page_index === 'number' && Number.isFinite(s.page_index) ? s.page_index + 1 : null);
+      return !!doc && page != null;
+    });
+  };
+
+  const isSpecificBusinessModelString = (raw: string): boolean => {
+    const s = raw.trim();
+    if (!s) return false;
+    const lowered = s.toLowerCase();
+
+    // Reject single-token generic labels (common leakage: "Licensing").
+    const tokenCount = lowered.split(/\s+|\//g).filter(Boolean).length;
+    if (tokenCount < 2) return false;
+
+    // Require some money-flow / go-to-market model keyword.
+    return /\b(dtc|direct\s*-?to\s*-?consumer|wholesale|retail|marketplace|subscription|recurring|saas|commission|take\s*-?rate|transaction|fee|pricing|usage\s*-?based|consumption|licens(e|ing)|royalt(y|ies)|ads?|services?)\b/i.test(s);
+  };
+
   const overviewSources = Array.isArray(overview?.sources)
     ? overview.sources.map((s: any) => ({ kind: 'phase1.deal_overview_v2', ...s }))
     : [];
@@ -413,7 +463,7 @@ function buildStructuredSummary(
     structured.raise = { value: overviewRaise, confidence: 0.9, sources: overviewSources };
   }
   const overviewModel = asNonEmptyString(overview?.business_model);
-  if (overviewModel && !structured.business_model.value) {
+  if (overviewModel && !structured.business_model.value && hasPrimaryCitation(overviewSources)) {
     structured.business_model = { value: overviewModel, confidence: 0.9, sources: overviewSources };
   }
 
@@ -426,7 +476,7 @@ function buildStructuredSummary(
   }
   if (!structured.business_model.value) {
     const execModel = asNonEmptyString(exec?.business_model);
-    if (execModel) {
+    if (execModel && hasPrimaryCitation(execEvidence)) {
       const band = (exec as any)?.confidence?.sections?.business_model ?? (exec as any)?.confidence?.overall;
       structured.business_model = { value: execModel, confidence: confidenceBandToNumber(band), sources: execEvidence };
     }
@@ -491,10 +541,48 @@ function buildStructuredSummary(
           confidence: revenueMetric.confidence,
         },
       ],
+      selection_reason: 'input_metric_preferred',
+      candidates: [
+        {
+          selected: true,
+          score: revenueMetric.confidence,
+          scope: 'input_metric',
+          subtype: period ? String(period).toLowerCase() : null,
+          year: null,
+          value_raw: money.raw,
+          amount: money.amount,
+          currency: money.currency ?? revenueMetric.unit ?? null,
+          confidence: revenueMetric.confidence,
+          sources: [
+            {
+              kind: 'input_metric',
+              document_id: revenueMetric.document_id,
+              page: revenueMetric.page,
+              metric_key: revenueMetric.key,
+              unit: revenueMetric.unit,
+              confidence: revenueMetric.confidence,
+            },
+          ],
+        },
+      ],
     };
   } else {
-    const promotedRevenue = (() => {
-      const revenueFacts = promoted.filter((f) => factTypeOf(f) === 'revenue_v1');
+    const promotedRevenueTrace = (() => {
+      // Canonical revenue must ignore marketing-attributed/channel-attributed facts.
+      // These are now emitted as marketing_attributed_revenue_v1, but we also defensively
+      // exclude legacy revenue_v1 attributed scope/subtype.
+      const revenueFacts = promoted
+        .filter((f) => factTypeOf(f) === 'revenue_v1')
+        .filter((f: any) => {
+          const vj = getPromotedValueJson(f) ?? {};
+          const subtype = String((vj as any)?.subtype ?? '').toLowerCase();
+          const scope = String((vj as any)?.scope ?? (f as any)?.content_json?.provenance?.scope ?? '').toLowerCase();
+          if (scope === 'channel_attributed') return false;
+          if (subtype === 'attributed') return false;
+          // Forecast revenue is treated as growth/outlook, not canonical revenue.
+          if (subtype === 'forecast') return false;
+          return true;
+        });
       if (revenueFacts.length === 0) return null;
 
       const disallowedSeg = new Set(['team', 'advisors', 'equipment']);
@@ -510,6 +598,60 @@ function buildStructuredSummary(
         return false;
       };
 
+      const currentYear = new Date().getFullYear();
+
+      const getSubtype = (f: any): string | null => {
+        const vj = getPromotedValueJson(f) ?? {};
+        const s = asNonEmptyString((vj as any)?.subtype);
+        return s ? s.toLowerCase() : null;
+      };
+
+      const getScope = (f: any): string | null => {
+        const prov = f?.content_json?.provenance;
+        const vj = getPromotedValueJson(f) ?? {};
+        const v = asNonEmptyString((vj as any)?.scope);
+        if (v) return v;
+        const p = asNonEmptyString((prov as any)?.scope);
+        return p ?? null;
+      };
+
+      const inferredScope = (f: any): 'company_financials_table' | 'company_total' | 'channel_attributed' => {
+        const vj = getPromotedValueJson(f) ?? {};
+        const subtype = String((vj as any)?.subtype ?? '').toLowerCase();
+        const scopeRaw = String(getScope(f) ?? '').trim().toLowerCase();
+        if (scopeRaw === 'company_financials_table') return 'company_financials_table';
+        if (scopeRaw === 'channel_attributed') return 'channel_attributed';
+        if (scopeRaw === 'company_total') return 'company_total';
+        // Back-compat: if subtype explicitly says attributed, treat as channel-attributed.
+        if (subtype === 'attributed') return 'channel_attributed';
+        return 'company_total';
+      };
+
+      const buildCandidate = (f: any, scoreValue: number, selected: boolean): any => {
+        const vj = getPromotedValueJson(f) ?? {};
+        const display = asNonEmptyString((vj as any)?.display) ?? asNonEmptyString((vj as any)?.raw);
+        const amountRaw = (vj as any)?.amount?.amount;
+        const amount = typeof amountRaw === 'number' && Number.isFinite(amountRaw) ? amountRaw : null;
+        const yearRaw = (vj as any)?.year;
+        const year = typeof yearRaw === 'number' && Number.isFinite(yearRaw) ? yearRaw : null;
+        const scope = asNonEmptyString((vj as any)?.scope) ?? asNonEmptyString((f as any)?.content_json?.provenance?.scope);
+        const subtype = asNonEmptyString((vj as any)?.subtype);
+        const sources = attachNoteSnippet(promotedSourcesFor(f), (vj as any)?.note_snippet);
+        const conf = clamp01(typeof f?.confidence === 'number' ? f.confidence : 0.62);
+        return {
+          selected,
+          score: scoreValue,
+          scope: scope ?? inferredScope(f),
+          subtype: subtype ?? getSubtype(f),
+          year,
+          value_raw: display,
+          amount,
+          currency: 'USD',
+          confidence: conf,
+          sources,
+        };
+      };
+
       const score = (f: any): number => {
         const prov = f?.content_json?.provenance;
         const title = String(prov?.slide_title ?? '').toLowerCase();
@@ -518,6 +660,9 @@ function buildStructuredSummary(
         const raw = String((vj as any)?.display ?? (vj as any)?.raw ?? '').toLowerCase();
         const note = String((vj as any)?.note_snippet ?? '').toLowerCase();
         const subtype = String((vj as any)?.subtype ?? '').toLowerCase();
+        const scope = inferredScope(f);
+        const yearRaw = (vj as any)?.year;
+        const year = typeof yearRaw === 'number' && Number.isFinite(yearRaw) ? yearRaw : null;
         const titleIsFinancialOrPerformance = title.includes('financial') || title.includes('performance');
 
         // Exclude opportunity-style revenue.
@@ -527,6 +672,18 @@ function buildStructuredSummary(
         if (seg && disallowedSeg.has(seg) && !titleIsFinancialOrPerformance) return -500;
 
         let s = 0;
+        if (scope === 'company_financials_table') s += 50;
+        if (scope === 'company_total') s += 10;
+        if (scope === 'channel_attributed') s -= 10;
+
+        // Forecast revenue should never outrank completed-year revenue or attributed revenue.
+        if (subtype === 'forecast') s -= 20;
+
+        if (typeof year === 'number') {
+          // Prefer recent completed years.
+          if (year <= currentYear - 2) s += 10;
+          s += Math.max(0, Math.min(6, year - (currentYear - 10)) * 0.2);
+        }
         if (title.includes('business performance')) s += 12;
         if (title.includes('financial')) s += 10;
         if (title.includes('performance')) s += 9;
@@ -539,32 +696,110 @@ function buildStructuredSummary(
         return s;
       };
 
-      const bestBySubtype = (subtype: string): PromotedFactInput | null => {
-        const hits = revenueFacts.filter((f) => {
-          const vj = getPromotedValueJson(f) ?? {};
-          return asNonEmptyString((vj as any)?.subtype) === subtype;
-        });
+      const scored = revenueFacts
+        .map((f: any) => ({ f, score: score(f) }))
+        .filter((x: any) => typeof x.score === 'number' && Number.isFinite(x.score) && x.score >= -100);
+
+      const sortedAll = scored
+        .slice()
+        .sort(
+          (a: any, b: any) =>
+            b.score - a.score ||
+            String(b?.f?.extracted_at ?? '').localeCompare(String(a?.f?.extracted_at ?? ''))
+        );
+
+      const pickBest = (
+        predicate: (f: any) => boolean,
+        selection_reason: string
+      ): { fact: PromotedFactInput; selection_reason: string } | null => {
+        const hits = revenueFacts.filter((f: any) => predicate(f));
         if (hits.length === 0) return null;
-        const sorted = hits.slice().sort((a: any, b: any) => score(b) - score(a) || String(b?.extracted_at ?? '').localeCompare(String(a?.extracted_at ?? '')));
+        const sorted = hits
+          .slice()
+          .sort(
+            (a: any, b: any) =>
+              score(b) - score(a) ||
+              String(b?.extracted_at ?? '').localeCompare(String(a?.extracted_at ?? ''))
+          );
         const best = sorted[0];
-        return score(best) < -100 ? null : best;
+        return score(best) < -100 ? null : { fact: best, selection_reason };
       };
 
-      return bestBySubtype('annual') ?? bestBySubtype('attributed') ?? null;
+      const pickBestFinancialTableAnnual = (): { fact: PromotedFactInput; selection_reason: string } | null => {
+        const hits = revenueFacts.filter(
+          (f: any) => inferredScope(f) === 'company_financials_table' && getSubtype(f) === 'annual'
+        );
+        if (hits.length === 0) return null;
+        const sorted = hits
+          .slice()
+          .sort((a: any, b: any) => {
+            const aYearRaw = (getPromotedValueJson(a) ?? {})?.year;
+            const bYearRaw = (getPromotedValueJson(b) ?? {})?.year;
+            const aYear = typeof aYearRaw === 'number' && Number.isFinite(aYearRaw) ? aYearRaw : null;
+            const bYear = typeof bYearRaw === 'number' && Number.isFinite(bYearRaw) ? bYearRaw : null;
+            if (aYear != null && bYear != null && aYear !== bYear) return bYear - aYear;
+            return score(b) - score(a) || String(b?.extracted_at ?? '').localeCompare(String(a?.extracted_at ?? ''));
+          });
+        const best = sorted[0];
+        return score(best) < -100 ? null : { fact: best, selection_reason: 'financial_table_preferred' };
+      };
+
+      // Canonical revenue preference order when no document input metrics exist.
+      // 1) company_financials_table annual revenue (completed-year table row)
+      // 2) company_total annual revenue (non-attributed)
+      // Note: forecast revenue is intentionally excluded from canonical revenue.
+      const picked = (
+        pickBestFinancialTableAnnual() ??
+        pickBest((f) => inferredScope(f) === 'company_total' && getSubtype(f) === 'annual', 'company_total_preferred') ??
+        null
+      );
+
+      const chosen = picked ? picked.fact : null;
+      const selection_reason = picked ? picked.selection_reason : null;
+
+      const candidates = sortedAll
+        .slice(0, 12)
+        .map((x: any) => buildCandidate(x.f, x.score, chosen != null && x.f === chosen));
+
+      // If we chose something excluded from sortedAll (shouldn't happen), still emit it as selected.
+      if (chosen && !candidates.some((c: any) => c && c.selected)) {
+        try {
+          const sc = score(chosen);
+          candidates.unshift(buildCandidate(chosen, sc, true));
+        } catch {
+          // ignore
+        }
+      }
+
+      return { chosen, selection_reason, candidates };
     })();
 
-    if (promotedRevenue) {
+    if (promotedRevenueTrace && promotedRevenueTrace.chosen) {
+      const promotedRevenue = promotedRevenueTrace.chosen;
       const vj = getPromotedValueJson(promotedRevenue) ?? {};
       const display = asNonEmptyString((vj as any)?.display) ?? asNonEmptyString((vj as any)?.raw);
       const subtype = asNonEmptyString((vj as any)?.subtype);
+      const scope = asNonEmptyString((vj as any)?.scope) ?? asNonEmptyString((promotedRevenue as any)?.content_json?.provenance?.scope);
+      const yearRaw = (vj as any)?.year;
+      const year = typeof yearRaw === 'number' && Number.isFinite(yearRaw) ? yearRaw : null;
       const amountRaw = (vj as any)?.amount?.amount;
       const amount = typeof amountRaw === 'number' && Number.isFinite(amountRaw) ? amountRaw : null;
       const sources = attachNoteSnippet(promotedSourcesFor(promotedRevenue), (vj as any)?.note_snippet);
+
+      const label = (() => {
+        const scopeNorm = String(scope ?? '').trim().toLowerCase();
+        if (scopeNorm === 'channel_attributed' || subtype === 'attributed') return 'Attributed';
+        if (scopeNorm === 'company_financials_table' && typeof year === 'number') return String(year);
+        return null;
+      })();
+
       structured.revenue = {
         value: { amount, currency: 'USD', period: null, raw: display },
         confidence: clamp01(typeof promotedRevenue.confidence === 'number' ? promotedRevenue.confidence : 0.62),
         sources,
-        label: subtype && subtype !== 'annual' ? (subtype === 'attributed' ? 'Attributed' : null) : null,
+        label,
+        selection_reason: promotedRevenueTrace.selection_reason,
+        candidates: Array.isArray(promotedRevenueTrace.candidates) ? promotedRevenueTrace.candidates : [],
       };
     } else {
     const fhRevenue = (dio as any)?.analyzer_results?.financial_health?.metrics?.revenue;
@@ -573,8 +808,51 @@ function buildStructuredSummary(
         value: { amount: fhRevenue, currency: null, period: 'annual', raw: null },
         confidence: clamp01((dio as any)?.analyzer_results?.financial_health?.confidence ?? 0.5),
         sources: [{ kind: 'financial_health.metrics', metric_key: 'revenue' }],
+        selection_reason: 'financial_health_fallback',
+        candidates: [
+          {
+            selected: true,
+            score: clamp01((dio as any)?.analyzer_results?.financial_health?.confidence ?? 0.5),
+            scope: 'financial_health',
+            subtype: 'annual',
+            year: null,
+            value_raw: null,
+            amount: fhRevenue,
+            currency: null,
+            confidence: clamp01((dio as any)?.analyzer_results?.financial_health?.confidence ?? 0.5),
+            sources: [{ kind: 'financial_health.metrics', metric_key: 'revenue' }],
+          },
+        ],
       };
     }
+    }
+  }
+
+  // Marketing-attributed revenue (must never be treated as canonical company revenue).
+  // Surface it under structured_summary.marketing_metrics for inspection/debug/UI.
+  {
+    const attributedFacts = promoted.filter((f) => factTypeOf(f) === 'marketing_attributed_revenue_v1');
+    if (attributedFacts.length > 0) {
+      const best = attributedFacts
+        .slice()
+        .sort(
+          (a: any, b: any) =>
+            (typeof b?.confidence === 'number' ? b.confidence : 0) - (typeof a?.confidence === 'number' ? a.confidence : 0) ||
+            String(b?.extracted_at ?? '').localeCompare(String(a?.extracted_at ?? ''))
+        )[0];
+
+      const vj = getPromotedValueJson(best) ?? {};
+      const value_raw = asNonEmptyString((vj as any)?.display) ?? asNonEmptyString((vj as any)?.raw);
+      const channel = asNonEmptyString((vj as any)?.channel) ?? asNonEmptyString((best as any)?.content_json?.provenance?.channel);
+      const sources = attachNoteSnippet(promotedSourcesFor(best), (vj as any)?.note_snippet);
+
+      structured.marketing_metrics = structured.marketing_metrics ?? {};
+      structured.marketing_metrics.attributed_revenue = {
+        value_raw,
+        channel: channel ?? null,
+        confidence: clamp01(typeof best?.confidence === 'number' ? best.confidence : 0.62),
+        sources,
+      };
     }
   }
 
@@ -674,7 +952,7 @@ function buildStructuredSummary(
   }
   if (!structured.business_model.value) {
     const businessModel = asNonEmptyString(scoreExplanationAny?.context?.business_model);
-    if (businessModel) {
+    if (businessModel && isSpecificBusinessModelString(businessModel)) {
       structured.business_model = {
         value: businessModel,
         confidence: 0.55,

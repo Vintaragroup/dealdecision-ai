@@ -273,6 +273,181 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(within(overviewBusinessModelRow as HTMLElement).getByText(/Usage-based SaaS/i)).toBeInTheDocument();
   });
 
+  test('renders understanding_v1 diligence items under Score Understanding → Weaknesses (Palm-like)', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v1.0.0',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-01-02T00:00:00.000Z',
+    } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+
+    vi.mocked(apiGetDealReport).mockResolvedValueOnce({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-rpt-understanding-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 50,
+        recommendation: 'no',
+        sections: [{ id: 'executive-summary', title: 'Executive Summary', content: 'Exec', evidence_ids: [] }],
+        structured_summary: {
+          revenue: { value: { raw: '$2.476M' }, sources: [] },
+        },
+        metadata: {
+          score_explanation: {
+            understanding_v1: {
+              strengths: [{ text: 'Evidence-backed product definition' }],
+              diligence_open_items: [
+                { text: 'Confirm gross margin by channel (DTC vs wholesale).' },
+                { text: 'Validate inventory/working capital needs by season.' },
+                { text: 'Validate CAC and unit economics at scale.' },
+                { text: 'Confirm multi-year financial tables and accounting basis.' },
+              ],
+              execution_dependencies: [{ text: 'Wholesale expansion requires channel partnerships.' }],
+            },
+            context: { stage: 'in_diligence', deal_type: 'Primary equity' },
+          },
+          score_band_v2: { key: 'consider_caution', label: 'Consider (Caution)', overall_score: 50, thresholds_version: 'v2' },
+          hard_pass_guardrail_v2: { triggered: false, reason: null, note: null, criteria_snapshot: null },
+          decision_v1: { recommendation_key: 'consider', label: 'Consider (Caution)', severity: 'warn', reasons: ['band:consider_caution'] },
+        },
+      },
+    } as any);
+
+    render(
+      <ScoreSourceProvider>
+        <DealWorkspace darkMode={false} dealId="deal-rpt-understanding-1" dealData={baseDeal} />
+      </ScoreSourceProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /Score Understanding/i })).toBeInTheDocument();
+    });
+
+    const card = screen.getByRole('heading', { name: /Score Understanding/i }).closest('div');
+    expect(card).not.toBeNull();
+
+    const weaknessesLabel = within(card as HTMLElement).getByText(/^Weaknesses$/i);
+    const headerRow = weaknessesLabel.closest('div');
+    const weaknessColumn = headerRow?.parentElement as HTMLElement | null;
+    expect(weaknessColumn).not.toBeNull();
+
+    const items = within(weaknessColumn as HTMLElement).getAllByRole('listitem');
+    expect(items.length).toBeGreaterThanOrEqual(4);
+  });
+
+  test('header KPI labels: financial-table revenue shows year; growth forecast shows Forecast YEAR (Palm)', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v1.0.0',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-01-02T00:00:00.000Z',
+    } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+
+    vi.mocked(apiGetDealReport).mockResolvedValueOnce({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-rpt-kpi-labels-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 50,
+        recommendation: 'no',
+        sections: [{ id: 'executive-summary', title: 'Executive Summary', content: 'Exec', evidence_ids: [] }],
+        structured_summary: {
+          revenue: {
+            value: { raw: '$2.476M' },
+            label: 'Annual',
+            sources: [{ document_id: 'doc-1', page_index: 12, note_snippet: 'Revenue 2024 $2.476M', meta: { scope: 'company_financials_table', year: 2024, period: 'annual' } }],
+          },
+          growth: {
+            value: { raw: '40% YoY', year: 2026 },
+            label: 'Annual',
+            sources: [{ document_id: 'doc-1', page_index: 9, note_snippet: 'Forecast 2026', meta: { period: 'forecast', year: 2026 } }],
+          },
+          customers: { value: { raw: '12 wholesale accounts' }, sources: [] },
+        },
+        metadata: {
+          score_explanation: { context: { stage: 'in_diligence', deal_type: 'Primary equity' } },
+          score_band_v2: { key: 'consider_caution', label: 'Consider (Caution)', overall_score: 50, thresholds_version: 'v2' },
+          hard_pass_guardrail_v2: { triggered: false, reason: null, note: null, criteria_snapshot: null },
+          decision_v1: { recommendation_key: 'consider', label: 'Consider (Caution)', severity: 'warn', reasons: ['band:consider_caution'] },
+        },
+      },
+    } as any);
+
+    render(
+      <ScoreSourceProvider>
+        <DealWorkspace darkMode={false} dealId="deal-rpt-kpi-labels-1" dealData={baseDeal} />
+      </ScoreSourceProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Revenue \(2024\)/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/Growth \(Forecast 2026\)/i)).toBeInTheDocument();
+  });
+
+  test('header KPI labels: channel-attributed revenue shows Attributed and does not show Annual note (Palm)', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v1.0.0',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-01-02T00:00:00.000Z',
+    } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+
+    vi.mocked(apiGetDealReport).mockResolvedValueOnce({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-rpt-kpi-labels-2',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 50,
+        recommendation: 'no',
+        sections: [{ id: 'executive-summary', title: 'Executive Summary', content: 'Exec', evidence_ids: [] }],
+        structured_summary: {
+          revenue: {
+            value: { raw: '$800k' },
+            label: 'Annual',
+            sources: [{ document_id: 'doc-1', page_index: 7, note_snippet: 'Email attributed revenue', meta: { scope: 'channel_attributed', year: 2024, period: 'annual' } }],
+          },
+          growth: { value: { raw: '—' }, sources: [] },
+          customers: { value: { raw: '—' }, sources: [] },
+        },
+        metadata: {
+          score_explanation: { context: { stage: 'in_diligence', deal_type: 'Primary equity' } },
+          score_band_v2: { key: 'consider_caution', label: 'Consider (Caution)', overall_score: 50, thresholds_version: 'v2' },
+          hard_pass_guardrail_v2: { triggered: false, reason: null, note: null, criteria_snapshot: null },
+          decision_v1: { recommendation_key: 'consider', label: 'Consider (Caution)', severity: 'warn', reasons: ['band:consider_caution'] },
+        },
+      },
+    } as any);
+
+    render(
+      <ScoreSourceProvider>
+        <DealWorkspace darkMode={false} dealId="deal-rpt-kpi-labels-2" dealData={baseDeal} />
+      </ScoreSourceProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Revenue \(Attributed\)/i)).toBeInTheDocument();
+    });
+
+    const revenueLabel = screen.getByText(/^Revenue$/i);
+    const revenueCard = revenueLabel.parentElement as HTMLElement | null;
+    expect(revenueCard).not.toBeNull();
+    expect(within(revenueCard as HTMLElement).getByText(/^Attributed$/i)).toBeInTheDocument();
+    expect(within(revenueCard as HTMLElement).queryByText(/^Annual$/i)).toBeNull();
+  });
+
   test('renders hard pass guardrail badge + note in DealWorkspace top section', async () => {
     vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: 'v1.0.0',
@@ -433,6 +608,11 @@ describe('DealWorkspace Job Center (live mode)', () => {
         deal_summary: {
           version: 'deal_summary_v1',
           ready: true,
+          tiers: {
+            hero: 'CANON HERO (top) — short',
+            overview: 'CANON OVERVIEW (overview tab) — longer and more detailed.',
+            deep: 'CANON DEEP PARA 1 (accordion).\n\nCANON DEEP PARA 2 (accordion).',
+          },
           one_liner: {
             text: 'CANON one-liner',
             sources: [
@@ -494,12 +674,12 @@ describe('DealWorkspace Job Center (live mode)', () => {
     renderWorkspace({ dealId: 'deal-can-1' });
 
     await waitFor(() => {
-      expect(screen.getAllByText('CANON one-liner').length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/CANON HERO/i).length).toBeGreaterThan(0);
     });
 
     const top = screen.getByLabelText('Deal top summary');
     expect(within(top).getByRole('heading', { name: 'Deal Summary' })).toBeInTheDocument();
-    expect(within(top).getByText('CANON one-liner')).toBeInTheDocument();
+    expect(within(top).getByText(/CANON HERO \(top\)/i)).toBeInTheDocument();
     expect(within(top).queryByText(/LEGACY EXEC SUMMARY/i)).toBeNull();
 
     expect(screen.getAllByText('Canonical').length).toBeGreaterThan(0);
@@ -507,11 +687,19 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(screen.getByText('CANON product')).toBeInTheDocument();
     expect(screen.getByText('CANON market')).toBeInTheDocument();
 
+    // Overview tab shows the overview tier (not the hero tier).
+    expect(screen.getByText(/CANON OVERVIEW \(overview tab\)/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^CANON one-liner$/)).toBeNull();
+
     // Citations toggle appears only when canonical citations are present.
     await userEvent.click(screen.getByRole('button', { name: /view citations/i }));
     expect(screen.getByText(/^One-liner$/i)).toBeInTheDocument();
     expect(screen.getAllByText(/doc-aaaa… · p1 · Overview/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/We build X for Y/i).length).toBeGreaterThan(0);
+
+    // Deep tier appears only after expanding.
+    await userEvent.click(screen.getByRole('button', { name: /show more/i }));
+    expect(screen.getByText(/CANON DEEP PARA 1/i)).toBeInTheDocument();
   });
 
   test('Deal Summary shows Legacy label and hides citations toggle when canonical summary is not ready', async () => {

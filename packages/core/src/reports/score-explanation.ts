@@ -8,6 +8,9 @@ export type ScoreExplainExcludedReason = "status_not_ok" | "null_score" | "doc_t
 
 export type ScoreExplanation = {
   context: DealIntelligenceObject["dio_context"];
+  // Additive: investor-friendly explanation buckets (V1).
+  // Intentionally additive to preserve backward compatibility with stored score_explanation blobs.
+  understanding_v1?: ScoreUnderstandingV1;
   aggregation: {
     method: "weighted_mean";
     policy_id: string | null;
@@ -63,6 +66,19 @@ export type ScoreComponent = {
   debug_ref?: string;
 };
 
+export type ScoreUnderstandingItemV1 = {
+  text: string;
+  evidence_ids: string[];
+  component_keys: string[];
+};
+
+export type ScoreUnderstandingV1 = {
+  summary: string;
+  strengths: ScoreUnderstandingItemV1[];
+  execution_dependencies: ScoreUnderstandingItemV1[];
+  diligence_open_items: ScoreUnderstandingItemV1[];
+};
+
 const PENALTY_MISSING = 8;
 const PENALTY_NON_OK = 6;
 
@@ -87,6 +103,234 @@ const uniqueStrings = (xs: string[]): string[] => {
   return out;
 };
 
+const uniqueUnderstandingItems = (items: ScoreUnderstandingItemV1[]): ScoreUnderstandingItemV1[] => {
+  const seen = new Set<string>();
+  const out: ScoreUnderstandingItemV1[] = [];
+  for (const item of items) {
+    const key = normalizeKey(item.text);
+    if (!key) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      text: item.text.trim(),
+      evidence_ids: uniqueStrings(Array.isArray(item.evidence_ids) ? item.evidence_ids : []),
+      component_keys: uniqueStrings(Array.isArray(item.component_keys) ? item.component_keys : []),
+    });
+  }
+  return out;
+};
+
+const shouldTreatAsGenericReason = (reason: string): boolean => {
+  const r = reason.trim().toLowerCase();
+  if (!r) return true;
+  if (r.includes("neutral baseline")) return true;
+  if (r.includes("missing analyzer")) return true;
+  if (r.includes("insufficient")) return true;
+  if (r.includes("failed")) return true;
+  if (r === "analyzer score used") return true;
+  if (r === "neutral baseline used") return true;
+  return false;
+};
+
+const mapRubricSignalToDiligenceText = (signal: string): string | null => {
+  const s = normalizeKey(signal);
+  switch (s) {
+    case "unit_economics":
+      return "Unit economics at scale (CAC, LTV/CAC, payback) and contribution margin.";
+    case "gross_margin_or_unit_economics":
+      return "Gross margin / contribution margin (and how it changes with scale).";
+    case "working_capital_plan":
+      return "Inventory and working capital plan (cash conversion cycle, purchase terms).";
+    case "distribution_traction_or_agreements":
+      return "Distribution traction and/or signed distribution agreements.";
+    case "retention_or_churn":
+      return "Retention / churn metrics (cohorts, NRR/GRR) where applicable.";
+    case "revenue":
+      return "Multi-period revenue (with source-of-truth tables) and reconciliation to bank/accounting.";
+    case "risk_controls":
+      return "Operating controls and instrumentation (cohorts, conversion, chargebacks/fraud where applicable).";
+    default:
+      return null;
+  }
+};
+
+const buildScoreUnderstandingV1 = (params: {
+  dio: DealIntelligenceObject;
+  explanation: ScoreExplanation;
+  rubricEval: RubricEval | null;
+}): ScoreUnderstandingV1 => {
+  const { dio, explanation, rubricEval } = params;
+
+  const overall = typeof explanation.totals.overall_score === "number" ? explanation.totals.overall_score : null;
+  const unadjustedPinned = Boolean((explanation.totals as any).unadjusted_pinned);
+  const adjustment = typeof explanation.totals.adjustment_factor === "number" ? explanation.totals.adjustment_factor : null;
+  const coverage = typeof explanation.totals.coverage_ratio === "number" ? explanation.totals.coverage_ratio : null;
+  const dueDiligence = typeof explanation.totals.due_diligence_factor === "number" ? explanation.totals.due_diligence_factor : null;
+
+  const nearNeutral = overall !== null && overall >= 45 && overall <= 55;
+
+  const summary = (() => {
+    if (unadjustedPinned) {
+      return "Score is set to the neutral baseline (50) because no score-bearing analyzer outputs were usable; this is not a negative signal, just missing evidence.";
+    }
+    if (nearNeutral) {
+      const parts: string[] = ["Score is near-neutral (~50) because the system blends toward baseline when evidence is limited."];
+      if (coverage !== null) parts.push(`Coverage ratio=${coverage.toFixed(2)}.`);
+      if (dueDiligence !== null) parts.push(`Due diligence readiness=${dueDiligence.toFixed(2)}.`);
+      if (adjustment !== null) parts.push(`Adjustment factor=${adjustment.toFixed(2)}.`);
+      return parts.join(" ");
+    }
+    return "Strengths and open items below explain what drove the score and what would move it.";
+  })();
+
+  const strengths: ScoreUnderstandingItemV1[] = [];
+  const executionDependencies: ScoreUnderstandingItemV1[] = [];
+  const diligenceOpen: ScoreUnderstandingItemV1[] = [];
+
+  const components: any = explanation.components as any;
+  for (const key of Object.keys(components)) {
+    const comp = components[key];
+    if (!comp || typeof comp !== "object") continue;
+    const used = typeof comp.used_score === "number" && Number.isFinite(comp.used_score) ? comp.used_score : null;
+    const penalty = typeof comp.penalty === "number" && Number.isFinite(comp.penalty) ? comp.penalty : 0;
+    const effective = used === null ? null : Math.max(0, Math.min(100, used - penalty));
+    const reason = typeof comp.reason === "string" ? comp.reason : "";
+    const evidenceIds = uniqueStrings(asStringArray(comp.evidence_ids));
+
+    if (comp.status === "ok" && effective !== null && effective >= 65 && !shouldTreatAsGenericReason(reason)) {
+      strengths.push({ text: reason, evidence_ids: evidenceIds, component_keys: [key] });
+    }
+
+    const gaps = Array.isArray(comp.gaps) ? comp.gaps : [];
+    if (gaps.length > 0 && (unadjustedPinned || nearNeutral)) {
+      // Convert a few key gap patterns into diligence-style items.
+      for (const g of gaps) {
+        const gg = normalizeKey(String(g));
+        if (gg === "metrics" || gg === "benchmark_mapping") {
+          diligenceOpen.push({
+            text: "Provide benchmarkable KPIs (revenue, gross margin/contribution margin, CAC/LTV, AOV) so the score can move off neutral.",
+            evidence_ids: evidenceIds,
+            component_keys: [key],
+          });
+        }
+        if (gg === "cash_balance" || gg === "burn_rate" || gg === "runway_months" || gg === "burn_multiple") {
+          diligenceOpen.push({
+            text: "Confirm cash balance, burn rate, and runway (and whether financials are cash vs accrual).",
+            evidence_ids: evidenceIds,
+            component_keys: [key],
+          });
+        }
+        if (gg === "explicit_risks") {
+          diligenceOpen.push({
+            text: "Run a deliberate risk review (market, team, execution, financial) to ensure key risks are explicitly captured.",
+            evidence_ids: evidenceIds,
+            component_keys: [key],
+          });
+        }
+      }
+    }
+  }
+
+  // Phase 1 coverage/unknowns are the most deterministic “what’s missing” signal available in the DIO.
+  const phase1: any = (dio as any)?.dio?.phase1;
+  const unknowns: string[] = asStringArray(phase1?.executive_summary_v1?.unknowns);
+  const nextRequests: string[] = asStringArray(phase1?.decision_summary_v1?.next_requests);
+  for (const u of unknowns) {
+    diligenceOpen.push({ text: u, evidence_ids: [], component_keys: ["phase1"] });
+  }
+  for (const n of nextRequests) {
+    diligenceOpen.push({ text: n, evidence_ids: [], component_keys: ["phase1"] });
+  }
+
+  const coverageSections = phase1?.coverage?.sections && typeof phase1.coverage.sections === "object" ? phase1.coverage.sections : null;
+  if (coverageSections) {
+    const missing = Object.keys(coverageSections).filter((k) => coverageSections[k] === "missing");
+    if (missing.length > 0) {
+      diligenceOpen.push({
+        text: `Add evidence for missing sections: ${missing.join(", ")}.`,
+        evidence_ids: [],
+        component_keys: ["phase1"],
+      });
+    }
+  }
+
+  // Rubric-derived missing signals -> diligence items.
+  if (rubricEval && Array.isArray(rubricEval.missing_required)) {
+    for (const sig of rubricEval.missing_required) {
+      const mapped = mapRubricSignalToDiligenceText(sig);
+      if (mapped) diligenceOpen.push({ text: mapped, evidence_ids: [], component_keys: ["rubric"] });
+    }
+  }
+
+  // Consumer-brand specific execution dependencies and diligence (Palm-style).
+  const policyId = explanation.aggregation.policy_id;
+  const isConsumerBrand = policyId === "consumer_ecommerce_brand_v1" || policyId === "physical_product_cpg_spirits_v1";
+  if (isConsumerBrand) {
+    executionDependencies.push({
+      text: "Maintain growth while scaling unit economics (CAC, payback) and sustaining margins across channel mix.",
+      evidence_ids: uniqueStrings([
+        ...asStringArray((explanation.components as any)?.metric_benchmark?.evidence_ids),
+        ...asStringArray((explanation.components as any)?.financial_health?.evidence_ids),
+      ]),
+      component_keys: ["metric_benchmark", "financial_health"],
+    });
+    executionDependencies.push({
+      text: "If wholesale expands, inventory planning and working capital discipline become primary execution constraints.",
+      evidence_ids: [],
+      component_keys: ["metric_benchmark", "financial_health"],
+    });
+
+    // Ensure these appear even in neutral/low-evidence states.
+    diligenceOpen.push({
+      text: "Margin by channel (DTC vs wholesale) and contribution margin.",
+      evidence_ids: [],
+      component_keys: ["metric_benchmark"],
+    });
+    diligenceOpen.push({
+      text: "Inventory and working capital requirements for wholesale growth.",
+      evidence_ids: [],
+      component_keys: ["financial_health"],
+    });
+    diligenceOpen.push({
+      text: "CAC and unit economics at scaled spend (LTV/CAC, payback), not just current efficiency.",
+      evidence_ids: [],
+      component_keys: ["metric_benchmark"],
+    });
+    diligenceOpen.push({
+      text: "Confirm multi-year financial tables and accounting basis (cash vs accrual) used for reported figures.",
+      evidence_ids: [],
+      component_keys: ["financial_health"],
+    });
+  }
+
+  // Business Performance (traction/marketing) signals: surface as an explicit Strength.
+  // These are *not* treated as canonical company revenue; they are supporting traction evidence.
+  const bp = getBusinessPerformanceSignalsFromInputs(dio);
+  if (bp.signal_count > 0) {
+    const parts: string[] = [];
+    if (bp.values.paid_media_conversion_pct) parts.push(`Paid media conversion=${bp.values.paid_media_conversion_pct}.`);
+    if (bp.values.marketing_attributed_revenue_email_sms) parts.push(`Email/SMS attributed revenue=${bp.values.marketing_attributed_revenue_email_sms}.`);
+    if (bp.values.first_party_database_size) {
+      const active = bp.values.first_party_database_active_pct ? ` (active=${bp.values.first_party_database_active_pct})` : "";
+      parts.push(`First-party database size=${bp.values.first_party_database_size}${active}.`);
+    }
+    if (parts.length === 0) parts.push("Traction/marketing performance metrics are quantified.");
+
+    strengths.unshift({
+      text: `Business Performance: ${parts.join(" ")}`,
+      evidence_ids: bp.evidence_ids,
+      component_keys: ["inputs"],
+    });
+  }
+
+  return {
+    summary,
+    strengths: uniqueUnderstandingItems(strengths).slice(0, 6),
+    execution_dependencies: uniqueUnderstandingItems(executionDependencies).slice(0, 6),
+    diligence_open_items: uniqueUnderstandingItems(diligenceOpen).slice(0, 12),
+  };
+};
+
 const normalizeKey = (s: string): string =>
   s
     .trim()
@@ -94,6 +338,69 @@ const normalizeKey = (s: string): string =>
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "")
     .replace(/_{2,}/g, "_");
+
+type BusinessPerformanceSignals = {
+  signal_count: number;
+  keys_present: string[];
+  evidence_ids: string[];
+  values: {
+    paid_media_conversion_pct?: string | null;
+    marketing_attributed_revenue_email_sms?: string | null;
+    first_party_database_size?: string | null;
+    first_party_database_active_pct?: string | null;
+  };
+};
+
+const getBusinessPerformanceSignalsFromInputs = (dio: DealIntelligenceObject): BusinessPerformanceSignals => {
+  const docs: any[] = Array.isArray((dio as any)?.inputs?.documents) ? (dio as any).inputs.documents : [];
+
+  const targets = new Set<string>([
+    "paid_media_conversion_pct",
+    "marketing_attributed_revenue_email_sms",
+    "first_party_database_size",
+    "first_party_database_active_pct",
+  ]);
+
+  const values: BusinessPerformanceSignals["values"] = {};
+  const evidence_ids: string[] = [];
+  const keys_present: string[] = [];
+
+  for (const doc of docs) {
+    const metrics: any[] = Array.isArray(doc?.metrics) ? doc.metrics : [];
+    for (const m of metrics) {
+      const rawKey = typeof m?.key === "string" && m.key.trim()
+        ? m.key
+        : (typeof m?.name === "string" && m.name.trim() ? m.name : "");
+      const k = normalizeKey(rawKey);
+      if (!targets.has(k)) continue;
+
+      const valueRaw = typeof m?.raw === "string" && m.raw.trim()
+        ? m.raw.trim()
+        : (typeof m?.value === "string" && m.value.trim()
+            ? m.value.trim()
+            : (m?.value != null ? String(m.value) : null));
+
+      // Keep the first occurrence; do not overfit to duplicates.
+      if ((values as any)[k] == null) (values as any)[k] = valueRaw;
+
+      const ev = typeof m?.evidence_id === "string" && m.evidence_id.trim() ? m.evidence_id.trim() : null;
+      if (ev) evidence_ids.push(ev);
+
+      keys_present.push(k);
+    }
+  }
+
+  const uniqueKeys = uniqueStrings(keys_present);
+  const uniqueEvidence = uniqueStrings(evidence_ids);
+  const signal_count = uniqueKeys.length;
+
+  return {
+    signal_count,
+    keys_present: uniqueKeys,
+    evidence_ids: uniqueEvidence,
+    values,
+  };
+};
 
 type RubricEval = {
   id: string;
@@ -2128,6 +2435,24 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   // - overall_score = unadjusted*adjustment + 50*(1-adjustment)
   let evidenceFactor = clamp01(0.5 + 0.5 * coverageRatio);
 
+  // Business Performance (traction/marketing) signals: if present, treat as small extra evidence.
+  // This is intentionally modest and must not override policy caps.
+  try {
+    const bp = getBusinessPerformanceSignalsFromInputs(dio);
+    if (bp.signal_count > 0) {
+      const bonus = Math.min(0.06, 0.02 * bp.signal_count);
+      const next = clamp01(evidenceFactor + bonus);
+      if (next !== evidenceFactor) {
+        evidenceFactor = next;
+        notes.metric_benchmark.push(
+          `business_performance_v1: signals present (${bp.keys_present.join(", ")}) -> evidence_factor +${bonus.toFixed(2)}`
+        );
+      }
+    }
+  } catch {
+    // ignore
+  }
+
   // Policy behavior: execution_ready_v1 should not auto-fail for missing revenue.
   // Readiness evidence is required; if missing, keep the final score close to neutral (~50) even if other components are strong.
   if (classificationSelectedPolicy === "execution_ready_v1" && rubricEval) {
@@ -2412,8 +2737,9 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
     };
   };
 
-  return {
+  const baseExplanation: ScoreExplanation = {
     context: ctx,
+    understanding_v1: undefined,
     aggregation: {
       method: "weighted_mean",
       policy_id: classificationSelectedPolicy,
@@ -2448,6 +2774,14 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
       adjustment_factor: adjustmentFactor,
     },
   };
+
+  baseExplanation.understanding_v1 = buildScoreUnderstandingV1({
+    dio,
+    explanation: baseExplanation,
+    rubricEval: rubricEval ?? null,
+  });
+
+  return baseExplanation;
 }
 
 const mapComponentStatusForDiagnostics = (status: string | null): string => {

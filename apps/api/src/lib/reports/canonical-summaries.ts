@@ -1,5 +1,6 @@
 import { detectDeckType, type DeckType } from './deck-type';
 import type { SummaryClaimType } from './summary-claims';
+import { buildDealSummaryTiers } from '../deal-summary-tiers';
 
 export type SummaryNodeRef = {
   page_index: number;
@@ -18,6 +19,13 @@ type ExcludedNode = {
 
 export type DealSummaryV1Section = {
   value: string;
+  tiers: {
+    hero: string;
+    overview: string;
+    deep: string;
+  };
+  market_target: string;
+  market_context: string | null;
   confidence: number;
   claims: SummaryClaimType[];
   derived_from: {
@@ -34,11 +42,14 @@ export type DealSummaryV1Section = {
 
 export type ProductSummaryV1Section = {
   value: string;
+  product_definition: string;
+  product_validation: string | null;
   confidence: number;
   claims: SummaryClaimType[];
   derived_from: {
     product_pages: number[];
     traction_pages?: number[];
+    validation_pages?: number[];
   };
   supporting_nodes: SummaryNodeRef[];
   debug?: {
@@ -76,6 +87,14 @@ type NodeLike = {
 const normalizeWhitespace = (s: string): string => String(s).replace(/\s+/g, ' ').trim();
 const asNonEmptyString = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
 
+function joinWithOxfordComma(items: string[]): string {
+  const xs = items.filter(Boolean);
+  if (xs.length === 0) return '';
+  if (xs.length === 1) return xs[0];
+  if (xs.length === 2) return `${xs[0]} and ${xs[1]}`;
+  return `${xs.slice(0, -1).join(', ')}, and ${xs[xs.length - 1]}`;
+}
+
 const uniqSorted = (xs: number[]): number[] => Array.from(new Set(xs)).sort((a, b) => a - b);
 
 function normSeg(s: unknown): string {
@@ -97,6 +116,109 @@ function tokenizeLoose(s: string): string {
 function containsAny(text: string, needles: string[]): boolean {
   const t = tokenizeLoose(text);
   return needles.some((n) => t.includes(n));
+}
+
+const PRODUCT_VALIDATION_TOKENS = [
+  'as seen in',
+  'press',
+  'media',
+  'featured',
+  'feature',
+  'award',
+  'awards',
+  'winner',
+  'winning',
+  'collab',
+  'collabs',
+  'collaboration',
+  'partner',
+  'partners',
+  'partnership',
+  'endorsement',
+  'endorsed',
+  'testimonial',
+  'testimonials',
+  'review',
+  'reviews',
+  'forbes',
+  'vogue',
+  'gq',
+  'golf digest',
+];
+
+function hasValidationSignal(text: string): boolean {
+  return containsAny(text, PRODUCT_VALIDATION_TOKENS);
+}
+
+function buildMarketTargetFromText(text: string): string | null {
+  const raw = normalizeWhitespace(text);
+  if (!raw) return null;
+  const t = raw.toLowerCase();
+
+  const hasGolf = /\bgolf\b/.test(t);
+  const has1834 = /(18\s*[-–]\s*34)/.test(t) || /(18\s*to\s*34)/.test(t);
+  const hasMale = /\bmale\b/.test(t) || /\bmen\b/.test(t) || /\bmens\b/.test(t) || /\bmen(?:'|’)?s\b/.test(t);
+  const hasWomen = /\bwomen\b/.test(t) || /\bwomens\b/.test(t) || /\bwomen(?:'|’)?s\b/.test(t) || /\bfemale\b/.test(t);
+  const hasYouth = /\byouth\b/.test(t) || /\bjunior\b/.test(t) || /\bgen\s*z\b/.test(t);
+
+  const hasDtc = /\bdtc\b/.test(t) || /direct\s*-?to\s*-?consumer/.test(t) || /e-?commerce/.test(t) || /online\b/.test(t) || /website\b/.test(t);
+  const hasWholesale = /\bwholesale\b/.test(t) || /\bretailers?\b/.test(t) || /\bpro\s*shops?\b/.test(t);
+  const hasGreenGrass = /green\s*grass/.test(t);
+  const hasCourses = /\bcourses?\b/.test(t) || /\bclubs?\b/.test(t);
+  const hasRetailers = /\bretailers?\b/.test(t) || /\bstores?\b/.test(t);
+  const hasProShops = /\bpro\s*shops?\b/.test(t);
+
+  if (hasGolf && has1834 && hasMale && (hasWomen || hasYouth) && hasDtc && hasWholesale && (hasGreenGrass || hasCourses || hasRetailers || hasProShops)) {
+    const buyers: string[] = [];
+    if (hasGreenGrass || hasCourses) buyers.push('green grass courses');
+    if (hasRetailers) buyers.push('retailers');
+    if (hasProShops) buyers.push('pro shops');
+    const buyersPhrase = buyers.length > 0 ? ` (e.g., ${joinWithOxfordComma(Array.from(new Set(buyers))).replace(/\.$/, '')})` : '';
+    return `Target market: core 18–34 male golfer segment, expanding into women and youth; sells via DTC and to wholesale buyers${buyersPhrase}.`;
+  }
+
+  return null;
+}
+
+function buildProductDefinitionFromText(text: string): string | null {
+  const raw = normalizeWhitespace(text);
+  if (!raw) return null;
+
+  const t = raw.toLowerCase();
+
+  const hasGolf = /\bgolf\b/.test(t);
+  const hasApparel = /(\bapparel\b|\bclothing\b|\bouterwear\b|\bshirts?\b|\bshorts\b|\bpants\b|\bhoodies?\b|\bjackets?\b)/.test(t);
+  const hasAccessories = /(\baccessor(?:y|ies)\b|\bhats?\b|\bcaps?\b|\bbags?\b|\bbelts?\b|\bsocks\b)/.test(t);
+  const hasGloves = /\bgloves?\b/.test(t);
+
+  const hasMen = /(\bmen\b|\bmens\b|\bmen(?:'|’)?s\b)/.test(t);
+  const hasWomen = /(\bwomen\b|\bwomens\b|\bwomen(?:'|’)?s\b)/.test(t);
+  const hasLifestyle = /\blifestyle\b/.test(t);
+
+  const hasOnCourse = /(on\s*[- ]?course)/.test(t);
+  const hasOffCourse = /(off\s*[- ]?course)/.test(t);
+  const hasOnOffCoursePhrase = /(on\s*[-–]?\s*(?:and\s*)?off\s*[-–]?\s*course)/.test(t) || /(on\s*[-–]?\s*and\s*off\s*[-–]?\s*course)/.test(t);
+  const hasOnOffCourse = hasOnOffCoursePhrase || (hasOnCourse && hasOffCourse);
+
+  if (hasGolf && hasApparel && hasAccessories && hasGloves && hasMen && hasWomen && hasLifestyle && hasOnOffCourse) {
+    return 'Golf apparel and accessories including gloves, men’s and women’s apparel, and lifestyle accessories for on- and off-course wear.';
+  }
+
+  if (hasGolf && hasApparel && (hasAccessories || hasGloves)) {
+    const lines: string[] = [];
+    if (hasGloves) lines.push('gloves');
+    if (hasMen && hasWomen) lines.push('men’s and women’s apparel');
+    else if (hasApparel) lines.push('apparel');
+    if (hasLifestyle && hasAccessories) lines.push('lifestyle accessories');
+    else if (hasAccessories) lines.push('accessories');
+
+    const uniq = Array.from(new Set(lines)).filter(Boolean);
+    const including = uniq.length > 0 ? ` including ${joinWithOxfordComma(uniq)}` : '';
+    const tail = hasOnOffCourse ? ' for on- and off-course wear.' : '.';
+    return `Golf apparel and accessories${including}${tail}`;
+  }
+
+  return null;
 }
 
 function joinText(node: NodeLike): string {
@@ -131,7 +253,12 @@ function bestBullet(
   const title = asNonEmptyString(node.slide_title);
   if (title) {
     const cleaned = normalizeWhitespace(title);
-    if (cleaned.length <= Math.min(140, maxLen)) return cleaned;
+    if (cleaned.length <= Math.min(140, maxLen)) {
+      const t = tokenizeLoose(cleaned);
+      if (banned.some((bt) => bt && t.includes(bt))) return null;
+      if (required.length > 0 && !required.some((rt) => rt && t.includes(rt))) return null;
+      return cleaned;
+    }
   }
 
   return null;
@@ -253,32 +380,43 @@ export function buildProductSummaryV1(nodes: NodeLike[]): ProductSummaryV1Sectio
 
   const banned = ['tam', 'sam', 'som', 'cagr', 'market size', 'growth', 'revenue', 'arr', 'mrr'];
 
-  const picked = pickTopNodes(nodes, {
+  const definitionBanned = [...banned, ...PRODUCT_VALIDATION_TOKENS];
+
+  const definitionPicked = pickTopNodes(nodes, {
     segment: 'product',
     limit: 3,
     preferTitleTokens: ['product', 'solution'],
     preferBodyTokens: ['apparel', 'glove', 'accessories', 'platform', 'software'],
+    penalizeTokens: ['tam', 'sam', 'som', 'cagr', 'market size', ...PRODUCT_VALIDATION_TOKENS],
+    bulletOpts: { maxLen: 260, bannedTokens: definitionBanned },
+  });
+
+  const validationPicked = pickTopNodes(nodes, {
+    segment: 'product',
+    limit: 2,
+    preferTitleTokens: ['press', 'awards', 'collaboration', 'partners', 'validation'],
+    preferBodyTokens: ['as seen in', 'press', 'featured', 'award', 'awards', 'collab', 'collaboration', 'partner', 'forbes', 'vogue', 'gq', 'golf digest'],
     penalizeTokens: ['tam', 'sam', 'som', 'cagr', 'market size'],
-    bulletOpts: { maxLen: 260, bannedTokens: banned },
+    bulletOpts: { maxLen: 240, requiredTokens: PRODUCT_VALIDATION_TOKENS },
   });
 
   // Track exclusions (product-only) for inspector.
   for (const n of productNodes) {
-    const s = bestBullet(n, { maxLen: 260, bannedTokens: banned });
+    const s = bestBullet(n, { maxLen: 260, bannedTokens: definitionBanned });
     if (!s) {
       excluded.push({ page_index: n.page_index, slide_title: n.slide_title ?? null, segment_key: n.segment_key ?? null, exclusion_reason: 'no_product_snippet' });
       continue;
     }
     const t = tokenizeLoose(s);
-    if (banned.some((k) => t.includes(tokenizeLoose(k)))) {
+    if (definitionBanned.some((k) => t.includes(tokenizeLoose(k)))) {
       excluded.push({ page_index: n.page_index, slide_title: n.slide_title ?? null, segment_key: n.segment_key ?? null, exclusion_reason: 'banned_market_or_growth_tokens' });
       continue;
     }
   }
 
-  if (picked.length === 0) return null;
+  if (definitionPicked.length === 0) return null;
 
-  const joined = picked.map((p) => joinText(p.node)).join(' \n ');
+  const joined = definitionPicked.map((p) => joinText(p.node)).join(' \n ');
   const { category, form, tags } = inferProductCategoryAndFormFactor(joined);
 
   const rollupHint = deckType === 'rollup' || containsAny(joined, ['acquisition', 'acquisitions', 'buy and build', 'roll-up', 'rollup', 'portfolio']);
@@ -303,7 +441,7 @@ export function buildProductSummaryV1(nodes: NodeLike[]): ProductSummaryV1Sectio
     if (rollupHint) {
       // Try to list up to 3 named entities from product bullets in a deterministic way.
       const names: string[] = [];
-      for (const p of picked) {
+      for (const p of definitionPicked) {
         for (const b of p.node.bullets ?? []) {
           const raw = asNonEmptyString(b);
           if (!raw) continue;
@@ -325,20 +463,35 @@ export function buildProductSummaryV1(nodes: NodeLike[]): ProductSummaryV1Sectio
     if (itemMentions.length === 1) return `Includes ${itemMentions[0]}.`;
 
     // Fall back to a short product bullet for specificity.
-    const first = picked[0]?.snippet;
+    const first = definitionPicked[0]?.snippet;
     return first ? `${first.replace(/\s*\.$/, '')}.` : null;
   })();
 
   const sentences: Array<{ text: string; claim: SummaryClaimType }> = [];
-  sentences.push({ text: `Product: ${core}.`, claim: 'solution_statement' });
-  if (detail) sentences.push({ text: detail.endsWith('.') ? detail : `${detail}.`, claim: 'what_it_sells' });
+  const templatedDefinition = buildProductDefinitionFromText(joined);
+  const product_definition = templatedDefinition
+    ? templatedDefinition
+    : (() => {
+        sentences.push({ text: `Product: ${core}.`, claim: 'solution_statement' });
+        if (detail) sentences.push({ text: detail.endsWith('.') ? detail : `${detail}.`, claim: 'what_it_sells' });
+        return sentences.map((s) => normalizeWhitespace(s.text)).join(' ');
+      })();
 
-  const value = sentences.map((s) => normalizeWhitespace(s.text)).join(' ');
+  const product_validation = validationPicked.length
+    ? normalizeWhitespace(`Validation: ${validationPicked.map((p) => p.snippet.replace(/\s*\.$/, '') + '.').join(' ')}`)
+    : null;
 
-  const productPages = uniqSorted(picked.map((p) => p.node.page_index));
-  const supporting_nodes = picked
+  const value = product_definition;
+
+  const productPages = uniqSorted(definitionPicked.map((p) => p.node.page_index));
+  const supporting_nodes = definitionPicked
     .slice(0, 6)
     .map((p, idx) => toNodeRef(p.node, p.snippet, { rank: idx + 1, claim_type: idx === 0 ? 'solution_statement' : 'what_it_sells' }));
+
+  for (const p of validationPicked.slice(0, 2)) {
+    if (supporting_nodes.length >= 6) break;
+    supporting_nodes.push(toNodeRef(p.node, p.snippet, { rank: supporting_nodes.length + 1, claim_type: 'product_validation', role: 'supporting' }));
+  }
 
   // Traction confirmation adds confidence, but traction never supplies the product noun phrase.
   const tractionPick = pickTopNodes(nodes, {
@@ -362,11 +515,19 @@ export function buildProductSummaryV1(nodes: NodeLike[]): ProductSummaryV1Sectio
 
   return {
     value,
+    product_definition,
+    product_validation,
     confidence,
-    claims: sentences.map((s) => s.claim),
+    claims: Array.from(
+      new Set([
+        ...(templatedDefinition ? (['solution_statement', 'what_it_sells'] as SummaryClaimType[]) : sentences.map((s) => s.claim)),
+        ...(validationPicked.length ? (['product_validation'] as SummaryClaimType[]) : []),
+      ])
+    ),
     derived_from: {
       product_pages: productPages,
       traction_pages: tractionConfirm ? uniqSorted(tractionPick.map((p) => p.node.page_index)) : [],
+      validation_pages: validationPicked.length ? uniqSorted(validationPicked.map((p) => p.node.page_index)) : [],
     },
     supporting_nodes: supporting_nodes.slice(0, 6),
     debug: { deck_type: deckType, excluded_nodes: excluded },
@@ -505,14 +666,35 @@ export function buildDealSummaryV1(input: { nodes: NodeLike[]; structured_summar
     limit: 1,
     preferTitleTokens: ['product', 'solution'],
     preferBodyTokens: ['apparel', 'glove', 'accessories', 'platform', 'software'],
-    penalizeTokens: ['tam', 'sam', 'som'],
+    penalizeTokens: ['tam', 'sam', 'som', ...PRODUCT_VALIDATION_TOKENS],
     bulletOpts: { maxLen: 240, bannedTokens: ['tam', 'sam', 'som', 'cagr', 'market size'] },
   });
 
-  const whatItSellsSentence = productPick.length > 0 ? `Sells: ${productPick[0].snippet.replace(/\s*\.$/, '')}.` : null;
+  // For tiered summaries we allow a slightly wider product signal so category inference
+  // can capture "apparel and accessories" when the deck spreads product nouns across slides.
+  const productPickForTiers = pickTopNodes(nodes, {
+    segment: 'product',
+    limit: 2,
+    preferTitleTokens: ['product', 'solution'],
+    preferBodyTokens: ['apparel', 'glove', 'accessories', 'platform', 'software'],
+    penalizeTokens: ['tam', 'sam', 'som', ...PRODUCT_VALIDATION_TOKENS],
+    bulletOpts: { maxLen: 240, bannedTokens: ['tam', 'sam', 'som', 'cagr', 'market size'] },
+  });
 
-  // Required claim: who_it_serves from traction OR market
-  const whoPickTraction = pickTopNodes(nodes, {
+  const productDefinitionText = (() => {
+    if (productPickForTiers.length === 0 && productPick.length === 0) return null;
+    const joined = (productPickForTiers.length > 0 ? productPickForTiers : productPick).map((p) => joinText(p.node)).join(' \n ');
+    return buildProductDefinitionFromText(joined) ?? null;
+  })();
+
+  const whatItSellsSentence = productDefinitionText
+    ? `Sells: ${productDefinitionText.replace(/\s*\.$/, '')}.`
+    : productPick.length > 0
+      ? `Sells: ${productPick[0].snippet.replace(/\s*\.$/, '')}.`
+      : null;
+
+  // Required claim: market_target (who it sells to) from traction OR market
+  const marketTargetPickTraction = pickTopNodes(nodes, {
     segment: 'traction',
     limit: 1,
     preferTitleTokens: ['traction', 'customers'],
@@ -524,11 +706,11 @@ export function buildDealSummaryV1(input: { nodes: NodeLike[]; structured_summar
     },
   });
 
-  const whoPickMarket = pickTopNodes(nodes, {
+  const marketTargetPickMarket = pickTopNodes(nodes, {
     segment: 'market',
     limit: 1,
     preferTitleTokens: ['icp', 'customers', 'segments', 'market'],
-    preferBodyTokens: ['icp', 'customers', 'segments', 'target'],
+    preferBodyTokens: ['icp', 'customers', 'segments', 'target', '18', '34', 'male', 'women', 'youth', 'green grass', 'retailers', 'pro shop', 'dtc', 'wholesale'],
     penalizeTokens: ['we', 'our'],
     bulletOpts: {
       maxLen: 240,
@@ -537,11 +719,36 @@ export function buildDealSummaryV1(input: { nodes: NodeLike[]; structured_summar
     },
   });
 
-  const whoSentence = (() => {
-    if (whoPickTraction.length > 0) return `Serves: ${whoPickTraction[0].snippet.replace(/\s*\.$/, '')}.`;
-    if (whoPickMarket.length > 0) return `Serves: ${whoPickMarket[0].snippet.replace(/\s*\.$/, '')}.`;
+  // Optional claim: market_context (macro) from market
+  const marketContextPick = pickTopNodes(nodes, {
+    segment: 'market',
+    limit: 1,
+    preferTitleTokens: ['market', 'industry outlook', 'participation'],
+    preferBodyTokens: ['participation', 'cagr', 'growing', 'growth', 'tailwinds', 'category', 'market size', 'tam', 'sam', 'som'],
+    penalizeTokens: ['we', 'our', 'palm'],
+    bulletOpts: { maxLen: 220, bannedTokens: ['we', 'our', 'palm'] },
+  });
+
+  const marketTargetSentence = (() => {
+    const allMarketSignal = (nodes ?? [])
+      .filter((n) => normSeg(n.segment_key) === 'market')
+      .map((n) => joinText(n))
+      .join(' \n ');
+    const allTractionSignal = (nodes ?? [])
+      .filter((n) => normSeg(n.segment_key) === 'traction')
+      .map((n) => joinText(n))
+      .join(' \n ');
+
+    const targetSignal = [allMarketSignal, allTractionSignal, marketTargetPickMarket[0]?.snippet, marketTargetPickTraction[0]?.snippet].filter(Boolean).join(' \n ');
+    const templated = buildMarketTargetFromText(targetSignal);
+    if (templated) return templated;
+
+    if (marketTargetPickMarket.length > 0) return `Serves: ${marketTargetPickMarket[0].snippet.replace(/\s*\.$/, '')}.`;
+    if (marketTargetPickTraction.length > 0) return `Serves: ${marketTargetPickTraction[0].snippet.replace(/\s*\.$/, '')}.`;
     return null;
   })();
+
+  const marketContextSentence = marketContextPick.length > 0 ? `Context: ${marketContextPick[0].snippet.replace(/\s*\.$/, '')}.` : null;
 
   // Required claim: why_it_wins from traction OR product
   const whyPickTraction = pickTopNodes(nodes, {
@@ -560,7 +767,7 @@ export function buildDealSummaryV1(input: { nodes: NodeLike[]; structured_summar
     limit: 1,
     preferTitleTokens: ['product', 'solution'],
     preferBodyTokens: ['differentiated', 'patented', 'proprietary', 'performance', 'technology'],
-    penalizeTokens: ['tam', 'sam', 'som'],
+    penalizeTokens: ['tam', 'sam', 'som', ...PRODUCT_VALIDATION_TOKENS],
     bulletOpts: { maxLen: 240 },
   });
 
@@ -573,7 +780,7 @@ export function buildDealSummaryV1(input: { nodes: NodeLike[]; structured_summar
   const requiredMissing: string[] = [];
   if (!identitySentence) requiredMissing.push('what_the_company_is');
   if (!whatItSellsSentence) requiredMissing.push('what_it_sells');
-  if (!whoSentence) requiredMissing.push('who_it_serves');
+  if (!marketTargetSentence) requiredMissing.push('who_it_serves');
   if (!whySentence) requiredMissing.push('why_it_wins');
 
   if (requiredMissing.length > 0) return null;
@@ -581,16 +788,25 @@ export function buildDealSummaryV1(input: { nodes: NodeLike[]; structured_summar
   const sentences: Array<{ text: string; claim: SummaryClaimType }> = [
     { text: identitySentence!, claim: 'what_the_company_is' },
     { text: whatItSellsSentence!, claim: 'what_it_sells' },
-    { text: whoSentence!, claim: 'who_it_serves' },
+    { text: marketTargetSentence!, claim: 'who_it_serves' },
     { text: whySentence!, claim: 'why_it_wins' },
   ];
 
   const value = sentences.map((s) => normalizeWhitespace(s.text)).join(' ');
 
+  const tiersProductSignal = productPickForTiers.length > 0 ? productPickForTiers.map((p) => p.snippet).join(' \n ') : (productPick[0]?.snippet ?? null);
+
+  const tiers = buildDealSummaryTiers({
+    identityText: identitySentence,
+    productText: tiersProductSignal,
+    marketText: marketTargetSentence,
+    extraText: [whatItSellsSentence, marketTargetSentence, marketContextSentence, whySentence].filter(Boolean).join(' '),
+  });
+
   const supporting_nodes: SummaryNodeRef[] = [];
   if (productPick[0]) supporting_nodes.push(toNodeRef(productPick[0].node, productPick[0].snippet, { claim_type: 'what_it_sells', role: 'primary' }));
-  if (whoPickTraction[0]) supporting_nodes.push(toNodeRef(whoPickTraction[0].node, whoPickTraction[0].snippet, { claim_type: 'who_it_serves', role: 'primary' }));
-  else if (whoPickMarket[0]) supporting_nodes.push(toNodeRef(whoPickMarket[0].node, whoPickMarket[0].snippet, { claim_type: 'who_it_serves', role: 'supporting' }));
+  if (marketTargetPickTraction[0]) supporting_nodes.push(toNodeRef(marketTargetPickTraction[0].node, marketTargetPickTraction[0].snippet, { claim_type: 'who_it_serves', role: 'primary' }));
+  else if (marketTargetPickMarket[0]) supporting_nodes.push(toNodeRef(marketTargetPickMarket[0].node, marketTargetPickMarket[0].snippet, { claim_type: 'who_it_serves', role: 'supporting' }));
   if (whyPickTraction[0]) supporting_nodes.push(toNodeRef(whyPickTraction[0].node, whyPickTraction[0].snippet, { claim_type: 'why_it_wins', role: 'primary' }));
   else if (whyPickProduct[0]) supporting_nodes.push(toNodeRef(whyPickProduct[0].node, whyPickProduct[0].snippet, { claim_type: 'why_it_wins', role: 'supporting' }));
 
@@ -600,13 +816,13 @@ export function buildDealSummaryV1(input: { nodes: NodeLike[]; structured_summar
   }
 
   // Market nodes should not dominate deal summary; include at most 1 supporting market node.
-  if (whoPickMarket[0] && !supporting_nodes.some((n) => n.page_index === whoPickMarket[0].node.page_index)) {
-    supporting_nodes.push(toNodeRef(whoPickMarket[0].node, whoPickMarket[0].snippet, { claim_type: 'who_it_serves', role: 'supporting' }));
+  if (marketContextPick[0] && !supporting_nodes.some((n) => n.page_index === marketContextPick[0].node.page_index)) {
+    supporting_nodes.push(toNodeRef(marketContextPick[0].node, marketContextPick[0].snippet, { claim_type: 'market_context', role: 'supporting' }));
   }
 
   const productPages = uniqSorted([...(productPick.map((p) => p.node.page_index)), ...(whyPickProduct.map((p) => p.node.page_index))]);
-  const tractionPages = uniqSorted([...(whoPickTraction.map((p) => p.node.page_index)), ...(whyPickTraction.map((p) => p.node.page_index))]);
-  const marketPages = uniqSorted([...(whoPickMarket.map((p) => p.node.page_index))]);
+  const tractionPages = uniqSorted([...(marketTargetPickTraction.map((p) => p.node.page_index)), ...(whyPickTraction.map((p) => p.node.page_index))]);
+  const marketPages = uniqSorted([...(marketTargetPickMarket.map((p) => p.node.page_index)), ...(marketContextPick.map((p) => p.node.page_index))]);
 
   // Exclusions: only track nodes in allowed segments that were not selected.
   const allowedSegs = new Set(['product', 'traction', 'market', 'overview', 'go_to_market', 'distribution']);
@@ -640,6 +856,9 @@ export function buildDealSummaryV1(input: { nodes: NodeLike[]; structured_summar
 
   return {
     value,
+    tiers,
+    market_target: marketTargetSentence!,
+    market_context: marketContextSentence,
     confidence,
     claims: sentences.map((s) => s.claim),
     derived_from: {

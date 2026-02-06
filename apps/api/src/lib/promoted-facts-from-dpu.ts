@@ -11,6 +11,7 @@ type SlideRow = {
 	row: DpuRow;
 	slideText: string;
 	slideTitle: string | null;
+	slide_number: number | null;
 	segment_key: string | null;
 	structured_segment_key_raw: string | null;
 	segment_reason: {
@@ -22,6 +23,8 @@ type SlideRow = {
 	bullets: string[];
 	extracted_at: string;
 };
+
+type RevenueScope = 'company_financials_table' | 'company_total' | 'channel_attributed';
 
 export type BusinessModelEvidenceRole = "primary" | "supporting" | "excluded";
 
@@ -60,6 +63,27 @@ const asNonEmptyString = (v: unknown): string | null =>
 	typeof v === "string" && v.trim() ? v.trim() : null;
 
 const normalizeText = (raw: string): string => raw.replace(/\s+/g, " ").trim();
+
+function extractSlideNumberFromPayload(payload: any): number | null {
+	const structured = payload?.structured ?? null;
+	const source = payload?.source ?? null;
+
+	const candidates = [
+		structured?.slide_number,
+		structured?.ppt_slide_number,
+		source?.slide_number,
+		source?.ppt_slide_number,
+		source?.ppt_slide,
+		payload?.slide_number,
+		payload?.ppt_slide_number,
+	];
+
+	for (const v of candidates) {
+		const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
+		if (Number.isFinite(n) && n > 0) return n;
+	}
+	return null;
+}
 
 function buildSlideTextFromPayload(payload: any): { text: string; slide_title: string | null; segment_key: string | null; bullets: string[] } {
 	const structured = payload?.structured ?? null;
@@ -351,11 +375,29 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 	display: string;
 	amount: number;
 	year: number | null;
+	scope: RevenueScope;
+	channel?: 'email_sms' | null;
 	note_snippet: string | null;
 	primary: { document_id: string; page_index: number; slide_title: string | null; segment_key: string | null };
 }> {
 	const currentYear = new Date().getFullYear();
 	const moneyRe = /\$\s*\d[\d,]*(?:\.\d+)?\s*(?:mm|m|million|mn|bn|b|k|thousand)?/gi;
+	const detectMarketingAttributedRevenueChannel = (bulletLower: string): 'email_sms' | null => {
+		const s = String(bulletLower ?? '').toLowerCase();
+		if (!s) return null;
+
+		const hasAttributed = s.includes('attributed');
+		const hasEmail = s.includes('email');
+		const hasSms = s.includes('sms');
+		const hasEmailSmsToken = s.includes('email/sms') || s.includes('email & sms') || s.includes('email and sms');
+
+		// Targeted patterns:
+		// - "revenue attributed to email/SMS" / "attributed to email"
+		// - "automated marketing journeys" (common deck phrasing implying attribution)
+		if (hasAttributed && (hasEmail || hasSms || hasEmailSmsToken)) return 'email_sms';
+		if (s.includes('automated marketing journeys')) return 'email_sms';
+		return null;
+	};
 	const prefer = (c: { subtype: string; slideTitle: string | null; slideText: string; year: number | null; segment_key: string | null }): number => {
 		const title = String(c.slideTitle ?? '').toLowerCase();
 		const t = c.slideText.toLowerCase();
@@ -380,6 +422,8 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 		display: string;
 		amount: number;
 		year: number | null;
+		scope: RevenueScope;
+		channel?: 'email_sms' | null;
 		note_snippet: string | null;
 		slideTitle: string | null;
 		slideText: string;
@@ -434,15 +478,17 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 				// Proximity rule: require "revenue" in the same bullet as the amount unless it's explicitly a Financials/Performance slide.
 				if (!titleIsFinancialOrPerformance && !bulletLower.includes('revenue') && !isForecast) continue;
 
-				const isAttributed =
-					bulletLower.includes('attributed') ||
-					(bulletLower.includes('email') || bulletLower.includes('sms'));
+				const channel = detectMarketingAttributedRevenueChannel(bulletLower);
+				const isAttributed = channel != null;
 
 				const subtype: 'annual' | 'attributed' | 'forecast' = isForecast ? 'forecast' : isAttributed ? 'attributed' : 'annual';
+				const scope: RevenueScope = subtype === 'attributed' ? 'channel_attributed' : 'company_total';
 				const display = formatUsdDisplay(amount);
 				const note_snippet = asNonEmptyString(bullet.slice(0, 240));
 				candidates.push({
 					subtype,
+					scope,
+					channel,
 					display,
 					amount,
 					year: subtype === 'forecast' ? year : null,
@@ -484,12 +530,152 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 		.filter(Boolean)
 		.map((c) => ({
 			subtype: c!.subtype,
+			scope: c!.scope,
+			channel: (c as any)?.channel ?? null,
 			display: c!.display,
 			amount: c!.amount,
 			year: c!.year,
 			note_snippet: c!.note_snippet,
 			primary: c!.primary,
 		}));
+}
+
+function parseRevenueFromFinancialTableSlides(rows: SlideRow[], currentYear: number): Array<{
+	subtype: 'annual' | 'forecast' | 'ytd';
+	year_kind: 'completed' | 'forecast' | 'ytd';
+	year_label_raw: string;
+	row_name: string;
+	value_raw: string;
+	display: string;
+	amount: number;
+	year: number;
+	scope: RevenueScope;
+	note_snippet: string | null;
+	primary: { document_id: string; page_index: number; slide_title: string | null; segment_key: string | null; slide_number: number | null };
+}> {
+	// Heuristic parser for slides that contain a revenue row with year columns.
+	// DPU for PPTX doesn't always preserve structured tables, so we parse from bullets/text.
+	// Require $ or a scale suffix to avoid accidentally capturing a year (e.g. "2023").
+	const moneyLikeRe = /(?:\$\s*\d[\d,]*(?:\.\d+)?\s*(?:mm|mn|m|million|k|thousand|bn|b|billion)?|\d[\d,]*(?:\.\d+)?\s*(?:mm|mn|m|million|k|thousand|bn|b|billion))/gi;
+	const yearLabelRe = /\b(20\d{2})\b(?:\s*(ytd|e|f|est|forecast|proj|projected))?/gi;
+
+	const parseMoneyLikeToken = (token: string): number | null => {
+		const t = String(token ?? '').trim();
+		if (!t) return null;
+		const m = t.match(/\$?\s*(\d[\d,]*(?:\.\d+)?)(?:\s*(mm|mn|m|million|k|thousand|bn|b|billion))?/i);
+		if (!m?.[1]) return null;
+		const n = Number(String(m[1]).replace(/,/g, ''));
+		if (!Number.isFinite(n)) return null;
+		const suf = String(m[2] ?? '').trim().toLowerCase();
+		const mult =
+			suf === 'mm' || suf === 'mn' || suf === 'm' || suf === 'million'
+				? 1e6
+				: suf === 'bn' || suf === 'b' || suf === 'billion'
+					? 1e9
+					: suf === 'k' || suf === 'thousand'
+						? 1e3
+						: 1;
+		return n * mult;
+	};
+
+	const out: Array<{
+		subtype: 'annual' | 'forecast' | 'ytd';
+		year_kind: 'completed' | 'forecast' | 'ytd';
+		year_label_raw: string;
+		row_name: string;
+		value_raw: string;
+		display: string;
+		amount: number;
+		year: number;
+		scope: RevenueScope;
+		note_snippet: string | null;
+		primary: { document_id: string; page_index: number; slide_title: string | null; segment_key: string | null; slide_number: number | null };
+	}> = [];
+
+	for (const r of rows) {
+		const titleLower = String(r.slideTitle ?? '').toLowerCase();
+		const seg = normalizeSegmentKey(r.segment_key);
+		const maybeFinancial = titleLower.includes('financial') || titleLower.includes('income statement') || titleLower.includes('p&l') || seg === 'financials';
+		if (!maybeFinancial) continue;
+
+		const candidatesText = Array.isArray(r.bullets) && r.bullets.length > 0 ? r.bullets : [r.slideText];
+		for (const lineRaw of candidatesText) {
+			const line = String(lineRaw ?? '').trim();
+			if (!line) continue;
+			const lower = line.toLowerCase();
+			if (!lower.includes('revenue')) continue;
+
+			const labels: Array<{
+				year: number;
+				year_label_raw: string;
+				year_kind: 'completed' | 'forecast' | 'ytd';
+				subtype: 'annual' | 'forecast' | 'ytd';
+				start: number;
+				end: number;
+			}> = [];
+			for (const m of line.matchAll(yearLabelRe)) {
+				if (!m?.[1] || typeof m.index !== 'number') continue;
+				const year = Number(m[1]);
+				if (!Number.isFinite(year)) continue;
+				const suffix = String(m[2] ?? '').trim().toLowerCase();
+				const year_label_raw = String(m[0] ?? '').trim();
+				const year_kind: 'completed' | 'forecast' | 'ytd' =
+					suffix === 'ytd'
+						? 'ytd'
+						: (suffix === 'e' || suffix === 'f' || suffix === 'est' || suffix === 'forecast' || suffix === 'proj' || suffix === 'projected' || year >= currentYear)
+							? 'forecast'
+							: 'completed';
+				const subtype: 'annual' | 'forecast' | 'ytd' = year_kind === 'completed' ? 'annual' : year_kind;
+				labels.push({ year, year_label_raw, year_kind, subtype, start: m.index, end: m.index + year_label_raw.length });
+			}
+			labels.sort((a, b) => a.start - b.start);
+			if (labels.length < 3) continue;
+
+			const row_name = (() => {
+				const first = labels[0];
+				const head = first ? line.slice(0, first.start).trim() : '';
+				const cleaned = head.replace(/[:\-–—]+\s*$/, '').trim();
+				return asNonEmptyString(cleaned) ?? 'Revenue';
+			})();
+
+			for (let i = 0; i < labels.length; i++) {
+				const label = labels[i];
+				const next = labels[i + 1] ?? null;
+				const window = line.slice(label.end, next ? next.start : line.length);
+				const moneyHit = window.match(moneyLikeRe);
+				if (!moneyHit?.[0]) continue;
+				const tokenRaw = String(moneyHit[0] ?? '').trim();
+				const token = tokenRaw.startsWith('$') ? tokenRaw : `$${tokenRaw}`;
+				const amt = parseMoneyLikeToken(token);
+				if (typeof amt !== 'number' || !Number.isFinite(amt) || amt <= 0) continue;
+
+				out.push({
+					subtype: label.subtype,
+					year_kind: label.year_kind,
+					year_label_raw: label.year_label_raw,
+					row_name,
+					value_raw: token,
+					display: token,
+					amount: amt,
+					year: label.year,
+					scope: 'company_financials_table',
+					note_snippet: asNonEmptyString(line.slice(0, 240)),
+					primary: {
+						document_id: r.row.document_id,
+						page_index: r.row.page_index,
+						slide_title: r.slideTitle,
+						segment_key: r.segment_key,
+						slide_number: r.slide_number,
+					},
+				});
+			}
+		}
+	}
+
+	if (out.length === 0) return [];
+	// Prefer ordering by most recent year; tie-breaker by later page.
+	out.sort((a, b) => b.year - a.year || b.primary.page_index - a.primary.page_index);
+	return out;
 }
 
 function parseCustomersWholesaleAccountsFromSlides(rows: SlideRow[]): {
@@ -898,6 +1084,7 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 				row,
 				slideText: built.text,
 				slideTitle: built.slide_title,
+				slide_number: extractSlideNumberFromPayload(row.payload),
 				segment_key: segmented.segment_key,
 				structured_segment_key_raw: built.segment_key,
 				segment_reason: {
@@ -920,6 +1107,10 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 	const slideKey = (document_id: string, page_index: number): string => `${document_id}:${page_index}`;
 	const slideById = new Map<string, SlideRow>();
 	for (const r of slideRows) slideById.set(slideKey(r.row.document_id, r.row.page_index), r);
+	const slideNumberFor = (document_id: string, page_index: number): number | null => {
+		const hit = slideById.get(slideKey(document_id, page_index));
+		return typeof hit?.slide_number === 'number' && Number.isFinite(hit.slide_number) ? hit.slide_number : null;
+	};
 	const segmentMetaFor = (document_id: string, page_index: number): { segment_key: string | null; segment_reason: any | null } => {
 		const hit = slideById.get(slideKey(document_id, page_index));
 		return { segment_key: hit?.segment_key ?? null, segment_reason: hit?.segment_reason ?? null };
@@ -1019,11 +1210,74 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 	}
 
 	// KPI fallbacks (Option A): deterministic, labeled facts from DPU.
+	const nowYear = new Date().getFullYear();
+	const tableRevenueFacts = parseRevenueFromFinancialTableSlides(slideRows, nowYear);
+	for (const rev of tableRevenueFacts) {
+		const seg = segmentMetaFor(rev.primary.document_id, rev.primary.page_index);
+		out.push({
+			evidence_id: `deal:${id}:dpu_fact:revenue_v1:${rev.subtype}:table:${rev.year}:${rev.year_kind}`,
+			deal_id: id,
+			source_type: 'dpu_derived_fact',
+			source_path: `doc:${rev.primary.document_id}:page:${rev.primary.page_index + 1}`,
+			source_document_id: rev.primary.document_id,
+			confidence: rev.subtype === 'annual' ? 0.76 : rev.subtype === 'ytd' ? 0.72 : 0.7,
+			extracted_at: slideRows.find((r) => r.row.document_id === rev.primary.document_id && r.row.page_index === rev.primary.page_index)?.extracted_at ?? new Date().toISOString(),
+			content_json: {
+				fact_type: 'revenue_v1',
+				value_json: {
+					display: rev.display,
+					subtype: rev.subtype,
+					year: rev.year,
+					year_kind: rev.year_kind,
+					year_label_raw: rev.year_label_raw,
+					scope: rev.scope,
+					row_name: rev.row_name,
+					value_raw: rev.value_raw,
+					note_snippet: rev.note_snippet,
+					amount: { amount: rev.amount, currency: 'USD' },
+				},
+				provenance: {
+					source_document_id: rev.primary.document_id,
+					page_index: rev.primary.page_index,
+					slide_title: rev.primary.slide_title,
+					slide_number: rev.primary.slide_number,
+					ppt_slide_number: rev.primary.slide_number,
+					segment_key: seg.segment_key ?? rev.primary.segment_key,
+					segment_reason: seg.segment_reason,
+					scope: rev.scope,
+					year: rev.year,
+					row_name: rev.row_name,
+					value_raw: rev.value_raw,
+					year_kind: rev.year_kind,
+					year_label_raw: rev.year_label_raw,
+				},
+			},
+			meta: {
+				document_id: rev.primary.document_id,
+				page_index: rev.primary.page_index,
+				slide_title: rev.primary.slide_title,
+				slide_number: rev.primary.slide_number,
+				ppt_slide_number: rev.primary.slide_number,
+				segment_key: seg.segment_key ?? rev.primary.segment_key,
+				segment_reason: seg.segment_reason,
+				subtype: rev.subtype,
+				year: rev.year,
+				year_kind: rev.year_kind,
+				year_label_raw: rev.year_label_raw,
+				scope: rev.scope,
+				row_name: rev.row_name,
+				value_raw: rev.value_raw,
+			},
+		});
+	}
+
 	const revenueFacts = parseRevenueFromSlides(slideRows);
 	for (const rev of revenueFacts) {
 		const seg = segmentMetaFor(rev.primary.document_id, rev.primary.page_index);
+		const fact_type = rev.subtype === 'attributed' ? 'marketing_attributed_revenue_v1' : 'revenue_v1';
+		const channel = rev.subtype === 'attributed' ? (rev.channel ?? 'email_sms') : null;
 		out.push({
-			evidence_id: `deal:${id}:dpu_fact:revenue_v1:${rev.subtype}:${rev.year ?? 'na'}`,
+			evidence_id: `deal:${id}:dpu_fact:${fact_type}:${rev.subtype}:${rev.year ?? 'na'}`,
 			deal_id: id,
 			source_type: "dpu_derived_fact",
 			source_path: `doc:${rev.primary.document_id}:page:${rev.primary.page_index + 1}`,
@@ -1031,11 +1285,13 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 			confidence: rev.subtype === 'annual' ? 0.66 : rev.subtype === 'attributed' ? 0.62 : 0.6,
 			extracted_at: slideRows.find((r) => r.row.document_id === rev.primary.document_id && r.row.page_index === rev.primary.page_index)?.extracted_at ?? new Date().toISOString(),
 			content_json: {
-				fact_type: "revenue_v1",
+				fact_type,
 				value_json: {
 					display: rev.display,
 					subtype: rev.subtype,
 					year: rev.year,
+					scope: rev.scope,
+					...(channel ? { channel } : {}),
 					note_snippet: rev.note_snippet,
 					amount: { amount: rev.amount, currency: "USD" },
 				},
@@ -1045,6 +1301,8 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 					slide_title: rev.primary.slide_title,
 					segment_key: seg.segment_key ?? rev.primary.segment_key,
 					segment_reason: seg.segment_reason,
+					scope: rev.scope,
+					...(channel ? { channel } : {}),
 				},
 			},
 			meta: {
@@ -1055,6 +1313,8 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 				segment_reason: seg.segment_reason,
 				subtype: rev.subtype,
 				year: rev.year,
+				scope: rev.scope,
+				...(channel ? { channel } : {}),
 			},
 		});
 	}

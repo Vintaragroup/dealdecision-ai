@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { normalizeAnalystSegment, type AnalystSegment } from "./analyst-segment";
 import { getSegmentedNodesForDeal, type SegmentedDealNode } from "./segmented-nodes-for-deal";
+import { buildDealSummaryTiers } from "./deal-summary-tiers";
 
 const normalizeWhitespace = (s: string): string => s.replace(/\s+/g, " ").trim();
 
@@ -30,8 +31,15 @@ export type DealSummaryV1 = {
   version: "deal_summary_v1";
   ready: boolean;
   reason: string | null;
+  tiers: {
+    hero: string;
+    overview: string;
+    deep: string;
+  };
   one_liner: DealSummaryLine | null;
   product: DealSummaryLine | null;
+  market_target: DealSummaryLine | null;
+  market_context: DealSummaryLine | null;
   market: DealSummaryLine | null;
   paragraphs: DealSummaryLine[];
   warnings: string[];
@@ -77,6 +85,37 @@ function hasConcreteInfoToken(text: string): boolean {
 
 function meetsMinimumInfo(text: string): boolean {
   return wordCountLoose(text) >= 7 || hasConcreteInfoToken(text);
+}
+
+function buildMarketTargetFromText(text: string): string | null {
+  const raw = normalizeWhitespace(text);
+  if (!raw) return null;
+  const t = raw.toLowerCase();
+
+  const hasGolf = /\bgolf\b/.test(t);
+  const has1834 = /(18\s*[-–]\s*34)/.test(t) || /(18\s*to\s*34)/.test(t);
+  const hasMale = /\bmale\b/.test(t) || /\bmen\b/.test(t) || /\bmens\b/.test(t) || /\bmen(?:'|’)?s\b/.test(t);
+  const hasWomen = /\bwomen\b/.test(t) || /\bwomens\b/.test(t) || /\bwomen(?:'|’)?s\b/.test(t) || /\bfemale\b/.test(t);
+  const hasYouth = /\byouth\b/.test(t) || /\bjunior\b/.test(t) || /\bgen\s*z\b/.test(t);
+
+  const hasDtc = /\bdtc\b/.test(t) || /direct\s*-?to\s*-?consumer/.test(t) || /e-?commerce/.test(t) || /online\b/.test(t) || /website\b/.test(t);
+  const hasWholesale = /\bwholesale\b/.test(t) || /\bretailers?\b/.test(t) || /\bpro\s*shops?\b/.test(t);
+  const hasGreenGrass = /green\s*grass/.test(t);
+  const hasCourses = /\bcourses?\b/.test(t) || /\bclubs?\b/.test(t);
+  const hasRetailers = /\bretailers?\b/.test(t) || /\bstores?\b/.test(t);
+  const hasProShops = /\bpro\s*shops?\b/.test(t);
+
+  if (hasGolf && has1834 && hasMale && (hasWomen || hasYouth) && hasDtc && hasWholesale && (hasGreenGrass || hasCourses || hasRetailers || hasProShops)) {
+    const buyers: string[] = [];
+    if (hasGreenGrass || hasCourses) buyers.push('green grass courses');
+    if (hasRetailers) buyers.push('retailers');
+    if (hasProShops) buyers.push('pro shops');
+    const uniqBuyers = Array.from(new Set(buyers));
+    const buyersPhrase = uniqBuyers.length > 0 ? ` (e.g., ${uniqBuyers.join(', ')})` : '';
+    return `Target market: core 18–34 male golfer segment, expanding into women and youth; sells via DTC and to wholesale buyers${buyersPhrase}.`;
+  }
+
+  return null;
 }
 
 function inferSegmentFromNode(node: SegmentedDealNode): AnalystSegment | null {
@@ -194,21 +233,89 @@ function buildCitation(node: SegmentedDealNode, snippet: string): DealSummaryCit
 }
 
 function pickBest(nodes: SegmentedDealNode[], segment: AnalystSegment): { node: SegmentedDealNode; text: string } | null {
+  const PRODUCT_VALIDATION_TOKENS = [
+    "as seen in",
+    "press",
+    "media",
+    "featured",
+    "award",
+    "awards",
+    "collab",
+    "collaboration",
+    "partner",
+    "partnership",
+    "forbes",
+    "vogue",
+    "gq",
+    "golf digest",
+  ];
+
+  const hasValidation = (s: string): boolean => {
+    const t = tokenizeLoose(s);
+    return PRODUCT_VALIDATION_TOKENS.some((k) => t.includes(tokenizeLoose(k)));
+  };
+
+  const tryPick = (opts: { disallowValidation: boolean }): { node: SegmentedDealNode; text: string } | null => {
+    let best: { node: SegmentedDealNode; text: string; score: number } | null = null;
+    for (const n of nodes) {
+      const score = scoreNodeForSegment(n, segment);
+      if (score <= 0) continue;
+      const text = candidateTextFromNodeForSegment(n, segment, 280);
+      if (!text) continue;
+
+      // Hard filter for fluff/min-info on market/product lines.
+      if ((segment === "market" || segment === "product") && startsWithAnyLoose(text, FLUFF_PREFIXES)) continue;
+      if ((segment === "market" || segment === "product") && !meetsMinimumInfo(text)) continue;
+
+      // Product definition should not be press/awards/collabs unless we have no alternative.
+      if (segment === "product" && opts.disallowValidation && hasValidation(`${n.slide_title ?? ""}\n${text}`)) continue;
+
+      if (!best || score > best.score) {
+        best = { node: n, text, score };
+      }
+    }
+    return best ? { node: best.node, text: best.text } : null;
+  };
+
+  return tryPick({ disallowValidation: true }) ?? tryPick({ disallowValidation: false });
+}
+
+function pickBestMarket(nodes: SegmentedDealNode[], kind: 'target' | 'context'): { node: SegmentedDealNode; text: string } | null {
+  const targetHints = ['icp', 'target', 'customer', 'customers', 'segment', 'segments', 'persona', 'buyer', 'age', 'cohort', 'golfers', 'dtc', 'wholesale', 'green grass', 'pro shop', 'retail', 'courses'];
+  const contextHints = ['participation', 'cagr', 'growth', 'growing', 'tailwinds', 'market size', 'tam', 'sam', 'som', 'industry'];
+
+  const isTargetLike = (text: string): boolean => {
+    const t = tokenizeLoose(text);
+    const hasCore = ['icp', 'target', 'customer', 'customers', 'segment', 'segments', 'persona', 'buyer'].some((k) => t.includes(k));
+    return hasCore && hasAny(t, targetHints);
+  };
+
+  const isContextLike = (text: string): boolean => {
+    const t = tokenizeLoose(text);
+    if (!hasAny(t, contextHints)) return false;
+    // If it reads like ICP, it's not context.
+    if (['icp', 'persona', 'buyer', 'segments', 'target customers'].some((k) => t.includes(tokenizeLoose(k)))) return false;
+    return true;
+  };
+
   let best: { node: SegmentedDealNode; text: string; score: number } | null = null;
   for (const n of nodes) {
-    const score = scoreNodeForSegment(n, segment);
-    if (score <= 0) continue;
-    const text = candidateTextFromNodeForSegment(n, segment, 280);
+    const base = scoreNodeForSegment(n, 'market');
+    if (base <= 0) continue;
+    const text = candidateTextFromNodeForSegment(n, 'market', 280);
     if (!text) continue;
+    if (startsWithAnyLoose(text, FLUFF_PREFIXES)) continue;
+    if (!meetsMinimumInfo(text)) continue;
 
-    // Hard filter for fluff/min-info on market/product lines.
-    if ((segment === "market" || segment === "product") && startsWithAnyLoose(text, FLUFF_PREFIXES)) continue;
-    if ((segment === "market" || segment === "product") && !meetsMinimumInfo(text)) continue;
+    const combined = `${n.slide_title ?? ''}\n${text}`;
+    if (kind === 'target' && !isTargetLike(combined)) continue;
+    if (kind === 'context' && !isContextLike(combined)) continue;
 
-    if (!best || score > best.score) {
-      best = { node: n, text, score };
-    }
+    const bump = kind === 'target' ? 10 : 0;
+    const score = base + bump;
+    if (!best || score > best.score) best = { node: n, text, score };
   }
+
   return best ? { node: best.node, text: best.text } : null;
 }
 
@@ -217,7 +324,8 @@ export async function compileDealSummaryV1(pool: Pool, dealId: string, opts?: { 
   const { nodes, warnings } = prefetched ?? (await getSegmentedNodesForDeal(pool, dealId));
 
   const productPick = pickBest(nodes, "product");
-  const marketPick = pickBest(nodes, "market");
+  const marketTargetPick = pickBestMarket(nodes, 'target') ?? pickBest(nodes, 'market');
+  const marketContextPick = pickBestMarket(nodes, 'context');
   const overviewPick = pickBest(nodes, "overview");
 
   const usedNodeIds: string[] = [];
@@ -232,17 +340,35 @@ export async function compileDealSummaryV1(pool: Pool, dealId: string, opts?: { 
       })()
     : null;
 
-  const market: DealSummaryLine | null = marketPick
+  const market_target: DealSummaryLine | null = marketTargetPick
     ? (() => {
-        usedNodeIds.push(marketPick.node.node_id);
+        const templated = buildMarketTargetFromText(`${overviewPick?.text ?? ''}\n${marketTargetPick.text}`);
+        usedNodeIds.push(marketTargetPick.node.node_id);
         return {
-          text: marketPick.text,
-          sources: [buildCitation(marketPick.node, marketPick.text)],
+          text: templated ?? marketTargetPick.text,
+          sources: [buildCitation(marketTargetPick.node, templated ?? marketTargetPick.text)],
         };
       })()
     : null;
 
-  const oneLinerPick = overviewPick ?? productPick ?? marketPick;
+  const market_context: DealSummaryLine | null = marketContextPick
+    ? (() => {
+        usedNodeIds.push(marketContextPick.node.node_id);
+        return {
+          text: marketContextPick.text,
+          sources: [buildCitation(marketContextPick.node, marketContextPick.text)],
+        };
+      })()
+    : null;
+
+  const market: DealSummaryLine | null = market_target
+    ? {
+        text: market_context ? `${market_target.text.replace(/\s*\.$/, '')}. Market context: ${market_context.text.replace(/\s*\.$/, '')}.` : market_target.text,
+        sources: [...market_target.sources, ...(market_context?.sources ?? [])],
+      }
+    : null;
+
+  const oneLinerPick = overviewPick ?? productPick ?? marketTargetPick ?? marketContextPick;
   const one_liner: DealSummaryLine | null = oneLinerPick
     ? (() => {
         usedNodeIds.push(oneLinerPick.node.node_id);
@@ -264,12 +390,19 @@ export async function compileDealSummaryV1(pool: Pool, dealId: string, opts?: { 
     }
   }
 
-  const ready = Boolean(one_liner && product && market);
+  const tiers = buildDealSummaryTiers({
+    identityText: overviewPick?.text ?? one_liner?.text ?? null,
+    productText: product?.text ?? null,
+    marketText: market_target?.text ?? null,
+    extraText: [market_context?.text ?? null, ...paragraphs.map((p) => p.text)].filter(Boolean).join(" \n "),
+  });
+
+  const ready = Boolean(one_liner && product && market_target);
   const reason = ready
     ? null
     : [
         !product ? "missing_product" : null,
-        !market ? "missing_market" : null,
+        !market_target ? "missing_market_target" : null,
         !one_liner ? "missing_one_liner" : null,
       ]
         .filter((v): v is string => Boolean(v))
@@ -279,8 +412,11 @@ export async function compileDealSummaryV1(pool: Pool, dealId: string, opts?: { 
     version: "deal_summary_v1",
     ready,
     reason: reason || null,
+    tiers,
     one_liner,
     product,
+    market_target,
+    market_context,
     market,
     paragraphs,
     warnings: warnings ?? [],

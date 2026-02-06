@@ -796,6 +796,17 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           <span id="deterministic-status" class="muted"></span>
         </div>
 
+        <div class="card" style="margin: 0.75rem 0 1rem;">
+          <h2 style="margin-bottom: 0.5rem;">Report Fingerprint</h2>
+          <div id="deterministic-fingerprint" class="muted">Not loaded.</div>
+        </div>
+
+        <div class="card" style="margin: 0.75rem 0 1rem;">
+          <h2 style="margin-bottom: 0.5rem;">Field Presence Matrix</h2>
+          <p class="muted" style="margin-bottom: 0.75rem;">Quick check that new computed fields are present without opening JSON.</p>
+          <div id="deterministic-field-presence" class="muted">Not loaded.</div>
+        </div>
+
         <div class="subtabs" aria-label="Deterministic sub-tabs">
           <button id="det-subtab-btn-canonical" class="subtab active" onclick="activateDeterministicSubtab('canonical')">Canonical Header</button>
           <button id="det-subtab-btn-structured" class="subtab" onclick="activateDeterministicSubtab('structured')">Structured Summary (raw)</button>
@@ -805,6 +816,24 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         <div id="det-subtab-canonical" class="card det-panel active">
           <h2 style="margin-bottom: 0.5rem;">Canonical Header Output</h2>
           <div id="deterministic-header" class="muted">Enter a deal id and click Load.</div>
+
+          <div style="border-top: 1px solid #e2e8f0; margin-top: 1rem; padding-top: 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Deal Summary Tiers</h2>
+            <p class="muted" style="margin-bottom: 0.75rem;">Shows hero / overview / deep tiers and warns on suspected tier collapse.</p>
+            <div id="deterministic-deal-summary-tiers" class="muted">Not loaded.</div>
+          </div>
+
+          <div style="border-top: 1px solid #e2e8f0; margin-top: 1rem; padding-top: 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Score Understanding v1</h2>
+            <p class="muted" style="margin-bottom: 0.75rem;">Investor-friendly buckets derived from score explanation.</p>
+            <div id="deterministic-score-understanding-v1" class="muted">Not loaded.</div>
+          </div>
+
+          <div style="border-top: 1px solid #e2e8f0; margin-top: 1rem; padding-top: 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Canonical KPI Trace</h2>
+            <p class="muted" style="margin-bottom: 0.75rem;">Explains why a KPI value was chosen and shows alternatives (Revenue).</p>
+            <div id="deterministic-kpi-trace" class="muted">Not loaded.</div>
+          </div>
         </div>
 
         <div id="det-subtab-structured" class="card det-panel">
@@ -1690,6 +1719,21 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         ? '<div class="muted" style="margin-top:0.35rem;"><span class="mono">claims</span>: ' + escapeHtml(claims.join(', ')) + '</div>'
         : '';
 
+      // Product Summary (v1): show product_validation separately for inspector/debug only.
+      const productValidationRaw = (typeof s.product_validation === 'string' && s.product_validation.trim())
+        ? s.product_validation.trim()
+        : null;
+      const socialProofText = productValidationRaw
+        ? productValidationRaw.replace(/^validation\s*:\s*/i, '').trim()
+        : null;
+      const socialProofHtml = (socialProofText && socialProofText.length > 0)
+        ? ''
+          + '<div style="margin-top:0.5rem;">'
+          +   '<div style="font-weight:600;">Social proof</div>'
+          +   '<div style="margin-top:0.25rem;">' + escapeHtml(socialProofText) + '</div>'
+          + '</div>'
+        : '';
+
       return ''
         + '<div style="border-top: 1px solid #e2e8f0; padding-top: 0.75rem; margin-top: 0.75rem;">'
         +   '<div style="display:flex; gap:0.75rem; flex-wrap:wrap; align-items: baseline;">'
@@ -1698,6 +1742,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         +     '<div class="muted">confidence=' + escapeHtml(conf != null ? conf.toFixed(3) : '-') + '</div>'
         +   '</div>'
         +   claimsHtml
+        +   socialProofHtml
         +   '<div class="muted" style="margin-top: 0.35rem;">Derived from (pages):</div>'
         +   '<div style="margin-top:0.25rem;">' + derivedLines + '</div>'
         +   supportingHtml
@@ -2490,11 +2535,401 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       el.innerHTML = renderMaybeJson(legacy);
     }
 
+    // Env debug is loaded on-demand (and cached) so the dashboard can surface
+    // env_source correctly even when running in containers.
+    let envDebugCache = null;
+    let envDebugPromise = null;
+    async function ensureEnvDebugLoaded() {
+      try {
+        if (envDebugCache) return envDebugCache;
+        if (envDebugPromise) return await envDebugPromise;
+        envDebugPromise = fetch('/api/dashboard/debug/env?t=' + Date.now())
+          .then((r) => r.json().catch(() => ({})))
+          .then((json) => {
+            envDebugCache = json && typeof json === 'object' ? json : {};
+            return envDebugCache;
+          })
+          .catch(() => {
+            envDebugCache = {};
+            return envDebugCache;
+          })
+          .finally(() => {
+            envDebugPromise = null;
+          });
+        return await envDebugPromise;
+      } catch {
+        envDebugCache = {};
+        envDebugPromise = null;
+        return envDebugCache;
+      }
+    }
+
+    function renderDeterministicFingerprint(payload) {
+      const el = document.getElementById('deterministic-fingerprint');
+      if (!el) return;
+
+      const meta = payload && payload.report && payload.report.metadata ? payload.report.metadata : null;
+      const inputs = meta && meta.deterministic_score_inputs_v1 ? meta.deterministic_score_inputs_v1 : null;
+      const preview = meta && meta.deterministic_score_preview_v1 ? meta.deterministic_score_preview_v1 : null;
+
+      const asString = (v) => {
+        if (v == null) return null;
+        const s = String(v);
+        return s.trim().length > 0 ? s : null;
+      };
+      const missing = (v) => {
+        const s = asString(v);
+        return s == null ? 'missing' : s;
+      };
+
+      const dealId = asString(payload?.deal_id);
+      const reportId = asString(payload?.ids?.dio_id) ?? asString(payload?.report?.artifact?.dio_id);
+      const generatedAt = asString(payload?.requested_at);
+      const inputsHash = asString(inputs?.inputs_hash);
+
+      const drift = asString(preview?.gate?.drift_assessment)
+        ?? asString(inputs?.deck?.drift_assessment)
+        ?? asString(meta?.archetype_segment_drift_v1?.overall_assessment);
+
+      const envDebug = envDebugCache && typeof envDebugCache === 'object' ? envDebugCache : null;
+      const envFlag = asString(envDebug?.DETERMINISTIC_SCORE_V1_ENABLED)
+        ?? asString(meta?.ui_preview_v1?.env?.DETERMINISTIC_SCORE_V1_ENABLED);
+      const envSource = asString(envDebug?.env_source);
+
+      const reportVersion = asString(payload?.report?.version);
+      const analysisVersion = asString(payload?.ids?.analysis_version) ?? asString(payload?.report?.artifact?.analysis_version);
+      const inputsVersion = asString(inputs?.version);
+
+      const lines = [
+        'deal_id=' + missing(dealId),
+        'report_id=' + missing(reportId),
+        'generated_at=' + missing(generatedAt),
+        'inputs_hash=' + missing(inputsHash),
+        'drift=' + missing(drift),
+        'DETERMINISTIC_SCORE_V1_ENABLED=' + missing(envFlag),
+        'env_source=' + missing(envSource),
+        'report_version=' + missing(reportVersion),
+        'analysis_version=' + missing(analysisVersion),
+        'deterministic_inputs_version=' + missing(inputsVersion),
+      ];
+
+      el.innerHTML = ''
+        + '<pre class="mono" style="margin:0; white-space:pre-wrap; word-break:break-word;">'
+        + escapeHtml(lines.join('\n'))
+        + '</pre>';
+    }
+
+    function renderDeterministicFieldPresenceMatrix(payload) {
+      const el = document.getElementById('deterministic-field-presence');
+      if (!el) return;
+
+      const rows = payload && Array.isArray(payload.field_presence_matrix)
+        ? payload.field_presence_matrix
+        : [];
+
+      if (!rows || rows.length === 0) {
+        el.innerHTML = '<div class="muted">No field_presence_matrix present.</div>';
+        return;
+      }
+
+      const badge = (status) => {
+        if (status === 'present') return '<span class="badge badge-success">present</span>';
+        if (status === 'missing') return '<span class="badge badge-danger">missing</span>';
+        return '<span class="badge badge-muted">unknown</span>';
+      };
+
+      const table = ''
+        + '<table style="margin-top:0.25rem; width:100%;">'
+        +   '<thead><tr><th style="width:45%;">field</th><th style="width:15%;">status</th><th>preview</th></tr></thead>'
+        +   '<tbody>'
+        +     rows.map((r) => {
+                const path = r && typeof r.path === 'string' ? r.path : '-';
+                const status = r && typeof r.status === 'string' ? r.status : 'unknown';
+                const preview = r && typeof r.preview === 'string' ? r.preview : '';
+                return '<tr>'
+                  + '<td class="mono">' + escapeHtml(path) + '</td>'
+                  + '<td>' + badge(status) + '</td>'
+                  + '<td class="mono" style="white-space:pre-wrap; word-break:break-word;">' + escapeHtml(preview || '-') + '</td>'
+                  + '</tr>';
+              }).join('')
+        +   '</tbody>'
+        + '</table>';
+
+      el.innerHTML = table;
+    }
+
+    function renderDeterministicKpiTracePanel(payload) {
+      const el = document.getElementById('deterministic-kpi-trace');
+      if (!el) return;
+
+      const ss = payload && payload.report && payload.report.structured_summary ? payload.report.structured_summary : null;
+      const revenue = ss && ss.revenue && typeof ss.revenue === 'object' ? ss.revenue : null;
+      const value = revenue && revenue.value && typeof revenue.value === 'object' ? revenue.value : null;
+
+      if (!revenue || !value) {
+        el.innerHTML = '<div class="muted">No structured_summary.revenue present.</div>';
+        return;
+      }
+
+      const selectionReason = (typeof revenue.selection_reason === 'string' && revenue.selection_reason.trim())
+        ? revenue.selection_reason.trim()
+        : null;
+
+      const amount = (typeof value.amount === 'number' && Number.isFinite(value.amount)) ? value.amount : null;
+      const currency = (typeof value.currency === 'string' && value.currency.trim()) ? value.currency.trim() : null;
+      const raw = (typeof value.raw === 'string' && value.raw.trim()) ? value.raw.trim() : null;
+
+      const sources = Array.isArray(revenue.sources) ? revenue.sources : [];
+      const primary0 = sources.length > 0 ? sources[0] : null;
+      const docId = primary0 && (primary0.document_id || primary0.source_document_id) ? String(primary0.document_id || primary0.source_document_id) : null;
+      const page = (primary0 && typeof primary0.page === 'number' && Number.isFinite(primary0.page))
+        ? primary0.page
+        : (primary0 && typeof primary0.page_index === 'number' && Number.isFinite(primary0.page_index) ? (primary0.page_index + 1) : null);
+      const slideTitle = primary0 && typeof primary0.slide_title === 'string' && primary0.slide_title.trim() ? primary0.slide_title.trim() : null;
+
+      const fmtMoneyShort = (v) => {
+        if (typeof v !== 'number' || !Number.isFinite(v)) return '-';
+        const abs = Math.abs(v);
+        if (abs >= 1e9) return '$' + (v / 1e9).toFixed(abs >= 1e10 ? 0 : 2).replace(/\.00$/, '') + 'B';
+        if (abs >= 1e6) return '$' + (v / 1e6).toFixed(abs >= 1e7 ? 0 : 3).replace(/\.000$/, '') + 'M';
+        if (abs >= 1e3) return '$' + (v / 1e3).toFixed(abs >= 1e4 ? 0 : 2).replace(/\.00$/, '') + 'K';
+        return '$' + String(Math.round(v));
+      };
+
+      const canonicalLines = [];
+      canonicalLines.push('<div style="display:flex; gap:0.75rem; flex-wrap:wrap; align-items:baseline;">'
+        + '<div><strong>Revenue</strong></div>'
+        + '<div class="muted"><span class="mono">amount</span>=' + escapeHtml(amount != null ? String(amount) : '-') + '</div>'
+        + '<div class="muted"><span class="mono">short</span>=' + escapeHtml(amount != null ? fmtMoneyShort(amount) : '-') + '</div>'
+        + '<div class="muted"><span class="mono">currency</span>=' + escapeHtml(currency || '-') + '</div>'
+        + '</div>');
+      canonicalLines.push('<div class="muted" style="margin-top:0.25rem;">'
+        + '<span class="mono">value_raw</span>=' + escapeHtml(raw || '-')
+        + '</div>');
+      canonicalLines.push('<div class="muted" style="margin-top:0.25rem; display:flex; gap:0.75rem; flex-wrap:wrap; align-items:baseline;">'
+        + '<div><span class="mono">selection_reason</span>=' + escapeHtml(selectionReason || '-') + '</div>'
+        + '<div><span class="mono">doc_id</span>=' + escapeHtml(docId || '-') + '</div>'
+        + '<div><span class="mono">page</span>=' + escapeHtml(page != null ? String(page) : '-') + '</div>'
+        + '</div>');
+      if (slideTitle) {
+        canonicalLines.push('<div class="muted" style="margin-top:0.25rem;">'
+          + '<span class="mono">slide_title</span>=' + escapeHtml(slideTitle)
+          + '</div>');
+      }
+
+      const candidates = Array.isArray(revenue.candidates) ? revenue.candidates : [];
+      const alternatives = candidates.filter((c) => !(c && c.selected));
+
+      const candidateTable = (rows) => {
+        if (!rows || rows.length === 0) return '<div class="muted" style="margin-top:0.5rem;">No candidates trace present.</div>';
+        const body = rows.map((c) => {
+          const selected = Boolean(c && c.selected);
+          const scope = c && typeof c.scope === 'string' ? c.scope : '-';
+          const subtype = c && typeof c.subtype === 'string' ? c.subtype : '-';
+          const year = (c && typeof c.year === 'number' && Number.isFinite(c.year)) ? c.year : null;
+          const conf = (c && typeof c.confidence === 'number' && Number.isFinite(c.confidence)) ? c.confidence : null;
+          const score = (c && typeof c.score === 'number' && Number.isFinite(c.score)) ? c.score : null;
+          const valueRaw = c && typeof c.value_raw === 'string' ? c.value_raw : '';
+          const amt = (c && typeof c.amount === 'number' && Number.isFinite(c.amount)) ? c.amount : null;
+          const src0 = (c && Array.isArray(c.sources) && c.sources.length > 0) ? c.sources[0] : null;
+          const pi = (src0 && typeof src0.page_index === 'number' && Number.isFinite(src0.page_index)) ? src0.page_index : null;
+          const page = pi != null ? (pi + 1) : ((src0 && typeof src0.page === 'number' && Number.isFinite(src0.page)) ? src0.page : null);
+          const doc = src0 && (src0.document_id || src0.source_document_id) ? String(src0.document_id || src0.source_document_id) : null;
+          return '<tr>'
+            + '<td>' + (selected ? '<span class="badge badge-success">selected</span>' : '<span class="badge badge-muted">alt</span>') + '</td>'
+            + '<td class="mono">' + escapeHtml(scope) + '</td>'
+            + '<td class="mono">' + escapeHtml(subtype + (year != null ? (':' + String(year)) : '')) + '</td>'
+            + '<td class="mono">' + escapeHtml(conf != null ? conf.toFixed(3) : '-') + '</td>'
+            + '<td class="mono">' + escapeHtml(score != null ? score.toFixed(2) : '-') + '</td>'
+            + '<td class="mono">' + escapeHtml(amt != null ? String(amt) : '-') + '</td>'
+            + '<td class="mono">' + escapeHtml(page != null ? String(page) : '-') + '</td>'
+            + '<td class="mono">' + escapeHtml(doc || '-') + '</td>'
+            + '<td class="muted" style="white-space:pre-wrap; word-break:break-word;">' + escapeHtml(valueRaw || '-') + '</td>'
+            + '</tr>';
+        }).join('');
+
+        return ''
+          + '<table style="margin-top:0.5rem; width:100%;">'
+          +   '<thead><tr>'
+          +     '<th style="width:9%;">kind</th>'
+          +     '<th style="width:14%;">scope</th>'
+          +     '<th style="width:14%;">subtype</th>'
+          +     '<th style="width:10%;">conf</th>'
+          +     '<th style="width:10%;">score</th>'
+          +     '<th style="width:10%;">amount</th>'
+          +     '<th style="width:8%;">page</th>'
+          +     '<th style="width:18%;">doc_id</th>'
+          +     '<th>value_raw</th>'
+          +   '</tr></thead>'
+          +   '<tbody>' + body + '</tbody>'
+          + '</table>';
+      };
+
+      const selectedRows = candidates.filter((c) => c && c.selected);
+
+      const html = ''
+        + canonicalLines.join('')
+        + '<details style="margin-top:0.75rem;">'
+        +   '<summary class="muted" style="cursor:pointer;">Alternatives (' + escapeHtml(String(alternatives.length)) + ')</summary>'
+        +   candidateTable(candidates.length > 0 ? candidates : selectedRows)
+        + '</details>';
+
+      el.innerHTML = html;
+    }
+
+    function renderDeterministicDealSummaryTiersPanel(payload) {
+      const el = document.getElementById('deterministic-deal-summary-tiers');
+      if (!el) return;
+
+      const report = payload && payload.report && typeof payload.report === 'object' ? payload.report : null;
+      const dealSummary = report && report.deal_summary && typeof report.deal_summary === 'object' ? report.deal_summary : null;
+      const tiers = dealSummary && dealSummary.tiers && typeof dealSummary.tiers === 'object' ? dealSummary.tiers : null;
+
+      const hero = tiers && typeof tiers.hero === 'string' ? tiers.hero : null;
+      const overview = tiers && typeof tiers.overview === 'string' ? tiers.overview : null;
+      const deep = tiers && typeof tiers.deep === 'string' ? tiers.deep : null;
+
+      if (!hero && !overview && !deep) {
+        el.innerHTML = '<div class="muted">No deal_summary.tiers present.</div>';
+        return;
+      }
+
+      const norm = (s) => {
+        if (typeof s !== 'string') return '';
+        return s.trim().replace(/\s+/g, ' ').toLowerCase();
+      };
+
+      const normHero = norm(hero);
+      const normOverview = norm(overview);
+      const normDeep = norm(deep);
+
+      const equalish = (a, b) => {
+        if (!a || !b) return false;
+        return a === b;
+      };
+
+      // Substring collapse heuristic:
+      // flag only if the shorter text is a *large* portion of the longer.
+      const isNearSubstring = (shorter, longer) => {
+        if (!shorter || !longer) return false;
+        if (shorter.length < 80) return false; // small tiers often overlap naturally
+        if (longer.length < shorter.length) return false;
+        if (!longer.includes(shorter)) return false;
+        const ratio = shorter.length / Math.max(1, longer.length);
+        return ratio >= 0.86;
+      };
+
+      const collapsePairs = [];
+      if (equalish(normHero, normOverview)) collapsePairs.push('hero == overview');
+      if (equalish(normOverview, normDeep)) collapsePairs.push('overview == deep');
+      if (equalish(normHero, normDeep)) collapsePairs.push('hero == deep');
+
+      if (isNearSubstring(normHero, normOverview) || isNearSubstring(normOverview, normHero)) collapsePairs.push('hero ⊂ overview');
+      if (isNearSubstring(normOverview, normDeep) || isNearSubstring(normDeep, normOverview)) collapsePairs.push('overview ⊂ deep');
+      if (isNearSubstring(normHero, normDeep) || isNearSubstring(normDeep, normHero)) collapsePairs.push('hero ⊂ deep');
+
+      const collapseSuspected = collapsePairs.length > 0;
+
+      const badge = collapseSuspected
+        ? '<span class="badge badge-warning" style="margin-left:0.5rem;">tier collapse suspected</span>'
+        : '<span class="badge badge-success" style="margin-left:0.5rem;">ok</span>';
+
+      const warnLine = collapseSuspected
+        ? ('<div class="muted" style="margin-top:0.25rem;">' + escapeHtml(collapsePairs.slice(0, 4).join(' · ')) + '</div>')
+        : '';
+
+      const tierBlock = (label, text) => {
+        const t = (typeof text === 'string') ? text : '';
+        const len = t.length;
+        return ''
+          + '<div style="border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.6rem 0.7rem; margin-top:0.5rem;">'
+          +   '<div style="display:flex; gap:0.5rem; align-items:baseline; flex-wrap:wrap;">'
+          +     '<div style="font-weight:600;">' + escapeHtml(label) + '</div>'
+          +     '<div class="muted">(' + escapeHtml(String(len)) + ' chars)</div>'
+          +   '</div>'
+          +   '<pre class="mono" style="margin:0.4rem 0 0; white-space:pre-wrap; word-break:break-word; background:#f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 0.5rem;">'
+          +     escapeHtml(t || '-')
+          +   '</pre>'
+          + '</div>';
+      };
+
+      el.innerHTML = ''
+        + '<div style="display:flex; gap:0.5rem; align-items:baseline; flex-wrap:wrap;">'
+        +   '<div><strong>deal_summary_v1</strong></div>'
+        +   badge
+        + '</div>'
+        + warnLine
+        + tierBlock('Hero', hero)
+        + tierBlock('Overview', overview)
+        + tierBlock('Deep', deep);
+    }
+
+    function renderDeterministicScoreUnderstandingV1Panel(payload) {
+      const el = document.getElementById('deterministic-score-understanding-v1');
+      if (!el) return;
+
+      const report = payload && payload.report && typeof payload.report === 'object' ? payload.report : null;
+      const meta = report && report.metadata && typeof report.metadata === 'object' ? report.metadata : null;
+      const scoreExp = meta && meta.score_explanation && typeof meta.score_explanation === 'object' ? meta.score_explanation : null;
+      const understanding = scoreExp && scoreExp.understanding_v1 && typeof scoreExp.understanding_v1 === 'object' ? scoreExp.understanding_v1 : null;
+
+      if (!understanding) {
+        el.innerHTML = ''
+          + '<div class="badge badge-warning">understanding_v1 missing; check score-explanation.ts wiring</div>';
+        return;
+      }
+
+      const asItems = (v) => Array.isArray(v) ? v.filter((x) => x && typeof x === 'object') : [];
+      const strengths = asItems(understanding.strengths);
+      const execDeps = asItems(understanding.execution_dependencies);
+      const diligence = asItems(understanding.diligence_open_items);
+
+      const list = (title, items) => {
+        const count = Array.isArray(items) ? items.length : 0;
+        const bullets = count
+          ? '<ul style="margin:0.35rem 0 0; padding-left: 1.1rem;">'
+              + items.map((it) => {
+                const t = it && typeof it.text === 'string' ? it.text : '';
+                return '<li>' + escapeHtml(t || '-') + '</li>';
+              }).join('')
+              + '</ul>'
+          : '<div class="muted" style="margin-top:0.35rem;">(none)</div>';
+
+        return ''
+          + '<div style="border: 1px solid #e2e8f0; border-radius: 8px; padding: 0.6rem 0.7rem; margin-top:0.5rem;">'
+          +   '<div style="display:flex; gap:0.5rem; align-items:baseline; flex-wrap:wrap;">'
+          +     '<div style="font-weight:600;">' + escapeHtml(title) + '</div>'
+          +     '<div class="muted">(' + escapeHtml(String(count)) + ')</div>'
+          +   '</div>'
+          +   bullets
+          + '</div>';
+      };
+
+      const summary = typeof understanding.summary === 'string' && understanding.summary.trim().length > 0
+        ? '<div class="muted" style="margin-top:0.25rem;">' + escapeHtml(understanding.summary.trim()) + '</div>'
+        : '';
+
+      el.innerHTML = ''
+        + '<div style="display:flex; gap:0.5rem; align-items:baseline; flex-wrap:wrap;">'
+        +   '<div><strong>score_explanation.understanding_v1</strong></div>'
+        +   '<span class="badge badge-info">diligence_open_items: ' + escapeHtml(String(diligence.length)) + '</span>'
+        + '</div>'
+        + summary
+        + list('Strengths', strengths)
+        + list('Execution dependencies', execDeps)
+        + list('Diligence open items', diligence);
+    }
+
     async function loadDeterministic(dealId) {
       const statusEl = document.getElementById('deterministic-status');
       const headerEl = document.getElementById('deterministic-header');
       const structuredEl = document.getElementById('deterministic-structured');
       const legacyEl = document.getElementById('deterministic-legacy');
+      const fingerprintEl = document.getElementById('deterministic-fingerprint');
+      const presenceEl = document.getElementById('deterministic-field-presence');
+      const kpiTraceEl = document.getElementById('deterministic-kpi-trace');
+      const tiersEl = document.getElementById('deterministic-deal-summary-tiers');
+      const understandingEl = document.getElementById('deterministic-score-understanding-v1');
 
       if (!dealId || typeof dealId !== 'string' || dealId.trim().length === 0) {
         if (statusEl) statusEl.textContent = 'Enter a deal id.';
@@ -2506,6 +2941,11 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       if (headerEl) headerEl.innerHTML = '<div class="loading">Loading…</div>';
       if (structuredEl) structuredEl.innerHTML = '<div class="loading">Loading…</div>';
       if (legacyEl) legacyEl.innerHTML = '<div class="loading">Loading…</div>';
+      if (fingerprintEl) fingerprintEl.innerHTML = '<div class="loading">Loading…</div>';
+      if (presenceEl) presenceEl.innerHTML = '<div class="loading">Loading…</div>';
+      if (kpiTraceEl) kpiTraceEl.innerHTML = '<div class="loading">Loading…</div>';
+      if (tiersEl) tiersEl.innerHTML = '<div class="loading">Loading…</div>';
+      if (understandingEl) understandingEl.innerHTML = '<div class="loading">Loading…</div>';
 
       try {
         const res = await fetch('/api/dashboard/deals/' + encodeURIComponent(id) + '/deterministic?t=' + Date.now());
@@ -2515,14 +2955,24 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           if (headerEl) headerEl.innerHTML = '<pre>' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre>';
           if (structuredEl) structuredEl.innerHTML = '<div class="muted">Not loaded.</div>';
           if (legacyEl) legacyEl.innerHTML = '<div class="muted">Not loaded.</div>';
+          if (fingerprintEl) fingerprintEl.innerHTML = '<div class="muted">Not loaded.</div>';
+          if (presenceEl) presenceEl.innerHTML = '<div class="muted">Not loaded.</div>';
           return;
         }
+
+        await ensureEnvDebugLoaded();
 
         if (statusEl) {
           const ready = data && data.report && data.report.ready === true;
           statusEl.textContent = 'Loaded. report.ready=' + String(ready);
         }
+
+        renderDeterministicFingerprint(data);
+        renderDeterministicFieldPresenceMatrix(data);
         renderDeterministicHeaderPanel(data);
+        renderDeterministicDealSummaryTiersPanel(data);
+        renderDeterministicScoreUnderstandingV1Panel(data);
+        renderDeterministicKpiTracePanel(data);
         renderDeterministicStructuredPanel(data);
         renderDeterministicLegacyPanel(data);
       } catch (e) {
@@ -2530,6 +2980,11 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         if (headerEl) headerEl.innerHTML = '<div class="muted">Failed to load.</div>';
         if (structuredEl) structuredEl.innerHTML = '<div class="muted">Failed to load.</div>';
         if (legacyEl) legacyEl.innerHTML = '<div class="muted">Failed to load.</div>';
+        if (fingerprintEl) fingerprintEl.innerHTML = '<div class="muted">Failed to load.</div>';
+        if (presenceEl) presenceEl.innerHTML = '<div class="muted">Failed to load.</div>';
+        if (kpiTraceEl) kpiTraceEl.innerHTML = '<div class="muted">Failed to load.</div>';
+        if (tiersEl) tiersEl.innerHTML = '<div class="muted">Failed to load.</div>';
+        if (understandingEl) understandingEl.innerHTML = '<div class="muted">Failed to load.</div>';
       }
     }
 
@@ -5611,6 +6066,124 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
 
     const artifact = reportNormalized?.artifact && typeof reportNormalized.artifact === "object" ? reportNormalized.artifact : null;
 
+    type FieldPresenceRow = {
+      path: string;
+      status: "present" | "missing";
+      preview: string;
+    };
+
+    const previewOf = (v: any): string => {
+      if (v === null || v === undefined) return "-";
+      if (typeof v === "string") {
+        const s = v.trim();
+        if (!s) return "-";
+        return s.length <= 80 ? s : `${s.slice(0, 79).trimEnd()}…`;
+      }
+      if (typeof v === "number" || typeof v === "boolean") return String(v);
+      if (Array.isArray(v)) return `count=${v.length}`;
+      if (typeof v === "object") {
+        const keys = Object.keys(v);
+        const head = keys.slice(0, 8).join(", ");
+        return keys.length <= 8 ? `keys=${head}` : `keys=${head}, … (+${keys.length - 8})`;
+      }
+      return String(v);
+    };
+
+    const presentRow = (path: string, v: any): FieldPresenceRow => {
+      const isPresent = v !== null && v !== undefined && !(typeof v === "string" && v.trim().length === 0);
+      return { path, status: isPresent ? "present" : "missing", preview: isPresent ? previewOf(v) : "-" };
+    };
+
+    const report = reportNormalized && typeof reportNormalized === "object" ? reportNormalized : null;
+    const dealSummary = report && (report as any).deal_summary && typeof (report as any).deal_summary === "object" ? (report as any).deal_summary : null;
+    const meta = report && (report as any).metadata && typeof (report as any).metadata === "object" ? (report as any).metadata : null;
+    const scoreExp = meta && (meta as any).score_explanation && typeof (meta as any).score_explanation === "object" ? (meta as any).score_explanation : null;
+    const understandingV1 = scoreExp && (scoreExp as any).understanding_v1 && typeof (scoreExp as any).understanding_v1 === "object" ? (scoreExp as any).understanding_v1 : null;
+
+    const ssRevenue = structuredSummary && typeof structuredSummary === "object" ? (structuredSummary as any).revenue : null;
+    const revValueRaw = (() => {
+      if (!ssRevenue || typeof ssRevenue !== "object") return null;
+      const direct = (ssRevenue as any).value_raw;
+      if (typeof direct === "string" && direct.trim()) return direct.trim();
+      const v = (ssRevenue as any).value;
+      if (typeof v === "string" && v.trim()) return v.trim();
+      if (v && typeof v === "object") {
+        const raw = (v as any).raw;
+        if (typeof raw === "string" && raw.trim()) return raw.trim();
+      }
+      return null;
+    })();
+
+    const revLabel = ssRevenue && typeof ssRevenue === "object" && typeof (ssRevenue as any).label === "string" ? ((ssRevenue as any).label as string).trim() : null;
+    const revSources0 = ssRevenue && typeof ssRevenue === "object" && Array.isArray((ssRevenue as any).sources) && (ssRevenue as any).sources.length > 0
+      ? (ssRevenue as any).sources[0]
+      : null;
+    const revScope = revSources0 && revSources0.meta && typeof revSources0.meta === "object" ? revSources0.meta.scope : null;
+    const revYear = revSources0 && revSources0.meta && typeof revSources0.meta === "object" ? revSources0.meta.year : null;
+    const revScopeLabelPreview = (() => {
+      const parts: string[] = [];
+      if (revLabel) parts.push(`label=${revLabel}`);
+      if (typeof revScope === "string" && revScope.trim()) parts.push(`scope=${revScope.trim()}`);
+      if (typeof revYear === "number" && Number.isFinite(revYear)) parts.push(`year=${String(revYear)}`);
+      if (typeof revYear === "string" && revYear.trim()) parts.push(`year=${revYear.trim()}`);
+      return parts.length > 0 ? parts.join(" ") : null;
+    })();
+
+    const revPage = (() => {
+      if (!revSources0 || typeof revSources0 !== "object") return null;
+      if (typeof revSources0.page_index === "number" && Number.isFinite(revSources0.page_index)) return revSources0.page_index + 1;
+      if (Array.isArray(revSources0.page_range) && revSources0.page_range.length > 0) {
+        const p0 = revSources0.page_range[0];
+        if (typeof p0 === "number" && Number.isFinite(p0)) return p0;
+      }
+      if (typeof revSources0.page === "number" && Number.isFinite(revSources0.page)) return revSources0.page;
+      return null;
+    })();
+    const revSlideTitle = revSources0 && typeof revSources0.slide_title === "string" && revSources0.slide_title.trim() ? revSources0.slide_title.trim() : null;
+    const revPageTitlePreview = (() => {
+      const parts: string[] = [];
+      if (revPage != null) parts.push(`page=${String(revPage)}`);
+      if (revSlideTitle) parts.push(`slide_title=${revSlideTitle}`);
+      return parts.length > 0 ? parts.join(" ") : null;
+    })();
+
+    const diligenceCount = (() => {
+      if (!understandingV1 || typeof understandingV1 !== "object") return null;
+      const open = (understandingV1 as any).diligence_open_items;
+      if (Array.isArray(open)) return open.length;
+      const d = (understandingV1 as any).diligence;
+      if (Array.isArray(d)) return d.length;
+      if (d && typeof d === "object" && Array.isArray((d as any).items)) return (d as any).items.length;
+      return null;
+    })();
+
+    const detMatrix: FieldPresenceRow[] = [
+      // Deal summary tiers (Palm-like)
+      presentRow("deal_summary_v1.hero", dealSummary?.tiers?.hero ?? dealSummary?.hero ?? null),
+      presentRow("deal_summary_v1.overview", dealSummary?.tiers?.overview ?? dealSummary?.overview ?? null),
+      presentRow("deal_summary_v1.deep", dealSummary?.tiers?.deep ?? dealSummary?.deep ?? null),
+
+      // Deal summary product + market lines
+      presentRow("deal_summary_v1.product.product_definition", dealSummary?.product?.text ?? null),
+      presentRow(
+        "deal_summary_v1.product.product_validation",
+        structuredSummary?.product_summary_v1 && typeof (structuredSummary as any).product_summary_v1 === "object"
+          ? ((structuredSummary as any).product_summary_v1 as any).product_validation ?? null
+          : null
+      ),
+      presentRow("deal_summary_v1.market.market_target", dealSummary?.market_target?.text ?? null),
+      presentRow("deal_summary_v1.market.market_context", dealSummary?.market_context?.text ?? null),
+
+      // Understanding v1 + diligence count
+      presentRow("score_explanation.understanding_v1", understandingV1),
+      presentRow("score_explanation.understanding_v1.diligence_items_count", diligenceCount),
+
+      // Revenue raw + provenance
+      presentRow("structured_summary.revenue.value_raw", revValueRaw),
+      presentRow("structured_summary.revenue.scope_label", revScopeLabelPreview),
+      presentRow("structured_summary.revenue.sources[0].page_slide_title", revPageTitlePreview),
+    ];
+
     return {
       deal_id,
       requested_at: requestedAt.toISOString(),
@@ -5622,6 +6195,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       },
       report: reportNormalized,
       structured_summary: structuredSummary,
+      field_presence_matrix: detMatrix,
       header_canonical: {
         raise: canonical.raise,
         business_model: canonical.business_model,

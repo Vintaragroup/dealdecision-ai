@@ -17,6 +17,7 @@ import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { DealWorkspaceTopSection } from '../workspace/DealWorkspaceTopSection';
 import { DealWorkspaceOverviewComp } from '../workspace/dealworkspace_overview_comp';
+import { selectDealWorkspaceHeader } from '../../lib/selectDealWorkspaceHeader';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
 import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness } from '../../lib/apiClient';
 import type { JobProgressEventV1 } from '@dealdecision/contracts';
@@ -1344,36 +1345,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return human.length > 80 ? `${human.slice(0, 77).trim()}…` : human;
   };
 
-  const decisionTileStrengths = [
+  const decisionTileStrengthsFallback = [
+    // legacy highlights remain available below as a fallback,
+    // but the IC-memo overview prefers extracted structured facts + diagnostics.
     normalizeDecisionHighlight(decisionHighlights[0]),
     normalizeDecisionHighlight(decisionHighlights[1]),
   ].filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
 
-  const decisionTileOpenItemsAll = missingChips.map(formatOpenItemLabel).filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
-  const decisionTileOpenItems = decisionTileOpenItemsAll.slice(0, 2);
-  const decisionTileOpenItemsCount = decisionTileOpenItemsAll.length;
-
-  const decisionTileConfidenceBand: 'high' | 'med' | 'low' | 'unknown' = (() => {
-    const fromOverall = toBand(phase1ConfidenceRaw);
-    if (fromOverall !== 'unknown') return fromOverall;
-    const bands = [
-      getBandForCategory('Product'),
-      getBandForCategory('Market/ICP'),
-      getBandForCategory('Team'),
-      getBandForCategory('Risks'),
-    ].filter((b): b is 'high' | 'med' | 'low' => b !== 'unknown');
-    if (bands.length === 0) return 'unknown';
-    if (bands.includes('low')) return 'low';
-    if (bands.includes('med')) return 'med';
-    return 'high';
-  })();
-
-  const decisionTileConfidenceLabelShort = (() => {
-    if (decisionTileConfidenceBand === 'high') return 'High';
-    if (decisionTileConfidenceBand === 'med') return 'Med';
-    if (decisionTileConfidenceBand === 'low') return 'Low';
-    return 'Pending';
-  })();
+  const decisionScoreExplanation = (reportFromApi as any)?.metadata?.score_explanation as any;
+  const deterministicScoreInputsV1 = (reportFromApi as any)?.metadata?.deterministic_score_inputs_v1 as any;
 
   const bandToBadgeClasses = (band: 'high' | 'med' | 'low' | 'unknown') => {
     if (band === 'high') return darkMode ? 'bg-emerald-500/10 text-emerald-200 border-emerald-500/20' : 'bg-emerald-50 text-emerald-700 border-emerald-200';
@@ -1381,19 +1361,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     if (band === 'low') return darkMode ? 'bg-red-500/10 text-red-200 border-red-500/20' : 'bg-red-50 text-red-700 border-red-200';
     return darkMode ? 'bg-white/5 text-gray-200 border-white/10' : 'bg-gray-50 text-gray-700 border-gray-200';
   };
-
-  const decisionTileRationale = (() => {
-    if (decisionTileLabel === '—' || decisionTileScore0_100 == null) {
-      return 'Recommendation pending. Score will appear once sufficient information is available.';
-    }
-
-    const strengthA = decisionTileStrengths[0] ?? 'a credible product narrative';
-    const strengthB = decisionTileStrengths[1] ?? 'an experienced team';
-    const openA = decisionTileOpenItems[0] ?? 'key diligence inputs';
-    const openB = decisionTileOpenItems[1] ?? 'a forward execution plan';
-
-    return `Recommendation: ${decisionTileLabel} (${decisionTileScore0_100}/100). The materials support ${strengthA} and ${strengthB}; however, conviction is constrained by ${openA} and ${openB}.`;
-  })();
 
   type DecisionRadarDatum = {
     key: 'market' | 'team' | 'documents' | 'financial_health' | 'risk_assessment';
@@ -1406,7 +1373,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     reason: string | null;
   };
 
-  const decisionScoreExplanation = (reportFromApi as any)?.metadata?.score_explanation as any;
+  // decisionScoreExplanation is defined above (used for IC memo + radar).
 
   const bandToIndicatorScore0_100 = (band: 'high' | 'med' | 'low' | 'unknown'): number => {
     if (band === 'high') return 80;
@@ -1854,6 +1821,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     : null;
   const canonicalDealSummaryReady = canonicalDealSummaryV1 && typeof canonicalDealSummaryV1 === 'object' && (canonicalDealSummaryV1 as any).ready === true;
 
+  const canonicalTiers = canonicalDealSummaryReady && (canonicalDealSummaryV1 as any)?.tiers && typeof (canonicalDealSummaryV1 as any).tiers === 'object'
+    ? (canonicalDealSummaryV1 as any).tiers
+    : null;
+
+  const canonicalTierHero = canonicalDealSummaryReady ? safeText((canonicalTiers as any)?.hero) : '';
+  const canonicalTierOverview = canonicalDealSummaryReady ? safeText((canonicalTiers as any)?.overview) : '';
+  const canonicalTierDeep = canonicalDealSummaryReady ? safeText((canonicalTiers as any)?.deep) : '';
+
   const canonicalDealOneLiner = canonicalDealSummaryReady ? safeText((canonicalDealSummaryV1 as any)?.one_liner?.text) : '';
   const canonicalProduct = canonicalDealSummaryReady ? safeText((canonicalDealSummaryV1 as any)?.product?.text) : '';
   const canonicalMarket = canonicalDealSummaryReady ? safeText((canonicalDealSummaryV1 as any)?.market?.text) : '';
@@ -1873,6 +1848,272 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           : [],
       }
     : null;
+
+  const buildIcMemoOverviewV1 = (): {
+    snapshot: string;
+    supportsProceeding: string[];
+    diligenceItems: string[];
+    scoreRationale: string;
+  } => {
+    const safeNonEmpty = (v: unknown): string | null => {
+      if (typeof v !== 'string') return null;
+      const s = v.trim();
+      if (!s || s === '—') return null;
+      return s;
+    };
+    const uniq = (xs: Array<string | null | undefined>): string[] => {
+      const out: string[] = [];
+      const seen = new Set<string>();
+      for (const x of xs) {
+        const s = typeof x === 'string' ? x.trim() : '';
+        if (!s) continue;
+        const k = s.toLowerCase();
+        if (seen.has(k)) continue;
+        seen.add(k);
+        out.push(s);
+      }
+      return out;
+    };
+    const isGenericReason = (reason: string): boolean => {
+      const r = reason.trim().toLowerCase();
+      if (!r) return true;
+      if (r.includes('neutral baseline')) return true;
+      if (r.includes('missing analyzer')) return true;
+      if (r.includes('insufficient')) return true;
+      if (r.includes('failed')) return true;
+      if (r === 'analyzer score used') return true;
+      if (r === 'neutral baseline used') return true;
+      return false;
+    };
+
+    const product = safeNonEmpty(canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : overviewProduct);
+    const market = safeNonEmpty(canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : overviewMarketIcp);
+    const businessModel = safeNonEmpty(overviewBusinessModel);
+    const raise = safeNonEmpty(overviewRaiseTerms);
+
+    const kpis: any[] = deterministicScoreInputsV1 && Array.isArray(deterministicScoreInputsV1.kpis)
+      ? deterministicScoreInputsV1.kpis
+      : [];
+
+    const kpiByKey = new Map<string, any>(kpis
+      .filter((k) => k && typeof k === 'object' && typeof k.key === 'string')
+      .map((k) => [k.key, k]));
+
+    const kpiLine = (key: 'revenue' | 'customers' | 'growth'): string | null => {
+      const k = kpiByKey.get(key);
+      if (!k) return null;
+      const valueRaw = safeNonEmpty(k.value_raw);
+      const conf = typeof k.confidence === 'number' && Number.isFinite(k.confidence) ? k.confidence : 0;
+      const sources = Array.isArray(k.sources) ? k.sources : [];
+      if (!valueRaw) return null;
+      if (!(conf >= 0.55) || sources.length === 0) return null;
+      if (key === 'revenue') return `Revenue KPI extracted: ${valueRaw}.`;
+      if (key === 'customers') return `Customer KPI extracted: ${valueRaw}.`;
+      return `Growth KPI extracted: ${valueRaw}.`;
+    };
+
+    const snapshotSentences: string[] = [];
+    if (product && market) snapshotSentences.push(`Company sells ${product} and targets ${market}.`);
+    else if (product) snapshotSentences.push(`Company sells ${product}.`);
+    else if (market) snapshotSentences.push(`Target market / ICP: ${market}.`);
+
+    if (businessModel) snapshotSentences.push(`Business model: ${businessModel}.`);
+    if (raise) snapshotSentences.push(`Raise / terms: ${raise}.`);
+
+    // Add factual financial snippets only when they’re actually extracted + sourced.
+    const kpiSentences = uniq([
+      kpiLine('revenue'),
+      kpiLine('growth'),
+      kpiLine('customers'),
+    ]);
+    snapshotSentences.push(...kpiSentences);
+
+    const snapshot = snapshotSentences
+      .filter((s) => s.length > 0)
+      .slice(0, 4)
+      .join(' ');
+
+    // What supports proceeding: evidence-backed bullets only.
+    const supports: string[] = [];
+    if (product) supports.push(`Product is explicitly described: ${product}.`);
+    if (market) supports.push(`Target market / ICP is explicitly described: ${market}.`);
+    if (businessModel) supports.push(`Business model is stated: ${businessModel}.`);
+    if (raise) supports.push(`Raise / terms are stated: ${raise}.`);
+
+    // Prefer diagnostics-backed “strength reasons” when they’re non-generic.
+    const compsObj = decisionScoreExplanation?.components && typeof decisionScoreExplanation.components === 'object'
+      ? decisionScoreExplanation.components
+      : null;
+    const pushReason = (key: string) => {
+      const r = safeNonEmpty(compsObj?.[key]?.reason);
+      if (!r || isGenericReason(r)) return;
+      supports.push(r);
+    };
+    if (compsObj) {
+      pushReason('financial_health');
+      pushReason('risk_assessment');
+    }
+
+    // Key risks / diligence items: combine coverage gaps + diagnostics + deterministic-score inputs.
+    const diligence: string[] = [];
+    const understanding = decisionScoreExplanation?.understanding_v1;
+    const understandingItems: string[] = Array.isArray(understanding?.diligence_open_items)
+      ? understanding.diligence_open_items
+          .map((i: any) => safeNonEmpty(i?.text))
+          .filter((v: any): v is string => typeof v === 'string' && v.trim().length > 0)
+      : [];
+    diligence.push(...understandingItems);
+
+    // Coverage chips are already deterministic “missing inputs” signals.
+    diligence.push(
+      ...missingChips
+        .map(formatOpenItemLabel)
+        .filter((v): v is string => typeof v === 'string' && v.trim().length > 0),
+    );
+
+    // Deterministic-score inputs: deck drift and override ratio become explicit diligence items.
+    const drift = safeNonEmpty(deterministicScoreInputsV1?.deck?.drift_assessment);
+    if (drift && drift !== 'aligned' && drift !== 'mostly_aligned') {
+      diligence.push(`Deck/story drift flagged as '${drift}': confirm core investor questions are explicitly covered (problem, solution, market, traction, team, financials).`);
+    }
+    const overrideRatio = typeof deterministicScoreInputsV1?.segments?.override_ratio === 'number' && Number.isFinite(deterministicScoreInputsV1.segments.override_ratio)
+      ? deterministicScoreInputsV1.segments.override_ratio
+      : null;
+    if (overrideRatio != null && overrideRatio >= 0.2) {
+      diligence.push(`Extraction required many segment overrides (${Math.round(overrideRatio * 100)}%): confirm key numbers directly from primary financial tables.`);
+    }
+
+    // KPI confidence-driven diligence.
+    const kpiNeedsConfirm = (key: 'revenue' | 'customers' | 'growth', label: string) => {
+      const k = kpiByKey.get(key);
+      const conf = typeof k?.confidence === 'number' && Number.isFinite(k.confidence) ? k.confidence : 0;
+      const valueRaw = safeNonEmpty(k?.value_raw);
+      const hasSources = Array.isArray(k?.sources) && k.sources.length > 0;
+      if (!valueRaw || !hasSources || conf < 0.55) {
+        diligence.push(`Confirm ${label} from multi-year financial tables (and document basis: cash vs accrual).`);
+      }
+    };
+    kpiNeedsConfirm('revenue', 'revenue');
+    kpiNeedsConfirm('growth', 'growth');
+
+    const adjustment = typeof decisionScoreExplanation?.totals?.adjustment_factor === 'number' && Number.isFinite(decisionScoreExplanation.totals.adjustment_factor)
+      ? decisionScoreExplanation.totals.adjustment_factor
+      : null;
+    const pinned = Boolean(decisionScoreExplanation?.totals?.unadjusted_pinned);
+    if (pinned) {
+      const missing = Array.isArray(decisionScoreExplanation?.totals?.unadjusted_missing_inputs)
+        ? decisionScoreExplanation.totals.unadjusted_missing_inputs
+        : [];
+      if (missing.length > 0) {
+        diligence.push(`Score pinned to baseline (50) until missing inputs are filled: ${missing.slice(0, 6).join('; ')}.`);
+      }
+    } else if (adjustment != null && adjustment < 0.4) {
+      diligence.push('Evidence coverage is limited, so the score is blended toward neutral; add benchmarkable KPIs and runway inputs to increase conviction.');
+    }
+
+    const warningStrings: string[] = Array.isArray(decisionScoreExplanation?.totals?.warnings)
+      ? decisionScoreExplanation.totals.warnings
+          .map((w: any) => safeNonEmpty(w))
+          .filter((v: any): v is string => typeof v === 'string' && v.trim().length > 0)
+      : [];
+    for (const w of warningStrings.slice(0, 6)) {
+      diligence.push(`Diagnostic warning: ${w}.`);
+    }
+
+    const score0_100 = decisionTileScore0_100;
+    const scoreBand = score0_100 == null ? 'unknown' : score0_100 >= 70 ? 'positive' : score0_100 <= 40 ? 'negative' : 'neutral';
+    const scoreRationale = (() => {
+      if (decisionTileLabel === '—' || score0_100 == null) {
+        return 'Recommendation pending: score will appear once sufficient information is available.';
+      }
+
+      const totals = decisionScoreExplanation?.totals;
+      const coverageRatio = typeof totals?.coverage_ratio === 'number' && Number.isFinite(totals.coverage_ratio) ? totals.coverage_ratio : null;
+      const dueDiligenceFactor = typeof totals?.due_diligence_factor === 'number' && Number.isFinite(totals.due_diligence_factor) ? totals.due_diligence_factor : null;
+
+      const driverReasons = (() => {
+        if (!compsObj) return [] as string[];
+        return uniq([
+          safeNonEmpty(compsObj?.financial_health?.reason),
+          safeNonEmpty(compsObj?.risk_assessment?.reason),
+        ]).filter((r) => !isGenericReason(r));
+      })();
+      const driverSentence = driverReasons.length > 0
+        ? `Key drivers: ${driverReasons.slice(0, 2).join(' ')}.`
+        : null;
+
+      if (pinned) {
+        return uniq([
+          `Score rationale: ${decisionTileLabel} (${score0_100}/100). The system held the score at the neutral baseline (50) because score-bearing evidence was not usable; fill the open items to move off baseline.`,
+          driverSentence,
+        ]).join(' ');
+      }
+      if (scoreBand === 'neutral') {
+        const parts = [`Score rationale: ${decisionTileLabel} (${score0_100}/100).`];
+        parts.push('The score is near-neutral because evidence/verification coverage is limited and the system blends toward baseline rather than over-weighting sparse signals.');
+        if (coverageRatio != null) parts.push(`Coverage ratio=${coverageRatio.toFixed(2)}.`);
+        if (dueDiligenceFactor != null) parts.push(`Due diligence readiness=${dueDiligenceFactor.toFixed(2)}.`);
+        if (driverSentence) parts.push(driverSentence);
+        return parts.join(' ');
+      }
+
+      return uniq([
+        `Score rationale: ${decisionTileLabel} (${score0_100}/100). The score reflects the available extracted fundamentals and risk signals; review the diligence items for what would change conviction.`,
+        driverSentence,
+      ]).join(' ');
+    })();
+
+    return {
+      snapshot: snapshot || 'Company snapshot is pending: structured facts were not extracted from the materials.',
+      supportsProceeding: uniq(supports).slice(0, 6),
+      diligenceItems: uniq(diligence).slice(0, 12),
+      scoreRationale,
+    };
+  };
+
+  const icMemo = buildIcMemoOverviewV1();
+
+  const decisionTileOpenItemsAll = icMemo.diligenceItems.filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
+  const decisionTileOpenItems = decisionTileOpenItemsAll.slice(0, 2);
+  const decisionTileOpenItemsCount = decisionTileOpenItemsAll.length;
+
+  const decisionTileStrengths = icMemo.supportsProceeding.length > 0
+    ? icMemo.supportsProceeding
+    : decisionTileStrengthsFallback;
+
+  const decisionTileConfidenceBand: 'high' | 'med' | 'low' | 'unknown' = (() => {
+    const fromOverall = toBand(phase1ConfidenceRaw);
+    if (fromOverall !== 'unknown') return fromOverall;
+    const bands = [
+      getBandForCategory('Product'),
+      getBandForCategory('Market/ICP'),
+      getBandForCategory('Team'),
+      getBandForCategory('Risks'),
+    ].filter((b): b is 'high' | 'med' | 'low' => b !== 'unknown');
+    if (bands.length === 0) return 'unknown';
+    if (bands.includes('low')) return 'low';
+    if (bands.includes('med')) return 'med';
+    return 'high';
+  })();
+
+  const decisionTileConfidenceLabelShort = (() => {
+    if (decisionTileConfidenceBand === 'high') return 'High';
+    if (decisionTileConfidenceBand === 'med') return 'Med';
+    if (decisionTileConfidenceBand === 'low') return 'Low';
+    return 'Pending';
+  })();
+
+  const decisionTileRationale = (() => {
+    if (decisionTileLabel === '—' || decisionTileScore0_100 == null) {
+      return 'Recommendation pending. Score will appear once sufficient information is available.';
+    }
+
+    // IC memo style: Company Snapshot + Score rationale (single paragraph).
+    // All claims must map to extracted structured facts or deterministic missing inputs.
+    const snap = icMemo.snapshot;
+    const rationale = icMemo.scoreRationale;
+    return `${snap} ${rationale}`;
+  })();
 
   const EvidenceCoverageSection = (sectionProps: {
     documentsReviewedCount: number;
@@ -2079,7 +2320,29 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return 'Run analysis to generate a deal summary.';
   })();
 
+  const understandingV1 = decisionScoreExplanation?.understanding_v1;
+  const extractUnderstandingTexts = (items: unknown): string[] => {
+    if (!Array.isArray(items)) return [];
+    const out: string[] = [];
+    for (const it of items) {
+      const s =
+        typeof it === 'string'
+          ? safeText(it)
+          : it && typeof it === 'object'
+            ? safeText((it as any).text)
+            : null;
+      if (!s) continue;
+      out.push(s);
+    }
+    return out;
+  };
+
   const topSectionStrengths = (() => {
+    const understandingStrengths = extractUnderstandingTexts((understandingV1 as any)?.strengths);
+    if (understandingStrengths.length > 0) {
+      return Array.from(new Set(understandingStrengths.map((x) => x.trim()))).slice(0, 6);
+    }
+
     const v2Strengths = Array.isArray((dealSummaryV2 as any)?.strengths) ? (dealSummaryV2 as any).strengths : [];
     const merged = [...v2Strengths, ...decisionTileStrengths]
       .filter((x: any): x is string => typeof x === 'string' && x.trim().length > 0)
@@ -2088,6 +2351,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   })();
 
   const topSectionWeaknesses = (() => {
+    const understandingDiligence = extractUnderstandingTexts((understandingV1 as any)?.diligence_open_items);
+    const understandingDeps = extractUnderstandingTexts((understandingV1 as any)?.execution_dependencies);
+    const preferred = [...understandingDiligence, ...understandingDeps]
+      .filter((x) => x.trim().length > 0)
+      .map((x) => x.trim());
+    if (preferred.length > 0) {
+      return Array.from(new Set(preferred)).slice(0, 8);
+    }
+
     const v2Risks = Array.isArray((dealSummaryV2 as any)?.risks) ? (dealSummaryV2 as any).risks : [];
     const merged = [...v2Risks, ...decisionMissing]
       .filter((x: any): x is string => typeof x === 'string' && x.trim().length > 0)
@@ -2159,7 +2431,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     })();
 
     const legacySummary = executiveSummaryFromReport ?? topSectionDealSummary;
-    const canonicalTopSummary = canonicalDealSummaryReady ? canonicalDealOneLiner : '';
+    const canonicalTopSummary = canonicalDealSummaryReady ? (canonicalTierHero || canonicalDealOneLiner) : '';
     const showCanonicalTopSummary = Boolean(canonicalTopSummary);
 
     const businessModelSynthesized = safeText(structuredSummary?.business_model_summary?.value);
@@ -2231,6 +2503,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     dealFromApi,
     canonicalDealSummaryReady,
     canonicalDealOneLiner,
+    canonicalTierHero,
     topSectionDealSummary,
     topSectionBusinessModel,
     topSectionDealType,
@@ -2254,9 +2527,21 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const reportStructuredBusinessModelPromoted = safeText((reportFromApi as any)?.structured_summary?.business_model?.value);
   const reportStructuredBusinessModel = reportStructuredBusinessModelSynthesized || reportStructuredBusinessModelPromoted;
   const reportStructuredBusinessModelLabel = reportStructuredBusinessModelSynthesized ? 'Synthesized' : null;
-  const reportStructuredRevenueLabel = safeText((reportFromApi as any)?.structured_summary?.revenue?.label);
-  const reportStructuredCustomersLabel = safeText((reportFromApi as any)?.structured_summary?.customers?.label);
-  const reportStructuredGrowthLabel = safeText((reportFromApi as any)?.structured_summary?.growth?.label);
+
+  const selectedHeader = useMemo(() => {
+    const phase1: any = {
+      raise: overviewV2?.raise_terms ?? (executiveSummaryV1 as any)?.raise,
+      business_model: overviewV2?.business_model ?? (executiveSummaryV1 as any)?.business_model,
+      revenue: overviewV2?.revenue,
+      growth: overviewV2?.growth,
+      customers: overviewV2?.customers,
+    };
+    return selectDealWorkspaceHeader((reportFromApi as any) ?? null, phase1);
+  }, [reportFromApi, overviewV2, executiveSummaryV1]);
+
+  const reportStructuredRevenueLabel = selectedHeader.ready ? (selectedHeader.revenue.label ?? null) : null;
+  const reportStructuredCustomersLabel = selectedHeader.ready ? (selectedHeader.customers.label ?? null) : null;
+  const reportStructuredGrowthLabel = selectedHeader.ready ? (selectedHeader.growth.label ?? null) : null;
 
   const reportStructuredRevenueTooltip = safeText((reportFromApi as any)?.structured_summary?.revenue?.sources?.[0]?.note_snippet);
   const reportStructuredCustomersTooltip = safeText((reportFromApi as any)?.structured_summary?.customers?.sources?.[0]?.note_snippet);
@@ -2282,14 +2567,41 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return null;
   })();
 
-  const overviewDealOneLinerCanonical = canonicalDealSummaryReady && canonicalDealOneLiner ? canonicalDealOneLiner : overviewDealOneLiner;
   const overviewProductCanonical = canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : overviewProduct;
   const overviewMarketIcpCanonical = canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : overviewMarketIcp;
   const overviewBusinessModelCanonical = reportStructuredBusinessModel || (reportView.applied ? reportView.businessModel : overviewBusinessModel);
   const overviewRaiseTermsCanonical = reportStructuredRaise || (reportView.applied ? reportView.raise : overviewRaiseTerms);
-  const overviewDealSummaryParagraphsCanonical: string[] = canonicalDealSummaryReady && canonicalParagraphs.length > 0
-    ? canonicalParagraphs
-    : overviewDealSummaryParagraphs;
+  const splitTierDeepToParagraphs = (raw: string): string[] => {
+    const normalized = String(raw ?? '')
+      .replace(/\r\n/g, '\n')
+      .trim();
+    if (!normalized) return [];
+    return normalized
+      .split(/\n{2,}/g)
+      .map((p) => safeText(p))
+      .filter((p) => p.length > 0)
+      .slice(0, 6);
+  };
+
+  const overviewDealOneLinerCanonical = (() => {
+    if (canonicalDealSummaryReady) {
+      // Prefer the dedicated overview tier (1–2 short paragraphs).
+      if (canonicalTierOverview) return canonicalTierOverview;
+      // Fallback only if the tier is missing.
+      if (canonicalDealOneLiner) return canonicalDealOneLiner;
+    }
+    return overviewDealOneLiner;
+  })();
+
+  const overviewDealSummaryParagraphsCanonical: string[] = (() => {
+    if (canonicalDealSummaryReady) {
+      const fromTier = canonicalTierDeep ? splitTierDeepToParagraphs(canonicalTierDeep) : [];
+      if (fromTier.length > 0) return fromTier;
+      // Fallback only if the deep tier is missing.
+      if (canonicalParagraphs.length > 0) return canonicalParagraphs;
+    }
+    return overviewDealSummaryParagraphs;
+  })();
 
   const dealSummarySourceLabel = canonicalDealSummaryReady ? 'Canonical' : 'Legacy';
 

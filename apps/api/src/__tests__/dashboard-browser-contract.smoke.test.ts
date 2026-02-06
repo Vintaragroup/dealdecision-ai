@@ -34,6 +34,12 @@ test("dashboard browser contract smoke: HTML shell contains load-bearing strings
   assert.ok(html.includes("Archetype ↔ Segment Alignment"));
   assert.ok(html.includes("Override Quality (v1)"));
   assert.ok(html.includes("Score Inputs (v1)"));
+  assert.ok(html.includes("Field Presence Matrix"));
+  assert.ok(html.includes("deterministic-field-presence"));
+  assert.ok(html.includes("Deal Summary Tiers"));
+  assert.ok(html.includes("deterministic-deal-summary-tiers"));
+  assert.ok(html.includes("Score Understanding v1"));
+  assert.ok(html.includes("deterministic-score-understanding-v1"));
   assert.ok(html.includes("function detectDeterministicScoreV1EnvSource"));
   assert.ok(!html.includes("process.env.DETERMINISTIC_SCORE_V1_ENABLED"));
   assert.ok(html.includes("UI Preview (v1)"));
@@ -42,6 +48,8 @@ test("dashboard browser contract smoke: HTML shell contains load-bearing strings
 
   // JS wiring contract (string-based, no DOM parsing)
   assert.ok(html.includes("function loadDeterministic("));
+  assert.ok(html.includes("function renderDeterministicDealSummaryTiersPanel("));
+  assert.ok(html.includes("function renderDeterministicScoreUnderstandingV1Panel("));
   assert.ok(html.includes("function loadNodeInspector("));
   assert.ok(html.includes("function activateTab("));
   assert.ok(html.includes("function setDeterministicDealId("));
@@ -60,6 +68,23 @@ test("dashboard browser contract smoke: deterministic JSON endpoint returns cano
     return {
       ready: true,
       version: 1,
+      deal_summary: {
+        version: "deal_summary_v1",
+        ready: true,
+        reason: null,
+        tiers: {
+          hero: "Golf apparel and accessories brand selling performance and lifestyle products via DTC with wholesale expansion.",
+          overview: "Product: premium golf apparel and gloves. Market: core golfers with wholesale + DTC demand.",
+          deep: "Product details: premium golf apparel and gloves.\n\nMarket / ICP: core golfers; demand supported by participation growth.",
+        },
+        one_liner: null,
+        product: { text: "Premium golf apparel and accessories including gloves.", sources: [] },
+        market_target: { text: "Target market: core golfers; sells via DTC and wholesale.", sources: [] },
+        market_context: { text: "Market context: golf participation is growing.", sources: [] },
+        market: null,
+        paragraphs: [],
+        warnings: [],
+      },
       metadata: {
         deck_archetype: {
           version: "deck_archetype_v1",
@@ -228,6 +253,14 @@ test("dashboard browser contract smoke: deterministic JSON endpoint returns cano
   assert.equal(body.report.metadata.override_quality.assessment, "moderate");
   assert.equal(body.report.metadata.override_quality.total_nodes, 10);
   assert.equal(body.report.metadata.override_quality.overridden_nodes, 2);
+
+  // Field presence matrix must show Palm-like deal_summary tiers as present.
+  assert.ok(Array.isArray(body.field_presence_matrix));
+  const rows = body.field_presence_matrix as Array<{ path: string; status: string; preview: string }>;
+  const find = (p: string) => rows.find((r) => r && r.path === p);
+  assert.equal(find("deal_summary_v1.hero")?.status, "present");
+  assert.equal(find("deal_summary_v1.overview")?.status, "present");
+  assert.equal(find("deal_summary_v1.deep")?.status, "present");
 
   await app.close();
 });

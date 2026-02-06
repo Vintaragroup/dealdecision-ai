@@ -155,6 +155,7 @@ import { apiGetDealDeterministicUnderstanding, apiGetDealVisualAssets, apiPostDe
 describe('DealAnalystTab deterministic understanding', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.history.replaceState({}, '', '/?debug=1');
   });
 
   test('shows Compute button on missing patch and renders page type after compute', async () => {

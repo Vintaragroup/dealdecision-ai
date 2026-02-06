@@ -642,6 +642,8 @@ export type PageUnderstandingReadinessDocument = {
   page_count: number;
   dpu_rows: number;
   missing_pages: number[];
+  dpu_rows_meaningful?: number;
+  non_meaningful_pages?: number[];
 };
 
 export type PageUnderstandingReadiness = {
@@ -650,9 +652,13 @@ export type PageUnderstandingReadiness = {
   documents: PageUnderstandingReadinessDocument[];
   expected_pages_total: number;
   dpu_rows_total: number;
+  dpu_rows_meaningful_total?: number;
+  non_meaningful_pages_total?: number;
   missing_pages_total: number;
   ready: boolean;
   blocked_reason?: string | null;
+  poll_after_ms?: number | null;
+  action?: { type: string; deal_id?: string; document_id?: string; version?: string } | null;
 };
 
 export function apiGetDealReadiness(dealId: string, version: string) {
@@ -722,7 +728,7 @@ export function apiPostVerifyDealDocuments(dealId: string, input?: { document_id
   );
 }
 
-export function apiGetJob(jobId: string) {
+export function apiGetJob(jobId: string, opts?: { signal?: AbortSignal }) {
   return request<{
     job_id: string;
     type?: string;
@@ -733,7 +739,9 @@ export function apiGetJob(jobId: string) {
     created_at?: string;
     started_at?: string | null;
     status_detail?: JobStatusDetail | null;
-  }>(`/api/v1/jobs/${jobId}`);
+  }>(`/api/v1/jobs/${jobId}`, {
+    signal: opts?.signal,
+  });
 }
 
 export type DealJobRowV2 = {

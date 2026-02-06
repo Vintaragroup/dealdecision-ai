@@ -167,7 +167,9 @@ describe('DealWorkspace Job Center (live mode)', () => {
       expect(screen.getByTestId('analysis-output-panel')).toBeInTheDocument();
     });
     expect(within(screen.getByTestId('analysis-output-panel')).getByText(/Analysis complete/i)).toBeInTheDocument();
-    expect(within(screen.getByTestId('analysis-output-panel')).getByText(/Pinned \(coverage_too_low\)/i)).toBeInTheDocument();
+    // Default (non-debug) view is intentionally simplified when report.ready=true.
+    expect(within(screen.getByTestId('analysis-output-panel')).getByText(/Structured summary/i)).toBeInTheDocument();
+    expect(within(screen.getByTestId('analysis-output-panel')).queryByText(/Pinned \(coverage_too_low\)/i)).toBeNull();
   });
 
   test('binds top summary tiles to ready report payload (score + executive summary + stage + structured tiles)', async () => {
@@ -909,7 +911,10 @@ describe('DealWorkspace Job Center (live mode)', () => {
     await userEvent.click(headerRunButton);
 
     await waitFor(() => {
-      expect(apiGetJob).toHaveBeenCalledWith('job-analyze-1');
+      expect(apiGetJob).toHaveBeenCalledWith(
+        'job-analyze-1',
+        expect.objectContaining({ signal: expect.any(Object) })
+      );
       const feed = screen.getByTestId('analysis-progress-feed');
       expect(feed).toBeInTheDocument();
       expect(within(feed).getAllByText(/10%/i).length).toBeGreaterThan(0);

@@ -102,6 +102,19 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const { scoreSource, setScoreSource } = useScoreSource();
   const dealDataExt = dealData as DealFormDataExtras | null | undefined;
   const [activeTab, setActiveTab] = useState('overview');
+
+  const workspaceDebugEnabled = useMemo(() => {
+    try {
+      if (typeof window === 'undefined') return false;
+      const qs = new URLSearchParams(window.location.search);
+      if (qs.get('debug') === '1') return true;
+      const raw = window.localStorage.getItem('ddai:debugDealWorkspace');
+      return raw === '1' || raw === 'true';
+    } catch {
+      return false;
+    }
+  }, []);
+
   const [investorScore, setInvestorScore] = useState(0);
   const [analyzing, setAnalyzing] = useState(false);
   const [toasts, setToasts] = useState<Array<{ id: string; type: ToastType; title: string; message?: string }>>([]);
@@ -128,6 +141,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [jobProgressSnapshot, setJobProgressSnapshot] = useState<JobProgressEventV1 | null>(null);
   const [jobType, setJobType] = useState<string | null>(null);
   const [jobQueuedSeconds, setJobQueuedSeconds] = useState<number>(0);
+  const [jobPollConnection, setJobPollConnection] = useState<{
+    status: 'connected' | 'disconnected';
+    consecutiveFailures: number;
+    lastError: string | null;
+  }>({ status: 'connected', consecutiveFailures: 0, lastError: null });
+  const [jobPollNonce, setJobPollNonce] = useState(0);
   const [dealJobs, setDealJobs] = useState<DealJobRowV2[]>([]);
   const [dealJobsError, setDealJobsError] = useState<string | null>(null);
   type FullProcessStepKey = 'reextract_documents' | 'extract_visuals' | 'analyze_deal';
@@ -2367,6 +2386,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     let cancelled = false;
     let pollTimer: number | undefined;
     let consecutiveErrors = 0;
+    let controller: AbortController | null = null;
+
+    // New job => reset connection indicator.
+    setJobPollConnection({ status: 'connected', consecutiveFailures: 0, lastError: null });
 
     const jobsLogEnabled = (() => {
       if (!import.meta.env.DEV) return false;
@@ -2391,6 +2414,23 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       }
     };
 
+    const abortInFlight = () => {
+      if (!controller) return;
+      try {
+        controller.abort();
+      } catch {
+        // ignore
+      }
+      controller = null;
+    };
+
+    const backoffMsForFailures = (failures: number): number => {
+      if (failures <= 1) return 2000;
+      if (failures === 2) return 5000;
+      if (failures === 3) return 10000;
+      return 30000;
+    };
+
     const schedulePoll = (ms: number) => {
       clearPollTimer();
       pollTimer = window.setTimeout(() => {
@@ -2402,9 +2442,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       if (cancelled) return;
       try {
         jobsLog('poll:getJob:start', { jobId: activeJobId, sseReady });
-        const job = await apiGetJob(activeJobId);
+        abortInFlight();
+        controller = new AbortController();
+        const job = await apiGetJob(activeJobId, { signal: controller.signal });
         if (cancelled) return;
         consecutiveErrors = 0;
+
+        setJobPollConnection({ status: 'connected', consecutiveFailures: 0, lastError: null });
 
         jobsLog('poll:getJob:result', {
           job_id: job.job_id,
@@ -2538,16 +2582,29 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         }
       } catch (err) {
         if (cancelled) return;
+        const aborted =
+          (err instanceof DOMException && err.name === 'AbortError') ||
+          (err instanceof Error && String(err.name).toLowerCase() === 'aborterror');
+        if (aborted) return;
+
         consecutiveErrors += 1;
-        clearPollTimer();
-        setAnalyzing(false);
         const message = err instanceof Error ? err.message : 'Unknown error';
-        setJobStatus('failed');
-        setJobMessage(message);
-        setJobUpdatedAt(new Date().toISOString());
-        addToastOnce(`job-poll-failed:${activeJobId}`, 'error', 'Job polling failed', message);
-        // Stop further polling to avoid noisy loops; user can re-run the job to restart tracking.
-        cancelled = true;
+        setJobPollConnection({ status: 'connected', consecutiveFailures: consecutiveErrors, lastError: message });
+
+        // Keep the existing job status/message; just surface connection trouble and retry.
+        if (consecutiveErrors === 1) {
+          addToastOnce(`job-poll-flaky:${activeJobId}`, 'warning', 'Connection issue', 'Retrying job polling…');
+        }
+
+        if (consecutiveErrors >= 10) {
+          clearPollTimer();
+          setJobPollConnection({ status: 'disconnected', consecutiveFailures: consecutiveErrors, lastError: message });
+          addToastOnce(`job-poll-disconnected:${activeJobId}`, 'error', 'Disconnected', 'Job polling failed repeatedly. Click Retry polling.');
+          return;
+        }
+
+        const delay = backoffMsForFailures(consecutiveErrors);
+        schedulePoll(Math.max(delay, sseReady ? 10000 : 0));
       }
     };
 
@@ -2555,8 +2612,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return () => {
       cancelled = true;
       clearPollTimer();
+      abortInFlight();
     };
-  }, [activeJobId, sseReady]);
+  }, [activeJobId, jobPollNonce, sseReady]);
 
   useEffect(() => {
     if (!dealId) {
@@ -3136,11 +3194,18 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         return { job_id: String((res.json as any).job_id), status: String((res.json as any).status ?? 'queued') };
       }
 
-      if (res.status === 409 && res.json && (res.json as any).error === 'page_understanding_not_ready') {
+      // Intermediate state: backend is preparing documents (202) or returns not-ready (409 legacy).
+      const notReadyError = res.json && typeof (res.json as any).error === 'string' ? String((res.json as any).error) : null;
+      if ((res.status === 202 || res.status === 409) && notReadyError === 'page_understanding_not_ready') {
         const readiness = (res.json as any).readiness as PageUnderstandingReadiness | undefined;
         const missingTotal = typeof readiness?.missing_pages_total === 'number' ? readiness.missing_pages_total : null;
-        logDev('preflight_not_ready', { missing_pages_total: missingTotal, version });
-        addToast('info', 'Preparing documents…', typeof missingTotal === 'number' ? `Missing ${missingTotal} page(s)` : 'Waiting for page understanding');
+        const blockedReason = res.json && typeof (res.json as any).blocked_reason === 'string' ? String((res.json as any).blocked_reason) : null;
+        logDev('preflight_not_ready', { missing_pages_total: missingTotal, version, blocked_reason: blockedReason });
+        addToast(
+          'info',
+          'Preparing documents…',
+          blockedReason ? `${blockedReason}${typeof missingTotal === 'number' ? ` • Missing ${missingTotal} page(s)` : ''}` : typeof missingTotal === 'number' ? `Missing ${missingTotal} page(s)` : 'Waiting for page understanding'
+        );
         setPageUnderstandingGate({
           status: 'preparing',
           version,
@@ -3150,6 +3215,32 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           error: null,
         });
         lastReady = typeof readiness?.ready === 'boolean' ? readiness.ready : null;
+        return null;
+      }
+
+      // Treat 409 as a normal intermediate state when the backend indicates analysis is already running.
+      // Prefer returning an existing job_id if provided.
+      if (res.status === 409) {
+        const existingJobId = res.json && typeof (res.json as any).job_id === 'string' ? String((res.json as any).job_id) : null;
+        const existingStatus = res.json && typeof (res.json as any).status === 'string' ? String((res.json as any).status) : 'running';
+        if (existingJobId) {
+          addToast('info', 'Analysis already running', `Tracking job ${existingJobId}`);
+          return { job_id: existingJobId, status: existingStatus };
+        }
+
+        try {
+          const rows = await apiGetDealJobs(dealId, { limit: 200 });
+          const arr = Array.isArray(rows) ? (rows as DealJobRowV2[]) : [];
+          const best = selectBestAnalyzeJob(arr, null);
+          if (best?.job_id) {
+            addToast('info', 'Analysis already running', `Tracking job ${best.job_id}`);
+            return { job_id: best.job_id, status: String(best.status ?? 'running') };
+          }
+        } catch {
+          // ignore
+        }
+
+        addToast('info', 'Analysis already running', 'Backend returned 409 (no job id).');
         return null;
       }
 
@@ -4728,7 +4819,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
         {/* Tabs Section */}
 
-        {debugApiIsEnabled() && (
+        {workspaceDebugEnabled && debugApiIsEnabled() && (
           <details
             className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
               darkMode
@@ -4823,6 +4914,30 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                           Track analyze jobs and backend progress. Polling runs while a job is active.
                         </p>
+                        {jobPollConnection.status === 'disconnected' ? (
+                          <div
+                            className={`mt-2 rounded-lg border px-3 py-2 text-xs flex items-center justify-between gap-3 ${
+                              darkMode
+                                ? 'bg-red-500/10 border-red-500/30 text-red-200'
+                                : 'bg-red-50 border-red-200 text-red-800'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <div className="font-medium">Disconnected</div>
+                              <div className="opacity-90 truncate">{jobPollConnection.lastError || 'Polling failed repeatedly.'}</div>
+                            </div>
+                            <Button
+                              size="sm"
+                              variant={darkMode ? 'secondary' : 'outline'}
+                              onClick={() => {
+                                setJobPollConnection({ status: 'connected', consecutiveFailures: 0, lastError: null });
+                                setJobPollNonce((v) => v + 1);
+                              }}
+                            >
+                              Retry polling
+                            </Button>
+                          </div>
+                        ) : null}
                         {reportMissing && (
                           <p className="text-xs text-amber-600 mt-1">Report not generated yet. Run analysis to create it.</p>
                         )}
@@ -5041,186 +5156,223 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                             </div>
                           </div>
 
-                          <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                            <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Findings / insights</div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              {(() => {
-                                const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
-                                  ? (reportFromApi as any).metadata
-                                  : null;
+                          {workspaceDebugEnabled ? (
+                            <>
+                              <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
+                                <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Findings / insights</div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {(() => {
+                                    const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
+                                      ? (reportFromApi as any).metadata
+                                      : null;
 
-                                const decisionLabel = safeText((reportMeta as any)?.decision_v1?.label);
-                                const legacyRecommendation = safeText((reportMeta as any)?.legacy_recommendation_v0);
-                                const legacyGrade = safeText((reportMeta as any)?.legacy_grade_v0);
-                                const showLegacy = Boolean(legacyRecommendation || legacyGrade);
+                                    const decisionLabel = safeText((reportMeta as any)?.decision_v1?.label);
+                                    const legacyRecommendation = safeText((reportMeta as any)?.legacy_recommendation_v0);
+                                    const legacyGrade = safeText((reportMeta as any)?.legacy_grade_v0);
+                                    const showLegacy = Boolean(legacyRecommendation || legacyGrade);
 
-                                return (
-                                  <>
-                                    {decisionLabel ? (
-                                      <span
-                                        className={`px-2 py-1 rounded-full text-xs border ${
-                                          darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
-                                        }`}
-                                      >
-                                        Decision: {decisionLabel}
-                                      </span>
-                                    ) : null}
+                                    return (
+                                      <>
+                                        {decisionLabel ? (
+                                          <span
+                                            className={`px-2 py-1 rounded-full text-xs border ${
+                                              darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
+                                            }`}
+                                          >
+                                            Decision: {decisionLabel}
+                                          </span>
+                                        ) : null}
 
-                                    {typeof (reportFromApi as any)?.recommendation === 'string' ? (
-                                      <span
-                                        className={`px-2 py-1 rounded-full text-xs border ${
-                                          darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
-                                        }`}
-                                      >
-                                        Recommendation: {(reportFromApi as any).recommendation}
-                                      </span>
-                                    ) : null}
+                                        {typeof (reportFromApi as any)?.recommendation === 'string' ? (
+                                          <span
+                                            className={`px-2 py-1 rounded-full text-xs border ${
+                                              darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
+                                            }`}
+                                          >
+                                            Recommendation: {(reportFromApi as any).recommendation}
+                                          </span>
+                                        ) : null}
 
-                                    {showLegacy ? (
-                                      <details className="px-2 py-1">
-                                        <summary className={`cursor-pointer select-none text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                          Legacy
-                                        </summary>
-                                        <div className={`mt-2 flex flex-wrap items-center gap-2 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                                          {legacyRecommendation ? (
-                                            <span
-                                              className={`px-2 py-1 rounded-full text-xs border ${
-                                                darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
-                                              }`}
-                                            >
-                                              Legacy recommendation: {legacyRecommendation}
-                                            </span>
-                                          ) : null}
-                                          {legacyGrade ? (
-                                            <span
-                                              className={`px-2 py-1 rounded-full text-xs border ${
-                                                darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
-                                              }`}
-                                            >
-                                              Legacy grade: {legacyGrade}
-                                            </span>
-                                          ) : null}
-                                        </div>
-                                      </details>
-                                    ) : null}
-                                  </>
-                                );
-                              })()}
-                              {typeof (reportFromApi as any)?.grade === 'string' ? (
-                                <span
-                                  className={`px-2 py-1 rounded-full text-xs border ${
-                                    darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
-                                  }`}
-                                >
-                                  Grade: {(reportFromApi as any).grade}
-                                </span>
-                              ) : null}
-                              {typeof (reportFromApi as any)?.overallScore === 'number' ? (
-                                <span
-                                  className={`px-2 py-1 rounded-full text-xs border ${
-                                    darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
-                                  }`}
-                                >
-                                  Score: {Math.round((reportFromApi as any).overallScore)}
-                                </span>
-                              ) : null}
-
-                              {(() => {
-                                const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
-                                  ? (reportFromApi as any).metadata
-                                  : null;
-                                const baseline = reportMeta && typeof reportMeta === 'object'
-                                  ? (reportMeta as any)?.deterministic_score_preview_v1?.baseline
-                                  : null;
-                                const pinned = Boolean(baseline && typeof baseline === 'object' && (baseline as any).unadjusted_pinned === true);
-                                if (!pinned) return null;
-                                const reasonRaw = (baseline && typeof baseline === 'object' && typeof (baseline as any).unadjusted_pin_reason === 'string')
-                                  ? String((baseline as any).unadjusted_pin_reason).trim()
-                                  : '';
-                                const reason = reasonRaw.length > 0 ? reasonRaw : null;
-                                const label = (() => {
-                                  if (!reason) return null;
-                                  if (reason === 'low_coverage') return 'coverage_too_low';
-                                  if (reason === 'low_confidence') return 'confidence_too_low';
-                                  return reason;
-                                })();
-
-                                return (
-                                  <span className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                    {label ? `Pinned (${label})` : 'Pinned'}
-                                  </span>
-                                );
-                              })()}
-                            </div>
-
-                            {Array.isArray((reportFromApi as any)?.greenFlags) && (reportFromApi as any).greenFlags.length > 0 ? (
-                              <ul className={`mt-3 list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                                {(reportFromApi as any).greenFlags.slice(0, 8).map((g: any, idx: number) => (
-                                  <li key={`green-${idx}`}>{String(g)}</li>
-                                ))}
-                              </ul>
-                            ) : (
-                              <div className={`mt-3 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No highlights available yet.</div>
-                            )}
-
-                            {Array.isArray((reportFromApi as any)?.sections) && (reportFromApi as any).sections.length > 0 ? (
-                              <div className="mt-4 space-y-3">
-                                {(reportFromApi as any).sections.slice(0, 8).map((s: any) => {
-                                  const sectionTitle =
-                                    typeof s?.title === 'string' && s.title.trim().length > 0 ? s.title.trim() : 'Section';
-                                  const content = typeof s?.content === 'string' ? s.content : '';
-                                  const evidenceIds = Array.isArray(s?.evidence_ids) ? s.evidence_ids : [];
-                                  return (
-                                    <div
-                                      key={String(s?.id ?? sectionTitle)}
-                                      className={`rounded-lg border p-3 ${
-                                        darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'
+                                        {showLegacy ? (
+                                          <details className="px-2 py-1">
+                                            <summary className={`cursor-pointer select-none text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                              Legacy
+                                            </summary>
+                                            <div className={`mt-2 flex flex-wrap items-center gap-2 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                              {legacyRecommendation ? (
+                                                <span
+                                                  className={`px-2 py-1 rounded-full text-xs border ${
+                                                    darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
+                                                  }`}
+                                                >
+                                                  Legacy recommendation: {legacyRecommendation}
+                                                </span>
+                                              ) : null}
+                                              {legacyGrade ? (
+                                                <span
+                                                  className={`px-2 py-1 rounded-full text-xs border ${
+                                                    darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
+                                                  }`}
+                                                >
+                                                  Legacy grade: {legacyGrade}
+                                                </span>
+                                              ) : null}
+                                            </div>
+                                          </details>
+                                        ) : null}
+                                      </>
+                                    );
+                                  })()}
+                                  {typeof (reportFromApi as any)?.grade === 'string' ? (
+                                    <span
+                                      className={`px-2 py-1 rounded-full text-xs border ${
+                                        darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
                                       }`}
                                     >
-                                      <div className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>{sectionTitle}</div>
-                                      {content ? (
-                                        <div className={`mt-1 text-sm whitespace-pre-wrap ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{content}</div>
-                                      ) : (
-                                        <div className={`mt-1 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No content.</div>
-                                      )}
-                                      {Array.isArray(evidenceIds) && evidenceIds.length > 0 ? (
-                                        <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                          Evidence IDs: {evidenceIds.slice(0, 6).join(', ')}{evidenceIds.length > 6 ? '…' : ''}
-                                        </div>
-                                      ) : null}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            ) : null}
-                          </div>
+                                      Grade: {(reportFromApi as any).grade}
+                                    </span>
+                                  ) : null}
+                                  {typeof (reportFromApi as any)?.overallScore === 'number' ? (
+                                    <span
+                                      className={`px-2 py-1 rounded-full text-xs border ${
+                                        darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
+                                      }`}
+                                    >
+                                      Score: {Math.round((reportFromApi as any).overallScore)}
+                                    </span>
+                                  ) : null}
 
-                          <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                            <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Evidence / signals</div>
-                            <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                              {reportEvidenceIds.length > 0
-                                ? `${reportEvidenceIds.length} evidence id(s) referenced`
-                                : 'No evidence IDs referenced in report sections.'}
+                                  {(() => {
+                                    const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
+                                      ? (reportFromApi as any).metadata
+                                      : null;
+                                    const baseline = reportMeta && typeof reportMeta === 'object'
+                                      ? (reportMeta as any)?.deterministic_score_preview_v1?.baseline
+                                      : null;
+                                    const pinned = Boolean(baseline && typeof baseline === 'object' && (baseline as any).unadjusted_pinned === true);
+                                    if (!pinned) return null;
+                                    const reasonRaw = (baseline && typeof baseline === 'object' && typeof (baseline as any).unadjusted_pin_reason === 'string')
+                                      ? String((baseline as any).unadjusted_pin_reason).trim()
+                                      : '';
+                                    const reason = reasonRaw.length > 0 ? reasonRaw : null;
+                                    const label = (() => {
+                                      if (!reason) return null;
+                                      if (reason === 'low_coverage') return 'coverage_too_low';
+                                      if (reason === 'low_confidence') return 'confidence_too_low';
+                                      return reason;
+                                    })();
+
+                                    return (
+                                      <span className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                        {label ? `Pinned (${label})` : 'Pinned'}
+                                      </span>
+                                    );
+                                  })()}
+                                </div>
+
+                                {Array.isArray((reportFromApi as any)?.greenFlags) && (reportFromApi as any).greenFlags.length > 0 ? (
+                                  <ul className={`mt-3 list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                    {(reportFromApi as any).greenFlags.slice(0, 8).map((g: any, idx: number) => (
+                                      <li key={`green-${idx}`}>{String(g)}</li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <div className={`mt-3 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No highlights available yet.</div>
+                                )}
+
+                                {Array.isArray((reportFromApi as any)?.sections) && (reportFromApi as any).sections.length > 0 ? (
+                                  <div className="mt-4 space-y-3">
+                                    {(reportFromApi as any).sections.slice(0, 8).map((s: any) => {
+                                      const sectionTitle =
+                                        typeof s?.title === 'string' && s.title.trim().length > 0 ? s.title.trim() : 'Section';
+                                      const content = typeof s?.content === 'string' ? s.content : '';
+                                      const evidenceIds = Array.isArray(s?.evidence_ids) ? s.evidence_ids : [];
+                                      return (
+                                        <div
+                                          key={String(s?.id ?? sectionTitle)}
+                                          className={`rounded-lg border p-3 ${
+                                            darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'
+                                          }`}
+                                        >
+                                          <div className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>{sectionTitle}</div>
+                                          {content ? (
+                                            <div className={`mt-1 text-sm whitespace-pre-wrap ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{content}</div>
+                                          ) : (
+                                            <div className={`mt-1 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No content.</div>
+                                          )}
+                                          {Array.isArray(evidenceIds) && evidenceIds.length > 0 ? (
+                                            <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                              Evidence IDs: {evidenceIds.slice(0, 6).join(', ')}{evidenceIds.length > 6 ? '…' : ''}
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                ) : null}
+                              </div>
+
+                              <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
+                                <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Evidence / signals</div>
+                                <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                  {reportEvidenceIds.length > 0
+                                    ? `${reportEvidenceIds.length} evidence id(s) referenced`
+                                    : 'No evidence IDs referenced in report sections.'}
+                                </div>
+                                {reportEvidenceIds.length > 0 ? (
+                                  <div className={`mt-2 text-xs font-mono break-all ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                    {reportEvidenceIds.join(' · ')}
+                                  </div>
+                                ) : null}
+                                {Array.isArray((reportFromApi as any)?.redFlags) && (reportFromApi as any).redFlags.length > 0 ? (
+                                  <div className="mt-3">
+                                    <div className={`text-xs mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Red flags</div>
+                                    <ul className={`space-y-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                      {(reportFromApi as any).redFlags.slice(0, 6).map((rf: any, idx: number) => (
+                                        <li key={`rf-${idx}`}>
+                                          <span className="font-medium">{String(rf?.severity ?? 'unknown')}</span>: {String(rf?.message ?? '')}
+                                          {rf?.action ? ` (Action: ${String(rf.action)})` : ''}
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                ) : null}
+                              </div>
+                            </>
+                          ) : (
+                            <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
+                              <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Structured summary</div>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div>
+                                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Raise</div>
+                                  <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportView.raise || '—'}</div>
+                                </div>
+                                <div>
+                                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Business model</div>
+                                  <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportView.businessModel || '—'}</div>
+                                </div>
+                                <div>
+                                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Revenue</div>
+                                  <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportView.revenue || '—'}</div>
+                                </div>
+                                <div>
+                                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Customers</div>
+                                  <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportView.customers || '—'}</div>
+                                </div>
+                                <div>
+                                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Growth</div>
+                                  <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportStructuredGrowthValue || topSectionGrowth || '—'}</div>
+                                </div>
+                                <div>
+                                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Recommendation</div>
+                                  <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportView.recommendation || '—'}</div>
+                                </div>
+                              </div>
+                              <div className={`mt-3 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                Add <span className="font-mono">?debug=1</span> to view full sections, evidence IDs, and diagnostics.
+                              </div>
                             </div>
-                            {reportEvidenceIds.length > 0 ? (
-                              <div className={`mt-2 text-xs font-mono break-all ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                {reportEvidenceIds.join(' · ')}
-                              </div>
-                            ) : null}
-                            {Array.isArray((reportFromApi as any)?.redFlags) && (reportFromApi as any).redFlags.length > 0 ? (
-                              <div className="mt-3">
-                                <div className={`text-xs mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Red flags</div>
-                                <ul className={`space-y-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                                  {(reportFromApi as any).redFlags.slice(0, 6).map((rf: any, idx: number) => (
-                                    <li key={`rf-${idx}`}>
-                                      <span className="font-medium">{String(rf?.severity ?? 'unknown')}</span>: {String(rf?.message ?? '')}
-                                      {rf?.action ? ` (Action: ${String(rf.action)})` : ''}
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            ) : null}
-                          </div>
+                          )}
                         </div>
                       )}
                     </div>

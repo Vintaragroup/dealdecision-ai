@@ -3326,8 +3326,23 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
       const lineagePromise = apiGetDealLineage(dealId);
       const assetsPromise = apiGetDealVisualAssets(dealId);
 
-      // Optional: deterministic understanding patch (may be missing).
-      const understandingPromise = isLiveBackend() ? apiGetDealDeterministicUnderstanding(dealId) : Promise.resolve(null);
+      const deterministicDebugEnabled = (() => {
+        try {
+          if (typeof window === 'undefined') return false;
+          const qs = new URLSearchParams(window.location.search);
+          if (qs.get('debug') === '1') return true;
+          const raw = window.localStorage.getItem('ddai:debugDeterministicUnderstanding');
+          return raw === '1' || raw === 'true';
+        } catch {
+          return false;
+        }
+      })();
+
+      // Optional: deterministic understanding patch (may be missing). Gate behind debug to avoid 404 spam.
+      const understandingPromise =
+        deterministicDebugEnabled && isLiveBackend()
+          ? apiGetDealDeterministicUnderstanding(dealId)
+          : Promise.resolve(null);
 
       const [lineageRes, assetsRes, understandingRes] = await Promise.allSettled([
         lineagePromise,
@@ -3364,7 +3379,9 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
         dealAssetsFetchedRef.current = false;
       }
 
-      if (understandingRes.status === 'fulfilled') {
+      if (!deterministicDebugEnabled) {
+        setDetUnderstanding({ status: 'idle', value: null, error: null, lastFetchedAt: Date.now() });
+      } else if (understandingRes.status === 'fulfilled') {
         const val = understandingRes.value;
         setDetUnderstanding({
           status: val ? 'ready' : 'missing',

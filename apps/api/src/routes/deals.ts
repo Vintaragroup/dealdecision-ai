@@ -41,6 +41,7 @@ import {
 import { buildClassificationText, buildSegmentFeatures, classifySegment, normalizeAnalystSegment, type AnalystSegment, type SegmentClassifierInput } from "../lib/analyst-segment";
 import { groupWordVisualAssetsByDocument, groupWordVisualAssetsByDocumentWithStats, type WordGroupingStats } from "../lib/word-visual-grouping";
 import { fetchPageUnderstandingReadinessForDeal } from "../lib/deal-page-understanding-readiness";
+import { ensureDocumentsReadyForAnalysis } from "../lib/ensure-documents-ready-for-analysis";
 
 export { computeNodeEvidenceGateV1 };
 
@@ -216,48 +217,6 @@ async function bestEffortReadinessJobPresenceCheck(args: {
     // If Redis/BullMQ is unavailable, fall back to DB presence.
     return { hasRequiredJob: true, blocked_reason: null, checked: true };
   }
-}
-
-async function enqueuePopulateDpuJobIdempotent(args: {
-  pool: DealRoutesPool;
-  dealId: string;
-  documentId: string;
-  version: string;
-  parentJobId?: string | null;
-}) {
-  const { pool, dealId, documentId, version, parentJobId } = args;
-  const operation = "populate_document_page_understanding";
-  const idempotencyKey = `${dealId}__${documentId}__${version}`;
-
-  return runIdempotentOperation({
-    deal_id: dealId,
-    operation,
-    idempotency_key: idempotencyKey,
-    poolOverride: pool as any,
-    runDb: async (client) => {
-      const inserted = await insertJobRow(
-        {
-          deal_id: dealId,
-          document_id: documentId,
-          type: "populate_document_page_understanding",
-          queue: QUEUE_NAMES.populate_document_page_understanding,
-          parent_job_id: parentJobId ?? null,
-          payload: {
-            page_understanding_version: version,
-          },
-        },
-        { deps: { pool: client as any } }
-      );
-      return { job_id: inserted.job_id, status: inserted.status, bullPayload: inserted.bullPayload };
-    },
-    afterCommit: async (dbResult) => {
-      await enqueueBullmqJob({
-        type: "populate_document_page_understanding",
-        jobId: dbResult.job_id,
-        bullPayload: (dbResult as any).bullPayload ?? { deal_id: dealId, document_id: documentId, page_understanding_version: version },
-      });
-    },
-  });
 }
 
 function parseBoolQ(value: unknown, defaultValue = false): boolean {
@@ -8629,110 +8588,47 @@ export async function registerDealRoutes(
 
     if (requirePageUnderstanding) {
       try {
-        const readiness = await fetchPageUnderstandingReadinessForDeal(pool as any, dealId, pageUnderstandingVersion);
-        if (
-          readiness.expected_pages_total > 0 &&
-          readiness.missing_pages_total > 0 &&
-          readiness.dpu_rows_total === 0
-        ) {
-          const presence = await bestEffortReadinessJobPresenceCheck({ pool: pool as any, dealId, version: pageUnderstandingVersion });
-          (readiness as any).blocked_reason = presence.blocked_reason;
-          if (presence.blocked_reason) {
-            request.log.error(
-              {
-                event: "INGEST_BLOCKED_NO_JOBS",
-                deal_id: dealId,
-                version: pageUnderstandingVersion,
-                expected_pages_total: readiness.expected_pages_total,
-                dpu_rows_total: readiness.dpu_rows_total,
-                missing_pages_total: readiness.missing_pages_total,
-                checked: presence.checked,
-              },
-              "Readiness is blocked: no required jobs observed"
-            );
-          }
-        }
+        const prep = await ensureDocumentsReadyForAnalysis({
+          pool: pool as any,
+          dealId,
+          requirePageUnderstanding: true,
+          pageUnderstandingVersion,
+          logger: request.log,
+          enqueue,
+        });
+
         request.log.info(
           {
             event: "READINESS_CHECK",
             deal_id: dealId,
-            version: readiness.version,
-            expected_pages_total: readiness.expected_pages_total,
-            dpu_rows_total: readiness.dpu_rows_total,
-            missing_pages_total: readiness.missing_pages_total,
-            ready: readiness.ready,
+            version: prep.readiness.version,
+            expected_pages_total: prep.readiness.expected_pages_total,
+            dpu_rows_total: prep.readiness.dpu_rows_total,
+            missing_pages_total: prep.readiness.missing_pages_total,
+            ready: prep.ready,
+            blocked_reason: prep.blocked_reason,
+            enqueued: prep.enqueued,
           },
-          "deal.page_understanding.readiness"
+          "deal.analysis.preflight"
         );
 
-        if (!readiness.ready) {
-          const missingDocIds = readiness.documents
-            .filter((d) => Array.isArray(d.missing_pages) && d.missing_pages.length > 0)
-            .map((d) => d.document_id);
-
-        if (readiness.dpu_rows_total === 0 && missingDocIds.length > 0) {
-          // Best-effort: enqueue a direct DPU population job per doc.
-          // This is idempotent by (deal_id, document_id, page_understanding_version).
-          for (const docId of missingDocIds.slice(0, 50)) {
-            try {
-              await enqueuePopulateDpuJobIdempotent({
-                pool: pool as any,
-                dealId,
-                documentId: docId,
-                version: pageUnderstandingVersion,
-                parentJobId: null,
-              });
-            } catch (err) {
-              const message = err instanceof Error ? err.message : String(err);
-              request.log.warn(
-                { event: "populate_document_page_understanding.enqueue_failed", deal_id: dealId, document_id: docId, err: message },
-                "Failed to enqueue populate_document_page_understanding"
-              );
-            }
-          }
-        }
-
-          try {
-            // Best-effort: enqueue extract_visuals for docs missing page understanding.
-            // Worker-side DPU population is deterministic (per-chunk upserts), so this re-drive is safe.
-            await enqueueJob(
-              {
-                deal_id: dealId,
-                type: "extract_visuals_deal",
-						queue: "extract_visuals",
-                payload: {
-                  document_ids: missingDocIds,
-                  enqueue_deep_scan: true,
-                },
-              },
-              { dedupe: { by: "deal" } }
-            );
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            request.log.error(
-              { event: "extract_visuals.enqueue_failed", deal_id: dealId, err: message },
-              "Failed to enqueue extract_visuals for DPU gaps"
-            );
-            return reply.status(503).send({
-              error: "page_understanding_not_ready",
-              message:
-                "Page understanding is not ready and the system could not enqueue the required extraction job. Queue/Redis may be unavailable.",
-              ...(process.env.NODE_ENV === "production" ? {} : { detail: message, readiness }),
-            });
-          }
-
+        if (!prep.ready) {
           // Don't enqueue analysis yet; caller should poll readiness and retry when ready.
-          return reply.status(409).send({
+          return reply.status(202).send({
+            status: "preparing_documents",
             error: "page_understanding_not_ready",
-            message: "Page understanding is not complete yet. Extraction has been enqueued; retry analysis once readiness is true.",
-            readiness,
+            message: "Preparing documents for analysis. Poll /readiness and retry once readiness is true.",
+            blocked_reason: prep.blocked_reason,
+            poll_after_ms: prep.poll_after_ms,
+            enqueued: prep.enqueued,
+            readiness: prep.readiness,
           });
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         request.log.error(
           { event: "READINESS_CHECK_FAILED", deal_id: dealId, err: message },
-          "Failed to compute page understanding readiness"
+          "Failed to compute/ensure page understanding readiness"
         );
         return reply.status(500).send({
           error: "readiness_check_failed",
@@ -8744,7 +8640,7 @@ export async function registerDealRoutes(
 
     let job: { job_id: string; status: string };
     try {
-      job = await enqueueJob(
+      job = await enqueue(
         {
           deal_id: dealId,
           type: "analyze_deal",
@@ -8773,7 +8669,98 @@ export async function registerDealRoutes(
     // (This would typically happen in a background worker after job completes)
     // For now, we queue the job and the worker will handle stage progression
 
-    return reply.status(202).send({ job_id: job.job_id, status: job.status });
+    // When preflight is not requested, analysis may fail due to missing prereqs.
+    // Make this behavior explicit (extra fields are backwards-compatible).
+    if (!requirePageUnderstanding) {
+      return reply.status(202).send({
+        job_id: job.job_id,
+        status: job.status,
+        prereqs_kicked: false,
+        note:
+          "Prerequisites were not kicked because require_page_understanding=false. If readiness is blocked (e.g. PAGE_COUNT_UNKNOWN), call /prepare or call /analyze with {require_page_understanding:true}.",
+      });
+    }
+
+    return reply.status(202).send({ job_id: job.job_id, status: job.status, prereqs_kicked: true });
+  });
+
+  // Explicit opt-in endpoint to prepare documents for analysis.
+  // Safe for prod: it only enqueues prerequisites, it does not silently run analysis.
+  app.post("/api/v1/deals/:deal_id/prepare", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    if (!isUuid(dealId)) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+
+    const pageUnderstandingVersionRaw = (request.body as any)?.page_understanding_version;
+    const pageUnderstandingVersion =
+      typeof pageUnderstandingVersionRaw === "string" && pageUnderstandingVersionRaw.trim().length > 0
+        ? pageUnderstandingVersionRaw.trim()
+        : "page_understanding_v1";
+
+    const { rows } = await pool.query<DealRow>(
+      `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+      [dealId]
+    );
+    if (rows.length === 0) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    try {
+      const prep = await ensureDocumentsReadyForAnalysis({
+        pool: pool as any,
+        dealId,
+        requirePageUnderstanding: true,
+        pageUnderstandingVersion,
+        logger: request.log,
+        enqueue,
+      });
+
+      request.log.info(
+        {
+          event: "DOC_PREPARE_RESULT",
+          deal_id: dealId,
+          version: prep.readiness.version,
+          expected_pages_total: prep.readiness.expected_pages_total,
+          dpu_rows_total: prep.readiness.dpu_rows_total,
+          missing_pages_total: prep.readiness.missing_pages_total,
+          ready: prep.ready,
+          blocked_reason: prep.blocked_reason,
+          enqueued: prep.enqueued,
+        },
+        "deal.prepare"
+      );
+
+      if (!prep.ready) {
+        return reply.status(202).send({
+          status: "preparing_documents",
+          message: "Preparing documents for analysis. Poll /readiness and retry once readiness is true.",
+          blocked_reason: prep.blocked_reason,
+          poll_after_ms: prep.poll_after_ms,
+          enqueued: prep.enqueued,
+          readiness: prep.readiness,
+        });
+      }
+
+      return reply.send({
+        status: "ready",
+        blocked_reason: null,
+        poll_after_ms: null,
+        enqueued: prep.enqueued,
+        readiness: prep.readiness,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      request.log.error(
+        { event: "DOC_PREPARE_FAILED", deal_id: dealId, err: message },
+        "Failed to prepare documents for analysis"
+      );
+      return reply.status(500).send({
+        error: "prepare_failed",
+        message: "Failed to prepare documents for analysis.",
+        ...(process.env.NODE_ENV === "production" ? {} : { detail: message }),
+      });
+    }
   });
 
   app.get("/api/v1/deals/:deal_id/readiness", async (request, reply) => {
@@ -8794,26 +8781,114 @@ export async function registerDealRoutes(
     }
 
     const readiness = await fetchPageUnderstandingReadinessForDeal(pool as any, dealId, version);
-    if (
-      readiness.expected_pages_total > 0 &&
-      readiness.missing_pages_total > 0 &&
-      readiness.dpu_rows_total === 0
-    ) {
-      const presence = await bestEffortReadinessJobPresenceCheck({ pool: pool as any, dealId, version });
-      (readiness as any).blocked_reason = presence.blocked_reason;
-      if (presence.blocked_reason) {
-        request.log.error(
-          {
-            event: "INGEST_BLOCKED_NO_JOBS",
-            deal_id: dealId,
-            version,
-            expected_pages_total: readiness.expected_pages_total,
-            dpu_rows_total: readiness.dpu_rows_total,
-            missing_pages_total: readiness.missing_pages_total,
-            checked: presence.checked,
-          },
-          "Readiness is blocked: no required jobs observed"
-        );
+
+    // If any visual document still has unknown page_count (0), treat readiness as not ready.
+    // This prevents analysis from proceeding (or the UI from flipping to ready) before
+    // render_document_pages has established page_count + rendered pages.
+    try {
+      const hasMimeType = await hasColumn(pool as any, "documents", "mime_type");
+      const hasFileName = await hasColumn(pool as any, "documents", "file_name");
+      const hasFilename = hasFileName ? false : await hasColumn(pool as any, "documents", "filename");
+      const fileNameExpr = hasFileName ? "d.file_name" : hasFilename ? "d.filename" : "NULL::text";
+      const mimeTypeExpr = hasMimeType ? "d.mime_type" : "NULL::text";
+
+      const { rows: docRows } = await pool.query<{
+        id: string;
+        page_count: number | null;
+        file_name: string | null;
+        mime_type: string | null;
+      }>(
+        `SELECT d.id,
+                COALESCE(d.page_count, 0) AS page_count,
+                ${fileNameExpr} AS file_name,
+                ${mimeTypeExpr} AS mime_type
+           FROM documents d
+          WHERE d.deal_id = $1
+            AND d.deleted_at IS NULL`,
+        [dealId]
+      );
+
+      const unknownPageCountVisualDocs: string[] = [];
+      for (const d of docRows ?? []) {
+        const caps = getDocumentCapabilities({
+          fileName: typeof d.file_name === "string" ? d.file_name : null,
+          mimeType: typeof d.mime_type === "string" ? d.mime_type : null,
+        });
+        const pageCount = typeof d.page_count === "number" && Number.isFinite(d.page_count) ? Math.max(0, Math.trunc(d.page_count)) : 0;
+        if (caps.visualExtractable && caps.supports_page_rendering && pageCount <= 0) {
+          unknownPageCountVisualDocs.push(d.id);
+        }
+      }
+
+      if (unknownPageCountVisualDocs.length > 0) {
+        (readiness as any).ready = false;
+        (readiness as any).blocked_reason = (readiness as any).blocked_reason ?? "PAGE_COUNT_UNKNOWN";
+        (readiness as any).poll_after_ms = (readiness as any).poll_after_ms ?? 2000;
+        (readiness as any).action = (readiness as any).action ?? { type: "render_document_pages", deal_id: dealId, version };
+        (readiness as any).render_missing_page_count_documents = unknownPageCountVisualDocs;
+
+        // Observability: if no prerequisite jobs exist, explain how to kick them.
+        // Readiness is intentionally read-only by default.
+        try {
+          const res = await pool.query(
+            `SELECT 1
+               FROM jobs
+              WHERE deal_id = $1
+                AND type = ANY($2::text[])
+                AND created_at >= (now() - interval '2 hours')
+              LIMIT 1`,
+            [dealId, ["render_document_pages", "document_intelligence_extract", "populate_document_page_understanding"]]
+          );
+          const hasAnyPrereqJob = Array.isArray((res as any)?.rows) && (res as any).rows.length > 0;
+          if (!hasAnyPrereqJob) {
+            (readiness as any).blocked_message =
+              "No pages rendered yet (page_count=0). Call POST /api/v1/deals/:deal_id/prepare or POST /api/v1/deals/:deal_id/analyze with {require_page_understanding:true} to enqueue render/OCR/DPU prerequisites.";
+            (readiness as any).blocked_action = {
+              method: "POST",
+              path: `/api/v1/deals/${dealId}/prepare`,
+              body: { page_understanding_version: version },
+            };
+          }
+        } catch {
+          // best-effort only
+        }
+      }
+    } catch {
+      // best-effort only
+    }
+    const nonMeaningfulPagesTotal =
+      typeof (readiness as any)?.non_meaningful_pages_total === "number" &&
+      Number.isFinite((readiness as any).non_meaningful_pages_total)
+        ? (readiness as any).non_meaningful_pages_total
+        : 0;
+
+    if (readiness.expected_pages_total > 0 && readiness.missing_pages_total > 0) {
+      const shouldPresenceCheck = readiness.dpu_rows_total === 0 || nonMeaningfulPagesTotal > 0;
+      if (shouldPresenceCheck) {
+        const presence = await bestEffortReadinessJobPresenceCheck({ pool: pool as any, dealId, version });
+        (readiness as any).blocked_reason = presence.blocked_reason;
+        if (!presence.blocked_reason && nonMeaningfulPagesTotal > 0) {
+          (readiness as any).blocked_reason = "DPU_EMPTY_CONTENT";
+          (readiness as any).poll_after_ms = 1500;
+          (readiness as any).action = { type: "rebuild_page_understanding", deal_id: dealId, version };
+        }
+
+        if ((readiness as any).blocked_reason) {
+          request.log.error(
+            {
+              event: "INGEST_BLOCKED_NO_JOBS",
+              deal_id: dealId,
+              version,
+              expected_pages_total: readiness.expected_pages_total,
+              dpu_rows_total: readiness.dpu_rows_total,
+              missing_pages_total: readiness.missing_pages_total,
+              non_meaningful_pages_total: nonMeaningfulPagesTotal,
+              checked: presence.checked,
+              blocked_reason: (readiness as any).blocked_reason,
+            },
+            "Readiness is blocked or stalled"
+          );
+        }
       }
     }
     request.log.info(

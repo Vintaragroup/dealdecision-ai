@@ -1,0 +1,332 @@
+import type { FastifyBaseLogger } from "fastify";
+import { getDocumentCapabilities, sanitizeText } from "@dealdecision/core";
+import { fetchPageUnderstandingReadinessForDeal, type PageUnderstandingReadiness } from "./deal-page-understanding-readiness";
+import type { EnqueueJobInput, EnqueueJobOptions } from "../services/jobs";
+
+type QueryResult<T> = { rows: T[] };
+
+type PoolLike = {
+  query: <T = any>(sql: string, params?: unknown[]) => Promise<QueryResult<T>>;
+};
+
+export type EnsureDocumentsReadyResult = {
+  ready: boolean;
+  enqueued: {
+    render_document_pages: string[];
+    document_intelligence_extract: string[];
+    extract_visuals_deal: boolean;
+    populate_document_page_understanding: string[];
+  };
+  readiness: PageUnderstandingReadiness;
+  blocked_reason: string | null;
+  poll_after_ms: number;
+};
+
+async function hasColumn(pool: PoolLike, table: string, column: string): Promise<boolean> {
+  try {
+    const { rows } = await pool.query<{ ok: number }>(
+      `SELECT 1 as ok FROM information_schema.columns WHERE table_name = $1 AND column_name = $2 LIMIT 1`,
+      [table, column]
+    );
+    return Array.isArray(rows) && rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+const toInt = (value: unknown, fallback = 0): number => {
+  const n = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
+};
+
+const isNonEmptyText = (value: unknown, minLen = 1): boolean => {
+  if (typeof value !== "string") return false;
+  return value.trim().length >= minLen;
+};
+
+const readTextProbeWantsOcr = (meta: any): boolean => {
+  if (!meta || typeof meta !== "object") return false;
+  const probe = (meta as any).textProbe;
+  if (!probe || typeof probe !== "object") return false;
+  const decision = (probe as any).decision;
+  if (decision && typeof decision === "object" && (decision as any).run === true) return true;
+  if ((probe as any).run === true) return true;
+  if ((probe as any).should_run_ocr === true) return true;
+  return false;
+};
+
+function computeEffectiveReadiness(args: {
+  readiness: PageUnderstandingReadiness;
+  visualDocsMissingPageCount: string[];
+}): { readiness: PageUnderstandingReadiness; ready: boolean; blocked_reason: string | null; poll_after_ms: number } {
+  const base = args.readiness;
+  if (!Array.isArray(args.visualDocsMissingPageCount) || args.visualDocsMissingPageCount.length === 0) {
+    return { readiness: base, ready: !!base.ready, blocked_reason: (base as any).blocked_reason ?? null, poll_after_ms: (base as any).poll_after_ms ?? 2000 };
+  }
+
+  const blocked_reason = "PAGE_COUNT_UNKNOWN";
+  const readiness = {
+    ...(base as any),
+    ready: false,
+    blocked_reason,
+    poll_after_ms: 2000,
+    action: { type: "render_document_pages", deal_id: base.deal_id, version: base.version },
+    render_missing_page_count_documents: args.visualDocsMissingPageCount,
+  } as PageUnderstandingReadiness & { render_missing_page_count_documents?: string[] };
+
+  return { readiness, ready: false, blocked_reason, poll_after_ms: 2000 };
+}
+
+export async function ensureDocumentsReadyForAnalysis(args: {
+  pool: PoolLike;
+  dealId: string;
+  requirePageUnderstanding: boolean;
+  pageUnderstandingVersion: string;
+  logger?: FastifyBaseLogger;
+  enqueue: (input: EnqueueJobInput, opts?: EnqueueJobOptions) => Promise<{ job_id: string; status: string }>;
+}): Promise<EnsureDocumentsReadyResult> {
+  const { pool, dealId, requirePageUnderstanding, pageUnderstandingVersion, enqueue } = args;
+  const log = args.logger;
+
+  const hasMimeType = await hasColumn(pool, "documents", "mime_type");
+  const hasFileName = await hasColumn(pool, "documents", "file_name");
+  const hasFilename = hasFileName ? false : await hasColumn(pool, "documents", "filename");
+
+  const fileNameExpr = hasFileName ? "d.file_name" : hasFilename ? "d.filename" : "NULL::text";
+  const mimeTypeExpr = hasMimeType ? "d.mime_type" : "NULL::text";
+
+  type DocRow = {
+    id: string;
+    title: string | null;
+    status: string | null;
+    page_count: number | null;
+    extraction_metadata: any;
+    full_text: string | null;
+    full_text_absent_reason: string | null;
+    file_name: string | null;
+    mime_type: string | null;
+  };
+
+  const { rows: docs } = await pool.query<DocRow>(
+    `SELECT d.id,
+            d.title,
+            d.status,
+            COALESCE(d.page_count, 0) AS page_count,
+            d.extraction_metadata,
+            d.full_text,
+            d.full_text_absent_reason,
+            ${fileNameExpr} AS file_name,
+            ${mimeTypeExpr} AS mime_type
+       FROM documents d
+      WHERE d.deal_id = $1
+        AND d.deleted_at IS NULL`,
+    [sanitizeText(dealId)]
+  );
+
+  const visualDocs = (docs ?? []).filter((d) => {
+    const caps = getDocumentCapabilities({
+      fileName: typeof d.file_name === "string" ? d.file_name : null,
+      mimeType: typeof d.mime_type === "string" ? d.mime_type : null,
+    });
+    return !!caps.visualExtractable;
+  });
+
+  const renderChunkSize = (() => {
+    const raw = toInt(process.env.VISUAL_PAGE_IMAGE_MAX_PAGES, 10);
+    return Math.max(1, Math.min(1000, raw || 10));
+  })();
+
+  const enqueued = {
+    render_document_pages: [] as string[],
+    document_intelligence_extract: [] as string[],
+    extract_visuals_deal: false,
+    populate_document_page_understanding: [] as string[],
+  };
+
+  const visualDocsMissingPageCount: string[] = [];
+  const visualDocIdsNeedingRender: string[] = [];
+  const visualDocIdsNeedingOcr: string[] = [];
+
+  for (const d of visualDocs) {
+    const caps = getDocumentCapabilities({
+      fileName: typeof d.file_name === "string" ? d.file_name : null,
+      mimeType: typeof d.mime_type === "string" ? d.mime_type : null,
+    });
+
+    const pageCount = Math.max(0, toInt(d.page_count, 0));
+    if (pageCount <= 0 && caps.supports_page_rendering) {
+      visualDocsMissingPageCount.push(d.id);
+    }
+
+    const metaObj = d.extraction_metadata && typeof d.extraction_metadata === "object" ? (d.extraction_metadata as any) : null;
+    const renderedR2 = metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === "object" ? (metaObj.rendered_pages_r2 as any) : null;
+    const renderedCount = typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count) ? Math.max(0, Math.trunc(metaObj.rendered_pages_count)) : 0;
+    const renderedRendered = typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered) ? Math.max(0, Math.trunc(metaObj.rendered_pages_rendered)) : null;
+
+    const fullTextOk = isNonEmptyText(d.full_text, 50);
+    const needsOcr =
+      String(d.status ?? "").toLowerCase() === "needs_ocr" ||
+      readTextProbeWantsOcr(metaObj) ||
+      metaObj?.needsOcr === true ||
+      metaObj?.needs_ocr === true ||
+      (!fullTextOk && isNonEmptyText(d.full_text_absent_reason, 1));
+
+    if (needsOcr) {
+      visualDocIdsNeedingOcr.push(d.id);
+    }
+
+    const needsRender =
+      caps.supports_page_rendering &&
+      (
+        pageCount <= 0 ||
+        !renderedR2 ||
+        renderedCount <= 0 ||
+        renderedRendered == null ||
+        renderedRendered < renderedCount
+      );
+
+    if (needsRender) {
+      visualDocIdsNeedingRender.push(d.id);
+    }
+  }
+
+  // 1) Render prerequisites
+  for (const docId of visualDocIdsNeedingRender) {
+    const forceOcr = visualDocIdsNeedingOcr.includes(docId);
+
+    // IMPORTANT: for force_ocr, avoid dedupe so we don't get stuck behind an earlier non-force render.
+    const opts: EnqueueJobOptions | undefined = forceOcr ? undefined : { dedupe: { by: "document" } };
+
+    try {
+      await enqueue(
+        {
+          deal_id: dealId,
+          document_id: docId,
+          type: "render_document_pages",
+          page_start: 0,
+          page_end: renderChunkSize,
+          payload: {
+            deal_id: dealId,
+            document_id: docId,
+            page_start: 0,
+            page_end: renderChunkSize,
+            ...(forceOcr ? { force_ocr: true } : {}),
+          },
+        },
+        opts
+      );
+      enqueued.render_document_pages.push(docId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log?.warn({ event: "render_document_pages.enqueue_failed", deal_id: dealId, document_id: docId, err: msg }, "Failed to enqueue render_document_pages");
+    }
+
+    if (forceOcr) {
+      try {
+        await enqueue(
+          {
+            deal_id: dealId,
+            document_id: docId,
+            type: "document_intelligence_extract",
+            payload: { deal_id: dealId, document_id: docId, reason: "analysis_preflight_needs_ocr" },
+          },
+          { dedupe: { by: "document" } }
+        );
+        enqueued.document_intelligence_extract.push(docId);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log?.warn(
+          { event: "document_intelligence_extract.enqueue_failed", deal_id: dealId, document_id: docId, err: msg },
+          "Failed to enqueue document_intelligence_extract"
+        );
+      }
+    }
+  }
+
+  // 2) Page understanding readiness
+  const readiness = requirePageUnderstanding
+    ? await fetchPageUnderstandingReadinessForDeal(pool as any, dealId, pageUnderstandingVersion)
+    : ({
+        deal_id: dealId,
+        version: pageUnderstandingVersion,
+        documents: [],
+        expected_pages_total: 0,
+        dpu_rows_total: 0,
+        missing_pages_total: 0,
+        blocked_reason: null,
+        poll_after_ms: null,
+        action: null,
+        ready: true,
+      } as PageUnderstandingReadiness);
+
+  const effective = computeEffectiveReadiness({ readiness, visualDocsMissingPageCount });
+
+  // If we're still missing render prerequisites, don't enqueue downstream visual extraction yet.
+  const hasRenderWorkEnqueued = enqueued.render_document_pages.length > 0;
+
+  if (requirePageUnderstanding && !effective.ready && !hasRenderWorkEnqueued) {
+    const missingDocs = (effective.readiness.documents ?? [])
+      .filter((d) => Array.isArray(d.missing_pages) && d.missing_pages.length > 0)
+      .map((d) => d.document_id);
+
+    const missingSet = new Set(missingDocs);
+    const visualMissingDocs = visualDocs
+      .map((d) => d.id)
+      .filter((id) => missingSet.has(id));
+
+    if (visualMissingDocs.length > 0) {
+      for (const docId of visualMissingDocs.slice(0, 50)) {
+        try {
+          await enqueue(
+            {
+              deal_id: dealId,
+              document_id: docId,
+              type: "populate_document_page_understanding",
+              payload: { page_understanding_version: pageUnderstandingVersion },
+            },
+            { dedupe: { by: "document" } }
+          );
+          enqueued.populate_document_page_understanding.push(docId);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log?.warn(
+            { event: "populate_document_page_understanding.enqueue_failed", deal_id: dealId, document_id: docId, err: msg },
+            "Failed to enqueue populate_document_page_understanding"
+          );
+        }
+      }
+
+      try {
+        await enqueue(
+          {
+            deal_id: dealId,
+            type: "extract_visuals_deal",
+            queue: "extract_visuals",
+            payload: {
+              document_ids: visualMissingDocs,
+              enqueue_deep_scan: true,
+            },
+          },
+          { dedupe: { by: "deal" } }
+        );
+        enqueued.extract_visuals_deal = true;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log?.error(
+          { event: "extract_visuals_deal.enqueue_failed", deal_id: dealId, err: msg },
+          "Failed to enqueue extract_visuals_deal for DPU gaps"
+        );
+      }
+    }
+  }
+
+  const pollAfter = effective.poll_after_ms ?? 2000;
+
+  return {
+    ready: effective.ready,
+    readiness: effective.readiness,
+    blocked_reason: effective.blocked_reason,
+    poll_after_ms: pollAfter,
+    enqueued,
+  };
+}

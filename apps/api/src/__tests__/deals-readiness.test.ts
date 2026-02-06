@@ -205,3 +205,149 @@ test("GET /api/v1/deals/:deal_id/readiness returns INGEST_PENDING_OCR when docs 
 
   await app.close();
 });
+
+test("GET /api/v1/deals/:deal_id/readiness treats placeholder/empty DPU as missing and can report blocked", async () => {
+  const dealId = "00000000-0000-0000-0000-000000000013";
+
+  const mockPool = {
+    query: async (sql: string, params?: unknown[]) => {
+      if (sql.includes("SELECT * FROM deals WHERE id = $1")) {
+        return { rows: [{ id: String((params ?? [])[0]), deleted_at: null }] };
+      }
+
+      if (sql.includes("SELECT to_regclass")) {
+        // document_page_understanding exists
+        return { rows: [{ oid: "document_page_understanding" }] };
+      }
+
+      if (sql.includes("WITH docs AS") && sql.includes("document_page_understanding")) {
+        return {
+          rows: [
+            {
+              document_id: "doc-1",
+              title: "Deck",
+              page_count: 3,
+              dpu_rows: 3,
+              dpu_rows_meaningful: 0,
+              non_meaningful_pages: [0, 1, 2],
+              missing_pages: [0, 1, 2],
+            },
+          ],
+        };
+      }
+
+      if (sql.includes("FROM jobs") && sql.includes("WHERE deal_id")) {
+        // No required jobs exist.
+        return { rows: [] };
+      }
+
+      if (sql.includes("FROM documents") && sql.includes("status = 'needs_ocr'")) {
+        return { rows: [] };
+      }
+
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as any;
+
+  const app = Fastify();
+  await registerDealRoutes(app, mockPool);
+
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/v1/deals/${dealId}/readiness?page_understanding_version=page_understanding_v1`,
+  });
+
+  assert.equal(res.statusCode, 200);
+  const body = res.json() as any;
+
+  assert.equal(body.deal_id, dealId);
+  assert.equal(body.ready, false);
+  assert.equal(body.expected_pages_total, 3);
+  assert.equal(body.dpu_rows_total, 3);
+  assert.equal(body.missing_pages_total, 3);
+  assert.equal(body.non_meaningful_pages_total, 3);
+  assert.equal(body.blocked_reason, "INGEST_BLOCKED_NO_JOBS");
+
+  await app.close();
+});
+
+test("GET /api/v1/deals/:deal_id/readiness treats visual docs with page_count=0 as not ready (PAGE_COUNT_UNKNOWN)", async () => {
+  const dealId = "00000000-0000-0000-0000-000000000014";
+
+  const mockPool = {
+    query: async (sql: string, params?: unknown[]) => {
+      if (sql.includes("SELECT * FROM deals WHERE id = $1")) {
+        return { rows: [{ id: String((params ?? [])[0]), deleted_at: null }] };
+      }
+
+      if (sql.includes("SELECT to_regclass")) {
+        // document_page_understanding exists
+        return { rows: [{ oid: "document_page_understanding" }] };
+      }
+
+      if (sql.includes("WITH docs AS") && sql.includes("document_page_understanding")) {
+        return {
+          rows: [
+            {
+              document_id: "doc-1",
+              title: "Deck",
+              page_count: 0,
+              dpu_rows: 0,
+              dpu_rows_meaningful: 0,
+              non_meaningful_pages: [],
+              missing_pages: [],
+            },
+          ],
+        };
+      }
+
+      if (sql.includes("information_schema.columns")) {
+        // hasColumn() probes
+        return { rows: [{ ok: 1 }] };
+      }
+
+      if (sql.includes("FROM documents d") && sql.includes("COALESCE(d.page_count")) {
+        // extra gating query in readiness handler
+        return {
+          rows: [
+            {
+              id: "doc-1",
+              page_count: 0,
+              file_name: "deck.pdf",
+              mime_type: "application/pdf",
+            },
+          ],
+        };
+      }
+
+      if (sql.includes("FROM jobs") && sql.includes("WHERE deal_id")) {
+        // presence check path: no jobs
+        return { rows: [] };
+      }
+
+      if (sql.includes("FROM documents") && sql.includes("status = 'needs_ocr'")) {
+        return { rows: [] };
+      }
+
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as any;
+
+  const app = Fastify();
+  await registerDealRoutes(app, mockPool);
+
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/v1/deals/${dealId}/readiness?page_understanding_version=page_understanding_v1`,
+  });
+
+  assert.equal(res.statusCode, 200);
+  const body = res.json() as any;
+  assert.equal(body.deal_id, dealId);
+  assert.equal(body.ready, false);
+  assert.equal(body.blocked_reason, "PAGE_COUNT_UNKNOWN");
+  assert.ok(Array.isArray(body.render_missing_page_count_documents));
+  assert.deepEqual(body.render_missing_page_count_documents, ["doc-1"]);
+
+  await app.close();
+});

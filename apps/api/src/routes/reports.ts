@@ -109,6 +109,47 @@ function ensureStructuredRevenueSelectionReason(report: any): void {
   }
 }
 
+function ensureStructuredSummaryKpis(report: any): void {
+  try {
+    if (!report || typeof report !== 'object') return;
+    const structured = (report as any).structured_summary;
+    if (!structured || typeof structured !== 'object') return;
+
+    const existing = (structured as any).kpis;
+    const kpis = existing && typeof existing === 'object' ? existing : {};
+
+    // Compatibility mapping: older clients expect structured_summary.kpis.*
+    if ((kpis as any).raise == null) (kpis as any).raise = (structured as any).raise ?? null;
+    if ((kpis as any).revenue == null) (kpis as any).revenue = (structured as any).revenue ?? null;
+    if ((kpis as any).customers == null) (kpis as any).customers = (structured as any).customers ?? null;
+    if ((kpis as any).growth == null) (kpis as any).growth = (structured as any).growth ?? null;
+
+    if ((kpis as any).business_model == null) {
+      (kpis as any).business_model = (structured as any).business_model ?? (structured as any).business_model_summary ?? null;
+    }
+
+    // Compatibility: surface marketing attributed revenue under kpis.performance when available.
+    const marketingMetrics = (structured as any).marketing_metrics;
+    const attributedRevenue =
+      marketingMetrics && typeof marketingMetrics === 'object'
+        ? ((marketingMetrics as any).attributed_revenue ?? (marketingMetrics as any).marketing_attributed_revenue_v1 ?? null)
+        : null;
+
+    if (attributedRevenue) {
+      const perfExisting = (kpis as any).performance;
+      const perf = perfExisting && typeof perfExisting === 'object' ? perfExisting : {};
+      if ((perf as any).marketing_attributed_revenue_v1 == null) {
+        (perf as any).marketing_attributed_revenue_v1 = attributedRevenue;
+      }
+      (kpis as any).performance = perf;
+    }
+
+    (structured as any).kpis = kpis;
+  } catch {
+    // ignore
+  }
+}
+
 type ReportRecommendationV0 = 'strong_yes' | 'yes' | 'consider' | 'pass';
 type ReportGradeV0 = 'Excellent' | 'Good' | 'Fair' | 'Needs Improvement' | 'Insufficient Information';
 
@@ -644,6 +685,7 @@ export async function registerReportRoutes(
         }
         if (report && typeof report === 'object') {
           ensureStructuredRevenueSelectionReason(report);
+          ensureStructuredSummaryKpis(report);
           // Keep deal_summary nested under the compiled report as well.
           (report as any).deal_summary = dealSummaryV1;
           payload.report = report;
@@ -730,6 +772,9 @@ export async function registerReportRoutes(
         const report = promotedFacts.length > 0
           ? compileDIOToReportWithPromotedFacts(dioRows[0].dio_data, { promotedFacts })
           : compileDIOToReport(dioRows[0].dio_data);
+
+        // Backward compatibility: ensure structured_summary.kpis exists.
+        ensureStructuredSummaryKpis(report);
 
         // Best-effort: attach deterministic deck archetype metadata for versioned reports too.
         try {

@@ -2615,7 +2615,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
 
       el.innerHTML = ''
         + '<pre class="mono" style="margin:0; white-space:pre-wrap; word-break:break-word;">'
-        + escapeHtml(lines.join('\n'))
+        + escapeHtml(lines.join('\\n'))
         + '</pre>';
     }
 

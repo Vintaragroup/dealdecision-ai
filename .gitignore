@@ -110,6 +110,9 @@ __pycache__/
 apps/api/test/fixtures/regressions/**/*.full.report.json
 apps/api/test/fixtures/regressions/runner*.log
 
+# Fixture input decks (raw PDFs/PPTX) — keep out of git
+apps/api/test/fixtures/decks/**
+
 # Allow committed regression baselines
 !apps/api/test/fixtures/regressions/**/*.snapshot.json
 !apps/api/test/fixtures/regressions/**/*.meta.json

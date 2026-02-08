@@ -202,6 +202,25 @@ function palmLikeDpuRows(docId: string): Array<{ document_id: string; page_index
 	}));
 }
 
+function palmLikeDpuRowsCanonicalRevenue(docId: string): Array<{ document_id: string; page_index: number; payload: any }> {
+	// Same as palmLikeDpuRows, but avoids performance-attribution tokens (conversion/CAC/ROAS)
+	// so the revenue bullet remains canonical revenue_v1.
+	const rows = palmLikeDpuRows(docId);
+	return rows.map((r) => {
+		if (r.page_index !== 8) return r;
+		return {
+			...r,
+			payload: {
+				...r.payload,
+				structured: {
+					...(r.payload?.structured ?? {}),
+					bullets: ["$800,000 in revenue", "Wholesale expansion"],
+				},
+			},
+		};
+	});
+}
+
 function fullCriteriaDpuRows(docId: string): Array<{ document_id: string; page_index: number; payload: any }> {
 	const pages: Array<{ page_index: number; title: string; bullets: string[] }> = [
 		{ page_index: 1, title: "Market Opportunity", bullets: ["TAM $10B", "CAGR 20%"] },
@@ -789,7 +808,7 @@ test("deterministic score bridge v1: inputs_hash stable + KPI page_index preserv
 		dealId,
 		dioId,
 		dio,
-		dpuRows: palmLikeDpuRows(docId),
+		dpuRows: palmLikeDpuRowsCanonicalRevenue(docId),
 		evidenceItems: [],
 	});
 

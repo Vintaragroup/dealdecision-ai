@@ -218,6 +218,31 @@ export function pickStableReportExcerpt(report: any): any {
   const tierOverview = normalizeWhitespace(tiers?.overview) ?? '';
   const tierDeep = normalizeWhitespace(tiers?.deep) ?? '';
 
+  const extractProductDefinitionFromTiers = (): string | null => {
+    const candidates = [tierOverview, tierDeep].filter(Boolean);
+    for (const text of candidates) {
+      const re = /\bproduct\s*:\s*/i;
+      const m = re.exec(text);
+      if (!m) continue;
+
+      const start = m.index + m[0].length;
+      const tail = text.slice(start);
+
+      const endMarkers = [/\bmarket\s*\/\s*icp\s*:\s*/i, /\bmarket\s*:\s*/i];
+      let end = tail.length;
+      for (const marker of endMarkers) {
+        const mm = marker.exec(tail);
+        if (mm && mm.index >= 0) {
+          end = Math.min(end, mm.index);
+        }
+      }
+
+      const extracted = normalizeWhitespace(tail.slice(0, end));
+      if (extracted && extracted.length >= 12) return extracted;
+    }
+    return null;
+  };
+
   const productSummaryV1 = structured?.product_summary_v1 && typeof structured.product_summary_v1 === 'object'
     ? structured.product_summary_v1
     : null;
@@ -228,6 +253,8 @@ export function pickStableReportExcerpt(report: any): any {
 
   const product_definition = normalizeWhitespace(productSummaryV1?.product_definition) ?? null;
   const product_validation = normalizeWhitespace(productSummaryV1?.product_validation) ?? null;
+
+  const product_definition_effective = product_definition ?? extractProductDefinitionFromTiers();
 
   const market_target = (() => {
     const v = normalizeWhitespace(dealSummaryV1?.market_target);
@@ -282,10 +309,10 @@ export function pickStableReportExcerpt(report: any): any {
       },
     },
 
-    ...(product_definition || product_validation
+    ...(product_definition_effective || product_validation
       ? {
           product_summary: {
-            product_definition,
+            product_definition: product_definition_effective,
             product_validation,
           },
         }

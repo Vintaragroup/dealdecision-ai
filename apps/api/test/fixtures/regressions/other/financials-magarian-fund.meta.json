@@ -1,0 +1,13 @@
+{
+  "fixture_key": "other/financials-magarian-fund",
+  "vertical": "other",
+  "basename_slug": "financials-magarian-fund",
+  "deal_id": "0a501597-f6cc-4719-b3a4-b35744b977df",
+  "document_id": "bfd83cf2-447f-476d-9595-56086c0e8dc8",
+  "inputs_hash": "46daeac7477b01a637de2ecc795c0e38573509f4e2842a7363e593e9b849e451",
+  "deck_archetype_key": "unknown",
+  "generated_at": "2026-02-08T00:41:07.533Z",
+  "base_url": "http://localhost:9001",
+  "deck_file": "apps/api/test/fixtures/decks/other/Financials - Magarian Fund.pdf",
+  "deck_file_sha256": "5ce0bd8fa2fda30a18964c04c32b43c47b35b68fab133199604ce033ae6c0c74"
+}

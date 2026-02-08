@@ -1,0 +1,13 @@
+{
+  "fixture_key": "other/pd-3ice",
+  "vertical": "other",
+  "basename_slug": "pd-3ice",
+  "deal_id": "29ecd01e-825f-4c70-bfc2-3422361a4504",
+  "document_id": "6241e470-4d43-4e86-b428-697fbd08988e",
+  "inputs_hash": "d5fb6e15330fe22073a8c65307e94df180608848084b8147911adf688c3eb400",
+  "deck_archetype_key": "unknown",
+  "generated_at": "2026-02-08T00:41:42.196Z",
+  "base_url": "http://localhost:9001",
+  "deck_file": "apps/api/test/fixtures/decks/other/PD - 3ICE.pdf",
+  "deck_file_sha256": "b69963c230639fd705f8503f3b8dc621fc1548d5fb7940c14fb00b0c56d34de6"
+}

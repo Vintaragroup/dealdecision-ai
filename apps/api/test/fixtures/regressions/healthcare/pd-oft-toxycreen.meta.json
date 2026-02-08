@@ -1,0 +1,13 @@
+{
+  "fixture_key": "healthcare/pd-oft-toxycreen",
+  "vertical": "healthcare",
+  "basename_slug": "pd-oft-toxycreen",
+  "deal_id": "995f2b7a-415c-4077-99d4-5fab74aca134",
+  "document_id": "77971a28-c52b-4bb3-bc91-8d81eea4b09f",
+  "inputs_hash": "07ce7ea6fc3e7d48a11d3593813c72733044a7b29a0b22a6b81190aa6b8fb4c5",
+  "deck_archetype_key": "unknown",
+  "generated_at": "2026-02-08T00:41:01.427Z",
+  "base_url": "http://localhost:9001",
+  "deck_file": "apps/api/test/fixtures/decks/healthcare/PD - OFT _ TOXYCREEN.pptx",
+  "deck_file_sha256": "830103ef806a582bd5b05d1b1bc8c828c619de124a3e58d991b16f291d246251"
+}

@@ -1,11 +1,17 @@
 # Fixture Verification Report
 
-Generated: 2026-02-08T00:00:26.193Z
+Generated: 2026-02-08T00:45:00.211Z
 
 ## Summary
 
 | fixture | vertical | red_flag_count | top flags |
 | --- | --- | ---: | --- |
+| healthcare/pd-oft-toxycreen | healthcare | 5 | archetype_key === "unknown", kpis.revenue.value_raw is null, kpis.customers.value_raw is null |
+| other/financials-magarian-fund | other | 7 | archetype_key === "unknown", citations.total_sources === 0, deal_summary tiers contain placeholder phrasing |
+| other/pd-3ice | other | 7 | archetype_key === "unknown", citations.total_sources === 0, deal_summary tiers contain placeholder phrasing |
+| other/pd-bar-capital-nj-consolidation-strategy | other | 7 | archetype_key === "unknown", citations.total_sources === 0, deal_summary tiers contain placeholder phrasing |
+| other/pd-carmoola-series-b-teaser-oct-25 | other | 7 | archetype_key === "unknown", citations.total_sources === 0, deal_summary tiers contain placeholder phrasing |
+| other/pd-magarian-fund | other | 7 | archetype_key === "unknown", citations.total_sources === 0, deal_summary tiers contain placeholder phrasing |
 | product/pd-palm-capital-raise-070425-v2 | product | 2 | kpis.revenue.value_raw is null, kpi source.slide_title is null |
 | product/pd-verse | product | 7 | archetype_key === "unknown", citations.total_sources === 0, deal_summary tiers contain placeholder phrasing |
 | real_estate/cross-nobis-pref-equity-opportunity-deal-summary | real_estate | 7 | archetype_key === "unknown", citations.total_sources === 0, deal_summary tiers contain placeholder phrasing |
@@ -15,6 +21,220 @@ Generated: 2026-02-08T00:00:26.193Z
 | services/pd-brandpoint-services-pcc-vf | services | 7 | archetype_key === "unknown", citations.total_sources === 0, deal_summary tiers contain placeholder phrasing |
 | technology/pd-cino-deck-2025-series-a | technology | 7 | archetype_key === "unknown", citations.total_sources === 0, deal_summary tiers contain placeholder phrasing |
 | technology/pd-qredible-future-of-compliance-v6-v2 | technology | 7 | archetype_key === "unknown", citations.total_sources === 0, deal_summary tiers contain placeholder phrasing |
+
+## healthcare/pd-oft-toxycreen
+
+- Deck archetype: unknown (confidence: 0.21923076923076923)
+- Citations: total_sources=8, unique_pages=4
+
+**Deal summary tiers**
+
+- hero (36 chars): This is a consumer brand in apparel.
+- overview (215 chars): This is a consumer brand in apparel. Product: NON-INVASIVE EASE OF COLLECTION….. Market: DIFFICULT TO GET CHILDREN THAT NEED TO BE TESTED TO THE FACILITIES THAT OFFER TESTING….DISTANCE….TRAVEL……TIME…..UNDERSTANDING.
+- deep (684 chars): This is a consumer brand in apparel. Product details: NON-INVASIVE EASE OF COLLECTION….. SCREENING CAN BE PERFORMED ANYWHERE, SCHOOLS, RECREATION CENTERS, OUTDOORS ……anywhere!!!!. Market / ICP: DIFFICULT TO GET CHILDREN THAT NEED TO BE TESTED TO THE FACILITIES THAT OFFER TESTING….DISTANCE….TRAVEL……TIME…..UNDERSTANDING. Sample Collection Instructions Lead has been found in paint, window blinds, pottery, cosmetics, children’s toys, candy/gum, lead bullets, canned food, and most recently, baby food. Exposure to lead can also come from lead- contaminated dust, water, and soil, as well as brought home on clothing by adults that work with batteries, auto repair or home renovations.
+
+**KPIs**
+
+| kpi | value_raw | scope_label | selection_reason | source page | source title |
+| --- | --- | --- | --- | ---: | --- |
+| raise | Unknown | — | — | — | — |
+| revenue | — | — | not_extracted_yet | — | — |
+| customers | — | — | — | — | — |
+| growth | — | — | — | — | — |
+
+**Red flags**
+
+- archetype_key === "unknown"
+- kpis.revenue.value_raw is null
+- kpis.customers.value_raw is null
+- kpis.growth.value_raw is null
+- kpi source.slide_title is null
+
+**Vertical Contract Compliance**
+
+- Errors: 0, Warns: 0
+
+- —
+
+## other/financials-magarian-fund
+
+- Deck archetype: unknown (confidence: 0)
+- Citations: total_sources=0, unique_pages=0
+
+**Deal summary tiers**
+
+- hero (29 chars): This is a company in product.
+- overview (79 chars): This is a company in product. Key details are pending from extracted materials.
+- deep (120 chars): This is a company in product. Key details are pending from extracted materials. Notes: limited extracted signals so far.
+
+**KPIs**
+
+| kpi | value_raw | scope_label | selection_reason | source page | source title |
+| --- | --- | --- | --- | ---: | --- |
+| raise | Unknown | — | — | — | — |
+| revenue | — | — | not_extracted_yet | — | — |
+| customers | — | — | — | — | — |
+| growth | — | — | — | — | — |
+
+**Red flags**
+
+- archetype_key === "unknown"
+- citations.total_sources === 0
+- deal_summary tiers contain placeholder phrasing
+- kpis.revenue.value_raw is null
+- kpis.customers.value_raw is null
+- kpis.growth.value_raw is null
+- kpi source.slide_title is null
+
+**Vertical Contract Compliance**
+
+- Errors: 0, Warns: 0
+
+- —
+
+## other/pd-3ice
+
+- Deck archetype: unknown (confidence: 0)
+- Citations: total_sources=0, unique_pages=0
+
+**Deal summary tiers**
+
+- hero (29 chars): This is a company in product.
+- overview (79 chars): This is a company in product. Key details are pending from extracted materials.
+- deep (120 chars): This is a company in product. Key details are pending from extracted materials. Notes: limited extracted signals so far.
+
+**KPIs**
+
+| kpi | value_raw | scope_label | selection_reason | source page | source title |
+| --- | --- | --- | --- | ---: | --- |
+| raise | Unknown | — | — | — | — |
+| revenue | — | — | not_extracted_yet | — | — |
+| customers | — | — | — | — | — |
+| growth | — | — | — | — | — |
+
+**Red flags**
+
+- archetype_key === "unknown"
+- citations.total_sources === 0
+- deal_summary tiers contain placeholder phrasing
+- kpis.revenue.value_raw is null
+- kpis.customers.value_raw is null
+- kpis.growth.value_raw is null
+- kpi source.slide_title is null
+
+**Vertical Contract Compliance**
+
+- Errors: 0, Warns: 0
+
+- —
+
+## other/pd-bar-capital-nj-consolidation-strategy
+
+- Deck archetype: unknown (confidence: 0)
+- Citations: total_sources=0, unique_pages=0
+
+**Deal summary tiers**
+
+- hero (29 chars): This is a company in product.
+- overview (79 chars): This is a company in product. Key details are pending from extracted materials.
+- deep (120 chars): This is a company in product. Key details are pending from extracted materials. Notes: limited extracted signals so far.
+
+**KPIs**
+
+| kpi | value_raw | scope_label | selection_reason | source page | source title |
+| --- | --- | --- | --- | ---: | --- |
+| raise | Raise $2,500,000 | — | — | — | — |
+| revenue | — | — | not_extracted_yet | — | — |
+| customers | — | — | — | — | — |
+| growth | — | — | — | — | — |
+
+**Red flags**
+
+- archetype_key === "unknown"
+- citations.total_sources === 0
+- deal_summary tiers contain placeholder phrasing
+- kpis.revenue.value_raw is null
+- kpis.customers.value_raw is null
+- kpis.growth.value_raw is null
+- kpi source.slide_title is null
+
+**Vertical Contract Compliance**
+
+- Errors: 0, Warns: 0
+
+- —
+
+## other/pd-carmoola-series-b-teaser-oct-25
+
+- Deck archetype: unknown (confidence: 0)
+- Citations: total_sources=0, unique_pages=0
+
+**Deal summary tiers**
+
+- hero (29 chars): This is a company in product.
+- overview (79 chars): This is a company in product. Key details are pending from extracted materials.
+- deep (120 chars): This is a company in product. Key details are pending from extracted materials. Notes: limited extracted signals so far.
+
+**KPIs**
+
+| kpi | value_raw | scope_label | selection_reason | source page | source title |
+| --- | --- | --- | --- | ---: | --- |
+| raise | Unknown | — | — | — | — |
+| revenue | — | — | not_extracted_yet | — | — |
+| customers | — | — | — | — | — |
+| growth | — | — | — | — | — |
+
+**Red flags**
+
+- archetype_key === "unknown"
+- citations.total_sources === 0
+- deal_summary tiers contain placeholder phrasing
+- kpis.revenue.value_raw is null
+- kpis.customers.value_raw is null
+- kpis.growth.value_raw is null
+- kpi source.slide_title is null
+
+**Vertical Contract Compliance**
+
+- Errors: 0, Warns: 0
+
+- —
+
+## other/pd-magarian-fund
+
+- Deck archetype: unknown (confidence: 0)
+- Citations: total_sources=0, unique_pages=0
+
+**Deal summary tiers**
+
+- hero (29 chars): This is a company in product.
+- overview (79 chars): This is a company in product. Key details are pending from extracted materials.
+- deep (120 chars): This is a company in product. Key details are pending from extracted materials. Notes: limited extracted signals so far.
+
+**KPIs**
+
+| kpi | value_raw | scope_label | selection_reason | source page | source title |
+| --- | --- | --- | --- | ---: | --- |
+| raise | Unknown | — | — | — | — |
+| revenue | — | — | not_extracted_yet | — | — |
+| customers | — | — | — | — | — |
+| growth | — | — | — | — | — |
+
+**Red flags**
+
+- archetype_key === "unknown"
+- citations.total_sources === 0
+- deal_summary tiers contain placeholder phrasing
+- kpis.revenue.value_raw is null
+- kpis.customers.value_raw is null
+- kpis.growth.value_raw is null
+- kpi source.slide_title is null
+
+**Vertical Contract Compliance**
+
+- Errors: 0, Warns: 0
+
+- —
 
 ## product/pd-palm-capital-raise-070425-v2
 

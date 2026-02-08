@@ -1,0 +1,82 @@
+{
+  "debug": {
+    "deck_archetype_key": "unknown",
+    "archetype_confidence": 0
+  },
+  "structured_summary": {
+    "kpis": {
+      "raise": {
+        "value_raw": "Unknown",
+        "value": "Unknown",
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      },
+      "revenue": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": "not_extracted_yet",
+        "source": null
+      },
+      "customers": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      },
+      "growth": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      }
+    }
+  },
+  "deal_summary": {
+    "tiers": {
+      "hero": "This is a company in product.",
+      "overview": "This is a company in product. Key details are pending from extracted materials.",
+      "deep": "This is a company in product. Key details are pending from extracted materials. Notes: limited extracted signals so far."
+    },
+    "tier_char_counts": {
+      "hero": 29,
+      "overview": 79,
+      "deep": 120
+    }
+  },
+  "score_explanation": {
+    "understanding_v1": {
+      "summary_char_count": 170,
+      "strengths": {
+        "count": 1,
+        "items": [
+          "Narrative pacing score computed"
+        ]
+      },
+      "execution_dependencies": {
+        "count": 2,
+        "items": [
+          "If wholesale expands, inventory planning and working capital discipline become primary execution constraints.",
+          "Maintain growth while scaling unit economics (CAC, payback) and sustaining margins across channel mix."
+        ]
+      },
+      "diligence_open_items": {
+        "count": 10,
+        "items": [
+          "Add evidence for missing sections: raise_terms, terms.",
+          "Add raise amount, round type, and expected use of funds.",
+          "CAC and unit economics at scaled spend (LTV/CAC, payback), not just current efficiency.",
+          "Confirm cash balance, burn rate, and runway (and whether financials are cash vs accrual).",
+          "Confirm multi-year financial tables and accounting basis (cash vs accrual) used for reported figures."
+        ]
+      }
+    }
+  },
+  "citations": {
+    "total_sources": 0,
+    "unique_pages": 0
+  }
+}

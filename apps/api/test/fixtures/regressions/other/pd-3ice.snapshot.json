@@ -1,0 +1,79 @@
+{
+  "debug": {
+    "deck_archetype_key": "unknown",
+    "archetype_confidence": 0
+  },
+  "structured_summary": {
+    "kpis": {
+      "raise": {
+        "value_raw": "Unknown",
+        "value": "Unknown",
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      },
+      "revenue": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": "not_extracted_yet",
+        "source": null
+      },
+      "customers": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      },
+      "growth": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      }
+    }
+  },
+  "deal_summary": {
+    "tiers": {
+      "hero": "This is a company in product.",
+      "overview": "This is a company in product. Key details are pending from extracted materials.",
+      "deep": "This is a company in product. Key details are pending from extracted materials. Notes: limited extracted signals so far."
+    },
+    "tier_char_counts": {
+      "hero": 29,
+      "overview": 79,
+      "deep": 120
+    }
+  },
+  "score_explanation": {
+    "understanding_v1": {
+      "summary_char_count": 170,
+      "strengths": {
+        "count": 1,
+        "items": [
+          "Narrative pacing score computed"
+        ]
+      },
+      "execution_dependencies": {
+        "count": 0,
+        "items": []
+      },
+      "diligence_open_items": {
+        "count": 12,
+        "items": [
+          "Add 1 slide or 1 paragraph describing the problem, solution, and why now.",
+          "Add burn, runway, cash balance, and margin profile (or a simple P&L).",
+          "Add ICP definition (buyer, user, segment) and market sizing (TAM/SAM/SOM or bottom-up).",
+          "business_model",
+          "Confirm cash balance, burn rate, and runway (and whether financials are cash vs accrual)."
+        ]
+      }
+    }
+  },
+  "citations": {
+    "total_sources": 0,
+    "unique_pages": 0
+  }
+}

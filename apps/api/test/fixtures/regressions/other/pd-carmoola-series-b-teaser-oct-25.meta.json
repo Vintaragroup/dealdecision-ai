@@ -1,0 +1,13 @@
+{
+  "fixture_key": "other/pd-carmoola-series-b-teaser-oct-25",
+  "vertical": "other",
+  "basename_slug": "pd-carmoola-series-b-teaser-oct-25",
+  "deal_id": "db755fc5-dbc8-404d-acbc-a9f57d326076",
+  "document_id": "0b2c7161-adef-4d2d-a252-a0da2cbf37d5",
+  "inputs_hash": "9e8a2b4ea73d94565ab4681cfb3683934054cf1858a24a6ff025d9c1829e0c0c",
+  "deck_archetype_key": "unknown",
+  "generated_at": "2026-02-08T00:43:10.838Z",
+  "base_url": "http://localhost:9001",
+  "deck_file": "apps/api/test/fixtures/decks/other/PD - Carmoola - Series B Teaser (Oct 25).pdf",
+  "deck_file_sha256": "579dca684237131f57d037edd08bbb444804a1e3730772c21fab53bf8ff24caf"
+}

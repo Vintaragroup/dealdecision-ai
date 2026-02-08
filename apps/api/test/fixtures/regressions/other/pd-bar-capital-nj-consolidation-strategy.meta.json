@@ -1,0 +1,13 @@
+{
+  "fixture_key": "other/pd-bar-capital-nj-consolidation-strategy",
+  "vertical": "other",
+  "basename_slug": "pd-bar-capital-nj-consolidation-strategy",
+  "deal_id": "4dd9e66d-f475-445e-84fb-cba564bce084",
+  "document_id": "59a12c00-168a-48ea-93f5-897934019a9b",
+  "inputs_hash": "d1090cb15a3273d3b1ceea2cf0644cbad6c20591ca7462a927a56b53ee100996",
+  "deck_archetype_key": "unknown",
+  "generated_at": "2026-02-08T00:42:40.519Z",
+  "base_url": "http://localhost:9001",
+  "deck_file": "apps/api/test/fixtures/decks/other/PD - Bar Capital NJ Consolidation Strategy.pdf",
+  "deck_file_sha256": "a21678ded67d0b1917cd7f1ce3df8f5788736bbaa96761df96ddcff6dac08577"
+}

@@ -206,7 +206,7 @@ test("GET /api/v1/deals/:deal_id/readiness returns INGEST_PENDING_OCR when docs 
   await app.close();
 });
 
-test("GET /api/v1/deals/:deal_id/readiness treats placeholder/empty DPU as missing and can report blocked", async () => {
+test("GET /api/v1/deals/:deal_id/readiness reports placeholder/empty DPU as non-meaningful (but not missing)", async () => {
   const dealId = "00000000-0000-0000-0000-000000000013";
 
   const mockPool = {
@@ -230,7 +230,7 @@ test("GET /api/v1/deals/:deal_id/readiness treats placeholder/empty DPU as missi
               dpu_rows: 3,
               dpu_rows_meaningful: 0,
               non_meaningful_pages: [0, 1, 2],
-              missing_pages: [0, 1, 2],
+              missing_pages: [],
             },
           ],
         };
@@ -261,12 +261,12 @@ test("GET /api/v1/deals/:deal_id/readiness treats placeholder/empty DPU as missi
   const body = res.json() as any;
 
   assert.equal(body.deal_id, dealId);
-  assert.equal(body.ready, false);
+  assert.equal(body.ready, true);
   assert.equal(body.expected_pages_total, 3);
   assert.equal(body.dpu_rows_total, 3);
-  assert.equal(body.missing_pages_total, 3);
+  assert.equal(body.missing_pages_total, 0);
   assert.equal(body.non_meaningful_pages_total, 3);
-  assert.equal(body.blocked_reason, "INGEST_BLOCKED_NO_JOBS");
+  assert.equal(body.blocked_reason, null);
 
   await app.close();
 });

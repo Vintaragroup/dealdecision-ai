@@ -10,6 +10,7 @@
     "report:slide-titles:md": "tsx scripts/export-slide-titles-md.ts",
     "report:unknowns:hotspots": "tsx scripts/unknown-hotspots.ts",
     "report:unknowns:kb": "tsx scripts/unknown-knowledgebase.ts",
+    "fixtures:verify": "tsx apps/api/scripts/fixture-verification-report.ts",
     "dev": "pnpm --filter api dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",

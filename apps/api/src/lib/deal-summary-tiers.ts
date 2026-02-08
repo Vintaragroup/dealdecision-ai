@@ -198,9 +198,31 @@ export function buildDealSummaryTiers(input: {
     .map((s) => (s.endsWith('.') ? s : `${s}.`))
     .join('\n\n');
 
+  // Guardrail: when we have very low signal, the tiers can collapse to the same
+  // single sentence (e.g., only the inferred category/companyType line). Keep
+  // tiers non-identical with deterministic, non-domain-specific fallbacks.
+  const heroNorm = normalizeWhitespace(sentenceClamp(heroRaw, 3));
+  const overviewNorm = normalizeWhitespace(overview);
+  const deepNorm = normalizeWhitespace(deep);
+
+  const safeHero = heroNorm;
+  const safeOverview = (() => {
+    if (!overviewNorm) return `${safeHero} Key details are pending from extracted materials.`;
+    if (overviewNorm === heroNorm) return `${safeHero} Key details are pending from extracted materials.`;
+    return overview;
+  })();
+
+  const safeDeep = (() => {
+    if (!deepNorm) return `${safeOverview}\n\nNotes: limited extracted signals so far.`;
+    if (deepNorm === heroNorm || deepNorm === normalizeWhitespace(safeOverview)) {
+      return `${safeOverview}\n\nNotes: limited extracted signals so far.`;
+    }
+    return deep;
+  })();
+
   return {
-    hero: sentenceClamp(heroRaw, 3),
-    overview,
-    deep,
+    hero: safeHero,
+    overview: safeOverview,
+    deep: safeDeep,
   };
 }

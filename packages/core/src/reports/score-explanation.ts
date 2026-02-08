@@ -323,11 +323,29 @@ const buildScoreUnderstandingV1 = (params: {
     });
   }
 
+  const diligenceMin = 3;
+  const diligenceUnique = uniqueUnderstandingItems(diligenceOpen);
+  if (diligenceUnique.length < diligenceMin) {
+    const fallbackTexts: string[] = [
+      "Confirm revenue (ARR/MRR or annual) and the period it covers.",
+      "Provide unit economics (gross margin or contribution margin, CAC/LTV, payback) and retention/churn if applicable.",
+      "Share burn, runway, and current cash balance (and whether financials are cash vs accrual).",
+    ];
+
+    const existing = new Set<string>(diligenceUnique.map((d) => String(d.text ?? "").trim()).filter(Boolean));
+    for (const text of fallbackTexts) {
+      if (diligenceUnique.length >= diligenceMin) break;
+      if (existing.has(text)) continue;
+      diligenceUnique.push({ text, evidence_ids: [], component_keys: ["system"] });
+      existing.add(text);
+    }
+  }
+
   return {
     summary,
     strengths: uniqueUnderstandingItems(strengths).slice(0, 6),
     execution_dependencies: uniqueUnderstandingItems(executionDependencies).slice(0, 6),
-    diligence_open_items: uniqueUnderstandingItems(diligenceOpen).slice(0, 12),
+    diligence_open_items: diligenceUnique.slice(0, 12),
   };
 };
 

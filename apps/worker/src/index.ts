@@ -4248,6 +4248,92 @@ registerWorker("extract_visuals", async (job: Job) => {
 					});
 					chunkJobIds.push(persisted.job_id);
 				}
+
+				// IMPORTANT: Even when chunking, PDF documents may be disallowed for vision fallback
+				// (e.g. editable/text PDFs). In that case, chunk jobs will skip vision and persist
+				// zero visual_assets/extractions, which would otherwise leave DPU stuck with
+				// placeholders (missing_visual_extraction). Persist pdf_v2 shadow assets + per-page
+				// understanding here in the coordinator pass so readiness can advance.
+				try {
+					const docKind = deduceDocKind({ extraction_metadata: docMeta?.extraction_metadata, type: docMeta?.type ?? null });
+					const mimeType = typeof docMeta?.type === "string" ? docMeta.type : "";
+					const isPdfByMime = mimeType.trim().toLowerCase().startsWith("application/pdf");
+					const isPdf = isPdfByMime || docKind === "pdf";
+					if (isPdf) {
+						// Ensure pdf_v2.pages[*].understanding_v1 exists; persist helpers require it.
+						try {
+							const fullContent = (docMeta as any)?.full_content ?? {};
+							const pdfV2 =
+								(fullContent as any)?.pdf_v2 && typeof (fullContent as any).pdf_v2 === "object"
+									? (fullContent as any).pdf_v2
+									: fullContent;
+							const wrapper = {
+								pages: Array.isArray((fullContent as any)?.pages) ? (fullContent as any).pages : [],
+								pdf_v2: pdfV2,
+							};
+							const applied = applySlideUnderstandingV1Shadow(wrapper as any);
+							if (applied.applied) {
+								console.log(JSON.stringify({ event: "PDF_SLIDE_UNDERSTANDING_APPLIED", document_id: docId }));
+							}
+						} catch (err) {
+							console.warn(
+								`[extract_visuals] pdf slide understanding apply failed (coordinator) doc=${docId}: ${
+									err instanceof Error ? err.message : String(err)
+								}`
+							);
+						}
+
+						try {
+							const fullContent = (docMeta as any)?.full_content ?? {};
+							const persistedLocal = await persistPdfV2TextRegionAssetsV1Shadow({
+								pool,
+								documentId: docId,
+								dealId: dealId ?? (typeof docMeta?.deal_id === "string" ? docMeta.deal_id : null),
+								fullContent,
+								env: process.env,
+							});
+							if (persistedLocal > 0) {
+								console.log(JSON.stringify({ event: "PDF_TEXT_REGION_ASSETS_PERSISTED", document_id: docId, persisted_assets: persistedLocal }));
+							}
+						} catch (err) {
+							console.warn(
+								`[extract_visuals] pdf text region assets failed (coordinator) doc=${docId}: ${
+									err instanceof Error ? err.message : String(err)
+								}`
+							);
+						}
+
+						try {
+							const fullContent = (docMeta as any)?.full_content ?? {};
+							const res = await persistPdfPageUnderstandingV1Shadow({
+								pool,
+								documentId: docId,
+								dealId: dealId ?? (typeof docMeta?.deal_id === "string" ? docMeta.deal_id : null),
+								fullContent,
+								env: process.env,
+							});
+							if (res.persisted_pages > 0) {
+								console.log(
+									JSON.stringify({
+										event: "PDF_PAGE_UNDERSTANDING_PERSISTED",
+										document_id: docId,
+										persisted_pages: res.persisted_pages,
+										attempted_pages: res.attempted_pages,
+									})
+								);
+							}
+						} catch (err) {
+							console.warn(
+								`[extract_visuals] pdf page understanding failed (coordinator) doc=${docId}: ${
+									err instanceof Error ? err.message : String(err)
+								}`
+							);
+						}
+					}
+				} catch {
+					// best-effort only
+				}
+
 				console.log(
 					JSON.stringify({
 						event: "EXTRACT_VISUALS_ENQUEUE",

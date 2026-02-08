@@ -377,26 +377,62 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 	year: number | null;
 	scope: RevenueScope;
 	channel?: 'email_sms' | null;
+	typing_reason?: string | null;
 	note_snippet: string | null;
 	primary: { document_id: string; page_index: number; slide_title: string | null; segment_key: string | null };
 }> {
 	const currentYear = new Date().getFullYear();
 	const moneyRe = /\$\s*\d[\d,]*(?:\.\d+)?\s*(?:mm|m|million|mn|bn|b|k|thousand)?/gi;
-	const detectMarketingAttributedRevenueChannel = (bulletLower: string): 'email_sms' | null => {
-		const s = String(bulletLower ?? '').toLowerCase();
+	const detectMarketingAttribution = (
+		bulletLower: string,
+		slideContextLower: string
+	): { channel: 'email_sms' | null; typing_reason: string } | null => {
+		const bullet = String(bulletLower ?? '').toLowerCase();
+		const ctx = String(slideContextLower ?? '').toLowerCase();
+		const s = `${bullet} ${ctx}`.trim();
 		if (!s) return null;
 
-		const hasAttributed = s.includes('attributed');
 		const hasEmail = s.includes('email');
 		const hasSms = s.includes('sms');
-		const hasEmailSmsToken = s.includes('email/sms') || s.includes('email & sms') || s.includes('email and sms');
+		const hasEmailSmsToken =
+			s.includes('email/sms') || s.includes('email & sms') || s.includes('email and sms') || s.includes('sms/email');
 
-		// Targeted patterns:
-		// - "revenue attributed to email/SMS" / "attributed to email"
-		// - "automated marketing journeys" (common deck phrasing implying attribution)
-		if (hasAttributed && (hasEmail || hasSms || hasEmailSmsToken)) return 'email_sms';
-		if (s.includes('automated marketing journeys')) return 'email_sms';
-		return null;
+		const hasAttributed = s.includes('attributed');
+		const hasCampaign = s.includes('campaign') || s.includes('paid media') || s.includes('paid') || s.includes('ads') || s.includes('ad spend');
+		const hasPerformance = s.includes('roas') || s.includes('cac') || s.includes('conversion');
+		const hasMarketing = s.includes('marketing');
+
+		// Keep deterministic and conservative: require revenue mention plus marketing/attribution signals.
+		const mentionsRevenue = s.includes('revenue') || s.includes('sales') || s.includes('gmv');
+		if (!mentionsRevenue) return null;
+
+		const strong = hasAttributed || hasEmail || hasSms || hasEmailSmsToken || hasCampaign;
+		// If the bullet includes performance attribution signals (ROAS/CAC/conversion), treat it as marketing-attributed
+		// even if the word "marketing" or "campaign" isn't present.
+		const weakButSupported = hasPerformance;
+		if (!strong && !weakButSupported) return null;
+
+		const tokens: string[] = [];
+		if (hasAttributed) tokens.push('attributed');
+		if (hasEmailSmsToken) tokens.push('email/sms');
+		else {
+			if (hasEmail) tokens.push('email');
+			if (hasSms) tokens.push('sms');
+		}
+		if (s.includes('campaign')) tokens.push('campaign');
+		if (s.includes('paid media')) tokens.push('paid media');
+		if (s.includes('ad spend')) tokens.push('ad spend');
+		if (s.includes('roas')) tokens.push('roas');
+		if (s.includes('cac')) tokens.push('cac');
+		if (s.includes('conversion')) tokens.push('conversion');
+		if (s.includes('marketing')) tokens.push('marketing');
+
+		const channel: 'email_sms' | null = (hasEmail || hasSms || hasEmailSmsToken || s.includes('automated marketing journeys'))
+			? 'email_sms'
+			: null;
+
+		const uniq = Array.from(new Set(tokens)).sort((a, b) => a.localeCompare(b));
+		return { channel, typing_reason: `marketing_attributed_revenue_v1: tokens=[${uniq.join(', ')}]` };
 	};
 	const prefer = (c: { subtype: string; slideTitle: string | null; slideText: string; year: number | null; segment_key: string | null }): number => {
 		const title = String(c.slideTitle ?? '').toLowerCase();
@@ -424,6 +460,7 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 		year: number | null;
 		scope: RevenueScope;
 		channel?: 'email_sms' | null;
+		typing_reason?: string | null;
 		note_snippet: string | null;
 		slideTitle: string | null;
 		slideText: string;
@@ -439,6 +476,11 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 		if (seg && DPU_DISALLOWED_REVENUE_SEGMENTS.has(seg) && !titleIsFinancialOrPerformance) continue;
 
 		const bullets = Array.isArray(r.bullets) && r.bullets.length > 0 ? r.bullets : [r.slideText];
+		const slideContextLower = [r.slideTitle, r.slideText, ...bullets]
+			.map((v) => String(v ?? '').trim())
+			.filter((v) => v.length > 0)
+			.join(' ')
+			.toLowerCase();
 		for (const bulletRaw of bullets) {
 			const bullet = String(bulletRaw ?? '').trim();
 			if (!bullet || !bullet.includes('$')) continue;
@@ -478,8 +520,10 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 				// Proximity rule: require "revenue" in the same bullet as the amount unless it's explicitly a Financials/Performance slide.
 				if (!titleIsFinancialOrPerformance && !bulletLower.includes('revenue') && !isForecast) continue;
 
-				const channel = detectMarketingAttributedRevenueChannel(bulletLower);
-				const isAttributed = channel != null;
+				const attribution = detectMarketingAttribution(bulletLower, slideContextLower);
+				const isAttributed = attribution != null;
+				const channel = attribution?.channel ?? null;
+				const typing_reason = attribution?.typing_reason ?? null;
 
 				const subtype: 'annual' | 'attributed' | 'forecast' = isForecast ? 'forecast' : isAttributed ? 'attributed' : 'annual';
 				const scope: RevenueScope = subtype === 'attributed' ? 'channel_attributed' : 'company_total';
@@ -489,6 +533,7 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 					subtype,
 					scope,
 					channel,
+					typing_reason,
 					display,
 					amount,
 					year: subtype === 'forecast' ? year : null,
@@ -532,6 +577,7 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 			subtype: c!.subtype,
 			scope: c!.scope,
 			channel: (c as any)?.channel ?? null,
+			typing_reason: (c as any)?.typing_reason ?? null,
 			display: c!.display,
 			amount: c!.amount,
 			year: c!.year,
@@ -1275,7 +1321,8 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 	for (const rev of revenueFacts) {
 		const seg = segmentMetaFor(rev.primary.document_id, rev.primary.page_index);
 		const fact_type = rev.subtype === 'attributed' ? 'marketing_attributed_revenue_v1' : 'revenue_v1';
-		const channel = rev.subtype === 'attributed' ? (rev.channel ?? 'email_sms') : null;
+		const channel = rev.subtype === 'attributed' ? (rev.channel ?? null) : null;
+		const typing_reason = rev.subtype === 'attributed' ? (rev.typing_reason ?? null) : null;
 		out.push({
 			evidence_id: `deal:${id}:dpu_fact:${fact_type}:${rev.subtype}:${rev.year ?? 'na'}`,
 			deal_id: id,
@@ -1292,6 +1339,7 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 					year: rev.year,
 					scope: rev.scope,
 					...(channel ? { channel } : {}),
+					...(typing_reason ? { typing_reason } : {}),
 					note_snippet: rev.note_snippet,
 					amount: { amount: rev.amount, currency: "USD" },
 				},
@@ -1315,6 +1363,7 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 				year: rev.year,
 				scope: rev.scope,
 				...(channel ? { channel } : {}),
+				...(typing_reason ? { typing_reason } : {}),
 			},
 		});
 	}

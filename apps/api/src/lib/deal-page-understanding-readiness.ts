@@ -10,6 +10,7 @@ export type PageUnderstandingReadinessDocument = {
   dpu_rows_meaningful?: number;
   /** Pages that have a DPU row but it is placeholder/empty. */
   non_meaningful_pages?: number[];
+  /** Pages that do not have any DPU row at all (no payload). */
   missing_pages: number[];
 };
 
@@ -196,12 +197,11 @@ export async function fetchPageUnderstandingReadinessForDeal(pool: Pool, dealId:
           )
       ),
       missing AS (
-        SELECT e.document_id, e.page_index
-          FROM expected e
-          LEFT JOIN dpu_meaningful p
-            ON p.document_id = e.document_id
-           AND p.page_index = e.page_index
-         WHERE p.page_index IS NULL
+        -- Missing pages are those with no DPU payload at all.
+        -- Non-meaningful pages are tracked separately.
+        SELECT document_id, page_index
+          FROM dpu_expected
+         WHERE payload IS NULL
       ),
       non_meaningful AS (
         SELECT e.document_id, e.page_index

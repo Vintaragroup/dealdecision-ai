@@ -521,9 +521,21 @@ function buildStructuredSummary(
     return best;
   };
 
-  const revenueMetric = pickMetric((k) =>
-    k.includes('arr') || k.includes('mrr') || k.includes('revenue') || k.includes('sales') || k.includes('gmv')
-  );
+  const revenueMetric = pickMetric((k) => {
+    const kn = normalizeMetricKey(k);
+    const isMarketingAttributed =
+      kn.includes('attributed') ||
+      kn.includes('email') ||
+      kn.includes('sms') ||
+      kn.includes('campaign') ||
+      kn.includes('paid media') ||
+      kn.includes('roas') ||
+      kn.includes('cac') ||
+      kn.includes('conversion') ||
+      kn.includes('marketing');
+    if (isMarketingAttributed) return false;
+    return kn.includes('arr') || kn.includes('mrr') || kn.includes('revenue') || kn.includes('sales') || kn.includes('gmv');
+  });
   if (revenueMetric) {
     const keyNorm = normalizeMetricKey(revenueMetric.key);
     const period = keyNorm.includes('arr') ? 'ARR' : keyNorm.includes('mrr') ? 'MRR' : null;
@@ -568,21 +580,31 @@ function buildStructuredSummary(
     };
   } else {
     const promotedRevenueTrace = (() => {
-      // Canonical revenue must ignore marketing-attributed/channel-attributed facts.
-      // These are now emitted as marketing_attributed_revenue_v1, but we also defensively
-      // exclude legacy revenue_v1 attributed scope/subtype.
+      // GOVERNANCE: canonical revenue (structured_summary.revenue / kpis.revenue) must represent
+      // company-level revenue only. Marketing-attributed / channel-attributed revenue is allowed
+      // elsewhere (marketing_metrics, performance KPIs, evidence), but it must NEVER compete for
+      // canonical revenue selection.
+      const isCanonicalRevenueEligible = (f: PromotedFactInput): boolean => {
+        const ft = factTypeOf(f);
+        if (ft === 'marketing_attributed_revenue_v1') return false;
+
+        const vj = getPromotedValueJson(f) ?? {};
+        const subtype = String((vj as any)?.subtype ?? '').toLowerCase();
+        const scope = String((vj as any)?.scope ?? (f as any)?.content_json?.provenance?.scope ?? '').toLowerCase();
+
+        // Hard exclusions
+        if (scope === 'channel_attributed') return false;
+        if (subtype === 'attributed') return false;
+
+        // Forecast revenue is treated as growth/outlook, not canonical revenue.
+        if (subtype === 'forecast') return false;
+
+        return true;
+      };
+
       const revenueFacts = promoted
         .filter((f) => factTypeOf(f) === 'revenue_v1')
-        .filter((f: any) => {
-          const vj = getPromotedValueJson(f) ?? {};
-          const subtype = String((vj as any)?.subtype ?? '').toLowerCase();
-          const scope = String((vj as any)?.scope ?? (f as any)?.content_json?.provenance?.scope ?? '').toLowerCase();
-          if (scope === 'channel_attributed') return false;
-          if (subtype === 'attributed') return false;
-          // Forecast revenue is treated as growth/outlook, not canonical revenue.
-          if (subtype === 'forecast') return false;
-          return true;
-        });
+        .filter((f) => isCanonicalRevenueEligible(f));
       if (revenueFacts.length === 0) return null;
 
       const disallowedSeg = new Set(['team', 'advisors', 'equipment']);
@@ -1002,6 +1024,43 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
   const existingExplanation = (dio as any).score_explanation;
   const scoreExplanation = existingExplanation ?? buildScoreExplanationFromDIO(dio);
   const persistedOverall = (dio as any).overall_score;
+
+  // Back-compat safety: older persisted DIOs can carry an older score_explanation.
+  // Ensure understanding_v1 always meets minimum completeness invariants (>=3 open items)
+  // without requiring re-analysis.
+  try {
+    const se: any = scoreExplanation as any;
+    const u: any = se?.understanding_v1;
+    if (u && typeof u === 'object') {
+      const list: any[] = Array.isArray(u.diligence_open_items) ? u.diligence_open_items : [];
+      const normalized = list
+        .filter((i) => i && typeof i === 'object')
+        .map((i) => ({
+          text: typeof (i as any).text === 'string' ? (i as any).text : '',
+          evidence_ids: Array.isArray((i as any).evidence_ids) ? (i as any).evidence_ids : [],
+          component_keys: Array.isArray((i as any).component_keys) ? (i as any).component_keys : [],
+        }))
+        .filter((i) => typeof i.text === 'string' && i.text.trim().length > 0);
+
+      const existing = new Set(normalized.map((i) => i.text.trim()));
+      const fallbacks: string[] = [
+        'Confirm revenue (ARR/MRR or annual) and the period it covers.',
+        'Provide unit economics (gross margin or contribution margin, CAC/LTV, payback) and retention/churn if applicable.',
+        'Share burn, runway, and current cash balance (and whether financials are cash vs accrual).',
+      ];
+
+      while (normalized.length < 3) {
+        const next = fallbacks.find((t) => !existing.has(t)) ?? null;
+        if (!next) break;
+        normalized.push({ text: next, evidence_ids: [], component_keys: ['system'] });
+        existing.add(next);
+      }
+
+      u.diligence_open_items = normalized;
+    }
+  } catch {
+    // ignore
+  }
   
   const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
   const isOk = (status: unknown): status is 'ok' => status === 'ok';

@@ -283,6 +283,31 @@ export type DocumentOriginalFile = {
   bytes: Buffer;
 };
 
+export type DocumentOriginalFileMeta = {
+  document_id: string;
+  sha256: string;
+  file_name: string | null;
+  mime_type: string | null;
+  size_bytes: number;
+};
+
+export async function getDocumentOriginalFileMeta(documentId: string): Promise<DocumentOriginalFileMeta | null> {
+  const currentPool = getPool();
+  const { rows } = await currentPool.query<DocumentOriginalFileMeta>(
+    `SELECT d.id AS document_id,
+        COALESCE(f.sha256, '') AS sha256,
+        f.file_name,
+        COALESCE(f.mime_type, d.mime_type) AS mime_type,
+        COALESCE(f.size_bytes, d.size_bytes, 0) AS size_bytes
+       FROM documents d
+       LEFT JOIN document_files f ON f.document_id = d.id
+      WHERE d.id = $1
+      LIMIT 1`,
+    [sanitizeText(documentId)]
+  );
+  return rows?.[0] ?? null;
+}
+
 export async function getDocumentOriginalFile(documentId: string): Promise<DocumentOriginalFile | null> {
   const currentPool = getPool();
   const { rows } = await currentPool.query<DocumentOriginalFile>(

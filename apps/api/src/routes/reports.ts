@@ -36,6 +36,79 @@ const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
 
 const asFiniteNumber = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
 
+function ensureStructuredRevenueSelectionReason(report: any): void {
+  try {
+    if (!report || typeof report !== 'object') return;
+    const structured = (report as any).structured_summary;
+    if (!structured || typeof structured !== 'object') return;
+
+    const hasNonEmptyString = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
+
+    const revenueExisting = (structured as any).revenue;
+    if (!revenueExisting || typeof revenueExisting !== 'object') {
+      (structured as any).revenue = {
+        value: null,
+        confidence: 0,
+        sources: [],
+        label: null,
+        selection_reason: 'not_extracted_yet',
+        candidates: [],
+      };
+      return;
+    }
+
+    const revenue = revenueExisting as any;
+    const selection = revenue.selection_reason;
+    if (hasNonEmptyString(selection)) return;
+
+    // Prefer signals from candidates/sources to keep this deterministic and meaningful.
+    const candidates: any[] = Array.isArray(revenue.candidates) ? revenue.candidates : [];
+    const selectedCandidate = candidates.find((c) => c && typeof c === 'object' && c.selected === true) ?? null;
+    const selectedScope = hasNonEmptyString(selectedCandidate?.scope) ? String(selectedCandidate.scope).trim().toLowerCase() : null;
+
+    const sources: any[] = Array.isArray(revenue.sources) ? revenue.sources : [];
+    const sourceKinds = new Set(
+      sources
+        .map((s) => (s && typeof s === 'object' ? String((s as any).kind ?? '').trim().toLowerCase() : ''))
+        .filter(Boolean)
+    );
+
+    const hasRevenueValue = (() => {
+      const v = revenue.value;
+      if (v == null) return false;
+      if (typeof v === 'string') return v.trim().length > 0;
+      if (typeof v === 'object') {
+        const raw = (v as any).raw;
+        if (hasNonEmptyString(raw)) return true;
+        const amount = (v as any).amount;
+        if (typeof amount === 'number' && Number.isFinite(amount)) return true;
+      }
+      return true;
+    })();
+
+    if (sourceKinds.has('input_metric') || selectedScope === 'input_metric') {
+      revenue.selection_reason = 'input_metric_preferred';
+      return;
+    }
+    if (sourceKinds.has('financial_health.metrics') || selectedScope === 'financial_health') {
+      revenue.selection_reason = 'financial_health_fallback';
+      return;
+    }
+    if (selectedScope === 'company_financials_table') {
+      revenue.selection_reason = 'financial_table_preferred';
+      return;
+    }
+    if (selectedScope === 'company_total') {
+      revenue.selection_reason = 'company_total_preferred';
+      return;
+    }
+
+    revenue.selection_reason = hasRevenueValue ? 'unknown_source_defaulted' : 'not_extracted_yet';
+  } catch {
+    // ignore
+  }
+}
+
 type ReportRecommendationV0 = 'strong_yes' | 'yes' | 'consider' | 'pass';
 type ReportGradeV0 = 'Excellent' | 'Good' | 'Fair' | 'Needs Improvement' | 'Insufficient Information';
 
@@ -570,6 +643,7 @@ export async function registerReportRoutes(
           }));
         }
         if (report && typeof report === 'object') {
+          ensureStructuredRevenueSelectionReason(report);
           // Keep deal_summary nested under the compiled report as well.
           (report as any).deal_summary = dealSummaryV1;
           payload.report = report;
@@ -705,6 +779,10 @@ export async function registerReportRoutes(
           }
         } catch {
           // ignore
+        }
+
+        if (report && typeof report === 'object') {
+          ensureStructuredRevenueSelectionReason(report);
         }
         
         const endTs = Date.now();

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const updateJobProgress = vi.fn(async () => undefined);
 const getDocumentsForDealWithVerification = vi.fn();
 const getDocumentsByIds = vi.fn();
+const getDocumentOriginalFileMeta = vi.fn();
 const deleteExtractionEvidenceForDocument = vi.fn(async () => undefined);
 const insertDocumentExtractionAudit = vi.fn(async () => undefined);
 const updateDocumentStatus = vi.fn(async () => undefined);
@@ -12,6 +13,7 @@ const enqueuePersistedJob = vi.fn(async (input: any) => ({ job_id: String(input?
 vi.mock("../../lib/job-progress", () => ({ updateJobProgress }));
 vi.mock("../../lib/db", () => ({
 	deleteExtractionEvidenceForDocument,
+	getDocumentOriginalFileMeta,
 	getDocumentsByIds,
 	getDocumentsForDealWithVerification,
 	insertDocumentExtractionAudit,
@@ -25,6 +27,9 @@ describe("reextractDocumentsProcessor", () => {
 	});
 
 	it("forced reextract completes after enqueueing child jobs", async () => {
+		(getDocumentOriginalFileMeta as any).mockResolvedValue(null);
+		(getDocumentOriginalFileMeta as any).mockResolvedValue(null);
+
 		(getDocumentsForDealWithVerification as any).mockResolvedValueOnce([
 			{
 				id: "doc1",

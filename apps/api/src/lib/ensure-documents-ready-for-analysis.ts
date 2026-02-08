@@ -160,6 +160,7 @@ export async function ensureDocumentsReadyForAnalysis(args: {
 
     const metaObj = d.extraction_metadata && typeof d.extraction_metadata === "object" ? (d.extraction_metadata as any) : null;
     const renderedR2 = metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === "object" ? (metaObj.rendered_pages_r2 as any) : null;
+    const renderedDir = typeof metaObj?.rendered_pages_dir === "string" ? metaObj.rendered_pages_dir.trim() : "";
     const renderedCount = typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count) ? Math.max(0, Math.trunc(metaObj.rendered_pages_count)) : 0;
     const renderedRendered = typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered) ? Math.max(0, Math.trunc(metaObj.rendered_pages_rendered)) : null;
 
@@ -175,15 +176,14 @@ export async function ensureDocumentsReadyForAnalysis(args: {
       visualDocIdsNeedingOcr.push(d.id);
     }
 
-    const needsRender =
-      caps.supports_page_rendering &&
-      (
-        pageCount <= 0 ||
-        !renderedR2 ||
-        renderedCount <= 0 ||
-        renderedRendered == null ||
-        renderedRendered < renderedCount
-      );
+    // Render prerequisites can be satisfied via:
+    // - R2-backed rendered pages (rendered_pages_r2)
+    // - Local rendered pages (rendered_pages_dir)
+    // In dev/local mode we often render to local disk, so requiring rendered_pages_r2
+    // will cause /prepare to continuously enqueue render jobs and never advance to DPU.
+    const hasRenderedPagesLocation = !!renderedR2 || renderedDir.length > 0;
+    const hasRenderProgress = renderedCount > 0 && renderedRendered != null && renderedRendered >= renderedCount;
+    const needsRender = caps.supports_page_rendering && (pageCount <= 0 || !hasRenderedPagesLocation || !hasRenderProgress);
 
     if (needsRender) {
       visualDocIdsNeedingRender.push(d.id);

@@ -1,0 +1,13 @@
+{
+  "fixture_key": "real_estate/little-rock-ar-nobis-pref-equity-opportunity",
+  "vertical": "real_estate",
+  "basename_slug": "little-rock-ar-nobis-pref-equity-opportunity",
+  "deal_id": "5082afc8-2176-45ad-90ea-54283d3e5f1f",
+  "document_id": "d38f8f6a-3bb8-4e13-ab32-77fa80a8af70",
+  "inputs_hash": "534f6a9c0cbabc86227b52f2ca90ee1380c60f4b847e927d5d7dc135e5008e33",
+  "deck_archetype_key": "unknown",
+  "generated_at": "2026-02-07T17:55:36.796Z",
+  "base_url": "http://localhost:9001",
+  "deck_file": "test/fixtures/decks/real_estate/Little Rock, AR -  Nobis Pref. Equity Opportunity.pdf",
+  "deck_file_sha256": "dbc598d832764ef09f3af2db01bd8efb01df58fb496e0a6474c85f36f1ef44d8"
+}

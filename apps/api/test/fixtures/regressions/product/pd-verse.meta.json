@@ -1,0 +1,13 @@
+{
+  "fixture_key": "product/pd-verse",
+  "vertical": "product",
+  "basename_slug": "pd-verse",
+  "deal_id": "9e03b5a8-eb84-4750-a8dc-8100a7b3180b",
+  "document_id": "8b333e47-a2d6-4277-9aa0-9775d858381a",
+  "inputs_hash": "ac9efa99855cbacaa416688e8227b113cad869e17e027d03a869590f1172572d",
+  "deck_archetype_key": "unknown",
+  "generated_at": "2026-02-07T23:56:53.824Z",
+  "base_url": "http://localhost:9001",
+  "deck_file": "test/fixtures/decks/product/PD - Verse.pdf",
+  "deck_file_sha256": "b3c2eed844b7d1bda7a1ae6940db924df96a0fa0af2bc7681156764ab60796ee"
+}

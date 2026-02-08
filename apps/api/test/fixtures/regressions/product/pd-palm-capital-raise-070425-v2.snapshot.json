@@ -1,0 +1,114 @@
+{
+  "debug": {
+    "deck_archetype_key": "consumer_apparel_dtc",
+    "archetype_confidence": 0.8857142857142858
+  },
+  "structured_summary": {
+    "kpis": {
+      "raise": {
+        "value_raw": "$1.5MM",
+        "value": "$1.5MM",
+        "scope_label": null,
+        "selection_reason": null,
+        "source": {
+          "page": 20,
+          "slide_title": "Capital Raise."
+        }
+      },
+      "revenue": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": "not_extracted_yet",
+        "source": null
+      },
+      "customers": {
+        "value_raw": "46",
+        "value": {
+          "count": 46,
+          "kind": "customers"
+        },
+        "scope_label": "Wholesale",
+        "selection_reason": null,
+        "source": {
+          "page": 23,
+          "slide_title": "Strategic Hires & Wholesale Build Out"
+        }
+      },
+      "growth": {
+        "value_raw": "Forecast: $4.5M (2026)",
+        "value": {
+          "percent": null,
+          "year": 2026
+        },
+        "scope_label": "Forecast",
+        "selection_reason": null,
+        "source": {
+          "page": 17,
+          "slide_title": "Growth Forecast."
+        }
+      },
+      "performance": {
+        "marketing_attributed_revenue_v1": {
+          "value_raw": "$800k",
+          "value": null,
+          "scope_label": "email_sms",
+          "selection_reason": "marketing_attributed_revenue_v1",
+          "source": {
+            "page": 9,
+            "slide_title": "Business Performance:"
+          }
+        }
+      }
+    }
+  },
+  "deal_summary": {
+    "tiers": {
+      "hero": "This is a consumer brand in golf apparel and accessories.",
+      "overview": "This is a consumer brand in golf apparel and accessories. Product: Palm enables the lifestyle of golf. Market: Participation in the sport has seen double digit growth over the last 5 years with over 36 million players in the US.",
+      "deep": "This is a consumer brand in golf apparel and accessories. Product details: Palm enables the lifestyle of golf. Our apparel and accessories are rooted in the game of golf but are worn by lovers of fun on and off the course. Market / ICP: Participation in the sport has seen double digit growth over the last 5 years with over 36 million players in the US. Largest Segment is 18–34-year-old male, with 6.2M participants in 2022. Participation in the sport has seen double digit growth over the last 5 years with over 36 million players in the US. Largest Segment is 18–34-year-old male, with 6.2M participants in 2022. Palm enables the lifestyle of golf."
+    },
+    "tier_char_counts": {
+      "hero": 57,
+      "overview": 228,
+      "deep": 652
+    }
+  },
+  "product_summary": {
+    "product_definition": "Golf apparel and accessories including gloves, men’s and women’s apparel, and lifestyle accessories.",
+    "product_validation": "Validation: Golf Digest Collab with some of Golf’s Coolest Brands."
+  },
+  "market_summary": {
+    "market_target": "Serves: Sports Organizations – allows for a regional targeted play (i.e. SEC Campus collection) during slow season.",
+    "market_context": "Context: Golf is growing."
+  },
+  "score_explanation": {
+    "understanding_v1": {
+      "summary_char_count": 170,
+      "strengths": {
+        "count": 1,
+        "items": [
+          "Narrative pacing score computed"
+        ]
+      },
+      "execution_dependencies": {
+        "count": 0,
+        "items": []
+      },
+      "diligence_open_items": {
+        "count": 7,
+        "items": [
+          "Add burn, runway, cash balance, and margin profile (or a simple P&L).",
+          "Add evidence for missing sections: business_model, financials, risks.",
+          "business_model",
+          "Confirm cash balance, burn rate, and runway (and whether financials are cash vs accrual).",
+          "key_risks_detected"
+        ]
+      }
+    }
+  },
+  "citations": {
+    "total_sources": 11,
+    "unique_pages": 5
+  }
+}

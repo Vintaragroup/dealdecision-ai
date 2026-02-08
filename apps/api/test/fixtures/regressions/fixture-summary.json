@@ -1,0 +1,123 @@
+{
+  "generated_at": "2026-02-07T23:58:32.674Z",
+  "decks_root": "test/fixtures/decks",
+  "out_root": "test/fixtures/regressions",
+  "base_url": "http://localhost:9001",
+  "full": true,
+  "timeout_ms": 600000,
+  "verticals": [
+    "product",
+    "technology",
+    "services"
+  ],
+  "fixtures": [
+    {
+      "fixtureKey": "product/pd-palm-capital-raise-070425-v2",
+      "vertical": "product",
+      "basenameSlug": "pd-palm-capital-raise-070425-v2",
+      "inputPath": "test/fixtures/decks/product/PD - Palm Capital Raise 070425 v2 .pptx",
+      "status": "ok",
+      "duration_ms": 4490,
+      "step": "report.fetch",
+      "deal_id": "a23e4041-f927-4266-baf1-58cdf73468ab",
+      "document_id": "d727f8d2-0fba-4ca8-8c32-ab7c2ad3433d",
+      "inputs_hash": "a5a5e40d2bcbe6bb78e57fb8188cab115b25502c4c364abeabe075adc7217630",
+      "deck_archetype_key": "consumer_apparel_dtc",
+      "output": {
+        "snapshot": "test/fixtures/regressions/product/pd-palm-capital-raise-070425-v2.snapshot.json",
+        "meta": "test/fixtures/regressions/product/pd-palm-capital-raise-070425-v2.meta.json",
+        "full": "test/fixtures/regressions/product/pd-palm-capital-raise-070425-v2.full.report.json"
+      }
+    },
+    {
+      "fixtureKey": "product/pd-verse",
+      "vertical": "product",
+      "basenameSlug": "pd-verse",
+      "inputPath": "test/fixtures/decks/product/PD - Verse.pdf",
+      "status": "ok",
+      "duration_ms": 6143,
+      "step": "report.fetch",
+      "deal_id": "9e03b5a8-eb84-4750-a8dc-8100a7b3180b",
+      "document_id": "8b333e47-a2d6-4277-9aa0-9775d858381a",
+      "inputs_hash": "ac9efa99855cbacaa416688e8227b113cad869e17e027d03a869590f1172572d",
+      "deck_archetype_key": "unknown",
+      "output": {
+        "snapshot": "test/fixtures/regressions/product/pd-verse.snapshot.json",
+        "meta": "test/fixtures/regressions/product/pd-verse.meta.json",
+        "full": "test/fixtures/regressions/product/pd-verse.full.report.json"
+      }
+    },
+    {
+      "fixtureKey": "services/black-horse-cim",
+      "vertical": "services",
+      "basenameSlug": "black-horse-cim",
+      "inputPath": "test/fixtures/decks/services/Black-Horse-CIM.pdf",
+      "status": "ok",
+      "duration_ms": 6117,
+      "step": "report.fetch",
+      "deal_id": "2dd60d8e-fe26-498b-859b-19fcd2e0467b",
+      "document_id": "00ba23d9-d5d5-454d-8add-2b39f1d0b49f",
+      "inputs_hash": "4b182e8a3d92248d6e973cd0a4882038633075a006f847969e62e3fa29f2a5fd",
+      "deck_archetype_key": "unknown",
+      "output": {
+        "snapshot": "test/fixtures/regressions/services/black-horse-cim.snapshot.json",
+        "meta": "test/fixtures/regressions/services/black-horse-cim.meta.json",
+        "full": "test/fixtures/regressions/services/black-horse-cim.full.report.json"
+      }
+    },
+    {
+      "fixtureKey": "services/pd-brandpoint-services-pcc-vf",
+      "vertical": "services",
+      "basenameSlug": "pd-brandpoint-services-pcc-vf",
+      "inputPath": "test/fixtures/decks/services/PD - BrandPoint Services PCC vF.pdf",
+      "status": "ok",
+      "duration_ms": 12163,
+      "step": "report.fetch",
+      "deal_id": "73a086bf-6a4e-4033-913d-86b596b69fa7",
+      "document_id": "a7f28905-41b2-4e64-ab35-6044d347b234",
+      "inputs_hash": "804f78f715635ac4570df29f42f37068c91fb528447205fd1264bb63849c4413",
+      "deck_archetype_key": "unknown",
+      "output": {
+        "snapshot": "test/fixtures/regressions/services/pd-brandpoint-services-pcc-vf.snapshot.json",
+        "meta": "test/fixtures/regressions/services/pd-brandpoint-services-pcc-vf.meta.json",
+        "full": "test/fixtures/regressions/services/pd-brandpoint-services-pcc-vf.full.report.json"
+      }
+    },
+    {
+      "fixtureKey": "technology/pd-cino-deck-2025-series-a",
+      "vertical": "technology",
+      "basenameSlug": "pd-cino-deck-2025-series-a",
+      "inputPath": "test/fixtures/decks/technology/PD - Cino Deck 2025 Series A.pdf",
+      "status": "ok",
+      "duration_ms": 66357,
+      "step": "report.fetch",
+      "deal_id": "d511b33f-2d6c-4872-b9b2-0385ce2fadac",
+      "document_id": "32f6109d-3412-48cd-bb61-2420f8c72ba4",
+      "inputs_hash": "ac9efa99855cbacaa416688e8227b113cad869e17e027d03a869590f1172572d",
+      "deck_archetype_key": "unknown",
+      "output": {
+        "snapshot": "test/fixtures/regressions/technology/pd-cino-deck-2025-series-a.snapshot.json",
+        "meta": "test/fixtures/regressions/technology/pd-cino-deck-2025-series-a.meta.json",
+        "full": "test/fixtures/regressions/technology/pd-cino-deck-2025-series-a.full.report.json"
+      }
+    },
+    {
+      "fixtureKey": "technology/pd-qredible-future-of-compliance-v6-v2",
+      "vertical": "technology",
+      "basenameSlug": "pd-qredible-future-of-compliance-v6-v2",
+      "inputPath": "test/fixtures/decks/technology/PD - Qredible Future of Compliance V6 (v2).pdf",
+      "status": "ok",
+      "duration_ms": 14212,
+      "step": "report.fetch",
+      "deal_id": "8c82e142-d6fd-470f-8a28-63d687ec76a8",
+      "document_id": "34713cc2-4a91-42a6-87ea-29738806cb04",
+      "inputs_hash": "2286880cb3fdf43ef2a7624a3091179854cfa9fb618f9f9bcc6c9edd3a12d03d",
+      "deck_archetype_key": "unknown",
+      "output": {
+        "snapshot": "test/fixtures/regressions/technology/pd-qredible-future-of-compliance-v6-v2.snapshot.json",
+        "meta": "test/fixtures/regressions/technology/pd-qredible-future-of-compliance-v6-v2.meta.json",
+        "full": "test/fixtures/regressions/technology/pd-qredible-future-of-compliance-v6-v2.full.report.json"
+      }
+    }
+  ]
+}

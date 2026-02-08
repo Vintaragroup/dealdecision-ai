@@ -1,0 +1,13 @@
+{
+  "fixture_key": "services/pd-brandpoint-services-pcc-vf",
+  "vertical": "services",
+  "basename_slug": "pd-brandpoint-services-pcc-vf",
+  "deal_id": "73a086bf-6a4e-4033-913d-86b596b69fa7",
+  "document_id": "a7f28905-41b2-4e64-ab35-6044d347b234",
+  "inputs_hash": "804f78f715635ac4570df29f42f37068c91fb528447205fd1264bb63849c4413",
+  "deck_archetype_key": "unknown",
+  "generated_at": "2026-02-07T23:57:12.104Z",
+  "base_url": "http://localhost:9001",
+  "deck_file": "test/fixtures/decks/services/PD - BrandPoint Services PCC vF.pdf",
+  "deck_file_sha256": "53dae7d8559dc8cc03a7524bbbcaf6c7ba9f56d1e35399b3fca37bf8c9a0a455"
+}

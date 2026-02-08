@@ -104,3 +104,14 @@ __pycache__/
 
 # giga
 .giga/
+
+
+# Fixture regression artifacts (generated)
+apps/api/test/fixtures/regressions/**/*.full.report.json
+apps/api/test/fixtures/regressions/runner*.log
+
+# Allow committed regression baselines
+!apps/api/test/fixtures/regressions/**/*.snapshot.json
+!apps/api/test/fixtures/regressions/**/*.meta.json
+!apps/api/test/fixtures/regressions/fixture-summary.json
+!apps/api/test/fixtures/regressions/VERIFICATION_REPORT.md

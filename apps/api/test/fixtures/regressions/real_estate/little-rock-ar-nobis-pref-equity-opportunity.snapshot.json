@@ -1,0 +1,75 @@
+{
+  "debug": {
+    "deck_archetype_key": "unknown",
+    "archetype_confidence": 0
+  },
+  "structured_summary": {
+    "kpis": {
+      "raise": {
+        "value_raw": "Raise $5.7M",
+        "value": "Raise $5.7M",
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      },
+      "revenue": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": "not_extracted_yet",
+        "source": null
+      },
+      "customers": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      },
+      "growth": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      }
+    }
+  },
+  "deal_summary": {
+    "tiers": {
+      "hero": "This is a company in product.",
+      "overview": "This is a company in product. Key details are pending from extracted materials.",
+      "deep": "This is a company in product. Key details are pending from extracted materials. Notes: limited extracted signals so far."
+    },
+    "tier_char_counts": {
+      "hero": 29,
+      "overview": 79,
+      "deep": 120
+    }
+  },
+  "score_explanation": {
+    "understanding_v1": {
+      "summary_char_count": 83,
+      "strengths": {
+        "count": 3,
+        "items": [
+          "Benchmarks applied to extracted metrics",
+          "Narrative pacing score computed",
+          "Risks assessed; risk score inverted for investment score"
+        ]
+      },
+      "execution_dependencies": {
+        "count": 0,
+        "items": []
+      },
+      "diligence_open_items": {
+        "count": 0,
+        "items": []
+      }
+    }
+  },
+  "citations": {
+    "total_sources": 0,
+    "unique_pages": 0
+  }
+}

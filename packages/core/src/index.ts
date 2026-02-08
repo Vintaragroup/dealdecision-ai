@@ -150,6 +150,12 @@ export { buildScoreExplanationFromDIO, buildScoringDiagnosticsFromDIO } from "./
 export type { ScoreExplanation } from "./reports/score-explanation";
 export type { ScoringDiagnosticsV1 } from "./types/dio";
 
+// Verticals
+export { getVerticalContract } from "./verticals/vertical-contracts";
+export type { VerticalKey, VerticalContract } from "./verticals/vertical-contracts";
+export { validateReportAgainstContract } from "./verticals/validate-vertical-contract";
+export type { ContractViolation } from "./verticals/validate-vertical-contract";
+
 // Deterministic score bridge (API-side gating)
 export { buildDeterministicScoreInputsV1 } from "./scoring/score-inputs-v1";
 export type { ScoreInputsV1 } from "./scoring/score-inputs-v1";

@@ -132,6 +132,27 @@ export async function processDocument(
                 fileName,
               });
               (v1 as unknown as { pdf_v2?: unknown }).pdf_v2 = v2;
+
+              // Hybrid PDFs: if v1 native extraction yields empty per-page text, but v2 shadow has per-page
+              // OCR/native final text, merge v2 final text into v1 pages (non-destructive; only fills empties).
+              try {
+                const v1Pages = (v1 as any)?.pages;
+                const v2Pages = (v2 as any)?.pages;
+                if (Array.isArray(v1Pages) && Array.isArray(v2Pages)) {
+                  for (const p of v2Pages) {
+                    const pageIndex = typeof p?.page_index === "number" ? p.page_index : null;
+                    if (pageIndex == null || pageIndex < 0) continue;
+                    const finalText = typeof p?.final?.text === "string" ? String(p.final.text) : "";
+                    if (!finalText.trim()) continue;
+                    const v1Page = v1Pages[pageIndex];
+                    if (!v1Page || typeof v1Page?.text !== "string") continue;
+                    if (v1Page.text.trim().length > 0) continue;
+                    v1Page.text = finalText;
+                  }
+                }
+              } catch {
+                // best-effort; never fail extraction due to shadow merge
+              }
             } catch (err) {
               // Shadow mode must never fail ingestion; attach error for observability.
               (v1 as unknown as { pdf_v2?: unknown }).pdf_v2 = {

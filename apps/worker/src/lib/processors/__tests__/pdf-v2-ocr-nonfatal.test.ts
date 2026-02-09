@@ -70,7 +70,7 @@ vi.mock("pdfjs-dist/legacy/build/pdf.js", () => {
 });
 
 // Import after mocks.
-import { extractPDFContentV2Shadow } from "../pdf-v2";
+import { extractPDFContentV2Shadow, needsOcr } from "../pdf-v2";
 
 describe("pdf v2 OCR failures are non-fatal", () => {
 	it("records structured OCR errors and still returns native text", async () => {
@@ -96,5 +96,41 @@ describe("pdf v2 OCR failures are non-fatal", () => {
 
 		// Still succeeds via native text
 		expect(page.final.text).toContain("native text exists");
+	});
+});
+
+describe("pdf v2 per-page OCR gating", () => {
+	it("forces OCR for scanned pages", () => {
+		expect(
+			needsOcr({
+				kind: "scanned",
+				reason: "x",
+				native_word_count: 100,
+				native_text_len: 1000,
+				image_count: 1,
+			})
+		).toBe(true);
+	});
+
+	it("forces OCR when native text or word count is empty", () => {
+		expect(
+			needsOcr({
+				kind: "text",
+				reason: "x",
+				native_word_count: 0,
+				native_text_len: 500,
+				image_count: 0,
+			})
+		).toBe(true);
+
+		expect(
+			needsOcr({
+				kind: "text",
+				reason: "x",
+				native_word_count: 10,
+				native_text_len: 0,
+				image_count: 0,
+			})
+		).toBe(true);
 	});
 });

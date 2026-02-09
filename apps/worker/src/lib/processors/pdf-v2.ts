@@ -186,10 +186,14 @@ function shouldRunOcrV2(ocrMode: PdfV2OcrMode, classification: PdfV2PageClassifi
 	return false; // never for text pages
 }
 
-function needsOcr(classification: PdfV2PageClassification): boolean {
-	// OCR fallback ONLY for scanned pages or insufficient native extraction.
-	// "Insufficient" for text pages is a strict low threshold.
+export function needsOcr(classification: PdfV2PageClassification): boolean {
+	// Deterministic per-page OCR gating:
+	// - Always OCR scanned pages
+	// - OCR when native text is empty (hybrid PDFs can pass global probes but have empty pages)
+	// - Otherwise, OCR only when native is clearly insufficient
 	if (classification.kind === "scanned") return true;
+	if (classification.native_text_len === 0) return true;
+	if (classification.native_word_count === 0) return true;
 	return classification.native_word_count < 5 && classification.native_text_len < 50;
 }
 

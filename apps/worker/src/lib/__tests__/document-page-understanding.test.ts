@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 describe("document_page_understanding population", () => {
 	it("runs deterministic upsert and returns counts", async () => {
@@ -24,6 +24,14 @@ describe("document_page_understanding population", () => {
 
 	it("filters by document + page range and uses conflict target", async () => {
 		const { populateDocumentPageUnderstandingFromVisualExtractions } = await import("../document-page-understanding.js");
+		const logs: any[] = [];
+		const spy = vi.spyOn(console, "log").mockImplementation((msg: any) => {
+			try {
+				logs.push(typeof msg === "string" ? JSON.parse(msg) : msg);
+			} catch {
+				logs.push(msg);
+			}
+		});
 
 		const queries: Array<{ sql: string; params: any[] | undefined }> = [];
 		const pool: any = {
@@ -72,5 +80,9 @@ describe("document_page_understanding population", () => {
 			20,
 			"page_understanding_v1",
 		]);
+
+		const startLog = logs.find((l) => l && typeof l === "object" && l.event === "POPULATE_DOCUMENT_PAGE_UNDERSTANDING_START");
+		expect(startLog?.deal_id).toBe("33333333-3333-3333-3333-333333333333");
+		spy.mockRestore();
 	});
 });

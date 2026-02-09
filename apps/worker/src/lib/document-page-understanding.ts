@@ -3,6 +3,9 @@ import type { Pool } from "pg";
 export type PopulateDpuResult = {
 	upserted: number;
 	page_text_empty: number;
+	candidates_found?: number;
+	rows_with_text?: number;
+	rows_missing_text?: number;
 };
 
 export type PopulateDpuParams =
@@ -119,6 +122,8 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 	const version = (params.version ?? "page_understanding_v1").trim();
 	const hasDocument = typeof (params as any)?.documentId === "string" && String((params as any).documentId).trim().length > 0;
 	const dealId = !hasDocument && typeof (params as any)?.dealId === "string" ? String((params as any).dealId).trim() : "";
+	const dealIdForLogs =
+		hasDocument && typeof (params as any)?.dealId === "string" ? String((params as any).dealId).trim() : dealId;
 	const documentId = hasDocument ? String((params as any).documentId).trim() : "";
 	const pageStartRaw = hasDocument ? (params as any).pageStart : null;
 	const pageEndRaw = hasDocument ? (params as any).pageEnd : null;
@@ -138,7 +143,7 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 		console.log(
 			JSON.stringify({
 				event: "POPULATE_DOCUMENT_PAGE_UNDERSTANDING_START",
-				deal_id: dealId || null,
+				deal_id: dealIdForLogs || null,
 				document_id: documentId || null,
 				page_start: hasDocument ? pageStart : null,
 				page_end: hasDocument ? pageEnd : null,
@@ -561,7 +566,7 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 				JSON.stringify({
 					event: "POPULATE_DOCUMENT_PAGE_UNDERSTANDING_RESULT",
 					mode: hasDocument ? "document_range" : "deal_wide",
-					deal_id: dealId || null,
+					deal_id: dealIdForLogs || null,
 					document_id: documentId || null,
 					page_start: hasDocument ? pageStart : null,
 					page_end: hasDocument ? pageEnd : null,
@@ -593,7 +598,7 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 					JSON.stringify({
 						event: "POPULATE_DOCUMENT_PAGE_UNDERSTANDING_ZERO",
 						mode: hasDocument ? "document_range" : "deal_wide",
-						deal_id: dealId || null,
+						deal_id: dealIdForLogs || null,
 						document_id: documentId || null,
 						page_start: hasDocument ? pageStart : null,
 						page_end: hasDocument ? pageEnd : null,
@@ -624,7 +629,7 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 						JSON.stringify({
 							event: "POPULATE_DOCUMENT_PAGE_UNDERSTANDING_PLACEHOLDERS",
 							document_id: documentId,
-							deal_id: dealId || null,
+							deal_id: dealIdForLogs || null,
 							page_start: pageStart,
 							page_end: pageEnd,
 							version,
@@ -641,6 +646,9 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 		return {
 			upserted: upsertedNum,
 			page_text_empty: emptyNum,
+			candidates_found: Number.isFinite(candidatesFoundNum) ? candidatesFoundNum : 0,
+			rows_with_text: Number.isFinite(rowsWithTextNum) ? rowsWithTextNum : 0,
+			rows_missing_text: Number.isFinite(rowsMissingTextNum) ? rowsMissingTextNum : 0,
 		};
 	} catch (err: any) {
 		if (isMissingTableError(err)) return { upserted: 0, page_text_empty: 0 };

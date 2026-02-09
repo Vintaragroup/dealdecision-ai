@@ -95,6 +95,7 @@ import { computeChunkRangeForPage } from "./lib/r2-probe";
 import { makeJobId } from "./lib/job-id";
 import { reextractDocumentsProcessor } from "./jobs/reextract-documents";
 import { documentIntelligenceExtractProcessor } from "./jobs/document-intelligence-extract";
+import { populateDocumentPageUnderstandingProcessor } from "./jobs/populate-document-page-understanding";
 
 async function countVisualAssetsForDeal(pool: ReturnType<typeof getPool>, dealId: string): Promise<number | null> {
 	try {
@@ -3444,75 +3445,7 @@ registerWorker("render_document_pages", async (job: Job) => {
 });
 
 registerWorker(QUEUE_NAMES.populate_document_page_understanding, async (job: Job) => {
-	const data = (job.data ?? {}) as {
-		deal_id?: string;
-		document_id?: string;
-		page_understanding_version?: string;
-		version?: string;
-	};
-
-	const dealId = typeof data.deal_id === "string" ? data.deal_id.trim() : "";
-	const docId = typeof data.document_id === "string" ? data.document_id.trim() : "";
-	const versionRaw =
-		typeof (data as any).page_understanding_version === "string"
-			? String((data as any).page_understanding_version)
-			: typeof (data as any).version === "string"
-				? String((data as any).version)
-				: "page_understanding_v1";
-	const version = versionRaw.trim() || "page_understanding_v1";
-
-	if (!dealId && !docId) {
-		await updateJob(job, "failed", "Missing deal_id or document_id", 100);
-		return { ok: false, reason: "missing_identifiers" };
-	}
-
-	await updateJob(job, "running", "Populating document page understanding", 5);
-
-	const pool = getPool();
-	let resolvedDealId: string | null = dealId || null;
-	let pageCount: number | null = null;
-
-	if (docId) {
-		try {
-			const { rows } = await pool.query<{ deal_id: string | null; page_count: number | null }>(
-				"SELECT deal_id, page_count FROM documents WHERE id = $1 LIMIT 1",
-				[docId]
-			);
-			resolvedDealId = resolvedDealId || rows?.[0]?.deal_id || null;
-			pageCount = typeof rows?.[0]?.page_count === "number" && Number.isFinite(rows[0].page_count)
-				? Math.max(0, Math.floor(rows[0].page_count))
-				: null;
-		} catch {
-			pageCount = null;
-		}
-	}
-
-	try {
-		const res = docId
-			? await populateDocumentPageUnderstandingFromVisualExtractions(pool as any, {
-				documentId: docId,
-				...(resolvedDealId ? { dealId: resolvedDealId } : {}),
-				pageStart: 0,
-				pageEnd: Math.max(1, pageCount ?? 0),
-				version,
-			})
-			: await populateDocumentPageUnderstandingFromVisualExtractions(pool as any, {
-				dealId: resolvedDealId || dealId,
-				version,
-			});
-
-		await updateJob(
-			job,
-			"succeeded",
-			`Populated document_page_understanding (upserted=${res.upserted}, empty=${res.page_text_empty}, version=${version})`,
-			100
-		);
-		return { ok: true, ...res, version };
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		await updateJob(job, "failed", `populate_document_page_understanding failed: ${msg}`, 100);
-		throw err;
-	}
+	return populateDocumentPageUnderstandingProcessor(job);
 });
 
 const extractVisualsConcurrency = (() => {

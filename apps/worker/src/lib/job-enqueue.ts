@@ -8,6 +8,7 @@ import { getQueue } from "./queue";
 export type EnqueuePersistedJobInput = {
 	job_id?: string;
 	idempotent?: boolean;
+  delay_ms?: number;
   type:
     | "ingest_documents"
     | "render_document_pages"
@@ -105,11 +106,13 @@ export async function enqueuePersistedJob(input: EnqueuePersistedJobInput): Prom
   }
 
   try {
+    const delayMsRaw = typeof input.delay_ms === "number" && Number.isFinite(input.delay_ms) ? input.delay_ms : null;
+    const delayMs = delayMsRaw != null ? Math.max(0, Math.floor(delayMsRaw)) : 250;
     await queue.add(input.type, payload, {
       jobId,
       removeOnComplete: true,
       removeOnFail: false,
-      delay: 250,
+      delay: delayMs,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

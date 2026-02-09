@@ -90,4 +90,32 @@ describe("enqueuePersistedJob", () => {
 			})
 		).rejects.toThrow(/document_id/i);
 	});
+
+	it("supports delay_ms override", async () => {
+		const pool: MockPool = {
+			query: vi.fn(async () => ({ rows: [] } as any)),
+		};
+		const queue: MockQueue = {
+			add: vi.fn(async () => ({} as any)),
+		};
+
+		vi.doMock("../db", () => ({ getPool: () => pool }));
+		vi.doMock("../queue", () => ({ getQueue: () => queue }));
+
+		const { enqueuePersistedJob } = await import("../job-enqueue");
+		await enqueuePersistedJob({
+			job_id: "test_job_delay",
+			type: "ingest_documents",
+			deal_id: "deal_1",
+			document_id: "doc_1",
+			payload: { hello: "world" },
+			delay_ms: 5000,
+		});
+
+		expect(queue.add).toHaveBeenCalledWith(
+			"ingest_documents",
+			expect.any(Object),
+			expect.objectContaining({ delay: 5000 })
+		);
+	});
 });

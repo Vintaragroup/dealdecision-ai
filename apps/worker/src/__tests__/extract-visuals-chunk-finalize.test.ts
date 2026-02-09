@@ -548,4 +548,52 @@ describe("extract_visuals chunking finalization", () => {
 		expect(analyzeLogs.length).toBe(0);
 		logSpy.mockRestore();
 	});
+
+	it("emits DOC_PLAN and starts vision (or logs skip reasons) when URIs exist and skip_existing=false", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined as any);
+		const m = getMocks();
+
+		await extractVisualsProcessor!(
+			makeJob({
+				deal_id: "deal-1",
+				document_id: "doc-1",
+				page_start: 0,
+				page_end: 1,
+				force_reextract: true,
+			})
+		);
+
+		const events = logSpy.mock.calls
+			.map((c) => c[0])
+			.filter((v) => typeof v === "string" && v.trim().startsWith("{"))
+			.map((s) => {
+				try {
+					return JSON.parse(String(s));
+				} catch {
+					return null;
+				}
+			})
+			.filter(Boolean);
+
+		const plan = events.find((e: any) => e.event === "EXTRACT_VISUALS_DOC_PLAN");
+		expect(plan).toBeTruthy();
+		expect(plan.document_id).toBe("doc-1");
+		expect(plan.total_pages).toBeGreaterThan(0);
+		expect(plan.skip_existing).toBe(false);
+		expect(plan.page_range_start).toBe(0);
+		expect(plan.page_range_end).toBe(1);
+
+		const summary = events.find((e: any) => e.event === "EXTRACT_VISUALS_DOC_SUMMARY");
+		expect(summary).toBeTruthy();
+		const skipped = events.filter((e: any) => e.event === "EXTRACT_VISUALS_PAGE_SKIPPED");
+		expect((summary?.vision_calls_started ?? 0) > 0 || skipped.length > 0).toBe(true);
+
+		// If not skipped, we should have started at least one vision call.
+		if (skipped.length === 0) {
+			expect(m.callVisionWorkerWithRetries).toHaveBeenCalled();
+			expect(summary?.vision_calls_started ?? 0).toBeGreaterThan(0);
+		}
+
+		logSpy.mockRestore();
+	});
 });

@@ -4175,6 +4175,44 @@ registerWorker("extract_visuals", async (job: Job) => {
 		const totalPages = uris.length;
 		const totalPagesForChunking = Math.max(totalPages, typeof docPageCount === "number" ? docPageCount : 0);
 
+		// Instrumentation: log the plan immediately after URI resolution so production can prove why
+		// we may skip pages (e.g., page_count > uris.length in eventual consistency scenarios).
+		try {
+			const skipExisting = !forceReextract && !forceOcr;
+			const totalPagesForRange = totalPagesForChunking > 0 ? totalPagesForChunking : totalPages;
+			const plannedPageStart = Math.min(requestedPageStart, Math.max(0, totalPagesForRange - 1));
+			const plannedPageEndExclusive =
+				typeof requestedPageEnd === "number"
+					? Math.min(Math.max(plannedPageStart, requestedPageEnd), totalPagesForRange)
+					: Math.min(plannedPageStart + chunkSize, totalPagesForRange);
+			console.log(
+				JSON.stringify({
+					event: "EXTRACT_VISUALS_DOC_PLAN",
+					job_id: job.id ? String(job.id) : null,
+					deal_id: (typeof dealId === "string" ? dealId : null) ?? null,
+					document_id: docId,
+					total_pages: totalPages,
+					total_pages_for_range: totalPagesForRange,
+					page_range_start: plannedPageStart,
+					page_range_end: plannedPageEndExclusive,
+					max_pages: chunkSize,
+					extractor_version: extractorVersion,
+					skip_existing: skipExisting,
+					rerun_flags: {
+						force_resegment: forceResegment,
+						force_reextract: forceReextract,
+						force_ocr: forceOcr,
+						enqueue_deep_scan: enqueueDeepScan,
+					},
+					is_coordinator: isCoordinator,
+					is_chunk_job: isChunkJob,
+					ts: new Date().toISOString(),
+				})
+			);
+		} catch {
+			// never block extraction on logging
+		}
+
 		// Coordinator behavior: only enqueue chunk jobs and exit without processing pages or finalizing.
 		if (isCoordinator) {
 			try {
@@ -5328,11 +5366,35 @@ registerWorker("extract_visuals", async (job: Job) => {
 		let pagesCompletedInJob = 0;
 		let lastReportedCompleted = 0;
 		let lastSkipReportMs = 0;
+		let docPagesConsidered = 0;
+		let docPagesSkipped = 0;
+		let docPagesProcessed = 0;
+		let docVisionCallsStarted = 0;
+		let docVisionCallsDone = 0;
 
 		for (let i = pageStart; i < pageEndExclusive; i += 1) {
+			docPagesConsidered += 1;
+			let visionStartedForPage = false;
+			try {
 			if (!visionFallbackAllowedForDoc) {
 				pagesSkippedPolicy += 1;
+				docPagesSkipped += 1;
 				pagesCompletedInJob += 1;
+				try {
+					console.log(
+						JSON.stringify({
+							event: "EXTRACT_VISUALS_PAGE_SKIPPED",
+							job_id: job.id ? String(job.id) : null,
+							deal_id: derivedDealId ?? null,
+							document_id: docId,
+							page_index: i,
+							reason_code: "other",
+							ts: new Date().toISOString(),
+						})
+					);
+				} catch {
+					// ignore
+				}
 				const nowMs = Date.now();
 				const shouldReport =
 					(pagesCompletedInJob - lastReportedCompleted) >= 3 ||
@@ -5357,6 +5419,28 @@ registerWorker("extract_visuals", async (job: Job) => {
 							range: { start: pageStart, end: pageEndExclusive },
 						},
 					});
+				}
+				continue;
+			}
+
+			// If doc_page_count > uris.length, the loop may iterate beyond resolved image URIs.
+			if (i >= uris.length) {
+				docPagesSkipped += 1;
+				pagesCompletedInJob += 1;
+				try {
+					console.log(
+						JSON.stringify({
+							event: "EXTRACT_VISUALS_PAGE_SKIPPED",
+							job_id: job.id ? String(job.id) : null,
+							deal_id: derivedDealId ?? null,
+							document_id: docId,
+							page_index: i,
+							reason_code: "out_of_range",
+							ts: new Date().toISOString(),
+						})
+					);
+				} catch {
+					// ignore
 				}
 				continue;
 			}
@@ -5428,6 +5512,26 @@ registerWorker("extract_visuals", async (job: Job) => {
 			}
 
 			const image_uri = uris[i];
+			if (typeof image_uri !== "string" || image_uri.trim().length === 0) {
+				docPagesSkipped += 1;
+				pagesCompletedInJob += 1;
+				try {
+					console.log(
+						JSON.stringify({
+							event: "EXTRACT_VISUALS_PAGE_SKIPPED",
+							job_id: job.id ? String(job.id) : null,
+							deal_id: derivedDealId ?? null,
+							document_id: docId,
+							page_index: i,
+							reason_code: "page_missing_uri",
+							ts: new Date().toISOString(),
+						})
+					);
+				} catch {
+					// ignore
+				}
+				continue;
+			}
 			const signedUrlPrefix = (() => {
 				if (typeof image_uri !== "string" || !image_uri) return null;
 				try {
@@ -5474,7 +5578,23 @@ registerWorker("extract_visuals", async (job: Job) => {
 					if ((rows?.length ?? 0) > 0) {
 						pagesSkippedExisting += 1;
 						docPagesSkippedExisting += 1;
+						docPagesSkipped += 1;
 						pagesCompletedInJob += 1;
+						try {
+							console.log(
+								JSON.stringify({
+									event: "EXTRACT_VISUALS_PAGE_SKIPPED",
+									job_id: job.id ? String(job.id) : null,
+									deal_id: derivedDealId ?? null,
+									document_id: docId,
+									page_index: i,
+									reason_code: "already_has_assets",
+									ts: new Date().toISOString(),
+								})
+							);
+						} catch {
+							// ignore
+						}
 						const nowMs = Date.now();
 						const shouldReport =
 							(pagesCompletedInJob - lastReportedCompleted) >= 3 ||
@@ -5589,6 +5709,9 @@ registerWorker("extract_visuals", async (job: Job) => {
 			}
 
 			docVisionAttempted += 1;
+			visionStartedForPage = true;
+			docVisionCallsStarted += 1;
+			docPagesProcessed += 1;
 			pagesVisionAttempted += 1;
 			const timeoutsMs = docKind === "powerpoint" ? [20_000, 60_000, 90_000] : [20_000, 60_000];
 			const { response, attempts } = await callVisionWorkerWithRetries(
@@ -5603,6 +5726,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 				},
 				{ logger: console, logMeta: visionLogMeta, runtime: visionRuntime, timeoutsMs, backoffMs: [500, 1500] }
 			);
+			docVisionCallsDone += 1;
 			let resolvedResponse = response;
 			if (!resolvedResponse) {
 				console.warn(
@@ -5779,6 +5903,54 @@ registerWorker("extract_visuals", async (job: Job) => {
 				);
 			}
 			await yieldToEventLoop();
+			} catch (err) {
+				if (!visionStartedForPage) {
+					const msg = err instanceof Error ? err.message : String(err);
+					const stack = err instanceof Error ? err.stack : undefined;
+					try {
+						console.warn(
+							JSON.stringify({
+								event: "EXTRACT_VISUALS_DOC_ERROR_BEFORE_VISION",
+								job_id: job.id ? String(job.id) : null,
+								deal_id: derivedDealId ?? null,
+								document_id: docId,
+								page_index: i,
+								message: msg,
+								stack,
+								ts: new Date().toISOString(),
+							})
+						);
+					} catch {
+						// ignore
+					}
+				}
+				throw err;
+			}
+		}
+
+		try {
+			console.log(
+				JSON.stringify({
+					event: "EXTRACT_VISUALS_DOC_SUMMARY",
+					job_id: job.id ? String(job.id) : null,
+					deal_id: derivedDealId ?? null,
+					document_id: docId,
+					page_range_start: pageStart,
+					page_range_end: pageEndExclusive,
+					total_pages: uris.length,
+					pages_considered: docPagesConsidered,
+					pages_skipped: docPagesSkipped,
+					pages_processed: docPagesProcessed,
+					vision_calls_started: docVisionCallsStarted,
+					vision_calls_done: docVisionCallsDone,
+					persisted_assets_total: docPersisted,
+					extractor_version: extractorVersion,
+					skip_existing: !forceReextract && !forceOcr,
+					ts: new Date().toISOString(),
+				})
+			);
+		} catch {
+			// ignore
 		}
 
 		// Populate document_page_understanding per chunk, immediately after this chunk's visual_assets + visual_extractions

@@ -1,9 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type MockPool = { query: ReturnType<typeof vi.fn> };
 type MockQueue = { add: ReturnType<typeof vi.fn> };
 
 describe("enqueuePersistedJob", () => {
+	beforeEach(() => {
+		vi.resetModules();
+		vi.clearAllMocks();
+	});
+
 	it("inserts job row before queue.add", async () => {
 		const calls: string[] = [];
 		const pool: MockPool = {

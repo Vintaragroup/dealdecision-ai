@@ -162,3 +162,20 @@ export type { ScoreInputsV1 } from "./scoring/score-inputs-v1";
 
 // Phase 1 deterministic composer (used by worker for change acknowledgement)
 export { generatePhase1DIOV1 } from "./phase1/phase1-dio-v1";
+
+// LLM narration (API-side optional feature)
+export { LlmNarrationV1Schema } from "./llm/narration-schema";
+export type { LlmNarrationV1 } from "./llm/narration-schema";
+export type { LlmNarrationV1 as LlmNarrationV1Type } from "./llm/narration-schema";
+
+// LLM overview (API-side optional feature)
+export { LlmOverviewV1Schema, LlmOverviewV1CitationSchema } from "./llm/overview-schema";
+export type { LlmOverviewV1 } from "./llm/overview-schema";
+export type { LlmOverviewV1 as LlmOverviewV1Type } from "./llm/overview-schema";
+export { buildNarrationPrompt } from "./llm/build-narration-prompt";
+export { buildOverviewPrompt } from "./llm/build-overview-prompt";
+export { buildInvestmentAnalysisOverviewPrompt } from "./llm/build-investment-analysis-overview-prompt";
+export { degradeNarrationV1, validateNoNewFacts } from "./llm/narration-guard";
+export type { NarrationGuardResult, NarrationGuardViolation } from "./llm/narration-guard";
+export { degradeOverviewV1 } from "./llm/overview-guard";
+export type { OverviewDegradeResult, OverviewGuardError, OverviewGuardViolation } from "./llm/overview-guard";

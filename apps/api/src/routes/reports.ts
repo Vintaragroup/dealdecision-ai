@@ -141,7 +141,7 @@ const normalizeKpiForNarrationExcerpt = (kpi: any): any => {
   return out;
 };
 
-function buildAllowlistedNarrationExcerpt(report: any): any {
+function buildAllowlistedNarrationExcerpt(report: any, opts?: { promoted_facts?: any[] }): any {
   const structured = report?.structured_summary && typeof report.structured_summary === 'object' ? report.structured_summary : null;
   const kpisRaw = structured?.kpis && typeof structured.kpis === 'object' ? structured.kpis : null;
 
@@ -206,7 +206,25 @@ function buildAllowlistedNarrationExcerpt(report: any): any {
     return { total_sources: pages.length, unique_pages: unique.size };
   })();
 
-  const understanding = report?.metadata?.score_explanation?.understanding_v1 ?? null;
+  const scoreExplanation = report?.metadata?.score_explanation ?? null;
+  const understanding = scoreExplanation?.understanding_v1 ?? null;
+
+  // Expand allowlisted grounding surface with deterministic, provenance-linked evidence IDs.
+  // This is excerpt-only (overlay use); it must not mutate canonical deterministic report outputs.
+  const componentEvidenceIds = (() => {
+    const out: Record<string, string[]> = {};
+    const comps = scoreExplanation?.components;
+    if (!comps || typeof comps !== 'object') return out;
+    for (const [k, v] of Object.entries(comps)) {
+      if (!v || typeof v !== 'object') continue;
+      const ids = Array.isArray((v as any).evidence_ids) ? (v as any).evidence_ids : [];
+      const cleaned = ids
+        .map((x: any) => (typeof x === 'string' ? x.trim() : ''))
+        .filter((x: string) => x.length > 0);
+      if (cleaned.length > 0) out[k] = cleaned.slice(0, 80);
+    }
+    return out;
+  })();
 
   return {
     structured_summary: structured
@@ -216,8 +234,11 @@ function buildAllowlistedNarrationExcerpt(report: any): any {
         }
       : null,
     deal_summary_v1: report?.deal_summary ?? null,
+    // Optional: promoted facts (deterministic; provenance via evidence_id + source_path)
+    promoted_facts: Array.isArray(opts?.promoted_facts) ? opts?.promoted_facts : null,
     score_explanation: {
       understanding_v1: understanding,
+      component_evidence_ids: componentEvidenceIds,
     },
     citations: citationsSummary,
   };
@@ -228,6 +249,7 @@ async function maybeAttachNarrationV1(args: {
   report: any;
   nextMetadata: any;
   narrateEnabled: boolean;
+  promotedFactsForExcerpt?: any[];
 }): Promise<void> {
   if (!args.narrateEnabled) return;
   if (!args.report || typeof args.report !== 'object') return;
@@ -235,7 +257,7 @@ async function maybeAttachNarrationV1(args: {
   const meta = args.nextMetadata && typeof args.nextMetadata === 'object' ? args.nextMetadata : {};
   const model = process.env.OPENAI_MODEL_REPORT_NARRATE || 'gpt-4o-mini';
 
-  const excerpt = buildAllowlistedNarrationExcerpt(args.report);
+  const excerpt = buildAllowlistedNarrationExcerpt(args.report, { promoted_facts: args.promotedFactsForExcerpt });
   const prompt = buildNarrationPrompt({ excerpt });
 
   const devCacheEnabled = String(process.env.NODE_ENV ?? '').toLowerCase() === 'development';
@@ -511,6 +533,7 @@ async function maybeAttachOverviewV1(args: {
   report: any;
   nextMetadata: any;
   narrateEnabled: boolean;
+  promotedFactsForExcerpt?: any[];
 }): Promise<void> {
   if (!args.narrateEnabled) return;
   if (!args.report || typeof args.report !== 'object') return;
@@ -537,7 +560,7 @@ async function maybeAttachOverviewV1(args: {
   let excerpt: any;
   let prompt: { system: string; user: string };
   try {
-    excerpt = buildAllowlistedNarrationExcerpt(args.report);
+    excerpt = buildAllowlistedNarrationExcerpt(args.report, { promoted_facts: args.promotedFactsForExcerpt });
     const narrationStyleHint = (args.report as any).llm_narration_v1 ?? null;
     prompt = buildOverviewPrompt({ reportExcerpt: excerpt, narration: narrationStyleHint });
   } catch (err) {
@@ -640,6 +663,7 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
   report: any;
   nextMetadata: any;
   narrateEnabled: boolean;
+  promotedFactsForExcerpt?: any[];
 }): Promise<void> {
   if (!args.narrateEnabled) return;
   if (!args.report || typeof args.report !== 'object') return;
@@ -754,7 +778,7 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
   let excerpt: any;
   let prompt: { system: string; user: string };
   try {
-    excerpt = buildAllowlistedNarrationExcerpt(args.report);
+    excerpt = buildAllowlistedNarrationExcerpt(args.report, { promoted_facts: args.promotedFactsForExcerpt });
     prompt = buildInvestmentAnalysisOverviewPrompt({ reportExcerpt: excerpt });
   } catch (err) {
     const baseMessage = err instanceof Error ? err.message : String(err ?? 'unknown_error');
@@ -1572,15 +1596,19 @@ export async function registerReportRoutes(
           // ignore
         }
 
-        if (Array.isArray(promotedFacts) && promotedFacts.length > 0) {
-          payload.promoted_facts = promotedFacts.map((r: any) => ({
-            fact_type: r?.content_json?.fact_type ?? r?.fact_type ?? null,
-            value_json: r?.content_json?.value_json ?? null,
-            confidence: r?.confidence ?? null,
-            source_path: r?.source_path ?? null,
-            evidence_id: r?.evidence_id ?? null,
-            extracted_at: r?.extracted_at ?? null,
-          }));
+        const promotedFactsForExcerpt = Array.isArray(promotedFacts) && promotedFacts.length > 0
+          ? promotedFacts.map((r: any) => ({
+              fact_type: r?.content_json?.fact_type ?? r?.fact_type ?? null,
+              value_json: r?.content_json?.value_json ?? null,
+              confidence: r?.confidence ?? null,
+              source_path: r?.source_path ?? null,
+              evidence_id: r?.evidence_id ?? null,
+              extracted_at: r?.extracted_at ?? null,
+            }))
+          : null;
+
+        if (Array.isArray(promotedFactsForExcerpt) && promotedFactsForExcerpt.length > 0) {
+          payload.promoted_facts = promotedFactsForExcerpt;
         }
         const narrateEnabled = envFlagEnabled((request.query as any)?.narrate);
 
@@ -1593,12 +1621,12 @@ export async function registerReportRoutes(
           // Optional LLM narration: additive only; never alters deterministic fields.
           try {
             const nextMetadata = { ...((report as any)?.metadata ?? (payload as any)?.metadata ?? {}) };
-            await maybeAttachNarrationV1({ request, report, nextMetadata, narrateEnabled });
+            await maybeAttachNarrationV1({ request, report, nextMetadata, narrateEnabled, promotedFactsForExcerpt: promotedFactsForExcerpt ?? undefined });
             (payload as any).metadata = (report as any).metadata;
 
 			// Optional LLM overview: additive only; never alters deterministic fields.
 			try {
-				await maybeAttachOverviewV1({ request, report, nextMetadata, narrateEnabled });
+        await maybeAttachOverviewV1({ request, report, nextMetadata, narrateEnabled, promotedFactsForExcerpt: promotedFactsForExcerpt ?? undefined });
 				(payload as any).metadata = (report as any).metadata;
 			} catch {
 				// ignore
@@ -1606,7 +1634,7 @@ export async function registerReportRoutes(
 
       // Optional Investment Analysis Overview reasoning: additive only; never alters deterministic fields.
       try {
-        await maybeAttachInvestmentAnalysisOverviewV1({ request, report, nextMetadata, narrateEnabled });
+        await maybeAttachInvestmentAnalysisOverviewV1({ request, report, nextMetadata, narrateEnabled, promotedFactsForExcerpt: promotedFactsForExcerpt ?? undefined });
         (payload as any).metadata = (report as any).metadata;
       } catch {
         // ignore

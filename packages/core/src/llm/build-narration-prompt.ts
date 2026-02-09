@@ -25,6 +25,16 @@ const dedupeCitations = (items: CitationRef[]): CitationRef[] => {
 const buildCitationCatalogFromExcerpt = (excerpt: any): CitationRef[] => {
 	const raw: CitationRef[] = [];
 
+	const parsePageFromSourcePath = (v: unknown): number | undefined => {
+		const s = normalizeString(v);
+		if (!s) return undefined;
+		// Expected: doc:<documentId>:page:<1-based>
+		const m = /\bpage:(\d+)\b/i.exec(s);
+		if (!m) return undefined;
+		const n = Number(m[1]);
+		return Number.isFinite(n) ? n : undefined;
+	};
+
 	const push = (c: CitationRef) => {
 		raw.push({
 			page: typeof c?.page === "number" && Number.isFinite(c.page) ? c.page : undefined,
@@ -51,6 +61,22 @@ const buildCitationCatalogFromExcerpt = (excerpt: any): CitationRef[] => {
 		if (depth > 8) return;
 		if (!node || typeof node !== "object") return;
 
+		// Allow list entries may appear as direct objects (e.g., evidence_catalog items).
+		if (Object.prototype.hasOwnProperty.call(node, "page") || Object.prototype.hasOwnProperty.call(node, "page_index")) {
+			visitSourceObject(node);
+		}
+
+		// Some deterministic structures carry a single evidence_id field.
+		if (typeof (node as any).evidence_id === "string") push({ evidence_id: (node as any).evidence_id });
+		if (typeof (node as any).evidenceId === "string") push({ evidence_id: (node as any).evidenceId });
+
+		// Promoted facts / API-mapped facts often carry a compact source_path.
+		if (typeof (node as any).source_path === "string") {
+			const page = parsePageFromSourcePath((node as any).source_path);
+			const evidence_id = typeof (node as any).evidence_id === "string" ? (node as any).evidence_id : undefined;
+			if (page != null || evidence_id) push({ page, evidence_id });
+		}
+
 		if (node.source && typeof node.source === "object") visitSourceObject(node.source);
 		if (Array.isArray(node.sources)) visitSourcesArray(node.sources);
 
@@ -70,7 +96,10 @@ const buildCitationCatalogFromExcerpt = (excerpt: any): CitationRef[] => {
 	// Build catalog from the allowlisted excerpt subtrees.
 	walk(excerpt?.structured_summary, 0);
 	walk(excerpt?.deal_summary_v1, 0);
+	walk(excerpt?.promoted_facts, 0);
 	walk(excerpt?.score_explanation, 0);
+	walk(excerpt?.evidence_catalog, 0);
+	walk(excerpt?.evidence, 0);
 
 	return dedupeCitations(raw);
 };

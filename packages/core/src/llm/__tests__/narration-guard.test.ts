@@ -21,6 +21,68 @@ const baseExcerpt = {
 } as const;
 
 describe("validateNoNewFacts (regressions: titles + suggestion KPI tokens)", () => {
+	it("ok: sentence-start 'Potential …' does not trigger entity.new_not_in_excerpt", () => {
+		const excerpt = {
+			structured_summary: {},
+			deal_summary_v1: { version: "deal_summary_v1", one_liner: "Deterministic one-liner." },
+			score_explanation: {
+				understanding_v1: { summary: "", strengths: [], execution_dependencies: [], diligence_open_items: [] },
+			},
+			citations: { total_sources: 0, unique_pages: 0 },
+		} as const;
+
+		const narration = {
+			version: "llm_narration_v1",
+			summary: "Grounded summary.",
+			sections: [
+				{
+					title: "Overview",
+					body: "Potential improvement exists with more audited financials.",
+					what_would_change_my_mind: "Provide cited excerpt evidence that supports this.",
+					evidence_basis: "cited",
+					citations: [{ page: 1, slide_title: "Summary" }],
+				},
+			],
+			suggestions: { gaps: [], questions: [] },
+			quality_flags: [],
+		};
+
+		const res = validateNoNewFacts({ reportExcerpt: excerpt, narration });
+		expect(res.ok).toBe(true);
+		expect(res.violations.some((v) => v.code === "entity.new_not_in_excerpt")).toBe(false);
+	});
+
+	it("rejects: sentence-start 'Notion …' still triggers entity.new_not_in_excerpt", () => {
+		const excerpt = {
+			structured_summary: {},
+			deal_summary_v1: { version: "deal_summary_v1", one_liner: "Deterministic one-liner." },
+			score_explanation: {
+				understanding_v1: { summary: "", strengths: [], execution_dependencies: [], diligence_open_items: [] },
+			},
+			citations: { total_sources: 0, unique_pages: 0 },
+		} as const;
+
+		const narration = {
+			version: "llm_narration_v1",
+			summary: "Grounded summary.",
+			sections: [
+				{
+					title: "Notes",
+					body: "Notion may improve collaboration.",
+					what_would_change_my_mind: "Provide cited excerpt evidence that mentions Notion.",
+					evidence_basis: "cited",
+					citations: [{ page: 1, slide_title: "Summary" }],
+				},
+			],
+			suggestions: { gaps: [], questions: [] },
+			quality_flags: [],
+		};
+
+		const res = validateNoNewFacts({ reportExcerpt: excerpt, narration });
+		expect(res.ok).toBe(false);
+		expect(res.violations.some((v) => v.code === "entity.new_not_in_excerpt")).toBe(true);
+	});
+
 	it("ok: 'Continued' in section body does not trigger entity gating", () => {
 		const narration = {
 			version: "llm_narration_v1",

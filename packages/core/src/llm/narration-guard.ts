@@ -307,6 +307,34 @@ const SAFE_SECTION_TITLES = [
 
 const safeSectionTitlesLower = new Set(SAFE_SECTION_TITLES.map((t) => normalizeWhitespace(t).toLowerCase()));
 
+// Common sentence starters that are not entities, but often get Title-Case at sentence start.
+// Case-insensitive; used only for sentence-start suppression (NOT a global ignore list).
+// NOTE: Keep this in parity with overview-guard.ts.
+const COMMON_SENTENCE_STARTERS = new Set(
+	[
+		"clarity",
+		"understanding",
+		"currently",
+		"clear",
+		"transparent",
+		"specific",
+		"reliable",
+		"insufficient",
+		"lack",
+		"potential",
+		"insights",
+		"information",
+		"projections",
+		"operations",
+		"operational",
+		"legal",
+		"forecasted",
+		"heavy",
+		"current",
+		"unclear",
+	].map((s) => s.toLowerCase()),
+);
+
 // Common deck artifacts / headings that are not named entities.
 // Case-insensitive: these tokens will never be treated as a new entity.
 const NON_ENTITY_TOKENS = new Set([
@@ -472,7 +500,7 @@ const extractEntityCandidates = (text: string): string[] => {
 	// AND the next token begins with a lowercase letter.
 	const suppressSentenceStartNonEntityToken = (tok: string): boolean => {
 		if (!/^[A-Z][a-z]+$/.test(tok)) return false; // do not suppress acronyms
-		if (!isNonEntityToken(tok)) return false;
+		if (!COMMON_SENTENCE_STARTERS.has(tok.toLowerCase())) return false;
 		const esc = escapeRegex(tok);
 		const re = new RegExp(`^\\s*(?:[•*\\-]\\s+)?${esc}\\b\\s+[a-z]`);
 		return re.test(raw);

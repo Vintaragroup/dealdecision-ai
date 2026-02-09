@@ -80,12 +80,18 @@ export async function updateDocumentAnalysis(params: {
   const currentPool = getPool();
   await currentPool.query(
     `UPDATE documents
-       SET structured_data = COALESCE($2, structured_data),
-           extraction_metadata = COALESCE($3, extraction_metadata),
+       SET structured_data = COALESCE($2::jsonb, structured_data),
+           extraction_metadata = CASE
+             WHEN $3::jsonb IS NULL THEN extraction_metadata
+             ELSE COALESCE(extraction_metadata, '{}'::jsonb) || $3::jsonb
+           END,
            status = COALESCE($4, status),
-           full_content = COALESCE($5, full_content),
+           full_content = COALESCE($5::jsonb, full_content),
            full_text = COALESCE($6, full_text),
-           full_text_absent_reason = COALESCE($7, full_text_absent_reason),
+           full_text_absent_reason = CASE
+             WHEN $6 IS NOT NULL AND length(trim($6)) > 0 THEN NULL
+             ELSE COALESCE($7, full_text_absent_reason)
+           END,
            page_count = COALESCE($8, page_count)
      WHERE id = $1`,
     [
@@ -276,6 +282,31 @@ export type DocumentOriginalFile = {
   size_bytes: number;
   bytes: Buffer;
 };
+
+export type DocumentOriginalFileMeta = {
+  document_id: string;
+  sha256: string;
+  file_name: string | null;
+  mime_type: string | null;
+  size_bytes: number;
+};
+
+export async function getDocumentOriginalFileMeta(documentId: string): Promise<DocumentOriginalFileMeta | null> {
+  const currentPool = getPool();
+  const { rows } = await currentPool.query<DocumentOriginalFileMeta>(
+    `SELECT d.id AS document_id,
+        COALESCE(f.sha256, '') AS sha256,
+        f.file_name,
+        COALESCE(f.mime_type, d.mime_type) AS mime_type,
+        COALESCE(f.size_bytes, d.size_bytes, 0) AS size_bytes
+       FROM documents d
+       LEFT JOIN document_files f ON f.document_id = d.id
+      WHERE d.id = $1
+      LIMIT 1`,
+    [sanitizeText(documentId)]
+  );
+  return rows?.[0] ?? null;
+}
 
 export async function getDocumentOriginalFile(documentId: string): Promise<DocumentOriginalFile | null> {
   const currentPool = getPool();

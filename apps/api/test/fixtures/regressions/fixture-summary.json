@@ -1,0 +1,122 @@
+{
+  "generated_at": "2026-02-08T00:43:31.024Z",
+  "decks_root": "apps/api/test/fixtures/decks",
+  "out_root": "apps/api/test/fixtures/regressions",
+  "base_url": "http://localhost:9001",
+  "full": true,
+  "timeout_ms": 600000,
+  "verticals": [
+    "healthcare",
+    "other"
+  ],
+  "fixtures": [
+    {
+      "fixtureKey": "healthcare/pd-oft-toxycreen",
+      "vertical": "healthcare",
+      "basenameSlug": "pd-oft-toxycreen",
+      "inputPath": "apps/api/test/fixtures/decks/healthcare/PD - OFT _ TOXYCREEN.pptx",
+      "status": "ok",
+      "duration_ms": 4381,
+      "step": "report.fetch",
+      "deal_id": "995f2b7a-415c-4077-99d4-5fab74aca134",
+      "document_id": "77971a28-c52b-4bb3-bc91-8d81eea4b09f",
+      "inputs_hash": "07ce7ea6fc3e7d48a11d3593813c72733044a7b29a0b22a6b81190aa6b8fb4c5",
+      "deck_archetype_key": "unknown",
+      "output": {
+        "snapshot": "apps/api/test/fixtures/regressions/healthcare/pd-oft-toxycreen.snapshot.json",
+        "meta": "apps/api/test/fixtures/regressions/healthcare/pd-oft-toxycreen.meta.json",
+        "full": "apps/api/test/fixtures/regressions/healthcare/pd-oft-toxycreen.full.report.json"
+      }
+    },
+    {
+      "fixtureKey": "other/financials-magarian-fund",
+      "vertical": "other",
+      "basenameSlug": "financials-magarian-fund",
+      "inputPath": "apps/api/test/fixtures/decks/other/Financials - Magarian Fund.pdf",
+      "status": "ok",
+      "duration_ms": 6104,
+      "step": "report.fetch",
+      "deal_id": "0a501597-f6cc-4719-b3a4-b35744b977df",
+      "document_id": "bfd83cf2-447f-476d-9595-56086c0e8dc8",
+      "inputs_hash": "46daeac7477b01a637de2ecc795c0e38573509f4e2842a7363e593e9b849e451",
+      "deck_archetype_key": "unknown",
+      "output": {
+        "snapshot": "apps/api/test/fixtures/regressions/other/financials-magarian-fund.snapshot.json",
+        "meta": "apps/api/test/fixtures/regressions/other/financials-magarian-fund.meta.json",
+        "full": "apps/api/test/fixtures/regressions/other/financials-magarian-fund.full.report.json"
+      }
+    },
+    {
+      "fixtureKey": "other/pd-3ice",
+      "vertical": "other",
+      "basenameSlug": "pd-3ice",
+      "inputPath": "apps/api/test/fixtures/decks/other/PD - 3ICE.pdf",
+      "status": "ok",
+      "duration_ms": 34664,
+      "step": "report.fetch",
+      "deal_id": "29ecd01e-825f-4c70-bfc2-3422361a4504",
+      "document_id": "6241e470-4d43-4e86-b428-697fbd08988e",
+      "inputs_hash": "d5fb6e15330fe22073a8c65307e94df180608848084b8147911adf688c3eb400",
+      "deck_archetype_key": "unknown",
+      "output": {
+        "snapshot": "apps/api/test/fixtures/regressions/other/pd-3ice.snapshot.json",
+        "meta": "apps/api/test/fixtures/regressions/other/pd-3ice.meta.json",
+        "full": "apps/api/test/fixtures/regressions/other/pd-3ice.full.report.json"
+      }
+    },
+    {
+      "fixtureKey": "other/pd-bar-capital-nj-consolidation-strategy",
+      "vertical": "other",
+      "basenameSlug": "pd-bar-capital-nj-consolidation-strategy",
+      "inputPath": "apps/api/test/fixtures/decks/other/PD - Bar Capital NJ Consolidation Strategy.pdf",
+      "status": "ok",
+      "duration_ms": 58322,
+      "step": "report.fetch",
+      "deal_id": "4dd9e66d-f475-445e-84fb-cba564bce084",
+      "document_id": "59a12c00-168a-48ea-93f5-897934019a9b",
+      "inputs_hash": "d1090cb15a3273d3b1ceea2cf0644cbad6c20591ca7462a927a56b53ee100996",
+      "deck_archetype_key": "unknown",
+      "output": {
+        "snapshot": "apps/api/test/fixtures/regressions/other/pd-bar-capital-nj-consolidation-strategy.snapshot.json",
+        "meta": "apps/api/test/fixtures/regressions/other/pd-bar-capital-nj-consolidation-strategy.meta.json",
+        "full": "apps/api/test/fixtures/regressions/other/pd-bar-capital-nj-consolidation-strategy.full.report.json"
+      }
+    },
+    {
+      "fixtureKey": "other/pd-carmoola-series-b-teaser-oct-25",
+      "vertical": "other",
+      "basenameSlug": "pd-carmoola-series-b-teaser-oct-25",
+      "inputPath": "apps/api/test/fixtures/decks/other/PD - Carmoola - Series B Teaser (Oct 25).pdf",
+      "status": "ok",
+      "duration_ms": 30320,
+      "step": "report.fetch",
+      "deal_id": "db755fc5-dbc8-404d-acbc-a9f57d326076",
+      "document_id": "0b2c7161-adef-4d2d-a252-a0da2cbf37d5",
+      "inputs_hash": "9e8a2b4ea73d94565ab4681cfb3683934054cf1858a24a6ff025d9c1829e0c0c",
+      "deck_archetype_key": "unknown",
+      "output": {
+        "snapshot": "apps/api/test/fixtures/regressions/other/pd-carmoola-series-b-teaser-oct-25.snapshot.json",
+        "meta": "apps/api/test/fixtures/regressions/other/pd-carmoola-series-b-teaser-oct-25.meta.json",
+        "full": "apps/api/test/fixtures/regressions/other/pd-carmoola-series-b-teaser-oct-25.full.report.json"
+      }
+    },
+    {
+      "fixtureKey": "other/pd-magarian-fund",
+      "vertical": "other",
+      "basenameSlug": "pd-magarian-fund",
+      "inputPath": "apps/api/test/fixtures/decks/other/PD - Magarian Fund.pdf",
+      "status": "ok",
+      "duration_ms": 20185,
+      "step": "report.fetch",
+      "deal_id": "0e8fa8ae-94fa-4ab7-ab66-39c07651d089",
+      "document_id": "24027935-e1bb-4f2d-904e-2d6ef3fc79f7",
+      "inputs_hash": "612b492b125778b97ba4bfcc8a1237c0d1a9e9eba1b1743da2da37f6fbe17d4d",
+      "deck_archetype_key": "unknown",
+      "output": {
+        "snapshot": "apps/api/test/fixtures/regressions/other/pd-magarian-fund.snapshot.json",
+        "meta": "apps/api/test/fixtures/regressions/other/pd-magarian-fund.meta.json",
+        "full": "apps/api/test/fixtures/regressions/other/pd-magarian-fund.full.report.json"
+      }
+    }
+  ]
+}

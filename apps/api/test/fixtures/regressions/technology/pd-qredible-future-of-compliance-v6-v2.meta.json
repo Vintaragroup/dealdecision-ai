@@ -1,0 +1,13 @@
+{
+  "fixture_key": "technology/pd-qredible-future-of-compliance-v6-v2",
+  "vertical": "technology",
+  "basename_slug": "pd-qredible-future-of-compliance-v6-v2",
+  "deal_id": "8c82e142-d6fd-470f-8a28-63d687ec76a8",
+  "document_id": "34713cc2-4a91-42a6-87ea-29738806cb04",
+  "inputs_hash": "2286880cb3fdf43ef2a7624a3091179854cfa9fb618f9f9bcc6c9edd3a12d03d",
+  "deck_archetype_key": "unknown",
+  "generated_at": "2026-02-07T23:58:32.673Z",
+  "base_url": "http://localhost:9001",
+  "deck_file": "test/fixtures/decks/technology/PD - Qredible Future of Compliance V6 (v2).pdf",
+  "deck_file_sha256": "02e45546119ed06582ce7a7d2d02c263ee901234cdabdd48bf56e33232fed3d9"
+}

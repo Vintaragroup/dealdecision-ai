@@ -5,12 +5,37 @@ import { updateJobProgress } from "../lib/job-progress";
 import { enqueuePersistedJob } from "../lib/job-enqueue";
 import {
 	deleteExtractionEvidenceForDocument,
+	getDocumentOriginalFileMeta,
 	getDocumentsByIds,
 	getDocumentsForDealWithVerification,
 	insertDocumentExtractionAudit,
 	updateDocumentStatus,
 } from "../lib/db";
 import { selectReextractCandidates } from "../lib/reextract-selection";
+
+function inferFileNameFallback(input: { documentId: string; mimeType: string | null }): string {
+	const mt = String(input.mimeType ?? "").toLowerCase();
+	if (mt.includes("pdf")) return `${input.documentId}.pdf`;
+	if (mt.includes("presentation") || mt.includes("powerpoint") || mt.includes("ppt")) return `${input.documentId}.pptx`;
+	if (mt.includes("sheet") || mt.includes("excel") || mt.includes("spreadsheet")) return `${input.documentId}.xlsx`;
+	if (mt.includes("word")) return `${input.documentId}.docx`;
+	if (mt.startsWith("image/")) {
+		const ext = mt.split("/")[1] || "png";
+		return `${input.documentId}.${ext}`;
+	}
+	if (mt.includes("csv")) return `${input.documentId}.csv`;
+	return `${input.documentId}`;
+}
+
+function hasUsableExtensionForIngest(fileName: string): boolean {
+	const raw = String(fileName ?? "").trim();
+	if (!raw) return false;
+	const lower = raw.toLowerCase();
+	// Require a known extension so downstream detectFileType() behaves.
+	const ext = lower.includes(".") ? lower.split(".").pop() || "" : "";
+	if (!ext) return false;
+	return ["pdf", "pptx", "ppt", "xlsx", "xls", "docx", "doc", "png", "jpg", "jpeg", "gif", "csv"].includes(ext);
+}
 
 type ReextractDocumentsJobData = {
 	deal_id?: string;
@@ -156,6 +181,11 @@ export async function reextractDocumentsProcessor(job: Job): Promise<ReextractDo
 		const enqueueIdRaw = `ingest_documents__${dealId}__${doc.id}__${jobId ?? "reextract"}__${i}`;
 		const ingestJobId = sanitizeJobId(enqueueIdRaw);
 		try {
+			const meta = await getDocumentOriginalFileMeta(doc.id);
+			const fileNameFromMetaRaw = typeof meta?.file_name === "string" && meta.file_name.trim() ? meta.file_name.trim() : null;
+			const fileNameFromMeta = fileNameFromMetaRaw && hasUsableExtensionForIngest(fileNameFromMetaRaw) ? fileNameFromMetaRaw : null;
+			const fileName = fileNameFromMeta ?? inferFileNameFallback({ documentId: doc.id, mimeType: meta?.mime_type ?? null });
+
 			await enqueuePersistedJob({
 				job_id: ingestJobId,
 				type: "ingest_documents",
@@ -165,7 +195,7 @@ export async function reextractDocumentsProcessor(job: Job): Promise<ReextractDo
 				payload: {
 					document_id: doc.id,
 					deal_id: doc.deal_id,
-					file_name: typeof doc.title === "string" && doc.title.trim() ? doc.title : `${doc.id}`,
+					file_name: fileName,
 					mode: "from_storage",
 					attempt: 1,
 					parent_job_id: jobId,

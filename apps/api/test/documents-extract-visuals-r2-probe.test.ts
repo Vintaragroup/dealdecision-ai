@@ -11,6 +11,9 @@ test.after(async () => {
 });
 
 test("POST /api/v1/deals/:deal_id/documents/:document_id/extract-visuals returns 202 when R2 probe overrides stale rendered_pages_rendered", async () => {
+	const dealId = "00000000-0000-0000-0000-0000000000b1";
+	const documentId = "00000000-0000-0000-0000-0000000000b2";
+
 	const mockPool = {
 		query: async (sql: string, params: unknown[]) => {
 			if (sql.includes("information_schema.columns")) {
@@ -22,15 +25,15 @@ test("POST /api/v1/deals/:deal_id/documents/:document_id/extract-visuals returns
 				return { rows: [{ oid: null }] };
 			}
 			if (sql.includes("FROM documents") && sql.includes("WHERE id = $1") && sql.includes("deal_id = $2")) {
-				assert.equal(params[0], "doc-1");
-				assert.equal(params[1], "deal-1");
+				assert.equal(params[0], documentId);
+				assert.equal(params[1], dealId);
 				return {
 					rows: [
 						{
 							extraction_metadata: {
 								rendered_pages_r2: {
 									bucket: "b",
-									prefix: "deals/deal-1/documents/doc-1/rendered_pages",
+									prefix: `deals/${dealId}/documents/${documentId}/rendered_pages`,
 									format: "page_%04d.png",
 								},
 								rendered_pages_count: 5,
@@ -50,8 +53,8 @@ test("POST /api/v1/deals/:deal_id/documents/:document_id/extract-visuals returns
 	await registerDocumentRoutes(app, mockPool, {
 		enqueueJob: async (input: any) => {
 			assert.equal(input.type, "extract_visuals");
-			assert.equal(input.deal_id, "deal-1");
-			assert.equal(input.document_id, "doc-1");
+			assert.equal(input.deal_id, dealId);
+			assert.equal(input.document_id, documentId);
 			return { id: 1, job_id: "job-1", status: "queued" };
 		},
 		r2: {
@@ -77,14 +80,14 @@ test("POST /api/v1/deals/:deal_id/documents/:document_id/extract-visuals returns
 		},
 	});
 
-	const res = await app.inject({ method: "POST", url: "/api/v1/deals/deal-1/documents/doc-1/extract-visuals", payload: {} });
+	const res = await app.inject({ method: "POST", url: `/api/v1/deals/${dealId}/documents/${documentId}/extract-visuals`, payload: {} });
 	assert.equal(res.statusCode, 202);
 	const body = res.json() as any;
 	assert.equal(body.ok, true);
 	assert.equal(body.job_id, "job-1");
 	assert.equal(body.readiness_reason, "r2_probe_overrode_metadata");
 	assert.equal(body.r2_probe_overrides?.length, 1);
-	assert.equal(body.r2_probe_overrides[0].document_id, "doc-1");
+	assert.equal(body.r2_probe_overrides[0].document_id, documentId);
 
 	await app.close();
 });

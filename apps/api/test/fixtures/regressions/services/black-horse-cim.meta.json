@@ -1,0 +1,13 @@
+{
+  "fixture_key": "services/black-horse-cim",
+  "vertical": "services",
+  "basename_slug": "black-horse-cim",
+  "deal_id": "2dd60d8e-fe26-498b-859b-19fcd2e0467b",
+  "document_id": "00ba23d9-d5d5-454d-8add-2b39f1d0b49f",
+  "inputs_hash": "4b182e8a3d92248d6e973cd0a4882038633075a006f847969e62e3fa29f2a5fd",
+  "deck_archetype_key": "unknown",
+  "generated_at": "2026-02-07T23:56:59.942Z",
+  "base_url": "http://localhost:9001",
+  "deck_file": "test/fixtures/decks/services/Black-Horse-CIM.pdf",
+  "deck_file_sha256": "89313e2fba000e0bbcd79856abf4549945c4ac9d05dd2ab00f5e16d68ec74f9a"
+}

@@ -25,7 +25,16 @@ export function getVisualIngestBlockReason(input: {
 	// Source of truth is documents table only.
 	void input.jobStatus;
 	if (input.deletedAt != null) return "deleted";
-	if (input.status !== "ready_for_analysis") return "status_not_ready";
+	// Most flows set documents.status=ready_for_analysis once ingestion is complete.
+	// Some remediation flows temporarily set status=needs_ocr while still producing
+	// usable rendered pages + successful ingest metadata. Visual extraction should
+	// be allowed to proceed in that state to avoid guard stalls.
+	const status = typeof input.status === "string" ? input.status : "";
+	if (status !== "ready_for_analysis") {
+		const meta = typeof input.metaStatus === "string" ? input.metaStatus.toLowerCase() : null;
+		const allowNeedsOcr = status === "needs_ocr" && meta === "succeeded";
+		if (!allowNeedsOcr) return "status_not_ready";
+	}
 	if (input.metaStatus == null) return "meta_status_missing";
 	if (input.metaStatus !== "succeeded") return "meta_status_not_succeeded";
 	return null;

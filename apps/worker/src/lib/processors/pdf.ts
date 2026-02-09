@@ -3,8 +3,9 @@ import { createCanvas, Image, ImageData } from "@napi-rs/canvas";
 import path from "path";
 import fs from "fs/promises";
 import crypto from "crypto";
-import Tesseract from "tesseract.js";
 import { createRequire } from "module";
+
+import { safeTesseractRecognizeBuffer } from "../ocr/safe-tesseract";
 
 import { logMemory } from "../memory";
 
@@ -605,8 +606,9 @@ export async function ocrPdfPageV2(
   };
 
   const ocrPng = async (png: Buffer, label: string) => {
-    const { data } = await withTimeout(
-      withSilencedTesseractNoise(() => Tesseract.recognize(png, "eng", { logger: () => {} })),
+    const data = await withTimeout(
+      // Child-process isolation: prevents native aborts from crashing the worker.
+      safeTesseractRecognizeBuffer({ buffer: png, lang: "eng", timeoutMs: OCR_TIMEOUT_MS }),
       label,
       OCR_TIMEOUT_MS
     );
@@ -848,8 +850,9 @@ async function ocrPage(
 
   if (regions.length === 0) {
     const fullPng = canvas.toBuffer("image/png");
-    const { data } = await withTimeout(
-      withSilencedTesseractNoise(() => Tesseract.recognize(fullPng, "eng", { logger: () => {} })),
+    const data = await withTimeout(
+      // Child-process isolation: prevents native aborts from crashing the worker.
+      safeTesseractRecognizeBuffer({ buffer: fullPng, lang: "eng", timeoutMs: OCR_TIMEOUT_MS }),
       `ocr page ${pageNumber}`,
       OCR_TIMEOUT_MS
     );
@@ -871,8 +874,9 @@ async function ocrPage(
       const ctx = crop.getContext("2d");
       ctx.drawImage(canvas, region.x, region.y, region.w, region.h, 0, 0, region.w, region.h);
       const png = crop.toBuffer("image/png");
-      const { data } = await withTimeout(
-        withSilencedTesseractNoise(() => Tesseract.recognize(png, "eng", { logger: () => {} })),
+      const data = await withTimeout(
+        // Child-process isolation: prevents native aborts from crashing the worker.
+        safeTesseractRecognizeBuffer({ buffer: png, lang: "eng", timeoutMs: OCR_TIMEOUT_MS }),
         `ocr page ${pageNumber} region`,
         OCR_TIMEOUT_MS
       );

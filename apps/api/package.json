@@ -4,6 +4,7 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
+    "predev": "pnpm -C ../.. --filter @dealdecision/core build",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/src/index.js",
     "build": "pnpm --filter @dealdecision/core build && pnpm --filter @dealdecision/contracts build && tsc -p tsconfig.json && pnpm --filter worker build",
@@ -11,7 +12,8 @@
     "worker": "node ../worker/dist/src/index.js",
     "worker:dev": "tsx watch ../worker/src/index.ts",
     "db:migrate": "tsx scripts/migrate.ts",
-    "test": "node --test --require ts-node/register test/*.test.ts src/__tests__/*.test.ts"
+    "test": "pnpm --filter @dealdecision/core build && node --test --require ts-node/register test/*.test.ts src/__tests__/*.test.ts",
+    "lint": "eslint \"src/**/*.{ts,tsx}\" \"test/**/*.{ts,tsx}\""
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.975.0",
@@ -34,6 +36,9 @@
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@types/pg": "^8.11.10",
+    "@typescript-eslint/eslint-plugin": "^8.26.0",
+    "@typescript-eslint/parser": "^8.26.0",
+    "eslint": "^9.20.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3"
   }

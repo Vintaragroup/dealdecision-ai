@@ -1,0 +1,87 @@
+{
+  "debug": {
+    "deck_archetype_key": "unknown",
+    "archetype_confidence": 0.21923076923076923
+  },
+  "structured_summary": {
+    "kpis": {
+      "raise": {
+        "value_raw": "Unknown",
+        "value": "Unknown",
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      },
+      "revenue": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": "not_extracted_yet",
+        "source": null
+      },
+      "customers": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      },
+      "growth": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      }
+    }
+  },
+  "deal_summary": {
+    "tiers": {
+      "hero": "This is a consumer brand in apparel.",
+      "overview": "This is a consumer brand in apparel. Product: NON-INVASIVE EASE OF COLLECTION….. Market: DIFFICULT TO GET CHILDREN THAT NEED TO BE TESTED TO THE FACILITIES THAT OFFER TESTING….DISTANCE….TRAVEL……TIME…..UNDERSTANDING.",
+      "deep": "This is a consumer brand in apparel. Product details: NON-INVASIVE EASE OF COLLECTION….. SCREENING CAN BE PERFORMED ANYWHERE, SCHOOLS, RECREATION CENTERS, OUTDOORS ……anywhere!!!!. Market / ICP: DIFFICULT TO GET CHILDREN THAT NEED TO BE TESTED TO THE FACILITIES THAT OFFER TESTING….DISTANCE….TRAVEL……TIME…..UNDERSTANDING. Sample Collection Instructions Lead has been found in paint, window blinds, pottery, cosmetics, children’s toys, candy/gum, lead bullets, canned food, and most recently, baby food. Exposure to lead can also come from lead- contaminated dust, water, and soil, as well as brought home on clothing by adults that work with batteries, auto repair or home renovations."
+    },
+    "tier_char_counts": {
+      "hero": 36,
+      "overview": 215,
+      "deep": 684
+    }
+  },
+  "product_summary": {
+    "product_definition": "NON-INVASIVE EASE OF COLLECTION…..",
+    "product_validation": null
+  },
+  "market_summary": {
+    "market_target": "DIFFICULT TO GET CHILDREN THAT NEED TO BE TESTED TO THE FACILITIES THAT OFFER TESTING….DISTANCE….TRAVEL……TIME…..UNDERSTANDING",
+    "market_context": "Sample Collection Instructions"
+  },
+  "score_explanation": {
+    "understanding_v1": {
+      "summary_char_count": 170,
+      "strengths": {
+        "count": 1,
+        "items": [
+          "Narrative pacing score computed"
+        ]
+      },
+      "execution_dependencies": {
+        "count": 0,
+        "items": []
+      },
+      "diligence_open_items": {
+        "count": 12,
+        "items": [
+          "Add burn, runway, cash balance, and margin profile (or a simple P&L).",
+          "Add founder bios (roles, relevant experience, prior outcomes).",
+          "Add ICP definition (buyer, user, segment) and market sizing (TAM/SAM/SOM or bottom-up).",
+          "Add raise amount, round type, and expected use of funds.",
+          "business_model"
+        ]
+      }
+    }
+  },
+  "citations": {
+    "total_sources": 8,
+    "unique_pages": 4
+  }
+}

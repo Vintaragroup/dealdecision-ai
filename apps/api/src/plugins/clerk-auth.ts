@@ -31,6 +31,8 @@ function isDevLike(): boolean {
   return process.env.NODE_ENV !== 'production';
 }
 
+let didWarnBypassInProd = false;
+
 function parseBoolEnv(value: unknown, defaultValue: boolean): boolean {
   if (typeof value !== 'string') return defaultValue;
   const v = value.trim().toLowerCase();
@@ -144,14 +146,23 @@ export function extractOrgFromPayload(payload: Record<string, unknown>): { orgId
 }
 
 async function authenticateRequest(request: FastifyRequest): Promise<ClerkAuthContext> {
-  // Local dev escape hatch (explicit).
-  if (shouldBypassAuth() && isDevLike()) {
+  // Explicit escape hatch.
+  // Note: Our canonical local Docker stack runs with NODE_ENV=production for a
+  // production-shaped runtime, so DISABLE_CLERK_AUTH must work even in that mode.
+  if (shouldBypassAuth()) {
+    if (!isDevLike() && !didWarnBypassInProd) {
+      didWarnBypassInProd = true;
+      request.log.warn(
+        { event: 'auth_bypass_enabled', node_env: process.env.NODE_ENV },
+        'DISABLE_CLERK_AUTH enabled while NODE_ENV=production; bypassing Clerk auth'
+      );
+    }
     return {
       userId: process.env.DEV_AUTH_USER_ID?.trim() || 'dev_user',
       orgId: process.env.DEV_AUTH_ORG_ID?.trim() || 'dev_org',
       orgRole: process.env.DEV_AUTH_ORG_ROLE?.trim() || 'org:admin',
       sessionId: null,
-      claims: { dev: true },
+      claims: { dev: true, bypass_auth: true },
     };
   }
 

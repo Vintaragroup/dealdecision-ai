@@ -1,5 +1,52 @@
-import { Worker, Queue, type Job, type Processor } from "bullmq";
+import type { Job, Processor } from "bullmq";
 import IORedis from "ioredis";
+import { wrapBullmqProcessorWithRunLedger } from "./pipeline-run-ledger";
+import type { QueueName } from "@dealdecision/contracts";
+
+let BullMQ: typeof import("bullmq");
+
+const injectedBullmq = (globalThis as any).__DEALDECISION_BULLMQ as
+  | { Worker: any; Queue: any }
+  | undefined;
+
+if (injectedBullmq?.Worker && injectedBullmq?.Queue) {
+  BullMQ = injectedBullmq as any;
+} else {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    BullMQ = require("bullmq");
+  } catch (err) {
+    const error = err instanceof Error ? { message: err.message, stack: err.stack } : { message: String(err) };
+    console.error(
+      JSON.stringify({
+        event: "FATAL_MISSING_BULLMQ",
+        service: "worker",
+        error,
+      })
+    );
+    process.exit(1);
+  }
+}
+
+const { Worker, Queue } = BullMQ;
+
+export function getBullmqRuntimeInfo(): { version: string | null; resolved: string | null } {
+  let version: string | null = null;
+  let resolved: string | null = null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    version = require("bullmq/package.json")?.version ?? null;
+  } catch {
+    version = null;
+  }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    resolved = require.resolve("bullmq");
+  } catch {
+    resolved = null;
+  }
+  return { version, resolved };
+}
 
 function installBullmqEvictionPolicyWarningDeduper() {
   const originalWarn = console.warn;
@@ -34,7 +81,34 @@ if (!redisUrl) {
   throw new Error("REDIS_URL is required for worker queues");
 }
 
-console.log(`[queue] Connecting to Redis: ${redisUrl}`);
+function safeRedisUrl(raw: string): string {
+  try {
+    const parsed = new URL(raw);
+    const host = parsed.hostname;
+    const port = parsed.port || "6379";
+    const user = parsed.username ? `${parsed.username}@` : "";
+    return `${parsed.protocol}//${user}${host}:${port}${parsed.pathname}`;
+  } catch {
+    return "<invalid_redis_url>";
+  }
+}
+
+console.log(`[queue] Connecting to Redis: ${safeRedisUrl(redisUrl)}`);
+
+function safeDbTarget(raw: string | undefined): string {
+  if (!raw) return "<missing_database_url>";
+  try {
+    const parsed = new URL(raw);
+    const host = parsed.hostname;
+    const port = parsed.port || "5432";
+    const db = parsed.pathname?.startsWith("/") ? parsed.pathname.slice(1) : parsed.pathname;
+    return `${host}:${port}/${db || "<unknown_db>"}`;
+  } catch {
+    return "<invalid_database_url>";
+  }
+}
+
+console.log(`[queue] DB target: ${safeDbTarget(process.env.DATABASE_URL)}`);
 
 export const connection = new IORedis(redisUrl, {
   maxRetriesPerRequest: null,
@@ -51,60 +125,54 @@ connection.on('error', (err) => {
 
 export function createWorker(
   name:
-    | "ingest_documents"
-    | "render_document_pages"
-    | "extract_visuals"
-    | "deep_scan_visuals"
-    | "fetch_evidence"
-    | "analyze_deal"
-    | "verify_documents"
-    | "remediate_extraction"
-    | "reextract_documents"
-    | "generate_ingestion_report"
+    | QueueName
     | "generate_ingestion_report"
     | "reconcile_ingest"
     | "orchestration",
-    processor: Processor<any, any, string>,
-    options?: {
-      concurrency?: number;
-      lockDuration?: number;
-    }
+  processor: Processor<any, any, string>,
+  options?: {
+    concurrency?: number;
+    lockDuration?: number;
+  }
 ) {
   console.log(`[queue] Creating worker for queue: ${name}`);
 
-    const readPositiveIntEnv = (key: string, fallback: number) => {
-      const raw = process.env[key];
-      if (raw == null || raw.trim() === "") return fallback;
-      const parsed = Number(raw);
-      if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 1) {
-        console.warn(`[queue] Invalid ${key}=${raw}; using ${fallback}`);
-        return fallback;
-      }
-      return parsed;
-    };
+  const readPositiveIntEnv = (key: string, fallback: number) => {
+    const raw = process.env[key];
+    if (raw == null || raw.trim() === "") return fallback;
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 1) {
+      console.warn(`[queue] Invalid ${key}=${raw}; using ${fallback}`);
+      return fallback;
+    }
+    return parsed;
+  };
 
-    // Global concurrency cap (Render OOM prevention).
-    // Default is 1 unless explicitly overridden per-queue.
-    const envConcurrency = readPositiveIntEnv("WORKER_CONCURRENCY", 1);
-    const concurrency = options?.concurrency ?? envConcurrency;
+  // Global concurrency cap (Render OOM prevention).
+  // Default is 1 unless explicitly overridden per-queue.
+  const envConcurrency = readPositiveIntEnv("WORKER_CONCURRENCY", 1);
+  const concurrency = options?.concurrency ?? envConcurrency;
 
-    // NOTE: lockDuration must cover long-running CPU-heavy extraction loops.
-    // Keep reextract_documents here: it can run full document re-processing + enqueue downstream work.
-    const heavyQueues = new Set([
-      "ingest_documents",
-      "render_document_pages",
-      "extract_visuals",
-      "deep_scan_visuals",
-      "reextract_documents",
-    ]);
-    const lockDuration =
-      options?.lockDuration ?? (heavyQueues.has(name) ? 10 * 60 * 1000 : 2 * 60 * 1000);
+  // NOTE: lockDuration must cover long-running CPU-heavy extraction loops.
+  // Keep reextract_documents here: it can run full document re-processing + enqueue downstream work.
+  const heavyQueues = new Set([
+    "ingest_documents",
+    "render_document_pages",
+    "extract_visuals",
+    "deep_scan_visuals",
+    "reextract_documents",
+    "populate_document_page_understanding",
+  ]);
+  const lockDuration =
+    options?.lockDuration ?? (heavyQueues.has(name) ? 10 * 60 * 1000 : 2 * 60 * 1000);
 
   const heartbeatMsRaw = process.env.JOB_HEARTBEAT_INTERVAL_MS;
   const heartbeatMs = heartbeatMsRaw == null ? 60000 : Number(heartbeatMsRaw);
 
-  const wrappedProcessor: Processor<any, any, string> = async (job, token) => {
-    const intervalMs = Number.isFinite(heartbeatMs) ? Math.max(5000, Math.floor(heartbeatMs)) : 60000;
+  const processorWithHeartbeat: Processor<any, any, string> = async (job, token) => {
+    const intervalMs = Number.isFinite(heartbeatMs)
+      ? Math.max(5000, Math.floor(heartbeatMs))
+      : 60000;
     let stopped = false;
 
     const timer = setInterval(() => {
@@ -127,7 +195,17 @@ export function createWorker(
     }
   };
 
-  const worker = new Worker(name, wrappedProcessor, {
+  const processorWithLedger = wrapBullmqProcessorWithRunLedger(
+    () => {
+      // Lazy DB import so unit tests that only validate worker options don't need DATABASE_URL.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { getPool } = require("./db") as typeof import("./db");
+      return getPool();
+    },
+    processorWithHeartbeat
+  );
+
+  const worker = new Worker(name, processorWithLedger, {
     connection,
     concurrency,
     lockDuration,
@@ -151,7 +229,19 @@ export function createWorker(
   });
   
   worker.on('failed', (job, err) => {
-    console.error(`[worker] Job failed: ${job?.id} - ${name}`, err?.message);
+    const payload = {
+      event: "worker_job_failed",
+      queue: name,
+      job_id: job?.id ?? null,
+      err_message: err?.message ?? null,
+      err_code: (err as any)?.code ?? null,
+      err_stack: err?.stack ?? null,
+    };
+    try {
+      console.error(JSON.stringify(payload));
+    } catch {
+      console.error(`[worker] Job failed: ${job?.id} - ${name}`, err?.message);
+    }
   });
   
   worker.on('error', (err) => {
@@ -173,16 +263,7 @@ export function createWorker(
 
 export function getQueue(
   name:
-    | "ingest_documents"
-    | "render_document_pages"
-    | "extract_visuals"
-    | "deep_scan_visuals"
-    | "fetch_evidence"
-    | "analyze_deal"
-    | "verify_documents"
-    | "remediate_extraction"
-    | "reextract_documents"
-    | "generate_ingestion_report"
+    | QueueName
     | "generate_ingestion_report"
     | "reconcile_ingest"
     | "orchestration"

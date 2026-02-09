@@ -4,14 +4,34 @@ export type DealWorkspaceTopSectionProps = {
   darkMode: boolean;
   score: number; // 0-100
   scoreLabel?: string;
+  scoreBandLabel?: string | null;
+  hardPassGuardrailTriggered?: boolean;
+  hardPassGuardrailNote?: string | null;
+  hardPassGuardrailCriteriaSnapshot?: any | null;
+  decisionV1?: {
+    recommendation_key?: string;
+    label?: string;
+    severity?: 'danger' | 'warn' | 'info' | 'success';
+    reasons?: string[];
+  } | null;
   dealSummary: string;
+  dealSummaryTitle?: string;
+  dealSummarySource?: 'canonical' | 'legacy';
   strengths: string[];
   weaknesses: string[];
   raise: string;
   revenue: string;
+  revenueLabel?: string | null;
+  revenueTooltip?: string | null;
   growth: string;
+  growthLabel?: string | null;
+  growthNote?: string | null;
+  growthTooltip?: string | null;
   customers: string;
+  customersLabel?: string | null;
+  customersTooltip?: string | null;
   businessModel: string;
+  businessModelLabel?: string | null;
   dealType: string;
   confidence: 'High' | 'Medium' | 'Low';
   verified?: boolean;
@@ -48,20 +68,58 @@ export function DealWorkspaceTopSection({
   darkMode,
   score,
   scoreLabel = 'Fundamentals score',
+  scoreBandLabel = null,
+  hardPassGuardrailTriggered = false,
+  hardPassGuardrailNote = null,
+  hardPassGuardrailCriteriaSnapshot = null,
+  decisionV1 = null,
   dealSummary,
+  dealSummaryTitle = 'Deal Summary',
+  dealSummarySource = 'legacy',
   strengths,
   weaknesses,
   raise,
   revenue,
+  revenueLabel = null,
+  revenueTooltip = null,
   growth,
+  growthLabel = null,
+  growthNote = null,
+  growthTooltip = null,
   customers,
+  customersLabel = null,
+  customersTooltip = null,
   businessModel,
+  businessModelLabel = null,
   dealType,
   confidence,
   verified = false,
 }: DealWorkspaceTopSectionProps) {
+  const summaryParagraphs = (() => {
+    const raw = typeof dealSummary === 'string' ? dealSummary : '';
+    const normalized = raw
+      // Convert literal backslash-n sequences into real newlines.
+      .replace(/\\r\\n/g, '\n')
+      .replace(/\\n/g, '\n')
+      .replace(/\r\n/g, '\n')
+      .trim();
+    if (!normalized) return [];
+    return normalized
+      .split(/\n{2,}/g)
+      .map((p) => p.split(/\n+/g).join(' ').trim())
+      .filter(Boolean)
+      .slice(0, 6);
+  })();
+
   const score0_100 = clampScore0_100(score);
   const tone = scoreTone(score0_100);
+
+  const decisionLabel = typeof decisionV1?.label === 'string' && decisionV1.label.trim() ? decisionV1.label.trim() : null;
+  const decisionReasons = Array.isArray(decisionV1?.reasons) ? decisionV1!.reasons!.filter((r) => typeof r === 'string' && r.trim()).slice(0, 12) : [];
+  const guardrailNote = typeof hardPassGuardrailNote === 'string' && hardPassGuardrailNote.trim() ? hardPassGuardrailNote.trim() : null;
+  const bandLabel = typeof scoreBandLabel === 'string' && scoreBandLabel.trim() ? scoreBandLabel.trim() : null;
+
+  const showDecisionDetails = Boolean(decisionLabel || decisionReasons.length > 0 || hardPassGuardrailCriteriaSnapshot);
 
   // SVG ring math (match story: r=85, viewBox 220)
   const radius = 85;
@@ -73,12 +131,41 @@ export function DealWorkspaceTopSection({
   const extraStrengths = Math.max(0, (Array.isArray(strengths) ? strengths : []).filter(Boolean).length - visibleStrengths.length);
   const weaknessList = (Array.isArray(weaknesses) ? weaknesses : []).filter(Boolean);
 
-  const metricCards: Array<{ label: string; value: string; note: string; noteClass: string }> = [
+  const revenueNote = (() => {
+    const b = String(revenueLabel ?? '').trim().toLowerCase();
+    if (!b) return 'Annual';
+    if (b.includes('attributed')) return 'Attributed';
+    if (b.includes('ytd')) return 'YTD';
+    return 'Annual';
+  })();
+
+  const metricCards: Array<{ label: string; value: string; note: string; noteClass: string; tooltip?: string | null; badge?: string | null }> = [
     { label: 'Raise', value: raise, note: 'Target', noteClass: 'text-emerald-400' },
-    { label: 'Revenue', value: revenue, note: 'Annual', noteClass: 'text-blue-400' },
-    { label: 'Growth', value: growth, note: 'YoY', noteClass: 'text-emerald-400' },
-    { label: 'Customers', value: customers, note: 'Active', noteClass: 'text-zinc-400' },
-    { label: 'Business Model', value: businessModel, note: 'Recurring', noteClass: 'text-blue-400' },
+    {
+      label: 'Revenue',
+      value: revenue,
+      note: revenueNote,
+      noteClass: 'text-blue-400',
+      tooltip: revenueTooltip,
+      badge: revenueLabel,
+    },
+    {
+      label: 'Growth',
+      value: growth,
+      note: growthNote || 'YoY',
+      noteClass: 'text-emerald-400',
+      tooltip: growthTooltip,
+      badge: growthLabel,
+    },
+    {
+      label: 'Customers',
+      value: customers,
+      note: 'Active',
+      noteClass: 'text-zinc-400',
+      tooltip: customersTooltip,
+      badge: customersLabel,
+    },
+    { label: 'Business Model', value: businessModel, note: 'Recurring', noteClass: 'text-blue-400', badge: businessModelLabel },
     { label: 'Deal Type', value: dealType, note: 'Equity', noteClass: 'text-amber-400' },
   ];
 
@@ -94,10 +181,40 @@ export function DealWorkspaceTopSection({
         <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-stretch">
           {/* Left: score donut (1/3 on desktop) */}
           <div className="md:col-span-4 flex items-center justify-center">
-            <div
-              className="relative w-full max-w-[260px] flex items-center justify-center"
-              aria-label={`${scoreLabel}: ${score0_100} out of 100`}
-            >
+            <div className="w-full max-w-[300px]">
+              {/* Deterministic band/guardrail badges */}
+              {(bandLabel || hardPassGuardrailTriggered) ? (
+                <div className="flex flex-wrap items-center justify-center gap-2 mb-3">
+                  {bandLabel ? (
+                    <span
+                      className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold border ${
+                        darkMode
+                          ? 'bg-white/5 text-zinc-200 border-white/10'
+                          : 'bg-white text-zinc-800 border-gray-200'
+                      }`}
+                    >
+                      {bandLabel}
+                    </span>
+                  ) : null}
+
+                  {hardPassGuardrailTriggered ? (
+                    <span className="inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold bg-red-500/15 text-red-200 border border-red-500/30">
+                      Hard Pass (Full Coverage)
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {hardPassGuardrailTriggered && guardrailNote ? (
+                <div className="text-xs text-center text-red-200/90 mb-3">
+                  {guardrailNote}
+                </div>
+              ) : null}
+
+              <div
+                className="relative w-full max-w-[260px] mx-auto flex items-center justify-center"
+                aria-label={`${scoreLabel}: ${score0_100} out of 100`}
+              >
               <svg
                 width="220"
                 height="220"
@@ -134,6 +251,44 @@ export function DealWorkspaceTopSection({
                 <div className="text-xs text-zinc-400 mt-2">{scoreLabel}</div>
               </div>
             </div>
+
+            {showDecisionDetails ? (
+              <details className="mt-3">
+                <summary className={`cursor-pointer select-none text-xs ${darkMode ? 'text-zinc-300' : 'text-zinc-700'}`}>
+                  Details
+                </summary>
+                <div className={`mt-2 text-xs space-y-2 ${darkMode ? 'text-zinc-200' : 'text-zinc-800'}`}>
+                  {decisionLabel ? (
+                    <div>
+                      <span className="text-zinc-400">Recommendation:</span> <span className="font-semibold">{decisionLabel}</span>
+                    </div>
+                  ) : null}
+
+                  {decisionReasons.length > 0 ? (
+                    <div>
+                      <div className="text-zinc-400">Reasons</div>
+                      <ul className="list-disc pl-5 space-y-1">
+                        {decisionReasons.map((r) => (
+                          <li key={r}>{r}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+
+                  {hardPassGuardrailCriteriaSnapshot ? (
+                    <div>
+                      <div className="text-zinc-400">Guardrail snapshot</div>
+                      <div className={`mt-1 border rounded-lg p-2 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
+                        <pre className="whitespace-pre-wrap break-words text-[11px] leading-snug">
+                          {JSON.stringify(hardPassGuardrailCriteriaSnapshot, null, 2)}
+                        </pre>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </details>
+            ) : null}
+            </div>
           </div>
 
           {/* Right: metric cards (2/3 on desktop) */}
@@ -141,10 +296,17 @@ export function DealWorkspaceTopSection({
             <h3 className="sr-only">Key metrics</h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
               {metricCards.map((m) => (
-                <div key={m.label} className={`${insetClass} p-4`}>
+                <div key={m.label} className={`${insetClass} p-4`} title={m.tooltip || undefined}>
                   <div className="text-xs text-zinc-500 mb-1">{m.label}</div>
                   <div className="text-2xl text-white mb-0.5 break-words">{m.value}</div>
-                  <div className={`text-xs ${m.noteClass}`}>{m.note}</div>
+                  <div className="flex items-center gap-2">
+                    <div className={`text-xs ${m.noteClass}`}>{m.note}</div>
+                    {m.badge ? (
+                      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-white/5 text-zinc-200 border border-white/10">
+                        {m.badge}
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
               ))}
             </div>
@@ -156,8 +318,30 @@ export function DealWorkspaceTopSection({
       <div className={`${cardClass} p-4`}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
           <div className="h-full min-h-[160px]">
-            <h3 className="text-sm text-zinc-300 mb-3">Deal Summary</h3>
-            <p className="text-zinc-200 leading-relaxed">{dealSummary}</p>
+            <div className="flex items-center gap-2 mb-3">
+              <h3 className="text-sm text-zinc-300">{dealSummaryTitle}</h3>
+              {dealSummarySource === 'canonical' ? (
+                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/15 text-emerald-200 border border-emerald-500/25">
+                  Canonical
+                </span>
+              ) : (
+                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-white/5 text-zinc-200 border border-white/10">
+                  Legacy
+                </span>
+              )}
+            </div>
+
+            {summaryParagraphs.length > 0 ? (
+              <div className="space-y-2">
+                {summaryParagraphs.map((p) => (
+                  <p key={p} className="text-zinc-200 leading-relaxed">
+                    {p}
+                  </p>
+                ))}
+              </div>
+            ) : (
+              <p className="text-zinc-200 leading-relaxed">—</p>
+            )}
           </div>
 
           <div className={`${insetClass} p-4 h-full min-h-[160px] flex flex-col justify-between`}>

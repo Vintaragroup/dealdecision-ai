@@ -1,0 +1,13 @@
+{
+  "fixture_key": "real_estate/cross-nobis-pref-equity-opportunity-deal-summary",
+  "vertical": "real_estate",
+  "basename_slug": "cross-nobis-pref-equity-opportunity-deal-summary",
+  "deal_id": "e76a00c9-249b-436e-9b93-4b151802d50c",
+  "document_id": "fd3ded0c-ee1d-45e7-bbe8-c5daadf6f016",
+  "inputs_hash": "8aea2f7b56d048a4112df4e6dca29565aa34e0c4d9120a6cecbdddc76f834a74",
+  "deck_archetype_key": "unknown",
+  "generated_at": "2026-02-07T17:53:18.022Z",
+  "base_url": "http://localhost:9001",
+  "deck_file": "test/fixtures/decks/real_estate/Cross - Nobis Pref Equity Opportunity Deal Summary.pdf",
+  "deck_file_sha256": "e92042b3a4818c588d0f21ae1ad548931f722d7f3bb9207b8b04f61155130eb3"
+}

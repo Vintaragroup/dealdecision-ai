@@ -1,0 +1,82 @@
+{
+  "debug": {
+    "deck_archetype_key": "unknown",
+    "archetype_confidence": 0.31000000000000005
+  },
+  "structured_summary": {
+    "kpis": {
+      "raise": {
+        "value_raw": "$2M",
+        "value": "$2M",
+        "scope_label": null,
+        "selection_reason": null,
+        "source": {
+          "page": 11,
+          "slide_title": null
+        }
+      },
+      "revenue": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": "not_extracted_yet",
+        "source": null
+      },
+      "customers": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      },
+      "growth": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      }
+    }
+  },
+  "deal_summary": {
+    "tiers": {
+      "hero": "This is a company in product.",
+      "overview": "This is a company in product. Key details are pending from extracted materials.",
+      "deep": "This is a company in product. Key details are pending from extracted materials. Notes: limited extracted signals so far."
+    },
+    "tier_char_counts": {
+      "hero": 29,
+      "overview": 79,
+      "deep": 120
+    }
+  },
+  "score_explanation": {
+    "understanding_v1": {
+      "summary_char_count": 170,
+      "strengths": {
+        "count": 1,
+        "items": [
+          "Narrative pacing score computed"
+        ]
+      },
+      "execution_dependencies": {
+        "count": 0,
+        "items": []
+      },
+      "diligence_open_items": {
+        "count": 5,
+        "items": [
+          "Add burn, runway, cash balance, and margin profile (or a simple P&L).",
+          "Add evidence for missing sections: financials, risks.",
+          "Confirm cash balance, burn rate, and runway (and whether financials are cash vs accrual).",
+          "key_risks_detected",
+          "Run a deliberate risk review (market, team, execution, financial) to ensure key risks are explicitly captured."
+        ]
+      }
+    }
+  },
+  "citations": {
+    "total_sources": 1,
+    "unique_pages": 1
+  }
+}

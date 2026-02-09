@@ -10,8 +10,25 @@
     process.env.BROWSER = 'none';
   }
 
+  const appBasenameRewritePlugin = () => ({
+    name: 'dealdecision-app-basename-rewrite',
+    configureServer(server: any) {
+      server.middlewares.use((req: any, _res: any, next: any) => {
+        const url = req.url ?? '';
+        if (url === '/app' || url.startsWith('/app/')) {
+          const hasExtension = /\.[a-zA-Z0-9]+($|\?)/.test(url);
+          const isViteInternal = url.startsWith('/app/@') || url.startsWith('/app/__') || url.startsWith('/app/@fs');
+          if (!hasExtension && !isViteInternal) {
+            req.url = '/';
+          }
+        }
+        next();
+      });
+    },
+  });
+
   export default defineConfig({
-    plugins: [react()],
+    plugins: [appBasenameRewritePlugin(), react()],
     resolve: {
       extensions: ['.js', '.jsx', '.ts', '.tsx', '.json'],
       alias: {

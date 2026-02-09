@@ -8,8 +8,11 @@ import { getUploadsRootDir } from "../plugins/uploads-static";
 import { getPool } from "../lib/db";
 import { resolveVisualAssetImageUriForApi } from "../lib/visual-asset-image-uri";
 import type { Deal } from "@dealdecision/contracts";
+import type { JobStatus, JobType } from "@dealdecision/contracts";
+import { QUEUE_NAMES } from "@dealdecision/core";
 import { enqueueBullmqJob, enqueueJob, insertJobRow } from "../services/jobs";
 import { runIdempotentOperation } from "../lib/jobs";
+import { getStorageDriver } from "../lib/storage-contract";
 import { autoProgressDealStage } from "../services/stageProgression";
 import { updateDealPriority, updateAllDealPriorities } from "../services/priorityClassification";
 import { computeNodeEvidenceGateV1 } from "../services/nodeEvidenceGateV1";
@@ -38,6 +41,8 @@ import {
 } from "../lib/slide-title";
 import { buildClassificationText, buildSegmentFeatures, classifySegment, normalizeAnalystSegment, type AnalystSegment, type SegmentClassifierInput } from "../lib/analyst-segment";
 import { groupWordVisualAssetsByDocument, groupWordVisualAssetsByDocumentWithStats, type WordGroupingStats } from "../lib/word-visual-grouping";
+import { fetchPageUnderstandingReadinessForDeal } from "../lib/deal-page-understanding-readiness";
+import { ensureDocumentsReadyForAnalysis } from "../lib/ensure-documents-ready-for-analysis";
 
 export { computeNodeEvidenceGateV1 };
 
@@ -116,6 +121,103 @@ function stripEvidenceFromClaims(claims: any): any[] {
 function parseDealApiMode(request: FastifyRequest | any): DealApiMode {
   const modeRaw = (request?.query as any)?.mode ?? (request as any)?.mode;
   return typeof modeRaw === "string" && modeRaw.toLowerCase() === "phase1" ? "phase1" : "full";
+}
+
+async function bestEffortReadinessJobPresenceCheck(args: {
+  pool: DealRoutesPool;
+  dealId: string;
+  version: string;
+}): Promise<{ hasRequiredJob: boolean; blocked_reason: string | null; checked: boolean }> {
+  const { pool, dealId } = args;
+  const requiredTypes: JobType[] = [
+    "render_document_pages",
+    "extract_visuals",
+    "extract_visuals_deal",
+    "populate_document_page_understanding",
+  ];
+  const activeStatuses: JobStatus[] = ["queued", "running", "retrying"];
+
+  let rows: Array<{ job_id: string; type: string; queue: string | null }> = [];
+  try {
+    const res = await pool.query(
+      `SELECT job_id, type, queue
+         FROM jobs
+        WHERE deal_id = $1
+          AND type = ANY($2::text[])
+          AND status = ANY($3::text[])
+          AND created_at >= (now() - interval '2 hours')
+        ORDER BY created_at DESC
+        LIMIT 25`,
+      [dealId, requiredTypes, activeStatuses]
+    );
+    rows = (res as any)?.rows ?? [];
+  } catch {
+    // If jobs table isn't available in this context, we can't confirm.
+    return { hasRequiredJob: false, blocked_reason: null, checked: false };
+  }
+
+  const hasInDb = rows.length > 0;
+  if (!hasInDb) {
+    try {
+      const ocrRes = await pool.query(
+        "SELECT 1 FROM documents WHERE deal_id = $1 AND status = 'needs_ocr' LIMIT 1",
+        [dealId]
+      );
+      const hasNeedsOcr = Array.isArray((ocrRes as any)?.rows) && (ocrRes as any).rows.length > 0;
+      if (hasNeedsOcr) {
+        return { hasRequiredJob: false, blocked_reason: "INGEST_PENDING_OCR", checked: true };
+      }
+    } catch {
+      // ignore: fall through to legacy blocked reason
+    }
+    return { hasRequiredJob: false, blocked_reason: "INGEST_BLOCKED_NO_JOBS", checked: true };
+  }
+
+  // In tests, avoid requiring Redis. Treat DB presence as sufficient.
+  if (process.env.NODE_ENV === "test") {
+    return { hasRequiredJob: true, blocked_reason: null, checked: true };
+  }
+
+  // Best-effort: verify at least one job ID exists in BullMQ/Redis.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { Queue } = require("bullmq") as typeof import("bullmq");
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const qmod = require("../lib/queue") as typeof import("../lib/queue");
+    const connection = qmod.getConnection();
+
+    const queueCache = new Map<string, any>();
+    for (const r of rows) {
+      const jobId = typeof r.job_id === "string" ? r.job_id : "";
+      if (!jobId) continue;
+      const queueName = typeof r.queue === "string" && r.queue.trim().length > 0 ? r.queue.trim() : String(r.type || "");
+      if (!queueName) continue;
+      let q = queueCache.get(queueName);
+      if (!q) {
+        q = new Queue(queueName, { connection });
+        queueCache.set(queueName, q);
+      }
+      const found = await q.getJob(jobId);
+      if (found) return { hasRequiredJob: true, blocked_reason: null, checked: true };
+    }
+
+    try {
+      const ocrRes = await pool.query(
+        "SELECT 1 FROM documents WHERE deal_id = $1 AND status = 'needs_ocr' LIMIT 1",
+        [dealId]
+      );
+      const hasNeedsOcr = Array.isArray((ocrRes as any)?.rows) && (ocrRes as any).rows.length > 0;
+      if (hasNeedsOcr) {
+        return { hasRequiredJob: false, blocked_reason: "INGEST_PENDING_OCR", checked: true };
+      }
+    } catch {
+      // ignore
+    }
+    return { hasRequiredJob: false, blocked_reason: "INGEST_BLOCKED_NO_JOBS", checked: true };
+  } catch {
+    // If Redis/BullMQ is unavailable, fall back to DB presence.
+    return { hasRequiredJob: true, blocked_reason: null, checked: true };
+  }
 }
 
 function parseBoolQ(value: unknown, defaultValue = false): boolean {
@@ -8466,6 +8568,15 @@ export async function registerDealRoutes(
 
   app.post("/api/v1/deals/:deal_id/analyze", async (request, reply) => {
     const dealId = (request.params as { deal_id: string }).deal_id;
+		if (!isUuid(dealId)) {
+			return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+		}
+    const requirePageUnderstanding = Boolean((request.body as any)?.require_page_understanding);
+    const pageUnderstandingVersionRaw = (request.body as any)?.page_understanding_version;
+    const pageUnderstandingVersion =
+      typeof pageUnderstandingVersionRaw === "string" && pageUnderstandingVersionRaw.trim().length > 0
+        ? pageUnderstandingVersionRaw.trim()
+        : "page_understanding_v1";
 
     const { rows } = await pool.query<DealRow>(
       `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
@@ -8476,16 +8587,325 @@ export async function registerDealRoutes(
       return reply.status(404).send({ error: "Deal not found" });
     }
 
-    const job = await enqueueJob(
-      { deal_id: dealId, type: "analyze_deal" },
-      { dedupe: { by: "deal" } }
-    );
+    if (requirePageUnderstanding) {
+      try {
+        const prep = await ensureDocumentsReadyForAnalysis({
+          pool: pool as any,
+          dealId,
+          requirePageUnderstanding: true,
+          pageUnderstandingVersion,
+          logger: request.log,
+          enqueue,
+        });
+
+        request.log.info(
+          {
+            event: "READINESS_CHECK",
+            deal_id: dealId,
+            version: prep.readiness.version,
+            expected_pages_total: prep.readiness.expected_pages_total,
+            dpu_rows_total: prep.readiness.dpu_rows_total,
+            missing_pages_total: prep.readiness.missing_pages_total,
+            ready: prep.ready,
+            blocked_reason: prep.blocked_reason,
+            enqueued: prep.enqueued,
+          },
+          "deal.analysis.preflight"
+        );
+
+        if (!prep.ready) {
+          // Don't enqueue analysis yet; caller should poll readiness and retry when ready.
+          return reply.status(202).send({
+            status: "preparing_documents",
+            error: "page_understanding_not_ready",
+            message: "Preparing documents for analysis. Poll /readiness and retry once readiness is true.",
+            blocked_reason: prep.blocked_reason,
+            poll_after_ms: prep.poll_after_ms,
+            enqueued: prep.enqueued,
+            readiness: prep.readiness,
+          });
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        request.log.error(
+          { event: "READINESS_CHECK_FAILED", deal_id: dealId, err: message },
+          "Failed to compute/ensure page understanding readiness"
+        );
+        return reply.status(500).send({
+          error: "readiness_check_failed",
+          message: "Failed to compute page understanding readiness.",
+          ...(process.env.NODE_ENV === "production" ? {} : { detail: message }),
+        });
+      }
+    }
+
+    let job: { job_id: string; status: string };
+    try {
+      job = await enqueue(
+        {
+          deal_id: dealId,
+          type: "analyze_deal",
+          payload: {
+            require_page_understanding: requirePageUnderstanding,
+            page_understanding_version: pageUnderstandingVersion,
+          },
+        },
+        { dedupe: { by: "deal" } }
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      request.log.error(
+        { event: "analyze_deal.enqueue_failed", deal_id: dealId, err: message },
+        "Failed to enqueue analyze_deal"
+      );
+      return reply.status(503).send({
+        error: "queue_unavailable",
+        message:
+          "Failed to enqueue analysis job. Queue/Redis may be unavailable. Check REDIS_URL and that Redis is running (for local: pnpm local:up).",
+        ...(process.env.NODE_ENV === "production" ? {} : { detail: message }),
+      });
+    }
 
     // After analysis job is enqueued, mark it so we can auto-progress when complete
     // (This would typically happen in a background worker after job completes)
     // For now, we queue the job and the worker will handle stage progression
 
-    return reply.status(202).send({ job_id: job.job_id, status: job.status });
+    // When preflight is not requested, analysis may fail due to missing prereqs.
+    // Make this behavior explicit (extra fields are backwards-compatible).
+    if (!requirePageUnderstanding) {
+      return reply.status(202).send({
+        job_id: job.job_id,
+        status: job.status,
+        prereqs_kicked: false,
+        note:
+          "Prerequisites were not kicked because require_page_understanding=false. If readiness is blocked (e.g. PAGE_COUNT_UNKNOWN), call /prepare or call /analyze with {require_page_understanding:true}.",
+      });
+    }
+
+    return reply.status(202).send({ job_id: job.job_id, status: job.status, prereqs_kicked: true });
+  });
+
+  // Explicit opt-in endpoint to prepare documents for analysis.
+  // Safe for prod: it only enqueues prerequisites, it does not silently run analysis.
+  app.post("/api/v1/deals/:deal_id/prepare", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    if (!isUuid(dealId)) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+
+    const pageUnderstandingVersionRaw = (request.body as any)?.page_understanding_version;
+    const pageUnderstandingVersion =
+      typeof pageUnderstandingVersionRaw === "string" && pageUnderstandingVersionRaw.trim().length > 0
+        ? pageUnderstandingVersionRaw.trim()
+        : "page_understanding_v1";
+
+    const { rows } = await pool.query<DealRow>(
+      `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+      [dealId]
+    );
+    if (rows.length === 0) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    try {
+      const prep = await ensureDocumentsReadyForAnalysis({
+        pool: pool as any,
+        dealId,
+        requirePageUnderstanding: true,
+        pageUnderstandingVersion,
+        logger: request.log,
+        enqueue,
+      });
+
+      request.log.info(
+        {
+          event: "DOC_PREPARE_RESULT",
+          deal_id: dealId,
+          version: prep.readiness.version,
+          expected_pages_total: prep.readiness.expected_pages_total,
+          dpu_rows_total: prep.readiness.dpu_rows_total,
+          missing_pages_total: prep.readiness.missing_pages_total,
+          ready: prep.ready,
+          blocked_reason: prep.blocked_reason,
+          enqueued: prep.enqueued,
+        },
+        "deal.prepare"
+      );
+
+      if (!prep.ready) {
+        return reply.status(202).send({
+          status: "preparing_documents",
+          message: "Preparing documents for analysis. Poll /readiness and retry once readiness is true.",
+          blocked_reason: prep.blocked_reason,
+          poll_after_ms: prep.poll_after_ms,
+          enqueued: prep.enqueued,
+          readiness: prep.readiness,
+        });
+      }
+
+      return reply.send({
+        status: "ready",
+        blocked_reason: null,
+        poll_after_ms: null,
+        enqueued: prep.enqueued,
+        readiness: prep.readiness,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      request.log.error(
+        { event: "DOC_PREPARE_FAILED", deal_id: dealId, err: message },
+        "Failed to prepare documents for analysis"
+      );
+      return reply.status(500).send({
+        error: "prepare_failed",
+        message: "Failed to prepare documents for analysis.",
+        ...(process.env.NODE_ENV === "production" ? {} : { detail: message }),
+      });
+    }
+  });
+
+  app.get("/api/v1/deals/:deal_id/readiness", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    if (!isUuid(dealId)) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+
+    const versionRaw = (request.query as any)?.page_understanding_version;
+    const version = typeof versionRaw === "string" && versionRaw.trim().length > 0 ? versionRaw.trim() : "page_understanding_v1";
+
+    const { rows } = await pool.query<DealRow>(
+      `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+      [dealId]
+    );
+    if (rows.length === 0) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    const readiness = await fetchPageUnderstandingReadinessForDeal(pool as any, dealId, version);
+
+    // If any visual document still has unknown page_count (0), treat readiness as not ready.
+    // This prevents analysis from proceeding (or the UI from flipping to ready) before
+    // render_document_pages has established page_count + rendered pages.
+    try {
+      const hasMimeType = await hasColumn(pool as any, "documents", "mime_type");
+      const hasFileName = await hasColumn(pool as any, "documents", "file_name");
+      const hasFilename = hasFileName ? false : await hasColumn(pool as any, "documents", "filename");
+      const fileNameExpr = hasFileName ? "d.file_name" : hasFilename ? "d.filename" : "NULL::text";
+      const mimeTypeExpr = hasMimeType ? "d.mime_type" : "NULL::text";
+
+      const { rows: docRows } = await pool.query<{
+        id: string;
+        page_count: number | null;
+        file_name: string | null;
+        mime_type: string | null;
+      }>(
+        `SELECT d.id,
+                COALESCE(d.page_count, 0) AS page_count,
+                ${fileNameExpr} AS file_name,
+                ${mimeTypeExpr} AS mime_type
+           FROM documents d
+          WHERE d.deal_id = $1
+            AND d.deleted_at IS NULL`,
+        [dealId]
+      );
+
+      const unknownPageCountVisualDocs: string[] = [];
+      for (const d of docRows ?? []) {
+        const caps = getDocumentCapabilities({
+          fileName: typeof d.file_name === "string" ? d.file_name : null,
+          mimeType: typeof d.mime_type === "string" ? d.mime_type : null,
+        });
+        const pageCount = typeof d.page_count === "number" && Number.isFinite(d.page_count) ? Math.max(0, Math.trunc(d.page_count)) : 0;
+        if (caps.visualExtractable && caps.supports_page_rendering && pageCount <= 0) {
+          unknownPageCountVisualDocs.push(d.id);
+        }
+      }
+
+      if (unknownPageCountVisualDocs.length > 0) {
+        (readiness as any).ready = false;
+        (readiness as any).blocked_reason = (readiness as any).blocked_reason ?? "PAGE_COUNT_UNKNOWN";
+        (readiness as any).poll_after_ms = (readiness as any).poll_after_ms ?? 2000;
+        (readiness as any).action = (readiness as any).action ?? { type: "render_document_pages", deal_id: dealId, version };
+        (readiness as any).render_missing_page_count_documents = unknownPageCountVisualDocs;
+
+        // Observability: if no prerequisite jobs exist, explain how to kick them.
+        // Readiness is intentionally read-only by default.
+        try {
+          const res = await pool.query(
+            `SELECT 1
+               FROM jobs
+              WHERE deal_id = $1
+                AND type = ANY($2::text[])
+                AND created_at >= (now() - interval '2 hours')
+              LIMIT 1`,
+            [dealId, ["render_document_pages", "document_intelligence_extract", "populate_document_page_understanding"]]
+          );
+          const hasAnyPrereqJob = Array.isArray((res as any)?.rows) && (res as any).rows.length > 0;
+          if (!hasAnyPrereqJob) {
+            (readiness as any).blocked_message =
+              "No pages rendered yet (page_count=0). Call POST /api/v1/deals/:deal_id/prepare or POST /api/v1/deals/:deal_id/analyze with {require_page_understanding:true} to enqueue render/OCR/DPU prerequisites.";
+            (readiness as any).blocked_action = {
+              method: "POST",
+              path: `/api/v1/deals/${dealId}/prepare`,
+              body: { page_understanding_version: version },
+            };
+          }
+        } catch {
+          // best-effort only
+        }
+      }
+    } catch {
+      // best-effort only
+    }
+    const nonMeaningfulPagesTotal =
+      typeof (readiness as any)?.non_meaningful_pages_total === "number" &&
+      Number.isFinite((readiness as any).non_meaningful_pages_total)
+        ? (readiness as any).non_meaningful_pages_total
+        : 0;
+
+    if (readiness.expected_pages_total > 0 && readiness.missing_pages_total > 0) {
+      const shouldPresenceCheck = readiness.dpu_rows_total === 0 || nonMeaningfulPagesTotal > 0;
+      if (shouldPresenceCheck) {
+        const presence = await bestEffortReadinessJobPresenceCheck({ pool: pool as any, dealId, version });
+        (readiness as any).blocked_reason = presence.blocked_reason;
+        if (!presence.blocked_reason && nonMeaningfulPagesTotal > 0) {
+          (readiness as any).blocked_reason = "DPU_EMPTY_CONTENT";
+          (readiness as any).poll_after_ms = 1500;
+          (readiness as any).action = { type: "rebuild_page_understanding", deal_id: dealId, version };
+        }
+
+        if ((readiness as any).blocked_reason) {
+          request.log.error(
+            {
+              event: "INGEST_BLOCKED_NO_JOBS",
+              deal_id: dealId,
+              version,
+              expected_pages_total: readiness.expected_pages_total,
+              dpu_rows_total: readiness.dpu_rows_total,
+              missing_pages_total: readiness.missing_pages_total,
+              non_meaningful_pages_total: nonMeaningfulPagesTotal,
+              checked: presence.checked,
+              blocked_reason: (readiness as any).blocked_reason,
+            },
+            "Readiness is blocked or stalled"
+          );
+        }
+      }
+    }
+    request.log.info(
+      {
+        event: "READINESS_CHECK",
+        deal_id: dealId,
+        version: readiness.version,
+        expected_pages_total: readiness.expected_pages_total,
+        dpu_rows_total: readiness.dpu_rows_total,
+        missing_pages_total: readiness.missing_pages_total,
+        ready: readiness.ready,
+      },
+      "deal.page_understanding.readiness"
+    );
+
+    return reply.send(readiness);
   });
 
   // Enqueue a best-effort visual extraction pass for all documents in the deal.
@@ -8598,10 +9018,10 @@ export async function registerDealRoutes(
 
     const pad4 = (n: number) => String(Math.max(0, Math.trunc(n))).padStart(4, "0");
 
-    // Local-dev fallback: when R2 is not configured, treat locally-rendered pages under UPLOAD_DIR as ready.
+    // Local-dev fallback: when storage driver is local, treat locally-rendered pages under UPLOAD_DIR as ready.
     // Worker writes page images to `${UPLOAD_DIR}/rendered_pages/<safeDocumentId>/page_%04d.png`.
     const uploadsRootDir = getUploadsRootDir();
-    const r2BucketConfigured = (process.env.R2_BUCKET || "").trim().length > 0;
+    const r2Enabled = getStorageDriver(process.env) === "r2";
     const safeDocIdForPath = (documentId: string) => String(documentId || "").replace(/[^a-zA-Z0-9_\-]/g, "_");
     const localRenderedPagesDirForDoc = (documentId: string) =>
       path.resolve(uploadsRootDir, "rendered_pages", safeDocIdForPath(documentId));
@@ -8653,8 +9073,8 @@ export async function registerDealRoutes(
       const rendered = typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered) ? metaObj.rendered_pages_rendered : null;
 
       if (!renderedR2) {
-        // If R2 isn't configured (typical local dev), allow local rendered pages to satisfy readiness.
-        if (!r2BucketConfigured) {
+        // If storage driver is local (typical local dev), allow local rendered pages to satisfy readiness.
+        if (!r2Enabled) {
           const local = hasLocalRenderedPages(d.id);
           if (local.ok) {
             readyDocIds.push(d.id);
@@ -8826,7 +9246,8 @@ export async function registerDealRoutes(
             const inserted = await insertJobRow(
               {
                 deal_id: dealId,
-                type: "extract_visuals",
+					type: "extract_visuals_deal",
+					queue: "extract_visuals",
                 payload,
               },
               { dedupe: { by: "deal" }, deps: { pool: client as any } }
@@ -8843,7 +9264,7 @@ export async function registerDealRoutes(
             try {
               await enqueueBullmqJob(
                 {
-                  type: "extract_visuals",
+						type: "extract_visuals_deal",
                   jobId: String(dbResult.job_id),
                   bullPayload: (dbResult as any).bullPayload ?? {},
                 },
@@ -8898,7 +9319,8 @@ export async function registerDealRoutes(
       job = await enqueue(
         {
           deal_id: dealId,
-          type: "extract_visuals",
+				type: "extract_visuals_deal",
+				queue: "extract_visuals",
           payload,
         },
         { dedupe: { by: "deal" } }
@@ -8910,7 +9332,7 @@ export async function registerDealRoutes(
       readiness_reason:
         r2ProbeOverrides.length > 0
           ? "r2_probe_overrode_metadata"
-          : !r2BucketConfigured
+          : !r2Enabled
             ? "local_rendered_pages_present"
             : "metadata_ready",
       ready_documents: readyDocIds,

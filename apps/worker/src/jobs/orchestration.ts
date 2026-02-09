@@ -31,6 +31,7 @@ import {
   MockEvidenceService,
   MockLLMService,
   createDefaultMCPConfig,
+  CanonicalEvidenceServiceImpl,
 } from "@dealdecision/core";
 import type { Pool } from "pg";
 
@@ -99,7 +100,8 @@ function createPipeline(orchestrator: DealOrchestrator): AnalysisPipeline {
   
   const mcpConfig = createDefaultMCPConfig();
   const mcpClient = new MockMCPClient(mcpConfig);
-  const evidenceService = new MockEvidenceService();
+  const { getPool } = require("../lib/db");
+  const evidenceService = new CanonicalEvidenceServiceImpl(getPool());
   const llmService = new MockLLMService();
   
   return new AnalysisPipeline(
@@ -119,6 +121,31 @@ function createPipeline(orchestrator: DealOrchestrator): AnalysisPipeline {
       debug: process.env.PIPELINE_DEBUG === 'true',
     }
   );
+}
+
+async function enrichInputWithEvidence(
+	deal_id: string,
+	input_data: Record<string, unknown>,
+	purpose: string,
+	provenance?: { run_id: string; step_run_id: string } | null
+) {
+  const { getPool } = require("../lib/db");
+  const evidenceService = new CanonicalEvidenceServiceImpl(getPool());
+  try {
+	await evidenceService.ingestExistingArtifacts(deal_id, provenance ? provenance : undefined);
+  } catch {
+    // fail open
+  }
+  try {
+    const packet = await evidenceService.getEvidencePacket(deal_id, purpose);
+    return {
+      ...input_data,
+      evidence_packet: packet,
+      evidence: evidenceService.toLegacyEvidence(packet.selected),
+    };
+  } catch {
+    return input_data;
+  }
 }
 
 // ============================================================================
@@ -155,11 +182,19 @@ export async function handleAnalyzeJob(job: Job<AnalyzeJobData>): Promise<Orches
     // Update progress: 10%
     await job.updateProgress(10);
     
+    const provenance = ((job.data as any)?.__pipeline_ledger as { run_id: string; step_run_id: string } | undefined) ?? null;
+    const enrichedInput = await enrichInputWithEvidence(
+      deal_id,
+      input_data,
+      `orchestration:cycle:${analysis_cycle}`,
+      provenance
+    );
+
     // Run analysis
     const result = await orchestrator.analyze({
       deal_id,
       analysis_cycle,
-      input_data,
+      input_data: enrichedInput,
       config,
     });
     
@@ -219,6 +254,17 @@ export async function handlePipelineJob(job: Job<PipelineJobData>): Promise<Pipe
     // Update progress: 5%
     await job.updateProgress(5);
     
+    // Ingest once before pipeline starts (pipeline selects per-cycle packets)
+    try {
+		const { getPool } = require("../lib/db");
+		const ev = new CanonicalEvidenceServiceImpl(getPool());
+    const provenance =
+      ((job.data as any)?.__pipeline_ledger as { run_id: string; step_run_id: string } | undefined) ?? null;
+    await ev.ingestExistingArtifacts(deal_id, provenance ? provenance : undefined);
+	} catch {
+		// fail open
+	}
+
     // Run pipeline with progress tracking
     const result = await pipeline.run({
       deal_id,

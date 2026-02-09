@@ -21,6 +21,15 @@ COPY apps/worker ./apps/worker
 
 RUN pnpm install --frozen-lockfile
 
+# Ensure the worker workspace deps are materialized for runtime resolution.
+# Use an explicit filter to force dependency linking for the worker importer.
+RUN pnpm --filter ./apps/worker... install --frozen-lockfile
+
+# Sanity check: BullMQ must be resolvable from the worker package root.
+# NOTE: `node -e` resolves modules relative to `/app/[eval]` (not `process.cwd()`),
+# so we must use a require rooted at the worker package.
+RUN node -e 'const { createRequire } = require("module"); const req = createRequire("/app/apps/worker/package.json"); req("bullmq"); console.log("bullmq_ok")'
+
 # ----------------------
 # build: compile worker
 # ----------------------

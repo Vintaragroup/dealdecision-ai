@@ -1,0 +1,80 @@
+{
+  "debug": {
+    "deck_archetype_key": "unknown",
+    "archetype_confidence": 0
+  },
+  "structured_summary": {
+    "kpis": {
+      "raise": {
+        "value_raw": "Unknown",
+        "value": "Unknown",
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      },
+      "revenue": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": "not_extracted_yet",
+        "source": null
+      },
+      "customers": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      },
+      "growth": {
+        "value_raw": null,
+        "value": null,
+        "scope_label": null,
+        "selection_reason": null,
+        "source": null
+      }
+    }
+  },
+  "deal_summary": {
+    "tiers": {
+      "hero": "This is a company in product.",
+      "overview": "This is a company in product. Key details are pending from extracted materials.",
+      "deep": "This is a company in product. Key details are pending from extracted materials. Notes: limited extracted signals so far."
+    },
+    "tier_char_counts": {
+      "hero": 29,
+      "overview": 79,
+      "deep": 120
+    }
+  },
+  "score_explanation": {
+    "understanding_v1": {
+      "summary_char_count": 170,
+      "strengths": {
+        "count": 2,
+        "items": [
+          "Benchmarks applied to extracted metrics",
+          "Narrative pacing score computed"
+        ]
+      },
+      "execution_dependencies": {
+        "count": 0,
+        "items": []
+      },
+      "diligence_open_items": {
+        "count": 7,
+        "items": [
+          "Add evidence for missing sections: raise_terms, terms, team, risks.",
+          "Add founder bios (roles, relevant experience, prior outcomes).",
+          "Add raise amount, round type, and expected use of funds.",
+          "Confirm cash balance, burn rate, and runway (and whether financials are cash vs accrual).",
+          "key_risks_detected"
+        ]
+      }
+    }
+  },
+  "citations": {
+    "total_sources": 0,
+    "unique_pages": 0
+  }
+}

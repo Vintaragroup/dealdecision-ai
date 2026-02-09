@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
-import { vi } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 // Mock ReactFlow to avoid DOM layout dependencies and to give us deterministic "nodes" to click.
 vi.mock('@xyflow/react', async () => {
@@ -97,13 +97,13 @@ vi.mock('@xyflow/react', async () => {
   };
 });
 
-vi.mock('../lib/apiClient', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../lib/apiClient')>();
+vi.mock('../lib/apiClient', async (importOriginal: unknown) => {
+  const actual = (await (importOriginal as unknown as () => Promise<unknown>)()) as typeof import('../lib/apiClient');
 
   return {
     ...actual,
     // Minimal baseline mocks for DealAnalystTab boot.
-    getWebBackendRuntimeConfig: vi.fn(() => ({ backendMode: 'live', apiBaseUrl: 'http://localhost:9000' } as any)),
+    getWebBackendRuntimeConfig: vi.fn(() => ({ backendMode: 'live', apiBaseUrl: 'http://localhost:9001' } as any)),
     isLiveBackend: vi.fn(() => true),
 
     apiGetDealLineage: vi.fn(async () => ({ nodes: [], edges: [] } as any)),

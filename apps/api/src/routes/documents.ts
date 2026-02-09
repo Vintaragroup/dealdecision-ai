@@ -9,12 +9,17 @@ import { resolveVisualAssetImageUriForApi } from "../lib/visual-asset-image-uri"
 import { getPool } from "../lib/db";
 import { inferDocumentTypeFromName } from "../lib/document-type-inference";
 import { deleteFromR2, getPublicUrlForKey, getR2Config, getSignedDownloadUrl, objectExistsInR2, uploadToR2 } from "../lib/r2";
+import { getStorageDriver } from "../lib/storage-contract";
 import { getUploadsRootDir } from "../plugins/uploads-static";
 import { insertEvidence } from "../services/evidence";
 import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
 import { normalizeDealName } from "../lib/normalize-deal-name";
 import { reconcileIngest } from "../lib/ingest-reconcile";
+
+function isUuid(value: string): boolean {
+  return z.string().uuid().safeParse(value).success;
+}
 
 function parseBoolQ(value: unknown, defaultValue = false): boolean {
   if (typeof value === "boolean") return value;
@@ -919,11 +924,7 @@ export async function registerDocumentRoutes(
   app.post("/api/v1/deals/:deal_id/documents", async (request, reply) => {
     const dealId = sanitizeText((request.params as any)?.deal_id);
     const documentId = randomUUID();
-    const useR2 =
-      !!process.env.R2_ENDPOINT &&
-      !!process.env.R2_BUCKET &&
-      !!process.env.R2_ACCESS_KEY_ID &&
-      !!process.env.R2_SECRET_ACCESS_KEY;
+    const useR2 = getStorageDriver(process.env) === "r2";
 
     let legacyFileBuffer: Buffer | null = null;
     let uploadedKey: string | null = null;
@@ -1662,6 +1663,12 @@ export async function registerDocumentRoutes(
   // Optional: force_resegment recomputes segment_key for existing structured synthetic assets.
   app.post("/api/v1/deals/:deal_id/documents/:document_id/extract-visuals", async (request, reply) => {
     const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
+    if (!isUuid(deal_id)) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+    if (!isUuid(document_id)) {
+      return reply.status(400).send({ error: "invalid_document_id", message: "document_id must be a UUID" });
+    }
     const forceResegment = Boolean((request.body as any)?.force_resegment);
 
     const hasMimeType = await hasColumn(pool as any, "documents", "mime_type");
@@ -1704,20 +1711,22 @@ export async function registerDocumentRoutes(
     const count = typeof metaObj?.rendered_pages_count === "number" && Number.isFinite(metaObj.rendered_pages_count) ? metaObj.rendered_pages_count : 0;
     const rendered = typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered) ? metaObj.rendered_pages_rendered : null;
 
-    // Local-dev fallback: if R2 isn't configured, accept locally rendered pages under UPLOAD_DIR.
-    const r2BucketConfigured = (process.env.R2_BUCKET || "").trim().length > 0;
+    // Local-dev fallback: only when storage driver is local, accept locally rendered pages under UPLOAD_DIR.
+    const r2Enabled = getStorageDriver(process.env) === "r2";
     const uploadsRootDir = getUploadsRootDir();
     const safeDocIdForPath = (id: string) => String(id || "").replace(/[^a-zA-Z0-9_\-]/g, "_");
     const localRenderedPagesDir = path.resolve(uploadsRootDir, "rendered_pages", safeDocIdForPath(document_id));
-    const localReady = (() => {
-      if (r2BucketConfigured) return false;
+    const localRenderedPagesCount = (() => {
+      if (r2Enabled) return 0;
       try {
         const names = fs.readdirSync(localRenderedPagesDir);
-        return (names || []).some((n) => /^page_\d{4}\.png$/i.test(String(n)));
+        const matches = (names || []).filter((n) => /^page_\d{4}\.png$/i.test(String(n)));
+        return matches.length;
       } catch {
-        return false;
+        return 0;
       }
     })();
+    const localReady = localRenderedPagesCount > 0;
 
     const pad4 = (n: number) => String(Math.max(0, Math.trunc(n))).padStart(4, "0");
     const renderedPageKeyForIndex = (renderedR2Obj: any, pageIndex: number): string | null => {
@@ -1829,6 +1838,8 @@ export async function registerDocumentRoutes(
         deal_id,
         document_id,
         type: "extract_visuals",
+			page_start: 0,
+			page_end: Math.max(1, (count > 0 ? count : localRenderedPagesCount)),
         payload: { force_resegment: forceResegment },
       },
       { dedupe: { by: "document" } }

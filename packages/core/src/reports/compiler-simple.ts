@@ -12,19 +12,60 @@ type ReportDTO = {
   generatedAt: string;
   version: number;
   overallScore: number;
-  grade: 'Excellent' | 'Good' | 'Fair' | 'Needs Improvement' | 'Insufficient Information';
-  recommendation: 'strong_yes' | 'yes' | 'consider' | 'pass';
-  categories: Array<{
-    name: string;
-    score: number;
-    maxScore?: number;
-    color?: string;
+  structured_summary?: {
+    raise: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
+    business_model: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
+    revenue: {
+      value: { amount: number | null; currency: string | null; period: string | null; raw: string | null } | null;
+      confidence: number;
+      sources: Array<Record<string, any>>;
+      label?: string | null;
+      selection_reason?: string | null;
+      candidates?: Array<{
+        selected?: boolean;
+        score?: number;
+        scope?: string | null;
+        subtype?: string | null;
+        year?: number | null;
+        value_raw?: string | null;
+        amount?: number | null;
+        currency?: string | null;
+        confidence?: number | null;
+        sources?: Array<Record<string, any>>;
+      }>;
+    };
+
+    marketing_metrics?: {
+      attributed_revenue?: {
+        value_raw: string | null;
+        channel: string | null;
+        confidence: number;
+        sources: Array<Record<string, any>>;
+      };
+    };
+    customers: {
+      value: { count: number | null; kind: string | null; raw: string | null } | null;
+      confidence: number;
+      sources: Array<Record<string, any>>;
+      label?: string | null;
+    };
+    growth: {
+      value: { percent: number | null; year: number | null; raw: string | null } | null;
+      confidence: number;
+      sources: Array<Record<string, any>>;
+      label?: string | null;
+    };
     issues: string[];
     strengths: string[];
     recommendations: string[];
-  }>;
+  };
+
+  grade: 'Excellent' | 'Good' | 'Fair' | 'Needs Improvement' | 'Insufficient Information';
+  recommendation: 'strong_yes' | 'yes' | 'consider' | 'pass';
+  categories: Array<Record<string, any>>;
   redFlags: Array<{ severity: 'high' | 'medium' | 'low'; message: string; action: string }>;
   greenFlags: string[];
+
   sections: ReportSection[];
   completeness: number;
   metadata?: Record<string, any>;
@@ -43,6 +84,907 @@ type ReportSection = {
 };
 
 type DIO = DealIntelligenceObject;
+type PromotedFactInput = {
+  fact_type: string;
+  confidence?: number;
+  extracted_at?: string;
+  source_path?: string;
+  source_document_id?: string | null;
+  evidence_id?: string;
+  content_json?: any;
+  meta?: any;
+};
+
+type StructuredField<T> = { value: T | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
+
+const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
+
+const confidenceBandToNumber = (band: unknown): number => {
+  if (band === 'high') return 0.85;
+  if (band === 'med') return 0.65;
+  if (band === 'low') return 0.45;
+  return 0.5;
+};
+
+const emptyField = <T,>(value: T | null = null): StructuredField<T> => ({ value, confidence: 0, sources: [], label: null });
+
+const asNonEmptyString = (v: unknown): string | null =>
+  typeof v === 'string' && v.trim() ? v.trim() : null;
+
+const parseScaledNumber = (raw: string): number | null => {
+  const s = raw.trim();
+  if (!s) return null;
+  const m = s.match(/(-?\d+(?:[\d,]*\d)?(?:\.\d+)?)(\s*[kKmMbB])?\b/);
+  if (!m) return null;
+  const base = Number(String(m[1]).replace(/,/g, ''));
+  if (!Number.isFinite(base)) return null;
+  const suffix = (m[2] || '').trim().toLowerCase();
+  const mult = suffix === 'k' ? 1e3 : suffix === 'm' ? 1e6 : suffix === 'b' ? 1e9 : 1;
+  return base * mult;
+};
+
+const parseMoneyLike = (v: unknown): { amount: number | null; currency: string | null; raw: string | null } => {
+  if (typeof v === 'number' && Number.isFinite(v)) return { amount: v, currency: null, raw: null };
+  const s = typeof v === 'string' ? v.trim() : '';
+  if (!s) return { amount: null, currency: null, raw: null };
+  const currency = s.includes('$') ? 'USD' : null;
+  const amount = parseScaledNumber(s.replace(/[^0-9kKmMbB,\.\-]/g, ''));
+  return { amount, currency, raw: s };
+};
+
+const normalizeMetricKey = (s: string): string => s.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_');
+
+const formatUsdShort = (amount: number | null | undefined): string | null => {
+  const v = typeof amount === 'number' && Number.isFinite(amount) ? amount : null;
+  if (v == null || v <= 0) return null;
+  if (v >= 1e9) {
+    const x = v / 1e9;
+    const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+    return `$${s}B`;
+  }
+  if (v >= 1e6) {
+    const x = v / 1e6;
+    const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+    return `$${s}MM`;
+  }
+  if (v >= 1e3) {
+    const x = v / 1e3;
+    const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+    return `$${s}K`;
+  }
+  return `$${Math.round(v)}`;
+};
+
+const shouldCollapseRaiseDisplay = (display: string): boolean => {
+  const s = display.toLowerCase();
+  // If detailed term sheet semantics are present, keep the full display.
+  if (s.includes('safe') || s.includes('cap') || s.includes('discount') || s.includes('interest') || s.includes('%')) return false;
+  // Collapse when it's essentially a raise amount + valuation phrasing.
+  if (s.includes('valuation') || s.includes('@') || s.includes('post-money') || s.includes('pre-money') || /\braise\b/.test(s)) return true;
+  return false;
+};
+
+function buildStructuredSummary(
+  dio: DIO,
+  scoreExplanation: any,
+  promotedFacts?: PromotedFactInput[]
+): NonNullable<ReportDTO['structured_summary']> {
+  const structured: NonNullable<ReportDTO['structured_summary']> = {
+    raise: emptyField<string>(),
+    business_model: emptyField<string>(),
+    revenue: emptyField<{ amount: number | null; currency: string | null; period: string | null; raw: string | null }>(),
+    customers: emptyField<{ count: number | null; kind: string | null; raw: string | null }>(),
+    growth: emptyField<{ percent: number | null; year: number | null; raw: string | null }>(),
+    marketing_metrics: {},
+    issues: [],
+    strengths: [],
+    recommendations: [],
+  };
+
+  // Priority 0: deterministic promoted facts from document_page_understanding -> evidence_items.
+  const promoted = Array.isArray(promotedFacts) ? promotedFacts : [];
+  const factTypeOf = (f: PromotedFactInput): string => {
+    const root = (f as any)?.fact_type;
+    if (typeof root === 'string' && root.trim()) return root.trim();
+    const nested = (f as any)?.content_json?.fact_type;
+    return typeof nested === 'string' ? nested.trim() : '';
+  };
+  const getPromotedValueJson = (f: PromotedFactInput): any => {
+    const cj = (f as any)?.content_json;
+    if (cj && typeof cj === 'object') {
+      return (cj as any)?.value_json ?? (cj as any)?.valueJson ?? null;
+    }
+    return null;
+  };
+
+  const attachNoteSnippet = (sources: Array<Record<string, any>>, noteSnippet: unknown): Array<Record<string, any>> => {
+    const note_snippet = asNonEmptyString(noteSnippet);
+    if (!note_snippet) return sources;
+    return sources.map((s) => ({ ...s, note_snippet }));
+  };
+  const promotedSourcesFor = (f: PromotedFactInput): Array<Record<string, any>> => {
+    const prov = ((f as any)?.content_json && typeof (f as any).content_json === 'object')
+      ? (f as any).content_json.provenance
+      : null;
+    const pageIndex = typeof prov?.page_index === 'number' && Number.isFinite(prov.page_index)
+      ? prov.page_index
+      : (typeof (f as any)?.meta?.page_index === 'number' && Number.isFinite((f as any).meta.page_index) ? (f as any).meta.page_index : null);
+
+    const primaryFromArray = Array.isArray(prov?.primary_sources) ? prov.primary_sources : [];
+    const supportingFromArray = Array.isArray(prov?.supporting_sources) ? prov.supporting_sources : [];
+
+    const mk = (docId: unknown, pi: unknown): string => `${String(docId ?? '')}:${String(pi ?? '')}`;
+    const out: Array<Record<string, any>> = [];
+    const base = {
+      kind: 'promoted_fact',
+      fact_type: factTypeOf(f) || f.fact_type,
+      evidence_id: (f as any)?.evidence_id ?? null,
+      extracted_at: f.extracted_at ?? null,
+    };
+
+    // Primary: prefer explicit primary_sources[0], else provenance root, else meta.
+    const primary0 = primaryFromArray[0] ?? null;
+    const primaryDoc =
+      (typeof primary0?.source_document_id === 'string' && primary0.source_document_id.trim() ? primary0.source_document_id.trim() : null) ??
+      (typeof prov?.source_document_id === 'string' && prov.source_document_id.trim() ? prov.source_document_id.trim() : null) ??
+      (typeof f.source_document_id === 'string' && f.source_document_id.trim() ? f.source_document_id.trim() : null) ??
+      (typeof (f as any)?.meta?.document_id === 'string' && (f as any).meta.document_id.trim() ? (f as any).meta.document_id.trim() : null);
+    const primaryPi =
+      (typeof primary0?.page_index === 'number' && Number.isFinite(primary0.page_index) ? primary0.page_index : null) ??
+      (typeof prov?.page_index === 'number' && Number.isFinite(prov.page_index) ? prov.page_index : null) ??
+      pageIndex;
+
+    out.push({
+      ...base,
+      evidence_role: 'primary',
+      source_path: primaryDoc != null && primaryPi != null ? `doc:${primaryDoc}:page:${primaryPi + 1}` : (f.source_path ?? null),
+      source_document_id: primaryDoc,
+      page_index: primaryPi,
+      page: primaryPi != null ? primaryPi + 1 : null,
+      slide_number: typeof primary0?.slide_number === 'number' && Number.isFinite(primary0.slide_number)
+        ? primary0.slide_number
+        : (typeof prov?.slide_number === 'number' && Number.isFinite(prov.slide_number) ? prov.slide_number : null),
+      segment_key: typeof primary0?.segment_key === 'string'
+        ? primary0.segment_key
+        : (typeof prov?.segment_key === 'string' ? prov.segment_key : null),
+      segment_reason: (primary0 && typeof primary0 === 'object' && (primary0 as any).segment_reason)
+        ? (primary0 as any).segment_reason
+        : (prov && typeof prov === 'object' && (prov as any).segment_reason)
+          ? (prov as any).segment_reason
+          : ((f as any)?.meta && typeof (f as any).meta === 'object' ? (f as any).meta.segment_reason ?? null : null),
+      slide_title: typeof primary0?.slide_title === 'string'
+        ? primary0.slide_title
+        : (typeof prov?.slide_title === 'string' ? prov.slide_title : null),
+    });
+
+    const supportingLegacy = Array.isArray(prov?.supporting) ? prov.supporting : [];
+    const supporting = supportingFromArray.length > 0 ? supportingFromArray : supportingLegacy;
+    for (const s of supporting) {
+      const sPi = typeof s?.page_index === 'number' && Number.isFinite(s.page_index) ? s.page_index : null;
+      const sDoc = typeof s?.source_document_id === 'string' && s.source_document_id.trim() ? s.source_document_id.trim() : null;
+      if (sDoc == null || sPi == null) continue;
+      out.push({
+        ...base,
+        evidence_role: 'supporting',
+        supporting: true,
+        source_path: `doc:${sDoc}:page:${sPi + 1}`,
+        source_document_id: sDoc,
+        page_index: sPi,
+        page: sPi + 1,
+        slide_number: typeof s?.slide_number === 'number' && Number.isFinite(s.slide_number) ? s.slide_number : null,
+        segment_key: typeof s?.segment_key === 'string' ? s.segment_key : null,
+        segment_reason: (s && typeof s === 'object' && (s as any).segment_reason) ? (s as any).segment_reason : null,
+        slide_title: typeof s?.slide_title === 'string' ? s.slide_title : null,
+      });
+    }
+
+    const seen = new Set<string>();
+    return out.filter((x) => {
+      const k = mk(x.source_document_id, x.page_index);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  };
+
+  const promotedRaise = promoted.find((f) => factTypeOf(f) === 'raise_terms_v1');
+  if (promotedRaise) {
+    const vj = getPromotedValueJson(promotedRaise) ?? {};
+    const display = asNonEmptyString(vj?.display) ?? asNonEmptyString((vj as any)?.raw_text);
+    const amountRaw = (vj as any)?.amount?.amount;
+    const valuationRaw = (vj as any)?.valuation?.amount;
+    const amount = typeof amountRaw === 'number' && Number.isFinite(amountRaw) ? amountRaw : null;
+    const valuation = typeof valuationRaw === 'number' && Number.isFinite(valuationRaw) ? valuationRaw : null;
+
+    const value = (() => {
+      if (amount != null && display && shouldCollapseRaiseDisplay(display)) {
+        return formatUsdShort(amount) ?? display;
+      }
+      if (amount != null && !display) return formatUsdShort(amount);
+      return display;
+    })();
+
+    if (value) {
+      const sources = promotedSourcesFor(promotedRaise);
+      const noteFromValueJson = asNonEmptyString((vj as any)?.note_snippet);
+      const valuationNote = valuation != null ? `on ${formatUsdShort(valuation) ?? '$' + String(valuation)} valuation` : null;
+      const note = noteFromValueJson ?? valuationNote;
+      structured.raise = {
+        value,
+        confidence: clamp01(typeof promotedRaise.confidence === 'number' ? promotedRaise.confidence : 0.7),
+        sources: note ? sources.map((s) => ({ ...s, note })) : sources,
+      };
+    }
+  }
+
+  const promotedModel = (() => {
+    const models = promoted.filter((f) => factTypeOf(f) === 'business_model_v1');
+    if (models.length === 0) return null;
+
+    const score = (f: any): number => {
+      const st = typeof f?.source_type === 'string' ? f.source_type : '';
+      const conf = typeof f?.confidence === 'number' && Number.isFinite(f.confidence) ? f.confidence : 0;
+      const bonus = st === 'business_model_fact' ? 0.25 : 0;
+      return conf + bonus;
+    };
+
+    return (
+      models
+        .slice()
+        .sort((a: any, b: any) => score(b) - score(a) || String(b?.extracted_at ?? '').localeCompare(String(a?.extracted_at ?? '')))[0] ?? null
+    );
+  })();
+  if (promotedModel) {
+    const vj = getPromotedValueJson(promotedModel) ?? {};
+    const display = asNonEmptyString(vj?.display) ?? asNonEmptyString(vj?.model);
+    const sourcesAll = promotedSourcesFor(promotedModel);
+    const primaries = sourcesAll.filter((s) => (s as any)?.evidence_role === 'primary' && (s as any)?.source_document_id && (s as any)?.page_index != null);
+    const supportings = sourcesAll.filter((s) => (s as any)?.evidence_role === 'supporting' && (s as any)?.source_document_id && (s as any)?.page_index != null);
+
+    // Canonical restriction: exactly 1 primary + 0–3 supporting. No primary => null/0/[] (no inference).
+    if (display && primaries.length === 1) {
+      structured.business_model = {
+        value: display,
+        confidence: clamp01(typeof promotedModel.confidence === 'number' ? promotedModel.confidence : 0.7),
+        sources: [primaries[0], ...supportings.slice(0, 3)],
+      };
+    } else {
+      structured.business_model = { value: null, confidence: 0, sources: [], label: null };
+    }
+  }
+
+  // Growth: percent preferred over forecast outlook.
+  const promotedGrowthPercent = (() => {
+    const facts = promoted.filter((f) => factTypeOf(f) === 'growth_v1');
+    if (facts.length === 0) return null;
+
+    const disallowedSeg = new Set(['team', 'advisors', 'about', 'story']);
+    const score = (f: any): number => {
+      const prov = f?.content_json?.provenance;
+      const title = String(prov?.slide_title ?? '').toLowerCase();
+      const seg = String(prov?.segment_key ?? '').trim().toLowerCase();
+      const vj = getPromotedValueJson(f) ?? {};
+      const note = String((vj as any)?.note_snippet ?? '').toLowerCase();
+      let s = 0;
+      if (seg && disallowedSeg.has(seg)) s -= 100;
+      if (title.includes('growth forecast')) s += 10;
+      else if (title.includes('financial')) s += 7;
+      else if (title.includes('performance')) s += 6;
+      else if (title.includes('growth')) s += 5;
+      else if (title.includes('forecast')) s += 4;
+      if (note.includes('yoy') || note.includes('y/y') || note.includes('year over year')) s += 2;
+      if (note.includes('growth') || note.includes('increase') || note.includes('returning')) s += 1;
+      const conf = typeof f?.confidence === 'number' && Number.isFinite(f.confidence) ? f.confidence : 0;
+      s += conf;
+      return s;
+    };
+
+    return (
+      facts
+        .slice()
+        .sort((a: any, b: any) => score(b) - score(a) || String(b?.extracted_at ?? '').localeCompare(String(a?.extracted_at ?? '')))[0] ?? null
+    );
+  })();
+  if (promotedGrowthPercent) {
+    const vj = getPromotedValueJson(promotedGrowthPercent) ?? {};
+    const raw = asNonEmptyString((vj as any)?.display) ?? asNonEmptyString((vj as any)?.raw);
+    const pctRaw = (vj as any)?.percent;
+    const percent = typeof pctRaw === 'number' && Number.isFinite(pctRaw) ? pctRaw : null;
+    if (raw || percent != null) {
+      const sources = attachNoteSnippet(promotedSourcesFor(promotedGrowthPercent), (vj as any)?.note_snippet);
+      structured.growth = {
+        value: { percent, year: null, raw: raw ?? null },
+        confidence: clamp01(typeof promotedGrowthPercent.confidence === 'number' ? promotedGrowthPercent.confidence : 0.6),
+        sources,
+        label: null,
+      };
+    }
+  }
+
+  if (!structured.growth.value) {
+    const promotedGrowthOutlook = promoted.find((f) => factTypeOf(f) === 'growth_outlook_v1');
+    if (promotedGrowthOutlook) {
+      const vj = getPromotedValueJson(promotedGrowthOutlook) ?? {};
+      const raw = asNonEmptyString((vj as any)?.display) ?? asNonEmptyString((vj as any)?.raw);
+      const yearRaw = (vj as any)?.year;
+      const year = typeof yearRaw === 'number' && Number.isFinite(yearRaw) ? yearRaw : null;
+      if (raw) {
+        const sources = attachNoteSnippet(promotedSourcesFor(promotedGrowthOutlook), (vj as any)?.note_snippet);
+        structured.growth = {
+          value: { percent: null, year, raw },
+          confidence: clamp01(typeof promotedGrowthOutlook.confidence === 'number' ? promotedGrowthOutlook.confidence : 0.58),
+          sources,
+          label: 'Forecast',
+        };
+      }
+    }
+  }
+
+  const phase1 = (dio as any)?.dio?.phase1;
+  const overview = phase1?.deal_overview_v2;
+  const exec = phase1?.executive_summary_v1;
+
+  const hasPrimaryCitation = (sources: Array<Record<string, any>>): boolean => {
+    if (!Array.isArray(sources) || sources.length === 0) return false;
+    return sources.some((s: any) => {
+      if (!s || typeof s !== 'object') return false;
+      const doc = typeof s.document_id === 'string' && s.document_id.trim()
+        ? s.document_id.trim()
+        : (typeof s.source_document_id === 'string' && s.source_document_id.trim() ? s.source_document_id.trim() : null);
+      const page = typeof s.page === 'number' && Number.isFinite(s.page)
+        ? s.page
+        : (typeof s.page_index === 'number' && Number.isFinite(s.page_index) ? s.page_index + 1 : null);
+      return !!doc && page != null;
+    });
+  };
+
+  const isSpecificBusinessModelString = (raw: string): boolean => {
+    const s = raw.trim();
+    if (!s) return false;
+    const lowered = s.toLowerCase();
+
+    // Reject single-token generic labels (common leakage: "Licensing").
+    const tokenCount = lowered.split(/\s+|\//g).filter(Boolean).length;
+    if (tokenCount < 2) return false;
+
+    // Require some money-flow / go-to-market model keyword.
+    return /\b(dtc|direct\s*-?to\s*-?consumer|wholesale|retail|marketplace|subscription|recurring|saas|commission|take\s*-?rate|transaction|fee|pricing|usage\s*-?based|consumption|licens(e|ing)|royalt(y|ies)|ads?|services?)\b/i.test(s);
+  };
+
+  const overviewSources = Array.isArray(overview?.sources)
+    ? overview.sources.map((s: any) => ({ kind: 'phase1.deal_overview_v2', ...s }))
+    : [];
+  const execEvidence = Array.isArray(exec?.evidence)
+    ? exec.evidence.map((e: any) => ({ kind: 'phase1.executive_summary_v1', ...e }))
+    : [];
+
+  const overviewRaise = asNonEmptyString(overview?.raise);
+  if (overviewRaise && !structured.raise.value) {
+    structured.raise = { value: overviewRaise, confidence: 0.9, sources: overviewSources };
+  }
+  const overviewModel = asNonEmptyString(overview?.business_model);
+  if (overviewModel && !structured.business_model.value && hasPrimaryCitation(overviewSources)) {
+    structured.business_model = { value: overviewModel, confidence: 0.9, sources: overviewSources };
+  }
+
+  if (!structured.raise.value) {
+    const execRaise = asNonEmptyString(exec?.raise);
+    if (execRaise) {
+      const band = (exec as any)?.confidence?.sections?.raise ?? (exec as any)?.confidence?.overall;
+      structured.raise = { value: execRaise, confidence: confidenceBandToNumber(band), sources: execEvidence };
+    }
+  }
+  if (!structured.business_model.value) {
+    const execModel = asNonEmptyString(exec?.business_model);
+    if (execModel && hasPrimaryCitation(execEvidence)) {
+      const band = (exec as any)?.confidence?.sections?.business_model ?? (exec as any)?.confidence?.overall;
+      structured.business_model = { value: execModel, confidence: confidenceBandToNumber(band), sources: execEvidence };
+    }
+  }
+
+  // Priority: document-level extracted metrics from immutable inputs.
+  type MetricHit = {
+    document_id: string;
+    key: string;
+    value: unknown;
+    unit: string | null;
+    page: number | string;
+    confidence: number;
+  };
+  const allMetrics: MetricHit[] = [];
+  for (const doc of Array.isArray(dio.inputs?.documents) ? dio.inputs.documents : []) {
+    const docId = (doc as any)?.document_id;
+    if (typeof docId !== 'string') continue;
+    const metrics = Array.isArray((doc as any).metrics) ? (doc as any).metrics : [];
+    for (const m of metrics) {
+      const key = typeof m?.key === 'string' ? m.key : '';
+      if (!key) continue;
+      const conf = typeof m?.confidence === 'number' && Number.isFinite(m.confidence) ? clamp01(m.confidence) : 0;
+      allMetrics.push({
+        document_id: docId,
+        key,
+        value: m?.value,
+        unit: typeof m?.unit === 'string' ? m.unit : null,
+        page: m?.page,
+        confidence: conf,
+      });
+    }
+  }
+
+  const pickMetric = (predicate: (k: string) => boolean): MetricHit | null => {
+    let best: MetricHit | null = null;
+    for (const m of allMetrics) {
+      const nk = normalizeMetricKey(m.key);
+      if (!predicate(nk)) continue;
+      if (!best || m.confidence > best.confidence) best = m;
+    }
+    return best;
+  };
+
+  const revenueMetric = pickMetric((k) => {
+    const kn = normalizeMetricKey(k);
+    const isMarketingAttributed =
+      kn.includes('attributed') ||
+      kn.includes('email') ||
+      kn.includes('sms') ||
+      kn.includes('campaign') ||
+      kn.includes('paid media') ||
+      kn.includes('roas') ||
+      kn.includes('cac') ||
+      kn.includes('conversion') ||
+      kn.includes('marketing');
+    if (isMarketingAttributed) return false;
+    return kn.includes('arr') || kn.includes('mrr') || kn.includes('revenue') || kn.includes('sales') || kn.includes('gmv');
+  });
+  if (revenueMetric) {
+    const keyNorm = normalizeMetricKey(revenueMetric.key);
+    const period = keyNorm.includes('arr') ? 'ARR' : keyNorm.includes('mrr') ? 'MRR' : null;
+    const money = parseMoneyLike(revenueMetric.value);
+    structured.revenue = {
+      value: { amount: money.amount, currency: money.currency ?? revenueMetric.unit ?? null, period, raw: money.raw },
+      confidence: revenueMetric.confidence,
+      sources: [
+        {
+          kind: 'input_metric',
+          document_id: revenueMetric.document_id,
+          page: revenueMetric.page,
+          metric_key: revenueMetric.key,
+          unit: revenueMetric.unit,
+          confidence: revenueMetric.confidence,
+        },
+      ],
+      selection_reason: 'input_metric_preferred',
+      candidates: [
+        {
+          selected: true,
+          score: revenueMetric.confidence,
+          scope: 'input_metric',
+          subtype: period ? String(period).toLowerCase() : null,
+          year: null,
+          value_raw: money.raw,
+          amount: money.amount,
+          currency: money.currency ?? revenueMetric.unit ?? null,
+          confidence: revenueMetric.confidence,
+          sources: [
+            {
+              kind: 'input_metric',
+              document_id: revenueMetric.document_id,
+              page: revenueMetric.page,
+              metric_key: revenueMetric.key,
+              unit: revenueMetric.unit,
+              confidence: revenueMetric.confidence,
+            },
+          ],
+        },
+      ],
+    };
+  } else {
+    const promotedRevenueTrace = (() => {
+      // GOVERNANCE: canonical revenue (structured_summary.revenue / kpis.revenue) must represent
+      // company-level revenue only. Marketing-attributed / channel-attributed revenue is allowed
+      // elsewhere (marketing_metrics, performance KPIs, evidence), but it must NEVER compete for
+      // canonical revenue selection.
+      const isCanonicalRevenueEligible = (f: PromotedFactInput): boolean => {
+        const ft = factTypeOf(f);
+        if (ft === 'marketing_attributed_revenue_v1') return false;
+
+        const vj = getPromotedValueJson(f) ?? {};
+        const subtype = String((vj as any)?.subtype ?? '').toLowerCase();
+        const scope = String((vj as any)?.scope ?? (f as any)?.content_json?.provenance?.scope ?? '').toLowerCase();
+
+        // Hard exclusions
+        if (scope === 'channel_attributed') return false;
+        if (subtype === 'attributed') return false;
+
+        // Forecast revenue is treated as growth/outlook, not canonical revenue.
+        if (subtype === 'forecast') return false;
+
+        return true;
+      };
+
+      const revenueFacts = promoted
+        .filter((f) => factTypeOf(f) === 'revenue_v1')
+        .filter((f) => isCanonicalRevenueEligible(f));
+      if (revenueFacts.length === 0) return null;
+
+      const disallowedSeg = new Set(['team', 'advisors', 'equipment']);
+      const isOpportunityStyle = (t: string): boolean => {
+        const s = t.toLowerCase();
+        if (s.includes('opportunity')) return true;
+        if (s.includes('annual opportunity')) return true;
+        if (s.includes('within driving distance')) return true;
+        if (s.includes('could be')) return true;
+        if (s.includes('potential')) return true;
+        if (s.includes('per year in retail revenue')) return true;
+        if (s.includes('potential revenue')) return true;
+        return false;
+      };
+
+      const currentYear = new Date().getFullYear();
+
+      const getSubtype = (f: any): string | null => {
+        const vj = getPromotedValueJson(f) ?? {};
+        const s = asNonEmptyString((vj as any)?.subtype);
+        return s ? s.toLowerCase() : null;
+      };
+
+      const getScope = (f: any): string | null => {
+        const prov = f?.content_json?.provenance;
+        const vj = getPromotedValueJson(f) ?? {};
+        const v = asNonEmptyString((vj as any)?.scope);
+        if (v) return v;
+        const p = asNonEmptyString((prov as any)?.scope);
+        return p ?? null;
+      };
+
+      const inferredScope = (f: any): 'company_financials_table' | 'company_total' | 'channel_attributed' => {
+        const vj = getPromotedValueJson(f) ?? {};
+        const subtype = String((vj as any)?.subtype ?? '').toLowerCase();
+        const scopeRaw = String(getScope(f) ?? '').trim().toLowerCase();
+        if (scopeRaw === 'company_financials_table') return 'company_financials_table';
+        if (scopeRaw === 'channel_attributed') return 'channel_attributed';
+        if (scopeRaw === 'company_total') return 'company_total';
+        // Back-compat: if subtype explicitly says attributed, treat as channel-attributed.
+        if (subtype === 'attributed') return 'channel_attributed';
+        return 'company_total';
+      };
+
+      const buildCandidate = (f: any, scoreValue: number, selected: boolean): any => {
+        const vj = getPromotedValueJson(f) ?? {};
+        const display = asNonEmptyString((vj as any)?.display) ?? asNonEmptyString((vj as any)?.raw);
+        const amountRaw = (vj as any)?.amount?.amount;
+        const amount = typeof amountRaw === 'number' && Number.isFinite(amountRaw) ? amountRaw : null;
+        const yearRaw = (vj as any)?.year;
+        const year = typeof yearRaw === 'number' && Number.isFinite(yearRaw) ? yearRaw : null;
+        const scope = asNonEmptyString((vj as any)?.scope) ?? asNonEmptyString((f as any)?.content_json?.provenance?.scope);
+        const subtype = asNonEmptyString((vj as any)?.subtype);
+        const sources = attachNoteSnippet(promotedSourcesFor(f), (vj as any)?.note_snippet);
+        const conf = clamp01(typeof f?.confidence === 'number' ? f.confidence : 0.62);
+        return {
+          selected,
+          score: scoreValue,
+          scope: scope ?? inferredScope(f),
+          subtype: subtype ?? getSubtype(f),
+          year,
+          value_raw: display,
+          amount,
+          currency: 'USD',
+          confidence: conf,
+          sources,
+        };
+      };
+
+      const score = (f: any): number => {
+        const prov = f?.content_json?.provenance;
+        const title = String(prov?.slide_title ?? '').toLowerCase();
+        const seg = String(prov?.segment_key ?? '').trim().toLowerCase();
+        const vj = getPromotedValueJson(f) ?? {};
+        const raw = String((vj as any)?.display ?? (vj as any)?.raw ?? '').toLowerCase();
+        const note = String((vj as any)?.note_snippet ?? '').toLowerCase();
+        const subtype = String((vj as any)?.subtype ?? '').toLowerCase();
+        const scope = inferredScope(f);
+        const yearRaw = (vj as any)?.year;
+        const year = typeof yearRaw === 'number' && Number.isFinite(yearRaw) ? yearRaw : null;
+        const titleIsFinancialOrPerformance = title.includes('financial') || title.includes('performance');
+
+        // Exclude opportunity-style revenue.
+        if (subtype === 'opportunity' || isOpportunityStyle(raw) || isOpportunityStyle(note)) return -1000;
+
+        // Exclude irrelevant segments unless explicitly financial/performance.
+        if (seg && disallowedSeg.has(seg) && !titleIsFinancialOrPerformance) return -500;
+
+        let s = 0;
+        if (scope === 'company_financials_table') s += 50;
+        if (scope === 'company_total') s += 10;
+        if (scope === 'channel_attributed') s -= 10;
+
+        // Forecast revenue should never outrank completed-year revenue or attributed revenue.
+        if (subtype === 'forecast') s -= 20;
+
+        if (typeof year === 'number') {
+          // Prefer recent completed years.
+          if (year <= currentYear - 2) s += 10;
+          s += Math.max(0, Math.min(6, year - (currentYear - 10)) * 0.2);
+        }
+        if (title.includes('business performance')) s += 12;
+        if (title.includes('financial')) s += 10;
+        if (title.includes('performance')) s += 9;
+        if (title.includes('equipment')) s -= 15;
+        if (seg === 'equipment') s -= 20;
+        if (raw.includes('attributed') || note.includes('attributed')) s += 2;
+        if (raw.includes('revenue') || note.includes('revenue')) s += 2;
+        const conf = typeof f?.confidence === 'number' && Number.isFinite(f.confidence) ? f.confidence : 0;
+        s += conf;
+        return s;
+      };
+
+      const scored = revenueFacts
+        .map((f: any) => ({ f, score: score(f) }))
+        .filter((x: any) => typeof x.score === 'number' && Number.isFinite(x.score) && x.score >= -100);
+
+      const sortedAll = scored
+        .slice()
+        .sort(
+          (a: any, b: any) =>
+            b.score - a.score ||
+            String(b?.f?.extracted_at ?? '').localeCompare(String(a?.f?.extracted_at ?? ''))
+        );
+
+      const pickBest = (
+        predicate: (f: any) => boolean,
+        selection_reason: string
+      ): { fact: PromotedFactInput; selection_reason: string } | null => {
+        const hits = revenueFacts.filter((f: any) => predicate(f));
+        if (hits.length === 0) return null;
+        const sorted = hits
+          .slice()
+          .sort(
+            (a: any, b: any) =>
+              score(b) - score(a) ||
+              String(b?.extracted_at ?? '').localeCompare(String(a?.extracted_at ?? ''))
+          );
+        const best = sorted[0];
+        return score(best) < -100 ? null : { fact: best, selection_reason };
+      };
+
+      const pickBestFinancialTableAnnual = (): { fact: PromotedFactInput; selection_reason: string } | null => {
+        const hits = revenueFacts.filter(
+          (f: any) => inferredScope(f) === 'company_financials_table' && getSubtype(f) === 'annual'
+        );
+        if (hits.length === 0) return null;
+        const sorted = hits
+          .slice()
+          .sort((a: any, b: any) => {
+            const aYearRaw = (getPromotedValueJson(a) ?? {})?.year;
+            const bYearRaw = (getPromotedValueJson(b) ?? {})?.year;
+            const aYear = typeof aYearRaw === 'number' && Number.isFinite(aYearRaw) ? aYearRaw : null;
+            const bYear = typeof bYearRaw === 'number' && Number.isFinite(bYearRaw) ? bYearRaw : null;
+            if (aYear != null && bYear != null && aYear !== bYear) return bYear - aYear;
+            return score(b) - score(a) || String(b?.extracted_at ?? '').localeCompare(String(a?.extracted_at ?? ''));
+          });
+        const best = sorted[0];
+        return score(best) < -100 ? null : { fact: best, selection_reason: 'financial_table_preferred' };
+      };
+
+      // Canonical revenue preference order when no document input metrics exist.
+      // 1) company_financials_table annual revenue (completed-year table row)
+      // 2) company_total annual revenue (non-attributed)
+      // Note: forecast revenue is intentionally excluded from canonical revenue.
+      const picked = (
+        pickBestFinancialTableAnnual() ??
+        pickBest((f) => inferredScope(f) === 'company_total' && getSubtype(f) === 'annual', 'company_total_preferred') ??
+        null
+      );
+
+      const chosen = picked ? picked.fact : null;
+      const selection_reason = picked ? picked.selection_reason : null;
+
+      const candidates = sortedAll
+        .slice(0, 12)
+        .map((x: any) => buildCandidate(x.f, x.score, chosen != null && x.f === chosen));
+
+      // If we chose something excluded from sortedAll (shouldn't happen), still emit it as selected.
+      if (chosen && !candidates.some((c: any) => c && c.selected)) {
+        try {
+          const sc = score(chosen);
+          candidates.unshift(buildCandidate(chosen, sc, true));
+        } catch {
+          // ignore
+        }
+      }
+
+      return { chosen, selection_reason, candidates };
+    })();
+
+    if (promotedRevenueTrace && promotedRevenueTrace.chosen) {
+      const promotedRevenue = promotedRevenueTrace.chosen;
+      const vj = getPromotedValueJson(promotedRevenue) ?? {};
+      const display = asNonEmptyString((vj as any)?.display) ?? asNonEmptyString((vj as any)?.raw);
+      const subtype = asNonEmptyString((vj as any)?.subtype);
+      const scope = asNonEmptyString((vj as any)?.scope) ?? asNonEmptyString((promotedRevenue as any)?.content_json?.provenance?.scope);
+      const yearRaw = (vj as any)?.year;
+      const year = typeof yearRaw === 'number' && Number.isFinite(yearRaw) ? yearRaw : null;
+      const amountRaw = (vj as any)?.amount?.amount;
+      const amount = typeof amountRaw === 'number' && Number.isFinite(amountRaw) ? amountRaw : null;
+      const sources = attachNoteSnippet(promotedSourcesFor(promotedRevenue), (vj as any)?.note_snippet);
+
+      const label = (() => {
+        const scopeNorm = String(scope ?? '').trim().toLowerCase();
+        if (scopeNorm === 'channel_attributed' || subtype === 'attributed') return 'Attributed';
+        if (scopeNorm === 'company_financials_table' && typeof year === 'number') return String(year);
+        return null;
+      })();
+
+      structured.revenue = {
+        value: { amount, currency: 'USD', period: null, raw: display },
+        confidence: clamp01(typeof promotedRevenue.confidence === 'number' ? promotedRevenue.confidence : 0.62),
+        sources,
+        label,
+        selection_reason: promotedRevenueTrace.selection_reason,
+        candidates: Array.isArray(promotedRevenueTrace.candidates) ? promotedRevenueTrace.candidates : [],
+      };
+    } else {
+    const fhRevenue = (dio as any)?.analyzer_results?.financial_health?.metrics?.revenue;
+    if (typeof fhRevenue === 'number' && Number.isFinite(fhRevenue)) {
+      structured.revenue = {
+        value: { amount: fhRevenue, currency: null, period: 'annual', raw: null },
+        confidence: clamp01((dio as any)?.analyzer_results?.financial_health?.confidence ?? 0.5),
+        sources: [{ kind: 'financial_health.metrics', metric_key: 'revenue' }],
+        selection_reason: 'financial_health_fallback',
+        candidates: [
+          {
+            selected: true,
+            score: clamp01((dio as any)?.analyzer_results?.financial_health?.confidence ?? 0.5),
+            scope: 'financial_health',
+            subtype: 'annual',
+            year: null,
+            value_raw: null,
+            amount: fhRevenue,
+            currency: null,
+            confidence: clamp01((dio as any)?.analyzer_results?.financial_health?.confidence ?? 0.5),
+            sources: [{ kind: 'financial_health.metrics', metric_key: 'revenue' }],
+          },
+        ],
+      };
+    }
+    }
+  }
+
+  // Marketing-attributed revenue (must never be treated as canonical company revenue).
+  // Surface it under structured_summary.marketing_metrics for inspection/debug/UI.
+  {
+    const attributedFacts = promoted.filter((f) => factTypeOf(f) === 'marketing_attributed_revenue_v1');
+    if (attributedFacts.length > 0) {
+      const best = attributedFacts
+        .slice()
+        .sort(
+          (a: any, b: any) =>
+            (typeof b?.confidence === 'number' ? b.confidence : 0) - (typeof a?.confidence === 'number' ? a.confidence : 0) ||
+            String(b?.extracted_at ?? '').localeCompare(String(a?.extracted_at ?? ''))
+        )[0];
+
+      const vj = getPromotedValueJson(best) ?? {};
+      const value_raw = asNonEmptyString((vj as any)?.display) ?? asNonEmptyString((vj as any)?.raw);
+      const channel = asNonEmptyString((vj as any)?.channel) ?? asNonEmptyString((best as any)?.content_json?.provenance?.channel);
+      const sources = attachNoteSnippet(promotedSourcesFor(best), (vj as any)?.note_snippet);
+
+      structured.marketing_metrics = structured.marketing_metrics ?? {};
+      structured.marketing_metrics.attributed_revenue = {
+        value_raw,
+        channel: channel ?? null,
+        confidence: clamp01(typeof best?.confidence === 'number' ? best.confidence : 0.62),
+        sources,
+      };
+    }
+  }
+
+  const customerMetric = pickMetric((k) =>
+    k.includes('customer') || k === 'customers' || k.includes('users') || k.includes('subscriber') || k.includes('accounts')
+  );
+  if (customerMetric) {
+    const raw = typeof customerMetric.value === 'string' ? customerMetric.value.trim() : null;
+    const count = typeof customerMetric.value === 'number'
+      ? customerMetric.value
+      : raw
+        ? parseScaledNumber(raw)
+        : null;
+    const kind = normalizeMetricKey(customerMetric.key).includes('user')
+      ? 'users'
+      : normalizeMetricKey(customerMetric.key).includes('subscriber')
+        ? 'subscribers'
+        : 'customers';
+    structured.customers = {
+      value: { count: typeof count === 'number' && Number.isFinite(count) ? count : null, kind, raw },
+      confidence: customerMetric.confidence,
+      sources: [
+        {
+          kind: 'input_metric',
+          document_id: customerMetric.document_id,
+          page: customerMetric.page,
+          metric_key: customerMetric.key,
+          unit: customerMetric.unit,
+          confidence: customerMetric.confidence,
+        },
+      ],
+    };
+  } else {
+    const promotedCustomers = (() => {
+      const facts = promoted.filter((f) => factTypeOf(f) === 'customers_v1');
+      if (facts.length === 0) return null;
+
+      const disallowedSeg = new Set(['team', 'advisors']);
+      const score = (f: any): number => {
+        const prov = f?.content_json?.provenance;
+        const title = String(prov?.slide_title ?? '').toLowerCase();
+        const seg = String(prov?.segment_key ?? '').trim().toLowerCase();
+        const vj = getPromotedValueJson(f) ?? {};
+        const subtype = String((vj as any)?.subtype ?? '').toLowerCase();
+        const note = String((vj as any)?.note_snippet ?? '').toLowerCase();
+        const raw = String((vj as any)?.display ?? (vj as any)?.raw ?? '').toLowerCase();
+        const conf = typeof f?.confidence === 'number' && Number.isFinite(f.confidence) ? f.confidence : 0;
+        const sourcesAll = promotedSourcesFor(f);
+        const primary = sourcesAll.find((s) => (s as any)?.evidence_role === 'primary') ?? null;
+        const allowTeamWholesale = subtype === 'wholesale_accounts' && conf >= 0.55 && (primary as any)?.evidence_role === 'primary';
+        if (seg && disallowedSeg.has(seg) && !allowTeamWholesale) return -500;
+        let s = 0;
+        if (title.includes('customers') || title.includes('traction') || title.includes('partners')) s += 3;
+        if (raw.includes('serving') && raw.includes('retailer')) s += 4;
+        if (note.includes('=') && note.includes('serving') && note.includes('retailer')) s += 3;
+        if (seg && disallowedSeg.has(seg) && allowTeamWholesale) s -= 10;
+        s += conf;
+        return s;
+      };
+
+      const bestBySubtype = (subtype: string): PromotedFactInput | null => {
+        const hits = facts.filter((f) => {
+          const vj = getPromotedValueJson(f) ?? {};
+          return asNonEmptyString((vj as any)?.subtype) === subtype;
+        });
+        if (hits.length === 0) return null;
+        const sorted = hits.slice().sort((a: any, b: any) => score(b) - score(a) || String(b?.extracted_at ?? '').localeCompare(String(a?.extracted_at ?? '')));
+        const best = sorted[0];
+        return score(best) < -100 ? null : best;
+      };
+
+      return bestBySubtype('active') ?? bestBySubtype('wholesale_accounts') ?? (
+        facts.slice().sort((a: any, b: any) => score(b) - score(a) || String(b?.extracted_at ?? '').localeCompare(String(a?.extracted_at ?? '')))[0] ?? null
+      );
+    })();
+    if (promotedCustomers) {
+      const vj = getPromotedValueJson(promotedCustomers) ?? {};
+      const subtype = asNonEmptyString((vj as any)?.subtype);
+      const display = asNonEmptyString((vj as any)?.display) ?? asNonEmptyString((vj as any)?.raw);
+      const countRaw = (vj as any)?.count;
+      const count = typeof countRaw === 'number' && Number.isFinite(countRaw) ? countRaw : null;
+      const sources = attachNoteSnippet(promotedSourcesFor(promotedCustomers), (vj as any)?.note_snippet);
+      structured.customers = {
+        value: { count, kind: 'customers', raw: display },
+        confidence: clamp01(typeof promotedCustomers.confidence === 'number' ? promotedCustomers.confidence : 0.62),
+        sources,
+        label: subtype && subtype !== 'active' ? (subtype === 'wholesale_accounts' ? 'Wholesale' : null) : null,
+      };
+    }
+  }
+
+  // Last-resort fallback: context strings from score explanation if present.
+  const scoreExplanationAny = scoreExplanation ?? (dio as any)?.score_explanation;
+  if (!structured.raise.value) {
+    const raise = asNonEmptyString(scoreExplanationAny?.context?.raise);
+    if (raise) structured.raise = { value: raise, confidence: 0.55, sources: [{ kind: 'score_explanation.context', field: 'raise' }] };
+  }
+  if (!structured.business_model.value) {
+    const businessModel = asNonEmptyString(scoreExplanationAny?.context?.business_model);
+    if (businessModel && isSpecificBusinessModelString(businessModel)) {
+      structured.business_model = {
+        value: businessModel,
+        confidence: 0.55,
+        sources: [{ kind: 'score_explanation.context', field: 'business_model' }],
+      };
+    }
+  }
+
+  return structured;
+}
 
 function formatWhyThisScore(debug_scoring: any): string {
   if (!debug_scoring || !Array.isArray(debug_scoring.rules) || debug_scoring.rules.length === 0) return "";
@@ -82,6 +1024,43 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
   const existingExplanation = (dio as any).score_explanation;
   const scoreExplanation = existingExplanation ?? buildScoreExplanationFromDIO(dio);
   const persistedOverall = (dio as any).overall_score;
+
+  // Back-compat safety: older persisted DIOs can carry an older score_explanation.
+  // Ensure understanding_v1 always meets minimum completeness invariants (>=3 open items)
+  // without requiring re-analysis.
+  try {
+    const se: any = scoreExplanation as any;
+    const u: any = se?.understanding_v1;
+    if (u && typeof u === 'object') {
+      const list: any[] = Array.isArray(u.diligence_open_items) ? u.diligence_open_items : [];
+      const normalized = list
+        .filter((i) => i && typeof i === 'object')
+        .map((i) => ({
+          text: typeof (i as any).text === 'string' ? (i as any).text : '',
+          evidence_ids: Array.isArray((i as any).evidence_ids) ? (i as any).evidence_ids : [],
+          component_keys: Array.isArray((i as any).component_keys) ? (i as any).component_keys : [],
+        }))
+        .filter((i) => typeof i.text === 'string' && i.text.trim().length > 0);
+
+      const existing = new Set(normalized.map((i) => i.text.trim()));
+      const fallbacks: string[] = [
+        'Confirm revenue (ARR/MRR or annual) and the period it covers.',
+        'Provide unit economics (gross margin or contribution margin, CAC/LTV, payback) and retention/churn if applicable.',
+        'Share burn, runway, and current cash balance (and whether financials are cash vs accrual).',
+      ];
+
+      while (normalized.length < 3) {
+        const next = fallbacks.find((t) => !existing.has(t)) ?? null;
+        if (!next) break;
+        normalized.push({ text: next, evidence_ids: [], component_keys: ['system'] });
+        existing.add(next);
+      }
+
+      u.diligence_open_items = normalized;
+    }
+  } catch {
+    // ignore
+  }
   
   const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
   const isOk = (status: unknown): status is 'ok' => status === 'ok';
@@ -445,8 +1424,9 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     dealId: dio.deal_id,
     generatedAt: new Date().toISOString(),
     version: dio.analysis_version,
-    
+
     overallScore: overallScoreFinal,
+    structured_summary: buildStructuredSummary(dio, scoreExplanation, undefined),
     grade,
     recommendation,
     
@@ -466,6 +1446,15 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
       score_explanation: scoreExplanation,
     }
   };
+}
+
+export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedFacts?: PromotedFactInput[] }): ReportDTO {
+	const scoreExplanation = buildScoreExplanationFromDIO(dio as any);
+	const base = compileDIOToReport(dio);
+	return {
+		...base,
+		structured_summary: buildStructuredSummary(dio, scoreExplanation, opts?.promotedFacts ?? undefined),
+	};
 }
 
 /**

@@ -31,6 +31,11 @@ COPY packages/contracts/ packages/contracts/
 COPY packages/core/ packages/core/
 RUN pnpm install --frozen-lockfile=false
 
+# Sanity check: BullMQ must be available at worker runtime.
+WORKDIR /app/apps/worker
+RUN node -e 'require("bullmq"); console.log("bullmq_ok")'
+WORKDIR /app
+
 # @dealdecision/core has "main": dist/index.js; build it so runtime imports work
 RUN pnpm --filter @dealdecision/core build
 

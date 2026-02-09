@@ -1,0 +1,70 @@
+import { describe, expect, it, vi } from "vitest";
+
+type MockPool = { query: ReturnType<typeof vi.fn> };
+type MockQueue = { add: ReturnType<typeof vi.fn> };
+
+describe("enqueuePersistedJob", () => {
+	it("inserts job row before queue.add", async () => {
+		const calls: string[] = [];
+		const pool: MockPool = {
+			query: vi.fn(async () => {
+				calls.push("db");
+				return { rows: [] } as any;
+			}),
+		};
+		const queue: MockQueue = {
+			add: vi.fn(async () => {
+				calls.push("queue");
+				return {} as any;
+			}),
+		};
+
+		vi.doMock("../db", () => ({ getPool: () => pool }));
+		vi.doMock("../queue", () => ({ getQueue: () => queue }));
+
+		const { enqueuePersistedJob } = await import("../job-enqueue");
+		await enqueuePersistedJob({
+			job_id: "test_job_123",
+			type: "ingest_documents",
+			deal_id: "deal_1",
+			document_id: "doc_1",
+			payload: { hello: "world" },
+		});
+
+		expect(calls[0]).toBe("db");
+		expect(calls[1]).toBe("queue");
+		expect(pool.query).toHaveBeenCalledTimes(1);
+		expect(queue.add).toHaveBeenCalledTimes(1);
+	});
+
+	it("idempotent mode tolerates existing job and existing queue job", async () => {
+		const pool: MockPool = {
+			query: vi.fn(async () => {
+				// ON CONFLICT DO NOTHING means no error; just return.
+				return { rows: [] } as any;
+			}),
+		};
+		const queue: MockQueue = {
+			add: vi.fn(async () => {
+				throw new Error("Job test_job_123 already exists");
+			}),
+		};
+
+		vi.doMock("../db", () => ({ getPool: () => pool }));
+		vi.doMock("../queue", () => ({ getQueue: () => queue }));
+
+		const { enqueuePersistedJob } = await import("../job-enqueue");
+		await expect(
+			enqueuePersistedJob({
+				job_id: "test_job_123",
+				idempotent: true,
+				type: "render_document_pages",
+				deal_id: "deal_1",
+				document_id: "doc_1",
+				payload: { force_ocr: true },
+				page_start: 0,
+				page_end: 10,
+			})
+		).resolves.toEqual({ job_id: "test_job_123" });
+	});
+});

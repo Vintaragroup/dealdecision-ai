@@ -1,0 +1,13 @@
+{
+  "fixture_key": "product/pd-palm-capital-raise-070425-v2",
+  "vertical": "product",
+  "basename_slug": "pd-palm-capital-raise-070425-v2",
+  "deal_id": "a23e4041-f927-4266-baf1-58cdf73468ab",
+  "document_id": "d727f8d2-0fba-4ca8-8c32-ab7c2ad3433d",
+  "inputs_hash": "a5a5e40d2bcbe6bb78e57fb8188cab115b25502c4c364abeabe075adc7217630",
+  "deck_archetype_key": "consumer_apparel_dtc",
+  "generated_at": "2026-02-07T23:56:47.680Z",
+  "base_url": "http://localhost:9001",
+  "deck_file": "test/fixtures/decks/product/PD - Palm Capital Raise 070425 v2 .pptx",
+  "deck_file_sha256": "0b13bcb8b02f54547c05c6f276f379bbd0100022620992f37d2a74c43fc3d4c2"
+}

@@ -1,0 +1,13 @@
+{
+  "fixture_key": "real_estate/pd-webmax-investor-deck-2026-v2-edits",
+  "vertical": "real_estate",
+  "basename_slug": "pd-webmax-investor-deck-2026-v2-edits",
+  "deal_id": "379cccc3-df37-429d-929f-d1d88bab58db",
+  "document_id": "b9dc991d-96fa-4b2b-9459-29861a5aec42",
+  "inputs_hash": "da7d29b5b6b70f21b0a9201cfe7fedecf68a2c112f87262a3b64f182ca82440e",
+  "deck_archetype_key": "unknown",
+  "generated_at": "2026-02-07T14:56:14.575Z",
+  "base_url": "http://localhost:9001",
+  "deck_file": "test/fixtures/decks/real_estate/PD - WebMax Investor Deck 2026 v2 edits.pdf",
+  "deck_file_sha256": "6eb717ea1694d0e58968992924ff67e0b74b258d9feec0a5000b6c4b3ebf2845"
+}

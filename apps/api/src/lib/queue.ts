@@ -1,6 +1,7 @@
 import { Queue } from "bullmq";
 import IORedis from "ioredis";
 import dotenv from "dotenv";
+import { QUEUE_NAMES } from "@dealdecision/core";
 
 function installBullmqEvictionPolicyWarningDeduper() {
   const originalWarn = console.warn;
@@ -32,13 +33,40 @@ export type ApiQueues = {
   ingestQueue: Queue;
   renderDocumentPagesQueue: Queue;
   extractVisualsQueue: Queue;
+  populateDocumentPageUnderstandingQueue: Queue;
   deepScanVisualsQueue: Queue;
+  documentIntelligenceExtractQueue: Queue;
   fetchEvidenceQueue: Queue;
   analyzeDealQueue: Queue;
   verifyDocumentsQueue: Queue;
   remediateExtractionQueue: Queue;
   reextractDocumentsQueue: Queue;
 };
+
+function assertQueueNamesRuntimeExport() {
+  if (!QUEUE_NAMES || typeof QUEUE_NAMES !== "object") {
+    throw new Error(
+      "QUEUE_NAMES is missing at runtime. API must import QUEUE_NAMES from @dealdecision/core (runtime export), not @dealdecision/contracts."
+    );
+  }
+
+  const requiredKeys = [
+    "ingest_documents",
+    "render_document_pages",
+    "extract_visuals",
+    "populate_document_page_understanding",
+    "document_intelligence_extract",
+  ] as const;
+
+  for (const key of requiredKeys) {
+    const value = (QUEUE_NAMES as any)[key];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new Error(
+        `QUEUE_NAMES is missing required key: ${key}. API must import QUEUE_NAMES from @dealdecision/core only.`
+      );
+    }
+  }
+}
 
 let singletonConnection: IORedis | null = null;
 let singletonQueues: ApiQueues | null = null;
@@ -117,24 +145,30 @@ export function getQueues(): ApiQueues {
   if (singletonQueues) return singletonQueues;
 
   installBullmqWarnDeduperOnce();
+  assertQueueNamesRuntimeExport();
   const connection = getConnection();
 
   singletonQueues = {
-    ingestQueue: new Queue("ingest_documents", { connection }),
-    renderDocumentPagesQueue: new Queue("render_document_pages", {
+    ingestQueue: new Queue(QUEUE_NAMES.ingest_documents, { connection }),
+    renderDocumentPagesQueue: new Queue(QUEUE_NAMES.render_document_pages, {
       connection,
       defaultJobOptions: { attempts: 3, backoff: { type: "exponential", delay: 10_000 } },
     }),
-    extractVisualsQueue: new Queue("extract_visuals", {
+    extractVisualsQueue: new Queue(QUEUE_NAMES.extract_visuals, {
       connection,
       defaultJobOptions: { attempts: 5, backoff: { type: "exponential", delay: 10_000 } },
     }),
-    deepScanVisualsQueue: new Queue("deep_scan_visuals", { connection }),
-    fetchEvidenceQueue: new Queue("fetch_evidence", { connection }),
-    analyzeDealQueue: new Queue("analyze_deal", { connection }),
-    verifyDocumentsQueue: new Queue("verify_documents", { connection }),
-    remediateExtractionQueue: new Queue("remediate_extraction", { connection }),
-    reextractDocumentsQueue: new Queue("reextract_documents", { connection }),
+    populateDocumentPageUnderstandingQueue: new Queue(QUEUE_NAMES.populate_document_page_understanding, {
+      connection,
+      defaultJobOptions: { attempts: 3, backoff: { type: "exponential", delay: 10_000 } },
+    }),
+    deepScanVisualsQueue: new Queue(QUEUE_NAMES.deep_scan_visuals, { connection }),
+    documentIntelligenceExtractQueue: new Queue(QUEUE_NAMES.document_intelligence_extract, { connection }),
+    fetchEvidenceQueue: new Queue(QUEUE_NAMES.fetch_evidence, { connection }),
+    analyzeDealQueue: new Queue(QUEUE_NAMES.analyze_deal, { connection }),
+    verifyDocumentsQueue: new Queue(QUEUE_NAMES.verify_documents, { connection }),
+    remediateExtractionQueue: new Queue(QUEUE_NAMES.remediate_extraction, { connection }),
+    reextractDocumentsQueue: new Queue(QUEUE_NAMES.reextract_documents, { connection }),
   };
 
   if (!didLogQueueConfig && process.env.NODE_ENV !== "production") {
@@ -147,15 +181,17 @@ export function getQueues(): ApiQueues {
       const user = parsed.username ? `${parsed.username}@` : "";
       const safeUrl = `${parsed.protocol}//${user}${host}:${port}${parsed.pathname}`;
       const queues = [
-        "ingest_documents",
-        "render_document_pages",
-        "extract_visuals",
-        "deep_scan_visuals",
-        "fetch_evidence",
-        "analyze_deal",
-        "verify_documents",
-        "remediate_extraction",
-        "reextract_documents",
+        QUEUE_NAMES.ingest_documents,
+        QUEUE_NAMES.render_document_pages,
+        QUEUE_NAMES.extract_visuals,
+        QUEUE_NAMES.populate_document_page_understanding,
+        QUEUE_NAMES.deep_scan_visuals,
+        QUEUE_NAMES.document_intelligence_extract,
+        QUEUE_NAMES.fetch_evidence,
+        QUEUE_NAMES.analyze_deal,
+        QUEUE_NAMES.verify_documents,
+        QUEUE_NAMES.remediate_extraction,
+        QUEUE_NAMES.reextract_documents,
       ];
       console.log(
         JSON.stringify({
@@ -192,7 +228,9 @@ export async function closeQueues() {
       queues.ingestQueue.close(),
       queues.renderDocumentPagesQueue.close(),
       queues.extractVisualsQueue.close(),
+      queues.populateDocumentPageUnderstandingQueue.close(),
       queues.deepScanVisualsQueue.close(),
+      queues.documentIntelligenceExtractQueue.close(),
       queues.fetchEvidenceQueue.close(),
       queues.analyzeDealQueue.close(),
       queues.verifyDocumentsQueue.close(),

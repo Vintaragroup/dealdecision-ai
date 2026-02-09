@@ -1,0 +1,13 @@
+{
+  "fixture_key": "other/pd-magarian-fund",
+  "vertical": "other",
+  "basename_slug": "pd-magarian-fund",
+  "deal_id": "0e8fa8ae-94fa-4ab7-ab66-39c07651d089",
+  "document_id": "24027935-e1bb-4f2d-904e-2d6ef3fc79f7",
+  "inputs_hash": "612b492b125778b97ba4bfcc8a1237c0d1a9e9eba1b1743da2da37f6fbe17d4d",
+  "deck_archetype_key": "unknown",
+  "generated_at": "2026-02-08T00:43:31.023Z",
+  "base_url": "http://localhost:9001",
+  "deck_file": "apps/api/test/fixtures/decks/other/PD - Magarian Fund.pdf",
+  "deck_file_sha256": "ca8146f37f4662a7e4d79829fb27efb74560252711e32f15f5217a116d6b0953"
+}

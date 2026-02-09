@@ -6,8 +6,9 @@ import { extractExcelContent, type ExcelContent } from "./excel";
 import { extractPowerPointContent, type PowerPointContent } from "./powerpoint";
 import { extractWordContent, type WordContent } from "./word";
 import { extractImageContent, type ImageContent } from "./image";
+import { extractCSVContent, type CSVContent } from "./csv";
 
-export type ExtractedContent = PDFContent | ExcelContent | PowerPointContent | WordContent | ImageContent;
+export type ExtractedContent = PDFContent | ExcelContent | PowerPointContent | WordContent | ImageContent | CSVContent;
 
 export interface DocumentAnalysis {
   documentId: string;
@@ -21,6 +22,7 @@ export interface DocumentAnalysis {
     | "powerpoint"
     | "word"
     | "image"
+    | "csv"
     | "unknown";
   content: ExtractedContent | null;
   metadata: {
@@ -58,6 +60,7 @@ function getContentType(
     jpg: "image",
     jpeg: "image",
     gif: "image",
+    csv: "csv",
   };
   return typeMap[fileType] || "unknown";
 }
@@ -188,6 +191,11 @@ export async function processDocument(
         }
         break;
 
+      case "csv":
+        extractedContent = extractCSVContent(buffer);
+        extractionSuccess = true;
+        break;
+
       default:
         extractionSuccess = false;
         errorMessage = `Unsupported file type: ${fileType}`;
@@ -268,6 +276,45 @@ function extractStructuredData(
         value: { min: m.min, max: m.max, avg: m.avg },
         source: m.sheet,
       }));
+      break;
+    }
+
+    case "csv": {
+      const csv = content as CSVContent;
+      const header = Array.isArray(csv.header) ? csv.header : [];
+      const rows = Array.isArray(csv.rows) ? csv.rows : [];
+
+      baseData.mainHeadings = header;
+      baseData.textSummary = `CSV with ${rows.length} row(s), ${header.length} column(s)`;
+
+      const lowerHeader = header.map((h) => String(h || "").trim().toLowerCase());
+      const metricIdx = lowerHeader.findIndex((h) => h === "metric" || h === "key" || h === "name");
+      const valueIdx = lowerHeader.findIndex((h) => h === "value" || h === "amount" || h === "val");
+
+      if (metricIdx >= 0 && valueIdx >= 0) {
+        for (const row of rows.slice(0, 50)) {
+          const k = String(row?.[metricIdx] ?? "").trim();
+          const vRaw = String(row?.[valueIdx] ?? "").trim();
+          if (!k) continue;
+
+          const vNum = Number(vRaw.replace(/[$,%\s]/g, ""));
+          const value = Number.isFinite(vNum) && vRaw !== "" ? vNum : vRaw;
+          baseData.keyMetrics.push({ key: k, value, source: "csv" });
+        }
+      } else {
+        // Fallback: pick up numeric values from the first rows.
+        for (const row of rows.slice(0, 20)) {
+          for (let i = 0; i < Math.min(row.length, header.length); i++) {
+            const h = header[i] || `col_${i}`;
+            const raw = String(row[i] ?? "").trim();
+            const n = Number(raw.replace(/[$,%\s]/g, ""));
+            if (!raw || !Number.isFinite(n)) continue;
+            baseData.keyMetrics.push({ key: String(h), value: n, source: "csv" });
+            if (baseData.keyMetrics.length >= 25) break;
+          }
+          if (baseData.keyMetrics.length >= 25) break;
+        }
+      }
       break;
     }
 

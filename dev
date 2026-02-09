@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+PROJECT_NAME_DEFAULT="dealdecision-dev"
+PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$PROJECT_NAME_DEFAULT}"
+
+say() { printf "%s\n" "$*"; }
+
+# Find a running container for a given compose service in the project.
+container_id_for_service() {
+  local service="$1"
+  docker ps \
+    --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
+    --filter "label=com.docker.compose.service=${service}" \
+    --format '{{.ID}}' \
+    | head -n 1
+}
+
+compose_files_for_project() {
+  # Try to infer the compose file(s) used for this running project.
+  # This is best-effort and only used by ./dev ps|logs wrappers.
+  local any_id
+  any_id="$(docker ps --filter "label=com.docker.compose.project=${PROJECT_NAME}" --format '{{.ID}}' | head -n 1 || true)"
+  if [[ -z "$any_id" ]]; then
+    return 0
+  fi
+
+  docker inspect -f '{{ index .Config.Labels "com.docker.compose.project.config_files" }}' "$any_id" 2>/dev/null || true
+}
+
+run_compose_for_project() {
+  local subcmd="$1"; shift
+
+  local config_files
+  config_files="$(compose_files_for_project)"
+
+  if [[ -n "$config_files" ]]; then
+    # com.docker.compose.project.config_files is a comma-separated list
+    local args=()
+    IFS=',' read -r -a files <<< "$config_files"
+    for f in "${files[@]}"; do
+      if [[ -n "$f" ]]; then
+        args+=("-f" "$f")
+      fi
+    done
+
+    COMPOSE_PROJECT_NAME="$PROJECT_NAME" docker compose "${args[@]}" "$subcmd" "$@"
+  else
+    # Fallback: show containers by label without requiring compose files.
+    case "$subcmd" in
+      ps)
+        docker ps --filter "label=com.docker.compose.project=${PROJECT_NAME}" --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+        ;;
+      logs)
+        local service="${1:-}"
+        if [[ -z "$service" ]]; then
+          say "Usage: ./dev logs <service>" >&2
+          exit 1
+        fi
+        local id
+        id="$(container_id_for_service "$service")"
+        if [[ -z "$id" ]]; then
+          say "No running container found for service '$service' in project '$PROJECT_NAME'." >&2
+          exit 1
+        fi
+        docker logs -f --tail=200 "$id"
+        ;;
+      *)
+        say "Unable to infer compose files; only 'ps' and 'logs' are supported in fallback mode." >&2
+        exit 1
+        ;;
+    esac
+  fi
+}
+
+print_env_var_from_container() {
+  local id="$1"
+  local key="$2"
+
+  local val
+  val="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$id" 2>/dev/null | awk -F= -v k="$key" '$1==k{print substr($0, index($0, "=")+1)}' | tail -n 1)"
+
+  if [[ -z "$val" ]]; then
+    printf "%s=%s\n" "$key" "(not set)"
+  else
+    printf "%s=%s\n" "$key" "$val"
+  fi
+}
+
+containers_reserving_host_port_with_status() {
+  local host_port="$1"
+
+  # Scan running + created containers for PortBindings that reserve host_port.
+  # This catches cases where a Created container blocks binding.
+  docker ps -aq | while read -r id; do
+    [[ -z "$id" ]] && continue
+    local bindings ports
+
+    # Running containers reliably report published ports here.
+    ports="$(docker inspect -f '{{range $p,$conf := .NetworkSettings.Ports}}{{if $conf}}{{$p}}={{(index $conf 0).HostPort}} {{end}}{{end}}' "$id" 2>/dev/null || true)"
+
+    # Created/stopped containers that still reserve a port may only show it here.
+    bindings="$(docker inspect -f '{{range $p,$conf := .HostConfig.PortBindings}}{{if $conf}}{{$p}}={{(index $conf 0).HostPort}} {{end}}{{end}}' "$id" 2>/dev/null || true)"
+
+    if echo "$ports $bindings" | grep -qE "=${host_port}($|[[:space:]])"; then
+      local name status
+      name="$(docker inspect -f '{{.Name}}' "$id" 2>/dev/null | sed 's#^/##')"
+      status="$(docker inspect -f '{{.State.Status}}' "$id" 2>/dev/null || true)"
+      printf "%s\t%s\n" "$name" "${status:-unknown}"
+    fi
+  done | awk 'NF{print}' | sort -u
+}
+
+warn_stray_postgres() {
+  local out
+  out="$(docker ps --format '{{.ID}}\t{{.Image}}\t{{.Ports}}\t{{.Names}}')"
+
+  local found=0
+  while IFS=$'\t' read -r id image ports name; do
+    [[ -z "$id" ]] && continue
+    if [[ "$image" == postgres* ]]; then
+      local proj
+      proj="$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$id" 2>/dev/null || true)"
+      if [[ "$proj" != "$PROJECT_NAME" ]]; then
+        found=1
+        say "WARN: stray postgres container running outside '$PROJECT_NAME': name=$name image=$image project=${proj:-none} ports=${ports:-none}"
+      fi
+
+      if echo "${ports:-}" | grep -qE '(^|,\s*)(0\.0\.0\.0:)?55434->5432/tcp|\[::\]:55434->5432/tcp'; then
+        say "WARN: postgres exposing host port 55434 detected: name=$name ports=$ports"
+      fi
+    fi
+  done <<< "$out"
+
+  if [[ $found -eq 0 ]]; then
+    say "OK: no stray postgres containers detected outside '$PROJECT_NAME'."
+  fi
+}
+
+doctor() {
+  say "DealDecisionAI dev doctor"
+  say "- Project: $PROJECT_NAME"
+  say "- Time: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  say
+
+  say "== Running containers =="
+  docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+  say
+
+  say "== Guardrails =="
+  warn_stray_postgres
+  say
+
+  say "== Port ownership (host -> container) =="
+  for p in 55433 6380 8001 9001; do
+    local owners running nonrunning
+    owners="$(containers_reserving_host_port_with_status "$p")"
+    if [[ -z "$owners" ]]; then
+      say "- $p: (no container reserving this port)"
+      continue
+    fi
+
+    running="$(echo "$owners" | awk -F'\t' '$2=="running"{print $1}' | paste -sd', ' -)"
+    nonrunning="$(echo "$owners" | awk -F'\t' '$2!="running"{print $1"("$2")"}' | paste -sd', ' -)"
+
+    if [[ -n "$running" ]]; then
+      if [[ -n "$nonrunning" ]]; then
+        say "- $p: $running (also reserved by: $nonrunning)"
+      else
+        say "- $p: $running"
+      fi
+    else
+      say "- $p: (no running container; reserved by: $nonrunning)"
+    fi
+  done
+  say
+
+  say "== Project env (api_dev / worker_dev) =="
+  local api_id worker_id
+  api_id="$(container_id_for_service api_dev || true)"
+  worker_id="$(container_id_for_service worker_dev || true)"
+
+  if [[ -z "$api_id" ]]; then
+    say "WARN: api_dev is not running under project '$PROJECT_NAME'."
+  else
+    say "api_dev container: $(docker inspect -f '{{.Name}}' "$api_id" | sed 's#^/##')"
+    print_env_var_from_container "$api_id" DATABASE_URL
+    print_env_var_from_container "$api_id" REDIS_URL
+  fi
+
+  say
+  if [[ -z "$worker_id" ]]; then
+    say "WARN: worker_dev is not running under project '$PROJECT_NAME'."
+  else
+    say "worker_dev container: $(docker inspect -f '{{.Name}}' "$worker_id" | sed 's#^/##')"
+    print_env_var_from_container "$worker_id" DATABASE_URL
+    print_env_var_from_container "$worker_id" REDIS_URL
+  fi
+
+  say
+  say "== Repo env sanity (non-destructive) =="
+  if [[ -f ".env" ]] && grep -q "55432" .env 2>/dev/null; then
+    say "WARN: repo-root .env references localhost:55432 (legacy). Canonical dealdecision-dev Postgres is localhost:55433."
+  fi
+  if [[ -f ".env.local" ]] && grep -q "localhost:55433" .env.local 2>/dev/null; then
+    say "OK: .env.local targets localhost:55433 (canonical dev stack)."
+  fi
+  if [[ -f "infra/docker-compose.yml" ]] && grep -q "55432:5432" infra/docker-compose.yml 2>/dev/null; then
+    say "Note: infra/docker-compose.yml publishes Postgres on 55432 (separate/legacy stack)."
+  fi
+  say
+
+  say "== Compose context (best-effort) =="
+  local config_files
+  config_files="$(compose_files_for_project || true)"
+  if [[ -n "$config_files" ]]; then
+    say "compose config files: $config_files"
+  else
+    say "compose config files: (unknown)"
+  fi
+
+  say
+  say "Doctor complete. (No changes made.)"
+}
+
+case "${1:-}" in
+  doctor)
+    doctor
+    ;;
+  ps)
+    run_compose_for_project ps
+    ;;
+  logs)
+    shift || true
+    if [[ $# -lt 1 ]]; then
+      say "Usage: ./dev logs <service>" >&2
+      say "Example: ./dev logs api_dev" >&2
+      exit 1
+    fi
+    run_compose_for_project logs "$1"
+    ;;
+  *)
+    say "Usage:" >&2
+    say "  ./dev doctor" >&2
+    say "  ./dev ps" >&2
+    say "  ./dev logs <service>" >&2
+    say >&2
+    say "Notes:" >&2
+    say "  - Uses COMPOSE_PROJECT_NAME (default: $PROJECT_NAME_DEFAULT)" >&2
+    exit 1
+    ;;
+esac

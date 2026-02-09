@@ -5,7 +5,7 @@ import { getAuthToken } from './authToken';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 
 const META_ENV = (import.meta as any)?.env as any;
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:9000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:9001';
 // Default to live for any non-dev build (Render preview/staging builds may not set import.meta.env.PROD).
 // Default to mock only for true local dev.
 const DEFAULT_BACKEND_MODE = META_ENV?.DEV ? 'mock' : 'live';
@@ -462,6 +462,110 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
 }
 
+type RequestWithStatusResult<TJson = unknown> = {
+  ok: boolean;
+  status: number;
+  json: TJson | null;
+  text: string | null;
+};
+
+async function requestWithStatus<TJson = unknown>(path: string, options?: RequestInit): Promise<RequestWithStatusResult<TJson>> {
+  const method = String(options?.method ?? 'GET').toUpperCase();
+  const isFormData = options?.body instanceof FormData;
+  const hasBody = options?.body !== undefined && options?.body !== null;
+
+  const looksLikeJwtExpFailure = (text: string): boolean => {
+    const t = (text ?? '').toLowerCase();
+    return (
+      (t.includes('exp') && t.includes('timestamp') && t.includes('failed'))
+    ) || t.includes('"exp" claim timestamp check failed') || t.includes('jwt expired');
+  };
+
+  const normalizeHeadersInit = (input?: HeadersInit): Record<string, string> => {
+    const out: Record<string, string> = {};
+    try {
+      if (!input) return out;
+      if (typeof (input as any).forEach === 'function') {
+        (input as any).forEach((value: any, key: any) => {
+          if (typeof key === 'string') out[key] = String(value);
+        });
+        return out;
+      }
+      if (Array.isArray(input)) {
+        for (const entry of input as any[]) {
+          if (Array.isArray(entry) && entry.length >= 2) {
+            const k = entry[0];
+            const v = entry[1];
+            if (typeof k === 'string') out[k] = String(v);
+          }
+        }
+        return out;
+      }
+      if (typeof input === 'object') {
+        for (const [k, v] of Object.entries(input as Record<string, any>)) {
+          if (typeof v !== 'undefined' && v !== null) out[k] = String(v);
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return out;
+  };
+
+  const doFetch = async (forceRefreshToken: boolean): Promise<Response> => {
+    const authHeader = await getAuthHeader({ forceRefresh: forceRefreshToken, refreshWithinSeconds: 30 });
+    return await fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      headers: {
+        ...(isFormData ? {} : hasBody ? { 'Content-Type': 'application/json' } : {}),
+        ...authHeader,
+        ...normalizeHeadersInit(options?.headers),
+      },
+    });
+  };
+
+  const parse = async (res: Response): Promise<{ json: unknown | null; text: string | null }> => {
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+      try {
+        const bodyJson = await res.json();
+        return { json: bodyJson, text: null };
+      } catch {
+        // fallthrough to text
+      }
+    }
+    try {
+      const bodyText = await res.text();
+      return { json: null, text: bodyText };
+    } catch {
+      return { json: null, text: null };
+    }
+  };
+
+  let res = await doFetch(false);
+  let parsed = await parse(res);
+
+  if (res.status === 401 && typeof parsed.text === 'string' && looksLikeJwtExpFailure(parsed.text)) {
+    const refreshed = await doFetch(true);
+    if (refreshed.ok) {
+      res = refreshed;
+      parsed = await parse(res);
+    }
+  }
+
+  if ((import.meta as any)?.env?.DEV && method !== 'GET' && method !== 'HEAD') {
+    const payloadSummary = parsed.json ?? (typeof parsed.text === 'string' ? parsed.text.slice(0, 500) : null);
+    console.debug('[api:status]', method, `${API_BASE_URL}${path}`, res.status, payloadSummary);
+  }
+
+  return {
+    ok: res.ok,
+    status: res.status,
+    json: (parsed.json as any) ?? null,
+    text: parsed.text,
+  };
+}
+
 export function isLiveBackend() {
   return BACKEND_MODE === 'live';
 }
@@ -532,6 +636,50 @@ export function apiPostAnalyze(dealId: string) {
   });
 }
 
+export type PageUnderstandingReadinessDocument = {
+  document_id: string;
+  title: string | null;
+  page_count: number;
+  dpu_rows: number;
+  missing_pages: number[];
+  dpu_rows_meaningful?: number;
+  non_meaningful_pages?: number[];
+};
+
+export type PageUnderstandingReadiness = {
+  deal_id: string;
+  version: string;
+  documents: PageUnderstandingReadinessDocument[];
+  expected_pages_total: number;
+  dpu_rows_total: number;
+  dpu_rows_meaningful_total?: number;
+  non_meaningful_pages_total?: number;
+  missing_pages_total: number;
+  ready: boolean;
+  blocked_reason?: string | null;
+  poll_after_ms?: number | null;
+  action?: { type: string; deal_id?: string; document_id?: string; version?: string } | null;
+};
+
+export function apiGetDealReadiness(dealId: string, version: string) {
+  const qs = new URLSearchParams();
+  if (version) qs.set('page_understanding_version', version);
+  return request<PageUnderstandingReadiness>(`/api/v1/deals/${dealId}/readiness?${qs.toString()}`);
+}
+
+export function apiPostAnalyzeWithStatus(
+  dealId: string,
+  input?: { require_page_understanding?: boolean; page_understanding_version?: string }
+) {
+  return requestWithStatus<{ job_id?: string; status?: string; error?: string; message?: string; readiness?: any }>(
+    `/api/v1/deals/${dealId}/analyze`,
+    {
+      method: 'POST',
+      body: JSON.stringify(input ?? {}),
+    }
+  );
+}
+
 export function apiPostExtractVisuals(
   dealId: string,
   opts?: { source?: string; requestId?: string; idempotencyKey?: string }
@@ -580,7 +728,7 @@ export function apiPostVerifyDealDocuments(dealId: string, input?: { document_id
   );
 }
 
-export function apiGetJob(jobId: string) {
+export function apiGetJob(jobId: string, opts?: { signal?: AbortSignal }) {
   return request<{
     job_id: string;
     type?: string;
@@ -591,7 +739,9 @@ export function apiGetJob(jobId: string) {
     created_at?: string;
     started_at?: string | null;
     status_detail?: JobStatusDetail | null;
-  }>(`/api/v1/jobs/${jobId}`);
+  }>(`/api/v1/jobs/${jobId}`, {
+    signal: opts?.signal,
+  });
 }
 
 export type DealJobRowV2 = {
@@ -1272,8 +1422,51 @@ export type DealReport = {
   metadata?: Record<string, any>;
 };
 
-export async function apiGetDealReport(dealId: string): Promise<DealReport | null> {
-  const path = `/api/v1/deals/${dealId}/report`;
+export type DealReportEnvelope =
+  | {
+      ready: false;
+      reason: 'not_generated_yet' | string;
+      version?: number;
+      artifact?: unknown;
+      report?: DealReport | null;
+    }
+  | {
+      ready: true;
+      version: number;
+      artifact: unknown;
+      report?: DealReport | null;
+      // Backward compat: API may also include report fields at top-level.
+      [key: string]: unknown;
+    }
+  | (DealReport & { ready?: true | false; reason?: string; artifact?: unknown; report?: DealReport | null });
+
+const isDealReport = (value: unknown): value is DealReport => {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as any;
+  return typeof v.dealId === 'string' && typeof v.generatedAt === 'string' && typeof v.version === 'number';
+};
+
+const normalizeReportEnvelope = (value: unknown): DealReportEnvelope => {
+  if (!value || typeof value !== 'object') return { ready: false, reason: 'not_generated_yet' };
+  const v = value as any;
+  if (typeof v.ready === 'boolean') return v as DealReportEnvelope;
+  if (isDealReport(v)) return v as DealReportEnvelope;
+  // If API returns a ready payload without the `ready` key (legacy), treat as ready.
+  if (typeof v.dealId === 'string' && typeof v.version === 'number') return v as DealReportEnvelope;
+  return v as DealReportEnvelope;
+};
+
+export async function apiGetDealReport(dealId: string): Promise<DealReportEnvelope> {
+  return apiGetDealReportInternal(dealId, { narrate: false });
+}
+
+export async function apiGetDealReportNarrated(dealId: string): Promise<DealReportEnvelope> {
+  return apiGetDealReportInternal(dealId, { narrate: true });
+}
+
+async function apiGetDealReportInternal(dealId: string, opts: { narrate: boolean }): Promise<DealReportEnvelope> {
+  const qs = opts.narrate ? '?narrate=1' : '';
+  const path = `/api/v1/deals/${dealId}/report${qs}`;
   const debugEnabled = debugApiIsEnabled();
   const startedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
   let res: Response | undefined;
@@ -1284,6 +1477,7 @@ export async function apiGetDealReport(dealId: string): Promise<DealReport | nul
     const authHeader = await getAuthHeader({ forceRefresh: forceRefreshToken, refreshWithinSeconds: 30 });
     return await fetch(`${API_BASE_URL}${path}`, {
       method: 'GET',
+      cache: 'no-store',
       headers: {
         ...authHeader,
       },
@@ -1299,26 +1493,26 @@ export async function apiGetDealReport(dealId: string): Promise<DealReport | nul
 
   try {
     res = await doFetch(false);
-    if (res.status === 404) {
-      return null;
-    }
+    // New contract: /report should not 404 for normal pre-analysis states.
+    // Keep legacy handling in case older servers are still deployed.
+    if (res.status === 404) return { ready: false, reason: 'not_generated_yet' };
     if (!res.ok) {
       const text = await res.text();
 
       if (res.status === 401 && looksLikeJwtExpFailure(text || '')) {
         const refreshed = await doFetch(true);
-        if (refreshed.status === 404) return null;
+        if (refreshed.status === 404) return { ready: false, reason: 'not_generated_yet' };
         if (refreshed.ok) {
           res = refreshed;
           responseJson = await res.json();
-          return responseJson as DealReport;
+          return normalizeReportEnvelope(responseJson);
         }
       }
 
       throw new Error(text || `Request failed with ${res.status}`);
     }
     responseJson = await res.json();
-    return responseJson as DealReport;
+    return normalizeReportEnvelope(responseJson);
   } catch (err) {
     error = err;
     throw err;

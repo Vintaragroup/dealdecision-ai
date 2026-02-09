@@ -101,6 +101,7 @@ export type DocumentStatus =
 	| 'pending'
 	| 'processing'
 	| 'completed'
+	| 'needs_ocr'
 	| 'failed'
 	| 'rejected'
 	| 'needs_review';
@@ -119,7 +120,10 @@ export type JobType =
 	| 'ingest_documents'
 	| 'render_document_pages'
 	| 'extract_visuals'
+	| 'extract_visuals_deal'
+	| 'populate_document_page_understanding'
 	| 'deep_scan_visuals'
+	| 'document_intelligence_extract'
 	| 'fetch_evidence'
 	| 'analyze_deal'
 	| 'verify_documents'
@@ -128,6 +132,23 @@ export type JobType =
 	| 'generate_report'
 	| 'sync_crm'
 	| 'classify_document';
+
+// BullMQ queue names. Keep these centralized so API + worker stay in sync.
+export const QUEUE_NAMES = {
+	ingest_documents: 'ingest_documents',
+	render_document_pages: 'render_document_pages',
+	extract_visuals: 'extract_visuals',
+	deep_scan_visuals: 'deep_scan_visuals',
+	document_intelligence_extract: 'document_intelligence_extract',
+	fetch_evidence: 'fetch_evidence',
+	analyze_deal: 'analyze_deal',
+	verify_documents: 'verify_documents',
+	remediate_extraction: 'remediate_extraction',
+	reextract_documents: 'reextract_documents',
+	populate_document_page_understanding: 'populate_document_page_understanding',
+} as const;
+
+export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
 
 export type JobProgressStage =
 	| 'queued'

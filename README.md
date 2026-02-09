@@ -110,6 +110,92 @@ Auth notes:
 
 ---
 
+## Local Docker (use docker-compose.dev.yml day-to-day)
+
+This repo uses ONE canonical local dev stack:
+
+- **Project name**: `dealdecision-dev`
+- **Services**: `api_dev` → `http://localhost:9001`, `web_dev` → `http://localhost:4174`, `postgres` → `localhost:55433`, `redis` → `localhost:6380`, `vision_worker` → `localhost:8001`
+
+Do not create ad-hoc infra with commands like `docker run postgres ...`.
+Stray Postgres/Redis containers are the #1 cause of “missing data” symptoms (UI shows empty deals, readiness shows 0 pages, worker appears idle) because you’re accidentally connected to a different database/volume.
+
+### Doctor (safe, non-destructive)
+
+- `./dev doctor`
+
+It will:
+
+- List running containers
+- Warn on any Postgres not in `dealdecision-dev`
+- Warn if any Postgres exposes host port `55434`
+- Show which container is bound to `55433`, `6380`, `8001`, `9001`
+- Print `DATABASE_URL`/`REDIS_URL` for `api_dev` and `worker_dev`
+
+### Inspect and verify DB contents
+
+Find the dev Postgres container:
+
+- `docker ps --filter name=dealdecision-dev-postgres --format 'table {{.Names}}\t{{.Ports}}\t{{.Status}}'`
+
+Connect with psql (inside the container):
+
+- `docker exec -it dealdecision-dev-postgres-1 psql -U postgres -d dealdecision`
+
+Useful queries:
+
+- `\dt public.*`
+- `SELECT count(*) FROM public.deals;`
+- `SELECT id, created_at, title FROM public.deals ORDER BY created_at DESC LIMIT 20;`
+
+If something looks empty, assume you are pointed at the wrong DB until proven otherwise:
+
+- Run `./dev doctor` and confirm `55433` is owned by `dealdecision-dev-postgres-1`.
+
+To keep Docker Desktop unambiguous, local dev and prod-parity are split into two compose files:
+
+- `docker-compose.dev.yml` (day-to-day): `api_dev`, `worker_dev`, `web_dev`
+- `docker-compose.prod.yml` (prod parity): `api`, `worker`, `web`
+
+Use distinct project names so stacks never appear together:
+
+- dev: `COMPOSE_PROJECT_NAME=dealdecision-dev`
+- prod: `COMPOSE_PROJECT_NAME=dealdecision-prod`
+
+Note: dev and prod-parity use the same host ports, so you should run only one at a time.
+
+### Start local dev stack
+
+- `./scripts/docker/local-dev.sh up`
+
+Equivalent raw command:
+
+- `COMPOSE_PROJECT_NAME=dealdecision-dev docker compose -f docker-compose.dev.yml up -d --build`
+
+Ports:
+
+- Web: `http://localhost:4174`
+- API: `http://localhost:9001` (health: `/health`)
+- Postgres: `localhost:55433`
+- Redis: `localhost:6380`
+- Vision worker: `localhost:8001`
+
+### Start prod-parity stack
+
+- `COMPOSE_PROJECT_NAME=dealdecision-prod docker compose -f docker-compose.prod.yml up -d --build`
+
+### Clean up accidental prod stack
+
+- `./scripts/docker/local-dev.sh clean-prod`
+
+### Quick verification checklist
+
+- `COMPOSE_PROJECT_NAME=dealdecision-dev docker compose -f docker-compose.dev.yml ps` shows `api_dev`, `worker_dev`, `web_dev` running
+- Readiness route works: `http://localhost:9001/api/v1/deals/:deal_id/readiness`
+- Trigger extract-visuals and confirm worker logs include `POPULATE_DOCUMENT_PAGE_UNDERSTANDING`
+
+---
+
 ## Analysis Phases (Conceptual)
 
 ### Phase 1 — Core Analysis

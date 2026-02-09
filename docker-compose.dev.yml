@@ -1,0 +1,176 @@
+name: dealdecision-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-dealdecision}
+    ports:
+      - "55433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "dealdecision"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  vision_worker:
+    build:
+      context: services/vision_worker
+      dockerfile: Dockerfile
+      args:
+        ENABLE_VISION_UNDERSTANDING: ${ENABLE_VISION_UNDERSTANDING:-0}
+    environment:
+      PYTHONUNBUFFERED: "1"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ENABLE_VISION_UNDERSTANDING: ${ENABLE_VISION_UNDERSTANDING:-0}
+      VISION_UNDERSTANDING_CACHE_DIR: /app/.cache/vision_understanding
+      XDG_CACHE_HOME: /app/.cache
+      HF_HOME: /app/.cache/huggingface
+    ports:
+      - "8001:8000"
+    volumes:
+      - dealdecision_uploads:/app/uploads
+      - vision_worker_cache:/app/.cache
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api_dev:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile.dev
+    command:
+      - sh
+      - -lc
+      - |
+        pnpm --filter @dealdecision/core build
+        pnpm --filter api db:migrate
+        pnpm --filter api dev
+    env_file:
+      - .env.docker.local
+    environment:
+      API_PORT: "9000"
+      UPLOAD_DIR: /app/uploads
+      DISABLE_CLERK_AUTH: ${DISABLE_CLERK_AUTH:-1}
+      # NOTE: Root .env is used for compose substitution only; runtime injection is explicit.
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    ports:
+      - "9001:9000"
+    volumes:
+      - ./apps/api/src:/app/apps/api/src
+      - ./apps/api/scripts:/app/apps/api/scripts
+      - ./apps/api/package.json:/app/apps/api/package.json
+      - ./infra/migrations:/app/infra/migrations
+      - ./packages/core/src:/app/packages/core/src
+      - ./packages/core/dist:/app/packages/core/dist
+      - ./packages/core/package.json:/app/packages/core/package.json
+      - ./packages/contracts/dist:/app/packages/contracts/dist
+      - ./packages/contracts/package.json:/app/packages/contracts/package.json
+      - ./tsconfig.base.json:/app/tsconfig.base.json
+      - ./pnpm-lock.yaml:/app/pnpm-lock.yaml
+      - dealdecision_uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker_dev:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile.dev
+    command:
+      - sh
+      - -lc
+      - |
+        pnpm --filter @dealdecision/core build
+        pnpm --filter worker dev
+    env_file:
+      - .env.docker.local
+    environment:
+      UPLOAD_DIR: /app/uploads
+      VISION_BASE_URL: http://vision_worker:8000
+      ENABLE_VISUAL_EXTRACTION: ${ENABLE_VISUAL_EXTRACTION:-1}
+      # NOTE: Root .env is used for compose substitution only; runtime injection is explicit.
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      DDAI_ENABLE_PHASEB_VISUAL_EVIDENCE: "1"
+      PDF_EXTRACT_MODE: ${PDF_EXTRACT_MODE:-v2_shadow}
+      PDF_SLIDE_UNDERSTANDING_MODE: ${PDF_SLIDE_UNDERSTANDING_MODE:-shadow}
+      PDF_V2_OCR_MODE: ${PDF_V2_OCR_MODE:-off}
+      PDF_V2_TEXT_REGION_ASSETS_MODE: ${PDF_V2_TEXT_REGION_ASSETS_MODE:-off}
+      PDF_PAGE_UNDERSTANDING_MODE: ${PDF_PAGE_UNDERSTANDING_MODE:-shadow}
+      FUNDABILITY_SHADOW_MODE: ${FUNDABILITY_SHADOW_MODE:-1}
+      FUNDABILITY_SOFT_CAPS: ${FUNDABILITY_SOFT_CAPS:-1}
+      FUNDABILITY_HARD_GATES: ${FUNDABILITY_HARD_GATES:-0}
+      DEBUG_PHASE1_OVERVIEW_V2: "1"
+    volumes:
+      - ./apps/worker/src:/app/apps/worker/src
+      - ./apps/worker/package.json:/app/apps/worker/package.json
+      - ./packages/core/src:/app/packages/core/src
+      - ./packages/core/dist:/app/packages/core/dist
+      - ./packages/core/package.json:/app/packages/core/package.json
+      - ./packages/contracts/dist:/app/packages/contracts/dist
+      - ./packages/contracts/package.json:/app/packages/contracts/package.json
+      - ./tsconfig.base.json:/app/tsconfig.base.json
+      - ./pnpm-lock.yaml:/app/pnpm-lock.yaml
+      - dealdecision_uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      vision_worker:
+        condition: service_healthy
+
+  web_dev:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile.dev
+    command:
+      - sh
+      - -lc
+      - |
+        if [ ! -f /app/node_modules/@xyflow/react/dist/style.css ] || [ ! -d /app/node_modules/@dagrejs/dagre ] || [ ! -d /app/node_modules/@clerk/clerk-react ] || [ ! -d /app/node_modules/react-router-dom ] || [ ! -d /app/node_modules/@microsoft/fetch-event-source ]; then
+          CI=true pnpm install --frozen-lockfile
+        fi
+        pnpm --filter web dev -- --host 0.0.0.0 --port 5173
+    environment:
+      VITE_API_BASE_URL: http://localhost:9001
+      VITE_BACKEND_MODE: live
+      CHOKIDAR_USEPOLLING: "true"
+      CHOKIDAR_INTERVAL: "200"
+      WATCHPACK_POLLING: "true"
+    ports:
+      - "4174:5173"
+    volumes:
+      - ./:/app
+      - /app/node_modules
+      - /app/apps/web/node_modules
+    depends_on:
+      api_dev:
+        condition: service_started
+
+volumes:
+  postgres_data:
+  redis_data:
+  dealdecision_uploads:
+  vision_worker_cache:

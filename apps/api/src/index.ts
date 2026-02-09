@@ -24,10 +24,29 @@ import { initializeLLM } from "./lib/llm";
 import { getPool } from "./lib/db";
 import { applyPendingMigrations, getMigrationStatus } from "./lib/migrations";
 import "./lib/queue";
+import { getConnection } from "./lib/queue";
 import dotenv from "dotenv";
 import { createHash } from "crypto";
+import { assertProductionStorageContract } from "./lib/storage-contract";
 
 dotenv.config();
+
+function assertRequiredEnvVars() {
+  if (process.env.NODE_ENV === "test") return;
+
+  const required = ["DATABASE_URL", "REDIS_URL"] as const;
+  const missing = required.filter((key) => {
+    const value = process.env[key];
+    return value == null || String(value).trim() === "";
+  });
+
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required env vars: ${missing.join(", ")}. ` +
+        `For local development, set host tooling in .env.local and docker compose containers in .env.docker.local.`
+    );
+  }
+}
 
 // Initialize LLM module
 initializeLLM();
@@ -40,10 +59,37 @@ const app = fastify({
 const port = Number(process.env.PORT ?? process.env.API_PORT) || 9000;
 const host = "0.0.0.0";
 
+async function pingRedisOrThrow(appLogger: Pick<typeof app.log, "info" | "warn" | "error">) {
+  if (process.env.NODE_ENV === "test") return;
+  const conn = getConnection();
+
+  const timeoutMs = 3000;
+  const timeout = new Promise<never>((_, reject) => {
+    const t = setTimeout(() => {
+      clearTimeout(t);
+      reject(new Error(`redis_ping_timeout_${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  try {
+    const pong = await Promise.race([conn.ping(), timeout]);
+    if (pong !== "PONG") {
+      throw new Error(`redis_ping_unexpected:${String(pong)}`);
+    }
+    appLogger.info({ event: "redis_ping_ok" }, "Redis ping OK");
+  } catch (err) {
+    appLogger.error({ event: "redis_ping_failed", err }, "Redis unavailable; queue operations will fail");
+    throw new Error(
+      "Redis is unavailable. Check REDIS_URL and ensure Redis is running (for local: pnpm local:up)."
+    );
+  }
+}
+
 async function bootstrap() {
   await registerCors(app);
   await registerClerkAuth(app);
   await registerUploadsStatic(app);
+  await pingRedisOrThrow(app.log);
   const pool = getPool();
 
   // Startup verification: DB fingerprint + basic schema presence check.
@@ -164,6 +210,20 @@ async function bootstrap() {
 
 async function start() {
   try {
+    assertRequiredEnvVars();
+
+    const storage = assertProductionStorageContract(process.env);
+    app.log.info(
+      {
+        event: "storage_backend",
+        service: "api",
+        driver: storage.storage_driver,
+        r2_bucket: storage.r2_bucket,
+        r2_endpoint: storage.r2_endpoint,
+      },
+      "Storage backend"
+    );
+
     await bootstrap();
     await app.listen({ port, host });
     app.log.info(`API listening on http://${host}:${port}`);

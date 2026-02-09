@@ -491,7 +491,12 @@ function tryExtractR2KeyFromUrl(input: string, env: NodeJS.ProcessEnv = process.
 	}
 
 	// Signed URL / endpoint (path-style: /<bucket>/<key>) case.
-	const endpointRaw = typeof env.R2_ENDPOINT === "string" ? env.R2_ENDPOINT.trim() : "";
+	// Canonical env: R2_ENDPOINT. Back-compat: R2_S3_ENDPOINT.
+	const endpointRaw = (() => {
+		const v1 = typeof env.R2_ENDPOINT === "string" ? env.R2_ENDPOINT.trim() : "";
+		if (v1) return v1;
+		return typeof env.R2_S3_ENDPOINT === "string" ? env.R2_S3_ENDPOINT.trim() : "";
+	})();
 	const bucket = typeof env.R2_BUCKET === "string" ? env.R2_BUCKET.trim() : "";
 	if (!endpointRaw || !bucket) return null;
 
@@ -920,7 +925,8 @@ export async function resolvePageImageUris(
 
 		const dirs = candidateArtifactDirs({ documentId, meta: row?.extraction_metadata, env: options?.env });
 		const envNode = (options?.env?.NODE_ENV ?? process.env.NODE_ENV ?? "").trim().toLowerCase();
-		if (envNode === "production") {
+		const r2BucketConfigured = ((options?.env?.R2_BUCKET ?? process.env.R2_BUCKET ?? "") as string).trim().length > 0;
+		if (envNode === "production" && r2BucketConfigured) {
 			logger.log(
 				JSON.stringify({
 					event: "NO_PAGE_IMAGES_AVAILABLE",

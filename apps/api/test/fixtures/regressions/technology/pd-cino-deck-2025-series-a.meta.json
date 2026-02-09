@@ -1,0 +1,13 @@
+{
+  "fixture_key": "technology/pd-cino-deck-2025-series-a",
+  "vertical": "technology",
+  "basename_slug": "pd-cino-deck-2025-series-a",
+  "deal_id": "d511b33f-2d6c-4872-b9b2-0385ce2fadac",
+  "document_id": "32f6109d-3412-48cd-bb61-2420f8c72ba4",
+  "inputs_hash": "ac9efa99855cbacaa416688e8227b113cad869e17e027d03a869590f1172572d",
+  "deck_archetype_key": "unknown",
+  "generated_at": "2026-02-07T23:58:18.461Z",
+  "base_url": "http://localhost:9001",
+  "deck_file": "test/fixtures/decks/technology/PD - Cino Deck 2025 Series A.pdf",
+  "deck_file_sha256": "4b308ca5fe23e1e99e76b23f73f63b318c83eb9145ad62cb54eb8adc4be29f47"
+}

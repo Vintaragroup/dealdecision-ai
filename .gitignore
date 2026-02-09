@@ -14,6 +14,7 @@ node_modules/
 **/.env
 **/.env.*
 !.env.example
+!.env.*.example
 
 # logs and caches
 npm-debug.log*
@@ -27,7 +28,7 @@ scripts/experimental/
 # local dev artifacts (do not commit)
 apps/api/tmp_*.cjs
 apps/worker/*.traineddata
-services/
+/services/
 
 # internal documentation
 # Keep the bulk of docs ignored (trace runs can be large), but allow committing
@@ -100,3 +101,26 @@ packages/**/docs/.vscode/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# giga
+.giga/
+
+
+# Fixture regression artifacts (generated)
+apps/api/test/fixtures/regressions/**/*.full.report.json
+apps/api/test/fixtures/regressions/runner*.log
+
+# Fixture input decks (raw PDFs/PPTX/etc) — commit governed fixtures only
+apps/api/test/fixtures/decks/**
+!apps/api/test/fixtures/decks/
+!apps/api/test/fixtures/decks/**/
+!apps/api/test/fixtures/decks/**/*.pdf
+!apps/api/test/fixtures/decks/**/*.pptx
+!apps/api/test/fixtures/decks/**/*.xlsx
+!apps/api/test/fixtures/decks/**/*.docx
+
+# Allow committed regression baselines
+!apps/api/test/fixtures/regressions/**/*.snapshot.json
+!apps/api/test/fixtures/regressions/**/*.meta.json
+!apps/api/test/fixtures/regressions/fixture-summary.json
+!apps/api/test/fixtures/regressions/VERIFICATION_REPORT.md

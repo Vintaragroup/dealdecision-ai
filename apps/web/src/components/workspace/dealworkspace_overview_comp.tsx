@@ -10,6 +10,19 @@ export type DealWorkspaceOverviewCompProps = {
   raiseTerms: string;
   dealSummaryParagraphs: string[];
 
+  interpretationStatus?: 'idle' | 'loading' | 'ready' | 'error';
+  interpretationText?: string | null;
+  interpretationErrorCode?: string | null;
+  onRequestInterpretation?: () => void;
+
+  dealSummarySourceLabel?: string;
+  dealSummaryCitations?: {
+    one_liner?: Array<{ source_document_id: string; page_index: number; slide_title: string | null; snippet: string }>;
+    product?: Array<{ source_document_id: string; page_index: number; slide_title: string | null; snippet: string }>;
+    market?: Array<{ source_document_id: string; page_index: number; slide_title: string | null; snippet: string }>;
+    paragraphs?: Array<{ source_document_id: string; page_index: number; slide_title: string | null; snippet: string }>;
+  };
+
   score0_100: number | null;
   decisionLabel: 'PASS' | 'CONSIDER' | 'FUND' | '—' | string;
   confidenceLabel: string;
@@ -24,12 +37,20 @@ export type DealWorkspaceOverviewCompProps = {
 
 export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps) {
   const [isExpanded, setIsExpanded] = useState(false);
+  const [showCitations, setShowCitations] = useState(false);
+  const [showInterpretation, setShowInterpretation] = useState(false);
 
   const cardClassName = `backdrop-blur-xl border rounded-xl p-6 w-full ${
     props.darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'
   }`;
 
   const dividerClassName = props.darkMode ? 'border-white/10' : 'border-gray-200/50';
+
+  const interpretationStatus = props.interpretationStatus ?? 'idle';
+  const interpretationText = typeof props.interpretationText === 'string' ? props.interpretationText.trim() : '';
+  const interpretationErrorCode = typeof props.interpretationErrorCode === 'string' && props.interpretationErrorCode.trim().length > 0
+    ? props.interpretationErrorCode.trim()
+    : null;
 
   const safeLines = (lines: string[]): string[] =>
     lines
@@ -56,14 +77,54 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
 
   const badgeBaseClassName = 'inline-flex items-center px-2 py-1 rounded-full border text-[11px] font-medium leading-none';
 
+  const citationsPresent = Boolean(
+    (props.dealSummaryCitations?.one_liner && props.dealSummaryCitations.one_liner.length > 0) ||
+      (props.dealSummaryCitations?.product && props.dealSummaryCitations.product.length > 0) ||
+      (props.dealSummaryCitations?.market && props.dealSummaryCitations.market.length > 0) ||
+      (props.dealSummaryCitations?.paragraphs && props.dealSummaryCitations.paragraphs.length > 0)
+  );
+
+  const renderCitations = (items: Array<{ source_document_id: string; page_index: number; slide_title: string | null; snippet: string }>) => {
+    const cleaned = items
+      .filter((c) => c && typeof c.source_document_id === 'string' && Number.isFinite(c.page_index))
+      .slice(0, 8);
+    if (cleaned.length === 0) return null;
+    return (
+      <ul className="mt-2 space-y-1">
+        {cleaned.map((c, idx) => {
+          const docShort = c.source_document_id.length > 10 ? `${c.source_document_id.slice(0, 8)}…` : c.source_document_id;
+          const pageLabel = Number.isFinite(c.page_index) ? `p${Math.max(1, Math.floor(c.page_index) + 1)}` : 'p—';
+          const title = typeof c.slide_title === 'string' && c.slide_title.trim().length > 0 ? c.slide_title.trim() : null;
+          const snippet = typeof c.snippet === 'string' ? c.snippet.trim() : '';
+          const line = [docShort, pageLabel, title].filter(Boolean).join(' · ');
+          return (
+            <li key={`cite-${idx}`} className="text-[11px] text-zinc-400">
+              <div className="font-mono">{line}</div>
+              {snippet ? <div className="mt-0.5 text-zinc-500">{snippet}</div> : null}
+            </li>
+          );
+        })}
+      </ul>
+    );
+  };
+
   return (
     <div className="space-y-6 w-full">
       {/* Deal Summary Card */}
       <div className={cardClassName}>
           {/* Header */}
           <div className="mb-6">
-            <h2 className="text-white text-xl mb-1">Deal Summary</h2>
-            <p className="text-zinc-500 text-sm">What this company does</p>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-white text-xl mb-1">Deal Summary</h2>
+                <p className="text-zinc-500 text-sm">What this company does</p>
+              </div>
+              {props.dealSummarySourceLabel ? (
+                <span className={`${badgeBaseClassName} bg-white/5 text-zinc-300 border-white/10`}>
+                  {props.dealSummarySourceLabel}
+                </span>
+              ) : null}
+            </div>
           </div>
 
           {/* One-liner */}
@@ -118,16 +179,59 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
           )}
 
           {/* Expand Control */}
-          <button
-            onClick={() => setIsExpanded(!isExpanded)}
-            className="flex items-center gap-1.5 text-blue-400 hover:text-blue-300 transition-colors text-sm group"
-          >
-            <span>{isExpanded ? 'Show less' : 'Show more'}</span>
-            <ChevronDown 
-              className={`w-4 h-4 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} 
-              strokeWidth={1.5} 
-            />
-          </button>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <button
+              onClick={() => setIsExpanded(!isExpanded)}
+              className="flex items-center gap-1.5 text-blue-400 hover:text-blue-300 transition-colors text-sm group"
+            >
+              <span>{isExpanded ? 'Show less' : 'Show more'}</span>
+              <ChevronDown
+                className={`w-4 h-4 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
+                strokeWidth={1.5}
+              />
+            </button>
+
+            {citationsPresent ? (
+              <button
+                onClick={() => setShowCitations(!showCitations)}
+                className="text-zinc-400 hover:text-zinc-200 transition-colors text-sm"
+              >
+                {showCitations ? 'Hide citations' : 'View citations'}
+              </button>
+            ) : null}
+          </div>
+
+          {showCitations && citationsPresent ? (
+            <div className={`mt-4 pt-4 border-t ${dividerClassName}`}>
+              {props.dealSummaryCitations?.one_liner?.length ? (
+                <div>
+                  <div className="text-[11px] uppercase tracking-wider text-zinc-500">One-liner</div>
+                  {renderCitations(props.dealSummaryCitations.one_liner)}
+                </div>
+              ) : null}
+
+              {props.dealSummaryCitations?.product?.length ? (
+                <div className="mt-3">
+                  <div className="text-[11px] uppercase tracking-wider text-zinc-500">Product</div>
+                  {renderCitations(props.dealSummaryCitations.product)}
+                </div>
+              ) : null}
+
+              {props.dealSummaryCitations?.market?.length ? (
+                <div className="mt-3">
+                  <div className="text-[11px] uppercase tracking-wider text-zinc-500">Market</div>
+                  {renderCitations(props.dealSummaryCitations.market)}
+                </div>
+              ) : null}
+
+              {props.dealSummaryCitations?.paragraphs?.length ? (
+                <div className="mt-3">
+                  <div className="text-[11px] uppercase tracking-wider text-zinc-500">Paragraphs</div>
+                  {renderCitations(props.dealSummaryCitations.paragraphs)}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
       </div>
 
       {/* Investment Analysis Overview Card */}
@@ -160,6 +264,49 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
             <p className="text-zinc-200 text-sm leading-relaxed">
               {props.rationale}
             </p>
+          </div>
+
+          {/* Interpretation (governed overlay) */}
+          <div className={`mb-6 pb-6 border-b ${dividerClassName}`}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-zinc-400 text-sm">Interpretation</div>
+                <div className="text-zinc-500 text-xs">LLM overlay (display-only). Deterministic report remains authoritative.</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !showInterpretation;
+                  setShowInterpretation(next);
+                  if (next && interpretationStatus === 'idle') {
+                    props.onRequestInterpretation?.();
+                  }
+                }}
+                className="flex items-center gap-1.5 text-blue-400 hover:text-blue-300 transition-colors text-sm group"
+              >
+                <span>{showInterpretation ? 'Hide interpretation' : 'Show interpretation'}</span>
+                <ChevronDown
+                  className={`w-4 h-4 transition-transform duration-200 ${showInterpretation ? 'rotate-180' : ''}`}
+                  strokeWidth={1.5}
+                />
+              </button>
+            </div>
+
+            {showInterpretation ? (
+              <div className="mt-3">
+                {interpretationStatus === 'loading' ? (
+                  <div className="text-zinc-300 text-sm">Generating interpretation…</div>
+                ) : interpretationStatus === 'ready' && interpretationText ? (
+                  <div className="text-zinc-200 text-sm whitespace-pre-wrap leading-relaxed">{interpretationText}</div>
+                ) : interpretationStatus === 'error' ? (
+                  <div className="text-zinc-300 text-sm">
+                    Interpretation unavailable{interpretationErrorCode ? ` (code=${interpretationErrorCode})` : ''}.
+                  </div>
+                ) : (
+                  <div className="text-zinc-400 text-sm">Open to generate an interpretation.</div>
+                )}
+              </div>
+            ) : null}
           </div>
 
           {/* Strengths vs Concerns - Two Column Layout */}

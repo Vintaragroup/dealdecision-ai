@@ -17,9 +17,14 @@ export * from "./services/prompt-generator";
 // Export utilities
 export * from "./lib/sanitize";
 export * from "./lib/document-capabilities";
+export * from "./lib/stable-uuid";
+export * from "./lib/stable-json";
+export * from "./queue-names";
 export * from './config/segment-thresholds';
 export * from './scoring/segment-coverage';
 export * from './scoring/scoring-input-v0';
+export * from './scoring/score-bands-v2';
+export * from './scoring/decision-v1';
 export * from './classification/content-archetypes';
 
 // ============================================================================
@@ -115,6 +120,20 @@ export {
 export type { EvidenceService } from "./services/evidence/service";
 
 export {
+	CanonicalEvidenceServiceImpl,
+	EvidenceItemSchema,
+	EvidencePacketSchema,
+	computeEvidenceId,
+	computePacketId,
+	selectEvidenceForPacket,
+	sha256Hex,
+} from "./services/evidence/canonical-evidence";
+export type { CanonicalEvidenceService, EvidenceItem, EvidencePacket } from "./services/evidence/canonical-evidence";
+
+// Document Intelligence (signals-only)
+export * from "./services/document-intelligence/document-intelligence";
+
+export {
 	LLMServiceError,
 	LLMTimeoutError,
 	MockLLMService,
@@ -126,10 +145,37 @@ export type { LLMService } from "./services/llm/service";
 export * from "./services/purge-deal-cascade";
 
 // Reports
-export { compileDIOToReport } from "./reports/compiler-simple";
+export { compileDIOToReport, compileDIOToReportWithPromotedFacts } from "./reports/compiler-simple";
 export { buildScoreExplanationFromDIO, buildScoringDiagnosticsFromDIO } from "./reports/score-explanation";
 export type { ScoreExplanation } from "./reports/score-explanation";
 export type { ScoringDiagnosticsV1 } from "./types/dio";
 
+// Verticals
+export { getVerticalContract } from "./verticals/vertical-contracts";
+export type { VerticalKey, VerticalContract } from "./verticals/vertical-contracts";
+export { validateReportAgainstContract } from "./verticals/validate-vertical-contract";
+export type { ContractViolation } from "./verticals/validate-vertical-contract";
+
+// Deterministic score bridge (API-side gating)
+export { buildDeterministicScoreInputsV1 } from "./scoring/score-inputs-v1";
+export type { ScoreInputsV1 } from "./scoring/score-inputs-v1";
+
 // Phase 1 deterministic composer (used by worker for change acknowledgement)
 export { generatePhase1DIOV1 } from "./phase1/phase1-dio-v1";
+
+// LLM narration (API-side optional feature)
+export { LlmNarrationV1Schema } from "./llm/narration-schema";
+export type { LlmNarrationV1 } from "./llm/narration-schema";
+export type { LlmNarrationV1 as LlmNarrationV1Type } from "./llm/narration-schema";
+
+// LLM overview (API-side optional feature)
+export { LlmOverviewV1Schema, LlmOverviewV1CitationSchema } from "./llm/overview-schema";
+export type { LlmOverviewV1 } from "./llm/overview-schema";
+export type { LlmOverviewV1 as LlmOverviewV1Type } from "./llm/overview-schema";
+export { buildNarrationPrompt } from "./llm/build-narration-prompt";
+export { buildOverviewPrompt } from "./llm/build-overview-prompt";
+export { buildInvestmentAnalysisOverviewPrompt } from "./llm/build-investment-analysis-overview-prompt";
+export { degradeNarrationV1, validateNoNewFacts } from "./llm/narration-guard";
+export type { NarrationGuardResult, NarrationGuardViolation } from "./llm/narration-guard";
+export { degradeOverviewV1 } from "./llm/overview-guard";
+export type { OverviewDegradeResult, OverviewGuardError, OverviewGuardViolation } from "./llm/overview-guard";

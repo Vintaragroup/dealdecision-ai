@@ -480,6 +480,8 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       border-color: #667eea;
       color: #fff;
     }
+    .det-main-panel { display: none; }
+    .det-main-panel.active { display: block; }
     .det-panel { display: none; }
     .det-panel.active { display: block; }
     /* Overflow-safe deterministic panels */
@@ -796,55 +798,163 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           <span id="deterministic-status" class="muted"></span>
         </div>
 
-        <div class="card" style="margin: 0.75rem 0 1rem;">
-          <h2 style="margin-bottom: 0.5rem;">Report Fingerprint</h2>
-          <div id="deterministic-fingerprint" class="muted">Not loaded.</div>
+        <div class="subtabs" aria-label="Deterministic main tabs">
+          <button id="det-main-btn-pre" class="subtab active" onclick="activateDeterministicMainTab('pre')">Deterministic</button>
+          <button id="det-main-btn-llm" class="subtab" onclick="activateDeterministicMainTab('llm')">LLM Interpretation</button>
+          <button id="det-main-btn-overlay" class="subtab" onclick="activateDeterministicMainTab('overlay')">Workspace Mirror</button>
         </div>
 
-        <div class="card" style="margin: 0.75rem 0 1rem;">
-          <h2 style="margin-bottom: 0.5rem;">Field Presence Matrix</h2>
-          <p class="muted" style="margin-bottom: 0.75rem;">Quick check that new computed fields are present without opening JSON.</p>
-          <div id="deterministic-field-presence" class="muted">Not loaded.</div>
-        </div>
-
-        <div class="subtabs" aria-label="Deterministic sub-tabs">
-          <button id="det-subtab-btn-canonical" class="subtab active" onclick="activateDeterministicSubtab('canonical')">Canonical Header</button>
-          <button id="det-subtab-btn-structured" class="subtab" onclick="activateDeterministicSubtab('structured')">Structured Summary (raw)</button>
-          <button id="det-subtab-btn-legacy" class="subtab" onclick="activateDeterministicSubtab('legacy')">Legacy / Phase 1</button>
-        </div>
-
-        <div id="det-subtab-canonical" class="card det-panel active">
-          <h2 style="margin-bottom: 0.5rem;">Canonical Header Output</h2>
-          <div id="deterministic-header" class="muted">Enter a deal id and click Load.</div>
-
-          <div style="border-top: 1px solid #e2e8f0; margin-top: 1rem; padding-top: 1rem;">
-            <h2 style="margin-bottom: 0.5rem;">Deal Summary Tiers</h2>
-            <p class="muted" style="margin-bottom: 0.75rem;">Shows hero / overview / deep tiers and warns on suspected tier collapse.</p>
-            <div id="deterministic-deal-summary-tiers" class="muted">Not loaded.</div>
+        <div id="det-main-pre" class="det-main-panel active">
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Report Fingerprint</h2>
+            <div id="deterministic-fingerprint" class="muted">Not loaded.</div>
           </div>
 
-          <div style="border-top: 1px solid #e2e8f0; margin-top: 1rem; padding-top: 1rem;">
-            <h2 style="margin-bottom: 0.5rem;">Score Understanding v1</h2>
-            <p class="muted" style="margin-bottom: 0.75rem;">Investor-friendly buckets derived from score explanation.</p>
-            <div id="deterministic-score-understanding-v1" class="muted">Not loaded.</div>
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Field Presence Matrix</h2>
+            <p class="muted" style="margin-bottom: 0.75rem;">Quick check that new computed fields are present without opening JSON.</p>
+            <div id="deterministic-field-presence" class="muted">Not loaded.</div>
           </div>
 
-          <div style="border-top: 1px solid #e2e8f0; margin-top: 1rem; padding-top: 1rem;">
-            <h2 style="margin-bottom: 0.5rem;">Canonical KPI Trace</h2>
-            <p class="muted" style="margin-bottom: 0.75rem;">Explains why a KPI value was chosen and shows alternatives (Revenue).</p>
-            <div id="deterministic-kpi-trace" class="muted">Not loaded.</div>
+          <div class="subtabs" aria-label="Deterministic sub-tabs">
+            <button id="det-subtab-btn-canonical" class="subtab active" onclick="activateDeterministicSubtab('canonical')">Canonical Header</button>
+            <button id="det-subtab-btn-structured" class="subtab" onclick="activateDeterministicSubtab('structured')">Structured Summary (raw)</button>
+            <button id="det-subtab-btn-legacy" class="subtab" onclick="activateDeterministicSubtab('legacy')">Legacy / Phase 1</button>
+          </div>
+
+          <div id="det-subtab-canonical" class="card det-panel active">
+            <h2 style="margin-bottom: 0.5rem;">Canonical Header Output</h2>
+            <div id="deterministic-header" class="muted">Enter a deal id and click Load.</div>
+
+            <div style="border-top: 1px solid #e2e8f0; margin-top: 1rem; padding-top: 1rem;">
+              <h2 style="margin-bottom: 0.5rem;">Deal Summary Tiers</h2>
+              <p class="muted" style="margin-bottom: 0.75rem;">Shows hero / overview / deep tiers and warns on suspected tier collapse.</p>
+              <div id="deterministic-deal-summary-tiers" class="muted">Not loaded.</div>
+            </div>
+
+            <div style="border-top: 1px solid #e2e8f0; margin-top: 1rem; padding-top: 1rem;">
+              <h2 style="margin-bottom: 0.5rem;">Score Understanding v1</h2>
+              <p class="muted" style="margin-bottom: 0.75rem;">Investor-friendly buckets derived from score explanation.</p>
+              <div id="deterministic-score-understanding-v1" class="muted">Not loaded.</div>
+            </div>
+
+            <div style="border-top: 1px solid #e2e8f0; margin-top: 1rem; padding-top: 1rem;">
+              <h2 style="margin-bottom: 0.5rem;">Canonical KPI Trace</h2>
+              <p class="muted" style="margin-bottom: 0.75rem;">Explains why a KPI value was chosen and shows alternatives (Revenue).</p>
+              <div id="deterministic-kpi-trace" class="muted">Not loaded.</div>
+            </div>
+          </div>
+
+          <div id="det-subtab-structured" class="card det-panel">
+            <h2 style="margin-bottom: 0.5rem;">Structured Summary (raw)</h2>
+            <div id="deterministic-structured" class="muted">Not loaded.</div>
+          </div>
+
+          <div id="det-subtab-legacy" class="card det-panel">
+            <h2 style="margin-bottom: 0.5rem;">Legacy / Phase 1 (comparison only)</h2>
+            <p class="muted" style="margin-bottom: 0.5rem;">Non-canonical. Used only when report.ready=false.</p>
+            <div id="deterministic-legacy" class="muted">Not loaded.</div>
           </div>
         </div>
 
-        <div id="det-subtab-structured" class="card det-panel">
-          <h2 style="margin-bottom: 0.5rem;">Structured Summary (raw)</h2>
-          <div id="deterministic-structured" class="muted">Not loaded.</div>
+        <div id="det-main-llm" class="det-main-panel">
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">LLM Interpretation (Governed)</h2>
+            <p class="muted" style="margin-bottom: 0;">
+              <strong>Deterministic output is the rule of law.</strong> LLM output is interpretation-only and must never change deterministic report subtrees.
+            </p>
+          </div>
+
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <div style="display:flex; gap:0.75rem; align-items:center; justify-content:space-between; flex-wrap:wrap;">
+              <h2 style="margin-bottom: 0.5rem;">Controls</h2>
+              <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+                <button id="deterministic-llm-generate-btn" class="btn btn-small">Generate narration</button>
+                <button id="deterministic-llm-copy-btn" class="btn btn-small btn-secondary">Copy JSON</button>
+                <button id="deterministic-llm-download-btn" class="btn btn-small btn-secondary">Download JSON</button>
+                <span id="deterministic-llm-loading" class="muted" style="display:none;">Loading…</span>
+              </div>
+            </div>
+            <div class="muted" style="margin-top:0.35rem;">Source: <span class="mono">response.report.llm_narration_v1</span></div>
+            <div id="deterministic-llm-timeout-banner" style="display:none; margin-top:0.75rem; padding:0.6rem 0.7rem; border:1px solid #feb2b2; background:#fff5f5; border-radius:8px;">
+              <div style="font-weight:700;">Timeout</div>
+              <div class="muted" style="margin-top:0.25rem;">Request exceeded 30s.</div>
+            </div>
+            <div id="deterministic-llm-request-error" style="display:none; margin-top:0.75rem; padding:0.6rem 0.7rem; border:1px solid #feb2b2; background:#fff5f5; border-radius:8px;">
+              <div style="font-weight:700;">Error</div>
+              <div id="deterministic-llm-request-error-message" class="muted" style="margin-top:0.25rem;"></div>
+            </div>
+          </div>
+
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Status</h2>
+            <div id="deterministic-llm-status" class="muted">Not loaded.</div>
+          </div>
+
+          <details class="card" style="margin: 0.75rem 0 1rem;">
+            <summary style="cursor:pointer; font-weight:700;">Guard diagnostics</summary>
+            <div id="deterministic-llm-guard" class="muted" style="margin-top:0.75rem;">Not loaded.</div>
+          </details>
+
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">LLM Content</h2>
+            <div id="deterministic-llm-parsed" class="muted">Not loaded.</div>
+          </div>
+
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Raw JSON</h2>
+            <pre id="deterministic-llm-raw" class="muted" style="white-space:pre-wrap; word-break:break-word; margin:0;">Not loaded.</pre>
+          </div>
+
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Deterministic Drift Check</h2>
+            <p class="muted" style="margin-bottom: 0.75rem;">Compares deterministic subtrees between <span class="mono">/report</span> and <span class="mono">/report?narrate=1</span>.</p>
+            <div id="deterministic-llm-drift" class="muted">Not loaded.</div>
+          </div>
         </div>
 
-        <div id="det-subtab-legacy" class="card det-panel">
-          <h2 style="margin-bottom: 0.5rem;">Legacy / Phase 1 (comparison only)</h2>
-          <p class="muted" style="margin-bottom: 0.5rem;">Non-canonical. Used only when report.ready=false.</p>
-          <div id="deterministic-legacy" class="muted">Not loaded.</div>
+        <div id="det-main-overlay" class="det-main-panel">
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Workspace Mirror (Overview)</h2>
+            <p class="muted" style="margin-bottom: 0;">
+              <strong>Deterministic output is the rule of law.</strong> This tab mirrors the Web App Overview blocks 1:1 and compares deterministic (authoritative) vs governed overlay (interpretation).
+            </p>
+          </div>
+
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <div style="display:flex; gap:0.75rem; align-items:center; justify-content:space-between; flex-wrap:wrap;">
+              <h2 style="margin-bottom: 0.5rem;">Controls</h2>
+              <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+                <button id="deterministic-overlay-generate-btn" class="btn btn-small">Load governed overlay</button>
+                <span id="deterministic-overlay-loading" class="muted" style="display:none;">Loading…</span>
+              </div>
+            </div>
+            <div class="muted" style="margin-top:0.35rem;">Fetches governed output from <span class="mono">/api/v1/deals/:dealId/report?narrate=1</span> only on click (no server behavior changes).</div>
+            <div id="deterministic-overlay-timeout-banner" style="display:none; margin-top:0.75rem; padding:0.6rem 0.7rem; border:1px solid #feb2b2; background:#fff5f5; border-radius:8px;">
+              <div style="font-weight:700;">Timeout</div>
+              <div class="muted" style="margin-top:0.25rem;">Request exceeded 30s.</div>
+            </div>
+            <div id="deterministic-overlay-request-error" style="display:none; margin-top:0.75rem; padding:0.6rem 0.7rem; border:1px solid #feb2b2; background:#fff5f5; border-radius:8px;">
+              <div style="font-weight:700;">Error</div>
+              <div id="deterministic-overlay-request-error-message" class="muted" style="margin-top:0.25rem;"></div>
+            </div>
+          </div>
+
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Status</h2>
+            <div id="deterministic-overlay-status" class="muted">Not generated yet.</div>
+          </div>
+
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Workspace Mirror Blocks</h2>
+            <div id="deterministic-overlay-content" class="muted">Load deterministic first, then load governed overlay.</div>
+          </div>
+
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">LLM Narration (extra)</h2>
+            <div class="muted" style="margin-top:0.35rem;">Source: <span class="mono">response.report.llm_narration_v1</span></div>
+            <div id="deterministic-overlay-narration-extra" class="muted">Load governed overlay to view.</div>
+          </div>
         </div>
       </div>
     </div>
@@ -955,6 +1065,37 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
     // Deterministic deck archetype expectations (display-only; no enforcement).
     const DECK_ARCHETYPE_EXPECTATIONS_V1 = ${deckArchetypeExpectationsJson};
 
+    // Shared API base URL for deterministic + narration fetches.
+    // Prefer env var if present; otherwise default to current origin via relative fetch.
+    const DASHBOARD_ENV_API_BASE_URL = ${JSON.stringify(process.env.VITE_API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL || '')};
+    const DASHBOARD_DEV = ${process.env.NODE_ENV !== 'production'};
+
+    function normalizeApiBaseUrl(raw) {
+      const s = (typeof raw === 'string' ? raw : '').trim();
+      if (!s) return '';
+      let out = s;
+      while (out.endsWith('/')) out = out.slice(0, -1);
+      return out;
+    }
+
+    function getApiBaseUrl() {
+      // Allow overriding in-browser for debugging.
+      const fromWindow = (typeof window !== 'undefined' && (window).__DD_API_BASE_URL)
+        ? (window).__DD_API_BASE_URL
+        : '';
+      return normalizeApiBaseUrl(fromWindow || DASHBOARD_ENV_API_BASE_URL || '');
+    }
+
+    const apiBaseUrl = getApiBaseUrl();
+
+    function apiUrl(path) {
+      const p = String(path || '');
+      if (!p) return apiBaseUrl;
+      if (p.startsWith('http://') || p.startsWith('https://')) return p;
+      if (!apiBaseUrl) return p;
+      return p.startsWith('/') ? (apiBaseUrl + p) : (apiBaseUrl + '/' + p);
+    }
+
     const visualReextractState = {
       active: false,
       runId: null,
@@ -1029,6 +1170,67 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       }
     }
 
+    const DET_MAIN_TAB_STORAGE_KEY = 'devdash_report_tab';
+
+    function readDeterministicMainTabFromStorage() {
+      try {
+        const v = window && window.localStorage ? window.localStorage.getItem(DET_MAIN_TAB_STORAGE_KEY) : null;
+        return (v === 'llm' || v === 'pre' || v === 'overlay') ? v : null;
+      } catch {
+        return null;
+      }
+    }
+
+    function writeDeterministicMainTabToStorage(v) {
+      try {
+        if (window && window.localStorage) window.localStorage.setItem(DET_MAIN_TAB_STORAGE_KEY, v);
+      } catch {
+        // ignore
+      }
+    }
+
+    function activateDeterministicMainTab(name) {
+      const target = (name === 'llm' || name === 'pre' || name === 'overlay') ? name : 'pre';
+      const names = ['pre', 'llm', 'overlay'];
+      for (const n of names) {
+        const panel = document.getElementById('det-main-' + n);
+        const btn = document.getElementById('det-main-btn-' + n);
+        const active = n === target;
+        if (panel && panel.classList) panel.classList.toggle('active', active);
+        if (btn && btn.classList) btn.classList.toggle('active', active);
+      }
+      writeDeterministicMainTabToStorage(target);
+
+      // Lazy LLM rendering: no fetch, just render current caches if present.
+      try {
+        if (target === 'llm') {
+          renderDeterministicLlmPanels({
+            baseOk: Boolean(deterministicBaseReportCache),
+            narrOk: Boolean(deterministicNarratedReportCache),
+            baseReport: deterministicBaseReportCache,
+            narratedReport: deterministicNarratedReportCache,
+          });
+        }
+      } catch {
+        // ignore
+      }
+
+      // Lazy Overlay rendering: no fetch, just render current caches if present.
+      try {
+        if (target === 'overlay') {
+          renderDeterministicOverlayPanel({
+            baseOk: Boolean(deterministicBaseReportCache),
+            narrOk: Boolean(deterministicNarratedReportCache),
+            baseReport: deterministicBaseReportCache,
+            narratedReport: deterministicNarratedReportCache,
+            deal: deterministicDealCache,
+          });
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     (function initDeterministicSubtabs() {
       try {
         activateDeterministicSubtab('canonical');
@@ -1036,6 +1238,1783 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         // ignore
       }
     })();
+
+    (function initDeterministicMainTabs() {
+      try {
+        const stored = readDeterministicMainTabFromStorage();
+        activateDeterministicMainTab(stored || 'pre');
+      } catch {
+        // ignore
+      }
+    })();
+
+    function stableStringify(v) {
+      const seen = new Set();
+      const walk = (x) => {
+        if (x == null) return x;
+        if (typeof x !== 'object') return x;
+        if (seen.has(x)) return '[Circular]';
+        seen.add(x);
+        if (Array.isArray(x)) return x.map(walk);
+        const out = {};
+        const keys = Object.keys(x).sort();
+        for (const k of keys) out[k] = walk(x[k]);
+        return out;
+      };
+      return JSON.stringify(walk(v));
+    }
+
+    function deepEqualStable(a, b) {
+      try {
+        return stableStringify(a) === stableStringify(b);
+      } catch {
+        return false;
+      }
+    }
+
+    function downloadJsonObject(obj, filename) {
+      const name = (typeof filename === 'string' && filename.trim()) ? filename.trim() : 'export.json';
+      const blob = new Blob([JSON.stringify(obj ?? null, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 250);
+    }
+
+    async function copyJsonObject(obj) {
+      const text = JSON.stringify(obj ?? null, null, 2);
+      try {
+        if (navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+      } catch {
+        // ignore
+      }
+
+      // Fallback for older browsers / insecure contexts.
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.top = '0';
+        ta.style.left = '0';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        return ok;
+      } catch {
+        return false;
+      }
+    }
+
+    let deterministicLlmExportTarget = null;
+    let deterministicLlmExportFilename = null;
+
+    let deterministicBaseReportCache = null;
+    let deterministicNarratedReportCache = null;
+    let deterministicDealCache = null;
+    let deterministicLastDealId = null;
+
+    function readNarrationFromApiPayload(payload) {
+      if (!payload || typeof payload !== 'object') return null;
+      const reportObj = payload.report && typeof payload.report === 'object' ? payload.report : payload;
+      const narration = reportObj.llm_narration_v1 && typeof reportObj.llm_narration_v1 === 'object' ? reportObj.llm_narration_v1 : null;
+      const metaPresent = (payload.metadata && typeof payload.metadata === 'object') || (reportObj.metadata && typeof reportObj.metadata === 'object');
+      const metaObj = payload.metadata && typeof payload.metadata === 'object'
+        ? payload.metadata
+        : (reportObj.metadata && typeof reportObj.metadata === 'object' ? reportObj.metadata : null);
+      const err = metaObj && metaObj.llm_narration_v1_error && typeof metaObj.llm_narration_v1_error === 'object'
+        ? metaObj.llm_narration_v1_error
+        : null;
+      return { reportObj, narration, metaObj: metaObj || {}, metaPresent: Boolean(metaPresent), err };
+    }
+
+    function readOverviewFromApiPayload(payload) {
+      if (!payload || typeof payload !== 'object') return null;
+      const reportObj = payload.report && typeof payload.report === 'object' ? payload.report : payload;
+      const overview = reportObj.llm_overview_v1 && typeof reportObj.llm_overview_v1 === 'object' ? reportObj.llm_overview_v1 : null;
+      const narration = reportObj.llm_narration_v1 && typeof reportObj.llm_narration_v1 === 'object' ? reportObj.llm_narration_v1 : null;
+      const metaObj = payload.metadata && typeof payload.metadata === 'object'
+        ? payload.metadata
+        : (reportObj.metadata && typeof reportObj.metadata === 'object' ? reportObj.metadata : null);
+      const errOverview = metaObj && metaObj.llm_overview_v1_error && typeof metaObj.llm_overview_v1_error === 'object'
+        ? metaObj.llm_overview_v1_error
+        : null;
+      const errNarr = metaObj && metaObj.llm_narration_v1_error && typeof metaObj.llm_narration_v1_error === 'object'
+        ? metaObj.llm_narration_v1_error
+        : null;
+      return { reportObj, overview, narration, metaObj: metaObj || {}, err: errOverview || errNarr };
+    }
+
+    function renderGuardStatusBlock(err) {
+      const payload = err && typeof err === 'object' ? err : null;
+      const code = payload && typeof payload.code === 'string' ? payload.code : null;
+      const blockedTitles = payload && Array.isArray(payload.blocked_section_titles) ? payload.blocked_section_titles : [];
+      const blockedReasons = payload && Array.isArray(payload.blocked_reasons_top3) ? payload.blocked_reasons_top3 : [];
+      const violations = payload && Array.isArray(payload.violations) ? payload.violations : [];
+
+      const badge = code
+        ? (code === 'guard_degraded'
+            ? '<span class="badge badge-warning">guard_degraded</span>'
+            : (code === 'missing_openai_api_key' ? '<span class="badge badge-danger">missing_openai_api_key</span>' : '<span class="badge badge-info">' + escapeHtml(code) + '</span>'))
+        : '<span class="badge badge-info">no guard metadata</span>';
+
+      const list = (items) => {
+        if (!items || items.length === 0) return '<div class="muted">(none)</div>';
+        return '<ul style="margin:0.35rem 0 0; padding-left: 1.1rem;">'
+          + items.slice(0, 30).map((t) => '<li>' + escapeHtml(String(t)) + '</li>').join('')
+          + (items.length > 30 ? ('<li class="muted">…+' + escapeHtml(String(items.length - 30)) + '</li>') : '')
+          + '</ul>';
+      };
+
+      const violationRows = violations.slice(0, 10).map((v) => {
+        const c = v && typeof v.code === 'string' ? v.code : 'unknown';
+        const p = v && typeof v.path === 'string' ? v.path : '';
+        const m = v && typeof v.message === 'string' ? v.message : '';
+        return '<tr>'
+          + '<td class="mono" style="vertical-align:top;">' + escapeHtml(String(c)) + '</td>'
+          + '<td class="mono" style="vertical-align:top;">' + escapeHtml(String(p)) + '</td>'
+          + '<td style="vertical-align:top;">' + escapeHtml(String(m)) + '</td>'
+          + '</tr>';
+      }).join('');
+
+      const violationsBlock = violations.length
+        ? ('<table style="margin-top:0.5rem; width:100%;">'
+            + '<thead><tr><th style="width:22%;">code</th><th style="width:28%;">path</th><th>message</th></tr></thead>'
+            + '<tbody>' + violationRows + '</tbody>'
+            + '</table>'
+            + (violations.length > 10 ? ('<div class="muted" style="margin-top:0.35rem;">Showing first 10 of ' + escapeHtml(String(violations.length)) + ' violations.</div>') : ''))
+        : '<div class="muted" style="margin-top:0.35rem;">No violations.</div>';
+
+      return ''
+        + '<div style="border:1px solid #e2e8f0; border-radius:8px; padding:0.6rem 0.7rem; margin-top:0.5rem;">'
+        +   '<div style="display:flex; gap:0.5rem; align-items:baseline; flex-wrap:wrap;">'
+        +     '<div style="font-weight:700;">Degradation status</div>'
+        +     badge
+        +   '</div>'
+        +   '<div style="margin-top:0.6rem; display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0.75rem;">'
+        +     '<div>'
+        +       '<div class="muted" style="font-weight:600;">blocked_section_titles</div>'
+        +       list(blockedTitles)
+        +     '</div>'
+        +     '<div>'
+        +       '<div class="muted" style="font-weight:600;">blocked_reasons_top3</div>'
+        +       list(blockedReasons)
+        +     '</div>'
+        +   '</div>'
+        +   '<div style="margin-top:0.75rem;">'
+        +     '<div class="muted" style="font-weight:600;">violations (code + path + message)</div>'
+        +     violationsBlock
+        +   '</div>'
+        + '</div>';
+    }
+
+    function renderDeterministicLlmPanels(args) {
+      const driftEl = document.getElementById('deterministic-llm-drift');
+      const statusEl = document.getElementById('deterministic-llm-status');
+      const guardEl = document.getElementById('deterministic-llm-guard');
+      const parsedEl = document.getElementById('deterministic-llm-parsed');
+      const rawEl = document.getElementById('deterministic-llm-raw');
+      if (!driftEl || !statusEl || !guardEl || !parsedEl || !rawEl) return;
+
+      const overlayDriftEl = document.getElementById('deterministic-overlay-drift');
+      const overlayDriftTopEl = document.getElementById('deterministic-overlay-drift-top');
+
+      const base = args && args.baseReport && typeof args.baseReport === 'object' ? args.baseReport : null;
+      const narr = args && args.narratedReport && typeof args.narratedReport === 'object' ? args.narratedReport : null;
+      const baseOk = Boolean(args && args.baseOk);
+      const narrOk = Boolean(args && args.narrOk);
+
+      if (!baseOk || !base) {
+        driftEl.innerHTML = '<div class="badge badge-danger">Failed to load base /report payload.</div>';
+        if (overlayDriftEl) overlayDriftEl.innerHTML = driftEl.innerHTML;
+        if (overlayDriftTopEl) overlayDriftTopEl.innerHTML = driftEl.innerHTML;
+        statusEl.innerHTML = '<div class="badge badge-danger">Base report missing</div>';
+        guardEl.innerHTML = '<div class="muted">Not loaded.</div>';
+        parsedEl.innerHTML = '<div class="muted">Cannot render narration without base report.</div>';
+        rawEl.textContent = 'Not loaded.';
+        deterministicLlmExportTarget = null;
+        deterministicLlmExportFilename = null;
+        return;
+      }
+
+      if (!narrOk || !narr) {
+        driftEl.innerHTML = ''
+          + '<div class="badge badge-info">narrated report not loaded</div>'
+          + '<div class="muted" style="margin-top:0.35rem;">Open this tab and click <span class="mono">Generate narration</span> to fetch <span class="mono">/report?narrate=1</span>.</div>';
+        if (overlayDriftEl) overlayDriftEl.innerHTML = driftEl.innerHTML;
+        if (overlayDriftTopEl) overlayDriftTopEl.innerHTML = driftEl.innerHTML;
+        statusEl.innerHTML = '<div class="muted">No narrated payload loaded yet.</div>';
+        guardEl.innerHTML = '<div class="muted">Not loaded.</div>';
+        parsedEl.innerHTML = '<div class="muted">No narrated payload loaded yet.</div>';
+        rawEl.textContent = 'Not loaded.';
+        deterministicLlmExportTarget = { code: 'narrated_report_not_loaded' };
+        deterministicLlmExportFilename = (deterministicLastDealId ? ('llm_narration_v1_error.' + deterministicLastDealId + '.json') : 'llm_narration_v1_error.json');
+        return;
+      }
+
+      const baseStructured = base.structured_summary ?? null;
+      const narrStructured = narr.structured_summary ?? null;
+      const basePromoted = base.promoted_facts ?? null;
+      const narrPromoted = narr.promoted_facts ?? null;
+      const baseScoreExp = (base.metadata && typeof base.metadata === 'object') ? (base.metadata.score_explanation ?? null) : null;
+      const narrScoreExp = (narr.metadata && typeof narr.metadata === 'object') ? (narr.metadata.score_explanation ?? null) : null;
+
+      const eqStructured = deepEqualStable(baseStructured, narrStructured);
+      const eqPromoted = deepEqualStable(basePromoted ?? null, narrPromoted ?? null);
+      const eqScoreExp = deepEqualStable(baseScoreExp ?? null, narrScoreExp ?? null);
+
+      const okAll = eqStructured && eqPromoted && eqScoreExp;
+      const badge = okAll
+        ? '<span class="badge badge-success">✅ unchanged</span>'
+        : '<span class="badge badge-danger">❌ drift detected</span>';
+
+      const rows = [
+        { k: 'structured_summary_equal', ok: eqStructured },
+        { k: 'promoted_facts_equal', ok: eqPromoted },
+        { k: 'score_explanation_equal', ok: eqScoreExp },
+      ].map((r) => {
+        return '<tr>'
+          + '<td class="mono">' + escapeHtml(r.k) + '</td>'
+          + '<td>'
+          +   '<span class="mono" style="margin-right:0.5rem;">' + escapeHtml(String(Boolean(r.ok))) + '</span>'
+          +   (r.ok ? '<span class="badge badge-success">match</span>' : '<span class="badge badge-danger">DIFF</span>')
+          + '</td>'
+          + '</tr>';
+      }).join('');
+
+      const warning = okAll
+        ? ''
+        : ('<div style="margin-top:0.75rem; padding:0.6rem 0.7rem; border:1px solid #feb2b2; background:#fff5f5; border-radius:8px;">'
+            + '<div style="font-weight:700;">Warning</div>'
+            + '<div class="muted" style="margin-top:0.25rem;">Deterministic report subtrees differ between <span class="mono">/report</span> and <span class="mono">/report?narrate=1</span>. This should never happen.</div>'
+            + '</div>');
+
+      driftEl.innerHTML = ''
+        + '<div style="display:flex; gap:0.75rem; flex-wrap:wrap; align-items:baseline;">'
+        +   badge
+        +   '<span class="muted">(should remain identical)</span>'
+        + '</div>'
+        + '<table style="margin-top:0.75rem; width:100%;">'
+        +   '<thead><tr><th style="width:65%;">subtree</th><th>status</th></tr></thead>'
+        +   '<tbody>' + rows + '</tbody>'
+        + '</table>'
+        + warning;
+
+      if (overlayDriftEl) overlayDriftEl.innerHTML = driftEl.innerHTML;
+      if (overlayDriftTopEl) overlayDriftTopEl.innerHTML = driftEl.innerHTML;
+
+      const parsed = readNarrationFromApiPayload(narr);
+      const narration = parsed ? parsed.narration : null;
+      const err = parsed ? parsed.err : null;
+      const metaPresent = parsed ? Boolean(parsed.metaPresent) : false;
+
+      const dealId = (typeof base.deal_id === 'string' && base.deal_id.trim()) ? base.deal_id.trim() : null;
+
+      // 2) Status banner
+      const errCode = err && typeof err.code === 'string' ? err.code : null;
+      const errMsg = err && typeof err.message === 'string' ? err.message : null;
+      if (errCode) {
+        statusEl.innerHTML = ''
+          + '<div style="display:flex; gap:0.5rem; align-items:baseline; flex-wrap:wrap;">'
+          +   '<div style="font-weight:700;">Degradation status:</div>'
+          +   '<span class="badge badge-warning">' + escapeHtml(String(errCode)) + '</span>'
+          + '</div>'
+          + (errMsg ? ('<div class="muted" style="margin-top:0.35rem;">' + escapeHtml(errMsg) + '</div>') : '')
+          + (narration ? '<div class="muted" style="margin-top:0.35rem;">Narration attached.</div>' : '<div class="muted" style="margin-top:0.35rem;">Narration not attached.</div>');
+      } else if (metaPresent) {
+        statusEl.innerHTML = ''
+          + '<div style="display:flex; gap:0.5rem; align-items:baseline; flex-wrap:wrap;">'
+          +   '<div style="font-weight:700;">Degradation status:</div>'
+          +   '<span class="badge badge-success">clean</span>'
+          + '</div>'
+          + (narration ? '<div class="muted" style="margin-top:0.35rem;">Narration attached.</div>' : '<div class="muted" style="margin-top:0.35rem;">Narration not attached.</div>');
+      } else {
+        statusEl.innerHTML = ''
+          + '<div style="display:flex; gap:0.5rem; align-items:baseline; flex-wrap:wrap;">'
+          +   '<div style="font-weight:700;">Degradation status:</div>'
+          +   '<span class="badge badge-info">no guard metadata</span>'
+          + '</div>'
+          + (narration ? '<div class="muted" style="margin-top:0.35rem;">Narration attached.</div>' : '<div class="muted" style="margin-top:0.35rem;">Narration not attached.</div>');
+      }
+
+      // 3) Guard diagnostics panel (collapsible)
+      if (err && typeof err === 'object') {
+        const blockedTitles = Array.isArray(err.blocked_section_titles) ? err.blocked_section_titles : [];
+        const blockedReasons = Array.isArray(err.blocked_reasons_top3) ? err.blocked_reasons_top3 : [];
+        const violations = Array.isArray(err.violations) ? err.violations : [];
+
+        const invalidSections = (typeof err.invalid_sections === 'number') ? err.invalid_sections : null;
+        const droppedSuggestions = (typeof err.dropped_suggestions === 'number') ? err.dropped_suggestions : null;
+        const droppedInsights = (typeof err.dropped_insights === 'number') ? err.dropped_insights : null;
+
+        const metrics = [
+          { k: 'invalid_sections', v: invalidSections },
+          { k: 'dropped_suggestions', v: droppedSuggestions },
+          { k: 'dropped_insights', v: droppedInsights },
+        ].filter((x) => typeof x.v === 'number');
+
+        const metricsHtml = metrics.length
+          ? ('<div style="margin-bottom:0.5rem; display:flex; gap:0.5rem; flex-wrap:wrap;">'
+              + metrics.map((m) => '<span class="badge badge-info">' + escapeHtml(String(m.k)) + ': ' + escapeHtml(String(m.v)) + '</span>').join('')
+              + '</div>')
+          : '';
+
+        const list = (items) => {
+          if (!items || items.length === 0) return '<div class="muted">(none)</div>';
+          return '<ul style="margin:0.35rem 0 0; padding-left: 1.1rem;">'
+            + items.slice(0, 30).map((t) => '<li>' + escapeHtml(String(t)) + '</li>').join('')
+            + (items.length > 30 ? ('<li class="muted">…+' + escapeHtml(String(items.length - 30)) + '</li>') : '')
+            + '</ul>';
+        };
+
+        const violationRows = violations.slice(0, 10).map((v) => {
+          const c = v && typeof v.code === 'string' ? v.code : 'unknown';
+          const p = v && typeof v.path === 'string' ? v.path : '';
+          const m = v && typeof v.message === 'string' ? v.message : '';
+          return '<tr>'
+            + '<td class="mono" style="vertical-align:top;">' + escapeHtml(String(c)) + '</td>'
+            + '<td class="mono" style="vertical-align:top;">' + escapeHtml(String(p)) + '</td>'
+            + '<td style="vertical-align:top;">' + escapeHtml(String(m)) + '</td>'
+            + '</tr>';
+        }).join('');
+
+        const violationsTable = violations.length
+          ? ('<table style="margin-top:0.5rem; width:100%;">'
+              + '<thead><tr><th style="width:22%;">code</th><th style="width:28%;">path</th><th>message</th></tr></thead>'
+              + '<tbody>' + violationRows + '</tbody>'
+              + '</table>'
+              + (violations.length > 10 ? ('<div class="muted" style="margin-top:0.35rem;">Showing first 10 of ' + escapeHtml(String(violations.length)) + ' violations.</div>') : ''))
+          : '<div class="muted">No violations.</div>';
+
+        guardEl.innerHTML = ''
+          + metricsHtml
+          + '<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0.75rem;">'
+          +   '<div>'
+          +     '<div class="muted" style="font-weight:600;">blocked_section_titles</div>'
+          +     list(blockedTitles)
+          +   '</div>'
+          +   '<div>'
+          +     '<div class="muted" style="font-weight:600;">blocked_reasons_top3</div>'
+          +     list(blockedReasons)
+          +   '</div>'
+          + '</div>'
+          + '<div style="margin-top:0.75rem;">'
+          +   '<div class="muted" style="font-weight:600;">violations (code | path | message)</div>'
+          +   violationsTable
+          + '</div>';
+      } else {
+        guardEl.innerHTML = '<div class="muted">No guard diagnostics available.</div>';
+      }
+
+      const badgeEvidenceBasis = (basis) => {
+        return String(basis || '') === 'no_evidence'
+          ? '<span class="badge badge-warning">no_evidence</span>'
+          : '<span class="badge badge-success">cited</span>';
+      };
+
+      const badgeTier = (tier) => {
+        const t = String(tier || '').toLowerCase();
+        if (t === 'implication') return '<span class="badge badge-info">implication</span>';
+        if (t === 'hypothesis') return '<span class="badge badge-warning">hypothesis</span>';
+        if (t === 'restatement') return '<span class="badge badge-success">restatement</span>';
+        return '<span class="badge badge-info">' + escapeHtml(String(tier || 'unknown')) + '</span>';
+      };
+
+      const badgeConfidence = (conf) => {
+        const c = String(conf || '').toLowerCase();
+        if (c === 'high') return '<span class="badge badge-success">high</span>';
+        if (c === 'medium') return '<span class="badge badge-info">medium</span>';
+        if (c === 'low') return '<span class="badge badge-warning">low</span>';
+        return '<span class="badge badge-info">' + escapeHtml(String(conf || 'unknown')) + '</span>';
+      };
+
+      const renderDecisionTrigger = (wcm) => {
+        const s = typeof wcm === 'string' ? wcm.trim() : '';
+        return '<div class="muted" style="margin-top:0.35rem;"><em>Decision trigger:</em> ' + escapeHtml(s || '(missing)') + '</div>';
+      };
+
+      const renderCitationsTable = (refs) => {
+        const cs = Array.isArray(refs) ? refs.filter((x) => x && typeof x === 'object') : [];
+        if (cs.length === 0) return '<div class="muted" style="margin-top:0.35rem;">No citations</div>';
+        const rows = cs.slice(0, 50).map((c) => {
+          const page = (c && typeof c.page === 'number' && Number.isFinite(c.page)) ? String(c.page) : '-';
+          const slide = (c && typeof c.slide_title === 'string' && c.slide_title.trim()) ? c.slide_title.trim() : '-';
+          const eid = (c && typeof c.evidence_id === 'string' && c.evidence_id.trim()) ? c.evidence_id.trim() : '-';
+          return '<tr>'
+            + '<td class="mono">' + escapeHtml(page) + '</td>'
+            + '<td>' + escapeHtml(slide) + '</td>'
+            + '<td class="mono">' + escapeHtml(eid) + '</td>'
+            + '</tr>';
+        }).join('');
+        return ''
+          + '<table style="margin-top:0.5rem; width:100%;">'
+          + '<thead><tr><th style="width:12%;">page</th><th style="width:44%;">slide_title</th><th>evidence_id</th></tr></thead>'
+          + '<tbody>' + rows + '</tbody>'
+          + '</table>'
+          + (cs.length > 50 ? ('<div class="muted" style="margin-top:0.35rem;">…and ' + escapeHtml(String(cs.length - 50)) + ' more</div>') : '');
+      };
+
+      // 4) LLM content rendering + raw JSON
+      if (!narration || typeof narration !== 'object') {
+        if (!err) {
+          deterministicLlmExportTarget = { code: 'no_narration_and_no_error_metadata' };
+          deterministicLlmExportFilename = (dealId ? ('llm_narration_v1_error.' + dealId + '.json') : 'llm_narration_v1_error.json');
+          parsedEl.innerHTML = '<div class="badge badge-warning">Narration not attached</div><div class="muted" style="margin-top:0.35rem;">Narration not attached and no guard metadata provided.</div>';
+          rawEl.textContent = 'null';
+          return;
+        }
+
+        deterministicLlmExportTarget = err;
+        deterministicLlmExportFilename = (dealId ? ('llm_narration_v1_error.' + dealId + '.json') : 'llm_narration_v1_error.json');
+        parsedEl.innerHTML = '<div class="badge badge-warning">Narration not attached</div>';
+        rawEl.textContent = 'null';
+      } else {
+        deterministicLlmExportTarget = narration;
+        deterministicLlmExportFilename = (dealId ? ('llm_narration_v1.' + dealId + '.json') : 'llm_narration_v1.json');
+
+        const summary = typeof narration.summary === 'string' ? narration.summary.trim() : '';
+        const insights = Array.isArray(narration.insights) ? narration.insights : [];
+        const sections = Array.isArray(narration.sections) ? narration.sections : [];
+        const suggestions = narration.suggestions && typeof narration.suggestions === 'object' ? narration.suggestions : null;
+        const gaps = suggestions && Array.isArray(suggestions.gaps) ? suggestions.gaps : [];
+        const questions = suggestions && Array.isArray(suggestions.questions) ? suggestions.questions : [];
+
+        const renderInsight = (ins) => {
+          const title = ins && typeof ins.title === 'string' ? ins.title : 'Insight';
+          const claim = ins && typeof ins.claim === 'string' ? ins.claim : '';
+          const tier = ins && typeof ins.tier === 'string' ? ins.tier : '';
+          const confidence = ins && typeof ins.confidence === 'string' ? ins.confidence : '';
+          const evidenceBasis = ins && typeof ins.evidence_basis === 'string' ? ins.evidence_basis : '';
+          const basis = ins && Array.isArray(ins.basis) ? ins.basis : [];
+          const wcm = ins && typeof ins.what_would_change_my_mind === 'string' ? ins.what_would_change_my_mind : '';
+          return ''
+            + '<div style="border-top: 1px solid #e2e8f0; padding-top:0.75rem; margin-top:0.75rem;">'
+            +   '<h4 style="margin:0;">' + escapeHtml(title) + '</h4>'
+            +   '<div style="margin-top:0.4rem; display:flex; gap:0.5rem; flex-wrap:wrap; align-items:center;">'
+            +     badgeTier(tier)
+            +     badgeConfidence(confidence)
+            +     badgeEvidenceBasis(evidenceBasis)
+            +   '</div>'
+            +   '<div style="margin-top:0.5rem; white-space:pre-wrap; word-break:break-word;">' + escapeHtml(claim || '-') + '</div>'
+            +   renderDecisionTrigger(wcm)
+            +   renderCitationsTable(basis)
+            + '</div>';
+        };
+
+        const byTier = {
+          implication: insights.filter((x) => x && x.tier === 'implication'),
+          hypothesis: insights.filter((x) => x && x.tier === 'hypothesis'),
+          restatement: insights.filter((x) => x && x.tier === 'restatement'),
+        };
+
+        const renderInsightGroup = (title, items, noteHtml) => {
+          if (!items || items.length === 0) return '';
+          return ''
+            + '<div style="margin-top:0.75rem;">'
+            +   '<h3 style="margin:0;">' + escapeHtml(title) + '</h3>'
+            +   (noteHtml || '')
+            +   items.map(renderInsight).join('')
+            + '</div>';
+        };
+
+        const renderSection = (s, idx) => {
+          const title = (s && typeof s.title === 'string') ? s.title : ('Section ' + (idx + 1));
+          const body = (s && typeof s.body === 'string') ? s.body : '';
+          const evidenceBasis = (s && typeof s.evidence_basis === 'string') ? s.evidence_basis : 'cited';
+          const citations = (s && Array.isArray(s.citations)) ? s.citations : [];
+          const wcm = (s && typeof s.what_would_change_my_mind === 'string') ? s.what_would_change_my_mind : '';
+          return ''
+            + '<div style="border-top: 1px solid #e2e8f0; padding-top:0.75rem; margin-top:0.75rem;">'
+            +   '<div style="display:flex; gap:0.75rem; align-items:baseline; flex-wrap:wrap;">'
+            +     '<h3 style="margin:0;">' + escapeHtml(title) + '</h3>'
+            +     badgeEvidenceBasis(evidenceBasis)
+            +   '</div>'
+            +   '<div style="margin-top:0.5rem; white-space:pre-wrap; word-break:break-word;">' + escapeHtml(body || '-') + '</div>'
+            +   renderDecisionTrigger(wcm)
+            +   renderCitationsTable(citations)
+            + '</div>';
+        };
+
+        const gapsHtml = gaps.length
+          ? ('<ul style="margin:0.35rem 0 0; padding-left: 1.1rem;">'
+              + gaps.map((g) => {
+                const key = g && typeof g.key === 'string' ? g.key : '';
+                const rationale = g && typeof g.rationale === 'string' ? g.rationale : '';
+                return '<li><span class="mono">' + escapeHtml(key || '-') + '</span>'
+                  + (rationale ? (': ' + escapeHtml(rationale)) : '')
+                  + '</li>';
+              }).join('')
+              + '</ul>')
+          : '<div class="muted">(none)</div>';
+
+        const questionsHtml = questions.length
+          ? ('<ul style="margin:0.35rem 0 0; padding-left: 1.1rem;">'
+              + questions.map((q) => '<li>' + escapeHtml(String(q)) + '</li>').join('')
+              + '</ul>')
+          : '<div class="muted">(none)</div>';
+
+        parsedEl.innerHTML = ''
+          + '<div>'
+          +   '<h3 style="margin:0;">Summary</h3>'
+          +   '<div style="margin-top:0.5rem; white-space:pre-wrap; word-break:break-word;">' + escapeHtml(summary || '-') + '</div>'
+          + '</div>'
+          + (insights && insights.length > 0
+              ? ('<div style="margin-top:1rem;">'
+                  + '<h3 style="margin:0;">Insights</h3>'
+                  + renderInsightGroup('Implications', byTier.implication, '')
+                  + renderInsightGroup('Hypotheses', byTier.hypothesis, '<div class="muted" style="margin-top:0.35rem;">Hypotheses are uncertainty-marked and may be uncited; they are NOT facts.</div>')
+                  + renderInsightGroup('Restatements', byTier.restatement, '')
+                + '</div>')
+              : '')
+          + '<div style="margin-top:1rem;">'
+          +   '<h3 style="margin:0;">Sections</h3>'
+          +   (sections.length ? sections.map(renderSection).join('') : '<div class="muted" style="margin-top:0.35rem;">(none)</div>')
+          + '</div>'
+          + '<div style="margin-top:1rem;">'
+          +   '<h3 style="margin:0;">Suggestions</h3>'
+          +   '<div style="margin-top:0.5rem;">'
+          +     '<div style="font-weight:700;">gaps</div>'
+          +     gapsHtml
+          +   '</div>'
+          +   '<div style="margin-top:0.75rem;">'
+          +     '<div style="font-weight:700;">questions</div>'
+          +     questionsHtml
+          +   '</div>'
+          + '</div>';
+
+        rawEl.textContent = JSON.stringify(narration ?? null, null, 2);
+      }
+
+      // Wire Copy/Download buttons.
+      try {
+        const copyBtn = document.getElementById('deterministic-llm-copy-btn');
+        const dlBtn = document.getElementById('deterministic-llm-download-btn');
+        if (copyBtn && !copyBtn.dataset.bound) {
+          copyBtn.dataset.bound = '1';
+          copyBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            const ok = await copyJsonObject(deterministicLlmExportTarget);
+            if (!ok) alert('Copy failed.');
+          });
+        }
+        if (dlBtn && !dlBtn.dataset.bound) {
+          dlBtn.dataset.bound = '1';
+          dlBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            downloadJsonObject(deterministicLlmExportTarget, deterministicLlmExportFilename || 'export.json');
+          });
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    const WORKSPACE_MIRROR_BANNED_FLUFF_PHRASES = [
+      'strong investor interest',
+      'capitalizing on',
+      'growing market',
+      'strategic positioning',
+      'enhancing market reach',
+      'crucial for scaling',
+      'reflecting optimism',
+    ];
+
+    function toFiniteNumber(v) {
+      return (typeof v === 'number' && Number.isFinite(v)) ? v : null;
+    }
+
+    function firstNonEmptyString(xs) {
+      const items = Array.isArray(xs) ? xs : [];
+      for (const v of items) {
+        if (typeof v === 'string' && v.trim()) return v.trim();
+      }
+      return null;
+    }
+
+    function unwrapReportEnvelope(payload) {
+      if (!payload || typeof payload !== 'object') return null;
+      const hasNested = payload.report && typeof payload.report === 'object';
+      if (hasNested && !payload.structured_summary && !payload.metadata) return payload.report;
+      return payload;
+    }
+
+    function getReportObjFromAny(payload) {
+      const unwrapped = unwrapReportEnvelope(payload);
+      if (!unwrapped || typeof unwrapped !== 'object') return null;
+      if (unwrapped.report && typeof unwrapped.report === 'object') return unwrapped.report;
+      return unwrapped;
+    }
+
+    function stripBannedFluffPhrases(text) {
+      if (typeof text !== 'string') return '';
+      let out = text;
+      for (const phrase of WORKSPACE_MIRROR_BANNED_FLUFF_PHRASES) {
+        try {
+          const re = new RegExp(phrase.replace(/[.*+?^{}$()|[\]\\]/g, '\\$&'), 'ig');
+          out = out.replace(re, '');
+        } catch {
+          // ignore
+        }
+      }
+      // NOTE: this code is emitted inside a server-side template string; regex backslashes must be double-escaped.
+      return out.replace(/\\s+/g, ' ').replace(/\\s+([,.;:!?])/g, '$1').trim();
+    }
+
+    function takeSentences(text, maxSentences) {
+      const t = typeof text === 'string' ? text.trim() : '';
+      if (!t) return [];
+      const matches = t.match(/[^.!?]+[.!?]+|[^.!?]+$/g);
+      const parts = (matches && Array.isArray(matches) ? matches : [t])
+        .map((s) => String(s || '').trim())
+        .filter(Boolean);
+      return parts.slice(0, Math.max(0, maxSentences || 0));
+    }
+
+    function composeGovernedInvestmentOverview(narration) {
+      if (!narration || typeof narration !== 'object') return '';
+
+      const insights = Array.isArray(narration.insights) ? narration.insights : [];
+      const sections = Array.isArray(narration.sections) ? narration.sections : [];
+
+      const tierKey = (it) => {
+        const t = it && typeof it.tier === 'string'
+          ? it.tier
+          : (it && it.tier && typeof it.tier === 'object' ? (typeof it.tier.key === 'string' ? it.tier.key : null) : null);
+        return typeof t === 'string' ? t : null;
+      };
+
+      const implicationTexts = insights
+        .filter((it) => tierKey(it) === 'implication')
+        .map((it) => (it && typeof it.text === 'string' ? it.text.trim() : ''))
+        .filter(Boolean)
+        .slice(0, 3);
+
+      const sectionBodies = sections
+        .map((s) => (s && typeof s.body === 'string' ? s.body.trim() : ''))
+        .filter(Boolean)
+        .slice(0, 2);
+
+      const candidates = [];
+      for (const imp of implicationTexts) candidates.push(...takeSentences(imp, 1));
+      for (const body of sectionBodies) candidates.push(...takeSentences(body, 1));
+
+      const cleaned = candidates
+        .map(stripBannedFluffPhrases)
+        .map((s) => s.replace(/\\s+/g, ' ').trim())
+        .filter(Boolean);
+
+      const uniq = [];
+      const seen = new Set();
+      for (const s of cleaned) {
+        const key = s.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        uniq.push(s);
+      }
+
+      return uniq.slice(0, 4).join(' ');
+    }
+
+    function buildWorkspaceMirrorModel(deterministicReport, narratedReport, deterministicDeal) {
+      const detPayload = getReportObjFromAny(deterministicReport);
+      const detReport = detPayload && detPayload.report && typeof detPayload.report === 'object' ? detPayload.report : detPayload;
+      const detWrapper = (deterministicReport && typeof deterministicReport === 'object') ? deterministicReport : null;
+
+      const dealFromApi = (deterministicDeal && typeof deterministicDeal === 'object' && deterministicDeal.deal && typeof deterministicDeal.deal === 'object')
+        ? deterministicDeal.deal
+        : deterministicDeal;
+      const ui = dealFromApi && typeof dealFromApi.ui === 'object' ? dealFromApi.ui : null;
+
+      // NOTE: this code is emitted inside a server-side template string; regex backslashes must be double-escaped.
+      const isProbablyOcrJunk = (value) => {
+        if (typeof value !== 'string') return true;
+        const s = value.replace(/[\\u0000-\\u001F\\u007F]+/g, ' ').replace(/\s+/g, ' ').trim();
+        if (!s) return true;
+        if (/[\uFFFD�]/.test(s)) return true;
+        if (/[@#%*=^~\\x60|\\\\]{2,}/.test(s)) return true;
+        if (/([!?.,:;])\\1{2,}/.test(s)) return true;
+        const noSpace = s.replace(/\s+/g, '');
+        const letters = (noSpace.match(/[A-Za-z]/g) ?? []).length;
+        const symbols = (noSpace.match(/[^A-Za-z0-9]/g) ?? []).length;
+        if (noSpace.length >= 20) {
+          const letterRatio = letters / noSpace.length;
+          const symbolRatio = symbols / noSpace.length;
+          if (letterRatio < 0.35) return true;
+          if (symbolRatio > 0.55) return true;
+        }
+        return false;
+      };
+
+      const safeText = (value) => {
+        if (typeof value !== 'string') return '';
+        const s = value.replace(/\s+/g, ' ').trim();
+        if (!s) return '';
+        if (isProbablyOcrJunk(s)) return '';
+        return s;
+      };
+
+      const safeLines = (lines) => {
+        const xs = Array.isArray(lines) ? lines : [];
+        return xs
+          .filter((x) => typeof x === 'string')
+          .map((x) => String(x || '').replace(/\s+/g, ' ').trim())
+          .filter((x) => x.length > 0);
+      };
+
+      const scoreToWorkspaceDecision = (score) => {
+        if (typeof score !== 'number' || !Number.isFinite(score)) return 'PASS';
+        if (score >= 70) return 'FUND';
+        if (score >= 55) return 'CONSIDER';
+        return 'PASS';
+      };
+
+      const overviewV2 = ui ? (ui.overviewV2 ?? ui.dealOverviewV2) : null;
+      const dealSummaryV2 = ui ? ui.dealSummaryV2 : null;
+      const executiveSummaryV2 = ui ? ui.executiveSummaryV2 : null;
+      const executiveSummaryV1 = ui ? ui.executiveSummary : null;
+
+      // Canonical deal_summary_v1 from /report.
+      const reportReady = Boolean(detReport && typeof detReport === 'object' && detReport.ready === true);
+      const canonicalDealSummaryV1 = reportReady
+        ? (detReport && typeof detReport.deal_summary === 'object' ? detReport.deal_summary : null)
+        : null;
+      const canonicalDealSummaryReady = Boolean(canonicalDealSummaryV1 && typeof canonicalDealSummaryV1 === 'object' && canonicalDealSummaryV1.ready === true);
+      const canonicalTiers = canonicalDealSummaryReady && canonicalDealSummaryV1 && canonicalDealSummaryV1.tiers && typeof canonicalDealSummaryV1.tiers === 'object'
+        ? canonicalDealSummaryV1.tiers
+        : null;
+
+      const canonicalTierHero = canonicalDealSummaryReady ? safeText(canonicalTiers ? canonicalTiers.hero : '') : '';
+      const canonicalTierOverview = canonicalDealSummaryReady ? safeText(canonicalTiers ? canonicalTiers.overview : '') : '';
+      const canonicalTierDeep = canonicalDealSummaryReady ? safeText(canonicalTiers ? canonicalTiers.deep : '') : '';
+
+      const canonicalDealOneLiner = canonicalDealSummaryReady ? safeText(canonicalDealSummaryV1 && canonicalDealSummaryV1.one_liner ? canonicalDealSummaryV1.one_liner.text : '') : '';
+      const canonicalProduct = canonicalDealSummaryReady ? safeText(canonicalDealSummaryV1 && canonicalDealSummaryV1.product ? canonicalDealSummaryV1.product.text : '') : '';
+      const canonicalMarket = canonicalDealSummaryReady ? safeText(canonicalDealSummaryV1 && canonicalDealSummaryV1.market ? canonicalDealSummaryV1.market.text : '') : '';
+
+      const canonicalParagraphs = canonicalDealSummaryReady && canonicalDealSummaryV1 && Array.isArray(canonicalDealSummaryV1.paragraphs)
+        ? canonicalDealSummaryV1.paragraphs
+            .map((p) => safeText(p && typeof p === 'object' ? p.text : p))
+            .filter((s) => s.length > 0)
+            .slice(0, 6)
+        : [];
+
+      const overviewDealOneLiner = (() => {
+        const v2Summary = dealSummaryV2 ? dealSummaryV2.summary : null;
+        if (v2Summary && typeof v2Summary === 'object') {
+          const one = safeText(v2Summary.one_liner);
+          if (one) return one;
+        }
+        if (typeof v2Summary === 'string') {
+          const s = safeText(v2Summary);
+          if (s) return s;
+        }
+        const v1One = safeText(executiveSummaryV1 ? executiveSummaryV1.one_liner : null);
+        if (v1One) return v1One;
+        if (executiveSummaryV2 && Array.isArray(executiveSummaryV2.highlights)) {
+          const first = executiveSummaryV2.highlights.find((h) => typeof h === 'string' && h.trim().length > 0);
+          const s = safeText(first);
+          if (s) return s;
+        }
+        if (v2Summary && typeof v2Summary === 'object') {
+          const paras = Array.isArray(v2Summary.paragraphs) ? v2Summary.paragraphs : [];
+          const firstPara = safeText(paras.find((p) => typeof p === 'string' && p.trim().length > 0));
+          if (firstPara) return firstPara;
+        }
+        if (executiveSummaryV2 && Array.isArray(executiveSummaryV2.paragraphs)) {
+          const p = executiveSummaryV2.paragraphs.find((x) => typeof x === 'string' && x.trim().length > 0);
+          const s = safeText(p);
+          if (s) return s;
+        }
+        const v1 = safeText(executiveSummaryV1 ? executiveSummaryV1.summary : null);
+        if (v1) return v1;
+        return 'Run analysis to generate a deal summary.';
+      })();
+
+      const overviewProduct =
+        safeText(overviewV2 ? overviewV2.product_solution : null) ||
+        safeText(executiveSummaryV2 ? executiveSummaryV2.product_solution : null) ||
+        safeText(executiveSummaryV1 ? executiveSummaryV1.product_solution : null) ||
+        '—';
+      const overviewMarketIcp =
+        safeText(overviewV2 ? overviewV2.market_icp : null) ||
+        safeText(executiveSummaryV2 ? executiveSummaryV2.market_icp : null) ||
+        safeText(executiveSummaryV1 ? executiveSummaryV1.market_icp : null) ||
+        '—';
+      const overviewBusinessModel =
+        safeText(overviewV2 ? overviewV2.business_model : null) ||
+        safeText(executiveSummaryV2 ? executiveSummaryV2.business_model : null) ||
+        safeText(executiveSummaryV1 ? executiveSummaryV1.business_model : null) ||
+        '—';
+      const overviewRaiseTerms =
+        safeText(overviewV2 ? overviewV2.raise : null) ||
+        safeText(executiveSummaryV2 ? executiveSummaryV2.raise : null) ||
+        safeText(executiveSummaryV1 ? executiveSummaryV1.raise : null) ||
+        '—';
+
+      const overviewDealSummaryParagraphs = (() => {
+        const out = [];
+        const v2Summary = dealSummaryV2 ? dealSummaryV2.summary : null;
+        if (v2Summary && typeof v2Summary === 'object') {
+          const paras = Array.isArray(v2Summary.paragraphs) ? v2Summary.paragraphs : [];
+          for (const p of paras) {
+            const s = safeText(p);
+            if (s) out.push(s);
+          }
+        }
+        if (out.length === 0 && executiveSummaryV2 && Array.isArray(executiveSummaryV2.paragraphs)) {
+          for (const p of executiveSummaryV2.paragraphs) {
+            const s = safeText(p);
+            if (s) out.push(s);
+          }
+        }
+        if (out.length === 0) {
+          const v1 = safeText(executiveSummaryV1 ? executiveSummaryV1.summary : null);
+          if (v1) out.push(v1);
+        }
+        return out.slice(0, 6);
+      })();
+
+      const splitTierDeepToParagraphs = (raw) => {
+        const normalized = String(raw ?? '')
+          .replace(/\\r\\n/g, '\\n')
+          .trim();
+        if (!normalized) return [];
+        return normalized
+          .split(/\\n{2,}/g)
+          .map((p) => safeText(p))
+          .filter((p) => p.length > 0)
+          .slice(0, 6);
+      };
+
+      const overviewDealOneLinerCanonical = (() => {
+        if (canonicalDealSummaryReady) {
+          if (canonicalTierOverview) return canonicalTierOverview;
+          if (canonicalDealOneLiner) return canonicalDealOneLiner;
+        }
+        return overviewDealOneLiner;
+      })();
+
+      const overviewDealSummaryParagraphsCanonical = (() => {
+        if (canonicalDealSummaryReady) {
+          const fromTier = canonicalTierDeep ? splitTierDeepToParagraphs(canonicalTierDeep) : [];
+          if (fromTier.length > 0) return fromTier;
+          if (canonicalParagraphs.length > 0) return canonicalParagraphs;
+        }
+        return overviewDealSummaryParagraphs;
+      })();
+
+      const phase1Signals = dealFromApi && dealFromApi.phase1 && dealFromApi.phase1.executive_summary_v2 && dealFromApi.phase1.executive_summary_v2.signals
+        ? dealFromApi.phase1.executive_summary_v2.signals
+        : (dealFromApi && dealFromApi.executive_summary_v2 && dealFromApi.executive_summary_v2.signals ? dealFromApi.executive_summary_v2.signals : null);
+
+      const missingFromV2 = (dealFromApi && dealFromApi.phase1 && dealFromApi.phase1.executive_summary_v2 && Array.isArray(dealFromApi.phase1.executive_summary_v2.missing))
+        ? dealFromApi.phase1.executive_summary_v2.missing
+        : (dealFromApi && dealFromApi.executive_summary_v2 && Array.isArray(dealFromApi.executive_summary_v2.missing))
+          ? dealFromApi.executive_summary_v2.missing
+          : [];
+      const missingFromSignals = (phase1Signals && Array.isArray(phase1Signals.coverage_missing_sections)) ? phase1Signals.coverage_missing_sections : [];
+      const missingFromV1 = (executiveSummaryV1 && Array.isArray(executiveSummaryV1.unknowns)) ? executiveSummaryV1.unknowns : [];
+      const missingChips = (() => {
+        const xs = [...missingFromV2, ...missingFromSignals, ...missingFromV1]
+          .filter((x) => typeof x === 'string' && x.trim().length > 0)
+          .map((x) => x.trim());
+        const out = [];
+        const seen = new Set();
+        for (const x of xs) {
+          if (seen.has(x)) continue;
+          seen.add(x);
+          out.push(x);
+        }
+        return out.slice(0, 10);
+      })();
+
+      const decisionHighlightsSource = (dealFromApi && dealFromApi.phase1 && dealFromApi.phase1.executive_summary_v2 && Array.isArray(dealFromApi.phase1.executive_summary_v2.highlights))
+        ? dealFromApi.phase1.executive_summary_v2.highlights
+        : (dealFromApi && dealFromApi.executive_summary_v2 && Array.isArray(dealFromApi.executive_summary_v2.highlights))
+          ? dealFromApi.executive_summary_v2.highlights
+          : [];
+      const decisionHighlights = decisionHighlightsSource
+        .filter((h) => typeof h === 'string')
+        .map((h) => h.trim())
+        .filter((h) => h.length > 0)
+        .filter((h) => !/^Recommendation:/i.test(h))
+        .slice(0, 3);
+
+      const normalizeDecisionHighlight = (value) => {
+        if (typeof value !== 'string') return null;
+        const s = value.trim();
+        if (!s) return null;
+        const stripped = s
+          // NOTE: This code is emitted inside a server-side template literal.
+          // To ensure the browser receives regex escapes like \s, we must double-escape them here.
+          .replace(/^Product:\\s*/i, '')
+          .replace(/^ICP:\\s*/i, '')
+          .replace(/^Market:\\s*/i, '')
+          .replace(/^Raise\\s+terms:\\s*/i, '')
+          .replace(/^Business model:\\s*/i, '')
+          .replace(/^Traction:\\s*/i, '')
+          .replace(/^Risks:\\s*/i, '');
+        const out = stripped.trim();
+        if (!out) return null;
+        return out.length > 120 ? (out.slice(0, 117).trim() + '…') : out;
+      };
+
+      const decisionTileStrengthsFallback = [
+        normalizeDecisionHighlight(decisionHighlights[0]),
+        normalizeDecisionHighlight(decisionHighlights[1]),
+      ].filter((v) => typeof v === 'string' && v.trim().length > 0);
+
+      const fundamentalsScore0_100 = (() => {
+        if (dealFromApi && typeof dealFromApi.score === 'number' && Number.isFinite(dealFromApi.score)) return Math.round(dealFromApi.score);
+        if (detReport && typeof detReport.overall_score === 'number' && Number.isFinite(detReport.overall_score)) return Math.round(detReport.overall_score);
+        if (detReport && typeof detReport.overallScore === 'number' && Number.isFinite(detReport.overallScore)) return Math.round(detReport.overallScore);
+        return null;
+      })();
+
+      const decisionTileScore0_100 = fundamentalsScore0_100;
+      const decisionTileLabel = decisionTileScore0_100 != null ? scoreToWorkspaceDecision(decisionTileScore0_100) : '—';
+
+      const decisionScoreExplanation = detReport && detReport.metadata && typeof detReport.metadata === 'object' ? detReport.metadata.score_explanation : null;
+      const deterministicScoreInputsV1 = detReport && detReport.metadata && typeof detReport.metadata === 'object' ? detReport.metadata.deterministic_score_inputs_v1 : null;
+
+      const formatOpenItemLabel = (value) => {
+        if (typeof value !== 'string') return null;
+        const raw = value.trim();
+        if (!raw) return null;
+        const key = raw.toLowerCase().trim();
+        const mapped = {
+          'risk_assessment': 'risk assessment',
+          'risks': 'risk assessment',
+          'risk': 'risk assessment',
+          'roadmap': '12-month execution roadmap',
+          '12_month_roadmap': '12-month execution roadmap',
+          'twelve_month_roadmap': '12-month execution roadmap',
+          'operating_plan': '12-month operating plan',
+          'financials': 'financial performance and runway',
+          'runway': 'runway and burn profile',
+          'burn': 'burn and cash usage',
+          'unit_economics': 'unit economics',
+          'team': 'team depth and execution capacity',
+          'market': 'market sizing and ICP definition',
+          'product': 'product differentiation and roadmap',
+          'traction': 'traction and retention metrics',
+        };
+        const direct = mapped[key];
+        if (direct) return direct;
+        const human = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+        return human.length > 80 ? (human.slice(0, 77).trim() + '…') : human;
+      };
+
+      const buildIcMemoOverviewV1 = () => {
+        const safeNonEmpty = (v) => {
+          if (typeof v !== 'string') return null;
+          const s = v.trim();
+          if (!s || s === '—') return null;
+          return s;
+        };
+        const uniq = (xs) => {
+          const out = [];
+          const seen = new Set();
+          for (const x of xs) {
+            const s = typeof x === 'string' ? x.trim() : '';
+            if (!s) continue;
+            const k = s.toLowerCase();
+            if (seen.has(k)) continue;
+            seen.add(k);
+            out.push(s);
+          }
+          return out;
+        };
+        const isGenericReason = (reason) => {
+          const r = String(reason || '').trim().toLowerCase();
+          if (!r) return true;
+          if (r.includes('neutral baseline')) return true;
+          if (r.includes('missing analyzer')) return true;
+          if (r.includes('insufficient')) return true;
+          if (r.includes('failed')) return true;
+          if (r === 'analyzer score used') return true;
+          if (r === 'neutral baseline used') return true;
+          return false;
+        };
+
+        const product = safeNonEmpty(canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : overviewProduct);
+        const market = safeNonEmpty(canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : overviewMarketIcp);
+        const businessModel = safeNonEmpty(overviewBusinessModel);
+        const raise = safeNonEmpty(overviewRaiseTerms);
+
+        const kpis = (deterministicScoreInputsV1 && Array.isArray(deterministicScoreInputsV1.kpis))
+          ? deterministicScoreInputsV1.kpis
+          : [];
+        const kpiByKey = new Map(
+          kpis
+            .filter((k) => k && typeof k === 'object' && typeof k.key === 'string')
+            .map((k) => [k.key, k])
+        );
+
+        const kpiLine = (key, kind) => {
+          const k = kpiByKey.get(key);
+          if (!k) return null;
+          const valueRaw = safeNonEmpty(k.value_raw);
+          const conf = typeof k.confidence === 'number' && Number.isFinite(k.confidence) ? k.confidence : 0;
+          const sources = Array.isArray(k.sources) ? k.sources : [];
+          if (!valueRaw) return null;
+          if (!(conf >= 0.55) || sources.length === 0) return null;
+          if (kind === 'revenue') return 'Revenue KPI extracted: ' + valueRaw + '.';
+          if (kind === 'customers') return 'Customer KPI extracted: ' + valueRaw + '.';
+          return 'Growth KPI extracted: ' + valueRaw + '.';
+        };
+
+        const snapshotSentences = [];
+        if (product && market) snapshotSentences.push('Company sells ' + product + ' and targets ' + market + '.');
+        else if (product) snapshotSentences.push('Company sells ' + product + '.');
+        else if (market) snapshotSentences.push('Target market / ICP: ' + market + '.');
+        if (businessModel) snapshotSentences.push('Business model: ' + businessModel + '.');
+        if (raise) snapshotSentences.push('Raise / terms: ' + raise + '.');
+
+        const kpiSentences = uniq([
+          kpiLine('revenue', 'revenue'),
+          kpiLine('growth', 'growth'),
+          kpiLine('customers', 'customers'),
+        ]);
+        snapshotSentences.push(...kpiSentences);
+
+        const snapshot = snapshotSentences.filter((s) => s.length > 0).slice(0, 4).join(' ');
+
+        const supports = [];
+        if (product) supports.push('Product is explicitly described: ' + product + '.');
+        if (market) supports.push('Target market / ICP is explicitly described: ' + market + '.');
+        if (businessModel) supports.push('Business model is stated: ' + businessModel + '.');
+        if (raise) supports.push('Raise / terms are stated: ' + raise + '.');
+
+        const compsObj = (decisionScoreExplanation && typeof decisionScoreExplanation === 'object' && decisionScoreExplanation.components && typeof decisionScoreExplanation.components === 'object')
+          ? decisionScoreExplanation.components
+          : null;
+        const pushReason = (key) => {
+          const r = safeNonEmpty(compsObj && compsObj[key] ? compsObj[key].reason : null);
+          if (!r || isGenericReason(r)) return;
+          supports.push(r);
+        };
+        if (compsObj) {
+          pushReason('financial_health');
+          pushReason('risk_assessment');
+        }
+
+        const diligence = [];
+        const understanding = decisionScoreExplanation && typeof decisionScoreExplanation === 'object' ? decisionScoreExplanation.understanding_v1 : null;
+        const understandingItems = Array.isArray(understanding && understanding.diligence_open_items)
+          ? understanding.diligence_open_items
+              .map((i) => safeNonEmpty(i && typeof i === 'object' ? i.text : null))
+              .filter((v) => typeof v === 'string' && v.trim().length > 0)
+          : [];
+        diligence.push(...understandingItems);
+
+        diligence.push(
+          ...missingChips
+            .map(formatOpenItemLabel)
+            .filter((v) => typeof v === 'string' && v.trim().length > 0)
+        );
+
+        const drift = safeNonEmpty(deterministicScoreInputsV1 && deterministicScoreInputsV1.deck ? deterministicScoreInputsV1.deck.drift_assessment : null);
+        if (drift && drift !== 'aligned' && drift !== 'mostly_aligned') {
+          diligence.push("Deck/story drift flagged as '" + drift + "': confirm core investor questions are explicitly covered (problem, solution, market, traction, team, financials).");
+        }
+        const overrideRatio = (deterministicScoreInputsV1 && deterministicScoreInputsV1.segments && typeof deterministicScoreInputsV1.segments.override_ratio === 'number' && Number.isFinite(deterministicScoreInputsV1.segments.override_ratio))
+          ? deterministicScoreInputsV1.segments.override_ratio
+          : null;
+        if (overrideRatio != null && overrideRatio >= 0.2) {
+          diligence.push('Extraction required many segment overrides (' + String(Math.round(overrideRatio * 100)) + '%): confirm key numbers directly from primary financial tables.');
+        }
+
+        const kpiNeedsConfirm = (key, label) => {
+          const k = kpiByKey.get(key);
+          const conf = typeof (k && k.confidence) === 'number' && Number.isFinite(k.confidence) ? k.confidence : 0;
+          const valueRaw = safeNonEmpty(k ? k.value_raw : null);
+          const hasSources = Boolean(k && Array.isArray(k.sources) && k.sources.length > 0);
+          if (!valueRaw || !hasSources || conf < 0.55) {
+            diligence.push('Confirm ' + label + ' from multi-year financial tables (and document basis: cash vs accrual).');
+          }
+        };
+        kpiNeedsConfirm('revenue', 'revenue');
+        kpiNeedsConfirm('growth', 'growth');
+
+        const adjustment = (decisionScoreExplanation && decisionScoreExplanation.totals && typeof decisionScoreExplanation.totals.adjustment_factor === 'number' && Number.isFinite(decisionScoreExplanation.totals.adjustment_factor))
+          ? decisionScoreExplanation.totals.adjustment_factor
+          : null;
+        const pinned = Boolean(decisionScoreExplanation && decisionScoreExplanation.totals && decisionScoreExplanation.totals.unadjusted_pinned);
+        if (pinned) {
+          const missing = (decisionScoreExplanation && decisionScoreExplanation.totals && Array.isArray(decisionScoreExplanation.totals.unadjusted_missing_inputs))
+            ? decisionScoreExplanation.totals.unadjusted_missing_inputs
+            : [];
+          if (missing.length > 0) {
+            diligence.push('Score pinned to baseline (50) until missing inputs are filled: ' + missing.slice(0, 6).join('; ') + '.');
+          }
+        } else if (adjustment != null && adjustment < 0.4) {
+          diligence.push('Evidence coverage is limited, so the score is blended toward neutral; add benchmarkable KPIs and runway inputs to increase conviction.');
+        }
+
+        const warningStrings = (decisionScoreExplanation && decisionScoreExplanation.totals && Array.isArray(decisionScoreExplanation.totals.warnings))
+          ? decisionScoreExplanation.totals.warnings
+              .map((w) => safeNonEmpty(w))
+              .filter((v) => typeof v === 'string' && v.trim().length > 0)
+          : [];
+        for (const w of warningStrings.slice(0, 6)) {
+          diligence.push('Diagnostic warning: ' + w + '.');
+        }
+
+        const score0_100 = decisionTileScore0_100;
+        const scoreBand = score0_100 == null ? 'unknown' : (score0_100 >= 70 ? 'positive' : (score0_100 <= 40 ? 'negative' : 'neutral'));
+        const scoreRationale = (() => {
+          if (decisionTileLabel === '—' || score0_100 == null) {
+            return 'Recommendation pending: score will appear once sufficient information is available.';
+          }
+
+          const totals = decisionScoreExplanation ? decisionScoreExplanation.totals : null;
+          const coverageRatio = (totals && typeof totals.coverage_ratio === 'number' && Number.isFinite(totals.coverage_ratio)) ? totals.coverage_ratio : null;
+          const dueDiligenceFactor = (totals && typeof totals.due_diligence_factor === 'number' && Number.isFinite(totals.due_diligence_factor)) ? totals.due_diligence_factor : null;
+
+          const driverReasons = (() => {
+            if (!compsObj) return [];
+            return uniq([
+              safeNonEmpty(compsObj && compsObj.financial_health ? compsObj.financial_health.reason : null),
+              safeNonEmpty(compsObj && compsObj.risk_assessment ? compsObj.risk_assessment.reason : null),
+            ]).filter((r) => !isGenericReason(r));
+          })();
+          const driverSentence = driverReasons.length > 0
+            ? ('Key drivers: ' + driverReasons.slice(0, 2).join(' ') + '.')
+            : null;
+
+          if (pinned) {
+            return uniq([
+              'Score rationale: ' + decisionTileLabel + ' (' + String(score0_100) + '/100). The system held the score at the neutral baseline (50) because score-bearing evidence was not usable; fill the open items to move off baseline.',
+              driverSentence,
+            ]).join(' ');
+          }
+          if (scoreBand === 'neutral') {
+            const parts = ['Score rationale: ' + decisionTileLabel + ' (' + String(score0_100) + '/100).'];
+            parts.push('The score is near-neutral because evidence/verification coverage is limited and the system blends toward baseline rather than over-weighting sparse signals.');
+            if (coverageRatio != null) parts.push('Coverage ratio=' + coverageRatio.toFixed(2) + '.');
+            if (dueDiligenceFactor != null) parts.push('Due diligence readiness=' + dueDiligenceFactor.toFixed(2) + '.');
+            if (driverSentence) parts.push(driverSentence);
+            return parts.join(' ');
+          }
+
+          return uniq([
+            'Score rationale: ' + decisionTileLabel + ' (' + String(score0_100) + '/100). The score reflects the available extracted fundamentals and risk signals; review the diligence items for what would change conviction.',
+            driverSentence,
+          ]).join(' ');
+        })();
+
+        return {
+          snapshot: snapshot || 'Company snapshot is pending: structured facts were not extracted from the materials.',
+          supportsProceeding: uniq(supports).slice(0, 6),
+          diligenceItems: uniq(diligence).slice(0, 12),
+          scoreRationale,
+        };
+      };
+
+      const icMemo = buildIcMemoOverviewV1();
+      const decisionTileOpenItemsAll = (icMemo && Array.isArray(icMemo.diligenceItems) ? icMemo.diligenceItems : []).filter((v) => typeof v === 'string' && v.trim().length > 0);
+      const decisionTileStrengths = (icMemo && Array.isArray(icMemo.supportsProceeding) && icMemo.supportsProceeding.length > 0)
+        ? icMemo.supportsProceeding
+        : decisionTileStrengthsFallback;
+      const decisionTileRationale = (() => {
+        if (decisionTileLabel === '—' || decisionTileScore0_100 == null) {
+          return 'Recommendation pending. Score will appear once sufficient information is available.';
+        }
+        const snap = icMemo ? icMemo.snapshot : '';
+        const rationale = icMemo ? icMemo.scoreRationale : '';
+        return (String(snap || '') + ' ' + String(rationale || '')).trim();
+      })();
+
+      // Top "Hero strip" text in the Web App prefers canonical tier hero/one-liner; otherwise uses the Executive Summary section.
+      const sections = (detReport && Array.isArray(detReport.sections)) ? detReport.sections : [];
+      const executiveSummaryFromReport = (() => {
+        const byId = sections.find((s) => typeof (s && s.id) === 'string' && ['executive-summary', 'executive_summary', 'executiveSummary'].includes(s.id));
+        const byTitle = sections.find((s) => typeof (s && s.title) === 'string' && /executive\s+summary/i.test(s.title));
+        const content = safeText((byId || byTitle) ? (byId || byTitle).content : null);
+        return content || null;
+      })();
+      const topSectionDealSummary = safeText(executiveSummaryV1 ? executiveSummaryV1.summary : null)
+        || safeText(executiveSummaryV2 && Array.isArray(executiveSummaryV2.paragraphs) ? executiveSummaryV2.paragraphs[0] : null)
+        || null;
+      const legacySummary = executiveSummaryFromReport ?? topSectionDealSummary;
+      const canonicalTopSummary = canonicalDealSummaryReady ? (canonicalTierHero || canonicalDealOneLiner) : '';
+      const heroStripText = (canonicalTopSummary || legacySummary || '').trim();
+
+      const deepExpandedText = (() => {
+        const cleaned = safeLines(overviewDealSummaryParagraphsCanonical);
+        return cleaned.join(' ');
+      })();
+
+      const narrPayload = getReportObjFromAny(narratedReport);
+      const narrReport = narrPayload && narrPayload.report && typeof narrPayload.report === 'object' ? narrPayload.report : narrPayload;
+      const parsedOverview = readOverviewFromApiPayload(narratedReport);
+      const overviewObj = parsedOverview ? parsedOverview.overview : null;
+      const overviewErr = parsedOverview ? parsedOverview.err : null;
+      const errCode = overviewErr && typeof overviewErr.code === 'string' ? overviewErr.code : null;
+      const overviewStatus = overviewObj
+        ? 'ok'
+        : (errCode === 'guard_degraded' ? 'guard_degraded' : (errCode ? 'provider_error' : 'missing'));
+
+      const llmOverview = (overviewObj && typeof overviewObj === 'object')
+        ? overviewObj
+        : (narrReport && narrReport.llm_overview_v1 && typeof narrReport.llm_overview_v1 === 'object' ? narrReport.llm_overview_v1 : null);
+
+      // Governed overlay values come ONLY from llm_overview_v1.
+      const govHeroHeader = safeText(llmOverview && llmOverview.hero_header ? llmOverview.hero_header : null);
+      const govDealSummary = {
+        hero: safeText(llmOverview && llmOverview.deal_summary ? llmOverview.deal_summary.hero : null),
+        mid: safeText(llmOverview && llmOverview.deal_summary ? llmOverview.deal_summary.mid : null),
+        long: safeText(llmOverview && llmOverview.deal_summary ? llmOverview.deal_summary.long : null),
+      };
+      const govInvestmentOverview = safeText(llmOverview && llmOverview.investment_analysis_overview ? llmOverview.investment_analysis_overview : null);
+      const govStrengths = safeLines(llmOverview && Array.isArray(llmOverview.strengths_overlay) ? llmOverview.strengths_overlay : []);
+      const govConcerns = safeLines(llmOverview && Array.isArray(llmOverview.concerns_overlay) ? llmOverview.concerns_overlay : []);
+      const govCoverageGaps = safeLines(llmOverview && Array.isArray(llmOverview.coverage_gaps_overlay) ? llmOverview.coverage_gaps_overlay : []);
+
+      return {
+        overview_status: overviewStatus,
+        overview_error: overviewErr,
+        blocks: [
+          {
+            key: 'hero',
+            label: 'Hero strip',
+            deterministic: {
+              value: heroStripText,
+              json_paths: [
+                'report.deal_summary (canonical when ready=true)',
+                'report.sections[executive summary].content (legacy fallback)',
+                'deal.ui.executiveSummary.summary (legacy fallback)',
+              ],
+              composition_rule: canonicalDealSummaryReady ? 'canonicalTierHero || canonicalDealOneLiner' : 'executive summary fallback',
+            },
+            governed: {
+              value: govHeroHeader,
+              json_paths: ['report.llm_overview_v1.hero_header'],
+              composition_rule: 'direct: report.llm_overview_v1.hero_header',
+            },
+          },
+          {
+            key: 'deal_summary',
+            label: 'Deal Summary (3 depths)',
+            deterministic: {
+              value: {
+                hero: canonicalTierHero,
+                mid: overviewDealOneLinerCanonical,
+                long: deepExpandedText,
+              },
+              json_paths: [
+                'deal.ui.dealSummaryV2 / deal.ui.executiveSummary* (legacy)',
+                'report.deal_summary.tiers.hero',
+                'report.deal_summary.tiers.overview',
+                'report.deal_summary.tiers.deep',
+              ],
+              composition_rule: 'mapped tiers: hero<-report.deal_summary.tiers.hero, mid<-tiers.overview, long<-tiers.deep',
+            },
+            governed: {
+              value: govDealSummary,
+              json_paths: [
+                'report.llm_overview_v1.deal_summary.hero',
+                'report.llm_overview_v1.deal_summary.mid',
+                'report.llm_overview_v1.deal_summary.long',
+              ],
+              composition_rule: 'direct: report.llm_overview_v1.deal_summary.{hero,mid,long}',
+            },
+          },
+          {
+            key: 'investment_overview',
+            label: 'Investment Analysis Overview',
+            deterministic: {
+              value: decisionTileRationale,
+              json_paths: [
+                'deal.score (for decision label)',
+                'report.metadata.score_explanation',
+                'report.metadata.deterministic_score_inputs_v1',
+              ],
+              composition_rule: 'Web App IC memo snapshot + score rationale',
+            },
+            governed: {
+              value: govInvestmentOverview,
+              json_paths: ['report.llm_overview_v1.investment_analysis_overview'],
+              composition_rule: 'direct: report.llm_overview_v1.investment_analysis_overview',
+            },
+          },
+          {
+            key: 'strengths',
+            label: 'Strengths',
+            deterministic: {
+              value: safeLines(decisionTileStrengths),
+              json_paths: [
+                'deal.phase1.executive_summary_v2.highlights (fallback)',
+                'report.metadata.score_explanation.components.*.reason',
+              ],
+              composition_rule: 'Web App supportsProceeding (fallback to highlights)',
+            },
+            governed: {
+              value: safeLines(govStrengths),
+              json_paths: ['report.llm_overview_v1.strengths_overlay[]'],
+              composition_rule: 'direct: report.llm_overview_v1.strengths_overlay[]',
+            },
+          },
+          {
+            key: 'concerns',
+            label: 'Concerns / Open Items',
+            deterministic: {
+              value: safeLines(decisionTileOpenItemsAll),
+              json_paths: [
+                'deal.phase1.*.missing / unknowns / coverage_missing_sections',
+                'report.metadata.score_explanation.understanding_v1.diligence_open_items[].text',
+              ],
+              composition_rule: 'Web App diligence items (understanding + coverage + diagnostics)',
+            },
+            governed: {
+              value: safeLines(govConcerns),
+              json_paths: ['report.llm_overview_v1.concerns_overlay[]'],
+              composition_rule: 'direct: report.llm_overview_v1.concerns_overlay[]',
+            },
+          },
+          {
+            key: 'coverage_gaps',
+            label: 'Coverage Gaps',
+            deterministic: {
+              value: safeLines(missingChips),
+              json_paths: [
+                'deal.phase1.executive_summary_v2.missing',
+                'deal.phase1.executive_summary_v2.signals.coverage_missing_sections',
+                'deal.ui.executiveSummary.unknowns',
+              ],
+              composition_rule: 'Web App coverage chips',
+            },
+            governed: {
+              value: safeLines(govCoverageGaps),
+              json_paths: ['report.llm_overview_v1.coverage_gaps_overlay[]'],
+              composition_rule: 'direct: report.llm_overview_v1.coverage_gaps_overlay[]',
+            },
+          },
+        ],
+      };
+    }
+
+    function composeNarrationOverviewText(narration) {
+      const insights = (narration && Array.isArray(narration.insights)) ? narration.insights : [];
+      const summary = (narration && typeof narration.summary === 'string') ? narration.summary.trim() : '';
+
+      const picked = [];
+      const pickedTitles = [];
+      const addFromInsight = (it) => {
+        if (!it || typeof it !== 'object') return;
+        const claim = (typeof it.claim === 'string') ? it.claim.trim() : '';
+        if (!claim) return;
+        const sents = takeSentences(claim, 1);
+        if (!sents.length) return;
+        picked.push(sents[0]);
+        if (typeof it.title === 'string' && it.title.trim()) pickedTitles.push(it.title.trim());
+      };
+
+      // Prefer implications first, then restatements.
+      const byTier = (tier) => insights.filter((it) => it && typeof it === 'object' && it.tier === tier);
+      const ordered = [...byTier('implication'), ...byTier('restatement'), ...byTier('hypothesis')];
+      for (const it of ordered) {
+        if (picked.length >= 4) break;
+        addFromInsight(it);
+      }
+
+      // If we couldn't form at least 2 sentences, fall back to narration.summary.
+      if (picked.length < 2 && summary) {
+        const remaining = 4 - picked.length;
+        const extra = takeSentences(summary, remaining);
+        for (const s of extra) {
+          if (picked.length >= 4) break;
+          picked.push(s);
+        }
+      }
+
+      const text = picked.filter(Boolean).slice(0, 4).join(' ').trim();
+      return { text, pickedInsightTitles: pickedTitles };
+    }
+
+    function inferInsightIsPositive(it) {
+      // Narration schema does not include polarity. Use a conservative heuristic to avoid mislabeling.
+      const claim = (it && typeof it.claim === 'string') ? it.claim : '';
+      const title = (it && typeof it.title === 'string') ? it.title : '';
+      const t = (claim + ' ' + title).toLowerCase();
+      if (!t.trim()) return false;
+      if (/(\brisk\b|\bconcern\b|\bissue\b|\bproblem\b|\buncertain\b|\bweak\b|\bdownside\b|\bdeclin|\bchurn\b|\bburn\b|\blitigation\b|\bheadwind\b|\bcompetition\b)/i.test(t)) return false;
+      return true;
+    }
+
+    function formatSuggestionsGaps(gaps) {
+      const out = [];
+      const xs = Array.isArray(gaps) ? gaps : [];
+      for (const g of xs) {
+        if (typeof g === 'string' && g.trim()) {
+          out.push(g.trim());
+          continue;
+        }
+        if (g && typeof g === 'object') {
+          const key = (typeof g.key === 'string') ? g.key.trim() : '';
+          const rationale = (typeof g.rationale === 'string') ? g.rationale.trim() : '';
+          if (key && rationale) out.push(key + ': ' + rationale);
+          else if (key) out.push(key);
+          else if (rationale) out.push(rationale);
+        }
+      }
+      return out;
+    }
+
+    function getNarrationStatus(parsedNarr) {
+      const narration = parsedNarr ? parsedNarr.narration : null;
+      const err = parsedNarr ? parsedNarr.err : null;
+      const errCode = err && typeof err.code === 'string' ? err.code : null;
+      if (!narration && !errCode) return 'missing';
+      if (errCode) {
+        if (String(errCode).startsWith('provider_error')) return 'provider_error';
+        if (errCode === 'model_output_not_json' || errCode === 'model_output_truncated') return 'provider_error';
+        return 'degraded';
+      }
+      return narration ? 'ok' : 'missing';
+    }
+
+    function buildCompareMapModel(deterministicReport, narratedReport, deterministicDeal) {
+      // Back-compat wrapper: callers still refer to the old name.
+      return buildWorkspaceMirrorModel(deterministicReport, narratedReport, deterministicDeal);
+    }
+
+    function renderCompareMapBlocks(model) {
+      const blocks = model && Array.isArray(model.blocks) ? model.blocks : [];
+      const overviewStatus = model && typeof model.overview_status === 'string' ? model.overview_status : 'missing';
+
+      const isMeaningful = (v) => {
+        if (v == null) return false;
+        if (typeof v === 'string') return !!v.trim();
+        if (Array.isArray(v)) return v.some((x) => typeof x === 'string' ? x.trim() : x != null);
+        if (typeof v === 'object') {
+          try {
+            for (const k of Object.keys(v)) {
+              const vv = v[k];
+              if (typeof vv === 'string' && vv.trim()) return true;
+              if (typeof vv === 'number' && Number.isFinite(vv)) return true;
+              if (vv != null && typeof vv !== 'string') return true;
+            }
+          } catch {
+            return false;
+          }
+          return false;
+        }
+        return true;
+      };
+
+      const normalizeForCompare = (v) => {
+        if (v == null) return null;
+        if (typeof v === 'string') return String(v || '').replace(/\s+/g, ' ').trim();
+        if (Array.isArray(v)) {
+          return v
+            .filter((x) => typeof x === 'string')
+            .map((x) => String(x || '').replace(/\s+/g, ' ').trim())
+            .filter(Boolean);
+        }
+        if (typeof v === 'object') {
+          try {
+            const out = {};
+            for (const k of Object.keys(v)) {
+              const vv = v[k];
+              out[k] = (typeof vv === 'string') ? String(vv || '').replace(/\s+/g, ' ').trim() : vv;
+            }
+            return out;
+          } catch {
+            return v;
+          }
+        }
+        return v;
+      };
+
+      const isEqualNormalized = (a, b) => {
+        const aa = normalizeForCompare(a);
+        const bb = normalizeForCompare(b);
+        try {
+          return JSON.stringify(aa) === JSON.stringify(bb);
+        } catch {
+          return aa === bb;
+        }
+      };
+
+      const normalizeForDiff = (v, mode) => {
+        if (v == null) return [];
+        const toText = (value) => {
+          if (value == null) return '';
+          if (typeof value === 'string') return String(value || '');
+          if (Array.isArray(value)) return value.filter((x) => typeof x === 'string').join('\n');
+          if (typeof value === 'object') {
+            try {
+              return Object.keys(value)
+                .map((k) => {
+                  const vv = value[k];
+                  const s = (vv == null) ? '' : (typeof vv === 'string' ? vv : String(vv));
+                  return String(k) + ': ' + String(s);
+                })
+                .join('\n');
+            } catch {
+              return '';
+            }
+          }
+          return String(value);
+        };
+
+        const text = toText(v).replace(/\s+/g, ' ').trim();
+        if (!text) return [];
+
+        if (mode === 'sentences') {
+          const sents = text
+            .split(/(?<=[.!?])\s+/)
+            .map((s) => String(s || '').trim())
+            .filter(Boolean);
+          return sents.length ? sents : [text];
+        }
+
+        return text.split(' ').filter(Boolean);
+      };
+
+      const diffLcs = (a, b) => {
+        const n = a.length;
+        const m = b.length;
+        const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+        for (let i = n - 1; i >= 0; i--) {
+          for (let j = m - 1; j >= 0; j--) {
+            dp[i][j] = a[i] === b[j] ? (1 + dp[i + 1][j + 1]) : Math.max(dp[i + 1][j], dp[i][j + 1]);
+          }
+        }
+        const ops = [];
+        let i = 0;
+        let j = 0;
+        while (i < n && j < m) {
+          if (a[i] === b[j]) {
+            ops.push({ t: 'eq', v: a[i] });
+            i++; j++;
+          } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+            ops.push({ t: 'del', v: a[i] });
+            i++;
+          } else {
+            ops.push({ t: 'add', v: b[j] });
+            j++;
+          }
+        }
+        while (i < n) { ops.push({ t: 'del', v: a[i++] }); }
+        while (j < m) { ops.push({ t: 'add', v: b[j++] }); }
+        return ops;
+      };
+
+      const renderDiff = (detVal, govVal, mode) => {
+        const a = normalizeForDiff(detVal, mode);
+        const b = normalizeForDiff(govVal, mode);
+        if (!a.length && !b.length) return '<div class="muted">(no content to diff)</div>';
+        const ops = diffLcs(a, b);
+        const out = ops.map((op) => {
+          const v = String(op.v || '');
+          if (!v) return '';
+          if (op.t === 'eq') return escapeHtml(v) + ' ';
+          const cls = op.t === 'add' ? 'badge-success' : 'badge-danger';
+          return '<span class="badge ' + cls + '" style="padding:0.05rem 0.35rem; border-radius:6px; font-size:0.85rem;">'
+            + escapeHtml(v)
+            + '</span> ';
+        }).join('');
+        return '<div style="white-space:pre-wrap; word-break:break-word; line-height:1.55;">' + out.trim() + '</div>';
+      };
+
+      const renderJsonPaths = (paths) => {
+        const xs = Array.isArray(paths) ? paths : [];
+        if (!xs.length) return '<div class="muted">(none)</div>';
+        return '<ul style="margin:0; padding-left: 1.1rem;">' + xs.slice(0, 12).map((p) => '<li class="mono">' + escapeHtml(String(p)) + '</li>').join('') + '</ul>';
+      };
+
+      const renderSources = (sources) => {
+        const xs = Array.isArray(sources) ? sources : [];
+        if (!xs.length) return '<div class="muted">(none)</div>';
+        const rows = xs.slice(0, 12).map((s) => {
+          const evidenceId = s && typeof s.evidence_id === 'string' ? s.evidence_id.trim() : '';
+          const slideTitle = s && typeof s.slide_title === 'string' ? s.slide_title.trim() : '';
+          const page = s && typeof s.page === 'number' && Number.isFinite(s.page) ? s.page : null;
+          const parts = [
+            evidenceId ? ('evidence_id=' + evidenceId) : '',
+            page != null ? ('p' + String(page)) : '',
+            slideTitle ? ('slide=' + slideTitle) : '',
+          ].filter(Boolean);
+          return '<li class="mono">' + escapeHtml(parts.join(' • ') || '(unknown)') + '</li>';
+        }).join('');
+        return '<ul style="margin:0; padding-left: 1.1rem;">' + rows + '</ul>';
+      };
+
+      const renderValue = (v) => {
+        if (v == null) return '<div class="muted">(missing)</div>';
+        if (Array.isArray(v)) {
+          if (!v.length) return '<div class="muted">(none)</div>';
+          return '<ul style="margin:0; padding-left: 1.1rem;">' + v.slice(0, 14).map((t) => '<li>' + escapeHtml(String(t)) + '</li>').join('') + '</ul>';
+        }
+        if (typeof v === 'object') {
+          const rows = Object.keys(v).map((k) => {
+            const vv = v[k];
+            const s = (vv == null) ? '-' : (typeof vv === 'string' ? vv : String(vv));
+            return '<tr><td class="mono">' + escapeHtml(k) + '</td><td>' + escapeHtml(String(s)) + '</td></tr>';
+          }).join('');
+          return '<table><thead><tr><th>field</th><th>value</th></tr></thead><tbody>' + rows + '</tbody></table>';
+        }
+        const s = String(v);
+        if (!s.trim()) return '<div class="muted">(missing)</div>';
+        return '<div style="white-space:pre-wrap; word-break:break-word;">' + escapeHtml(s) + '</div>';
+      };
+
+      if (!blocks.length) return '<div class="muted">No workspace mirror blocks configured.</div>';
+
+      return blocks.map((b) => {
+        const det = b && b.deterministic ? b.deterministic : {};
+        const gov = b && b.governed ? b.governed : {};
+        const detVal = det ? det.value : null;
+        const govVal = gov ? gov.value : null;
+        const overlayEmpty = !isMeaningful(govVal);
+        const unchanged = overlayEmpty || isEqualNormalized(detVal, govVal);
+        const changeBadge = unchanged
+          ? '<span class="badge badge-info">unchanged</span>'
+          : '<span class="badge badge-warning">changed</span>';
+
+        const isInvestmentOverview = String(b && b.key ? b.key : '') === 'investment_overview';
+        const showOverlayUnavailable = isInvestmentOverview && (overlayEmpty || overviewStatus === 'guard_degraded');
+
+        return ''
+          + '<div class="card" style="margin: 0.75rem 0 1rem;">'
+          +   '<div style="display:flex; gap:0.5rem; align-items:baseline; flex-wrap:wrap; justify-content:space-between;">'
+          +     '<h3 style="margin:0;">' + escapeHtml(String(b.label || 'Block')) + '</h3>'
+          +     changeBadge
+          +   '</div>'
+          +   (unchanged
+              ? ''
+              : ('<details style="margin-top:0.5rem;">'
+                  + '<summary style="cursor:pointer; font-weight:700;">' + (isInvestmentOverview ? 'Sentence diff (deterministic vs overlay)' : 'Word diff (deterministic vs overlay)') + '</summary>'
+                  + '<div style="margin-top:0.5rem;">' + renderDiff(detVal, govVal, isInvestmentOverview ? 'sentences' : 'words') + '</div>'
+                + '</details>'))
+          +   '<div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 1rem; margin-top:0.75rem;">'
+          +     '<div>'
+          +       '<div style="display:flex; gap:0.5rem; align-items:baseline; flex-wrap:wrap;">'
+          +         '<div style="font-weight:700;">Deterministic</div><span class="badge badge-info">authoritative</span>'
+          +       '</div>'
+          +       '<div class="muted" style="margin-top:0.35rem;"><strong>composition_rule:</strong> ' + escapeHtml(String(det.composition_rule || 'direct')) + '</div>'
+          +       '<div style="margin-top:0.5rem;">' + renderValue(det.value) + '</div>'
+          +     '</div>'
+          +     '<div>'
+          +       '<div style="display:flex; gap:0.5rem; align-items:baseline; flex-wrap:wrap;">'
+          +         '<div style="font-weight:700;">Governed overlay</div><span class="badge badge-warning">interpretation</span>'
+          +       '</div>'
+          +       '<div class="muted" style="margin-top:0.35rem;"><strong>composition_rule:</strong> ' + escapeHtml(String(gov.composition_rule || 'direct')) + '</div>'
+          +       '<div style="margin-top:0.5rem;">'
+          +         (showOverlayUnavailable ? '<div class="muted">Governed overlay unavailable (guarded)</div>' : renderValue(gov.value))
+          +       '</div>'
+          +     '</div>'
+          +   '</div>'
+          + '</div>';
+      }).join('');
+    }
+
+    function renderDeterministicOverlayPanel(args) {
+      const statusEl = document.getElementById('deterministic-overlay-status');
+      const contentEl = document.getElementById('deterministic-overlay-content');
+      const narrationExtraEl = document.getElementById('deterministic-overlay-narration-extra');
+      if (!statusEl || !contentEl) return;
+
+      const base = args && args.baseReport && typeof args.baseReport === 'object' ? args.baseReport : null;
+      const narr = args && args.narratedReport && typeof args.narratedReport === 'object' ? args.narratedReport : null;
+      const deal = args && args.deal && typeof args.deal === 'object' ? args.deal : null;
+      const baseOk = Boolean(args && args.baseOk);
+      const narrOk = Boolean(args && args.narrOk);
+
+      if (!baseOk || !base) {
+        statusEl.innerHTML = '<div class="badge badge-danger">Base report missing</div>';
+        contentEl.innerHTML = '<div class="muted">Load deterministic first.</div>';
+        if (narrationExtraEl) narrationExtraEl.innerHTML = '<div class="muted">Load deterministic first.</div>';
+        return;
+      }
+
+      if (!narrOk || !narr) {
+        statusEl.innerHTML = '<div class="badge badge-info">missing</div>';
+        contentEl.innerHTML = '<div class="muted">Click <span class="mono">Load governed overlay</span> to fetch <span class="mono">/report?narrate=1</span> and populate Workspace Mirror.</div>';
+        if (narrationExtraEl) narrationExtraEl.innerHTML = '<div class="muted">Load governed overlay to view.</div>';
+        return;
+      }
+
+      const parsed = readOverviewFromApiPayload(narr);
+      const err = parsed ? parsed.err : null;
+      const hasOverview = Boolean(parsed && parsed.overview);
+      const errCode = err && typeof err.code === 'string' ? err.code : null;
+      const errMsg = err && typeof err.message === 'string' ? err.message : null;
+
+      const overviewStatus = (() => {
+        if (hasOverview) return 'ok';
+        if (errCode === 'guard_degraded') return 'guard_degraded';
+        if (errCode) return 'provider_error';
+        return 'missing';
+      })();
+
+      const statusBadge = overviewStatus === 'ok'
+        ? '<span class="badge badge-success">ok</span>'
+        : (overviewStatus === 'guard_degraded'
+          ? '<span class="badge badge-warning">guard_degraded</span>'
+          : (overviewStatus === 'provider_error'
+            ? '<span class="badge badge-danger">provider_error</span>'
+            : '<span class="badge badge-info">missing</span>'));
+
+      statusEl.innerHTML = ''
+        + '<div style="display:flex; gap:0.5rem; align-items:baseline; flex-wrap:wrap;">'
+        +   '<div style="font-weight:700;">llm_overview_v1:</div>'
+        +   statusBadge
+        + '</div>'
+        + (errCode ? ('<div class="muted" style="margin-top:0.35rem;">code=' + escapeHtml(String(errCode)) + (errMsg ? (' • ' + escapeHtml(String(errMsg))) : '') + '</div>') : '')
+        + (err ? renderGuardStatusBlock(err) : '');
+
+      const model = buildWorkspaceMirrorModel(base, narr, deal);
+      contentEl.innerHTML = renderCompareMapBlocks(model);
+
+      try {
+        if (narrationExtraEl) {
+          const narrParsed = readNarrationFromApiPayload(narr);
+          const narration = narrParsed ? narrParsed.narration : null;
+          if (!narration || typeof narration !== 'object') {
+            narrationExtraEl.innerHTML = '<div class="muted">llm_narration_v1 not attached.</div>';
+          } else {
+            const summary = (typeof narration.summary === 'string') ? narration.summary.trim() : '';
+            const insights = Array.isArray(narration.insights) ? narration.insights : [];
+            const titles = insights
+              .map((it) => (it && typeof it.title === 'string' ? it.title.trim() : ''))
+              .filter(Boolean)
+              .slice(0, 6);
+
+            const raw = JSON.stringify(narration, null, 2);
+            const max = 20000;
+            const clipped = raw.length > max ? (raw.slice(0, max) + '\\n…(truncated)') : raw;
+
+            narrationExtraEl.innerHTML = ''
+              + (summary ? ('<div style="white-space:pre-wrap; word-break:break-word;">' + escapeHtml(summary) + '</div>') : '<div class="muted">(no summary)</div>')
+              + (titles.length
+                ? ('<div style="margin-top:0.75rem;">'
+                    + '<div class="muted" style="font-weight:600;">insight titles</div>'
+                    + '<ul style="margin:0.35rem 0 0; padding-left: 1.1rem;">' + titles.map((t) => '<li>' + escapeHtml(t) + '</li>').join('') + '</ul>'
+                    + '</div>')
+                : '')
+              + '<details style="margin-top:0.75rem;">'
+              +   '<summary style="cursor:pointer; font-weight:700;">Raw JSON</summary>'
+              +   '<pre class="muted" style="white-space:pre-wrap; word-break:break-word; margin:0.5rem 0 0;">' + escapeHtml(clipped) + '</pre>'
+              + '</details>';
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
 
     function setDeterministicDealId(dealId) {
       const input = document.querySelector('#deterministic-deal-id');
@@ -1724,7 +3703,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         ? s.product_validation.trim()
         : null;
       const socialProofText = productValidationRaw
-        ? productValidationRaw.replace(/^validation\s*:\s*/i, '').trim()
+        ? productValidationRaw.replace(/^validation\\s*:\\s*/i, '').trim()
         : null;
       const socialProofHtml = (socialProofText && socialProofText.length > 0)
         ? ''
@@ -2796,7 +4775,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
 
       const norm = (s) => {
         if (typeof s !== 'string') return '';
-        return s.trim().replace(/\s+/g, ' ').toLowerCase();
+        return s.trim().replace(/\\s+/g, ' ').toLowerCase();
       };
 
       const normHero = norm(hero);
@@ -2930,6 +4909,14 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       const kpiTraceEl = document.getElementById('deterministic-kpi-trace');
       const tiersEl = document.getElementById('deterministic-deal-summary-tiers');
       const understandingEl = document.getElementById('deterministic-score-understanding-v1');
+      const llmDriftEl = document.getElementById('deterministic-llm-drift');
+      const llmStatusEl = document.getElementById('deterministic-llm-status');
+      const llmGuardEl = document.getElementById('deterministic-llm-guard');
+      const llmParsedEl = document.getElementById('deterministic-llm-parsed');
+      const llmRawEl = document.getElementById('deterministic-llm-raw');
+      const llmLoadingEl = document.getElementById('deterministic-llm-loading');
+      const llmTimeoutEl = document.getElementById('deterministic-llm-timeout-banner');
+      const llmErrorEl = document.getElementById('deterministic-llm-request-error');
 
       if (!dealId || typeof dealId !== 'string' || dealId.trim().length === 0) {
         if (statusEl) statusEl.textContent = 'Enter a deal id.';
@@ -2946,10 +4933,49 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       if (kpiTraceEl) kpiTraceEl.innerHTML = '<div class="loading">Loading…</div>';
       if (tiersEl) tiersEl.innerHTML = '<div class="loading">Loading…</div>';
       if (understandingEl) understandingEl.innerHTML = '<div class="loading">Loading…</div>';
+      if (llmDriftEl) llmDriftEl.innerHTML = '<div class="loading">Loading…</div>';
+      if (llmStatusEl) llmStatusEl.innerHTML = '<div class="loading">Loading…</div>';
+      if (llmGuardEl) llmGuardEl.innerHTML = '<div class="loading">Loading…</div>';
+      if (llmParsedEl) llmParsedEl.innerHTML = '<div class="loading">Loading…</div>';
+      if (llmRawEl) llmRawEl.textContent = '';
+      try {
+        if (llmLoadingEl) llmLoadingEl.style.display = 'none';
+        if (llmTimeoutEl) llmTimeoutEl.style.display = 'none';
+        if (llmErrorEl) llmErrorEl.style.display = 'none';
+      } catch {
+        // ignore
+      }
 
       try {
-        const res = await fetch('/api/dashboard/deals/' + encodeURIComponent(id) + '/deterministic?t=' + Date.now());
+        deterministicLastDealId = id;
+        deterministicNarratedReportCache = null;
+        deterministicDealCache = null;
+
+        const [res, baseRes, dealRes] = await Promise.all([
+          fetch('/api/dashboard/deals/' + encodeURIComponent(id) + '/deterministic?t=' + Date.now()),
+          fetch(apiUrl('/api/v1/deals/' + encodeURIComponent(id) + '/report?t=' + Date.now())),
+          fetch(apiUrl('/api/v1/deals/' + encodeURIComponent(id) + '?t=' + Date.now())),
+        ]);
+
         const data = await res.json().catch(() => ({}));
+        const baseJson = baseRes && baseRes.ok ? await baseRes.json().catch(() => null) : null;
+        const dealJson = dealRes && dealRes.ok ? await dealRes.json().catch(() => null) : null;
+
+        deterministicBaseReportCache = baseJson;
+        deterministicDealCache = dealJson;
+
+        // Render LLM panel regardless of deterministic inspector endpoint state.
+        try {
+          renderDeterministicLlmPanels({
+            baseOk: Boolean(baseRes && baseRes.ok),
+            narrOk: false,
+            baseReport: baseJson,
+            narratedReport: null,
+          });
+        } catch {
+          // ignore
+        }
+
         if (!res.ok) {
           if (statusEl) statusEl.textContent = 'Error: ' + res.status + ' ' + (data?.message || data?.error || '');
           if (headerEl) headerEl.innerHTML = '<pre>' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre>';
@@ -2985,6 +5011,274 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         if (kpiTraceEl) kpiTraceEl.innerHTML = '<div class="muted">Failed to load.</div>';
         if (tiersEl) tiersEl.innerHTML = '<div class="muted">Failed to load.</div>';
         if (understandingEl) understandingEl.innerHTML = '<div class="muted">Failed to load.</div>';
+        if (llmDriftEl) llmDriftEl.innerHTML = '<div class="muted">Failed to load.</div>';
+        if (llmStatusEl) llmStatusEl.innerHTML = '<div class="muted">Failed to load.</div>';
+        if (llmGuardEl) llmGuardEl.innerHTML = '<div class="muted">Failed to load.</div>';
+        if (llmParsedEl) llmParsedEl.innerHTML = '<div class="muted">Failed to load.</div>';
+        if (llmRawEl) llmRawEl.textContent = '';
+      }
+    }
+
+    async function loadDeterministicNarratedReport(dealId) {
+      const driftEl = document.getElementById('deterministic-llm-drift');
+      const statusEl = document.getElementById('deterministic-llm-status');
+      const guardEl = document.getElementById('deterministic-llm-guard');
+      const parsedEl = document.getElementById('deterministic-llm-parsed');
+      const rawEl = document.getElementById('deterministic-llm-raw');
+      const loadingEl = document.getElementById('deterministic-llm-loading');
+      const timeoutEl = document.getElementById('deterministic-llm-timeout-banner');
+      const errorEl = document.getElementById('deterministic-llm-request-error');
+      const errorMsgEl = document.getElementById('deterministic-llm-request-error-message');
+
+      if (!driftEl || !statusEl || !guardEl || !parsedEl || !rawEl) return;
+
+      if (!dealId || typeof dealId !== 'string' || !dealId.trim()) {
+        driftEl.innerHTML = '<div class="badge badge-danger">Missing deal id.</div>';
+        statusEl.innerHTML = '<div class="badge badge-danger">Missing deal id.</div>';
+        guardEl.innerHTML = '<div class="muted">(not loaded)</div>';
+        parsedEl.innerHTML = '<div class="muted">Enter a deal id and load deterministic first.</div>';
+        rawEl.textContent = '';
+        return;
+      }
+
+      // Reset banners and show loading state.
+      try {
+        if (timeoutEl) timeoutEl.style.display = 'none';
+        if (errorEl) errorEl.style.display = 'none';
+        if (errorMsgEl) errorMsgEl.textContent = '';
+        if (loadingEl) loadingEl.style.display = 'inline';
+      } catch {
+        // ignore
+      }
+
+      driftEl.innerHTML = '<div class="loading">Loading narrated /report?narrate=1…</div>';
+      statusEl.innerHTML = '<div class="loading">Loading…</div>';
+      guardEl.innerHTML = '<div class="loading">Loading…</div>';
+      parsedEl.innerHTML = '<div class="loading">Loading…</div>';
+      rawEl.textContent = '';
+
+      try {
+        const id = dealId.trim();
+        const narr = await fetchNarratedReport(id);
+
+        try {
+          if (loadingEl) loadingEl.style.display = 'none';
+        } catch {
+          // ignore
+        }
+
+        // Keep the full narrated payload for drift checks.
+        deterministicNarratedReportCache = narr && narr.payload ? narr.payload : null;
+        deterministicLastDealId = id;
+
+        if (!narr || !narr.ok) {
+          driftEl.innerHTML = '<div class="badge badge-danger">Failed to load /report?narrate=1.</div>';
+          const detail = narr && typeof narr.status === 'number'
+            ? ('HTTP ' + String(narr.status))
+            : 'Unknown error';
+
+          if (errorEl) errorEl.style.display = 'block';
+          if (errorMsgEl) errorMsgEl.textContent = detail;
+
+          statusEl.innerHTML = '<div class="badge badge-danger">provider_error</div>';
+          guardEl.innerHTML = '<div class="muted">(not loaded)</div>';
+          parsedEl.innerHTML = '<div class="muted">' + escapeHtml(detail) + '</div>';
+          rawEl.textContent = '';
+          return;
+        }
+
+        // Hide banners on success.
+        try {
+          if (timeoutEl) timeoutEl.style.display = 'none';
+          if (errorEl) errorEl.style.display = 'none';
+          if (errorMsgEl) errorMsgEl.textContent = '';
+        } catch {
+          // ignore
+        }
+
+        renderDeterministicLlmPanels({
+          baseOk: Boolean(deterministicBaseReportCache),
+          narrOk: Boolean(narr && narr.ok && narr.payload),
+          baseReport: deterministicBaseReportCache,
+          narratedReport: narr && narr.payload ? narr.payload : null,
+        });
+
+        // Keep overlay tab in sync (no fetch; uses same cache).
+        try {
+          renderDeterministicOverlayPanel({
+            baseOk: Boolean(deterministicBaseReportCache),
+            narrOk: Boolean(narr && narr.ok && narr.payload),
+            baseReport: deterministicBaseReportCache,
+            narratedReport: narr && narr.payload ? narr.payload : null,
+            deal: deterministicDealCache,
+          });
+        } catch {
+          // ignore
+        }
+      } catch (e) {
+        driftEl.innerHTML = '<div class="badge badge-danger">Failed to load /report?narrate=1.</div>';
+
+        try {
+          if (loadingEl) loadingEl.style.display = 'none';
+        } catch {
+          // ignore
+        }
+
+        const msg = e?.message || String(e);
+        const isAbort = Boolean(e && (e.name === 'AbortError' || String(e).toLowerCase().includes('abort')));
+
+        if (isAbort && timeoutEl) {
+          timeoutEl.style.display = 'block';
+        }
+        if (errorEl) errorEl.style.display = 'block';
+        if (errorMsgEl) errorMsgEl.textContent = msg;
+
+        statusEl.innerHTML = '<div class="badge badge-danger">provider_error</div>';
+        guardEl.innerHTML = '<div class="muted">(not loaded)</div>';
+        parsedEl.innerHTML = '<div class="muted" style="margin-top:0.35rem;">' + escapeHtml(msg) + '</div>';
+        rawEl.textContent = '';
+      }
+    }
+
+    async function loadDeterministicOverlay(dealId) {
+      const statusEl = document.getElementById('deterministic-overlay-status');
+      const contentEl = document.getElementById('deterministic-overlay-content');
+      const loadingEl = document.getElementById('deterministic-overlay-loading');
+      const timeoutEl = document.getElementById('deterministic-overlay-timeout-banner');
+      const errorEl = document.getElementById('deterministic-overlay-request-error');
+      const errorMsgEl = document.getElementById('deterministic-overlay-request-error-message');
+
+      if (!statusEl || !contentEl) return;
+
+      if (!dealId || typeof dealId !== 'string' || !dealId.trim()) {
+        statusEl.innerHTML = '<div class="badge badge-danger">Missing deal id.</div>';
+        contentEl.innerHTML = '<div class="muted">Enter a deal id and load deterministic first.</div>';
+        return;
+      }
+
+      // Reset banners and show loading state.
+      try {
+        if (timeoutEl) timeoutEl.style.display = 'none';
+        if (errorEl) errorEl.style.display = 'none';
+        if (errorMsgEl) errorMsgEl.textContent = '';
+        if (loadingEl) loadingEl.style.display = 'inline';
+      } catch {
+        // ignore
+      }
+
+      statusEl.innerHTML = '<div class="loading">Loading…</div>';
+      contentEl.innerHTML = '<div class="loading">Loading…</div>';
+
+      try {
+        const id = dealId.trim();
+        const narr = await fetchNarratedReport(id);
+
+        try {
+          if (loadingEl) loadingEl.style.display = 'none';
+        } catch {
+          // ignore
+        }
+
+        deterministicNarratedReportCache = narr && narr.payload ? narr.payload : null;
+        deterministicLastDealId = id;
+
+        if (!narr || !narr.ok) {
+          const detail = narr && typeof narr.status === 'number'
+            ? ('HTTP ' + String(narr.status))
+            : 'Unknown error';
+
+          if (errorEl) errorEl.style.display = 'block';
+          if (errorMsgEl) errorMsgEl.textContent = detail;
+
+          statusEl.innerHTML = '<div class="badge badge-danger">provider_error</div>';
+          contentEl.innerHTML = '<div class="muted">' + escapeHtml(detail) + '</div>';
+          return;
+        }
+
+        // Hide banners on success.
+        try {
+          if (timeoutEl) timeoutEl.style.display = 'none';
+          if (errorEl) errorEl.style.display = 'none';
+          if (errorMsgEl) errorMsgEl.textContent = '';
+        } catch {
+          // ignore
+        }
+
+        renderDeterministicOverlayPanel({
+          baseOk: Boolean(deterministicBaseReportCache),
+          narrOk: Boolean(narr && narr.ok && narr.payload),
+          baseReport: deterministicBaseReportCache,
+          narratedReport: narr && narr.payload ? narr.payload : null,
+          deal: deterministicDealCache,
+        });
+      } catch (e) {
+        try {
+          if (loadingEl) loadingEl.style.display = 'none';
+        } catch {
+          // ignore
+        }
+
+        const msg = e?.message || String(e);
+        const isAbort = Boolean(e && (e.name === 'AbortError' || String(e).toLowerCase().includes('abort')));
+
+        if (isAbort && timeoutEl) timeoutEl.style.display = 'block';
+        if (errorEl) errorEl.style.display = 'block';
+        if (errorMsgEl) errorMsgEl.textContent = msg;
+
+        statusEl.innerHTML = '<div class="badge badge-danger">provider_error</div>';
+        contentEl.innerHTML = '<div class="muted">' + escapeHtml(msg) + '</div>';
+      }
+    }
+
+    // Narration fetch: 30s timeout ONLY for narration requests.
+    let deterministicNarrationState = { narration: null, narrationError: null, narrationMeta: null };
+
+    async function fetchNarratedReport(dealId) {
+      const id = String(dealId || '').trim();
+      if (!id) return { ok: false, status: null, payload: null, errorMessage: 'Missing dealId' };
+
+      const url = apiUrl('/api/v1/deals/' + encodeURIComponent(id) + '/report?narrate=1&t=' + Date.now());
+
+      const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+      const timeoutMs = 30_000;
+      const timeoutId = globalThis.setTimeout(() => {
+        try {
+          if (controller) controller.abort();
+        } catch {
+          // ignore
+        }
+      }, timeoutMs);
+
+      try {
+        if (DASHBOARD_DEV) console.debug('[dashboard:narrate] GET', url);
+        const res = await fetch(url, controller ? { signal: controller.signal } : undefined);
+        const payload = await res.json().catch(() => null);
+
+        const narration = (payload && payload.report && typeof payload.report === 'object')
+          ? (payload.report.llm_narration_v1 ?? null)
+          : (payload ? (payload.llm_narration_v1 ?? null) : null);
+        const narrationError = payload && payload.metadata && typeof payload.metadata === 'object'
+          ? (payload.metadata.llm_narration_v1_error ?? null)
+          : null;
+        const narrationMeta = payload && payload.metadata && typeof payload.metadata === 'object'
+          ? (payload.metadata.llm_narration_v1_meta ?? null)
+          : null;
+
+        deterministicNarrationState = { narration: narration || null, narrationError: narrationError || null, narrationMeta: narrationMeta || null };
+
+        const errCode = narrationError && typeof narrationError.code === 'string' ? narrationError.code : null;
+        if (DASHBOARD_DEV) console.debug('[dashboard:narrate]', res.status, 'ok=' + String(!!res.ok), 'errorCode=' + String(errCode));
+
+        return {
+          ok: !!res.ok,
+          status: typeof res.status === 'number' ? res.status : null,
+          payload,
+          narration: narration || null,
+          narrationError: narrationError || null,
+          narrationMeta: narrationMeta || null,
+        };
+      } finally {
+        globalThis.clearTimeout(timeoutId);
       }
     }
 
@@ -4114,6 +6408,9 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
     (function bindDeterministicTab() {
       const btn = document.getElementById('deterministic-load-btn');
       const viewBtn = document.getElementById('deterministic-view-nodeinspector-btn');
+      const genBtn = document.getElementById('deterministic-llm-generate-btn');
+      const overlayGenBtn = document.getElementById('deterministic-overlay-generate-btn');
+      const overlayCopyBtn = document.getElementById('deterministic-overlay-copy-btn');
       const input = document.getElementById('deterministic-deal-id');
 
       if (btn && !btn.dataset.bound) {
@@ -4145,6 +6442,86 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           if (!dealId) return;
           setNodeInspectorDealId(dealId);
           activateTab('node-inspector');
+        });
+      }
+
+      if (genBtn && !genBtn.dataset.bound) {
+        genBtn.dataset.bound = '1';
+        genBtn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          if (genBtn.dataset.loading === '1') return;
+          genBtn.dataset.loading = '1';
+          const prevText = typeof genBtn.textContent === 'string' ? genBtn.textContent : 'Generate narration';
+          genBtn.dataset.prevText = prevText;
+          try {
+            genBtn.disabled = true;
+            genBtn.textContent = 'Generating…';
+          } catch {
+            // ignore
+          }
+          const v = input && typeof input.value === 'string' ? input.value : '';
+          const dealId = String(v || '').trim() || String(deterministicLastDealId || '').trim();
+          try {
+            await loadDeterministicNarratedReport(dealId);
+          } finally {
+            try {
+              genBtn.disabled = false;
+              genBtn.textContent = genBtn.dataset.prevText || prevText;
+            } catch {
+              // ignore
+            }
+            genBtn.dataset.loading = '0';
+          }
+        });
+      }
+
+      if (overlayGenBtn && !overlayGenBtn.dataset.bound) {
+        overlayGenBtn.dataset.bound = '1';
+        overlayGenBtn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          if (overlayGenBtn.dataset.loading === '1') return;
+          overlayGenBtn.dataset.loading = '1';
+          const prevText = typeof overlayGenBtn.textContent === 'string' ? overlayGenBtn.textContent : 'Load governed overlay';
+          overlayGenBtn.dataset.prevText = prevText;
+          try {
+            overlayGenBtn.disabled = true;
+            overlayGenBtn.textContent = 'Generating…';
+          } catch {
+            // ignore
+          }
+
+          const v = input && typeof input.value === 'string' ? input.value : '';
+          const dealId = String(v || '').trim() || String(deterministicLastDealId || '').trim();
+          try {
+            await loadDeterministicOverlay(dealId);
+          } finally {
+            try {
+              overlayGenBtn.disabled = false;
+              overlayGenBtn.textContent = overlayGenBtn.dataset.prevText || prevText;
+            } catch {
+              // ignore
+            }
+            overlayGenBtn.dataset.loading = '0';
+          }
+        });
+      }
+
+      if (overlayCopyBtn && !overlayCopyBtn.dataset.bound) {
+        overlayCopyBtn.dataset.bound = '1';
+        overlayCopyBtn.addEventListener('click', async (e) => {
+          e.preventDefault();
+
+          const payload = deterministicNarratedReportCache;
+          const parsed = payload ? readOverviewFromApiPayload(payload) : null;
+          const reportObj = parsed ? parsed.reportObj : null;
+          const target = (reportObj && reportObj.llm_narration_v1 && typeof reportObj.llm_narration_v1 === 'object')
+            ? reportObj.llm_narration_v1
+            : ((reportObj && reportObj.llm_overview_v1 && typeof reportObj.llm_overview_v1 === 'object')
+              ? reportObj.llm_overview_v1
+              : { code: 'no_llm_payload_loaded' });
+
+          const ok = await copyJsonObject(target);
+          if (!ok) alert('Copy failed.');
         });
       }
     })();

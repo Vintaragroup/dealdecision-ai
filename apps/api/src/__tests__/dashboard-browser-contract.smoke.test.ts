@@ -36,6 +36,8 @@ test("dashboard browser contract smoke: HTML shell contains load-bearing strings
   assert.ok(html.includes("Score Inputs (v1)"));
   assert.ok(html.includes("Field Presence Matrix"));
   assert.ok(html.includes("deterministic-field-presence"));
+  assert.ok(html.includes("Workspace Mirror"));
+  assert.ok(html.includes("Investment Analysis Overview"));
   assert.ok(html.includes("Deal Summary Tiers"));
   assert.ok(html.includes("deterministic-deal-summary-tiers"));
   assert.ok(html.includes("Score Understanding v1"));

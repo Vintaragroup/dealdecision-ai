@@ -71,6 +71,8 @@ services:
       API_PORT: "9000"
       UPLOAD_DIR: /app/uploads
       DISABLE_CLERK_AUTH: ${DISABLE_CLERK_AUTH:-1}
+      # NOTE: Root .env is used for compose substitution only; runtime injection is explicit.
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
     ports:
       - "9001:9000"
     volumes:
@@ -78,6 +80,7 @@ services:
       - ./apps/api/scripts:/app/apps/api/scripts
       - ./apps/api/package.json:/app/apps/api/package.json
       - ./infra/migrations:/app/infra/migrations
+      - ./packages/core/src:/app/packages/core/src
       - ./packages/core/dist:/app/packages/core/dist
       - ./packages/core/package.json:/app/packages/core/package.json
       - ./packages/contracts/dist:/app/packages/contracts/dist
@@ -107,6 +110,8 @@ services:
       UPLOAD_DIR: /app/uploads
       VISION_BASE_URL: http://vision_worker:8000
       ENABLE_VISUAL_EXTRACTION: ${ENABLE_VISUAL_EXTRACTION:-1}
+      # NOTE: Root .env is used for compose substitution only; runtime injection is explicit.
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
       DDAI_ENABLE_PHASEB_VISUAL_EVIDENCE: "1"
       PDF_EXTRACT_MODE: ${PDF_EXTRACT_MODE:-v2_shadow}
       PDF_SLIDE_UNDERSTANDING_MODE: ${PDF_SLIDE_UNDERSTANDING_MODE:-shadow}
@@ -120,6 +125,7 @@ services:
     volumes:
       - ./apps/worker/src:/app/apps/worker/src
       - ./apps/worker/package.json:/app/apps/worker/package.json
+      - ./packages/core/src:/app/packages/core/src
       - ./packages/core/dist:/app/packages/core/dist
       - ./packages/core/package.json:/app/packages/core/package.json
       - ./packages/contracts/dist:/app/packages/contracts/dist

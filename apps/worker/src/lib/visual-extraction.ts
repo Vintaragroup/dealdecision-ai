@@ -689,6 +689,7 @@ export async function resolvePageImageUris(
 ): Promise<string[]> {
 	const logger = options?.logger ?? console;
 	const fsImpl = options?.fsImpl ?? fs;
+	const env = options?.env ?? process.env;
 
 	try {
 		const { rows } = await pool.query<{ page_count: number | null; extraction_metadata: unknown | null }>(
@@ -720,6 +721,30 @@ export async function resolvePageImageUris(
 			metaObj?.page_images_uri_prefix,
 			metaObj?.page_image_url_prefix,
 		];
+
+		const shouldSignR2KeysForRemoteVision = (() => {
+			const visionBase = (env.VISION_BASE_URL || env.VISION_WORKER_URL || "").trim();
+			const remoteVision = visionBase.startsWith("https://");
+			const r2Bucket = (env.R2_BUCKET ?? "").trim();
+			return remoteVision && r2Bucket.length > 0;
+		})();
+
+		const normalizeLegacyMetaUri = async (raw: string): Promise<string> => {
+			const v = raw.trim();
+			if (!v) return "";
+			if (v.startsWith("http://") || v.startsWith("https://") || v.startsWith("/uploads/")) return v;
+			// Avoid attempting to sign obvious local filesystem paths.
+			if (v.startsWith("/")) return v;
+			if (!shouldSignR2KeysForRemoteVision) return v;
+			const bucket = (env.R2_BUCKET ?? "").trim();
+			if (!bucket) return v;
+			try {
+				const key = v.replace(/^\/+/, "");
+				return await getR2ObjectUrl({ bucket, key, env });
+			} catch {
+				return v;
+			}
+		};
 
 		const legacyCandidateCounts = { list_urls: 0, prefix: 0 };
 		for (const cand of metaListCandidates) {
@@ -892,15 +917,17 @@ export async function resolvePageImageUris(
 
 		for (const cand of metaListCandidates) {
 			if (!Array.isArray(cand)) continue;
-			const urls = cand
-				.filter((u) => typeof u === "string" && u.trim().length > 0)
-				.map((u) => u.trim());
+			const raw = cand.filter((u) => typeof u === "string" && u.trim().length > 0).map((u) => String(u));
+			const urls = shouldSignR2KeysForRemoteVision
+				? (await Promise.all(raw.map((u) => normalizeLegacyMetaUri(u)))).filter((u) => typeof u === "string" && u.trim().length > 0)
+				: raw.map((u) => u.trim());
 			if (urls.length > 0) {
 				logger.log(
 					JSON.stringify({
 						event: "PAGE_IMAGE_URIS_FROM_METADATA",
 						document_id: documentId,
 						count: urls.length,
+						signed_r2_keys: shouldSignR2KeysForRemoteVision,
 					})
 				);
 				return urls;

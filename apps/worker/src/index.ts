@@ -4169,6 +4169,32 @@ registerWorker("extract_visuals", async (job: Job) => {
 			uris = await resolvePageImageUris(pool, docId, { env: process.env, logger: console });
 		}
 
+		// Confirmation instrumentation: capture what resolvePageImageUris returned in prod.
+		try {
+			const firstUri = uris.length > 0 ? uris[0] : null;
+			const sampleKind = (() => {
+				const u = typeof firstUri === "string" ? firstUri.trim() : "";
+				if (!u) return "r2_key";
+				if (u.startsWith("http://") || u.startsWith("https://")) return "http";
+				if (u.startsWith("/uploads/") || u.startsWith("/")) return "file_path";
+				return "r2_key";
+			})();
+			console.log(
+				JSON.stringify({
+					event: "EXTRACT_VISUALS_URIS_RESOLVED",
+					job_id: job.id ? String(job.id) : null,
+					deal_id: (typeof dealId === "string" ? dealId : null) ?? null,
+					document_id: docId,
+					uris_count: uris.length,
+					first_uri: typeof firstUri === "string" ? firstUri : null,
+					uri_sample_kind: sampleKind,
+					ts: new Date().toISOString(),
+				})
+			);
+		} catch {
+			// never block extraction on logging
+		}
+
 		const docPageCount =
 			typeof docMeta?.page_count === "number" && Number.isFinite(docMeta.page_count) ? docMeta.page_count : null;
 		const chunkSize = config.maxPages;
@@ -5714,6 +5740,24 @@ registerWorker("extract_visuals", async (job: Job) => {
 			docPagesProcessed += 1;
 			pagesVisionAttempted += 1;
 			const timeoutsMs = docKind === "powerpoint" ? [20_000, 60_000, 90_000] : [20_000, 60_000];
+			try {
+				console.log(
+					JSON.stringify({
+						event: "VISION_REQUEST_PREP",
+						job_id: job.id ? String(job.id) : null,
+						deal_id: dealIdForVision,
+						document_id: docId,
+						page_index: i,
+						url: `${config.visionWorkerUrl}/extract-visuals`,
+						page_image_uri: typeof safe_image_uri === "string" ? safe_image_uri : null,
+						timeout_ms: Array.isArray(timeoutsMs) && typeof timeoutsMs[0] === "number" ? timeoutsMs[0] : null,
+						ts: new Date().toISOString(),
+					})
+				);
+			} catch {
+				// ignore
+			}
+
 			const { response, attempts } = await callVisionWorkerWithRetries(
 				config,
 				{
@@ -5726,6 +5770,33 @@ registerWorker("extract_visuals", async (job: Job) => {
 				},
 				{ logger: console, logMeta: visionLogMeta, runtime: visionRuntime, timeoutsMs, backoffMs: [500, 1500] }
 			);
+
+			try {
+				const last = Array.isArray(attempts) && attempts.length > 0 ? attempts[attempts.length - 1] : null;
+				const hasAssets = Boolean(response && Array.isArray((response as any).assets) && (response as any).assets.length > 0);
+				let responseBytes: number | null = null;
+				try {
+					responseBytes = response ? Buffer.byteLength(JSON.stringify(response), "utf8") : 0;
+				} catch {
+					responseBytes = null;
+				}
+				console.log(
+					JSON.stringify({
+						event: "VISION_RESPONSE_META",
+						job_id: job.id ? String(job.id) : null,
+						deal_id: dealIdForVision,
+						document_id: docId,
+						page_index: i,
+						status: typeof (last as any)?.status_code === "number" ? (last as any).status_code : null,
+						ok: Boolean(response),
+						response_bytes: responseBytes,
+						has_assets: hasAssets,
+						ts: new Date().toISOString(),
+					})
+				);
+			} catch {
+				// ignore
+			}
 			docVisionCallsDone += 1;
 			let resolvedResponse = response;
 			if (!resolvedResponse) {
@@ -5852,6 +5923,22 @@ registerWorker("extract_visuals", async (job: Job) => {
 
 			try {
 				const { persisted: pCount, withImageUri } = await persistVisionResponse(pool, resolvedResponse, { pageImageUri: image_uri });
+				try {
+					console.log(
+						JSON.stringify({
+							event: "VISION_PERSIST_RESULT",
+							job_id: job.id ? String(job.id) : null,
+							deal_id: dealIdForVision,
+							document_id: docId,
+							page_index: i,
+							persisted: pCount,
+							withImageUri,
+							ts: new Date().toISOString(),
+						})
+					);
+				} catch {
+					// ignore
+				}
 				persisted += pCount;
 				docPersisted += pCount;
 				docPersistedWithImageUri += withImageUri;
@@ -5896,10 +5983,25 @@ registerWorker("extract_visuals", async (job: Job) => {
 					});
 				}
 			} catch (err) {
+				try {
+					console.log(
+						JSON.stringify({
+							event: "VISION_PERSIST_RESULT",
+							job_id: job.id ? String(job.id) : null,
+							deal_id: dealIdForVision,
+							document_id: docId,
+							page_index: i,
+							persisted: null,
+							withImageUri: null,
+							error: err instanceof Error ? err.message : String(err),
+							ts: new Date().toISOString(),
+						})
+					);
+				} catch {
+					// ignore
+				}
 				console.warn(
-					`[extract_visuals] Persist failed doc=${docId} page=${i}: ${
-						err instanceof Error ? err.message : String(err)
-					}`
+					`[extract_visuals] Persist failed doc=${docId} page=${i}: ${err instanceof Error ? err.message : String(err)}`
 				);
 			}
 			await yieldToEventLoop();

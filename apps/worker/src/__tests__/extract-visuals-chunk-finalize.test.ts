@@ -583,6 +583,11 @@ describe("extract_visuals chunking finalization", () => {
 		expect(plan.page_range_start).toBe(0);
 		expect(plan.page_range_end).toBe(1);
 
+		const urisResolved = events.find((e: any) => e.event === "EXTRACT_VISUALS_URIS_RESOLVED");
+		expect(urisResolved).toBeTruthy();
+		expect(urisResolved.document_id).toBe("doc-1");
+		expect(urisResolved.uris_count).toBeGreaterThan(0);
+
 		const summary = events.find((e: any) => e.event === "EXTRACT_VISUALS_DOC_SUMMARY");
 		expect(summary).toBeTruthy();
 		const skipped = events.filter((e: any) => e.event === "EXTRACT_VISUALS_PAGE_SKIPPED");
@@ -592,6 +597,14 @@ describe("extract_visuals chunking finalization", () => {
 		if (skipped.length === 0) {
 			expect(m.callVisionWorkerWithRetries).toHaveBeenCalled();
 			expect(summary?.vision_calls_started ?? 0).toBeGreaterThan(0);
+
+			const prep = events.find((e: any) => e.event === "VISION_REQUEST_PREP");
+			expect(prep).toBeTruthy();
+			expect(prep.document_id).toBe("doc-1");
+
+			const persisted = events.find((e: any) => e.event === "VISION_PERSIST_RESULT");
+			expect(persisted).toBeTruthy();
+			expect(persisted.document_id).toBe("doc-1");
 		}
 
 		logSpy.mockRestore();

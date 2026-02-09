@@ -24,6 +24,25 @@ test("dashboard browser contract smoke: HTML shell contains load-bearing strings
 
   const html = String(res.body ?? "");
 
+  // Regression: do not emit invalid JS like `.join('` + newline + `')`.
+  assert.ok(!html.includes("join('\n"));
+
+  // Regression: whitespace normalization must not degrade into /s+/g (would strip the letter 's').
+  assert.ok(!html.includes("replace(/s+/g"));
+  assert.ok(!html.includes("split(/(?<=[.!?])s+/"));
+  assert.ok(html.includes("replace(/\\s+/g"));
+  assert.ok(html.includes("split(/(?<=[.!?])\\s+/"));
+
+  // Unit-style sanity check for the intended normalization behavior.
+  const normalizeDisplayText = (s: string) => s.replace(/\s+/g, " ").trim();
+  const sample = "business  analysis\naccessories\tThis is a test";
+  const out = normalizeDisplayText(sample);
+  assert.ok(out.includes("business"));
+  assert.ok(out.includes("analysis"));
+  assert.ok(out.includes("accessories"));
+  assert.ok(out.includes("This"));
+  assert.ok(!out.includes("  "));
+
   // HTML shell contract (browser-facing strings)
   assert.ok(html.includes("🧭 Deterministic"));
   assert.ok(html.includes("🧩 Node Inspector"));
@@ -44,6 +63,7 @@ test("dashboard browser contract smoke: HTML shell contains load-bearing strings
   assert.ok(html.includes("deterministic-score-understanding-v1"));
   assert.ok(html.includes("function detectDeterministicScoreV1EnvSource"));
   assert.ok(!html.includes("process.env.DETERMINISTIC_SCORE_V1_ENABLED"));
+  assert.ok(html.includes("Request exceeded 180s."));
   assert.ok(html.includes("UI Preview (v1)"));
   assert.ok(html.includes("Expected segments"));
   assert.ok(html.includes("deck_type"));

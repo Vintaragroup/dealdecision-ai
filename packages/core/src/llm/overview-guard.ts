@@ -55,6 +55,31 @@ const getAtPath = (root: any, path: string): unknown => {
 	return cur;
 };
 
+// Common sentence starters that are not entities, but often get Title-Case at sentence start.
+// Case-insensitive; used only for sentence-start suppression (NOT a global ignore list).
+const COMMON_SENTENCE_STARTERS = new Set(
+	[
+		"clarity",
+		"understanding",
+		"currently",
+		"clear",
+		"transparent",
+		"specific",
+		"reliable",
+		"insufficient",
+		"lack",
+		"potential",
+		"insights",
+		"information",
+		"projections",
+		"operations",
+		"legal",
+		"forecasted",
+		"heavy",
+		"current",
+	].map((s) => s.toLowerCase()),
+);
+
 // Common deck artifacts / headings that are not named entities.
 // Case-insensitive: these tokens will never be treated as a new entity.
 const NON_ENTITY_TOKENS = new Set([
@@ -218,6 +243,31 @@ const extractEntityCandidates = (text: string): string[] => {
 		return re.test(raw);
 	};
 
+	const isSentenceStartIndex = (index: number): boolean => {
+		if (index <= 0) return true;
+		const prefix = raw.slice(0, index);
+		// Sentence start if preceded by start-of-string OR (.?! or newline) plus optional quotes/parens/brackets/spaces.
+		return /(^|[.?!\n])[\s"'“”‘’()\[\]{}]*$/.test(prefix);
+	};
+
+	// Suppress a Title-Case token if (a) it is in COMMON_SENTENCE_STARTERS and
+	// (b) every occurrence of that token in the string is at a sentence start.
+	// If the token appears mid-sentence anywhere, it is NOT suppressed.
+	const suppressCommonSentenceStarterAtSentenceStartOnly = (tok: string): boolean => {
+		if (!/^[A-Z][a-z]+$/.test(tok)) return false;
+		if (!COMMON_SENTENCE_STARTERS.has(tok.toLowerCase())) return false;
+		const esc = escapeRegex(tok);
+		const re = new RegExp(`\\b${esc}\\b`, "g");
+		let m: RegExpExecArray | null;
+		let saw = false;
+		while ((m = re.exec(raw)) !== null) {
+			saw = true;
+			const idx = m.index;
+			if (!isSentenceStartIndex(idx)) return false;
+		}
+		return saw;
+	};
+
 	const ignoreSingle = new Set([
 		"This",
 		"That",
@@ -275,6 +325,7 @@ const extractEntityCandidates = (text: string): string[] => {
 		if (ignoreSingle.has(tok)) continue;
 		if (/^Series$/i.test(tok)) continue;
 		if (suppressSentenceStartNonEntityToken(tok)) continue;
+		if (suppressCommonSentenceStarterAtSentenceStartOnly(tok)) continue;
 		push(tok);
 	}
 

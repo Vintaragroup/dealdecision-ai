@@ -19,7 +19,7 @@ import { DealWorkspaceTopSection } from '../workspace/DealWorkspaceTopSection';
 import { DealWorkspaceOverviewComp } from '../workspace/dealworkspace_overview_comp';
 import { selectDealWorkspaceHeader } from '../../lib/selectDealWorkspaceHeader';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
-import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness } from '../../lib/apiClient';
+import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealReportNarrated, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness } from '../../lib/apiClient';
 import type { JobProgressEventV1 } from '@dealdecision/contracts';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
@@ -609,6 +609,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const [debugApiEntries, setDebugApiEntries] = useState<DebugApiEntry[]>(() => (debugApiIsEnabled() ? debugApiGetEntries() : []));
 
+  const [governedEnvelope, setGovernedEnvelope] = useState<DealReportEnvelope | null>(null);
+  const [governedStatus, setGovernedStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [governedErrorCode, setGovernedErrorCode] = useState<string | null>(null);
+
   useEffect(() => {
     if (!debugApiIsEnabled()) return;
     setDebugApiEntries(debugApiGetEntries());
@@ -616,6 +620,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       setDebugApiEntries(debugApiGetEntries());
     });
   }, []);
+
+  useEffect(() => {
+    // Governed overlays are deal-specific and interpretation-only.
+    // Reset them when deal changes so we never show stale overlays.
+    setGovernedEnvelope(null);
+    setGovernedStatus('idle');
+    setGovernedErrorCode(null);
+  }, [dealId]);
 
   const normalizeProgressSnapshot = (progress: unknown, jobMeta?: Partial<JobUpdatedEvent>): JobProgressEventV1 | null => {
     if (!progress || typeof progress !== 'object') return null;
@@ -692,6 +704,73 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     } catch (err: any) {
       // Network / auth / server errors: keep report null but don't treat as "missing report".
       setReportFromApi(null);
+    }
+  };
+
+  const governedReportReady = Boolean((governedEnvelope as any)?.ready);
+  const governedReportFromApi = (() => {
+    if (!governedReportReady) return null;
+    const report = (governedEnvelope as any)?.report && typeof (governedEnvelope as any).report === 'object' ? (governedEnvelope as any).report : governedEnvelope;
+    return report && typeof report === 'object' ? (report as DealReport) : null;
+  })();
+
+  const governedMeta = (governedReportFromApi as any)?.metadata ?? (governedEnvelope as any)?.metadata;
+  const governedOverviewText = (() => {
+    const llmOverview = (governedReportFromApi as any)?.llm_overview_v1 ?? (governedEnvelope as any)?.llm_overview_v1;
+    const text = llmOverview && typeof llmOverview === 'object' ? (llmOverview as any)?.investment_analysis_overview : null;
+    return typeof text === 'string' && text.trim().length > 0 ? text.trim() : null;
+  })();
+
+  const extractGovernedErrorCode = (meta: any): string | null => {
+    if (!meta || typeof meta !== 'object') return null;
+    const maybe =
+      meta?.llm_overview_v1_error?.code ??
+      meta?.llm_narration_v1_error?.code ??
+      meta?.llm_overview_v1_error ??
+      meta?.llm_narration_v1_error ??
+      null;
+    if (typeof maybe === 'string' && maybe.trim().length > 0) return maybe.trim();
+    if (maybe && typeof maybe === 'object' && typeof (maybe as any).code === 'string') return String((maybe as any).code);
+    return null;
+  };
+
+  const loadGovernedOverlay = async (opts?: { force?: boolean }) => {
+    if (!dealId) return;
+    // Only fetch interpretation once deterministic report is ready.
+    if (!reportReady) return;
+    if (!opts?.force) {
+      if (governedStatus === 'loading') return;
+      if (governedStatus === 'ready' && governedReportReady) return;
+    }
+
+    setGovernedStatus('loading');
+    setGovernedErrorCode(null);
+    try {
+      const env = await apiGetDealReportNarrated(dealId);
+      setGovernedEnvelope(env);
+
+      const ready = Boolean((env as any)?.ready);
+      const report = ready
+        ? ((env as any)?.report && typeof (env as any).report === 'object' ? (env as any).report : env)
+        : null;
+      const meta = (report as any)?.metadata ?? (env as any)?.metadata;
+      const errorCode = extractGovernedErrorCode(meta);
+
+      const llmOverview = (report as any)?.llm_overview_v1 ?? (env as any)?.llm_overview_v1;
+      const hasInterpretation = !!(llmOverview && typeof llmOverview === 'object' && typeof (llmOverview as any).investment_analysis_overview === 'string' && (llmOverview as any).investment_analysis_overview.trim().length > 0);
+
+      if (!ready || !hasInterpretation) {
+        setGovernedStatus('error');
+        setGovernedErrorCode(errorCode ?? 'interpretation_unavailable');
+        return;
+      }
+
+      setGovernedStatus('ready');
+      setGovernedErrorCode(null);
+    } catch (err) {
+      setGovernedEnvelope(null);
+      setGovernedStatus('error');
+      setGovernedErrorCode(err instanceof Error ? err.message : 'provider_error');
     }
   };
 
@@ -3662,6 +3741,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     setJobReason(null);
     reportMissingRef.current = false;
     lastReportAttemptAtRef.current = 0;
+
+    // Interpretation overlays must never be treated as canonical.
+    // Reset them whenever a new analysis run begins.
+    setGovernedEnvelope(null);
+    setGovernedStatus('idle');
+    setGovernedErrorCode(null);
+
     addToast('info', 'Starting analysis…', 'Checking page understanding readiness');
     try {
       await runAnalysisWithReadinessGate(dealId, 'page_understanding_v1');
@@ -5979,6 +6065,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   strengths={decisionTileStrengths}
                   openItems={decisionTileOpenItemsAll}
                   coverageGaps={missingChips}
+                  interpretationStatus={governedStatus}
+                  interpretationText={governedOverviewText}
+                  interpretationErrorCode={governedErrorCode ?? extractGovernedErrorCode(governedMeta)}
+                  onRequestInterpretation={() => {
+                    loadGovernedOverlay().catch(() => {
+                      // handled via governedStatus
+                    });
+                  }}
                   onViewFullAnalysis={() => setActiveTab('evidence')}
                 />
 

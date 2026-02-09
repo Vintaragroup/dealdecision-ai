@@ -104,6 +104,7 @@ export function buildOverviewPrompt(args: BuildOverviewPromptArgs): { system: st
 		"(G) quality_flags.length <= 24. " +
 		"Hard rules (deterministic is the law): " +
 		"(1) Do NOT invent facts, numbers, entities, customers, geographies, partners, competitors, timelines, or metrics not present in REPORT_EXCERPT_JSON. " +
+		"(1b) Avoid sentence-initial Title Case for generic words (e.g., write 'clarity may improve…' not 'Clarity may improve…') unless it is a real named entity that appears in REPORT_EXCERPT_JSON. " +
 		"(2) If you go beyond restatement (i.e., you infer implications, risks, or causality), you MUST use uncertainty language unless the statement is directly supported by cited evidence. Use words like may/might/likely/appears/suggests/possibly. " +
 		"(3) Any KPI term OR any numeric token (including $ amounts, percentages, counts, dates/years) MUST be supported by citations chosen from CITATION_CATALOG_JSON. " +
 		"(4) Citations MUST be chosen exactly from CITATION_CATALOG_JSON; do not invent citations. " +

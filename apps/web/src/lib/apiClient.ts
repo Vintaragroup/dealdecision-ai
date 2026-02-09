@@ -1457,7 +1457,16 @@ const normalizeReportEnvelope = (value: unknown): DealReportEnvelope => {
 };
 
 export async function apiGetDealReport(dealId: string): Promise<DealReportEnvelope> {
-  const path = `/api/v1/deals/${dealId}/report`;
+  return apiGetDealReportInternal(dealId, { narrate: false });
+}
+
+export async function apiGetDealReportNarrated(dealId: string): Promise<DealReportEnvelope> {
+  return apiGetDealReportInternal(dealId, { narrate: true });
+}
+
+async function apiGetDealReportInternal(dealId: string, opts: { narrate: boolean }): Promise<DealReportEnvelope> {
+  const qs = opts.narrate ? '?narrate=1' : '';
+  const path = `/api/v1/deals/${dealId}/report${qs}`;
   const debugEnabled = debugApiIsEnabled();
   const startedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
   let res: Response | undefined;

@@ -21,6 +21,90 @@ const baseExcerpt = {
 } as const;
 
 describe("degradeOverviewV1", () => {
+	it("sentence-start 'Clarity …' does not trigger entity.new_not_in_excerpt", () => {
+		const excerpt = {
+			structured_summary: {},
+			deal_summary_v1: { version: "deal_summary_v1", one_liner: "Deterministic one-liner." },
+			deal_summary: { tiers: { hero: "Deterministic hero." } },
+			score_explanation: {
+				understanding_v1: { summary: "", strengths: [], execution_dependencies: [], diligence_open_items: [] },
+			},
+			citations: { total_sources: 0, unique_pages: 0 },
+		} as const;
+
+		const overview = {
+			version: "llm_overview_v1",
+			hero_header: "Clarity may improve with audited financials.",
+			deal_summary: { hero: "", mid: "", long: "" },
+			investment_analysis_overview: "",
+			strengths_overlay: [],
+			concerns_overlay: [],
+			coverage_gaps_overlay: [],
+			citations: [],
+			quality_flags: [],
+		};
+
+		const res = degradeOverviewV1({ reportExcerpt: excerpt, overview });
+		expect(res.ok).toBe(true);
+		expect((res.error?.violations ?? []).some((v) => v.code === "entity.new_not_in_excerpt")).toBe(false);
+	});
+
+	it("sentence-start 'Notion …' still triggers entity.new_not_in_excerpt", () => {
+		const excerpt = {
+			structured_summary: {},
+			deal_summary_v1: { version: "deal_summary_v1", one_liner: "Deterministic one-liner." },
+			deal_summary: { tiers: { hero: "Deterministic hero." } },
+			score_explanation: {
+				understanding_v1: { summary: "", strengths: [], execution_dependencies: [], diligence_open_items: [] },
+			},
+			citations: { total_sources: 0, unique_pages: 0 },
+		} as const;
+
+		const overview = {
+			version: "llm_overview_v1",
+			hero_header: "Notion may improve collaboration.",
+			deal_summary: { hero: "", mid: "", long: "" },
+			investment_analysis_overview: "",
+			strengths_overlay: [],
+			concerns_overlay: [],
+			coverage_gaps_overlay: [],
+			citations: [],
+			quality_flags: [],
+		};
+
+		const res = degradeOverviewV1({ reportExcerpt: excerpt, overview });
+		expect(res.ok).toBe(false);
+		expect(res.error?.violations.some((v) => v.code === "entity.new_not_in_excerpt")).toBe(true);
+	});
+
+	it("sentence-start 'Palm …' triggers entity.new_not_in_excerpt when excerpt is empty", () => {
+		const excerpt = {
+			structured_summary: {},
+			deal_summary_v1: { version: "deal_summary_v1", one_liner: "Deterministic one-liner." },
+			deal_summary: { tiers: { hero: "Deterministic hero." } },
+			score_explanation: {
+				understanding_v1: { summary: "", strengths: [], execution_dependencies: [], diligence_open_items: [] },
+			},
+			citations: { total_sources: 0, unique_pages: 0 },
+		} as const;
+
+		const overview = {
+			version: "llm_overview_v1",
+			hero_header: "Palm may improve execution discipline.",
+			deal_summary: { hero: "", mid: "", long: "" },
+			investment_analysis_overview: "",
+			strengths_overlay: [],
+			concerns_overlay: [],
+			coverage_gaps_overlay: [],
+			citations: [],
+			quality_flags: [],
+		};
+
+		const res = degradeOverviewV1({ reportExcerpt: excerpt, overview });
+		expect(res.ok).toBe(false);
+		expect(res.error?.violations.some((v) => v.code === "entity.new_not_in_excerpt")).toBe(true);
+	});
+
 	it("drops an invalid bullet but keeps the others", () => {
 		const overview = {
 			version: "llm_overview_v1",

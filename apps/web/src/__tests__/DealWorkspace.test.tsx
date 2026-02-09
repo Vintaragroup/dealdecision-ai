@@ -27,6 +27,7 @@ vi.mock('../lib/apiClient', async (importOriginal) => {
     apiGetEvidence: vi.fn(async () => ({ evidence: [] } as any)),
     apiGetDocuments: vi.fn(async () => ({ documents: [] } as any)),
     apiGetDealReport: vi.fn(async () => ({ ready: false, reason: 'not_generated_yet' } as any)),
+    apiGetDealReportNarrated: vi.fn(async () => ({ ready: false, reason: 'not_generated_yet' } as any)),
     apiGetDealDeterministicUnderstanding: vi.fn(async () => null as any),
     apiPostDealDeterministicUnderstanding: vi.fn(async () => ({
       analysis_version: 'deterministic_understanding_v1',

@@ -10,6 +10,11 @@ export type DealWorkspaceOverviewCompProps = {
   raiseTerms: string;
   dealSummaryParagraphs: string[];
 
+  interpretationStatus?: 'idle' | 'loading' | 'ready' | 'error';
+  interpretationText?: string | null;
+  interpretationErrorCode?: string | null;
+  onRequestInterpretation?: () => void;
+
   dealSummarySourceLabel?: string;
   dealSummaryCitations?: {
     one_liner?: Array<{ source_document_id: string; page_index: number; slide_title: string | null; snippet: string }>;
@@ -33,12 +38,19 @@ export type DealWorkspaceOverviewCompProps = {
 export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [showCitations, setShowCitations] = useState(false);
+  const [showInterpretation, setShowInterpretation] = useState(false);
 
   const cardClassName = `backdrop-blur-xl border rounded-xl p-6 w-full ${
     props.darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'
   }`;
 
   const dividerClassName = props.darkMode ? 'border-white/10' : 'border-gray-200/50';
+
+  const interpretationStatus = props.interpretationStatus ?? 'idle';
+  const interpretationText = typeof props.interpretationText === 'string' ? props.interpretationText.trim() : '';
+  const interpretationErrorCode = typeof props.interpretationErrorCode === 'string' && props.interpretationErrorCode.trim().length > 0
+    ? props.interpretationErrorCode.trim()
+    : null;
 
   const safeLines = (lines: string[]): string[] =>
     lines
@@ -252,6 +264,49 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
             <p className="text-zinc-200 text-sm leading-relaxed">
               {props.rationale}
             </p>
+          </div>
+
+          {/* Interpretation (governed overlay) */}
+          <div className={`mb-6 pb-6 border-b ${dividerClassName}`}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-zinc-400 text-sm">Interpretation</div>
+                <div className="text-zinc-500 text-xs">LLM overlay (display-only). Deterministic report remains authoritative.</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !showInterpretation;
+                  setShowInterpretation(next);
+                  if (next && interpretationStatus === 'idle') {
+                    props.onRequestInterpretation?.();
+                  }
+                }}
+                className="flex items-center gap-1.5 text-blue-400 hover:text-blue-300 transition-colors text-sm group"
+              >
+                <span>{showInterpretation ? 'Hide interpretation' : 'Show interpretation'}</span>
+                <ChevronDown
+                  className={`w-4 h-4 transition-transform duration-200 ${showInterpretation ? 'rotate-180' : ''}`}
+                  strokeWidth={1.5}
+                />
+              </button>
+            </div>
+
+            {showInterpretation ? (
+              <div className="mt-3">
+                {interpretationStatus === 'loading' ? (
+                  <div className="text-zinc-300 text-sm">Generating interpretation…</div>
+                ) : interpretationStatus === 'ready' && interpretationText ? (
+                  <div className="text-zinc-200 text-sm whitespace-pre-wrap leading-relaxed">{interpretationText}</div>
+                ) : interpretationStatus === 'error' ? (
+                  <div className="text-zinc-300 text-sm">
+                    Interpretation unavailable{interpretationErrorCode ? ` (code=${interpretationErrorCode})` : ''}.
+                  </div>
+                ) : (
+                  <div className="text-zinc-400 text-sm">Open to generate an interpretation.</div>
+                )}
+              </div>
+            ) : null}
           </div>
 
           {/* Strengths vs Concerns - Two Column Layout */}

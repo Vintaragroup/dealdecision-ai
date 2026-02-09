@@ -878,7 +878,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
             <div class="muted" style="margin-top:0.35rem;">Source: <span class="mono">response.report.llm_narration_v1</span></div>
             <div id="deterministic-llm-timeout-banner" style="display:none; margin-top:0.75rem; padding:0.6rem 0.7rem; border:1px solid #feb2b2; background:#fff5f5; border-radius:8px;">
               <div style="font-weight:700;">Timeout</div>
-              <div class="muted" style="margin-top:0.25rem;">Request exceeded 30s.</div>
+              <div class="muted" style="margin-top:0.25rem;">Request exceeded 180s.</div>
             </div>
             <div id="deterministic-llm-request-error" style="display:none; margin-top:0.75rem; padding:0.6rem 0.7rem; border:1px solid #feb2b2; background:#fff5f5; border-radius:8px;">
               <div style="font-weight:700;">Error</div>
@@ -932,7 +932,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
             <div class="muted" style="margin-top:0.35rem;">Fetches governed output from <span class="mono">/api/v1/deals/:dealId/report?narrate=1</span> only on click (no server behavior changes).</div>
             <div id="deterministic-overlay-timeout-banner" style="display:none; margin-top:0.75rem; padding:0.6rem 0.7rem; border:1px solid #feb2b2; background:#fff5f5; border-radius:8px;">
               <div style="font-weight:700;">Timeout</div>
-              <div class="muted" style="margin-top:0.25rem;">Request exceeded 30s.</div>
+              <div class="muted" style="margin-top:0.25rem;">Request exceeded 180s.</div>
             </div>
             <div id="deterministic-overlay-request-error" style="display:none; margin-top:0.75rem; padding:0.6rem 0.7rem; border:1px solid #feb2b2; background:#fff5f5; border-radius:8px;">
               <div style="font-weight:700;">Error</div>
@@ -1937,12 +1937,12 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       // NOTE: this code is emitted inside a server-side template string; regex backslashes must be double-escaped.
       const isProbablyOcrJunk = (value) => {
         if (typeof value !== 'string') return true;
-        const s = value.replace(/[\\u0000-\\u001F\\u007F]+/g, ' ').replace(/\s+/g, ' ').trim();
+        const s = value.replace(/[\\u0000-\\u001F\\u007F]+/g, ' ').replace(/\\s+/g, ' ').trim();
         if (!s) return true;
         if (/[\uFFFD�]/.test(s)) return true;
         if (/[@#%*=^~\\x60|\\\\]{2,}/.test(s)) return true;
         if (/([!?.,:;])\\1{2,}/.test(s)) return true;
-        const noSpace = s.replace(/\s+/g, '');
+        const noSpace = s.replace(/\\s+/g, '');
         const letters = (noSpace.match(/[A-Za-z]/g) ?? []).length;
         const symbols = (noSpace.match(/[^A-Za-z0-9]/g) ?? []).length;
         if (noSpace.length >= 20) {
@@ -1956,7 +1956,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
 
       const safeText = (value) => {
         if (typeof value !== 'string') return '';
-        const s = value.replace(/\s+/g, ' ').trim();
+        const s = value.replace(/\\s+/g, ' ').trim();
         if (!s) return '';
         if (isProbablyOcrJunk(s)) return '';
         return s;
@@ -1966,7 +1966,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         const xs = Array.isArray(lines) ? lines : [];
         return xs
           .filter((x) => typeof x === 'string')
-          .map((x) => String(x || '').replace(/\s+/g, ' ').trim())
+          .map((x) => String(x || '').replace(/\\s+/g, ' ').trim())
           .filter((x) => x.length > 0);
       };
 
@@ -2210,7 +2210,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         };
         const direct = mapped[key];
         if (direct) return direct;
-        const human = raw.replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+        const human = raw.replace(/[_-]+/g, ' ').replace(/\\s+/g, ' ').trim();
         return human.length > 80 ? (human.slice(0, 77).trim() + '…') : human;
       };
 
@@ -2715,11 +2715,11 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
 
       const normalizeForCompare = (v) => {
         if (v == null) return null;
-        if (typeof v === 'string') return String(v || '').replace(/\s+/g, ' ').trim();
+        if (typeof v === 'string') return String(v || '').replace(/\\s+/g, ' ').trim();
         if (Array.isArray(v)) {
           return v
             .filter((x) => typeof x === 'string')
-            .map((x) => String(x || '').replace(/\s+/g, ' ').trim())
+            .map((x) => String(x || '').replace(/\\s+/g, ' ').trim())
             .filter(Boolean);
         }
         if (typeof v === 'object') {
@@ -2727,7 +2727,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
             const out = {};
             for (const k of Object.keys(v)) {
               const vv = v[k];
-              out[k] = (typeof vv === 'string') ? String(vv || '').replace(/\s+/g, ' ').trim() : vv;
+              out[k] = (typeof vv === 'string') ? String(vv || '').replace(/\\s+/g, ' ').trim() : vv;
             }
             return out;
           } catch {
@@ -2752,7 +2752,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         const toText = (value) => {
           if (value == null) return '';
           if (typeof value === 'string') return String(value || '');
-          if (Array.isArray(value)) return value.filter((x) => typeof x === 'string').join('\n');
+          if (Array.isArray(value)) return value.filter((x) => typeof x === 'string').join('\\n');
           if (typeof value === 'object') {
             try {
               return Object.keys(value)
@@ -2761,7 +2761,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
                   const s = (vv == null) ? '' : (typeof vv === 'string' ? vv : String(vv));
                   return String(k) + ': ' + String(s);
                 })
-                .join('\n');
+                .join('\\n');
             } catch {
               return '';
             }
@@ -2769,12 +2769,12 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           return String(value);
         };
 
-        const text = toText(v).replace(/\s+/g, ' ').trim();
+        const text = toText(v).replace(/\\s+/g, ' ').trim();
         if (!text) return [];
 
         if (mode === 'sentences') {
           const sents = text
-            .split(/(?<=[.!?])\s+/)
+            .split(/(?<=[.!?])\\s+/)
             .map((s) => String(s || '').trim())
             .filter(Boolean);
           return sents.length ? sents : [text];
@@ -5124,8 +5124,9 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           // ignore
         }
 
-        const msg = e?.message || String(e);
+        let msg = e?.message || String(e);
         const isAbort = Boolean(e && (e.name === 'AbortError' || String(e).toLowerCase().includes('abort')));
+        if (isAbort) msg = 'Request exceeded ' + String(NARRATED_REPORT_TIMEOUT_SECONDS) + 's.';
 
         if (isAbort && timeoutEl) {
           timeoutEl.style.display = 'block';
@@ -5218,8 +5219,9 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           // ignore
         }
 
-        const msg = e?.message || String(e);
+        let msg = e?.message || String(e);
         const isAbort = Boolean(e && (e.name === 'AbortError' || String(e).toLowerCase().includes('abort')));
+        if (isAbort) msg = 'Request exceeded ' + String(NARRATED_REPORT_TIMEOUT_SECONDS) + 's.';
 
         if (isAbort && timeoutEl) timeoutEl.style.display = 'block';
         if (errorEl) errorEl.style.display = 'block';
@@ -5230,7 +5232,9 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       }
     }
 
-    // Narration fetch: 30s timeout ONLY for narration requests.
+    // Narration fetch: allow more time; /report?narrate=1 can take longer in dev.
+    const NARRATED_REPORT_TIMEOUT_MS = 180_000;
+    const NARRATED_REPORT_TIMEOUT_SECONDS = Math.round(NARRATED_REPORT_TIMEOUT_MS / 1000);
     let deterministicNarrationState = { narration: null, narrationError: null, narrationMeta: null };
 
     async function fetchNarratedReport(dealId) {
@@ -5240,7 +5244,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       const url = apiUrl('/api/v1/deals/' + encodeURIComponent(id) + '/report?narrate=1&t=' + Date.now());
 
       const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
-      const timeoutMs = 30_000;
+      const timeoutMs = NARRATED_REPORT_TIMEOUT_MS;
       const timeoutId = globalThis.setTimeout(() => {
         try {
           if (controller) controller.abort();

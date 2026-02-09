@@ -29,7 +29,7 @@ describe('apiGetDealReport URL contract', () => {
   };
 
   test('apiGetDealReport calls /report (no narrate param)', async () => {
-    const fetchSpy = vi.fn(async () => makeJsonResponse({ ready: false, reason: 'not_generated_yet' }));
+    const fetchSpy = vi.fn(async (_input: RequestInfo | URL) => makeJsonResponse({ ready: false, reason: 'not_generated_yet' }));
     vi.stubGlobal('fetch', fetchSpy as any);
 
     const { apiGetDealReport } = await import('../lib/apiClient');
@@ -42,7 +42,7 @@ describe('apiGetDealReport URL contract', () => {
   });
 
   test('apiGetDealReportNarrated calls /report?narrate=1', async () => {
-    const fetchSpy = vi.fn(async () => makeJsonResponse({ ready: false, reason: 'not_generated_yet' }));
+    const fetchSpy = vi.fn(async (_input: RequestInfo | URL) => makeJsonResponse({ ready: false, reason: 'not_generated_yet' }));
     vi.stubGlobal('fetch', fetchSpy as any);
 
     const { apiGetDealReportNarrated } = await import('../lib/apiClient');

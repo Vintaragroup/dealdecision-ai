@@ -67,4 +67,27 @@ describe("enqueuePersistedJob", () => {
 			})
 		).resolves.toEqual({ job_id: "test_job_123" });
 	});
+
+	it("rejects empty document_id for document-scoped jobs", async () => {
+		const pool: MockPool = {
+			query: vi.fn(async () => ({ rows: [] } as any)),
+		};
+		const queue: MockQueue = {
+			add: vi.fn(async () => ({} as any)),
+		};
+
+		vi.doMock("../db", () => ({ getPool: () => pool }));
+		vi.doMock("../queue", () => ({ getQueue: () => queue }));
+
+		const { enqueuePersistedJob } = await import("../job-enqueue");
+		await expect(
+			enqueuePersistedJob({
+				job_id: "test_job_empty_doc",
+				type: "extract_visuals",
+				deal_id: "deal_1",
+				document_id: "   ",
+				payload: {},
+			})
+		).rejects.toThrow(/document_id/i);
+	});
 });

@@ -34,14 +34,33 @@ export async function enqueuePersistedJob(input: EnqueuePersistedJobInput): Prom
   const pool = getPool();
   const queue = getQueue(input.type as any);
 
+  const normalizedDealId = typeof input.deal_id === "string" ? input.deal_id.trim() : "";
+  const normalizedDocumentId = typeof input.document_id === "string" ? input.document_id.trim() : "";
+
+  const requiresDocumentId = new Set<EnqueuePersistedJobInput["type"]>([
+    "render_document_pages",
+    "extract_visuals",
+    "deep_scan_visuals",
+    "populate_document_page_understanding",
+    "document_intelligence_extract",
+    "fetch_evidence",
+    "verify_documents",
+    "remediate_extraction",
+    "reextract_documents",
+    "generate_ingestion_report",
+  ]);
+  if (requiresDocumentId.has(input.type) && !normalizedDocumentId) {
+    throw new Error(`Missing document_id for job type ${input.type}`);
+  }
+
   // Defensive: BullMQ job ids must not contain ':' or other reserved separators.
   // UUIDs are already safe, but sanitize to harden against any future changes.
   const jobId = sanitizeJobId(input.job_id ? String(input.job_id) : randomUUID());
 
   const payload = sanitizeDeep({
     ...(input.payload ?? {}),
-    ...(input.deal_id ? { deal_id: input.deal_id } : {}),
-    ...(input.document_id ? { document_id: input.document_id } : {}),
+		...(normalizedDealId ? { deal_id: normalizedDealId } : {}),
+		...(normalizedDocumentId ? { document_id: normalizedDocumentId } : {}),
     ...(input.parent_job_id ? { parent_job_id: input.parent_job_id } : {}),
     ...(typeof input.page_start === "number" ? { page_start: input.page_start } : {}),
     ...(typeof input.page_end === "number" ? { page_end: input.page_end } : {}),
@@ -55,8 +74,8 @@ export async function enqueuePersistedJob(input: EnqueuePersistedJobInput): Prom
        ON CONFLICT (job_id) DO NOTHING`,
       [
         sanitizeText(jobId),
-        input.deal_id ? sanitizeText(input.deal_id) : null,
-        input.document_id ? sanitizeText(input.document_id) : null,
+        normalizedDealId ? sanitizeText(normalizedDealId) : null,
+        normalizedDocumentId ? sanitizeText(normalizedDocumentId) : null,
         sanitizeText(input.type),
         sanitizeText(input.type),
         "queued",
@@ -72,8 +91,8 @@ export async function enqueuePersistedJob(input: EnqueuePersistedJobInput): Prom
        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)`,
       [
         sanitizeText(jobId),
-        input.deal_id ? sanitizeText(input.deal_id) : null,
-        input.document_id ? sanitizeText(input.document_id) : null,
+        normalizedDealId ? sanitizeText(normalizedDealId) : null,
+        normalizedDocumentId ? sanitizeText(normalizedDocumentId) : null,
         sanitizeText(input.type),
         sanitizeText(input.type),
         "queued",

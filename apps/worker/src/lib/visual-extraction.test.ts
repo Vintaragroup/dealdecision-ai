@@ -111,6 +111,48 @@ test("computeVisionRoutingDecisionV1: editable PDFs are disallowed", () => {
 	expect(res.reason).toBe("pdf_text_ok");
 });
 
+test("computeVisionRoutingDecisionV1: weak coverage allows PDF vision fallback even when needsOcr=false", () => {
+	const res = computeVisionRoutingDecisionV1({
+		doc_kind: "pdf",
+		extraction_metadata: { needsOcr: false },
+		full_text_len: 5000,
+		min_text_threshold_chars: 800,
+		page_coverage: { pages_with_text: 3, total_pages: 10, coverage: 0.3 },
+		completeness_score: 0.95,
+		summary_length: 200,
+	});
+	expect(res.vision_fallback_allowed).toBe(true);
+	expect(res.reason).toBe("pdf_weak_coverage_or_low_content");
+});
+
+test("computeVisionRoutingDecisionV1: low completeness allows PDF vision fallback", () => {
+	const res = computeVisionRoutingDecisionV1({
+		doc_kind: "pdf",
+		extraction_metadata: { needsOcr: false },
+		full_text_len: 5000,
+		min_text_threshold_chars: 800,
+		page_coverage: { pages_with_text: 9, total_pages: 10, coverage: 0.9 },
+		completeness_score: 0.5,
+		summary_length: 200,
+	});
+	expect(res.vision_fallback_allowed).toBe(true);
+	expect(res.reason).toBe("pdf_weak_coverage_or_low_content");
+});
+
+test("computeVisionRoutingDecisionV1: short summary allows PDF vision fallback", () => {
+	const res = computeVisionRoutingDecisionV1({
+		doc_kind: "pdf",
+		extraction_metadata: { needsOcr: false },
+		full_text_len: 5000,
+		min_text_threshold_chars: 800,
+		page_coverage: { pages_with_text: 9, total_pages: 10, coverage: 0.9 },
+		completeness_score: 0.95,
+		summary_length: 10,
+	});
+	expect(res.vision_fallback_allowed).toBe(true);
+	expect(res.reason).toBe("pdf_weak_coverage_or_low_content");
+});
+
 test("computeVisionRoutingDecisionV1: image-only PDFs allow vision only after OCR attempted and low text", () => {
 	const allowed = computeVisionRoutingDecisionV1({
 		doc_kind: "pdf",

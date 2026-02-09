@@ -2140,9 +2140,26 @@ export type VisionRoutingDecisionV1 = {
 		needs_ocr: boolean | null;
 		page_ocr_attempted: boolean | null;
 		full_text_len: number | null;
+		pages_with_text: number | null;
+		total_pages: number | null;
+		coverage: number | null;
+		completeness_score: number | null;
+		summary_length: number | null;
 		min_text_threshold_chars: number;
 	};
 };
+
+function coerceNumberOrNull(v: unknown): number | null {
+	if (typeof v !== "number") return null;
+	if (!Number.isFinite(v)) return null;
+	return v;
+}
+
+function coerceIntOrNull(v: unknown): number | null {
+	const n = coerceNumberOrNull(v);
+	if (n == null) return null;
+	return Math.max(0, Math.floor(n));
+}
 
 function coerceBoolOrNull(v: unknown): boolean | null {
 	if (typeof v === "boolean") return v;
@@ -2184,12 +2201,34 @@ export function computeVisionRoutingDecisionV1(params: {
 	full_text_len: number;
 	min_text_threshold_chars: number;
 	force_ocr?: boolean;
+	page_coverage?: { pages_with_text: number | null; total_pages: number | null; coverage: number | null };
+	completeness_score?: number | null;
+	summary_length?: number | null;
 }): VisionRoutingDecisionV1 {
 	const docKind = String(params.doc_kind || "unknown").trim().toLowerCase();
 	const minTextThresholdChars = Number.isFinite(params.min_text_threshold_chars)
 		? Math.max(0, Math.floor(params.min_text_threshold_chars))
 		: 800;
 	const fullTextLen = Number.isFinite(params.full_text_len) ? Math.max(0, Math.floor(params.full_text_len)) : 0;
+
+	const metaObj = params.extraction_metadata && typeof params.extraction_metadata === "object" ? (params.extraction_metadata as any) : null;
+	const completenessScore = params.completeness_score ?? coerceNumberOrNull(metaObj?.completeness?.score);
+	const summaryLength = params.summary_length ?? coerceIntOrNull(metaObj?.summaryLength);
+
+	const pagesWithTextFromMeta = (() => {
+		const probe = metaObj?.pdf_text_probe && typeof metaObj.pdf_text_probe === "object" ? metaObj.pdf_text_probe : null;
+		const probe2 = metaObj?.textProbe && typeof metaObj.textProbe === "object" ? metaObj.textProbe : null;
+		return coerceIntOrNull(probe?.pages_with_text ?? probe2?.pages_with_text);
+	})();
+	const totalPagesFromMeta = coerceIntOrNull(metaObj?.totalPages ?? metaObj?.pagesProcessed ?? metaObj?.pages_probed);
+
+	const pagesWithText = params.page_coverage?.pages_with_text ?? pagesWithTextFromMeta;
+	const totalPages = params.page_coverage?.total_pages ?? totalPagesFromMeta;
+	const coverage = params.page_coverage?.coverage ?? (totalPages && totalPages > 0 && pagesWithText != null ? pagesWithText / totalPages : null);
+	const weakCoverageOrLowContent =
+		(coverage != null && coverage < 0.7) ||
+		(completenessScore != null && completenessScore < 0.8) ||
+		(summaryLength != null && summaryLength < 50);
 
 	const isOffice = docKind === "excel" || docKind === "powerpoint" || docKind === "word";
 	const isPdf = docKind === "pdf";
@@ -2211,6 +2250,9 @@ export function computeVisionRoutingDecisionV1(params: {
 		if (forceOcr) {
 			visionFallbackAllowed = true;
 			reason = "force_ocr";
+		} else if (weakCoverageOrLowContent) {
+			visionFallbackAllowed = true;
+			reason = "pdf_weak_coverage_or_low_content";
 		} else if (needsOcr !== true) {
 			visionFallbackAllowed = false;
 			reason = "pdf_text_ok";
@@ -2237,6 +2279,11 @@ export function computeVisionRoutingDecisionV1(params: {
 			needs_ocr: needsOcr,
 			page_ocr_attempted: pageOcrAttempted,
 			full_text_len: fullTextLen,
+			pages_with_text: pagesWithText,
+			total_pages: totalPages,
+			coverage,
+			completeness_score: completenessScore,
+			summary_length: summaryLength,
 			min_text_threshold_chars: minTextThresholdChars,
 		},
 	};

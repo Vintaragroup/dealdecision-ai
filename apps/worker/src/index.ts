@@ -66,6 +66,8 @@ import {
 	applyVisionHintsToStructuredPowerpointSlides,
 	callXlsxWorker,
 	computeVisionRoutingDecisionV1,
+	probeImageUriFetchability,
+	type ImageUriFetchDiag,
 } from "./lib/visual-extraction";
 import { normalizeToCanonical } from "./lib/normalization";
 import { processDocument } from "./lib/processors";
@@ -562,12 +564,12 @@ async function verifyVisionServiceForJob(baseUrl: string): Promise<VisionService
 	}
 }
 
-type HeadCheckResult = { ok: boolean; status: number | null; content_type: string | null; duration_ms: number; method: "HEAD" | "GET"; error?: string };
+type HeadCheckResult = ImageUriFetchDiag | { ok: boolean; status: number | null; content_type: string | null; duration_ms: number; method: "FILE"; error?: string };
 
 async function headCheckImageUri(uri: string): Promise<HeadCheckResult> {
 	const u = String(uri || "").trim();
 	if (!u) {
-		return { ok: false, status: null, content_type: null, duration_ms: 0, method: "HEAD", error: "empty_uri" };
+		return { ok: false, status: null, content_type: null, duration_ms: 0, method: "GET_RANGE", error: "empty_uri" };
 	}
 
 	const started = Date.now();
@@ -596,48 +598,23 @@ async function headCheckImageUri(uri: string): Promise<HeadCheckResult> {
 						: ext === ".webp"
 							? "image/webp"
 							: null;
-			return { ok: true, status: 200, content_type: ct, duration_ms: Date.now() - started, method: "HEAD" };
+			return { ok: true, status: 200, content_type: ct, duration_ms: Date.now() - started, method: "FILE" };
 		} catch (err) {
 			return {
 				ok: false,
 				status: 404,
 				content_type: null,
 				duration_ms: Date.now() - started,
-				method: "HEAD",
+				method: "FILE",
 				error: err instanceof Error ? err.message : "file_not_found",
 			};
 		}
 	}
 
 	if (!u.startsWith("http://") && !u.startsWith("https://")) {
-		return { ok: false, status: null, content_type: null, duration_ms: Date.now() - started, method: "HEAD", error: "unsupported_uri" };
+		return { ok: false, status: null, content_type: null, duration_ms: Date.now() - started, method: "GET_RANGE", error: "unsupported_uri" };
 	}
-	try {
-		const headRes = await fetchWithTimeout(u, { method: "HEAD", timeoutMs: 5000 });
-		const ct = headRes.headers.get("content-type");
-		if (headRes.status === 405 || headRes.status === 501) {
-			// Some object stores don't allow HEAD; fall back to a tiny ranged GET.
-			const getRes = await fetchWithTimeout(u, { method: "GET", headers: { Range: "bytes=0-0" }, timeoutMs: 5000 });
-			const ct2 = getRes.headers.get("content-type");
-			return {
-				ok: getRes.ok,
-				status: getRes.status,
-				content_type: ct2,
-				duration_ms: Date.now() - started,
-				method: "GET",
-			};
-		}
-		return { ok: headRes.ok, status: headRes.status, content_type: ct, duration_ms: Date.now() - started, method: "HEAD" };
-	} catch (err) {
-		return {
-			ok: false,
-			status: null,
-			content_type: null,
-			duration_ms: Date.now() - started,
-			method: "HEAD",
-			error: err instanceof Error ? err.message : String(err),
-		};
-	}
+	return await probeImageUriFetchability(u, { timeoutMs: 5000 });
 }
 
 function formatRenderedPageKey(params: { prefix: string; format?: string | null; pageIndex: number }): string {

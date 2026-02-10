@@ -1,28 +1,3 @@
-// Normalize vision request image_uri for the vision worker: convert R2 keys to HTTP URLs, treat empty as missing.
-async function normalizeVisionRequestImageUri(
-	request: VisionExtractRequest,
-	env: NodeJS.ProcessEnv = process.env
-): Promise<VisionExtractRequest> {
-	const raw = typeof request.image_uri === "string" ? request.image_uri.trim() : "";
-	// Treat empty string as missing.
-	if (!raw) return { ...request, image_uri: undefined };
-	// Already acceptable for API.
-	if (raw.startsWith("http://") || raw.startsWith("https://") || raw.startsWith("/uploads/")) return request;
-
-	// If the caller provided an R2 object key (preferred DB format), convert it to a fetchable URL.
-	// This is required because the vision worker can only fetch via HTTP(S), and our preflight
-	// reachability checks expect HTTP(S).
-	const bucket = typeof env.R2_BUCKET === "string" && env.R2_BUCKET.trim() ? env.R2_BUCKET.trim() : null;
-	if (!bucket) return { ...request, image_uri: undefined };
-
-	try {
-		const key = raw.replace(/^\//, "");
-		const url = await getR2ObjectUrl({ bucket, key, env });
-		return { ...request, image_uri: url };
-	} catch {
-		return { ...request, image_uri: undefined };
-	}
-}
 import { sanitizeDeep, sanitizeText } from "@dealdecision/core";
 import type { Pool } from "pg";
 import path from "path";
@@ -56,6 +31,32 @@ export type VisionExtractRequest = {
 	return_blocks?: boolean;
 	return_structured?: boolean;
 };
+
+// Normalize vision request image_uri for the vision worker: convert R2 keys to HTTP URLs, treat empty as missing.
+async function normalizeVisionRequestImageUri(
+	request: VisionExtractRequest,
+	env: NodeJS.ProcessEnv = process.env
+): Promise<VisionExtractRequest> {
+	const raw = typeof request.image_uri === "string" ? request.image_uri.trim() : "";
+	// Treat empty string as missing.
+	if (!raw) return { ...request, image_uri: undefined };
+	// Already acceptable for API.
+	if (raw.startsWith("http://") || raw.startsWith("https://") || raw.startsWith("/uploads/")) return request;
+
+	// If the caller provided an R2 object key (preferred DB format), convert it to a fetchable URL.
+	// This is required because the vision worker can only fetch via HTTP(S), and our preflight
+	// reachability checks expect HTTP(S).
+	const bucket = typeof env.R2_BUCKET === "string" && env.R2_BUCKET.trim() ? env.R2_BUCKET.trim() : null;
+	if (!bucket) return { ...request, image_uri: undefined };
+
+	try {
+		const key = raw.replace(/^\//, "");
+		const url = await getR2ObjectUrl({ bucket, key, env });
+		return { ...request, image_uri: url };
+	} catch {
+		return { ...request, image_uri: undefined };
+	}
+}
 
 export type VisionBBox = { x: number; y: number; w: number; h: number };
 
@@ -94,6 +95,58 @@ async function fetchWithTimeout(fetchImpl: typeof fetch, url: string, init: Requ
 		return await fetchImpl(url, { ...init, signal: controller.signal });
 	} finally {
 		clearTimeout(timer);
+	}
+}
+
+export type ImageUriFetchDiag = {
+	ok: boolean;
+	status: number | null;
+	content_type: string | null;
+	duration_ms: number;
+	method: "GET_RANGE";
+	error?: string;
+};
+
+export async function probeImageUriFetchability(url: string, options?: { fetchImpl?: typeof fetch; timeoutMs?: number }): Promise<ImageUriFetchDiag> {
+	const u = String(url || "").trim();
+	if (!u) {
+		return { ok: false, status: null, content_type: null, duration_ms: 0, method: "GET_RANGE", error: "empty_uri" };
+	}
+	if (!u.startsWith("http://") && !u.startsWith("https://")) {
+		return { ok: false, status: null, content_type: null, duration_ms: 0, method: "GET_RANGE", error: "unsupported_uri" };
+	}
+
+	const started = Date.now();
+	const fetchImpl = options?.fetchImpl ?? fetch;
+	const timeoutMs = typeof options?.timeoutMs === "number" && Number.isFinite(options.timeoutMs) ? Math.max(500, options.timeoutMs) : 5000;
+
+	// Cloudflare R2 signed URLs may return 403 for HEAD while still succeeding for ranged GET (206).
+	// Use a minimal ranged GET probe to avoid false negatives.
+	try {
+		const res = await fetchWithTimeout(fetchImpl, u, { method: "GET", headers: { Range: "bytes=0-0" } }, timeoutMs);
+		const ct = res.headers.get("content-type");
+		try {
+			await res.arrayBuffer();
+		} catch {
+			// ignore
+		}
+		const ok = res.status === 200 || res.status === 206;
+		return {
+			ok,
+			status: res.status,
+			content_type: ct,
+			duration_ms: Date.now() - started,
+			method: "GET_RANGE",
+		};
+	} catch (err) {
+		return {
+			ok: false,
+			status: null,
+			content_type: null,
+			duration_ms: Date.now() - started,
+			method: "GET_RANGE",
+			error: err instanceof Error ? err.message : String(err),
+		};
 	}
 }
 

@@ -1,4 +1,16 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+vi.mock("../lib/ocr/safe-tesseract", () => {
+	return {
+		safeTesseractRecognizeBuffer: vi.fn(async () => ({
+			text: "Revenue Growth\n$1.2M ARR\nQ/Q +25%",
+			confidence: 92,
+		})),
+	};
+});
 
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://user:pass@localhost:5432/dealdecisionai_test";
 process.env.REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
@@ -152,6 +164,8 @@ vi.mock("pg", () => {
 								pageOcr: { attempted: true },
 							},
 							type: "application/pdf",
+							full_content: null,
+							page_count: 32,
 							full_text_len: fullTextOverride.length,
 						},
 					],
@@ -265,6 +279,10 @@ describe("extract_visuals chunking finalization", () => {
 	});
 
 	beforeEach(async () => {
+		const here = path.dirname(fileURLToPath(import.meta.url));
+		const fixturePath = path.join(here, "fixtures", "rendered-slide-sample.png");
+		const fixtureBytes = fs.readFileSync(fixturePath);
+
 		// Keep vision verification deterministic for these unit tests.
 		(globalThis as any).fetch = vi.fn(async (url: any, init?: any) => {
 			const u = String(url ?? "");
@@ -284,9 +302,12 @@ describe("extract_visuals chunking finalization", () => {
 				);
 			}
 
-			// Page image HEAD checks may occur; return OK.
-			if ((method === "HEAD" || method === "GET") && u.startsWith("https://example.com/page_")) {
-				return new Response("", { status: 200, headers: { "content-type": "image/png" } });
+			// Page image checks + local OCR fallback may fetch bytes.
+			if (u.startsWith("https://example.com/page_")) {
+				if (method === "HEAD") {
+					return new Response("", { status: 200, headers: { "content-type": "image/png" } });
+				}
+				return new Response(fixtureBytes, { status: 200, headers: { "content-type": "image/png" } });
 			}
 
 			// Default: OK empty
@@ -459,7 +480,9 @@ describe("extract_visuals chunking finalization", () => {
 		const m = getMocks();
 		m.useRealPersistVisionResponse = true;
 
-		await extractVisualsProcessor!(makeJob({ deal_id: "deal-1", document_id: "doc-1", page_start: 0, page_end: 1 }));
+		await extractVisualsProcessor!(
+			makeJob({ deal_id: "deal-1", document_id: "doc-1", page_start: 0, page_end: 1, skip_existing: false })
+		);
 
 		// Ensure OCR was requested
 		const firstCall = (m.callVisionWorkerWithRetries as any).mock.calls?.[0] ?? [];
@@ -518,7 +541,8 @@ describe("extract_visuals chunking finalization", () => {
 			})
 			.filter(Boolean);
 		const jobSummary = events.find((e: any) => e.event === "EXTRACT_VISUALS_JOB_SUMMARY");
-		expect(jobSummary?.counters?.pages_with_ocr ?? 0).toBe(0);
+		// With local OCR fallback enabled, we may still attach OCR text even when needsOcr=false.
+		expect(jobSummary?.counters?.pages_with_ocr ?? 0).toBe(1);
 
 		logSpy.mockRestore();
 	});
@@ -559,6 +583,7 @@ describe("extract_visuals chunking finalization", () => {
 				document_id: "doc-1",
 				page_start: 0,
 				page_end: 1,
+				skip_existing: false,
 				force_reextract: true,
 			})
 		);
@@ -606,6 +631,67 @@ describe("extract_visuals chunking finalization", () => {
 			expect(persisted).toBeTruthy();
 			expect(persisted.document_id).toBe("doc-1");
 		}
+
+		logSpy.mockRestore();
+	});
+
+	it("adds local OCR fallback when structured text is too short", async () => {
+		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined as any);
+		const m = getMocks();
+		m.useRealPersistVisionResponse = true;
+
+		// Force needsOcr=false so the vision request doesn't include OCR; local fallback should run.
+		m.docFullTextOverride = "some extracted PDF text";
+		m.docFullTextAbsentReasonOverride = null;
+
+		await extractVisualsProcessor!(
+			makeJob({
+				deal_id: "deal-1",
+				document_id: "doc-1",
+				page_start: 0,
+				page_end: 1,
+				skip_existing: false,
+				force_reextract: true,
+			})
+		);
+
+		const events = logSpy.mock.calls
+			.map((c) => c[0])
+			.filter((v) => typeof v === "string" && v.trim().startsWith("{"))
+			.map((s) => {
+				try {
+					return JSON.parse(String(s));
+				} catch {
+					return null;
+				}
+			})
+			.filter(Boolean);
+
+		const plan = events.find((e: any) => e?.event === "EXTRACT_VISUALS_DOC_PLAN");
+		expect(plan).toBeTruthy();
+		expect(plan?.is_chunk_job).toBe(true);
+		expect(plan?.skip_existing).toBe(false);
+
+		const skipped = events.find((e: any) => e?.event === "EXTRACT_VISUALS_PAGE_SKIPPED");
+		if (skipped) {
+			expect(skipped?.reason_code).toBe("__expected_not_skipped__");
+		}
+
+		expect(m.callVisionWorkerWithRetries).toHaveBeenCalled();
+		// Ensure OCR text was persisted (upsertVisualExtraction parameter $2 is ocr_text)
+		const inserts = Array.isArray(m.visualExtractions) ? m.visualExtractions : [];
+		expect(inserts.length).toBeGreaterThan(0);
+		const firstInsertParams = (inserts[0] as any)?.params ?? [];
+		const persistedOcrText = firstInsertParams?.[1];
+		expect(typeof persistedOcrText).toBe("string");
+		expect(String(persistedOcrText)).toContain("Revenue Growth");
+
+		const lens = events.find((e: any) => e?.event === "VISION_PAGE_TEXT_LENS");
+		expect(lens).toBeTruthy();
+		expect(lens?.fallback_used).toBe(true);
+		expect(typeof lens?.primary_text_len).toBe("number");
+		expect(typeof lens?.ocr_text_len).toBe("number");
+		expect(typeof lens?.final_page_text_len).toBe("number");
 
 		logSpy.mockRestore();
 	});

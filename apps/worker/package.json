@@ -5,6 +5,7 @@
   "type": "commonjs",
   "scripts": {
     "predev": "pnpm -C ../.. --filter @dealdecision/core build",
+    "pretest": "pnpm -C ../.. --filter @dealdecision/core build",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/src/index.js",
     "build": "tsc -p tsconfig.json",

@@ -97,6 +97,33 @@ import { reextractDocumentsProcessor } from "./jobs/reextract-documents";
 import { documentIntelligenceExtractProcessor } from "./jobs/document-intelligence-extract";
 import { populateDocumentPageUnderstandingProcessor } from "./jobs/populate-document-page-understanding";
 
+// Deterministic startup instrumentation (must run at boot, before any queues are registered).
+(() => {
+	const ts = new Date().toISOString();
+	console.log(
+		JSON.stringify({
+			event: "release_stamp",
+			service: "worker",
+			git_sha: typeof process.env.RENDER_GIT_COMMIT === "string" ? process.env.RENDER_GIT_COMMIT : null,
+			ts,
+		})
+	);
+
+	const visionBaseUrlRaw = process.env.VISION_BASE_URL || process.env.VISION_WORKER_URL || null;
+	const visionBaseUrl = typeof visionBaseUrlRaw === "string" && visionBaseUrlRaw.trim().length > 0 ? visionBaseUrlRaw.trim() : null;
+	const r2Bucket = typeof process.env.R2_BUCKET === "string" && process.env.R2_BUCKET.trim().length > 0 ? "set" : "missing";
+	const storageDriverRaw = process.env.STORAGE_DRIVER;
+	const storageDriver = typeof storageDriverRaw === "string" && storageDriverRaw.trim().length > 0 ? storageDriverRaw.trim() : null;
+	console.log(
+		JSON.stringify({
+			event: "runtime_env_stamp",
+			vision_base_url: visionBaseUrl,
+			r2_bucket: r2Bucket,
+			storage_driver: storageDriver,
+		})
+	);
+})();
+
 async function countVisualAssetsForDeal(pool: ReturnType<typeof getPool>, dealId: string): Promise<number | null> {
 	try {
 		const { rows } = await pool.query<{ c: number }>(

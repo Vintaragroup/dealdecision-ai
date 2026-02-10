@@ -124,3 +124,5 @@ apps/api/test/fixtures/decks/**
 !apps/api/test/fixtures/regressions/**/*.meta.json
 !apps/api/test/fixtures/regressions/fixture-summary.json
 !apps/api/test/fixtures/regressions/VERIFICATION_REPORT.md
+# local debug reports
+DEBUG_FACT_EVIDENCE_TRACE_QREDIBLE*.md

@@ -1698,6 +1698,12 @@ export async function registerDocumentRoutes(
       fileName: typeof rows[0]?.file_name === "string" ? rows[0].file_name : null,
       mimeType: typeof (rows[0] as any)?.mime_type === "string" ? String((rows[0] as any).mime_type) : null,
     });
+
+    const docKind = inferDocKindFromUpload({
+      fileName: typeof rows[0]?.file_name === "string" ? rows[0].file_name : null,
+      mimeType: typeof (rows[0] as any)?.mime_type === "string" ? String((rows[0] as any).mime_type) : null,
+      title: null,
+    });
     if (!caps.visualExtractable) {
       return reply.status(422).send({
         ok: false,
@@ -1782,7 +1788,8 @@ export async function registerDocumentRoutes(
       }
     }
 
-    if ((!renderedR2 || !count || count <= 0 || rendered == null || rendered < count) && !r2ProbeOverrideReady && !localReady) {
+    const requiresRenderedPages = docKind !== "excel";
+    if (requiresRenderedPages && (!renderedR2 || !count || count <= 0 || rendered == null || rendered < count) && !r2ProbeOverrideReady && !localReady) {
       // Best-effort self-heal: enqueue render_document_pages when applicable (deduped per document).
       const parseIntWithDefault = (input: unknown, fallback: number): number => {
         const v = Number.parseInt(String(input ?? ""), 10);

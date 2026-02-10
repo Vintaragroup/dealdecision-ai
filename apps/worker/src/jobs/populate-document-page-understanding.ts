@@ -194,6 +194,24 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 					pageEnd,
 					version,
 				});
+				const attempted = Array.isArray(promoted.facts) ? promoted.facts.length : 0;
+				if (attempted <= 0) {
+					console.warn(
+						JSON.stringify({
+							event: "PROMOTE_SLIDE_FACTS_ZERO_FACTS",
+							deal_id: resolvedDealId,
+							document_id: docId,
+							page_start: pageStart,
+							page_end: pageEnd,
+							version,
+							attempted,
+							inserted: promoted.inserted,
+							updated: promoted.updated,
+							warnings: promoted.warnings,
+							ts: new Date().toISOString(),
+						})
+					)
+				}
 				console.log(
 					JSON.stringify({
 						event: "PROMOTE_SLIDE_FACTS",
@@ -201,6 +219,7 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 						document_id: docId,
 						page_start: pageStart,
 						page_end: pageEnd,
+						attempted,
 						inserted: promoted.inserted,
 						updated: promoted.updated,
 						fact_types: promoted.facts.map((f) => f.fact_type),

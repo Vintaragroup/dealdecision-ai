@@ -641,9 +641,15 @@ function betterCandidate(a: PromotedFact, b: PromotedFact): PromotedFact {
 	return a;
 }
 
-async function upsertPromotedFact(pool: Pool, fact: PromotedFact, opts?: { run_id?: string | null; step_run_id?: string | null }): Promise<{ inserted: number; updated: number }> {
-	// Only uses base evidence_items columns; ignore optional run_id/step_run_id columns.
-	const evidenceId = stableEvidenceId(String((fact.meta as any)?.deal_id ?? "").trim(), fact.fact_type);
+async function upsertPromotedFact(
+	pool: Pool,
+	dealId: string,
+	fact: PromotedFact,
+	_opts?: { run_id?: string | null; step_run_id?: string | null }
+): Promise<{ inserted: number; updated: number }> {
+	// IMPORTANT: evidence_id must be stable and deal-scoped.
+	// Derive from the explicit dealId param (not from meta), so persistence is deterministic.
+	const evidenceId = stableEvidenceId(dealId, fact.fact_type);
 	const betterExpr = `(EXCLUDED.confidence > evidence_items.confidence OR (EXCLUDED.confidence = evidence_items.confidence AND EXCLUDED.extracted_at > evidence_items.extracted_at))`;
 	const sql = `INSERT INTO evidence_items (
 	evidence_id,
@@ -684,7 +690,7 @@ RETURNING (xmax = 0) as inserted`;
 
 	const params = [
 		evidenceId,
-		fact.meta.deal_id,
+		dealId,
 		fact.source_type ?? "promoted_slide_fact",
 		fact.source_path,
 		fact.source_document_id,
@@ -859,12 +865,28 @@ export async function promoteSlideFactsFromDocumentPageUnderstanding(pool: Pool,
 	}
 
 	const facts = Array.from(bestByType.values()).sort((a, b) => b.confidence - a.confidence || b.extracted_at.localeCompare(a.extracted_at));
+	if (facts.length === 0) {
+		// Warn (but do not fail): promotion is best-effort.
+		console.warn(
+			JSON.stringify({
+				event: "PROMOTE_SLIDE_FACTS_ZERO_FACTS",
+				deal_id: dealId,
+				document_id: documentId,
+				page_start: pageStart,
+				page_end: pageEnd,
+				version,
+				dpu_rows_loaded: dpuRows.length,
+				warnings,
+				ts: new Date().toISOString(),
+			})
+		);
+	}
 
 	let inserted = 0;
 	let updated = 0;
 	for (const fact of facts) {
 		try {
-			const res = await upsertPromotedFact(pool, fact, { run_id: params.runId ?? null, step_run_id: params.stepRunId ?? null });
+			const res = await upsertPromotedFact(pool, dealId, fact, { run_id: params.runId ?? null, step_run_id: params.stepRunId ?? null });
 			inserted += res.inserted;
 			updated += res.updated;
 		} catch (err: any) {

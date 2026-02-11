@@ -929,7 +929,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
                 <span id="deterministic-overlay-loading" class="muted" style="display:none;">Loading…</span>
               </div>
             </div>
-            <div class="muted" style="margin-top:0.35rem;">Fetches governed output from <span class="mono">/api/v1/deals/:dealId/report?narrate=1</span> only on click (no server behavior changes).</div>
+            <div class="muted" style="margin-top:0.35rem;">Prefers persisted governed overlay from <span class="mono">/api/v1/deals/:dealId/governed-llm-overview</span>; falls back to legacy narrated overlay from <span class="mono">/api/v1/deals/:dealId/report?narrate=1</span> (only on click).</div>
             <div id="deterministic-overlay-timeout-banner" style="display:none; margin-top:0.75rem; padding:0.6rem 0.7rem; border:1px solid #feb2b2; background:#fff5f5; border-radius:8px;">
               <div style="font-weight:700;">Timeout</div>
               <div class="muted" style="margin-top:0.25rem;">Request exceeded 180s.</div>
@@ -941,12 +941,19 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           </div>
 
           <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Persisted Governed Overlay (PR2) — Non-Authoritative</h2>
+            <div class="muted" style="margin-top:0.35rem;">Source: <span class="mono">/api/v1/deals/:dealId/governed-llm-overview</span></div>
+            <div id="deterministic-overlay-persisted-status" class="muted" style="margin-top:0.5rem;">Not loaded.</div>
+            <div id="deterministic-overlay-persisted-content" class="muted" style="margin-top:0.5rem;">Load deterministic first, then load governed overlay.</div>
+          </div>
+
+          <div class="card" style="margin: 0.75rem 0 1rem;">
             <h2 style="margin-bottom: 0.5rem;">Status</h2>
             <div id="deterministic-overlay-status" class="muted">Not generated yet.</div>
           </div>
 
           <div class="card" style="margin: 0.75rem 0 1rem;">
-            <h2 style="margin-bottom: 0.5rem;">Workspace Mirror Blocks</h2>
+            <h2 style="margin-bottom: 0.5rem;">Legacy narrated compare view (/report?narrate=1)</h2>
             <div id="deterministic-overlay-content" class="muted">Load deterministic first, then load governed overlay.</div>
           </div>
 
@@ -5148,12 +5155,21 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       const timeoutEl = document.getElementById('deterministic-overlay-timeout-banner');
       const errorEl = document.getElementById('deterministic-overlay-request-error');
       const errorMsgEl = document.getElementById('deterministic-overlay-request-error-message');
+      const persistedStatusEl = document.getElementById('deterministic-overlay-persisted-status');
+      const persistedContentEl = document.getElementById('deterministic-overlay-persisted-content');
 
       if (!statusEl || !contentEl) return;
 
       if (!dealId || typeof dealId !== 'string' || !dealId.trim()) {
         statusEl.innerHTML = '<div class="badge badge-danger">Missing deal id.</div>';
         contentEl.innerHTML = '<div class="muted">Enter a deal id and load deterministic first.</div>';
+
+        try {
+          if (persistedStatusEl) persistedStatusEl.innerHTML = '<div class="badge badge-danger">Missing deal id.</div>';
+          if (persistedContentEl) persistedContentEl.innerHTML = '<div class="muted">Enter a deal id and load deterministic first.</div>';
+        } catch {
+          // ignore
+        }
         return;
       }
 
@@ -5171,7 +5187,30 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       contentEl.innerHTML = '<div class="loading">Loading…</div>';
 
       try {
+        if (persistedStatusEl) persistedStatusEl.innerHTML = '<div class="loading">Loading…</div>';
+        if (persistedContentEl) persistedContentEl.innerHTML = '<div class="loading">Loading…</div>';
+      } catch {
+        // ignore
+      }
+
+      try {
         const id = dealId.trim();
+        const baseOk = Boolean(deterministicBaseReportCache);
+
+        // Prefer the persisted PR2 overlay; always fail-open.
+        let persisted = null;
+        try {
+          persisted = await fetchPersistedGovernedOverview(id);
+        } catch {
+          persisted = null;
+        }
+        try {
+          renderPersistedGovernedOverlayPanel({ baseOk, result: persisted });
+        } catch {
+          // ignore
+        }
+
+        // Legacy narrated view used for compare blocks (kept for parity).
         const narr = await fetchNarratedReport(id);
 
         try {
@@ -5206,7 +5245,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         }
 
         renderDeterministicOverlayPanel({
-          baseOk: Boolean(deterministicBaseReportCache),
+          baseOk,
           narrOk: Boolean(narr && narr.ok && narr.payload),
           baseReport: deterministicBaseReportCache,
           narratedReport: narr && narr.payload ? narr.payload : null,
@@ -5229,6 +5268,13 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
 
         statusEl.innerHTML = '<div class="badge badge-danger">provider_error</div>';
         contentEl.innerHTML = '<div class="muted">' + escapeHtml(msg) + '</div>';
+
+        try {
+          if (persistedStatusEl) persistedStatusEl.innerHTML = '<div class="badge badge-danger">provider_error</div>';
+          if (persistedContentEl) persistedContentEl.innerHTML = '<div class="muted">' + escapeHtml(msg) + '</div>';
+        } catch {
+          // ignore
+        }
       }
     }
 
@@ -5236,6 +5282,132 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
     const NARRATED_REPORT_TIMEOUT_MS = 180_000;
     const NARRATED_REPORT_TIMEOUT_SECONDS = Math.round(NARRATED_REPORT_TIMEOUT_MS / 1000);
     let deterministicNarrationState = { narration: null, narrationError: null, narrationMeta: null };
+
+    async function fetchPersistedGovernedOverview(dealId) {
+      const id = String(dealId || '').trim();
+      if (!id) return { ok: false, status: null, payload: null, overview: null, errorMessage: 'Missing dealId' };
+
+      const url = apiUrl('/api/v1/deals/' + encodeURIComponent(id) + '/governed-llm-overview?t=' + Date.now());
+
+      try {
+        if (DASHBOARD_DEV) console.debug('[dashboard:governed_overlay] GET', url);
+        const res = await fetch(url);
+        const payload = await res.json().catch(() => null);
+        const overview = payload && typeof payload === 'object' ? (payload.overview ?? null) : null;
+        return {
+          ok: !!res.ok,
+          status: typeof res.status === 'number' ? res.status : null,
+          payload,
+          overview: overview && typeof overview === 'object' ? overview : null,
+          errorMessage: null,
+        };
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        return { ok: false, status: null, payload: null, overview: null, errorMessage: msg };
+      }
+    }
+
+    function renderPersistedGovernedOverlayPanel(args) {
+      const statusEl = document.getElementById('deterministic-overlay-persisted-status');
+      const contentEl = document.getElementById('deterministic-overlay-persisted-content');
+      if (!statusEl || !contentEl) return;
+
+      const result = args && args.result ? args.result : null;
+      const baseOk = Boolean(args && args.baseOk);
+
+      if (!baseOk) {
+        statusEl.innerHTML = '<div class="badge badge-info">not_loaded</div>';
+        contentEl.innerHTML = '<div class="muted">Load deterministic first.</div>';
+        return;
+      }
+
+      if (!result) {
+        statusEl.innerHTML = '<div class="badge badge-info">not_loaded</div>';
+        contentEl.innerHTML = '<div class="muted">Click <span class="mono">Load governed overlay</span> to fetch the persisted PR2 overlay.</div>';
+        return;
+      }
+
+      if (!result.ok) {
+        const detail = result && typeof result.status === 'number' ? ('HTTP ' + String(result.status)) : (result.errorMessage || 'Unknown error');
+        statusEl.innerHTML = '<div class="badge badge-danger">provider_error</div>';
+        contentEl.innerHTML = '<div class="muted">' + escapeHtml(detail) + '</div>';
+        return;
+      }
+
+      const ov = result.overview;
+      if (!ov) {
+        statusEl.innerHTML = '<div class="badge badge-info">none</div>';
+        contentEl.innerHTML = '<div class="muted">No persisted governed overlay found for this deal.</div>';
+        return;
+      }
+
+      const phase = typeof ov.llm_phase_mode === 'string' ? ov.llm_phase_mode : 'unknown';
+      const inputHash = typeof ov.input_hash === 'string' ? ov.input_hash : '';
+      const createdAt = typeof ov.created_at === 'string' ? ov.created_at : '';
+      const summary = typeof ov.summary_text === 'string' ? ov.summary_text.trim() : '';
+      const claims = Array.isArray(ov.claims) ? ov.claims : [];
+      const disclosures = Array.isArray(ov.disclosures) ? ov.disclosures : [];
+
+      statusEl.innerHTML = '<span class="badge badge-success">present</span>';
+
+      const renderClaim = (c) => {
+        if (!c || typeof c !== 'object') return '';
+        const label = typeof c.label === 'string' ? c.label.trim() : 'Claim';
+        const valueString = typeof c.value_string === 'string' ? c.value_string.trim() : '';
+        const valueNumber = (typeof c.value_number === 'number' && Number.isFinite(c.value_number)) ? String(c.value_number) : '';
+        const unit = typeof c.unit === 'string' ? c.unit.trim() : '';
+        const value = (valueString || valueNumber) ? ((valueString || valueNumber) + (unit ? (' ' + unit) : '')) : '';
+
+        const refs = Array.isArray(c.evidence_refs) ? c.evidence_refs : [];
+        const refText = refs
+          .filter((r) => r && typeof r.document_id === 'string' && typeof r.page_index === 'number')
+          .slice(0, 3)
+          .map((r) => String(r.document_id) + ' p' + String(r.page_index))
+          .join(' • ');
+
+        const head = escapeHtml(label) + (value ? (': ' + escapeHtml(value)) : '');
+        const refsHtml = refText ? ('<div class="muted" style="margin-top:0.15rem;">' + escapeHtml(refText) + '</div>') : '';
+        return '<li>'
+          + '<div style="white-space:pre-wrap; word-break:break-word;">' + head + '</div>'
+          + refsHtml
+          + '</li>';
+      };
+
+      const claimsHtml = claims.length
+        ? ('<div style="margin-top:0.75rem;">'
+            + '<div class="muted" style="font-weight:600;">claims</div>'
+            + '<ul style="margin:0.35rem 0 0; padding-left: 1.1rem;">' + claims.slice(0, 12).map(renderClaim).join('') + '</ul>'
+          + '</div>')
+        : '<div class="muted" style="margin-top:0.75rem;">(no claims)</div>';
+
+      const disclosuresHtml = disclosures.length
+        ? ('<div style="margin-top:0.75rem;">'
+            + '<div class="muted" style="font-weight:600;">disclosures</div>'
+            + '<ul style="margin:0.35rem 0 0; padding-left: 1.1rem;">'
+              + disclosures.slice(0, 12).map((d) => {
+                if (!d || typeof d !== 'object') return '<li>(invalid disclosure)</li>';
+                const code = typeof d.code === 'string' ? d.code.trim() : '';
+                const msg = typeof d.message === 'string' ? d.message.trim() : '';
+                const text = (code ? ('(' + code + ') ') : '') + msg;
+                return '<li>' + escapeHtml(text || 'Disclosure') + '</li>';
+              }).join('')
+            + '</ul>'
+          + '</div>')
+        : '<div class="muted" style="margin-top:0.75rem;">(no disclosures)</div>';
+
+      contentEl.innerHTML = ''
+        + '<div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0.75rem;">'
+        +   '<div><div class="muted" style="font-weight:600;">llm_phase_mode</div><div class="mono">' + escapeHtml(String(phase)) + '</div></div>'
+        +   '<div><div class="muted" style="font-weight:600;">input_hash</div><div class="mono">' + escapeHtml(String(inputHash || '')) + '</div></div>'
+        +   '<div><div class="muted" style="font-weight:600;">created_at</div><div class="mono">' + escapeHtml(String(createdAt || '')) + '</div></div>'
+        + '</div>'
+        + '<div style="margin-top:0.75rem;">'
+        +   '<div class="muted" style="font-weight:600;">summary_text</div>'
+        +   (summary ? ('<div style="white-space:pre-wrap; word-break:break-word;">' + escapeHtml(summary) + '</div>') : '<div class="muted">(empty)</div>')
+        + '</div>'
+        + claimsHtml
+        + disclosuresHtml;
+    }
 
     async function fetchNarratedReport(dealId) {
       const id = String(dealId || '').trim();

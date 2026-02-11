@@ -1479,6 +1479,63 @@ export async function apiGetDealReportNarrated(dealId: string): Promise<DealRepo
   return apiGetDealReportInternal(dealId, { narrate: true });
 }
 
+export type PersistedGovernedOverlayOverview = {
+  schema_version: string;
+  deal_id: string;
+  run_id?: string;
+  step_run_id?: string;
+  input_hash: string;
+  created_at: string;
+  llm_phase_mode: 'exploratory' | 'stabilizing' | 'governed';
+  summary_text: string;
+  claims: any[];
+  disclosures: any[];
+};
+
+export async function apiGetDealGovernedOverlayPersisted(
+  dealId: string
+): Promise<{ overview: PersistedGovernedOverlayOverview | null }> {
+  const path = `/api/v1/deals/${dealId}/governed-llm-overview`;
+
+  const doFetch = async (forceRefreshToken: boolean): Promise<Response> => {
+    const authHeader = await getAuthHeader({ forceRefresh: forceRefreshToken, refreshWithinSeconds: 30 });
+    return await fetch(`${API_BASE_URL}${path}`, {
+      method: 'GET',
+      cache: 'no-store',
+      headers: {
+        ...authHeader,
+      },
+    });
+  };
+
+  const tryParseJson = async (res: Response): Promise<any> => {
+    try {
+      return await res.json();
+    } catch {
+      return null;
+    }
+  };
+
+  try {
+    let res = await doFetch(false);
+    if (!res.ok && res.status === 401) {
+      // Retry once with a forced refresh token (mirrors /report behavior).
+      res = await doFetch(true);
+    }
+    if (!res.ok) {
+      // Caller decides fallback behavior; treat non-200 as error by throwing.
+      throw new Error(`governed_overlay_http_${res.status}`);
+    }
+
+    const payload = await tryParseJson(res);
+    const overview = payload && typeof payload === 'object' ? (payload as any).overview : null;
+    return { overview: (overview && typeof overview === 'object') ? (overview as PersistedGovernedOverlayOverview) : null };
+  } catch (err) {
+    // Surface error to allow caller to fallback.
+    throw err;
+  }
+}
+
 async function apiGetDealReportInternal(dealId: string, opts: { narrate: boolean }): Promise<DealReportEnvelope> {
   const qs = opts.narrate ? '?narrate=1' : '';
   const path = `/api/v1/deals/${dealId}/report${qs}`;

@@ -11,9 +11,14 @@ export type DealWorkspaceOverviewCompProps = {
   dealSummaryParagraphs: string[];
 
   interpretationStatus?: 'idle' | 'loading' | 'ready' | 'error';
+  interpretationSource?: 'persisted' | 'narrated' | 'none';
   interpretationText?: string | null;
+  interpretationClaims?: any[];
+  interpretationDisclosures?: any[];
   interpretationErrorCode?: string | null;
   onRequestInterpretation?: () => void;
+
+  llmPhaseMode?: 'exploratory' | 'stabilizing' | 'governed' | string | null;
 
   dealSummarySourceLabel?: string;
   dealSummaryCitations?: {
@@ -47,10 +52,14 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
   const dividerClassName = props.darkMode ? 'border-white/10' : 'border-gray-200/50';
 
   const interpretationStatus = props.interpretationStatus ?? 'idle';
+  const interpretationSource = props.interpretationSource ?? 'none';
   const interpretationText = typeof props.interpretationText === 'string' ? props.interpretationText.trim() : '';
   const interpretationErrorCode = typeof props.interpretationErrorCode === 'string' && props.interpretationErrorCode.trim().length > 0
     ? props.interpretationErrorCode.trim()
     : null;
+
+  const persistedClaims = Array.isArray(props.interpretationClaims) ? props.interpretationClaims : [];
+  const persistedDisclosures = Array.isArray(props.interpretationDisclosures) ? props.interpretationDisclosures : [];
 
   const safeLines = (lines: string[]): string[] =>
     lines
@@ -83,6 +92,68 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
       (props.dealSummaryCitations?.market && props.dealSummaryCitations.market.length > 0) ||
       (props.dealSummaryCitations?.paragraphs && props.dealSummaryCitations.paragraphs.length > 0)
   );
+
+  const renderPersistedClaims = () => {
+    if (interpretationSource !== 'persisted') return null;
+    if (!persistedClaims.length) return null;
+
+    const take = persistedClaims.slice(0, 6);
+    return (
+      <div className="mt-4">
+        <div className="text-zinc-400 text-xs mb-2">Cited claims</div>
+        <ul className="space-y-2">
+          {take.map((c: any, idx: number) => {
+            const label = typeof c?.label === 'string' ? c.label.trim() : '';
+            const valueString = typeof c?.value_string === 'string' ? c.value_string.trim() : '';
+            const valueNumber = typeof c?.value_number === 'number' && Number.isFinite(c.value_number) ? String(c.value_number) : '';
+            const unit = typeof c?.unit === 'string' ? c.unit.trim() : '';
+            const value = valueString || valueNumber ? `${valueString || valueNumber}${unit ? ` ${unit}` : ''}` : '';
+
+            const refs = Array.isArray(c?.evidence_refs) ? c.evidence_refs : [];
+            const refText = refs
+              .filter((r: any) => r && typeof r.document_id === 'string' && typeof r.page_index === 'number')
+              .slice(0, 3)
+              .map((r: any) => `${String(r.document_id)} p${String(r.page_index)}`)
+              .join(' • ');
+
+            return (
+              <li key={`claim-${idx}`} className="text-zinc-300 text-sm">
+                <div className="leading-relaxed">
+                  <span className="text-zinc-200">{label || 'Claim'}</span>
+                  {value ? <span className="text-zinc-400">: {value}</span> : null}
+                </div>
+                {refText ? <div className="text-zinc-500 text-xs mt-0.5">{refText}</div> : null}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    );
+  };
+
+  const renderPersistedDisclosures = () => {
+    if (interpretationSource !== 'persisted') return null;
+    if (!persistedDisclosures.length) return null;
+
+    const take = persistedDisclosures.slice(0, 6);
+    return (
+      <div className="mt-4">
+        <div className="text-zinc-400 text-xs mb-2">Disclosures</div>
+        <ul className="space-y-1">
+          {take.map((d: any, idx: number) => {
+            const code = typeof d?.code === 'string' ? d.code.trim() : '';
+            const message = typeof d?.message === 'string' ? d.message.trim() : '';
+            const text = [code ? `(${code})` : '', message].filter(Boolean).join(' ');
+            return (
+              <li key={`disclosure-${idx}`} className="text-zinc-400 text-xs leading-relaxed">
+                {text || 'Disclosure'}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    );
+  };
 
   const renderCitations = (items: Array<{ source_document_id: string; page_index: number; slide_title: string | null; snippet: string }>) => {
     const cleaned = items
@@ -244,6 +315,11 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
                 <span className={`${badgeBaseClassName} bg-emerald-500/20 text-emerald-400 border-emerald-500/30`}>
                   {decisionLabelText}
                 </span>
+                {props.llmPhaseMode ? (
+                  <span className={`${badgeBaseClassName} bg-zinc-500/20 text-zinc-300 border-zinc-500/30`}>
+                    phase: {String(props.llmPhaseMode)}
+                  </span>
+                ) : null}
               </div>
             </div>
             
@@ -271,7 +347,10 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-zinc-400 text-sm">Interpretation</div>
-                <div className="text-zinc-500 text-xs">LLM overlay (display-only). Deterministic report remains authoritative.</div>
+                <div className="text-zinc-500 text-xs">
+                  LLM overlay (display-only). Deterministic report remains authoritative.
+                  {interpretationSource === 'persisted' ? ' Source: persisted governed overlay (PR2).' : interpretationSource === 'narrated' ? ' Source: legacy narrated /report?narrate=1.' : ''}
+                </div>
               </div>
               <button
                 type="button"
@@ -296,8 +375,16 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
               <div className="mt-3">
                 {interpretationStatus === 'loading' ? (
                   <div className="text-zinc-300 text-sm">Generating interpretation…</div>
-                ) : interpretationStatus === 'ready' && interpretationText ? (
-                  <div className="text-zinc-200 text-sm whitespace-pre-wrap leading-relaxed">{interpretationText}</div>
+                ) : interpretationStatus === 'ready' ? (
+                  <>
+                    {interpretationText ? (
+                      <div className="text-zinc-200 text-sm whitespace-pre-wrap leading-relaxed">{interpretationText}</div>
+                    ) : (
+                      <div className="text-zinc-400 text-sm">No overlay generated.</div>
+                    )}
+                    {renderPersistedClaims()}
+                    {renderPersistedDisclosures()}
+                  </>
                 ) : interpretationStatus === 'error' ? (
                   <div className="text-zinc-300 text-sm">
                     Interpretation unavailable{interpretationErrorCode ? ` (code=${interpretationErrorCode})` : ''}.

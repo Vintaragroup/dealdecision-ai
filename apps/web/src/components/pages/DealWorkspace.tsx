@@ -20,7 +20,8 @@ import { DealWorkspaceOverviewComp } from '../workspace/dealworkspace_overview_c
 import { selectDealWorkspaceHeader } from '../../lib/selectDealWorkspaceHeader';
 import { selectAuthoritativeBusinessModelV1 } from '../../lib/selectors/selectAuthoritativeBusinessModelV1';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
-import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealReportNarrated, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness } from '../../lib/apiClient';
+import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness } from '../../lib/apiClient';
+import { fetchPreferredDealOverlay, type PreferredOverlaySource } from '../../lib/preferredOverlay';
 import type { JobProgressEventV1 } from '@dealdecision/contracts';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
@@ -611,6 +612,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [debugApiEntries, setDebugApiEntries] = useState<DebugApiEntry[]>(() => (debugApiIsEnabled() ? debugApiGetEntries() : []));
 
   const [governedEnvelope, setGovernedEnvelope] = useState<DealReportEnvelope | null>(null);
+  const [governedOverlaySource, setGovernedOverlaySource] = useState<PreferredOverlaySource>('none');
+  const [governedPersistedOverview, setGovernedPersistedOverview] = useState<any | null>(null);
   const [governedStatus, setGovernedStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [governedErrorCode, setGovernedErrorCode] = useState<string | null>(null);
 
@@ -626,6 +629,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     // Governed overlays are deal-specific and interpretation-only.
     // Reset them when deal changes so we never show stale overlays.
     setGovernedEnvelope(null);
+    setGovernedOverlaySource('none');
+    setGovernedPersistedOverview(null);
     setGovernedStatus('idle');
     setGovernedErrorCode(null);
   }, [dealId]);
@@ -716,11 +721,31 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   })();
 
   const governedMeta = (governedReportFromApi as any)?.metadata ?? (governedEnvelope as any)?.metadata;
-  const governedOverviewText = (() => {
+  const narratedInterpretationText = (() => {
     const llmOverview = (governedReportFromApi as any)?.llm_overview_v1 ?? (governedEnvelope as any)?.llm_overview_v1;
     const text = llmOverview && typeof llmOverview === 'object' ? (llmOverview as any)?.investment_analysis_overview : null;
     return typeof text === 'string' && text.trim().length > 0 ? text.trim() : null;
   })();
+
+  const persistedInterpretationText = (() => {
+    if (!governedPersistedOverview || typeof governedPersistedOverview !== 'object') return null;
+    const text = (governedPersistedOverview as any).summary_text;
+    return typeof text === 'string' && text.trim().length > 0 ? text.trim() : null;
+  })();
+
+  const interpretationText = governedOverlaySource === 'persisted'
+    ? persistedInterpretationText
+    : narratedInterpretationText;
+
+  const persistedClaims = useMemo(() => {
+    const xs = governedPersistedOverview && typeof governedPersistedOverview === 'object' ? (governedPersistedOverview as any).claims : null;
+    return Array.isArray(xs) ? xs : [];
+  }, [governedPersistedOverview]);
+
+  const persistedDisclosures = useMemo(() => {
+    const xs = governedPersistedOverview && typeof governedPersistedOverview === 'object' ? (governedPersistedOverview as any).disclosures : null;
+    return Array.isArray(xs) ? xs : [];
+  }, [governedPersistedOverview]);
 
   const extractGovernedErrorCode = (meta: any): string | null => {
     if (!meta || typeof meta !== 'object') return null;
@@ -741,37 +766,55 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     if (!reportReady) return;
     if (!opts?.force) {
       if (governedStatus === 'loading') return;
-      if (governedStatus === 'ready' && governedReportReady) return;
+      if (governedStatus === 'ready' && (governedOverlaySource === 'persisted' || governedReportReady || governedOverlaySource === 'none')) return;
     }
 
     setGovernedStatus('loading');
     setGovernedErrorCode(null);
     try {
-      const env = await apiGetDealReportNarrated(dealId);
-      setGovernedEnvelope(env);
+      const preferred = await fetchPreferredDealOverlay(dealId);
 
-      const ready = Boolean((env as any)?.ready);
-      const report = ready
-        ? ((env as any)?.report && typeof (env as any).report === 'object' ? (env as any).report : env)
-        : null;
-      const meta = (report as any)?.metadata ?? (env as any)?.metadata;
-      const errorCode = extractGovernedErrorCode(meta);
-
-      const llmOverview = (report as any)?.llm_overview_v1 ?? (env as any)?.llm_overview_v1;
-      const hasInterpretation = !!(llmOverview && typeof llmOverview === 'object' && typeof (llmOverview as any).investment_analysis_overview === 'string' && (llmOverview as any).investment_analysis_overview.trim().length > 0);
-
-      if (!ready || !hasInterpretation) {
-        setGovernedStatus('error');
-        setGovernedErrorCode(errorCode ?? 'interpretation_unavailable');
+      if (preferred.overlay_source === 'persisted') {
+        setGovernedOverlaySource('persisted');
+        setGovernedPersistedOverview(preferred.overlay);
+        setGovernedEnvelope(null);
+        setGovernedStatus('ready');
+        setGovernedErrorCode(null);
         return;
       }
 
+      if (preferred.overlay_source === 'narrated') {
+        setGovernedOverlaySource('narrated');
+        setGovernedPersistedOverview(null);
+        setGovernedEnvelope(preferred.overlay.envelope as any);
+
+        const meta = preferred.overlay.metadata;
+        const errorCode = extractGovernedErrorCode(meta);
+        const llmOverview = preferred.overlay.llm_overview_v1;
+        const hasInterpretation = !!(
+          llmOverview &&
+          typeof llmOverview === 'object' &&
+          typeof (llmOverview as any).investment_analysis_overview === 'string' &&
+          (llmOverview as any).investment_analysis_overview.trim().length > 0
+        );
+
+        setGovernedStatus('ready');
+        setGovernedErrorCode(hasInterpretation ? null : (errorCode ?? null));
+        return;
+      }
+
+      // none
+      setGovernedOverlaySource('none');
+      setGovernedPersistedOverview(null);
+      setGovernedEnvelope(null);
       setGovernedStatus('ready');
       setGovernedErrorCode(null);
     } catch (err) {
+      setGovernedOverlaySource('none');
+      setGovernedPersistedOverview(null);
       setGovernedEnvelope(null);
-      setGovernedStatus('error');
-      setGovernedErrorCode(err instanceof Error ? err.message : 'provider_error');
+      setGovernedStatus('ready');
+      setGovernedErrorCode(null);
     }
   };
 
@@ -3747,6 +3790,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     // Interpretation overlays must never be treated as canonical.
     // Reset them whenever a new analysis run begins.
     setGovernedEnvelope(null);
+    setGovernedOverlaySource('none');
+    setGovernedPersistedOverview(null);
     setGovernedStatus('idle');
     setGovernedErrorCode(null);
 
@@ -6071,7 +6116,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   openItems={decisionTileOpenItemsAll}
                   coverageGaps={missingChips}
                   interpretationStatus={governedStatus}
-                  interpretationText={governedOverviewText}
+                  interpretationSource={governedOverlaySource}
+                  interpretationText={interpretationText}
+                  interpretationClaims={governedOverlaySource === 'persisted' ? persistedClaims : []}
+                  interpretationDisclosures={governedOverlaySource === 'persisted' ? persistedDisclosures : []}
+                  llmPhaseMode={
+                    (governedOverlaySource === 'persisted' && governedPersistedOverview && typeof governedPersistedOverview === 'object')
+                      ? ((governedPersistedOverview as any).llm_phase_mode ?? null)
+                      : ((dealData as any)?.llm_phase_mode ?? null)
+                  }
                   interpretationErrorCode={governedErrorCode ?? extractGovernedErrorCode(governedMeta)}
                   onRequestInterpretation={() => {
                     loadGovernedOverlay().catch(() => {

@@ -127,7 +127,7 @@ describe("degradeOverviewV1", () => {
 		expect(res.error?.dropped_bullets ?? 0).toBeGreaterThanOrEqual(1);
 	});
 
-	it("numeric/KPI token without citation triggers violation", () => {
+	it("numeric/KPI token without citation is rewritten to remove numeric/KPI tokens", () => {
 		const overview = {
 			version: "llm_overview_v1",
 			hero_header: "Revenue grew 50% year-over-year.",
@@ -141,8 +141,48 @@ describe("degradeOverviewV1", () => {
 		};
 
 		const res = degradeOverviewV1({ reportExcerpt: baseExcerpt, overview });
-		expect(res.ok).toBe(false);
-		expect(res.error?.violations.some((v) => v.code === "citation.required_for_numeric_or_kpi")).toBe(true);
+		expect(res.ok).toBe(true);
+		expect(res.error?.degraded).toBe(true);
+		expect(res.overview.hero_header).not.toMatch(/\b\d/);
+		expect(res.overview.hero_header.toLowerCase()).not.toMatch(/\brevenue\b/);
+	});
+
+	it("uncited commitment markers are softened", () => {
+		const overview = {
+			version: "llm_overview_v1",
+			hero_header: "Acme Corp will expand into adjacent verticals.",
+			deal_summary: { hero: "Acme Corp.", mid: "", long: "" },
+			investment_analysis_overview: "",
+			strengths_overlay: [],
+			concerns_overlay: [],
+			coverage_gaps_overlay: [],
+			citations: [],
+			quality_flags: [],
+		};
+
+		const res = degradeOverviewV1({ reportExcerpt: baseExcerpt, overview });
+		expect(res.ok).toBe(true);
+		expect(res.error?.degraded).toBe(true);
+		expect(res.overview.hero_header.toLowerCase()).not.toMatch(/\bwill\b/);
+		expect(res.overview.hero_header.toLowerCase()).toMatch(/\bmay\b/);
+	});
+
+	it("truncates overlong citation slide_title before schema validation", () => {
+		const overview = {
+			version: "llm_overview_v1",
+			hero_header: "Acme Corp overview.",
+			deal_summary: { hero: "Acme Corp.", mid: "", long: "" },
+			investment_analysis_overview: "",
+			strengths_overlay: [],
+			concerns_overlay: [],
+			coverage_gaps_overlay: [],
+			citations: [{ page: 1, slide_title: "A".repeat(220) }],
+			quality_flags: [],
+		};
+
+		const res = degradeOverviewV1({ reportExcerpt: baseExcerpt, overview });
+		expect(res.ok).toBe(true);
+		expect(res.overview.citations[0]?.slide_title?.length ?? 0).toBeLessThanOrEqual(160);
 	});
 
 	it("uses deterministic fallbacks on failure", () => {
@@ -305,7 +345,7 @@ describe("degradeOverviewV1", () => {
 		expect((res.error?.violations ?? []).some((v) => v.code === "citation.required_for_numeric_or_kpi")).toBe(false);
 	});
 
-	it("uncited KPI claim still requires citation", () => {
+	it("uncited KPI claim is rewritten to remove KPI tokens", () => {
 		const overview = {
 			version: "llm_overview_v1",
 			hero_header: "Acme Corp overview.",
@@ -319,11 +359,12 @@ describe("degradeOverviewV1", () => {
 		};
 
 		const res = degradeOverviewV1({ reportExcerpt: baseExcerpt, overview });
-		expect(res.ok).toBe(false);
-		expect(res.error?.violations.some((v) => v.code === "citation.required_for_numeric_or_kpi")).toBe(true);
+		expect(res.ok).toBe(true);
+		expect(res.error?.degraded).toBe(true);
+		expect(res.overview.strengths_overlay[0]?.toLowerCase()).not.toMatch(/\brevenue\b/);
 	});
 
-	it("uncited numeric KPI claim still requires citation", () => {
+	it("uncited numeric KPI claim is rewritten to remove numeric/KPI tokens", () => {
 		const overview = {
 			version: "llm_overview_v1",
 			hero_header: "Acme Corp overview.",
@@ -337,8 +378,10 @@ describe("degradeOverviewV1", () => {
 		};
 
 		const res = degradeOverviewV1({ reportExcerpt: baseExcerpt, overview });
-		expect(res.ok).toBe(false);
-		expect(res.error?.violations.some((v) => v.code === "citation.required_for_numeric_or_kpi")).toBe(true);
+		expect(res.ok).toBe(true);
+		expect(res.error?.degraded).toBe(true);
+		expect(res.overview.strengths_overlay[0]?.toLowerCase()).not.toMatch(/\brevenue\b/);
+		expect(res.overview.strengths_overlay[0] ?? "").not.toMatch(/\b\d/);
 	});
 
 	it("keeps investment_analysis_overview when it matches the required 2–4 point structure", () => {

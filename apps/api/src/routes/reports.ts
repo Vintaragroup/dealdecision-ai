@@ -19,7 +19,7 @@ import { LlmNarrationV1Schema, degradeNarrationV1, validateNoNewFacts } from '@d
 import { buildNarrationPrompt } from '@dealdecision/core';
 import type { LlmNarrationV1Type } from '@dealdecision/core';
 import { buildOverviewPrompt, degradeOverviewV1 } from '@dealdecision/core';
-import { buildInvestmentAnalysisOverviewPrompt, LlmOverviewV1Schema } from '@dealdecision/core';
+import { buildInvestmentAnalysisOverviewPrompt, LlmOverviewV1CitationSchema, LlmOverviewV1Schema } from '@dealdecision/core';
 import { loadPromotedFactsForDeal } from '../lib/promoted-facts';
 import { derivePromotedFactsFromDpuForDeal } from '../lib/promoted-facts-from-dpu';
 import { compileDealSummaryV1 } from '../lib/deal-summary-v1';
@@ -595,6 +595,192 @@ async function maybeAttachNarrationV1(args: {
   }
 }
 
+const OVERVIEW_SCHEMA_MAX = {
+  hero_header_chars: 900,
+  deal_summary_hero_chars: 400,
+  deal_summary_mid_chars: 1400,
+  deal_summary_long_chars: 3600,
+  investment_overview_chars: 2400,
+  bullet_chars: 320,
+  strengths_bullets: 6,
+  concerns_bullets: 8,
+  coverage_gaps_bullets: 12,
+  citations: 80,
+  quality_flags: 24,
+  evidence_id_chars: 96,
+  slide_title_chars: 160,
+} as const;
+
+function sanitizeLlmOverviewV1AfterGuard(overview: any): any {
+  if (!overview || typeof overview !== 'object') return overview;
+
+  const clamp = (v: unknown, max: number): unknown => {
+    if (typeof v !== 'string') return v;
+    const trimmed = v.trim();
+    if (trimmed.length <= max) return trimmed;
+    return trimmed.slice(0, max).trimEnd();
+  };
+
+  const clampBulletArray = (arr: unknown, maxItems: number): unknown => {
+    if (!Array.isArray(arr)) return arr;
+    return arr
+      .slice(0, maxItems)
+      .map((v) => clamp(v, OVERVIEW_SCHEMA_MAX.bullet_chars));
+  };
+
+  const next: any = { ...overview };
+
+  next.hero_header = clamp(next.hero_header, OVERVIEW_SCHEMA_MAX.hero_header_chars);
+  next.investment_analysis_overview = clamp(next.investment_analysis_overview, OVERVIEW_SCHEMA_MAX.investment_overview_chars);
+
+  if (next.deal_summary && typeof next.deal_summary === 'object') {
+    next.deal_summary = { ...next.deal_summary };
+    next.deal_summary.hero = clamp(next.deal_summary.hero, OVERVIEW_SCHEMA_MAX.deal_summary_hero_chars);
+    next.deal_summary.mid = clamp(next.deal_summary.mid, OVERVIEW_SCHEMA_MAX.deal_summary_mid_chars);
+    next.deal_summary.long = clamp(next.deal_summary.long, OVERVIEW_SCHEMA_MAX.deal_summary_long_chars);
+  }
+
+  next.strengths_overlay = clampBulletArray(next.strengths_overlay, OVERVIEW_SCHEMA_MAX.strengths_bullets);
+  next.concerns_overlay = clampBulletArray(next.concerns_overlay, OVERVIEW_SCHEMA_MAX.concerns_bullets);
+  next.coverage_gaps_overlay = clampBulletArray(next.coverage_gaps_overlay, OVERVIEW_SCHEMA_MAX.coverage_gaps_bullets);
+
+  if (Array.isArray(next.citations)) {
+    next.citations = next.citations.slice(0, OVERVIEW_SCHEMA_MAX.citations).map((c: any) => {
+      if (!c || typeof c !== 'object') return c;
+      const out: any = { ...c };
+      out.slide_title = clamp(out.slide_title, OVERVIEW_SCHEMA_MAX.slide_title_chars);
+      out.evidence_id = clamp(out.evidence_id, OVERVIEW_SCHEMA_MAX.evidence_id_chars);
+      return out;
+    });
+  }
+
+  if (Array.isArray(next.quality_flags)) {
+    next.quality_flags = next.quality_flags.slice(0, OVERVIEW_SCHEMA_MAX.quality_flags).map((v: any) => clamp(v, 64));
+  }
+
+  return next;
+}
+
+function sanitizeOverviewCandidateBeforeGuard(overview: any): any {
+  if (!overview || typeof overview !== 'object') return overview;
+
+  const clamp = (v: unknown, max: number): unknown => {
+    if (typeof v !== 'string') return v;
+    const trimmed = v.trim();
+    if (trimmed.length <= max) return trimmed;
+    return trimmed.slice(0, max).trimEnd();
+  };
+
+  const clampBulletArray = (arr: unknown, maxItems: number): unknown => {
+    if (!Array.isArray(arr)) return arr;
+    return arr
+      .slice(0, maxItems)
+      .map((v) => clamp(v, OVERVIEW_SCHEMA_MAX.bullet_chars));
+  };
+
+  const next: any = { ...(overview as any) };
+
+  next.hero_header = clamp(next.hero_header, OVERVIEW_SCHEMA_MAX.hero_header_chars);
+  if (next.deal_summary && typeof next.deal_summary === 'object') {
+    next.deal_summary = { ...next.deal_summary };
+    next.deal_summary.hero = clamp(next.deal_summary.hero, OVERVIEW_SCHEMA_MAX.deal_summary_hero_chars);
+    next.deal_summary.mid = clamp(next.deal_summary.mid, OVERVIEW_SCHEMA_MAX.deal_summary_mid_chars);
+    next.deal_summary.long = clamp(next.deal_summary.long, OVERVIEW_SCHEMA_MAX.deal_summary_long_chars);
+  }
+  if (typeof next.investment_analysis_overview === 'string') {
+    const repaired = repairInvestmentAnalysisOverviewStructure(next.investment_analysis_overview);
+    next.investment_analysis_overview = clamp(repaired, OVERVIEW_SCHEMA_MAX.investment_overview_chars);
+  } else {
+    next.investment_analysis_overview = clamp(next.investment_analysis_overview, OVERVIEW_SCHEMA_MAX.investment_overview_chars);
+  }
+
+  next.strengths_overlay = clampBulletArray(next.strengths_overlay, OVERVIEW_SCHEMA_MAX.strengths_bullets);
+  next.concerns_overlay = clampBulletArray(next.concerns_overlay, OVERVIEW_SCHEMA_MAX.concerns_bullets);
+  next.coverage_gaps_overlay = clampBulletArray(next.coverage_gaps_overlay, OVERVIEW_SCHEMA_MAX.coverage_gaps_bullets);
+
+  if (Array.isArray(next.citations)) {
+    const raw = next.citations.slice(0, OVERVIEW_SCHEMA_MAX.citations).map((c: any) => {
+      if (!c || typeof c !== 'object') return c;
+      const out: any = { ...c };
+      out.slide_title = clamp(out.slide_title, OVERVIEW_SCHEMA_MAX.slide_title_chars);
+      out.evidence_id = clamp(out.evidence_id, OVERVIEW_SCHEMA_MAX.evidence_id_chars);
+      return out;
+    });
+
+    // If citations are still schema-invalid (even after truncation), drop them entirely.
+    const allCitationsValid = raw.every((c: any) => LlmOverviewV1CitationSchema.safeParse(c).success);
+    next.citations = allCitationsValid ? raw : [];
+  }
+
+  if (Array.isArray(next.quality_flags)) {
+    next.quality_flags = next.quality_flags.slice(0, OVERVIEW_SCHEMA_MAX.quality_flags).map((v: any) => clamp(v, 64));
+  }
+
+  return next;
+}
+
+const repairInvestmentAnalysisOverviewStructure = (text: string): string => {
+  const raw = typeof text === 'string' ? text : '';
+  const cleaned = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+  if (!cleaned) return cleaned;
+
+  const signalRe = /(^|\n)\s*[•*\-]?\s*Signal\s*:/gim;
+  const starts: number[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = signalRe.exec(cleaned)) !== null) {
+    const idx = cleaned.indexOf('Signal', m.index);
+    starts.push(idx >= 0 ? idx : m.index);
+    if (m.index === signalRe.lastIndex) signalRe.lastIndex++;
+  }
+  const uniqStarts = Array.from(new Set(starts.filter((x) => x >= 0))).sort((a, b) => a - b);
+  if (uniqStarts.length === 0) return cleaned;
+
+  const points: string[] = [];
+  for (let i = 0; i < uniqStarts.length && points.length < 4; i++) {
+    const start = uniqStarts[i];
+    const end = i + 1 < uniqStarts.length ? uniqStarts[i + 1] : cleaned.length;
+    let chunk = cleaned.slice(start, end).trim();
+    if (!chunk) continue;
+
+    const hasImplication = /(^|\n)\s*[•*\-]?\s*Implication\s*:/im.test(chunk);
+    const hasUncertainty = /(^|\n)\s*[•*\-]?\s*Uncertainty\s*:/im.test(chunk);
+    const hasDecisionTension = /(^|\n)\s*[•*\-]?\s*Decision\s*Tension\s*:/im.test(chunk);
+    if (!hasImplication || !hasUncertainty) continue;
+
+    chunk = chunk
+      .replace(/(^|\n)\s*[•*\-]?\s*Signal\s*:/gim, '$1• Signal:')
+      .replace(/(^|\n)\s*[•*\-]?\s*Implication\s*:/gim, '$1• Implication:')
+      .replace(/(^|\n)\s*[•*\-]?\s*Uncertainty\s*:/gim, '$1• Uncertainty:')
+      .replace(/(^|\n)\s*[•*\-]?\s*Decision\s*Tension\s*:/gim, '$1• Decision Tension:');
+
+    if (!hasDecisionTension) {
+      chunk = `${chunk}\n• Decision Tension: What evidence would most change conviction, and what specific diligence question should be answered next?`;
+    }
+
+    points.push(chunk.trim());
+  }
+
+  if (points.length >= 2 && points.length <= 4) return points.join('\n\n');
+  return cleaned;
+};
+
+function sanitizeAndValidateOverviewOrDropCitations(overview: any):
+  | { ok: true; overview: any; dropped_citations: boolean }
+  | { ok: false; overview: any; error: any } {
+  const sanitized = sanitizeLlmOverviewV1AfterGuard(overview);
+
+  const first = LlmOverviewV1Schema.safeParse(sanitized);
+  if (first.success) return { ok: true as const, overview: first.data, dropped_citations: false };
+
+  const citationsOnly = first.error.issues.every((i) => i?.path?.[0] === 'citations');
+  if (!citationsOnly) return { ok: false as const, overview: sanitized, error: first.error.flatten() };
+
+  const dropped = sanitized && typeof sanitized === 'object' ? { ...(sanitized as any), citations: [] } : sanitized;
+  const second = LlmOverviewV1Schema.safeParse(dropped);
+  if (second.success) return { ok: true as const, overview: second.data, dropped_citations: true };
+  return { ok: false as const, overview: dropped, error: second.error.flatten() };
+}
+
 async function maybeAttachOverviewV1(args: {
   request: FastifyRequest;
   report: any;
@@ -690,8 +876,15 @@ async function maybeAttachOverviewV1(args: {
       }
     })();
 
-    const guarded = degradeOverviewV1({ reportExcerpt: excerpt, overview: parsed });
-    (args.report as any).llm_overview_v1 = guarded.overview;
+    const candidate = sanitizeOverviewCandidateBeforeGuard(parsed);
+    const guarded = degradeOverviewV1({ reportExcerpt: excerpt, overview: candidate });
+    const validated = sanitizeAndValidateOverviewOrDropCitations(guarded.overview);
+    if (validated.ok) {
+      (args.report as any).llm_overview_v1 = validated.overview;
+    } else {
+      ensureOverviewPresent();
+      meta.llm_overview_v1_error = meta.llm_overview_v1_error ?? { code: 'schema_invalid_after_degrade', details: validated.error };
+    }
 
     meta.llm_overview_v1_meta = {
       model: completion.model,
@@ -759,10 +952,17 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
     const out: Array<{ page: number; slide_title?: string; evidence_id?: string }> = [];
     const seen = new Set<string>();
 
+    const clampTitle = (v: unknown): string | undefined => {
+      if (typeof v !== 'string') return undefined;
+      const trimmed = v.trim();
+      if (!trimmed) return undefined;
+      return trimmed.length <= OVERVIEW_SCHEMA_MAX.slide_title_chars ? trimmed : trimmed.slice(0, OVERVIEW_SCHEMA_MAX.slide_title_chars).trimEnd();
+    };
+
     const push = (page: unknown, slideTitle: unknown, evidenceId: unknown) => {
       const p = typeof page === 'number' && Number.isFinite(page) ? page : null;
       if (p == null) return;
-      const t = typeof slideTitle === 'string' && slideTitle.trim() ? slideTitle.trim() : undefined;
+      const t = clampTitle(slideTitle);
       const e = typeof evidenceId === 'string' && evidenceId.trim() ? evidenceId.trim() : undefined;
       const key = `${p}|${(t ?? '').toLowerCase()}|${(e ?? '').toLowerCase()}`;
       if (seen.has(key)) return;
@@ -800,47 +1000,6 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
 
     walk(reportExcerpt, 0);
     return out;
-  };
-
-  const repairInvestmentAnalysisOverviewStructure = (text: string): string => {
-    const raw = typeof text === 'string' ? text : '';
-    const cleaned = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
-    if (!cleaned) return cleaned;
-
-    const signalRe = /(^|\n)\s*[•*\-]?\s*Signal\s*:/gim;
-    const starts: number[] = [];
-    let m: RegExpExecArray | null;
-    while ((m = signalRe.exec(cleaned)) !== null) {
-      // Start at the actual 'S' of Signal:
-      const idx = cleaned.indexOf('Signal', m.index);
-      starts.push(idx >= 0 ? idx : m.index);
-      if (m.index === signalRe.lastIndex) signalRe.lastIndex++;
-    }
-    const uniqStarts = Array.from(new Set(starts.filter((x) => x >= 0))).sort((a, b) => a - b);
-    if (uniqStarts.length === 0) return cleaned;
-
-    const points: string[] = [];
-    for (let i = 0; i < uniqStarts.length && points.length < 4; i++) {
-      const start = uniqStarts[i];
-      const end = i + 1 < uniqStarts.length ? uniqStarts[i + 1] : cleaned.length;
-      let chunk = cleaned.slice(start, end).trim();
-      if (!chunk) continue;
-
-      const hasImplication = /(^|\n)\s*[•*\-]?\s*Implication\s*:/im.test(chunk);
-      const hasUncertainty = /(^|\n)\s*[•*\-]?\s*Uncertainty\s*:/im.test(chunk);
-      const hasDecisionTension = /(^|\n)\s*[•*\-]?\s*Decision\s*Tension\s*:/im.test(chunk);
-      if (!hasImplication || !hasUncertainty) continue;
-
-      if (!hasDecisionTension) {
-        chunk = `${chunk}\nDecision Tension: What evidence would most change conviction, and what specific diligence question should be answered next?`;
-      }
-
-      points.push(chunk.trim());
-    }
-
-    // Only rewrite when we can produce a valid 2–4 point structure.
-    if (points.length >= 2 && points.length <= 4) return points.join('\n\n');
-    return cleaned;
   };
 
   let excerpt: any;
@@ -971,7 +1130,7 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
       (args.report as any).llm_overview_v1 = guarded.overview;
     } else {
       (existing as any).investment_analysis_overview = guarded.overview.investment_analysis_overview;
-      if (!Array.isArray((existing as any).citations) || (existing as any).citations.length === 0) {
+      if (!Array.isArray((existing as any).citations)) {
         (existing as any).citations = guardCitations;
       }
       if (Array.isArray(guarded.overview.quality_flags) && guarded.overview.quality_flags.includes('guard_degraded')) {
@@ -979,6 +1138,16 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
           ? Array.from(new Set([...(existing as any).quality_flags, 'guard_degraded']))
           : ['guard_degraded'];
       }
+    }
+
+    // Final schema safety pass (after guard/degrade + merge).
+    const current = (args.report as any).llm_overview_v1;
+    const validated = sanitizeAndValidateOverviewOrDropCitations(current);
+    if (validated.ok) {
+      (args.report as any).llm_overview_v1 = validated.overview;
+    } else {
+      ensureOverviewPresent();
+      meta.llm_overview_v1_error = meta.llm_overview_v1_error ?? { code: 'schema_invalid_after_degrade', details: validated.error };
     }
 
     // Attach lightweight metadata without introducing new meta keys.

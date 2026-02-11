@@ -3,6 +3,27 @@ import { describe, expect, test } from 'vitest';
 import { selectDealWorkspaceHeader } from '../selectDealWorkspaceHeader';
 
 describe('selectDealWorkspaceHeader', () => {
+  test('when report is ready and arbitration exists: business_model prefers arbitration and indicates Arbitrated', () => {
+    const report: any = {
+      ready: true,
+      structured_summary: {
+        business_model_summary: { value: 'Real estate investment (synthesized)' },
+        business_model: { value: 'Real estate investment (promoted)', label: 'Attributed', sources: [] },
+      },
+    };
+
+    const phase1: any = {
+      business_model_arbitration_v1: { business_model: 'saas', confidence: 0.83 },
+      business_model: 'SHOULD_NOT_WIN',
+    };
+
+    const selected = selectDealWorkspaceHeader(report, phase1);
+    expect(selected.ready).toBe(true);
+    expect(selected.business_model.value).toBe('saas');
+    expect(selected.business_model.label).toBe('Arbitrated');
+    expect(selected.business_model_synthesized.value).toBeNull();
+  });
+
   test('when report is ready: routes only from report.structured_summary (ignores Phase 1)', () => {
     const sourcesRef = [{ document_id: 'doc-1', page_index: 3, note_snippet: 'from deck' }];
 

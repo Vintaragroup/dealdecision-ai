@@ -268,7 +268,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(overviewRaiseRow).not.toBeNull();
     expect(within(overviewRaiseRow as HTMLElement).getByText(/\$2M Seed/i)).toBeInTheDocument();
 
-    const overviewBusinessModelLabel = screen.getByText(/Business Model:\s*/i);
+    const overviewBusinessModelLabel = screen.getByText(/^Business Model:\s*$/i);
     const overviewBusinessModelRow = overviewBusinessModelLabel.closest('div');
     expect(overviewBusinessModelRow).not.toBeNull();
     expect(within(overviewBusinessModelRow as HTMLElement).getByText(/Usage-based SaaS/i)).toBeInTheDocument();

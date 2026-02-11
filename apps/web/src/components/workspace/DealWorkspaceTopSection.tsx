@@ -32,6 +32,7 @@ export type DealWorkspaceTopSectionProps = {
   customersTooltip?: string | null;
   businessModel: string;
   businessModelLabel?: string | null;
+  businessModelTooltip?: string | null;
   dealType: string;
   confidence: 'High' | 'Medium' | 'Low';
   verified?: boolean;
@@ -91,6 +92,7 @@ export function DealWorkspaceTopSection({
   customersTooltip = null,
   businessModel,
   businessModelLabel = null,
+  businessModelTooltip = null,
   dealType,
   confidence,
   verified = false,
@@ -165,7 +167,14 @@ export function DealWorkspaceTopSection({
       tooltip: customersTooltip,
       badge: customersLabel,
     },
-    { label: 'Business Model', value: businessModel, note: 'Recurring', noteClass: 'text-blue-400', badge: businessModelLabel },
+    {
+      label: 'Business Model',
+      value: businessModel,
+      note: 'Recurring',
+      noteClass: 'text-blue-400',
+      tooltip: businessModelTooltip,
+      badge: businessModelLabel,
+    },
     { label: 'Deal Type', value: dealType, note: 'Equity', noteClass: 'text-amber-400' },
   ];
 

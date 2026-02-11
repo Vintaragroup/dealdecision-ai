@@ -5,7 +5,8 @@ import { getAuthToken } from './authToken';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 
 const META_ENV = (import.meta as any)?.env as any;
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:9001';
+// Local dev default: docker/infra compose and .env.example use 9000.
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:9000';
 // Default to live for any non-dev build (Render preview/staging builds may not set import.meta.env.PROD).
 // Default to mock only for true local dev.
 const DEFAULT_BACKEND_MODE = META_ENV?.DEV ? 'mock' : 'live';
@@ -22,6 +23,20 @@ export function getWebBackendRuntimeConfig() {
     prod: !!META_ENV?.PROD,
     mode: typeof META_ENV?.MODE === 'string' ? META_ENV.MODE : null,
   };
+}
+
+// DEV-only: expose a small inspection helper for debugging in the browser console.
+// DevTools can't reliably evaluate `import.meta.env`, so this provides an easy way to
+// confirm which API base URL and backend mode the running UI is using.
+try {
+  if (META_ENV?.DEV && typeof window !== 'undefined') {
+    (window as any).__ddaiApiClient = {
+      ...(typeof (window as any).__ddaiApiClient === 'object' ? (window as any).__ddaiApiClient : {}),
+      getWebBackendRuntimeConfig,
+    };
+  }
+} catch {
+  // ignore
 }
 
 async function getAuthHeader(opts?: { forceRefresh?: boolean; refreshWithinSeconds?: number }): Promise<Record<string, string>> {

@@ -18,6 +18,7 @@ import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { DealWorkspaceTopSection } from '../workspace/DealWorkspaceTopSection';
 import { DealWorkspaceOverviewComp } from '../workspace/dealworkspace_overview_comp';
 import { selectDealWorkspaceHeader } from '../../lib/selectDealWorkspaceHeader';
+import { selectAuthoritativeBusinessModelV1 } from '../../lib/selectors/selectAuthoritativeBusinessModelV1';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
 import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealReportNarrated, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness } from '../../lib/apiClient';
 import type { JobProgressEventV1 } from '@dealdecision/contracts';
@@ -1855,11 +1856,18 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     safeText((executiveSummaryV1 as any)?.market_icp) ||
     '—';
 
-  const overviewBusinessModel =
-    safeText(overviewV2?.business_model) ||
-    safeText((executiveSummaryV2 as any)?.business_model) ||
-    safeText((executiveSummaryV1 as any)?.business_model) ||
-    '—';
+  const authoritativeBusinessModel = useMemo(() => {
+    const phase1Raw = (dealFromApi as any)?.phase1;
+    const phase1 = phase1Raw && typeof phase1Raw === 'object'
+      ? phase1Raw
+      : {
+          deal_overview_v2: overviewV2 ?? null,
+          executive_summary_v1: executiveSummaryV1 ?? null,
+        };
+    return selectAuthoritativeBusinessModelV1({ report: (reportFromApi as any) ?? null, phase1 });
+  }, [dealFromApi, reportFromApi, overviewV2, executiveSummaryV1]);
+
+  const overviewBusinessModel = authoritativeBusinessModel.value || '—';
 
   const overviewRaiseTerms =
     safeText(overviewV2?.raise) ||
@@ -2266,7 +2274,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     // Primary structured signals
     out.push(safeText(overviewV2?.raise));
-    out.push(safeText(overviewV2?.business_model));
+    out.push(safeText(authoritativeBusinessModel.value));
     out.push(safeText(overviewV2?.deal_type));
     out.push(safeText(overviewV2?.product_solution));
     out.push(safeText(overviewV2?.market_icp));
@@ -2304,7 +2312,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const archetypeValue = typeof businessArchetypeV1?.value === 'string' ? businessArchetypeV1.value.toLowerCase() : '';
   const looksRealEstate =
     archetypeValue.includes('real_estate') ||
-    /\breal\s+estate\b/i.test(String(overviewV2?.business_model ?? '')) ||
+    /\breal\s+estate\b/i.test(String(authoritativeBusinessModel.value ?? '')) ||
     /\b(real_estate|preferred\s+equity|offering\s+memorandum|cap\s*rate|noi|ltv|dscr)\b/i.test(metricText);
 
   const pickMatch = (re: RegExp): RegExpMatchArray | null => {
@@ -2339,6 +2347,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
 
   type MetricCard = { label: string; value: string; change: string };
+
   const keyMetricsCards: MetricCard[] = looksRealEstate
     ? [
         { label: 'Raise / Terms', value: pickMoney(), change: 'Capital sought / structure' },
@@ -2367,7 +2376,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           value: pickValue(/\b(\d[\d,]*)\s*(customers|users|teams|clients)\b/i, (m) => `${m[1]} ${m[2]}`),
           change: 'Usage / adoption',
         },
-        { label: 'Business Model', value: safeText(overviewV2?.business_model) || safeText(executiveSummaryV1?.business_model) || '—', change: 'Model' },
+        { label: 'Business Model', value: authoritativeBusinessModel.value || '—', change: authoritativeBusinessModel.is_arbitrated ? 'Arbitrated (evidence-backed)' : 'Model' },
         { label: 'Deal Type', value: safeText(overviewV2?.deal_type) || safeText(executiveSummaryV1?.deal_type) || '—', change: 'Classification' },
         { label: displayScoreLabel, value: displayScore != null ? `${Math.round(displayScore)}/100` : '—', change: 'Overall (0–100)' },
         { label: 'Confidence', value: phase1ConfidenceRaw ? phase1ConfidenceRaw.toUpperCase() : '—', change: 'Overall' },
@@ -2462,12 +2471,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const topSectionCustomers = looksRealEstate
     ? pickValue(/\bterm\b[^\d]{0,24}(\d{1,3})\s*(months|month|mos|years|year|yrs)\b/i, (m) => `${m[1]} ${m[2]}`)
     : pickValue(/\b(\d[\d,]*)\s*(customers|users|teams|clients)\b/i, (m) => `${m[1]} ${m[2]}`);
-  const topSectionBusinessModel =
-    safeText((reportFromApi as any)?.structured_summary?.business_model_summary?.value) ||
-    safeText((reportFromApi as any)?.structured_summary?.business_model?.value) ||
-    safeText(overviewV2?.business_model) ||
-    safeText(executiveSummaryV1?.business_model) ||
-    '—';
+  const topSectionBusinessModel = authoritativeBusinessModel.value || '—';
   const topSectionDealType = safeText(overviewV2?.deal_type) || safeText(executiveSummaryV1?.deal_type) || '—';
 
   const reportView = useMemo(() => {
@@ -2513,10 +2517,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const canonicalTopSummary = canonicalDealSummaryReady ? (canonicalTierHero || canonicalDealOneLiner) : '';
     const showCanonicalTopSummary = Boolean(canonicalTopSummary);
 
-    const businessModelSynthesized = safeText(structuredSummary?.business_model_summary?.value);
-    const businessModelPromoted = safeText(structuredSummary?.business_model?.value);
-    const businessModelFromReport = businessModelSynthesized || businessModelPromoted || safeText(ctx?.business_model);
-    const businessModelLabelFromReport = businessModelSynthesized ? 'Synthesized' : null;
+    const businessModelFromReport = authoritativeBusinessModel.value || safeText(ctx?.business_model);
+    const businessModelLabelFromReport = authoritativeBusinessModel.label;
     const dealTypeFromReport = safeText(ctx?.deal_type);
     const raiseFromReport = safeText(structuredSummary?.raise?.value) || safeText(ctx?.raise);
 
@@ -2589,6 +2591,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     topSectionRaise,
     topSectionRevenue,
     topSectionCustomers,
+    authoritativeBusinessModel,
   ]);
 
   const lastReportBindingsLogRef = useRef<string | null>(null);
@@ -2602,21 +2605,20 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, [dealId, reportVersion, reportView]);
 
   const reportStructuredRaise = safeText((reportFromApi as any)?.structured_summary?.raise?.value);
-  const reportStructuredBusinessModelSynthesized = safeText((reportFromApi as any)?.structured_summary?.business_model_summary?.value);
-  const reportStructuredBusinessModelPromoted = safeText((reportFromApi as any)?.structured_summary?.business_model?.value);
-  const reportStructuredBusinessModel = reportStructuredBusinessModelSynthesized || reportStructuredBusinessModelPromoted;
-  const reportStructuredBusinessModelLabel = reportStructuredBusinessModelSynthesized ? 'Synthesized' : null;
+  const reportStructuredBusinessModelLabel = authoritativeBusinessModel.label;
 
   const selectedHeader = useMemo(() => {
     const phase1: any = {
       raise: overviewV2?.raise_terms ?? (executiveSummaryV1 as any)?.raise,
-      business_model: overviewV2?.business_model ?? (executiveSummaryV1 as any)?.business_model,
+      business_model_arbitration_v1: (dealFromApi as any)?.phase1?.business_model_arbitration_v1 ?? null,
+      deal_overview_v2: overviewV2 ?? null,
+      executive_summary_v1: executiveSummaryV1 ?? null,
       revenue: overviewV2?.revenue,
       growth: overviewV2?.growth,
       customers: overviewV2?.customers,
     };
     return selectDealWorkspaceHeader((reportFromApi as any) ?? null, phase1);
-  }, [reportFromApi, overviewV2, executiveSummaryV1]);
+  }, [reportFromApi, overviewV2, executiveSummaryV1, dealFromApi]);
 
   const reportStructuredRevenueLabel = selectedHeader.ready ? (selectedHeader.revenue.label ?? null) : null;
   const reportStructuredCustomersLabel = selectedHeader.ready ? (selectedHeader.customers.label ?? null) : null;
@@ -2648,7 +2650,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const overviewProductCanonical = canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : overviewProduct;
   const overviewMarketIcpCanonical = canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : overviewMarketIcp;
-  const overviewBusinessModelCanonical = reportStructuredBusinessModel || (reportView.applied ? reportView.businessModel : overviewBusinessModel);
+  const overviewBusinessModelCanonical = authoritativeBusinessModel.value || (reportView.applied ? reportView.businessModel : overviewBusinessModel);
   const overviewRaiseTermsCanonical = reportStructuredRaise || (reportView.applied ? reportView.raise : overviewRaiseTerms);
   const splitTierDeepToParagraphs = (raw: string): string[] => {
     const normalized = String(raw ?? '')
@@ -5205,6 +5207,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   customersTooltip={reportStructuredCustomersTooltip}
                   businessModel={reportView.businessModel}
                   businessModelLabel={reportStructuredBusinessModelLabel || reportView.businessModelLabel}
+                  businessModelTooltip={authoritativeBusinessModel.is_arbitrated
+                    ? `Evidence-backed arbitration${typeof authoritativeBusinessModel.confidence === 'number' ? ` (confidence ${Math.round(authoritativeBusinessModel.confidence * 100)}%)` : ''}`
+                    : null}
                   dealType={reportView.dealType}
                   confidence={topSectionConfidence}
                   verified={decisionTileConfidenceBand === 'high'}

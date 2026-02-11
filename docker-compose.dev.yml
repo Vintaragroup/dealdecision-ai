@@ -71,6 +71,7 @@ services:
       API_PORT: "9000"
       UPLOAD_DIR: /app/uploads
       DISABLE_CLERK_AUTH: ${DISABLE_CLERK_AUTH:-1}
+      DETERMINISTIC_SCORE_V1_ENABLED: ${DETERMINISTIC_SCORE_V1_ENABLED:-1}
       # NOTE: Root .env is used for compose substitution only; runtime injection is explicit.
       OPENAI_API_KEY: ${OPENAI_API_KEY}
     ports:
@@ -110,6 +111,7 @@ services:
       UPLOAD_DIR: /app/uploads
       VISION_BASE_URL: http://vision_worker:8000
       ENABLE_VISUAL_EXTRACTION: ${ENABLE_VISUAL_EXTRACTION:-1}
+      DETERMINISTIC_SCORE_V1_ENABLED: ${DETERMINISTIC_SCORE_V1_ENABLED:-1}
       # NOTE: Root .env is used for compose substitution only; runtime injection is explicit.
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       DDAI_ENABLE_PHASEB_VISUAL_EVIDENCE: "1"

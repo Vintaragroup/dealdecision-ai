@@ -10,11 +10,55 @@ export type DealStage = 'intake' | 'under_review' | 'in_diligence' | 'ready_deci
 export type DealPriority = 'high' | 'medium' | 'low';
 export type DealTrend = 'up' | 'down' | 'stable';
 
+export type LLMPhaseMode = 'exploratory' | 'stabilizing' | 'governed';
+
+// ============================================================================
+// PR2B: Governed LLM Overlay (Non-authoritative Artifact)
+// ============================================================================
+
+export type EvidenceRefV1 = {
+	document_id: string;
+	page_index: number;
+	dpu_id?: string;
+	block_id?: string;
+	char_range?: [number, number];
+};
+
+export type GovernedLLMClaimV1 = {
+	claim_type: 'kpi' | 'risk' | 'summary' | 'other';
+	label: string;
+	value_string?: string;
+	value_number?: number;
+	unit?: string;
+	confidence: number; // 0..1
+	evidence_refs: EvidenceRefV1[];
+};
+
+export type GovernedLLMOverviewV1 = {
+	schema_version: 'governed_llm_overview_v1';
+	deal_id: string;
+	run_id?: string;
+	step_run_id?: string;
+	input_hash: string;
+	created_at?: string;
+
+	llm_phase_mode: LLMPhaseMode;
+
+	summary_text: string;
+	claims: GovernedLLMClaimV1[];
+
+	disclosures: Array<{
+		code: string;
+		message: string;
+	}>;
+};
+
 export interface Deal {
 	id: string;
 	name: string;
 	stage: DealStage;
 	priority: DealPriority;
+	llm_phase_mode: LLMPhaseMode;
 	trend?: DealTrend;
 	score?: number;
 	owner?: string;

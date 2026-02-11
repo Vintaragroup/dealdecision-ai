@@ -95,6 +95,7 @@ import { populateDocumentPageUnderstandingFromVisualExtractions } from "./lib/do
 import { promoteSlideFactsFromDocumentPageUnderstanding } from "./lib/promote-slide-facts";
 import { ensureOcrFallbackForVisionResponse } from "./lib/vision-ocr-fallback";
 import { finishStepRunLedger, startNamedStepRunLedger, reconcileStuckPipelineRuns } from "./lib/pipeline-run-ledger";
+import { generateAndPersistGovernedLlmOverviewBestEffort } from "./lib/governed-llm-overlay";
 import { computeChunkRangeForPage } from "./lib/r2-probe";
 import { makeJobId } from "./lib/job-id";
 import { reextractDocumentsProcessor } from "./jobs/reextract-documents";
@@ -8708,6 +8709,27 @@ registerWorker("analyze_deal", async (job: Job) => {
 			`Analysis complete (version=${result.storage_result.version}${result.storage_result.is_duplicate ? ", refreshed" : ""})`,
 			100
 		);
+
+		// PR2B: governed LLM overlay artifact (evidence-bound, non-authoritative, fail-open).
+		try {
+			await generateAndPersistGovernedLlmOverviewBestEffort({
+				pool: getPool(),
+				dealId,
+				runId: job.id ? String(job.id) : null,
+				stepRunId: null,
+				dealName:
+					(typeof (previousDio as any)?.deal?.name === "string" ? (previousDio as any).deal.name : undefined) ??
+					(typeof phase1_deal_overview_v2.deal_name === "string" ? phase1_deal_overview_v2.deal_name : undefined) ??
+					null,
+				phase1_deal_overview_v2,
+				phase1_business_archetype_v1,
+				phase1_update_report_v1,
+				phase1_deal_summary_v2,
+				phase1_documents: phase1Documents.map((d) => ({ document_id: d.document_id, type: d.type ?? null })),
+			});
+		} catch {
+			// Never block deterministic pipeline completion.
+		}
 
 		if (requirePageUnderstanding) {
 			try {

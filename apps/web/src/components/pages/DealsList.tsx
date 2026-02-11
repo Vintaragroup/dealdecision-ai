@@ -1041,6 +1041,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
             name: d.name,
             stage: d.stage,
             priority: d.priority,
+            llm_phase_mode: (d as any).llm_phase_mode ?? "exploratory",
             trend: d.trend,
             score: d.score ?? undefined,
             owner: d.owner || undefined,

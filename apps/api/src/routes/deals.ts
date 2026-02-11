@@ -1018,11 +1018,14 @@ function jsonbParam(value: unknown): any {
 
 const dealUpdateSchema = dealCreateSchema.partial();
 
+const llmPhaseModeEnum = z.enum(["exploratory", "stabilizing", "governed"]);
+
 type DealRow = {
   id: string;
   name: string;
   stage: Deal["stage"];
   priority: Deal["priority"];
+  llm_phase_mode?: Deal["llm_phase_mode"] | null;
   trend: Deal["trend"] | null;
   score: number | null;
   owner: string | null;
@@ -2333,6 +2336,7 @@ function mapDeal(
     name: row.name,
     stage: row.stage,
     priority: row.priority,
+		llm_phase_mode: row.llm_phase_mode ?? "exploratory",
 		trend: String(row.trend ?? "") === "flat" ? "stable" : row.trend ?? undefined,
     owner: row.owner ?? undefined,
     lastUpdated: new Date(row.updated_at).toISOString(),
@@ -6500,8 +6504,8 @@ export async function registerDealRoutes(
     const name = requestedName || `Draft Deal ${randomUUID().slice(0, 8)}`;
 
     const { rows } = await pool.query<{ id: string }>(
-      `INSERT INTO deals (name, stage, priority, owner, created_by_user_id)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO deals (name, stage, priority, llm_phase_mode, owner, created_by_user_id)
+       VALUES ($1, $2, $3, 'exploratory', $4, $5)
        RETURNING id`,
       [name, stage, priority, owner, createdByUserId]
     );
@@ -6736,8 +6740,8 @@ export async function registerDealRoutes(
     }
 
     const { rows } = await pool.query<DealRow>(
-      `INSERT INTO deals (name, stage, priority, trend, score, owner, created_by_user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO deals (name, stage, priority, llm_phase_mode, trend, score, owner, created_by_user_id)
+       VALUES ($1, $2, $3, 'exploratory', $4, $5, $6, $7)
        RETURNING *`,
       [name, stage, priority, trend ?? null, score ?? null, owner ?? null, createdByUserId]
     );
@@ -8527,6 +8531,121 @@ export async function registerDealRoutes(
     }
 
     return mapDeal(rows[0], null, "full");
+  });
+
+  // PR2A: governance-only switch for progressive LLM gating. No side effects.
+  app.patch("/api/v1/deals/:deal_id/llm-phase", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    if (!isUuid(dealId)) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+
+    const parsed = z.object({ llm_phase_mode: llmPhaseModeEnum }).safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "Invalid input", details: parsed.error.flatten() });
+    }
+
+    const next = parsed.data.llm_phase_mode;
+    const { rows } = await pool.query<DealRow>(
+      `UPDATE deals
+          SET llm_phase_mode = $2,
+              updated_at = now()
+        WHERE id = $1
+          AND deleted_at IS NULL
+        RETURNING *`,
+      [dealId, next]
+    );
+
+    if (!rows?.[0]) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    return reply.status(200).send(mapDeal(rows[0], null, "full"));
+  });
+
+  // PR2B: latest governed LLM overlay artifact (evidence-bound). Read-only; no side effects.
+  app.get("/api/v1/deals/:deal_id/governed-llm-overview", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    if (!isUuid(dealId)) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+
+    const tableOk = await hasTable(pool as any, "governed_llm_overviews");
+    if (!tableOk) {
+      return reply.status(200).send({ overview: null });
+    }
+
+    const { rows: dealRows } = await pool.query<{ id: string }>(
+      `SELECT id FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+      [dealId]
+    );
+    if (dealRows.length === 0) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    const { rows } = await pool.query<{
+      id: string;
+      deal_id: string;
+      schema_version: string;
+      llm_phase_mode: string;
+      input_hash: string;
+      run_id: string | null;
+      step_run_id: string | null;
+      summary_text: string;
+      claims: any;
+      disclosures: any;
+      created_at: string;
+    }>(
+      `SELECT id,
+              deal_id::text as deal_id,
+              schema_version,
+              llm_phase_mode,
+              input_hash,
+              run_id,
+              step_run_id,
+              summary_text,
+              claims,
+              disclosures,
+              created_at
+         FROM governed_llm_overviews
+        WHERE deal_id = $1
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      [dealId]
+    );
+
+    const latest = rows?.[0] ?? null;
+    if (!latest) {
+      return reply.status(200).send({ overview: null });
+    }
+
+    const coerceJsonArray = (v: unknown): any[] => {
+      if (Array.isArray(v)) return v;
+      if (typeof v === "string") {
+        try {
+          const parsed = JSON.parse(v);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      }
+      return [];
+    };
+
+    return reply.status(200).send({
+      overview: {
+        schema_version: latest.schema_version,
+        deal_id: latest.deal_id,
+        run_id: latest.run_id ?? undefined,
+        step_run_id: latest.step_run_id ?? undefined,
+        input_hash: latest.input_hash,
+        created_at: latest.created_at,
+        llm_phase_mode: latest.llm_phase_mode,
+        summary_text: latest.summary_text,
+        claims: coerceJsonArray(latest.claims),
+        disclosures: coerceJsonArray(latest.disclosures),
+      },
+    });
   });
 
   app.delete("/api/v1/deals/:deal_id", async (request, reply) => {

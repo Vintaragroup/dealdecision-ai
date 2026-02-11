@@ -74,6 +74,8 @@ services:
       DETERMINISTIC_SCORE_V1_ENABLED: ${DETERMINISTIC_SCORE_V1_ENABLED:-1}
       # NOTE: Root .env is used for compose substitution only; runtime injection is explicit.
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL_REPORT_NARRATE: ${OPENAI_MODEL_REPORT_NARRATE:-}
+      OPENAI_MODEL_REPORT_OVERVIEW: ${OPENAI_MODEL_REPORT_OVERVIEW:-}
     ports:
       - "9001:9000"
     volumes:

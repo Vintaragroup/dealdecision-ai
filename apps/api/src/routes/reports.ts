@@ -38,6 +38,25 @@ const envFlagEnabled = (v: unknown): boolean => {
   return s === '1' || s === 'true' || s === 'yes' || s === 'on';
 };
 
+const readReportDeterministicFlags = () => {
+  return {
+    deterministic_score_v1_enabled: envFlagEnabled(process.env.DETERMINISTIC_SCORE_V1_ENABLED),
+    fundability_shadow_mode: envFlagEnabled(process.env.FUNDABILITY_SHADOW_MODE),
+    fundability_soft_caps: envFlagEnabled(process.env.FUNDABILITY_SOFT_CAPS),
+    fundability_hard_gates: envFlagEnabled(process.env.FUNDABILITY_HARD_GATES),
+    phaseb_visual_evidence: envFlagEnabled(process.env.DDAI_ENABLE_PHASEB_VISUAL_EVIDENCE),
+  };
+};
+
+const readReportAuthMode = (request: FastifyRequest): string => {
+  const auth = (request as any)?.auth;
+  if (!auth || typeof auth !== 'object') return 'none';
+  if (auth?.claims?.bypass_auth) return 'bypass_claim';
+  if (envFlagEnabled(process.env.DISABLE_CLERK_AUTH)) return 'bypass_env';
+  if (typeof auth?.userId === 'string' && auth.userId.trim()) return 'clerk_jwt';
+  return 'unknown';
+};
+
 const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
 
 const asFiniteNumber = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
@@ -274,7 +293,23 @@ async function maybeAttachNarrationV1(args: {
   if (devCacheEnabled) {
     const cached = narrationDevCache.get(cacheKey);
     if (cached) {
+      args.request.log.info(
+        {
+          event: 'report_narration_decision_v1',
+          deal_id: (args.report as any)?.deal_id ?? (args.report as any)?.dealId ?? null,
+          narrate_query: (args.request.query as any)?.narrate ?? null,
+          will_call_llm: false,
+          skip_reason: 'cache_hit',
+          provider: 'openai',
+          model,
+          has_api_key: Boolean(process.env.OPENAI_API_KEY),
+          deterministic_flags: readReportDeterministicFlags(),
+          auth_mode: readReportAuthMode(args.request),
+        },
+        'report_narration_decision_v1'
+      );
       (args.report as any).llm_narration_v1 = cached.narration;
+      meta.llm_narration_v1_skipped = { reason: 'cache_hit' };
       meta.llm_narration_v1_meta = {
         model: cached.meta.model,
         usage: cached.meta.usage ?? null,
@@ -288,10 +323,42 @@ async function maybeAttachNarrationV1(args: {
   }
 
   if (!process.env.OPENAI_API_KEY) {
-    meta.llm_narration_v1_error = { code: 'missing_openai_api_key' };
+    args.request.log.info(
+      {
+        event: 'report_narration_decision_v1',
+        deal_id: (args.report as any)?.deal_id ?? (args.report as any)?.dealId ?? null,
+        narrate_query: (args.request.query as any)?.narrate ?? null,
+        will_call_llm: false,
+        skip_reason: 'missing_api_key',
+        provider: 'openai',
+        model,
+        has_api_key: false,
+        deterministic_flags: readReportDeterministicFlags(),
+        auth_mode: readReportAuthMode(args.request),
+      },
+      'report_narration_decision_v1'
+    );
+    meta.llm_narration_v1_error = meta.llm_narration_v1_error ?? { code: 'missing_openai_api_key' };
+    meta.llm_narration_v1_skipped = { reason: 'missing_api_key' };
     args.report.metadata = meta;
     return;
   }
+
+  args.request.log.info(
+    {
+      event: 'report_narration_decision_v1',
+      deal_id: (args.report as any)?.deal_id ?? (args.report as any)?.dealId ?? null,
+      narrate_query: (args.request.query as any)?.narrate ?? null,
+      will_call_llm: true,
+      skip_reason: null,
+      provider: 'openai',
+      model,
+      has_api_key: true,
+      deterministic_flags: readReportDeterministicFlags(),
+      auth_mode: readReportAuthMode(args.request),
+    },
+    'report_narration_decision_v1'
+  );
 
   const startedAt = Date.now();
   let completionFinishReason: string | null = null;
@@ -573,7 +640,8 @@ async function maybeAttachOverviewV1(args: {
 
   if (!process.env.OPENAI_API_KEY) {
     ensureOverviewPresent();
-    meta.llm_overview_v1_error = { code: 'missing_openai_api_key' };
+    meta.llm_overview_v1_error = meta.llm_overview_v1_error ?? { code: 'missing_openai_api_key' };
+    meta.llm_overview_v1_skipped = { reason: 'missing_api_key' };
     args.report.metadata = meta;
     return;
   }
@@ -789,9 +857,9 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
   }
 
   if (!process.env.OPENAI_API_KEY) {
-    // Mirror existing behavior: record missing key and do not attempt provider call.
     ensureOverviewPresent();
     meta.llm_overview_v1_error = meta.llm_overview_v1_error ?? { code: 'missing_openai_api_key' };
+    meta.llm_overview_v1_skipped = meta.llm_overview_v1_skipped ?? { reason: 'missing_api_key' };
     args.report.metadata = meta;
     return;
   }

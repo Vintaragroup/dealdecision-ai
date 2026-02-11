@@ -81,6 +81,72 @@ export function computeGovernedLlmOverviewInputHash(deterministicInputs: unknown
   return createHash("sha256").update(stableJsonStringify(deterministicInputs)).digest("hex");
 }
 
+function isNumericClaimWithoutEvidence(claim: GovernedLLMClaimV1): boolean {
+  const hasNumber = typeof claim.value_number === "number" && Number.isFinite(claim.value_number);
+  if (!hasNumber) return false;
+  const refs = Array.isArray(claim.evidence_refs) ? claim.evidence_refs : [];
+  return refs.length === 0;
+}
+
+function appendDisclosureOnce(disclosures: Disclosure[], code: string, message: string): Disclosure[] {
+  if (disclosures.some((d) => d.code === code)) return disclosures;
+  return [...disclosures, { code, message }];
+}
+
+export function enforcePhaseMode(
+  overlay: GovernedLLMOverviewV1,
+  phase: "exploratory" | "stabilizing" | "governed"
+): GovernedLLMOverviewV1 {
+  try {
+    const originalClaims = Array.isArray(overlay.claims) ? overlay.claims : [];
+    const originalDisclosures = Array.isArray(overlay.disclosures) ? overlay.disclosures : [];
+
+    const numericWithoutEvidence = originalClaims.filter((c) => isNumericClaimWithoutEvidence(c));
+    if (numericWithoutEvidence.length === 0) {
+      return { ...overlay, claims: originalClaims, disclosures: originalDisclosures };
+    }
+
+    if (phase === "exploratory") {
+      return {
+        ...overlay,
+        claims: originalClaims,
+        disclosures: appendDisclosureOnce(
+          originalDisclosures,
+          "numeric_claim_missing_evidence",
+          "Exploratory mode: numeric claims may be present without evidence; treat cautiously."
+        ),
+      };
+    }
+
+    if (phase === "stabilizing") {
+      const filtered = originalClaims.filter((c) => !isNumericClaimWithoutEvidence(c));
+      return {
+        ...overlay,
+        claims: filtered,
+        disclosures: appendDisclosureOnce(
+          originalDisclosures,
+          "stabilizing_removed_numeric_without_evidence",
+          "Stabilizing mode: removed numeric claims that lacked evidence."
+        ),
+      };
+    }
+
+    // governed
+    return {
+      ...overlay,
+      claims: [],
+      disclosures: appendDisclosureOnce(
+        originalDisclosures,
+        "governed_mode_validation_failed",
+        "Governed mode: suppressed overlay claims due to numeric claims lacking evidence."
+      ),
+    };
+  } catch {
+    // Never throw; enforcement must be fail-open.
+    return overlay;
+  }
+}
+
 function isPhaseMode(v: unknown): v is LLMPhaseMode {
   return v === "exploratory" || v === "stabilizing" || v === "governed";
 }
@@ -152,6 +218,31 @@ export function validateGovernedLlmOverviewV1(
         },
       };
     }
+  }
+
+  for (const d of candidate.disclosures as any[]) {
+    if (!d || typeof d !== "object") return { ok: false as const, error: "invalid_disclosure" };
+    if (typeof (d as any).code !== "string" || !(d as any).code.trim()) return { ok: false as const, error: "invalid_disclosure" };
+    if (typeof (d as any).message !== "string" || !(d as any).message.trim()) return { ok: false as const, error: "invalid_disclosure" };
+  }
+
+  return { ok: true as const, data: candidate };
+}
+
+function validateGovernedLlmOverviewSchemaV1(
+  candidate: GovernedLLMOverviewV1
+): { ok: true; data: GovernedLLMOverviewV1 } | { ok: false; error: unknown } {
+  if (!candidate || typeof candidate !== "object") return { ok: false as const, error: "candidate_not_object" };
+  if ((candidate as any).schema_version !== SCHEMA_VERSION) return { ok: false as const, error: "invalid_schema_version" };
+  if (typeof candidate.deal_id !== "string" || !candidate.deal_id.trim()) return { ok: false as const, error: "missing_deal_id" };
+  if (typeof candidate.input_hash !== "string" || !candidate.input_hash.trim()) return { ok: false as const, error: "missing_input_hash" };
+  if (!isPhaseMode((candidate as any).llm_phase_mode)) return { ok: false as const, error: "invalid_llm_phase_mode" };
+  if (typeof candidate.summary_text !== "string") return { ok: false as const, error: "invalid_summary_text" };
+  if (!Array.isArray(candidate.claims)) return { ok: false as const, error: "invalid_claims" };
+  if (!Array.isArray(candidate.disclosures)) return { ok: false as const, error: "invalid_disclosures" };
+
+  for (const c of candidate.claims as any[]) {
+    if (!isGovernedClaimV1(c)) return { ok: false as const, error: "invalid_claim" };
   }
 
   for (const d of candidate.disclosures as any[]) {
@@ -362,20 +453,41 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
       disclosures,
     };
 
-    const validated = validateGovernedLlmOverviewV1(candidate);
-    const toPersist: GovernedLLMOverviewV1 = validated.ok
-      ? validated.data
-      : {
-          ...candidate,
-          claims: [],
-          disclosures: [
-            ...disclosures,
-            {
-              code: "governed_llm_overlay_validation_failed",
-              message: "Governed LLM overlay failed schema/evidence-binding validation; claims omitted.",
-            },
-          ],
-        };
+    const schemaValidated = validateGovernedLlmOverviewSchemaV1(candidate);
+    let toPersist: GovernedLLMOverviewV1;
+    if (!schemaValidated.ok) {
+      toPersist = {
+        ...candidate,
+        claims: [],
+        disclosures: [
+          ...disclosures,
+          {
+            code: "governed_llm_overlay_validation_failed",
+            message: "Governed LLM overlay failed schema validation; claims omitted.",
+          },
+        ],
+      };
+    } else {
+      const enforced = enforcePhaseMode(schemaValidated.data, llm_phase_mode);
+      if (llm_phase_mode === "exploratory") {
+        toPersist = enforced;
+      } else {
+        const strictValidated = validateGovernedLlmOverviewV1(enforced);
+        toPersist = strictValidated.ok
+          ? strictValidated.data
+          : {
+            ...enforced,
+            claims: [],
+            disclosures: [
+              ...(Array.isArray(enforced.disclosures) ? enforced.disclosures : []),
+              {
+                code: "governed_llm_overlay_validation_failed",
+                message: "Governed LLM overlay failed strict validation; claims omitted.",
+              },
+            ],
+          };
+      }
+    }
 
     const persisted = await persistGovernedOverview(pool, toPersist);
 
@@ -388,7 +500,7 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
         input_hash,
         inserted: persisted.inserted,
         claims_count: Array.isArray(toPersist.claims) ? toPersist.claims.length : 0,
-        validation_failed: !validated.ok,
+        validation_failed: !schemaValidated.ok,
         run_id: args.runId ?? null,
         step_run_id: args.stepRunId ?? null,
         duration_ms: Date.now() - startedAt,
@@ -396,7 +508,7 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
       })
     );
 
-    return { ok: true, inserted: persisted.inserted, input_hash, validation_failed: !validated.ok };
+    return { ok: true, inserted: persisted.inserted, input_hash, validation_failed: !schemaValidated.ok };
   } catch (err: any) {
     const msg = err instanceof Error ? err.message : String(err ?? "unknown_error");
     try {

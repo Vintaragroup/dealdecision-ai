@@ -36,6 +36,7 @@ test("GET /api/dashboard/debug/env returns safe env visibility", async () => {
 
     assert.equal(typeof body, "object");
     assert.equal(body.DETERMINISTIC_SCORE_V1_ENABLED, true);
+    assert.equal(body.env_source, "process.env");
     assert.equal(body.NODE_ENV, "test");
     assert.equal(body.COMPOSE_PROFILE, "dev");
     assert.equal(body.database_url_host_port, "db.example:55433");
@@ -50,5 +51,30 @@ test("GET /api/dashboard/debug/env returns safe env visibility", async () => {
     process.env.NODE_ENV = prev.NODE_ENV;
     process.env.COMPOSE_PROFILE = prev.COMPOSE_PROFILE;
     process.env.DATABASE_URL = prev.DATABASE_URL;
+  }
+});
+
+test("GET /api/dashboard/debug/env reports missing when unset", async () => {
+  const prev = {
+    DETERMINISTIC_SCORE_V1_ENABLED: process.env.DETERMINISTIC_SCORE_V1_ENABLED,
+  };
+
+  delete process.env.DETERMINISTIC_SCORE_V1_ENABLED;
+
+  const app = Fastify();
+  const mockPool = { query: async () => ({ rows: [] }) } as any;
+
+  try {
+    await registerDashboardRoutes(app, mockPool);
+
+    const res = await app.inject({ method: "GET", url: "/api/dashboard/debug/env" });
+    assert.equal(res.statusCode, 200);
+
+    const body = res.json() as any;
+    assert.equal(body.DETERMINISTIC_SCORE_V1_ENABLED, false);
+    assert.equal(body.env_source, "missing");
+  } finally {
+    await app.close();
+    process.env.DETERMINISTIC_SCORE_V1_ENABLED = prev.DETERMINISTIC_SCORE_V1_ENABLED;
   }
 });

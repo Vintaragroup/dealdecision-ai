@@ -7988,7 +7988,10 @@ export async function registerDealRoutes(
     const mode = parseDealApiMode(request);
     // Accept optional filters but ignore for now (TODO)
     const userId = (request as any)?.auth?.userId;
-    const userIdParam = typeof userId === "string" ? userId : "";
+    const bypassAuthEnvRaw = typeof process.env.DISABLE_CLERK_AUTH === "string" ? process.env.DISABLE_CLERK_AUTH : "";
+    const bypassAuthEnv = ["1", "true", "yes", "on"].includes(bypassAuthEnvRaw.trim().toLowerCase());
+    const bypassAuth = Boolean((request as any)?.auth?.claims?.bypass_auth) || bypassAuthEnv;
+    const hasUserId = !bypassAuth && typeof userId === "string" && userId.trim().length > 0;
     const { rows } = await pool.query<DealRow & {
       dio_id: string | null;
       analysis_version: number | null;
@@ -8111,9 +8114,9 @@ export async function registerDealRoutes(
             WHERE deal_id = d.id
          ) stats ON TRUE
         WHERE d.deleted_at IS NULL
-          AND d.created_by_user_id = $1
+          ${hasUserId ? "AND (d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)" : ""}
         ORDER BY d.created_at DESC`,
-      [userIdParam]
+      hasUserId ? [userId] : []
     );
     return rows.map((row) => mapDeal(row, {
       dio_id: row.dio_id,

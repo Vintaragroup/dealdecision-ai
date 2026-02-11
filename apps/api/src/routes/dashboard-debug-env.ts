@@ -44,6 +44,7 @@ export async function registerDashboardDebugEnvRoutes(app: FastifyInstance): Pro
   app.get("/api/dashboard/debug/env", async (_request, reply) => {
     return reply.send({
       DETERMINISTIC_SCORE_V1_ENABLED: envFlagEnabled(process.env.DETERMINISTIC_SCORE_V1_ENABLED),
+      env_source: detectDeterministicScoreV1EnvSource(),
       NODE_ENV: process.env.NODE_ENV ?? "",
       COMPOSE_PROFILE: process.env.COMPOSE_PROFILE ?? "",
       database_url_host_port: parseDatabaseUrlHostPort(process.env.DATABASE_URL),

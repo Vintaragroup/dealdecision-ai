@@ -6012,7 +6012,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 			}
 
 			try {
-				const { persisted: pCount, withImageUri } = await persistVisionResponse(pool, resolvedResponse, { pageImageUri: image_uri });
+				const { persisted: pCount, withImageUri } = await persistVisionResponse(pool, resolvedResponse as any, { pageImageUri: image_uri });
 				try {
 					console.log(
 						JSON.stringify({

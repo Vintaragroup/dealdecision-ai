@@ -680,13 +680,14 @@ function requireDestructiveAuth(request: FastifyRequest | any): { ok: true } | {
 
 const dealStageEnum = z.enum(["intake", "under_review", "in_diligence", "ready_decision", "pitched"]);
 const dealPriorityEnum = z.enum(["high", "medium", "low"]);
-const dealTrendEnum = z.enum(["up", "down", "flat"]);
+const normalizeDealTrend = (value: unknown): unknown => (value === "flat" ? "stable" : value);
+const dealTrendEnum = z.preprocess(normalizeDealTrend, z.enum(["up", "down", "stable"]).optional());
 
 const dealCreateSchema = z.object({
   name: z.string().min(1),
   stage: dealStageEnum.default("intake"),
   priority: dealPriorityEnum.default("medium"),
-  trend: dealTrendEnum.optional(),
+  trend: dealTrendEnum,
   score: z.number().optional(),
   owner: z.string().optional(),
 });
@@ -2332,7 +2333,7 @@ function mapDeal(
     name: row.name,
     stage: row.stage,
     priority: row.priority,
-    trend: row.trend ?? undefined,
+		trend: String(row.trend ?? "") === "flat" ? "stable" : row.trend ?? undefined,
     owner: row.owner ?? undefined,
     lastUpdated: new Date(row.updated_at).toISOString(),
     dioVersionId: dio?.dio_id ?? undefined,
@@ -9021,10 +9022,20 @@ export async function registerDealRoutes(
 
     const pad4 = (n: number) => String(Math.max(0, Math.trunc(n))).padStart(4, "0");
 
+    const isProd = process.env.NODE_ENV === "production";
+    const envFlag = (key: string): boolean => {
+      const raw = process.env[key];
+      if (typeof raw !== "string") return false;
+      const v = raw.trim().toLowerCase();
+      return v === "1" || v === "true" || v === "yes";
+    };
+
     // Local-dev fallback: when storage driver is local, treat locally-rendered pages under UPLOAD_DIR as ready.
     // Worker writes page images to `${UPLOAD_DIR}/rendered_pages/<safeDocumentId>/page_%04d.png`.
     const uploadsRootDir = getUploadsRootDir();
     const r2Enabled = getStorageDriver(process.env) === "r2";
+    const devLocalFallbackEnabled = !isProd && !r2Enabled && envFlag("DDAI_DEV_LOCAL_FALLBACK");
+    const localFallbackUsedDocIds: string[] = [];
     const safeDocIdForPath = (documentId: string) => String(documentId || "").replace(/[^a-zA-Z0-9_\-]/g, "_");
     const localRenderedPagesDirForDoc = (documentId: string) =>
       path.resolve(uploadsRootDir, "rendered_pages", safeDocIdForPath(documentId));
@@ -9076,11 +9087,13 @@ export async function registerDealRoutes(
       const rendered = typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered) ? metaObj.rendered_pages_rendered : null;
 
       if (!renderedR2) {
-        // If storage driver is local (typical local dev), allow local rendered pages to satisfy readiness.
-        if (!r2Enabled) {
+        // If storage driver is local (typical local dev), allow local rendered pages to satisfy readiness
+        // only when explicitly enabled.
+        if (devLocalFallbackEnabled) {
           const local = hasLocalRenderedPages(d.id);
           if (local.ok) {
             readyDocIds.push(d.id);
+            localFallbackUsedDocIds.push(d.id);
             continue;
           }
         }
@@ -9158,6 +9171,36 @@ export async function registerDealRoutes(
         continue;
       }
       readyDocIds.push(d.id);
+    }
+
+    // Governance disclosure: surface any metadata override used to mark a document ready.
+    if (r2ProbeOverrides.length > 0) {
+      request.log.info(
+        {
+          event: "GOVERNANCE_DISCLOSURE",
+          code: "r2_probe_overrode_render_metadata",
+          deal_id: dealId,
+          overrides: r2ProbeOverrides,
+          attempted: r2ProbesUsed,
+          max_attempted: maxR2Probes,
+          node_env: process.env.NODE_ENV,
+        },
+        "deal.extract_visuals.governance_disclosure"
+      );
+    }
+
+    if (localFallbackUsedDocIds.length > 0) {
+      request.log.info(
+        {
+          event: "GOVERNANCE_DISCLOSURE",
+          code: "dev_local_rendered_pages_fallback",
+          deal_id: dealId,
+          document_ids: localFallbackUsedDocIds,
+          uploads_root_dir: uploadsRootDir,
+          node_env: process.env.NODE_ENV,
+        },
+        "deal.extract_visuals.governance_disclosure"
+      );
     }
 
     // Best-effort: if render isn't ready, kick render jobs now (idempotent via per-document dedupe).
@@ -9335,7 +9378,7 @@ export async function registerDealRoutes(
       readiness_reason:
         r2ProbeOverrides.length > 0
           ? "r2_probe_overrode_metadata"
-          : !r2Enabled
+          : localFallbackUsedDocIds.length > 0
             ? "local_rendered_pages_present"
             : "metadata_ready",
       ready_documents: readyDocIds,

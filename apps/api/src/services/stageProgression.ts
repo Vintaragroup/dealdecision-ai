@@ -1,7 +1,10 @@
 import type { Pool } from "pg";
 import type { DealStage } from "@dealdecision/contracts";
+import { getFailOpenMode } from "@dealdecision/core";
 import { updateDealPriority } from "./priorityClassification";
 import { getNodeEvidenceGateForDeal } from "./nodeEvidenceGateForDeal";
+
+const DISCLOSURE_FAIL_OPEN_STAGE_PROGRESSION_GATE = "fail_open_stage_progression_gate" as const;
 
 interface StageProgressionRule {
   fromStage: DealStage;
@@ -17,6 +20,48 @@ interface DealMetrics {
   daysInCurrentStage: number;
   hasAnalysis: boolean;
   hasEvidenceCount: number;
+}
+
+async function getEvidenceCountForGate(pool: Pool, dealId: string): Promise<number> {
+  const parseCount = (rows: any[]): number => {
+    const raw = rows?.[0]?.count;
+    const n = Number.parseInt(String(raw ?? 0), 10);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const hasEvidenceItems = await (async () => {
+    try {
+      const { rows } = await pool.query<{ oid: string | null }>(
+        "SELECT to_regclass('public.evidence_items') as oid"
+      );
+      return !!rows?.[0]?.oid;
+    } catch {
+      return false;
+    }
+  })();
+
+  if (hasEvidenceItems) {
+    try {
+      const { rows } = await pool.query(
+        `SELECT COUNT(*) as count FROM evidence_items WHERE deal_id = $1`,
+        [dealId]
+      );
+      const count = parseCount(rows as any);
+      if (count > 0) return count;
+    } catch {
+      // Best-effort; fall back to legacy evidence.
+    }
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT COUNT(*) as count FROM evidence WHERE deal_id = $1`,
+      [dealId]
+    );
+    return parseCount(rows as any);
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -53,8 +98,15 @@ const progressionRules: StageProgressionRule[] = [
  */
 export async function evaluateDealStageProgression(
   pool: Pool,
-  dealId: string
-): Promise<{ shouldProgress: boolean; newStage?: DealStage; reason?: string; gate?: any }> {
+  dealId: string,
+  opts?: {
+		getNodeEvidenceGateForDeal?: typeof getNodeEvidenceGateForDeal;
+		env?: NodeJS.ProcessEnv;
+	}
+): Promise<{ shouldProgress: boolean; newStage?: DealStage; reason?: string; gate?: any; disclosures?: string[] }> {
+  const env = opts?.env ?? process.env;
+  const failOpenMode = getFailOpenMode(env);
+  const gateFetcher = opts?.getNodeEvidenceGateForDeal ?? getNodeEvidenceGateForDeal;
   // Fetch current deal
   const { rows: dealRows } = await pool.query(
     `SELECT id, stage, score, created_at, updated_at FROM deals WHERE id = $1 AND deleted_at IS NULL`,
@@ -75,12 +127,8 @@ export async function evaluateDealStageProgression(
   );
   const documentCount = parseInt(docCountRows[0].count || 0, 10);
 
-  // Fetch evidence count
-  const { rows: evidenceCountRows } = await pool.query(
-    `SELECT COUNT(*) as count FROM evidence WHERE deal_id = $1`,
-    [dealId]
-  );
-  const hasEvidenceCount = parseInt(evidenceCountRows[0].count || 0, 10);
+  // Fetch evidence count (canonical bridge)
+  const hasEvidenceCount = await getEvidenceCountForGate(pool, dealId);
 
   // Check if deal has analysis (latest DIO)
   const { rows: analysisRows } = await pool.query(
@@ -117,7 +165,7 @@ export async function evaluateDealStageProgression(
       const warnOnly = gateMode === "warn" || gateMode === "soft";
 
       try {
-        const { gate } = await getNodeEvidenceGateForDeal(pool, dealId);
+			const { gate } = await gateFetcher(pool, dealId);
         const gateMsg = `Node-backed scoring gate: ${gate.status.toUpperCase()} (${gate.node_coverage_pct}% node-locatable linked evidence).`;
 
         if (enforce && gate.status === "block") {
@@ -144,12 +192,37 @@ export async function evaluateDealStageProgression(
           gate,
         };
       } catch (err) {
-        // Fail-open: stage progression is still driven by base metrics if the gate can't be computed.
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      try {
+        console.warn(
+          JSON.stringify({
+            event: "DISCLOSURE",
+            code: DISCLOSURE_FAIL_OPEN_STAGE_PROGRESSION_GATE,
+            mode: failOpenMode,
+            deal_id: dealId,
+            error: errorMsg,
+            ts: new Date().toISOString(),
+          })
+        );
+      } catch {
+        // ignore
+      }
+
+      if (failOpenMode === "prod_block") {
         return {
-          shouldProgress: true,
-          newStage: applicableRule.toStage,
-          reason: applicableRule.description,
+          shouldProgress: false,
+          reason: `Blocked from ready_decision. Node-backed scoring gate unavailable (${DISCLOSURE_FAIL_OPEN_STAGE_PROGRESSION_GATE}).`,
+          disclosures: [DISCLOSURE_FAIL_OPEN_STAGE_PROGRESSION_GATE],
         };
+      }
+
+      // dev + prod_warn: fail open, but make it observable via disclosure.
+      return {
+        shouldProgress: true,
+        newStage: applicableRule.toStage,
+        reason: applicableRule.description,
+        disclosures: [DISCLOSURE_FAIL_OPEN_STAGE_PROGRESSION_GATE],
+      };
       }
     }
 

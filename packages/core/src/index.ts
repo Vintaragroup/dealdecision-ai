@@ -17,6 +17,7 @@ export * from "./services/prompt-generator";
 // Export utilities
 export * from "./lib/sanitize";
 export * from "./lib/document-capabilities";
+export * from "./lib/fail-open-policy";
 export * from "./lib/stable-uuid";
 export * from "./lib/stable-json";
 export * from "./queue-names";

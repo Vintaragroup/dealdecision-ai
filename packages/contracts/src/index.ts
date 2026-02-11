@@ -100,6 +100,7 @@ export type DocumentType =
 export type DocumentStatus =
 	| 'pending'
 	| 'processing'
+	| 'ready_for_analysis'
 	| 'completed'
 	| 'needs_ocr'
 	| 'failed'

@@ -123,6 +123,36 @@ export const Phase1DIOV1Schema = z.object({
     })
     .optional(),
 
+  // Additive: deterministic business model arbitration (canonical + auditable).
+  // This layer can override weak upstream classifications when contradictions exist.
+  business_model_arbitration_v1: z
+    .object({
+      business_model: z.string().min(1),
+      confidence: z.number().min(0).max(1),
+      evidence: z
+        .array(
+          z.object({
+            model: z.string().min(1),
+            kind: z.string().min(1),
+            weight: z.number(),
+            detail: z.string().min(1),
+            source: z.string().optional(),
+          })
+        )
+        .optional(),
+      overridden_candidates: z
+        .array(
+          z.object({
+            business_model: z.string().min(1),
+            confidence: z.number().min(0).max(1).optional(),
+            source: z.string().optional(),
+            note: z.string().optional(),
+          })
+        )
+        .optional(),
+    })
+    .optional(),
+
   // Additive: worker-computed canonical overview for Phase 1 (V2).
   // This is the preferred single source for executive-summary one-liner composition.
   deal_overview_v2: z

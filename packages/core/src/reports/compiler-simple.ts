@@ -424,6 +424,23 @@ function buildStructuredSummary(
   const overview = phase1?.deal_overview_v2;
   const exec = phase1?.executive_summary_v1;
 
+  const arbitrationV1 = phase1?.business_model_arbitration_v1;
+  const arbitratedModel = asNonEmptyString(arbitrationV1?.business_model);
+  if (arbitratedModel) {
+    const evidence = Array.isArray(arbitrationV1?.evidence) ? arbitrationV1.evidence : [];
+    const sources = evidence.map((e: any) => ({
+      kind: 'phase1.business_model_arbitration_v1',
+      model: typeof e?.model === 'string' ? e.model : null,
+      rule_kind: typeof e?.kind === 'string' ? e.kind : null,
+      weight: typeof e?.weight === 'number' && Number.isFinite(e.weight) ? e.weight : null,
+      detail: typeof e?.detail === 'string' ? e.detail : null,
+      source: typeof e?.source === 'string' ? e.source : null,
+    }));
+    const confRaw = (arbitrationV1 as any)?.confidence;
+    const conf = typeof confRaw === 'number' && Number.isFinite(confRaw) ? clamp01(confRaw) : 0.7;
+    structured.business_model = { value: arbitratedModel, confidence: conf, sources, label: 'Arbitrated' };
+  }
+
   const hasPrimaryCitation = (sources: Array<Record<string, any>>): boolean => {
     if (!Array.isArray(sources) || sources.length === 0) return false;
     return sources.some((s: any) => {

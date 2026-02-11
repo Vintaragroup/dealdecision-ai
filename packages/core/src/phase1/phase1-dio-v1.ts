@@ -158,6 +158,10 @@ export type Phase1DecisionSummaryV1 = {
 export type Phase1DIOV1 = {
 	executive_summary_v1: Phase1ExecutiveSummaryV1;
 	executive_summary_v2?: Phase1ExecutiveSummaryV2;
+	// Additive: deterministic KPI reconciliation (ARR/MRR) from the worker.
+	kpi_reconciliation_v1?: unknown;
+	// Additive: raw KPI claims used for reconciliation (ARR/MRR).
+	kpi_claims_v1?: unknown;
 	// Additive: optional investor-readable synthesis from the worker (Phase 1 only).
 	deal_summary_v2?: {
 		generated_at: string;
@@ -176,6 +180,24 @@ export type Phase1DIOV1 = {
 		confidence: number;
 		generated_at?: string;
 		evidence?: Array<{ document_id: string; page_range?: [number, number]; snippet: string; rule?: string }>;
+	};
+	// Additive: deterministic business model arbitration (canonical + auditable).
+	business_model_arbitration_v1?: {
+		business_model: string;
+		confidence: number;
+		evidence?: Array<{
+			model: string;
+			kind: string;
+			weight: number;
+			detail: string;
+			source?: string;
+		}>;
+		overridden_candidates?: Array<{
+			business_model: string;
+			confidence?: number;
+			source?: string;
+			note?: string;
+		}>;
 	};
 	// Additive: worker-computed canonical overview for Phase 1.
 	deal_overview_v2?: {
@@ -2341,6 +2363,7 @@ export function generatePhase1DIOV1(params: {
 	dio?: unknown;
 	deal_overview_v2?: unknown;
 	business_archetype_v1?: unknown;
+	business_model_arbitration_v1?: unknown;
 	update_report_v1?: unknown;
 	maxClaims?: number;
 }): Phase1DIOV1 {
@@ -2367,6 +2390,9 @@ export function generatePhase1DIOV1(params: {
 	const overviewV2Normalized = normalizePhase1OverviewV2(overviewV2);
 	const updateReportV1 = (params.update_report_v1 && typeof params.update_report_v1 === "object")
 		? (params.update_report_v1 as any)
+		: null;
+	const businessModelArbitrationV1 = (params.business_model_arbitration_v1 && typeof params.business_model_arbitration_v1 === "object")
+		? (params.business_model_arbitration_v1 as any)
 		: null;
 	const updateAfter = (field: string): string => {
 		const changes = Array.isArray(updateReportV1?.changes) ? updateReportV1.changes : [];
@@ -2947,6 +2973,7 @@ export function generatePhase1DIOV1(params: {
 		claims: uniqueClaims,
 		coverage,
 		business_archetype_v1: businessArchetypeV1 ? (businessArchetypeV1 as any) : undefined,
+		business_model_arbitration_v1: businessModelArbitrationV1 ? (businessModelArbitrationV1 as any) : undefined,
 		deal_overview_v2: mergedOverviewForV2 ? (mergedOverviewForV2 as any) : undefined,
 		update_report_v1:
 			params.update_report_v1 && typeof params.update_report_v1 === "object" ? (params.update_report_v1 as any) : undefined,
@@ -3083,6 +3110,8 @@ export function mergePhase1IntoDIO(dio: any, phase1: Phase1DIOV1): any {
 	const executive_summary_v2 = (phase1 as any)?.executive_summary_v2;
 	const deal_summary_v2 = (phase1 as any)?.deal_summary_v2;
 	const disclosures_v1 = (phase1 as any)?.disclosures_v1;
+	const kpi_reconciliation_v1 = (phase1 as any)?.kpi_reconciliation_v1;
+	const kpi_claims_v1 = (phase1 as any)?.kpi_claims_v1;
 
 	const coverage = ensurePhase1Coverage(phase1 as any, existingPhase1);
 
@@ -3102,6 +3131,9 @@ export function mergePhase1IntoDIO(dio: any, phase1: Phase1DIOV1): any {
 		coverage,
 
 			...(Array.isArray(disclosures_v1) ? { disclosures_v1 } : {}),
+
+			...(kpi_reconciliation_v1 && typeof kpi_reconciliation_v1 === "object" ? { kpi_reconciliation_v1 } : {}),
+			...(Array.isArray(kpi_claims_v1) ? { kpi_claims_v1 } : {}),
 
 			...(deal_summary_v2 && typeof deal_summary_v2 === "object" ? { deal_summary_v2 } : {}),
 

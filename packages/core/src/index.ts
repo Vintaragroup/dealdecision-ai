@@ -26,6 +26,7 @@ export * from './scoring/scoring-input-v0';
 export * from './scoring/score-bands-v2';
 export * from './scoring/decision-v1';
 export * from './classification/content-archetypes';
+export * from './classification/business-model-arbitrator';
 
 // ============================================================================
 // DIO / Orchestration (Phase 4)
@@ -162,6 +163,9 @@ export type { ScoreInputsV1 } from "./scoring/score-inputs-v1";
 
 // Phase 1 deterministic composer (used by worker for change acknowledgement)
 export { generatePhase1DIOV1 } from "./phase1/phase1-dio-v1";
+
+// Phase 1 deterministic KPI reconciliation (ARR/MRR)
+export * from "./phase1/kpi-reconciliation-v1";
 
 // LLM narration (API-side optional feature)
 export { LlmNarrationV1Schema } from "./llm/narration-schema";

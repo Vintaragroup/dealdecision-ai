@@ -104,7 +104,9 @@ __pycache__/
 
 # giga
 .giga/
-
+AGENTS.md
+CLAUDE.md
+.github/copilot-instructions.md
 
 # Fixture regression artifacts (generated)
 apps/api/test/fixtures/regressions/**/*.full.report.json

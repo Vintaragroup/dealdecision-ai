@@ -81,9 +81,12 @@ export function computeGovernedLlmOverviewInputHash(deterministicInputs: unknown
   return createHash("sha256").update(stableJsonStringify(deterministicInputs)).digest("hex");
 }
 
+export function isNumericClaim(claim: GovernedLLMClaimV1): boolean {
+  return typeof claim.value_number === "number" && Number.isFinite(claim.value_number);
+}
+
 function isNumericClaimWithoutEvidence(claim: GovernedLLMClaimV1): boolean {
-  const hasNumber = typeof claim.value_number === "number" && Number.isFinite(claim.value_number);
-  if (!hasNumber) return false;
+  if (!isNumericClaim(claim)) return false;
   const refs = Array.isArray(claim.evidence_refs) ? claim.evidence_refs : [];
   return refs.length === 0;
 }

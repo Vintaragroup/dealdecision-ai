@@ -8594,6 +8594,7 @@ export async function registerDealRoutes(
       summary_text: string;
       claims: any;
       disclosures: any;
+      overview_json: any;
       created_at: string;
     }>(
       `SELECT id,
@@ -8606,6 +8607,7 @@ export async function registerDealRoutes(
               summary_text,
               claims,
               disclosures,
+              overview_json,
               created_at
          FROM governed_llm_overviews
         WHERE deal_id = $1
@@ -8632,6 +8634,20 @@ export async function registerDealRoutes(
       return [];
     };
 
+    const coerceJsonObject = (v: unknown): Record<string, any> | null => {
+      if (!v) return null;
+      if (typeof v === "object" && !Array.isArray(v)) return v as any;
+      if (typeof v === "string") {
+        try {
+          const parsed = JSON.parse(v);
+          return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as any) : null;
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    };
+
     return reply.status(200).send({
       overview: {
         schema_version: latest.schema_version,
@@ -8644,6 +8660,102 @@ export async function registerDealRoutes(
         summary_text: latest.summary_text,
         claims: coerceJsonArray(latest.claims),
         disclosures: coerceJsonArray(latest.disclosures),
+        overview_json: coerceJsonObject((latest as any).overview_json),
+      },
+    });
+  });
+
+  // PR3: latest analysis diagnostics snapshot (read-only). No side effects.
+  app.get("/api/v1/deals/:deal_id/analysis-diagnostics", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    if (!isUuid(dealId)) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+
+    const tableOk = await hasTable(pool as any, "deal_analysis_diagnostics");
+    if (!tableOk) {
+      return reply.status(200).send({ diagnostics: null });
+    }
+
+    const { rows: dealRows } = await pool.query<{ id: string }>(
+      `SELECT id FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+      [dealId]
+    );
+    if (dealRows.length === 0) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    // PR3.1: error counters are optional in older DBs; select NULLs when columns absent.
+    const hasProviderError = await hasColumn(pool as any, "deal_analysis_diagnostics", "provider_error_count");
+    const hasTruncated = await hasColumn(pool as any, "deal_analysis_diagnostics", "model_output_truncated_count");
+    const hasNotJson = await hasColumn(pool as any, "deal_analysis_diagnostics", "model_output_not_json_count");
+    const hasGuardDegraded = await hasColumn(pool as any, "deal_analysis_diagnostics", "guard_degraded_count");
+
+    const { rows } = await pool.query<{
+      deal_id: string;
+      report_id: string;
+      llm_phase_mode: string;
+      citation_integrity_percent: string | number | null;
+      numeric_claims_without_evidence: number | null;
+      semantic_drift_score: string | number | null;
+      hallucination_count: number | null;
+      deterministic_coverage_ratio: string | number | null;
+      provider_error_count?: number | null;
+      model_output_truncated_count?: number | null;
+      model_output_not_json_count?: number | null;
+      guard_degraded_count?: number | null;
+      created_at: string;
+    }>(
+      `SELECT deal_id::text as deal_id,
+              report_id,
+              llm_phase_mode,
+              citation_integrity_percent,
+              numeric_claims_without_evidence,
+              semantic_drift_score,
+              hallucination_count,
+              deterministic_coverage_ratio,
+              ${hasProviderError ? "provider_error_count" : "NULL::int as provider_error_count"},
+              ${hasTruncated ? "model_output_truncated_count" : "NULL::int as model_output_truncated_count"},
+              ${hasNotJson ? "model_output_not_json_count" : "NULL::int as model_output_not_json_count"},
+              ${hasGuardDegraded ? "guard_degraded_count" : "NULL::int as guard_degraded_count"},
+              created_at
+         FROM deal_analysis_diagnostics
+        WHERE deal_id = $1
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      [dealId]
+    );
+
+    const latest = rows?.[0] ?? null;
+    if (!latest) {
+      return reply.status(200).send({ diagnostics: null });
+    }
+
+    const toNum = (v: any): number | null => {
+      if (v == null) return null;
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+      if (typeof v === "string") {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+      }
+      return null;
+    };
+
+    return reply.status(200).send({
+      diagnostics: {
+        deal_id: latest.deal_id,
+        report_id: latest.report_id,
+        llm_phase_mode: latest.llm_phase_mode,
+        citation_integrity_percent: toNum(latest.citation_integrity_percent),
+        numeric_claims_without_evidence: latest.numeric_claims_without_evidence,
+        semantic_drift_score: toNum(latest.semantic_drift_score),
+        hallucination_count: latest.hallucination_count,
+        deterministic_coverage_ratio: toNum(latest.deterministic_coverage_ratio),
+        provider_error_count: typeof (latest as any).provider_error_count === "number" ? (latest as any).provider_error_count : null,
+        model_output_truncated_count: typeof (latest as any).model_output_truncated_count === "number" ? (latest as any).model_output_truncated_count : null,
+        model_output_not_json_count: typeof (latest as any).model_output_not_json_count === "number" ? (latest as any).model_output_not_json_count : null,
+        guard_degraded_count: typeof (latest as any).guard_degraded_count === "number" ? (latest as any).guard_degraded_count : null,
+        created_at: latest.created_at,
       },
     });
   });

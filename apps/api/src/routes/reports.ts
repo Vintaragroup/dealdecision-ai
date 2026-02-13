@@ -30,6 +30,7 @@ import { buildBusinessModelSummaryV1 } from '../lib/reports/business-model-summa
 import { computeArchetypeSegmentDriftV1 } from '../lib/archetype-segment-drift-v1';
 import { computeOverrideQualityV1 } from '../lib/override-quality-v1';
 import { computeDeterministicModifierV1, computeDeterministicScorePreviewV1Diagnostics, shouldPinUnadjusted } from '../lib/deterministic-score-preview-v1';
+import { StageTimer, nowMs } from '../lib/telemetry/stage-timer';
 
 const isUuid = (value: unknown): value is string => z.string().uuid().safeParse(value).success;
 
@@ -94,9 +95,48 @@ async function openaiChatCompletion(params: {
   temperature: number;
   maxTokens: number;
   responseFormat?: { type: 'json_object' };
+  audit?: {
+    request: FastifyRequest;
+    deal_id: string | null;
+    dio_id: string | null;
+    llm_phase_mode: string | null;
+    call: string;
+    prompt_version: string;
+    prompt_hash: string;
+    system_bytes: number;
+    user_bytes: number;
+    prompt_bytes: number;
+    request_id: string | number | null;
+  };
 }): Promise<{ content: string; model: string; usage?: OpenAIChatCompletionResponse['usage']; finish_reason?: string }> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
+
+  const startedAtMs = nowMs();
+  if (params.audit) {
+    params.audit.request.log.info(
+      {
+        event: 'LLM_CALL_START',
+        provider: 'openai',
+        model: params.model,
+        call: params.audit.call,
+        prompt_version: params.audit.prompt_version,
+        llm_phase_mode: params.audit.llm_phase_mode,
+        deal_id: params.audit.deal_id,
+        dio_id: params.audit.dio_id,
+        request_id: params.audit.request_id,
+        temperature: params.temperature,
+        max_tokens: params.maxTokens,
+        top_p: null,
+        prompt_hash: params.audit.prompt_hash,
+        system_bytes: params.audit.system_bytes,
+        user_bytes: params.audit.user_bytes,
+        prompt_bytes: params.audit.prompt_bytes,
+        ts: new Date().toISOString(),
+      },
+      'LLM_CALL_START'
+    );
+  }
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -115,14 +155,91 @@ async function openaiChatCompletion(params: {
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(text || `OpenAI request failed with ${res.status}`);
+    const errMessage = text || `OpenAI request failed with ${res.status}`;
+    if (params.audit) {
+      params.audit.request.log.info(
+        {
+          event: 'LLM_CALL_DONE',
+          ok: false,
+          provider: 'openai',
+          model: params.model,
+          call: params.audit.call,
+          prompt_version: params.audit.prompt_version,
+          llm_phase_mode: params.audit.llm_phase_mode,
+          deal_id: params.audit.deal_id,
+          dio_id: params.audit.dio_id,
+          request_id: params.audit.request_id,
+          elapsed_ms: nowMs() - startedAtMs,
+          finish_reason: null,
+          usage_available: false,
+          prompt_tokens: null,
+          completion_tokens: null,
+          total_tokens: null,
+          error: errMessage.slice(0, 800),
+          ts: new Date().toISOString(),
+        },
+        'LLM_CALL_DONE'
+      );
+    }
+    throw new Error(errMessage);
   }
 
   const json = (await res.json()) as OpenAIChatCompletionResponse;
   const choice0 = json?.choices?.[0];
   const content = choice0?.message?.content;
   if (typeof content !== 'string' || content.trim().length === 0) {
+    if (params.audit) {
+      params.audit.request.log.info(
+        {
+          event: 'LLM_CALL_DONE',
+          ok: false,
+          provider: 'openai',
+          model: json?.model ?? params.model,
+          call: params.audit.call,
+          prompt_version: params.audit.prompt_version,
+          llm_phase_mode: params.audit.llm_phase_mode,
+          deal_id: params.audit.deal_id,
+          dio_id: params.audit.dio_id,
+          request_id: params.audit.request_id,
+          elapsed_ms: nowMs() - startedAtMs,
+          finish_reason: choice0?.finish_reason ?? null,
+          usage_available: Boolean(json?.usage),
+          prompt_tokens: asFiniteInt(json?.usage?.prompt_tokens) ?? null,
+          completion_tokens: asFiniteInt(json?.usage?.completion_tokens) ?? null,
+          total_tokens: asFiniteInt(json?.usage?.total_tokens) ?? null,
+          error: 'OpenAI returned empty content',
+          ts: new Date().toISOString(),
+        },
+        'LLM_CALL_DONE'
+      );
+    }
     throw new Error('OpenAI returned empty content');
+  }
+
+  if (params.audit) {
+    params.audit.request.log.info(
+      {
+        event: 'LLM_CALL_DONE',
+        ok: true,
+        provider: 'openai',
+        model: json?.model ?? params.model,
+        call: params.audit.call,
+        prompt_version: params.audit.prompt_version,
+        llm_phase_mode: params.audit.llm_phase_mode,
+        deal_id: params.audit.deal_id,
+        dio_id: params.audit.dio_id,
+        request_id: params.audit.request_id,
+        elapsed_ms: nowMs() - startedAtMs,
+        finish_reason: choice0?.finish_reason ?? null,
+        usage_available: Boolean(json?.usage),
+        prompt_tokens: asFiniteInt(json?.usage?.prompt_tokens) ?? null,
+        completion_tokens: asFiniteInt(json?.usage?.completion_tokens) ?? null,
+        total_tokens: asFiniteInt(json?.usage?.total_tokens) ?? null,
+        output_bytes: Buffer.byteLength(content, 'utf8'),
+        ts: new Date().toISOString(),
+      },
+      'LLM_CALL_DONE'
+    );
   }
   return { content, model: json.model, usage: json.usage, finish_reason: choice0?.finish_reason };
 }
@@ -141,6 +258,18 @@ const normalizeKpiForNarrationExcerpt = (kpi: any): any => {
   if (!kpi || typeof kpi !== 'object') return kpi;
   const out: any = { ...kpi };
 
+  // Normalize `source` to the shape expected by the guard.
+  // Many deterministic extractors store 0-based `page_index`; guard citations use 1-based `page`.
+  if (out.source && typeof out.source === 'object') {
+    try {
+      if ((out.source as any).page == null && typeof (out.source as any).page_index === 'number' && Number.isFinite((out.source as any).page_index)) {
+        (out.source as any).page = (out.source as any).page_index + 1;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   if (out.value_raw == null && out.value && typeof out.value === 'object') {
     const raw = (out.value as any).raw;
     if (typeof raw === 'string' && raw.trim()) out.value_raw = raw;
@@ -149,12 +278,24 @@ const normalizeKpiForNarrationExcerpt = (kpi: any): any => {
   // Guard expects a single deterministic `source` object (page + optional slide_title).
   if (out.source == null) {
     const sources = Array.isArray(out.sources) ? out.sources : [];
-    const best = sources.find((s: any) => s && typeof s === 'object' && typeof s.page === 'number') ?? null;
+    const best =
+      sources.find(
+        (s: any) =>
+          s &&
+          typeof s === 'object' &&
+          (typeof (s as any).page === 'number' || typeof (s as any).page_index === 'number')
+      ) ?? null;
     if (best) {
+      const page =
+        typeof (best as any).page === 'number'
+          ? (best as any).page
+          : (typeof (best as any).page_index === 'number' ? (best as any).page_index + 1 : null);
+      if (typeof page === 'number' && Number.isFinite(page)) {
       out.source = {
-        page: (best as any).page,
+        page,
         slide_title: typeof (best as any).slide_title === 'string' ? (best as any).slide_title : null,
       };
+      }
     }
   }
   return out;
@@ -269,6 +410,10 @@ async function maybeAttachNarrationV1(args: {
   nextMetadata: any;
   narrateEnabled: boolean;
   promotedFactsForExcerpt?: any[];
+  timer?: StageTimer;
+  reportExcerpt?: any;
+  excerptHash?: string;
+  llmContext?: { deal_id: string | null; dio_id: string | null; llm_phase_mode: string | null; request_id: string | number | null };
 }): Promise<void> {
   if (!args.narrateEnabled) return;
   if (!args.report || typeof args.report !== 'object') return;
@@ -276,7 +421,7 @@ async function maybeAttachNarrationV1(args: {
   const meta = args.nextMetadata && typeof args.nextMetadata === 'object' ? args.nextMetadata : {};
   const model = process.env.OPENAI_MODEL_REPORT_NARRATE || 'gpt-4o-mini';
 
-  const excerpt = buildAllowlistedNarrationExcerpt(args.report, { promoted_facts: args.promotedFactsForExcerpt });
+  const excerpt = args.reportExcerpt ?? buildAllowlistedNarrationExcerpt(args.report, { promoted_facts: args.promotedFactsForExcerpt });
   const prompt = buildNarrationPrompt({ excerpt });
 
   const devCacheEnabled = String(process.env.NODE_ENV ?? '').toLowerCase() === 'development';
@@ -287,7 +432,7 @@ async function maybeAttachNarrationV1(args: {
     (typeof (args.report as any)?.metadata?.deterministic_score_inputs_v1?.inputs_hash === 'string'
       ? String((args.report as any).metadata.deterministic_score_inputs_v1.inputs_hash)
       : null) ||
-    stableHash(JSON.stringify(excerpt ?? null));
+    (typeof args.excerptHash === 'string' && args.excerptHash.trim() ? args.excerptHash : stableHash(JSON.stringify(excerpt ?? null)));
 
   const cacheKey = `${inputsHash}|${model}|${NARRATION_PROMPT_VERSION}`;
   if (devCacheEnabled) {
@@ -365,45 +510,85 @@ async function maybeAttachNarrationV1(args: {
   let completionModelUsed: string | null = null;
   let completionOutputChars: number | null = null;
   try {
+    const system = prompt.system;
+    const user = prompt.user;
+    const systemBytes = Buffer.byteLength(system, 'utf8');
+    const userBytes = Buffer.byteLength(user, 'utf8');
+    const promptHash = stableHash(`${system}\n\n${user}`);
+
     const completion = await openaiChatCompletion({
       model,
       messages: [
-        { role: 'system', content: prompt.system },
-        { role: 'user', content: prompt.user },
+        { role: 'system', content: system },
+        { role: 'user', content: user },
       ],
       responseFormat: { type: 'json_object' },
       temperature: 0.2,
       maxTokens: 1800,
+      audit: {
+        request: args.request,
+        call: 'report.narration_v1',
+        prompt_version: NARRATION_PROMPT_VERSION,
+        prompt_hash: promptHash,
+        system_bytes: systemBytes,
+        user_bytes: userBytes,
+        prompt_bytes: systemBytes + userBytes,
+        deal_id: args.llmContext?.deal_id ?? null,
+        dio_id: args.llmContext?.dio_id ?? null,
+        llm_phase_mode: args.llmContext?.llm_phase_mode ?? null,
+        request_id: args.llmContext?.request_id ?? null,
+      },
     });
 
     const raw = completion.content;
     completionFinishReason = typeof completion.finish_reason === 'string' && completion.finish_reason.trim() ? completion.finish_reason.trim() : null;
     completionModelUsed = typeof completion.model === 'string' && completion.model.trim() ? completion.model.trim() : null;
     completionOutputChars = typeof raw === 'string' ? raw.length : null;
-    const parsed = (() => {
-      try {
-        return parseJsonOnly(raw);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e ?? 'unknown_error');
-        if (message === 'model_output_not_json') {
-          const trimmed = typeof raw === 'string' ? raw.trim() : '';
-          const head = trimmed.slice(0, 400);
-          const tail = trimmed.slice(Math.max(0, trimmed.length - 200));
-          args.request.log.warn(
-            {
-              code: 'model_output_not_json',
-              model: completionModelUsed ?? model,
-              finish_reason: completionFinishReason,
-              output_chars: completionOutputChars,
-              raw_head: head,
-              raw_tail: tail,
-            },
-            'LLM_NARRATION_RAW_OUTPUT'
-          );
-        }
-        throw e;
+    const stageBase = {
+      request_id: args.llmContext?.request_id ?? (args.request as any)?.id ?? null,
+      deal_id: args.llmContext?.deal_id ?? (args.report as any)?.deal_id ?? (args.report as any)?.dealId ?? null,
+      dio_id: args.llmContext?.dio_id ?? null,
+    };
+
+    const parseStartMs = nowMs();
+    let parsed: unknown;
+    try {
+      parsed = parseJsonOnly(raw);
+    } catch (e) {
+      const parseMs = nowMs() - parseStartMs;
+      args.timer?.mark('llm.narration_v1.parse_json', parseMs, false);
+      args.request.log.info(
+        { event: 'REPORT_STAGE_TIMING', stage: 'llm.narration_v1.parse_json', ms: parseMs, ok: false, ...stageBase, ts: new Date().toISOString() },
+        'REPORT_STAGE_TIMING'
+      );
+
+      const message = e instanceof Error ? e.message : String(e ?? 'unknown_error');
+      if (message === 'model_output_not_json') {
+        const trimmed = typeof raw === 'string' ? raw.trim() : '';
+        const head = trimmed.slice(0, 400);
+        const tail = trimmed.slice(Math.max(0, trimmed.length - 200));
+        args.request.log.warn(
+          {
+            code: 'model_output_not_json',
+            model: completionModelUsed ?? model,
+            finish_reason: completionFinishReason,
+            output_chars: completionOutputChars,
+            raw_head: head,
+            raw_tail: tail,
+          },
+          'LLM_NARRATION_RAW_OUTPUT'
+        );
       }
-    })();
+      throw e;
+    }
+    const parseMs = nowMs() - parseStartMs;
+    args.timer?.mark('llm.narration_v1.parse_json', parseMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.narration_v1.parse_json', ms: parseMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
+
+    const validateStartMs = nowMs();
     const validatedStrict = LlmNarrationV1Schema.safeParse(parsed);
 
     // Recovery path: if strict schema fails due to missing fields (e.g., what_would_change_my_mind),
@@ -502,11 +687,32 @@ async function maybeAttachNarrationV1(args: {
 
     if (!validated.ok) return;
 
+    const validateMs = nowMs() - validateStartMs;
+    args.timer?.mark('llm.narration_v1.schema_validate', validateMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.narration_v1.schema_validate', ms: validateMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
+
+    const guardStartMs = nowMs();
     const guard = validateNoNewFacts({ reportExcerpt: excerpt, narration: validated.narration });
+    const guardMs = nowMs() - guardStartMs;
+    args.timer?.mark('llm.narration_v1.guard', guardMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.narration_v1.guard', ms: guardMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
 
     const narration = (() => {
       if (guard.ok) return validated.narration as LlmNarrationV1Type;
+      const degradeStartMs = nowMs();
       const degraded = degradeNarrationV1({ narration: validated.narration as LlmNarrationV1Type, violations: guard.violations });
+      const degradeMs = nowMs() - degradeStartMs;
+      args.timer?.mark('llm.narration_v1.degrade', degradeMs, true);
+      args.request.log.info(
+        { event: 'REPORT_STAGE_TIMING', stage: 'llm.narration_v1.degrade', ms: degradeMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+        'REPORT_STAGE_TIMING'
+      );
 
     const blockedSectionTitles = (() => {
       const titles = new Set<string>();
@@ -561,7 +767,14 @@ async function maybeAttachNarrationV1(args: {
       return degraded.narration;
     })();
 
+    const assignStartMs = nowMs();
     (args.report as any).llm_narration_v1 = narration;
+    const assignMs = nowMs() - assignStartMs;
+    args.timer?.mark('llm.narration_v1.assign', assignMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.narration_v1.assign', ms: assignMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
     meta.llm_narration_v1_meta = {
       model: completion.model,
       usage: completion.usage ?? null,
@@ -787,6 +1000,10 @@ async function maybeAttachOverviewV1(args: {
   nextMetadata: any;
   narrateEnabled: boolean;
   promotedFactsForExcerpt?: any[];
+  timer?: StageTimer;
+  reportExcerpt?: any;
+  excerptHash?: string;
+  llmContext?: { deal_id: string | null; dio_id: string | null; llm_phase_mode: string | null; request_id: string | number | null };
 }): Promise<void> {
   if (!args.narrateEnabled) return;
   if (!args.report || typeof args.report !== 'object') return;
@@ -813,7 +1030,7 @@ async function maybeAttachOverviewV1(args: {
   let excerpt: any;
   let prompt: { system: string; user: string };
   try {
-    excerpt = buildAllowlistedNarrationExcerpt(args.report, { promoted_facts: args.promotedFactsForExcerpt });
+    excerpt = args.reportExcerpt ?? buildAllowlistedNarrationExcerpt(args.report, { promoted_facts: args.promotedFactsForExcerpt });
     const narrationStyleHint = (args.report as any).llm_narration_v1 ?? null;
     prompt = buildOverviewPrompt({ reportExcerpt: excerpt, narration: narrationStyleHint });
   } catch (err) {
@@ -837,15 +1054,34 @@ async function maybeAttachOverviewV1(args: {
   let completionModelUsed: string | null = null;
   let completionOutputChars: number | null = null;
   try {
+    const system = prompt.system;
+    const user = prompt.user;
+    const systemBytes = Buffer.byteLength(system, 'utf8');
+    const userBytes = Buffer.byteLength(user, 'utf8');
+    const promptHash = stableHash(`${system}\n\n${user}`);
+
     const completion = await openaiChatCompletion({
       model,
       messages: [
-        { role: 'system', content: prompt.system },
-        { role: 'user', content: prompt.user },
+        { role: 'system', content: system },
+        { role: 'user', content: user },
       ],
       responseFormat: { type: 'json_object' },
       temperature: 0.2,
       maxTokens: 1800,
+      audit: {
+        request: args.request,
+        call: 'report.overview_v1',
+        prompt_version: OVERVIEW_PROMPT_VERSION,
+        prompt_hash: promptHash,
+        system_bytes: systemBytes,
+        user_bytes: userBytes,
+        prompt_bytes: systemBytes + userBytes,
+        deal_id: args.llmContext?.deal_id ?? null,
+        dio_id: args.llmContext?.dio_id ?? null,
+        llm_phase_mode: args.llmContext?.llm_phase_mode ?? null,
+        request_id: args.llmContext?.request_id ?? null,
+      },
     });
 
     const raw = completion.content;
@@ -853,32 +1089,74 @@ async function maybeAttachOverviewV1(args: {
     completionModelUsed = typeof completion.model === 'string' && completion.model.trim() ? completion.model.trim() : null;
     completionOutputChars = typeof raw === 'string' ? raw.length : null;
 
-    const parsed = (() => {
-      try {
-        return parseJsonOnly(raw);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e ?? 'unknown_error');
-        if (message === 'model_output_not_json') {
-          const trimmed = typeof raw === 'string' ? raw.trim() : '';
-          args.request.log.warn(
-            {
-              code: 'model_output_not_json',
-              model: completionModelUsed ?? model,
-              finish_reason: completionFinishReason,
-              output_chars: completionOutputChars,
-              raw_head: trimmed.slice(0, 400),
-              raw_tail: trimmed.slice(Math.max(0, trimmed.length - 200)),
-            },
-            'LLM_OVERVIEW_RAW_OUTPUT'
-          );
-        }
-        throw e;
-      }
-    })();
+    const stageBase = {
+      request_id: args.llmContext?.request_id ?? (args.request as any)?.id ?? null,
+      deal_id: args.llmContext?.deal_id ?? (args.report as any)?.deal_id ?? (args.report as any)?.dealId ?? null,
+      dio_id: args.llmContext?.dio_id ?? null,
+    };
 
+    const parseStartMs = nowMs();
+    let parsed: unknown;
+    try {
+      parsed = parseJsonOnly(raw);
+    } catch (e) {
+      const parseMs = nowMs() - parseStartMs;
+      args.timer?.mark('llm.overview_v1.parse_json', parseMs, false);
+      args.request.log.info(
+        { event: 'REPORT_STAGE_TIMING', stage: 'llm.overview_v1.parse_json', ms: parseMs, ok: false, ...stageBase, ts: new Date().toISOString() },
+        'REPORT_STAGE_TIMING'
+      );
+
+      const message = e instanceof Error ? e.message : String(e ?? 'unknown_error');
+      if (message === 'model_output_not_json') {
+        const trimmed = typeof raw === 'string' ? raw.trim() : '';
+        args.request.log.warn(
+          {
+            code: 'model_output_not_json',
+            model: completionModelUsed ?? model,
+            finish_reason: completionFinishReason,
+            output_chars: completionOutputChars,
+            raw_head: trimmed.slice(0, 400),
+            raw_tail: trimmed.slice(Math.max(0, trimmed.length - 200)),
+          },
+          'LLM_OVERVIEW_RAW_OUTPUT'
+        );
+      }
+      throw e;
+    }
+    const parseMs = nowMs() - parseStartMs;
+    args.timer?.mark('llm.overview_v1.parse_json', parseMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.overview_v1.parse_json', ms: parseMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
+
+    const sanitizeStartMs = nowMs();
     const candidate = sanitizeOverviewCandidateBeforeGuard(parsed);
+    const sanitizeMs = nowMs() - sanitizeStartMs;
+    args.timer?.mark('llm.overview_v1.sanitize_before_guard', sanitizeMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.overview_v1.sanitize_before_guard', ms: sanitizeMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
+
+    const guardStartMs = nowMs();
     const guarded = degradeOverviewV1({ reportExcerpt: excerpt, overview: candidate });
+    const guardMs = nowMs() - guardStartMs;
+    args.timer?.mark('llm.overview_v1.guard_degrade', guardMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.overview_v1.guard_degrade', ms: guardMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
+
+    const validateStartMs = nowMs();
     const validated = sanitizeAndValidateOverviewOrDropCitations(guarded.overview);
+    const validateMs = nowMs() - validateStartMs;
+    args.timer?.mark('llm.overview_v1.validate', validateMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.overview_v1.validate', ms: validateMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
     if (validated.ok) {
       (args.report as any).llm_overview_v1 = validated.overview;
     } else {
@@ -925,6 +1203,10 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
   nextMetadata: any;
   narrateEnabled: boolean;
   promotedFactsForExcerpt?: any[];
+  timer?: StageTimer;
+  reportExcerpt?: any;
+  excerptHash?: string;
+  llmContext?: { deal_id: string | null; dio_id: string | null; llm_phase_mode: string | null; request_id: string | number | null };
 }): Promise<void> {
   if (!args.narrateEnabled) return;
   if (!args.report || typeof args.report !== 'object') return;
@@ -1005,7 +1287,7 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
   let excerpt: any;
   let prompt: { system: string; user: string };
   try {
-    excerpt = buildAllowlistedNarrationExcerpt(args.report, { promoted_facts: args.promotedFactsForExcerpt });
+    excerpt = args.reportExcerpt ?? buildAllowlistedNarrationExcerpt(args.report, { promoted_facts: args.promotedFactsForExcerpt });
     prompt = buildInvestmentAnalysisOverviewPrompt({ reportExcerpt: excerpt });
   } catch (err) {
     const baseMessage = err instanceof Error ? err.message : String(err ?? 'unknown_error');
@@ -1028,15 +1310,34 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
   let completionModelUsed: string | null = null;
   let completionOutputChars: number | null = null;
   try {
+    const system = prompt.system;
+    const user = prompt.user;
+    const systemBytes = Buffer.byteLength(system, 'utf8');
+    const userBytes = Buffer.byteLength(user, 'utf8');
+    const promptHash = stableHash(`${system}\n\n${user}`);
+
     const completion = await openaiChatCompletion({
       model,
       messages: [
-        { role: 'system', content: prompt.system },
-        { role: 'user', content: prompt.user },
+        { role: 'system', content: system },
+        { role: 'user', content: user },
       ],
       responseFormat: { type: 'json_object' },
       temperature: 0.2,
       maxTokens: 900,
+      audit: {
+        request: args.request,
+        call: 'report.investment_analysis_overview_v1',
+        prompt_version: INVESTMENT_ANALYSIS_OVERVIEW_PROMPT_VERSION,
+        prompt_hash: promptHash,
+        system_bytes: systemBytes,
+        user_bytes: userBytes,
+        prompt_bytes: systemBytes + userBytes,
+        deal_id: args.llmContext?.deal_id ?? null,
+        dio_id: args.llmContext?.dio_id ?? null,
+        llm_phase_mode: args.llmContext?.llm_phase_mode ?? null,
+        request_id: args.llmContext?.request_id ?? null,
+      },
     });
 
     const raw = completion.content;
@@ -1044,28 +1345,47 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
     completionModelUsed = typeof completion.model === 'string' && completion.model.trim() ? completion.model.trim() : null;
     completionOutputChars = typeof raw === 'string' ? raw.length : null;
 
-    const parsed = (() => {
-      try {
-        return parseJsonOnly(raw);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e ?? 'unknown_error');
-        if (message === 'model_output_not_json') {
-          const trimmed = typeof raw === 'string' ? raw.trim() : '';
-          args.request.log.warn(
-            {
-              code: 'model_output_not_json',
-              model: completionModelUsed ?? model,
-              finish_reason: completionFinishReason,
-              output_chars: completionOutputChars,
-              raw_head: trimmed.slice(0, 400),
-              raw_tail: trimmed.slice(Math.max(0, trimmed.length - 200)),
-            },
-            'LLM_INVESTMENT_ANALYSIS_OVERVIEW_RAW_OUTPUT'
-          );
-        }
-        throw e;
+    const stageBase = {
+      request_id: args.llmContext?.request_id ?? (args.request as any)?.id ?? null,
+      deal_id: args.llmContext?.deal_id ?? (args.report as any)?.deal_id ?? (args.report as any)?.dealId ?? null,
+      dio_id: args.llmContext?.dio_id ?? null,
+    };
+
+    const parseStartMs = nowMs();
+    let parsed: unknown;
+    try {
+      parsed = parseJsonOnly(raw);
+    } catch (e) {
+      const parseMs = nowMs() - parseStartMs;
+      args.timer?.mark('llm.investment_analysis_overview_v1.parse_json', parseMs, false);
+      args.request.log.info(
+        { event: 'REPORT_STAGE_TIMING', stage: 'llm.investment_analysis_overview_v1.parse_json', ms: parseMs, ok: false, ...stageBase, ts: new Date().toISOString() },
+        'REPORT_STAGE_TIMING'
+      );
+
+      const message = e instanceof Error ? e.message : String(e ?? 'unknown_error');
+      if (message === 'model_output_not_json') {
+        const trimmed = typeof raw === 'string' ? raw.trim() : '';
+        args.request.log.warn(
+          {
+            code: 'model_output_not_json',
+            model: completionModelUsed ?? model,
+            finish_reason: completionFinishReason,
+            output_chars: completionOutputChars,
+            raw_head: trimmed.slice(0, 400),
+            raw_tail: trimmed.slice(Math.max(0, trimmed.length - 200)),
+          },
+          'LLM_INVESTMENT_ANALYSIS_OVERVIEW_RAW_OUTPUT'
+        );
       }
-    })();
+      throw e;
+    }
+    const parseMs = nowMs() - parseStartMs;
+    args.timer?.mark('llm.investment_analysis_overview_v1.parse_json', parseMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.investment_analysis_overview_v1.parse_json', ms: parseMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
 
     const rawCandidate = parsed && typeof parsed === 'object' ? (parsed as any).investment_analysis_overview : null;
     if (typeof rawCandidate !== 'string') {
@@ -1119,11 +1439,18 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
     const repairedText = repairInvestmentAnalysisOverviewStructure(candidateText);
 
     // Provide deterministic citations so numeric tokens (if any) can pass guard.
+    const guardStartMs = nowMs();
     const guardCitations = collectDeterministicOverviewCitations(excerpt, 40);
     const guarded = degradeOverviewV1({
       reportExcerpt: excerpt,
       overview: { version: 'llm_overview_v1', investment_analysis_overview: repairedText, citations: guardCitations },
     });
+    const guardMs = nowMs() - guardStartMs;
+    args.timer?.mark('llm.investment_analysis_overview_v1.guard_degrade', guardMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.investment_analysis_overview_v1.guard_degrade', ms: guardMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
 
     const existing = (args.report as any).llm_overview_v1;
     if (!existing || typeof existing !== 'object') {
@@ -1141,8 +1468,15 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
     }
 
     // Final schema safety pass (after guard/degrade + merge).
+    const validateStartMs = nowMs();
     const current = (args.report as any).llm_overview_v1;
     const validated = sanitizeAndValidateOverviewOrDropCitations(current);
+    const validateMs = nowMs() - validateStartMs;
+    args.timer?.mark('llm.investment_analysis_overview_v1.validate', validateMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.investment_analysis_overview_v1.validate', ms: validateMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
     if (validated.ok) {
       (args.report as any).llm_overview_v1 = validated.overview;
     } else {
@@ -1505,6 +1839,23 @@ export async function registerReportRoutes(
     "/api/v1/deals/:deal_id/report",
     async (request: FastifyRequest<{ Params: ReportParams }>, reply: FastifyReply) => {
       const startTs = Date.now();
+      const timer = new StageTimer();
+      const requestId = (request as any)?.id ?? null;
+      const logStage = (stage: string, ms: number, ok: boolean, extra?: Record<string, any>) => {
+        request.log.info(
+          {
+            event: 'REPORT_STAGE_TIMING',
+            stage,
+            ms,
+            ok,
+            request_id: requestId,
+            deal_id: request.params?.deal_id ?? null,
+            ...(extra ?? {}),
+            ts: new Date().toISOString(),
+          },
+          'REPORT_STAGE_TIMING'
+        );
+      };
       try {
         const { deal_id } = request.params;
         request.log.info({ msg: "deal.report.start", deal_id, start_ts: new Date(startTs).toISOString() });
@@ -1514,33 +1865,42 @@ export async function registerReportRoutes(
         }
 
         // 404 only when the deal itself does not exist.
-        const { rows: dealRows } = await pool.query<{ id: string }>(
-          `SELECT id FROM deals WHERE id = $1 AND deleted_at IS NULL`,
-          [deal_id]
-        );
+        const dealLookup = await timer.stage('db.deal_lookup', async () => {
+          return pool.query<{ id: string; llm_phase_mode: string | null }>(
+            `SELECT id, llm_phase_mode::text as llm_phase_mode FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+            [deal_id]
+          );
+        });
+        logStage('db.deal_lookup', dealLookup.ms, true);
+        const dealRows = dealLookup.value.rows;
         if (dealRows.length === 0) {
           return reply.status(404).send({ error: 'Deal not found' });
         }
+        const llm_phase_mode = typeof dealRows[0]?.llm_phase_mode === 'string' ? dealRows[0].llm_phase_mode : null;
 
         // Canonical persisted analysis artifact: the latest Deal Intelligence Object (DIO).
         // Do NOT infer readiness from job messages.
-        const { rows: dioRows } = await pool.query<{
-          dio_id: string;
-          analysis_version: number | null;
-          recommendation: string | null;
-          overall_score: number | null;
-          dio_data: any;
-          updated_at: string | null;
-        }>(
-          `SELECT dio_id, analysis_version, recommendation, overall_score, dio_data, updated_at
-             FROM deal_intelligence_objects
-            WHERE deal_id = $1
-            ORDER BY analysis_version DESC,
-                     updated_at DESC NULLS LAST,
-                     dio_id DESC
-            LIMIT 1`,
-          [deal_id]
-        );
+        const dioLookup = await timer.stage('db.dio_latest', async () => {
+          return pool.query<{
+            dio_id: string;
+            analysis_version: number | null;
+            recommendation: string | null;
+            overall_score: number | null;
+            dio_data: any;
+            updated_at: string | null;
+          }>(
+            `SELECT dio_id, analysis_version, recommendation, overall_score, dio_data, updated_at
+               FROM deal_intelligence_objects
+              WHERE deal_id = $1
+              ORDER BY analysis_version DESC,
+                       updated_at DESC NULLS LAST,
+                       dio_id DESC
+              LIMIT 1`,
+            [deal_id]
+          );
+        });
+        logStage('db.dio_latest', dioLookup.ms, true);
+        const dioRows = dioLookup.value.rows;
 
         if (dioRows.length === 0) {
           return reply.status(200).send({ ready: false, reason: 'not_generated_yet' });
@@ -1565,14 +1925,23 @@ export async function registerReportRoutes(
         let dealSummaryV1: any = null;
         let segmentedNodes: { nodes: any[]; warnings: string[] } | null = null;
         try {
-          segmentedNodes = await getSegmentedNodesForDeal(pool as any, deal_id);
+          const seg = await timer.stage('db.segmented_nodes', async () => getSegmentedNodesForDeal(pool as any, deal_id));
+          logStage('db.segmented_nodes', seg.ms, true);
+          segmentedNodes = seg.value;
         } catch (err) {
+          const ms = 0;
+          logStage('db.segmented_nodes', ms, false, { error: err instanceof Error ? err.message : String(err ?? 'unknown_error') });
           request.log.warn({ event: 'deal.report.segmented_nodes_failed', deal_id, dio_id: row.dio_id, err }, 'segmented nodes lookup failed');
           segmentedNodes = null;
         }
         try {
-          dealSummaryV1 = await compileDealSummaryV1(pool as any, deal_id, { prefetched: segmentedNodes ?? undefined } as any);
+          const ds = await timer.stage('compile.deal_summary_v1', async () =>
+            compileDealSummaryV1(pool as any, deal_id, { prefetched: segmentedNodes ?? undefined } as any)
+          );
+          logStage('compile.deal_summary_v1', ds.ms, true);
+          dealSummaryV1 = ds.value;
         } catch (err) {
+          logStage('compile.deal_summary_v1', 0, false, { error: err instanceof Error ? err.message : String(err ?? 'unknown_error') });
           request.log.warn({ event: 'deal.report.deal_summary_v1_failed', deal_id, dio_id: row.dio_id, err }, 'deal_summary_v1 compilation failed');
           dealSummaryV1 = {
             version: 'deal_summary_v1',
@@ -1591,7 +1960,9 @@ export async function registerReportRoutes(
         let report: any = null;
         let promotedFacts: any[] = [];
         try {
-          promotedFacts = await loadPromotedFactsForDeal(pool as any, deal_id);
+          const pf = await timer.stage('db.promoted_facts', async () => loadPromotedFactsForDeal(pool as any, deal_id));
+          logStage('db.promoted_facts', pf.ms, true);
+          promotedFacts = pf.value;
 
       // Deterministic fallback: if evidence_items did not get populated yet, derive
       // promoted-like facts directly from document_page_understanding payloads.
@@ -1607,7 +1978,9 @@ export async function registerReportRoutes(
       // If any of the key structured_summary items are missing, derive them deterministically
       // from document_page_understanding and attach as promotedFacts inputs.
       if (!hasRaise || !hasModel || !hasKpi) {
-        const derived = await derivePromotedFactsFromDpuForDeal(pool as any, deal_id);
+        const derivedStage = await timer.stage('db.promoted_facts_derived_from_dpu', async () => derivePromotedFactsFromDpuForDeal(pool as any, deal_id));
+        logStage('db.promoted_facts_derived_from_dpu', derivedStage.ms, true);
+        const derived = derivedStage.value;
         const existingEvidenceIds = new Set(promotedFacts.map((r: any) => String(r?.evidence_id ?? '')).filter(Boolean));
         for (const r of derived) {
           const evidenceId = String((r as any)?.evidence_id ?? '');
@@ -1621,9 +1994,13 @@ export async function registerReportRoutes(
         }
       }
 
-          report = promotedFacts.length > 0
-            ? compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts })
-            : compileDIOToReport(row.dio_data);
+          const compiled = await timer.stage('compile.report', async () =>
+            promotedFacts.length > 0
+              ? compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts })
+              : compileDIOToReport(row.dio_data)
+          );
+          logStage('compile.report', compiled.ms, true);
+          report = compiled.value;
 
           // Deterministic structured_summary additions (no LLM): market/product/gtm/deal summaries.
           try {
@@ -1849,6 +2226,41 @@ export async function registerReportRoutes(
         }
         const narrateEnabled = envFlagEnabled((request.query as any)?.narrate);
 
+        const llmContext = {
+          deal_id,
+          dio_id: String(row.dio_id ?? ''),
+          llm_phase_mode: typeof llm_phase_mode === 'string' && llm_phase_mode.trim() ? llm_phase_mode.trim() : null,
+          request_id: requestId,
+        };
+
+        let reportExcerpt: any = undefined;
+        let excerptHash: string | undefined = undefined;
+        if (narrateEnabled && report && typeof report === 'object') {
+          try {
+            // Ensure excerpt contains the stable deterministic KPI shapes required by the narration guard.
+            // These are deterministic, shape-only normalizations and must not change underlying extracted values.
+            ensureStructuredRevenueSelectionReason(report);
+            ensureStructuredSummaryKpis(report);
+            // Ensure excerpt sees the deterministic deal_summary_v1 subtree as well.
+            (report as any).deal_summary = dealSummaryV1;
+
+            const ex = await timer.stage('llm.build_excerpt', async () => {
+              const e = buildAllowlistedNarrationExcerpt(report, { promoted_facts: promotedFactsForExcerpt ?? undefined });
+              return e;
+            });
+            logStage('llm.build_excerpt', ex.ms, true);
+            reportExcerpt = ex.value;
+
+            const hashStage = await timer.stage('llm.excerpt_hash', async () => stableHash(JSON.stringify(reportExcerpt ?? null)));
+            logStage('llm.excerpt_hash', hashStage.ms, true);
+            excerptHash = hashStage.value;
+          } catch (err) {
+            logStage('llm.build_excerpt', 0, false, { error: err instanceof Error ? err.message : String(err ?? 'unknown_error') });
+            reportExcerpt = undefined;
+            excerptHash = undefined;
+          }
+        }
+
         if (report && typeof report === 'object') {
           ensureStructuredRevenueSelectionReason(report);
           ensureStructuredSummaryKpis(report);
@@ -1858,12 +2270,38 @@ export async function registerReportRoutes(
           // Optional LLM narration: additive only; never alters deterministic fields.
           try {
             const nextMetadata = { ...((report as any)?.metadata ?? (payload as any)?.metadata ?? {}) };
-            await maybeAttachNarrationV1({ request, report, nextMetadata, narrateEnabled, promotedFactsForExcerpt: promotedFactsForExcerpt ?? undefined });
+            const narr = await timer.stage('llm.narration_v1', async () =>
+              maybeAttachNarrationV1({
+                request,
+                report,
+                nextMetadata,
+                narrateEnabled,
+                promotedFactsForExcerpt: promotedFactsForExcerpt ?? undefined,
+                timer,
+                reportExcerpt,
+                excerptHash,
+                llmContext,
+              })
+            );
+            logStage('llm.narration_v1', narr.ms, true);
             (payload as any).metadata = (report as any).metadata;
 
 			// Optional LLM overview: additive only; never alters deterministic fields.
 			try {
-        await maybeAttachOverviewV1({ request, report, nextMetadata, narrateEnabled, promotedFactsForExcerpt: promotedFactsForExcerpt ?? undefined });
+        const ov = await timer.stage('llm.overview_v1', async () =>
+          maybeAttachOverviewV1({
+            request,
+            report,
+            nextMetadata,
+            narrateEnabled,
+            promotedFactsForExcerpt: promotedFactsForExcerpt ?? undefined,
+            timer,
+            reportExcerpt,
+            excerptHash,
+            llmContext,
+          })
+        );
+        logStage('llm.overview_v1', ov.ms, true);
 				(payload as any).metadata = (report as any).metadata;
 			} catch {
 				// ignore
@@ -1871,7 +2309,20 @@ export async function registerReportRoutes(
 
       // Optional Investment Analysis Overview reasoning: additive only; never alters deterministic fields.
       try {
-        await maybeAttachInvestmentAnalysisOverviewV1({ request, report, nextMetadata, narrateEnabled, promotedFactsForExcerpt: promotedFactsForExcerpt ?? undefined });
+        const ia = await timer.stage('llm.investment_analysis_overview_v1', async () =>
+          maybeAttachInvestmentAnalysisOverviewV1({
+            request,
+            report,
+            nextMetadata,
+            narrateEnabled,
+            promotedFactsForExcerpt: promotedFactsForExcerpt ?? undefined,
+            timer,
+            reportExcerpt,
+            excerptHash,
+            llmContext,
+          })
+        );
+        logStage('llm.investment_analysis_overview_v1', ia.ms, true);
         (payload as any).metadata = (report as any).metadata;
       } catch {
         // ignore
@@ -1894,6 +2345,21 @@ export async function registerReportRoutes(
           end_ts: new Date(endTs).toISOString(),
           duration_ms: endTs - startTs,
         });
+
+        const summary = timer.summary();
+        request.log.info(
+          {
+            event: 'REPORT_TIMING_SUMMARY',
+            request_id: requestId,
+            deal_id,
+            dio_id: String(row?.dio_id ?? ''),
+            llm_phase_mode: typeof llm_phase_mode === 'string' ? llm_phase_mode : null,
+            total_ms: summary.total_ms,
+            stage_ms: summary.stage_ms,
+            ts: new Date().toISOString(),
+          },
+          'REPORT_TIMING_SUMMARY'
+        );
 
         return reply.status(200).send(payload);
         

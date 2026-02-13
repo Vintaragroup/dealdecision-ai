@@ -67,9 +67,9 @@ function mkMockPool(args: {
 	return {
 		query: async (sql: string, params?: unknown[]) => {
 			const q = String(sql);
-			if (q.includes("SELECT id FROM deals") && q.includes("deleted_at IS NULL")) {
+			if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
 				assert.deepEqual(params, [args.dealId]);
-				return { rows: [{ id: args.dealId }] };
+				return { rows: [{ id: args.dealId, llm_phase_mode: null }] };
 			}
 			if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {
 				assert.deepEqual(params, [args.dealId]);

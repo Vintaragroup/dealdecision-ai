@@ -2,6 +2,13 @@ import type { Pool } from "pg";
 import { normalizeAnalystSegment, type AnalystSegment } from "./analyst-segment";
 import { getSegmentedNodesForDeal, type SegmentedDealNode } from "./segmented-nodes-for-deal";
 import { buildDealSummaryTiers } from "./deal-summary-tiers";
+import {
+  assessTextQuality,
+  sanitizeForDisplay,
+  type SuppressReason,
+  type TextQuality,
+} from "./text-quality";
+import { normalizeCanonicalFact, type CanonicalFactKind, type CanonicalFactMeta } from "./canonical/canonical-fact-normalizer";
 
 const normalizeWhitespace = (s: string): string => s.replace(/\s+/g, " ").trim();
 
@@ -11,6 +18,19 @@ const asCleanString = (v: unknown, maxLen: number): string | null => {
   if (!s) return null;
   if (s.length <= maxLen) return s;
   return `${s.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…`;
+};
+
+const truncateForDisplay = (text: string, maxLen: number): string | null => {
+  const s = normalizeWhitespace(text);
+  if (!s) return null;
+  if (s.length <= maxLen) return s;
+  if (maxLen < 24) return null;
+
+  const head = s.slice(0, Math.max(0, maxLen - 3)).trimEnd();
+  const lastSpace = head.lastIndexOf(" ");
+  const trimmed = (lastSpace >= Math.floor(maxLen * 0.6) ? head.slice(0, lastSpace) : head).trimEnd();
+  if (trimmed.length < 12) return null;
+  return `${trimmed}…`;
 };
 
 export type DealSummaryCitation = {
@@ -24,6 +44,9 @@ export type DealSummaryCitation = {
 
 export type DealSummaryLine = {
   text: string;
+  display_text: string | null;
+  quality: TextQuality;
+  suppressed_reasons: SuppressReason[];
   sources: DealSummaryCitation[];
 };
 
@@ -31,6 +54,13 @@ export type DealSummaryV1 = {
   version: "deal_summary_v1";
   ready: boolean;
   reason: string | null;
+  meta?: {
+    one_liner?: CanonicalFactMeta;
+    product?: CanonicalFactMeta;
+    market_target?: CanonicalFactMeta;
+    market_context?: CanonicalFactMeta;
+    market?: CanonicalFactMeta;
+  };
   tiers: {
     hero: string;
     overview: string;
@@ -85,6 +115,64 @@ function hasConcreteInfoToken(text: string): boolean {
 
 function meetsMinimumInfo(text: string): boolean {
   return wordCountLoose(text) >= 7 || hasConcreteInfoToken(text);
+}
+
+type Assessed = { quality: TextQuality; reasons: SuppressReason[]; display: string | null };
+
+function assessCandidateText(input: string): Assessed {
+  return assessTextQuality(sanitizeForDisplay(input));
+}
+
+// Ranking-only: use this to pick between deterministic candidates.
+// Suppression semantics still come from assessTextQuality/buildLine.
+function rankTextQuality(assessed: Assessed): number {
+  let score = 0;
+
+  if (assessed.quality === "good") score += 40;
+  else if (assessed.quality === "ok") score += 20;
+
+  if (!assessed.display) score -= 30;
+
+  const d = assessed.display ?? "";
+  const wc = wordCountLoose(d);
+  if (wc >= 10) score += 6;
+  if (wc <= 4) score -= 8;
+  if (startsWithAnyLoose(d, FLUFF_PREFIXES)) score -= 10;
+  if (!meetsMinimumInfo(d)) score -= 6;
+
+  for (const r of assessed.reasons ?? []) {
+    if (r === "boilerplate_marker" || r === "looks_like_footer") score -= 8;
+  }
+
+  return score;
+}
+
+function buildLine(node: SegmentedDealNode, rawText: string): DealSummaryLine {
+  const assessed = assessCandidateText(rawText);
+  const display = assessed.display;
+  const snippet = display ?? sanitizeForDisplay(rawText);
+  return {
+    text: display ?? "",
+    display_text: display,
+    quality: assessed.quality,
+    suppressed_reasons: assessed.reasons,
+    sources: [buildCitation(node, snippet)],
+  };
+}
+
+function buildCanonicalLine(node: SegmentedDealNode, rawText: string, kind: CanonicalFactKind): { line: DealSummaryLine; meta: CanonicalFactMeta } {
+  const normalized = normalizeCanonicalFact(rawText, { kind, maxLen: 220 });
+  const snippet = normalized.display_text ?? sanitizeForDisplay(rawText);
+  return {
+    line: {
+      text: normalized.display_text ?? "",
+      display_text: normalized.display_text,
+      quality: normalized.quality,
+      suppressed_reasons: normalized.suppressed_reasons,
+      sources: [buildCitation(node, snippet)],
+    },
+    meta: normalized.meta,
+  };
 }
 
 function buildMarketTargetFromText(text: string): string | null {
@@ -152,8 +240,9 @@ function candidateTextFromNode(node: SegmentedDealNode, maxLen: number): string 
   const snippet = asCleanString(node.bullets_snippet ?? "", maxLen);
   if (snippet) return snippet;
   const title = asCleanString(node.slide_title ?? "", Math.min(120, maxLen));
-  if (title) return title;
-  return null;
+  // Return raw title even if it is garbage so callers can produce a suppressed line
+  // (display_text null) rather than treating the segment as missing.
+  return title;
 }
 
 function candidateTextFromNodeForSegment(node: SegmentedDealNode, segment: AnalystSegment, maxLen: number): string | null {
@@ -164,12 +253,19 @@ function candidateTextFromNodeForSegment(node: SegmentedDealNode, segment: Analy
       const s = asCleanString(b, maxLen);
       if (!s) continue;
       if (startsWithAnyLoose(s, FLUFF_PREFIXES)) continue;
-      if (!meetsMinimumInfo(s)) continue;
-      return s;
+
+      const assessed = assessCandidateText(s);
+      if (!(assessed.quality === "good" || assessed.quality === "ok") || !assessed.display) continue;
+      if (!meetsMinimumInfo(assessed.display)) continue;
+      return assessed.display;
     }
   }
 
-  return candidateTextFromNode(node, maxLen);
+  const raw = candidateTextFromNode(node, maxLen);
+  if (!raw) return null;
+  const assessed = assessCandidateText(raw);
+  if (!(assessed.quality === "good" || assessed.quality === "ok") || !assessed.display) return raw;
+  return assessed.display;
 }
 
 function scoreNodeForSegment(node: SegmentedDealNode, segment: AnalystSegment): number {
@@ -222,17 +318,22 @@ function scoreNodeForSegment(node: SegmentedDealNode, segment: AnalystSegment): 
 }
 
 function buildCitation(node: SegmentedDealNode, snippet: string): DealSummaryCitation {
+  const cleaned = sanitizeForDisplay(snippet);
+  const assessed = assessTextQuality(cleaned);
+  const finalSnippet = assessed.display ?? asCleanString(cleaned, 220) ?? cleaned;
   return {
     source_document_id: node.source_document_id,
     page_index: node.page_index,
     slide_title: node.slide_title,
-    snippet: asCleanString(snippet, 220) ?? snippet,
+    snippet: finalSnippet,
     segment_key: node.segment_key,
     node_id: node.node_id,
   };
 }
 
-function pickBest(nodes: SegmentedDealNode[], segment: AnalystSegment): { node: SegmentedDealNode; text: string } | null {
+type Pick = { node: SegmentedDealNode; raw_text: string; assessed: Assessed };
+
+function pickBest(nodes: SegmentedDealNode[], segment: AnalystSegment): Pick | null {
   const PRODUCT_VALIDATION_TOKENS = [
     "as seen in",
     "press",
@@ -255,32 +356,51 @@ function pickBest(nodes: SegmentedDealNode[], segment: AnalystSegment): { node: 
     return PRODUCT_VALIDATION_TOKENS.some((k) => t.includes(tokenizeLoose(k)));
   };
 
-  const tryPick = (opts: { disallowValidation: boolean }): { node: SegmentedDealNode; text: string } | null => {
-    let best: { node: SegmentedDealNode; text: string; score: number } | null = null;
+  const tryPick = (opts: { disallowValidation: boolean }): Pick | null => {
+    let bestEligible: { pick: Pick; score: number; q: number } | null = null;
+    let bestRejected: { pick: Pick; score: number; q: number } | null = null;
     for (const n of nodes) {
       const score = scoreNodeForSegment(n, segment);
       if (score <= 0) continue;
-      const text = candidateTextFromNodeForSegment(n, segment, 280);
-      if (!text) continue;
+
+      const rawText = candidateTextFromNodeForSegment(n, segment, 280) ?? candidateTextFromNode(n, 280);
+      if (!rawText) continue;
+
+      const assessed = assessCandidateText(rawText);
+      const pick: Pick = { node: n, raw_text: rawText, assessed };
+      const display = assessed.display;
+      const isGood = !!display && (assessed.quality === "good" || assessed.quality === "ok");
+      const q = rankTextQuality(assessed);
 
       // Hard filter for fluff/min-info on market/product lines.
-      if ((segment === "market" || segment === "product") && startsWithAnyLoose(text, FLUFF_PREFIXES)) continue;
-      if ((segment === "market" || segment === "product") && !meetsMinimumInfo(text)) continue;
+      const eligible =
+        isGood &&
+        (segment !== "market" && segment !== "product"
+          ? true
+          : !startsWithAnyLoose(display!, FLUFF_PREFIXES) && meetsMinimumInfo(display!));
 
       // Product definition should not be press/awards/collabs unless we have no alternative.
-      if (segment === "product" && opts.disallowValidation && hasValidation(`${n.slide_title ?? ""}\n${text}`)) continue;
+      if (segment === "product" && opts.disallowValidation && eligible && hasValidation(`${n.slide_title ?? ""}\n${display!}`)) {
+        continue;
+      }
 
-      if (!best || score > best.score) {
-        best = { node: n, text, score };
+      if (eligible) {
+        if (!bestEligible || score > bestEligible.score || (score === bestEligible.score && q > bestEligible.q)) {
+          bestEligible = { pick, score, q };
+        }
+      } else {
+        if (!bestRejected || score > bestRejected.score || (score === bestRejected.score && q > bestRejected.q)) {
+          bestRejected = { pick, score, q };
+        }
       }
     }
-    return best ? { node: best.node, text: best.text } : null;
+    return bestEligible?.pick ?? bestRejected?.pick ?? null;
   };
 
   return tryPick({ disallowValidation: true }) ?? tryPick({ disallowValidation: false });
 }
 
-function pickBestMarket(nodes: SegmentedDealNode[], kind: 'target' | 'context'): { node: SegmentedDealNode; text: string } | null {
+function pickBestMarket(nodes: SegmentedDealNode[], kind: 'target' | 'context'): Pick | null {
   const targetHints = ['icp', 'target', 'customer', 'customers', 'segment', 'segments', 'persona', 'buyer', 'age', 'cohort', 'golfers', 'dtc', 'wholesale', 'green grass', 'pro shop', 'retail', 'courses'];
   const contextHints = ['participation', 'cagr', 'growth', 'growing', 'tailwinds', 'market size', 'tam', 'sam', 'som', 'industry'];
 
@@ -298,25 +418,43 @@ function pickBestMarket(nodes: SegmentedDealNode[], kind: 'target' | 'context'):
     return true;
   };
 
-  let best: { node: SegmentedDealNode; text: string; score: number } | null = null;
+  let bestEligible: { pick: Pick; score: number; q: number } | null = null;
+  let bestRejected: { pick: Pick; score: number; q: number } | null = null;
   for (const n of nodes) {
     const base = scoreNodeForSegment(n, 'market');
     if (base <= 0) continue;
-    const text = candidateTextFromNodeForSegment(n, 'market', 280);
-    if (!text) continue;
-    if (startsWithAnyLoose(text, FLUFF_PREFIXES)) continue;
-    if (!meetsMinimumInfo(text)) continue;
 
-    const combined = `${n.slide_title ?? ''}\n${text}`;
+    const rawText = candidateTextFromNodeForSegment(n, 'market', 280) ?? candidateTextFromNode(n, 280);
+    if (!rawText) continue;
+    const assessed = assessCandidateText(rawText);
+    const pick: Pick = { node: n, raw_text: rawText, assessed };
+    const textForChecks = assessed.display ?? rawText;
+    const q = rankTextQuality(assessed);
+
+    // Target/context classification should still be attempted on the raw text when suppressed,
+    // so callers can differentiate missing vs suppressed.
+    if (startsWithAnyLoose(textForChecks, FLUFF_PREFIXES)) continue;
+    if (!meetsMinimumInfo(textForChecks)) continue;
+
+    const combined = `${n.slide_title ?? ''}\n${textForChecks}`;
     if (kind === 'target' && !isTargetLike(combined)) continue;
     if (kind === 'context' && !isContextLike(combined)) continue;
 
     const bump = kind === 'target' ? 10 : 0;
     const score = base + bump;
-    if (!best || score > best.score) best = { node: n, text, score };
+    const eligible = !!assessed.display && (assessed.quality === "good" || assessed.quality === "ok");
+    if (eligible) {
+      if (!bestEligible || score > bestEligible.score || (score === bestEligible.score && q > bestEligible.q)) {
+        bestEligible = { pick, score, q };
+      }
+    } else {
+      if (!bestRejected || score > bestRejected.score || (score === bestRejected.score && q > bestRejected.q)) {
+        bestRejected = { pick, score, q };
+      }
+    }
   }
 
-  return best ? { node: best.node, text: best.text } : null;
+  return bestEligible?.pick ?? bestRejected?.pick ?? null;
 }
 
 export async function compileDealSummaryV1(pool: Pool, dealId: string, opts?: { includeDebug?: boolean }): Promise<DealSummaryV1> {
@@ -329,53 +467,97 @@ export async function compileDealSummaryV1(pool: Pool, dealId: string, opts?: { 
   const overviewPick = pickBest(nodes, "overview");
 
   const usedNodeIds: string[] = [];
+  const meta: NonNullable<DealSummaryV1['meta']> = {};
 
   const product: DealSummaryLine | null = productPick
     ? (() => {
         usedNodeIds.push(productPick.node.node_id);
-        return {
-          text: productPick.text,
-          sources: [buildCitation(productPick.node, productPick.text)],
-        };
+        const built = buildCanonicalLine(productPick.node, productPick.assessed.display ?? productPick.raw_text, 'product');
+        meta.product = built.meta;
+        return built.line;
       })()
     : null;
 
   const market_target: DealSummaryLine | null = marketTargetPick
     ? (() => {
-        const templated = buildMarketTargetFromText(`${overviewPick?.text ?? ''}\n${marketTargetPick.text}`);
         usedNodeIds.push(marketTargetPick.node.node_id);
-        return {
-          text: templated ?? marketTargetPick.text,
-          sources: [buildCitation(marketTargetPick.node, templated ?? marketTargetPick.text)],
-        };
+
+        const baseDisplay = marketTargetPick.assessed.display;
+        const templatedRaw = buildMarketTargetFromText(`${overviewPick?.assessed.display ?? ''}\n${baseDisplay ?? marketTargetPick.raw_text}`);
+        const templatedAssessed = templatedRaw ? assessCandidateText(templatedRaw) : null;
+        const finalText = templatedAssessed?.display ?? baseDisplay ?? marketTargetPick.raw_text;
+
+        // Prefer templated target if it passes quality gate; otherwise keep original.
+        const lineBuilt = buildCanonicalLine(marketTargetPick.node, finalText, 'market_target');
+        meta.market_target = lineBuilt.meta;
+        // Preserve suppression from original pick if templating is suppressed.
+        if (templatedAssessed && !templatedAssessed.display && baseDisplay) {
+          const fallbackBuilt = buildCanonicalLine(marketTargetPick.node, baseDisplay, 'market_target');
+          meta.market_target = fallbackBuilt.meta;
+          return fallbackBuilt.line;
+        }
+        return lineBuilt.line;
       })()
     : null;
 
   const market_context: DealSummaryLine | null = marketContextPick
     ? (() => {
         usedNodeIds.push(marketContextPick.node.node_id);
-        return {
-          text: marketContextPick.text,
-          sources: [buildCitation(marketContextPick.node, marketContextPick.text)],
-        };
+        const built = buildCanonicalLine(marketContextPick.node, marketContextPick.assessed.display ?? marketContextPick.raw_text, 'market_context');
+        meta.market_context = built.meta;
+        return built.line;
       })()
     : null;
 
   const market: DealSummaryLine | null = market_target
-    ? {
-        text: market_context ? `${market_target.text.replace(/\s*\.$/, '')}. Market context: ${market_context.text.replace(/\s*\.$/, '')}.` : market_target.text,
-        sources: [...market_target.sources, ...(market_context?.sources ?? [])],
-      }
+    ? (() => {
+        // If market_target is suppressed, market is suppressed too.
+        if (!market_target.display_text) {
+          meta.market = meta.market_target;
+          return {
+            text: "",
+            display_text: null,
+            quality: market_target.quality,
+            suppressed_reasons: market_target.suppressed_reasons,
+            sources: [...market_target.sources, ...(market_context?.sources ?? [])],
+          };
+        }
+
+        const target = market_target.display_text.replace(/\s*\.+\s*$/, "").trim();
+        const context = market_context?.display_text ? market_context.display_text.replace(/\s*\.+\s*$/, "").trim() : null;
+
+        let composed = `${target}.`;
+        if (context) {
+          const prefix = `${composed} Market context: `;
+          const suffix = ".";
+          const maxContextLen = 220 - prefix.length - suffix.length;
+          const clipped = truncateForDisplay(context, maxContextLen);
+          if (clipped) {
+            const proposal = `${prefix}${clipped}${suffix}`;
+            if (proposal.length <= 220) composed = proposal;
+          }
+        }
+
+        const normalized = normalizeCanonicalFact(composed, { kind: 'market', maxLen: 220 });
+        meta.market = normalized.meta;
+
+        return {
+          text: normalized.display_text ?? "",
+          display_text: normalized.display_text,
+          quality: normalized.quality,
+          suppressed_reasons: normalized.suppressed_reasons,
+          sources: [...market_target.sources, ...(context && market_context?.sources ? market_context.sources : [])],
+        };
+      })()
     : null;
 
   const oneLinerPick = overviewPick ?? productPick ?? marketTargetPick ?? marketContextPick;
   const one_liner: DealSummaryLine | null = oneLinerPick
     ? (() => {
         usedNodeIds.push(oneLinerPick.node.node_id);
-        return {
-          text: oneLinerPick.text,
-          sources: [buildCitation(oneLinerPick.node, oneLinerPick.text)],
-        };
+        const built = buildCanonicalLine(oneLinerPick.node, oneLinerPick.assessed.display ?? oneLinerPick.raw_text, 'one_liner');
+        meta.one_liner = built.meta;
+        return built.line;
       })()
     : null;
 
@@ -383,27 +565,26 @@ export async function compileDealSummaryV1(pool: Pool, dealId: string, opts?: { 
   if (overviewPick?.node?.bullets?.length) {
     const firstTwo = overviewPick.node.bullets.slice(0, 2).map((b) => asCleanString(b, 420)).filter((v): v is string => Boolean(v));
     for (const p of firstTwo) {
-      paragraphs.push({
-        text: p,
-        sources: [buildCitation(overviewPick.node, p)],
-      });
+      const assessed = assessCandidateText(p);
+      if (!(assessed.quality === "good" || assessed.quality === "ok") || !assessed.display) continue;
+      paragraphs.push(buildLine(overviewPick.node, assessed.display));
     }
   }
 
   const tiers = buildDealSummaryTiers({
-    identityText: overviewPick?.text ?? one_liner?.text ?? null,
-    productText: product?.text ?? null,
-    marketText: market_target?.text ?? null,
-    extraText: [market_context?.text ?? null, ...paragraphs.map((p) => p.text)].filter(Boolean).join(" \n "),
+    identityText: overviewPick?.assessed.display ?? one_liner?.display_text ?? null,
+    productText: product?.display_text ?? null,
+    marketText: market_target?.display_text ?? null,
+    extraText: [market_context?.display_text ?? null, ...paragraphs.map((p) => p.display_text).filter((v): v is string => Boolean(v))].filter(Boolean).join(" \n "),
   });
 
-  const ready = Boolean(one_liner && product && market_target);
+  const ready = Boolean(one_liner?.display_text && product?.display_text && market_target?.display_text);
   const reason = ready
     ? null
     : [
-        !product ? "missing_product" : null,
-        !market_target ? "missing_market_target" : null,
-        !one_liner ? "missing_one_liner" : null,
+        !product ? "missing_product" : product.display_text ? null : "suppressed_product",
+        !market_target ? "missing_market_target" : market_target.display_text ? null : "suppressed_market_target",
+        !one_liner ? "missing_one_liner" : one_liner.display_text ? null : "suppressed_one_liner",
       ]
         .filter((v): v is string => Boolean(v))
         .join(",");
@@ -412,6 +593,7 @@ export async function compileDealSummaryV1(pool: Pool, dealId: string, opts?: { 
     version: "deal_summary_v1",
     ready,
     reason: reason || null,
+    meta,
     tiers,
     one_liner,
     product,

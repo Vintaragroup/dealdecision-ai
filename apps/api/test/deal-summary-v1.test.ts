@@ -122,9 +122,9 @@ test("/report includes deterministic deal_summary_v1 with segment-pure citations
     query: async (sql: string, params?: unknown[]) => {
       const q = String(sql);
 
-      if (q.includes("SELECT id FROM deals") && q.includes("deleted_at IS NULL")) {
+      if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
         assert.deepEqual(params, [dealId]);
-        return { rows: [{ id: dealId }] };
+        return { rows: [{ id: dealId, llm_phase_mode: "exploratory" }] };
       }
 
       if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {
@@ -285,9 +285,9 @@ test("/report deterministic deal_summary_v1 market line avoids fluff cover slide
     query: async (sql: string, params?: unknown[]) => {
       const q = String(sql);
 
-      if (q.includes("SELECT id FROM deals") && q.includes("deleted_at IS NULL")) {
+      if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
         assert.deepEqual(params, [dealId]);
-        return { rows: [{ id: dealId }] };
+        return { rows: [{ id: dealId, llm_phase_mode: "exploratory" }] };
       }
 
       if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {

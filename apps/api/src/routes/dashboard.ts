@@ -802,6 +802,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           <button id="det-main-btn-pre" class="subtab active" onclick="activateDeterministicMainTab('pre')">Deterministic</button>
           <button id="det-main-btn-llm" class="subtab" onclick="activateDeterministicMainTab('llm')">LLM Interpretation</button>
           <button id="det-main-btn-overlay" class="subtab" onclick="activateDeterministicMainTab('overlay')">Workspace Mirror</button>
+          <button id="det-main-btn-analytics" class="subtab" onclick="activateDeterministicMainTab('analytics')">Analytics</button>
         </div>
 
         <div id="det-main-pre" class="det-main-panel active">
@@ -961,6 +962,48 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
             <h2 style="margin-bottom: 0.5rem;">LLM Narration (extra)</h2>
             <div class="muted" style="margin-top:0.35rem;">Source: <span class="mono">response.report.llm_narration_v1</span></div>
             <div id="deterministic-overlay-narration-extra" class="muted">Load governed overlay to view.</div>
+          </div>
+        </div>
+
+        <div id="det-main-analytics" class="det-main-panel">
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Analytics (Read-only)</h2>
+            <p class="muted" style="margin-bottom: 0;">
+              Diagnostics are <strong>non-authoritative</strong> and must never change deterministic report subtrees.
+            </p>
+          </div>
+
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <div style="display:flex; gap:0.75rem; align-items:center; justify-content:space-between; flex-wrap:wrap;">
+              <h2 style="margin-bottom: 0.5rem;">Status</h2>
+              <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+                <button id="deterministic-analytics-refresh-btn" class="btn btn-small">Refresh diagnostics</button>
+                <span id="deterministic-analytics-loading" class="muted" style="display:none;">Loading…</span>
+              </div>
+            </div>
+            <div class="muted" style="margin-top:0.35rem;">Source: <span class="mono">/api/v1/deals/:dealId/analysis-diagnostics</span></div>
+            <div id="deterministic-analytics-status" class="muted" style="margin-top:0.5rem;">Not loaded.</div>
+            <div id="deterministic-analytics-meta" class="muted" style="margin-top:0.35rem;"></div>
+          </div>
+
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Overlay Governance</h2>
+            <div id="deterministic-analytics-overlay-governance" class="muted">Not loaded.</div>
+          </div>
+
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Hallucination / Guard Health</h2>
+            <div id="deterministic-analytics-hallucination" class="muted">Not loaded.</div>
+          </div>
+
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Drift</h2>
+            <div id="deterministic-analytics-drift" class="muted">Not loaded.</div>
+          </div>
+
+          <div class="card" style="margin: 0.75rem 0 1rem;">
+            <h2 style="margin-bottom: 0.5rem;">Deterministic Diagnostics Snapshot</h2>
+            <div id="deterministic-analytics-deterministic" class="muted">Not loaded.</div>
           </div>
         </div>
       </div>
@@ -1182,7 +1225,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
     function readDeterministicMainTabFromStorage() {
       try {
         const v = window && window.localStorage ? window.localStorage.getItem(DET_MAIN_TAB_STORAGE_KEY) : null;
-        return (v === 'llm' || v === 'pre' || v === 'overlay') ? v : null;
+        return (v === 'llm' || v === 'pre' || v === 'overlay' || v === 'analytics') ? v : null;
       } catch {
         return null;
       }
@@ -1197,8 +1240,8 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
     }
 
     function activateDeterministicMainTab(name) {
-      const target = (name === 'llm' || name === 'pre' || name === 'overlay') ? name : 'pre';
-      const names = ['pre', 'llm', 'overlay'];
+      const target = (name === 'llm' || name === 'pre' || name === 'overlay' || name === 'analytics') ? name : 'pre';
+      const names = ['pre', 'llm', 'overlay', 'analytics'];
       for (const n of names) {
         const panel = document.getElementById('det-main-' + n);
         const btn = document.getElementById('det-main-btn-' + n);
@@ -1232,6 +1275,21 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
             narratedReport: deterministicNarratedReportCache,
             deal: deterministicDealCache,
           });
+        }
+      } catch {
+        // ignore
+      }
+
+      // Lazy Analytics rendering; fetch is best-effort.
+      try {
+        if (target === 'analytics') {
+          renderDeterministicAnalyticsPanels({
+            baseOk: Boolean(deterministicBaseReportCache),
+            baseReport: deterministicBaseReportCache,
+            diagnostics: deterministicAnalysisDiagnosticsCache,
+            narratedReport: deterministicNarratedReportCache,
+          });
+          void refreshDeterministicAnalytics();
         }
       } catch {
         // ignore
@@ -1329,6 +1387,9 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
     let deterministicNarratedReportCache = null;
     let deterministicDealCache = null;
     let deterministicLastDealId = null;
+
+    let deterministicAnalysisDiagnosticsCache = null;
+    let deterministicAnalysisDiagnosticsLastDealId = null;
 
     function readNarrationFromApiPayload(payload) {
       if (!payload || typeof payload !== 'object') return null;
@@ -4957,6 +5018,8 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         deterministicLastDealId = id;
         deterministicNarratedReportCache = null;
         deterministicDealCache = null;
+        deterministicAnalysisDiagnosticsCache = null;
+        deterministicAnalysisDiagnosticsLastDealId = null;
 
         const [res, baseRes, dealRes] = await Promise.all([
           fetch('/api/dashboard/deals/' + encodeURIComponent(id) + '/deterministic?t=' + Date.now()),
@@ -5008,6 +5071,14 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
         renderDeterministicKpiTracePanel(data);
         renderDeterministicStructuredPanel(data);
         renderDeterministicLegacyPanel(data);
+
+        // If Analytics tab is active, refresh diagnostics best-effort.
+        try {
+          const stored = readDeterministicMainTabFromStorage();
+          if (stored === 'analytics') void refreshDeterministicAnalytics(id);
+        } catch {
+          // ignore
+        }
       } catch (e) {
         if (statusEl) statusEl.textContent = 'Failed: ' + (e?.message || String(e));
         if (headerEl) headerEl.innerHTML = '<div class="muted">Failed to load.</div>';
@@ -5210,8 +5281,9 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           // ignore
         }
 
-        // Legacy narrated view used for compare blocks (kept for parity).
-        const narr = await fetchNarratedReport(id);
+        // IMPORTANT: Never auto-fetch narration. Overlay compare view only uses narrated cache
+        // populated by the explicit "Generate narration" click in the LLM tab.
+        const narrPayload = deterministicNarratedReportCache;
 
         try {
           if (loadingEl) loadingEl.style.display = 'none';
@@ -5219,23 +5291,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           // ignore
         }
 
-        deterministicNarratedReportCache = narr && narr.payload ? narr.payload : null;
-        deterministicLastDealId = id;
-
-        if (!narr || !narr.ok) {
-          const detail = narr && typeof narr.status === 'number'
-            ? ('HTTP ' + String(narr.status))
-            : 'Unknown error';
-
-          if (errorEl) errorEl.style.display = 'block';
-          if (errorMsgEl) errorMsgEl.textContent = detail;
-
-          statusEl.innerHTML = '<div class="badge badge-danger">provider_error</div>';
-          contentEl.innerHTML = '<div class="muted">' + escapeHtml(detail) + '</div>';
-          return;
-        }
-
-        // Hide banners on success.
+        // Hide banners on success (persisted overlay fetch succeeded/fail-open already).
         try {
           if (timeoutEl) timeoutEl.style.display = 'none';
           if (errorEl) errorEl.style.display = 'none';
@@ -5244,11 +5300,21 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
           // ignore
         }
 
+        if (!narrPayload) {
+          statusEl.innerHTML = '<div class="badge badge-info">not_loaded</div>';
+          contentEl.innerHTML = ''
+            + '<div class="muted">Narrated /report?narrate=1 is not loaded.</div>'
+            + '<div class="muted" style="margin-top:0.35rem;">Click <span class="mono">Generate narration</span> in the LLM tab to fetch it manually, then return here to compare.</div>';
+          return;
+        }
+
+        deterministicLastDealId = id;
+
         renderDeterministicOverlayPanel({
           baseOk,
-          narrOk: Boolean(narr && narr.ok && narr.payload),
+          narrOk: Boolean(narrPayload),
           baseReport: deterministicBaseReportCache,
-          narratedReport: narr && narr.payload ? narr.payload : null,
+          narratedReport: narrPayload,
           deal: deterministicDealCache,
         });
       } catch (e) {
@@ -5304,6 +5370,198 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       } catch (e) {
         const msg = e && e.message ? e.message : String(e);
         return { ok: false, status: null, payload: null, overview: null, errorMessage: msg };
+      }
+    }
+
+    function readInputsHashFromBaseReport(baseReportPayload) {
+      try {
+        const payload = baseReportPayload && typeof baseReportPayload === 'object' ? baseReportPayload : null;
+        const reportObj = payload && payload.report && typeof payload.report === 'object' ? payload.report : payload;
+        const meta = reportObj && reportObj.metadata && typeof reportObj.metadata === 'object' ? reportObj.metadata : null;
+        const inputs = meta && meta.deterministic_score_inputs_v1 && typeof meta.deterministic_score_inputs_v1 === 'object'
+          ? meta.deterministic_score_inputs_v1
+          : null;
+        const inputsHash = inputs && typeof inputs.inputs_hash === 'string' ? inputs.inputs_hash : null;
+        return inputsHash || null;
+      } catch {
+        return null;
+      }
+    }
+
+    async function fetchAnalysisDiagnostics(dealId) {
+      const id = String(dealId || '').trim();
+      if (!id) return { ok: false, status: null, payload: null, diagnostics: null, errorMessage: 'Missing dealId' };
+
+      const url = apiUrl('/api/v1/deals/' + encodeURIComponent(id) + '/analysis-diagnostics?t=' + Date.now());
+
+      try {
+        if (DASHBOARD_DEV) console.debug('[dashboard:analysis_diagnostics] GET', url);
+        const res = await fetch(url);
+        const payload = await res.json().catch(() => null);
+        const diagnostics = payload && typeof payload === 'object' ? (payload.diagnostics ?? null) : null;
+        return {
+          ok: !!res.ok,
+          status: typeof res.status === 'number' ? res.status : null,
+          payload,
+          diagnostics: diagnostics && typeof diagnostics === 'object' ? diagnostics : null,
+          errorMessage: null,
+        };
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        return { ok: false, status: null, payload: null, diagnostics: null, errorMessage: msg };
+      }
+    }
+
+    function renderDeterministicAnalyticsPanels(args) {
+      const statusEl = document.getElementById('deterministic-analytics-status');
+      const metaEl = document.getElementById('deterministic-analytics-meta');
+      const govEl = document.getElementById('deterministic-analytics-overlay-governance');
+      const hallucEl = document.getElementById('deterministic-analytics-hallucination');
+      const driftEl = document.getElementById('deterministic-analytics-drift');
+      const detEl = document.getElementById('deterministic-analytics-deterministic');
+      if (!statusEl || !metaEl || !govEl || !hallucEl || !driftEl || !detEl) return;
+
+      const baseOk = Boolean(args && args.baseOk);
+      const baseReport = args && args.baseReport ? args.baseReport : null;
+      const diag = args && args.diagnostics ? args.diagnostics : null;
+
+      const inputsHash = readInputsHashFromBaseReport(baseReport);
+      const safeStr = (v) => (typeof v === 'string' && v.trim()) ? v.trim() : null;
+      const safeNum = (v) => (typeof v === 'number' && Number.isFinite(v)) ? v : null;
+      const fmtNum = (v, digits) => {
+        const n = safeNum(v);
+        if (n == null) return '-';
+        if (typeof digits === 'number') return n.toFixed(digits);
+        return String(n);
+      };
+      const fmtPct = (v) => {
+        const n = safeNum(v);
+        if (n == null) return '-';
+        return n.toFixed(2) + '%';
+      };
+
+      if (!baseOk) {
+        statusEl.textContent = 'Load deterministic first.';
+        metaEl.textContent = '';
+        govEl.textContent = 'Not loaded.';
+        hallucEl.textContent = 'Not loaded.';
+        driftEl.textContent = 'Not loaded.';
+        detEl.textContent = 'Not loaded.';
+        return;
+      }
+
+      if (!diag) {
+        statusEl.textContent = 'No diagnostics yet — run analysis.';
+        metaEl.innerHTML = 'input_hash=<span class="mono">' + escapeHtml(inputsHash || '-') + '</span>';
+        govEl.textContent = '(none)';
+        hallucEl.textContent = '(none)';
+        driftEl.textContent = '(none)';
+        detEl.textContent = '(none)';
+        return;
+      }
+
+      const reportId = safeStr(diag.report_id);
+      const llmPhaseMode = safeStr(diag.llm_phase_mode);
+      const createdAt = safeStr(diag.created_at);
+
+      statusEl.textContent = 'Loaded.';
+      metaEl.innerHTML = ''
+        + 'report_id=<span class="mono">' + escapeHtml(reportId || '-') + '</span>'
+        + ' &nbsp; input_hash=<span class="mono">' + escapeHtml(inputsHash || '-') + '</span>'
+        + ' &nbsp; created_at=<span class="mono">' + escapeHtml(createdAt || '-') + '</span>';
+
+      const cell = (k, v) => ''
+        + '<div>'
+        +   '<div class="muted" style="font-weight:600;">' + escapeHtml(k) + '</div>'
+        +   '<div class="mono">' + escapeHtml(String(v)) + '</div>'
+        + '</div>';
+
+      const grid = (cells) => '<div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0.75rem;">' + cells.join('') + '</div>';
+
+      govEl.innerHTML = grid([
+        cell('llm_phase_mode', llmPhaseMode || '-'),
+        cell('citation_integrity_percent', fmtPct(diag.citation_integrity_percent)),
+        cell('numeric_claims_total', '(not available)'),
+        cell('numeric_claims_without_evidence', fmtNum(diag.numeric_claims_without_evidence)),
+        cell('claims_removed_by_phase_enforcement', '(not available)'),
+        cell('overlay_suppression_count', '(not available)'),
+      ]);
+
+      hallucEl.innerHTML = grid([
+        cell('entity_not_in_excerpt_count', '(not available)'),
+        cell('invented_metric_count', '(not available)'),
+        cell('provider_error_count', fmtNum(diag.provider_error_count)),
+        cell('model_output_truncated_count', fmtNum(diag.model_output_truncated_count)),
+        cell('model_output_not_json_count', fmtNum(diag.model_output_not_json_count)),
+        cell('guard_degraded_count', fmtNum(diag.guard_degraded_count)),
+        cell('hallucination_count', fmtNum(diag.hallucination_count)),
+      ]);
+
+      driftEl.innerHTML = grid([
+        cell('semantic_drift_score', fmtNum(diag.semantic_drift_score, 3)),
+        cell('contradiction_count', '(not available)'),
+        cell('unsupported_numeric_claims_count', '(not available)'),
+      ]);
+
+      detEl.innerHTML = grid([
+        cell('deterministic_coverage_ratio', fmtNum(diag.deterministic_coverage_ratio, 3)),
+        cell('missing_kpi_count', '(not available)'),
+        cell('extraction_confidence', '(not available)'),
+      ]);
+    }
+
+    async function refreshDeterministicAnalytics(dealIdOverride) {
+      const loadingEl = document.getElementById('deterministic-analytics-loading');
+      const statusEl = document.getElementById('deterministic-analytics-status');
+
+      const dealId = String(dealIdOverride || '').trim() || String(deterministicLastDealId || '').trim();
+      if (!dealId) {
+        try {
+          if (statusEl) statusEl.textContent = 'Enter a deal id (load deterministic first).';
+        } catch {
+          // ignore
+        }
+        return;
+      }
+
+      try {
+        if (loadingEl) loadingEl.style.display = 'inline';
+      } catch {
+        // ignore
+      }
+
+      try {
+        const result = await fetchAnalysisDiagnostics(dealId);
+
+        deterministicAnalysisDiagnosticsLastDealId = dealId;
+        deterministicAnalysisDiagnosticsCache = result && result.ok ? result.diagnostics : null;
+
+        if (!result.ok) {
+          const msg = result && typeof result.status === 'number'
+            ? ('HTTP ' + String(result.status))
+            : (result.errorMessage || 'Unknown error');
+          if (statusEl) statusEl.textContent = 'Diagnostics fetch failed: ' + msg;
+        }
+
+        renderDeterministicAnalyticsPanels({
+          baseOk: Boolean(deterministicBaseReportCache),
+          baseReport: deterministicBaseReportCache,
+          diagnostics: deterministicAnalysisDiagnosticsCache,
+          narratedReport: deterministicNarratedReportCache,
+        });
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        try {
+          if (statusEl) statusEl.textContent = 'Diagnostics fetch failed: ' + msg;
+        } catch {
+          // ignore
+        }
+      } finally {
+        try {
+          if (loadingEl) loadingEl.style.display = 'none';
+        } catch {
+          // ignore
+        }
       }
     }
 
@@ -6587,6 +6845,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       const genBtn = document.getElementById('deterministic-llm-generate-btn');
       const overlayGenBtn = document.getElementById('deterministic-overlay-generate-btn');
       const overlayCopyBtn = document.getElementById('deterministic-overlay-copy-btn');
+      const analyticsRefreshBtn = document.getElementById('deterministic-analytics-refresh-btn');
       const input = document.getElementById('deterministic-deal-id');
 
       if (btn && !btn.dataset.bound) {
@@ -6698,6 +6957,33 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
 
           const ok = await copyJsonObject(target);
           if (!ok) alert('Copy failed.');
+        });
+      }
+
+      if (analyticsRefreshBtn && !analyticsRefreshBtn.dataset.bound) {
+        analyticsRefreshBtn.dataset.bound = '1';
+        analyticsRefreshBtn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          if (analyticsRefreshBtn.dataset.loading === '1') return;
+          analyticsRefreshBtn.dataset.loading = '1';
+          try {
+            analyticsRefreshBtn.disabled = true;
+          } catch {
+            // ignore
+          }
+
+          const v = input && typeof input.value === 'string' ? input.value : '';
+          const dealId = String(v || '').trim() || String(deterministicLastDealId || '').trim();
+          try {
+            await refreshDeterministicAnalytics(dealId);
+          } finally {
+            try {
+              analyticsRefreshBtn.disabled = false;
+            } catch {
+              // ignore
+            }
+            analyticsRefreshBtn.dataset.loading = '0';
+          }
         });
       }
     })();

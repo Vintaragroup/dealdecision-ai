@@ -63,9 +63,9 @@ test("GET /api/v1/deals/:deal_id/report returns 200 {ready:false} before analysi
   const mockPool = {
     query: async (sql: string, params?: unknown[]) => {
       const q = String(sql);
-      if (q.includes("SELECT id FROM deals") && q.includes("deleted_at IS NULL")) {
+      if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
         assert.deepEqual(params, [dealId]);
-        return { rows: [{ id: dealId }] };
+        return { rows: [{ id: dealId, llm_phase_mode: "exploratory" }] };
       }
       if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {
         assert.deepEqual(params, [dealId]);
@@ -99,9 +99,9 @@ test("GET /api/v1/deals/:deal_id/report returns 200 {ready:true} when a DIO exis
   const mockPool = {
     query: async (sql: string, params?: unknown[]) => {
       const q = String(sql);
-      if (q.includes("SELECT id FROM deals") && q.includes("deleted_at IS NULL")) {
+      if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
         assert.deepEqual(params, [dealId]);
-        return { rows: [{ id: dealId }] };
+        return { rows: [{ id: dealId, llm_phase_mode: null }] };
       }
       if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {
         assert.deepEqual(params, [dealId]);
@@ -214,9 +214,9 @@ test("GET /api/v1/deals/:deal_id/report includes structured_summary populated fr
   const mockPool = {
     query: async (sql: string, params?: unknown[]) => {
       const q = String(sql);
-      if (q.includes("SELECT id FROM deals") && q.includes("deleted_at IS NULL")) {
+      if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
         assert.deepEqual(params, [dealId]);
-        return { rows: [{ id: dealId }] };
+        return { rows: [{ id: dealId, llm_phase_mode: null }] };
       }
       if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {
         assert.deepEqual(params, [dealId]);
@@ -391,9 +391,9 @@ test("GET /api/v1/deals/:deal_id/report surfaces labeled KPI fallbacks derived f
   const mockPool = {
     query: async (sql: string, params?: unknown[]) => {
       const q = String(sql);
-      if (q.includes("SELECT id FROM deals") && q.includes("deleted_at IS NULL")) {
+      if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
         assert.deepEqual(params, [dealId]);
-        return { rows: [{ id: dealId }] };
+        return { rows: [{ id: dealId, llm_phase_mode: null }] };
       }
       if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {
         assert.deepEqual(params, [dealId]);
@@ -525,9 +525,9 @@ test("GET /api/v1/deals/:deal_id/report adds deterministic market/product/gtm/de
   const mockPool = {
     query: async (sql: string, params?: unknown[]) => {
       const q = String(sql);
-      if (q.includes("SELECT id FROM deals") && q.includes("deleted_at IS NULL")) {
+      if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
         assert.deepEqual(params, [dealId]);
-        return { rows: [{ id: dealId }] };
+        return { rows: [{ id: dealId, llm_phase_mode: null }] };
       }
       if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {
         assert.deepEqual(params, [dealId]);
@@ -703,9 +703,9 @@ test("GET /api/v1/deals/:deal_id/report prefers promoted facts for raise and bus
   const mockPool = {
     query: async (sql: string, params?: unknown[]) => {
       const q = String(sql);
-      if (q.includes("SELECT id FROM deals") && q.includes("deleted_at IS NULL")) {
+      if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
         assert.deepEqual(params, [dealId]);
-        return { rows: [{ id: dealId }] };
+        return { rows: [{ id: dealId, llm_phase_mode: null }] };
       }
       if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {
         assert.deepEqual(params, [dealId]);
@@ -828,9 +828,9 @@ test("GET /api/v1/deals/:deal_id/report surfaces promoted raise with valuation p
   const mockPool = {
     query: async (sql: string, params?: unknown[]) => {
       const q = String(sql);
-      if (q.includes("SELECT id FROM deals") && q.includes("deleted_at IS NULL")) {
+      if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
         assert.deepEqual(params, [dealId]);
-        return { rows: [{ id: dealId }] };
+        return { rows: [{ id: dealId, llm_phase_mode: null }] };
       }
       if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {
         assert.deepEqual(params, [dealId]);
@@ -957,9 +957,9 @@ test("GET /api/v1/deals/:deal_id/report derives raise + business_model from docu
   const mockPool = {
     query: async (sql: string, params?: unknown[]) => {
       const q = String(sql);
-      if (q.includes("SELECT id FROM deals") && q.includes("deleted_at IS NULL")) {
+      if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
         assert.deepEqual(params, [dealId]);
-        return { rows: [{ id: dealId }] };
+        return { rows: [{ id: dealId, llm_phase_mode: null }] };
       }
       if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {
         assert.deepEqual(params, [dealId]);

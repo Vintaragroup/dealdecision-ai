@@ -24,20 +24,20 @@ describe('selectAuthoritativeBusinessModelV1', () => {
     expect(selected.source).toBe('arbitration');
   });
 
-  test('when no arbitration and report is ready: prefers synthesized over promoted', () => {
+  test('when no arbitration and report is ready: prefers promoted when evidence-backed', () => {
     const report: any = {
       ready: true,
       structured_summary: {
         business_model_summary: { value: 'Synthesized model', confidence: 0.72 },
-        business_model: { value: 'Promoted model', label: 'Attributed' },
+        business_model: { value: 'Promoted model', label: 'Attributed', sources: [{ document_id: 'doc-1', page_index: 2 }] },
       },
     };
 
     const selected = selectAuthoritativeBusinessModelV1({ report, phase1: null });
-    expect(selected.value).toBe('Synthesized model');
-    expect(selected.label).toBe('Synthesized');
+    expect(selected.value).toBe('Promoted model');
+    expect(selected.label).toBe('Attributed');
     expect(selected.is_arbitrated).toBe(false);
-    expect(selected.source).toBe('report.business_model_summary');
+    expect(selected.source).toBe('report.business_model');
   });
 
   test('when report.ready===true but structured_summary is missing: returns null (no Phase 1 mixing)', () => {

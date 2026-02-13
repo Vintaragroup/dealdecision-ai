@@ -1,6 +1,9 @@
 import type { Pool } from "pg";
 import { createHash } from "crypto";
 
+import { OpenAIGPT4oProvider } from "./llm/providers/openai-provider";
+import type { ProviderConfig } from "./llm/types";
+
 import type {
   EvidenceRefV1,
   GovernedLLMClaimV1,
@@ -9,8 +12,182 @@ import type {
 } from "@dealdecision/contracts";
 
 import { buildPhase1KpiReconciliationV1 } from "./phase1/kpiReconciliationV1";
+import {
+  computeDeterministicDiagnostics,
+  computeDriftMetrics,
+  computeOverlayGovernanceMetrics,
+  type DocumentIndexLite,
+} from "./analysis-diagnostics";
 
 const SCHEMA_VERSION = "governed_llm_overview_v1" as const;
+
+type DisplayFactsBasisV1 = "direct_snippet" | "no_evidence";
+
+type DisplayFactFieldV1 = {
+  text: string | null;
+  evidence_ids: string[];
+  evidence_basis: DisplayFactsBasisV1;
+};
+
+type DisplayFactsV1 = {
+  schema_version: "display_facts_v1";
+  product_solution: DisplayFactFieldV1;
+  market_icp: DisplayFactFieldV1;
+  business_model: DisplayFactFieldV1;
+  raise_terms: DisplayFactFieldV1;
+};
+
+type DisplayFactsQualityV1 = {
+  generated_at: string;
+  model: string | null;
+  ok: boolean;
+  guard_degraded: boolean;
+  skipped_reason?: string;
+  errors?: string[];
+};
+
+function safeJsonParseObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function deterministicUuidFromKey(key: string): string {
+  const digest = createHash("sha256").update(key).digest();
+  const bytes = Buffer.from(digest.subarray(0, 16));
+  // Version 5 (name-based)
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  // Variant RFC 4122
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function clampText(value: unknown, maxLen: number): string | null {
+  if (typeof value !== "string") return null;
+  const s = value.replace(/\s+/g, " ").trim();
+  if (!s) return null;
+  if (s.length <= maxLen) return s;
+  return `${s.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…`;
+}
+
+function isUuidLike(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  const v = value.trim();
+  if (!v) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+}
+
+function logDiagnosticsPersistFailure(args: {
+  dealId: string;
+  reportId: string;
+  llm_phase_mode: LLMPhaseMode;
+  err: unknown;
+}) {
+  const e: any = args.err;
+  const payload: any = {
+    event: "DIAGNOSTICS_PERSIST_FAILED",
+    deal_id: args.dealId,
+    report_id: args.reportId,
+    llm_phase_mode: args.llm_phase_mode,
+    error_message: e instanceof Error ? e.message : String(e ?? "unknown_error"),
+  };
+
+  if (e && typeof e === "object") {
+    if (typeof e.code === "string") payload.error_code = e.code;
+    if (typeof e.detail === "string") payload.error_detail = e.detail;
+    if (typeof e.hint === "string") payload.error_hint = e.hint;
+    if (typeof e.where === "string") payload.error_where = e.where;
+    if (typeof e.stack === "string") payload.error_stack = e.stack;
+  }
+
+  try {
+    console.warn(JSON.stringify(payload));
+  } catch {
+    // ignore
+  }
+}
+
+type DiagnosticsColumnSupport = {
+  provider_error_count: boolean;
+  model_output_truncated_count: boolean;
+  model_output_not_json_count: boolean;
+  guard_degraded_count: boolean;
+};
+
+const diagnosticsColumnSupportCache = new WeakMap<object, DiagnosticsColumnSupport>();
+const diagnosticsColumnSupportInFlight = new WeakMap<object, Promise<DiagnosticsColumnSupport>>();
+
+async function getDiagnosticsColumnSupport(pool: Pool): Promise<DiagnosticsColumnSupport> {
+  const key: any = pool as any;
+  if (!key || (typeof key !== "object" && typeof key !== "function")) {
+    return {
+      provider_error_count: false,
+      model_output_truncated_count: false,
+      model_output_not_json_count: false,
+      guard_degraded_count: false,
+    };
+  }
+
+  const cached = diagnosticsColumnSupportCache.get(key);
+  if (cached) return cached;
+
+  const inFlight = diagnosticsColumnSupportInFlight.get(key);
+  if (inFlight) return inFlight;
+
+  const p = (async () => {
+    const targetCols = [
+      "provider_error_count",
+      "model_output_truncated_count",
+      "model_output_not_json_count",
+      "guard_degraded_count",
+    ];
+
+    try {
+      const { rows } = await pool.query<{ column_name: string }>(
+        `SELECT column_name
+           FROM information_schema.columns
+          WHERE table_schema='public'
+            AND table_name='deal_analysis_diagnostics'
+            AND column_name = ANY($1::text[])`,
+        [targetCols]
+      );
+      const present = new Set(
+        (rows ?? [])
+          .map((r) => (typeof r?.column_name === "string" ? r.column_name.trim() : ""))
+          .filter(Boolean)
+      );
+      const support: DiagnosticsColumnSupport = {
+        provider_error_count: present.has("provider_error_count"),
+        model_output_truncated_count: present.has("model_output_truncated_count"),
+        model_output_not_json_count: present.has("model_output_not_json_count"),
+        guard_degraded_count: present.has("guard_degraded_count"),
+      };
+      diagnosticsColumnSupportCache.set(key, support);
+      return support;
+    } catch {
+      const support: DiagnosticsColumnSupport = {
+        provider_error_count: false,
+        model_output_truncated_count: false,
+        model_output_not_json_count: false,
+        guard_degraded_count: false,
+      };
+      diagnosticsColumnSupportCache.set(key, support);
+      return support;
+    } finally {
+      diagnosticsColumnSupportInFlight.delete(key);
+    }
+  })();
+
+  diagnosticsColumnSupportInFlight.set(key, p);
+  return p;
+}
 
 type Disclosure = { code: string; message: string };
 
@@ -300,10 +477,14 @@ function toEvidenceRefFromKpiClaim(claim: { document_id: string; page: number })
   };
 }
 
-async function persistGovernedOverview(pool: Pool, overview: GovernedLLMOverviewV1): Promise<{ inserted: boolean }> {
+type PersistableGovernedOverviewRow = GovernedLLMOverviewV1 & {
+  overview_json?: unknown;
+};
+
+async function persistGovernedOverview(pool: Pool, overview: PersistableGovernedOverviewRow): Promise<{ inserted: boolean }> {
   const res = await pool.query(
-    `INSERT INTO governed_llm_overviews (deal_id, schema_version, llm_phase_mode, input_hash, run_id, step_run_id, summary_text, claims, disclosures)
-     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)
+    `INSERT INTO governed_llm_overviews (deal_id, schema_version, llm_phase_mode, input_hash, run_id, step_run_id, summary_text, claims, disclosures, overview_json)
+     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb)
      ON CONFLICT (deal_id, input_hash, schema_version) DO NOTHING`,
     [
       overview.deal_id,
@@ -315,10 +496,265 @@ async function persistGovernedOverview(pool: Pool, overview: GovernedLLMOverview
       overview.summary_text,
       JSON.stringify(overview.claims ?? []),
       JSON.stringify(overview.disclosures ?? []),
+      JSON.stringify((overview as any).overview_json ?? null),
     ]
   );
 
   return { inserted: (res as any)?.rowCount === 1 };
+}
+
+async function persistDiagnosticsSnapshotBestEffort(args: {
+  pool: Pool;
+  dealId: string;
+  reportId: string;
+  llm_phase_mode: LLMPhaseMode;
+  overlay?: Pick<GovernedLLMOverviewV1, "llm_phase_mode" | "claims"> | null;
+  provider_error_count?: number;
+  model_output_truncated_count?: number;
+  model_output_not_json_count?: number;
+  guard_degraded_count?: number;
+}): Promise<void> {
+  const pool = args.pool;
+
+  try {
+    const tableOk = await hasTable(pool, "deal_analysis_diagnostics");
+    if (!tableOk) return;
+
+    const claims = Array.isArray(args.overlay?.claims) ? args.overlay.claims : [];
+    const docIdsRaw: string[] = [];
+    for (const c of claims as any[]) {
+      const refs = Array.isArray(c?.evidence_refs) ? c.evidence_refs : [];
+      for (const r of refs) {
+        const id = typeof r?.document_id === "string" ? String(r.document_id).trim() : "";
+        if (id) docIdsRaw.push(id);
+      }
+    }
+
+    const docIds = Array.from(new Set(docIdsRaw)).filter(isUuidLike);
+
+    let documentsById: DocumentIndexLite | null = null;
+    if (docIds.length > 0) {
+      const { rows } = await pool.query<{ id: string; page_count: number | null }>(
+        `SELECT id::text AS id, page_count
+           FROM documents
+          WHERE id = ANY($1::uuid[])`,
+        [docIds]
+      );
+      documentsById = new Map();
+      for (const r of rows) {
+        if (!r?.id) continue;
+        documentsById.set(r.id, { page_count: typeof r.page_count === "number" ? r.page_count : null });
+      }
+    }
+
+    // Drift + deterministic coverage are derived from the latest persisted DIO snapshot.
+    let dioData: any = null;
+    try {
+      const { rows } = await pool.query<{ dio_data: any }>(
+        `SELECT dio_data
+           FROM deal_intelligence_objects
+          WHERE deal_id = $1::uuid
+          ORDER BY analysis_version DESC
+          LIMIT 1`,
+        [args.dealId]
+      );
+      dioData = rows?.[0]?.dio_data ?? null;
+    } catch {
+      dioData = null;
+    }
+
+    // Evidence coverage: node-backed evidence is approximated by presence of visual_asset_id.
+    let evidenceVisualAssetById: Map<string, string> | null = null;
+    try {
+      const sectionsCandidates: any[] = [
+        dioData?.computed_score_breakdown_v1,
+        dioData?.dio?.phase1?.executive_summary_v2?.score_breakdown_v1,
+        dioData?.dio?.phase1?.score_breakdown_v1,
+        dioData?.dio?.phase1?.executive_summary_v1?.score_breakdown_v1,
+      ];
+      let sections: any[] = [];
+      for (const cand of sectionsCandidates) {
+        if (Array.isArray(cand?.sections)) {
+          sections = cand.sections;
+          break;
+        }
+      }
+
+      const linkedIdsAll: string[] = [];
+      for (const s of sections) {
+        const linked = Array.isArray(s?.evidence_ids_linked)
+          ? s.evidence_ids_linked.filter((v: any) => typeof v === "string" && v.trim().length > 0)
+          : [];
+        for (const id of linked) linkedIdsAll.push(String(id).trim());
+      }
+
+      const uniqueLinkedIds = Array.from(new Set(linkedIdsAll)).filter(isUuidLike);
+
+      if (uniqueLinkedIds.length > 0) {
+        const { rows: evRows } = await pool.query<{ id: string; visual_asset_id: string | null }>(
+          `SELECT id::text AS id, visual_asset_id::text AS visual_asset_id
+             FROM evidence
+            WHERE deal_id = $1::uuid
+              AND id = ANY($2::uuid[])`,
+          [args.dealId, uniqueLinkedIds]
+        );
+        evidenceVisualAssetById = new Map();
+        for (const r of evRows) {
+          const id = typeof r?.id === "string" ? r.id.trim() : "";
+          const va = typeof r?.visual_asset_id === "string" ? r.visual_asset_id.trim() : "";
+          if (id) evidenceVisualAssetById.set(id, va);
+        }
+      }
+    } catch {
+      evidenceVisualAssetById = null;
+    }
+
+    const overlayMetrics = args.overlay
+      ? computeOverlayGovernanceMetrics({ overlay: args.overlay, documentsById })
+      : {
+        llm_phase_mode: args.llm_phase_mode,
+        citation_integrity_percent: null,
+        numeric_claims_without_evidence: 0,
+        hallucination_count: 0,
+      };
+    const driftMetrics = computeDriftMetrics({ dioData });
+    const deterministicDiagnostics = computeDeterministicDiagnostics({ dioData, evidenceVisualAssetById });
+
+    const providerErrorCount = typeof args.provider_error_count === "number" && Number.isFinite(args.provider_error_count) ? args.provider_error_count : 0;
+    const truncatedCount = typeof args.model_output_truncated_count === "number" && Number.isFinite(args.model_output_truncated_count) ? args.model_output_truncated_count : 0;
+    const notJsonCount = typeof args.model_output_not_json_count === "number" && Number.isFinite(args.model_output_not_json_count) ? args.model_output_not_json_count : 0;
+    const guardDegradedCount = typeof args.guard_degraded_count === "number" && Number.isFinite(args.guard_degraded_count) ? args.guard_degraded_count : 0;
+
+    // Log computed metrics before insert/upsert. Keep this compact (no raw text, no excerpts).
+    try {
+      console.log(
+        JSON.stringify({
+          event: "DIAGNOSTICS_METRICS_COMPUTED",
+          deal_id: args.dealId,
+          report_id: args.reportId,
+          llm_phase_mode: args.llm_phase_mode,
+          metrics: {
+            overlay: {
+              citation_integrity_percent: overlayMetrics.citation_integrity_percent,
+              numeric_claims_without_evidence: overlayMetrics.numeric_claims_without_evidence,
+              hallucination_count: overlayMetrics.hallucination_count,
+            },
+            drift: {
+              semantic_drift_score: driftMetrics.semantic_drift_score,
+            },
+            deterministic: {
+              deterministic_coverage_ratio: deterministicDiagnostics.deterministic_coverage_ratio,
+            },
+            error_counts: {
+              provider_error_count: providerErrorCount,
+              model_output_truncated_count: truncatedCount,
+              model_output_not_json_count: notJsonCount,
+              guard_degraded_count: guardDegradedCount,
+            },
+          },
+          context: {
+            overlay_claims_count: Array.isArray(args.overlay?.claims) ? args.overlay!.claims.length : 0,
+            overlay_doc_ids_unique_uuid_like_count: docIds.length,
+            evidence_visual_asset_map_size: evidenceVisualAssetById ? evidenceVisualAssetById.size : 0,
+            dio_loaded: Boolean(dioData),
+          },
+          ts: new Date().toISOString(),
+        })
+      );
+    } catch {
+      // ignore
+    }
+
+    const support = await getDiagnosticsColumnSupport(pool);
+
+    const baseColumns = [
+      "deal_id",
+      "report_id",
+      "llm_phase_mode",
+      "citation_integrity_percent",
+      "numeric_claims_without_evidence",
+      "semantic_drift_score",
+      "hallucination_count",
+      "deterministic_coverage_ratio",
+    ];
+
+    const optionalCols: Array<{ name: keyof DiagnosticsColumnSupport; col: string; value: number }> = [
+      { name: "provider_error_count", col: "provider_error_count", value: providerErrorCount },
+      { name: "model_output_truncated_count", col: "model_output_truncated_count", value: truncatedCount },
+      { name: "model_output_not_json_count", col: "model_output_not_json_count", value: notJsonCount },
+      { name: "guard_degraded_count", col: "guard_degraded_count", value: guardDegradedCount },
+    ];
+
+    const columns: string[] = [...baseColumns];
+    const values: any[] = [
+      args.dealId,
+      args.reportId,
+      args.llm_phase_mode,
+      overlayMetrics.citation_integrity_percent,
+      overlayMetrics.numeric_claims_without_evidence,
+      driftMetrics.semantic_drift_score,
+      overlayMetrics.hallucination_count,
+      deterministicDiagnostics.deterministic_coverage_ratio,
+    ];
+
+    for (const opt of optionalCols) {
+      if ((support as any)[opt.name] === true) {
+        columns.push(opt.col);
+        values.push(opt.value);
+      }
+    }
+
+    const placeholders = columns.map((_, idx) => (idx === 0 ? "$1::uuid" : `$${idx + 1}`));
+    const updateAssignments = columns
+      .filter((c) => c !== "deal_id" && c !== "report_id" && c !== "llm_phase_mode")
+      .map((c) => `${c} = EXCLUDED.${c}`);
+
+    const sql =
+      `INSERT INTO deal_analysis_diagnostics (${columns.join(", ")})\n` +
+      `VALUES (${placeholders.join(", ")})\n` +
+      `ON CONFLICT (deal_id, report_id, llm_phase_mode) DO UPDATE SET ${updateAssignments.join(", ")}\n` +
+      `RETURNING (xmax = 0) AS inserted`; // best-effort insert vs update signal
+
+    // Structured pre-insert log for visibility in cases where the query errors or is cancelled.
+    try {
+      console.log(
+        JSON.stringify({
+          event: "DIAGNOSTICS_PERSIST_ATTEMPT",
+          deal_id: args.dealId,
+          report_id: args.reportId,
+          llm_phase_mode: args.llm_phase_mode,
+          cols: columns,
+          optional_cols_supported: support,
+          ts: new Date().toISOString(),
+        })
+      );
+    } catch {
+      // ignore
+    }
+
+    const res = await pool.query<{ inserted: boolean }>(sql, values);
+    const inserted = Boolean((res as any)?.rows?.[0]?.inserted);
+
+    try {
+      console.log(
+        JSON.stringify({
+          event: "DIAGNOSTICS_PERSIST_OK",
+          deal_id: args.dealId,
+          report_id: args.reportId,
+          llm_phase_mode: args.llm_phase_mode,
+          inserted,
+          updated: !inserted,
+          cols: columns,
+          ts: new Date().toISOString(),
+        })
+      );
+    } catch {
+      // ignore
+    }
+  } catch (err) {
+    // Best-effort only. Must never interfere with deterministic or overlay persistence.
+    logDiagnosticsPersistFailure({ dealId: args.dealId, reportId: args.reportId, llm_phase_mode: args.llm_phase_mode, err });
+  }
 }
 
 async function readDealPhaseMode(pool: Pool, dealId: string): Promise<LLMPhaseMode> {
@@ -356,6 +792,388 @@ async function hasTable(pool: Pool, table: string): Promise<boolean> {
   }
 }
 
+async function hasColumn(pool: Pool, table: string, column: string): Promise<boolean> {
+  try {
+    const { rows } = await pool.query<{ ok: number }>(
+      `SELECT 1 as ok
+         FROM information_schema.columns
+        WHERE table_schema='public'
+          AND table_name=$1
+          AND column_name=$2
+        LIMIT 1`,
+      [table, column]
+    );
+    return Array.isArray(rows) && rows.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function coerceSourceArray(value: unknown): Array<{ document_id: string; page_range?: [number, number]; note?: string }> {
+  const xs = Array.isArray(value) ? value : [];
+  const out: Array<{ document_id: string; page_range?: [number, number]; note?: string }> = [];
+  for (const x of xs as any[]) {
+    const document_id = typeof x?.document_id === "string" ? x.document_id.trim() : "";
+    if (!document_id) continue;
+    const pr = Array.isArray(x?.page_range) && x.page_range.length === 2 ? x.page_range : null;
+    const page1 = pr && typeof pr[0] === "number" && Number.isFinite(pr[0]) ? Math.floor(pr[0]) : null;
+    const page2 = pr && typeof pr[1] === "number" && Number.isFinite(pr[1]) ? Math.floor(pr[1]) : null;
+    const note = typeof x?.note === "string" && x.note.trim() ? x.note.trim() : undefined;
+    out.push({
+      document_id,
+      ...(page1 != null && page2 != null ? { page_range: [page1, page2] as [number, number] } : {}),
+      ...(note ? { note } : {}),
+    });
+  }
+  return out;
+}
+
+async function fetchDpuSnippet(pool: Pool, input: { documentId: string; pageIndex: number }): Promise<string | null> {
+  try {
+    const { rows } = await pool.query<{ payload: any }>(
+      "SELECT payload FROM document_page_understanding WHERE document_id = $1 AND page_index = $2 AND version = 'page_understanding_v1' LIMIT 1",
+      [input.documentId, input.pageIndex]
+    );
+    const payload = rows?.[0]?.payload ?? null;
+    if (!payload || typeof payload !== "object") return null;
+
+    const normalized = clampText((payload as any).normalized_text, 2000);
+    if (normalized && normalized.length >= 40) return normalized;
+
+    const blocks = (payload as any).text_blocks && typeof (payload as any).text_blocks === "object" ? (payload as any).text_blocks : null;
+    const snippet = clampText(blocks?.text_snippet, 2000);
+    if (snippet && snippet.length >= 30) return snippet;
+
+    const pageText = clampText((payload as any).page_text, 2000);
+    if (pageText && pageText.length >= 30) return pageText;
+
+    const ocrText = clampText(blocks?.ocr_text, 2000);
+    return ocrText;
+  } catch {
+    return null;
+  }
+}
+
+async function upsertDisplayFactEvidenceBestEffort(pool: Pool, input: {
+  dealId: string;
+  field: "product_solution" | "market_icp" | "business_model" | "raise_terms";
+  documentId: string;
+  pageIndex: number;
+  snippet: string;
+}): Promise<string | null> {
+  try {
+    const ok = await hasTable(pool, "evidence");
+    if (!ok) return null;
+
+    const hasId = await hasColumn(pool, "evidence", "id");
+    if (!hasId) return null;
+
+    const [hasDealId, hasDocumentId, hasSource, hasKind, hasText, hasExcerpt, hasPage, hasPageNumber, hasConfidence] = await Promise.all([
+      hasColumn(pool, "evidence", "deal_id"),
+      hasColumn(pool, "evidence", "document_id"),
+      hasColumn(pool, "evidence", "source"),
+      hasColumn(pool, "evidence", "kind"),
+      hasColumn(pool, "evidence", "text"),
+      hasColumn(pool, "evidence", "excerpt"),
+      hasColumn(pool, "evidence", "page"),
+      hasColumn(pool, "evidence", "page_number"),
+      hasColumn(pool, "evidence", "confidence"),
+    ]);
+
+    if (!hasDealId || !hasSource || !hasKind || !hasText) return null;
+
+    const evidenceId = deterministicUuidFromKey(
+      `display_fact_v1|${input.dealId}|${input.field}|${input.documentId}|${String(input.pageIndex)}`
+    );
+
+    const cols: string[] = ["id", "deal_id"];
+    const values: unknown[] = [evidenceId, input.dealId];
+
+    if (hasDocumentId) {
+      cols.push("document_id");
+      values.push(input.documentId);
+    }
+
+    cols.push("source", "kind", "text");
+    values.push("display_fact", `display_fact:${input.field}`, input.snippet);
+
+    if (hasExcerpt) {
+      cols.push("excerpt");
+      values.push(input.snippet.length > 500 ? `${input.snippet.slice(0, 497)}...` : input.snippet);
+    }
+
+    const pageNumber = input.pageIndex + 1;
+    if (hasPageNumber) {
+      cols.push("page_number");
+      values.push(pageNumber);
+    } else if (hasPage) {
+      cols.push("page");
+      values.push(pageNumber);
+    }
+
+    if (hasConfidence) {
+      cols.push("confidence");
+      values.push(0.75);
+    }
+
+    const placeholders = cols.map((_, idx) => `$${idx + 1}`).join(", ");
+    const updateAssignments = cols
+      .filter((c) => c !== "id")
+      .map((c) => `${c} = EXCLUDED.${c}`)
+      .join(", ");
+
+    await pool.query(
+      `INSERT INTO evidence (${cols.join(", ")})
+       VALUES (${placeholders})
+       ON CONFLICT (id) DO UPDATE SET ${updateAssignments}`,
+      values
+    );
+
+    return evidenceId;
+  } catch {
+    return null;
+  }
+}
+
+function isFallbackSource(note: string | undefined): boolean {
+  const n = (note ?? "").toLowerCase();
+  return n.includes("fallback_") || n.includes("du fallback_");
+}
+
+function pickSourcesForField(
+  sources: Array<{ document_id: string; page_range?: [number, number]; note?: string }>,
+  field: "product_solution" | "market_icp" | "business_model" | "raise_terms"
+): Array<{ document_id: string; page_range?: [number, number]; note?: string }> {
+  const usable = sources.filter((s) => !isFallbackSource(s.note));
+  const rx =
+    field === "raise_terms"
+      ? /(raise|raising|funding|ask|raise_terms)/i
+      : field === "business_model"
+        ? /(business\s*model|business_model|saas|subscription|marketplace|licens|services)/i
+        : field === "market_icp"
+          ? /(icp|market|customers|who we serve|target)/i
+          : /(definition|tagline|product|scored:product|from heading|verb|platform)/i;
+
+  const direct = usable.filter((s) => rx.test(String(s.note ?? "")));
+  if (direct.length > 0) return direct.slice(0, 3);
+
+  // Fallback: best-effort ordering assumption from builder (product, market, raise, business model).
+  if (field === "product_solution") return usable.slice(0, 1);
+  if (field === "market_icp") return usable.slice(1, 2);
+  if (field === "raise_terms") return usable.slice(2, 3);
+  return usable.slice(3, 4);
+}
+
+async function generateDisplayFactsV1BestEffort(args: {
+  pool: Pool;
+  dealId: string;
+  nowIso: string;
+  llm_phase_mode: LLMPhaseMode;
+  phase1_deal_overview_v2?: unknown;
+}): Promise<{ display_facts_v1: DisplayFactsV1 | null; quality: DisplayFactsQualityV1; deterministic_input: unknown; providerMeta?: { model: string } }>{
+  const overview = args.phase1_deal_overview_v2 && typeof args.phase1_deal_overview_v2 === "object" ? (args.phase1_deal_overview_v2 as any) : null;
+  const sources = coerceSourceArray(overview?.sources);
+
+  type Ev = { evidence_id: string; document_id: string; page_index: number; snippet: string };
+
+  const buildEvidenceForField = async (field: "product_solution" | "market_icp" | "business_model" | "raise_terms"): Promise<Ev[]> => {
+    const picked = pickSourcesForField(sources, field);
+    const out: Ev[] = [];
+    for (const s of picked) {
+      const startPage = s.page_range?.[0];
+      const endPage = s.page_range?.[1];
+      const page = typeof startPage === "number" && Number.isFinite(startPage) ? startPage : null;
+      const pageIndex = page != null ? Math.max(0, page - 1) : null;
+      if (pageIndex == null) continue;
+      const snippet = await fetchDpuSnippet(args.pool, { documentId: s.document_id, pageIndex });
+      if (!snippet) continue;
+      const evidence_id = await upsertDisplayFactEvidenceBestEffort(args.pool, {
+        dealId: args.dealId,
+        field,
+        documentId: s.document_id,
+        pageIndex,
+        snippet,
+      });
+      if (!evidence_id) continue;
+      out.push({ evidence_id, document_id: s.document_id, page_index: pageIndex, snippet });
+      if (out.length >= 3) break;
+    }
+    return out;
+  };
+
+  const [productEvidence, marketEvidence, modelEvidence, raiseEvidence] = await Promise.all([
+    buildEvidenceForField("product_solution"),
+    buildEvidenceForField("market_icp"),
+    buildEvidenceForField("business_model"),
+    buildEvidenceForField("raise_terms"),
+  ]);
+
+  const deterministic_input = {
+    schema_version: "display_facts_v1_input_v1",
+    product_solution: productEvidence.map((e) => ({ evidence_id: e.evidence_id, document_id: e.document_id, page_index: e.page_index, snippet_head: e.snippet.slice(0, 120) })),
+    market_icp: marketEvidence.map((e) => ({ evidence_id: e.evidence_id, document_id: e.document_id, page_index: e.page_index, snippet_head: e.snippet.slice(0, 120) })),
+    business_model: modelEvidence.map((e) => ({ evidence_id: e.evidence_id, document_id: e.document_id, page_index: e.page_index, snippet_head: e.snippet.slice(0, 120) })),
+    raise_terms: raiseEvidence.map((e) => ({ evidence_id: e.evidence_id, document_id: e.document_id, page_index: e.page_index, snippet_head: e.snippet.slice(0, 120) })),
+  };
+
+  const allEvidenceIds = new Set<string>([
+    ...productEvidence.map((e) => e.evidence_id),
+    ...marketEvidence.map((e) => e.evidence_id),
+    ...modelEvidence.map((e) => e.evidence_id),
+    ...raiseEvidence.map((e) => e.evidence_id),
+  ]);
+
+  const qualityBase: DisplayFactsQualityV1 = {
+    generated_at: args.nowIso,
+    model: null,
+    ok: false,
+    guard_degraded: false,
+  };
+
+  if (allEvidenceIds.size === 0) {
+    const noEvidence: DisplayFactFieldV1 = { text: null, evidence_ids: [], evidence_basis: "no_evidence" };
+    return {
+      display_facts_v1: {
+        schema_version: "display_facts_v1",
+        product_solution: noEvidence,
+        market_icp: noEvidence,
+        business_model: noEvidence,
+        raise_terms: noEvidence,
+      },
+      quality: { ...qualityBase, ok: true, skipped_reason: "no_evidence" },
+      deterministic_input,
+    };
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return {
+      display_facts_v1: null,
+      quality: { ...qualityBase, skipped_reason: "missing_openai_api_key" },
+      deterministic_input,
+    };
+  }
+
+  const providerConfig: ProviderConfig = {
+    type: "openai",
+    enabled: true,
+    priority: 1,
+    apiKey,
+    timeout: 30_000,
+    retries: 2,
+  };
+
+  const provider = new OpenAIGPT4oProvider(providerConfig);
+
+  const system =
+    "You are a deal analyst. Convert noisy deterministic OCR snippets into clean, investor-readable short statements. " +
+    "Use ONLY the provided snippets. Do not invent facts or numbers. " +
+    "If the snippets are insufficient for a field, set text=null, evidence_ids=[], evidence_basis=\"no_evidence\". " +
+    "Output MUST be valid JSON only (no markdown). " +
+    "Return JSON with EXACT keys: product_solution, market_icp, business_model, raise_terms. " +
+    "Each value MUST be an object {text: string|null, evidence_ids: string[], evidence_basis: \"direct_snippet\"|\"no_evidence\"}. " +
+    "If evidence_ids is non-empty, evidence_basis MUST be \"direct_snippet\" and text MUST be non-empty. " +
+    "Keep each text under 220 characters. Remove OCR artifacts (duplicated spaces, broken words, stray punctuation).";
+
+  const payload = {
+    deal_id: args.dealId,
+    llm_phase_mode: args.llm_phase_mode,
+    fields: {
+      product_solution: productEvidence,
+      market_icp: marketEvidence,
+      business_model: modelEvidence,
+      raise_terms: raiseEvidence,
+    },
+  };
+
+  const response = await provider.complete({
+    task: "synthesis",
+    model: "gpt-4o-mini" as any,
+    temperature: 0,
+    max_tokens: 700,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: JSON.stringify(payload) },
+    ],
+    metadata: { dealId: args.dealId, kind: "display_facts_v1" },
+  });
+
+  const parsed = safeJsonParseObject(response?.content);
+  if (!parsed) {
+    return {
+      display_facts_v1: null,
+      quality: { ...qualityBase, model: "gpt-4o-mini", ok: false, guard_degraded: false, errors: ["model_output_not_json"] },
+      deterministic_input,
+      providerMeta: { model: "gpt-4o-mini" },
+    };
+  }
+
+  const errors: string[] = [];
+  const coerceField = (key: keyof DisplayFactsV1): DisplayFactFieldV1 | null => {
+    const raw = (parsed as any)[key];
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      errors.push(`${String(key)}_missing`);
+      return null;
+    }
+    const evidence_basis = (raw as any).evidence_basis;
+    const basis: DisplayFactsBasisV1 | null = evidence_basis === "direct_snippet" || evidence_basis === "no_evidence" ? evidence_basis : null;
+    const evidence_ids_raw: unknown[] = Array.isArray((raw as any).evidence_ids) ? ((raw as any).evidence_ids as unknown[]) : [];
+    const evidence_ids: string[] = Array.from(
+      new Set(
+        evidence_ids_raw
+          .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+          .map((v) => v.trim())
+      )
+    ).slice(0, 6);
+    const text = clampText((raw as any).text, 220);
+
+    const hasEvidence = evidence_ids.length > 0;
+
+    if (hasEvidence) {
+      for (const id of evidence_ids) if (!allEvidenceIds.has(id)) errors.push(`${String(key)}_evidence_id_out_of_scope`);
+      if (basis !== "direct_snippet") errors.push(`${String(key)}_basis_invalid_for_evidence`);
+      if (!text) errors.push(`${String(key)}_text_missing_with_evidence`);
+      return { text: text ?? null, evidence_ids, evidence_basis: "direct_snippet" };
+    }
+
+    if (basis !== "no_evidence") {
+      // Fail closed: evidence-free fields must explicitly use no_evidence.
+      errors.push(`${String(key)}_basis_expected_no_evidence`);
+    }
+    if (text != null) {
+      errors.push(`${String(key)}_text_present_without_evidence`);
+    }
+    return { text: null, evidence_ids: [], evidence_basis: "no_evidence" };
+  };
+
+  const product_solution = coerceField("product_solution" as any);
+  const market_icp = coerceField("market_icp" as any);
+  const business_model = coerceField("business_model" as any);
+  const raise_terms = coerceField("raise_terms" as any);
+
+  if (!product_solution || !market_icp || !business_model || !raise_terms || errors.length > 0) {
+    return {
+      display_facts_v1: null,
+      quality: { ...qualityBase, model: "gpt-4o-mini", ok: false, guard_degraded: true, errors: errors.length ? errors : ["guard_degraded"] },
+      deterministic_input,
+      providerMeta: { model: "gpt-4o-mini" },
+    };
+  }
+
+  return {
+    display_facts_v1: {
+      schema_version: "display_facts_v1",
+      product_solution,
+      market_icp,
+      business_model,
+      raise_terms,
+    },
+    quality: { ...qualityBase, model: "gpt-4o-mini", ok: true, guard_degraded: false },
+    deterministic_input,
+    providerMeta: { model: "gpt-4o-mini" },
+  };
+}
+
 export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
   pool: Pool;
   dealId: string;
@@ -371,147 +1189,248 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
   const startedAt = Date.now();
   const pool = args.pool;
 
+  const nowIso = new Date().toISOString();
+
+  let llm_phase_mode: LLMPhaseMode = "exploratory";
+  let input_hash: string | null = null;
+  let validation_failed = false;
+  let inserted = false;
+  let overlayForDiagnostics: Pick<GovernedLLMOverviewV1, "llm_phase_mode" | "claims"> | null = null;
+
+  // PR3.1: capture overlay-attempt failure state; diagnostics must persist even on failures.
+  let provider_error_count = 0;
+  let model_output_truncated_count = 0;
+  let model_output_not_json_count = 0;
+  let guard_degraded_count = 0;
+
+  const classifyAttemptError = (err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err ?? "");
+    const normalized = msg.toLowerCase();
+    provider_error_count = 1;
+    if (normalized.includes("guard_degraded")) guard_degraded_count = 1;
+    if (normalized.includes("truncat") || normalized.includes("max token") || normalized.includes("context length") || normalized.includes("finish_reason")) {
+      model_output_truncated_count = 1;
+    }
+    if (normalized.includes("unexpected token") || normalized.includes("non-json") || (normalized.includes("json") && normalized.includes("parse"))) {
+      model_output_not_json_count = 1;
+    }
+  };
+
+  const persistDiagnosticsAlways = async () => {
+    try {
+      const reportId = input_hash || `overlay_attempt:${args.dealId}:${nowIso}`;
+      await persistDiagnosticsSnapshotBestEffort({
+        pool,
+        dealId: args.dealId,
+        reportId,
+        llm_phase_mode,
+        overlay: overlayForDiagnostics,
+        provider_error_count,
+        model_output_truncated_count,
+        model_output_not_json_count,
+        guard_degraded_count,
+      });
+    } catch {
+      // ignore
+    }
+  };
+
   try {
     const tableOk = await hasTable(pool, "governed_llm_overviews");
     if (!tableOk) {
       return { ok: true, inserted: false, input_hash: null, validation_failed: false };
     }
 
-    const llm_phase_mode = await readDealPhaseMode(pool, args.dealId);
+    llm_phase_mode = await readDealPhaseMode(pool, args.dealId);
 
-    const nowIso = new Date().toISOString();
-
-    let kpiClaims: any[] = [];
+    // Attempt overlay generation + persistence.
     try {
-      const docs = Array.isArray(args.phase1_documents) ? args.phase1_documents : [];
-      const out = await buildPhase1KpiReconciliationV1({
-        pool,
-        dealId: args.dealId,
-        documents: docs.map((d) => ({ document_id: String(d.document_id), type: d.type ?? null })),
-        nowIso,
-      });
-      kpiClaims = Array.isArray(out?.claims) ? out.claims : [];
-    } catch {
-      kpiClaims = [];
-    }
-
-    const deterministicInputs = {
-      schema_version: SCHEMA_VERSION,
-      deal_id: args.dealId,
-      llm_phase_mode,
-      phase1: {
-        deal_overview_v2: stripNonDeterministicFieldsDeep(args.phase1_deal_overview_v2 ?? null),
-        business_archetype_v1: stripNonDeterministicFieldsDeep(args.phase1_business_archetype_v1 ?? null),
-        update_report_v1: stripNonDeterministicFieldsDeep(args.phase1_update_report_v1 ?? null),
-        deal_summary_v2: stripNonDeterministicFieldsDeep(args.phase1_deal_summary_v2 ?? null),
-      },
-      phase1_kpi_claims_v1: kpiClaims.map((c) => ({
-        claim_id: (c as any)?.claim_id ?? null,
-        metric: (c as any)?.metric ?? null,
-        value: (c as any)?.value ?? null,
-        document_id: (c as any)?.document_id ?? null,
-        page: (c as any)?.page ?? null,
-        confidence: (c as any)?.confidence ?? null,
-      })),
-    };
-
-    const input_hash = computeGovernedLlmOverviewInputHash(deterministicInputs);
-
-    const summary_text = buildSummaryText({
-      dealName: args.dealName ?? null,
-      dealOverviewV2: args.phase1_deal_overview_v2 ?? null,
-      businessArchetypeV1: args.phase1_business_archetype_v1 ?? null,
-    });
-
-    const claims: GovernedLLMClaimV1[] = [];
-    for (const c of kpiClaims) {
-      const metric = typeof (c as any)?.metric === "string" ? String((c as any).metric) : "";
-      const value = typeof (c as any)?.value === "number" && Number.isFinite((c as any).value) ? (c as any).value : null;
-      const conf = clamp01((c as any)?.confidence, 0.7);
-      const ev = toEvidenceRefFromKpiClaim({ document_id: String((c as any)?.document_id ?? ""), page: Number((c as any)?.page ?? NaN) });
-      if (!metric || value == null) continue;
-      if (!ev) continue;
-      claims.push({
-        claim_type: "kpi",
-        label: metric,
-        value_number: value,
-        unit: "USD",
-        confidence: conf,
-        evidence_refs: [ev],
-      });
-    }
-
-    const disclosures: Disclosure[] = [];
-
-    const candidate: GovernedLLMOverviewV1 = {
-      schema_version: SCHEMA_VERSION,
-      deal_id: args.dealId,
-      run_id: args.runId ?? undefined,
-      step_run_id: args.stepRunId ?? undefined,
-      input_hash,
-      created_at: nowIso,
-      llm_phase_mode,
-      summary_text,
-      claims,
-      disclosures,
-    };
-
-    const schemaValidated = validateGovernedLlmOverviewSchemaV1(candidate);
-    let toPersist: GovernedLLMOverviewV1;
-    if (!schemaValidated.ok) {
-      toPersist = {
-        ...candidate,
-        claims: [],
-        disclosures: [
-          ...disclosures,
-          {
-            code: "governed_llm_overlay_validation_failed",
-            message: "Governed LLM overlay failed schema validation; claims omitted.",
-          },
-        ],
-      };
-    } else {
-      const enforced = enforcePhaseMode(schemaValidated.data, llm_phase_mode);
-      if (llm_phase_mode === "exploratory") {
-        toPersist = enforced;
-      } else {
-        const strictValidated = validateGovernedLlmOverviewV1(enforced);
-        toPersist = strictValidated.ok
-          ? strictValidated.data
-          : {
-            ...enforced,
-            claims: [],
-            disclosures: [
-              ...(Array.isArray(enforced.disclosures) ? enforced.disclosures : []),
-              {
-                code: "governed_llm_overlay_validation_failed",
-                message: "Governed LLM overlay failed strict validation; claims omitted.",
-              },
-            ],
-          };
+      let kpiClaims: any[] = [];
+      try {
+        const docs = Array.isArray(args.phase1_documents) ? args.phase1_documents : [];
+        const out = await buildPhase1KpiReconciliationV1({
+          pool,
+          dealId: args.dealId,
+          documents: docs.map((d) => ({ document_id: String(d.document_id), type: d.type ?? null })),
+          nowIso,
+        });
+        kpiClaims = Array.isArray(out?.claims) ? out.claims : [];
+      } catch {
+        kpiClaims = [];
       }
+
+      // display_facts_v1: derived from deterministic evidence (DPU snippets) + guarded LLM paraphrase.
+      let display_facts_v1: DisplayFactsV1 | null = null;
+      let display_facts_v1_quality: DisplayFactsQualityV1 | null = null;
+      let display_facts_v1_input: unknown = null;
+      try {
+        const out = await generateDisplayFactsV1BestEffort({
+          pool,
+          dealId: args.dealId,
+          nowIso,
+          llm_phase_mode,
+          phase1_deal_overview_v2: args.phase1_deal_overview_v2 ?? null,
+        });
+        display_facts_v1 = out.display_facts_v1;
+        display_facts_v1_quality = out.quality;
+        display_facts_v1_input = out.deterministic_input;
+        if (out.quality.guard_degraded) guard_degraded_count = Math.max(guard_degraded_count, 1);
+        if (out.quality.errors?.includes("model_output_not_json")) model_output_not_json_count = Math.max(model_output_not_json_count, 1);
+      } catch (err) {
+        classifyAttemptError(err);
+        display_facts_v1 = null;
+        display_facts_v1_quality = {
+          generated_at: nowIso,
+          model: null,
+          ok: false,
+          guard_degraded: false,
+          skipped_reason: "exception",
+          errors: [err instanceof Error ? err.message : String(err ?? "unknown_error")],
+        };
+        display_facts_v1_input = null;
+      }
+
+      const deterministicInputs = {
+        schema_version: SCHEMA_VERSION,
+        deal_id: args.dealId,
+        llm_phase_mode,
+        phase1: {
+          deal_overview_v2: stripNonDeterministicFieldsDeep(args.phase1_deal_overview_v2 ?? null),
+          business_archetype_v1: stripNonDeterministicFieldsDeep(args.phase1_business_archetype_v1 ?? null),
+          update_report_v1: stripNonDeterministicFieldsDeep(args.phase1_update_report_v1 ?? null),
+          deal_summary_v2: stripNonDeterministicFieldsDeep(args.phase1_deal_summary_v2 ?? null),
+        },
+        phase1_kpi_claims_v1: kpiClaims.map((c) => ({
+          claim_id: (c as any)?.claim_id ?? null,
+          metric: (c as any)?.metric ?? null,
+          value: (c as any)?.value ?? null,
+          document_id: (c as any)?.document_id ?? null,
+          page: (c as any)?.page ?? null,
+          confidence: (c as any)?.confidence ?? null,
+        })),
+        display_facts_v1_input_v1: stripNonDeterministicFieldsDeep(display_facts_v1_input),
+      };
+
+      input_hash = computeGovernedLlmOverviewInputHash(deterministicInputs);
+
+      const summary_text = buildSummaryText({
+        dealName: args.dealName ?? null,
+        dealOverviewV2: args.phase1_deal_overview_v2 ?? null,
+        businessArchetypeV1: args.phase1_business_archetype_v1 ?? null,
+      });
+
+      const claims: GovernedLLMClaimV1[] = [];
+      for (const c of kpiClaims) {
+        const metric = typeof (c as any)?.metric === "string" ? String((c as any).metric) : "";
+        const value = typeof (c as any)?.value === "number" && Number.isFinite((c as any).value) ? (c as any).value : null;
+        const conf = clamp01((c as any)?.confidence, 0.7);
+        const ev = toEvidenceRefFromKpiClaim({ document_id: String((c as any)?.document_id ?? ""), page: Number((c as any)?.page ?? NaN) });
+        if (!metric || value == null) continue;
+        if (!ev) continue;
+        claims.push({
+          claim_type: "kpi",
+          label: metric,
+          value_number: value,
+          unit: "USD",
+          confidence: conf,
+          evidence_refs: [ev],
+        });
+      }
+
+      const disclosures: Disclosure[] = [];
+
+      const candidate: GovernedLLMOverviewV1 = {
+        schema_version: SCHEMA_VERSION,
+        deal_id: args.dealId,
+        run_id: args.runId ?? undefined,
+        step_run_id: args.stepRunId ?? undefined,
+        input_hash,
+        created_at: nowIso,
+        llm_phase_mode,
+        summary_text,
+        claims,
+        disclosures,
+      };
+
+      const overview_json = {
+        phase1: {
+          deal_overview_v2: stripNonDeterministicFieldsDeep(args.phase1_deal_overview_v2 ?? null),
+          deal_summary_v2: stripNonDeterministicFieldsDeep(args.phase1_deal_summary_v2 ?? null),
+          business_archetype_v1: stripNonDeterministicFieldsDeep(args.phase1_business_archetype_v1 ?? null),
+          update_report_v1: stripNonDeterministicFieldsDeep(args.phase1_update_report_v1 ?? null),
+        },
+        display_facts_v1: display_facts_v1 ? stripNonDeterministicFieldsDeep(display_facts_v1) : null,
+        display_facts_v1_quality: display_facts_v1_quality ? stripNonDeterministicFieldsDeep(display_facts_v1_quality) : null,
+      };
+
+      const schemaValidated = validateGovernedLlmOverviewSchemaV1(candidate);
+      let toPersist: GovernedLLMOverviewV1;
+      if (!schemaValidated.ok) {
+        toPersist = {
+          ...candidate,
+          claims: [],
+          disclosures: [
+            ...disclosures,
+            {
+              code: "governed_llm_overlay_validation_failed",
+              message: "Governed LLM overlay failed schema validation; claims omitted.",
+            },
+          ],
+        };
+      } else {
+        const enforced = enforcePhaseMode(schemaValidated.data, llm_phase_mode);
+        if (llm_phase_mode === "exploratory") {
+          toPersist = enforced;
+        } else {
+          const strictValidated = validateGovernedLlmOverviewV1(enforced);
+          toPersist = strictValidated.ok
+            ? strictValidated.data
+            : {
+              ...enforced,
+              claims: [],
+              disclosures: [
+                ...(Array.isArray(enforced.disclosures) ? enforced.disclosures : []),
+                {
+                  code: "governed_llm_overlay_validation_failed",
+                  message: "Governed LLM overlay failed strict validation; claims omitted.",
+                },
+              ],
+            };
+        }
+      }
+
+      // Diagnostics should be as complete as possible even if overlay persistence fails.
+      overlayForDiagnostics = { llm_phase_mode, claims: Array.isArray(toPersist.claims) ? toPersist.claims : [] };
+
+      const persisted = await persistGovernedOverview(pool, { ...(toPersist as any), overview_json });
+      inserted = persisted.inserted;
+      validation_failed = !schemaValidated.ok;
+
+      console.log(
+        JSON.stringify({
+          event: "GOVERNED_LLM_OVERLAY_V1",
+          deal_id: args.dealId,
+          schema_version: SCHEMA_VERSION,
+          llm_phase_mode,
+          input_hash,
+          inserted: persisted.inserted,
+          claims_count: Array.isArray(toPersist.claims) ? toPersist.claims.length : 0,
+          validation_failed: !schemaValidated.ok,
+          run_id: args.runId ?? null,
+          step_run_id: args.stepRunId ?? null,
+          duration_ms: Date.now() - startedAt,
+          ts: new Date().toISOString(),
+        })
+      );
+    } catch (err) {
+      classifyAttemptError(err);
+      throw err;
+    } finally {
+      // PR3.1: ALWAYS persist diagnostics after attempting overlay generation.
+      await persistDiagnosticsAlways();
     }
 
-    const persisted = await persistGovernedOverview(pool, toPersist);
-
-    console.log(
-      JSON.stringify({
-        event: "GOVERNED_LLM_OVERLAY_V1",
-        deal_id: args.dealId,
-        schema_version: SCHEMA_VERSION,
-        llm_phase_mode,
-        input_hash,
-        inserted: persisted.inserted,
-        claims_count: Array.isArray(toPersist.claims) ? toPersist.claims.length : 0,
-        validation_failed: !schemaValidated.ok,
-        run_id: args.runId ?? null,
-        step_run_id: args.stepRunId ?? null,
-        duration_ms: Date.now() - startedAt,
-        ts: new Date().toISOString(),
-      })
-    );
-
-    return { ok: true, inserted: persisted.inserted, input_hash, validation_failed: !schemaValidated.ok };
+    return { ok: true, inserted, input_hash, validation_failed };
   } catch (err: any) {
     const msg = err instanceof Error ? err.message : String(err ?? "unknown_error");
     try {

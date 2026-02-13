@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react';
 import { ChevronDown, Package, Users, DollarSign, TrendingUp, Shield, ArrowRight, AlertCircle } from 'lucide-react';
+import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
+import type { EvidenceResolveResult } from '../../lib/apiClient';
 
 export type DealWorkspaceOverviewCompProps = {
   darkMode: boolean;
@@ -8,7 +10,29 @@ export type DealWorkspaceOverviewCompProps = {
   marketIcp: string;
   businessModel: string;
   raiseTerms: string;
+
+  productEvidenceIds?: string[];
+  marketIcpEvidenceIds?: string[];
+  businessModelEvidenceIds?: string[];
+  raiseTermsEvidenceIds?: string[];
+  resolvedEvidence?: Record<string, EvidenceResolveResult>;
+
+  productProvenance?: { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean };
+  marketIcpProvenance?: { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean };
+  businessModelProvenance?: { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean };
+  raiseTermsProvenance?: { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean };
   dealSummaryParagraphs: string[];
+  dealSummaryStrengths?: string[];
+  dealSummaryRisks?: string[];
+  dealSummaryOpenQuestions?: string[];
+  dealSummaryTractionSignals?: string[];
+  dealSummaryKeyRisksDetected?: string[];
+
+  kpiTiles?: Array<{
+    label: string;
+    value: string;
+    tooltipIfMissing?: string;
+  }>;
 
   interpretationStatus?: 'idle' | 'loading' | 'ready' | 'error';
   interpretationSource?: 'persisted' | 'narrated' | 'none';
@@ -67,10 +91,26 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
       .map((x) => x.replace(/\s+/g, ' ').trim())
       .filter((x) => x.length > 0);
 
-  const dealSummaryExpandedText = useMemo(() => {
-    const cleaned = safeLines(props.dealSummaryParagraphs);
-    return cleaned.join(' ');
-  }, [props.dealSummaryParagraphs]);
+  const dealSummaryParagraphs = useMemo(() => safeLines(props.dealSummaryParagraphs), [props.dealSummaryParagraphs]);
+  const dealSummaryStrengths = useMemo(() => safeLines(props.dealSummaryStrengths ?? []), [props.dealSummaryStrengths]);
+  const dealSummaryOpenQuestions = useMemo(() => safeLines(props.dealSummaryOpenQuestions ?? []), [props.dealSummaryOpenQuestions]);
+  const dealSummaryTractionSignals = useMemo(() => safeLines(props.dealSummaryTractionSignals ?? []), [props.dealSummaryTractionSignals]);
+  const dealSummaryRisks = useMemo(() => {
+    const combined = [...(props.dealSummaryRisks ?? []), ...(props.dealSummaryKeyRisksDetected ?? [])];
+    return safeLines(combined);
+  }, [props.dealSummaryRisks, props.dealSummaryKeyRisksDetected]);
+
+  const kpiTiles = useMemo(() => {
+    const xs = Array.isArray(props.kpiTiles) ? props.kpiTiles : [];
+    return xs
+      .filter((x) => x && typeof x.label === 'string')
+      .map((x) => ({
+        label: String(x.label ?? '').trim() || 'KPI',
+        value: String(x.value ?? '').trim() || '—',
+        tooltipIfMissing: typeof x.tooltipIfMissing === 'string' ? x.tooltipIfMissing : undefined,
+      }))
+      .slice(0, 8);
+  }, [props.kpiTiles]);
 
   const strengths = useMemo(() => safeLines(props.strengths), [props.strengths]);
   const strengthsPrimary = strengths.slice(0, 3);
@@ -86,12 +126,60 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
 
   const badgeBaseClassName = 'inline-flex items-center px-2 py-1 rounded-full border text-[11px] font-medium leading-none';
 
+  const renderProvenanceChips = (prov?: { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean }) => {
+    if (!prov) return null;
+
+    const chipClassName = (kind: 'deterministic' | 'governed' | 'missing' | 'needs_review') => {
+      if (kind === 'needs_review') {
+        return props.darkMode
+          ? 'bg-amber-500/10 text-amber-200 border-amber-500/40'
+          : 'bg-amber-50 text-amber-800 border-amber-200/70';
+      }
+
+      if (kind === 'missing') {
+        return props.darkMode
+          ? 'bg-white/5 text-zinc-500 border-white/10'
+          : 'bg-white text-zinc-600 border-gray-200';
+      }
+
+      return props.darkMode
+        ? 'bg-white/5 text-zinc-300 border-white/10'
+        : 'bg-white text-zinc-700 border-gray-200';
+    };
+
+    const mainLabel = prov.source === 'deterministic'
+      ? 'Authoritative (deterministic)'
+      : prov.source === 'governed'
+        ? 'Governed'
+        : 'Missing';
+
+    return (
+      <span className="inline-flex items-center gap-1.5 ml-2">
+        <span className={`${badgeBaseClassName} ${chipClassName(prov.source)}`}>{mainLabel}</span>
+        {prov.needsReview ? (
+          <span className={`${badgeBaseClassName} ${chipClassName('needs_review')}`}>Needs review</span>
+        ) : null}
+      </span>
+    );
+  };
+
   const citationsPresent = Boolean(
     (props.dealSummaryCitations?.one_liner && props.dealSummaryCitations.one_liner.length > 0) ||
       (props.dealSummaryCitations?.product && props.dealSummaryCitations.product.length > 0) ||
       (props.dealSummaryCitations?.market && props.dealSummaryCitations.market.length > 0) ||
       (props.dealSummaryCitations?.paragraphs && props.dealSummaryCitations.paragraphs.length > 0)
   );
+
+  const isMissingValueString = (value: string) => {
+    const s = typeof value === 'string' ? value.trim() : '';
+    return s.length === 0 || s === '—' || s.toLowerCase() === 'not extracted' || s.toLowerCase() === 'not available';
+  };
+
+  const renderMaybeMissingValue = (value: string) => {
+    const s = typeof value === 'string' ? value.trim() : '';
+    const isMissing = isMissingValueString(s);
+    return <span className={isMissing ? 'text-zinc-500 text-sm' : 'text-zinc-200 text-sm'}>{s || 'Not extracted'}</span>;
+  };
 
   const renderPersistedClaims = () => {
     if (interpretationSource !== 'persisted') return null;
@@ -179,6 +267,140 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
     );
   };
 
+  const renderExpandedParagraphs = (title: string, paragraphs: string[]) => {
+    const cleaned = safeLines(paragraphs);
+    return (
+      <div>
+        <div className="text-[11px] uppercase tracking-wider text-zinc-500 mb-2">{title}</div>
+        {cleaned.length ? (
+          <div className="space-y-3">
+            {cleaned.map((p, idx) => (
+              <p key={`${title}-p-${idx}`} className="text-zinc-300 text-sm leading-relaxed">
+                {p}
+              </p>
+            ))}
+          </div>
+        ) : (
+          <p className="text-zinc-500 text-sm leading-relaxed">Not available</p>
+        )}
+      </div>
+    );
+  };
+
+  const renderExpandedBullets = (title: string, items: string[]) => {
+    const cleaned = safeLines(items).slice(0, 6);
+    if (!cleaned.length) return null;
+    return (
+      <div>
+        <div className="text-[11px] uppercase tracking-wider text-zinc-500 mb-2">{title}</div>
+        <ul className="space-y-1">
+          {cleaned.map((s, idx) => (
+            <li key={`${title}-item-${idx}`} className="text-zinc-300 text-sm leading-relaxed">
+              • {s}
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  };
+
+  const resolvedEvidence = props.resolvedEvidence ?? {};
+
+  const normalizeEvidenceIds = (ids: unknown): string[] => {
+    if (!Array.isArray(ids)) return [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const v of ids) {
+      if (typeof v !== 'string') continue;
+      const s = v.trim();
+      if (!s) continue;
+      if (seen.has(s)) continue;
+      seen.add(s);
+      out.push(s);
+    }
+    return out.slice(0, 25);
+  };
+
+  const resolveEvidenceItems = (ids: string[]) => {
+    return ids.map((id) => {
+      const r = resolvedEvidence[id];
+      return {
+        id,
+        ok: Boolean(r?.ok),
+        document_title: typeof r?.document_title === 'string' ? r.document_title : null,
+        document_id: typeof r?.document_id === 'string' ? r.document_id : null,
+        page: typeof r?.page === 'number' && Number.isFinite(r.page) ? r.page : null,
+        snippet: typeof r?.snippet === 'string' ? r.snippet : null,
+      };
+    });
+  };
+
+  const renderEvidenceControls = (idsRaw: unknown) => {
+    const ids = normalizeEvidenceIds(idsRaw);
+    if (ids.length === 0) return null;
+
+    const items = resolveEvidenceItems(ids);
+    const sourcesLabelClass = props.darkMode
+      ? 'text-xs text-zinc-400 hover:text-zinc-200 underline underline-offset-2'
+      : 'text-xs text-zinc-600 hover:text-zinc-900 underline underline-offset-2';
+
+    const popoverClassName = props.darkMode
+      ? 'w-[420px] max-w-[80vw] bg-zinc-950 border-white/10 text-zinc-100'
+      : 'w-[420px] max-w-[80vw] bg-white border-gray-200 text-zinc-900';
+
+    return (
+      <div className="mt-1 flex flex-wrap items-center gap-3">
+        <Popover>
+          <PopoverTrigger asChild>
+            <button type="button" className={sourcesLabelClass}>
+              View sources
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className={popoverClassName}>
+            <div className="text-[11px] uppercase tracking-wider text-zinc-500">Sources</div>
+            <ul className="mt-2 space-y-2">
+              {items.map((it) => {
+                const title = it.document_title || (it.document_id ? `Document ${it.document_id}` : 'Document');
+                const page = typeof it.page === 'number' ? `p${Math.max(1, Math.floor(it.page) + 1)}` : 'p—';
+                const header = `${title} · ${page}`;
+                return (
+                  <li key={`ev-src-${it.id}`} className="text-xs">
+                    <div className={props.darkMode ? 'text-zinc-200' : 'text-zinc-800'}>{header}</div>
+                    <div className={props.darkMode ? 'mt-0.5 text-zinc-400 whitespace-pre-wrap' : 'mt-0.5 text-zinc-600 whitespace-pre-wrap'}>
+                      {it.snippet || 'Snippet not available'}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </PopoverContent>
+        </Popover>
+
+        <Popover>
+          <PopoverTrigger asChild>
+            <button type="button" className={sourcesLabelClass}>
+              View raw deterministic snippet
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className={popoverClassName}>
+            <div className="text-[11px] uppercase tracking-wider text-zinc-500">Raw deterministic snippet</div>
+            <div className={props.darkMode ? 'mt-2 text-xs text-zinc-300 whitespace-pre-wrap' : 'mt-2 text-xs text-zinc-700 whitespace-pre-wrap'}>
+              {items
+                .map((it) => {
+                  const title = it.document_title || (it.document_id ? `Document ${it.document_id}` : 'Document');
+                  const page = typeof it.page === 'number' ? `p${Math.max(1, Math.floor(it.page) + 1)}` : 'p—';
+                  const header = `${title} (${page})`;
+                  const body = it.snippet || 'Snippet not available';
+                  return `${header}\n${body}`;
+                })
+                .join('\n\n')}
+            </div>
+          </PopoverContent>
+        </Popover>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6 w-full">
       {/* Deal Summary Card */}
@@ -200,34 +422,60 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
 
           {/* One-liner */}
           <div className="mb-6">
-            <p className="text-zinc-100 text-lg leading-relaxed">
-              {props.dealOneLiner}
+            <p className={`${isMissingValueString(props.dealOneLiner) ? 'text-zinc-500' : 'text-zinc-100'} text-lg leading-relaxed`}>
+              {props.dealOneLiner || 'Not extracted'}
             </p>
           </div>
 
+          {/* KPI tiles */}
+          {kpiTiles.length > 0 ? (
+            <div className="mb-6 grid grid-cols-2 md:grid-cols-4 gap-3">
+              {kpiTiles.map((kpi, idx) => {
+                const isMissing = kpi.value.trim() === '—';
+                const title = isMissing ? (kpi.tooltipIfMissing ?? undefined) : undefined;
+                return (
+                  <div
+                    key={`kpi-${idx}`}
+                    title={title}
+                    className={`rounded-lg border p-3 ${props.darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}
+                  >
+                    <div className={`text-[11px] ${props.darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{kpi.label}</div>
+                    <div className={`mt-1 text-sm font-medium ${props.darkMode ? 'text-gray-100' : 'text-gray-900'}`}>{kpi.value}</div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+
           {/* Key Facts */}
           <div className="mb-6 space-y-3">
-            <div className="flex items-start gap-3">
+            <div className="flex items-start gap-3" data-testid="key-fact-product">
               <Package className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" strokeWidth={1.5} />
               <div>
                 <span className="text-zinc-400 text-sm">Product: </span>
-                <span className="text-zinc-200 text-sm">{props.product}</span>
+                {renderProvenanceChips(props.productProvenance)}
+                {renderMaybeMissingValue(props.product)}
+                {renderEvidenceControls(props.productEvidenceIds)}
               </div>
             </div>
             
-            <div className="flex items-start gap-3">
+            <div className="flex items-start gap-3" data-testid="key-fact-market">
               <Users className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" strokeWidth={1.5} />
               <div>
                 <span className="text-zinc-400 text-sm">Market: </span>
-                <span className="text-zinc-200 text-sm">{props.marketIcp}</span>
+                {renderProvenanceChips(props.marketIcpProvenance)}
+                {renderMaybeMissingValue(props.marketIcp)}
+                {renderEvidenceControls(props.marketIcpEvidenceIds)}
               </div>
             </div>
             
-            <div className="flex items-start gap-3">
+            <div className="flex items-start gap-3" data-testid="key-fact-business-model">
               <DollarSign className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" strokeWidth={1.5} />
               <div>
                 <span className="text-zinc-400 text-sm">Business Model: </span>
-                <span className="text-zinc-200 text-sm">{props.businessModel}</span>
+                {renderProvenanceChips(props.businessModelProvenance)}
+                {renderMaybeMissingValue(props.businessModel)}
+                {renderEvidenceControls(props.businessModelEvidenceIds)}
               </div>
             </div>
           </div>
@@ -235,17 +483,25 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
           {/* Raise / Terms */}
           <div className={`mb-5 pb-5 border-b ${dividerClassName}`}>
             <div className="flex items-center justify-between">
-              <span className="text-zinc-400 text-sm">Raise / Terms</span>
-              <span className="text-zinc-200 text-sm">{props.raiseTerms}</span>
+              <span className="text-zinc-400 text-sm" data-testid="key-fact-raise">
+                Raise / Terms
+                {renderProvenanceChips(props.raiseTermsProvenance)}
+              </span>
+              {renderMaybeMissingValue(props.raiseTerms)}
             </div>
+            {renderEvidenceControls(props.raiseTermsEvidenceIds)}
           </div>
 
           {/* Expandable Content */}
           {isExpanded && (
             <div className={`mb-5 pb-5 border-b ${dividerClassName}`}>
-              <p className="text-zinc-300 text-sm leading-relaxed">
-                {dealSummaryExpandedText || 'Not available'}
-              </p>
+              <div className="space-y-5">
+                {renderExpandedParagraphs('Summary', dealSummaryParagraphs)}
+                {renderExpandedBullets('Strengths', dealSummaryStrengths)}
+                {renderExpandedBullets('Risks', dealSummaryRisks)}
+                {renderExpandedBullets('Open Questions', dealSummaryOpenQuestions)}
+                {renderExpandedBullets('Traction Signals', dealSummaryTractionSignals)}
+              </div>
             </div>
           )}
 

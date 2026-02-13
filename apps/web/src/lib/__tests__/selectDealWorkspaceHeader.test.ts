@@ -117,17 +117,16 @@ describe('selectDealWorkspaceHeader', () => {
           derived_from: { product_pages: [12], gtm_pages: [15], distribution_pages: [23], traction_pages: [8], market_pages: [], other_pages: [] },
           supporting_nodes: [],
         },
-        business_model: { value: 'PROMOTED_SHOULD_NOT_WIN', label: 'Attributed', sources: [{ document_id: 'doc-x' }] },
+        business_model: { value: 'Usage-based SaaS', label: 'Attributed', sources: [{ document_id: 'doc-x', page_index: 3 }] },
       },
     };
 
     const selected = selectDealWorkspaceHeader(report, null);
 
     expect(selected.ready).toBe(true);
-    expect(selected.business_model_synthesized.value).toBe('DTC + wholesale apparel');
-    expect(selected.business_model_synthesized.label).toBe('Synthesized');
-    expect(selected.business_model.value).toBe('DTC + wholesale apparel');
-    expect(selected.business_model.label).toBe('Synthesized');
+    expect(selected.business_model_synthesized.value).toBeNull();
+    expect(selected.business_model.value).toBe('Usage-based SaaS');
+    expect(selected.business_model.label).toBe('Attributed');
   });
 
   test('when report is ready and business_model_summary is null: business_model falls back to promoted (no synthesized label)', () => {
@@ -135,7 +134,7 @@ describe('selectDealWorkspaceHeader', () => {
       ready: true,
       structured_summary: {
         business_model_summary: { value: null },
-        business_model: { value: 'Usage-based SaaS', label: 'Attributed', sources: [] },
+        business_model: { value: 'Usage-based SaaS', label: 'Attributed', sources: [{ document_id: 'doc-1', page_index: 1 }] },
       },
     };
 

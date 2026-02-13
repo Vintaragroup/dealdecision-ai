@@ -32,7 +32,10 @@ function getReportObjFromAny(envelopeOrReport: any): any | null {
   return envelopeOrReport;
 }
 
-export async function fetchPreferredDealOverlay(dealId: string): Promise<PreferredOverlayResult> {
+export async function fetchPreferredDealOverlay(
+  dealId: string,
+  opts?: { allowNarratedFallback?: boolean }
+): Promise<PreferredOverlayResult> {
   const id = String(dealId || '').trim();
   if (!id) return { overlay_source: 'none', overlay: null };
 
@@ -45,6 +48,10 @@ export async function fetchPreferredDealOverlay(dealId: string): Promise<Preferr
     // 2) If 200 + overview null => optional fallback to narrated
   } catch {
     // 3) If persisted fails (404/501/etc) => fallback to narrated
+  }
+
+  if (!opts?.allowNarratedFallback) {
+    return { overlay_source: 'none', overlay: null };
   }
 
   // 4) Narrated fallback (legacy)

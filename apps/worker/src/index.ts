@@ -8703,16 +8703,24 @@ registerWorker("analyze_deal", async (job: Job) => {
 			?? (result.dio as any)?.score_explanation?.totals?.overall_score
 			?? null;
 
-		await updateJob(
-			job,
-			"succeeded",
-			`Analysis complete (version=${result.storage_result.version}${result.storage_result.is_duplicate ? ", refreshed" : ""})`,
-			100
+		// Governed overview persistence is part of the terminal-success contract for analyze_deal.
+		// If it fails, we still complete the job but downgrade to succeeded_with_warnings.
+		const overviewPersistStartedAt = Date.now();
+		console.log(
+			JSON.stringify({
+				event: "OVERVIEW_PERSIST_START",
+				deal_id: dealId,
+				job_id: job.id ? String(job.id) : null,
+				dio_id: result.storage_result.dio_id ?? null,
+				dio_version: result.storage_result.version ?? null,
+				is_duplicate: Boolean(result.storage_result.is_duplicate),
+				ts: new Date().toISOString(),
+			})
 		);
 
-		// PR2B: governed LLM overlay artifact (evidence-bound, non-authoritative, fail-open).
+		let overview: Awaited<ReturnType<typeof generateAndPersistGovernedLlmOverviewBestEffort>> | null = null;
 		try {
-			await generateAndPersistGovernedLlmOverviewBestEffort({
+			overview = await generateAndPersistGovernedLlmOverviewBestEffort({
 				pool: getPool(),
 				dealId,
 				runId: job.id ? String(job.id) : null,
@@ -8727,9 +8735,57 @@ registerWorker("analyze_deal", async (job: Job) => {
 				phase1_deal_summary_v2,
 				phase1_documents: phase1Documents.map((d) => ({ document_id: d.document_id, type: d.type ?? null })),
 			});
-		} catch {
-			// Never block deterministic pipeline completion.
+		} catch (err) {
+			overview = { ok: false, inserted: false, input_hash: null, validation_failed: false };
+			console.warn(
+				JSON.stringify({
+					event: "OVERVIEW_PERSIST_FAIL",
+					deal_id: dealId,
+					job_id: job.id ? String(job.id) : null,
+					reason: err instanceof Error ? err.message : String(err),
+					duration_ms: Date.now() - overviewPersistStartedAt,
+					ts: new Date().toISOString(),
+				})
+			);
 		}
+
+		const overviewOk = Boolean(overview?.ok) && typeof overview?.input_hash === "string" && overview.input_hash.trim().length > 0;
+		if (overviewOk) {
+			console.log(
+				JSON.stringify({
+					event: "OVERVIEW_PERSIST_OK",
+					deal_id: dealId,
+					job_id: job.id ? String(job.id) : null,
+					input_hash: overview?.input_hash ?? null,
+					inserted: Boolean(overview?.inserted),
+					validation_failed: Boolean(overview?.validation_failed),
+					duration_ms: Date.now() - overviewPersistStartedAt,
+					ts: new Date().toISOString(),
+				})
+			);
+		} else {
+			console.warn(
+				JSON.stringify({
+					event: "OVERVIEW_PERSIST_FAIL",
+					deal_id: dealId,
+					job_id: job.id ? String(job.id) : null,
+					reason: overview?.ok === false ? "overlay_generation_failed" : "overlay_not_persisted",
+					input_hash: overview?.input_hash ?? null,
+					duration_ms: Date.now() - overviewPersistStartedAt,
+					ts: new Date().toISOString(),
+				})
+			);
+		}
+
+		const terminalStatus: JobStatus = overviewOk ? "succeeded" : "succeeded_with_warnings";
+		const terminalSuffix = result.storage_result.is_duplicate ? ", refreshed" : "";
+		const warningSuffix = overviewOk ? "" : "; governed overview pending/failed";
+		await updateJob(
+			job,
+			terminalStatus,
+			`Analysis complete (version=${result.storage_result.version}${terminalSuffix})${warningSuffix}`,
+			100
+		);
 
 		if (requirePageUnderstanding) {
 			try {

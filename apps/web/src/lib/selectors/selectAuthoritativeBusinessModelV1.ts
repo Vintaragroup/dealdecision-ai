@@ -24,6 +24,20 @@ const clamp01 = (v: unknown): number | null => {
   return Math.max(0, Math.min(1, v));
 };
 
+function hasEvidenceSources(sources: unknown): boolean {
+  if (!Array.isArray(sources) || sources.length === 0) return false;
+  return sources.some((s) => {
+    if (!s || typeof s !== 'object') return false;
+    const docId = typeof (s as any).document_id === 'string'
+      ? (s as any).document_id
+      : typeof (s as any).source_document_id === 'string'
+        ? (s as any).source_document_id
+        : '';
+    const page = (s as any).page_index;
+    return Boolean(String(docId ?? '').trim()) && typeof page === 'number' && Number.isFinite(page);
+  });
+}
+
 function reportLooksReady(report: unknown): boolean {
   if (!report || typeof report !== 'object') return false;
   const r: any = report as any;
@@ -82,19 +96,8 @@ export function selectAuthoritativeBusinessModelV1(params: {
 
   if (reportLooksReady(report)) {
     const structured = report?.structured_summary as any;
-    const synthesized = asNonEmptyString(structured?.business_model_summary?.value);
-    if (synthesized) {
-      return {
-        value: synthesized,
-        label: 'Synthesized',
-        confidence: clamp01(structured?.business_model_summary?.confidence) ?? null,
-        is_arbitrated: false,
-        source: 'report.business_model_summary',
-      };
-    }
-
     const promoted = asNonEmptyString(structured?.business_model?.value);
-    if (promoted) {
+    if (promoted && hasEvidenceSources(structured?.business_model?.sources)) {
       const label = asNonEmptyString(structured?.business_model?.label);
       return {
         value: promoted,
@@ -102,6 +105,18 @@ export function selectAuthoritativeBusinessModelV1(params: {
         confidence: clamp01(structured?.business_model?.confidence) ?? null,
         is_arbitrated: false,
         source: 'report.business_model',
+      };
+    }
+
+    // Only use synthesized business model summary if it becomes evidence-backed (e.g. sources added).
+    const synthesized = asNonEmptyString(structured?.business_model_summary?.value);
+    if (synthesized && hasEvidenceSources(structured?.business_model_summary?.sources)) {
+      return {
+        value: synthesized,
+        label: 'Synthesized',
+        confidence: clamp01(structured?.business_model_summary?.confidence) ?? null,
+        is_arbitrated: false,
+        source: 'report.business_model_summary',
       };
     }
   }

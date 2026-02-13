@@ -44,8 +44,8 @@ test('Report shape normalization ensures kpis.revenue.selection_reason (latest +
   const mockPool = {
     query: async (sql: string, params: unknown[] = []) => {
       // Deal existence check
-      if (sql.includes('SELECT id FROM deals') && sql.includes('deleted_at IS NULL')) {
-        return { rows: [{ id: String(params[0] ?? dealId) }] };
+      if (sql.includes('FROM deals') && sql.includes('WHERE id = $1') && sql.includes('deleted_at IS NULL')) {
+        return { rows: [{ id: String(params[0] ?? dealId), llm_phase_mode: 'exploratory' }] };
       }
 
       // Latest DIO lookup

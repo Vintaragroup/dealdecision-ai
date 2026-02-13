@@ -15,9 +15,9 @@ test("GET /api/v1/deals/:deal_id/report includes structured_summary.kpis (compat
 
   const mockPool = {
     query: async (sql: string, params: unknown[] = []) => {
-      // Deal existence check
-      if (sql.includes("SELECT id FROM deals") && sql.includes("deleted_at IS NULL")) {
-        return { rows: [{ id: String(params[0] ?? dealId) }] };
+      // Deal existence check (match regardless of selected columns)
+      if (sql.includes("FROM deals") && sql.includes("WHERE id = $1") && sql.includes("deleted_at IS NULL")) {
+        return { rows: [{ id: String(params[0] ?? dealId), llm_phase_mode: "exploratory" }] };
       }
 
       // Latest DIO lookup

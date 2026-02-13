@@ -57,8 +57,8 @@ test("GET /api/v1/deals/:deal_id/report?narrate=1 when provider mocked records l
 
   const mockPool = {
     query: async (sql: string, params: unknown[] = []) => {
-      if (sql.includes("SELECT id FROM deals") && sql.includes("deleted_at IS NULL")) {
-        return { rows: [{ id: String(params[0] ?? dealId) }] };
+      if (sql.includes("FROM deals") && sql.includes("WHERE id = $1") && sql.includes("deleted_at IS NULL")) {
+        return { rows: [{ id: String(params[0] ?? dealId), llm_phase_mode: "exploratory" }] };
       }
       if (sql.includes("FROM deal_intelligence_objects") && sql.includes("WHERE deal_id = $1")) {
         return {

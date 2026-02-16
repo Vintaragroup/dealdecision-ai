@@ -128,3 +128,5 @@ apps/api/test/fixtures/decks/**
 !apps/api/test/fixtures/regressions/VERIFICATION_REPORT.md
 # local debug reports
 DEBUG_FACT_EVIDENCE_TRACE_QREDIBLE*.md
+scripts/overview_runtime_vs_truth_table_diff.md
+verification_e2e_cinco_analysis_*.md

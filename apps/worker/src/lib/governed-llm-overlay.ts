@@ -909,8 +909,13 @@ async function upsertDisplayFactEvidenceBestEffort(pool: Pool, input: {
     const ok = await hasTable(pool, "evidence");
     if (!ok) return null;
 
-    const hasId = await hasColumn(pool, "evidence", "id");
-    if (!hasId) return null;
+    const [hasId, hasEvidenceId] = await Promise.all([
+      hasColumn(pool, "evidence", "id"),
+      hasColumn(pool, "evidence", "evidence_id"),
+    ]);
+    // Compatibility: prefer evidence_id (canonical migrations), but accept id for older schemas.
+    const pkCol = hasEvidenceId ? "evidence_id" : hasId ? "id" : null;
+    if (!pkCol) return null;
 
     const [hasDealId, hasDocumentId, hasSource, hasKind, hasText, hasExcerpt, hasPage, hasPageNumber, hasConfidence] = await Promise.all([
       hasColumn(pool, "evidence", "deal_id"),
@@ -930,8 +935,17 @@ async function upsertDisplayFactEvidenceBestEffort(pool: Pool, input: {
       `display_fact_v1|${input.dealId}|${input.field}|${input.documentId}|${String(input.pageIndex)}`
     );
 
-    const cols: string[] = ["id", "deal_id"];
+    const cols: string[] = [pkCol, "deal_id"];
     const values: unknown[] = [evidenceId, input.dealId];
+
+    // If both columns exist, populate both with the same deterministic identifier.
+    if (pkCol === "evidence_id" && hasId) {
+      cols.push("id");
+      values.push(evidenceId);
+    } else if (pkCol === "id" && hasEvidenceId) {
+      cols.push("evidence_id");
+      values.push(evidenceId);
+    }
 
     if (hasDocumentId) {
       cols.push("document_id");
@@ -962,17 +976,22 @@ async function upsertDisplayFactEvidenceBestEffort(pool: Pool, input: {
 
     const placeholders = cols.map((_, idx) => `$${idx + 1}`).join(", ");
     const updateAssignments = cols
-      .filter((c) => c !== "id")
+      .filter((c) => c !== pkCol)
       .map((c) => `${c} = EXCLUDED.${c}`)
       .join(", ");
 
-    await pool.query(
+    const { rows } = await pool.query<{ id?: unknown; evidence_id?: unknown }>(
       `INSERT INTO evidence (${cols.join(", ")})
        VALUES (${placeholders})
-       ON CONFLICT (id) DO UPDATE SET ${updateAssignments}`,
+       ON CONFLICT (${pkCol}) DO UPDATE SET ${updateAssignments}
+       RETURNING ${pkCol} AS id, ${pkCol} AS evidence_id`,
       values
     );
 
+    const returned = (rows as any)?.[0] ?? null;
+    const picked = (returned as any)?.evidence_id ?? (returned as any)?.id;
+    if (typeof picked === "string" && picked.trim()) return picked.trim();
+    // Fall back to the deterministic id we attempted to insert.
     return evidenceId;
   } catch {
     return null;

@@ -703,9 +703,12 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(screen.getAllByText(/doc-aaaa… · p1 · Overview/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/We build X for Y/i).length).toBeGreaterThan(0);
 
-    // Deep tier appears only after expanding.
+    // The expanded area shows the four list sections.
     await userEvent.click(screen.getByRole('button', { name: /show more/i }));
-    expect(screen.getByText(/CANON DEEP PARA 1/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/^Strengths$/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/^Concerns$/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/^Open Questions$/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/^Traction$/i).length).toBeGreaterThan(0);
   });
 
   test('Deal Summary shows Legacy label and hides citations toggle when canonical summary is not ready', async () => {

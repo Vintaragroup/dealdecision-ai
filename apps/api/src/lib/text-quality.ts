@@ -1,4 +1,4 @@
-export type TextQuality = 'good' | 'ok' | 'garbage' | 'empty';
+export type TextQuality = 'good' | 'ok' | 'weak_linguistic' | 'garbage' | 'empty';
 
 export type SuppressReason =
   | 'empty'
@@ -8,7 +8,9 @@ export type SuppressReason =
   | 'boilerplate_marker'
   | 'looks_like_footer'
   | 'looks_like_title_dump'
-  | 'not_sentence_like';
+  | 'not_sentence_like'
+  | 'not_coherent_sentence_like'
+  | 'no_coherent_clause_found';
 
 const normalizeWhitespace = (s: string): string => String(s).replace(/\s+/g, ' ').trim();
 

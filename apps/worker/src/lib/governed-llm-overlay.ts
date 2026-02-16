@@ -46,6 +46,50 @@ type DisplayFactsQualityV1 = {
   errors?: string[];
 };
 
+type GovernedUiCopyV1 = {
+  schema_version: "governed_ui_copy_v1";
+  // Back-compat: hero_summary was the original top-line string. New contract prefers deal_summary_mid.
+  deal_summary_mid?: string | null;
+  hero_summary: string | null;
+  product_solution: string | null;
+  market_icp: string | null;
+  business_model: string | null;
+  raise_terms: string | null;
+  traction?: string[];
+  strengths?: string[];
+  concerns?: string[];
+  open_questions?: string[];
+
+  evidence_map: {
+    deal_summary_mid: Array<{ source_document_id: string; page_index: number; node_id?: string; snippet?: string }>;
+    product_solution: Array<{ source_document_id: string; page_index: number; node_id?: string; snippet?: string }>;
+    market_icp: Array<{ source_document_id: string; page_index: number; node_id?: string; snippet?: string }>;
+    business_model: Array<{ source_document_id: string; page_index: number; node_id?: string; snippet?: string }>;
+    raise_terms: Array<{ source_document_id: string; page_index: number; node_id?: string; snippet?: string }>;
+    traction: Array<{ source_document_id: string; page_index: number; node_id?: string; snippet?: string }>;
+    strengths: Array<{ source_document_id: string; page_index: number; node_id?: string; snippet?: string }>;
+    concerns: Array<{ source_document_id: string; page_index: number; node_id?: string; snippet?: string }>;
+    open_questions: Array<{ source_document_id: string; page_index: number; node_id?: string; snippet?: string }>;
+  };
+  // Evidence ids are authoritative (not model-provided). Keyed to the same fields.
+  evidence_ids: {
+    product_solution: string[];
+    market_icp: string[];
+    business_model: string[];
+    raise_terms: string[];
+    hero_summary: string[];
+  };
+};
+
+type GovernedUiCopyQualityV1 = {
+  generated_at: string;
+  model: string | null;
+  ok: boolean;
+  guard_degraded: boolean;
+  skipped_reason?: string;
+  errors?: string[];
+};
+
 function safeJsonParseObject(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "string") return null;
   try {
@@ -945,6 +989,7 @@ function pickSourcesForField(
   field: "product_solution" | "market_icp" | "business_model" | "raise_terms"
 ): Array<{ document_id: string; page_range?: [number, number]; note?: string }> {
   const usable = sources.filter((s) => !isFallbackSource(s.note));
+  if (usable.length === 0) return [];
   const rx =
     field === "raise_terms"
       ? /(raise|raising|funding|ask|raise_terms)/i
@@ -957,11 +1002,12 @@ function pickSourcesForField(
   const direct = usable.filter((s) => rx.test(String(s.note ?? "")));
   if (direct.length > 0) return direct.slice(0, 3);
 
-  // Fallback: best-effort ordering assumption from builder (product, market, raise, business model).
-  if (field === "product_solution") return usable.slice(0, 1);
-  if (field === "market_icp") return usable.slice(1, 2);
-  if (field === "raise_terms") return usable.slice(2, 3);
-  return usable.slice(3, 4);
+  // Fallback: best-effort ordering assumption from builder (product, market, raise, business model),
+  // but clamp to the available range so we don't return empty when only 1–2 sources exist.
+  const preferredIdx =
+    field === "product_solution" ? 0 : field === "market_icp" ? 1 : field === "raise_terms" ? 2 : 3;
+  const idx = Math.min(Math.max(0, preferredIdx), Math.max(0, usable.length - 1));
+  return usable.slice(idx, idx + 1);
 }
 
 async function generateDisplayFactsV1BestEffort(args: {
@@ -1174,6 +1220,336 @@ async function generateDisplayFactsV1BestEffort(args: {
   };
 }
 
+function extractNumericTokens(s: string): string[] {
+  if (!s) return [];
+  const out = new Set<string>();
+  const matches = s.match(/\d+(?:\.\d+)?/g) ?? [];
+  for (const m of matches) out.add(m);
+  return Array.from(out);
+}
+
+function violatesNumericCitationGuard(args: { output: string; input: string }): boolean {
+  const outNums = extractNumericTokens(args.output);
+  if (outNums.length === 0) return false;
+  const input = args.input ?? "";
+  for (const n of outNums) {
+    if (!input.includes(n)) return true;
+  }
+  return false;
+}
+
+function clampMaybeText(v: unknown, maxLen: number): string | null {
+  const s = clampText(v, maxLen);
+  return s ? s : null;
+}
+
+async function generateGovernedUiCopyV1BestEffort(args: {
+  dealId: string;
+  nowIso: string;
+  llm_phase_mode: LLMPhaseMode;
+  display_facts_v1: DisplayFactsV1 | null;
+  display_facts_v1_input_v1: any | null;
+  phase1_deal_summary_v2?: unknown;
+  phase1_deal_overview_v2?: unknown;
+}): Promise<{ governed_ui_copy_v1: GovernedUiCopyV1 | null; quality: GovernedUiCopyQualityV1; deterministic_input: unknown }> {
+  const qualityBase: GovernedUiCopyQualityV1 = {
+    generated_at: args.nowIso,
+    model: null,
+    ok: false,
+    guard_degraded: false,
+  };
+
+  const df = args.display_facts_v1;
+  if (!df) {
+    return {
+      governed_ui_copy_v1: null,
+      quality: { ...qualityBase, ok: true, skipped_reason: "missing_display_facts_v1" },
+      deterministic_input: { schema_version: "governed_ui_copy_v1_input_v1", skipped: true },
+    };
+  }
+
+  const basis = {
+    product_solution: { text: df.product_solution?.text ?? null, evidence_ids: Array.isArray(df.product_solution?.evidence_ids) ? df.product_solution.evidence_ids : [] },
+    market_icp: { text: df.market_icp?.text ?? null, evidence_ids: Array.isArray(df.market_icp?.evidence_ids) ? df.market_icp.evidence_ids : [] },
+    business_model: { text: df.business_model?.text ?? null, evidence_ids: Array.isArray(df.business_model?.evidence_ids) ? df.business_model.evidence_ids : [] },
+    raise_terms: { text: df.raise_terms?.text ?? null, evidence_ids: Array.isArray(df.raise_terms?.evidence_ids) ? df.raise_terms.evidence_ids : [] },
+  };
+
+  const collapseWs = (s: string): string => String(s).replace(/\s+/g, " ").trim();
+
+  const coerceEvidenceRefs = (arr: any): Array<{ source_document_id: string; page_index: number; snippet?: string }> => {
+    const xs = Array.isArray(arr) ? arr : [];
+    const out: Array<{ source_document_id: string; page_index: number; snippet?: string }> = [];
+    for (const x of xs) {
+      const source_document_id = typeof x?.document_id === "string" ? x.document_id.trim() : "";
+      const page_index = typeof x?.page_index === "number" && Number.isFinite(x.page_index) ? Math.max(0, Math.floor(x.page_index)) : null;
+      if (!source_document_id || page_index == null) continue;
+      const snippetHead = typeof x?.snippet_head === "string" ? collapseWs(x.snippet_head) : "";
+      out.push({
+        source_document_id,
+        page_index,
+        ...(snippetHead ? { snippet: snippetHead.slice(0, 420) } : {}),
+      });
+      if (out.length >= 6) break;
+    }
+    return out;
+  };
+
+  const dfInput = args.display_facts_v1_input_v1 && typeof args.display_facts_v1_input_v1 === "object" ? args.display_facts_v1_input_v1 : null;
+  const evidence_map_fields = {
+    product_solution: coerceEvidenceRefs(dfInput?.product_solution),
+    market_icp: coerceEvidenceRefs(dfInput?.market_icp),
+    business_model: coerceEvidenceRefs(dfInput?.business_model),
+    raise_terms: coerceEvidenceRefs(dfInput?.raise_terms),
+  };
+  const deal_summary_mid_refs = Array.from(
+    new Map(
+      [...evidence_map_fields.product_solution, ...evidence_map_fields.market_icp, ...evidence_map_fields.business_model, ...evidence_map_fields.raise_terms]
+        .map((r) => [`${r.source_document_id}|${r.page_index}|${r.snippet ?? ""}`, r] as const)
+    ).values()
+  ).slice(0, 8);
+
+  const coerceStringArray = (v: unknown, max: number): string[] => {
+    if (!Array.isArray(v)) return [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const x of v) {
+      if (typeof x !== "string") continue;
+      const s = collapseWs(x);
+      if (!s) continue;
+      if (seen.has(s)) continue;
+      seen.add(s);
+      out.push(s);
+      if (out.length >= max) break;
+    }
+    return out;
+  };
+
+  const phase1Summary = args.phase1_deal_summary_v2 && typeof args.phase1_deal_summary_v2 === "object" ? (args.phase1_deal_summary_v2 as any) : null;
+  const tractionFromOverview = args.phase1_deal_overview_v2 && typeof args.phase1_deal_overview_v2 === "object" ? (args.phase1_deal_overview_v2 as any).traction_signals : null;
+  const strengths = coerceStringArray(phase1Summary?.strengths, 10);
+  const concerns = coerceStringArray(phase1Summary?.risks, 10);
+  const open_questions = coerceStringArray(phase1Summary?.open_questions, 10);
+  const traction = coerceStringArray(tractionFromOverview, 10);
+
+  const deterministic_input = {
+    schema_version: "governed_ui_copy_v1_input_v1",
+    deal_id: args.dealId,
+    llm_phase_mode: args.llm_phase_mode,
+    basis,
+    evidence_map_basis_v1: {
+      deal_summary_mid: deal_summary_mid_refs,
+      ...evidence_map_fields,
+    },
+    mirrored_lists_v1: {
+      traction,
+      strengths,
+      concerns,
+      open_questions,
+    },
+  };
+
+  // If there is no evidence anywhere, fail closed (no governed copy).
+  const anyEvidence =
+    basis.product_solution.evidence_ids.length > 0 ||
+    basis.market_icp.evidence_ids.length > 0 ||
+    basis.business_model.evidence_ids.length > 0 ||
+    basis.raise_terms.evidence_ids.length > 0;
+
+  if (!anyEvidence) {
+    return {
+      governed_ui_copy_v1: {
+        schema_version: "governed_ui_copy_v1",
+        deal_summary_mid: null,
+        hero_summary: null,
+        product_solution: null,
+        market_icp: null,
+        business_model: null,
+        raise_terms: null,
+        traction: [],
+        strengths: [],
+        concerns: [],
+        open_questions: [],
+        evidence_map: {
+          deal_summary_mid: [],
+          product_solution: [],
+          market_icp: [],
+          business_model: [],
+          raise_terms: [],
+          traction: [],
+          strengths: [],
+          concerns: [],
+          open_questions: [],
+        },
+        evidence_ids: {
+          product_solution: [],
+          market_icp: [],
+          business_model: [],
+          raise_terms: [],
+          hero_summary: [],
+        },
+      },
+      quality: { ...qualityBase, ok: true, skipped_reason: "no_evidence" },
+      deterministic_input,
+    };
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return {
+      governed_ui_copy_v1: null,
+      quality: { ...qualityBase, skipped_reason: "missing_openai_api_key" },
+      deterministic_input,
+    };
+  }
+
+  const providerConfig: ProviderConfig = {
+    type: "openai",
+    enabled: true,
+    priority: 1,
+    apiKey,
+    timeout: 30_000,
+    retries: 2,
+  };
+  const provider = new OpenAIGPT4oProvider(providerConfig);
+
+  const system =
+    "You are a deal analyst writing UI copy. Rewrite ONLY the provided basis texts into concise, coherent investor-readable copy. " +
+    "DO NOT invent facts, numbers, dates, metrics, customers, or claims. " +
+    "Keep any numbers EXACTLY as shown in the basis texts. If a basis field has text=null, return null for that field. " +
+    "Output MUST be valid JSON only (no markdown). " +
+    "Return JSON with EXACT keys: hero_summary, product_solution, market_icp, business_model, raise_terms. " +
+    "Each value MUST be a string or null. " +
+    "hero_summary should be 1-2 sentences max, and should not add details beyond the basis. " +
+    "Keep each field under 320 characters.";
+
+  const payload = {
+    deal_id: args.dealId,
+    llm_phase_mode: args.llm_phase_mode,
+    basis,
+  };
+
+  const response = await provider.complete({
+    task: "synthesis",
+    model: "gpt-4o-mini" as any,
+    temperature: 0,
+    max_tokens: 600,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: JSON.stringify(payload) },
+    ],
+    metadata: { dealId: args.dealId, kind: "governed_ui_copy_v1" },
+  });
+
+  const parsed = safeJsonParseObject(response?.content);
+  if (!parsed) {
+    return {
+      governed_ui_copy_v1: null,
+      quality: { ...qualityBase, model: "gpt-4o-mini", ok: false, guard_degraded: false, errors: ["model_output_not_json"] },
+      deterministic_input,
+    };
+  }
+
+  const errors: string[] = [];
+  const coerceText = (key: "hero_summary" | "product_solution" | "market_icp" | "business_model" | "raise_terms"): string | null => {
+    const raw = (parsed as any)[key];
+    if (raw === null) return null;
+    const clamped = clampMaybeText(raw, 320);
+    if (!clamped) {
+      errors.push(`${key}_empty_or_invalid`);
+      return null;
+    }
+    return clamped;
+  };
+
+  const hero_summary = coerceText("hero_summary");
+  const product_solution = coerceText("product_solution");
+  const market_icp = coerceText("market_icp");
+  const business_model = coerceText("business_model");
+  const raise_terms = coerceText("raise_terms");
+
+  // Fail closed: if basis text is null, output must be null.
+  const mustBeNull: Array<[keyof typeof basis, string | null]> = [
+    ["product_solution", product_solution],
+    ["market_icp", market_icp],
+    ["business_model", business_model],
+    ["raise_terms", raise_terms],
+  ];
+  for (const [k, v] of mustBeNull) {
+    if (!basis[k].text && v) errors.push(`${String(k)}_present_without_basis`);
+  }
+
+  const allBasisText = [basis.product_solution.text, basis.market_icp.text, basis.business_model.text, basis.raise_terms.text]
+    .filter((t): t is string => typeof t === "string" && t.trim().length > 0)
+    .join(" \n");
+
+  const numericChecks: Array<[string, string | null]> = [
+    ["hero_summary", hero_summary],
+    ["product_solution", product_solution],
+    ["market_icp", market_icp],
+    ["business_model", business_model],
+    ["raise_terms", raise_terms],
+  ];
+  for (const [k, v] of numericChecks) {
+    if (!v) continue;
+    if (violatesNumericCitationGuard({ output: v, input: allBasisText })) errors.push(`${k}_numeric_not_in_basis`);
+  }
+
+  if (errors.length > 0) {
+    return {
+      governed_ui_copy_v1: null,
+      quality: { ...qualityBase, model: "gpt-4o-mini", ok: false, guard_degraded: true, errors },
+      deterministic_input,
+    };
+  }
+
+  // Evidence ids are authoritative; do not accept any evidence ids from model.
+  const heroEvidence = Array.from(
+    new Set([
+      ...basis.product_solution.evidence_ids,
+      ...basis.market_icp.evidence_ids,
+      ...basis.business_model.evidence_ids,
+      ...basis.raise_terms.evidence_ids,
+    ])
+  ).slice(0, 10);
+
+  return {
+    governed_ui_copy_v1: {
+      schema_version: "governed_ui_copy_v1",
+      deal_summary_mid: hero_summary,
+      hero_summary,
+      product_solution,
+      market_icp,
+      business_model,
+      raise_terms,
+      traction,
+      strengths,
+      concerns,
+      open_questions,
+      evidence_map: {
+        deal_summary_mid: deal_summary_mid_refs,
+        product_solution: evidence_map_fields.product_solution,
+        market_icp: evidence_map_fields.market_icp,
+        business_model: evidence_map_fields.business_model,
+        raise_terms: evidence_map_fields.raise_terms,
+        traction: [],
+        strengths: [],
+        concerns: [],
+        open_questions: [],
+      },
+      evidence_ids: {
+        product_solution: basis.product_solution.evidence_ids,
+        market_icp: basis.market_icp.evidence_ids,
+        business_model: basis.business_model.evidence_ids,
+        raise_terms: basis.raise_terms.evidence_ids,
+        hero_summary: heroEvidence,
+      },
+    },
+    quality: { ...qualityBase, model: "gpt-4o-mini", ok: true, guard_degraded: false },
+    deterministic_input,
+  };
+}
+
 export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
   pool: Pool;
   dealId: string;
@@ -1290,6 +1666,39 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
         display_facts_v1_input = null;
       }
 
+      // governed_ui_copy_v1: rewrite-only UI copy derived from display_facts_v1.
+      let governed_ui_copy_v1: GovernedUiCopyV1 | null = null;
+      let governed_ui_copy_v1_quality: GovernedUiCopyQualityV1 | null = null;
+      let governed_ui_copy_v1_input: unknown = null;
+      try {
+        const out = await generateGovernedUiCopyV1BestEffort({
+          dealId: args.dealId,
+          nowIso,
+          llm_phase_mode,
+          display_facts_v1,
+          display_facts_v1_input_v1: display_facts_v1_input && typeof display_facts_v1_input === "object" ? display_facts_v1_input : null,
+          phase1_deal_summary_v2: args.phase1_deal_summary_v2 ?? null,
+          phase1_deal_overview_v2: args.phase1_deal_overview_v2 ?? null,
+        });
+        governed_ui_copy_v1 = out.governed_ui_copy_v1;
+        governed_ui_copy_v1_quality = out.quality;
+        governed_ui_copy_v1_input = out.deterministic_input;
+        if (out.quality.guard_degraded) guard_degraded_count = Math.max(guard_degraded_count, 1);
+        if (out.quality.errors?.includes("model_output_not_json")) model_output_not_json_count = Math.max(model_output_not_json_count, 1);
+      } catch (err) {
+        classifyAttemptError(err);
+        governed_ui_copy_v1 = null;
+        governed_ui_copy_v1_quality = {
+          generated_at: nowIso,
+          model: null,
+          ok: false,
+          guard_degraded: false,
+          skipped_reason: "exception",
+          errors: [err instanceof Error ? err.message : String(err ?? "unknown_error")],
+        };
+        governed_ui_copy_v1_input = null;
+      }
+
       const deterministicInputs = {
         schema_version: SCHEMA_VERSION,
         deal_id: args.dealId,
@@ -1309,6 +1718,7 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
           confidence: (c as any)?.confidence ?? null,
         })),
         display_facts_v1_input_v1: stripNonDeterministicFieldsDeep(display_facts_v1_input),
+        governed_ui_copy_v1_input_v1: stripNonDeterministicFieldsDeep(governed_ui_copy_v1_input),
       };
 
       input_hash = computeGovernedLlmOverviewInputHash(deterministicInputs);
@@ -1358,6 +1768,8 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
           deal_summary_v2: stripNonDeterministicFieldsDeep(args.phase1_deal_summary_v2 ?? null),
           business_archetype_v1: stripNonDeterministicFieldsDeep(args.phase1_business_archetype_v1 ?? null),
           update_report_v1: stripNonDeterministicFieldsDeep(args.phase1_update_report_v1 ?? null),
+          governed_ui_copy_v1: governed_ui_copy_v1 ? stripNonDeterministicFieldsDeep(governed_ui_copy_v1) : null,
+          governed_ui_copy_v1_quality: governed_ui_copy_v1_quality ? stripNonDeterministicFieldsDeep(governed_ui_copy_v1_quality) : null,
         },
         display_facts_v1: display_facts_v1 ? stripNonDeterministicFieldsDeep(display_facts_v1) : null,
         display_facts_v1_quality: display_facts_v1_quality ? stripNonDeterministicFieldsDeep(display_facts_v1_quality) : null,

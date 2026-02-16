@@ -84,6 +84,36 @@ describe('DealWorkspace governed overlay fetch', () => {
         summary_text: 'Persisted overlay summary',
         overview_json: {
           phase1: {
+            governed_ui_copy_v1: {
+              schema_version: 'governed_ui_copy_v1',
+              hero_summary: 'Overlay one-liner',
+              deal_summary_mid: 'Overlay one-liner',
+              product_solution: 'Overlay product (fallback)',
+              market_icp: 'Overlay market',
+              business_model: 'Overlay BM',
+              raise_terms: 'Overlay raise',
+              strengths: ['Overlay strength'],
+              concerns: ['Overlay risk'],
+              open_questions: ['Overlay open question'],
+              traction: ['Overlay traction'],
+              evidence_map: {
+                deal_summary_mid: [
+                  { source_document_id: 'doc-1', page_index: 0, snippet: 'Summary evidence snippet' },
+                ],
+                product_solution: [
+                  { source_document_id: 'doc-1', page_index: 0, snippet: 'Product evidence snippet' },
+                ],
+                market_icp: [
+                  { source_document_id: 'doc-1', page_index: 1, snippet: 'Market evidence snippet' },
+                ],
+                business_model: [],
+                raise_terms: [],
+                traction: [],
+                strengths: [],
+                concerns: [],
+                open_questions: [],
+              },
+            },
             deal_summary_v2: {
               summary: {
                 one_liner: 'Overlay one-liner',
@@ -139,29 +169,47 @@ describe('DealWorkspace governed overlay fetch', () => {
     expect(screen.getAllByText(/Overlay product \(fallback\)/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Needs review/i).length).toBeGreaterThan(0);
 
-    // Deterministic evidence-backed facts win over overlay facts.
-    expect(screen.getAllByText(/Usage-based SaaS/i).length).toBeGreaterThan(0);
-    expect(screen.queryByText(/Overlay BM/i)).not.toBeInTheDocument();
-    expect(screen.getAllByText(/\$2M Seed/i).length).toBeGreaterThan(0);
-    expect(screen.queryByText(/Overlay raise/i)).not.toBeInTheDocument();
+    // Governed UI copy wins when present (even if deterministic is available).
+    const bmFact = screen.getByTestId('key-fact-business-model');
+    expect(within(bmFact).getAllByText(/Overlay BM/i).length).toBeGreaterThan(0);
+    expect(within(bmFact).queryByText(/Usage-based SaaS/i)).not.toBeInTheDocument();
 
-    // Provenance chips: market from overlay, raise from deterministic, product suppressed.
+    const raiseLabel = screen.getByTestId('key-fact-raise');
+    const raiseContainer = raiseLabel.parentElement;
+    expect(raiseContainer).not.toBeNull();
+    expect(within(raiseContainer as HTMLElement).getAllByText(/Overlay raise/i).length).toBeGreaterThan(0);
+    expect(within(raiseContainer as HTMLElement).queryByText(/\$2M Seed/i)).not.toBeInTheDocument();
+
+    // Provenance chips: governed UI copy is primary.
     expect(screen.getAllByText(/Governed/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Authoritative \(deterministic\)/i).length).toBeGreaterThan(0);
+
+    // Field-level evidence toggle for governed product + market.
+    const productFact = screen.getByTestId('key-fact-product');
+    const productEvidenceToggle = within(productFact).getByTestId('evidence-toggle-product-solution');
+    await userEvent.click(productEvidenceToggle);
+    expect(screen.getAllByText(/Product evidence snippet/i).length).toBeGreaterThan(0);
+
+    const marketFact = screen.getByTestId('key-fact-market');
+    const marketEvidenceToggle = within(marketFact).getByTestId('evidence-toggle-market-icp');
+    await userEvent.click(marketEvidenceToggle);
+    expect(screen.getAllByText(/Market evidence snippet/i).length).toBeGreaterThan(0);
+
+    // Business model / raise have no explicit citations in this fixture.
+    expect(screen.queryByTestId('evidence-toggle-business-model')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('evidence-toggle-raise-terms')).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole('button', { name: /show more/i }));
-    expect(screen.getAllByText(/Summary/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Overlay paragraph 1/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Overlay paragraph 2/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Strengths/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Overlay strength/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Risks/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Concerns/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Overlay risk/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Open Questions/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Overlay open question/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Traction Signals/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Traction/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Overlay traction/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Overlay key risk/i).length).toBeGreaterThan(0);
+
+    // Missing citations for list fields should be explicit (evidence_map arrays are empty).
+    expect(screen.getAllByText(/No explicit citation/i).length).toBeGreaterThan(0);
 
     // Deterministic blocks are behind a drawer toggle.
     await waitFor(() => {
@@ -262,7 +310,128 @@ describe('DealWorkspace governed overlay fetch', () => {
     expect(within(marketFact).queryByText(/PIPE \| PIPE/i)).not.toBeInTheDocument();
   });
 
-  test('renders display_facts_v1 with evidence popovers when deterministic is missing', async () => {
+  test('post-analyze refresh polls until overlay signature changes (not just exists)', async () => {
+    const user = userEvent.setup();
+
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'dio-1', dioStatus: 'ready' } as any);
+
+    const overlayA = {
+      overview: {
+        schema_version: 'governed_llm_overview_v1',
+        deal_id: 'deal-1',
+        input_hash: 'a'.repeat(64),
+        created_at: '2024-01-01T00:00:00.000Z',
+        llm_phase_mode: 'governed',
+        summary_text: 'Overlay A summary',
+        overview_json: {
+          phase1: {
+            governed_ui_copy_v1: {
+              schema_version: 'governed_ui_copy_v1',
+              hero_summary: 'Overlay A one-liner',
+              deal_summary_mid: 'Overlay A one-liner',
+              product_solution: 'Overlay A product',
+              market_icp: 'Overlay A market',
+              business_model: 'Overlay A BM',
+              raise_terms: 'Overlay A raise',
+              strengths: ['Overlay A strength'],
+              concerns: ['Overlay A risk'],
+              open_questions: ['Overlay A question'],
+              traction: ['Overlay A traction'],
+              evidence_map: {
+                deal_summary_mid: [],
+                product_solution: [],
+                market_icp: [],
+                business_model: [],
+                raise_terms: [],
+                traction: [],
+                strengths: [],
+                concerns: [],
+                open_questions: [],
+              },
+            },
+            deal_summary_v2: {
+              summary: { one_liner: 'Overlay A one-liner', paragraphs: [] },
+              strengths: ['Overlay A strength'],
+              risks: ['Overlay A risk'],
+              open_questions: ['Overlay A question'],
+            },
+            deal_overview_v2: {
+              product_solution: 'Overlay A product',
+              market_icp: 'Overlay A market',
+              business_model: 'Overlay A BM',
+              raise: 'Overlay A raise',
+              traction_signals: ['Overlay A traction'],
+              key_risks_detected: [],
+              sources: [],
+            },
+          },
+        },
+        claims: [],
+        disclosures: [],
+      },
+    } as any;
+
+    const overlayB = {
+      overview: {
+        ...overlayA.overview,
+        input_hash: 'b'.repeat(64),
+        created_at: '2024-01-02T00:00:00.000Z',
+        summary_text: 'Overlay B summary',
+        overview_json: {
+          phase1: {
+            ...(overlayA.overview.overview_json as any).phase1,
+            governed_ui_copy_v1: {
+              ...((overlayA.overview.overview_json as any).phase1.governed_ui_copy_v1 ?? {}),
+              hero_summary: 'Overlay B one-liner',
+              deal_summary_mid: 'Overlay B one-liner',
+              product_solution: 'Overlay B product',
+            },
+            deal_overview_v2: {
+              ...((overlayA.overview.overview_json as any).phase1.deal_overview_v2 ?? {}),
+              product_solution: 'Overlay B product',
+            },
+          },
+        },
+      },
+    } as any;
+
+    vi.mocked(apiGetDealGovernedOverlayPersisted)
+      .mockResolvedValueOnce(overlayA)
+      // First post-analyze refresh: still the old signature.
+      .mockResolvedValueOnce(overlayA)
+      // Second post-analyze refresh: new signature.
+      .mockResolvedValueOnce(overlayB);
+
+    vi.mocked(apiGetJob as any).mockResolvedValue({
+      job_id: 'job-1',
+      type: 'analyze_deal',
+      status: 'succeeded',
+      message: 'Analysis complete',
+      updated_at: '2024-01-02T00:00:00.000Z',
+      created_at: '2024-01-02T00:00:00.000Z',
+      started_at: '2024-01-02T00:00:00.000Z',
+    } as any);
+
+    renderWorkspace();
+
+    // Initial overlay is A.
+    await waitFor(() => {
+      expect(screen.getAllByText(/Overlay A product/i).length).toBeGreaterThan(0);
+    });
+
+    await user.click(screen.getByRole('button', { name: /run analysis/i }));
+
+    // First refresh returns A again; we should still schedule another attempt.
+    await waitFor(() => {
+      expect(vi.mocked(apiGetDealGovernedOverlayPersisted).mock.calls.length).toBeGreaterThanOrEqual(3);
+    }, { timeout: 10000 });
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/Overlay B product/i).length).toBeGreaterThan(0);
+    }, { timeout: 10000 });
+  });
+
+  test('renders display_facts_v1 with evidence toggles when deterministic is missing', async () => {
     vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'dio-1', dioStatus: 'ready', phase1: {} } as any);
 
     // Deterministic report not ready => overview canonical facts collapse to "—" and are treated as missing.
@@ -334,12 +503,9 @@ describe('DealWorkspace governed overlay fetch', () => {
     // With deterministic missing, the governed overlay should be used.
     expect(screen.getAllByText(/Raw product/i).length).toBeGreaterThan(0);
 
-    // Evidence popover triggers should render for the governed fact.
-    expect(screen.getAllByRole('button', { name: /view sources/i }).length).toBeGreaterThan(0);
-    expect(screen.getAllByRole('button', { name: /view raw deterministic snippet/i }).length).toBeGreaterThan(0);
-
-    // Open sources popover and validate resolved snippet content renders.
-    await userEvent.click(screen.getAllByRole('button', { name: /view sources/i })[0]);
+    const productFact = screen.getByTestId('key-fact-product');
+    const toggle = within(productFact).getByTestId('evidence-toggle-product-solution');
+    await userEvent.click(toggle);
     expect(screen.getAllByText(/Pitch Deck/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/RAW SNIPPET: Product does X for Y\./i).length).toBeGreaterThan(0);
   });

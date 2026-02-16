@@ -353,6 +353,19 @@ async function main() {
   const overlayOneLiner = asNonEmptyString((overviewJson as any)?.phase1?.deal_summary_v2?.summary?.one_liner);
   assert(overlayOneLiner, `Expected overview.overview_json.phase1.deal_summary_v2.summary.one_liner to exist: ${ovRes.text}`);
 
+  const governedUiCopy = (overviewJson as any)?.phase1?.governed_ui_copy_v1;
+  assert(governedUiCopy && typeof governedUiCopy === "object", `Expected overview.overview_json.phase1.governed_ui_copy_v1 to be an object: ${ovRes.text}`);
+  assert(
+    asNonEmptyString((governedUiCopy as any).schema_version) === "governed_ui_copy_v1",
+    `Expected governed_ui_copy_v1.schema_version===governed_ui_copy_v1: ${ovRes.text}`
+  );
+  const governedHero = asNonEmptyString((governedUiCopy as any).hero_summary);
+  const governedProduct = asNonEmptyString((governedUiCopy as any).product_solution);
+  assert(
+    governedHero || governedProduct,
+    `Expected governed_ui_copy_v1.hero_summary or product_solution to be present (non-empty): ${ovRes.text}`
+  );
+
   const jobTerminalAt = parseIsoDate(jobTerminalAtIso, "job_terminal_at");
   const overviewCreatedAt = parseIsoDate(overview.created_at, "overview.created_at");
   const overviewSkewMs = Math.abs(overviewCreatedAt.getTime() - jobTerminalAt.getTime());
@@ -366,6 +379,7 @@ async function main() {
     llm_phase_mode: overview.llm_phase_mode,
     summary_len: overview.summary_text.length,
     overlay_one_liner_preview: overlayOneLiner.slice(0, 140),
+    governed_ui_copy_hero_preview: (governedHero ?? governedProduct ?? "").slice(0, 140),
     skew_ms_vs_job_terminal: overviewSkewMs,
   });
 
@@ -534,6 +548,7 @@ async function main() {
     `- summary_text length: ${overview.summary_text.length}\n\n` +
     `- overview_json persisted: true\n` +
     `- overview_json.phase1.deal_summary_v2.summary.one_liner (preview): ${overlayOneLiner.slice(0, 140)}\n\n` +
+    `- overview_json.phase1.governed_ui_copy_v1.hero_summary (preview): ${(governedHero ?? governedProduct ?? "").slice(0, 140)}\n\n` +
     `## Diagnostics (/analysis-diagnostics)\n\n` +
     `- report_id: ${diagnostics.report_id}\n` +
     `- llm_phase_mode: ${diagnostics.llm_phase_mode}\n` +

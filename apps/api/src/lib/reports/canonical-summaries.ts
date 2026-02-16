@@ -654,7 +654,8 @@ export function buildMarketSummaryV1(nodes: NodeLike[]): MarketSummaryV1Section 
   if (chosen.length === 0) return nonMarketCentric ? null : null;
 
   const lines = chosen.map((c) => {
-    const normalized = normalizeCanonicalFact(c.snippet, { kind: 'market_context', maxLen: 220 });
+    const sourceTexts = [c.node.slide_title ?? '', c.snippet].filter(Boolean);
+    const normalized = normalizeCanonicalFact(c.snippet, { kind: 'market_context', maxLen: 220, sourceTexts });
     const s = normalized.display_text ?? c.snippet;
     return s.replace(/\s*\.$/, '') + '.';
   });

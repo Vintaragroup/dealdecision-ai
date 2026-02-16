@@ -91,6 +91,7 @@ describe("display_facts_v1 (governed overlay)", () => {
       const parsed = typeof capturedOverviewJson === "string" ? JSON.parse(capturedOverviewJson) : capturedOverviewJson;
       expect(parsed.display_facts_v1).toEqual(null);
       expect(parsed.display_facts_v1_quality?.guard_degraded).toEqual(true);
+      expect(parsed.phase1?.governed_ui_copy_v1 ?? null).toEqual(null);
     } finally {
       if (originalKey == null) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = originalKey;
@@ -108,14 +109,24 @@ describe("display_facts_v1 (governed overlay)", () => {
       `display_fact_v1|${dealId}|product_solution|${documentId}|0`
     );
 
-    vi.spyOn(OpenAIGPT4oProvider.prototype as any, "complete").mockResolvedValue({
-      content: JSON.stringify({
-        product_solution: { text: "Concise product statement.", evidence_ids: [expectedEvidenceId], evidence_basis: "direct_snippet" },
-        market_icp: { text: null, evidence_ids: [], evidence_basis: "no_evidence" },
-        business_model: { text: null, evidence_ids: [], evidence_basis: "no_evidence" },
-        raise_terms: { text: null, evidence_ids: [], evidence_basis: "no_evidence" },
-      }),
-    });
+    vi.spyOn(OpenAIGPT4oProvider.prototype as any, "complete")
+      .mockResolvedValueOnce({
+        content: JSON.stringify({
+          product_solution: { text: "Concise product statement.", evidence_ids: [expectedEvidenceId], evidence_basis: "direct_snippet" },
+          market_icp: { text: null, evidence_ids: [], evidence_basis: "no_evidence" },
+          business_model: { text: null, evidence_ids: [], evidence_basis: "no_evidence" },
+          raise_terms: { text: null, evidence_ids: [], evidence_basis: "no_evidence" },
+        }),
+      })
+      .mockResolvedValueOnce({
+        content: JSON.stringify({
+          hero_summary: "Concise product statement.",
+          product_solution: "Concise product statement.",
+          market_icp: null,
+          business_model: null,
+          raise_terms: null,
+        }),
+      });
 
     let capturedOverviewJson: any = null;
 
@@ -178,6 +189,16 @@ describe("display_facts_v1 (governed overlay)", () => {
       expect(parsed.display_facts_v1?.product_solution?.evidence_ids).toEqual([expectedEvidenceId]);
       expect(parsed.display_facts_v1?.product_solution?.text).toEqual("Concise product statement.");
       expect(parsed.display_facts_v1_quality?.ok).toEqual(true);
+
+      expect(parsed.phase1?.governed_ui_copy_v1?.schema_version).toEqual("governed_ui_copy_v1");
+      expect(parsed.phase1?.governed_ui_copy_v1?.product_solution).toEqual("Concise product statement.");
+      expect(parsed.phase1?.governed_ui_copy_v1?.evidence_ids?.product_solution).toEqual([expectedEvidenceId]);
+      expect(parsed.phase1?.governed_ui_copy_v1?.evidence_map).toBeTruthy();
+      expect(Array.isArray(parsed.phase1?.governed_ui_copy_v1?.evidence_map?.product_solution)).toEqual(true);
+      expect(parsed.phase1?.governed_ui_copy_v1?.evidence_map?.product_solution?.[0]?.source_document_id).toEqual(documentId);
+      expect(parsed.phase1?.governed_ui_copy_v1?.evidence_map?.product_solution?.[0]?.page_index).toEqual(0);
+      expect(typeof parsed.phase1?.governed_ui_copy_v1?.evidence_map?.product_solution?.[0]?.snippet).toEqual("string");
+      expect(parsed.phase1?.governed_ui_copy_v1_quality?.ok).toEqual(true);
     } finally {
       if (originalKey == null) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = originalKey;

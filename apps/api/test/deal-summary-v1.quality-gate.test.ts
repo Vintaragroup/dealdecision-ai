@@ -46,7 +46,7 @@ test("compileDealSummaryV1 emits suppressed semantics when best candidate is gar
 
   assert.ok(out.product);
   assert.equal(out.product.display_text, null);
-  assert.equal(out.product.text, "");
+  assert.equal(out.product.text, null);
   assert.equal(out.product.quality, "garbage");
   assert.ok(Array.isArray(out.product.suppressed_reasons));
   assert.ok(out.reason?.includes("suppressed_product"));
@@ -97,6 +97,7 @@ test("compileDealSummaryV1 does not amplify market_context into an overlong mark
   assert.ok(out.market);
   assert.ok(out.market.display_text);
   assert.ok(!out.market.display_text.includes("Market context:"));
+  assert.ok(!out.market.display_text.includes("(Context:"));
 
   // If a context candidate existed but was too long, it should be present as suppressed.
   assert.ok(out.market_context);
@@ -149,7 +150,7 @@ test("compileDealSummaryV1 does not surface composed market text when it is supp
   assert.equal(typeof out.market.quality, "string");
   if (out.market.quality === "garbage") {
     assert.equal(out.market.display_text, null);
-    assert.equal(out.market.text, "");
+    assert.equal(out.market.text, null);
   }
 });
 
@@ -176,5 +177,140 @@ test("compileDealSummaryV1 only falls back to slide_title when title is good/ok"
   // Title is garbage, so we should end up suppressed/missing rather than surfacing it.
   assert.ok(out.product);
   assert.equal(out.product.display_text, null);
-  assert.equal(out.product.text, "");
+  assert.equal(out.product.text, null);
+});
+
+test('compileDealSummaryV1 market falls back to target when composed target+context is too long', async () => {
+  const capTo = (s: string, maxLen: number): string => {
+    const text = String(s).trim();
+    if (text.length <= maxLen) return text;
+    const head = text.slice(0, maxLen);
+    const lastSpace = head.lastIndexOf(' ');
+    return (lastSpace >= Math.floor(maxLen * 0.6) ? head.slice(0, lastSpace) : head).trim();
+  };
+
+  // Keep each component individually <= 220 (displayable), but guarantee composed target+context exceeds 220.
+  const target = capTo(
+    'Target customers are mid-market operations teams in logistics and field services buying routing + dispatch automation across multi-site operations, complex shift coverage, seasonal demand, and multi-warehouse workflows.',
+    218,
+  );
+  const context = capTo(
+    'Industry context: category growth is strong with participation tailwinds, expanding adoption, and increasing spend on automation across adjacent operational areas and geographies.',
+    218,
+  );
+
+  // Individually, these should be displayable under the 220-char gate after canonical normalization;
+  // together they should exceed the composed cap and trigger fallback.
+  const nodes = [
+    mkNode({
+      page_index: 0,
+      slide_title: 'Product',
+      bullets: ['We sell subscription software that automates dispatch routing for field service teams.'],
+      segment_key: 'product',
+      node_id: 'p0',
+    }),
+    mkNode({
+      page_index: 1,
+      slide_title: 'Market / ICP',
+      bullets: [target],
+      segment_key: 'market',
+      node_id: 'm1',
+    }),
+    mkNode({
+      page_index: 2,
+      slide_title: 'Industry outlook',
+      bullets: [context],
+      segment_key: 'market',
+      node_id: 'mc2',
+    }),
+    mkNode({
+      page_index: 3,
+      slide_title: 'Company Overview',
+      bullets: ['We help operations teams automate complex workflows across existing systems.'],
+      segment_key: 'overview',
+      node_id: 'o3',
+    }),
+  ];
+
+  const mockPool: any = {
+    query: async () => {
+      throw new Error('DB should not be called when prefetched nodes are provided');
+    },
+  };
+
+  const out: any = await compileDealSummaryV1(mockPool, 'deal_market_fallback', { prefetched: { nodes, warnings: [] } } as any);
+
+  assert.ok(out.market_target?.display_text);
+  assert.ok(out.market_context?.display_text);
+  assert.ok(out.market);
+
+  // Previously this was frequently suppressed as too_long; now it should fall back to a clean component.
+  assert.ok(out.market.display_text);
+  assert.ok(!out.market.suppressed_reasons?.includes('too_long'));
+  assert.ok(!out.market.display_text.includes('(Context:'));
+
+  // Auditable composition decision.
+  assert.ok(out.meta);
+  assert.ok(out.meta.market);
+  assert.ok(out.meta.market.canonical);
+  assert.ok(Array.isArray(out.meta.market.canonical.rules_applied));
+  assert.ok(out.meta.market.canonical.rules_applied.includes('market_compose_fallback_more_coherent_component'));
+
+  // Citations should align with the chosen text (coherence-based fallback => either market_target or market_context sources).
+  assert.equal(out.market.sources.length, 1);
+  const chosenId = out.market.sources[0].node_id;
+  const targetId = out.market_target.sources[0].node_id;
+  const contextId = out.market_context.sources[0].node_id;
+  assert.ok(chosenId === targetId || chosenId === contextId);
+
+  if (chosenId === targetId) {
+    assert.match(out.market.display_text, /Target customers are/i);
+  }
+});
+
+test('compileDealSummaryV1 market uses composed target+context when it fits cap', async () => {
+  const nodes = [
+    mkNode({
+      page_index: 0,
+      slide_title: 'Product',
+      bullets: ['We sell subscription software that automates dispatch routing for field service teams.'],
+      segment_key: 'product',
+      node_id: 'p0',
+    }),
+    mkNode({
+      page_index: 1,
+      slide_title: 'Market / ICP',
+      bullets: ['Target customers are mid-market field service operators.'],
+      segment_key: 'market',
+      node_id: 'm1',
+    }),
+    mkNode({
+      page_index: 2,
+      slide_title: 'Industry outlook',
+      bullets: ['Industry participation is growing, expanding demand for operational automation.'],
+      segment_key: 'market',
+      node_id: 'mc2',
+    }),
+    mkNode({
+      page_index: 3,
+      slide_title: 'Company Overview',
+      bullets: ['We help operations teams automate complex workflows across existing systems.'],
+      segment_key: 'overview',
+      node_id: 'o3',
+    }),
+  ];
+
+  const mockPool: any = {
+    query: async () => {
+      throw new Error('DB should not be called when prefetched nodes are provided');
+    },
+  };
+
+  const out: any = await compileDealSummaryV1(mockPool, 'deal_market_composed', { prefetched: { nodes, warnings: [] } } as any);
+
+  assert.ok(out.market_target?.display_text);
+  assert.ok(out.market_context?.display_text);
+  assert.ok(out.market?.display_text);
+  assert.ok(out.market.display_text.includes('(Context:'));
+  assert.ok(!out.meta?.market?.canonical?.rules_applied?.includes('market_compose_fallback_more_coherent_component'));
 });

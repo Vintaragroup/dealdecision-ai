@@ -1,15 +1,29 @@
 import { useMemo, useState } from 'react';
 import { ChevronDown, Package, Users, DollarSign, TrendingUp, Shield, ArrowRight, AlertCircle } from 'lucide-react';
-import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import type { EvidenceResolveResult } from '../../lib/apiClient';
+
+type FieldEvidenceRef = {
+  source_document_id: string;
+  page_index: number;
+  slide_title?: string | null;
+  snippet: string;
+};
 
 export type DealWorkspaceOverviewCompProps = {
   darkMode: boolean;
+  documentTitles?: Record<string, string>;
+  showFieldEvidence?: boolean;
   dealOneLiner: string;
   product: string;
   marketIcp: string;
   businessModel: string;
   raiseTerms: string;
+
+  dealOneLinerEvidenceRefs?: FieldEvidenceRef[];
+  productEvidenceRefs?: FieldEvidenceRef[];
+  marketIcpEvidenceRefs?: FieldEvidenceRef[];
+  businessModelEvidenceRefs?: FieldEvidenceRef[];
+  raiseTermsEvidenceRefs?: FieldEvidenceRef[];
 
   productEvidenceIds?: string[];
   marketIcpEvidenceIds?: string[];
@@ -27,6 +41,11 @@ export type DealWorkspaceOverviewCompProps = {
   dealSummaryOpenQuestions?: string[];
   dealSummaryTractionSignals?: string[];
   dealSummaryKeyRisksDetected?: string[];
+
+  dealSummaryStrengthEvidenceRefs?: FieldEvidenceRef[];
+  dealSummaryRiskEvidenceRefs?: FieldEvidenceRef[];
+  dealSummaryOpenQuestionsEvidenceRefs?: FieldEvidenceRef[];
+  dealSummaryTractionSignalsEvidenceRefs?: FieldEvidenceRef[];
 
   kpiTiles?: Array<{
     label: string;
@@ -68,6 +87,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
   const [isExpanded, setIsExpanded] = useState(false);
   const [showCitations, setShowCitations] = useState(false);
   const [showInterpretation, setShowInterpretation] = useState(false);
+  const [fieldEvidenceOpen, setFieldEvidenceOpen] = useState<Record<string, boolean>>({});
 
   const cardClassName = `backdrop-blur-xl border rounded-xl p-6 w-full ${
     props.darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'
@@ -95,10 +115,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
   const dealSummaryStrengths = useMemo(() => safeLines(props.dealSummaryStrengths ?? []), [props.dealSummaryStrengths]);
   const dealSummaryOpenQuestions = useMemo(() => safeLines(props.dealSummaryOpenQuestions ?? []), [props.dealSummaryOpenQuestions]);
   const dealSummaryTractionSignals = useMemo(() => safeLines(props.dealSummaryTractionSignals ?? []), [props.dealSummaryTractionSignals]);
-  const dealSummaryRisks = useMemo(() => {
-    const combined = [...(props.dealSummaryRisks ?? []), ...(props.dealSummaryKeyRisksDetected ?? [])];
-    return safeLines(combined);
-  }, [props.dealSummaryRisks, props.dealSummaryKeyRisksDetected]);
+  const dealSummaryRisks = useMemo(() => safeLines(props.dealSummaryRisks ?? []), [props.dealSummaryRisks]);
 
   const kpiTiles = useMemo(() => {
     const xs = Array.isArray(props.kpiTiles) ? props.kpiTiles : [];
@@ -173,6 +190,35 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
   const isMissingValueString = (value: string) => {
     const s = typeof value === 'string' ? value.trim() : '';
     return s.length === 0 || s === '—' || s.toLowerCase() === 'not extracted' || s.toLowerCase() === 'not available';
+  };
+
+  const documentTitles = props.documentTitles ?? {};
+
+  const normalizeEvidenceRefs = (refsRaw: unknown): FieldEvidenceRef[] => {
+    if (!Array.isArray(refsRaw)) return [];
+    const out: FieldEvidenceRef[] = [];
+    const seen = new Set<string>();
+
+    for (const v of refsRaw) {
+      if (!v || typeof v !== 'object') continue;
+      const source_document_id = typeof (v as any).source_document_id === 'string' ? (v as any).source_document_id.trim() : '';
+      const page_index_raw = (v as any).page_index;
+      const page_index = typeof page_index_raw === 'number' && Number.isFinite(page_index_raw) ? Math.max(0, Math.floor(page_index_raw)) : null;
+      const snippet = typeof (v as any).snippet === 'string' ? (v as any).snippet.trim() : '';
+      const slide_title = typeof (v as any).slide_title === 'string' ? (v as any).slide_title.trim() : null;
+
+      if (!source_document_id || page_index == null) continue;
+      const key = `${source_document_id}::${page_index}::${snippet.slice(0, 64).toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ source_document_id, page_index, snippet, slide_title });
+    }
+
+    return out.slice(0, 12);
+  };
+
+  const toggleFieldEvidence = (key: string) => {
+    setFieldEvidenceOpen((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
   const renderMaybeMissingValue = (value: string) => {
@@ -289,17 +335,20 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
 
   const renderExpandedBullets = (title: string, items: string[]) => {
     const cleaned = safeLines(items).slice(0, 6);
-    if (!cleaned.length) return null;
     return (
       <div>
         <div className="text-[11px] uppercase tracking-wider text-zinc-500 mb-2">{title}</div>
-        <ul className="space-y-1">
-          {cleaned.map((s, idx) => (
-            <li key={`${title}-item-${idx}`} className="text-zinc-300 text-sm leading-relaxed">
-              • {s}
-            </li>
-          ))}
-        </ul>
+        {cleaned.length ? (
+          <ul className="space-y-1">
+            {cleaned.map((s, idx) => (
+              <li key={`${title}-item-${idx}`} className="text-zinc-300 text-sm leading-relaxed">
+                • {s}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-zinc-500 text-sm leading-relaxed">Not available</p>
+        )}
       </div>
     );
   };
@@ -335,68 +384,102 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
     });
   };
 
-  const renderEvidenceControls = (idsRaw: unknown) => {
-    const ids = normalizeEvidenceIds(idsRaw);
-    if (ids.length === 0) return null;
+  const renderFieldEvidence = (opts: {
+    fieldKey: string;
+    valuePresent: boolean;
+    refs?: FieldEvidenceRef[];
+    evidenceIds?: unknown;
+  }) => {
+    if (!props.showFieldEvidence) return null;
+    if (!opts.valuePresent) return null;
 
-    const items = resolveEvidenceItems(ids);
-    const sourcesLabelClass = props.darkMode
-      ? 'text-xs text-zinc-400 hover:text-zinc-200 underline underline-offset-2'
-      : 'text-xs text-zinc-600 hover:text-zinc-900 underline underline-offset-2';
+    const refs = normalizeEvidenceRefs(opts.refs);
+    const ids = normalizeEvidenceIds(opts.evidenceIds);
 
-    const popoverClassName = props.darkMode
-      ? 'w-[420px] max-w-[80vw] bg-zinc-950 border-white/10 text-zinc-100'
-      : 'w-[420px] max-w-[80vw] bg-white border-gray-200 text-zinc-900';
+    // Guardrail: undefined refs means "not applicable" (ex: deterministic override).
+    const refsApplicable = typeof opts.refs !== 'undefined';
+    const idsApplicable = ids.length > 0;
+    if (!refsApplicable && !idsApplicable) return null;
+
+    const hasRefs = refs.length > 0;
+    const hasIds = ids.length > 0;
+    const hasEvidence = hasRefs || hasIds;
+
+    const badgeClassName = props.darkMode
+      ? 'bg-white/5 text-zinc-400 border-white/10'
+      : 'bg-white text-zinc-600 border-gray-200';
+
+    if (!hasEvidence) {
+      return (
+        <div className="mt-1">
+          <span className={`inline-flex items-center px-2 py-1 rounded-full border text-[11px] font-medium leading-none ${badgeClassName}`}>
+            No explicit citation
+          </span>
+        </div>
+      );
+    }
+
+    const open = Boolean(fieldEvidenceOpen[opts.fieldKey]);
+    const buttonClass = props.darkMode
+      ? 'flex items-center gap-1 text-xs text-zinc-400 hover:text-zinc-200 underline underline-offset-2'
+      : 'flex items-center gap-1 text-xs text-zinc-600 hover:text-zinc-900 underline underline-offset-2';
+
+    const panelClass = props.darkMode
+      ? 'mt-2 rounded-lg border border-white/10 bg-white/5 p-3'
+      : 'mt-2 rounded-lg border border-gray-200 bg-white p-3';
+
+    const itemsFromIds = hasRefs ? [] : resolveEvidenceItems(ids);
+    const hasContent = hasRefs ? refs.length > 0 : itemsFromIds.length > 0;
+    if (!hasContent) return null;
 
     return (
-      <div className="mt-1 flex flex-wrap items-center gap-3">
-        <Popover>
-          <PopoverTrigger asChild>
-            <button type="button" className={sourcesLabelClass}>
-              View sources
-            </button>
-          </PopoverTrigger>
-          <PopoverContent align="start" className={popoverClassName}>
-            <div className="text-[11px] uppercase tracking-wider text-zinc-500">Sources</div>
-            <ul className="mt-2 space-y-2">
-              {items.map((it) => {
-                const title = it.document_title || (it.document_id ? `Document ${it.document_id}` : 'Document');
-                const page = typeof it.page === 'number' ? `p${Math.max(1, Math.floor(it.page) + 1)}` : 'p—';
-                const header = `${title} · ${page}`;
-                return (
-                  <li key={`ev-src-${it.id}`} className="text-xs">
-                    <div className={props.darkMode ? 'text-zinc-200' : 'text-zinc-800'}>{header}</div>
-                    <div className={props.darkMode ? 'mt-0.5 text-zinc-400 whitespace-pre-wrap' : 'mt-0.5 text-zinc-600 whitespace-pre-wrap'}>
-                      {it.snippet || 'Snippet not available'}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          </PopoverContent>
-        </Popover>
+      <div className="mt-1">
+        <button
+          type="button"
+          className={buttonClass}
+          onClick={() => toggleFieldEvidence(opts.fieldKey)}
+          data-testid={`evidence-toggle-${opts.fieldKey}`}
+        >
+          <span>{open ? 'Hide evidence' : 'Evidence'}</span>
+          <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} strokeWidth={1.5} />
+        </button>
 
-        <Popover>
-          <PopoverTrigger asChild>
-            <button type="button" className={sourcesLabelClass}>
-              View raw deterministic snippet
-            </button>
-          </PopoverTrigger>
-          <PopoverContent align="start" className={popoverClassName}>
-            <div className="text-[11px] uppercase tracking-wider text-zinc-500">Raw deterministic snippet</div>
-            <div className={props.darkMode ? 'mt-2 text-xs text-zinc-300 whitespace-pre-wrap' : 'mt-2 text-xs text-zinc-700 whitespace-pre-wrap'}>
-              {items
-                .map((it) => {
-                  const title = it.document_title || (it.document_id ? `Document ${it.document_id}` : 'Document');
-                  const page = typeof it.page === 'number' ? `p${Math.max(1, Math.floor(it.page) + 1)}` : 'p—';
-                  const header = `${title} (${page})`;
-                  const body = it.snippet || 'Snippet not available';
-                  return `${header}\n${body}`;
-                })
-                .join('\n\n')}
+        {open ? (
+          <div className={panelClass} data-testid={`evidence-panel-${opts.fieldKey}`}>
+            <div className={props.darkMode ? 'text-[11px] uppercase tracking-wider text-zinc-500' : 'text-[11px] uppercase tracking-wider text-zinc-500'}>
+              Evidence
             </div>
-          </PopoverContent>
-        </Popover>
+            <ul className="mt-2 space-y-2">
+              {hasRefs
+                ? refs.map((r, idx) => {
+                    const title = documentTitles[r.source_document_id] || r.source_document_id;
+                    const page = `p${Math.max(1, Math.floor(r.page_index) + 1)}`;
+                    const header = [title, page, r.slide_title].filter(Boolean).join(' · ');
+                    return (
+                      <li key={`ref-${opts.fieldKey}-${idx}`} className="text-xs">
+                        <div className={props.darkMode ? 'text-zinc-200' : 'text-zinc-800'}>{header}</div>
+                        <div className={props.darkMode ? 'mt-0.5 text-zinc-400 whitespace-pre-wrap' : 'mt-0.5 text-zinc-600 whitespace-pre-wrap'}>
+                          {r.snippet || 'Snippet not available'}
+                        </div>
+                      </li>
+                    );
+                  })
+                : itemsFromIds.map((it) => {
+                    const title = it.document_title || (it.document_id ? (documentTitles[it.document_id] || `Document ${it.document_id}`) : 'Document');
+                    const page = typeof it.page === 'number' ? `p${Math.max(1, Math.floor(it.page) + 1)}` : 'p—';
+                    const header = `${title} · ${page}`;
+                    return (
+                      <li key={`id-${opts.fieldKey}-${it.id}`} className="text-xs">
+                        <div className={props.darkMode ? 'text-zinc-200' : 'text-zinc-800'}>{header}</div>
+                        <div className={props.darkMode ? 'mt-0.5 text-zinc-400 whitespace-pre-wrap' : 'mt-0.5 text-zinc-600 whitespace-pre-wrap'}>
+                          {it.snippet || 'Snippet not available'}
+                        </div>
+                      </li>
+                    );
+                  })}
+            </ul>
+          </div>
+        ) : null}
       </div>
     );
   };
@@ -425,6 +508,11 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
             <p className={`${isMissingValueString(props.dealOneLiner) ? 'text-zinc-500' : 'text-zinc-100'} text-lg leading-relaxed`}>
               {props.dealOneLiner || 'Not extracted'}
             </p>
+            {renderFieldEvidence({
+              fieldKey: 'deal-one-liner',
+              valuePresent: !isMissingValueString(props.dealOneLiner),
+              refs: props.dealOneLinerEvidenceRefs,
+            })}
           </div>
 
           {/* KPI tiles */}
@@ -455,7 +543,12 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
                 <span className="text-zinc-400 text-sm">Product: </span>
                 {renderProvenanceChips(props.productProvenance)}
                 {renderMaybeMissingValue(props.product)}
-                {renderEvidenceControls(props.productEvidenceIds)}
+                {renderFieldEvidence({
+                  fieldKey: 'product-solution',
+                  valuePresent: !isMissingValueString(props.product),
+                  refs: props.productEvidenceRefs,
+                  evidenceIds: props.productEvidenceIds,
+                })}
               </div>
             </div>
             
@@ -465,7 +558,12 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
                 <span className="text-zinc-400 text-sm">Market: </span>
                 {renderProvenanceChips(props.marketIcpProvenance)}
                 {renderMaybeMissingValue(props.marketIcp)}
-                {renderEvidenceControls(props.marketIcpEvidenceIds)}
+                {renderFieldEvidence({
+                  fieldKey: 'market-icp',
+                  valuePresent: !isMissingValueString(props.marketIcp),
+                  refs: props.marketIcpEvidenceRefs,
+                  evidenceIds: props.marketIcpEvidenceIds,
+                })}
               </div>
             </div>
             
@@ -475,7 +573,12 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
                 <span className="text-zinc-400 text-sm">Business Model: </span>
                 {renderProvenanceChips(props.businessModelProvenance)}
                 {renderMaybeMissingValue(props.businessModel)}
-                {renderEvidenceControls(props.businessModelEvidenceIds)}
+                {renderFieldEvidence({
+                  fieldKey: 'business-model',
+                  valuePresent: !isMissingValueString(props.businessModel),
+                  refs: props.businessModelEvidenceRefs,
+                  evidenceIds: props.businessModelEvidenceIds,
+                })}
               </div>
             </div>
           </div>
@@ -489,18 +592,45 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
               </span>
               {renderMaybeMissingValue(props.raiseTerms)}
             </div>
-            {renderEvidenceControls(props.raiseTermsEvidenceIds)}
+            {renderFieldEvidence({
+              fieldKey: 'raise-terms',
+              valuePresent: !isMissingValueString(props.raiseTerms),
+              refs: props.raiseTermsEvidenceRefs,
+              evidenceIds: props.raiseTermsEvidenceIds,
+            })}
           </div>
 
           {/* Expandable Content */}
           {isExpanded && (
             <div className={`mb-5 pb-5 border-b ${dividerClassName}`}>
               <div className="space-y-5">
-                {renderExpandedParagraphs('Summary', dealSummaryParagraphs)}
                 {renderExpandedBullets('Strengths', dealSummaryStrengths)}
-                {renderExpandedBullets('Risks', dealSummaryRisks)}
+                {renderFieldEvidence({
+                  fieldKey: 'strengths',
+                  valuePresent: dealSummaryStrengths.length > 0,
+                  refs: props.dealSummaryStrengthEvidenceRefs,
+                })}
+
+                {renderExpandedBullets('Concerns', dealSummaryRisks)}
+                {renderFieldEvidence({
+                  fieldKey: 'concerns',
+                  valuePresent: dealSummaryRisks.length > 0,
+                  refs: props.dealSummaryRiskEvidenceRefs,
+                })}
+
                 {renderExpandedBullets('Open Questions', dealSummaryOpenQuestions)}
-                {renderExpandedBullets('Traction Signals', dealSummaryTractionSignals)}
+                {renderFieldEvidence({
+                  fieldKey: 'open-questions',
+                  valuePresent: dealSummaryOpenQuestions.length > 0,
+                  refs: props.dealSummaryOpenQuestionsEvidenceRefs,
+                })}
+
+                {renderExpandedBullets('Traction', dealSummaryTractionSignals)}
+                {renderFieldEvidence({
+                  fieldKey: 'traction',
+                  valuePresent: dealSummaryTractionSignals.length > 0,
+                  refs: props.dealSummaryTractionSignalsEvidenceRefs,
+                })}
               </div>
             </div>
           )}

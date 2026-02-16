@@ -179,6 +179,55 @@ describe('buildWorkspaceMirrorOverviewVM', () => {
     expect(vm.facts.raise.value).toBe('Raw raise');
   });
 
+  test('prefers phase1.governed_ui_copy_v1 for display strings and evidence_ids when present', () => {
+    const vm = buildWorkspaceMirrorOverviewVM({
+      overview_json: {
+        display_facts_v1: {
+          product_solution: { text: 'Clean product statement', evidence_ids: ['ev-old'], evidence_basis: 'direct_snippet' },
+          market_icp: { text: null, evidence_ids: [], evidence_basis: 'no_evidence' },
+          business_model: { text: null, evidence_ids: [], evidence_basis: 'no_evidence' },
+          raise_terms: { text: null, evidence_ids: [], evidence_basis: 'no_evidence' },
+        },
+        phase1: {
+          governed_ui_copy_v1: {
+            schema_version: 'governed_ui_copy_v1',
+            hero_summary: 'Governed hero summary.',
+            product_solution: 'Governed product.',
+            market_icp: 'Governed market.',
+            business_model: 'Governed BM.',
+            raise_terms: 'Governed raise.',
+            evidence_ids: {
+              hero_summary: ['ev-h'],
+              product_solution: ['ev-ps'],
+              market_icp: ['ev-mi'],
+              business_model: ['ev-bm'],
+              raise_terms: ['ev-r'],
+            },
+          },
+          deal_summary_v2: {
+            summary: { one_liner: 'Deterministic one-liner', paragraphs: [] },
+          },
+          deal_overview_v2: {
+            product_solution: 'Raw product',
+            market_icp: 'Raw market',
+            business_model: 'Raw BM',
+            raise: 'Raw raise',
+          },
+        },
+      },
+    });
+
+    expect(vm.missing).toBe(false);
+    if (vm.missing) throw new Error('expected non-missing');
+
+    expect(vm.one_liner).toBe('Governed hero summary.');
+    expect(vm.facts.product_solution.value).toBe('Governed product.');
+    expect(vm.facts.product_solution.evidence_ids).toEqual(['ev-ps']);
+    expect(vm.facts.market_icp.value).toBe('Governed market.');
+    expect(vm.facts.raise.value).toBe('Governed raise.');
+    expect(vm.facts.raise.evidence_ids).toEqual(['ev-r']);
+  });
+
   test('falls back one_liner to summary_text when PR2 one_liner missing', () => {
     const vm = buildWorkspaceMirrorOverviewVM({
       overview: {

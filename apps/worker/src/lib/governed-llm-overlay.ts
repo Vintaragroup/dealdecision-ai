@@ -1003,30 +1003,111 @@ function isFallbackSource(note: string | undefined): boolean {
   return n.includes("fallback_") || n.includes("du fallback_");
 }
 
-function pickSourcesForField(
-  sources: Array<{ document_id: string; page_range?: [number, number]; note?: string }>,
-  field: "product_solution" | "market_icp" | "business_model" | "raise_terms"
-): Array<{ document_id: string; page_range?: [number, number]; note?: string }> {
-  const usable = sources.filter((s) => !isFallbackSource(s.note));
-  if (usable.length === 0) return [];
-  const rx =
-    field === "raise_terms"
-      ? /(raise|raising|funding|ask|raise_terms)/i
-      : field === "business_model"
-        ? /(business\s*model|business_model|saas|subscription|marketplace|licens|services)/i
-        : field === "market_icp"
-          ? /(icp|market|customers|who we serve|target)/i
-          : /(definition|tagline|product|scored:product|from heading|verb|platform)/i;
+function sourceKey(s: { document_id: string; page_range?: [number, number] }): string {
+  const pr = s.page_range;
+  if (!pr) return `${s.document_id}|_`;
+  return `${s.document_id}|${String(pr[0])}-${String(pr[1])}`;
+}
 
-  const direct = usable.filter((s) => rx.test(String(s.note ?? "")));
+function classifySnippetSignals(snippetHead: string): {
+  isRaiseTerms: boolean;
+  isProduct: boolean;
+  isMarketIcp: boolean;
+  isBusinessModel: boolean;
+} {
+  const t = snippetHead.toLowerCase();
+  const isRaiseTerms =
+    /(\braising\b|\braise\b|\bfunding\b|\bterms\b|\bvaluation\b|\bmultiple\b|\bask\b|\$\s*\d|\bpre[-\s]?money\b|\bpost[-\s]?money\b|\bseed\b|\bseries\s*[a-d]\b)/i.test(
+      t
+    );
+  const isMarketIcp = /(\bcustomer\b|\bcustomers\b|\btarget\b|\baudience\b|\bmarket\b|\bicp\b|\bwho\s+we\s+serve\b)/i.test(t);
+  const isBusinessModel =
+    /(\brevenue\b|\bbusiness\s*model\b|\bsubscription\b|\bmarketplace\b|\blicens\w*\b|\bpricing\b|\bhow\s+we\s+make\s+money\b)/i.test(t);
+  const isProduct =
+    /(\bproduct\b|\bplatform\b|\bsolution\b|\bwhat\s+we\s+do\b|\bdescription\b|\boverview\b|\bdefinition\b|\btagline\b)/i.test(t) &&
+    !isRaiseTerms;
+  return { isRaiseTerms, isProduct, isMarketIcp, isBusinessModel };
+}
+
+async function pickSourcesForField(pool: Pool, input: {
+  sources: Array<{ document_id: string; page_range?: [number, number]; note?: string }>;
+  field: "product_solution" | "market_icp" | "business_model" | "raise_terms";
+  usedKeys: Set<string>;
+  avoidDuplicateWithUsed?: boolean;
+}): Promise<Array<{ document_id: string; page_range?: [number, number]; note?: string }>> {
+  const usable = input.sources.filter((s) => !isFallbackSource(s.note));
+  if (usable.length === 0) return [];
+
+  const noteRx =
+    input.field === "raise_terms"
+      ? /(raise|raising|funding|ask|raise_terms|terms|valuation)/i
+      : input.field === "business_model"
+        ? /(business\s*model|business_model|revenue|saas|subscription|marketplace|licens|services|pricing)/i
+        : input.field === "market_icp"
+          ? /(icp|market|customers|who\s+we\s+serve|target|audience)/i
+          : /(definition|tagline|product|scored:product|from heading|verb|platform|solution|what we do|overview)/i;
+
+  const raiseLikeNoteRx = /(raise|raising|funding|terms|valuation|ask)/i;
+
+  const applyDedupePreference = (xs: Array<{ document_id: string; page_range?: [number, number]; note?: string }>) => {
+    if (!input.avoidDuplicateWithUsed) return xs;
+    const preferred = xs.filter((s) => !input.usedKeys.has(sourceKey(s)));
+    return preferred.length > 0 ? preferred : xs;
+  };
+
+  // 1) Note regex first.
+  let direct = usable.filter((s) => noteRx.test(String(s.note ?? "")));
+  if (input.field === "product_solution") {
+    // Hard guard: never pick raise-like sources for product_solution.
+    direct = direct.filter((s) => !raiseLikeNoteRx.test(String(s.note ?? "")));
+  }
+  direct = applyDedupePreference(direct);
   if (direct.length > 0) return direct.slice(0, 3);
 
-  // Fallback: best-effort ordering assumption from builder (product, market, raise, business model),
-  // but clamp to the available range so we don't return empty when only 1–2 sources exist.
+  // 2) Lightweight snippet classifier (first ~400 chars) as best-effort routing.
+  const scored: Array<{ s: { document_id: string; page_range?: [number, number]; note?: string }; score: number }> = [];
+  for (const s of applyDedupePreference(usable)) {
+    const startPage = s.page_range?.[0];
+    const page = typeof startPage === "number" && Number.isFinite(startPage) ? startPage : null;
+    const pageIndex = page != null ? Math.max(0, page - 1) : null;
+    if (pageIndex == null) continue;
+    const snippet = await fetchDpuSnippet(pool, { documentId: s.document_id, pageIndex });
+    const head = (snippet ?? "").slice(0, 400);
+    if (!head) continue;
+    const signals = classifySnippetSignals(head);
+
+    let score = 0;
+    if (input.field === "raise_terms" && signals.isRaiseTerms) score += 3;
+    if (input.field === "product_solution" && signals.isProduct) score += 3;
+    if (input.field === "market_icp" && signals.isMarketIcp) score += 3;
+    if (input.field === "business_model" && signals.isBusinessModel) score += 3;
+
+    // Additional guardrails.
+    if (input.field === "product_solution" && signals.isRaiseTerms) score -= 5;
+    if (input.field !== "raise_terms" && signals.isRaiseTerms) score -= 1;
+
+    if (score > 0) scored.push({ s, score });
+  }
+
+  if (scored.length > 0) {
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, 3).map((x) => x.s);
+  }
+
+  // 3) Final fallback: best-effort ordering assumption from builder (product, market, raise, business model),
+  // but with a hard guard for product_solution to avoid raise-like notes.
   const preferredIdx =
-    field === "product_solution" ? 0 : field === "market_icp" ? 1 : field === "raise_terms" ? 2 : 3;
+    input.field === "product_solution" ? 0 : input.field === "market_icp" ? 1 : input.field === "raise_terms" ? 2 : 3;
   const idx = Math.min(Math.max(0, preferredIdx), Math.max(0, usable.length - 1));
-  return usable.slice(idx, idx + 1);
+  const sliced = usable.slice(idx, idx + 1);
+  if (input.field === "product_solution" && sliced.length > 0) {
+    const picked = sliced[0];
+    if (raiseLikeNoteRx.test(String(picked.note ?? ""))) {
+      const alt = usable.find((s) => !raiseLikeNoteRx.test(String(s.note ?? "")));
+      if (alt) return [alt];
+    }
+  }
+  return sliced;
 }
 
 async function generateDisplayFactsV1BestEffort(args: {
@@ -1041,8 +1122,10 @@ async function generateDisplayFactsV1BestEffort(args: {
 
   type Ev = { evidence_id: string; document_id: string; page_index: number; snippet: string };
 
-  const buildEvidenceForField = async (field: "product_solution" | "market_icp" | "business_model" | "raise_terms"): Promise<Ev[]> => {
-    const picked = pickSourcesForField(sources, field);
+  const buildEvidenceForField = async (
+    field: "product_solution" | "market_icp" | "business_model" | "raise_terms",
+    picked: Array<{ document_id: string; page_range?: [number, number]; note?: string }>
+  ): Promise<Ev[]> => {
     const out: Ev[] = [];
     for (const s of picked) {
       const startPage = s.page_range?.[0];
@@ -1066,11 +1149,45 @@ async function generateDisplayFactsV1BestEffort(args: {
     return out;
   };
 
-  const [productEvidence, marketEvidence, modelEvidence, raiseEvidence] = await Promise.all([
-    buildEvidenceForField("product_solution"),
-    buildEvidenceForField("market_icp"),
-    buildEvidenceForField("business_model"),
-    buildEvidenceForField("raise_terms"),
+  // Source picking is order-sensitive because we prefer not to reuse the same (document_id,page_range)
+  // across fields (especially product_solution vs raise_terms) when alternatives exist.
+  const usedKeys = new Set<string>();
+  const pickedProduct = await pickSourcesForField(args.pool, {
+    sources,
+    field: "product_solution",
+    usedKeys,
+    avoidDuplicateWithUsed: true,
+  });
+  for (const s of pickedProduct) usedKeys.add(sourceKey(s));
+
+  const pickedRaise = await pickSourcesForField(args.pool, {
+    sources,
+    field: "raise_terms",
+    usedKeys,
+    avoidDuplicateWithUsed: true,
+  });
+  for (const s of pickedRaise) usedKeys.add(sourceKey(s));
+
+  const pickedMarket = await pickSourcesForField(args.pool, {
+    sources,
+    field: "market_icp",
+    usedKeys,
+    avoidDuplicateWithUsed: true,
+  });
+  for (const s of pickedMarket) usedKeys.add(sourceKey(s));
+
+  const pickedModel = await pickSourcesForField(args.pool, {
+    sources,
+    field: "business_model",
+    usedKeys,
+    avoidDuplicateWithUsed: true,
+  });
+
+  const [productEvidence, raiseEvidence, marketEvidence, modelEvidence] = await Promise.all([
+    buildEvidenceForField("product_solution", pickedProduct),
+    buildEvidenceForField("raise_terms", pickedRaise),
+    buildEvidenceForField("market_icp", pickedMarket),
+    buildEvidenceForField("business_model", pickedModel),
   ]);
 
   const deterministic_input = {
@@ -1133,6 +1250,9 @@ async function generateDisplayFactsV1BestEffort(args: {
   const system =
     "You are a deal analyst. Convert noisy deterministic OCR snippets into clean, investor-readable short statements. " +
     "Use ONLY the provided snippets. Do not invent facts or numbers. " +
+    "IMPORTANT: evidence_ids MUST be chosen ONLY from the allowed IDs for that field. " +
+    "Allowed IDs for each field are provided as allowed_evidence_ids.<field> and also appear as fields.<field>[].evidence_id. " +
+    "Never output evidence_ids that are not in the allowed list for that field. " +
     "If the snippets are insufficient for a field, set text=null, evidence_ids=[], evidence_basis=\"no_evidence\". " +
     "Output MUST be valid JSON only (no markdown). " +
     "Return JSON with EXACT keys: product_solution, market_icp, business_model, raise_terms. " +
@@ -1143,6 +1263,12 @@ async function generateDisplayFactsV1BestEffort(args: {
   const payload = {
     deal_id: args.dealId,
     llm_phase_mode: args.llm_phase_mode,
+    allowed_evidence_ids: {
+      product_solution: productEvidence.map((e) => e.evidence_id),
+      market_icp: marketEvidence.map((e) => e.evidence_id),
+      business_model: modelEvidence.map((e) => e.evidence_id),
+      raise_terms: raiseEvidence.map((e) => e.evidence_id),
+    },
     fields: {
       product_solution: productEvidence,
       market_icp: marketEvidence,
@@ -1174,41 +1300,115 @@ async function generateDisplayFactsV1BestEffort(args: {
   }
 
   const errors: string[] = [];
-  const coerceField = (key: keyof DisplayFactsV1): DisplayFactFieldV1 | null => {
+  const noEvidenceField: DisplayFactFieldV1 = { text: null, evidence_ids: [], evidence_basis: "no_evidence" };
+
+  const allowedIdsByField: Record<keyof DisplayFactsV1, string[]> = {
+    product_solution: productEvidence.map((e) => e.evidence_id),
+    market_icp: marketEvidence.map((e) => e.evidence_id),
+    business_model: modelEvidence.map((e) => e.evidence_id),
+    raise_terms: raiseEvidence.map((e) => e.evidence_id),
+    schema_version: [],
+  } as any;
+
+  const repairFieldEvidenceIdsBestEffort = (key: keyof DisplayFactsV1) => {
+    if (key === "schema_version") return;
     const raw = (parsed as any)[key];
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-      errors.push(`${String(key)}_missing`);
-      return null;
-    }
-    const evidence_basis = (raw as any).evidence_basis;
-    const basis: DisplayFactsBasisV1 | null = evidence_basis === "direct_snippet" || evidence_basis === "no_evidence" ? evidence_basis : null;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+
+    const allowed = allowedIdsByField[key] ?? [];
+    if (allowed.length === 0) return;
+    const allowedSet = new Set(allowed);
+
     const evidence_ids_raw: unknown[] = Array.isArray((raw as any).evidence_ids) ? ((raw as any).evidence_ids as unknown[]) : [];
-    const evidence_ids: string[] = Array.from(
+    const evidenceIdsInput = Array.from(
       new Set(
         evidence_ids_raw
           .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
           .map((v) => v.trim())
       )
     ).slice(0, 6);
+
+    const hasAnyOutOfField = evidenceIdsInput.some((id) => !allowedSet.has(id));
+    const hasAnyInField = evidenceIdsInput.some((id) => allowedSet.has(id));
+    if (!hasAnyOutOfField && hasAnyInField) return;
+
+    // If the model returned bogus/cross-field ids but we have deterministic candidates for this field,
+    // prefer a repair that keeps text when possible.
+    const repairedIds = allowed.slice(0, 3);
+    const text = clampText((raw as any).text, 220);
+    const hasText = typeof text === "string" && text.trim().length > 0;
+
+    if (!hasText) {
+      (raw as any).text = null;
+      (raw as any).evidence_ids = [];
+      (raw as any).evidence_basis = "no_evidence";
+      errors.push(`${String(key)}_evidence_ids_repaired_no_text`);
+      return;
+    }
+
+    (raw as any).text = text;
+    (raw as any).evidence_ids = repairedIds;
+    (raw as any).evidence_basis = "direct_snippet";
+    errors.push(`${String(key)}_evidence_ids_repaired_to_allowed`);
+  };
+
+  repairFieldEvidenceIdsBestEffort("product_solution" as any);
+  repairFieldEvidenceIdsBestEffort("market_icp" as any);
+  repairFieldEvidenceIdsBestEffort("business_model" as any);
+  repairFieldEvidenceIdsBestEffort("raise_terms" as any);
+
+  // Coerce and sanitize one field at a time.
+  // Key behavior change: out-of-scope evidence_ids no longer fail the entire display_facts_v1;
+  // they are filtered per-field and may downgrade that field to no_evidence.
+  const coerceField = (key: keyof DisplayFactsV1): DisplayFactFieldV1 => {
+    const raw = (parsed as any)[key];
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      errors.push(`${String(key)}_missing`);
+      return noEvidenceField;
+    }
+
+    const evidence_basis = (raw as any).evidence_basis;
+    const basis: DisplayFactsBasisV1 | null =
+      evidence_basis === "direct_snippet" || evidence_basis === "no_evidence" ? evidence_basis : null;
+
+    const evidence_ids_raw: unknown[] = Array.isArray((raw as any).evidence_ids) ? ((raw as any).evidence_ids as unknown[]) : [];
+    const evidence_ids_input: string[] = Array.from(
+      new Set(
+        evidence_ids_raw
+          .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+          .map((v) => v.trim())
+      )
+    ).slice(0, 6);
+
+    const inScopeEvidenceIds: string[] = evidence_ids_input.filter((id) => allEvidenceIds.has(id));
+    const sawOutOfScope = evidence_ids_input.some((id) => !allEvidenceIds.has(id));
+    if (sawOutOfScope) {
+      errors.push(`${String(key)}_evidence_id_out_of_scope_sanitized`);
+    }
+
     const text = clampText((raw as any).text, 220);
 
-    const hasEvidence = evidence_ids.length > 0;
-
-    if (hasEvidence) {
-      for (const id of evidence_ids) if (!allEvidenceIds.has(id)) errors.push(`${String(key)}_evidence_id_out_of_scope`);
-      if (basis !== "direct_snippet") errors.push(`${String(key)}_basis_invalid_for_evidence`);
-      if (!text) errors.push(`${String(key)}_text_missing_with_evidence`);
-      return { text: text ?? null, evidence_ids, evidence_basis: "direct_snippet" };
+    // Strictness: never allow text without evidence, and never allow direct_snippet without evidence.
+    if (inScopeEvidenceIds.length > 0) {
+      if (basis !== "direct_snippet") {
+        errors.push(`${String(key)}_basis_invalid_for_evidence`);
+        return noEvidenceField;
+      }
+      if (!text) {
+        errors.push(`${String(key)}_text_missing_with_evidence`);
+        return noEvidenceField;
+      }
+      return { text: text ?? null, evidence_ids: inScopeEvidenceIds, evidence_basis: "direct_snippet" };
     }
 
     if (basis !== "no_evidence") {
-      // Fail closed: evidence-free fields must explicitly use no_evidence.
+      // Evidence-free fields must explicitly use no_evidence.
       errors.push(`${String(key)}_basis_expected_no_evidence`);
     }
     if (text != null) {
       errors.push(`${String(key)}_text_present_without_evidence`);
     }
-    return { text: null, evidence_ids: [], evidence_basis: "no_evidence" };
+    return noEvidenceField;
   };
 
   const product_solution = coerceField("product_solution" as any);
@@ -1216,10 +1416,30 @@ async function generateDisplayFactsV1BestEffort(args: {
   const business_model = coerceField("business_model" as any);
   const raise_terms = coerceField("raise_terms" as any);
 
-  if (!product_solution || !market_icp || !business_model || !raise_terms || errors.length > 0) {
+  const anyEvidenceAfter =
+    product_solution.evidence_ids.length > 0 ||
+    market_icp.evidence_ids.length > 0 ||
+    business_model.evidence_ids.length > 0 ||
+    raise_terms.evidence_ids.length > 0;
+
+  // If the provider returned JSON but sanitization/strictness zeroed all evidence, treat as no_evidence.
+  if (!anyEvidenceAfter) {
     return {
-      display_facts_v1: null,
-      quality: { ...qualityBase, model: "gpt-4o-mini", ok: false, guard_degraded: true, errors: errors.length ? errors : ["guard_degraded"] },
+      display_facts_v1: {
+        schema_version: "display_facts_v1",
+        product_solution: noEvidenceField,
+        market_icp: noEvidenceField,
+        business_model: noEvidenceField,
+        raise_terms: noEvidenceField,
+      },
+      quality: {
+        ...qualityBase,
+        model: "gpt-4o-mini",
+        ok: true,
+        skipped_reason: "no_evidence",
+        guard_degraded: errors.length > 0,
+        ...(errors.length > 0 ? { errors } : {}),
+      },
       deterministic_input,
       providerMeta: { model: "gpt-4o-mini" },
     };
@@ -1233,7 +1453,13 @@ async function generateDisplayFactsV1BestEffort(args: {
       business_model,
       raise_terms,
     },
-    quality: { ...qualityBase, model: "gpt-4o-mini", ok: true, guard_degraded: false },
+    quality: {
+      ...qualityBase,
+      model: "gpt-4o-mini",
+      ok: true,
+      guard_degraded: errors.length > 0,
+      ...(errors.length > 0 ? { errors } : {}),
+    },
     deterministic_input,
     providerMeta: { model: "gpt-4o-mini" },
   };

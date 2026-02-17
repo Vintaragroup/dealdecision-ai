@@ -174,6 +174,52 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(within(screen.getByTestId('analysis-output-panel')).queryByText(/Pinned \(coverage_too_low\)/i)).toBeNull();
   });
 
+  test('resolves evidence ids from report sections when report is ready (deduped + non-empty)', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v1.0.0',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-01-02T00:00:00.000Z',
+    } as any);
+
+    const { apiGetDealReport, apiResolveEvidence } = await import('../lib/apiClient');
+
+    vi.mocked(apiGetDealReport).mockResolvedValueOnce({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-rpt-ev-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 78,
+        grade: 'B',
+        recommendation: 'yes',
+        greenFlags: ['Strong early signal'],
+        sections: [
+          { id: 's1', title: 'Overview', content: 'Test content', evidence_ids: ['ev-2', '', '  ', 'ev-1', 'ev-2'] },
+        ],
+        metadata: {
+          cycle_number: 1,
+          deterministic_score_preview_v1: {
+            baseline: { unadjusted_pinned: true, unadjusted_pin_reason: 'low_coverage' },
+          },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-rpt-ev-1' });
+
+    await waitFor(() => {
+      expect(vi.mocked(apiResolveEvidence)).toHaveBeenCalled();
+    });
+
+    const calls = vi.mocked(apiResolveEvidence).mock.calls;
+    const firstArgs = calls[0]?.[0] ?? [];
+    expect(firstArgs).toEqual(expect.arrayContaining(['ev-1', 'ev-2']));
+    expect(firstArgs).not.toEqual(expect.arrayContaining(['']));
+    expect(firstArgs.some((v) => typeof v !== 'string' || v.trim().length === 0)).toEqual(false);
+  });
+
   test('binds top summary tiles to ready report payload (score + executive summary + stage + structured tiles)', async () => {
     vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: 'v1.0.0',

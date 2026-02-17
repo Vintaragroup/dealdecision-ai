@@ -1047,7 +1047,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     setResolvedEvidence({});
     setSelectedScoreSectionMismatch(false);
     setScoreTraceModeOverride(null);
+    lastResolveEvidenceKeyRef.current = null;
   }, [dealId]);
+
+  const lastResolveEvidenceKeyRef = useRef<string | null>(null);
 
   const displayFactsEvidenceIds = useMemo(() => {
     if (workspaceMirrorVM.missing) return [] as string[];
@@ -1078,11 +1081,26 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   useEffect(() => {
     const highlightedIds = (highlightedEvidenceIds ?? []).filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
     const visibleEvidenceIds = (evidence ?? []).map((e) => e?.evidence_id).filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
-    const ids = Array.from(new Set([...highlightedIds, ...visibleEvidenceIds, ...(displayFactsEvidenceIds ?? [])])).slice(0, 100);
+    const ids = Array.from(
+      new Set(
+        [...highlightedIds, ...visibleEvidenceIds, ...(displayFactsEvidenceIds ?? []), ...(reportEvidenceIds ?? [])]
+          .filter((v): v is string => typeof v === 'string')
+          .map((v) => v.trim())
+          .filter((v) => v.length > 0)
+      )
+    )
+      .sort((a, b) => a.localeCompare(b))
+      .slice(0, 100);
     if (ids.length === 0) {
       setResolvedEvidence({});
+      lastResolveEvidenceKeyRef.current = null;
       return;
     }
+
+    const key = ids.join(',');
+    if (lastResolveEvidenceKeyRef.current === key) return;
+    lastResolveEvidenceKeyRef.current = key;
+
     let active = true;
     apiResolveEvidence(ids)
       .then((res) => {

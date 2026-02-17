@@ -1131,6 +1131,9 @@ export class DealOrchestrator {
         update_report_v1: (input.input_data as any).phase1_update_report_v1,
 		// Additive: optional investor-readable synthesis from worker (Phase 1 only)
 		deal_summary_v2: (input.input_data as any).phase1_deal_summary_v2,
+  		// Additive: deterministic KPI reconciliation (ARR/MRR) from worker (Phase 1 only)
+  		kpi_reconciliation_v1: (input.input_data as any).phase1_kpi_reconciliation_v1,
+  		kpi_claims_v1: (input.input_data as any).phase1_kpi_claims_v1,
       };
 
     // Additive: worker-provided disclosures for Phase 1 (code + message).

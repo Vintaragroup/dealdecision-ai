@@ -16,22 +16,33 @@ export type DealWorkspaceTopSectionProps = {
   } | null;
   dealSummary: string;
   dealSummaryTitle?: string;
-  dealSummarySource?: 'canonical' | 'legacy';
+  dealSummarySource?: 'canonical' | 'legacy' | 'overlay';
   strengths: string[];
   weaknesses: string[];
-  raise: string;
-  revenue: string;
+  raise: string | null;
+  raiseConflict?: boolean;
+  raiseConflictOverlayValue?: string | null;
+  revenue: string | null;
   revenueLabel?: string | null;
   revenueTooltip?: string | null;
-  growth: string;
+  revenueConflict?: boolean;
+  revenueConflictOverlayValue?: string | null;
+  growth: string | null;
   growthLabel?: string | null;
   growthNote?: string | null;
   growthTooltip?: string | null;
-  customers: string;
+  growthConflict?: boolean;
+  growthConflictOverlayValue?: string | null;
+  customers: string | null;
   customersLabel?: string | null;
   customersTooltip?: string | null;
-  businessModel: string;
+  customersConflict?: boolean;
+  customersConflictOverlayValue?: string | null;
+  businessModel: string | null;
   businessModelLabel?: string | null;
+  businessModelTooltip?: string | null;
+  businessModelConflict?: boolean;
+  businessModelConflictOverlayValue?: string | null;
   dealType: string;
   confidence: 'High' | 'Medium' | 'Low';
   verified?: boolean;
@@ -79,18 +90,29 @@ export function DealWorkspaceTopSection({
   strengths,
   weaknesses,
   raise,
+  raiseConflict = false,
+  raiseConflictOverlayValue = null,
   revenue,
   revenueLabel = null,
   revenueTooltip = null,
+  revenueConflict = false,
+  revenueConflictOverlayValue = null,
   growth,
   growthLabel = null,
   growthNote = null,
   growthTooltip = null,
+  growthConflict = false,
+  growthConflictOverlayValue = null,
   customers,
   customersLabel = null,
   customersTooltip = null,
+  customersConflict = false,
+  customersConflictOverlayValue = null,
   businessModel,
   businessModelLabel = null,
+  businessModelTooltip = null,
+  businessModelConflict = false,
+  businessModelConflictOverlayValue = null,
   dealType,
   confidence,
   verified = false,
@@ -139,8 +161,8 @@ export function DealWorkspaceTopSection({
     return 'Annual';
   })();
 
-  const metricCards: Array<{ label: string; value: string; note: string; noteClass: string; tooltip?: string | null; badge?: string | null }> = [
-    { label: 'Raise', value: raise, note: 'Target', noteClass: 'text-emerald-400' },
+  const metricCards: Array<{ label: string; value: string | null; note: string; noteClass: string; tooltip?: string | null; badge?: string | null; conflict?: boolean; conflictOverlayValue?: string | null }> = [
+    { label: 'Raise', value: raise, note: 'Target', noteClass: 'text-emerald-400', conflict: raiseConflict, conflictOverlayValue: raiseConflictOverlayValue },
     {
       label: 'Revenue',
       value: revenue,
@@ -148,6 +170,8 @@ export function DealWorkspaceTopSection({
       noteClass: 'text-blue-400',
       tooltip: revenueTooltip,
       badge: revenueLabel,
+      conflict: revenueConflict,
+      conflictOverlayValue: revenueConflictOverlayValue,
     },
     {
       label: 'Growth',
@@ -156,6 +180,8 @@ export function DealWorkspaceTopSection({
       noteClass: 'text-emerald-400',
       tooltip: growthTooltip,
       badge: growthLabel,
+      conflict: growthConflict,
+      conflictOverlayValue: growthConflictOverlayValue,
     },
     {
       label: 'Customers',
@@ -164,8 +190,19 @@ export function DealWorkspaceTopSection({
       noteClass: 'text-zinc-400',
       tooltip: customersTooltip,
       badge: customersLabel,
+      conflict: customersConflict,
+      conflictOverlayValue: customersConflictOverlayValue,
     },
-    { label: 'Business Model', value: businessModel, note: 'Recurring', noteClass: 'text-blue-400', badge: businessModelLabel },
+    {
+      label: 'Business Model',
+      value: businessModel,
+      note: 'Recurring',
+      noteClass: 'text-blue-400',
+      tooltip: businessModelTooltip,
+      badge: businessModelLabel,
+      conflict: businessModelConflict,
+      conflictOverlayValue: businessModelConflictOverlayValue,
+    },
     { label: 'Deal Type', value: dealType, note: 'Equity', noteClass: 'text-amber-400' },
   ];
 
@@ -296,17 +333,35 @@ export function DealWorkspaceTopSection({
             <h3 className="sr-only">Key metrics</h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
               {metricCards.map((m) => (
-                <div key={m.label} className={`${insetClass} p-4`} title={m.tooltip || undefined}>
+                <div
+                  key={m.label}
+                  className={`${insetClass} p-4`}
+                  title={m.conflict
+                    ? `Conflict detected — overlay: ${m.conflictOverlayValue ?? '—'} · deterministic: ${typeof m.value === 'string' && m.value.trim() ? m.value.trim() : '—'}`
+                    : (m.tooltip || undefined)}
+                >
+                  {(() => {
+                    const displayValue = typeof m.value === 'string' && m.value.trim() ? m.value.trim() : '—';
+                    return (
+                      <>
                   <div className="text-xs text-zinc-500 mb-1">{m.label}</div>
-                  <div className="text-2xl text-white mb-0.5 break-words">{m.value}</div>
+                  <div className="text-2xl text-white mb-0.5 break-words">{displayValue}</div>
                   <div className="flex items-center gap-2">
                     <div className={`text-xs ${m.noteClass}`}>{m.note}</div>
+                    {m.conflict ? (
+                      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-amber-500/15 text-amber-200 border border-amber-500/25">
+                        Conflict
+                      </span>
+                    ) : null}
                     {m.badge ? (
                       <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-white/5 text-zinc-200 border border-white/10">
                         {m.badge}
                       </span>
                     ) : null}
                   </div>
+                      </>
+                    );
+                  })()}
                 </div>
               ))}
             </div>
@@ -323,6 +378,10 @@ export function DealWorkspaceTopSection({
               {dealSummarySource === 'canonical' ? (
                 <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/15 text-emerald-200 border border-emerald-500/25">
                   Canonical
+                </span>
+              ) : dealSummarySource === 'overlay' ? (
+                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-blue-500/15 text-blue-200 border border-blue-500/25">
+                  Overlay (non-authoritative)
                 </span>
               ) : (
                 <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-white/5 text-zinc-200 border border-white/10">

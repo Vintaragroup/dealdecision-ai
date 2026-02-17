@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { normalizeAnalystSegment, type AnalystSegment } from "./analyst-segment";
 import { segmentDpuPage } from "./segment-dpu-page";
+import { assessTextQuality, sanitizeForDisplay } from "./text-quality";
 
 const asNonEmptyString = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
 
@@ -32,6 +33,103 @@ export type SegmentedDealNode = {
   };
 };
 
+export type DroppedLine = { line: string; reason: string };
+
+const normalizeWhitespace = (s: string): string => s.replace(/\s+/g, " ").trim();
+
+const countMatches = (s: string, re: RegExp): number => {
+  const m = s.match(re);
+  return m ? m.length : 0;
+};
+
+const symbolRatio = (s: string): number => {
+  const cleaned = s.replace(/\s+/g, "");
+  if (!cleaned) return 0;
+  const symbols = countMatches(cleaned, /[^a-zA-Z0-9]/g);
+  return symbols / cleaned.length;
+};
+
+const digitRatio = (s: string): number => {
+  const cleaned = s.replace(/\s+/g, "");
+  if (!cleaned) return 0;
+  const digits = countMatches(cleaned, /\d/g);
+  return digits / cleaned.length;
+};
+
+const hasKpiContext = (s: string): boolean => {
+  const t = s.toLowerCase();
+  return /\b(revenue|arr|mrr|gmv|cagr|growth|margin|gross\s+margin|burn|runway|conversion|cac|ltv|ebitda|customers?|users?|accounts?|retailers?|courses?|locations?|stores?)\b/i.test(t);
+};
+
+const whitespaceRatio = (s: string): number => {
+  if (!s) return 0;
+  const spaces = countMatches(s, /\s/g);
+  return spaces / s.length;
+};
+
+const hasRepeatedPunctuationRun = (s: string): boolean => {
+  return /[|]{3,}/.test(s) || /[.]{6,}/.test(s) || /[-_]{8,}/.test(s) || /[=]{5,}/.test(s) || /[!]{4,}/.test(s);
+};
+
+export function normalizeAndFilterLines(lines: string[]): { kept: string[]; dropped: DroppedLine[] } {
+  const kept: string[] = [];
+  const dropped: DroppedLine[] = [];
+
+  for (const raw of Array.isArray(lines) ? lines : []) {
+    const original = typeof raw === "string" ? raw : "";
+    let line = normalizeWhitespace(original.replace(/^\s*[-•\u2022]+\s*/g, ""));
+    if (!line) {
+      dropped.push({ line: original, reason: "empty" });
+      continue;
+    }
+
+    if (/(confidential|all rights reserved|©|copyright)/i.test(line)) {
+      dropped.push({ line, reason: "boilerplate" });
+      continue;
+    }
+    if (/(http|https|www\.)/i.test(line)) {
+      dropped.push({ line, reason: "url" });
+      continue;
+    }
+
+    // Very long footer-like lines (often legal blocks or OCR concatenation)
+    if (line.length >= 220 && whitespaceRatio(line) <= 0.06) {
+      dropped.push({ line, reason: "long_footer" });
+      continue;
+    }
+
+    const sRatio = symbolRatio(line);
+    const dRatio = digitRatio(line);
+    if (sRatio > 0.25) {
+      dropped.push({ line, reason: "ocr_symbol_ratio" });
+      continue;
+    }
+    // Digit-heavy lines are often table scraps / OCR concat, but KPI bullets can be
+    // legitimately numeric (e.g. "$800,000 in revenue", "3.2% conversion").
+    // Only drop digit-heavy lines when they lack obvious KPI context.
+    if (dRatio > 0.25 && !hasKpiContext(line)) {
+      dropped.push({ line, reason: "ocr_digit_ratio" });
+      continue;
+    }
+
+    const tokens = line.split(/\s+/g).filter(Boolean);
+    const wordCount = tokens.length;
+    const avgTokenLen = wordCount > 0 ? tokens.reduce((acc, t) => acc + t.length, 0) / wordCount : 0;
+    if (avgTokenLen > 18 && wordCount < 6) {
+      dropped.push({ line, reason: "ocr_token_shape" });
+      continue;
+    }
+    if (hasRepeatedPunctuationRun(line)) {
+      dropped.push({ line, reason: "punctuation_run" });
+      continue;
+    }
+
+    kept.push(line);
+  }
+
+  return { kept, dropped };
+}
+
 function slideTitleFromPayload(payload: any): string | null {
   const structured = payload?.structured ?? null;
   const textBlocks = payload?.text_blocks ?? null;
@@ -43,17 +141,41 @@ function slideTitleFromPayload(payload: any): string | null {
   );
 }
 
-function bulletsFromPayload(payload: any, maxBullets = 12): string[] {
+function bulletLinesFromPayload(payload: any): { kept: string[]; dropped: DroppedLine[] } {
   const structured = payload?.structured ?? null;
   const textBlocks = payload?.text_blocks ?? null;
   const bullets: unknown = Array.isArray(structured?.bullets) ? structured.bullets : Array.isArray(textBlocks?.bullets) ? textBlocks.bullets : null;
-  if (!Array.isArray(bullets)) return [];
-  const out: string[] = [];
+  if (!Array.isArray(bullets)) return { kept: [], dropped: [] };
+
+  const rawLines: string[] = [];
   for (const b of bullets) {
-    if (out.length >= maxBullets) break;
     const s = asNonEmptyString(b);
     if (!s) continue;
-    out.push(s);
+    // Split multi-line bullets and inline bullet separators.
+    for (const piece of s.split(/\r?\n/g)) {
+      const trimmed = piece.trim();
+      if (!trimmed) continue;
+      if (trimmed.includes("•")) {
+        rawLines.push(...trimmed.split(/\s*•\s*/g));
+      } else {
+        rawLines.push(trimmed);
+      }
+    }
+  }
+
+  return normalizeAndFilterLines(rawLines);
+}
+
+function bulletsFromPayload(payload: any, maxBullets = 12): string[] {
+  const { kept } = bulletLinesFromPayload(payload);
+  const out: string[] = [];
+  for (const line of kept) {
+    if (out.length >= maxBullets) break;
+    const cleaned = sanitizeForDisplay(line);
+    const assessed = assessTextQuality(cleaned);
+    // Hard rule: do not allow garbage OCR/boilerplate to become a bullet candidate.
+    if (!(assessed.quality === "good" || assessed.quality === "ok") || !assessed.display) continue;
+    out.push(assessed.display);
   }
   return out;
 }
@@ -67,11 +189,14 @@ function segmentFromTitleAndBullets(input: { title: string | null; bullets: stri
 }
 
 function bulletsSnippetFromPayload(payload: any, maxLen: number): string {
-  const bullets = bulletsFromPayload(payload, 12);
-  const joined = bullets.join(" • ").replace(/\s+/g, " ").trim();
+  const { kept } = bulletLinesFromPayload(payload);
+  const joined = sanitizeForDisplay(kept.slice(0, 12).join(" • "));
   if (!joined) return "";
-  if (joined.length <= maxLen) return joined;
-  return `${joined.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…`;
+
+  const clipped = joined.length <= maxLen ? joined : `${joined.slice(0, Math.max(0, maxLen - 1)).trimEnd()}…`;
+  const assessed = assessTextQuality(clipped);
+  if (!(assessed.quality === 'good' || assessed.quality === 'ok') || !assessed.display) return "";
+  return assessed.display;
 }
 
 function visualAssetIdFromPayload(payload: any): string | null {

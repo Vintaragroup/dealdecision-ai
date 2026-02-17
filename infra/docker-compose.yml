@@ -56,7 +56,10 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/dealdecision
       REDIS_URL: redis://redis:6379
       UPLOAD_DIR: /app/uploads
-      DISABLE_CLERK_AUTH: ${DISABLE_CLERK_AUTH:-0}
+      # Local/dev default: bypass Clerk auth so the dev dashboard can call the API
+      # without needing a browser token. Set DISABLE_CLERK_AUTH=0 to enforce auth.
+      DISABLE_CLERK_AUTH: ${DISABLE_CLERK_AUTH:-1}
+      DETERMINISTIC_SCORE_V1_ENABLED: ${DETERMINISTIC_SCORE_V1_ENABLED:-1}
     ports:
       - "9000:9000"
     volumes:
@@ -90,6 +93,7 @@ services:
       UPLOAD_DIR: /app/uploads
       VISION_BASE_URL: http://vision_worker:8000
       ENABLE_VISUAL_EXTRACTION: ${ENABLE_VISUAL_EXTRACTION:-1}
+      DETERMINISTIC_SCORE_V1_ENABLED: ${DETERMINISTIC_SCORE_V1_ENABLED:-1}
       DDAI_ENABLE_PHASEB_VISUAL_EVIDENCE: "1"
       # PDF extraction rollout flags (safe defaults)
       PDF_EXTRACT_MODE: ${PDF_EXTRACT_MODE:-v1}

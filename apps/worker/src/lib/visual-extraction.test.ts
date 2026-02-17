@@ -100,12 +100,25 @@ test("computeVisionRoutingDecisionV1: images are allowed", () => {
 	expect(res.reason).toBe("image_allowed");
 });
 
-test("computeVisionRoutingDecisionV1: editable PDFs are disallowed", () => {
+test("computeVisionRoutingDecisionV1: pitch-deck sized PDFs allow vision fallback even when pdf text is ok", () => {
 	const res = computeVisionRoutingDecisionV1({
 		doc_kind: "pdf",
 		extraction_metadata: { needsOcr: false },
-		full_text_len: 5000,
+		full_text_len: 17232,
 		min_text_threshold_chars: 800,
+		page_coverage: { pages_with_text: 23, total_pages: 23, coverage: 1 },
+	});
+	expect(res.vision_fallback_allowed).toBe(true);
+	expect(res.reason).toBe("pdf_pitch_deck_allow_extract_visuals");
+});
+
+test("computeVisionRoutingDecisionV1: huge PDFs with good text remain disallowed (safety)", () => {
+	const res = computeVisionRoutingDecisionV1({
+		doc_kind: "pdf",
+		extraction_metadata: { needsOcr: false },
+		full_text_len: 50000,
+		min_text_threshold_chars: 800,
+		page_coverage: { pages_with_text: 300, total_pages: 300, coverage: 1 },
 	});
 	expect(res.vision_fallback_allowed).toBe(false);
 	expect(res.reason).toBe("pdf_text_ok");

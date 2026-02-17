@@ -5,6 +5,8 @@ import { getAuthToken } from './authToken';
 import { fetchEventSource } from '@microsoft/fetch-event-source';
 
 const META_ENV = (import.meta as any)?.env as any;
+// Local dev default: docker-compose.dev.yml exposes the API on 9001.
+// (VITE_API_BASE_URL remains the authoritative override.)
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:9001';
 // Default to live for any non-dev build (Render preview/staging builds may not set import.meta.env.PROD).
 // Default to mock only for true local dev.
@@ -22,6 +24,20 @@ export function getWebBackendRuntimeConfig() {
     prod: !!META_ENV?.PROD,
     mode: typeof META_ENV?.MODE === 'string' ? META_ENV.MODE : null,
   };
+}
+
+// DEV-only: expose a small inspection helper for debugging in the browser console.
+// DevTools can't reliably evaluate `import.meta.env`, so this provides an easy way to
+// confirm which API base URL and backend mode the running UI is using.
+try {
+  if (META_ENV?.DEV && typeof window !== 'undefined') {
+    (window as any).__ddaiApiClient = {
+      ...(typeof (window as any).__ddaiApiClient === 'object' ? (window as any).__ddaiApiClient : {}),
+      getWebBackendRuntimeConfig,
+    };
+  }
+} catch {
+  // ignore
 }
 
 async function getAuthHeader(opts?: { forceRefresh?: boolean; refreshWithinSeconds?: number }): Promise<Record<string, string>> {
@@ -1462,6 +1478,86 @@ export async function apiGetDealReport(dealId: string): Promise<DealReportEnvelo
 
 export async function apiGetDealReportNarrated(dealId: string): Promise<DealReportEnvelope> {
   return apiGetDealReportInternal(dealId, { narrate: true });
+}
+
+export type PersistedGovernedOverlayOverview = {
+  schema_version: string;
+  deal_id: string;
+  run_id?: string;
+  step_run_id?: string;
+  input_hash: string;
+  created_at: string;
+  llm_phase_mode: 'exploratory' | 'stabilizing' | 'governed';
+  summary_text: string;
+  claims: any[];
+  disclosures: any[];
+  overview_json?: Record<string, any> | null;
+};
+
+export async function apiGetDealGovernedOverlayPersisted(
+  dealId: string
+): Promise<{ overview: PersistedGovernedOverlayOverview | null }> {
+  const path = `/api/v1/deals/${dealId}/governed-llm-overview`;
+
+  const doFetch = async (forceRefreshToken: boolean): Promise<Response> => {
+    const authHeader = await getAuthHeader({ forceRefresh: forceRefreshToken, refreshWithinSeconds: 30 });
+    return await fetch(`${API_BASE_URL}${path}`, {
+      method: 'GET',
+      cache: 'no-store',
+      headers: {
+        ...authHeader,
+      },
+    });
+  };
+
+  const tryParseJson = async (res: Response): Promise<any> => {
+    try {
+      return await res.json();
+    } catch {
+      return null;
+    }
+  };
+
+  try {
+    let res = await doFetch(false);
+    if (!res.ok && res.status === 401) {
+      // Retry once with a forced refresh token (mirrors /report behavior).
+      res = await doFetch(true);
+    }
+    if (!res.ok) {
+      // Caller decides fallback behavior; treat non-200 as error by throwing.
+      throw new Error(`governed_overlay_http_${res.status}`);
+    }
+
+    const payload = await tryParseJson(res);
+    const overview = payload && typeof payload === 'object' ? (payload as any).overview : null;
+    return { overview: (overview && typeof overview === 'object') ? (overview as PersistedGovernedOverlayOverview) : null };
+  } catch (err) {
+    // Surface error to allow caller to fallback.
+    throw err;
+  }
+}
+
+export type DealAnalysisDiagnosticsSnapshot = {
+  deal_id: string;
+  report_id: string;
+  llm_phase_mode: 'exploratory' | 'stabilizing' | 'governed' | string;
+  citation_integrity_percent: number | null;
+  numeric_claims_without_evidence: number | null;
+  semantic_drift_score: number | null;
+  hallucination_count: number | null;
+  deterministic_coverage_ratio: number | null;
+  provider_error_count: number | null;
+  model_output_truncated_count: number | null;
+  model_output_not_json_count: number | null;
+  guard_degraded_count: number | null;
+  created_at: string;
+};
+
+export async function apiGetDealAnalysisDiagnostics(
+  dealId: string
+): Promise<{ diagnostics: DealAnalysisDiagnosticsSnapshot | null }> {
+  return request<{ diagnostics: DealAnalysisDiagnosticsSnapshot | null }>(`/api/v1/deals/${dealId}/analysis-diagnostics`);
 }
 
 async function apiGetDealReportInternal(dealId: string, opts: { narrate: boolean }): Promise<DealReportEnvelope> {

@@ -155,6 +155,64 @@ const formatUsdShort = (amount: number | null | undefined): string | null => {
   return `$${Math.round(v)}`;
 };
 
+const revenueDisplayFromStructuredSummary = (structured: any): string | null => {
+  const value = structured?.revenue?.value;
+  if (!value || typeof value !== 'object') return null;
+  const raw = asNonEmptyString((value as any).raw);
+  if (raw) return raw;
+  const formatted = formatUsdShort((value as any).amount);
+  return formatted;
+};
+
+const promotedFactTypeOf = (f: any): string => {
+  const root = f?.fact_type;
+  if (typeof root === 'string' && root.trim()) return root.trim();
+  const nested = f?.content_json?.fact_type;
+  return typeof nested === 'string' ? nested.trim() : '';
+};
+
+const promotedFactValueJson = (f: any): any => {
+  const cj = f?.content_json;
+  if (cj && typeof cj === 'object') {
+    return (cj as any)?.value_json ?? (cj as any)?.valueJson ?? null;
+  }
+  return null;
+};
+
+const revenueDisplayFromPromotedFacts = (promotedFacts?: PromotedFactInput[]): string | null => {
+  const facts = Array.isArray(promotedFacts) ? promotedFacts : [];
+  const candidates = facts
+    .filter((f) => promotedFactTypeOf(f) === 'revenue_v1')
+    .filter((f) => {
+      const vj = promotedFactValueJson(f) ?? {};
+      const subtype = String((vj as any)?.subtype ?? '').toLowerCase();
+      const scope = String((vj as any)?.scope ?? (f as any)?.content_json?.provenance?.scope ?? '').toLowerCase();
+      if (subtype === 'attributed') return false;
+      if (scope === 'channel_attributed') return false;
+      return true;
+    })
+    .sort((a, b) => (Number(b.confidence ?? 0) - Number(a.confidence ?? 0)));
+
+  for (const f of candidates) {
+    const vj = promotedFactValueJson(f) ?? {};
+    const display = asNonEmptyString((vj as any)?.display ?? (vj as any)?.raw);
+    if (display) return display;
+  }
+  return null;
+};
+
+const applyRevenueOverrideToMetricBenchmarkContent = (content: string, revenueDisplay: string | null): string => {
+  if (!revenueDisplay) return content;
+
+  // Ensure revenue is not reported as missing if canonical/provided revenue exists.
+  // Handles both real newlines and literal "\\n" sequences.
+  const re = /•\s*revenue\s*:\s*([^)]*?)\s+vs\s+([^)]*?)\s+\(Missing\)/gi;
+  return content.replace(re, (_m, _currentValue, benchmarkValue) => {
+    const bench = typeof benchmarkValue === 'string' && benchmarkValue.trim() ? benchmarkValue.trim() : '0';
+    return `• revenue: ${revenueDisplay} vs ${bench} (Adequate)`;
+  });
+};
+
 const shouldCollapseRaiseDisplay = (display: string): boolean => {
   const s = display.toLowerCase();
   // If detailed term sheet semantics are present, keep the full display.
@@ -423,6 +481,23 @@ function buildStructuredSummary(
   const phase1 = (dio as any)?.dio?.phase1;
   const overview = phase1?.deal_overview_v2;
   const exec = phase1?.executive_summary_v1;
+
+  const arbitrationV1 = phase1?.business_model_arbitration_v1;
+  const arbitratedModel = asNonEmptyString(arbitrationV1?.business_model);
+  if (arbitratedModel) {
+    const evidence = Array.isArray(arbitrationV1?.evidence) ? arbitrationV1.evidence : [];
+    const sources = evidence.map((e: any) => ({
+      kind: 'phase1.business_model_arbitration_v1',
+      model: typeof e?.model === 'string' ? e.model : null,
+      rule_kind: typeof e?.kind === 'string' ? e.kind : null,
+      weight: typeof e?.weight === 'number' && Number.isFinite(e.weight) ? e.weight : null,
+      detail: typeof e?.detail === 'string' ? e.detail : null,
+      source: typeof e?.source === 'string' ? e.source : null,
+    }));
+    const confRaw = (arbitrationV1 as any)?.confidence;
+    const conf = typeof confRaw === 'number' && Number.isFinite(confRaw) ? clamp01(confRaw) : 0.7;
+    structured.business_model = { value: arbitratedModel, confidence: conf, sources, label: 'Arbitrated' };
+  }
 
   const hasPrimaryCitation = (sources: Array<Record<string, any>>): boolean => {
     if (!Array.isArray(sources) || sources.length === 0) return false;
@@ -1276,6 +1351,9 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
   
   // Build report sections
   const sections: ReportSection[] = [];
+
+  const structuredSummary = buildStructuredSummary(dio, scoreExplanation, undefined);
+  const canonicalRevenueDisplay = revenueDisplayFromStructuredSummary(structuredSummary);
   
   // Executive Summary
   const overallScoreText = scoreAvailable ? `${overallScoreFinal}/100 (${grade})` : 'N/A (insufficient data)';
@@ -1309,14 +1387,19 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     const mb = results.metric_benchmark;
     const mbScoreText = mb.overall_score == null ? 'N/A' : `${mb.overall_score}/100`;
     const analyzed = Array.isArray(mb.metrics_analyzed) ? mb.metrics_analyzed : [];
+    const rawContent =
+      `Score: ${mbScoreText}\n\n` +
+      (analyzed.length > 0
+        ? `Metrics Analyzed:\\n${analyzed
+            .slice(0, 8)
+            .map((m: any) => `• ${m.metric}: ${m.value} vs ${m.benchmark_value} (${m.rating})`)
+            .join('\\n')}`
+        : 'No metrics analyzed') +
+      formatWhyThisScore((mb as any).debug_scoring);
     sections.push({
       id: 'metric-benchmark',
       title: 'Business Metrics',
-      content: `Score: ${mbScoreText}\n\n` +
-        (analyzed.length > 0
-          ? `Metrics Analyzed:\\n${analyzed.slice(0, 8).map((m: any) => `• ${m.metric}: ${m.value} vs ${m.benchmark_value} (${m.rating})`).join('\\n')}`
-          : 'No metrics analyzed') +
-        formatWhyThisScore((mb as any).debug_scoring),
+      content: applyRevenueOverrideToMetricBenchmarkContent(rawContent, canonicalRevenueDisplay),
       evidence_ids: mb.evidence_ids,
       metrics: mb.overall_score == null
         ? undefined
@@ -1426,7 +1509,7 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     version: dio.analysis_version,
 
     overallScore: overallScoreFinal,
-    structured_summary: buildStructuredSummary(dio, scoreExplanation, undefined),
+    structured_summary: structuredSummary,
     grade,
     recommendation,
     
@@ -1451,9 +1534,15 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
 export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedFacts?: PromotedFactInput[] }): ReportDTO {
 	const scoreExplanation = buildScoreExplanationFromDIO(dio as any);
 	const base = compileDIOToReport(dio);
+  const structuredSummary = buildStructuredSummary(dio, scoreExplanation, opts?.promotedFacts ?? undefined);
+  const revenueDisplay = revenueDisplayFromStructuredSummary(structuredSummary) ?? revenueDisplayFromPromotedFacts(opts?.promotedFacts);
+  const sections = revenueDisplay
+    ? base.sections.map((s) => (s.id === 'metric-benchmark' ? { ...s, content: applyRevenueOverrideToMetricBenchmarkContent(s.content, revenueDisplay) } : s))
+    : base.sections;
 	return {
 		...base,
-		structured_summary: buildStructuredSummary(dio, scoreExplanation, opts?.promotedFacts ?? undefined),
+    structured_summary: structuredSummary,
+    sections,
 	};
 }
 

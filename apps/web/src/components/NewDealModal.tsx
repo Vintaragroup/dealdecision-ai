@@ -206,6 +206,26 @@ export function NewDealModal({ isOpen, onClose, onSuccess, onCreatedDeal, darkMo
         }, 3500);
       };
 
+      const parseDealAlreadyExists = (err: unknown): { existing_deal_id: string; existing_deal_name?: string } | null => {
+        const message = err instanceof Error ? err.message : '';
+        const m = message.match(/^HTTP\s+(\d+)\s+/);
+        const status = m ? Number(m[1]) : null;
+        if (status !== 409) return null;
+
+        const idx = message.indexOf(':');
+        const tail = idx >= 0 ? message.slice(idx + 1).trim() : '';
+        if (!tail.startsWith('{')) return null;
+        try {
+          const parsed = JSON.parse(tail);
+          const existingId = typeof parsed?.existing_deal_id === 'string' ? parsed.existing_deal_id : '';
+          if (!existingId.trim()) return null;
+          const existingName = typeof parsed?.existing_deal_name === 'string' ? parsed.existing_deal_name : undefined;
+          return { existing_deal_id: existingId, ...(existingName ? { existing_deal_name: existingName } : {}) };
+        } catch {
+          return null;
+        }
+      };
+
       apiCreateDeal({
         name: formData.name || 'Untitled Deal',
         stage: mapStageToApi(formData.stage),
@@ -221,6 +241,25 @@ export function NewDealModal({ isOpen, onClose, onSuccess, onCreatedDeal, darkMo
           proceedToWorkspace(dealData, created);
         })
         .catch((err) => {
+          const conflict = parseDealAlreadyExists(err);
+          if (conflict) {
+            const name = conflict.existing_deal_name?.trim();
+            addToast('info', 'Deal already exists', name ? `Opening ${name}` : 'Opening existing deal');
+
+            void apiGetDeal(conflict.existing_deal_id)
+              .then((existing) => {
+                const dealData = buildDealData(existing.id);
+                proceedToWorkspace(dealData, existing);
+              })
+              .catch((loadErr) => {
+                const loadMessage = loadErr instanceof Error ? loadErr.message : 'Failed to load existing deal';
+                setSubmitError(loadMessage);
+                addToast('error', 'Failed to open existing deal', loadMessage);
+              });
+
+            return;
+          }
+
           const message = err instanceof Error ? err.message : 'Failed to create deal';
           setSubmitError(message);
           addToast('error', 'Failed to create deal', message);

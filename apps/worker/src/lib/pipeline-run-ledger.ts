@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import type { Job, Processor } from "bullmq";
 import { createHash } from "crypto";
+import { getFailOpenMode } from "@dealdecision/core";
 
 function sha256Hex(input: string): string {
 	return createHash("sha256").update(input).digest("hex");
@@ -383,6 +384,22 @@ export async function startStepRunLedger(
 		return { run_id, step_run_id };
 	} catch (err: any) {
 		if (isMissingTableError(err)) return null;
+		const mode = getFailOpenMode();
+		if (mode !== "dev") {
+			try {
+				console.warn(
+					JSON.stringify({
+						event: "DISCLOSURE",
+						code: "fail_open_pipeline_run_ledger",
+						mode,
+						error: err instanceof Error ? err.message : String(err),
+						ts: new Date().toISOString(),
+					})
+				);
+			} catch {
+				// ignore
+			}
+		}
 		// Fail open; ledger should never block work.
 		return null;
 	}

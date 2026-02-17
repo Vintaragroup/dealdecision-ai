@@ -59,6 +59,13 @@ describe("document_page_understanding population", () => {
 		expect(q0?.sql.includes("va.page_index >= $2")).toBe(true);
 		expect(q0?.sql.includes("va.page_index < $3")).toBe(true);
 		expect(q0?.sql.includes("ON CONFLICT (document_id, page_index, version)")).toBe(true);
+		// Regression guard: ensure OCR fallback + OCR-derived parsing is present.
+		expect(q0?.sql.includes("ocr_text_clean")).toBe(true);
+		expect(q0?.sql.includes("{text_blocks,ocr_text}")).toBe(true);
+		expect(q0?.sql.includes("regexp_split_to_array")).toBe(true);
+		expect(q0?.sql.includes("'used_ocr_fallback', (ocr_text_clean IS NOT NULL) AND ((NOT structured_ok) OR COALESCE(length(page_text), 0) < 40)")).toBe(true);
+		// page_text_empty now treats either page_text OR text_snippet as understanding.
+		expect(q0?.sql.includes("payload->'text_blocks'->>'text_snippet'")).toBe(true);
 		// Eligibility is driven by joins (visual_assets -> visual_extractions), not documents.type metadata.
 		expect(q0?.sql.includes("ILIKE '%presentation%'")).toBe(false);
 		expect(q0?.sql.includes("ILIKE '%powerpoint%'")).toBe(false);

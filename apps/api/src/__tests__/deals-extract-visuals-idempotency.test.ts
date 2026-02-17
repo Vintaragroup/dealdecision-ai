@@ -187,8 +187,12 @@ test("POST /api/v1/deals/:deal_id/extract-visuals treats local rendered pages as
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ddai-uploads-"));
   const prevUploadDir = process.env.UPLOAD_DIR;
   const prevR2 = process.env.R2_BUCKET;
+  const prevNodeEnv = process.env.NODE_ENV;
+  const prevLocalFallback = process.env.DDAI_DEV_LOCAL_FALLBACK;
 
   try {
+    process.env.NODE_ENV = "test";
+    process.env.DDAI_DEV_LOCAL_FALLBACK = "1";
     process.env.UPLOAD_DIR = tmp;
     delete (process.env as any).R2_BUCKET;
 
@@ -252,6 +256,12 @@ test("POST /api/v1/deals/:deal_id/extract-visuals treats local rendered pages as
     process.env.UPLOAD_DIR = prevUploadDir;
     if (prevR2 == null) delete (process.env as any).R2_BUCKET;
     else process.env.R2_BUCKET = prevR2;
+
+    if (prevNodeEnv == null) delete (process.env as any).NODE_ENV;
+    else process.env.NODE_ENV = prevNodeEnv;
+    if (prevLocalFallback == null) delete (process.env as any).DDAI_DEV_LOCAL_FALLBACK;
+    else process.env.DDAI_DEV_LOCAL_FALLBACK = prevLocalFallback;
+
     try {
       fs.rmSync(tmp, { recursive: true, force: true });
     } catch {

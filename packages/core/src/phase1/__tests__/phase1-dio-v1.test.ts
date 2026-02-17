@@ -916,6 +916,32 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		expect(out.dio.phase1.update_report_v1.changes).toEqual([]);
 	});
 
+	it("mergePhase1IntoDIO persists kpi_reconciliation_v1 and kpi_claims_v1 when provided", () => {
+		const existing: any = {
+			dio: { phase1: {} },
+		};
+		const phase1: any = generatePhase1DIOV1({
+			deal: { deal_id: "deal-1", name: null, stage: null },
+			inputDocuments: [{ document_id: "doc-1", title: "Deck", type: "pitch_deck" }],
+		});
+
+		phase1.kpi_reconciliation_v1 = {
+			version: "kpi_reconciliation_v1",
+			generated_at: "now",
+			results: {
+				ARR: { metric: "ARR", resolved: true, value: 1_000_000, source_claim_id: "dpu:doc-1:p0:km0", rejected_claims: [] },
+				MRR: { metric: "MRR", resolved: false, rejected_claims: [], conflict_reason: "no_claims" },
+			},
+		};
+		phase1.kpi_claims_v1 = [{ claim_id: "dpu:doc-1:p0:km0", metric: "ARR", value: 1_000_000 }];
+
+		const out: any = mergePhase1IntoDIO(existing, phase1);
+		expect(out?.dio?.phase1?.kpi_reconciliation_v1).toBeTruthy();
+		expect(out?.dio?.phase1?.kpi_reconciliation_v1?.version).toBe("kpi_reconciliation_v1");
+		expect(Array.isArray(out?.dio?.phase1?.kpi_claims_v1)).toBe(true);
+		expect(out?.dio?.phase1?.kpi_claims_v1?.length).toBe(1);
+	});
+
 	it("mergePhase1IntoDIO persists disclosures_v1 when provided", () => {
 		const { generatePhase1DIOV1, mergePhase1IntoDIO } = require("../phase1-dio-v1");
 

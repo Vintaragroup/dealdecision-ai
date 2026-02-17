@@ -28,6 +28,7 @@ vi.mock('../lib/apiClient', async (importOriginal) => {
     apiGetDocuments: vi.fn(async () => ({ documents: [] } as any)),
     apiGetDealReport: vi.fn(async () => ({ ready: false, reason: 'not_generated_yet' } as any)),
     apiGetDealReportNarrated: vi.fn(async () => ({ ready: false, reason: 'not_generated_yet' } as any)),
+    apiGetDealGovernedOverlayPersisted: vi.fn(async () => ({ overview: null } as any)),
     apiGetDealDeterministicUnderstanding: vi.fn(async () => null as any),
     apiPostDealDeterministicUnderstanding: vi.fn(async () => ({
       analysis_version: 'deterministic_understanding_v1',
@@ -173,6 +174,52 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(within(screen.getByTestId('analysis-output-panel')).queryByText(/Pinned \(coverage_too_low\)/i)).toBeNull();
   });
 
+  test('resolves evidence ids from report sections when report is ready (deduped + non-empty)', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v1.0.0',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-01-02T00:00:00.000Z',
+    } as any);
+
+    const { apiGetDealReport, apiResolveEvidence } = await import('../lib/apiClient');
+
+    vi.mocked(apiGetDealReport).mockResolvedValueOnce({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-rpt-ev-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 78,
+        grade: 'B',
+        recommendation: 'yes',
+        greenFlags: ['Strong early signal'],
+        sections: [
+          { id: 's1', title: 'Overview', content: 'Test content', evidence_ids: ['ev-2', '', '  ', 'ev-1', 'ev-2'] },
+        ],
+        metadata: {
+          cycle_number: 1,
+          deterministic_score_preview_v1: {
+            baseline: { unadjusted_pinned: true, unadjusted_pin_reason: 'low_coverage' },
+          },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-rpt-ev-1' });
+
+    await waitFor(() => {
+      expect(vi.mocked(apiResolveEvidence)).toHaveBeenCalled();
+    });
+
+    const calls = vi.mocked(apiResolveEvidence).mock.calls;
+    const firstArgs = calls[0]?.[0] ?? [];
+    expect(firstArgs).toEqual(expect.arrayContaining(['ev-1', 'ev-2']));
+    expect(firstArgs).not.toEqual(expect.arrayContaining(['']));
+    expect(firstArgs.some((v) => typeof v !== 'string' || v.trim().length === 0)).toEqual(false);
+  });
+
   test('binds top summary tiles to ready report payload (score + executive summary + stage + structured tiles)', async () => {
     vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: 'v1.0.0',
@@ -196,10 +243,14 @@ describe('DealWorkspace Job Center (live mode)', () => {
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: exec, evidence_ids: [] }],
         structured_summary: {
-          raise: { value: '$2M Seed', confidence: 0.9, sources: [] },
-          business_model: { value: 'Usage-based SaaS', confidence: 0.9, sources: [] },
-          revenue: { value: { raw: '$1.2M', currency: 'USD', period: 'ARR', amount: null }, confidence: 0.8, sources: [] },
-          customers: { value: { count: 450, kind: 'customers', raw: null }, confidence: 0.7, sources: [] },
+          raise: { value: '$2M Seed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
+          business_model: { value: 'Usage-based SaaS', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
+          revenue: {
+            value: { raw: '$1.2M', currency: 'USD', period: 'ARR', amount: null },
+            confidence: 0.8,
+            sources: [{ document_id: 'doc-1', page_index: 1 }],
+          },
+          customers: { value: { count: 450, kind: 'customers', raw: null }, confidence: 0.7, sources: [{ document_id: 'doc-1', page_index: 1 }] },
         },
         metadata: {
           score_explanation: {
@@ -237,22 +288,22 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(screen.getByText(/Stage:\s*In diligence/i)).toBeInTheDocument();
 
     // One tile reflects report context as well.
-    const dealTypeLabel = screen.getByText(/^Deal Type$/i);
+    const dealTypeLabel = within(top).getByText(/^Deal Type$/i);
     const dealTypeCard = dealTypeLabel.parentElement;
     expect(dealTypeCard).not.toBeNull();
     expect(within(dealTypeCard as HTMLElement).getByText(/Primary equity/i)).toBeInTheDocument();
 
-    const raiseLabel = screen.getByText(/^Raise$/i);
+    const raiseLabel = within(top).getByText(/^Raise$/i);
     const raiseCard = raiseLabel.parentElement;
     expect(raiseCard).not.toBeNull();
     expect(within(raiseCard as HTMLElement).getByText(/\$2M Seed/i)).toBeInTheDocument();
 
-    const revenueLabel = screen.getByText(/^Revenue$/i);
+    const revenueLabel = within(top).getByText(/^Revenue$/i);
     const revenueCard = revenueLabel.parentElement;
     expect(revenueCard).not.toBeNull();
     expect(within(revenueCard as HTMLElement).getByText(/\$1\.2M/i)).toBeInTheDocument();
 
-    const customersLabel = screen.getByText(/^Customers$/i);
+    const customersLabel = within(top).getByText(/^Customers$/i);
     const customersCard = customersLabel.parentElement;
     expect(customersCard).not.toBeNull();
     expect(within(customersCard as HTMLElement).getByText(/450 customers/i)).toBeInTheDocument();
@@ -268,7 +319,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(overviewRaiseRow).not.toBeNull();
     expect(within(overviewRaiseRow as HTMLElement).getByText(/\$2M Seed/i)).toBeInTheDocument();
 
-    const overviewBusinessModelLabel = screen.getByText(/Business Model:\s*/i);
+    const overviewBusinessModelLabel = screen.getByText(/^Business Model:\s*$/i);
     const overviewBusinessModelRow = overviewBusinessModelLabel.closest('div');
     expect(overviewBusinessModelRow).not.toBeNull();
     expect(within(overviewBusinessModelRow as HTMLElement).getByText(/Usage-based SaaS/i)).toBeInTheDocument();
@@ -502,7 +553,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(within(top).getByText(note)).toBeInTheDocument();
   });
 
-  test('Business Model tile prefers synthesized business_model_summary when report.ready=true (shows Synthesized badge)', async () => {
+  test('Business Model tile prefers promoted business_model when evidence-backed (even if synthesized summary exists)', async () => {
     vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: 'v1.0.0',
       dioStatus: 'ready',
@@ -529,7 +580,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
             derived_from: { product_pages: [12], gtm_pages: [15], distribution_pages: [23], traction_pages: [8], market_pages: [], other_pages: [] },
             supporting_nodes: [],
           },
-          business_model: { value: 'Usage-based SaaS (promoted)', confidence: 0.9, sources: [] },
+          business_model: { value: 'Usage-based SaaS (promoted)', label: 'Attributed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 2 }] },
         },
         metadata: { score_explanation: { context: { stage: 'in_diligence', deal_type: 'Primary equity' } } },
       },
@@ -541,8 +592,8 @@ describe('DealWorkspace Job Center (live mode)', () => {
     const businessModelLabel = within(top).getByText(/^Business Model$/i);
     const businessModelCard = businessModelLabel.parentElement;
     expect(businessModelCard).not.toBeNull();
-    expect(within(businessModelCard as HTMLElement).getByText(/DTC \+ wholesale apparel/i)).toBeInTheDocument();
-    expect(within(businessModelCard as HTMLElement).getByText(/^Synthesized$/i)).toBeInTheDocument();
+    expect(within(businessModelCard as HTMLElement).getByText(/Usage-based SaaS \(promoted\)/i)).toBeInTheDocument();
+    expect(within(businessModelCard as HTMLElement).getByText(/^Attributed$/i)).toBeInTheDocument();
   });
 
   test('Business Model tile falls back to promoted business_model when synthesized summary is null (no badge)', async () => {
@@ -567,7 +618,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
         sections: [],
         structured_summary: {
           business_model_summary: { value: null },
-          business_model: { value: 'Usage-based SaaS', confidence: 0.9, sources: [] },
+          business_model: { value: 'Usage-based SaaS', label: 'Attributed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
         },
         metadata: { score_explanation: { context: { stage: 'in_diligence', deal_type: 'Primary equity' } } },
       },
@@ -698,9 +749,12 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(screen.getAllByText(/doc-aaaa… · p1 · Overview/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/We build X for Y/i).length).toBeGreaterThan(0);
 
-    // Deep tier appears only after expanding.
+    // The expanded area shows the four list sections.
     await userEvent.click(screen.getByRole('button', { name: /show more/i }));
-    expect(screen.getByText(/CANON DEEP PARA 1/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/^Strengths$/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/^Concerns$/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/^Open Questions$/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/^Traction$/i).length).toBeGreaterThan(0);
   });
 
   test('Deal Summary shows Legacy label and hides citations toggle when canonical summary is not ready', async () => {
@@ -774,7 +828,42 @@ describe('DealWorkspace Job Center (live mode)', () => {
     const top = await screen.findByLabelText('Deal top summary');
     expect(top.textContent || '').not.toContain('\\n\\n');
     expect(within(top).getByText(/Overall Score: 50\/100/i)).toBeInTheDocument();
-    expect(within(top).getByText(/Recommendation: PASS/i)).toBeInTheDocument();
+    expect(within(top).queryByText(/Recommendation: PASS/i)).toBeNull();
+  });
+
+  test('When decision_v1 exists, top summary never shows legacy section recommendation', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v1.0.0',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-01-02T00:00:00.000Z',
+    } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    const exec = 'Overall Score: 50/100\\n\\nRecommendation: PASS';
+
+    vi.mocked(apiGetDealReport).mockResolvedValueOnce({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-rpt-dec-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 50,
+        recommendation: 'no',
+        sections: [{ id: 'executive-summary', title: 'Executive Summary', content: exec, evidence_ids: [] }],
+        metadata: {
+          cycle_number: 1,
+          decision_v1: { recommendation_key: 'consider', label: 'Consider (Caution)', severity: 'warn', reasons: ['band:consider_caution'] },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-rpt-dec-1' });
+
+    const top = await screen.findByLabelText('Deal top summary');
+    expect(within(top).queryByText(/Recommendation: PASS/i)).toBeNull();
+    expect(within(top).getByText(/Consider \(Caution\)/i)).toBeInTheDocument();
   });
 
   test('AI Assistant button is gated without DIO in live mode', async () => {

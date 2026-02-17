@@ -17,6 +17,7 @@ export * from "./services/prompt-generator";
 // Export utilities
 export * from "./lib/sanitize";
 export * from "./lib/document-capabilities";
+export * from "./lib/fail-open-policy";
 export * from "./lib/stable-uuid";
 export * from "./lib/stable-json";
 export * from "./queue-names";
@@ -26,6 +27,7 @@ export * from './scoring/scoring-input-v0';
 export * from './scoring/score-bands-v2';
 export * from './scoring/decision-v1';
 export * from './classification/content-archetypes';
+export * from './classification/business-model-arbitrator';
 
 // ============================================================================
 // DIO / Orchestration (Phase 4)
@@ -146,6 +148,7 @@ export * from "./services/purge-deal-cascade";
 
 // Reports
 export { compileDIOToReport, compileDIOToReportWithPromotedFacts } from "./reports/compiler-simple";
+export { buildInvestmentAnalysisOverviewV2 } from "./reports/investment-analysis-overview-v2";
 export { buildScoreExplanationFromDIO, buildScoringDiagnosticsFromDIO } from "./reports/score-explanation";
 export type { ScoreExplanation } from "./reports/score-explanation";
 export type { ScoringDiagnosticsV1 } from "./types/dio";
@@ -162,6 +165,9 @@ export type { ScoreInputsV1 } from "./scoring/score-inputs-v1";
 
 // Phase 1 deterministic composer (used by worker for change acknowledgement)
 export { generatePhase1DIOV1 } from "./phase1/phase1-dio-v1";
+
+// Phase 1 deterministic KPI reconciliation (ARR/MRR)
+export * from "./phase1/kpi-reconciliation-v1";
 
 // LLM narration (API-side optional feature)
 export { LlmNarrationV1Schema } from "./llm/narration-schema";

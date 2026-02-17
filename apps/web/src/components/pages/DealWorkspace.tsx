@@ -18,12 +18,17 @@ import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { DealWorkspaceTopSection } from '../workspace/DealWorkspaceTopSection';
 import { DealWorkspaceOverviewComp } from '../workspace/dealworkspace_overview_comp';
 import { selectDealWorkspaceHeader } from '../../lib/selectDealWorkspaceHeader';
+import { selectAuthoritativeBusinessModelV1 } from '../../lib/selectors/selectAuthoritativeBusinessModelV1';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
-import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealReportNarrated, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness } from '../../lib/apiClient';
+import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealAnalysisDiagnostics, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness, type DealAnalysisDiagnosticsSnapshot } from '../../lib/apiClient';
+import { useGovernedLlmOverview } from '../../hooks/useGovernedLlmOverview';
 import type { JobProgressEventV1 } from '@dealdecision/contracts';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
 import { derivePhaseBInsights } from '../../lib/phaseb-findings';
+import { buildOverlayViewModel } from '../../lib/overlay/overlayViewModel';
+import { buildWorkspaceMirrorOverviewVM } from '../../lib/workspaceMirrorPr2ViewModel';
+import { deterministicIsDisplayable } from '../../lib/deterministicDisplayPolicy';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { useScoreSource } from '../../contexts/ScoreSourceContext';
 import { extractFundabilityScore0_100 } from '../../lib/dealScore';
@@ -186,6 +191,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [reportFromApi, setReportFromApi] = useState<DealReport | null>(null);
   const [reportMissing, setReportMissing] = useState<boolean>(false);
   const [reportEnvelope, setReportEnvelope] = useState<DealReportEnvelope | null>(null);
+	const [analysisDiagnostics, setAnalysisDiagnostics] = useState<DealAnalysisDiagnosticsSnapshot | null>(null);
+	const [analysisDiagnosticsStatus, setAnalysisDiagnosticsStatus] = useState<'idle' | 'loading' | 'ready'>('idle');
+	const [analysisDiagnosticsError, setAnalysisDiagnosticsError] = useState<string | null>(null);
   const [analystReloadKey, setAnalystReloadKey] = useState(0);
   const [analystFocusNodeId, setAnalystFocusNodeId] = useState<string | null>(null);
   const [documentsReloadKey, setDocumentsReloadKey] = useState(0);
@@ -209,6 +217,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const handledTerminalJobKeysRef = useRef<Set<string>>(new Set());
   const fullProcessInFlightRef = useRef(false);
   const fullProcessRequestIdRef = useRef<string | null>(null);
+  const lastDiagnosticsAttemptAtRef = useRef<number>(0);
 
   const NO_EXTRACTED_DOCS_ANALYZE_ERROR = 'No extracted documents available for analysis';
 
@@ -609,9 +618,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const [debugApiEntries, setDebugApiEntries] = useState<DebugApiEntry[]>(() => (debugApiIsEnabled() ? debugApiGetEntries() : []));
 
-  const [governedEnvelope, setGovernedEnvelope] = useState<DealReportEnvelope | null>(null);
-  const [governedStatus, setGovernedStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
-  const [governedErrorCode, setGovernedErrorCode] = useState<string | null>(null);
+  const governedOverview = useGovernedLlmOverview(dealId);
+  const [overlayPostAnalyzeState, setOverlayPostAnalyzeState] = useState<'idle' | 'polling' | 'timeout'>('idle');
+  const overlayPostAnalyzeTimerRef = useRef<number | null>(null);
+  const overlayPostAnalyzeStartedAtRef = useRef<number>(0);
+  const overlayPostAnalyzeAttemptsRef = useRef<number>(0);
+  const [showDeterministicAuthoritative, setShowDeterministicAuthoritative] = useState<boolean>(false);
+  const deterministicToggleTouchedRef = useRef<boolean>(false);
+  const [showGovernedOverlayPanel, setShowGovernedOverlayPanel] = useState<boolean>(true);
+  const governedViewInitRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!debugApiIsEnabled()) return;
@@ -622,11 +637,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, []);
 
   useEffect(() => {
-    // Governed overlays are deal-specific and interpretation-only.
-    // Reset them when deal changes so we never show stale overlays.
-    setGovernedEnvelope(null);
-    setGovernedStatus('idle');
-    setGovernedErrorCode(null);
+    // Reset view defaults per deal.
+    governedViewInitRef.current = null;
+    setShowDeterministicAuthoritative(false);
+    setShowGovernedOverlayPanel(true);
+    deterministicToggleTouchedRef.current = false;
   }, [dealId]);
 
   const normalizeProgressSnapshot = (progress: unknown, jobMeta?: Partial<JobUpdatedEvent>): JobProgressEventV1 | null => {
@@ -707,19 +722,173 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     }
   };
 
-  const governedReportReady = Boolean((governedEnvelope as any)?.ready);
-  const governedReportFromApi = (() => {
-    if (!governedReportReady) return null;
-    const report = (governedEnvelope as any)?.report && typeof (governedEnvelope as any).report === 'object' ? (governedEnvelope as any).report : governedEnvelope;
-    return report && typeof report === 'object' ? (report as DealReport) : null;
-  })();
+  const loadDiagnostics = async (opts?: { force?: boolean }) => {
+    if (!dealId) {
+      setAnalysisDiagnostics(null);
+      setAnalysisDiagnosticsStatus('idle');
+      setAnalysisDiagnosticsError(null);
+      return;
+    }
+    const now = Date.now();
+    if (!opts?.force && now - lastDiagnosticsAttemptAtRef.current < 8000) return;
+    lastDiagnosticsAttemptAtRef.current = now;
 
-  const governedMeta = (governedReportFromApi as any)?.metadata ?? (governedEnvelope as any)?.metadata;
-  const governedOverviewText = (() => {
-    const llmOverview = (governedReportFromApi as any)?.llm_overview_v1 ?? (governedEnvelope as any)?.llm_overview_v1;
-    const text = llmOverview && typeof llmOverview === 'object' ? (llmOverview as any)?.investment_analysis_overview : null;
+    setAnalysisDiagnosticsStatus('loading');
+    setAnalysisDiagnosticsError(null);
+    try {
+      const res = await apiGetDealAnalysisDiagnostics(dealId);
+      const diag = res && typeof res === 'object' ? (res as any).diagnostics : null;
+      setAnalysisDiagnostics(diag && typeof diag === 'object' ? (diag as DealAnalysisDiagnosticsSnapshot) : null);
+      setAnalysisDiagnosticsStatus('ready');
+    } catch (err) {
+      setAnalysisDiagnostics(null);
+      setAnalysisDiagnosticsStatus('ready');
+      setAnalysisDiagnosticsError(err instanceof Error ? err.message : 'Failed to load diagnostics');
+    }
+  };
+
+  const hasGovernedOverview = !!(governedOverview.overview && typeof governedOverview.overview === 'object');
+  const governedQualityFlags = governedOverview.quality_flags ?? {};
+  const governedOverlayDegraded = Boolean(
+    governedQualityFlags.provider_error ||
+    governedQualityFlags.model_output_not_json ||
+    governedQualityFlags.guard_degraded
+  );
+
+  const workspaceMirrorVM = useMemo(() => {
+    if (!hasGovernedOverview) return buildWorkspaceMirrorOverviewVM(null);
+    return buildWorkspaceMirrorOverviewVM(governedOverview.overview);
+  }, [hasGovernedOverview, governedOverview.overview]);
+
+  const hasGovernedOverviewRef = useRef<boolean>(hasGovernedOverview);
+  useEffect(() => {
+    hasGovernedOverviewRef.current = hasGovernedOverview;
+  }, [hasGovernedOverview]);
+
+  const governedOverlaySignatureRef = useRef<{ created_at: string | null; input_hash: string | null }>({
+    created_at: governedOverview.created_at ?? null,
+    input_hash: governedOverview.input_hash ?? null,
+  });
+  useEffect(() => {
+    governedOverlaySignatureRef.current = {
+      created_at: governedOverview.created_at ?? null,
+      input_hash: governedOverview.input_hash ?? null,
+    };
+  }, [governedOverview.created_at, governedOverview.input_hash]);
+
+  const clearOverlayPostAnalyzeTimer = () => {
+    if (overlayPostAnalyzeTimerRef.current != null) {
+      window.clearTimeout(overlayPostAnalyzeTimerRef.current);
+      overlayPostAnalyzeTimerRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    // Cleanup on unmount.
+    return () => {
+      clearOverlayPostAnalyzeTimer();
+    };
+  }, []);
+
+  useEffect(() => {
+    // Reset bounded polling when switching deals.
+    clearOverlayPostAnalyzeTimer();
+    overlayPostAnalyzeStartedAtRef.current = 0;
+    overlayPostAnalyzeAttemptsRef.current = 0;
+    setOverlayPostAnalyzeState('idle');
+  }, [dealId]);
+
+  const startOverlayPostAnalyzePolling = () => {
+    if (!dealId) return;
+    clearOverlayPostAnalyzeTimer();
+    overlayPostAnalyzeStartedAtRef.current = Date.now();
+    overlayPostAnalyzeAttemptsRef.current = 0;
+    setOverlayPostAnalyzeState('polling');
+
+    // Capture a baseline signature so we can stop once the overlay refreshes.
+    // Important: the overlay may already exist, but the *new* overlay might not have
+    // been persisted yet when the analyze job flips to succeeded.
+    const baselineSig = {
+      created_at: governedOverlaySignatureRef.current.created_at,
+      input_hash: governedOverlaySignatureRef.current.input_hash,
+    };
+
+    // If overlay was missing at first load, the panel may be collapsed by default.
+    // During the post-analysis window, prefer showing the overlay as soon as it becomes available.
+    setShowGovernedOverlayPanel(true);
+
+    const maxMs = 45_000;
+    const maxAttempts = 8;
+
+    const backoffMs = (attempt: number): number => {
+      if (attempt <= 1) return 2000;
+      if (attempt === 2) return 5000;
+      if (attempt === 3) return 10000;
+      return 15000;
+    };
+
+    const poll = async () => {
+      try {
+        await governedOverview.refresh({ force: true });
+      } catch {
+        // ignore; state will reflect missing/error
+      }
+
+      const curSig = governedOverlaySignatureRef.current;
+      const overlayPresent = hasGovernedOverviewRef.current;
+      const signatureChanged =
+        (baselineSig.created_at == null && curSig.created_at != null) ||
+        (baselineSig.input_hash == null && curSig.input_hash != null) ||
+        (baselineSig.created_at != null && curSig.created_at != null && curSig.created_at !== baselineSig.created_at) ||
+        (baselineSig.input_hash != null && curSig.input_hash != null && curSig.input_hash !== baselineSig.input_hash);
+
+      // Stop polling once we can prove the persisted overlay changed.
+      if (overlayPresent && signatureChanged) {
+        clearOverlayPostAnalyzeTimer();
+        setOverlayPostAnalyzeState('idle');
+        return;
+      }
+
+      const elapsed = Date.now() - overlayPostAnalyzeStartedAtRef.current;
+      const attempts = overlayPostAnalyzeAttemptsRef.current;
+      if (elapsed > maxMs || attempts >= maxAttempts) {
+        clearOverlayPostAnalyzeTimer();
+        setOverlayPostAnalyzeState('timeout');
+        return;
+      }
+
+      overlayPostAnalyzeAttemptsRef.current = attempts + 1;
+      overlayPostAnalyzeTimerRef.current = window.setTimeout(() => {
+        void poll();
+      }, backoffMs(attempts + 1));
+    };
+
+    void poll();
+  };
+
+  const governedOverlayStatusUi: 'idle' | 'loading' | 'ready' | 'error' =
+    governedOverview.status === 'loading'
+      ? 'loading'
+      : governedOverview.status === 'error'
+        ? 'error'
+        : governedOverview.status === 'idle'
+          ? 'idle'
+          : 'ready';
+
+  const governedInterpretationText = (() => {
+    const text = (governedOverview.overview as any)?.summary_text;
     return typeof text === 'string' && text.trim().length > 0 ? text.trim() : null;
   })();
+
+  const governedInterpretationClaims = useMemo(() => {
+    const xs = (governedOverview.overview as any)?.claims;
+    return Array.isArray(xs) ? xs : [];
+  }, [governedOverview.overview]);
+
+  const governedInterpretationDisclosures = useMemo(() => {
+    const xs = (governedOverview.overview as any)?.disclosures;
+    return Array.isArray(xs) ? xs : [];
+  }, [governedOverview.overview]);
 
   const extractGovernedErrorCode = (meta: any): string | null => {
     if (!meta || typeof meta !== 'object') return null;
@@ -734,45 +903,44 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return null;
   };
 
-  const loadGovernedOverlay = async (opts?: { force?: boolean }) => {
+  useEffect(() => {
     if (!dealId) return;
-    // Only fetch interpretation once deterministic report is ready.
-    if (!reportReady) return;
-    if (!opts?.force) {
-      if (governedStatus === 'loading') return;
-      if (governedStatus === 'ready' && governedReportReady) return;
+    if (governedViewInitRef.current === dealId) return;
+    if (governedOverview.status === 'idle' || governedOverview.status === 'loading') return;
+
+    const missing = !hasGovernedOverview;
+    const degraded = governedOverlayDegraded;
+    const shouldDefaultDeterministic = missing || degraded || governedOverview.status === 'error';
+
+    setShowDeterministicAuthoritative(shouldDefaultDeterministic);
+    // If the overlay is degraded, keep it available but collapsed by default.
+    setShowGovernedOverlayPanel(!missing && !degraded);
+    governedViewInitRef.current = dealId;
+  }, [dealId, governedOverview.status, hasGovernedOverview, governedOverlayDegraded]);
+
+  const prevHasGovernedOverviewRef = useRef<boolean>(hasGovernedOverview);
+  useEffect(() => {
+    const prev = prevHasGovernedOverviewRef.current;
+    prevHasGovernedOverviewRef.current = hasGovernedOverview;
+
+    if (!dealId) return;
+    if (deterministicToggleTouchedRef.current) return;
+
+    // Overlay-first UX: if overlay becomes available after initial render,
+    // auto-close deterministic (unless the user explicitly opened it).
+    if (!prev && hasGovernedOverview && !governedOverlayDegraded && governedOverview.status !== 'error') {
+      setShowDeterministicAuthoritative(false);
     }
+  }, [dealId, hasGovernedOverview, governedOverlayDegraded, governedOverview.status]);
 
-    setGovernedStatus('loading');
-    setGovernedErrorCode(null);
-    try {
-      const env = await apiGetDealReportNarrated(dealId);
-      setGovernedEnvelope(env);
-
-      const ready = Boolean((env as any)?.ready);
-      const report = ready
-        ? ((env as any)?.report && typeof (env as any).report === 'object' ? (env as any).report : env)
-        : null;
-      const meta = (report as any)?.metadata ?? (env as any)?.metadata;
-      const errorCode = extractGovernedErrorCode(meta);
-
-      const llmOverview = (report as any)?.llm_overview_v1 ?? (env as any)?.llm_overview_v1;
-      const hasInterpretation = !!(llmOverview && typeof llmOverview === 'object' && typeof (llmOverview as any).investment_analysis_overview === 'string' && (llmOverview as any).investment_analysis_overview.trim().length > 0);
-
-      if (!ready || !hasInterpretation) {
-        setGovernedStatus('error');
-        setGovernedErrorCode(errorCode ?? 'interpretation_unavailable');
-        return;
-      }
-
-      setGovernedStatus('ready');
-      setGovernedErrorCode(null);
-    } catch (err) {
-      setGovernedEnvelope(null);
-      setGovernedStatus('error');
-      setGovernedErrorCode(err instanceof Error ? err.message : 'provider_error');
-    }
-  };
+  useEffect(() => {
+    // If the overlay becomes available (and is not degraded), ensure the panel is visible.
+    // In non-degraded mode, users have no explicit "hide" control.
+    if (!dealId) return;
+    if (!hasGovernedOverview) return;
+    if (governedOverlayDegraded) return;
+    setShowGovernedOverlayPanel(true);
+  }, [dealId, hasGovernedOverview, governedOverlayDegraded]);
 
   const reportReady = Boolean((reportEnvelope as any)?.ready);
   const reportVersion = (() => {
@@ -860,6 +1028,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       });
 
     loadReport({ force: true });
+		loadDiagnostics({ force: true });
 
     return () => {
       active = false;
@@ -867,12 +1036,40 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, [dealId]);
 
   useEffect(() => {
+    if (!dealId) return;
+    if (!reportReady) return;
+    loadDiagnostics();
+  }, [dealId, reportReady]);
+
+  useEffect(() => {
     setSelectedScoreSectionKey(null);
     setHighlightedEvidenceIds([]);
     setResolvedEvidence({});
     setSelectedScoreSectionMismatch(false);
     setScoreTraceModeOverride(null);
+    lastResolveEvidenceKeyRef.current = null;
   }, [dealId]);
+
+  const lastResolveEvidenceKeyRef = useRef<string | null>(null);
+
+  const displayFactsEvidenceIds = useMemo(() => {
+    if (workspaceMirrorVM.missing) return [] as string[];
+    const ids: string[] = [];
+    const pushAll = (xs: unknown) => {
+      if (!Array.isArray(xs)) return;
+      for (const v of xs) {
+        if (typeof v !== 'string') continue;
+        const s = v.trim();
+        if (!s) continue;
+        ids.push(s);
+      }
+    };
+    pushAll((workspaceMirrorVM.facts.product_solution as any)?.evidence_ids);
+    pushAll((workspaceMirrorVM.facts.market_icp as any)?.evidence_ids);
+    pushAll((workspaceMirrorVM.facts.business_model as any)?.evidence_ids);
+    pushAll((workspaceMirrorVM.facts.raise as any)?.evidence_ids);
+    return Array.from(new Set(ids)).slice(0, 100);
+  }, [workspaceMirrorVM]);
 
   useEffect(() => {
     lastProgressKeyRef.current = null;
@@ -884,11 +1081,26 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   useEffect(() => {
     const highlightedIds = (highlightedEvidenceIds ?? []).filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
     const visibleEvidenceIds = (evidence ?? []).map((e) => e?.evidence_id).filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
-    const ids = Array.from(new Set([...highlightedIds, ...visibleEvidenceIds])).slice(0, 100);
+    const ids = Array.from(
+      new Set(
+        [...highlightedIds, ...visibleEvidenceIds, ...(displayFactsEvidenceIds ?? []), ...(reportEvidenceIds ?? [])]
+          .filter((v): v is string => typeof v === 'string')
+          .map((v) => v.trim())
+          .filter((v) => v.length > 0)
+      )
+    )
+      .sort((a, b) => a.localeCompare(b))
+      .slice(0, 100);
     if (ids.length === 0) {
       setResolvedEvidence({});
+      lastResolveEvidenceKeyRef.current = null;
       return;
     }
+
+    const key = ids.join(',');
+    if (lastResolveEvidenceKeyRef.current === key) return;
+    lastResolveEvidenceKeyRef.current = key;
+
     let active = true;
     apiResolveEvidence(ids)
       .then((res) => {
@@ -906,7 +1118,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return () => {
       active = false;
     };
-  }, [highlightedEvidenceIds, evidence]);
+  }, [highlightedEvidenceIds, evidence, displayFactsEvidenceIds]);
 
   const getConfidenceLabel = (v: unknown): 'High' | 'Med' | 'Low' => {
     const n = typeof v === 'number' && Number.isFinite(v) ? v : 0;
@@ -1855,11 +2067,18 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     safeText((executiveSummaryV1 as any)?.market_icp) ||
     '—';
 
-  const overviewBusinessModel =
-    safeText(overviewV2?.business_model) ||
-    safeText((executiveSummaryV2 as any)?.business_model) ||
-    safeText((executiveSummaryV1 as any)?.business_model) ||
-    '—';
+  const authoritativeBusinessModel = useMemo(() => {
+    const phase1Raw = (dealFromApi as any)?.phase1;
+    const phase1 = phase1Raw && typeof phase1Raw === 'object'
+      ? phase1Raw
+      : {
+          deal_overview_v2: overviewV2 ?? null,
+          executive_summary_v1: executiveSummaryV1 ?? null,
+        };
+    return selectAuthoritativeBusinessModelV1({ report: (reportFromApi as any) ?? null, phase1 });
+  }, [dealFromApi, reportFromApi, overviewV2, executiveSummaryV1]);
+
+  const overviewBusinessModel = authoritativeBusinessModel.value || '—';
 
   const overviewRaiseTerms =
     safeText(overviewV2?.raise) ||
@@ -1910,7 +2129,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const canonicalDealOneLiner = canonicalDealSummaryReady ? safeText((canonicalDealSummaryV1 as any)?.one_liner?.text) : '';
   const canonicalProduct = canonicalDealSummaryReady ? safeText((canonicalDealSummaryV1 as any)?.product?.text) : '';
-  const canonicalMarket = canonicalDealSummaryReady ? safeText((canonicalDealSummaryV1 as any)?.market?.text) : '';
+  const canonicalMarket = canonicalDealSummaryReady
+    ? (
+        safeText((canonicalDealSummaryV1 as any)?.market_target?.text) ||
+        safeText((canonicalDealSummaryV1 as any)?.market?.text) ||
+        safeText((canonicalDealSummaryV1 as any)?.market_context?.text)
+      )
+    : '';
   const canonicalParagraphs: string[] = canonicalDealSummaryReady && Array.isArray((canonicalDealSummaryV1 as any)?.paragraphs)
     ? (canonicalDealSummaryV1 as any).paragraphs.map((p: any) => safeText(p?.text)).filter((s: string) => s.length > 0).slice(0, 6)
     : [];
@@ -2266,7 +2491,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     // Primary structured signals
     out.push(safeText(overviewV2?.raise));
-    out.push(safeText(overviewV2?.business_model));
+    out.push(safeText(authoritativeBusinessModel.value));
     out.push(safeText(overviewV2?.deal_type));
     out.push(safeText(overviewV2?.product_solution));
     out.push(safeText(overviewV2?.market_icp));
@@ -2300,11 +2525,29 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return out.filter(Boolean).join('\n');
   };
 
+  const stripRecommendationLines = (raw: string): string => {
+    const source = typeof raw === 'string' ? raw : '';
+    if (!source) return '';
+
+    const stripByDelimiter = (value: string, delimiter: '\n' | '\\n'): string => {
+      if (!value.includes(delimiter)) return value;
+      const parts = value
+        .split(delimiter)
+        .filter((line) => !/^\s*Recommendation\s*:/i.test(line));
+      return parts.join(delimiter);
+    };
+
+    // Handle both real newlines and literal "\\n" sequences.
+    const normalized = source.replace(/\r\n/g, '\n');
+    const stripped = stripByDelimiter(stripByDelimiter(normalized, '\n'), '\\n');
+    return stripped.trim();
+  };
+
   const metricText = collectMetricText();
   const archetypeValue = typeof businessArchetypeV1?.value === 'string' ? businessArchetypeV1.value.toLowerCase() : '';
   const looksRealEstate =
     archetypeValue.includes('real_estate') ||
-    /\breal\s+estate\b/i.test(String(overviewV2?.business_model ?? '')) ||
+    /\breal\s+estate\b/i.test(String(authoritativeBusinessModel.value ?? '')) ||
     /\b(real_estate|preferred\s+equity|offering\s+memorandum|cap\s*rate|noi|ltv|dscr)\b/i.test(metricText);
 
   const pickMatch = (re: RegExp): RegExpMatchArray | null => {
@@ -2339,6 +2582,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
 
   type MetricCard = { label: string; value: string; change: string };
+
   const keyMetricsCards: MetricCard[] = looksRealEstate
     ? [
         { label: 'Raise / Terms', value: pickMoney(), change: 'Capital sought / structure' },
@@ -2367,7 +2611,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           value: pickValue(/\b(\d[\d,]*)\s*(customers|users|teams|clients)\b/i, (m) => `${m[1]} ${m[2]}`),
           change: 'Usage / adoption',
         },
-        { label: 'Business Model', value: safeText(overviewV2?.business_model) || safeText(executiveSummaryV1?.business_model) || '—', change: 'Model' },
+        { label: 'Business Model', value: authoritativeBusinessModel.value || '—', change: authoritativeBusinessModel.is_arbitrated ? 'Arbitrated (evidence-backed)' : 'Model' },
         { label: 'Deal Type', value: safeText(overviewV2?.deal_type) || safeText(executiveSummaryV1?.deal_type) || '—', change: 'Classification' },
         { label: displayScoreLabel, value: displayScore != null ? `${Math.round(displayScore)}/100` : '—', change: 'Overall (0–100)' },
         { label: 'Confidence', value: phase1ConfidenceRaw ? phase1ConfidenceRaw.toUpperCase() : '—', change: 'Overall' },
@@ -2462,12 +2706,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const topSectionCustomers = looksRealEstate
     ? pickValue(/\bterm\b[^\d]{0,24}(\d{1,3})\s*(months|month|mos|years|year|yrs)\b/i, (m) => `${m[1]} ${m[2]}`)
     : pickValue(/\b(\d[\d,]*)\s*(customers|users|teams|clients)\b/i, (m) => `${m[1]} ${m[2]}`);
-  const topSectionBusinessModel =
-    safeText((reportFromApi as any)?.structured_summary?.business_model_summary?.value) ||
-    safeText((reportFromApi as any)?.structured_summary?.business_model?.value) ||
-    safeText(overviewV2?.business_model) ||
-    safeText(executiveSummaryV1?.business_model) ||
-    '—';
+  const topSectionBusinessModel = authoritativeBusinessModel.value || '—';
   const topSectionDealType = safeText(overviewV2?.deal_type) || safeText(executiveSummaryV1?.deal_type) || '—';
 
   const reportView = useMemo(() => {
@@ -2502,21 +2741,27 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     const sections = Array.isArray((reportFromApi as any)?.sections) ? (reportFromApi as any).sections : [];
     const structuredSummary = (reportFromApi as any)?.structured_summary;
+
+    const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
+      ? (reportFromApi as any).metadata
+      : null;
+    const decisionLabel = safeText((reportMeta as any)?.decision_v1?.label);
+
     const executiveSummaryFromReport = (() => {
       const byId = sections.find((s: any) => typeof s?.id === 'string' && ['executive-summary', 'executive_summary', 'executiveSummary'].includes(s.id));
       const byTitle = sections.find((s: any) => typeof s?.title === 'string' && /executive\s+summary/i.test(s.title));
       const content = safeText((byId ?? byTitle)?.content);
-      return content || null;
+      if (!content) return null;
+      // Executive summary is narrative; never let it drive canonical recommendation.
+      return stripRecommendationLines(content) || null;
     })();
 
     const legacySummary = executiveSummaryFromReport ?? topSectionDealSummary;
     const canonicalTopSummary = canonicalDealSummaryReady ? (canonicalTierHero || canonicalDealOneLiner) : '';
     const showCanonicalTopSummary = Boolean(canonicalTopSummary);
 
-    const businessModelSynthesized = safeText(structuredSummary?.business_model_summary?.value);
-    const businessModelPromoted = safeText(structuredSummary?.business_model?.value);
-    const businessModelFromReport = businessModelSynthesized || businessModelPromoted || safeText(ctx?.business_model);
-    const businessModelLabelFromReport = businessModelSynthesized ? 'Synthesized' : null;
+    const businessModelFromReport = authoritativeBusinessModel.value || safeText(ctx?.business_model);
+    const businessModelLabelFromReport = authoritativeBusinessModel.label;
     const dealTypeFromReport = safeText(ctx?.deal_type);
     const raiseFromReport = safeText(structuredSummary?.raise?.value) || safeText(ctx?.raise);
 
@@ -2550,6 +2795,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     })();
 
     const recommendation =
+      decisionLabel ||
       safeText((reportFromApi as any)?.recommendation) ||
       safeText(reportArtifact?.recommendation) ||
       null;
@@ -2567,7 +2813,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       businessModelLabel: businessModelLabelFromReport,
       dealType: dealTypeFromReport || topSectionDealType,
       raise: raiseFromReport || topSectionRaise,
-      revenue: revenueFromReport || topSectionRevenue,
+      revenue: reportReady ? (revenueFromReport || null) : (revenueFromReport || topSectionRevenue),
       customers: customersFromReport || topSectionCustomers,
       source: reportReady ? 'report' : 'fallback',
     } as const;
@@ -2589,6 +2835,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     topSectionRaise,
     topSectionRevenue,
     topSectionCustomers,
+    authoritativeBusinessModel,
   ]);
 
   const lastReportBindingsLogRef = useRef<string | null>(null);
@@ -2602,21 +2849,20 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, [dealId, reportVersion, reportView]);
 
   const reportStructuredRaise = safeText((reportFromApi as any)?.structured_summary?.raise?.value);
-  const reportStructuredBusinessModelSynthesized = safeText((reportFromApi as any)?.structured_summary?.business_model_summary?.value);
-  const reportStructuredBusinessModelPromoted = safeText((reportFromApi as any)?.structured_summary?.business_model?.value);
-  const reportStructuredBusinessModel = reportStructuredBusinessModelSynthesized || reportStructuredBusinessModelPromoted;
-  const reportStructuredBusinessModelLabel = reportStructuredBusinessModelSynthesized ? 'Synthesized' : null;
+  const reportStructuredBusinessModelLabel = authoritativeBusinessModel.label;
 
   const selectedHeader = useMemo(() => {
     const phase1: any = {
       raise: overviewV2?.raise_terms ?? (executiveSummaryV1 as any)?.raise,
-      business_model: overviewV2?.business_model ?? (executiveSummaryV1 as any)?.business_model,
+      business_model_arbitration_v1: (dealFromApi as any)?.phase1?.business_model_arbitration_v1 ?? null,
+      deal_overview_v2: overviewV2 ?? null,
+      executive_summary_v1: executiveSummaryV1 ?? null,
       revenue: overviewV2?.revenue,
       growth: overviewV2?.growth,
       customers: overviewV2?.customers,
     };
     return selectDealWorkspaceHeader((reportFromApi as any) ?? null, phase1);
-  }, [reportFromApi, overviewV2, executiveSummaryV1]);
+  }, [reportFromApi, overviewV2, executiveSummaryV1, dealFromApi]);
 
   const reportStructuredRevenueLabel = selectedHeader.ready ? (selectedHeader.revenue.label ?? null) : null;
   const reportStructuredCustomersLabel = selectedHeader.ready ? (selectedHeader.customers.label ?? null) : null;
@@ -2648,7 +2894,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const overviewProductCanonical = canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : overviewProduct;
   const overviewMarketIcpCanonical = canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : overviewMarketIcp;
-  const overviewBusinessModelCanonical = reportStructuredBusinessModel || (reportView.applied ? reportView.businessModel : overviewBusinessModel);
+  const overviewBusinessModelCanonical = authoritativeBusinessModel.value || (reportView.applied ? reportView.businessModel : overviewBusinessModel);
   const overviewRaiseTermsCanonical = reportStructuredRaise || (reportView.applied ? reportView.raise : overviewRaiseTerms);
   const splitTierDeepToParagraphs = (raw: string): string[] => {
     const normalized = String(raw ?? '')
@@ -2681,6 +2927,487 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     }
     return overviewDealSummaryParagraphs;
   })();
+
+  const overlayVM = useMemo(() => {
+    if (!hasGovernedOverview) return buildOverlayViewModel(null);
+    return buildOverlayViewModel(governedOverview.overview);
+  }, [hasGovernedOverview, governedOverview.overview]);
+
+  const useOverlayForHero = hasGovernedOverview && !governedOverlayDegraded;
+
+  type KpiKey = 'raise' | 'revenue' | 'growth' | 'customers' | 'business_model';
+  const normalizeKpiValue = (value: unknown): string | null => {
+    if (value == null) return null;
+    const s = String(value).trim();
+    if (!s || s === '—') return null;
+    return s;
+  };
+
+  const parseNumericSignal = (raw: string): { kind: 'money' | 'percent' | 'count' | 'text'; num?: number; text: string } => {
+    const text = raw
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ');
+
+    const pct = text.match(/(-?\d+(?:\.\d+)?)\s*%/);
+    if (pct?.[1]) {
+      const n = Number(pct[1]);
+      if (Number.isFinite(n)) return { kind: 'percent', num: n, text };
+    }
+
+    // Money-like: $1.2m, 1,200,000, 3mm, 2.5bn, etc.
+    const money = text.match(/\$?\s*(-?\d[\d,]*(?:\.\d+)?)\s*(k|m|mm|b|bn|million|billion)?\b/);
+    if (money?.[1]) {
+      const base = Number(money[1].replace(/,/g, ''));
+      if (Number.isFinite(base)) {
+        const suf = (money[2] ?? '').toLowerCase();
+        const mult = suf === 'k'
+          ? 1e3
+          : (suf === 'm' || suf === 'mm' || suf === 'million')
+            ? 1e6
+            : (suf === 'b' || suf === 'bn' || suf === 'billion')
+              ? 1e9
+              : 1;
+        const num = base * mult;
+        // Heuristic: treat large values as money; smaller numeric strings may be counts.
+        return { kind: mult > 1 ? 'money' : 'count', num, text };
+      }
+    }
+
+    const count = text.match(/\b(-?\d[\d,]*)\b/);
+    if (count?.[1]) {
+      const n = Number(count[1].replace(/,/g, ''));
+      if (Number.isFinite(n)) return { kind: 'count', num: n, text };
+    }
+
+    const compact = text
+      .replace(/[,\s\$]/g, '')
+      .replace(/\u2013|\u2014/g, '-');
+    return { kind: 'text', text: compact };
+  };
+
+  const isMeaningfulDiff = (a: string, b: string): boolean => {
+    const sa = parseNumericSignal(a);
+    const sb = parseNumericSignal(b);
+
+    if (sa.kind === sb.kind && typeof sa.num === 'number' && typeof sb.num === 'number') {
+      const denom = Math.max(1, Math.max(Math.abs(sa.num), Math.abs(sb.num)));
+      const rel = Math.abs(sa.num - sb.num) / denom;
+      // Treat <1% delta as same; allow small rounding noise.
+      if (rel < 0.01) return false;
+      // If values are tiny, require at least 1 unit difference.
+      if (Math.abs(sa.num - sb.num) < 1) return false;
+      return true;
+    }
+
+    // Text-ish fallback: ignore trivial punctuation/spacing.
+    return sa.text !== sb.text;
+  };
+
+  const buildHeroFact = (opts: {
+    key: KpiKey;
+    det: string | null;
+    overlay: string | null;
+  }): { value: string | null; conflict: boolean; overlayValueIfConflicted: string | null } => {
+    const det = normalizeKpiValue(opts.det);
+    const overlay = normalizeKpiValue(opts.overlay);
+
+    if (!det && overlay) return { value: overlay, conflict: false, overlayValueIfConflicted: null };
+    if (det && !overlay) return { value: det, conflict: false, overlayValueIfConflicted: null };
+    if (!det && !overlay) return { value: null, conflict: false, overlayValueIfConflicted: null };
+
+    // Both exist.
+    if (det && overlay && isMeaningfulDiff(det, overlay)) {
+      return { value: det, conflict: true, overlayValueIfConflicted: overlay };
+    }
+    return { value: det, conflict: false, overlayValueIfConflicted: null };
+  };
+
+  const overlayOneLiner = overlayVM.hero_summary || governedInterpretationText || overviewDealOneLinerCanonical;
+  const overlayParagraphs: string[] = overlayVM.deal_summary_paragraphs.length > 0
+    ? overlayVM.deal_summary_paragraphs
+    : overviewDealSummaryParagraphsCanonical;
+  const overlayStrengths: string[] = overlayVM.strengths.length > 0 ? overlayVM.strengths : decisionTileStrengths;
+  const overlayOpenItems: string[] = overlayVM.open_items.length > 0 ? overlayVM.open_items : decisionTileOpenItemsAll;
+
+  const overlayProduct = overlayVM.facts.product || overviewProductCanonical;
+  const overlayMarketIcp = overlayVM.facts.market_icp || overviewMarketIcpCanonical;
+  const overlayBusinessModel = overlayVM.facts.business_model || overviewBusinessModelCanonical;
+  const overlayRaiseTerms = overlayVM.facts.raise_terms || overviewRaiseTermsCanonical;
+
+  const kpiMissingTooltip = 'Not extracted from evidence';
+  const overlayKpiTiles = useMemo(() => {
+    const raise = safeText(reportStructuredRaise) || safeText(overviewRaiseTermsCanonical) || (overlayVM.kpis.raise?.value ?? null);
+    const revenue = overlayVM.kpis.revenue?.value ?? null;
+    const growth = overlayVM.kpis.growth?.value ?? null;
+    const customers = overlayVM.kpis.customers?.value ?? null;
+    return [
+      { label: 'Raise', value: raise ?? '—', tooltipIfMissing: kpiMissingTooltip },
+      { label: 'Revenue / ARR', value: revenue ?? '—', tooltipIfMissing: kpiMissingTooltip },
+      { label: 'Growth', value: growth ?? '—', tooltipIfMissing: kpiMissingTooltip },
+      { label: 'Customers', value: customers ?? '—', tooltipIfMissing: kpiMissingTooltip },
+    ];
+  }, [overlayVM, reportStructuredRaise, overviewRaiseTermsCanonical]);
+
+  const deterministicKpiTiles = useMemo(() => {
+    const raise = safeText(reportStructuredRaise) || safeText(overviewRaiseTermsCanonical) || null;
+    const revenue = safeText(reportView.revenue) || safeText(topSectionRevenue) || null;
+    const growth = safeText(reportStructuredGrowthValue) || safeText(topSectionGrowth) || null;
+    const customers = safeText(reportView.customers) || safeText(topSectionCustomers) || null;
+    return [
+      { label: 'Raise', value: raise ?? '—', tooltipIfMissing: kpiMissingTooltip },
+      { label: 'Revenue / ARR', value: revenue ?? '—', tooltipIfMissing: kpiMissingTooltip },
+      { label: 'Growth', value: growth ?? '—', tooltipIfMissing: kpiMissingTooltip },
+      { label: 'Customers', value: customers ?? '—', tooltipIfMissing: kpiMissingTooltip },
+    ];
+  }, [reportStructuredRaise, overviewRaiseTermsCanonical, reportView.revenue, topSectionRevenue, reportStructuredGrowthValue, topSectionGrowth, reportView.customers, topSectionCustomers]);
+
+  type KeyFactProvenance = { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean };
+  const keyFactMissingText = 'Not extracted from evidence';
+  const normalizeKeyFactText = (value: unknown): string | null => {
+    const s = safeText(value);
+    if (!s) return null;
+    if (s === '—') return null;
+    return s;
+  };
+
+  const chooseKeyFact = (opts: {
+    det: unknown;
+    overlay: { value: unknown; quality: 'promoted' | 'fallback' | 'unknown' } | null;
+  }): { value: string; provenance: KeyFactProvenance } => {
+    const det = normalizeKeyFactText(opts.det);
+    if (det) {
+      return { value: det, provenance: { source: 'deterministic' } };
+    }
+
+    const overlayValue = normalizeKeyFactText(opts.overlay?.value);
+    const overlayQuality = opts.overlay?.quality ?? 'unknown';
+    const overlayUsable = Boolean(overlayValue);
+
+    if (overlayUsable) {
+      return {
+        value: overlayValue as string,
+        provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' },
+      };
+    }
+
+    return { value: keyFactMissingText, provenance: { source: 'missing' } };
+  };
+
+  const chooseKeyFactDisplayPolicy = (opts: {
+    det: unknown;
+    overlay: { value: unknown; quality: 'promoted' | 'fallback' | 'unknown' } | null;
+  }): { value: string; provenance: KeyFactProvenance } => {
+    const overlayValue = normalizeKeyFactText(opts.overlay?.value);
+    const overlayQuality = opts.overlay?.quality ?? 'unknown';
+    const overlayUsable = Boolean(overlayValue);
+
+    const detValue = normalizeKeyFactText(opts.det);
+    const detDisplayable = detValue ? deterministicIsDisplayable(detValue) : false;
+
+    // Preferred display text: PR2 overlay phrasing.
+    if (overlayUsable && !detDisplayable) {
+      return {
+        value: overlayValue as string,
+        provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' },
+      };
+    }
+
+    // Deterministic may override PR2 only when it looks display-safe.
+    if (detValue && detDisplayable) {
+      return { value: detValue, provenance: { source: 'deterministic' } };
+    }
+
+    if (overlayUsable) {
+      return {
+        value: overlayValue as string,
+        provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' },
+      };
+    }
+
+    return { value: keyFactMissingText, provenance: { source: 'missing' } };
+  };
+
+  const governedKeyFacts = useMemo(() => {
+    const ovMissing = workspaceMirrorVM.missing;
+    const ovFacts = ovMissing ? null : (workspaceMirrorVM.facts as any);
+
+    const asClean = (v: unknown): string => {
+      const s = typeof v === 'string' ? v.trim() : '';
+      return s && s !== '—' ? s : '';
+    };
+
+    const chooseGovernedFirst = (opts: {
+      deterministic: string;
+      overlay?: { value: string | null; quality?: string; source?: 'governed' | 'deterministic' | 'missing' } | null;
+    }): { value: string; provenance: { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean }; fromOverlay: boolean } => {
+      const overlayVal = asClean(opts.overlay?.value);
+      const overlaySource = opts.overlay?.source;
+      const overlayQuality = opts.overlay?.quality;
+
+      if (overlayVal && overlaySource === 'governed') {
+        return { value: overlayVal, provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' }, fromOverlay: true };
+      }
+
+      const detVal = asClean(opts.deterministic);
+      const detDisplayable = detVal ? deterministicIsDisplayable(detVal) : false;
+
+      // Deterministic may override overlay only when it looks display-safe.
+      if (detVal && detDisplayable) {
+        return { value: detVal, provenance: { source: 'deterministic' }, fromOverlay: false };
+      }
+
+      if (overlayVal) {
+        // Overlay phrasing is preferred when deterministic looks like OCR soup / slide dump.
+        return { value: overlayVal, provenance: { source: 'deterministic', needsReview: overlayQuality === 'fallback' }, fromOverlay: true };
+      }
+
+      // If deterministic is present but not display-safe and there's no overlay, fall back to deterministic anyway.
+      if (detVal) {
+        return { value: detVal, provenance: { source: 'deterministic' }, fromOverlay: false };
+      }
+
+      return { value: keyFactMissingText, provenance: { source: 'missing' }, fromOverlay: false };
+    };
+
+    const product = chooseGovernedFirst({
+      deterministic: canonicalDealSummaryReady ? canonicalProduct : overviewProductCanonical,
+      overlay: ovFacts ? { value: ovFacts.product_solution?.value ?? null, quality: ovFacts.product_solution?.quality, source: ovFacts.product_solution?.source } : null,
+    });
+    const market = chooseGovernedFirst({
+      deterministic: canonicalDealSummaryReady ? canonicalMarket : overviewMarketIcpCanonical,
+      overlay: ovFacts ? { value: ovFacts.market_icp?.value ?? null, quality: ovFacts.market_icp?.quality, source: ovFacts.market_icp?.source } : null,
+    });
+    const businessModel = chooseGovernedFirst({
+      deterministic: overviewBusinessModelCanonical,
+      overlay: ovFacts ? { value: ovFacts.business_model?.value ?? null, quality: ovFacts.business_model?.quality, source: ovFacts.business_model?.source } : null,
+    });
+    const raise = chooseGovernedFirst({
+      deterministic: overviewRaiseTermsCanonical,
+      overlay: ovFacts ? { value: ovFacts.raise?.value ?? null, quality: ovFacts.raise?.quality, source: ovFacts.raise?.source } : null,
+    });
+
+    return { product, market, businessModel, raise };
+  }, [workspaceMirrorVM, canonicalDealSummaryReady, canonicalProduct, canonicalMarket, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical]);
+
+  const overviewProvenanceDebugEnabled = useMemo(() => {
+    try {
+      if (typeof window === 'undefined') return false;
+      const qs = new URLSearchParams(window.location.search);
+      if (qs.get('debug') === '1') return true;
+      const env = String((import.meta as any)?.env?.VITE_DDAI_OVERVIEW_DEBUG ?? '').trim().toLowerCase();
+      return env === '1' || env === 'true' || env === 'yes' || env === 'on';
+    } catch {
+      return false;
+    }
+  }, []);
+  const overviewProvenanceDebugByFieldKey = useMemo(() => {
+    if (!dealId) return {} as Record<string, string>;
+
+    const overlayCreatedAt = governedOverview.created_at ?? null;
+    const overlayHash = governedOverview.input_hash ?? null;
+    const overlaySig = `overlay.created_at=${overlayCreatedAt ?? '—'} overlay.hash=${overlayHash ? overlayHash.slice(0, 12) : '—'}`;
+
+    const reportGeneratedAt = (reportEnvelope as any)?.generatedAt ?? null;
+    const reportVer = (reportEnvelope as any)?.version;
+    const reportSig = `report.generatedAt=${reportGeneratedAt ?? '—'} report.version=${typeof reportVer === 'number' ? reportVer : '—'}`;
+
+    const srcKeyFact = (prov: KeyFactProvenance, detSrc: string, governedSrc: string): string => {
+      if (prov.source === 'governed') return `src=${governedSrc} ${overlaySig}`;
+      if (prov.source === 'deterministic') return `src=${detSrc} ${reportSig}`;
+      return `src=missing ${overlaySig} ${reportSig}`;
+    };
+
+    const listsFromGovernedUiCopy = !workspaceMirrorVM.missing && Boolean((workspaceMirrorVM as any)?.facts?.product_solution?.evidence_refs);
+
+    return {
+      'deal-one-liner': `src=overview_json.phase1.governed_ui_copy_v1.hero_summary (fallbacks: deal_summary_v2.summary.one_liner, overview.summary_text) ${overlaySig}`,
+      'product-solution': srcKeyFact(
+        governedKeyFacts.product.provenance,
+        canonicalDealSummaryReady ? 'deal_summary_v2.product (canonical)' : 'deal_summary_v2.product (canonical/fallback)',
+        'overview_json.phase1.governed_ui_copy_v1.product_solution'
+      ),
+      'market-icp': srcKeyFact(
+        governedKeyFacts.market.provenance,
+        canonicalDealSummaryReady ? 'deal_summary_v2.market (canonical)' : 'deal_summary_v2.market (canonical/fallback)',
+        'overview_json.phase1.governed_ui_copy_v1.market_icp'
+      ),
+      'business-model': srcKeyFact(
+        governedKeyFacts.businessModel.provenance,
+        'deal_summary_v2.business_model (canonical/fallback)',
+        'overview_json.phase1.governed_ui_copy_v1.business_model'
+      ),
+      'raise-terms': srcKeyFact(
+        governedKeyFacts.raise.provenance,
+        'deal_summary_v2.raise (canonical/fallback)',
+        'overview_json.phase1.governed_ui_copy_v1.raise_terms'
+      ),
+      'strengths': `src=${listsFromGovernedUiCopy ? 'overview_json.phase1.governed_ui_copy_v1.strengths' : 'overview_json.phase1.deal_summary_v2.strengths'} ${overlaySig}`,
+      'concerns': `src=${listsFromGovernedUiCopy ? 'overview_json.phase1.governed_ui_copy_v1.concerns' : 'overview_json.phase1.deal_summary_v2.risks'} ${overlaySig}`,
+      'open-questions': `src=${listsFromGovernedUiCopy ? 'overview_json.phase1.governed_ui_copy_v1.open_questions' : 'overview_json.phase1.deal_summary_v2.open_questions'} ${overlaySig}`,
+      'traction': `src=${listsFromGovernedUiCopy ? 'overview_json.phase1.governed_ui_copy_v1.traction' : 'overview_json.phase1.deal_overview_v2.traction_signals'} ${overlaySig}`,
+    };
+  }, [dealId, governedOverview.created_at, governedOverview.input_hash, reportEnvelope, canonicalDealSummaryReady, governedKeyFacts, workspaceMirrorVM]);
+
+  const governedKeyFactEvidenceIds = useMemo(() => {
+    if (workspaceMirrorVM.missing) {
+      return {
+        product: [] as string[],
+        market: [] as string[],
+        businessModel: [] as string[],
+        raise: [] as string[],
+      };
+    }
+
+    const facts = workspaceMirrorVM.facts as any;
+    const toIds = (xs: unknown): string[] => {
+      if (!Array.isArray(xs)) return [];
+      return xs
+        .filter((v): v is string => typeof v === 'string')
+        .map((v) => v.trim())
+        .filter((v) => v.length > 0)
+        .slice(0, 25);
+    };
+
+    return {
+      product: governedKeyFacts.product.fromOverlay ? toIds(facts?.product_solution?.evidence_ids) : [],
+      market: governedKeyFacts.market.fromOverlay ? toIds(facts?.market_icp?.evidence_ids) : [],
+      businessModel: governedKeyFacts.businessModel.fromOverlay ? toIds(facts?.business_model?.evidence_ids) : [],
+      raise: governedKeyFacts.raise.fromOverlay ? toIds(facts?.raise?.evidence_ids) : [],
+    };
+  }, [workspaceMirrorVM, governedKeyFacts]);
+
+  const governedKeyFactEvidenceRefs = useMemo(() => {
+    if (workspaceMirrorVM.missing) {
+      return {
+        one_liner: undefined as any,
+        product: undefined as any,
+        market: undefined as any,
+        businessModel: undefined as any,
+        raise: undefined as any,
+        strengths: undefined as any,
+        concerns: undefined as any,
+        open_questions: undefined as any,
+        traction: undefined as any,
+      };
+    }
+
+    const facts = workspaceMirrorVM.facts as any;
+    const governedUiCopyAvailable = typeof facts?.product_solution?.evidence_refs !== 'undefined';
+    if (!governedUiCopyAvailable) {
+      return {
+        one_liner: undefined as any,
+        product: undefined as any,
+        market: undefined as any,
+        businessModel: undefined as any,
+        raise: undefined as any,
+        strengths: undefined as any,
+        concerns: undefined as any,
+        open_questions: undefined as any,
+        traction: undefined as any,
+      };
+    }
+
+    const refBlock = (workspaceMirrorVM as any).evidence_refs as any;
+
+    const toRefsOrEmpty = (xs: unknown): any[] => {
+      if (!Array.isArray(xs)) return [];
+      return xs
+        .filter((v) => v && typeof v === 'object' && typeof (v as any).source_document_id === 'string')
+        .slice(0, 12);
+    };
+
+    const toRefsOrUndefined = (xs: unknown): any[] | undefined => {
+      if (!Array.isArray(xs)) return undefined;
+      return toRefsOrEmpty(xs);
+    };
+
+    return {
+      one_liner: toRefsOrEmpty(refBlock?.deal_one_liner),
+      product: governedKeyFacts.product.provenance.source === 'governed' ? toRefsOrUndefined(facts?.product_solution?.evidence_refs) : undefined,
+      market: governedKeyFacts.market.provenance.source === 'governed' ? toRefsOrUndefined(facts?.market_icp?.evidence_refs) : undefined,
+      businessModel: governedKeyFacts.businessModel.provenance.source === 'governed' ? toRefsOrUndefined(facts?.business_model?.evidence_refs) : undefined,
+      raise: governedKeyFacts.raise.provenance.source === 'governed' ? toRefsOrUndefined(facts?.raise?.evidence_refs) : undefined,
+      strengths: toRefsOrEmpty(refBlock?.strengths),
+      concerns: toRefsOrEmpty(refBlock?.concerns),
+      open_questions: toRefsOrEmpty(refBlock?.open_questions),
+      traction: toRefsOrEmpty(refBlock?.traction),
+    };
+  }, [workspaceMirrorVM, governedKeyFacts]);
+
+  const governedDealOneLinerDisplay = useMemo(() => {
+    // Priority:
+    // 1) PR2 deal_summary_v2.summary.one_liner (via workspaceMirrorVM.one_liner)
+    // 2) PR2 summary_text (top-level persisted field)
+    // 3) deterministic deal_summary_v1.tiers.overview (preferred display text)
+    // 4) deterministic deal_summary_v1.tiers.hero
+    const pr2 = !workspaceMirrorVM.missing ? (workspaceMirrorVM.one_liner ?? null) : null;
+    if (pr2 && pr2.trim().length > 0) return pr2;
+
+    const pr2SummaryText = typeof (governedOverview.overview as any)?.summary_text === 'string'
+      ? safeText((governedOverview.overview as any).summary_text)
+      : '';
+    if (pr2SummaryText) return pr2SummaryText;
+
+    if (canonicalTierOverview) return canonicalTierOverview;
+    if (canonicalTierHero) return canonicalTierHero;
+    return 'Not extracted';
+  }, [workspaceMirrorVM, governedOverview.overview, canonicalTierOverview, canonicalTierHero]);
+
+  const overlayListsWellFormed = overlayStrengths.length > 0 && overlayOpenItems.length > 0;
+
+  const heroDet = useMemo(() => {
+    return {
+      dealSummaryText: reportView.dealSummary,
+      dealSummaryTitle: reportView.dealSummaryTitle,
+      dealSummarySource: reportView.dealSummarySource as 'canonical' | 'legacy',
+      strengths: topSectionStrengths,
+      weaknesses: topSectionWeaknesses,
+      raise: selectedHeader.raise.value,
+      revenue: selectedHeader.revenue.value,
+      growth: selectedHeader.growth.value,
+      customers: selectedHeader.customers.value,
+      businessModel: selectedHeader.business_model.value,
+    };
+  }, [reportView, topSectionStrengths, topSectionWeaknesses, selectedHeader]);
+
+  const heroOverlay = useMemo(() => {
+    return {
+      dealSummaryText: overlayOneLiner,
+      dealSummaryTitle: 'Deal Summary',
+      dealSummarySource: 'overlay' as const,
+      strengths: overlayListsWellFormed ? overlayStrengths : topSectionStrengths,
+      weaknesses: overlayListsWellFormed ? overlayOpenItems : topSectionWeaknesses,
+      raise: overlayVM.kpis.raise?.value ?? overlayRaiseTerms,
+      revenue: overlayVM.kpis.revenue?.value ?? null,
+      growth: overlayVM.kpis.growth?.value ?? null,
+      customers: overlayVM.kpis.customers?.value ?? null,
+      businessModel: overlayBusinessModel,
+    };
+  }, [overlayOneLiner, overlayListsWellFormed, overlayStrengths, overlayOpenItems, topSectionStrengths, topSectionWeaknesses, overlayVM, overlayRaiseTerms, overlayBusinessModel]);
+
+  const heroMerged = useMemo(() => {
+    const base = useOverlayForHero ? heroOverlay : heroDet;
+
+    const raise = buildHeroFact({ key: 'raise', det: heroDet.raise, overlay: heroOverlay.raise });
+    const revenue = buildHeroFact({ key: 'revenue', det: heroDet.revenue, overlay: heroOverlay.revenue });
+    const growth = buildHeroFact({ key: 'growth', det: heroDet.growth, overlay: heroOverlay.growth });
+    const customers = buildHeroFact({ key: 'customers', det: heroDet.customers, overlay: heroOverlay.customers });
+    const businessModel = buildHeroFact({ key: 'business_model', det: heroDet.businessModel, overlay: heroOverlay.businessModel });
+
+    return {
+      dealSummaryText: base.dealSummaryText,
+      dealSummaryTitle: base.dealSummaryTitle,
+      dealSummarySource: base.dealSummarySource,
+      strengths: base.strengths,
+      weaknesses: base.weaknesses,
+      raise,
+      revenue,
+      growth,
+      customers,
+      businessModel,
+    };
+  }, [useOverlayForHero, heroDet, heroOverlay]);
 
   const dealSummarySourceLabel = canonicalDealSummaryReady ? 'Canonical' : 'Legacy';
 
@@ -2963,6 +3690,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             if (job.type === 'analyze_deal') {
               reportMissingRef.current = false;
               loadReport({ force: true });
+
+			  // After analysis completion, force-refresh the persisted governed overlay.
+			  // If it's not present yet, bounded-poll for a short window.
+			  const overlayKey = `overlay-post-analyze:${job.job_id}:${normalizedStatus}`;
+			  if (!handledTerminalJobKeysRef.current.has(overlayKey)) {
+			    handledTerminalJobKeysRef.current.add(overlayKey);
+			    startOverlayPostAnalyzePolling();
+			  }
             }
             loadEvidence();
             if (job.type === 'extract_visuals') {
@@ -3741,12 +4476,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     setJobReason(null);
     reportMissingRef.current = false;
     lastReportAttemptAtRef.current = 0;
-
-    // Interpretation overlays must never be treated as canonical.
-    // Reset them whenever a new analysis run begins.
-    setGovernedEnvelope(null);
-    setGovernedStatus('idle');
-    setGovernedErrorCode(null);
 
     addToast('info', 'Starting analysis…', 'Checking page understanding readiness');
     try {
@@ -5187,24 +5916,43 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   hardPassGuardrailNote={safeText((reportMeta as any)?.hard_pass_guardrail_v2?.note)}
                   hardPassGuardrailCriteriaSnapshot={(reportMeta as any)?.hard_pass_guardrail_v2?.criteria_snapshot ?? null}
                   decisionV1={(reportMeta as any)?.decision_v1 ?? null}
-                  dealSummary={reportView.dealSummary}
-                  dealSummaryTitle={reportView.dealSummaryTitle}
-                  dealSummarySource={reportView.dealSummarySource}
-                  strengths={topSectionStrengths}
-                  weaknesses={topSectionWeaknesses}
-                  raise={reportView.raise}
-                  revenue={reportView.revenue}
+                  dealSummary={heroMerged.dealSummaryText}
+                  dealSummaryTitle={heroMerged.dealSummaryTitle}
+                  dealSummarySource={heroMerged.dealSummarySource === 'overlay' ? 'overlay' : heroMerged.dealSummarySource}
+                  strengths={heroMerged.strengths}
+                  weaknesses={heroMerged.weaknesses}
+                  raise={heroMerged.raise.value}
+                  raiseConflict={heroMerged.raise.conflict}
+                  raiseConflictOverlayValue={heroMerged.raise.overlayValueIfConflicted}
+                  revenue={heroMerged.revenue.value}
                   revenueLabel={reportStructuredRevenueLabel}
-                  revenueTooltip={reportStructuredRevenueTooltip}
-                  growth={reportStructuredGrowthValue || topSectionGrowth}
+                  revenueTooltip={heroMerged.revenue.conflict
+                    ? `Conflict detected — overlay: ${heroMerged.revenue.overlayValueIfConflicted ?? '—'} · deterministic: ${heroMerged.revenue.value ?? '—'}`
+                    : reportStructuredRevenueTooltip}
+                  revenueConflict={heroMerged.revenue.conflict}
+                  revenueConflictOverlayValue={heroMerged.revenue.overlayValueIfConflicted}
+                  growth={heroMerged.growth.value}
                   growthLabel={reportStructuredGrowthLabel}
                   growthNote={reportStructuredGrowthNote}
-                  growthTooltip={reportStructuredGrowthTooltip}
-                  customers={reportView.customers}
+                  growthTooltip={heroMerged.growth.conflict
+                    ? `Conflict detected — overlay: ${heroMerged.growth.overlayValueIfConflicted ?? '—'} · deterministic: ${heroMerged.growth.value ?? '—'}`
+                    : reportStructuredGrowthTooltip}
+                  growthConflict={heroMerged.growth.conflict}
+                  growthConflictOverlayValue={heroMerged.growth.overlayValueIfConflicted}
+                  customers={heroMerged.customers.value}
                   customersLabel={reportStructuredCustomersLabel}
-                  customersTooltip={reportStructuredCustomersTooltip}
-                  businessModel={reportView.businessModel}
-                  businessModelLabel={reportStructuredBusinessModelLabel || reportView.businessModelLabel}
+                  customersTooltip={heroMerged.customers.conflict
+                    ? `Conflict detected — overlay: ${heroMerged.customers.overlayValueIfConflicted ?? '—'} · deterministic: ${heroMerged.customers.value ?? '—'}`
+                    : reportStructuredCustomersTooltip}
+                  customersConflict={heroMerged.customers.conflict}
+                  customersConflictOverlayValue={heroMerged.customers.overlayValueIfConflicted}
+                  businessModel={heroMerged.businessModel.value}
+                  businessModelLabel={selectedHeader.business_model.label ?? null}
+                  businessModelTooltip={authoritativeBusinessModel.is_arbitrated
+                    ? `Evidence-backed arbitration${typeof authoritativeBusinessModel.confidence === 'number' ? ` (confidence ${Math.round(authoritativeBusinessModel.confidence * 100)}%)` : ''}`
+                    : null}
+                  businessModelConflict={heroMerged.businessModel.conflict}
+                  businessModelConflictOverlayValue={heroMerged.businessModel.overlayValueIfConflicted}
                   dealType={reportView.dealType}
                   confidence={topSectionConfidence}
                   verified={decisionTileConfidenceBand === 'high'}
@@ -5567,7 +6315,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                     const decisionLabel = safeText((reportMeta as any)?.decision_v1?.label);
                                     const legacyRecommendation = safeText((reportMeta as any)?.legacy_recommendation_v0);
                                     const legacyGrade = safeText((reportMeta as any)?.legacy_grade_v0);
-                                    const showLegacy = Boolean(legacyRecommendation || legacyGrade);
+                                    const showLegacy = Boolean(!decisionLabel && (legacyRecommendation || legacyGrade));
 
                                     return (
                                       <>
@@ -5581,7 +6329,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                           </span>
                                         ) : null}
 
-                                        {typeof (reportFromApi as any)?.recommendation === 'string' ? (
+                                        {!decisionLabel && typeof (reportFromApi as any)?.recommendation === 'string' ? (
                                           <span
                                             className={`px-2 py-1 rounded-full text-xs border ${
                                               darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
@@ -5683,7 +6431,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                     {(reportFromApi as any).sections.slice(0, 8).map((s: any) => {
                                       const sectionTitle =
                                         typeof s?.title === 'string' && s.title.trim().length > 0 ? s.title.trim() : 'Section';
-                                      const content = typeof s?.content === 'string' ? s.content : '';
+                                      const decisionLabel = safeText((reportFromApi as any)?.metadata?.decision_v1?.label);
+                                      const rawContent = typeof s?.content === 'string' ? s.content : '';
+                                      const content = decisionLabel ? stripRecommendationLines(rawContent) : rawContent;
                                       const evidenceIds = Array.isArray(s?.evidence_ids) ? s.evidence_ids : [];
                                       return (
                                         <div
@@ -5763,7 +6513,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                 </div>
                                 <div>
                                   <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Recommendation</div>
-                                  <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportView.recommendation || '—'}</div>
+                                  {(() => {
+                                    const decisionLabel = safeText((reportFromApi as any)?.metadata?.decision_v1?.label);
+                                    const recommendation = decisionLabel || reportView.recommendation || null;
+                                    return <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{recommendation || '—'}</div>;
+                                  })()}
                                 </div>
                               </div>
                               <div className={`mt-3 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
@@ -6047,34 +6801,182 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             {/* Overview Tab */}
             {activeTab === 'overview' && (
               <div className="space-y-6">
-                <DealWorkspaceOverviewComp
-                  darkMode={darkMode}
-                  dealOneLiner={overviewDealOneLinerCanonical}
-                  product={overviewProductCanonical}
-                  marketIcp={overviewMarketIcpCanonical}
-                  businessModel={overviewBusinessModelCanonical}
-                  raiseTerms={overviewRaiseTermsCanonical}
-                  dealSummaryParagraphs={overviewDealSummaryParagraphsCanonical}
-                  dealSummarySourceLabel={dealSummarySourceLabel}
-                  dealSummaryCitations={canonicalCitations ?? undefined}
-                  score0_100={decisionTileScore0_100 ?? displayScore ?? investorScore}
-                  decisionLabel={decisionTileLabel}
-                  confidenceLabel={`${decisionTileConfidenceLabelShort} confidence`}
-                  confidenceVerified={decisionTileConfidenceBand !== 'unknown'}
-                  rationale={decisionTileRationale}
-                  strengths={decisionTileStrengths}
-                  openItems={decisionTileOpenItemsAll}
-                  coverageGaps={missingChips}
-                  interpretationStatus={governedStatus}
-                  interpretationText={governedOverviewText}
-                  interpretationErrorCode={governedErrorCode ?? extractGovernedErrorCode(governedMeta)}
-                  onRequestInterpretation={() => {
-                    loadGovernedOverlay().catch(() => {
-                      // handled via governedStatus
-                    });
-                  }}
-                  onViewFullAnalysis={() => setActiveTab('evidence')}
-                />
+                {hasGovernedOverview ? (
+                  <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Overview (governed overlay)</div>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('muted')}`}>
+                            phase: {String(governedOverview.llm_phase_mode ?? '—')}
+                          </span>
+                          <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('muted')}`}>
+                            created: {governedOverview.created_at ? new Date(governedOverview.created_at).toLocaleString() : '—'}
+                          </span>
+                          {governedQualityFlags.provider_error ? (
+                            <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('danger')}`}>provider_error</span>
+                          ) : null}
+                          {governedQualityFlags.model_output_not_json ? (
+                            <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('danger')}`}>model_output_not_json</span>
+                          ) : null}
+                          {governedQualityFlags.guard_degraded ? (
+                            <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('warning')}`}>guard_degraded</span>
+                          ) : null}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {governedOverlayDegraded ? (
+                          <Button
+                            variant={darkMode ? 'secondary' : 'outline'}
+                            onClick={() => setShowGovernedOverlayPanel((v) => !v)}
+                            className="text-xs"
+                          >
+                            {showGovernedOverlayPanel ? 'Hide governed overlay' : 'Show governed overlay'}
+                          </Button>
+                        ) : null}
+                        <Button
+                          variant={darkMode ? 'secondary' : 'outline'}
+                          onClick={() => {
+                            governedOverview.refresh({ force: true }).catch(() => {
+                              // handled via hook state
+                            });
+                          }}
+                          className="text-xs"
+                        >
+                          Refresh overlay
+                        </Button>
+                      </div>
+                    </div>
+
+                    {governedOverlayDegraded ? (
+                      <div className={`mt-4 rounded-lg border p-3 ${darkMode ? 'bg-amber-500/5 border-amber-500/40 text-amber-200' : 'bg-amber-50 border-amber-200/70 text-amber-800'}`}>
+                        Governed overlay is degraded — deterministic output is shown by default.
+                      </div>
+                    ) : null}
+
+                    {(showGovernedOverlayPanel || !governedOverlayDegraded) ? (
+                      <div className="mt-4">
+                        <DealWorkspaceOverviewComp
+                          darkMode={darkMode}
+                          documentTitles={documentTitles}
+                          showFieldEvidence={true}
+                          dealOneLiner={governedDealOneLinerDisplay}
+                          product={governedKeyFacts.product.value}
+                          marketIcp={governedKeyFacts.market.value}
+                          businessModel={governedKeyFacts.businessModel.value}
+                          raiseTerms={governedKeyFacts.raise.value}
+                          dealOneLinerEvidenceRefs={governedKeyFactEvidenceRefs.one_liner}
+                          productEvidenceRefs={governedKeyFactEvidenceRefs.product}
+                          marketIcpEvidenceRefs={governedKeyFactEvidenceRefs.market}
+                          businessModelEvidenceRefs={governedKeyFactEvidenceRefs.businessModel}
+                          raiseTermsEvidenceRefs={governedKeyFactEvidenceRefs.raise}
+                          productEvidenceIds={governedKeyFactEvidenceIds.product}
+                          marketIcpEvidenceIds={governedKeyFactEvidenceIds.market}
+                          businessModelEvidenceIds={governedKeyFactEvidenceIds.businessModel}
+                          raiseTermsEvidenceIds={governedKeyFactEvidenceIds.raise}
+                          resolvedEvidence={resolvedEvidence}
+                          productProvenance={governedKeyFacts.product.provenance}
+                          marketIcpProvenance={governedKeyFacts.market.provenance}
+                          businessModelProvenance={governedKeyFacts.businessModel.provenance}
+                          raiseTermsProvenance={governedKeyFacts.raise.provenance}
+                          dealSummaryParagraphs={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.paragraphs}
+                          dealSummaryStrengths={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.strengths}
+                          dealSummaryRisks={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.risks}
+                          dealSummaryOpenQuestions={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.open_questions}
+                          dealSummaryTractionSignals={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.traction_signals}
+                          dealSummaryKeyRisksDetected={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.key_risks_detected}
+                          dealSummaryStrengthEvidenceRefs={governedKeyFactEvidenceRefs.strengths}
+                          dealSummaryRiskEvidenceRefs={governedKeyFactEvidenceRefs.concerns}
+                          dealSummaryOpenQuestionsEvidenceRefs={governedKeyFactEvidenceRefs.open_questions}
+                          dealSummaryTractionSignalsEvidenceRefs={governedKeyFactEvidenceRefs.traction}
+                          kpiTiles={overlayKpiTiles}
+                          dealSummarySourceLabel={'Governed'}
+                          score0_100={decisionTileScore0_100 ?? displayScore ?? investorScore}
+                          decisionLabel={decisionTileLabel}
+                          confidenceLabel={`${decisionTileConfidenceLabelShort} confidence`}
+                          confidenceVerified={decisionTileConfidenceBand !== 'unknown'}
+                          rationale={decisionTileRationale}
+                          strengths={overlayStrengths}
+                          openItems={overlayOpenItems}
+                          coverageGaps={missingChips}
+                          interpretationStatus={governedOverlayStatusUi}
+                          interpretationSource={'persisted' as any}
+                          interpretationText={governedInterpretationText}
+                          interpretationClaims={governedInterpretationClaims}
+                          interpretationDisclosures={governedInterpretationDisclosures}
+                          llmPhaseMode={governedOverview.llm_phase_mode ?? ((dealData as any)?.llm_phase_mode ?? null)}
+                          interpretationErrorCode={null}
+                          onRequestInterpretation={() => {
+                            governedOverview.refresh({ force: true }).catch(() => {
+                              // handled via hook state
+                            });
+                          }}
+                          onViewFullAnalysis={() => setActiveTab('evidence')}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div
+                    className={`backdrop-blur-xl border rounded-xl p-6 w-full ${
+                      governedOverlayDegraded
+                        ? (darkMode ? 'bg-amber-500/5 border-amber-500/40' : 'bg-amber-50 border-amber-200/70')
+                        : (darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50')
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Governed overlay</div>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass(governedOverlayDegraded ? 'warning' : 'muted')}`}>
+                            phase: {String(governedOverview.llm_phase_mode ?? '—')}
+                          </span>
+                          <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('muted')}`}>
+                            created: {governedOverview.created_at ? new Date(governedOverview.created_at).toLocaleString() : '—'}
+                          </span>
+                          {governedQualityFlags.provider_error ? (
+                            <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('danger')}`}>provider_error</span>
+                          ) : null}
+                          {governedQualityFlags.model_output_not_json ? (
+                            <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('danger')}`}>model_output_not_json</span>
+                          ) : null}
+                          {governedQualityFlags.guard_degraded ? (
+                            <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('warning')}`}>guard_degraded</span>
+                          ) : null}
+                        </div>
+                      </div>
+                      <Button
+                        variant={darkMode ? 'secondary' : 'outline'}
+                        onClick={() => {
+                          governedOverview.refresh({ force: true }).catch(() => {
+                            // handled via hook state
+                          });
+                        }}
+                        className="text-xs"
+                      >
+                        Refresh overlay
+                      </Button>
+                    </div>
+
+                    <div className="mt-4">
+                      {governedOverview.status === 'loading' ? (
+                        <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Loading governed overlay…</div>
+                      ) : !hasGovernedOverview ? (
+                        <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                          {overlayPostAnalyzeState === 'polling'
+                            ? 'Overlay still processing… refreshing automatically.'
+                            : overlayPostAnalyzeState === 'timeout'
+                              ? 'Overlay still processing… refresh overlay or retry analysis.'
+                              : 'Run analysis to generate governed overlay.'}
+                        </div>
+                      ) : (
+                        <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                          Governed overlay is degraded — deterministic output is shown by default.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {/* Evidence & Coverage section must remain visible below the canonical overview component */}
                 <EvidenceCoverageSection
@@ -6086,6 +6988,139 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   isRunning={isFullProcessActive || analyzing}
                   lastAnalyzedAt={dioMeta?.lastAnalyzedAt ?? null}
                 />
+
+                <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Deterministic (authoritative)</div>
+                      <div className={`mt-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                        Canonical output from the deterministic report pipeline.
+                      </div>
+                    </div>
+                    <Button
+                      variant={darkMode ? 'secondary' : 'outline'}
+                      onClick={() => {
+                        deterministicToggleTouchedRef.current = true;
+                        setShowDeterministicAuthoritative((v) => !v);
+                      }}
+                    >
+                      {showDeterministicAuthoritative ? 'Hide Deterministic (Authoritative)' : 'Show Deterministic (Authoritative)'}
+                    </Button>
+                  </div>
+
+                  {showDeterministicAuthoritative ? (
+                    <div className="mt-4">
+                      <DealWorkspaceOverviewComp
+                        darkMode={darkMode}
+                        dealOneLiner={overviewDealOneLinerCanonical}
+                        product={overviewProductCanonical}
+                        marketIcp={overviewMarketIcpCanonical}
+                        businessModel={overviewBusinessModelCanonical}
+                        raiseTerms={overviewRaiseTermsCanonical}
+                        productProvenance={{ source: normalizeKeyFactText(overviewProductCanonical) ? 'deterministic' : 'missing' }}
+                        marketIcpProvenance={{ source: normalizeKeyFactText(overviewMarketIcpCanonical) ? 'deterministic' : 'missing' }}
+                        businessModelProvenance={{ source: normalizeKeyFactText(overviewBusinessModelCanonical) ? 'deterministic' : 'missing' }}
+                        raiseTermsProvenance={{ source: normalizeKeyFactText(overviewRaiseTermsCanonical) ? 'deterministic' : 'missing' }}
+                        dealSummaryParagraphs={overviewDealSummaryParagraphsCanonical}
+                        kpiTiles={deterministicKpiTiles}
+                        dealSummarySourceLabel={dealSummarySourceLabel}
+                        dealSummaryCitations={canonicalCitations ?? undefined}
+                        score0_100={decisionTileScore0_100 ?? displayScore ?? investorScore}
+                        decisionLabel={decisionTileLabel}
+                        confidenceLabel={`${decisionTileConfidenceLabelShort} confidence`}
+                        confidenceVerified={decisionTileConfidenceBand !== 'unknown'}
+                        rationale={decisionTileRationale}
+                        strengths={decisionTileStrengths}
+                        openItems={decisionTileOpenItemsAll}
+                        coverageGaps={missingChips}
+                        interpretationStatus={governedOverlayStatusUi}
+                        interpretationSource={hasGovernedOverview ? ('persisted' as any) : ('none' as any)}
+                        interpretationText={governedInterpretationText}
+                        interpretationClaims={hasGovernedOverview ? governedInterpretationClaims : []}
+                        interpretationDisclosures={hasGovernedOverview ? governedInterpretationDisclosures : []}
+                        llmPhaseMode={governedOverview.llm_phase_mode ?? ((dealData as any)?.llm_phase_mode ?? null)}
+                        interpretationErrorCode={null}
+                        onRequestInterpretation={() => {
+                          governedOverview.refresh({ force: true }).catch(() => {
+                            // handled via hook state
+                          });
+                        }}
+                        onViewFullAnalysis={() => setActiveTab('evidence')}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+
+          <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Analysis diagnostics</div>
+                <div className={`mt-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  {analysisDiagnosticsStatus === 'loading'
+                    ? 'Loading latest diagnostics snapshot…'
+                    : (analysisDiagnostics ? 'Latest snapshot loaded.' : 'No diagnostics yet — run analysis to generate.')}
+                </div>
+              </div>
+              {analysisDiagnostics ? (
+                <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                  {analysisDiagnostics.created_at ? `Updated ${new Date(analysisDiagnostics.created_at).toLocaleString()}` : null}
+                </div>
+              ) : null}
+            </div>
+
+            {analysisDiagnosticsError ? (
+              <div className={`mt-3 text-xs ${darkMode ? 'text-amber-200' : 'text-amber-700'}`}>
+                {analysisDiagnosticsError}
+              </div>
+            ) : null}
+
+            {analysisDiagnostics ? (
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
+                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Report</div>
+                  <div className={`text-xs font-mono break-all ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{analysisDiagnostics.report_id}</div>
+                  <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>phase: {String(analysisDiagnostics.llm_phase_mode ?? '—')}</div>
+                </div>
+
+                <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
+                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Coverage</div>
+                  <div className={`text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                    Deterministic coverage ratio: {typeof analysisDiagnostics.deterministic_coverage_ratio === 'number' ? `${Math.round(analysisDiagnostics.deterministic_coverage_ratio * 100)}%` : '—'}
+                  </div>
+                  <div className={`mt-1 text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                    Citation integrity: {typeof analysisDiagnostics.citation_integrity_percent === 'number' ? `${Math.round(analysisDiagnostics.citation_integrity_percent)}%` : '—'}
+                  </div>
+                </div>
+
+                <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
+                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Guard</div>
+                  <div className={`text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                    Hallucination count: {typeof analysisDiagnostics.hallucination_count === 'number' ? analysisDiagnostics.hallucination_count : '—'}
+                  </div>
+                  <div className={`mt-1 text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                    Numeric claims without evidence: {typeof analysisDiagnostics.numeric_claims_without_evidence === 'number' ? analysisDiagnostics.numeric_claims_without_evidence : '—'}
+                  </div>
+                </div>
+
+                <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
+                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Drift</div>
+                  <div className={`text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                    Semantic drift score: {typeof analysisDiagnostics.semantic_drift_score === 'number' ? analysisDiagnostics.semantic_drift_score.toFixed(4) : '—'}
+                  </div>
+                  {(
+                    typeof analysisDiagnostics.provider_error_count === 'number' ||
+                    typeof analysisDiagnostics.model_output_truncated_count === 'number' ||
+                    typeof analysisDiagnostics.model_output_not_json_count === 'number' ||
+                    typeof analysisDiagnostics.guard_degraded_count === 'number'
+                  ) ? (
+                    <div className={`mt-2 text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      Errors: provider={analysisDiagnostics.provider_error_count ?? '—'} · trunc={analysisDiagnostics.model_output_truncated_count ?? '—'} · nonjson={analysisDiagnostics.model_output_not_json_count ?? '—'} · guard={analysisDiagnostics.guard_degraded_count ?? '—'}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+          </div>
               </div>
             )}
 

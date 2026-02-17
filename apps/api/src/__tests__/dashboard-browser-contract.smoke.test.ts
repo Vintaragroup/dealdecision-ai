@@ -57,6 +57,10 @@ test("dashboard browser contract smoke: HTML shell contains load-bearing strings
   assert.ok(html.includes("deterministic-field-presence"));
   assert.ok(html.includes("Workspace Mirror"));
   assert.ok(html.includes("Investment Analysis Overview"));
+  assert.ok(html.includes("Persisted Governed Overlay (PR2)"));
+  assert.ok(html.includes("deterministic-overlay-persisted-status"));
+  assert.ok(html.includes("deterministic-overlay-persisted-content"));
+  assert.ok(html.includes("/governed-llm-overview"));
   assert.ok(html.includes("Deal Summary Tiers"));
   assert.ok(html.includes("deterministic-deal-summary-tiers"));
   assert.ok(html.includes("Score Understanding v1"));
@@ -76,6 +80,8 @@ test("dashboard browser contract smoke: HTML shell contains load-bearing strings
   assert.ok(html.includes("function activateTab("));
   assert.ok(html.includes("function setDeterministicDealId("));
   assert.ok(html.includes("function setNodeInspectorDealId("));
+  assert.ok(html.includes("function fetchPersistedGovernedOverview("));
+  assert.ok(html.includes("function renderPersistedGovernedOverlayPanel("));
 
   await app.close();
 });

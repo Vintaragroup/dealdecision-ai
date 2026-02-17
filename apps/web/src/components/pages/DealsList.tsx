@@ -15,6 +15,7 @@ import { apiGetDeals, apiGetDocuments, apiAutoProgressDeal, apiDeleteDeal } from
 import { Modal } from '../ui/Modal';
 import { useScoreSource } from '../../contexts/ScoreSourceContext';
 import { getDisplayScoreForDeal } from '../../lib/dealScore';
+import { selectAuthoritativeBusinessModelV1 } from '../../lib/selectors/selectAuthoritativeBusinessModelV1';
 import { useAuth } from '@clerk/clerk-react';
 import { 
   Search,
@@ -67,6 +68,7 @@ interface DealsListProps {
 
 export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, createdDeal }: DealsListProps) {
   const { isLoaded: authLoaded, isSignedIn, orgId } = useAuth();
+  const isDev = !!(import.meta as any)?.env?.DEV;
   const { scoreSource } = useScoreSource();
   const debugDealsList = useMemo(() => {
     try {
@@ -98,8 +100,13 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
   useEffect(() => {
     if (!authLoaded) return;
 
-    // Do not call the API until an active org exists.
-    if (!isSignedIn || !orgId) {
+    // In true local dev, we may not have a Clerk org selected, but the API may still be reachable
+    // (e.g. via VITE_ADMIN_TOKEN or dev-auth bypass). Prefer fetching and showing an error over
+    // silently showing an empty pipeline.
+    const allowDevWithoutOrg = isDev;
+
+    // Do not call the API until an active org exists (unless local dev).
+    if ((!isSignedIn || !orgId) && !allowDevWithoutOrg) {
       setLoading(false);
       setError(null);
       setLiveDeals([]);
@@ -231,12 +238,19 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
       const overview = deal?.ui?.overviewV2 ?? deal?.ui?.dealOverviewV2 ?? deal?.deal_overview_v2 ?? deal?.phase1?.deal_overview_v2;
       if (!overview || typeof overview !== 'object') return null;
 
+      const businessModelSelection = selectAuthoritativeBusinessModelV1({
+        report: null,
+        phase1: (deal?.phase1 && typeof deal.phase1 === 'object')
+          ? deal.phase1
+          : { deal_overview_v2: overview ?? null },
+      });
+
       const fields: Array<unknown> = [
         overview?.product_solution,
         overview?.market_icp,
         overview?.deal_type,
         overview?.raise,
-        overview?.business_model,
+        businessModelSelection?.value ?? null,
       ];
       const filledScalar = fields.filter((v) => typeof v === 'string' && v.trim().length > 0).length;
       const tractionFilled = Array.isArray(overview?.traction_signals) && overview.traction_signals.filter((x: any) => typeof x === 'string' && x.trim().length > 0).length > 0 ? 1 : 0;
@@ -1027,6 +1041,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
             name: d.name,
             stage: d.stage,
             priority: d.priority,
+            llm_phase_mode: (d as any).llm_phase_mode ?? "exploratory",
             trend: d.trend,
             score: d.score ?? undefined,
             owner: d.owner || undefined,

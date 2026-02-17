@@ -1,4 +1,5 @@
 import type { DealReport } from './apiClient';
+import { selectAuthoritativeBusinessModelV1 } from './selectors/selectAuthoritativeBusinessModelV1';
 
 export type Source = Record<string, any>;
 
@@ -11,6 +12,7 @@ export type HeaderField = {
 export type Phase1DealOverview = {
   raise?: unknown;
   business_model?: unknown;
+  business_model_arbitration_v1?: unknown;
   revenue?: unknown;
   growth?: unknown;
   customers?: unknown;
@@ -26,6 +28,20 @@ const asNonEmptyString = (v: unknown): string | null => {
   if (typeof v !== 'string') return null;
   const s = v.trim();
   return s.length > 0 ? s : null;
+};
+
+const hasEvidenceSources = (sources: unknown): boolean => {
+  if (!Array.isArray(sources) || sources.length === 0) return false;
+  return sources.some((s) => {
+    if (!s || typeof s !== 'object') return false;
+    const docId = typeof (s as any).document_id === 'string'
+      ? (s as any).document_id
+      : typeof (s as any).source_document_id === 'string'
+        ? (s as any).source_document_id
+        : '';
+    const page = (s as any).page_index;
+    return Boolean(String(docId ?? '').trim()) && typeof page === 'number' && Number.isFinite(page);
+  });
 };
 
 const fieldFromUnknown = (input: unknown): HeaderField => {
@@ -182,16 +198,13 @@ export function selectDealWorkspaceHeader(
     const structuredSummary = ((report as any)?.structured_summary ?? null) as any;
 
     const raise = structuredSummary?.raise;
-    const businessModelSynth = structuredSummary?.business_model_summary;
     const businessModel = structuredSummary?.business_model;
     const revenue = structuredSummary?.revenue;
     const growth = structuredSummary?.growth;
     const customers = structuredSummary?.customers;
 
-    const synthesizedValue = asNonEmptyString(businessModelSynth?.value);
+    const bm = selectAuthoritativeBusinessModelV1({ report, phase1 });
     const promotedValue = asNonEmptyString(businessModel?.value);
-    const chosenValue = synthesizedValue ?? promotedValue;
-    const usedSynthesized = Boolean(synthesizedValue);
 
     const revenueLabel = computeRevenueBadgeLabel(revenue);
     const growthLabel = computeGrowthBadgeLabel(growth);
@@ -199,31 +212,43 @@ export function selectDealWorkspaceHeader(
     return {
       ready: true,
       raise: {
-        value: asNonEmptyString(raise?.value),
+        value: hasEvidenceSources(raise?.sources) ? asNonEmptyString(raise?.value) : null,
         label: asNonEmptyString(raise?.label) ?? undefined,
         sources: Array.isArray(raise?.sources) ? (raise.sources as Source[]) : undefined,
       },
       business_model_synthesized: {
-        value: synthesizedValue,
-        label: synthesizedValue ? 'Synthesized' : undefined,
+        value: null,
       },
       business_model: {
-        value: chosenValue,
-        label: usedSynthesized ? 'Synthesized' : (asNonEmptyString(businessModel?.label) ?? undefined),
-        sources: usedSynthesized ? undefined : (Array.isArray(businessModel?.sources) ? (businessModel.sources as Source[]) : undefined),
+        value: bm.value,
+        label: bm.is_arbitrated
+          ? (bm.label ?? undefined)
+          : promotedValue
+            ? (asNonEmptyString(businessModel?.label) ?? undefined)
+            : undefined,
+        sources: bm.is_arbitrated
+          ? undefined
+          : (Array.isArray(businessModel?.sources) ? (businessModel.sources as Source[]) : undefined),
       },
       revenue: {
-        value: asNonEmptyString(revenue?.value?.raw),
+        value: hasEvidenceSources(revenue?.sources) ? asNonEmptyString(revenue?.value?.raw) : null,
         label: revenueLabel,
         sources: Array.isArray(revenue?.sources) ? (revenue.sources as Source[]) : undefined,
       },
       growth: {
-        value: asNonEmptyString(growth?.value?.raw),
+        value: hasEvidenceSources(growth?.sources) ? asNonEmptyString(growth?.value?.raw) : null,
         label: growthLabel,
         sources: Array.isArray(growth?.sources) ? (growth.sources as Source[]) : undefined,
       },
       customers: {
-        value: asNonEmptyString(customers?.value?.raw),
+        value: hasEvidenceSources(customers?.sources)
+          ? (
+              asNonEmptyString(customers?.value?.raw) ??
+              (typeof customers?.value?.count === 'number' && Number.isFinite(customers.value.count)
+                ? `${Math.round(customers.value.count)} customers`
+                : null)
+            )
+          : null,
         label: asNonEmptyString(customers?.label) ?? undefined,
         sources: Array.isArray(customers?.sources) ? (customers.sources as Source[]) : undefined,
       },
@@ -234,7 +259,13 @@ export function selectDealWorkspaceHeader(
     ready: false,
     raise: fieldFromUnknown(phase1?.raise),
     business_model_synthesized: { value: null },
-    business_model: fieldFromUnknown(phase1?.business_model),
+    business_model: (() => {
+      const bm = selectAuthoritativeBusinessModelV1({ report: null, phase1 });
+      if (bm.is_arbitrated && bm.value) {
+        return { value: bm.value, label: bm.label ?? undefined };
+      }
+      return fieldFromUnknown(phase1?.business_model);
+    })(),
     revenue: fieldFromUnknown(phase1?.revenue),
     growth: fieldFromUnknown(phase1?.growth),
     customers: fieldFromUnknown(phase1?.customers),

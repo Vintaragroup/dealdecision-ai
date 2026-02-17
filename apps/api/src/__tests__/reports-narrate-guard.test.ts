@@ -13,6 +13,8 @@ test.after(async () => {
 test("GET /api/v1/deals/:deal_id/report?narrate=1 attaches llm_narration_v1 when provider output is guard-compliant (KPI cited)", async () => {
   const dealId = "00000000-0000-0000-0000-000000000042";
 
+  const extractedAt = "2026-02-04T00:00:00.000Z";
+
   const originalKey = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = "test";
 
@@ -71,8 +73,8 @@ test("GET /api/v1/deals/:deal_id/report?narrate=1 attaches llm_narration_v1 when
 
   const mockPool = {
     query: async (sql: string, params: unknown[] = []) => {
-      if (sql.includes("SELECT id FROM deals") && sql.includes("deleted_at IS NULL")) {
-        return { rows: [{ id: String(params[0] ?? dealId) }] };
+      if (sql.includes("FROM deals") && sql.includes("WHERE id = $1") && sql.includes("deleted_at IS NULL")) {
+        return { rows: [{ id: String(params[0] ?? dealId), llm_phase_mode: "exploratory" }] };
       }
       if (sql.includes("FROM deal_intelligence_objects") && sql.includes("WHERE deal_id = $1")) {
         return {
@@ -106,8 +108,30 @@ test("GET /api/v1/deals/:deal_id/report?narrate=1 attaches llm_narration_v1 when
         };
       }
 
+      // Provide minimal DPU rows so deterministic KPI sources exist and can be matched by the guard.
+      if (sql.includes("SELECT 1 FROM document_page_understanding")) {
+        return { rows: [{ ok: 1 }], rowCount: 1 };
+      }
+      if (sql.toLowerCase().includes("from public.document_page_understanding") && sql.toLowerCase().includes("where deal_id")) {
+        return {
+          rows: [
+            {
+              document_id: "doc-1",
+              page_index: 0,
+              payload: {
+                source: { extracted_at: extractedAt, ppt_slide_number: 1 },
+                structured: {
+                  title: "Summary",
+                  bullets: ["Revenue: $2.476M"],
+                },
+              },
+            },
+          ],
+        };
+      }
+
       // Avoid promoted facts + DPU tables.
-      if (sql.includes("SELECT 1 FROM evidence_items") || sql.includes("SELECT 1 FROM document_page_understanding")) {
+      if (sql.includes("SELECT 1 FROM evidence_items")) {
         const err: any = new Error("missing table");
         err.code = "42P01";
         throw err;
@@ -218,8 +242,8 @@ test("GET /api/v1/deals/:deal_id/report?narrate=1 degrades invalid sections inst
 
   const mockPool = {
     query: async (sql: string, params: unknown[] = []) => {
-      if (sql.includes("SELECT id FROM deals") && sql.includes("deleted_at IS NULL")) {
-        return { rows: [{ id: String(params[0] ?? dealId) }] };
+      if (sql.includes("FROM deals") && sql.includes("WHERE id = $1") && sql.includes("deleted_at IS NULL")) {
+        return { rows: [{ id: String(params[0] ?? dealId), llm_phase_mode: "exploratory" }] };
       }
       if (sql.includes("FROM deal_intelligence_objects") && sql.includes("WHERE deal_id = $1")) {
         return {

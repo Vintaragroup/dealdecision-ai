@@ -2327,12 +2327,21 @@ export function computeVisionRoutingDecisionV1(params: {
 		visionFallbackAllowed = true;
 		reason = "image_allowed";
 	} else if (isPdf) {
+		// IMPORTANT: OCR gating and visual extraction are different concerns.
+		// For normal pitch-deck sized PDFs, we always allow vision fallback so we can
+		// run `extract_visuals` and populate page understanding/key metrics, even if
+		// native PDF text is "ok".
+		const isPitchDeckSized = typeof totalPages === "number" && Number.isFinite(totalPages) && totalPages > 0 && totalPages <= 80;
+
 		if (forceOcr) {
 			visionFallbackAllowed = true;
 			reason = "force_ocr";
 		} else if (weakCoverageOrLowContent) {
 			visionFallbackAllowed = true;
 			reason = "pdf_weak_coverage_or_low_content";
+		} else if (isPitchDeckSized) {
+			visionFallbackAllowed = true;
+			reason = "pdf_pitch_deck_allow_extract_visuals";
 		} else if (needsOcr !== true) {
 			visionFallbackAllowed = false;
 			reason = "pdf_text_ok";
@@ -2481,7 +2490,6 @@ type ExcelTimeSeriesTableLite = {
 	value_cols: Array<{ col: string; header: string }>;
 	rows: Array<{ label: string; values: Record<string, { value?: unknown; formula?: string }> }>;
 };
-
 type ExcelSheetMetricsV1 = {
 	schema_version: "excel_sheet_metrics_v1";
 	source: "time_series_table" | "sheet_rows" | "grid_preview" | "none";

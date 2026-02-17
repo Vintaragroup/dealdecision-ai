@@ -19,7 +19,7 @@ import { LlmNarrationV1Schema, degradeNarrationV1, validateNoNewFacts } from '@d
 import { buildNarrationPrompt } from '@dealdecision/core';
 import type { LlmNarrationV1Type } from '@dealdecision/core';
 import { buildOverviewPrompt, degradeOverviewV1 } from '@dealdecision/core';
-import { buildInvestmentAnalysisOverviewPrompt, LlmOverviewV1Schema } from '@dealdecision/core';
+import { buildInvestmentAnalysisOverviewPrompt, LlmOverviewV1CitationSchema, LlmOverviewV1Schema } from '@dealdecision/core';
 import { loadPromotedFactsForDeal } from '../lib/promoted-facts';
 import { derivePromotedFactsFromDpuForDeal } from '../lib/promoted-facts-from-dpu';
 import { compileDealSummaryV1 } from '../lib/deal-summary-v1';
@@ -27,15 +27,44 @@ import { getSegmentedNodesForDeal } from '../lib/segmented-nodes-for-deal';
 import { inferDeckArchetypeV1 } from '../lib/deck-archetypes';
 import { compileStructuredSummaryExtras } from '../lib/structured-summary-extras';
 import { buildBusinessModelSummaryV1 } from '../lib/reports/business-model-summary';
+import { buildInvestmentAnalysisOverviewV2 } from '@dealdecision/core';
 import { computeArchetypeSegmentDriftV1 } from '../lib/archetype-segment-drift-v1';
 import { computeOverrideQualityV1 } from '../lib/override-quality-v1';
 import { computeDeterministicModifierV1, computeDeterministicScorePreviewV1Diagnostics, shouldPinUnadjusted } from '../lib/deterministic-score-preview-v1';
+import { StageTimer, nowMs } from '../lib/telemetry/stage-timer';
 
 const isUuid = (value: unknown): value is string => z.string().uuid().safeParse(value).success;
+
+const isMissingRelation = (err: unknown, relationName: string): boolean => {
+  const e = err as any;
+  const code = typeof e?.code === 'string' ? e.code : null;
+  if (code !== '42P01') return false;
+  void relationName; // intentionally ignored; catch blocks are relation-specific
+  return true;
+};
 
 const envFlagEnabled = (v: unknown): boolean => {
   const s = String(v ?? '').trim().toLowerCase();
   return s === '1' || s === 'true' || s === 'yes' || s === 'on';
+};
+
+const readReportDeterministicFlags = () => {
+  return {
+    deterministic_score_v1_enabled: envFlagEnabled(process.env.DETERMINISTIC_SCORE_V1_ENABLED),
+    fundability_shadow_mode: envFlagEnabled(process.env.FUNDABILITY_SHADOW_MODE),
+    fundability_soft_caps: envFlagEnabled(process.env.FUNDABILITY_SOFT_CAPS),
+    fundability_hard_gates: envFlagEnabled(process.env.FUNDABILITY_HARD_GATES),
+    phaseb_visual_evidence: envFlagEnabled(process.env.DDAI_ENABLE_PHASEB_VISUAL_EVIDENCE),
+  };
+};
+
+const readReportAuthMode = (request: FastifyRequest): string => {
+  const auth = (request as any)?.auth;
+  if (!auth || typeof auth !== 'object') return 'none';
+  if (auth?.claims?.bypass_auth) return 'bypass_claim';
+  if (envFlagEnabled(process.env.DISABLE_CLERK_AUTH)) return 'bypass_env';
+  if (typeof auth?.userId === 'string' && auth.userId.trim()) return 'clerk_jwt';
+  return 'unknown';
 };
 
 const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
@@ -75,9 +104,48 @@ async function openaiChatCompletion(params: {
   temperature: number;
   maxTokens: number;
   responseFormat?: { type: 'json_object' };
+  audit?: {
+    request: FastifyRequest;
+    deal_id: string | null;
+    dio_id: string | null;
+    llm_phase_mode: string | null;
+    call: string;
+    prompt_version: string;
+    prompt_hash: string;
+    system_bytes: number;
+    user_bytes: number;
+    prompt_bytes: number;
+    request_id: string | number | null;
+  };
 }): Promise<{ content: string; model: string; usage?: OpenAIChatCompletionResponse['usage']; finish_reason?: string }> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
+
+  const startedAtMs = nowMs();
+  if (params.audit) {
+    params.audit.request.log.info(
+      {
+        event: 'LLM_CALL_START',
+        provider: 'openai',
+        model: params.model,
+        call: params.audit.call,
+        prompt_version: params.audit.prompt_version,
+        llm_phase_mode: params.audit.llm_phase_mode,
+        deal_id: params.audit.deal_id,
+        dio_id: params.audit.dio_id,
+        request_id: params.audit.request_id,
+        temperature: params.temperature,
+        max_tokens: params.maxTokens,
+        top_p: null,
+        prompt_hash: params.audit.prompt_hash,
+        system_bytes: params.audit.system_bytes,
+        user_bytes: params.audit.user_bytes,
+        prompt_bytes: params.audit.prompt_bytes,
+        ts: new Date().toISOString(),
+      },
+      'LLM_CALL_START'
+    );
+  }
 
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
@@ -96,14 +164,91 @@ async function openaiChatCompletion(params: {
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new Error(text || `OpenAI request failed with ${res.status}`);
+    const errMessage = text || `OpenAI request failed with ${res.status}`;
+    if (params.audit) {
+      params.audit.request.log.info(
+        {
+          event: 'LLM_CALL_DONE',
+          ok: false,
+          provider: 'openai',
+          model: params.model,
+          call: params.audit.call,
+          prompt_version: params.audit.prompt_version,
+          llm_phase_mode: params.audit.llm_phase_mode,
+          deal_id: params.audit.deal_id,
+          dio_id: params.audit.dio_id,
+          request_id: params.audit.request_id,
+          elapsed_ms: nowMs() - startedAtMs,
+          finish_reason: null,
+          usage_available: false,
+          prompt_tokens: null,
+          completion_tokens: null,
+          total_tokens: null,
+          error: errMessage.slice(0, 800),
+          ts: new Date().toISOString(),
+        },
+        'LLM_CALL_DONE'
+      );
+    }
+    throw new Error(errMessage);
   }
 
   const json = (await res.json()) as OpenAIChatCompletionResponse;
   const choice0 = json?.choices?.[0];
   const content = choice0?.message?.content;
   if (typeof content !== 'string' || content.trim().length === 0) {
+    if (params.audit) {
+      params.audit.request.log.info(
+        {
+          event: 'LLM_CALL_DONE',
+          ok: false,
+          provider: 'openai',
+          model: json?.model ?? params.model,
+          call: params.audit.call,
+          prompt_version: params.audit.prompt_version,
+          llm_phase_mode: params.audit.llm_phase_mode,
+          deal_id: params.audit.deal_id,
+          dio_id: params.audit.dio_id,
+          request_id: params.audit.request_id,
+          elapsed_ms: nowMs() - startedAtMs,
+          finish_reason: choice0?.finish_reason ?? null,
+          usage_available: Boolean(json?.usage),
+          prompt_tokens: asFiniteInt(json?.usage?.prompt_tokens) ?? null,
+          completion_tokens: asFiniteInt(json?.usage?.completion_tokens) ?? null,
+          total_tokens: asFiniteInt(json?.usage?.total_tokens) ?? null,
+          error: 'OpenAI returned empty content',
+          ts: new Date().toISOString(),
+        },
+        'LLM_CALL_DONE'
+      );
+    }
     throw new Error('OpenAI returned empty content');
+  }
+
+  if (params.audit) {
+    params.audit.request.log.info(
+      {
+        event: 'LLM_CALL_DONE',
+        ok: true,
+        provider: 'openai',
+        model: json?.model ?? params.model,
+        call: params.audit.call,
+        prompt_version: params.audit.prompt_version,
+        llm_phase_mode: params.audit.llm_phase_mode,
+        deal_id: params.audit.deal_id,
+        dio_id: params.audit.dio_id,
+        request_id: params.audit.request_id,
+        elapsed_ms: nowMs() - startedAtMs,
+        finish_reason: choice0?.finish_reason ?? null,
+        usage_available: Boolean(json?.usage),
+        prompt_tokens: asFiniteInt(json?.usage?.prompt_tokens) ?? null,
+        completion_tokens: asFiniteInt(json?.usage?.completion_tokens) ?? null,
+        total_tokens: asFiniteInt(json?.usage?.total_tokens) ?? null,
+        output_bytes: Buffer.byteLength(content, 'utf8'),
+        ts: new Date().toISOString(),
+      },
+      'LLM_CALL_DONE'
+    );
   }
   return { content, model: json.model, usage: json.usage, finish_reason: choice0?.finish_reason };
 }
@@ -122,6 +267,18 @@ const normalizeKpiForNarrationExcerpt = (kpi: any): any => {
   if (!kpi || typeof kpi !== 'object') return kpi;
   const out: any = { ...kpi };
 
+  // Normalize `source` to the shape expected by the guard.
+  // Many deterministic extractors store 0-based `page_index`; guard citations use 1-based `page`.
+  if (out.source && typeof out.source === 'object') {
+    try {
+      if ((out.source as any).page == null && typeof (out.source as any).page_index === 'number' && Number.isFinite((out.source as any).page_index)) {
+        (out.source as any).page = (out.source as any).page_index + 1;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   if (out.value_raw == null && out.value && typeof out.value === 'object') {
     const raw = (out.value as any).raw;
     if (typeof raw === 'string' && raw.trim()) out.value_raw = raw;
@@ -130,12 +287,24 @@ const normalizeKpiForNarrationExcerpt = (kpi: any): any => {
   // Guard expects a single deterministic `source` object (page + optional slide_title).
   if (out.source == null) {
     const sources = Array.isArray(out.sources) ? out.sources : [];
-    const best = sources.find((s: any) => s && typeof s === 'object' && typeof s.page === 'number') ?? null;
+    const best =
+      sources.find(
+        (s: any) =>
+          s &&
+          typeof s === 'object' &&
+          (typeof (s as any).page === 'number' || typeof (s as any).page_index === 'number')
+      ) ?? null;
     if (best) {
+      const page =
+        typeof (best as any).page === 'number'
+          ? (best as any).page
+          : (typeof (best as any).page_index === 'number' ? (best as any).page_index + 1 : null);
+      if (typeof page === 'number' && Number.isFinite(page)) {
       out.source = {
-        page: (best as any).page,
+        page,
         slide_title: typeof (best as any).slide_title === 'string' ? (best as any).slide_title : null,
       };
+      }
     }
   }
   return out;
@@ -250,6 +419,10 @@ async function maybeAttachNarrationV1(args: {
   nextMetadata: any;
   narrateEnabled: boolean;
   promotedFactsForExcerpt?: any[];
+  timer?: StageTimer;
+  reportExcerpt?: any;
+  excerptHash?: string;
+  llmContext?: { deal_id: string | null; dio_id: string | null; llm_phase_mode: string | null; request_id: string | number | null };
 }): Promise<void> {
   if (!args.narrateEnabled) return;
   if (!args.report || typeof args.report !== 'object') return;
@@ -257,7 +430,7 @@ async function maybeAttachNarrationV1(args: {
   const meta = args.nextMetadata && typeof args.nextMetadata === 'object' ? args.nextMetadata : {};
   const model = process.env.OPENAI_MODEL_REPORT_NARRATE || 'gpt-4o-mini';
 
-  const excerpt = buildAllowlistedNarrationExcerpt(args.report, { promoted_facts: args.promotedFactsForExcerpt });
+  const excerpt = args.reportExcerpt ?? buildAllowlistedNarrationExcerpt(args.report, { promoted_facts: args.promotedFactsForExcerpt });
   const prompt = buildNarrationPrompt({ excerpt });
 
   const devCacheEnabled = String(process.env.NODE_ENV ?? '').toLowerCase() === 'development';
@@ -268,13 +441,29 @@ async function maybeAttachNarrationV1(args: {
     (typeof (args.report as any)?.metadata?.deterministic_score_inputs_v1?.inputs_hash === 'string'
       ? String((args.report as any).metadata.deterministic_score_inputs_v1.inputs_hash)
       : null) ||
-    stableHash(JSON.stringify(excerpt ?? null));
+    (typeof args.excerptHash === 'string' && args.excerptHash.trim() ? args.excerptHash : stableHash(JSON.stringify(excerpt ?? null)));
 
   const cacheKey = `${inputsHash}|${model}|${NARRATION_PROMPT_VERSION}`;
   if (devCacheEnabled) {
     const cached = narrationDevCache.get(cacheKey);
     if (cached) {
+      args.request.log.info(
+        {
+          event: 'report_narration_decision_v1',
+          deal_id: (args.report as any)?.deal_id ?? (args.report as any)?.dealId ?? null,
+          narrate_query: (args.request.query as any)?.narrate ?? null,
+          will_call_llm: false,
+          skip_reason: 'cache_hit',
+          provider: 'openai',
+          model,
+          has_api_key: Boolean(process.env.OPENAI_API_KEY),
+          deterministic_flags: readReportDeterministicFlags(),
+          auth_mode: readReportAuthMode(args.request),
+        },
+        'report_narration_decision_v1'
+      );
       (args.report as any).llm_narration_v1 = cached.narration;
+      meta.llm_narration_v1_skipped = { reason: 'cache_hit' };
       meta.llm_narration_v1_meta = {
         model: cached.meta.model,
         usage: cached.meta.usage ?? null,
@@ -288,55 +477,127 @@ async function maybeAttachNarrationV1(args: {
   }
 
   if (!process.env.OPENAI_API_KEY) {
-    meta.llm_narration_v1_error = { code: 'missing_openai_api_key' };
+    args.request.log.info(
+      {
+        event: 'report_narration_decision_v1',
+        deal_id: (args.report as any)?.deal_id ?? (args.report as any)?.dealId ?? null,
+        narrate_query: (args.request.query as any)?.narrate ?? null,
+        will_call_llm: false,
+        skip_reason: 'missing_api_key',
+        provider: 'openai',
+        model,
+        has_api_key: false,
+        deterministic_flags: readReportDeterministicFlags(),
+        auth_mode: readReportAuthMode(args.request),
+      },
+      'report_narration_decision_v1'
+    );
+    meta.llm_narration_v1_error = meta.llm_narration_v1_error ?? { code: 'missing_openai_api_key' };
+    meta.llm_narration_v1_skipped = { reason: 'missing_api_key' };
     args.report.metadata = meta;
     return;
   }
+
+  args.request.log.info(
+    {
+      event: 'report_narration_decision_v1',
+      deal_id: (args.report as any)?.deal_id ?? (args.report as any)?.dealId ?? null,
+      narrate_query: (args.request.query as any)?.narrate ?? null,
+      will_call_llm: true,
+      skip_reason: null,
+      provider: 'openai',
+      model,
+      has_api_key: true,
+      deterministic_flags: readReportDeterministicFlags(),
+      auth_mode: readReportAuthMode(args.request),
+    },
+    'report_narration_decision_v1'
+  );
 
   const startedAt = Date.now();
   let completionFinishReason: string | null = null;
   let completionModelUsed: string | null = null;
   let completionOutputChars: number | null = null;
   try {
+    const system = prompt.system;
+    const user = prompt.user;
+    const systemBytes = Buffer.byteLength(system, 'utf8');
+    const userBytes = Buffer.byteLength(user, 'utf8');
+    const promptHash = stableHash(`${system}\n\n${user}`);
+
     const completion = await openaiChatCompletion({
       model,
       messages: [
-        { role: 'system', content: prompt.system },
-        { role: 'user', content: prompt.user },
+        { role: 'system', content: system },
+        { role: 'user', content: user },
       ],
       responseFormat: { type: 'json_object' },
       temperature: 0.2,
       maxTokens: 1800,
+      audit: {
+        request: args.request,
+        call: 'report.narration_v1',
+        prompt_version: NARRATION_PROMPT_VERSION,
+        prompt_hash: promptHash,
+        system_bytes: systemBytes,
+        user_bytes: userBytes,
+        prompt_bytes: systemBytes + userBytes,
+        deal_id: args.llmContext?.deal_id ?? null,
+        dio_id: args.llmContext?.dio_id ?? null,
+        llm_phase_mode: args.llmContext?.llm_phase_mode ?? null,
+        request_id: args.llmContext?.request_id ?? null,
+      },
     });
 
     const raw = completion.content;
     completionFinishReason = typeof completion.finish_reason === 'string' && completion.finish_reason.trim() ? completion.finish_reason.trim() : null;
     completionModelUsed = typeof completion.model === 'string' && completion.model.trim() ? completion.model.trim() : null;
     completionOutputChars = typeof raw === 'string' ? raw.length : null;
-    const parsed = (() => {
-      try {
-        return parseJsonOnly(raw);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e ?? 'unknown_error');
-        if (message === 'model_output_not_json') {
-          const trimmed = typeof raw === 'string' ? raw.trim() : '';
-          const head = trimmed.slice(0, 400);
-          const tail = trimmed.slice(Math.max(0, trimmed.length - 200));
-          args.request.log.warn(
-            {
-              code: 'model_output_not_json',
-              model: completionModelUsed ?? model,
-              finish_reason: completionFinishReason,
-              output_chars: completionOutputChars,
-              raw_head: head,
-              raw_tail: tail,
-            },
-            'LLM_NARRATION_RAW_OUTPUT'
-          );
-        }
-        throw e;
+    const stageBase = {
+      request_id: args.llmContext?.request_id ?? (args.request as any)?.id ?? null,
+      deal_id: args.llmContext?.deal_id ?? (args.report as any)?.deal_id ?? (args.report as any)?.dealId ?? null,
+      dio_id: args.llmContext?.dio_id ?? null,
+    };
+
+    const parseStartMs = nowMs();
+    let parsed: unknown;
+    try {
+      parsed = parseJsonOnly(raw);
+    } catch (e) {
+      const parseMs = nowMs() - parseStartMs;
+      args.timer?.mark('llm.narration_v1.parse_json', parseMs, false);
+      args.request.log.info(
+        { event: 'REPORT_STAGE_TIMING', stage: 'llm.narration_v1.parse_json', ms: parseMs, ok: false, ...stageBase, ts: new Date().toISOString() },
+        'REPORT_STAGE_TIMING'
+      );
+
+      const message = e instanceof Error ? e.message : String(e ?? 'unknown_error');
+      if (message === 'model_output_not_json') {
+        const trimmed = typeof raw === 'string' ? raw.trim() : '';
+        const head = trimmed.slice(0, 400);
+        const tail = trimmed.slice(Math.max(0, trimmed.length - 200));
+        args.request.log.warn(
+          {
+            code: 'model_output_not_json',
+            model: completionModelUsed ?? model,
+            finish_reason: completionFinishReason,
+            output_chars: completionOutputChars,
+            raw_head: head,
+            raw_tail: tail,
+          },
+          'LLM_NARRATION_RAW_OUTPUT'
+        );
       }
-    })();
+      throw e;
+    }
+    const parseMs = nowMs() - parseStartMs;
+    args.timer?.mark('llm.narration_v1.parse_json', parseMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.narration_v1.parse_json', ms: parseMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
+
+    const validateStartMs = nowMs();
     const validatedStrict = LlmNarrationV1Schema.safeParse(parsed);
 
     // Recovery path: if strict schema fails due to missing fields (e.g., what_would_change_my_mind),
@@ -435,11 +696,32 @@ async function maybeAttachNarrationV1(args: {
 
     if (!validated.ok) return;
 
+    const validateMs = nowMs() - validateStartMs;
+    args.timer?.mark('llm.narration_v1.schema_validate', validateMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.narration_v1.schema_validate', ms: validateMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
+
+    const guardStartMs = nowMs();
     const guard = validateNoNewFacts({ reportExcerpt: excerpt, narration: validated.narration });
+    const guardMs = nowMs() - guardStartMs;
+    args.timer?.mark('llm.narration_v1.guard', guardMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.narration_v1.guard', ms: guardMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
 
     const narration = (() => {
       if (guard.ok) return validated.narration as LlmNarrationV1Type;
+      const degradeStartMs = nowMs();
       const degraded = degradeNarrationV1({ narration: validated.narration as LlmNarrationV1Type, violations: guard.violations });
+      const degradeMs = nowMs() - degradeStartMs;
+      args.timer?.mark('llm.narration_v1.degrade', degradeMs, true);
+      args.request.log.info(
+        { event: 'REPORT_STAGE_TIMING', stage: 'llm.narration_v1.degrade', ms: degradeMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+        'REPORT_STAGE_TIMING'
+      );
 
     const blockedSectionTitles = (() => {
       const titles = new Set<string>();
@@ -494,7 +776,14 @@ async function maybeAttachNarrationV1(args: {
       return degraded.narration;
     })();
 
+    const assignStartMs = nowMs();
     (args.report as any).llm_narration_v1 = narration;
+    const assignMs = nowMs() - assignStartMs;
+    args.timer?.mark('llm.narration_v1.assign', assignMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.narration_v1.assign', ms: assignMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
     meta.llm_narration_v1_meta = {
       model: completion.model,
       usage: completion.usage ?? null,
@@ -528,12 +817,202 @@ async function maybeAttachNarrationV1(args: {
   }
 }
 
+const OVERVIEW_SCHEMA_MAX = {
+  hero_header_chars: 900,
+  deal_summary_hero_chars: 400,
+  deal_summary_mid_chars: 1400,
+  deal_summary_long_chars: 3600,
+  investment_overview_chars: 2400,
+  bullet_chars: 320,
+  strengths_bullets: 6,
+  concerns_bullets: 8,
+  coverage_gaps_bullets: 12,
+  citations: 80,
+  quality_flags: 24,
+  evidence_id_chars: 96,
+  slide_title_chars: 160,
+} as const;
+
+function sanitizeLlmOverviewV1AfterGuard(overview: any): any {
+  if (!overview || typeof overview !== 'object') return overview;
+
+  const clamp = (v: unknown, max: number): unknown => {
+    if (typeof v !== 'string') return v;
+    const trimmed = v.trim();
+    if (trimmed.length <= max) return trimmed;
+    return trimmed.slice(0, max).trimEnd();
+  };
+
+  const clampBulletArray = (arr: unknown, maxItems: number): unknown => {
+    if (!Array.isArray(arr)) return arr;
+    return arr
+      .slice(0, maxItems)
+      .map((v) => clamp(v, OVERVIEW_SCHEMA_MAX.bullet_chars));
+  };
+
+  const next: any = { ...overview };
+
+  next.hero_header = clamp(next.hero_header, OVERVIEW_SCHEMA_MAX.hero_header_chars);
+  next.investment_analysis_overview = clamp(next.investment_analysis_overview, OVERVIEW_SCHEMA_MAX.investment_overview_chars);
+
+  if (next.deal_summary && typeof next.deal_summary === 'object') {
+    next.deal_summary = { ...next.deal_summary };
+    next.deal_summary.hero = clamp(next.deal_summary.hero, OVERVIEW_SCHEMA_MAX.deal_summary_hero_chars);
+    next.deal_summary.mid = clamp(next.deal_summary.mid, OVERVIEW_SCHEMA_MAX.deal_summary_mid_chars);
+    next.deal_summary.long = clamp(next.deal_summary.long, OVERVIEW_SCHEMA_MAX.deal_summary_long_chars);
+  }
+
+  next.strengths_overlay = clampBulletArray(next.strengths_overlay, OVERVIEW_SCHEMA_MAX.strengths_bullets);
+  next.concerns_overlay = clampBulletArray(next.concerns_overlay, OVERVIEW_SCHEMA_MAX.concerns_bullets);
+  next.coverage_gaps_overlay = clampBulletArray(next.coverage_gaps_overlay, OVERVIEW_SCHEMA_MAX.coverage_gaps_bullets);
+
+  if (Array.isArray(next.citations)) {
+    next.citations = next.citations.slice(0, OVERVIEW_SCHEMA_MAX.citations).map((c: any) => {
+      if (!c || typeof c !== 'object') return c;
+      const out: any = { ...c };
+      out.slide_title = clamp(out.slide_title, OVERVIEW_SCHEMA_MAX.slide_title_chars);
+      out.evidence_id = clamp(out.evidence_id, OVERVIEW_SCHEMA_MAX.evidence_id_chars);
+      return out;
+    });
+  }
+
+  if (Array.isArray(next.quality_flags)) {
+    next.quality_flags = next.quality_flags.slice(0, OVERVIEW_SCHEMA_MAX.quality_flags).map((v: any) => clamp(v, 64));
+  }
+
+  return next;
+}
+
+function sanitizeOverviewCandidateBeforeGuard(overview: any): any {
+  if (!overview || typeof overview !== 'object') return overview;
+
+  const clamp = (v: unknown, max: number): unknown => {
+    if (typeof v !== 'string') return v;
+    const trimmed = v.trim();
+    if (trimmed.length <= max) return trimmed;
+    return trimmed.slice(0, max).trimEnd();
+  };
+
+  const clampBulletArray = (arr: unknown, maxItems: number): unknown => {
+    if (!Array.isArray(arr)) return arr;
+    return arr
+      .slice(0, maxItems)
+      .map((v) => clamp(v, OVERVIEW_SCHEMA_MAX.bullet_chars));
+  };
+
+  const next: any = { ...(overview as any) };
+
+  next.hero_header = clamp(next.hero_header, OVERVIEW_SCHEMA_MAX.hero_header_chars);
+  if (next.deal_summary && typeof next.deal_summary === 'object') {
+    next.deal_summary = { ...next.deal_summary };
+    next.deal_summary.hero = clamp(next.deal_summary.hero, OVERVIEW_SCHEMA_MAX.deal_summary_hero_chars);
+    next.deal_summary.mid = clamp(next.deal_summary.mid, OVERVIEW_SCHEMA_MAX.deal_summary_mid_chars);
+    next.deal_summary.long = clamp(next.deal_summary.long, OVERVIEW_SCHEMA_MAX.deal_summary_long_chars);
+  }
+  if (typeof next.investment_analysis_overview === 'string') {
+    const repaired = repairInvestmentAnalysisOverviewStructure(next.investment_analysis_overview);
+    next.investment_analysis_overview = clamp(repaired, OVERVIEW_SCHEMA_MAX.investment_overview_chars);
+  } else {
+    next.investment_analysis_overview = clamp(next.investment_analysis_overview, OVERVIEW_SCHEMA_MAX.investment_overview_chars);
+  }
+
+  next.strengths_overlay = clampBulletArray(next.strengths_overlay, OVERVIEW_SCHEMA_MAX.strengths_bullets);
+  next.concerns_overlay = clampBulletArray(next.concerns_overlay, OVERVIEW_SCHEMA_MAX.concerns_bullets);
+  next.coverage_gaps_overlay = clampBulletArray(next.coverage_gaps_overlay, OVERVIEW_SCHEMA_MAX.coverage_gaps_bullets);
+
+  if (Array.isArray(next.citations)) {
+    const raw = next.citations.slice(0, OVERVIEW_SCHEMA_MAX.citations).map((c: any) => {
+      if (!c || typeof c !== 'object') return c;
+      const out: any = { ...c };
+      out.slide_title = clamp(out.slide_title, OVERVIEW_SCHEMA_MAX.slide_title_chars);
+      out.evidence_id = clamp(out.evidence_id, OVERVIEW_SCHEMA_MAX.evidence_id_chars);
+      return out;
+    });
+
+    // If citations are still schema-invalid (even after truncation), drop them entirely.
+    const allCitationsValid = raw.every((c: any) => LlmOverviewV1CitationSchema.safeParse(c).success);
+    next.citations = allCitationsValid ? raw : [];
+  }
+
+  if (Array.isArray(next.quality_flags)) {
+    next.quality_flags = next.quality_flags.slice(0, OVERVIEW_SCHEMA_MAX.quality_flags).map((v: any) => clamp(v, 64));
+  }
+
+  return next;
+}
+
+const repairInvestmentAnalysisOverviewStructure = (text: string): string => {
+  const raw = typeof text === 'string' ? text : '';
+  const cleaned = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+  if (!cleaned) return cleaned;
+
+  const signalRe = /(^|\n)\s*[•*\-]?\s*Signal\s*:/gim;
+  const starts: number[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = signalRe.exec(cleaned)) !== null) {
+    const idx = cleaned.indexOf('Signal', m.index);
+    starts.push(idx >= 0 ? idx : m.index);
+    if (m.index === signalRe.lastIndex) signalRe.lastIndex++;
+  }
+  const uniqStarts = Array.from(new Set(starts.filter((x) => x >= 0))).sort((a, b) => a - b);
+  if (uniqStarts.length === 0) return cleaned;
+
+  const points: string[] = [];
+  for (let i = 0; i < uniqStarts.length && points.length < 4; i++) {
+    const start = uniqStarts[i];
+    const end = i + 1 < uniqStarts.length ? uniqStarts[i + 1] : cleaned.length;
+    let chunk = cleaned.slice(start, end).trim();
+    if (!chunk) continue;
+
+    const hasImplication = /(^|\n)\s*[•*\-]?\s*Implication\s*:/im.test(chunk);
+    const hasUncertainty = /(^|\n)\s*[•*\-]?\s*Uncertainty\s*:/im.test(chunk);
+    const hasDecisionTension = /(^|\n)\s*[•*\-]?\s*Decision\s*Tension\s*:/im.test(chunk);
+    if (!hasImplication || !hasUncertainty) continue;
+
+    chunk = chunk
+      .replace(/(^|\n)\s*[•*\-]?\s*Signal\s*:/gim, '$1• Signal:')
+      .replace(/(^|\n)\s*[•*\-]?\s*Implication\s*:/gim, '$1• Implication:')
+      .replace(/(^|\n)\s*[•*\-]?\s*Uncertainty\s*:/gim, '$1• Uncertainty:')
+      .replace(/(^|\n)\s*[•*\-]?\s*Decision\s*Tension\s*:/gim, '$1• Decision Tension:');
+
+    if (!hasDecisionTension) {
+      chunk = `${chunk}\n• Decision Tension: What evidence would most change conviction, and what specific diligence question should be answered next?`;
+    }
+
+    points.push(chunk.trim());
+  }
+
+  if (points.length >= 2 && points.length <= 4) return points.join('\n\n');
+  return cleaned;
+};
+
+function sanitizeAndValidateOverviewOrDropCitations(overview: any):
+  | { ok: true; overview: any; dropped_citations: boolean }
+  | { ok: false; overview: any; error: any } {
+  const sanitized = sanitizeLlmOverviewV1AfterGuard(overview);
+
+  const first = LlmOverviewV1Schema.safeParse(sanitized);
+  if (first.success) return { ok: true as const, overview: first.data, dropped_citations: false };
+
+  const citationsOnly = first.error.issues.every((i) => i?.path?.[0] === 'citations');
+  if (!citationsOnly) return { ok: false as const, overview: sanitized, error: first.error.flatten() };
+
+  const dropped = sanitized && typeof sanitized === 'object' ? { ...(sanitized as any), citations: [] } : sanitized;
+  const second = LlmOverviewV1Schema.safeParse(dropped);
+  if (second.success) return { ok: true as const, overview: second.data, dropped_citations: true };
+  return { ok: false as const, overview: dropped, error: second.error.flatten() };
+}
+
 async function maybeAttachOverviewV1(args: {
   request: FastifyRequest;
   report: any;
   nextMetadata: any;
   narrateEnabled: boolean;
   promotedFactsForExcerpt?: any[];
+  timer?: StageTimer;
+  reportExcerpt?: any;
+  excerptHash?: string;
+  llmContext?: { deal_id: string | null; dio_id: string | null; llm_phase_mode: string | null; request_id: string | number | null };
 }): Promise<void> {
   if (!args.narrateEnabled) return;
   if (!args.report || typeof args.report !== 'object') return;
@@ -560,7 +1039,7 @@ async function maybeAttachOverviewV1(args: {
   let excerpt: any;
   let prompt: { system: string; user: string };
   try {
-    excerpt = buildAllowlistedNarrationExcerpt(args.report, { promoted_facts: args.promotedFactsForExcerpt });
+    excerpt = args.reportExcerpt ?? buildAllowlistedNarrationExcerpt(args.report, { promoted_facts: args.promotedFactsForExcerpt });
     const narrationStyleHint = (args.report as any).llm_narration_v1 ?? null;
     prompt = buildOverviewPrompt({ reportExcerpt: excerpt, narration: narrationStyleHint });
   } catch (err) {
@@ -573,7 +1052,8 @@ async function maybeAttachOverviewV1(args: {
 
   if (!process.env.OPENAI_API_KEY) {
     ensureOverviewPresent();
-    meta.llm_overview_v1_error = { code: 'missing_openai_api_key' };
+    meta.llm_overview_v1_error = meta.llm_overview_v1_error ?? { code: 'missing_openai_api_key' };
+    meta.llm_overview_v1_skipped = { reason: 'missing_api_key' };
     args.report.metadata = meta;
     return;
   }
@@ -583,15 +1063,34 @@ async function maybeAttachOverviewV1(args: {
   let completionModelUsed: string | null = null;
   let completionOutputChars: number | null = null;
   try {
+    const system = prompt.system;
+    const user = prompt.user;
+    const systemBytes = Buffer.byteLength(system, 'utf8');
+    const userBytes = Buffer.byteLength(user, 'utf8');
+    const promptHash = stableHash(`${system}\n\n${user}`);
+
     const completion = await openaiChatCompletion({
       model,
       messages: [
-        { role: 'system', content: prompt.system },
-        { role: 'user', content: prompt.user },
+        { role: 'system', content: system },
+        { role: 'user', content: user },
       ],
       responseFormat: { type: 'json_object' },
       temperature: 0.2,
       maxTokens: 1800,
+      audit: {
+        request: args.request,
+        call: 'report.overview_v1',
+        prompt_version: OVERVIEW_PROMPT_VERSION,
+        prompt_hash: promptHash,
+        system_bytes: systemBytes,
+        user_bytes: userBytes,
+        prompt_bytes: systemBytes + userBytes,
+        deal_id: args.llmContext?.deal_id ?? null,
+        dio_id: args.llmContext?.dio_id ?? null,
+        llm_phase_mode: args.llmContext?.llm_phase_mode ?? null,
+        request_id: args.llmContext?.request_id ?? null,
+      },
     });
 
     const raw = completion.content;
@@ -599,31 +1098,80 @@ async function maybeAttachOverviewV1(args: {
     completionModelUsed = typeof completion.model === 'string' && completion.model.trim() ? completion.model.trim() : null;
     completionOutputChars = typeof raw === 'string' ? raw.length : null;
 
-    const parsed = (() => {
-      try {
-        return parseJsonOnly(raw);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e ?? 'unknown_error');
-        if (message === 'model_output_not_json') {
-          const trimmed = typeof raw === 'string' ? raw.trim() : '';
-          args.request.log.warn(
-            {
-              code: 'model_output_not_json',
-              model: completionModelUsed ?? model,
-              finish_reason: completionFinishReason,
-              output_chars: completionOutputChars,
-              raw_head: trimmed.slice(0, 400),
-              raw_tail: trimmed.slice(Math.max(0, trimmed.length - 200)),
-            },
-            'LLM_OVERVIEW_RAW_OUTPUT'
-          );
-        }
-        throw e;
-      }
-    })();
+    const stageBase = {
+      request_id: args.llmContext?.request_id ?? (args.request as any)?.id ?? null,
+      deal_id: args.llmContext?.deal_id ?? (args.report as any)?.deal_id ?? (args.report as any)?.dealId ?? null,
+      dio_id: args.llmContext?.dio_id ?? null,
+    };
 
-    const guarded = degradeOverviewV1({ reportExcerpt: excerpt, overview: parsed });
-    (args.report as any).llm_overview_v1 = guarded.overview;
+    const parseStartMs = nowMs();
+    let parsed: unknown;
+    try {
+      parsed = parseJsonOnly(raw);
+    } catch (e) {
+      const parseMs = nowMs() - parseStartMs;
+      args.timer?.mark('llm.overview_v1.parse_json', parseMs, false);
+      args.request.log.info(
+        { event: 'REPORT_STAGE_TIMING', stage: 'llm.overview_v1.parse_json', ms: parseMs, ok: false, ...stageBase, ts: new Date().toISOString() },
+        'REPORT_STAGE_TIMING'
+      );
+
+      const message = e instanceof Error ? e.message : String(e ?? 'unknown_error');
+      if (message === 'model_output_not_json') {
+        const trimmed = typeof raw === 'string' ? raw.trim() : '';
+        args.request.log.warn(
+          {
+            code: 'model_output_not_json',
+            model: completionModelUsed ?? model,
+            finish_reason: completionFinishReason,
+            output_chars: completionOutputChars,
+            raw_head: trimmed.slice(0, 400),
+            raw_tail: trimmed.slice(Math.max(0, trimmed.length - 200)),
+          },
+          'LLM_OVERVIEW_RAW_OUTPUT'
+        );
+      }
+      throw e;
+    }
+    const parseMs = nowMs() - parseStartMs;
+    args.timer?.mark('llm.overview_v1.parse_json', parseMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.overview_v1.parse_json', ms: parseMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
+
+    const sanitizeStartMs = nowMs();
+    const candidate = sanitizeOverviewCandidateBeforeGuard(parsed);
+    const sanitizeMs = nowMs() - sanitizeStartMs;
+    args.timer?.mark('llm.overview_v1.sanitize_before_guard', sanitizeMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.overview_v1.sanitize_before_guard', ms: sanitizeMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
+
+    const guardStartMs = nowMs();
+    const guarded = degradeOverviewV1({ reportExcerpt: excerpt, overview: candidate });
+    const guardMs = nowMs() - guardStartMs;
+    args.timer?.mark('llm.overview_v1.guard_degrade', guardMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.overview_v1.guard_degrade', ms: guardMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
+
+    const validateStartMs = nowMs();
+    const validated = sanitizeAndValidateOverviewOrDropCitations(guarded.overview);
+    const validateMs = nowMs() - validateStartMs;
+    args.timer?.mark('llm.overview_v1.validate', validateMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.overview_v1.validate', ms: validateMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
+    if (validated.ok) {
+      (args.report as any).llm_overview_v1 = validated.overview;
+    } else {
+      ensureOverviewPresent();
+      meta.llm_overview_v1_error = meta.llm_overview_v1_error ?? { code: 'schema_invalid_after_degrade', details: validated.error };
+    }
 
     meta.llm_overview_v1_meta = {
       model: completion.model,
@@ -664,6 +1212,10 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
   nextMetadata: any;
   narrateEnabled: boolean;
   promotedFactsForExcerpt?: any[];
+  timer?: StageTimer;
+  reportExcerpt?: any;
+  excerptHash?: string;
+  llmContext?: { deal_id: string | null; dio_id: string | null; llm_phase_mode: string | null; request_id: string | number | null };
 }): Promise<void> {
   if (!args.narrateEnabled) return;
   if (!args.report || typeof args.report !== 'object') return;
@@ -691,10 +1243,17 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
     const out: Array<{ page: number; slide_title?: string; evidence_id?: string }> = [];
     const seen = new Set<string>();
 
+    const clampTitle = (v: unknown): string | undefined => {
+      if (typeof v !== 'string') return undefined;
+      const trimmed = v.trim();
+      if (!trimmed) return undefined;
+      return trimmed.length <= OVERVIEW_SCHEMA_MAX.slide_title_chars ? trimmed : trimmed.slice(0, OVERVIEW_SCHEMA_MAX.slide_title_chars).trimEnd();
+    };
+
     const push = (page: unknown, slideTitle: unknown, evidenceId: unknown) => {
       const p = typeof page === 'number' && Number.isFinite(page) ? page : null;
       if (p == null) return;
-      const t = typeof slideTitle === 'string' && slideTitle.trim() ? slideTitle.trim() : undefined;
+      const t = clampTitle(slideTitle);
       const e = typeof evidenceId === 'string' && evidenceId.trim() ? evidenceId.trim() : undefined;
       const key = `${p}|${(t ?? '').toLowerCase()}|${(e ?? '').toLowerCase()}`;
       if (seen.has(key)) return;
@@ -734,51 +1293,10 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
     return out;
   };
 
-  const repairInvestmentAnalysisOverviewStructure = (text: string): string => {
-    const raw = typeof text === 'string' ? text : '';
-    const cleaned = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
-    if (!cleaned) return cleaned;
-
-    const signalRe = /(^|\n)\s*[•*\-]?\s*Signal\s*:/gim;
-    const starts: number[] = [];
-    let m: RegExpExecArray | null;
-    while ((m = signalRe.exec(cleaned)) !== null) {
-      // Start at the actual 'S' of Signal:
-      const idx = cleaned.indexOf('Signal', m.index);
-      starts.push(idx >= 0 ? idx : m.index);
-      if (m.index === signalRe.lastIndex) signalRe.lastIndex++;
-    }
-    const uniqStarts = Array.from(new Set(starts.filter((x) => x >= 0))).sort((a, b) => a - b);
-    if (uniqStarts.length === 0) return cleaned;
-
-    const points: string[] = [];
-    for (let i = 0; i < uniqStarts.length && points.length < 4; i++) {
-      const start = uniqStarts[i];
-      const end = i + 1 < uniqStarts.length ? uniqStarts[i + 1] : cleaned.length;
-      let chunk = cleaned.slice(start, end).trim();
-      if (!chunk) continue;
-
-      const hasImplication = /(^|\n)\s*[•*\-]?\s*Implication\s*:/im.test(chunk);
-      const hasUncertainty = /(^|\n)\s*[•*\-]?\s*Uncertainty\s*:/im.test(chunk);
-      const hasDecisionTension = /(^|\n)\s*[•*\-]?\s*Decision\s*Tension\s*:/im.test(chunk);
-      if (!hasImplication || !hasUncertainty) continue;
-
-      if (!hasDecisionTension) {
-        chunk = `${chunk}\nDecision Tension: What evidence would most change conviction, and what specific diligence question should be answered next?`;
-      }
-
-      points.push(chunk.trim());
-    }
-
-    // Only rewrite when we can produce a valid 2–4 point structure.
-    if (points.length >= 2 && points.length <= 4) return points.join('\n\n');
-    return cleaned;
-  };
-
   let excerpt: any;
   let prompt: { system: string; user: string };
   try {
-    excerpt = buildAllowlistedNarrationExcerpt(args.report, { promoted_facts: args.promotedFactsForExcerpt });
+    excerpt = args.reportExcerpt ?? buildAllowlistedNarrationExcerpt(args.report, { promoted_facts: args.promotedFactsForExcerpt });
     prompt = buildInvestmentAnalysisOverviewPrompt({ reportExcerpt: excerpt });
   } catch (err) {
     const baseMessage = err instanceof Error ? err.message : String(err ?? 'unknown_error');
@@ -789,9 +1307,9 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
   }
 
   if (!process.env.OPENAI_API_KEY) {
-    // Mirror existing behavior: record missing key and do not attempt provider call.
     ensureOverviewPresent();
     meta.llm_overview_v1_error = meta.llm_overview_v1_error ?? { code: 'missing_openai_api_key' };
+    meta.llm_overview_v1_skipped = meta.llm_overview_v1_skipped ?? { reason: 'missing_api_key' };
     args.report.metadata = meta;
     return;
   }
@@ -801,15 +1319,34 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
   let completionModelUsed: string | null = null;
   let completionOutputChars: number | null = null;
   try {
+    const system = prompt.system;
+    const user = prompt.user;
+    const systemBytes = Buffer.byteLength(system, 'utf8');
+    const userBytes = Buffer.byteLength(user, 'utf8');
+    const promptHash = stableHash(`${system}\n\n${user}`);
+
     const completion = await openaiChatCompletion({
       model,
       messages: [
-        { role: 'system', content: prompt.system },
-        { role: 'user', content: prompt.user },
+        { role: 'system', content: system },
+        { role: 'user', content: user },
       ],
       responseFormat: { type: 'json_object' },
       temperature: 0.2,
       maxTokens: 900,
+      audit: {
+        request: args.request,
+        call: 'report.investment_analysis_overview_v1',
+        prompt_version: INVESTMENT_ANALYSIS_OVERVIEW_PROMPT_VERSION,
+        prompt_hash: promptHash,
+        system_bytes: systemBytes,
+        user_bytes: userBytes,
+        prompt_bytes: systemBytes + userBytes,
+        deal_id: args.llmContext?.deal_id ?? null,
+        dio_id: args.llmContext?.dio_id ?? null,
+        llm_phase_mode: args.llmContext?.llm_phase_mode ?? null,
+        request_id: args.llmContext?.request_id ?? null,
+      },
     });
 
     const raw = completion.content;
@@ -817,28 +1354,47 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
     completionModelUsed = typeof completion.model === 'string' && completion.model.trim() ? completion.model.trim() : null;
     completionOutputChars = typeof raw === 'string' ? raw.length : null;
 
-    const parsed = (() => {
-      try {
-        return parseJsonOnly(raw);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e ?? 'unknown_error');
-        if (message === 'model_output_not_json') {
-          const trimmed = typeof raw === 'string' ? raw.trim() : '';
-          args.request.log.warn(
-            {
-              code: 'model_output_not_json',
-              model: completionModelUsed ?? model,
-              finish_reason: completionFinishReason,
-              output_chars: completionOutputChars,
-              raw_head: trimmed.slice(0, 400),
-              raw_tail: trimmed.slice(Math.max(0, trimmed.length - 200)),
-            },
-            'LLM_INVESTMENT_ANALYSIS_OVERVIEW_RAW_OUTPUT'
-          );
-        }
-        throw e;
+    const stageBase = {
+      request_id: args.llmContext?.request_id ?? (args.request as any)?.id ?? null,
+      deal_id: args.llmContext?.deal_id ?? (args.report as any)?.deal_id ?? (args.report as any)?.dealId ?? null,
+      dio_id: args.llmContext?.dio_id ?? null,
+    };
+
+    const parseStartMs = nowMs();
+    let parsed: unknown;
+    try {
+      parsed = parseJsonOnly(raw);
+    } catch (e) {
+      const parseMs = nowMs() - parseStartMs;
+      args.timer?.mark('llm.investment_analysis_overview_v1.parse_json', parseMs, false);
+      args.request.log.info(
+        { event: 'REPORT_STAGE_TIMING', stage: 'llm.investment_analysis_overview_v1.parse_json', ms: parseMs, ok: false, ...stageBase, ts: new Date().toISOString() },
+        'REPORT_STAGE_TIMING'
+      );
+
+      const message = e instanceof Error ? e.message : String(e ?? 'unknown_error');
+      if (message === 'model_output_not_json') {
+        const trimmed = typeof raw === 'string' ? raw.trim() : '';
+        args.request.log.warn(
+          {
+            code: 'model_output_not_json',
+            model: completionModelUsed ?? model,
+            finish_reason: completionFinishReason,
+            output_chars: completionOutputChars,
+            raw_head: trimmed.slice(0, 400),
+            raw_tail: trimmed.slice(Math.max(0, trimmed.length - 200)),
+          },
+          'LLM_INVESTMENT_ANALYSIS_OVERVIEW_RAW_OUTPUT'
+        );
       }
-    })();
+      throw e;
+    }
+    const parseMs = nowMs() - parseStartMs;
+    args.timer?.mark('llm.investment_analysis_overview_v1.parse_json', parseMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.investment_analysis_overview_v1.parse_json', ms: parseMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
 
     const rawCandidate = parsed && typeof parsed === 'object' ? (parsed as any).investment_analysis_overview : null;
     if (typeof rawCandidate !== 'string') {
@@ -892,18 +1448,25 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
     const repairedText = repairInvestmentAnalysisOverviewStructure(candidateText);
 
     // Provide deterministic citations so numeric tokens (if any) can pass guard.
+    const guardStartMs = nowMs();
     const guardCitations = collectDeterministicOverviewCitations(excerpt, 40);
     const guarded = degradeOverviewV1({
       reportExcerpt: excerpt,
       overview: { version: 'llm_overview_v1', investment_analysis_overview: repairedText, citations: guardCitations },
     });
+    const guardMs = nowMs() - guardStartMs;
+    args.timer?.mark('llm.investment_analysis_overview_v1.guard_degrade', guardMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.investment_analysis_overview_v1.guard_degrade', ms: guardMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
 
     const existing = (args.report as any).llm_overview_v1;
     if (!existing || typeof existing !== 'object') {
       (args.report as any).llm_overview_v1 = guarded.overview;
     } else {
       (existing as any).investment_analysis_overview = guarded.overview.investment_analysis_overview;
-      if (!Array.isArray((existing as any).citations) || (existing as any).citations.length === 0) {
+      if (!Array.isArray((existing as any).citations)) {
         (existing as any).citations = guardCitations;
       }
       if (Array.isArray(guarded.overview.quality_flags) && guarded.overview.quality_flags.includes('guard_degraded')) {
@@ -911,6 +1474,23 @@ async function maybeAttachInvestmentAnalysisOverviewV1(args: {
           ? Array.from(new Set([...(existing as any).quality_flags, 'guard_degraded']))
           : ['guard_degraded'];
       }
+    }
+
+    // Final schema safety pass (after guard/degrade + merge).
+    const validateStartMs = nowMs();
+    const current = (args.report as any).llm_overview_v1;
+    const validated = sanitizeAndValidateOverviewOrDropCitations(current);
+    const validateMs = nowMs() - validateStartMs;
+    args.timer?.mark('llm.investment_analysis_overview_v1.validate', validateMs, true);
+    args.request.log.info(
+      { event: 'REPORT_STAGE_TIMING', stage: 'llm.investment_analysis_overview_v1.validate', ms: validateMs, ok: true, ...stageBase, ts: new Date().toISOString() },
+      'REPORT_STAGE_TIMING'
+    );
+    if (validated.ok) {
+      (args.report as any).llm_overview_v1 = validated.overview;
+    } else {
+      ensureOverviewPresent();
+      meta.llm_overview_v1_error = meta.llm_overview_v1_error ?? { code: 'schema_invalid_after_degrade', details: validated.error };
     }
 
     // Attach lightweight metadata without introducing new meta keys.
@@ -1149,6 +1729,70 @@ function alignReportFieldsToDecisionV1(args: {
   }
 }
 
+function titleCaseFromKey(key: string): string {
+  return key
+    .split('_')
+    .filter(Boolean)
+    .map((w) => w.slice(0, 1).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+function decisionV1DisplayLabel(meta: any): string | null {
+  const decision = meta?.decision_v1 && typeof meta.decision_v1 === 'object' ? meta.decision_v1 : null;
+  const label = typeof decision?.label === 'string' && decision.label.trim() ? decision.label.trim() : null;
+  if (label) return label;
+  const key = typeof decision?.recommendation_key === 'string' && decision.recommendation_key.trim()
+    ? decision.recommendation_key.trim()
+    : null;
+  return key ? titleCaseFromKey(key) : null;
+}
+
+function alignReportSectionsToDecisionV1(args: {
+  nextMetadata: any;
+  report: any;
+}): void {
+  try {
+    const meta = args.nextMetadata && typeof args.nextMetadata === 'object' ? args.nextMetadata : null;
+    const report = args.report && typeof args.report === 'object' ? args.report : null;
+    if (!meta || !report) return;
+
+    if (meta.decision_v1_sections_alignment_v1 === true) return;
+
+    const label = decisionV1DisplayLabel(meta);
+    if (!label) return;
+
+    const sectionsRaw: any[] = Array.isArray((report as any).sections) ? (report as any).sections : [];
+    if (!sectionsRaw.length) return;
+
+    const shouldRewrite = (title: unknown): boolean => {
+      const t = typeof title === 'string' ? title.trim() : '';
+      return t === 'Executive Summary' || t === 'Investment Recommendation';
+    };
+
+    const nextSections = sectionsRaw.map((section) => {
+      if (!section || typeof section !== 'object') return section;
+      if (!shouldRewrite((section as any).title)) return section;
+      const content = typeof (section as any).content === 'string' ? String((section as any).content) : '';
+      if (!content) return section;
+
+      // Sections from the core compiler currently encode newlines as literal "\\n" sequences.
+      // Rewrite the "Recommendation:" line regardless of whether content uses real newlines or literal "\\n".
+      const nextContent = content.replace(
+        /Recommendation:\s*.*?(?=(\n|\\n|$))/g,
+        `Recommendation: ${label}`
+      );
+      if (nextContent === content) return section;
+      return { ...(section as any), content: nextContent };
+    });
+
+    (report as any).sections = nextSections;
+
+    meta.decision_v1_sections_alignment_v1 = true;
+  } catch {
+    // ignore
+  }
+}
+
 function attachScoreBandAndGuardrailV2(args: {
   nextMetadata: any;
   report: any;
@@ -1243,6 +1887,9 @@ function attachScoreBandAndGuardrailV2(args: {
     // Preserve legacy values in metadata and ensure idempotency.
     alignReportFieldsToDecisionV1({ nextMetadata: meta, report: args.report });
 
+    // Ensure any pre-rendered section text uses canonical decision_v1 too.
+    alignReportSectionsToDecisionV1({ nextMetadata: meta, report: args.report });
+
     args.nextMetadata = meta;
   } catch {
     // Best-effort: never fail /report for metadata enrichment.
@@ -1268,6 +1915,23 @@ export async function registerReportRoutes(
     "/api/v1/deals/:deal_id/report",
     async (request: FastifyRequest<{ Params: ReportParams }>, reply: FastifyReply) => {
       const startTs = Date.now();
+      const timer = new StageTimer();
+      const requestId = (request as any)?.id ?? null;
+      const logStage = (stage: string, ms: number, ok: boolean, extra?: Record<string, any>) => {
+        request.log.info(
+          {
+            event: 'REPORT_STAGE_TIMING',
+            stage,
+            ms,
+            ok,
+            request_id: requestId,
+            deal_id: request.params?.deal_id ?? null,
+            ...(extra ?? {}),
+            ts: new Date().toISOString(),
+          },
+          'REPORT_STAGE_TIMING'
+        );
+      };
       try {
         const { deal_id } = request.params;
         request.log.info({ msg: "deal.report.start", deal_id, start_ts: new Date(startTs).toISOString() });
@@ -1277,33 +1941,62 @@ export async function registerReportRoutes(
         }
 
         // 404 only when the deal itself does not exist.
-        const { rows: dealRows } = await pool.query<{ id: string }>(
-          `SELECT id FROM deals WHERE id = $1 AND deleted_at IS NULL`,
-          [deal_id]
-        );
+        const dealLookup = await timer.stage('db.deal_lookup', async () => {
+          return pool.query<{ id: string; llm_phase_mode: string | null }>(
+            `SELECT id, llm_phase_mode::text as llm_phase_mode FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+            [deal_id]
+          );
+        });
+        logStage('db.deal_lookup', dealLookup.ms, true);
+        const dealRows = dealLookup.value.rows;
         if (dealRows.length === 0) {
           return reply.status(404).send({ error: 'Deal not found' });
         }
+        const llm_phase_mode = typeof dealRows[0]?.llm_phase_mode === 'string' ? dealRows[0].llm_phase_mode : null;
 
         // Canonical persisted analysis artifact: the latest Deal Intelligence Object (DIO).
         // Do NOT infer readiness from job messages.
-        const { rows: dioRows } = await pool.query<{
+        let dioRows: Array<{
           dio_id: string;
           analysis_version: number | null;
           recommendation: string | null;
           overall_score: number | null;
           dio_data: any;
           updated_at: string | null;
-        }>(
-          `SELECT dio_id, analysis_version, recommendation, overall_score, dio_data, updated_at
-             FROM deal_intelligence_objects
-            WHERE deal_id = $1
-            ORDER BY analysis_version DESC,
-                     updated_at DESC NULLS LAST,
-                     dio_id DESC
-            LIMIT 1`,
-          [deal_id]
-        );
+        }> = [];
+        try {
+          const dioLookup = await timer.stage('db.dio_latest', async () => {
+            return pool.query<{
+              dio_id: string;
+              analysis_version: number | null;
+              recommendation: string | null;
+              overall_score: number | null;
+              dio_data: any;
+              updated_at: string | null;
+            }>(
+              `SELECT dio_id, analysis_version, recommendation, overall_score, dio_data, updated_at
+                 FROM deal_intelligence_objects
+                WHERE deal_id = $1
+                ORDER BY analysis_version DESC,
+                         updated_at DESC NULLS LAST,
+                         dio_id DESC
+                LIMIT 1`,
+              [deal_id]
+            );
+          });
+          logStage('db.dio_latest', dioLookup.ms, true);
+          dioRows = dioLookup.value.rows ?? [];
+        } catch (err) {
+          if (isMissingRelation(err, 'deal_intelligence_objects')) {
+            logStage('db.dio_latest', 0, false, { missing_table: 'deal_intelligence_objects' });
+            return reply.status(200).send({
+              ready: false,
+              reason: 'db_missing_table',
+              missing_table: 'deal_intelligence_objects',
+            });
+          }
+          throw err;
+        }
 
         if (dioRows.length === 0) {
           return reply.status(200).send({ ready: false, reason: 'not_generated_yet' });
@@ -1328,14 +2021,23 @@ export async function registerReportRoutes(
         let dealSummaryV1: any = null;
         let segmentedNodes: { nodes: any[]; warnings: string[] } | null = null;
         try {
-          segmentedNodes = await getSegmentedNodesForDeal(pool as any, deal_id);
+          const seg = await timer.stage('db.segmented_nodes', async () => getSegmentedNodesForDeal(pool as any, deal_id));
+          logStage('db.segmented_nodes', seg.ms, true);
+          segmentedNodes = seg.value;
         } catch (err) {
+          const ms = 0;
+          logStage('db.segmented_nodes', ms, false, { error: err instanceof Error ? err.message : String(err ?? 'unknown_error') });
           request.log.warn({ event: 'deal.report.segmented_nodes_failed', deal_id, dio_id: row.dio_id, err }, 'segmented nodes lookup failed');
           segmentedNodes = null;
         }
         try {
-          dealSummaryV1 = await compileDealSummaryV1(pool as any, deal_id, { prefetched: segmentedNodes ?? undefined } as any);
+          const ds = await timer.stage('compile.deal_summary_v1', async () =>
+            compileDealSummaryV1(pool as any, deal_id, { prefetched: segmentedNodes ?? undefined } as any)
+          );
+          logStage('compile.deal_summary_v1', ds.ms, true);
+          dealSummaryV1 = ds.value;
         } catch (err) {
+          logStage('compile.deal_summary_v1', 0, false, { error: err instanceof Error ? err.message : String(err ?? 'unknown_error') });
           request.log.warn({ event: 'deal.report.deal_summary_v1_failed', deal_id, dio_id: row.dio_id, err }, 'deal_summary_v1 compilation failed');
           dealSummaryV1 = {
             version: 'deal_summary_v1',
@@ -1354,7 +2056,9 @@ export async function registerReportRoutes(
         let report: any = null;
         let promotedFacts: any[] = [];
         try {
-          promotedFacts = await loadPromotedFactsForDeal(pool as any, deal_id);
+          const pf = await timer.stage('db.promoted_facts', async () => loadPromotedFactsForDeal(pool as any, deal_id));
+          logStage('db.promoted_facts', pf.ms, true);
+          promotedFacts = pf.value;
 
       // Deterministic fallback: if evidence_items did not get populated yet, derive
       // promoted-like facts directly from document_page_understanding payloads.
@@ -1370,7 +2074,9 @@ export async function registerReportRoutes(
       // If any of the key structured_summary items are missing, derive them deterministically
       // from document_page_understanding and attach as promotedFacts inputs.
       if (!hasRaise || !hasModel || !hasKpi) {
-        const derived = await derivePromotedFactsFromDpuForDeal(pool as any, deal_id);
+        const derivedStage = await timer.stage('db.promoted_facts_derived_from_dpu', async () => derivePromotedFactsFromDpuForDeal(pool as any, deal_id));
+        logStage('db.promoted_facts_derived_from_dpu', derivedStage.ms, true);
+        const derived = derivedStage.value;
         const existingEvidenceIds = new Set(promotedFacts.map((r: any) => String(r?.evidence_id ?? '')).filter(Boolean));
         for (const r of derived) {
           const evidenceId = String((r as any)?.evidence_id ?? '');
@@ -1384,9 +2090,13 @@ export async function registerReportRoutes(
         }
       }
 
-          report = promotedFacts.length > 0
-            ? compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts })
-            : compileDIOToReport(row.dio_data);
+          const compiled = await timer.stage('compile.report', async () =>
+            promotedFacts.length > 0
+              ? compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts })
+              : compileDIOToReport(row.dio_data)
+          );
+          logStage('compile.report', compiled.ms, true);
+          report = compiled.value;
 
           // Deterministic structured_summary additions (no LLM): market/product/gtm/deal summaries.
           try {
@@ -1612,21 +2322,95 @@ export async function registerReportRoutes(
         }
         const narrateEnabled = envFlagEnabled((request.query as any)?.narrate);
 
+        const llmContext = {
+          deal_id,
+          dio_id: String(row.dio_id ?? ''),
+          llm_phase_mode: typeof llm_phase_mode === 'string' && llm_phase_mode.trim() ? llm_phase_mode.trim() : null,
+          request_id: requestId,
+        };
+
+        let reportExcerpt: any = undefined;
+        let excerptHash: string | undefined = undefined;
+        if (narrateEnabled && report && typeof report === 'object') {
+          try {
+            // Ensure excerpt contains the stable deterministic KPI shapes required by the narration guard.
+            // These are deterministic, shape-only normalizations and must not change underlying extracted values.
+            ensureStructuredRevenueSelectionReason(report);
+            ensureStructuredSummaryKpis(report);
+            // Ensure excerpt sees the deterministic deal_summary_v1 subtree as well.
+            (report as any).deal_summary = dealSummaryV1;
+
+            const ex = await timer.stage('llm.build_excerpt', async () => {
+              const e = buildAllowlistedNarrationExcerpt(report, { promoted_facts: promotedFactsForExcerpt ?? undefined });
+              return e;
+            });
+            logStage('llm.build_excerpt', ex.ms, true);
+            reportExcerpt = ex.value;
+
+            const hashStage = await timer.stage('llm.excerpt_hash', async () => stableHash(JSON.stringify(reportExcerpt ?? null)));
+            logStage('llm.excerpt_hash', hashStage.ms, true);
+            excerptHash = hashStage.value;
+          } catch (err) {
+            logStage('llm.build_excerpt', 0, false, { error: err instanceof Error ? err.message : String(err ?? 'unknown_error') });
+            reportExcerpt = undefined;
+            excerptHash = undefined;
+          }
+        }
+
         if (report && typeof report === 'object') {
           ensureStructuredRevenueSelectionReason(report);
           ensureStructuredSummaryKpis(report);
           // Keep deal_summary nested under the compiled report as well.
           (report as any).deal_summary = dealSummaryV1;
 
+          // Deterministic Investment Analysis Overview v2 (no LLM): derived from persisted DIO + deterministic report metadata.
+          try {
+            const nextMetadata = { ...((report as any)?.metadata ?? (payload as any)?.metadata ?? {}) };
+            (nextMetadata as any).investment_analysis_overview_v2 = buildInvestmentAnalysisOverviewV2({
+              dio: row.dio_data as any,
+              report,
+            });
+            (payload as any).metadata = nextMetadata;
+            (report as any).metadata = nextMetadata;
+          } catch {
+            // ignore
+          }
+
           // Optional LLM narration: additive only; never alters deterministic fields.
           try {
             const nextMetadata = { ...((report as any)?.metadata ?? (payload as any)?.metadata ?? {}) };
-            await maybeAttachNarrationV1({ request, report, nextMetadata, narrateEnabled, promotedFactsForExcerpt: promotedFactsForExcerpt ?? undefined });
+            const narr = await timer.stage('llm.narration_v1', async () =>
+              maybeAttachNarrationV1({
+                request,
+                report,
+                nextMetadata,
+                narrateEnabled,
+                promotedFactsForExcerpt: promotedFactsForExcerpt ?? undefined,
+                timer,
+                reportExcerpt,
+                excerptHash,
+                llmContext,
+              })
+            );
+            logStage('llm.narration_v1', narr.ms, true);
             (payload as any).metadata = (report as any).metadata;
 
 			// Optional LLM overview: additive only; never alters deterministic fields.
 			try {
-        await maybeAttachOverviewV1({ request, report, nextMetadata, narrateEnabled, promotedFactsForExcerpt: promotedFactsForExcerpt ?? undefined });
+        const ov = await timer.stage('llm.overview_v1', async () =>
+          maybeAttachOverviewV1({
+            request,
+            report,
+            nextMetadata,
+            narrateEnabled,
+            promotedFactsForExcerpt: promotedFactsForExcerpt ?? undefined,
+            timer,
+            reportExcerpt,
+            excerptHash,
+            llmContext,
+          })
+        );
+        logStage('llm.overview_v1', ov.ms, true);
 				(payload as any).metadata = (report as any).metadata;
 			} catch {
 				// ignore
@@ -1634,7 +2418,20 @@ export async function registerReportRoutes(
 
       // Optional Investment Analysis Overview reasoning: additive only; never alters deterministic fields.
       try {
-        await maybeAttachInvestmentAnalysisOverviewV1({ request, report, nextMetadata, narrateEnabled, promotedFactsForExcerpt: promotedFactsForExcerpt ?? undefined });
+        const ia = await timer.stage('llm.investment_analysis_overview_v1', async () =>
+          maybeAttachInvestmentAnalysisOverviewV1({
+            request,
+            report,
+            nextMetadata,
+            narrateEnabled,
+            promotedFactsForExcerpt: promotedFactsForExcerpt ?? undefined,
+            timer,
+            reportExcerpt,
+            excerptHash,
+            llmContext,
+          })
+        );
+        logStage('llm.investment_analysis_overview_v1', ia.ms, true);
         (payload as any).metadata = (report as any).metadata;
       } catch {
         // ignore
@@ -1657,6 +2454,21 @@ export async function registerReportRoutes(
           end_ts: new Date(endTs).toISOString(),
           duration_ms: endTs - startTs,
         });
+
+        const summary = timer.summary();
+        request.log.info(
+          {
+            event: 'REPORT_TIMING_SUMMARY',
+            request_id: requestId,
+            deal_id,
+            dio_id: String(row?.dio_id ?? ''),
+            llm_phase_mode: typeof llm_phase_mode === 'string' ? llm_phase_mode : null,
+            total_ms: summary.total_ms,
+            stage_ms: summary.stage_ms,
+            ts: new Date().toISOString(),
+          },
+          'REPORT_TIMING_SUMMARY'
+        );
 
         return reply.status(200).send(payload);
         
@@ -1701,15 +2513,28 @@ export async function registerReportRoutes(
         }
         
         // Get specific DIO version (persisted canonical artifact).
-        const { rows: dioRows } = await pool.query<{ dio_data: any }>(
-          `SELECT dio_data
-             FROM deal_intelligence_objects
-            WHERE deal_id = $1 AND analysis_version = $2
-            ORDER BY updated_at DESC NULLS LAST,
-                     dio_id DESC
-            LIMIT 1`,
-          [deal_id, versionNum]
-        );
+        let dioRows: Array<{ dio_data: any }> = [];
+        try {
+          const r = await pool.query<{ dio_data: any }>(
+            `SELECT dio_data
+               FROM deal_intelligence_objects
+              WHERE deal_id = $1 AND analysis_version = $2
+              ORDER BY updated_at DESC NULLS LAST,
+                       dio_id DESC
+              LIMIT 1`,
+            [deal_id, versionNum]
+          );
+          dioRows = r.rows ?? [];
+        } catch (err) {
+          if (isMissingRelation(err, 'deal_intelligence_objects')) {
+            return reply.status(200).send({
+              ready: false,
+              reason: 'db_missing_table',
+              missing_table: 'deal_intelligence_objects',
+            });
+          }
+          throw err;
+        }
 
         if (dioRows.length === 0) {
           return reply.status(404).send({
@@ -1780,6 +2605,18 @@ export async function registerReportRoutes(
             attachScoreBandAndGuardrailV2({ nextMetadata, report });
             (report as any).metadata = nextMetadata;
           }
+        } catch {
+          // ignore
+        }
+
+        // Deterministic Investment Analysis Overview v2 (no LLM): derived from persisted DIO + deterministic report metadata.
+        try {
+          const nextMetadata = { ...((report as any)?.metadata ?? {}) };
+          (nextMetadata as any).investment_analysis_overview_v2 = buildInvestmentAnalysisOverviewV2({
+            dio: dioRows[0].dio_data as any,
+            report,
+          });
+          (report as any).metadata = nextMetadata;
         } catch {
           // ignore
         }

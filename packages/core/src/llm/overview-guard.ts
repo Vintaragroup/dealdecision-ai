@@ -170,6 +170,7 @@ const citationMatchesDeterministic = (citation: CitationRef, deterministic: Dete
 		const srcTitle = normalizeWhitespace(src.slide_title ?? "");
 		if (!srcTitle) return true;
 		if (srcTitle === title) return true;
+		if (srcTitle.startsWith(title) || title.startsWith(srcTitle)) return true;
 	}
 	return false;
 };
@@ -477,6 +478,47 @@ const textHasNumericToken = (text: string): boolean => {
 	return (s.match(numericTokenRe) ?? []).length > 0;
 };
 
+const normalizeCitationList = (citations: unknown): CitationRef[] => {
+	if (!Array.isArray(citations)) return [];
+	return citations.map((c) => {
+		const obj = c && typeof c === "object" ? (c as any) : {};
+		const page = typeof obj.page === "number" && Number.isFinite(obj.page) && Number.isInteger(obj.page) ? obj.page : undefined;
+		const slideTitleRaw = typeof obj.slide_title === "string" ? normalizeWhitespace(obj.slide_title) : "";
+		const evidenceRaw = typeof obj.evidence_id === "string" ? normalizeWhitespace(obj.evidence_id) : "";
+		const slide_title = slideTitleRaw ? slideTitleRaw.slice(0, 160).trimEnd() : undefined;
+		const evidence_id = evidenceRaw ? evidenceRaw.slice(0, 96).trimEnd() : undefined;
+		const out: CitationRef = {};
+		if (page != null) out.page = page;
+		if (slide_title) out.slide_title = slide_title;
+		if (evidence_id) out.evidence_id = evidence_id;
+		return out;
+	});
+};
+
+const rewriteUncitedNumericAndKpiTokens = (text: string, preserveNewlines?: boolean): { text: string; changed: boolean } => {
+	const replaceKpiTokens = (v: string): string => {
+		let out = v;
+		for (const token of kpiTokens) {
+			const pattern = token.includes("_") ? token.replace(/_/g, "[ _-]") : token;
+			const re = new RegExp(`\\b${pattern}\\b`, "gi");
+			out = out.replace(re, "performance");
+		}
+		return out;
+	};
+
+	const tidyPunctuation = (v: string): string => {
+		let out = v.replace(/\s+([,.;:?!])/g, "$1");
+		out = out.replace(/\(\s+/g, "(").replace(/\s+\)/g, ")");
+		return out;
+	};
+
+	let out = replaceKpiTokens(text);
+	out = out.replace(numericTokenRe, "");
+	out = tidyPunctuation(out);
+	out = preserveNewlines ? normalizeWhitespacePreserveNewlines(out) : normalizeWhitespace(out);
+	return { text: out, changed: out !== text };
+};
+
 const hasAnyWord = (text: string, words: string[]): string | null => {
 	const t = normalizeWhitespace(text).toLowerCase();
 	if (!t) return null;
@@ -489,6 +531,14 @@ const hasAnyWord = (text: string, words: string[]): string | null => {
 
 const commitmentMarkers = ["will", "expects", "guarantees"];
 const inferenceMarkers = ["indicates", "implies", "suggests"];
+
+const softenCommitmentMarkers = (text: string): string => {
+	let out = String(text || "");
+	out = out.replace(/\bwill\b/gi, "may");
+	out = out.replace(/\bexpects\b/gi, "may expect");
+	out = out.replace(/\bguarantees\b/gi, "aims to");
+	return out;
+};
 
 const forceUncertaintyMarkers = (text: string): string => {
 	let out = String(text || "");
@@ -634,7 +684,7 @@ export function degradeOverviewV1(args: { reportExcerpt: unknown; overview: unkn
 	let invalid_fields = 0;
 	let dropped_bullets = 0;
 
-	const citations = Array.isArray(base.citations) ? base.citations : [];
+	const citations = normalizeCitationList(base.citations);
 	(next as any).citations = citations;
 	(next as any).quality_flags = Array.isArray(base.quality_flags) ? base.quality_flags.slice() : [];
 
@@ -683,6 +733,10 @@ export function degradeOverviewV1(args: { reportExcerpt: unknown; overview: unkn
 	const validateInterpretationLanguage = (text: string, path: string): { ok: boolean; maybeRewritten: string } => {
 		const commitment = hasAnyWord(text, commitmentMarkers);
 		if (commitment && !hasDeterministicCitation(citations, deterministicSources)) {
+			const softened = softenCommitmentMarkers(text);
+			if (softened !== text) {
+				return { ok: true, maybeRewritten: softened };
+			}
 			push({
 				code: "commitment.citation_required",
 				path,
@@ -738,6 +792,14 @@ export function degradeOverviewV1(args: { reportExcerpt: unknown; overview: unkn
 			return opts.fallback ? opts.fallback() : "";
 		}
 
+		if (opts.requireNumericOrKpiCitation && !hasDeterministicCitation(citations, deterministicSources)) {
+			const rewrite = rewriteUncitedNumericAndKpiTokens(text, opts.preserveNewlines);
+			if (rewrite.changed) {
+				degraded = true;
+				text = rewrite.text;
+			}
+		}
+
 		if (opts.requireNumericOrKpiCitation && !requireCitationIfNumericOrKpi(text, path)) {
 			invalid_fields++;
 			degraded = true;
@@ -777,10 +839,12 @@ export function degradeOverviewV1(args: { reportExcerpt: unknown; overview: unkn
 	next.deal_summary.mid = validateTextField({
 		text: base?.deal_summary?.mid,
 		path: "overview.deal_summary.mid",
+		requireNumericOrKpiCitation: true,
 	});
 	next.deal_summary.long = validateTextField({
 		text: base?.deal_summary?.long,
 		path: "overview.deal_summary.long",
+		requireNumericOrKpiCitation: true,
 	});
 
 	// investment_analysis_overview

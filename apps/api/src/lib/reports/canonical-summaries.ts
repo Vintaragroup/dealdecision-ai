@@ -1,6 +1,7 @@
 import { detectDeckType, type DeckType } from './deck-type';
 import type { SummaryClaimType } from './summary-claims';
 import { buildDealSummaryTiers } from '../deal-summary-tiers';
+import { normalizeCanonicalFact } from '../canonical/canonical-fact-normalizer';
 
 export type SummaryNodeRef = {
   page_index: number;
@@ -353,6 +354,63 @@ function scoreNode(node: NodeLike, opts: { segment: string; preferTitleTokens?: 
   return score;
 }
 
+function isTractionLikeSegment(seg: unknown): boolean {
+  const s = normSeg(seg);
+  return s === 'traction' || s === 'go_to_market' || s === 'distribution';
+}
+
+function scoreNodeFromSegments(
+  node: NodeLike,
+  opts: { segments: string[]; preferTitleTokens?: string[]; preferBodyTokens?: string[]; penalizeTokens?: string[] }
+): number {
+  const seg = normSeg(node.segment_key);
+  if (!opts.segments.map((x) => normSeg(x)).includes(seg)) return -1;
+
+  let score = 50;
+  const title = tokenizeLoose(node.slide_title ?? '');
+  const body = tokenizeLoose(node.bullets.join(' \n '));
+
+  if (Array.isArray(opts.preferTitleTokens)) {
+    for (const k of opts.preferTitleTokens) if (k && title.includes(tokenizeLoose(k))) score += 8;
+  }
+  if (Array.isArray(opts.preferBodyTokens)) {
+    for (const k of opts.preferBodyTokens) if (k && body.includes(tokenizeLoose(k))) score += 6;
+  }
+  if (Array.isArray(opts.penalizeTokens)) {
+    for (const k of opts.penalizeTokens) if (k && (title.includes(tokenizeLoose(k)) || body.includes(tokenizeLoose(k)))) score -= 12;
+  }
+
+  const picked = bestBullet(node, { maxLen: 260 });
+  if (picked) {
+    if (picked.length >= 40 && picked.length <= 220) score += 6;
+    if (picked.length < 20) score -= 6;
+  } else {
+    score -= 25;
+  }
+
+  return score;
+}
+
+function pickTopNodesFromSegments(
+  nodes: NodeLike[],
+  opts: Parameters<typeof scoreNodeFromSegments>[1] & { limit: number; bulletOpts?: Parameters<typeof bestBullet>[1] }
+): Array<{ node: NodeLike; snippet: string; score: number }> {
+  const bulletOpts = opts.bulletOpts;
+  const scored = (nodes ?? [])
+    .map((n) => ({ node: n, score: scoreNodeFromSegments(n, opts) }))
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score || a.node.page_index - b.node.page_index);
+
+  const out: Array<{ node: NodeLike; snippet: string; score: number }> = [];
+  for (const x of scored) {
+    if (out.length >= opts.limit) break;
+    const snip = bestBullet(x.node, bulletOpts);
+    if (!snip) continue;
+    out.push({ node: x.node, snippet: snip, score: x.score });
+  }
+  return out;
+}
+
 function pickTopNodes(nodes: NodeLike[], opts: Parameters<typeof scoreNode>[1] & { limit: number; bulletOpts?: Parameters<typeof bestBullet>[1] }): Array<{ node: NodeLike; snippet: string; score: number }> {
   const bulletOpts = opts.bulletOpts;
   const scored = (nodes ?? [])
@@ -595,7 +653,12 @@ export function buildMarketSummaryV1(nodes: NodeLike[]): MarketSummaryV1Section 
   const chosen = [...picked, ...pickedIndustry, ...pickedOpp].slice(0, 3);
   if (chosen.length === 0) return nonMarketCentric ? null : null;
 
-  const lines = chosen.map((c) => c.snippet.replace(/\s*\.$/, '') + '.');
+  const lines = chosen.map((c) => {
+    const sourceTexts = [c.node.slide_title ?? '', c.snippet].filter(Boolean);
+    const normalized = normalizeCanonicalFact(c.snippet, { kind: 'market_context', maxLen: 220, sourceTexts });
+    const s = normalized.display_text ?? c.snippet;
+    return s.replace(/\s*\.$/, '') + '.';
+  });
 
   // Deterministic framing; avoid company positioning.
   const value = normalizeWhitespace(`Market context: ${lines.join(' ')}`);
@@ -693,9 +756,10 @@ export function buildDealSummaryV1(input: { nodes: NodeLike[]; structured_summar
       ? `Sells: ${productPick[0].snippet.replace(/\s*\.$/, '')}.`
       : null;
 
-  // Required claim: market_target (who it sells to) from traction OR market
-  const marketTargetPickTraction = pickTopNodes(nodes, {
-    segment: 'traction',
+  // Required claim: market_target (who it sells to) from traction-like OR market.
+  // Note: some decks label customer evidence as GTM/distribution rather than traction.
+  const marketTargetPickTractionLike = pickTopNodesFromSegments(nodes, {
+    segments: ['traction', 'go_to_market', 'distribution'],
     limit: 1,
     preferTitleTokens: ['traction', 'customers'],
     preferBodyTokens: ['customers', 'accounts', 'retailers', 'users', 'golfers', 'buyers', 'icp'],
@@ -735,24 +799,24 @@ export function buildDealSummaryV1(input: { nodes: NodeLike[]; structured_summar
       .map((n) => joinText(n))
       .join(' \n ');
     const allTractionSignal = (nodes ?? [])
-      .filter((n) => normSeg(n.segment_key) === 'traction')
+      .filter((n) => isTractionLikeSegment(n.segment_key))
       .map((n) => joinText(n))
       .join(' \n ');
 
-    const targetSignal = [allMarketSignal, allTractionSignal, marketTargetPickMarket[0]?.snippet, marketTargetPickTraction[0]?.snippet].filter(Boolean).join(' \n ');
+    const targetSignal = [allMarketSignal, allTractionSignal, marketTargetPickMarket[0]?.snippet, marketTargetPickTractionLike[0]?.snippet].filter(Boolean).join(' \n ');
     const templated = buildMarketTargetFromText(targetSignal);
     if (templated) return templated;
 
     if (marketTargetPickMarket.length > 0) return `Serves: ${marketTargetPickMarket[0].snippet.replace(/\s*\.$/, '')}.`;
-    if (marketTargetPickTraction.length > 0) return `Serves: ${marketTargetPickTraction[0].snippet.replace(/\s*\.$/, '')}.`;
+    if (marketTargetPickTractionLike.length > 0) return `Serves: ${marketTargetPickTractionLike[0].snippet.replace(/\s*\.$/, '')}.`;
     return null;
   })();
 
   const marketContextSentence = marketContextPick.length > 0 ? `Context: ${marketContextPick[0].snippet.replace(/\s*\.$/, '')}.` : null;
 
-  // Required claim: why_it_wins from traction OR product
-  const whyPickTraction = pickTopNodes(nodes, {
-    segment: 'traction',
+  // Required claim: why_it_wins from traction-like OR product
+  const whyPickTractionLike = pickTopNodesFromSegments(nodes, {
+    segments: ['traction', 'go_to_market', 'distribution'],
     limit: 1,
     preferTitleTokens: ['traction'],
     preferBodyTokens: ['conversion', 'accounts', 'revenue', 'repeat', 'adoption', 'pipeline'],
@@ -772,7 +836,7 @@ export function buildDealSummaryV1(input: { nodes: NodeLike[]; structured_summar
   });
 
   const whySentence = (() => {
-    if (whyPickTraction.length > 0) return `Why it wins: ${whyPickTraction[0].snippet.replace(/\s*\.$/, '')}.`;
+    if (whyPickTractionLike.length > 0) return `Why it wins: ${whyPickTractionLike[0].snippet.replace(/\s*\.$/, '')}.`;
     if (whyPickProduct.length > 0) return `Why it wins: ${whyPickProduct[0].snippet.replace(/\s*\.$/, '')}.`;
     return null;
   })();
@@ -805,9 +869,9 @@ export function buildDealSummaryV1(input: { nodes: NodeLike[]; structured_summar
 
   const supporting_nodes: SummaryNodeRef[] = [];
   if (productPick[0]) supporting_nodes.push(toNodeRef(productPick[0].node, productPick[0].snippet, { claim_type: 'what_it_sells', role: 'primary' }));
-  if (marketTargetPickTraction[0]) supporting_nodes.push(toNodeRef(marketTargetPickTraction[0].node, marketTargetPickTraction[0].snippet, { claim_type: 'who_it_serves', role: 'primary' }));
+  if (marketTargetPickTractionLike[0]) supporting_nodes.push(toNodeRef(marketTargetPickTractionLike[0].node, marketTargetPickTractionLike[0].snippet, { claim_type: 'who_it_serves', role: 'primary' }));
   else if (marketTargetPickMarket[0]) supporting_nodes.push(toNodeRef(marketTargetPickMarket[0].node, marketTargetPickMarket[0].snippet, { claim_type: 'who_it_serves', role: 'supporting' }));
-  if (whyPickTraction[0]) supporting_nodes.push(toNodeRef(whyPickTraction[0].node, whyPickTraction[0].snippet, { claim_type: 'why_it_wins', role: 'primary' }));
+  if (whyPickTractionLike[0]) supporting_nodes.push(toNodeRef(whyPickTractionLike[0].node, whyPickTractionLike[0].snippet, { claim_type: 'why_it_wins', role: 'primary' }));
   else if (whyPickProduct[0]) supporting_nodes.push(toNodeRef(whyPickProduct[0].node, whyPickProduct[0].snippet, { claim_type: 'why_it_wins', role: 'supporting' }));
 
   // Include top product node for identity if we didn't use business_model_summary.
@@ -821,7 +885,7 @@ export function buildDealSummaryV1(input: { nodes: NodeLike[]; structured_summar
   }
 
   const productPages = uniqSorted([...(productPick.map((p) => p.node.page_index)), ...(whyPickProduct.map((p) => p.node.page_index))]);
-  const tractionPages = uniqSorted([...(marketTargetPickTraction.map((p) => p.node.page_index)), ...(whyPickTraction.map((p) => p.node.page_index))]);
+  const tractionPages = uniqSorted([...(marketTargetPickTractionLike.map((p) => p.node.page_index)), ...(whyPickTractionLike.map((p) => p.node.page_index))]);
   const marketPages = uniqSorted([...(marketTargetPickMarket.map((p) => p.node.page_index)), ...(marketContextPick.map((p) => p.node.page_index))]);
 
   // Exclusions: only track nodes in allowed segments that were not selected.

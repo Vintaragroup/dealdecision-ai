@@ -69,6 +69,7 @@ import {
 	probeImageUriFetchability,
 	type ImageUriFetchDiag,
 } from "./lib/visual-extraction";
+import { shouldSkipExtractVisualsAfterRenderV1 } from "./lib/render-followups";
 import { normalizeToCanonical } from "./lib/normalization";
 import { processDocument } from "./lib/processors";
 import { verifyDocumentExtraction } from "./lib/verification";
@@ -92,7 +93,9 @@ import {
 } from "./lib/document-intelligence-batch";
 import { populateDocumentPageUnderstandingFromVisualExtractions } from "./lib/document-page-understanding";
 import { promoteSlideFactsFromDocumentPageUnderstanding } from "./lib/promote-slide-facts";
+import { ensureOcrFallbackForVisionResponse } from "./lib/vision-ocr-fallback";
 import { finishStepRunLedger, startNamedStepRunLedger, reconcileStuckPipelineRuns } from "./lib/pipeline-run-ledger";
+import { generateAndPersistGovernedLlmOverviewBestEffort } from "./lib/governed-llm-overlay";
 import { computeChunkRangeForPage } from "./lib/r2-probe";
 import { makeJobId } from "./lib/job-id";
 import { reextractDocumentsProcessor } from "./jobs/reextract-documents";
@@ -116,12 +119,19 @@ import { populateDocumentPageUnderstandingProcessor } from "./jobs/populate-docu
 	const r2Bucket = typeof process.env.R2_BUCKET === "string" && process.env.R2_BUCKET.trim().length > 0 ? "set" : "missing";
 	const storageDriverRaw = process.env.STORAGE_DRIVER;
 	const storageDriver = typeof storageDriverRaw === "string" && storageDriverRaw.trim().length > 0 ? storageDriverRaw.trim() : null;
+	const detRaw = typeof process.env.DETERMINISTIC_SCORE_V1_ENABLED === "string" ? process.env.DETERMINISTIC_SCORE_V1_ENABLED : "";
+	const detEnabled = (() => {
+		const s = detRaw.trim().toLowerCase();
+		return s === "1" || s === "true" || s === "yes" || s === "on";
+	})();
 	console.log(
 		JSON.stringify({
 			event: "runtime_env_stamp",
 			vision_base_url: visionBaseUrl,
 			r2_bucket: r2Bucket,
 			storage_driver: storageDriver,
+			DETERMINISTIC_SCORE_V1_ENABLED: detEnabled,
+			deterministic_score_v1_enabled_raw: detRaw.trim() || null,
 		})
 	);
 })();
@@ -3380,7 +3390,12 @@ registerWorker("render_document_pages", async (job: Job) => {
 					jobId: job.id ? String(job.id) : null,
 					force_ocr: forceOcr,
 				});
-				if (routing.doc_kind === "pdf" && !routing.decision.vision_fallback_allowed) {
+				const shouldSkip = shouldSkipExtractVisualsAfterRenderV1({
+					doc_kind: routing.doc_kind,
+					page_count_total: total,
+					vision_fallback_allowed: routing.decision.vision_fallback_allowed,
+				});
+				if (shouldSkip) {
 					const nowIso = new Date().toISOString();
 					try {
 						await mergeDocumentExtractionMetadata({
@@ -3409,6 +3424,18 @@ registerWorker("render_document_pages", async (job: Job) => {
 					);
 					// Skip enqueue.
 				} else {
+					if (routing.doc_kind === "pdf" && total > 0 && total <= 80 && !routing.decision.vision_fallback_allowed) {
+						console.log(
+							JSON.stringify({
+								event: "RENDER_COMPLETE_OVERRIDE_EXTRACT_VISUALS_POLICY",
+								document_id: docId,
+								deal_id: dealIdForEnqueue || null,
+								doc_kind: routing.doc_kind,
+								page_count_total: total,
+								reason: routing.decision.reason,
+							})
+						);
+					}
 					const enqueued = await enqueueExtractVisualsIfPossible({
 						pool: getPool(),
 						queue: visualsQueue,
@@ -4652,6 +4679,24 @@ registerWorker("extract_visuals", async (job: Job) => {
 							pageEnd: pageEndExclusive,
 							version: dpuVersion,
 						});
+						const attempted = Array.isArray(promoted.facts) ? promoted.facts.length : 0;
+						if (attempted <= 0) {
+							console.warn(
+								JSON.stringify({
+									event: "PROMOTE_SLIDE_FACTS_ZERO_FACTS",
+									deal_id: derivedDealId,
+									document_id: docId,
+									page_start: pageStart,
+									page_end: pageEndExclusive,
+									version: dpuVersion,
+									attempted,
+									inserted: promoted.inserted,
+									updated: promoted.updated,
+									warnings: promoted.warnings,
+									ts: new Date().toISOString(),
+								})
+							)
+						}
 						console.log(
 							JSON.stringify({
 								event: "PROMOTE_SLIDE_FACTS",
@@ -4659,6 +4704,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 								document_id: docId,
 								page_start: pageStart,
 								page_end: pageEndExclusive,
+								attempted,
 								inserted: promoted.inserted,
 								updated: promoted.updated,
 								fact_types: promoted.facts.map((f) => f.fact_type),
@@ -5859,6 +5905,47 @@ registerWorker("extract_visuals", async (job: Job) => {
 				pagesVisionSucceeded += 1;
 			}
 
+			// Per-page text guarantee: if structured extraction yields little/no usable text and OCR wasn't requested,
+			// run a local OCR fallback (tesseract) and attach ocr_text onto the response so persistence + DPU can use it.
+			// Also emit per-page text length diagnostics.
+			try {
+				const ensured = await ensureOcrFallbackForVisionResponse({
+					response: resolvedResponse as any,
+					pageImageUri: !needsOcr && typeof safe_image_uri === "string" ? safe_image_uri : null,
+					minPrimaryChars: 40,
+					minOcrChars: 20,
+					logger: console,
+					logMeta: {
+						deal_id: dealIdForVision,
+						document_id: docId,
+						page_index: i,
+						extractor_version: pageExtractorVersion,
+						needs_ocr: needsOcr,
+					},
+					force: false,
+				});
+				// Only apply local OCR mutations when we didn't already ask the vision service for OCR.
+				if (!needsOcr) {
+					resolvedResponse = ensured.response as any;
+				}
+				console.log(
+					JSON.stringify({
+						event: "VISION_PAGE_TEXT_LENS",
+						deal_id: dealIdForVision,
+						document_id: docId,
+						page_index: i,
+						primary_text_len: ensured.diag.primary_text_len,
+						ocr_text_len: ensured.diag.ocr_text_len,
+						final_page_text_len: ensured.diag.final_page_text_len,
+						fallback_used: (!needsOcr) && ensured.diag.fallback_used,
+						needs_ocr: needsOcr,
+						ts: new Date().toISOString(),
+					})
+				);
+			} catch {
+				// Best-effort; never block persistence on diagnostics/OCR helper.
+			}
+
 			const ocrDiag = (() => {
 				const assets = Array.isArray((resolvedResponse as any)?.assets) ? (resolvedResponse as any).assets : [];
 				let ocrText = "";
@@ -5926,7 +6013,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 			}
 
 			try {
-				const { persisted: pCount, withImageUri } = await persistVisionResponse(pool, resolvedResponse, { pageImageUri: image_uri });
+				const { persisted: pCount, withImageUri } = await persistVisionResponse(pool, resolvedResponse as any, { pageImageUri: image_uri });
 				try {
 					console.log(
 						JSON.stringify({
@@ -6476,12 +6563,102 @@ registerWorker("extract_visuals", async (job: Job) => {
 					.sort((a: any, b: any) => a.page_index - b.page_index);
 
 				if (ordered.length === 0) {
+					// Fallback: treat DPU page_text OR text_snippet as "understanding".
+					// This keeps segmentation/disclosure logic aligned with DPU population rules.
+					let dpuFallback:
+						| { page_start: number; page_end: number; pages_with_understanding: number; title_hint: string | null }
+						| null = null;
+					try {
+						const res = await pool.query(
+							`
+							WITH has_u AS (
+								SELECT
+									page_index,
+									NULLIF(BTRIM(COALESCE(payload->'text_blocks'->>'title','')), '') AS title_hint
+								  FROM public.document_page_understanding
+								 WHERE document_id = $1::uuid
+								   AND version = 'page_understanding_v1'
+								   AND (
+										NULLIF(BTRIM(COALESCE(payload->>'page_text','')), '') IS NOT NULL
+									 OR NULLIF(BTRIM(COALESCE(payload->'text_blocks'->>'text_snippet','')), '') IS NOT NULL
+								   )
+							)
+							SELECT
+								COUNT(*)::int AS pages_with_understanding,
+								MIN(page_index)::int AS page_start,
+								MAX(page_index)::int AS page_end,
+								(
+									SELECT title_hint
+									  FROM has_u
+									 WHERE title_hint IS NOT NULL
+									 ORDER BY page_index ASC
+									 LIMIT 1
+								) AS title_hint
+							FROM has_u;
+							`,
+							[sanitizeText(docId)]
+						);
+						const r = res?.rows?.[0] as any;
+						const pagesWith = typeof r?.pages_with_understanding === "number" ? r.pages_with_understanding : 0;
+						const pageStart = typeof r?.page_start === "number" ? r.page_start : null;
+						const pageEnd = typeof r?.page_end === "number" ? r.page_end : null;
+						const titleHint = typeof r?.title_hint === "string" && r.title_hint.trim() ? r.title_hint.trim() : null;
+						if (pagesWith > 0 && pageStart != null && pageEnd != null) {
+							dpuFallback = {
+								page_start: Math.max(0, pageStart),
+								page_end: Math.max(Math.max(0, pageStart), pageEnd),
+								pages_with_understanding: pagesWith,
+								title_hint: titleHint,
+							};
+						}
+					} catch {
+						// best-effort
+					}
+
+					if (!dpuFallback) {
+						console.log(
+							JSON.stringify({
+								event: "PAGE_SEGMENTS_V1_SKIP",
+								document_id: docId,
+								deal_id: (typeof row?.deal_id === "string" ? row.deal_id : null) ?? null,
+								reason: "no_pages_with_understanding",
+								should_finalize: true,
+							})
+						);
+						continue;
+					}
+
+					const segments = [
+						{
+							segment_index: 0,
+							segment_key: "unknown",
+							segment_label: "unknown",
+							page_start: dpuFallback.page_start,
+							page_end: dpuFallback.page_end,
+							title_hint: dpuFallback.title_hint,
+							avg_confidence: null,
+							pages: dpuFallback.pages_with_understanding,
+						},
+					];
+
+					await mergeDocumentExtractionMetadata({
+						documentId: docId,
+						patch: {
+							page_segments_v1: {
+								version: "page_segments_v1",
+								generated_at: new Date().toISOString(),
+								rendered_pages_r2: renderedPagesR2Ref,
+								segments,
+							},
+						},
+					});
 					console.log(
 						JSON.stringify({
-							event: "PAGE_SEGMENTS_V1_SKIP",
+							event: "PAGE_SEGMENTS_V1_WRITTEN",
 							document_id: docId,
 							deal_id: (typeof row?.deal_id === "string" ? row.deal_id : null) ?? null,
-							reason: "no_pages_with_understanding",
+							segments_count: segments.length,
+							source: "dpu_fallback",
 							should_finalize: true,
 						})
 					);
@@ -8526,10 +8703,87 @@ registerWorker("analyze_deal", async (job: Job) => {
 			?? (result.dio as any)?.score_explanation?.totals?.overall_score
 			?? null;
 
+		// Governed overview persistence is part of the terminal-success contract for analyze_deal.
+		// If it fails, we still complete the job but downgrade to succeeded_with_warnings.
+		const overviewPersistStartedAt = Date.now();
+		console.log(
+			JSON.stringify({
+				event: "OVERVIEW_PERSIST_START",
+				deal_id: dealId,
+				job_id: job.id ? String(job.id) : null,
+				dio_id: result.storage_result.dio_id ?? null,
+				dio_version: result.storage_result.version ?? null,
+				is_duplicate: Boolean(result.storage_result.is_duplicate),
+				ts: new Date().toISOString(),
+			})
+		);
+
+		let overview: Awaited<ReturnType<typeof generateAndPersistGovernedLlmOverviewBestEffort>> | null = null;
+		try {
+			overview = await generateAndPersistGovernedLlmOverviewBestEffort({
+				pool: getPool(),
+				dealId,
+				runId: job.id ? String(job.id) : null,
+				stepRunId: null,
+				dealName:
+					(typeof (previousDio as any)?.deal?.name === "string" ? (previousDio as any).deal.name : undefined) ??
+					(typeof phase1_deal_overview_v2.deal_name === "string" ? phase1_deal_overview_v2.deal_name : undefined) ??
+					null,
+				phase1_deal_overview_v2,
+				phase1_business_archetype_v1,
+				phase1_update_report_v1,
+				phase1_deal_summary_v2,
+				phase1_documents: phase1Documents.map((d) => ({ document_id: d.document_id, type: d.type ?? null })),
+			});
+		} catch (err) {
+			overview = { ok: false, inserted: false, input_hash: null, validation_failed: false };
+			console.warn(
+				JSON.stringify({
+					event: "OVERVIEW_PERSIST_FAIL",
+					deal_id: dealId,
+					job_id: job.id ? String(job.id) : null,
+					reason: err instanceof Error ? err.message : String(err),
+					duration_ms: Date.now() - overviewPersistStartedAt,
+					ts: new Date().toISOString(),
+				})
+			);
+		}
+
+		const overviewOk = Boolean(overview?.ok) && typeof overview?.input_hash === "string" && overview.input_hash.trim().length > 0;
+		if (overviewOk) {
+			console.log(
+				JSON.stringify({
+					event: "OVERVIEW_PERSIST_OK",
+					deal_id: dealId,
+					job_id: job.id ? String(job.id) : null,
+					input_hash: overview?.input_hash ?? null,
+					inserted: Boolean(overview?.inserted),
+					validation_failed: Boolean(overview?.validation_failed),
+					duration_ms: Date.now() - overviewPersistStartedAt,
+					ts: new Date().toISOString(),
+				})
+			);
+		} else {
+			console.warn(
+				JSON.stringify({
+					event: "OVERVIEW_PERSIST_FAIL",
+					deal_id: dealId,
+					job_id: job.id ? String(job.id) : null,
+					reason: overview?.ok === false ? "overlay_generation_failed" : "overlay_not_persisted",
+					input_hash: overview?.input_hash ?? null,
+					duration_ms: Date.now() - overviewPersistStartedAt,
+					ts: new Date().toISOString(),
+				})
+			);
+		}
+
+		const terminalStatus: JobStatus = overviewOk ? "succeeded" : "succeeded_with_warnings";
+		const terminalSuffix = result.storage_result.is_duplicate ? ", refreshed" : "";
+		const warningSuffix = overviewOk ? "" : "; governed overview pending/failed";
 		await updateJob(
 			job,
-			"succeeded",
-			`Analysis complete (version=${result.storage_result.version}${result.storage_result.is_duplicate ? ", refreshed" : ""})`,
+			terminalStatus,
+			`Analysis complete (version=${result.storage_result.version}${terminalSuffix})${warningSuffix}`,
 			100
 		);
 

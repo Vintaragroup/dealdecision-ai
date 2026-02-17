@@ -108,12 +108,13 @@ async function backfillMissingDpuPlaceholdersForDocumentRange(
 }
 
 /**
- * Populate public.document_page_understanding from visual_extractions for PPTX documents.
+ * Populate public.document_page_understanding from visual_extractions.
  *
  * Deterministic rules:
  * - One row per (document_id, page_index, version='page_understanding_v1')
- * - Prefer structured_json for kind='powerpoint_slide'
- * - Fallback to ocr_text only when structured_json is missing/empty
+ * - Prefer structured text when it is sufficiently non-empty (min char threshold)
+ * - Fallback to OCR text when structured text is missing/too short (even if structured_json exists)
+ * - Derive basic title/bullets/snippet from OCR when structured fields are absent
  */
 export async function populateDocumentPageUnderstandingFromVisualExtractions(
 	pool: Pool,
@@ -194,16 +195,13 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			labels,
 			structured_json,
 			ocr_text,
-			CASE
-				WHEN structured_json IS NOT NULL
-					AND structured_json <> '{}'::jsonb
-					AND COALESCE(structured_json->>'kind','') = 'powerpoint_slide'
-				THEN true
-				ELSE false
-			END AS structured_ok,
 			NULLIF(BTRIM(COALESCE(structured_json->>'title','')), '') AS title_text,
 			NULLIF(BTRIM(COALESCE(structured_json->>'notes','')), '') AS notes_text,
 			NULLIF(BTRIM(COALESCE(structured_json->>'text_snippet','')), '') AS snippet_text,
+			NULLIF(BTRIM(COALESCE(structured_json #>> '{text_blocks,title}','')), '') AS tb_title_text,
+			NULLIF(BTRIM(COALESCE(structured_json #>> '{text_blocks,notes}','')), '') AS tb_notes_text,
+			NULLIF(BTRIM(COALESCE(structured_json #>> '{text_blocks,text_snippet}','')), '') AS tb_snippet_text,
+			NULLIF(BTRIM(COALESCE(structured_json #>> '{text_blocks,ocr_text}','')), '') AS tb_ocr_text,
 			CASE
 				WHEN jsonb_typeof(structured_json->'bullets') = 'array' THEN (
 					SELECT NULLIF(BTRIM(string_agg(NULLIF(BTRIM(b.value), ''), E'\n')), '')
@@ -211,6 +209,14 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 				)
 				ELSE NULL
 			END AS bullets_text
+			,
+			CASE
+				WHEN jsonb_typeof(structured_json #> '{text_blocks,bullets}') = 'array' THEN (
+					SELECT NULLIF(BTRIM(string_agg(NULLIF(BTRIM(b.value), ''), E'\n')), '')
+					  FROM jsonb_array_elements_text(structured_json #> '{text_blocks,bullets}') AS b(value)
+				)
+				ELSE NULL
+			END AS tb_bullets_text
 		  FROM candidate
 	),
 	computed AS (
@@ -227,21 +233,98 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			labels,
 			structured_json,
 			ocr_text,
-			structured_ok,
-			title_text,
-			notes_text,
-			snippet_text,
-			bullets_text,
+			COALESCE(title_text, tb_title_text) AS title_text,
+			COALESCE(notes_text, tb_notes_text) AS notes_text,
+			COALESCE(snippet_text, tb_snippet_text) AS snippet_text,
+			COALESCE(bullets_text, tb_bullets_text) AS bullets_text,
+			NULLIF(
+				BTRIM(
+					concat_ws(
+						E'\n',
+						COALESCE(title_text, tb_title_text),
+						COALESCE(bullets_text, tb_bullets_text),
+						COALESCE(notes_text, tb_notes_text),
+						COALESCE(snippet_text, tb_snippet_text)
+					)
+				),
+				''
+			) AS primary_text,
+			NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '') AS ocr_text_clean,
+			CASE WHEN COALESCE(length(NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')), 0) >= 40 THEN true ELSE false END AS structured_ok,
 			CASE
-				WHEN structured_ok THEN NULLIF(BTRIM(concat_ws(E'\n', title_text, bullets_text, notes_text, snippet_text)), '')
-				WHEN structured_json IS NULL OR structured_json = '{}'::jsonb THEN NULLIF(BTRIM(COALESCE(ocr_text, '')), '')
+				WHEN COALESCE(length(NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')), 0) >= 40
+					THEN NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')
+				WHEN NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '') IS NOT NULL
+					THEN NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '')
+				WHEN NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '') IS NOT NULL
+					THEN NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')
 				ELSE NULL
 			END AS page_text,
 			COALESCE(
-				NULLIF(COALESCE(structured_json->>'text_snippet', ''), ''),
-				NULLIF(COALESCE(ocr_text, ''), ''),
+				COALESCE(snippet_text, tb_snippet_text),
+				CASE
+					WHEN COALESCE(length(NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')), 0) >= 40
+						THEN NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')
+					WHEN NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '') IS NOT NULL
+						THEN NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '')
+					WHEN NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '') IS NOT NULL
+						THEN NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')
+					ELSE NULL
+				END,
 				''
-			) AS normalized_text
+			) AS normalized_text,
+			CASE
+				WHEN NULLIF(BTRIM(COALESCE(ocr_text, '')), '') IS NOT NULL THEN (
+					SELECT NULLIF(BTRIM(x), '')
+					  FROM unnest(regexp_split_to_array(NULLIF(BTRIM(COALESCE(ocr_text, '')), ''), E'\\r?\\n+')) WITH ORDINALITY AS t(x,n)
+					 WHERE NULLIF(BTRIM(x), '') IS NOT NULL
+					 ORDER BY n
+					 LIMIT 1
+				)
+				ELSE NULL
+			END AS ocr_title_text,
+			CASE
+				WHEN NULLIF(BTRIM(COALESCE(ocr_text, '')), '') IS NOT NULL THEN (
+					SELECT jsonb_agg(line)
+					  FROM (
+						SELECT NULLIF(BTRIM(x), '') AS line
+						  FROM unnest(regexp_split_to_array(NULLIF(BTRIM(COALESCE(ocr_text, '')), ''), E'\\r?\\n+')) WITH ORDINALITY AS t(x,n)
+						 WHERE n >= 2
+						   AND NULLIF(BTRIM(x), '') IS NOT NULL
+						 ORDER BY n
+						 LIMIT 8
+					  ) s
+				)
+				ELSE NULL
+			END AS ocr_bullets_json,
+			COALESCE(title_text, tb_title_text,
+				CASE
+					WHEN NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '') IS NOT NULL THEN (
+						SELECT NULLIF(BTRIM(x), '')
+						  FROM unnest(regexp_split_to_array(NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), ''), E'\\r?\\n+')) WITH ORDINALITY AS t(x,n)
+						 WHERE NULLIF(BTRIM(x), '') IS NOT NULL
+						 ORDER BY n
+						 LIMIT 1
+					)
+					ELSE NULL
+				END
+			) AS resolved_title_text,
+			CASE
+				WHEN jsonb_typeof(structured_json->'bullets') = 'array' AND jsonb_array_length(structured_json->'bullets') > 0 THEN structured_json->'bullets'
+				WHEN jsonb_typeof(structured_json #> '{text_blocks,bullets}') = 'array' AND jsonb_array_length(structured_json #> '{text_blocks,bullets}') > 0 THEN structured_json #> '{text_blocks,bullets}'
+				WHEN NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '') IS NOT NULL THEN (
+					SELECT jsonb_agg(line)
+					  FROM (
+						SELECT NULLIF(BTRIM(x), '') AS line
+						  FROM unnest(regexp_split_to_array(NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), ''), E'\\r?\\n+')) WITH ORDINALITY AS t(x,n)
+						 WHERE n >= 2
+						   AND NULLIF(BTRIM(x), '') IS NOT NULL
+						 ORDER BY n
+						 LIMIT 8
+					  ) s
+				)
+				ELSE NULL
+			END AS resolved_bullets_json
 		  FROM prepared
 	),
 	best AS (
@@ -264,7 +347,20 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			snippet_text,
 			bullets_text,
 			page_text,
-			normalized_text
+			normalized_text,
+			ocr_text_clean,
+			resolved_title_text,
+			resolved_bullets_json,
+			CASE
+				WHEN COALESCE(length(page_text), 0) >= 40 THEN page_text
+				ELSE NULLIF(BTRIM(concat_ws(E'\n', resolved_title_text, bullets_text, ocr_text_clean, normalized_text)), '')
+			END AS page_text_final,
+			NULLIF(BTRIM(LEFT(regexp_replace(COALESCE(
+				CASE
+					WHEN COALESCE(length(page_text), 0) >= 40 THEN page_text
+					ELSE NULLIF(BTRIM(concat_ws(E'\n', resolved_title_text, bullets_text, ocr_text_clean, normalized_text)), '')
+				END,
+			''), E'\\s+', ' ', 'g'), 900)), '') AS text_snippet_final
 		  FROM computed
 		 ORDER BY
 			document_id,
@@ -292,23 +388,23 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 					'model_version', model_version,
 					'extracted_at', extracted_at
 				),
-				'page_type', COALESCE(structured_json->>'kind', 'powerpoint_slide'),
+				'page_type', COALESCE(structured_json->>'kind', 'page_image'),
 				'confidence', COALESCE(confidence, 0),
-				'page_text', COALESCE(page_text, ''),
+				'page_text', COALESCE(page_text_final, ''),
 				'normalized_text', COALESCE(normalized_text, ''),
 				'text_blocks', jsonb_build_object(
-					'title', title_text,
-					'bullets', structured_json->'bullets',
+					'title', resolved_title_text,
+					'bullets', resolved_bullets_json,
 					'notes', notes_text,
-					'text_snippet', snippet_text,
-					'ocr_text', CASE WHEN structured_json IS NULL OR structured_json = '{}'::jsonb THEN NULLIF(BTRIM(COALESCE(ocr_text, '')), '') ELSE NULL END
+					'text_snippet', text_snippet_final,
+					'ocr_text', ocr_text_clean
 				),
 				'structured', structured_json,
 				'labels', labels,
 				'quality_flags', jsonb_build_object(
 					'used_structured', structured_ok,
-					'used_ocr_fallback', (NOT structured_ok) AND (structured_json IS NULL OR structured_json = '{}'::jsonb),
-					'page_text_empty', page_text IS NULL
+					'used_ocr_fallback', (ocr_text_clean IS NOT NULL) AND ((NOT structured_ok) OR COALESCE(length(page_text), 0) < 40),
+					'page_text_empty', COALESCE(page_text_final, '') = ''
 				)
 			) AS payload
 		  FROM best
@@ -333,7 +429,10 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 	final AS (
 		SELECT
 			COUNT(*)::bigint AS upserted,
-			COUNT(*) FILTER (WHERE COALESCE(payload->>'page_text','') = '')::bigint AS page_text_empty
+			COUNT(*) FILTER (
+				WHERE COALESCE(payload->>'page_text','') = ''
+				  AND COALESCE(payload->'text_blocks'->>'text_snippet','') = ''
+			)::bigint AS page_text_empty
 		  FROM upserted
 	)
 	SELECT
@@ -387,16 +486,13 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			labels,
 			structured_json,
 			ocr_text,
-			CASE
-				WHEN structured_json IS NOT NULL
-					AND structured_json <> '{}'::jsonb
-					AND COALESCE(structured_json->>'kind','') = 'powerpoint_slide'
-				THEN true
-				ELSE false
-			END AS structured_ok,
 			NULLIF(BTRIM(COALESCE(structured_json->>'title','')), '') AS title_text,
 			NULLIF(BTRIM(COALESCE(structured_json->>'notes','')), '') AS notes_text,
 			NULLIF(BTRIM(COALESCE(structured_json->>'text_snippet','')), '') AS snippet_text,
+			NULLIF(BTRIM(COALESCE(structured_json #>> '{text_blocks,title}','')), '') AS tb_title_text,
+			NULLIF(BTRIM(COALESCE(structured_json #>> '{text_blocks,notes}','')), '') AS tb_notes_text,
+			NULLIF(BTRIM(COALESCE(structured_json #>> '{text_blocks,text_snippet}','')), '') AS tb_snippet_text,
+			NULLIF(BTRIM(COALESCE(structured_json #>> '{text_blocks,ocr_text}','')), '') AS tb_ocr_text,
 			CASE
 				WHEN jsonb_typeof(structured_json->'bullets') = 'array' THEN (
 					SELECT NULLIF(BTRIM(string_agg(NULLIF(BTRIM(b.value), ''), E'\n')), '')
@@ -404,6 +500,14 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 				)
 				ELSE NULL
 			END AS bullets_text
+			,
+			CASE
+				WHEN jsonb_typeof(structured_json #> '{text_blocks,bullets}') = 'array' THEN (
+					SELECT NULLIF(BTRIM(string_agg(NULLIF(BTRIM(b.value), ''), E'\n')), '')
+					  FROM jsonb_array_elements_text(structured_json #> '{text_blocks,bullets}') AS b(value)
+				)
+				ELSE NULL
+			END AS tb_bullets_text
 		  FROM candidate
 	),
 	computed AS (
@@ -420,21 +524,74 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			labels,
 			structured_json,
 			ocr_text,
-			structured_ok,
-			title_text,
-			notes_text,
-			snippet_text,
-			bullets_text,
+			COALESCE(title_text, tb_title_text) AS title_text,
+			COALESCE(notes_text, tb_notes_text) AS notes_text,
+			COALESCE(snippet_text, tb_snippet_text) AS snippet_text,
+			COALESCE(bullets_text, tb_bullets_text) AS bullets_text,
+			NULLIF(
+				BTRIM(
+					concat_ws(
+						E'\n',
+						COALESCE(title_text, tb_title_text),
+						COALESCE(bullets_text, tb_bullets_text),
+						COALESCE(notes_text, tb_notes_text),
+						COALESCE(snippet_text, tb_snippet_text)
+					)
+				),
+				''
+			) AS primary_text,
+			NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '') AS ocr_text_clean,
+			CASE WHEN COALESCE(length(NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')), 0) >= 40 THEN true ELSE false END AS structured_ok,
 			CASE
-				WHEN structured_ok THEN NULLIF(BTRIM(concat_ws(E'\n', title_text, bullets_text, notes_text, snippet_text)), '')
-				WHEN structured_json IS NULL OR structured_json = '{}'::jsonb THEN NULLIF(BTRIM(COALESCE(ocr_text, '')), '')
+				WHEN COALESCE(length(NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')), 0) >= 40
+					THEN NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')
+				WHEN NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '') IS NOT NULL
+					THEN NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '')
+				WHEN NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '') IS NOT NULL
+					THEN NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')
 				ELSE NULL
 			END AS page_text,
 			COALESCE(
-				NULLIF(COALESCE(structured_json->>'text_snippet', ''), ''),
-				NULLIF(COALESCE(ocr_text, ''), ''),
+				COALESCE(snippet_text, tb_snippet_text),
+				CASE
+					WHEN COALESCE(length(NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')), 0) >= 40
+						THEN NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')
+					WHEN NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '') IS NOT NULL
+						THEN NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '')
+					WHEN NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '') IS NOT NULL
+						THEN NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')
+					ELSE NULL
+				END,
 				''
-			) AS normalized_text
+			) AS normalized_text,
+			COALESCE(title_text, tb_title_text,
+				CASE
+					WHEN NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '') IS NOT NULL THEN (
+						SELECT NULLIF(BTRIM(x), '')
+						  FROM unnest(regexp_split_to_array(NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), ''), E'\\r?\\n+')) WITH ORDINALITY AS t(x,n)
+						 WHERE NULLIF(BTRIM(x), '') IS NOT NULL
+						 ORDER BY n
+						 LIMIT 1
+					)
+					ELSE NULL
+				END
+			) AS resolved_title_text,
+			CASE
+				WHEN jsonb_typeof(structured_json->'bullets') = 'array' AND jsonb_array_length(structured_json->'bullets') > 0 THEN structured_json->'bullets'
+				WHEN jsonb_typeof(structured_json #> '{text_blocks,bullets}') = 'array' AND jsonb_array_length(structured_json #> '{text_blocks,bullets}') > 0 THEN structured_json #> '{text_blocks,bullets}'
+				WHEN NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '') IS NOT NULL THEN (
+					SELECT jsonb_agg(line)
+					  FROM (
+						SELECT NULLIF(BTRIM(x), '') AS line
+						  FROM unnest(regexp_split_to_array(NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), ''), E'\\r?\\n+')) WITH ORDINALITY AS t(x,n)
+						 WHERE n >= 2
+						   AND NULLIF(BTRIM(x), '') IS NOT NULL
+						 ORDER BY n
+						 LIMIT 8
+					  ) s
+				)
+				ELSE NULL
+			END AS resolved_bullets_json
 		  FROM prepared
 	),
 	best AS (
@@ -457,7 +614,20 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			snippet_text,
 			bullets_text,
 			page_text,
-			normalized_text
+			normalized_text,
+			ocr_text_clean,
+			resolved_title_text,
+			resolved_bullets_json,
+			CASE
+				WHEN COALESCE(length(page_text), 0) >= 40 THEN page_text
+				ELSE NULLIF(BTRIM(concat_ws(E'\n', resolved_title_text, bullets_text, ocr_text_clean, normalized_text)), '')
+			END AS page_text_final,
+			NULLIF(BTRIM(LEFT(regexp_replace(COALESCE(
+				CASE
+					WHEN COALESCE(length(page_text), 0) >= 40 THEN page_text
+					ELSE NULLIF(BTRIM(concat_ws(E'\n', resolved_title_text, bullets_text, ocr_text_clean, normalized_text)), '')
+				END,
+			''), E'\\s+', ' ', 'g'), 900)), '') AS text_snippet_final
 		  FROM computed
 		 ORDER BY
 			document_id,
@@ -485,23 +655,23 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 					'model_version', model_version,
 					'extracted_at', extracted_at
 				),
-				'page_type', COALESCE(structured_json->>'kind', 'powerpoint_slide'),
+				'page_type', COALESCE(structured_json->>'kind', 'page_image'),
 				'confidence', COALESCE(confidence, 0),
-				'page_text', COALESCE(page_text, ''),
+				'page_text', COALESCE(page_text_final, ''),
 				'normalized_text', COALESCE(normalized_text, ''),
 				'text_blocks', jsonb_build_object(
-					'title', title_text,
-					'bullets', structured_json->'bullets',
+					'title', resolved_title_text,
+					'bullets', resolved_bullets_json,
 					'notes', notes_text,
-					'text_snippet', snippet_text,
-					'ocr_text', CASE WHEN structured_json IS NULL OR structured_json = '{}'::jsonb THEN NULLIF(BTRIM(COALESCE(ocr_text, '')), '') ELSE NULL END
+					'text_snippet', text_snippet_final,
+					'ocr_text', ocr_text_clean
 				),
 				'structured', structured_json,
 				'labels', labels,
 				'quality_flags', jsonb_build_object(
 					'used_structured', structured_ok,
-					'used_ocr_fallback', (NOT structured_ok) AND (structured_json IS NULL OR structured_json = '{}'::jsonb),
-					'page_text_empty', page_text IS NULL
+					'used_ocr_fallback', (ocr_text_clean IS NOT NULL) AND ((NOT structured_ok) OR COALESCE(length(page_text), 0) < 40),
+					'page_text_empty', COALESCE(page_text_final, '') = ''
 				)
 			) AS payload
 		  FROM best
@@ -526,7 +696,10 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 	final AS (
 		SELECT
 			COUNT(*)::bigint AS upserted,
-			COUNT(*) FILTER (WHERE COALESCE(payload->>'page_text','') = '')::bigint AS page_text_empty
+			COUNT(*) FILTER (
+				WHERE COALESCE(payload->>'page_text','') = ''
+				  AND COALESCE(payload->'text_blocks'->>'text_snippet','') = ''
+			)::bigint AS page_text_empty
 		  FROM upserted
 	)
 	SELECT

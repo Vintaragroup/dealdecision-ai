@@ -25,6 +25,15 @@ Do not rely on one `.env` for both host tooling and containers.
 
 Start from `.env.example` to see all supported keys.
 
+### Development Overrides
+
+`DDAI_DEV_LOCAL_FALLBACK` — Enables local rendered-pages readiness fallback for document extraction.
+- Only active when `NODE_ENV !== "production"`.
+- Must be explicitly set to `1`, `true`, or `yes`.
+- Disabled by default.
+- When enabled, may override render readiness metadata for local development convenience.
+- All overrides emit governance disclosure logs.
+
 ### Web build-time API URL
 
 The production-shaped `web` image bakes the API base URL into the Vite bundle at build time.

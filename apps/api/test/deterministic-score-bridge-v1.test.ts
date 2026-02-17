@@ -130,9 +130,9 @@ function mkMockPool(args: {
 	return {
 		query: async (sql: string, params?: unknown[]) => {
 			const q = String(sql);
-			if (q.includes("SELECT id FROM deals") && q.includes("deleted_at IS NULL")) {
+			if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
 				assert.deepEqual(params, [args.dealId]);
-				return { rows: [{ id: args.dealId }] };
+				return { rows: [{ id: args.dealId, llm_phase_mode: null }] };
 			}
 			if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {
 				assert.deepEqual(params, [args.dealId]);
@@ -159,7 +159,7 @@ function mkMockPool(args: {
 				assert.deepEqual(params, [args.dealId]);
 				return { rows: evidence };
 			}
-			if (q.includes("FROM public.document_page_understanding")) {
+			if (q.toLowerCase().includes("document_page_understanding") && q.toLowerCase().includes("where deal_id")) {
 				assert.deepEqual(params, [args.dealId]);
 				return { rows: args.dpuRows.map((r) => ({ document_id: r.document_id, page_index: r.page_index, payload: r.payload })) };
 			}
@@ -253,9 +253,9 @@ test("unadjusted==50 => overall stays 50 even if adjustment changes", async () =
 	const pool = {
 		query: async (sql: string, params?: unknown[]) => {
 			const q = String(sql);
-			if (q.includes("SELECT id FROM deals") && q.includes("deleted_at IS NULL")) {
+			if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
 				assert.deepEqual(params, [dealId]);
-				return { rows: [{ id: dealId }] };
+				return { rows: [{ id: dealId, llm_phase_mode: null }] };
 			}
 			if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {
 				dioCall += 1;
@@ -398,9 +398,9 @@ test("unadjusted>50 and higher adjustment => overall increases (Δ>=1)", async (
 	const pool = {
 		query: async (sql: string, params?: unknown[]) => {
 			const q = String(sql);
-			if (q.includes("SELECT id FROM deals") && q.includes("deleted_at IS NULL")) {
+			if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
 				assert.deepEqual(params, [dealId]);
-				return { rows: [{ id: dealId }] };
+				return { rows: [{ id: dealId, llm_phase_mode: null }] };
 			}
 			if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {
 				dioCall += 1;

@@ -680,13 +680,14 @@ function requireDestructiveAuth(request: FastifyRequest | any): { ok: true } | {
 
 const dealStageEnum = z.enum(["intake", "under_review", "in_diligence", "ready_decision", "pitched"]);
 const dealPriorityEnum = z.enum(["high", "medium", "low"]);
-const dealTrendEnum = z.enum(["up", "down", "flat"]);
+const normalizeDealTrend = (value: unknown): unknown => (value === "flat" ? "stable" : value);
+const dealTrendEnum = z.preprocess(normalizeDealTrend, z.enum(["up", "down", "stable"]).optional());
 
 const dealCreateSchema = z.object({
   name: z.string().min(1),
   stage: dealStageEnum.default("intake"),
   priority: dealPriorityEnum.default("medium"),
-  trend: dealTrendEnum.optional(),
+  trend: dealTrendEnum,
   score: z.number().optional(),
   owner: z.string().optional(),
 });
@@ -1017,11 +1018,14 @@ function jsonbParam(value: unknown): any {
 
 const dealUpdateSchema = dealCreateSchema.partial();
 
+const llmPhaseModeEnum = z.enum(["exploratory", "stabilizing", "governed"]);
+
 type DealRow = {
   id: string;
   name: string;
   stage: Deal["stage"];
   priority: Deal["priority"];
+  llm_phase_mode?: Deal["llm_phase_mode"] | null;
   trend: Deal["trend"] | null;
   score: number | null;
   owner: string | null;
@@ -2332,7 +2336,8 @@ function mapDeal(
     name: row.name,
     stage: row.stage,
     priority: row.priority,
-    trend: row.trend ?? undefined,
+		llm_phase_mode: row.llm_phase_mode ?? "exploratory",
+		trend: String(row.trend ?? "") === "flat" ? "stable" : row.trend ?? undefined,
     owner: row.owner ?? undefined,
     lastUpdated: new Date(row.updated_at).toISOString(),
     dioVersionId: dio?.dio_id ?? undefined,
@@ -6499,8 +6504,8 @@ export async function registerDealRoutes(
     const name = requestedName || `Draft Deal ${randomUUID().slice(0, 8)}`;
 
     const { rows } = await pool.query<{ id: string }>(
-      `INSERT INTO deals (name, stage, priority, owner, created_by_user_id)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO deals (name, stage, priority, llm_phase_mode, owner, created_by_user_id)
+       VALUES ($1, $2, $3, 'exploratory', $4, $5)
        RETURNING id`,
       [name, stage, priority, owner, createdByUserId]
     );
@@ -6735,8 +6740,8 @@ export async function registerDealRoutes(
     }
 
     const { rows } = await pool.query<DealRow>(
-      `INSERT INTO deals (name, stage, priority, trend, score, owner, created_by_user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO deals (name, stage, priority, llm_phase_mode, trend, score, owner, created_by_user_id)
+       VALUES ($1, $2, $3, 'exploratory', $4, $5, $6, $7)
        RETURNING *`,
       [name, stage, priority, trend ?? null, score ?? null, owner ?? null, createdByUserId]
     );
@@ -7988,7 +7993,10 @@ export async function registerDealRoutes(
     const mode = parseDealApiMode(request);
     // Accept optional filters but ignore for now (TODO)
     const userId = (request as any)?.auth?.userId;
-    const userIdParam = typeof userId === "string" ? userId : "";
+    const bypassAuthEnvRaw = typeof process.env.DISABLE_CLERK_AUTH === "string" ? process.env.DISABLE_CLERK_AUTH : "";
+    const bypassAuthEnv = ["1", "true", "yes", "on"].includes(bypassAuthEnvRaw.trim().toLowerCase());
+    const bypassAuth = Boolean((request as any)?.auth?.claims?.bypass_auth) || bypassAuthEnv;
+    const hasUserId = !bypassAuth && typeof userId === "string" && userId.trim().length > 0;
     const { rows } = await pool.query<DealRow & {
       dio_id: string | null;
       analysis_version: number | null;
@@ -8111,9 +8119,9 @@ export async function registerDealRoutes(
             WHERE deal_id = d.id
          ) stats ON TRUE
         WHERE d.deleted_at IS NULL
-          AND d.created_by_user_id = $1
+          ${hasUserId ? "AND (d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)" : ""}
         ORDER BY d.created_at DESC`,
-      [userIdParam]
+      hasUserId ? [userId] : []
     );
     return rows.map((row) => mapDeal(row, {
       dio_id: row.dio_id,
@@ -8523,6 +8531,233 @@ export async function registerDealRoutes(
     }
 
     return mapDeal(rows[0], null, "full");
+  });
+
+  // PR2A: governance-only switch for progressive LLM gating. No side effects.
+  app.patch("/api/v1/deals/:deal_id/llm-phase", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    if (!isUuid(dealId)) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+
+    const parsed = z.object({ llm_phase_mode: llmPhaseModeEnum }).safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "Invalid input", details: parsed.error.flatten() });
+    }
+
+    const next = parsed.data.llm_phase_mode;
+    const { rows } = await pool.query<DealRow>(
+      `UPDATE deals
+          SET llm_phase_mode = $2,
+              updated_at = now()
+        WHERE id = $1
+          AND deleted_at IS NULL
+        RETURNING *`,
+      [dealId, next]
+    );
+
+    if (!rows?.[0]) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    return reply.status(200).send(mapDeal(rows[0], null, "full"));
+  });
+
+  // PR2B: latest governed LLM overlay artifact (evidence-bound). Read-only; no side effects.
+  app.get("/api/v1/deals/:deal_id/governed-llm-overview", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    if (!isUuid(dealId)) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+
+    const tableOk = await hasTable(pool as any, "governed_llm_overviews");
+    if (!tableOk) {
+      return reply.status(200).send({ overview: null });
+    }
+
+    const { rows: dealRows } = await pool.query<{ id: string }>(
+      `SELECT id FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+      [dealId]
+    );
+    if (dealRows.length === 0) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    const { rows } = await pool.query<{
+      id: string;
+      deal_id: string;
+      schema_version: string;
+      llm_phase_mode: string;
+      input_hash: string;
+      run_id: string | null;
+      step_run_id: string | null;
+      summary_text: string;
+      claims: any;
+      disclosures: any;
+      overview_json: any;
+      created_at: string;
+    }>(
+      `SELECT id,
+              deal_id::text as deal_id,
+              schema_version,
+              llm_phase_mode,
+              input_hash,
+              run_id,
+              step_run_id,
+              summary_text,
+              claims,
+              disclosures,
+              overview_json,
+              created_at
+         FROM governed_llm_overviews
+        WHERE deal_id = $1
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      [dealId]
+    );
+
+    const latest = rows?.[0] ?? null;
+    if (!latest) {
+      return reply.status(200).send({ overview: null });
+    }
+
+    const coerceJsonArray = (v: unknown): any[] => {
+      if (Array.isArray(v)) return v;
+      if (typeof v === "string") {
+        try {
+          const parsed = JSON.parse(v);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      }
+      return [];
+    };
+
+    const coerceJsonObject = (v: unknown): Record<string, any> | null => {
+      if (!v) return null;
+      if (typeof v === "object" && !Array.isArray(v)) return v as any;
+      if (typeof v === "string") {
+        try {
+          const parsed = JSON.parse(v);
+          return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as any) : null;
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    };
+
+    return reply.status(200).send({
+      overview: {
+        schema_version: latest.schema_version,
+        deal_id: latest.deal_id,
+        run_id: latest.run_id ?? undefined,
+        step_run_id: latest.step_run_id ?? undefined,
+        input_hash: latest.input_hash,
+        created_at: latest.created_at,
+        llm_phase_mode: latest.llm_phase_mode,
+        summary_text: latest.summary_text,
+        claims: coerceJsonArray(latest.claims),
+        disclosures: coerceJsonArray(latest.disclosures),
+        overview_json: coerceJsonObject((latest as any).overview_json),
+      },
+    });
+  });
+
+  // PR3: latest analysis diagnostics snapshot (read-only). No side effects.
+  app.get("/api/v1/deals/:deal_id/analysis-diagnostics", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    if (!isUuid(dealId)) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+
+    const tableOk = await hasTable(pool as any, "deal_analysis_diagnostics");
+    if (!tableOk) {
+      return reply.status(200).send({ diagnostics: null });
+    }
+
+    const { rows: dealRows } = await pool.query<{ id: string }>(
+      `SELECT id FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+      [dealId]
+    );
+    if (dealRows.length === 0) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    // PR3.1: error counters are optional in older DBs; select NULLs when columns absent.
+    const hasProviderError = await hasColumn(pool as any, "deal_analysis_diagnostics", "provider_error_count");
+    const hasTruncated = await hasColumn(pool as any, "deal_analysis_diagnostics", "model_output_truncated_count");
+    const hasNotJson = await hasColumn(pool as any, "deal_analysis_diagnostics", "model_output_not_json_count");
+    const hasGuardDegraded = await hasColumn(pool as any, "deal_analysis_diagnostics", "guard_degraded_count");
+
+    const { rows } = await pool.query<{
+      deal_id: string;
+      report_id: string;
+      llm_phase_mode: string;
+      citation_integrity_percent: string | number | null;
+      numeric_claims_without_evidence: number | null;
+      semantic_drift_score: string | number | null;
+      hallucination_count: number | null;
+      deterministic_coverage_ratio: string | number | null;
+      provider_error_count?: number | null;
+      model_output_truncated_count?: number | null;
+      model_output_not_json_count?: number | null;
+      guard_degraded_count?: number | null;
+      created_at: string;
+    }>(
+      `SELECT deal_id::text as deal_id,
+              report_id,
+              llm_phase_mode,
+              citation_integrity_percent,
+              numeric_claims_without_evidence,
+              semantic_drift_score,
+              hallucination_count,
+              deterministic_coverage_ratio,
+              ${hasProviderError ? "provider_error_count" : "NULL::int as provider_error_count"},
+              ${hasTruncated ? "model_output_truncated_count" : "NULL::int as model_output_truncated_count"},
+              ${hasNotJson ? "model_output_not_json_count" : "NULL::int as model_output_not_json_count"},
+              ${hasGuardDegraded ? "guard_degraded_count" : "NULL::int as guard_degraded_count"},
+              created_at
+         FROM deal_analysis_diagnostics
+        WHERE deal_id = $1
+        ORDER BY created_at DESC, id DESC
+        LIMIT 1`,
+      [dealId]
+    );
+
+    const latest = rows?.[0] ?? null;
+    if (!latest) {
+      return reply.status(200).send({ diagnostics: null });
+    }
+
+    const toNum = (v: any): number | null => {
+      if (v == null) return null;
+      if (typeof v === "number" && Number.isFinite(v)) return v;
+      if (typeof v === "string") {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : null;
+      }
+      return null;
+    };
+
+    return reply.status(200).send({
+      diagnostics: {
+        deal_id: latest.deal_id,
+        report_id: latest.report_id,
+        llm_phase_mode: latest.llm_phase_mode,
+        citation_integrity_percent: toNum(latest.citation_integrity_percent),
+        numeric_claims_without_evidence: latest.numeric_claims_without_evidence,
+        semantic_drift_score: toNum(latest.semantic_drift_score),
+        hallucination_count: latest.hallucination_count,
+        deterministic_coverage_ratio: toNum(latest.deterministic_coverage_ratio),
+        provider_error_count: typeof (latest as any).provider_error_count === "number" ? (latest as any).provider_error_count : null,
+        model_output_truncated_count: typeof (latest as any).model_output_truncated_count === "number" ? (latest as any).model_output_truncated_count : null,
+        model_output_not_json_count: typeof (latest as any).model_output_not_json_count === "number" ? (latest as any).model_output_not_json_count : null,
+        guard_degraded_count: typeof (latest as any).guard_degraded_count === "number" ? (latest as any).guard_degraded_count : null,
+        created_at: latest.created_at,
+      },
+    });
   });
 
   app.delete("/api/v1/deals/:deal_id", async (request, reply) => {
@@ -9018,10 +9253,20 @@ export async function registerDealRoutes(
 
     const pad4 = (n: number) => String(Math.max(0, Math.trunc(n))).padStart(4, "0");
 
+    const isProd = process.env.NODE_ENV === "production";
+    const envFlag = (key: string): boolean => {
+      const raw = process.env[key];
+      if (typeof raw !== "string") return false;
+      const v = raw.trim().toLowerCase();
+      return v === "1" || v === "true" || v === "yes";
+    };
+
     // Local-dev fallback: when storage driver is local, treat locally-rendered pages under UPLOAD_DIR as ready.
     // Worker writes page images to `${UPLOAD_DIR}/rendered_pages/<safeDocumentId>/page_%04d.png`.
     const uploadsRootDir = getUploadsRootDir();
     const r2Enabled = getStorageDriver(process.env) === "r2";
+    const devLocalFallbackEnabled = !isProd && !r2Enabled && envFlag("DDAI_DEV_LOCAL_FALLBACK");
+    const localFallbackUsedDocIds: string[] = [];
     const safeDocIdForPath = (documentId: string) => String(documentId || "").replace(/[^a-zA-Z0-9_\-]/g, "_");
     const localRenderedPagesDirForDoc = (documentId: string) =>
       path.resolve(uploadsRootDir, "rendered_pages", safeDocIdForPath(documentId));
@@ -9073,11 +9318,13 @@ export async function registerDealRoutes(
       const rendered = typeof metaObj?.rendered_pages_rendered === "number" && Number.isFinite(metaObj.rendered_pages_rendered) ? metaObj.rendered_pages_rendered : null;
 
       if (!renderedR2) {
-        // If storage driver is local (typical local dev), allow local rendered pages to satisfy readiness.
-        if (!r2Enabled) {
+        // If storage driver is local (typical local dev), allow local rendered pages to satisfy readiness
+        // only when explicitly enabled.
+        if (devLocalFallbackEnabled) {
           const local = hasLocalRenderedPages(d.id);
           if (local.ok) {
             readyDocIds.push(d.id);
+            localFallbackUsedDocIds.push(d.id);
             continue;
           }
         }
@@ -9155,6 +9402,36 @@ export async function registerDealRoutes(
         continue;
       }
       readyDocIds.push(d.id);
+    }
+
+    // Governance disclosure: surface any metadata override used to mark a document ready.
+    if (r2ProbeOverrides.length > 0) {
+      request.log.info(
+        {
+          event: "GOVERNANCE_DISCLOSURE",
+          code: "r2_probe_overrode_render_metadata",
+          deal_id: dealId,
+          overrides: r2ProbeOverrides,
+          attempted: r2ProbesUsed,
+          max_attempted: maxR2Probes,
+          node_env: process.env.NODE_ENV,
+        },
+        "deal.extract_visuals.governance_disclosure"
+      );
+    }
+
+    if (localFallbackUsedDocIds.length > 0) {
+      request.log.info(
+        {
+          event: "GOVERNANCE_DISCLOSURE",
+          code: "dev_local_rendered_pages_fallback",
+          deal_id: dealId,
+          document_ids: localFallbackUsedDocIds,
+          uploads_root_dir: uploadsRootDir,
+          node_env: process.env.NODE_ENV,
+        },
+        "deal.extract_visuals.governance_disclosure"
+      );
     }
 
     // Best-effort: if render isn't ready, kick render jobs now (idempotent via per-document dedupe).
@@ -9332,7 +9609,7 @@ export async function registerDealRoutes(
       readiness_reason:
         r2ProbeOverrides.length > 0
           ? "r2_probe_overrode_metadata"
-          : !r2Enabled
+          : localFallbackUsedDocIds.length > 0
             ? "local_rendered_pages_present"
             : "metadata_ready",
       ready_documents: readyDocIds,

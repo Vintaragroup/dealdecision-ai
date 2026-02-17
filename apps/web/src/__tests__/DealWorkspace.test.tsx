@@ -782,7 +782,42 @@ describe('DealWorkspace Job Center (live mode)', () => {
     const top = await screen.findByLabelText('Deal top summary');
     expect(top.textContent || '').not.toContain('\\n\\n');
     expect(within(top).getByText(/Overall Score: 50\/100/i)).toBeInTheDocument();
-    expect(within(top).getByText(/Recommendation: PASS/i)).toBeInTheDocument();
+    expect(within(top).queryByText(/Recommendation: PASS/i)).toBeNull();
+  });
+
+  test('When decision_v1 exists, top summary never shows legacy section recommendation', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v1.0.0',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-01-02T00:00:00.000Z',
+    } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    const exec = 'Overall Score: 50/100\\n\\nRecommendation: PASS';
+
+    vi.mocked(apiGetDealReport).mockResolvedValueOnce({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-rpt-dec-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 50,
+        recommendation: 'no',
+        sections: [{ id: 'executive-summary', title: 'Executive Summary', content: exec, evidence_ids: [] }],
+        metadata: {
+          cycle_number: 1,
+          decision_v1: { recommendation_key: 'consider', label: 'Consider (Caution)', severity: 'warn', reasons: ['band:consider_caution'] },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-rpt-dec-1' });
+
+    const top = await screen.findByLabelText('Deal top summary');
+    expect(within(top).queryByText(/Recommendation: PASS/i)).toBeNull();
+    expect(within(top).getByText(/Consider \(Caution\)/i)).toBeInTheDocument();
   });
 
   test('AI Assistant button is gated without DIO in live mode', async () => {

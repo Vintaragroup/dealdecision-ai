@@ -148,6 +148,7 @@ export * from "./services/purge-deal-cascade";
 
 // Reports
 export { compileDIOToReport, compileDIOToReportWithPromotedFacts } from "./reports/compiler-simple";
+export { buildInvestmentAnalysisOverviewV2 } from "./reports/investment-analysis-overview-v2";
 export { buildScoreExplanationFromDIO, buildScoringDiagnosticsFromDIO } from "./reports/score-explanation";
 export type { ScoreExplanation } from "./reports/score-explanation";
 export type { ScoringDiagnosticsV1 } from "./types/dio";

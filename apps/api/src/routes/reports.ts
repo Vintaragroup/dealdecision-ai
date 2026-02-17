@@ -27,12 +27,21 @@ import { getSegmentedNodesForDeal } from '../lib/segmented-nodes-for-deal';
 import { inferDeckArchetypeV1 } from '../lib/deck-archetypes';
 import { compileStructuredSummaryExtras } from '../lib/structured-summary-extras';
 import { buildBusinessModelSummaryV1 } from '../lib/reports/business-model-summary';
+import { buildInvestmentAnalysisOverviewV2 } from '@dealdecision/core';
 import { computeArchetypeSegmentDriftV1 } from '../lib/archetype-segment-drift-v1';
 import { computeOverrideQualityV1 } from '../lib/override-quality-v1';
 import { computeDeterministicModifierV1, computeDeterministicScorePreviewV1Diagnostics, shouldPinUnadjusted } from '../lib/deterministic-score-preview-v1';
 import { StageTimer, nowMs } from '../lib/telemetry/stage-timer';
 
 const isUuid = (value: unknown): value is string => z.string().uuid().safeParse(value).success;
+
+const isMissingRelation = (err: unknown, relationName: string): boolean => {
+  const e = err as any;
+  const code = typeof e?.code === 'string' ? e.code : null;
+  if (code !== '42P01') return false;
+  void relationName; // intentionally ignored; catch blocks are relation-specific
+  return true;
+};
 
 const envFlagEnabled = (v: unknown): boolean => {
   const s = String(v ?? '').trim().toLowerCase();
@@ -1720,6 +1729,70 @@ function alignReportFieldsToDecisionV1(args: {
   }
 }
 
+function titleCaseFromKey(key: string): string {
+  return key
+    .split('_')
+    .filter(Boolean)
+    .map((w) => w.slice(0, 1).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+function decisionV1DisplayLabel(meta: any): string | null {
+  const decision = meta?.decision_v1 && typeof meta.decision_v1 === 'object' ? meta.decision_v1 : null;
+  const label = typeof decision?.label === 'string' && decision.label.trim() ? decision.label.trim() : null;
+  if (label) return label;
+  const key = typeof decision?.recommendation_key === 'string' && decision.recommendation_key.trim()
+    ? decision.recommendation_key.trim()
+    : null;
+  return key ? titleCaseFromKey(key) : null;
+}
+
+function alignReportSectionsToDecisionV1(args: {
+  nextMetadata: any;
+  report: any;
+}): void {
+  try {
+    const meta = args.nextMetadata && typeof args.nextMetadata === 'object' ? args.nextMetadata : null;
+    const report = args.report && typeof args.report === 'object' ? args.report : null;
+    if (!meta || !report) return;
+
+    if (meta.decision_v1_sections_alignment_v1 === true) return;
+
+    const label = decisionV1DisplayLabel(meta);
+    if (!label) return;
+
+    const sectionsRaw: any[] = Array.isArray((report as any).sections) ? (report as any).sections : [];
+    if (!sectionsRaw.length) return;
+
+    const shouldRewrite = (title: unknown): boolean => {
+      const t = typeof title === 'string' ? title.trim() : '';
+      return t === 'Executive Summary' || t === 'Investment Recommendation';
+    };
+
+    const nextSections = sectionsRaw.map((section) => {
+      if (!section || typeof section !== 'object') return section;
+      if (!shouldRewrite((section as any).title)) return section;
+      const content = typeof (section as any).content === 'string' ? String((section as any).content) : '';
+      if (!content) return section;
+
+      // Sections from the core compiler currently encode newlines as literal "\\n" sequences.
+      // Rewrite the "Recommendation:" line regardless of whether content uses real newlines or literal "\\n".
+      const nextContent = content.replace(
+        /Recommendation:\s*.*?(?=(\n|\\n|$))/g,
+        `Recommendation: ${label}`
+      );
+      if (nextContent === content) return section;
+      return { ...(section as any), content: nextContent };
+    });
+
+    (report as any).sections = nextSections;
+
+    meta.decision_v1_sections_alignment_v1 = true;
+  } catch {
+    // ignore
+  }
+}
+
 function attachScoreBandAndGuardrailV2(args: {
   nextMetadata: any;
   report: any;
@@ -1814,6 +1887,9 @@ function attachScoreBandAndGuardrailV2(args: {
     // Preserve legacy values in metadata and ensure idempotency.
     alignReportFieldsToDecisionV1({ nextMetadata: meta, report: args.report });
 
+    // Ensure any pre-rendered section text uses canonical decision_v1 too.
+    alignReportSectionsToDecisionV1({ nextMetadata: meta, report: args.report });
+
     args.nextMetadata = meta;
   } catch {
     // Best-effort: never fail /report for metadata enrichment.
@@ -1880,27 +1956,47 @@ export async function registerReportRoutes(
 
         // Canonical persisted analysis artifact: the latest Deal Intelligence Object (DIO).
         // Do NOT infer readiness from job messages.
-        const dioLookup = await timer.stage('db.dio_latest', async () => {
-          return pool.query<{
-            dio_id: string;
-            analysis_version: number | null;
-            recommendation: string | null;
-            overall_score: number | null;
-            dio_data: any;
-            updated_at: string | null;
-          }>(
-            `SELECT dio_id, analysis_version, recommendation, overall_score, dio_data, updated_at
-               FROM deal_intelligence_objects
-              WHERE deal_id = $1
-              ORDER BY analysis_version DESC,
-                       updated_at DESC NULLS LAST,
-                       dio_id DESC
-              LIMIT 1`,
-            [deal_id]
-          );
-        });
-        logStage('db.dio_latest', dioLookup.ms, true);
-        const dioRows = dioLookup.value.rows;
+        let dioRows: Array<{
+          dio_id: string;
+          analysis_version: number | null;
+          recommendation: string | null;
+          overall_score: number | null;
+          dio_data: any;
+          updated_at: string | null;
+        }> = [];
+        try {
+          const dioLookup = await timer.stage('db.dio_latest', async () => {
+            return pool.query<{
+              dio_id: string;
+              analysis_version: number | null;
+              recommendation: string | null;
+              overall_score: number | null;
+              dio_data: any;
+              updated_at: string | null;
+            }>(
+              `SELECT dio_id, analysis_version, recommendation, overall_score, dio_data, updated_at
+                 FROM deal_intelligence_objects
+                WHERE deal_id = $1
+                ORDER BY analysis_version DESC,
+                         updated_at DESC NULLS LAST,
+                         dio_id DESC
+                LIMIT 1`,
+              [deal_id]
+            );
+          });
+          logStage('db.dio_latest', dioLookup.ms, true);
+          dioRows = dioLookup.value.rows ?? [];
+        } catch (err) {
+          if (isMissingRelation(err, 'deal_intelligence_objects')) {
+            logStage('db.dio_latest', 0, false, { missing_table: 'deal_intelligence_objects' });
+            return reply.status(200).send({
+              ready: false,
+              reason: 'db_missing_table',
+              missing_table: 'deal_intelligence_objects',
+            });
+          }
+          throw err;
+        }
 
         if (dioRows.length === 0) {
           return reply.status(200).send({ ready: false, reason: 'not_generated_yet' });
@@ -2267,6 +2363,19 @@ export async function registerReportRoutes(
           // Keep deal_summary nested under the compiled report as well.
           (report as any).deal_summary = dealSummaryV1;
 
+          // Deterministic Investment Analysis Overview v2 (no LLM): derived from persisted DIO + deterministic report metadata.
+          try {
+            const nextMetadata = { ...((report as any)?.metadata ?? (payload as any)?.metadata ?? {}) };
+            (nextMetadata as any).investment_analysis_overview_v2 = buildInvestmentAnalysisOverviewV2({
+              dio: row.dio_data as any,
+              report,
+            });
+            (payload as any).metadata = nextMetadata;
+            (report as any).metadata = nextMetadata;
+          } catch {
+            // ignore
+          }
+
           // Optional LLM narration: additive only; never alters deterministic fields.
           try {
             const nextMetadata = { ...((report as any)?.metadata ?? (payload as any)?.metadata ?? {}) };
@@ -2404,15 +2513,28 @@ export async function registerReportRoutes(
         }
         
         // Get specific DIO version (persisted canonical artifact).
-        const { rows: dioRows } = await pool.query<{ dio_data: any }>(
-          `SELECT dio_data
-             FROM deal_intelligence_objects
-            WHERE deal_id = $1 AND analysis_version = $2
-            ORDER BY updated_at DESC NULLS LAST,
-                     dio_id DESC
-            LIMIT 1`,
-          [deal_id, versionNum]
-        );
+        let dioRows: Array<{ dio_data: any }> = [];
+        try {
+          const r = await pool.query<{ dio_data: any }>(
+            `SELECT dio_data
+               FROM deal_intelligence_objects
+              WHERE deal_id = $1 AND analysis_version = $2
+              ORDER BY updated_at DESC NULLS LAST,
+                       dio_id DESC
+              LIMIT 1`,
+            [deal_id, versionNum]
+          );
+          dioRows = r.rows ?? [];
+        } catch (err) {
+          if (isMissingRelation(err, 'deal_intelligence_objects')) {
+            return reply.status(200).send({
+              ready: false,
+              reason: 'db_missing_table',
+              missing_table: 'deal_intelligence_objects',
+            });
+          }
+          throw err;
+        }
 
         if (dioRows.length === 0) {
           return reply.status(404).send({
@@ -2483,6 +2605,18 @@ export async function registerReportRoutes(
             attachScoreBandAndGuardrailV2({ nextMetadata, report });
             (report as any).metadata = nextMetadata;
           }
+        } catch {
+          // ignore
+        }
+
+        // Deterministic Investment Analysis Overview v2 (no LLM): derived from persisted DIO + deterministic report metadata.
+        try {
+          const nextMetadata = { ...((report as any)?.metadata ?? {}) };
+          (nextMetadata as any).investment_analysis_overview_v2 = buildInvestmentAnalysisOverviewV2({
+            dio: dioRows[0].dio_data as any,
+            report,
+          });
+          (report as any).metadata = nextMetadata;
         } catch {
           // ignore
         }

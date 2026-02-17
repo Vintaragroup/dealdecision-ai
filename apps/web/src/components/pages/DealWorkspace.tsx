@@ -2507,6 +2507,24 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return out.filter(Boolean).join('\n');
   };
 
+  const stripRecommendationLines = (raw: string): string => {
+    const source = typeof raw === 'string' ? raw : '';
+    if (!source) return '';
+
+    const stripByDelimiter = (value: string, delimiter: '\n' | '\\n'): string => {
+      if (!value.includes(delimiter)) return value;
+      const parts = value
+        .split(delimiter)
+        .filter((line) => !/^\s*Recommendation\s*:/i.test(line));
+      return parts.join(delimiter);
+    };
+
+    // Handle both real newlines and literal "\\n" sequences.
+    const normalized = source.replace(/\r\n/g, '\n');
+    const stripped = stripByDelimiter(stripByDelimiter(normalized, '\n'), '\\n');
+    return stripped.trim();
+  };
+
   const metricText = collectMetricText();
   const archetypeValue = typeof businessArchetypeV1?.value === 'string' ? businessArchetypeV1.value.toLowerCase() : '';
   const looksRealEstate =
@@ -2705,11 +2723,19 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     const sections = Array.isArray((reportFromApi as any)?.sections) ? (reportFromApi as any).sections : [];
     const structuredSummary = (reportFromApi as any)?.structured_summary;
+
+    const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
+      ? (reportFromApi as any).metadata
+      : null;
+    const decisionLabel = safeText((reportMeta as any)?.decision_v1?.label);
+
     const executiveSummaryFromReport = (() => {
       const byId = sections.find((s: any) => typeof s?.id === 'string' && ['executive-summary', 'executive_summary', 'executiveSummary'].includes(s.id));
       const byTitle = sections.find((s: any) => typeof s?.title === 'string' && /executive\s+summary/i.test(s.title));
       const content = safeText((byId ?? byTitle)?.content);
-      return content || null;
+      if (!content) return null;
+      // Executive summary is narrative; never let it drive canonical recommendation.
+      return stripRecommendationLines(content) || null;
     })();
 
     const legacySummary = executiveSummaryFromReport ?? topSectionDealSummary;
@@ -2751,6 +2777,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     })();
 
     const recommendation =
+      decisionLabel ||
       safeText((reportFromApi as any)?.recommendation) ||
       safeText(reportArtifact?.recommendation) ||
       null;
@@ -2768,7 +2795,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       businessModelLabel: businessModelLabelFromReport,
       dealType: dealTypeFromReport || topSectionDealType,
       raise: raiseFromReport || topSectionRaise,
-      revenue: revenueFromReport || topSectionRevenue,
+      revenue: reportReady ? (revenueFromReport || null) : (revenueFromReport || topSectionRevenue),
       customers: customersFromReport || topSectionCustomers,
       source: reportReady ? 'report' : 'fallback',
     } as const;
@@ -6270,7 +6297,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                     const decisionLabel = safeText((reportMeta as any)?.decision_v1?.label);
                                     const legacyRecommendation = safeText((reportMeta as any)?.legacy_recommendation_v0);
                                     const legacyGrade = safeText((reportMeta as any)?.legacy_grade_v0);
-                                    const showLegacy = Boolean(legacyRecommendation || legacyGrade);
+                                    const showLegacy = Boolean(!decisionLabel && (legacyRecommendation || legacyGrade));
 
                                     return (
                                       <>
@@ -6284,7 +6311,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                           </span>
                                         ) : null}
 
-                                        {typeof (reportFromApi as any)?.recommendation === 'string' ? (
+                                        {!decisionLabel && typeof (reportFromApi as any)?.recommendation === 'string' ? (
                                           <span
                                             className={`px-2 py-1 rounded-full text-xs border ${
                                               darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
@@ -6386,7 +6413,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                     {(reportFromApi as any).sections.slice(0, 8).map((s: any) => {
                                       const sectionTitle =
                                         typeof s?.title === 'string' && s.title.trim().length > 0 ? s.title.trim() : 'Section';
-                                      const content = typeof s?.content === 'string' ? s.content : '';
+                                      const decisionLabel = safeText((reportFromApi as any)?.metadata?.decision_v1?.label);
+                                      const rawContent = typeof s?.content === 'string' ? s.content : '';
+                                      const content = decisionLabel ? stripRecommendationLines(rawContent) : rawContent;
                                       const evidenceIds = Array.isArray(s?.evidence_ids) ? s.evidence_ids : [];
                                       return (
                                         <div
@@ -6466,7 +6495,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                 </div>
                                 <div>
                                   <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Recommendation</div>
-                                  <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportView.recommendation || '—'}</div>
+                                  {(() => {
+                                    const decisionLabel = safeText((reportFromApi as any)?.metadata?.decision_v1?.label);
+                                    const recommendation = decisionLabel || reportView.recommendation || null;
+                                    return <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{recommendation || '—'}</div>;
+                                  })()}
                                 </div>
                               </div>
                               <div className={`mt-3 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>

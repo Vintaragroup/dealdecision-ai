@@ -6,6 +6,7 @@
 import type { DealIntelligenceObject } from '../types/dio.js';
 import { buildScoreExplanationFromDIO } from './score-explanation.js';
 import { inferFundingStageModelV1, type FundingStageModelV1 } from '../models/funding-stage-model.js';
+import { inferFinancialCoverageProfileV1, type FinancialCoverageProfileV1 } from '../models/financial-coverage-profile.js';
 
 // Import ReportDTO types directly from contracts
 type ReportDTO = {
@@ -16,6 +17,7 @@ type ReportDTO = {
 
   // Additive deterministic artifact (v1)
   funding_stage_v1?: FundingStageModelV1;
+  financial_coverage_v1?: FinancialCoverageProfileV1;
   structured_summary?: {
     raise: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
     business_model: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
@@ -1521,6 +1523,19 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     evidence_ids: []
   });
   
+  const financialCoverage = inferFinancialCoverageProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: null,
+    documents: Array.isArray((dio as any)?.inputs?.documents)
+      ? (dio as any).inputs.documents.map((d: any) => ({
+          document_id: d?.document_id,
+          kind: d?.kind,
+          mime_type: d?.mime_type,
+          filename: d?.filename,
+        }))
+      : null,
+  });
+
   return {
     dealId: dio.deal_id,
     generatedAt: new Date().toISOString(),
@@ -1528,6 +1543,7 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
 
     overallScore: overallScoreFinal,
     funding_stage_v1: fundingStage,
+    financial_coverage_v1: financialCoverage,
     structured_summary: structuredSummary,
     grade,
     recommendation,
@@ -1572,9 +1588,23 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
         }))
       : null,
   });
+
+  const financialCoverage = inferFinancialCoverageProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
+    documents: Array.isArray((dio as any)?.inputs?.documents)
+      ? (dio as any).inputs.documents.map((d: any) => ({
+          document_id: d?.document_id,
+          kind: d?.kind,
+          mime_type: d?.mime_type,
+          filename: d?.filename,
+        }))
+      : null,
+  });
 	return {
 		...base,
     funding_stage_v1: fundingStage,
+    financial_coverage_v1: financialCoverage,
     structured_summary: structuredSummary,
     sections,
 	};

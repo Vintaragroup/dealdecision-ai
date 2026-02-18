@@ -61,8 +61,8 @@ describe("compileDIOToReportWithPromotedFacts raise regression (valuation must n
 		];
 
 		const report = compileDIOToReportWithPromotedFacts(dio, { promotedFacts });
-
-		const raise = report.structured_summary.raise;
+		expect(report.structured_summary).toBeTruthy();
+		const raise = report.structured_summary!.raise;
 		expect(raise.value).toBeTruthy();
 		expect(String(raise.value)).toContain("$2");
 

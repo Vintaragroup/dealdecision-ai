@@ -61,8 +61,8 @@ describe("compileDIOToReportWithPromotedFacts raise regression (TAM must not be 
 		];
 
 		const report = compileDIOToReportWithPromotedFacts(dio, { promotedFacts });
-
-		const raise = report.structured_summary.raise;
+		expect(report.structured_summary).toBeTruthy();
+		const raise = report.structured_summary!.raise;
 		expect(raise.value).toBeTruthy();
 		expect(String(raise.value)).toContain("$2");
 		expect(String(raise.value)).not.toContain("$8");

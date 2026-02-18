@@ -61,7 +61,7 @@ export function inferFundingStageModelV1(input: {
   // B) Raise band signal (weight 0.4)
   const raiseAmount = typeof input.raise_amount === "number" && Number.isFinite(input.raise_amount) ? input.raise_amount : null;
   const raiseStage = raiseAmount != null ? inferStageFromRaiseAmountBand(raiseAmount) : null;
-  if (raiseStage) {
+  if (raiseStage && raiseAmount != null) {
     const src0 = Array.isArray(input.raise_sources) ? input.raise_sources[0] : null;
     stageScores[raiseStage] += 0.4;
     signals.push({

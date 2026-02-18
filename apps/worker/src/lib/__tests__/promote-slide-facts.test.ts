@@ -379,4 +379,99 @@ describe("promote slide facts", () => {
 		expect((bmFact as any).meta?.page_index).toBe(15);
 		expect((bmFact as any).meta?.segment_key).toBe("business_model");
 	});
+
+	it("raise_terms_v1 guard: '$8B TAM' must not emit raise_terms_v1", async () => {
+		const { promoteSlideFactsFromDocumentPageUnderstanding } = await import("../promote-slide-facts.js");
+
+		const pool: any = {
+			query: async (sql: string) => {
+				const q = String(sql);
+				if (q.includes("SELECT 1 FROM evidence_items")) {
+					return { rows: [{ ok: 1 }], rowCount: 1 };
+				}
+				if (q.includes("FROM public.document_page_understanding")) {
+					return {
+						rows: [
+							{
+								page_index: 0,
+								payload: {
+									source: { extracted_at: "2026-02-01T00:00:00.000Z" },
+									structured: {
+										kind: "powerpoint_slide",
+										title: "Market Size",
+										bullets: ["$8B TAM"],
+									},
+									page_text: "$8B TAM",
+								},
+							},
+						],
+					};
+				}
+				if (q.includes("INSERT INTO evidence_items")) {
+					return { rows: [{ inserted: true }], rowCount: 1 };
+				}
+				return { rows: [], rowCount: 0 };
+			},
+		};
+
+		const res = await promoteSlideFactsFromDocumentPageUnderstanding(pool, {
+			dealId: "11111111-1111-1111-1111-111111111111",
+			documentId: "22222222-2222-2222-2222-222222222222",
+			pageStart: 0,
+			pageEnd: 1,
+			version: "page_understanding_v1",
+		});
+
+		expect(res.ok).toBe(true);
+		expect(res.facts.some((f: any) => f?.fact_type === "raise_terms_v1")).toBe(false);
+	});
+
+	it("raise_terms_v1 guard: explicit ask must emit raise_terms_v1 with $2M", async () => {
+		const { promoteSlideFactsFromDocumentPageUnderstanding } = await import("../promote-slide-facts.js");
+
+		const pool: any = {
+			query: async (sql: string) => {
+				const q = String(sql);
+				if (q.includes("SELECT 1 FROM evidence_items")) {
+					return { rows: [{ ok: 1 }], rowCount: 1 };
+				}
+				if (q.includes("FROM public.document_page_understanding")) {
+					return {
+						rows: [
+							{
+								page_index: 0,
+								payload: {
+									source: { extracted_at: "2026-02-01T00:00:00.000Z" },
+									structured: {
+										kind: "powerpoint_slide",
+										title: "The Ask",
+										bullets: ["Raising $2M via SAFE"],
+									},
+									page_text: "The Ask: Raising $2M via SAFE",
+								},
+							},
+						],
+					};
+				}
+				if (q.includes("INSERT INTO evidence_items")) {
+					return { rows: [{ inserted: true }], rowCount: 1 };
+				}
+				return { rows: [], rowCount: 0 };
+			},
+		};
+
+		const res = await promoteSlideFactsFromDocumentPageUnderstanding(pool, {
+			dealId: "11111111-1111-1111-1111-111111111111",
+			documentId: "22222222-2222-2222-2222-222222222222",
+			pageStart: 0,
+			pageEnd: 1,
+			version: "page_understanding_v1",
+		});
+
+		expect(res.ok).toBe(true);
+		const raiseFact = res.facts.find((f: any) => f?.fact_type === "raise_terms_v1");
+		expect(raiseFact).toBeTruthy();
+		expect(String((raiseFact as any)?.value_json?.display ?? "")).toContain("$2M");
+		expect((raiseFact as any)?.value_json?.amount?.amount).toBe(2_000_000);
+	});
 });

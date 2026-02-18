@@ -5,6 +5,7 @@
 
 import type { DealIntelligenceObject } from '../types/dio.js';
 import { buildScoreExplanationFromDIO } from './score-explanation.js';
+import { inferFundingStageModelV1, type FundingStageModelV1 } from '../models/funding-stage-model.js';
 
 // Import ReportDTO types directly from contracts
 type ReportDTO = {
@@ -12,6 +13,9 @@ type ReportDTO = {
   generatedAt: string;
   version: number;
   overallScore: number;
+
+  // Additive deterministic artifact (v1)
+  funding_stage_v1?: FundingStageModelV1;
   structured_summary?: {
     raise: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
     business_model: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
@@ -1354,6 +1358,20 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
 
   const structuredSummary = buildStructuredSummary(dio, scoreExplanation, undefined);
   const canonicalRevenueDisplay = revenueDisplayFromStructuredSummary(structuredSummary);
+
+  const fundingStage = inferFundingStageModelV1({
+    funding_round_label: null,
+    company_phase_label: (dio as any)?.dio?.phase_inference_v1?.company_phase ?? null,
+    raise_amount: parseMoneyLike(structuredSummary?.raise?.value ?? null).amount ?? null,
+    raise_sources: Array.isArray(structuredSummary?.raise?.sources)
+      ? structuredSummary.raise.sources.map((s: any) => ({
+          document_id: s?.source_document_id ?? s?.document_id ?? undefined,
+          page_index: typeof s?.page_index === 'number' ? s.page_index : undefined,
+          page: typeof s?.page === 'number' ? s.page : undefined,
+          source_path: s?.source_path ?? undefined,
+        }))
+      : null,
+  });
   
   // Executive Summary
   const overallScoreText = scoreAvailable ? `${overallScoreFinal}/100 (${grade})` : 'N/A (insufficient data)';
@@ -1509,6 +1527,7 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     version: dio.analysis_version,
 
     overallScore: overallScoreFinal,
+    funding_stage_v1: fundingStage,
     structured_summary: structuredSummary,
     grade,
     recommendation,
@@ -1539,8 +1558,23 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
   const sections = revenueDisplay
     ? base.sections.map((s) => (s.id === 'metric-benchmark' ? { ...s, content: applyRevenueOverrideToMetricBenchmarkContent(s.content, revenueDisplay) } : s))
     : base.sections;
+
+  const fundingStage = inferFundingStageModelV1({
+    funding_round_label: null,
+    company_phase_label: (dio as any)?.dio?.phase_inference_v1?.company_phase ?? null,
+    raise_amount: parseMoneyLike(structuredSummary?.raise?.value ?? null).amount ?? null,
+    raise_sources: Array.isArray(structuredSummary?.raise?.sources)
+      ? structuredSummary.raise.sources.map((s: any) => ({
+          document_id: s?.source_document_id ?? s?.document_id ?? undefined,
+          page_index: typeof s?.page_index === 'number' ? s.page_index : undefined,
+          page: typeof s?.page === 'number' ? s.page : undefined,
+          source_path: s?.source_path ?? undefined,
+        }))
+      : null,
+  });
 	return {
 		...base,
+    funding_stage_v1: fundingStage,
     structured_summary: structuredSummary,
     sections,
 	};

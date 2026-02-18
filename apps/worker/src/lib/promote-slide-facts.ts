@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { containsMarketSizingLanguage, inferIsRaiseAskSlide } from "@dealdecision/core";
 
 export type PromoteSlideFactsParams = {
 	dealId: string;
@@ -912,7 +913,13 @@ export async function promoteSlideFactsFromDocumentPageUnderstanding(pool: Pool,
 			slide_title: slide.slide_title,
 		};
 
-		const raise = parseRaiseTermsFromText(slideText);
+		const raise = (() => {
+			// Guardrail: only promote raise_terms_v1 when the slide is truly an explicit "ask"
+			// and never when the slide looks like market sizing (TAM/SAM/SOM / market is $X).
+			if (containsMarketSizingLanguage(slideText)) return null;
+			if (!inferIsRaiseAskSlide(slideText)) return null;
+			return parseRaiseTermsFromText(slideText);
+		})();
 		if (raise) {
 			const fact: PromotedFact = {
 				fact_type: "raise_terms_v1",

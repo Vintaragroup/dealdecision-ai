@@ -10,6 +10,8 @@ import {
   type TextQuality,
 } from "../text-quality";
 
+import { containsMarketSizingLanguage, inferIsRaiseAskSlide } from "@dealdecision/core";
+
 const normalizeWhitespace = (s: string): string => String(s).replace(/\s+/g, " ").trim();
 
 export type DisplayFactSourceV1 = {
@@ -171,6 +173,24 @@ function factFromPlainText(field: string, rawText: unknown, sources: unknown): D
   };
 }
 
+function pickSnippetText(rawText: unknown, sources: unknown): string {
+  const direct = asNonEmptyString(rawText);
+  if (direct) return direct;
+
+  if (Array.isArray(sources)) {
+    for (const s of sources) {
+      if (!s || typeof s !== "object") continue;
+      const anyS: any = s;
+      const note = asNonEmptyString(anyS.note) ?? asNonEmptyString(anyS.snippet) ?? null;
+      if (note) return note;
+      const title = asNonEmptyString(anyS.slide_title) ?? asNonEmptyString(anyS.title) ?? null;
+      if (title) return title;
+    }
+  }
+
+  return "";
+}
+
 /**
  * Deterministic packet for governed UI synthesis.
  * Strict contract: derived only from the deterministic report payload.
@@ -193,7 +213,24 @@ export function buildDisplayFactsV1(report: any): DisplayFactsV1 {
 
   const raiseRaw = structured?.raise?.value_raw ?? structured?.raise?.value ?? structured?.raise;
   const raiseSources = structured?.raise?.sources ?? null;
-  const raise_terms = factFromCanonicalText("raise_terms", "raise", raiseRaw, raiseSources);
+
+  // Governed overlay hardening: only emit raise_terms when it's grounded in either
+  // (a) deterministic structured_summary.raise, or (b) a hardened ask detector on snippet text.
+  // Additionally, market-sizing language must NEVER emit raise_terms.
+  const raiseSnippetText = pickSnippetText(raiseRaw, raiseSources);
+  const hasDeterministicStructuredRaise = !!asNonEmptyString(raiseRaw);
+  const blockedByMarketSizing = raiseSnippetText ? containsMarketSizingLanguage(raiseSnippetText) : false;
+  const allowedByAskDetector = raiseSnippetText ? inferIsRaiseAskSlide(raiseSnippetText) : false;
+  const allowRaiseTerms = !blockedByMarketSizing && (hasDeterministicStructuredRaise || allowedByAskDetector);
+
+  const raise_terms = allowRaiseTerms
+    ? factFromCanonicalText("raise_terms", "raise", asNonEmptyString(raiseRaw) ?? raiseSnippetText, raiseSources)
+    : emptyFact(
+        "raise_terms",
+        blockedByMarketSizing
+          ? "guard_blocked_market_sizing_language"
+          : "guard_blocked_not_deterministic_or_ask"
+      );
 
   const tractionRaw = structured?.traction_signals ?? structured?.traction?.signals ?? report?.deal_overview_v2?.traction_signals ?? [];
   const traction_signals = asStringArray(tractionRaw).slice(0, 8).map((t, idx) => {

@@ -603,6 +603,174 @@ test("GET /api/v1/deals/:deal_id/report adds deterministic market/product/gtm/de
   }
 });
 
+test('GET /api/v1/deals/:deal_id/report debug_deal_summary=1 logs selection path and excludes team/raise as primary evidence', async () => {
+  const dealId = '00000000-0000-0000-0000-0000000000e2';
+  const dioId = '00000000-0000-4000-8000-00000000c002';
+  const docId = '00000000-0000-4000-8000-00000000f002';
+
+  const dio = baseDio(dealId, 1);
+  dio.dio_id = dioId;
+
+  const dpuRows = [
+    // Good overview/product/market candidates
+    {
+      document_id: docId,
+      page_index: 0,
+      payload: {
+        source: { extracted_at: now },
+        structured: {
+          title: 'Overview',
+          bullets: ['A workflow automation platform for SMB finance teams; reduces close time and improves accuracy.'],
+        },
+      },
+    },
+    {
+      document_id: docId,
+      page_index: 2,
+      payload: {
+        source: { extracted_at: now },
+        structured: {
+          title: 'Product',
+          bullets: ['Automates AP/AR workflows with integrations and approvals; includes reporting and audit trails.'],
+        },
+      },
+    },
+    {
+      document_id: docId,
+      page_index: 4,
+      payload: {
+        source: { extracted_at: now },
+        structured: {
+          title: 'Market',
+          bullets: ['ICP: SMB finance leaders; target segments include multi-location operators and services firms.'],
+        },
+      },
+    },
+    // Disallowed primary pages (should not become identity evidence)
+    {
+      document_id: docId,
+      page_index: 19,
+      payload: {
+        source: { extracted_at: now },
+        structured: {
+          title: 'Team',
+          bullets: ['Hiring plan: expand sales headcount and recruit engineering leadership.'],
+        },
+      },
+    },
+    {
+      document_id: docId,
+      page_index: 20,
+      payload: {
+        source: { extracted_at: now },
+        structured: {
+          title: 'Capital Raise',
+          bullets: ['Raising $5M Seed SAFE with $20M cap. Use of funds: hiring and product.'],
+        },
+      },
+    },
+  ];
+
+  const logs: any[] = [];
+
+  const mockPool = {
+    query: async (sql: string, params?: unknown[]) => {
+      const q = String(sql);
+      if (q.includes('FROM deals') && q.includes('WHERE id = $1') && q.includes('deleted_at IS NULL')) {
+        assert.deepEqual(params, [dealId]);
+        return { rows: [{ id: dealId, llm_phase_mode: null }] };
+      }
+      if (q.includes('FROM deal_intelligence_objects') && q.includes('WHERE deal_id = $1')) {
+        assert.deepEqual(params, [dealId]);
+        return {
+          rows: [
+            {
+              dio_id: dioId,
+              analysis_version: 1,
+              recommendation: null,
+              overall_score: null,
+              dio_data: dio,
+              updated_at: now,
+            },
+          ],
+        };
+      }
+      if (q.includes('MAX(dpu.created_at)')) {
+        return { rows: [{ latest_dpu_created_at: now }] };
+      }
+      if (q.includes('SELECT 1 FROM evidence_items')) {
+        return { rows: [{ ok: 1 }], rowCount: 1 };
+      }
+      if (q.includes("FROM evidence_items") && q.includes("source_type IN ('promoted_slide_fact','business_model_fact')")) {
+        assert.deepEqual(params, [dealId]);
+        return { rows: [] };
+      }
+      if (q.includes('SELECT 1 FROM document_page_understanding')) {
+        return { rows: [{ ok: 1 }], rowCount: 1 };
+      }
+      if (q.includes('FROM public.document_page_understanding') && q.includes("version = 'page_understanding_v1'")) {
+        assert.deepEqual(params, [dealId]);
+        return { rows: dpuRows };
+      }
+      if (q.includes('FROM visual_assets') && q.includes('quality_flags')) {
+        return { rows: [] };
+      }
+      throw new Error(`Unexpected SQL in test: ${q}`);
+    },
+  } as any;
+
+  const app = Fastify({
+    logger: {
+      level: 'info',
+      stream: {
+        write: (msg: string) => {
+          try {
+            logs.push(JSON.parse(msg));
+          } catch {
+            // ignore
+          }
+        },
+      },
+    },
+  });
+
+  try {
+    await registerReportRoutes(app, mockPool);
+    const res = await app.inject({ method: 'GET', url: `/api/v1/deals/${dealId}/report?debug_deal_summary=1` });
+    assert.equal(res.statusCode, 200);
+
+    const evt = logs.find((l) => l && l.event === 'deal.report.deal_summary_debug');
+    assert.ok(evt, 'Expected deal.report.deal_summary_debug log event');
+
+    assert.equal(evt.deal_id, dealId);
+    assert.equal(evt.dio_id, dioId);
+
+    // Selection path should be overview-first for identity/one-liner.
+    assert.equal(evt.selection_path?.identity_pick, 'overview_first');
+
+    const oneLinerSources = Array.isArray(evt.selected?.sources?.one_liner) ? evt.selected.sources.one_liner : [];
+    assert.ok(oneLinerSources.length > 0, 'Expected one_liner sources in debug event');
+    const s0 = oneLinerSources[0];
+    assert.ok(typeof s0.page_index === 'number');
+    assert.notEqual(s0.page_index, 19);
+    assert.notEqual(s0.page_index, 20);
+    assert.notEqual(s0.segment_key, 'team');
+    assert.notEqual(s0.segment_key, 'raise_terms');
+    assert.notEqual(s0.segment_key, 'financials');
+
+    // Candidates should include disallowed pages as ineligible primary.
+    const overviewCands = Array.isArray(evt.candidates?.overview) ? evt.candidates.overview : [];
+    const teamCand = overviewCands.find((c: any) => c && c.page_index === 19);
+    if (teamCand) {
+      assert.equal(teamCand.eligible_primary, false);
+      assert.ok(Array.isArray(teamCand.primary_exclude_reasons));
+      assert.ok(teamCand.primary_exclude_reasons.some((r: string) => r.includes('team') || r.includes('hiring')));
+    }
+  } finally {
+    await app.close();
+  }
+});
+
 test("GET /api/v1/deals/:deal_id/report prefers promoted facts for raise and business_model", async () => {
   const dealId = "00000000-0000-0000-0000-0000000000c4";
   const dioId = "00000000-0000-4000-8000-00000000a004";
@@ -764,6 +932,81 @@ test("GET /api/v1/deals/:deal_id/report prefers promoted facts for raise and bus
 
     assert.ok(Array.isArray(body.promoted_facts));
     assert.equal(body.promoted_facts.length, 2);
+  } finally {
+    await app.close();
+  }
+});
+
+test("GET /api/v1/deals/:deal_id/report_diagnostics computes staleness from dio.meta.min_dpu_created_at", async () => {
+  const dealId = "00000000-0000-0000-0000-0000000000d1";
+  const dioId = "00000000-0000-4000-8000-00000000a111";
+  const docId = "00000000-0000-4000-8000-00000000d222";
+
+  const dio = baseDio(dealId, 1);
+  dio.dio_id = dioId;
+  dio.meta = {
+    min_dpu_created_at: "2026-02-18T00:18:00.000Z",
+  };
+
+  const promotedRows = [
+    {
+      evidence_id: `deal:${dealId}:fact:business_model_v1`,
+      deal_id: dealId,
+      source_type: "promoted_slide_fact",
+      source_path: `doc:${docId}:page:5`,
+      source_document_id: docId,
+      confidence: 0.85,
+      extracted_at: now,
+      content_json: {
+        fact_type: "business_model_v1",
+        value_json: { display: "Licensing", model: "licensing" },
+      },
+      meta: { document_id: docId, page_index: 4 },
+    },
+  ];
+
+  const mockPool = {
+    query: async (sql: string, params?: unknown[]) => {
+      const q = String(sql);
+      if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {
+        return {
+          rows: [
+            {
+              dio_id: dioId,
+              analysis_version: 1,
+              input_hash: null,
+              updated_at: "2026-02-18T00:18:25.717Z",
+              recommendation: null,
+              overall_score: null,
+              dio_data: dio,
+            },
+          ],
+        };
+      }
+      if (q.includes("FROM document_page_understanding") && q.includes("MAX(dpu.created_at")) {
+        // Latest DPU is newer than the DIO's min_dpu_created_at token => not stale
+        return { rows: [{ latest_dpu_created_at: "2026-02-18T00:18:16.566Z" }] };
+      }
+      if (q.includes("SELECT 1 FROM evidence_items")) {
+        return { rows: [{ ok: 1 }], rowCount: 1 };
+      }
+      if (q.includes("FROM evidence_items") && q.includes("source_type IN ('promoted_slide_fact','business_model_fact')")) {
+        return { rows: promotedRows };
+      }
+      throw new Error(`Unexpected SQL in test: ${q}`);
+    },
+  } as any;
+
+  const app = Fastify();
+  try {
+    await registerReportRoutes(app, mockPool);
+    const res = await app.inject({ method: "GET", url: `/api/v1/deals/${dealId}/report_diagnostics` });
+    assert.equal(res.statusCode, 200);
+    const body = res.json() as any;
+
+    assert.equal(body.ok, true);
+    assert.equal(body.deal_id, dealId);
+    assert.equal(body.dpu?.stale_vs_dio_updated_at, false);
   } finally {
     await app.close();
   }

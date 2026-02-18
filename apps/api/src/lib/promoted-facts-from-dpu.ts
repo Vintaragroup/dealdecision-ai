@@ -126,6 +126,12 @@ function classifyBusinessModelEvidence(input: {
 	const bulletsJoined = bullets.join("\n");
 	const bulletsLower = bulletsJoined.toLowerCase();
 
+	// Some decks express their business model primarily through revenue line items (e.g. media rights, sponsorships).
+	// Those often appear on slides that otherwise look like "financials". We allow those through.
+	const allowsFinancialBusinessModel =
+		/\b(media\s+rights?|sponsorships?|title\s+sponsorship|licens(?:e|ing|ed))\b/i.test(textLower) &&
+		/\brevenues?\b/i.test(textLower);
+
 	const exclusionRules: Array<{ reason: string; hit: boolean }> = [
 		{
 			reason: "team_advisors_hiring",
@@ -186,7 +192,12 @@ function classifyBusinessModelEvidence(input: {
 
 	const exclusion = exclusionRules.find((r) => r.hit);
 	if (exclusion) {
+		// Override: allow financial slides through if they contain explicit business-model revenue lines.
+		if (exclusion.reason === 'financial_only' && allowsFinancialBusinessModel) {
+			// continue
+		} else {
 		return { role: "excluded", exclusion_reason: exclusion.reason, primary_signals: [], supporting_signals: [] };
+		}
 	}
 
 	const channelTokens = [
@@ -249,6 +260,11 @@ function classifyBusinessModelEvidence(input: {
 	if (hasPrimaryTitleKeyword) primary_signals.push("title_keyword");
 	if (hasPrimarySegmentKey) primary_signals.push("segment_key");
 	if (hasChannelBulletStructure) primary_signals.push("channel_bullet_structure");
+
+	// Revenue line-item business model (common in media/sports decks).
+	// Treat as primary evidence even when the slide is otherwise "financial".
+	if (allowsFinancialBusinessModel) primary_signals.push('revenue_line_items');
+
 	if (isChannelReferential) supporting_signals.push("channel_referential");
 
 	const role: BusinessModelEvidenceRole =
@@ -904,18 +920,79 @@ function inferBusinessModelLabel(rows: Array<{ row: DpuRow; slideText: string; s
 	primary_sources: BusinessModelEvidenceRef[];
 	supporting_sources: BusinessModelEvidenceRef[];
 	secondary_tags: string[];
+	diagnostics: {
+		has_media_signals: boolean;
+		has_ecom_mechanics: boolean;
+		ecom_mechanics_hits?: string[];
+		dtc_hits: string[];
+		media_hits: string[];
+		applied_guards: string[];
+		decision_reason: string;
+	};
 } | null {
-	const dtcRe = /\b(direct\s*to\s*consumer|\bdtc\b|e-?commerce|shopify|online\s*sales|direct\s+via\s+website|website\s+sales|email\b|sms\b)\b/i;
+	// DTC detection: allow broad channel language, but do NOT treat generic "ecommerce" as mechanics.
+	const dtcRe = /\b(direct\s*to\s*consumer|\bdtc\b|d2c|e-?commerce|shopify|online\s+store|direct\s+via\s+website|website\s+sales)\b/i;
+	const ecomMechanicsSignals: Array<{ rx: RegExp; neg: RegExp; kind: string }> = [
+		{ rx: /\bcheckout\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?checkout\b/i, kind: 'checkout' },
+		{ rx: /\bcart\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?cart\b/i, kind: 'cart' },
+		{ rx: /\borders?\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?orders?\b/i, kind: 'orders' },
+		{ rx: /\bskus?\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?skus?\b/i, kind: 'skus' },
+		{ rx: /\bstorefront\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?storefront\b/i, kind: 'storefront' },
+		{ rx: /\badd\s+to\s+cart\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?add\s+to\s+cart\b/i, kind: 'add_to_cart' },
+		{ rx: /\bfulfillment\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?fulfillment\b/i, kind: 'fulfillment' },
+		{ rx: /\binventory\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?inventory\b/i, kind: 'inventory' },
+	];
 	const wholesaleRe = /\b(wholesale|retail|brick\s*(?:&|and)\s*mortar|retailer|retailers|golf\s*courses|pro\s*shops|stores?)\b/i;
-	const licensingRe = /\blicens\w*\b/i;
+	// Treat media rights explicitly as licensing-like.
+	const licensingRe = /\b(licens\w*|media\s+rights?)\b/i;
+	const mediaSignals: Array<{ rx: RegExp; kind: string }> = [
+		{ rx: /\btitle\s+sponsorship\b/i, kind: 'title_sponsorship' },
+		{ rx: /\bsponsorship\b/i, kind: 'sponsorship' },
+		{ rx: /\bsponsor\b/i, kind: 'sponsor' },
+		{ rx: /\bmedia\s+partner\b/i, kind: 'media_partner' },
+		{ rx: /\bmedia\s+rights?\b/i, kind: 'media_rights' },
+		{ rx: /\bbroadcast\b/i, kind: 'broadcast' },
+		{ rx: /\bstreaming\b/i, kind: 'streaming' },
+		{ rx: /\bweb\s*series\b/i, kind: 'webseries' },
+		{ rx: /\bwebseries\b/i, kind: 'webseries' },
+		{ rx: /\bcontent\s+distribution\b/i, kind: 'content_distribution' },
+		{ rx: /\bdistribution\b/i, kind: 'distribution' },
+		{ rx: /\bcontent\s+production\b/i, kind: 'content_production' },
+		{ rx: /\bviewership\b/i, kind: 'viewership' },
+		{ rx: /\beyeballs\b/i, kind: 'eyeballs' },
+	];
+	const mediaLikeRe = new RegExp(mediaSignals.map((s) => `(?:${s.rx.source})`).join('|'), 'i');
+
+	const collectMediaHits = (text: string): string[] => {
+		const out: string[] = [];
+		for (const s of mediaSignals) {
+			if (s.rx.test(text)) out.push(s.kind);
+		}
+		out.sort();
+		return Array.from(new Set(out));
+	};
+
+	const collectEcomMechanicsHits = (text: string): string[] => {
+		const out: string[] = [];
+		for (const s of ecomMechanicsSignals) {
+			if (s.rx.test(text) && !s.neg.test(text)) out.push(s.kind);
+		}
+		out.sort();
+		return Array.from(new Set(out));
+	};
 
 	const assessed = rows.map((r) => {
 		const assessment = classifyBusinessModelEvidenceFromDpuSlide(r);
 		const t = r.slideText;
+		const mechanics_hits = collectEcomMechanicsHits(t);
 		return {
 			dtc: dtcRe.test(t),
+			ecom_mechanics: mechanics_hits.length > 0,
+			mechanics_hits,
 			wholesale: wholesaleRe.test(t),
 			licensing: licensingRe.test(t),
+			media_like: mediaLikeRe.test(t) || mediaLikeRe.test(String(r.slideTitle ?? '')),
+			media_hits: Array.from(new Set([...collectMediaHits(t), ...collectMediaHits(String(r.slideTitle ?? ''))])),
 			row: r,
 			assessment,
 		};
@@ -927,14 +1004,27 @@ function inferBusinessModelLabel(rows: Array<{ row: DpuRow; slideText: string; s
 	const hasDtc = hits.some((h) => h.dtc);
 	const hasWholesale = hits.some((h) => h.wholesale);
 	const hasLicensing = hits.some((h) => h.licensing);
+	const hasMediaLike = hits.some((h) => h.media_like) || assessed.some((h) => h.media_like);
+	const hasEcomMechanics = hits.some((h) => h.ecom_mechanics) || assessed.some((h) => h.ecom_mechanics);
+	const ecom_mechanics_hits = Array.from(new Set(assessed.flatMap((h) => h.mechanics_hits ?? []))).slice().sort().slice(0, 24);
+	const media_hits = Array.from(new Set(assessed.flatMap((h) => h.media_hits ?? []))).slice().sort().slice(0, 24);
+	const dtc_hits = Array.from(new Set(assessed.flatMap((h) => (h.dtc ? ['dtc_channel_language'] : [])))).slice().sort();
+	const applied_guards: string[] = [];
 
 	if (!hasDtc && !hasWholesale && !hasLicensing) return null;
 
-	const label = hasDtc && hasWholesale
+	// Hard exclusion: media/sponsorship + no ecommerce mechanics => never infer DTC.
+	const dtcAllowed = !(hasMediaLike && !hasEcomMechanics);
+	if (!dtcAllowed) applied_guards.push('media_blocks_dtc_without_ecom_mechanics');
+
+	// If the only signal was DTC channel language and it's blocked by the media guard, return null.
+	if (!dtcAllowed && hasDtc && !hasWholesale && !hasLicensing) return null;
+
+	const label = (dtcAllowed && hasDtc) && hasWholesale
 		? "Omnichannel (DTC + Wholesale/Retail)"
 		: hasWholesale
 			? "Wholesale/Retail"
-			: hasDtc
+			: (dtcAllowed && hasDtc)
 				? "DTC Ecommerce"
 				: "Licensing";
 
@@ -1015,6 +1105,15 @@ function inferBusinessModelLabel(rows: Array<{ row: DpuRow; slideText: string; s
 		],
 		supporting_sources: dedupSupporting,
 		secondary_tags,
+		diagnostics: {
+			has_media_signals: hasMediaLike,
+			has_ecom_mechanics: hasEcomMechanics,
+			ecom_mechanics_hits: ecom_mechanics_hits.length ? ecom_mechanics_hits : undefined,
+			dtc_hits,
+			media_hits,
+			applied_guards,
+			decision_reason: `media=${hasMediaLike ? 1 : 0} mechanics=${hasEcomMechanics ? 1 : 0} dtcAllowed=${dtcAllowed ? 1 : 0} label=${label}`,
+		},
 	};
 }
 
@@ -1232,6 +1331,7 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 				value_json: {
 					display: model.label,
 					secondary_tags: model.secondary_tags,
+					diagnostics: model.diagnostics,
 				},
 				provenance: {
 					source_document_id: primary.document_id,

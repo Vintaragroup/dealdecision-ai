@@ -15,6 +15,21 @@ function makePoolMock(row: any): Pool {
 test("/api/dashboard/reports returns latest DIO per deal (analysis_version, updated_at tie-break) and includes dealName + dioId", async () => {
   const app = Fastify();
 
+  // Dashboard route consumes canonical report payload via internal inject.
+  // Stub the canonical /report endpoint so this test doesn't need the full reports router.
+  app.get("/api/v1/deals/:deal_id/report", async (request, reply) => {
+    const deal_id = (request.params as any)?.deal_id;
+    return reply.send({
+      ready: true,
+      dealId: deal_id,
+      version: 2,
+      overallScore: 65,
+      recommendation: "no",
+      metadata: { score_explanation: { context: { primary_doc_type: "business_plan_im" } } },
+      categories: [],
+    });
+  });
+
   const dealId = "deal_latest_1";
 
   const makeDioData = (primaryDocType: string, analysisVersion: number) => ({
@@ -125,6 +140,32 @@ test("/api/dashboard/reports returns latest DIO per deal (analysis_version, upda
 
 test("/api/dashboard/reports includes score_explanation.debug scoring trace", async () => {
   const app = Fastify();
+
+  // Dashboard route consumes canonical report payload via internal inject.
+  // Stub the canonical /report endpoint so this test doesn't need the full reports router.
+  app.get("/api/v1/deals/:deal_id/report", async (request, reply) => {
+    const deal_id = (request.params as any)?.deal_id;
+    return reply.send({
+      ready: true,
+      dealId: deal_id,
+      version: 3,
+      overallScore: 55,
+      recommendation: "no",
+      metadata: {
+        documentCount: 1,
+        score_explanation: {
+          context: { primary_doc_type: "pitch_deck" },
+          debug: {
+            doc_inventory: [{ document_id: "doc_1" }],
+            analyzer_inputs_used: { slide_sequence: { source_docs: ["doc_1"] } },
+            context_used: dioData.dio_context,
+            inclusion_decisions: {},
+          },
+        },
+      },
+      categories: [],
+    });
+  });
 
   const dioData = {
     deal_id: "deal_1",

@@ -677,15 +677,17 @@ export type PageUnderstandingReadiness = {
   action?: { type: string; deal_id?: string; document_id?: string; version?: string } | null;
 };
 
-export function apiGetDealReadiness(dealId: string, version: string) {
+export function apiGetDealReadiness(dealId: string, version: string, opts?: { min_dpu_created_at?: string | null }) {
   const qs = new URLSearchParams();
   if (version) qs.set('page_understanding_version', version);
+  const min = typeof opts?.min_dpu_created_at === 'string' && opts.min_dpu_created_at.trim().length > 0 ? opts.min_dpu_created_at.trim() : null;
+  if (min) qs.set('min_dpu_created_at', min);
   return request<PageUnderstandingReadiness>(`/api/v1/deals/${dealId}/readiness?${qs.toString()}`);
 }
 
 export function apiPostAnalyzeWithStatus(
   dealId: string,
-  input?: { require_page_understanding?: boolean; page_understanding_version?: string }
+  input?: { require_page_understanding?: boolean; page_understanding_version?: string; force_refresh?: boolean }
 ) {
   return requestWithStatus<{ job_id?: string; status?: string; error?: string; message?: string; readiness?: any }>(
     `/api/v1/deals/${dealId}/analyze`,

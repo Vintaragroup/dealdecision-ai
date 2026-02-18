@@ -8806,12 +8806,26 @@ export async function registerDealRoutes(
 		if (!isUuid(dealId)) {
 			return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
 		}
-    const requirePageUnderstanding = Boolean((request.body as any)?.require_page_understanding);
+    const forceRefresh = Boolean((request.body as any)?.force_refresh);
+    const requirePageUnderstanding = Boolean((request.body as any)?.require_page_understanding) || forceRefresh;
     const pageUnderstandingVersionRaw = (request.body as any)?.page_understanding_version;
     const pageUnderstandingVersion =
       typeof pageUnderstandingVersionRaw === "string" && pageUnderstandingVersionRaw.trim().length > 0
         ? pageUnderstandingVersionRaw.trim()
         : "page_understanding_v1";
+    const minDpuCreatedAtRaw = (request.body as any)?.min_dpu_created_at;
+    const minDpuCreatedAtFromClient =
+      typeof minDpuCreatedAtRaw === "string" && minDpuCreatedAtRaw.trim().length > 0
+        ? minDpuCreatedAtRaw.trim()
+        : null;
+
+    // For reruns/force-refresh flows, callers should treat min_dpu_created_at as a stable
+    // token across retries so readiness + subsequent analysis are anchored to the same
+    // DPU freshness floor.
+    const minDpuCreatedAt =
+      (forceRefresh || minDpuCreatedAtFromClient)
+        ? (minDpuCreatedAtFromClient ?? new Date().toISOString())
+        : null;
 
     const { rows } = await pool.query<DealRow>(
       `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
@@ -8829,6 +8843,8 @@ export async function registerDealRoutes(
           dealId,
           requirePageUnderstanding: true,
           pageUnderstandingVersion,
+          forceRefresh,
+          minDpuCreatedAt,
           logger: request.log,
           enqueue,
         });
@@ -8857,6 +8873,7 @@ export async function registerDealRoutes(
             blocked_reason: prep.blocked_reason,
             poll_after_ms: prep.poll_after_ms,
             enqueued: prep.enqueued,
+            ...(minDpuCreatedAt ? { min_dpu_created_at: minDpuCreatedAt } : {}),
             readiness: prep.readiness,
           });
         }
@@ -8883,6 +8900,8 @@ export async function registerDealRoutes(
           payload: {
             require_page_understanding: requirePageUnderstanding,
             page_understanding_version: pageUnderstandingVersion,
+            ...(minDpuCreatedAt ? { min_dpu_created_at: minDpuCreatedAt } : {}),
+            ...(forceRefresh ? { force_refresh: true } : {}),
           },
         },
         { dedupe: { by: "deal" } }
@@ -9017,6 +9036,26 @@ export async function registerDealRoutes(
     }
 
     const readiness = await fetchPageUnderstandingReadinessForDeal(pool as any, dealId, version);
+
+    // Optional freshness gate: callers (UI) may pass min_dpu_created_at to ensure readiness
+    // reflects a forced refresh completion, not just missing pages.
+    try {
+      const minRaw = (request.query as any)?.min_dpu_created_at;
+      const min = typeof minRaw === "string" && minRaw.trim().length > 0 ? minRaw.trim() : null;
+      const latest = typeof (readiness as any)?.latest_dpu_created_at === "string" ? String((readiness as any).latest_dpu_created_at) : null;
+      if (min && latest) {
+        const a = Date.parse(latest);
+        const b = Date.parse(min);
+        if (Number.isFinite(a) && Number.isFinite(b) && a < b) {
+          (readiness as any).ready = false;
+          (readiness as any).blocked_reason = (readiness as any).blocked_reason ?? "DPU_STALE";
+          (readiness as any).poll_after_ms = (readiness as any).poll_after_ms ?? 2000;
+          (readiness as any).action = (readiness as any).action ?? { type: "rebuild_page_understanding", deal_id: dealId, version };
+        }
+      }
+    } catch {
+      // best-effort
+    }
 
     // If any visual document still has unknown page_count (0), treat readiness as not ready.
     // This prevents analysis from proceeding (or the UI from flipping to ready) before

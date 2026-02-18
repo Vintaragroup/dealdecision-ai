@@ -2567,7 +2567,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const pickMoney = (): string => {
     if (reportReady) {
-      const fromReport = safeText((reportFromApi as any)?.structured_summary?.raise?.value);
+      // KPI normalization must occur server-side only to prevent drift.
+      const fromReport = safeText((reportFromApi as any)?.structured_summary?.kpis?.raise?.value);
       if (fromReport) return fromReport;
     }
     const direct = safeText(overviewV2?.raise);
@@ -2741,6 +2742,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     const sections = Array.isArray((reportFromApi as any)?.sections) ? (reportFromApi as any).sections : [];
     const structuredSummary = (reportFromApi as any)?.structured_summary;
+    // KPI normalization must occur server-side only to prevent drift.
+    const kpis = structuredSummary && typeof structuredSummary === 'object' ? (structuredSummary as any).kpis : null;
 
     const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
       ? (reportFromApi as any).metadata
@@ -2763,10 +2766,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const businessModelFromReport = authoritativeBusinessModel.value || safeText(ctx?.business_model);
     const businessModelLabelFromReport = authoritativeBusinessModel.label;
     const dealTypeFromReport = safeText(ctx?.deal_type);
-    const raiseFromReport = safeText(structuredSummary?.raise?.value) || safeText(ctx?.raise);
+    const raiseFromReport = safeText(kpis?.raise?.value) || safeText(ctx?.raise);
 
     const revenueFromReport = (() => {
-      const v = structuredSummary?.revenue?.value;
+      const v = kpis?.revenue?.value;
       if (!v || typeof v !== 'object') return null;
       const raw = safeText((v as any).raw);
       if (raw) return raw;
@@ -2782,7 +2785,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     })();
 
     const customersFromReport = (() => {
-      const v = structuredSummary?.customers?.value;
+      const v = kpis?.customers?.value;
       if (!v || typeof v !== 'object') return null;
       const raw = safeText((v as any).raw);
       if (raw) return raw;
@@ -2848,7 +2851,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     console.log('[DDAI][report_bindings]', reportView);
   }, [dealId, reportVersion, reportView]);
 
-  const reportStructuredRaise = safeText((reportFromApi as any)?.structured_summary?.raise?.value);
+  const reportStructuredKpis = useMemo(() => {
+    // KPI normalization must occur server-side only to prevent drift.
+    return (reportFromApi as any)?.structured_summary?.kpis ?? null;
+  }, [reportFromApi]);
+
+  const reportStructuredRaise = safeText(reportStructuredKpis?.raise?.value);
   const reportStructuredBusinessModelLabel = authoritativeBusinessModel.label;
 
   const selectedHeader = useMemo(() => {
@@ -2868,12 +2876,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const reportStructuredCustomersLabel = selectedHeader.ready ? (selectedHeader.customers.label ?? null) : null;
   const reportStructuredGrowthLabel = selectedHeader.ready ? (selectedHeader.growth.label ?? null) : null;
 
-  const reportStructuredRevenueTooltip = safeText((reportFromApi as any)?.structured_summary?.revenue?.sources?.[0]?.note_snippet);
-  const reportStructuredCustomersTooltip = safeText((reportFromApi as any)?.structured_summary?.customers?.sources?.[0]?.note_snippet);
-  const reportStructuredGrowthTooltip = safeText((reportFromApi as any)?.structured_summary?.growth?.sources?.[0]?.note_snippet);
+  const reportStructuredRevenueTooltip = safeText(reportStructuredKpis?.revenue?.sources?.[0]?.note_snippet);
+  const reportStructuredCustomersTooltip = safeText(reportStructuredKpis?.customers?.sources?.[0]?.note_snippet);
+  const reportStructuredGrowthTooltip = safeText(reportStructuredKpis?.growth?.sources?.[0]?.note_snippet);
 
   const reportStructuredGrowthValue = (() => {
-    const growth = (reportFromApi as any)?.structured_summary?.growth;
+    const growth = reportStructuredKpis?.growth as any;
     const raw = safeText(growth?.value?.raw);
     const pct = growth?.value?.percent;
     const label = safeText(growth?.label);
@@ -2886,7 +2894,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   })();
 
   const reportStructuredGrowthNote = (() => {
-    const growth = (reportFromApi as any)?.structured_summary?.growth;
+    const growth = reportStructuredKpis?.growth as any;
     const year = growth?.value?.year;
     if (typeof year === 'number' && Number.isFinite(year)) return String(year);
     return null;
@@ -3037,17 +3045,30 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const kpiMissingTooltip = 'Not extracted from evidence';
   const overlayKpiTiles = useMemo(() => {
-    const raise = safeText(reportStructuredRaise) || safeText(overviewRaiseTermsCanonical) || (overlayVM.kpis.raise?.value ?? null);
-    const revenue = overlayVM.kpis.revenue?.value ?? null;
-    const growth = overlayVM.kpis.growth?.value ?? null;
-    const customers = overlayVM.kpis.customers?.value ?? null;
+    // When /report is ready, keep the governed overlay KPIs consistent with report.structured_summary
+    // (overlay KPI strings are treated as narrative-only, since they can drift).
+    const raise = selectedHeader.ready
+      ? (selectedHeader.raise.value ?? null)
+      : (safeText(reportStructuredRaise) || safeText(overviewRaiseTermsCanonical) || (overlayVM.kpis.raise?.value ?? null));
+
+    const revenue = selectedHeader.ready
+      ? (selectedHeader.revenue.value ?? null)
+      : (overlayVM.kpis.revenue?.value ?? null);
+
+    const growth = selectedHeader.ready
+      ? (selectedHeader.growth.value ?? null)
+      : (overlayVM.kpis.growth?.value ?? null);
+
+    const customers = selectedHeader.ready
+      ? (selectedHeader.customers.value ?? null)
+      : (overlayVM.kpis.customers?.value ?? null);
     return [
       { label: 'Raise', value: raise ?? '—', tooltipIfMissing: kpiMissingTooltip },
       { label: 'Revenue / ARR', value: revenue ?? '—', tooltipIfMissing: kpiMissingTooltip },
       { label: 'Growth', value: growth ?? '—', tooltipIfMissing: kpiMissingTooltip },
       { label: 'Customers', value: customers ?? '—', tooltipIfMissing: kpiMissingTooltip },
     ];
-  }, [overlayVM, reportStructuredRaise, overviewRaiseTermsCanonical]);
+  }, [overlayVM, reportStructuredRaise, overviewRaiseTermsCanonical, selectedHeader]);
 
   const deterministicKpiTiles = useMemo(() => {
     const raise = safeText(reportStructuredRaise) || safeText(overviewRaiseTermsCanonical) || null;
@@ -3140,16 +3161,22 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const chooseGovernedFirst = (opts: {
       deterministic: string;
       overlay?: { value: string | null; quality?: string; source?: 'governed' | 'deterministic' | 'missing' } | null;
+      preferDeterministic?: boolean;
     }): { value: string; provenance: { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean }; fromOverlay: boolean } => {
       const overlayVal = asClean(opts.overlay?.value);
       const overlaySource = opts.overlay?.source;
       const overlayQuality = opts.overlay?.quality;
 
+      const detVal = asClean(opts.deterministic);
+      if (opts.preferDeterministic) {
+        if (detVal) return { value: detVal, provenance: { source: 'deterministic' }, fromOverlay: false };
+        if (overlayVal) return { value: overlayVal, provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' }, fromOverlay: true };
+        return { value: keyFactMissingText, provenance: { source: 'missing' }, fromOverlay: false };
+      }
+
       if (overlayVal && overlaySource === 'governed') {
         return { value: overlayVal, provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' }, fromOverlay: true };
       }
-
-      const detVal = asClean(opts.deterministic);
       const detDisplayable = detVal ? deterministicIsDisplayable(detVal) : false;
 
       // Deterministic may override overlay only when it looks display-safe.
@@ -3181,14 +3208,40 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const businessModel = chooseGovernedFirst({
       deterministic: overviewBusinessModelCanonical,
       overlay: ovFacts ? { value: ovFacts.business_model?.value ?? null, quality: ovFacts.business_model?.quality, source: ovFacts.business_model?.source } : null,
+      // When report is ready, keep Business Model consistent with /report (overlay can still render narrative).
+      preferDeterministic: selectedHeader.ready,
     });
     const raise = chooseGovernedFirst({
       deterministic: overviewRaiseTermsCanonical,
       overlay: ovFacts ? { value: ovFacts.raise?.value ?? null, quality: ovFacts.raise?.quality, source: ovFacts.raise?.source } : null,
+      // When report is ready, keep Raise terms consistent with /report.
+      preferDeterministic: selectedHeader.ready,
     });
 
     return { product, market, businessModel, raise };
-  }, [workspaceMirrorVM, canonicalDealSummaryReady, canonicalProduct, canonicalMarket, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical]);
+  }, [workspaceMirrorVM, canonicalDealSummaryReady, canonicalProduct, canonicalMarket, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready]);
+
+  const lastWorkspaceSourcesLogRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    if (!workspaceDebugEnabled) return;
+    if (!dealId) return;
+
+    const overlaySig = `${governedOverview.created_at ?? 'na'}|${String(governedOverview.input_hash ?? '').slice(0, 12)}`;
+    const reportSig = `${reportReady ? 'ready' : 'not_ready'}|${typeof reportVersion === 'number' ? reportVersion : 'na'}`;
+    const key = `${dealId}|${reportSig}|${overlaySig}`;
+    if (lastWorkspaceSourcesLogRef.current === key) return;
+    lastWorkspaceSourcesLogRef.current = key;
+
+    console.info('[DDAI][dealworkspace_sources]', {
+      dealId,
+      report: { ready: reportReady, version: reportVersion ?? null },
+      overlay: { status: governedOverview.status, created_at: governedOverview.created_at ?? null },
+      selectedHeader,
+      overlayKpisRaw: overlayVM.kpis,
+      governedKeyFacts,
+    });
+  }, [workspaceDebugEnabled, dealId, reportReady, reportVersion, governedOverview.status, governedOverview.created_at, governedOverview.input_hash, selectedHeader, overlayVM, governedKeyFacts]);
 
   const overviewProvenanceDebugEnabled = useMemo(() => {
     try {
@@ -4266,7 +4319,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     startedAtMs: number | null;
     lastPolledAtMs: number | null;
     error: string | null;
-  }>({ status: 'idle', version: 'page_understanding_v1', readiness: null, startedAtMs: null, lastPolledAtMs: null, error: null });
+    minDpuCreatedAt: string | null;
+  }>({ status: 'idle', version: 'page_understanding_v1', readiness: null, startedAtMs: null, lastPolledAtMs: null, error: null, minDpuCreatedAt: null });
   const [showPageUnderstandingDetails, setShowPageUnderstandingDetails] = useState(false);
   const readinessPollRef = useRef<{ token: number; timerId: number | null }>({ token: 0, timerId: null });
 
@@ -4280,7 +4334,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     };
   }, []);
 
-  const runAnalysisWithReadinessGate = async (dealId: string, version = 'page_understanding_v1') => {
+  const runAnalysisWithReadinessGate = async (
+    dealId: string,
+    version = 'page_understanding_v1',
+    opts?: { forceRefresh?: boolean }
+  ) => {
     const dev = !!(import.meta as any)?.env?.DEV;
     const logDev = (msg: string, meta?: any) => {
       if (!dev) return;
@@ -4292,6 +4350,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     };
 
     let lastReady: boolean | null = null;
+    let minDpuCreatedAtToken: string | null = null;
 
     readinessPollRef.current.token += 1;
     const token = readinessPollRef.current.token;
@@ -4305,13 +4364,18 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     }
 
     const startedAtMs = Date.now();
-    setPageUnderstandingGate({ status: 'idle', version, readiness: null, startedAtMs, lastPolledAtMs: null, error: null });
+    setPageUnderstandingGate({ status: 'idle', version, readiness: null, startedAtMs, lastPolledAtMs: null, error: null, minDpuCreatedAt: null });
 
-    const tryAnalyze = async (): Promise<{ job_id: string; status: string } | null> => {
-      logDev('analyze_attempt', { version, require_page_understanding: true });
+    const requestedForceRefresh = opts?.forceRefresh === true;
+
+    const tryAnalyze = async (input?: { force_refresh?: boolean }): Promise<{ job_id: string; status: string } | null> => {
+      const force_refresh = input?.force_refresh === true;
+      logDev('analyze_attempt', { version, require_page_understanding: true, force_refresh });
       const res = await apiPostAnalyzeWithStatus(dealId, {
         require_page_understanding: true,
         page_understanding_version: version,
+        ...(minDpuCreatedAtToken ? { min_dpu_created_at: minDpuCreatedAtToken } : {}),
+        ...(force_refresh ? { force_refresh: true } : {}),
       });
 
       logDev('analyze_response', { ok: res.ok, status: res.status, json: res.json ?? null, text: res.text ?? null });
@@ -4324,6 +4388,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       const notReadyError = res.json && typeof (res.json as any).error === 'string' ? String((res.json as any).error) : null;
       if ((res.status === 202 || res.status === 409) && notReadyError === 'page_understanding_not_ready') {
         const readiness = (res.json as any).readiness as PageUnderstandingReadiness | undefined;
+        const minDpuCreatedAt = (res.json && typeof (res.json as any).min_dpu_created_at === 'string')
+          ? String((res.json as any).min_dpu_created_at)
+          : null;
+        minDpuCreatedAtToken = minDpuCreatedAt;
         const missingTotal = typeof readiness?.missing_pages_total === 'number' ? readiness.missing_pages_total : null;
         const blockedReason = res.json && typeof (res.json as any).blocked_reason === 'string' ? String((res.json as any).blocked_reason) : null;
         logDev('preflight_not_ready', { missing_pages_total: missingTotal, version, blocked_reason: blockedReason });
@@ -4339,6 +4407,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           startedAtMs,
           lastPolledAtMs: Date.now(),
           error: null,
+          minDpuCreatedAt,
         });
         lastReady = typeof readiness?.ready === 'boolean' ? readiness.ready : null;
         return null;
@@ -4395,7 +4464,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
       let readiness: PageUnderstandingReadiness | null = null;
       try {
-        readiness = await apiGetDealReadiness(dealId, version);
+        readiness = await apiGetDealReadiness(dealId, version, { min_dpu_created_at: minDpuCreatedAtToken });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logDev('poll_failed', { err: msg });
@@ -4429,9 +4498,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       if (ready) {
         logDev('ready_transition', { version });
         try {
-          const job = await tryAnalyze();
+          // Once readiness is truly ready (including freshness token, if any), enqueue analysis without force_refresh
+          // to avoid re-triggering refresh loops.
+          const job = await tryAnalyze({ force_refresh: false });
           if (job) {
-            setPageUnderstandingGate((prev) => ({ ...prev, status: 'idle', readiness: null, error: null }));
+            setPageUnderstandingGate((prev) => ({ ...prev, status: 'idle', readiness: null, error: null, minDpuCreatedAt: null }));
             setJobId(job.job_id);
             setJobStatus(job.status);
             addToast('info', 'Job queued', `Job ${job.job_id}`);
@@ -4451,7 +4522,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       }, pollMs);
     };
 
-    const job = await tryAnalyze();
+    const job = await tryAnalyze({ force_refresh: requestedForceRefresh });
     if (job) {
       setJobId(job.job_id);
       setJobStatus(job.status);
@@ -4479,7 +4550,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     addToast('info', 'Starting analysis…', 'Checking page understanding readiness');
     try {
-      await runAnalysisWithReadinessGate(dealId, 'page_understanding_v1');
+      await runAnalysisWithReadinessGate(dealId, 'page_understanding_v1', { forceRefresh: true });
     } catch (err) {
       addToast('error', 'Analysis failed to start', err instanceof Error ? err.message : 'Unknown error');
       setAnalyzing(false);
@@ -6837,6 +6908,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         <Button
                           variant={darkMode ? 'secondary' : 'outline'}
                           onClick={() => {
+                            // Keep overlay + cards in sync by refreshing both persisted overlay and /report.
+                            loadReport({ force: true }).catch(() => {
+                              // handled via state
+                            });
                             governedOverview.refresh({ force: true }).catch(() => {
                               // handled via hook state
                             });

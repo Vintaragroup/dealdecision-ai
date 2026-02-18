@@ -23,6 +23,8 @@ export type PageUnderstandingReadiness = {
   dpu_rows_meaningful_total?: number;
   non_meaningful_pages_total?: number;
   missing_pages_total: number;
+  /** Max(document_page_understanding.created_at) for the deal+version, when available. */
+  latest_dpu_created_at?: string | null;
   /**
    * When readiness indicates missing pages but the pipeline has no work enqueued,
    * this field explains why readiness may not be progressing.
@@ -265,5 +267,26 @@ export async function fetchPageUnderstandingReadinessForDeal(pool: Pool, dealId:
   }
 
   const readiness = computePageUnderstandingReadiness({ dealId, version, documents: rows });
+
+  // Best-effort: attach a freshness signal so callers can gate on "new enough" DPU.
+  if (dpuTableOk) {
+    try {
+      const res = await pool.query<{ latest_dpu_created_at: string | null }>(
+        `
+        SELECT MAX(dpu.created_at)::text AS latest_dpu_created_at
+          FROM document_page_understanding dpu
+          JOIN documents d ON d.id = dpu.document_id
+         WHERE d.deal_id = $1
+           AND d.deleted_at IS NULL
+           AND dpu.version = $2
+        `,
+        [dealId, version]
+      );
+      const v = res.rows?.[0]?.latest_dpu_created_at ?? null;
+      (readiness as any).latest_dpu_created_at = typeof v === 'string' ? v : null;
+    } catch {
+      // ignore
+    }
+  }
   return readiness;
 }

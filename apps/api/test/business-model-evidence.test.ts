@@ -161,3 +161,59 @@ test("business_model_v1 promotion: Palm deck primary must be page_index 15 or 23
   const primaryPi = prov?.primary_sources?.[0]?.page_index;
   assert.ok(primaryPi === 15 || primaryPi === 23, `Expected primary page_index 15 or 23, got ${String(primaryPi)}`);
 });
+
+test("business_model_v1 promotion: media/sponsorship phrasing must not infer DTC Ecommerce", async () => {
+  const dealId = "deal-media";
+  const docId = "doc-media";
+
+  // Regression: decks with media distribution / sponsorship language have repeatedly been misread
+  // as DTC Ecommerce. This test should fail if we ever infer DTC from these phrases.
+  const dpuRows = [
+    {
+      document_id: docId,
+      page_index: 0,
+      payload: makeDpuPayload({
+        title: "Go to Market Strategy",
+        segment_key: "go_to_market",
+        bullets: [
+          "title sponsorship",
+          "digital webseries",
+          "media partner",
+          "Distribution via streaming platforms and brand partners",
+          "consumer ecommerce awareness (not a storefront)",
+        ],
+      }),
+    },
+  ];
+
+  const mockPool = {
+    query: async (sql: string, params?: unknown[]) => {
+      const q = String(sql);
+      if (q.includes("SELECT 1 FROM document_page_understanding")) {
+        return { rows: [{ ok: 1 }], rowCount: 1 };
+      }
+      if (q.includes("FROM public.document_page_understanding") && q.includes("WHERE deal_id")) {
+        assert.deepEqual(params, [dealId]);
+        return { rows: dpuRows };
+      }
+      throw new Error(`Unexpected SQL in test: ${q}`);
+    },
+  } as any;
+
+  const rows = await derivePromotedFactsFromDpuForDeal(mockPool, dealId);
+  const bm = rows.find((r) => r.content_json?.fact_type === "business_model_v1");
+
+  // For media/sponsorship decks without ecommerce mechanics, we should not infer DTC Ecommerce.
+  // Preferably, we return null unless there is explicit wholesale/licensing/saas evidence.
+  if (bm) {
+    const v = bm.content_json?.value_json ?? {};
+    const label = String(v.display ?? "");
+    assert.notEqual(label, "DTC Ecommerce");
+    assert.equal(Boolean(v?.diagnostics?.has_media_signals), true);
+    assert.equal(Boolean(v?.diagnostics?.has_ecom_mechanics), false);
+    assert.ok(Array.isArray(v?.diagnostics?.applied_guards));
+    assert.ok(v?.diagnostics?.applied_guards.includes("media_blocks_dtc_without_ecom_mechanics"));
+  } else {
+    assert.equal(bm, undefined);
+  }
+});

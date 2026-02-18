@@ -6,7 +6,6 @@
 import type { FastifyInstance } from "fastify";
 import { getPool } from "../lib/db";
 import { resolveVisualAssetImageUriForApi } from "../lib/visual-asset-image-uri";
-import { compileDIOToReport, buildScoreExplanationFromDIO } from "@dealdecision/core";
 import { getSegmentedNodesForDeal } from "../lib/segmented-nodes-for-deal";
 import { classifyBusinessModelEvidenceFromDpuSlide } from "../lib/promoted-facts-from-dpu";
 import { inferSegmentFromTitleRuleId, segmentDpuPage } from "../lib/segment-dpu-page";
@@ -39,6 +38,15 @@ const asNonEmptyString = (v: unknown): string | null => {
   if (typeof v !== "string") return null;
   const s = v.trim();
   return s.length > 0 ? s : null;
+};
+
+const safeJsonParse = (payload: unknown): any | null => {
+  if (typeof payload !== "string") return null;
+  try {
+    return JSON.parse(payload);
+  } catch {
+    return null;
+  }
 };
 
 function isMissingTableError(err: any): boolean {
@@ -9397,30 +9405,8 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
     }
 
     const row = rows[0];
-    const dio_data = row.dio_data;
 
-    // Dashboard consistency:
-    // Recompute score_explanation for the RESPONSE when it's missing or stale.
-    // Stale = weights missing OR metric_benchmark effective weight is not zero.
-    // Do NOT write back to DB from this endpoint.
-    let responseDioData = dio_data;
-    if (dio_data) {
-      const expl = dio_data?.score_explanation;
-      const weights = expl?.aggregation?.weights;
-      const metricWeight = typeof weights?.metric_benchmark === "number" ? weights.metric_benchmark : null;
-      const isStale = !weights || metricWeight !== 0;
-
-      if (!expl || isStale) {
-        try {
-          const recomputed = buildScoreExplanationFromDIO(dio_data);
-          responseDioData = { ...dio_data, score_explanation: recomputed };
-        } catch {
-          // Best-effort: don't fail dashboard if explainability can't be computed
-        }
-      }
-    }
-
-    return { ...row, dio_data: responseDioData };
+    return { ...row, dio_data: row.dio_data };
   });
 
   /**
@@ -9493,94 +9479,58 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       return tb - ta;
     });
 
-    // Compile reports for each DIO
-    const reports = dedupedRows.map((row) => {
-      try {
-        // Reconstruct DIO object from database row
-        // Spread dio_data first, then override with current database values
-        const dio = {
-          ...row.dio_data, // Spread the JSONB data (contains analyzer_results, etc.)
-          dio_id: row.dio_id,
-          deal_id: row.deal_id, // Override with current deal_id from database
-          analysis_version: row.analysis_version,
-          overall_score: row.overall_score == null ? null : parseFloat(row.overall_score),
-          created_at: row.created_at,
-          updated_at: (row as any).updated_at,
-          score_explanation: row.dio_data?.score_explanation || buildScoreExplanationFromDIO(row.dio_data),
-        };
-        
-        const report = compileDIOToReport(dio as any);
+    // Dashboard must consume canonical report compilation to prevent drift.
+    const reports = await Promise.all(
+      dedupedRows.map(async (row) => {
+        const dealId = String((row as any).deal_id ?? "");
+        const dealName = (row as any).deal_name ?? null;
+        const dioId = (row as any).dio_id ?? null;
 
-        const docs: ReportDocRow[] = Array.isArray((row as any).documents)
-          ? ((row as any).documents as ReportDocRow[])
-          : [];
-
-        const docInventory = docInventoryFromDocs(docs);
-        const analyzerInputsUsed = buildAnalyzerInputsUsed(docs, docInventory);
-        const scoreExplanation = (report as any)?.metadata?.score_explanation;
-
-        if (scoreExplanation) {
-          (scoreExplanation as any).debug = {
-            doc_inventory: docInventory,
-            analyzer_inputs_used: analyzerInputsUsed,
-            context_used: (dio as any).dio_context,
-            inclusion_decisions: buildInclusionDecisions(scoreExplanation),
-          };
+        if (!dealId) {
+          return { error: "missing_deal_id", deal_name: dealName, dio_id: dioId, categories: [] };
         }
 
-        const primaryDocType = (dio as any)?.dio_context?.primary_doc_type ?? null;
+        try {
+          const injected = await app.inject({ method: "GET", url: `/api/v1/deals/${dealId}/report` });
+          const payload = safeJsonParse(injected.payload);
 
-        const normalizedScoreExplanation = scoreExplanation
-          ? {
-              ...scoreExplanation,
-              context: {
-                ...(scoreExplanation as any).context,
-                primary_doc_type: (scoreExplanation as any)?.context?.primary_doc_type ?? primaryDocType,
-              },
-            }
-          : {
-              ...(dio as any)?.score_explanation,
-              context: {
-                ...((dio as any)?.score_explanation?.context || {}),
-                primary_doc_type: (dio as any)?.score_explanation?.context?.primary_doc_type ?? primaryDocType,
-              },
+          if (injected.statusCode !== 200 || !payload) {
+            return {
+              dealId,
+              dealName,
+              deal_name: dealName,
+              dioId,
+              dio_id: dioId,
+              version: (row as any).analysis_version,
+              error: payload?.error ?? `canonical_report_failed:${injected.statusCode}`,
+              categories: [],
             };
+          }
 
-        const normalizedMetadata = {
-          ...((report as any)?.metadata || {}),
-          documentCount: docs.length,
-          score_explanation: normalizedScoreExplanation,
-        };
-
-        return {
-          ...report,
-          // Required stable identifiers for UI mapping
-          dealId: row.deal_id,
-          dealName: row.deal_name,
-          dioId: row.dio_id,
-          overallScore: (report as any).overallScore,
-          recommendation: (report as any).recommendation,
-          metadata: normalizedMetadata,
-
-          // Backwards-compatible aliases (legacy snake_case)
-          deal_name: row.deal_name,
-          dio_id: row.dio_id,
-          dio_data: {
-            score_explanation: (dio as any).score_explanation,
-            dio_context: (dio as any).dio_context,
-          },
-        };
-      } catch (error) {
-        return {
-          dealId: row.deal_id,
-          dealName: row.deal_name,
-          deal_name: row.deal_name,
-          dioId: row.dio_id,
-          version: row.analysis_version,
-          error: error instanceof Error ? error.message : "Failed to compile report"
-        };
-      }
-    });
+          const categories = Array.isArray((payload as any).categories) ? (payload as any).categories : [];
+          return {
+            ...payload,
+            categories,
+            dealId: (payload as any).dealId ?? dealId,
+            dealName: (payload as any).dealName ?? dealName,
+            deal_name: (payload as any).deal_name ?? dealName,
+            dioId: (payload as any).dioId ?? dioId,
+            dio_id: (payload as any).dio_id ?? dioId,
+          };
+        } catch (error) {
+          return {
+            dealId,
+            dealName,
+            deal_name: dealName,
+            dioId,
+            dio_id: dioId,
+            version: (row as any).analysis_version,
+            error: error instanceof Error ? error.message : "canonical_report_failed",
+            categories: [],
+          };
+        }
+      })
+    );
 
     return reports;
   });
@@ -9644,7 +9594,16 @@ export async function registerDashboardRoutes(app: FastifyInstance, pool: Pool =
       step5_recommendation: "Derived from grade and risk assessment"
     };
 
-    const report = compileDIOToReport(fullDIO as any);
+    // Dashboard must consume canonical report compilation to prevent drift.
+    let report: any = null;
+    try {
+      const injected = await app.inject({ method: "GET", url: `/api/v1/deals/${deal_id}/report/${version}` });
+      if (injected.statusCode === 200) {
+        report = safeJsonParse(injected.payload);
+      }
+    } catch {
+      report = null;
+    }
 
     const payload: any = {
       input_dio: fullDIO,

@@ -7934,6 +7934,11 @@ registerWorker("analyze_deal", async (job: Job) => {
 		typeof pageUnderstandingVersionRaw === "string" && pageUnderstandingVersionRaw.trim().length > 0
 			? pageUnderstandingVersionRaw.trim()
 			: "page_understanding_v1";
+	const minDpuCreatedAtRaw = (job.data as any)?.min_dpu_created_at ?? (job.data as any)?.payload?.min_dpu_created_at;
+	const minDpuCreatedAt =
+		typeof minDpuCreatedAtRaw === "string" && minDpuCreatedAtRaw.trim().length > 0
+			? minDpuCreatedAtRaw.trim()
+			: null;
 	if (!dealId) {
 		await updateJob(job, "failed", "Missing deal_id for analysis", 100);
 		return { ok: false };
@@ -8314,7 +8319,42 @@ registerWorker("analyze_deal", async (job: Job) => {
 				return out;
 			};
 
-			const promotedRaise = await loadPromoted("raise_terms_v1");
+			let promotedRaise = await loadPromoted("raise_terms_v1");
+			let promotedModel = await loadPromoted("business_model_v1");
+
+			// Best-effort self-heal: if evidence_items does not contain promoted facts yet,
+			// try promoting from existing document_page_understanding for pitch deck docs.
+			if (!promotedRaise || !promotedModel) {
+				try {
+					const dpuVersion = pageUnderstandingVersion;
+					const runId = job.id ? String(job.id) : null;
+					for (const doc of eligible) {
+						const structured = (doc.structured_data && typeof doc.structured_data === "object")
+							? (doc.structured_data as Record<string, unknown>)
+							: {};
+						const analysisType = inferAnalysisDocType({ ...doc, structured_data: structured });
+						if (analysisType !== "pitch_deck") continue;
+						const pageCount = typeof (doc as any)?.page_count === "number" && Number.isFinite((doc as any).page_count)
+							? Math.max(0, Math.floor((doc as any).page_count))
+							: 0;
+						await promoteSlideFactsFromDocumentPageUnderstanding(pool as any, {
+							dealId,
+							documentId: String(doc.id),
+							pageStart: 0,
+							// Allow promotion to infer page range if page_count is missing.
+							pageEnd: pageCount > 0 ? pageCount : 0,
+							version: dpuVersion,
+							runId,
+							stepRunId: null,
+						});
+					}
+				} catch {
+					// fail open
+				}
+				promotedRaise = promotedRaise ?? (await loadPromoted("raise_terms_v1"));
+				promotedModel = promotedModel ?? (await loadPromoted("business_model_v1"));
+			}
+
 			if (promotedRaise && typeof promotedRaise.display === "string" && promotedRaise.display.trim()) {
 				phase1_deal_overview_v2 = {
 					...phase1_deal_overview_v2,
@@ -8329,7 +8369,6 @@ registerWorker("analyze_deal", async (job: Job) => {
 				};
 			}
 
-			const promotedModel = await loadPromoted("business_model_v1");
 			if (promotedModel && typeof promotedModel.display === "string" && promotedModel.display.trim()) {
 				phase1_deal_overview_v2 = {
 					...phase1_deal_overview_v2,
@@ -8697,6 +8736,97 @@ registerWorker("analyze_deal", async (job: Job) => {
 		if (!result.success || !result.storage_result) {
 			await updateJob(job, "failed", result.error || "Analysis failed", 100);
 			return { ok: false, error: result.error || "Analysis failed" };
+		}
+
+		// Persist analysis provenance into the stored DIO JSON for correct downstream gating.
+		// This is best-effort and should never fail the analysis job.
+		if (minDpuCreatedAt) {
+			try {
+				const pool = getPool();
+				let dioIdToUpdate: string | null =
+					typeof (result.storage_result as any)?.dio_id === "string" && String((result.storage_result as any).dio_id).trim()
+						? String((result.storage_result as any).dio_id).trim()
+						: null;
+
+				// Some storage implementations may not return dio_id. Fall back to looking up the
+				// latest DIO row for this deal/version (or just the latest row for the deal).
+				if (!dioIdToUpdate) {
+					const versionRaw = (result.storage_result as any)?.version;
+					const version = typeof versionRaw === "number" && Number.isFinite(versionRaw) ? Math.trunc(versionRaw) : null;
+					try {
+						const lookup = version != null
+							? await pool.query<{ dio_id: string }>(
+								`SELECT dio_id
+								   FROM deal_intelligence_objects
+								  WHERE deal_id = $1::uuid
+								    AND analysis_version = $2::int
+								  ORDER BY updated_at DESC NULLS LAST, dio_id DESC
+								  LIMIT 1`,
+								[dealId, version]
+							)
+							: await pool.query<{ dio_id: string }>(
+								`SELECT dio_id
+								   FROM deal_intelligence_objects
+								  WHERE deal_id = $1::uuid
+								  ORDER BY analysis_version DESC, updated_at DESC NULLS LAST, dio_id DESC
+								  LIMIT 1`,
+								[dealId]
+							);
+						dioIdToUpdate = typeof lookup.rows?.[0]?.dio_id === "string" ? lookup.rows[0].dio_id : null;
+					} catch {
+						dioIdToUpdate = null;
+					}
+				}
+
+				if (!dioIdToUpdate) {
+					console.warn(
+						JSON.stringify({
+							event: "dio_meta_min_dpu_created_at_persist_skipped",
+							deal_id: dealId,
+							job_id: job.id ? String(job.id) : null,
+							reason: "missing_dio_id",
+							min_dpu_created_at: minDpuCreatedAt,
+							ts: new Date().toISOString(),
+						})
+					);
+				} else {
+					const persisted = await pool.query<{ persisted_min: string | null }>(
+						`UPDATE deal_intelligence_objects
+							SET dio_data = jsonb_set(
+								COALESCE(dio_data, '{}'::jsonb),
+								'{meta}',
+								COALESCE(dio_data->'meta', '{}'::jsonb) || jsonb_build_object('min_dpu_created_at', $1::text),
+								true
+							)
+						 WHERE dio_id = $2::uuid
+						 RETURNING (dio_data->'meta'->>'min_dpu_created_at')::text as persisted_min`,
+						[minDpuCreatedAt, dioIdToUpdate]
+					);
+					console.log(
+						JSON.stringify({
+							event: "dio_meta_min_dpu_created_at_persisted",
+							deal_id: dealId,
+							job_id: job.id ? String(job.id) : null,
+							dio_id: dioIdToUpdate,
+							min_dpu_created_at: minDpuCreatedAt,
+							row_count: persisted.rowCount,
+							persisted_min: persisted.rows?.[0]?.persisted_min ?? null,
+							ts: new Date().toISOString(),
+						})
+					);
+				}
+			} catch (err) {
+				console.warn(
+					JSON.stringify({
+						event: "dio_meta_min_dpu_created_at_persist_failed",
+						deal_id: dealId,
+						job_id: job.id ? String(job.id) : null,
+						min_dpu_created_at: minDpuCreatedAt,
+						reason: err instanceof Error ? err.message : String(err),
+						ts: new Date().toISOString(),
+					})
+				);
+			}
 		}
 
 		const overallScore = (result.dio as any)?.overall_score

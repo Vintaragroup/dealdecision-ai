@@ -243,14 +243,16 @@ describe('DealWorkspace Job Center (live mode)', () => {
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: exec, evidence_ids: [] }],
         structured_summary: {
-          raise: { value: '$2M Seed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
-          business_model: { value: 'Usage-based SaaS', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
-          revenue: {
-            value: { raw: '$1.2M', currency: 'USD', period: 'ARR', amount: null },
-            confidence: 0.8,
-            sources: [{ document_id: 'doc-1', page_index: 1 }],
+          kpis: {
+            raise: { value: '$2M Seed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
+            business_model: { value: 'Usage-based SaaS', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
+            revenue: {
+              value: { raw: '$1.2M', currency: 'USD', period: 'ARR', amount: null },
+              confidence: 0.8,
+              sources: [{ document_id: 'doc-1', page_index: 1 }],
+            },
+            customers: { value: { count: 450, kind: 'customers', raw: null }, confidence: 0.7, sources: [{ document_id: 'doc-1', page_index: 1 }] },
           },
-          customers: { value: { count: 450, kind: 'customers', raw: null }, confidence: 0.7, sources: [{ document_id: 'doc-1', page_index: 1 }] },
         },
         metadata: {
           score_explanation: {
@@ -346,7 +348,9 @@ describe('DealWorkspace Job Center (live mode)', () => {
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: 'Exec', evidence_ids: [] }],
         structured_summary: {
-          revenue: { value: { raw: '$2.476M' }, sources: [] },
+          kpis: {
+            revenue: { value: { raw: '$2.476M' }, sources: [] },
+          },
         },
         metadata: {
           score_explanation: {
@@ -412,17 +416,19 @@ describe('DealWorkspace Job Center (live mode)', () => {
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: 'Exec', evidence_ids: [] }],
         structured_summary: {
-          revenue: {
-            value: { raw: '$2.476M' },
-            label: 'Annual',
-            sources: [{ document_id: 'doc-1', page_index: 12, note_snippet: 'Revenue 2024 $2.476M', meta: { scope: 'company_financials_table', year: 2024, period: 'annual' } }],
+          kpis: {
+            revenue: {
+              value: { raw: '$2.476M' },
+              label: 'Annual',
+              sources: [{ document_id: 'doc-1', page_index: 12, note_snippet: 'Revenue 2024 $2.476M', meta: { scope: 'company_financials_table', year: 2024, period: 'annual' } }],
+            },
+            growth: {
+              value: { raw: '40% YoY', year: 2026 },
+              label: 'Annual',
+              sources: [{ document_id: 'doc-1', page_index: 9, note_snippet: 'Forecast 2026', meta: { period: 'forecast', year: 2026 } }],
+            },
+            customers: { value: { raw: '12 wholesale accounts' }, sources: [] },
           },
-          growth: {
-            value: { raw: '40% YoY', year: 2026 },
-            label: 'Annual',
-            sources: [{ document_id: 'doc-1', page_index: 9, note_snippet: 'Forecast 2026', meta: { period: 'forecast', year: 2026 } }],
-          },
-          customers: { value: { raw: '12 wholesale accounts' }, sources: [] },
         },
         metadata: {
           score_explanation: { context: { stage: 'in_diligence', deal_type: 'Primary equity' } },
@@ -466,13 +472,15 @@ describe('DealWorkspace Job Center (live mode)', () => {
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: 'Exec', evidence_ids: [] }],
         structured_summary: {
-          revenue: {
-            value: { raw: '$800k' },
-            label: 'Annual',
-            sources: [{ document_id: 'doc-1', page_index: 7, note_snippet: 'Email attributed revenue', meta: { scope: 'channel_attributed', year: 2024, period: 'annual' } }],
+          kpis: {
+            revenue: {
+              value: { raw: '$800k' },
+              label: 'Annual',
+              sources: [{ document_id: 'doc-1', page_index: 7, note_snippet: 'Email attributed revenue', meta: { scope: 'channel_attributed', year: 2024, period: 'annual' } }],
+            },
+            growth: { value: { raw: '—' }, sources: [] },
+            customers: { value: { raw: '—' }, sources: [] },
           },
-          growth: { value: { raw: '—' }, sources: [] },
-          customers: { value: { raw: '—' }, sources: [] },
         },
         metadata: {
           score_explanation: { context: { stage: 'in_diligence', deal_type: 'Primary equity' } },
@@ -523,10 +531,12 @@ describe('DealWorkspace Job Center (live mode)', () => {
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: exec, evidence_ids: [] }],
         structured_summary: {
-          raise: { value: '$2M Seed', confidence: 0.9, sources: [] },
-          business_model: { value: 'Usage-based SaaS', confidence: 0.9, sources: [] },
-          revenue: { value: { raw: '$1.2M', currency: 'USD', period: 'ARR', amount: null }, confidence: 0.8, sources: [] },
-          customers: { value: { count: 450, kind: 'customers', raw: null }, confidence: 0.7, sources: [] },
+          kpis: {
+            raise: { value: '$2M Seed', confidence: 0.9, sources: [] },
+            business_model: { value: 'Usage-based SaaS', confidence: 0.9, sources: [] },
+            revenue: { value: { raw: '$1.2M', currency: 'USD', period: 'ARR', amount: null }, confidence: 0.8, sources: [] },
+            customers: { value: { count: 450, kind: 'customers', raw: null }, confidence: 0.7, sources: [] },
+          },
         },
         metadata: {
           score_explanation: {
@@ -580,7 +590,9 @@ describe('DealWorkspace Job Center (live mode)', () => {
             derived_from: { product_pages: [12], gtm_pages: [15], distribution_pages: [23], traction_pages: [8], market_pages: [], other_pages: [] },
             supporting_nodes: [],
           },
-          business_model: { value: 'Usage-based SaaS (promoted)', label: 'Attributed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 2 }] },
+          kpis: {
+            business_model: { value: 'Usage-based SaaS (promoted)', label: 'Attributed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 2 }] },
+          },
         },
         metadata: { score_explanation: { context: { stage: 'in_diligence', deal_type: 'Primary equity' } } },
       },
@@ -618,7 +630,9 @@ describe('DealWorkspace Job Center (live mode)', () => {
         sections: [],
         structured_summary: {
           business_model_summary: { value: null },
-          business_model: { value: 'Usage-based SaaS', label: 'Attributed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
+          kpis: {
+            business_model: { value: 'Usage-based SaaS', label: 'Attributed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
+          },
         },
         metadata: { score_explanation: { context: { stage: 'in_diligence', deal_type: 'Primary equity' } } },
       },

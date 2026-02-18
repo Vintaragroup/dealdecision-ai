@@ -64,8 +64,14 @@ describe('DealWorkspace governed overlay fetch', () => {
         recommendation: 'no',
         sections: [],
         structured_summary: {
+          // Top-level (legacy) shape
           raise: { value: '$2M Seed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 3 }] },
-          business_model: { value: 'Usage-based SaaS', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 3 }] },
+          business_model: { value: 'Usage-based SaaS (top)', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 3 }] },
+          // Nested canonical KPI shape (should win)
+          kpis: {
+            raise: { value: '$3M Seed', confidence: 0.91, sources: [{ document_id: 'doc-1', page_index: 3 }] },
+            business_model: { value: 'Usage-based SaaS (kpi)', label: 'Attributed', confidence: 0.92, sources: [{ document_id: 'doc-1', page_index: 3 }] },
+          },
         },
         metadata: {
           score_explanation: { context: { stage: 'in_diligence', deal_type: 'Primary equity' } },
@@ -169,16 +175,17 @@ describe('DealWorkspace governed overlay fetch', () => {
     expect(screen.getAllByText(/Overlay product \(fallback\)/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Needs review/i).length).toBeGreaterThan(0);
 
-    // Governed UI copy wins when present (even if deterministic is available).
+    // When /report is ready, key facts should stay consistent with /report (overlay is narrative-only).
     const bmFact = screen.getByTestId('key-fact-business-model');
-    expect(within(bmFact).getAllByText(/Overlay BM/i).length).toBeGreaterThan(0);
-    expect(within(bmFact).queryByText(/Usage-based SaaS/i)).not.toBeInTheDocument();
+    expect(within(bmFact).getAllByText(/Usage-based SaaS \(kpi\)/i).length).toBeGreaterThan(0);
+    expect(within(bmFact).queryByText(/Overlay BM/i)).not.toBeInTheDocument();
 
     const raiseLabel = screen.getByTestId('key-fact-raise');
     const raiseContainer = raiseLabel.parentElement;
     expect(raiseContainer).not.toBeNull();
-    expect(within(raiseContainer as HTMLElement).getAllByText(/Overlay raise/i).length).toBeGreaterThan(0);
-    expect(within(raiseContainer as HTMLElement).queryByText(/\$2M Seed/i)).not.toBeInTheDocument();
+    expect(within(raiseContainer as HTMLElement).getAllByText(/\$3M Seed/i).length).toBeGreaterThan(0);
+    expect(within(raiseContainer as HTMLElement).queryByText(/Overlay raise/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\$2M Seed/i)).not.toBeInTheDocument();
 
     // Provenance chips: governed UI copy is primary.
     expect(screen.getAllByText(/Governed/i).length).toBeGreaterThan(0);

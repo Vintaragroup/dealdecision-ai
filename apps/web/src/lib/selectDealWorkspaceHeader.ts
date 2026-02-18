@@ -197,11 +197,14 @@ export function selectDealWorkspaceHeader(
   if (ready) {
     const structuredSummary = ((report as any)?.structured_summary ?? null) as any;
 
-    const raise = structuredSummary?.raise;
-    const businessModel = structuredSummary?.business_model;
-    const revenue = structuredSummary?.revenue;
-    const growth = structuredSummary?.growth;
-    const customers = structuredSummary?.customers;
+    // KPI normalization must occur server-side only to prevent drift.
+    const kpis = structuredSummary && typeof structuredSummary === 'object' ? (structuredSummary as any).kpis : null;
+
+    const raise = kpis?.raise;
+    const businessModel = kpis?.business_model;
+    const revenue = kpis?.revenue;
+    const growth = kpis?.growth;
+    const customers = kpis?.customers;
 
     const bm = selectAuthoritativeBusinessModelV1({ report, phase1 });
     const promotedValue = asNonEmptyString(businessModel?.value);

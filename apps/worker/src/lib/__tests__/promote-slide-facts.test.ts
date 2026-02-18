@@ -28,6 +28,35 @@ describe("promote slide facts", () => {
 		expect(bm?.value_json?.display).toBe("Omnichannel (DTC + Wholesale/Retail)");
 	});
 
+	it("does not misclassify media/sponsorship content as DTC Ecommerce", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Go to Market",
+				"title sponsorship",
+				"digital webseries",
+				"media partner",
+				"distribution via streaming platforms",
+				"consumer ecommerce awareness (not a storefront)",
+			].join("\n")
+		);
+
+		// For media decks without explicit ecommerce mechanics, we should not infer DTC Ecommerce.
+		// Preferably, we return null (no inference) unless there is explicit licensing/wholesale/saas evidence.
+		if (bm?.value_json?.display) {
+			expect(String(bm.value_json.display)).not.toBe("DTC Ecommerce");
+			expect(Boolean((bm.value_json as any)?.diagnostics?.has_media_signals)).toBe(true);
+			expect(Boolean((bm.value_json as any)?.diagnostics?.has_ecom_mechanics)).toBe(false);
+			// If we produced a label, ensure the media guard is recorded.
+			expect(((bm.value_json as any)?.diagnostics?.applied_guards ?? [])).toContain(
+				"media_blocks_dtc_without_ecom_mechanics"
+			);
+		} else {
+			expect(bm).toBeNull();
+		}
+	});
+
 	it("resolves primary business model as DTC + Wholesale and keeps Licensing secondary", async () => {
 		const { promoteSlideFactsFromDocumentPageUnderstanding } = await import("../promote-slide-facts.js");
 
@@ -162,6 +191,60 @@ describe("promote slide facts", () => {
 		expect(queries.some((x) => x.sql.includes("FROM public.document_page_understanding"))).toBe(true);
 		expect(queries.some((x) => x.sql.includes("INSERT INTO evidence_items"))).toBe(true);
 		expect(queries.some((x) => x.sql.includes("ON CONFLICT (evidence_id)"))).toBe(true);
+	});
+
+	it("infers page range when pageEnd is not provided", async () => {
+		const { promoteSlideFactsFromDocumentPageUnderstanding } = await import("../promote-slide-facts.js");
+
+		const queries: Array<{ sql: string; params?: any[] }> = [];
+		const pool: any = {
+			query: async (sql: string, params?: any[]) => {
+				queries.push({ sql: String(sql), params });
+				const q = String(sql);
+				if (q.includes("SELECT 1 FROM evidence_items")) {
+					return { rows: [{ ok: 1 }], rowCount: 1 };
+				}
+				if (q.includes("SELECT MAX(page_index)")) {
+					return { rows: [{ max_page_index: 2 }], rowCount: 1 };
+				}
+				if (q.includes("FROM public.document_page_understanding")) {
+					return {
+						rows: [
+							{
+								page_index: 2,
+								payload: {
+									source: { extracted_at: "2026-02-01T00:00:00.000Z" },
+									structured: {
+										kind: "powerpoint_slide",
+										title: "Go-to-market Channels",
+										bullets: ["Omnichannel: DTC ecommerce + retail partners like Whole Foods."],
+									},
+									page_text: "Go-to-market Channels\nOmnichannel: DTC ecommerce + retail partners like Whole Foods.",
+								},
+							},
+						],
+					};
+				}
+				if (q.includes("INSERT INTO evidence_items")) {
+					return { rows: [{ inserted: true }], rowCount: 1 };
+				}
+				return { rows: [], rowCount: 0 };
+			},
+		};
+
+		const res = await promoteSlideFactsFromDocumentPageUnderstanding(pool, {
+			dealId: "11111111-1111-1111-1111-111111111111",
+			documentId: "22222222-2222-2222-2222-222222222222",
+			pageStart: 0,
+			pageEnd: 0,
+			version: "page_understanding_v1",
+		});
+
+		expect(res.ok).toBe(true);
+		expect(queries.some((x) => x.sql.includes("SELECT MAX(page_index)"))).toBe(true);
+		expect(queries.some((x) => x.sql.includes("FROM public.document_page_understanding"))).toBe(true);
+		expect(queries.some((x) => x.sql.includes("INSERT INTO evidence_items"))).toBe(true);
+		expect(res.facts.some((f: any) => f?.fact_type === "business_model_v1")).toBe(true);
 	});
 
 	it("prefers raise_terms segment_key slide for raise selection", async () => {

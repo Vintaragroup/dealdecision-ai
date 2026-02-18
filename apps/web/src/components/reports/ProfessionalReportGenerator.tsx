@@ -50,6 +50,19 @@ export function ProfessionalReportGenerator({
   onClose 
 }: ReportGeneratorProps) {
   const { toasts, addToast, removeToast } = useLocalToasts();
+
+  const toNonEmptyString = (value: unknown): string | undefined => {
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  };
+
+  // Deal.stage is workflow stage. Do not use for funding/maturity classification.
+  const fundingStageDisplay =
+    toNonEmptyString(dealData?.round) ??
+    toNonEmptyString(dealData?.fundability?.company_phase) ??
+    toNonEmptyString(dealData?.dio_context?.stage) ??
+    'Unknown';
   const [reportSections, setReportSections] = useState<ReportSection[]>([
     { id: 'cover', title: 'Cover Page', enabled: true, required: true },
     { id: 'executive', title: 'Executive Summary', enabled: true, required: true },
@@ -436,7 +449,7 @@ export function ProfessionalReportGenerator({
                   <div>
                     <h3 className="text-xl mb-3 text-gray-800">Overview</h3>
                     <p className="text-gray-700 leading-relaxed">
-                      {dealData?.name || 'TechVision AI Platform'} is seeking {dealData?.fundingAmount || '$5M'} in {dealData?.stage || 'Series A'} funding. 
+                      {dealData?.name || 'TechVision AI Platform'} is seeking {dealData?.fundingAmount || '$5M'} in {fundingStageDisplay} funding. 
                       Our comprehensive AI-powered analysis has evaluated the opportunity across six critical dimensions: 
                       market opportunity, team strength, financial health, traction & growth, risk factors, and competitive position.
                     </p>
@@ -449,7 +462,7 @@ export function ProfessionalReportGenerator({
                     </div>
                     <div className="p-4 bg-gray-50 rounded-lg">
                       <div className="text-sm text-gray-600 mb-1">Stage</div>
-                      <div className="text-lg text-gray-900">{dealData?.stage || 'Series A'}</div>
+                      <div className="text-lg text-gray-900">{fundingStageDisplay}</div>
                     </div>
                     <div className="p-4 bg-gray-50 rounded-lg">
                       <div className="text-sm text-gray-600 mb-1">Current Revenue</div>

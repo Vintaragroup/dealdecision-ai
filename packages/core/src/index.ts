@@ -28,6 +28,7 @@ export * from './scoring/score-bands-v2';
 export * from './scoring/decision-v1';
 export * from './classification/content-archetypes';
 export * from './classification/business-model-arbitrator';
+export * from "./classifiers/raise-detector";
 
 // ============================================================================
 // DIO / Orchestration (Phase 4)

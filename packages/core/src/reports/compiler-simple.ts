@@ -7,6 +7,7 @@ import type { DealIntelligenceObject } from '../types/dio.js';
 import { buildScoreExplanationFromDIO } from './score-explanation.js';
 import { inferFundingStageModelV1, type FundingStageModelV1 } from '../models/funding-stage-model.js';
 import { inferFinancialCoverageProfileV1, type FinancialCoverageProfileV1 } from '../models/financial-coverage-profile.js';
+import { inferCapitalLogicProfileV1, type CapitalLogicProfileV1 } from '../models/capital-logic-profile.js';
 
 // Import ReportDTO types directly from contracts
 type ReportDTO = {
@@ -18,6 +19,7 @@ type ReportDTO = {
   // Additive deterministic artifact (v1)
   funding_stage_v1?: FundingStageModelV1;
   financial_coverage_v1?: FinancialCoverageProfileV1;
+  capital_logic_v1?: CapitalLogicProfileV1;
   structured_summary?: {
     raise: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
     business_model: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
@@ -1536,6 +1538,11 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
       : null,
   });
 
+  const capitalLogic = inferCapitalLogicProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: null,
+  });
+
   return {
     dealId: dio.deal_id,
     generatedAt: new Date().toISOString(),
@@ -1544,6 +1551,7 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     overallScore: overallScoreFinal,
     funding_stage_v1: fundingStage,
     financial_coverage_v1: financialCoverage,
+    capital_logic_v1: capitalLogic,
     structured_summary: structuredSummary,
     grade,
     recommendation,
@@ -1601,10 +1609,16 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
         }))
       : null,
   });
+
+  const capitalLogic = inferCapitalLogicProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
+  });
 	return {
 		...base,
     funding_stage_v1: fundingStage,
     financial_coverage_v1: financialCoverage,
+    capital_logic_v1: capitalLogic,
     structured_summary: structuredSummary,
     sections,
 	};

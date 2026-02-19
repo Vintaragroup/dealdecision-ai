@@ -64,12 +64,17 @@ describe('DealWorkspace governed overlay fetch', () => {
         recommendation: 'no',
         sections: [],
         structured_summary: {
-          // Top-level (legacy) shape
-          raise: { value: '$2M Seed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 3 }] },
+          // Canonical raise: amount-only + separate round label.
+          raise: {
+            value: '$3M',
+            round_label: 'Seed',
+            value_json: { amount: { amount: 3000000 } },
+            sources: [{ document_id: 'doc-1', page_index: 3 }],
+          },
           business_model: { value: 'Usage-based SaaS (top)', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 3 }] },
-          // Nested canonical KPI shape (should win)
+          // Legacy KPI strings should never override canonical raise numeric.
           kpis: {
-            raise: { value: '$3M Seed', confidence: 0.91, sources: [{ document_id: 'doc-1', page_index: 3 }] },
+            raise: { value: '$2M Seed', confidence: 0.91, sources: [{ document_id: 'doc-legacy', page_index: 3 }] },
             business_model: { value: 'Usage-based SaaS (kpi)', label: 'Attributed', confidence: 0.92, sources: [{ document_id: 'doc-1', page_index: 3 }] },
           },
         },
@@ -183,7 +188,8 @@ describe('DealWorkspace governed overlay fetch', () => {
     const raiseLabel = screen.getByTestId('key-fact-raise');
     const raiseContainer = raiseLabel.parentElement;
     expect(raiseContainer).not.toBeNull();
-    expect(within(raiseContainer as HTMLElement).getAllByText(/\$3M Seed/i).length).toBeGreaterThan(0);
+    expect(within(raiseContainer as HTMLElement).getAllByText(/\$3M/i).length).toBeGreaterThan(0);
+    expect(within(raiseContainer as HTMLElement).queryByText(/\$3M\s+Seed/i)).not.toBeInTheDocument();
     expect(within(raiseContainer as HTMLElement).queryByText(/Overlay raise/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/\$2M Seed/i)).not.toBeInTheDocument();
 

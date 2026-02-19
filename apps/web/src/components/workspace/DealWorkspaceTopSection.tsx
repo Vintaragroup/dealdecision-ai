@@ -20,6 +20,7 @@ export type DealWorkspaceTopSectionProps = {
   strengths: string[];
   weaknesses: string[];
   raise: string | null;
+  raiseLabel?: string | null;
   raiseConflict?: boolean;
   raiseConflictOverlayValue?: string | null;
   revenue: string | null;
@@ -90,6 +91,7 @@ export function DealWorkspaceTopSection({
   strengths,
   weaknesses,
   raise,
+  raiseLabel = null,
   raiseConflict = false,
   raiseConflictOverlayValue = null,
   revenue,
@@ -162,7 +164,7 @@ export function DealWorkspaceTopSection({
   })();
 
   const metricCards: Array<{ label: string; value: string | null; note: string; noteClass: string; tooltip?: string | null; badge?: string | null; conflict?: boolean; conflictOverlayValue?: string | null }> = [
-    { label: 'Raise', value: raise, note: 'Target', noteClass: 'text-emerald-400', conflict: raiseConflict, conflictOverlayValue: raiseConflictOverlayValue },
+    { label: 'Raise', value: raise, note: 'Target', noteClass: 'text-emerald-400', badge: raiseLabel, conflict: raiseConflict, conflictOverlayValue: raiseConflictOverlayValue },
     {
       label: 'Revenue',
       value: revenue,

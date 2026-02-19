@@ -92,6 +92,16 @@ function marketPenalty(stage: StageWeightedScoreInputsV1["stage"], code: string)
   return 0;
 }
 
+function teamPenalty(stage: StageWeightedScoreInputsV1["stage"], code: string): number {
+  const s = String(stage);
+  if (code === "no_founder") return 25;
+  if (code === "solo_founder") return s === "pre_seed" ? 10 : 0;
+  if (code === "no_technical_lead") return (s === "seed" || s === "series_a") ? 12 : 0;
+  if (code === "no_gtm_lead") return (s === "seed" || s === "series_a") ? 12 : 0;
+  if (code === "no_domain_experience") return s === "pre_seed" ? 0 : 8;
+  return 0;
+}
+
 export function scoreStageWeightedV1(inputs: StageWeightedScoreInputsV1): StageWeightedScoringV1 {
   const weights = getStageWeightMatrix(inputs.stage);
   const dimensions: DimensionScoreV1[] = [];
@@ -141,6 +151,27 @@ export function scoreStageWeightedV1(inputs: StageWeightedScoreInputsV1): StageW
       for (const code of hit) {
         const p = marketPenalty(inputs.stage, String(code));
         if (p > 0) score = clamp0_100(score - p);
+      }
+    }
+
+    if (key === "team") {
+      const penaltyCodes = new Set([
+        "no_founder",
+        "solo_founder",
+        "no_technical_lead",
+        "no_gtm_lead",
+        "no_domain_experience",
+      ]);
+
+      const hit = notes.filter((n) => penaltyCodes.has(String(n)));
+      for (const code of hit) {
+        const p = teamPenalty(inputs.stage, String(code));
+        if (p > 0) score = clamp0_100(score - p);
+      }
+
+      // Small boost for prior exits.
+      if (notes.some((n) => String(n) === "prior_exit_present")) {
+        score = clamp0_100(score + 5);
       }
     }
 

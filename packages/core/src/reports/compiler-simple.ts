@@ -12,6 +12,7 @@ import { inferStageExpectationsProfileV1, type StageExpectationsProfileV1 } from
 import { inferBusinessModelSignalProfileV1, type BusinessModelSignalProfileV1 } from '../models/business-model-signal-profile.js';
 import { inferMarketAccessibilitySignalProfileV1, type MarketAccessibilitySignalProfileV1 } from '../models/market-accessibility-signal-profile.js';
 import { inferTractionSignalProfileV1, type TractionSignalProfileV1 } from '../models/traction-signal-profile.js';
+import { inferTeamSignalProfileV1, type TeamSignalProfileV1 } from '../models/team-signal-profile.js';
 import { buildStageWeightedScoreInputsV1 } from '../scoring/stage-weighted-score-inputs-v1.js';
 import { scoreStageWeightedV1 } from '../scoring/dimension-scorer-v1.js';
 
@@ -30,8 +31,18 @@ type ReportDTO = {
   business_model_signal_v1?: BusinessModelSignalProfileV1;
   market_accessibility_signal_v1?: MarketAccessibilitySignalProfileV1;
   traction_signal_v1?: TractionSignalProfileV1;
+  team_signal_v1?: TeamSignalProfileV1;
   structured_summary?: {
-    raise: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
+    raise: {
+      value: string | null;
+      confidence: number;
+      sources: Array<Record<string, any>>;
+      label?: string | null;
+      round_label?: string | null;
+      value_json?: {
+        amount?: { amount: number | null; currency?: string | null };
+      };
+    };
     business_model: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
     revenue: {
       value: { amount: number | null; currency: string | null; period: string | null; raw: string | null } | null;
@@ -363,6 +374,35 @@ function buildStructuredSummary(
     });
   };
 
+  const inferRaiseRoundLabel = (raw: string): string | null => {
+    const s = raw.toLowerCase();
+    if (/\bpre[-\s]?seed\b/i.test(s)) return 'Pre-Seed';
+    if (/\bseed\+\b/i.test(s)) return 'Seed+';
+    if (/\bseed\b/i.test(s)) return 'Seed';
+    if (/\bseries\s*-?\s*a\b/i.test(s) || /\bseries_a\b/i.test(s)) return 'Series A';
+    if (/\bgrowth\b/i.test(s) || /\bseries\s*[b-z]\b/i.test(s)) return 'Growth';
+    return null;
+  };
+
+  const normalizeRaiseFromTextOrAmount = (
+    raw: string | null | undefined,
+    amountHint?: number | null
+  ): { value: string; amount: number | null; currency: string | null; round_label: string | null } | null => {
+    const text = asNonEmptyString(raw);
+    const parsed = text ? parseMoneyLike(text) : { amount: null, currency: null, raw: null };
+    const amount = (typeof amountHint === 'number' && Number.isFinite(amountHint))
+      ? amountHint
+      : (typeof parsed.amount === 'number' && Number.isFinite(parsed.amount) ? parsed.amount : null);
+    if (amount == null && !text) return null;
+
+    const currency = amount != null ? (asNonEmptyString(parsed.currency) ?? 'USD') : null;
+
+    // Non-negotiable: if we have an amount, the display must be amount-only.
+    const value = amount != null ? (formatUsdShort(amount) ?? (text ?? String(amount))) : (text as string);
+    const round_label = text ? inferRaiseRoundLabel(text) : null;
+    return { value, amount, currency, round_label };
+  };
+
   const promotedRaise = promoted.find((f) => factTypeOf(f) === 'raise_terms_v1');
   if (promotedRaise) {
     const vj = getPromotedValueJson(promotedRaise) ?? {};
@@ -372,21 +412,16 @@ function buildStructuredSummary(
     const amount = typeof amountRaw === 'number' && Number.isFinite(amountRaw) ? amountRaw : null;
     const valuation = typeof valuationRaw === 'number' && Number.isFinite(valuationRaw) ? valuationRaw : null;
 
-    const value = (() => {
-      if (amount != null && display && shouldCollapseRaiseDisplay(display)) {
-        return formatUsdShort(amount) ?? display;
-      }
-      if (amount != null && !display) return formatUsdShort(amount);
-      return display;
-    })();
-
-    if (value) {
+    const normalized = normalizeRaiseFromTextOrAmount(display, amount);
+    if (normalized?.value) {
       const sources = promotedSourcesFor(promotedRaise);
       const noteFromValueJson = asNonEmptyString((vj as any)?.note_snippet);
       const valuationNote = valuation != null ? `on ${formatUsdShort(valuation) ?? '$' + String(valuation)} valuation` : null;
       const note = noteFromValueJson ?? valuationNote;
       structured.raise = {
-        value,
+        value: normalized.value,
+        value_json: { amount: { amount: normalized.amount, currency: normalized.currency } },
+        round_label: normalized.round_label,
         confidence: clamp01(typeof promotedRaise.confidence === 'number' ? promotedRaise.confidence : 0.7),
         sources: note ? sources.map((s) => ({ ...s, note })) : sources,
       };
@@ -553,7 +588,14 @@ function buildStructuredSummary(
 
   const overviewRaise = asNonEmptyString(overview?.raise);
   if (overviewRaise && !structured.raise.value) {
-    structured.raise = { value: overviewRaise, confidence: 0.9, sources: overviewSources };
+    const normalized = normalizeRaiseFromTextOrAmount(overviewRaise);
+    structured.raise = {
+      value: normalized?.value ?? overviewRaise,
+      value_json: normalized ? { amount: { amount: normalized.amount, currency: normalized.currency } } : undefined,
+      round_label: normalized?.round_label ?? null,
+      confidence: 0.9,
+      sources: overviewSources,
+    };
   }
   const overviewModel = asNonEmptyString(overview?.business_model);
   if (overviewModel && !structured.business_model.value && hasPrimaryCitation(overviewSources)) {
@@ -564,7 +606,14 @@ function buildStructuredSummary(
     const execRaise = asNonEmptyString(exec?.raise);
     if (execRaise) {
       const band = (exec as any)?.confidence?.sections?.raise ?? (exec as any)?.confidence?.overall;
-      structured.raise = { value: execRaise, confidence: confidenceBandToNumber(band), sources: execEvidence };
+      const normalized = normalizeRaiseFromTextOrAmount(execRaise);
+      structured.raise = {
+        value: normalized?.value ?? execRaise,
+        value_json: normalized ? { amount: { amount: normalized.amount, currency: normalized.currency } } : undefined,
+        round_label: normalized?.round_label ?? null,
+        confidence: confidenceBandToNumber(band),
+        sources: execEvidence,
+      };
     }
   }
   if (!structured.business_model.value) {
@@ -1063,7 +1112,16 @@ function buildStructuredSummary(
   const scoreExplanationAny = scoreExplanation ?? (dio as any)?.score_explanation;
   if (!structured.raise.value) {
     const raise = asNonEmptyString(scoreExplanationAny?.context?.raise);
-    if (raise) structured.raise = { value: raise, confidence: 0.55, sources: [{ kind: 'score_explanation.context', field: 'raise' }] };
+    if (raise) {
+      const normalized = normalizeRaiseFromTextOrAmount(raise);
+      structured.raise = {
+        value: normalized?.value ?? raise,
+        value_json: normalized ? { amount: { amount: normalized.amount, currency: normalized.currency } } : undefined,
+        round_label: normalized?.round_label ?? null,
+        confidence: 0.55,
+        sources: [{ kind: 'score_explanation.context', field: 'raise' }],
+      };
+    }
   }
   if (!structured.business_model.value) {
     const businessModel = asNonEmptyString(scoreExplanationAny?.context?.business_model);
@@ -1569,6 +1627,11 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     promoted_facts: null,
   });
 
+  const teamSignal = inferTeamSignalProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: null,
+  });
+
   const stageExpectations = inferStageExpectationsProfileV1({
     funding_stage_v1: fundingStage,
     financial_coverage_v1: financialCoverage,
@@ -1584,6 +1647,7 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
       business_model_signal_v1: businessModelSignal,
       market_accessibility_signal_v1: marketAccessibilitySignal,
       traction_signal_v1: tractionSignal,
+      team_signal_v1: teamSignal,
       structured_summary: structuredSummary,
     }),
   );
@@ -1608,6 +1672,7 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     business_model_signal_v1: businessModelSignal,
     market_accessibility_signal_v1: marketAccessibilitySignal,
     traction_signal_v1: tractionSignal,
+    team_signal_v1: teamSignal,
     structured_summary: structuredSummary,
     grade,
     recommendation,
@@ -1687,6 +1752,11 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
     promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
   });
 
+  const teamSignal = inferTeamSignalProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
+  });
+
   const stageExpectations = inferStageExpectationsProfileV1({
     funding_stage_v1: fundingStage,
     financial_coverage_v1: financialCoverage,
@@ -1702,6 +1772,7 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
       business_model_signal_v1: businessModelSignal,
       market_accessibility_signal_v1: marketAccessibilitySignal,
       traction_signal_v1: tractionSignal,
+      team_signal_v1: teamSignal,
       structured_summary: structuredSummary,
     }),
   );
@@ -1719,6 +1790,7 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
     business_model_signal_v1: businessModelSignal,
     market_accessibility_signal_v1: marketAccessibilitySignal,
     traction_signal_v1: tractionSignal,
+    team_signal_v1: teamSignal,
     structured_summary: structuredSummary,
     sections,
 

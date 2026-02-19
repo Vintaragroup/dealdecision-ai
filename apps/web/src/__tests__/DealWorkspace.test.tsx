@@ -243,6 +243,12 @@ describe('DealWorkspace Job Center (live mode)', () => {
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: exec, evidence_ids: [] }],
         structured_summary: {
+          raise: {
+            value: '$2M',
+            round_label: 'Seed',
+            value_json: { amount: { amount: 2000000 } },
+            sources: [{ document_id: 'doc-1', page_index: 1 }],
+          },
           kpis: {
             raise: { value: '$2M Seed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
             business_model: { value: 'Usage-based SaaS', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
@@ -298,7 +304,9 @@ describe('DealWorkspace Job Center (live mode)', () => {
     const raiseLabel = within(top).getByText(/^Raise$/i);
     const raiseCard = raiseLabel.parentElement;
     expect(raiseCard).not.toBeNull();
-    expect(within(raiseCard as HTMLElement).getByText(/\$2M Seed/i)).toBeInTheDocument();
+    expect(within(raiseCard as HTMLElement).getByText(/\$2M/i)).toBeInTheDocument();
+    expect(within(raiseCard as HTMLElement).getByText(/^Seed$/i)).toBeInTheDocument();
+    expect(within(raiseCard as HTMLElement).queryByText(/\$2M\s+Seed/i)).toBeNull();
 
     const revenueLabel = within(top).getByText(/^Revenue$/i);
     const revenueCard = revenueLabel.parentElement;
@@ -313,13 +321,14 @@ describe('DealWorkspace Job Center (live mode)', () => {
     // Overview tab should also prefer /report bindings (not stale dealFromApi fields).
     await userEvent.click(screen.getByRole('tab', { name: /^overview$/i }));
     await waitFor(() => {
-      expect(screen.getByText(/Raise\s*\/\s*Terms/i)).toBeInTheDocument();
+      expect(screen.getByTestId('key-fact-raise')).toBeInTheDocument();
     });
 
-    const overviewRaiseLabel = screen.getByText(/Raise\s*\/\s*Terms/i);
-    const overviewRaiseRow = overviewRaiseLabel.closest('div');
+    const overviewRaiseLabel = screen.getByTestId('key-fact-raise');
+    const overviewRaiseRow = overviewRaiseLabel.parentElement;
     expect(overviewRaiseRow).not.toBeNull();
-    expect(within(overviewRaiseRow as HTMLElement).getByText(/\$2M Seed/i)).toBeInTheDocument();
+    expect(within(overviewRaiseRow as HTMLElement).getByText(/\$2M/i)).toBeInTheDocument();
+    expect(within(overviewRaiseRow as HTMLElement).queryByText(/\$2M\s+Seed/i)).toBeNull();
 
     const overviewBusinessModelLabel = screen.getByText(/^Business Model:\s*$/i);
     const overviewBusinessModelRow = overviewBusinessModelLabel.closest('div');
@@ -531,6 +540,12 @@ describe('DealWorkspace Job Center (live mode)', () => {
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: exec, evidence_ids: [] }],
         structured_summary: {
+          raise: {
+            value: '$2M',
+            round_label: 'Seed',
+            value_json: { amount: { amount: 2000000 } },
+            sources: [],
+          },
           kpis: {
             raise: { value: '$2M Seed', confidence: 0.9, sources: [] },
             business_model: { value: 'Usage-based SaaS', confidence: 0.9, sources: [] },

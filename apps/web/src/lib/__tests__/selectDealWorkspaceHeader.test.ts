@@ -33,8 +33,8 @@ describe('selectDealWorkspaceHeader', () => {
     const report: any = {
       ready: true,
       structured_summary: {
+        raise: { value: '$5M', round_label: 'Seed', value_json: { amount: { amount: 5_000_000 } }, sources: sourcesRef },
         kpis: {
-          raise: { value: '$5M', label: 'Attributed', sources: sourcesRef },
           business_model: { value: 'SaaS', label: 'Attributed', sources: [] },
           revenue: { value: { raw: '$850K ARR' }, label: 'Forecast', sources: sourcesRef },
           growth: { value: { raw: '40% MoM' }, label: 'Forecast', sources: sourcesRef },
@@ -55,7 +55,7 @@ describe('selectDealWorkspaceHeader', () => {
 
     expect(selected.ready).toBe(true);
     expect(selected.raise.value).toBe('$5M');
-    expect(selected.raise.label).toBe('Attributed');
+    expect(selected.raise.label).toBe('Seed');
     expect(selected.raise.sources).toBe(sourcesRef);
 
     expect(selected.business_model_synthesized.value).toBeNull();
@@ -74,8 +74,8 @@ describe('selectDealWorkspaceHeader', () => {
     const report: any = {
       ready: true,
       structured_summary: {
-        // Top-level values (should lose)
-        raise: { value: '$2M Seed', label: 'Top', sources: sourcesRef },
+        // Canonical raise amount lives on structured_summary.raise (should win)
+        raise: { value: '$2M Seed', round_label: 'Seed', value_json: { amount: { amount: 2_000_000 } }, sources: sourcesRef },
         business_model: { value: 'Top BM', label: 'Top', sources: sourcesRef },
         revenue: { value: { raw: '$800K ARR' }, label: 'Top', sources: sourcesRef },
         growth: { value: { raw: '30% MoM' }, label: 'Top', sources: sourcesRef },
@@ -94,8 +94,8 @@ describe('selectDealWorkspaceHeader', () => {
     const selected = selectDealWorkspaceHeader(report, null);
 
     expect(selected.ready).toBe(true);
-    expect(selected.raise.value).toBe('$3M Seed');
-    expect(selected.raise.label).toBe('KPI');
+    expect(selected.raise.value).toBe('$2M');
+    expect(selected.raise.label).toBe('Seed');
     expect(selected.revenue.value).toBe('$900K ARR');
     expect(selected.growth.value).toBe('40% MoM');
     expect(selected.customers.value).toBe('15 customers');

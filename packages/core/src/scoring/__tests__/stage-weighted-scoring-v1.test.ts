@@ -352,4 +352,115 @@ describe("stage-weighted deterministic scoring v1", () => {
     expect(mk.score_0_100).toBeLessThanOrEqual(70);
     expect(mk.score_0_100).toBeGreaterThanOrEqual(55);
   });
+
+  it("No founders => heavy team penalty", () => {
+    const inputs = buildStageWeightedScoreInputsV1({
+      funding_stage_v1: { funding_stage: "seed", confidence: 0.8, signals: [] } as any,
+      team_signal_v1: {
+        founder_count: 0,
+        key_roles_present: { ceo: false, technical: false, gtm: false },
+        prior_startup_experience_present: false,
+        prior_exit_present: false,
+        domain_experience_present: false,
+        team_size_known: false,
+        confidence: "low",
+        signals: [],
+      } as any,
+    });
+
+    const scored = scoreStageWeightedV1(inputs);
+    const tm = scored.dimensions.find((d) => d.key === "team")!;
+    expect(tm.notes ?? []).toContain("no_founder");
+    expect(tm.score_0_100).toBeLessThanOrEqual(15);
+    expect(scored.signals_used ?? []).toContain("team_signal_v1");
+  });
+
+  it("Solo founder pre-seed => moderate penalty", () => {
+    const inputs = buildStageWeightedScoreInputsV1({
+      funding_stage_v1: { funding_stage: "pre_seed", confidence: 0.8, signals: [] } as any,
+      team_signal_v1: {
+        founder_count: 1,
+        key_roles_present: { ceo: true, technical: true, gtm: false },
+        prior_startup_experience_present: false,
+        prior_exit_present: false,
+        domain_experience_present: true,
+        team_size_known: true,
+        confidence: "medium",
+        signals: [],
+      } as any,
+    });
+
+    const scored = scoreStageWeightedV1(inputs);
+    const tm = scored.dimensions.find((d) => d.key === "team")!;
+    expect(tm.notes ?? []).toContain("solo_founder");
+    expect(tm.score_0_100).toBeLessThanOrEqual(80);
+    expect(tm.score_0_100).toBeGreaterThanOrEqual(60);
+  });
+
+  it("Balanced founding team => no penalty", () => {
+    const inputs = buildStageWeightedScoreInputsV1({
+      funding_stage_v1: { funding_stage: "seed", confidence: 0.8, signals: [] } as any,
+      team_signal_v1: {
+        founder_count: 2,
+        key_roles_present: { ceo: true, technical: true, gtm: true },
+        prior_startup_experience_present: true,
+        prior_exit_present: false,
+        domain_experience_present: true,
+        team_size_known: true,
+        confidence: "high",
+        signals: [],
+      } as any,
+    });
+
+    const scored = scoreStageWeightedV1(inputs);
+    const tm = scored.dimensions.find((d) => d.key === "team")!;
+    expect(tm.notes ?? []).toContain("balanced_team");
+    expect(tm.notes ?? []).not.toContain("no_technical_lead");
+    expect(tm.notes ?? []).not.toContain("no_gtm_lead");
+    expect(tm.score_0_100).toBeGreaterThanOrEqual(90);
+  });
+
+  it("Prior exit => small boost", () => {
+    const inputs = buildStageWeightedScoreInputsV1({
+      funding_stage_v1: { funding_stage: "seed", confidence: 0.8, signals: [] } as any,
+      team_signal_v1: {
+        founder_count: 2,
+        key_roles_present: { ceo: true, technical: true, gtm: true },
+        prior_startup_experience_present: true,
+        prior_exit_present: true,
+        domain_experience_present: true,
+        team_size_known: true,
+        confidence: "high",
+        signals: [],
+      } as any,
+    });
+
+    const scored = scoreStageWeightedV1(inputs);
+    const tm = scored.dimensions.find((d) => d.key === "team")!;
+    expect(tm.notes ?? []).toContain("prior_exit_present");
+    expect(tm.score_0_100).toBeGreaterThanOrEqual(95);
+  });
+
+  it("Seed stage: no technical lead => penalty", () => {
+    const inputs = buildStageWeightedScoreInputsV1({
+      funding_stage_v1: { funding_stage: "seed", confidence: 0.8, signals: [] } as any,
+      team_signal_v1: {
+        founder_count: 2,
+        key_roles_present: { ceo: true, technical: false, gtm: true },
+        prior_startup_experience_present: true,
+        prior_exit_present: false,
+        domain_experience_present: true,
+        team_size_known: true,
+        confidence: "high",
+        signals: [],
+      } as any,
+    });
+
+    const scored = scoreStageWeightedV1(inputs);
+    const tm = scored.dimensions.find((d) => d.key === "team")!;
+    expect(tm.notes ?? []).toContain("no_technical_lead");
+    // Base present+high ~93.25; penalty -12 => ~81.25.
+    expect(tm.score_0_100).toBeLessThanOrEqual(88);
+    expect(tm.score_0_100).toBeGreaterThanOrEqual(70);
+  });
 });

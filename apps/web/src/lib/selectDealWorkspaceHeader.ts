@@ -18,6 +18,27 @@ export type Phase1DealOverview = {
   customers?: unknown;
 };
 
+const formatMoney = (amount: number): string => {
+  const v = typeof amount === 'number' && Number.isFinite(amount) ? amount : NaN;
+  if (!Number.isFinite(v)) return '—';
+  if (v >= 1e9) {
+    const x = v / 1e9;
+    const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+    return `$${s}B`;
+  }
+  if (v >= 1e6) {
+    const x = v / 1e6;
+    const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+    return `$${s}M`;
+  }
+  if (v >= 1e3) {
+    const x = v / 1e3;
+    const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+    return `$${s}K`;
+  }
+  return `$${Math.round(v).toLocaleString()}`;
+};
+
 type FactProvenance = {
   scope: string | null;
   year: number | null;
@@ -200,7 +221,11 @@ export function selectDealWorkspaceHeader(
     // KPI normalization must occur server-side only to prevent drift.
     const kpis = structuredSummary && typeof structuredSummary === 'object' ? (structuredSummary as any).kpis : null;
 
-    const raise = kpis?.raise;
+    const structuredRaise = structuredSummary && typeof structuredSummary === 'object' ? (structuredSummary as any).raise : null;
+    const raiseAmountRaw = structuredRaise?.value_json?.amount?.amount;
+    const raiseAmount = typeof raiseAmountRaw === 'number' && Number.isFinite(raiseAmountRaw) ? raiseAmountRaw : null;
+    const raiseRoundLabel = asNonEmptyString(structuredRaise?.round_label);
+
     const businessModel = kpis?.business_model;
     const revenue = kpis?.revenue;
     const growth = kpis?.growth;
@@ -215,9 +240,10 @@ export function selectDealWorkspaceHeader(
     return {
       ready: true,
       raise: {
-        value: hasEvidenceSources(raise?.sources) ? asNonEmptyString(raise?.value) : null,
-        label: asNonEmptyString(raise?.label) ?? undefined,
-        sources: Array.isArray(raise?.sources) ? (raise.sources as Source[]) : undefined,
+        value: raiseAmount != null ? formatMoney(raiseAmount) : null,
+        // Optional stage/round label is separate from the numeric value.
+        label: raiseAmount != null ? (raiseRoundLabel ?? undefined) : undefined,
+        sources: Array.isArray(structuredRaise?.sources) ? (structuredRaise.sources as Source[]) : undefined,
       },
       business_model_synthesized: {
         value: null,

@@ -2015,6 +2015,36 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return s;
   };
 
+  const formatMoneyAmountOnly = (amount: number): string => {
+    const v = typeof amount === 'number' && Number.isFinite(amount) ? amount : NaN;
+    if (!Number.isFinite(v)) return '—';
+    if (v >= 1e9) {
+      const x = v / 1e9;
+      const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+      return `$${s}B`;
+    }
+    if (v >= 1e6) {
+      const x = v / 1e6;
+      const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+      return `$${s}M`;
+    }
+    if (v >= 1e3) {
+      const x = v / 1e3;
+      const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+      return `$${s}K`;
+    }
+    return `$${Math.round(v).toLocaleString()}`;
+  };
+
+  const reportCanonicalRaise = useMemo(() => {
+    const structuredRaise = (reportFromApi as any)?.structured_summary?.raise;
+    const amountRaw = structuredRaise?.value_json?.amount?.amount;
+    const amount = typeof amountRaw === 'number' && Number.isFinite(amountRaw) ? amountRaw : null;
+    if (amount == null) return { value: null as string | null, roundLabel: null as string | null };
+    const roundLabel = safeText(structuredRaise?.round_label) || null;
+    return { value: formatMoneyAmountOnly(amount), roundLabel };
+  }, [reportFromApi]);
+
   // Overview-tab wiring helpers (derived only from existing dealFromApi/dealData state; no new API calls)
   const overviewDealOneLiner = (() => {
     const v2Summary = (dealSummaryV2 as any)?.summary;
@@ -2193,7 +2223,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const product = safeNonEmpty(canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : overviewProduct);
     const market = safeNonEmpty(canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : overviewMarketIcp);
     const businessModel = safeNonEmpty(overviewBusinessModel);
-    const raise = safeNonEmpty(overviewRaiseTerms);
+    const raise = safeNonEmpty(reportCanonicalRaise.value || overviewRaiseTerms);
 
     const kpis: any[] = deterministicScoreInputsV1 && Array.isArray(deterministicScoreInputsV1.kpis)
       ? deterministicScoreInputsV1.kpis
@@ -2567,8 +2597,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const pickMoney = (): string => {
     if (reportReady) {
-      // KPI normalization must occur server-side only to prevent drift.
-      const fromReport = safeText((reportFromApi as any)?.structured_summary?.kpis?.raise?.value);
+      // Canonical: amount-only from report.structured_summary.raise.value_json.amount.amount.
+      const fromReport = safeText(reportCanonicalRaise.value);
       if (fromReport) return fromReport;
     }
     const direct = safeText(overviewV2?.raise);
@@ -2766,7 +2796,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const businessModelFromReport = authoritativeBusinessModel.value || safeText(ctx?.business_model);
     const businessModelLabelFromReport = authoritativeBusinessModel.label;
     const dealTypeFromReport = safeText(ctx?.deal_type);
-    const raiseFromReport = safeText(kpis?.raise?.value) || safeText(ctx?.raise);
+    const raiseFromReport = safeText(reportCanonicalRaise.value);
 
     const revenueFromReport = (() => {
       const v = kpis?.revenue?.value;
@@ -2839,6 +2869,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     topSectionRevenue,
     topSectionCustomers,
     authoritativeBusinessModel,
+    reportCanonicalRaise,
   ]);
 
   const lastReportBindingsLogRef = useRef<string | null>(null);
@@ -2856,7 +2887,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return (reportFromApi as any)?.structured_summary?.kpis ?? null;
   }, [reportFromApi]);
 
-  const reportStructuredRaise = safeText(reportStructuredKpis?.raise?.value);
+  const reportStructuredRaise = safeText(reportCanonicalRaise.value) || null;
   const reportStructuredBusinessModelLabel = authoritativeBusinessModel.label;
 
   const selectedHeader = useMemo(() => {
@@ -3049,7 +3080,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     // (overlay KPI strings are treated as narrative-only, since they can drift).
     const raise = selectedHeader.ready
       ? (selectedHeader.raise.value ?? null)
-      : (safeText(reportStructuredRaise) || safeText(overviewRaiseTermsCanonical) || (overlayVM.kpis.raise?.value ?? null));
+      : (safeText(reportStructuredRaise) || safeText(overviewRaiseTermsCanonical) || null);
 
     const revenue = selectedHeader.ready
       ? (selectedHeader.revenue.value ?? null)
@@ -3431,7 +3462,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       dealSummarySource: 'overlay' as const,
       strengths: overlayListsWellFormed ? overlayStrengths : topSectionStrengths,
       weaknesses: overlayListsWellFormed ? overlayOpenItems : topSectionWeaknesses,
-      raise: overlayVM.kpis.raise?.value ?? overlayRaiseTerms,
+      raise: overlayRaiseTerms,
       revenue: overlayVM.kpis.revenue?.value ?? null,
       growth: overlayVM.kpis.growth?.value ?? null,
       customers: overlayVM.kpis.customers?.value ?? null,
@@ -3442,7 +3473,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const heroMerged = useMemo(() => {
     const base = useOverlayForHero ? heroOverlay : heroDet;
 
-    const raise = buildHeroFact({ key: 'raise', det: heroDet.raise, overlay: heroOverlay.raise });
+    const raise = selectedHeader.ready
+      ? { value: heroDet.raise, conflict: false, overlayValueIfConflicted: null }
+      : buildHeroFact({ key: 'raise', det: heroDet.raise, overlay: heroOverlay.raise });
     const revenue = buildHeroFact({ key: 'revenue', det: heroDet.revenue, overlay: heroOverlay.revenue });
     const growth = buildHeroFact({ key: 'growth', det: heroDet.growth, overlay: heroOverlay.growth });
     const customers = buildHeroFact({ key: 'customers', det: heroDet.customers, overlay: heroOverlay.customers });
@@ -3460,7 +3493,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       customers,
       businessModel,
     };
-  }, [useOverlayForHero, heroDet, heroOverlay]);
+  }, [useOverlayForHero, heroDet, heroOverlay, selectedHeader.ready]);
 
   const dealSummarySourceLabel = canonicalDealSummaryReady ? 'Canonical' : 'Legacy';
 
@@ -5993,6 +6026,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   strengths={heroMerged.strengths}
                   weaknesses={heroMerged.weaknesses}
                   raise={heroMerged.raise.value}
+                  raiseLabel={selectedHeader.ready ? (selectedHeader.raise.label ?? null) : null}
                   raiseConflict={heroMerged.raise.conflict}
                   raiseConflictOverlayValue={heroMerged.raise.overlayValueIfConflicted}
                   revenue={heroMerged.revenue.value}

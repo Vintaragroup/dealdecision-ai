@@ -1,6 +1,7 @@
 import type { CapitalLogicProfileV1 } from "../models/capital-logic-profile.js";
 import type { BusinessModelSignalProfileV1 } from "../models/business-model-signal-profile.js";
 import type { MarketAccessibilitySignalProfileV1 } from "../models/market-accessibility-signal-profile.js";
+import type { TeamSignalProfileV1 } from "../models/team-signal-profile.js";
 import type { TractionSignalProfileV1 } from "../models/traction-signal-profile.js";
 import type { FinancialCoverageProfileV1 } from "../models/financial-coverage-profile.js";
 import type { FundingStageModelV1 } from "../models/funding-stage-model.js";
@@ -29,6 +30,7 @@ export type StageWeightedScoreInputsV1Args = {
   business_model_signal_v1?: BusinessModelSignalProfileV1 | null;
   market_accessibility_signal_v1?: MarketAccessibilitySignalProfileV1 | null;
   traction_signal_v1?: TractionSignalProfileV1 | null;
+  team_signal_v1?: TeamSignalProfileV1 | null;
   structured_summary?: {
     business_model?: { value?: string | null } | null;
     revenue?: { value?: { amount?: number | null } | null } | null;
@@ -83,6 +85,13 @@ function bandTo01Traction(band: TractionSignalProfileV1["confidence"] | unknown)
 }
 
 function bandTo01Market(band: MarketAccessibilitySignalProfileV1["confidence"] | unknown): number {
+  if (band === "high") return 0.85;
+  if (band === "medium") return 0.6;
+  if (band === "low") return 0.35;
+  return 0.45;
+}
+
+function bandTo01Team(band: TeamSignalProfileV1["confidence"] | unknown): number {
   if (band === "high") return 0.85;
   if (band === "medium") return 0.6;
   if (band === "low") return 0.35;
@@ -260,6 +269,31 @@ export function buildStageWeightedScoreInputsV1(args: StageWeightedScoreInputsV1
     };
   }
 
+  // Team: deterministic TeamSignalProfileV1 (founders + key roles + experience).
+  const team = args.team_signal_v1 ?? null;
+  if (team) {
+    const teamNotes: Array<string | undefined> = [
+      team.founder_count === 0 ? "no_founder" : undefined,
+      team.founder_count === 1 ? "solo_founder" : undefined,
+      !team.key_roles_present?.technical ? "no_technical_lead" : undefined,
+      !team.key_roles_present?.gtm ? "no_gtm_lead" : undefined,
+      !team.prior_startup_experience_present ? "no_prior_experience" : undefined,
+      !team.domain_experience_present ? "no_domain_experience" : undefined,
+      (team.founder_count >= 2 && team.key_roles_present?.technical && team.key_roles_present?.gtm)
+        ? "balanced_team"
+        : undefined,
+      team.prior_exit_present ? "prior_exit_present" : undefined,
+    ];
+
+    signals.team = {
+      key: "team",
+      present: team.founder_count > 0,
+      confidence: clamp01(bandTo01Team(team.confidence)),
+      evidence_ids: [],
+      notes: uniqStrings(teamNotes),
+    };
+  }
+
   // Market, Problem, Solution, Team: v1 defaults (until we add deterministic extractors).
   // Keep them deterministic and conservative.
 
@@ -270,6 +304,7 @@ export function buildStageWeightedScoreInputsV1(args: StageWeightedScoreInputsV1
       bms ? "business_model_signal_v1" : undefined,
       ma ? "market_accessibility_signal_v1" : undefined,
       ts ? "traction_signal_v1" : undefined,
+      team ? "team_signal_v1" : undefined,
     ]),
   };
 }

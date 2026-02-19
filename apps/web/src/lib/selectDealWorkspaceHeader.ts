@@ -51,20 +51,6 @@ const asNonEmptyString = (v: unknown): string | null => {
   return s.length > 0 ? s : null;
 };
 
-const hasEvidenceSources = (sources: unknown): boolean => {
-  if (!Array.isArray(sources) || sources.length === 0) return false;
-  return sources.some((s) => {
-    if (!s || typeof s !== 'object') return false;
-    const docId = typeof (s as any).document_id === 'string'
-      ? (s as any).document_id
-      : typeof (s as any).source_document_id === 'string'
-        ? (s as any).source_document_id
-        : '';
-    const page = (s as any).page_index;
-    return Boolean(String(docId ?? '').trim()) && typeof page === 'number' && Number.isFinite(page);
-  });
-};
-
 const fieldFromUnknown = (input: unknown): HeaderField => {
   const direct = asNonEmptyString(input);
   if (direct) return { value: direct };
@@ -226,6 +212,8 @@ export function selectDealWorkspaceHeader(
     const raiseAmount = typeof raiseAmountRaw === 'number' && Number.isFinite(raiseAmountRaw) ? raiseAmountRaw : null;
     const raiseRoundLabel = asNonEmptyString(structuredRaise?.round_label);
 
+    const kpiRaise = kpis?.raise;
+
     const businessModel = kpis?.business_model;
     const revenue = kpis?.revenue;
     const growth = kpis?.growth;
@@ -237,13 +225,22 @@ export function selectDealWorkspaceHeader(
     const revenueLabel = computeRevenueBadgeLabel(revenue);
     const growthLabel = computeGrowthBadgeLabel(growth);
 
+    const raiseValue = (() => {
+      if (raiseAmount != null) return formatMoney(raiseAmount);
+      return asNonEmptyString(kpiRaise?.value) ?? asNonEmptyString(kpiRaise?.value?.raw) ?? null;
+    })();
+    const raiseLabel = raiseRoundLabel ?? asNonEmptyString(kpiRaise?.label);
+    const raiseSources = Array.isArray(structuredRaise?.sources)
+      ? (structuredRaise.sources as Source[])
+      : (Array.isArray(kpiRaise?.sources) ? (kpiRaise.sources as Source[]) : undefined);
+
     return {
       ready: true,
       raise: {
-        value: raiseAmount != null ? formatMoney(raiseAmount) : null,
+        value: raiseValue,
         // Optional stage/round label is separate from the numeric value.
-        label: raiseAmount != null ? (raiseRoundLabel ?? undefined) : undefined,
-        sources: Array.isArray(structuredRaise?.sources) ? (structuredRaise.sources as Source[]) : undefined,
+        label: raiseValue != null ? (raiseLabel ?? undefined) : undefined,
+        sources: raiseSources,
       },
       business_model_synthesized: {
         value: null,
@@ -260,24 +257,21 @@ export function selectDealWorkspaceHeader(
           : (Array.isArray(businessModel?.sources) ? (businessModel.sources as Source[]) : undefined),
       },
       revenue: {
-        value: hasEvidenceSources(revenue?.sources) ? asNonEmptyString(revenue?.value?.raw) : null,
+        value: asNonEmptyString(revenue?.value?.raw),
         label: revenueLabel,
         sources: Array.isArray(revenue?.sources) ? (revenue.sources as Source[]) : undefined,
       },
       growth: {
-        value: hasEvidenceSources(growth?.sources) ? asNonEmptyString(growth?.value?.raw) : null,
+        value: asNonEmptyString(growth?.value?.raw),
         label: growthLabel,
         sources: Array.isArray(growth?.sources) ? (growth.sources as Source[]) : undefined,
       },
       customers: {
-        value: hasEvidenceSources(customers?.sources)
-          ? (
-              asNonEmptyString(customers?.value?.raw) ??
-              (typeof customers?.value?.count === 'number' && Number.isFinite(customers.value.count)
-                ? `${Math.round(customers.value.count)} customers`
-                : null)
-            )
-          : null,
+        value:
+          asNonEmptyString(customers?.value?.raw) ??
+          (typeof customers?.value?.count === 'number' && Number.isFinite(customers.value.count)
+            ? `${Math.round(customers.value.count)} customers`
+            : null),
         label: asNonEmptyString(customers?.label) ?? undefined,
         sources: Array.isArray(customers?.sources) ? (customers.sources as Source[]) : undefined,
       },

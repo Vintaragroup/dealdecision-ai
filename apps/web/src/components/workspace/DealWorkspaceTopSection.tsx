@@ -16,7 +16,7 @@ export type DealWorkspaceTopSectionProps = {
   } | null;
   dealSummary: string;
   dealSummaryTitle?: string;
-  dealSummarySource?: 'canonical' | 'legacy' | 'overlay';
+  dealSummarySource?: 'canonical' | 'legacy' | 'overlay' | 'degraded';
   strengths: string[];
   weaknesses: string[];
   raise: string | null;
@@ -379,7 +379,11 @@ export function DealWorkspaceTopSection({
               <h3 className="text-sm text-zinc-300">{dealSummaryTitle}</h3>
               {dealSummarySource === 'canonical' ? (
                 <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/15 text-emerald-200 border border-emerald-500/25">
-                  Canonical
+                  Authoritative (deterministic)
+                </span>
+              ) : dealSummarySource === 'degraded' ? (
+                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-amber-500/15 text-amber-200 border border-amber-500/25">
+                  Deterministic (degraded)
                 </span>
               ) : dealSummarySource === 'overlay' ? (
                 <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-blue-500/15 text-blue-200 border border-blue-500/25">

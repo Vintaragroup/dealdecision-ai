@@ -1,5 +1,4 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { DealWorkspace } from '../components/pages/DealWorkspace';
@@ -23,7 +22,6 @@ vi.mock('../lib/apiClient', async (importOriginal) => {
     apiGetDealJobs: vi.fn(async () => []),
     apiGetJob: vi.fn(),
     isLiveBackend: vi.fn(() => true),
-    // Non-critical: keep these as no-ops unless a test asserts on them.
     apiGetEvidence: vi.fn(async () => ({ evidence: [] } as any)),
     apiGetDocuments: vi.fn(async () => ({ documents: [] } as any)),
     apiGetDealReport: vi.fn(async () => ({ ready: false, reason: 'not_generated_yet' } as any)),
@@ -58,7 +56,7 @@ const baseDeal = {
   estimatedSavings: { money: 1000, hours: 10 },
 } as const;
 
-describe('DealWorkspace raise display (canonical)', () => {
+describe('DealWorkspace canonical report binding', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -71,70 +69,88 @@ describe('DealWorkspace raise display (canonical)', () => {
     );
   };
 
-  test('shows amount-only from structured_summary.raise.value_json.amount.amount and renders round_label separately (no concatenation)', async () => {
+  test('binds Raise KPI to compiled report kpis.raise.value and does not allow overlay to replace missing deterministic deal summary', async () => {
     vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: 'v1.0.0',
       dioStatus: 'ready',
       lastAnalyzedAt: '2024-01-02T00:00:00.000Z',
     } as any);
 
-    const { apiGetDealReport } = await import('../lib/apiClient');
+    const { apiGetDealReport, apiGetDealGovernedOverlayPersisted } = await import('../lib/apiClient');
 
     vi.mocked(apiGetDealReport).mockResolvedValueOnce({
       ready: true,
       version: 1,
-      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-raise-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-canonical-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
       report: {
-        dealId: 'deal-raise-1',
+        dealId: 'deal-canonical-1',
         generatedAt: '2024-01-02T00:00:00.000Z',
         version: 1,
         overallScore: 78,
         recommendation: 'yes',
+        // deterministic summary is missing / not-ready → should show deterministic degraded placeholder (not overlay)
+        deal_summary: { ready: false },
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: 'Exec', evidence_ids: [] }],
         structured_summary: {
           raise: {
-            value: '$2M',
-            round_label: 'Pre-Seed',
             value_json: { amount: { amount: 2000000 } },
             sources: [{ document_id: 'doc-1', page_index: 1 }],
           },
-          // Intentionally include legacy/overlay-friendly strings to ensure they do not override canonical amount.
           kpis: {
-            raise: { value: '$2M Pre-Seed', confidence: 0.9, sources: [{ document_id: 'doc-legacy', page_index: 1 }] },
-            revenue: { value: { raw: '$1.2M' }, sources: [] },
-            customers: { value: { count: 450, kind: 'customers', raw: null }, sources: [] },
-            growth: { value: { raw: '50% YoY' }, sources: [] },
-            business_model: { value: 'SaaS', sources: [] },
+            raise: {
+              value: '$2M',
+              sources: [{ document_id: 'doc-kpi', page_index: 1 }],
+            },
           },
         },
         metadata: {
-          score_explanation: {
-            context: {
-              stage: 'in_diligence',
-              // Another drift source: should never be used when canonical numeric is present.
-              raise: 'Pre-Seed $2M',
-            },
-          },
           score_band_v2: { key: 'good', label: 'Good', overall_score: 78, thresholds_version: 'v2' },
         },
       },
     } as any);
 
-    renderWorkspace('deal-raise-1');
+    const overlayHeroSentence = 'OVERLAY HERO SENTENCE — SHOULD NOT BE PRIMARY';
+    vi.mocked(apiGetDealGovernedOverlayPersisted).mockResolvedValueOnce({
+      overview: {
+        created_at: new Date(0).toISOString(),
+        llm_phase_mode: 'v1',
+        overview_json: JSON.stringify({
+          phase1: {
+            deal_summary_v2: {
+              summary: {
+                one_liner: overlayHeroSentence,
+                paragraphs: [overlayHeroSentence],
+              },
+              strengths: [],
+              risks: [],
+              open_questions: [],
+            },
+            deal_overview_v2: {},
+          },
+        }),
+      },
+    } as any);
+
+    renderWorkspace('deal-canonical-1');
 
     const top = await screen.findByLabelText('Deal top summary');
+
+    await waitFor(() => {
+      const raiseLabel = within(top).getByText(/^Raise$/i);
+      const raiseCard = raiseLabel.parentElement;
+      expect(raiseCard).not.toBeNull();
+      expect(within(raiseCard as HTMLElement).getByText('$2M')).toBeInTheDocument();
+    });
+
+    // Raise is sourced from the compiled report (KPI block) and never rendered as "—".
     const raiseLabel = within(top).getByText(/^Raise$/i);
     const raiseCard = raiseLabel.parentElement;
     expect(raiseCard).not.toBeNull();
+    expect(within(raiseCard as HTMLElement).getByText('$2M')).toBeInTheDocument();
 
-    expect(within(raiseCard as HTMLElement).getByText(/^\$2M$/i)).toBeInTheDocument();
-    expect(within(raiseCard as HTMLElement).getByText(/^Pre-Seed$/i)).toBeInTheDocument();
-    expect(within(raiseCard as HTMLElement).queryByText(/\$2M\s*Pre-Seed/i)).toBeNull();
-
-    // Sanity check: overview still loads.
-    await userEvent.click(screen.getByRole('tab', { name: /^overview$/i }));
-    await waitFor(() => {
-      expect(screen.getByTestId('key-fact-raise')).toBeInTheDocument();
-    });
+    // Primary Deal Summary must not render overlay hero sentence when deterministic summary is missing.
+    expect(within(top).queryByText(overlayHeroSentence)).toBeNull();
+    expect(within(top).getByText('Deterministic deal summary unavailable.')).toBeInTheDocument();
+    expect(within(top).getByText(/Deterministic \(degraded\)/i)).toBeInTheDocument();
   });
 });

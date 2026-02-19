@@ -12,7 +12,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Pool } from 'pg';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { compileDIOToReport, compileDIOToReportWithPromotedFacts } from '@dealdecision/core';
+import { buildDeterministicDealSummaryV1FromStructuredSummary, compileDIOToReport, compileDIOToReportWithPromotedFacts } from '@dealdecision/core';
 import { buildDeterministicScoreInputsV1 } from '@dealdecision/core';
 import { computeDecisionV1, computeHardPassGuardrailV2, getScoreBandV2 } from '@dealdecision/core';
 import { LlmNarrationV1Schema, degradeNarrationV1, validateNoNewFacts } from '@dealdecision/core';
@@ -2414,6 +2414,18 @@ export async function registerReportRoutes(
             }
           } catch (err) {
             request.log.warn({ event: 'deal.report.structured_summary_extras_failed', deal_id, dio_id: row.dio_id, err }, 'structured_summary extras compilation failed');
+          }
+
+          // Deterministic deal_summary_v1: KPI-locked synthesis from structured_summary.
+          // Goal: provide stable hero/overview/deep and citations without overlay drift.
+          try {
+            if (report && typeof report === 'object' && (report as any).structured_summary && typeof (report as any).structured_summary === 'object') {
+              (report as any).deal_summary_v1 = buildDeterministicDealSummaryV1FromStructuredSummary({
+                structured_summary: (report as any).structured_summary,
+              });
+            }
+          } catch (err) {
+            request.log.warn({ event: 'deal.report.deal_summary_v1_failed', deal_id, dio_id: row.dio_id, err }, 'deal_summary_v1 synthesis failed');
           }
 
           // Deterministic synthesized business model summary (non-promoted, node-derived).

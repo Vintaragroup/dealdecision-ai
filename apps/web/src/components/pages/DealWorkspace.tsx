@@ -19,6 +19,8 @@ import { DealWorkspaceTopSection } from '../workspace/DealWorkspaceTopSection';
 import { DealWorkspaceOverviewComp } from '../workspace/dealworkspace_overview_comp';
 import { selectDealWorkspaceHeader } from '../../lib/selectDealWorkspaceHeader';
 import { selectAuthoritativeBusinessModelV1 } from '../../lib/selectors/selectAuthoritativeBusinessModelV1';
+import { selectAuthoritativeProductSummaryV1 } from '../../lib/selectors/selectAuthoritativeProductSummaryV1';
+import { selectAuthoritativeMarketSummaryV1 } from '../../lib/selectors/selectAuthoritativeMarketSummaryV1';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
 import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealAnalysisDiagnostics, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness, type DealAnalysisDiagnosticsSnapshot } from '../../lib/apiClient';
 import { useGovernedLlmOverview } from '../../hooks/useGovernedLlmOverview';
@@ -383,113 +385,90 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   type StageBadgeStatus = 'not_started' | 'running' | 'failed' | 'complete';
 
   const getLatestStageStatus = (
-    rows: DealJobRowV2[],
-    stageType: string,
-    opts?: {
-      sinceCreatedMs?: number | null;
-      cutoffStageType?: string;
-    }
+    rows: DealJobRowV2[] | null | undefined,
+    jobType: string,
+    opts?: { cutoffStageType?: string }
   ): { status: StageBadgeStatus; job: DealJobRowV2 | null } => {
-    const desired = String(stageType ?? '').trim().toLowerCase();
-    if (!desired) return { status: 'not_started', job: null };
+    const arr = Array.isArray(rows) ? rows : [];
 
-    const normalizedRows = Array.isArray(rows) ? rows : [];
-    const matchesStage = (r: DealJobRowV2): boolean => {
-      const t = String(r.type ?? '').trim().toLowerCase();
-      const q = String(r.queue ?? '').trim().toLowerCase();
-      return t === desired || q === desired;
-    };
-
-    const cutoffType = opts?.cutoffStageType ? String(opts.cutoffStageType).trim().toLowerCase() : '';
-    const cutoffMsFromJobs = (() => {
-      if (!cutoffType) return null;
-      let best: number | null = null;
-      for (const r of normalizedRows) {
-        const t = String(r.type ?? '').trim().toLowerCase();
-        const q = String(r.queue ?? '').trim().toLowerCase();
-        if (t !== cutoffType && q !== cutoffType) continue;
-        const createdMs = parseIsoMs(r.created_at ?? null) ?? parseIsoMs(r.updated_at ?? null);
-        if (createdMs == null) continue;
-        if (best == null || createdMs > best) best = createdMs;
-      }
-      return best;
-    })();
-
-    const sinceMs = typeof opts?.sinceCreatedMs === 'number' ? opts.sinceCreatedMs : cutoffMsFromJobs;
-
-    const candidates: Array<{ row: DealJobRowV2; createdMs: number }> = [];
-    for (const r of normalizedRows) {
-      if (!matchesStage(r)) continue;
-      const createdMs = parseIsoMs(r.created_at ?? null) ?? parseIsoMs(r.updated_at ?? null);
-      if (createdMs == null) continue;
-      if (typeof sinceMs === 'number' && createdMs < sinceMs) continue;
-      candidates.push({ row: r, createdMs });
+    let cutoffMs: number | null = null;
+    const cutoffType = opts?.cutoffStageType;
+    if (cutoffType) {
+      const latestCutoff = arr
+        .filter((r) => (r.type ?? '') === cutoffType)
+        .sort((a, b) => parseJobSortTs(b) - parseJobSortTs(a))[0];
+      const cutoffCandidateMs = parseIsoMs(latestCutoff?.created_at ?? null);
+      cutoffMs = cutoffCandidateMs ?? null;
     }
 
-    if (candidates.length === 0) return { status: 'not_started', job: null };
-    candidates.sort((a, b) => b.createdMs - a.createdMs);
-    const latest = candidates[0]?.row ?? null;
-    const normalizedStatus = String(latest?.status ?? '').toLowerCase();
+    const candidates = arr.filter((r) => {
+      if ((r.type ?? '') !== jobType) return false;
+      if (cutoffMs == null) return true;
+      const createdMs = parseIsoMs(r.created_at ?? null) ?? parseJobSortTs(r);
+      return createdMs >= cutoffMs;
+    });
 
-    if (normalizedStatus === 'succeeded' || normalizedStatus === 'succeeded_with_warnings') {
-      return { status: 'complete', job: latest };
+    if (candidates.length === 0) {
+      return { status: 'not_started', job: null };
     }
-    if (normalizedStatus === 'failed') return { status: 'failed', job: latest };
-    if (normalizedStatus === 'running' || normalizedStatus === 'queued' || normalizedStatus === 'retrying') {
-      return { status: 'running', job: latest };
-    }
-    // Unknown statuses: treat as running (best-effort) to avoid false “Not started”.
-    return { status: 'running', job: latest };
+
+    const latest = [...candidates].sort((a, b) => parseJobSortTs(b) - parseJobSortTs(a))[0] ?? null;
+    const status = latest
+      ? isSucceededJobStatus(latest.status)
+        ? 'complete'
+        : isFailedJobStatus(latest.status)
+          ? 'failed'
+          : isRunningOrRetryingJobStatus(latest.status)
+            ? 'running'
+            : 'running'
+      : 'not_started';
+
+    return { status, job: latest };
   };
 
-  const dealJobsById = useMemo(() => {
-    const map = new Map<string, DealJobRowV2>();
-    for (const row of dealJobs) map.set(row.job_id, row);
-    return map;
-  }, [dealJobs]);
+  // Full-process UX uses the extract_visuals job as the anchor for the run window.
+  // (Alias kept for historical naming; `fullProcessExtractJobId` is the actual state.)
+  const fullProcessRunExtractJobId = fullProcessExtractJobId;
 
   const pinnedJobRow = useMemo(() => {
     if (!jobId) return null;
-    return dealJobsById.get(jobId) ?? null;
-  }, [dealJobsById, jobId]);
+    const rows = Array.isArray(dealJobs) ? dealJobs : [];
+    return rows.find((r) => r.job_id === jobId) ?? null;
+  }, [dealJobs, jobId]);
 
-  const fullProcessRunExtractJobId = fullProcessExtractJobId ?? fullProcessUi?.steps?.extract_visuals?.job_id ?? null;
+  const pinnedIsAnalyze = Boolean(pinnedJobRow && (pinnedJobRow.type ?? '') === 'analyze_deal');
 
   const derivedAnalyzeForRun = useMemo(() => {
-    if (!fullProcessRunExtractJobId) return { job: null as DealJobRowV2 | null, treatFailedAsPending: false };
-    const window = getFullProcessRunWindowMs();
-    if (!window) return { job: null as DealJobRowV2 | null, treatFailedAsPending: false };
+    const extractJobIdForRun = fullProcessRunExtractJobId;
+    const window = extractJobIdForRun ? getFullProcessRunWindowMs() : null;
+    if (!window) {
+      return { job: null as DealJobRowV2 | null, treatFailedAsPending: false };
+    }
 
-    const job = selectAnalyzeJobInWindow(dealJobs, window);
-    if (!job) return { job: null as DealJobRowV2 | null, treatFailedAsPending: false };
-
+    const rows = Array.isArray(dealJobs) ? dealJobs : [];
+    const best = selectAnalyzeJobInWindow(rows, window);
     const treatFailedAsPending =
-      (job.type ?? '') === 'analyze_deal' &&
-      isFailedJobStatus(job.status) &&
-      // Only suppress the known fast-fail during the run.
-      isSupersedableAnalyzeFailure(job) &&
-      // Treat as pending while Full process is active, or shortly after extraction finishes.
+      !!best &&
+      (best.type ?? '') === 'analyze_deal' &&
+      isFailedJobStatus(best.status) &&
+      isSupersedableAnalyzeFailure(best) &&
       (isFullProcessActive || shouldTreatRunAnalyzeFailureAsPending({ extractFinishedAt: fullProcessExtractFinishedAt ?? null }));
 
-    return { job, treatFailedAsPending };
-  }, [dealJobs, fullProcessExtractCreatedAt, fullProcessExtractFinishedAt, fullProcessRunExtractJobId, isFullProcessActive, jobUpdatedAt]);
-
-  const pinnedIsAnalyze = jobType === 'analyze_deal' || (pinnedJobRow?.type ?? null) === 'analyze_deal';
+    return { job: best, treatFailedAsPending };
+  }, [dealJobs, fullProcessExtractCreatedAt, fullProcessExtractFinishedAt, fullProcessRunExtractJobId, isFullProcessActive]);
 
   const selectedAnalyzeJobForPinned = useMemo(() => {
     if (!pinnedIsAnalyze) return null;
-    // During Full process, only override pinned failed analyzes when a succeeded analyze exists within the run window.
-    if (fullProcessRunExtractJobId) {
-      const pinned = pinnedJobRow;
-      if (pinned && isFailedJobStatus(pinned.status) && derivedAnalyzeForRun.job && isSucceededJobStatus(derivedAnalyzeForRun.job.status)) {
-        if (parseJobSortTs(derivedAnalyzeForRun.job) > parseJobSortTs(pinned)) {
-          return derivedAnalyzeForRun.job;
-        }
-      }
-      return selectBestAnalyzeJob(dealJobs, jobId);
+
+    // If we're in the middle of a full-process run, follow the best analyze job in that run window.
+    if (isFullProcessActive && fullProcessRunExtractJobId && derivedAnalyzeForRun.job) {
+      return derivedAnalyzeForRun.job;
     }
-    return selectBestAnalyzeJob(dealJobs, jobId);
-  }, [dealJobs, derivedAnalyzeForRun.job, fullProcessRunExtractJobId, jobId, pinnedIsAnalyze, pinnedJobRow]);
+
+    // Otherwise keep the pinned analyze job (if present), or fall back to the newest analyze job.
+    if (pinnedJobRow) return pinnedJobRow;
+    return selectBestAnalyzeJob(Array.isArray(dealJobs) ? dealJobs : [], jobId);
+  }, [dealJobs, derivedAnalyzeForRun.job, fullProcessRunExtractJobId, isFullProcessActive, jobId, pinnedIsAnalyze, pinnedJobRow]);
 
   const activeJobId = pinnedIsAnalyze ? (selectedAnalyzeJobForPinned?.job_id ?? jobId) : jobId;
 
@@ -2142,12 +2121,29 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return out.slice(0, 6);
   })();
 
-  // Deterministic deal_summary_v1 from /report (derived from segmented DPU nodes).
-  // UI rule: use canonical only when deal_summary.ready=true; otherwise show legacy and label it.
+  // Deterministic deal_summary_v1 from /report (KPI-locked synthesis).
+  // UI rule: use canonical only when *.ready=true; otherwise show deterministic degraded placeholder.
   const canonicalDealSummaryV1 = reportReady
-    ? ((reportFromApi as any)?.deal_summary ?? (reportFromApi as any)?.report?.deal_summary ?? null)
+    ? (
+        (reportFromApi as any)?.deal_summary_v1 ??
+        (reportFromApi as any)?.report?.deal_summary_v1 ??
+        (reportFromApi as any)?.deal_summary ??
+        (reportFromApi as any)?.report?.deal_summary ??
+        null
+      )
     : null;
   const canonicalDealSummaryReady = canonicalDealSummaryV1 && typeof canonicalDealSummaryV1 === 'object' && (canonicalDealSummaryV1 as any).ready === true;
+
+  const authoritativeProductSummaryV1 = useMemo(() => {
+    return selectAuthoritativeProductSummaryV1((reportFromApi as any) ?? null);
+  }, [reportFromApi]);
+
+  const authoritativeMarketSummaryV1 = useMemo(() => {
+    return selectAuthoritativeMarketSummaryV1((reportFromApi as any) ?? null);
+  }, [reportFromApi]);
+
+  const authoritativeProductTextV1 = authoritativeProductSummaryV1.value ?? '';
+  const authoritativeMarketTextV1 = authoritativeMarketSummaryV1.value ?? '';
 
   const canonicalTiers = canonicalDealSummaryReady && (canonicalDealSummaryV1 as any)?.tiers && typeof (canonicalDealSummaryV1 as any).tiers === 'object'
     ? (canonicalDealSummaryV1 as any).tiers
@@ -2931,8 +2927,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return null;
   })();
 
-  const overviewProductCanonical = canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : overviewProduct;
-  const overviewMarketIcpCanonical = canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : overviewMarketIcp;
+  const overviewProductCanonical = authoritativeProductTextV1 || (canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : overviewProduct);
+  const overviewMarketIcpCanonical = authoritativeMarketTextV1 || (canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : overviewMarketIcp);
   const overviewBusinessModelCanonical = authoritativeBusinessModel.value || (reportView.applied ? reportView.businessModel : overviewBusinessModel);
   const overviewRaiseTermsCanonical = reportStructuredRaise || (reportView.applied ? reportView.raise : overviewRaiseTerms);
   const splitTierDeepToParagraphs = (raw: string): string[] => {
@@ -2949,7 +2945,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const overviewDealOneLinerCanonical = (() => {
     if (canonicalDealSummaryReady) {
-      // Prefer the dedicated overview tier (1–2 short paragraphs).
+      // Prefer tier hero/mid/long deterministically.
+      if (canonicalTierHero) return canonicalTierHero;
       if (canonicalTierOverview) return canonicalTierOverview;
       // Fallback only if the tier is missing.
       if (canonicalDealOneLiner) return canonicalDealOneLiner;
@@ -2959,8 +2956,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const overviewDealSummaryParagraphsCanonical: string[] = (() => {
     if (canonicalDealSummaryReady) {
+      const out: string[] = [];
+      if (canonicalTierOverview) out.push(canonicalTierOverview);
       const fromTier = canonicalTierDeep ? splitTierDeepToParagraphs(canonicalTierDeep) : [];
-      if (fromTier.length > 0) return fromTier;
+      out.push(...fromTier);
+      if (out.length > 0) return out.slice(0, 6);
       // Fallback only if the deep tier is missing.
       if (canonicalParagraphs.length > 0) return canonicalParagraphs;
     }
@@ -3229,12 +3229,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     };
 
     const product = chooseGovernedFirst({
-      deterministic: canonicalDealSummaryReady ? canonicalProduct : overviewProductCanonical,
+      deterministic: overviewProductCanonical,
       overlay: ovFacts ? { value: ovFacts.product_solution?.value ?? null, quality: ovFacts.product_solution?.quality, source: ovFacts.product_solution?.source } : null,
+      preferDeterministic: Boolean(authoritativeProductTextV1),
     });
     const market = chooseGovernedFirst({
-      deterministic: canonicalDealSummaryReady ? canonicalMarket : overviewMarketIcpCanonical,
+      deterministic: overviewMarketIcpCanonical,
       overlay: ovFacts ? { value: ovFacts.market_icp?.value ?? null, quality: ovFacts.market_icp?.quality, source: ovFacts.market_icp?.source } : null,
+      preferDeterministic: Boolean(authoritativeMarketTextV1),
     });
     const businessModel = chooseGovernedFirst({
       deterministic: overviewBusinessModelCanonical,
@@ -3250,7 +3252,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     });
 
     return { product, market, businessModel, raise };
-  }, [workspaceMirrorVM, canonicalDealSummaryReady, canonicalProduct, canonicalMarket, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready]);
+  }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, authoritativeProductTextV1, authoritativeMarketTextV1]);
 
   const lastWorkspaceSourcesLogRef = useRef<string | null>(null);
   useEffect(() => {
@@ -3408,8 +3410,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     return {
       one_liner: toRefsOrEmpty(refBlock?.deal_one_liner),
-      product: governedKeyFacts.product.provenance.source === 'governed' ? toRefsOrUndefined(facts?.product_solution?.evidence_refs) : undefined,
-      market: governedKeyFacts.market.provenance.source === 'governed' ? toRefsOrUndefined(facts?.market_icp?.evidence_refs) : undefined,
+      product: governedKeyFacts.product.provenance.source === 'governed'
+        ? toRefsOrUndefined(facts?.product_solution?.evidence_refs)
+        : (authoritativeProductSummaryV1.sources.length > 0 ? authoritativeProductSummaryV1.sources : undefined),
+      market: governedKeyFacts.market.provenance.source === 'governed'
+        ? toRefsOrUndefined(facts?.market_icp?.evidence_refs)
+        : (authoritativeMarketSummaryV1.sources.length > 0 ? authoritativeMarketSummaryV1.sources : undefined),
       businessModel: governedKeyFacts.businessModel.provenance.source === 'governed' ? toRefsOrUndefined(facts?.business_model?.evidence_refs) : undefined,
       raise: governedKeyFacts.raise.provenance.source === 'governed' ? toRefsOrUndefined(facts?.raise?.evidence_refs) : undefined,
       strengths: toRefsOrEmpty(refBlock?.strengths),
@@ -3417,7 +3423,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       open_questions: toRefsOrEmpty(refBlock?.open_questions),
       traction: toRefsOrEmpty(refBlock?.traction),
     };
-  }, [workspaceMirrorVM, governedKeyFacts]);
+  }, [workspaceMirrorVM, governedKeyFacts, authoritativeProductSummaryV1.sources, authoritativeMarketSummaryV1.sources]);
 
   const governedDealOneLinerDisplay = useMemo(() => {
     // Priority:
@@ -3438,64 +3444,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return 'Not extracted';
   }, [workspaceMirrorVM, governedOverview.overview, canonicalTierOverview, canonicalTierHero]);
 
-  const overlayListsWellFormed = overlayStrengths.length > 0 && overlayOpenItems.length > 0;
-
-  const heroDet = useMemo(() => {
-    return {
-      dealSummaryText: reportView.dealSummary,
-      dealSummaryTitle: reportView.dealSummaryTitle,
-      dealSummarySource: reportView.dealSummarySource as 'canonical' | 'legacy',
-      strengths: topSectionStrengths,
-      weaknesses: topSectionWeaknesses,
-      raise: selectedHeader.raise.value,
-      revenue: selectedHeader.revenue.value,
-      growth: selectedHeader.growth.value,
-      customers: selectedHeader.customers.value,
-      businessModel: selectedHeader.business_model.value,
-    };
-  }, [reportView, topSectionStrengths, topSectionWeaknesses, selectedHeader]);
-
-  const heroOverlay = useMemo(() => {
-    return {
-      dealSummaryText: overlayOneLiner,
-      dealSummaryTitle: 'Deal Summary',
-      dealSummarySource: 'overlay' as const,
-      strengths: overlayListsWellFormed ? overlayStrengths : topSectionStrengths,
-      weaknesses: overlayListsWellFormed ? overlayOpenItems : topSectionWeaknesses,
-      raise: overlayRaiseTerms,
-      revenue: overlayVM.kpis.revenue?.value ?? null,
-      growth: overlayVM.kpis.growth?.value ?? null,
-      customers: overlayVM.kpis.customers?.value ?? null,
-      businessModel: overlayBusinessModel,
-    };
-  }, [overlayOneLiner, overlayListsWellFormed, overlayStrengths, overlayOpenItems, topSectionStrengths, topSectionWeaknesses, overlayVM, overlayRaiseTerms, overlayBusinessModel]);
-
-  const heroMerged = useMemo(() => {
-    const base = useOverlayForHero ? heroOverlay : heroDet;
-
-    const raise = selectedHeader.ready
-      ? { value: heroDet.raise, conflict: false, overlayValueIfConflicted: null }
-      : buildHeroFact({ key: 'raise', det: heroDet.raise, overlay: heroOverlay.raise });
-    const revenue = buildHeroFact({ key: 'revenue', det: heroDet.revenue, overlay: heroOverlay.revenue });
-    const growth = buildHeroFact({ key: 'growth', det: heroDet.growth, overlay: heroOverlay.growth });
-    const customers = buildHeroFact({ key: 'customers', det: heroDet.customers, overlay: heroOverlay.customers });
-    const businessModel = buildHeroFact({ key: 'business_model', det: heroDet.businessModel, overlay: heroOverlay.businessModel });
-
-    return {
-      dealSummaryText: base.dealSummaryText,
-      dealSummaryTitle: base.dealSummaryTitle,
-      dealSummarySource: base.dealSummarySource,
-      strengths: base.strengths,
-      weaknesses: base.weaknesses,
-      raise,
-      revenue,
-      growth,
-      customers,
-      businessModel,
-    };
-  }, [useOverlayForHero, heroDet, heroOverlay, selectedHeader.ready]);
-
-  const dealSummarySourceLabel = canonicalDealSummaryReady ? 'Canonical' : 'Legacy';
+  const dealSummarySourceLabel = canonicalDealSummaryReady ? 'Authoritative (deterministic)' : 'Legacy';
 
   useEffect(() => {
     if (!debugApiIsEnabled()) return;
@@ -6020,44 +5969,50 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   hardPassGuardrailNote={safeText((reportMeta as any)?.hard_pass_guardrail_v2?.note)}
                   hardPassGuardrailCriteriaSnapshot={(reportMeta as any)?.hard_pass_guardrail_v2?.criteria_snapshot ?? null}
                   decisionV1={(reportMeta as any)?.decision_v1 ?? null}
-                  dealSummary={heroMerged.dealSummaryText}
-                  dealSummaryTitle={heroMerged.dealSummaryTitle}
-                  dealSummarySource={heroMerged.dealSummarySource === 'overlay' ? 'overlay' : heroMerged.dealSummarySource}
-                  strengths={heroMerged.strengths}
-                  weaknesses={heroMerged.weaknesses}
-                  raise={heroMerged.raise.value}
+                  dealSummary={(() => {
+                    if (!canonicalDealSummaryReady) return 'Deterministic deal summary unavailable.';
+
+                    const parts = [canonicalTierHero, canonicalTierOverview, canonicalTierDeep]
+                      .map((s) => safeText(s))
+                      .filter((s) => s.length > 0);
+
+                    // Render hero/mid/long as separate paragraphs.
+                    if (parts.length > 0) return parts.join('\n\n');
+
+                    const fallback = safeText(canonicalDealOneLiner) || canonicalParagraphs[0] || '';
+                    return fallback || 'Deterministic deal summary unavailable.';
+                  })()}
+                  dealSummaryTitle={'Deal Summary'}
+                  dealSummarySource={canonicalDealSummaryReady ? 'canonical' : 'degraded'}
+                  strengths={topSectionStrengths}
+                  weaknesses={topSectionWeaknesses}
+                  raise={selectedHeader.ready ? (selectedHeader.raise.value ?? null) : null}
                   raiseLabel={selectedHeader.ready ? (selectedHeader.raise.label ?? null) : null}
-                  raiseConflict={heroMerged.raise.conflict}
-                  raiseConflictOverlayValue={heroMerged.raise.overlayValueIfConflicted}
-                  revenue={heroMerged.revenue.value}
+                  raiseConflict={false}
+                  raiseConflictOverlayValue={null}
+                  revenue={selectedHeader.ready ? (selectedHeader.revenue.value ?? null) : null}
                   revenueLabel={reportStructuredRevenueLabel}
-                  revenueTooltip={heroMerged.revenue.conflict
-                    ? `Conflict detected — overlay: ${heroMerged.revenue.overlayValueIfConflicted ?? '—'} · deterministic: ${heroMerged.revenue.value ?? '—'}`
-                    : reportStructuredRevenueTooltip}
-                  revenueConflict={heroMerged.revenue.conflict}
-                  revenueConflictOverlayValue={heroMerged.revenue.overlayValueIfConflicted}
-                  growth={heroMerged.growth.value}
+                  revenueTooltip={reportStructuredRevenueTooltip}
+                  revenueConflict={false}
+                  revenueConflictOverlayValue={null}
+                  growth={selectedHeader.ready ? (safeText(reportStructuredGrowthValue) || selectedHeader.growth.value || null) : null}
                   growthLabel={reportStructuredGrowthLabel}
                   growthNote={reportStructuredGrowthNote}
-                  growthTooltip={heroMerged.growth.conflict
-                    ? `Conflict detected — overlay: ${heroMerged.growth.overlayValueIfConflicted ?? '—'} · deterministic: ${heroMerged.growth.value ?? '—'}`
-                    : reportStructuredGrowthTooltip}
-                  growthConflict={heroMerged.growth.conflict}
-                  growthConflictOverlayValue={heroMerged.growth.overlayValueIfConflicted}
-                  customers={heroMerged.customers.value}
+                  growthTooltip={reportStructuredGrowthTooltip}
+                  growthConflict={false}
+                  growthConflictOverlayValue={null}
+                  customers={selectedHeader.ready ? (selectedHeader.customers.value ?? null) : null}
                   customersLabel={reportStructuredCustomersLabel}
-                  customersTooltip={heroMerged.customers.conflict
-                    ? `Conflict detected — overlay: ${heroMerged.customers.overlayValueIfConflicted ?? '—'} · deterministic: ${heroMerged.customers.value ?? '—'}`
-                    : reportStructuredCustomersTooltip}
-                  customersConflict={heroMerged.customers.conflict}
-                  customersConflictOverlayValue={heroMerged.customers.overlayValueIfConflicted}
-                  businessModel={heroMerged.businessModel.value}
+                  customersTooltip={reportStructuredCustomersTooltip}
+                  customersConflict={false}
+                  customersConflictOverlayValue={null}
+                  businessModel={selectedHeader.ready ? (selectedHeader.business_model.value ?? null) : null}
                   businessModelLabel={selectedHeader.business_model.label ?? null}
                   businessModelTooltip={authoritativeBusinessModel.is_arbitrated
                     ? `Evidence-backed arbitration${typeof authoritativeBusinessModel.confidence === 'number' ? ` (confidence ${Math.round(authoritativeBusinessModel.confidence * 100)}%)` : ''}`
                     : null}
-                  businessModelConflict={heroMerged.businessModel.conflict}
-                  businessModelConflictOverlayValue={heroMerged.businessModel.overlayValueIfConflicted}
+                  businessModelConflict={false}
+                  businessModelConflictOverlayValue={null}
                   dealType={reportView.dealType}
                   confidence={topSectionConfidence}
                   verified={decisionTileConfidenceBand === 'high'}
@@ -6910,7 +6865,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Overview (governed overlay)</div>
+                        <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Overlay (non-authoritative)</div>
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('muted')}`}>
                             phase: {String(governedOverview.llm_phase_mode ?? '—')}
@@ -6936,7 +6891,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                             onClick={() => setShowGovernedOverlayPanel((v) => !v)}
                             className="text-xs"
                           >
-                            {showGovernedOverlayPanel ? 'Hide governed overlay' : 'Show governed overlay'}
+                            {showGovernedOverlayPanel ? 'Hide overlay' : 'Show overlay'}
                           </Button>
                         ) : null}
                         <Button
@@ -6959,7 +6914,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
                     {governedOverlayDegraded ? (
                       <div className={`mt-4 rounded-lg border p-3 ${darkMode ? 'bg-amber-500/5 border-amber-500/40 text-amber-200' : 'bg-amber-50 border-amber-200/70 text-amber-800'}`}>
-                        Governed overlay is degraded — deterministic output is shown by default.
+                        Overlay is degraded — deterministic output is shown by default.
                       </div>
                     ) : null}
 
@@ -6999,7 +6954,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                           dealSummaryOpenQuestionsEvidenceRefs={governedKeyFactEvidenceRefs.open_questions}
                           dealSummaryTractionSignalsEvidenceRefs={governedKeyFactEvidenceRefs.traction}
                           kpiTiles={overlayKpiTiles}
-                          dealSummarySourceLabel={'Governed'}
+                          dealSummarySourceLabel={'Overlay (non-authoritative)'}
                           score0_100={decisionTileScore0_100 ?? displayScore ?? investorScore}
                           decisionLabel={decisionTileLabel}
                           confidenceLabel={`${decisionTileConfidenceLabelShort} confidence`}
@@ -7035,7 +6990,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Governed overlay</div>
+                        <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Overlay (non-authoritative)</div>
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass(governedOverlayDegraded ? 'warning' : 'muted')}`}>
                             phase: {String(governedOverview.llm_phase_mode ?? '—')}
@@ -7080,7 +7035,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         </div>
                       ) : (
                         <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                          Governed overlay is degraded — deterministic output is shown by default.
+                          Overlay is degraded — deterministic output is shown by default.
                         </div>
                       )}
                     </div>

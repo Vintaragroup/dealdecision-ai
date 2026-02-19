@@ -242,6 +242,13 @@ describe('DealWorkspace Job Center (live mode)', () => {
         overallScore: 50,
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: exec, evidence_ids: [] }],
+        deal_summary: {
+          version: 'deal_summary_v1',
+          ready: true,
+          tiers: { hero: exec, overview: '', deep: '' },
+          one_liner: { text: exec, sources: [] },
+          paragraphs: [{ text: exec, sources: [] }],
+        },
         structured_summary: {
           raise: {
             value: '$2M',
@@ -276,12 +283,10 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
     renderWorkspace({ dealId: 'deal-rpt-bind-1' });
 
+    const top = await screen.findByLabelText('Deal top summary');
     await waitFor(() => {
-      expect(screen.getAllByText(exec).length).toBeGreaterThan(0);
+      expect(within(top).getAllByText(exec).length).toBeGreaterThan(0);
     });
-
-    const top = screen.getByLabelText('Deal top summary');
-    expect(within(top).getByRole('heading', { name: 'Executive Summary' })).toBeInTheDocument();
 
     // Gauge uses /report overallScore.
     expect(screen.getByRole('img', { name: /50 out of 100/i })).toBeInTheDocument();
@@ -289,7 +294,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     // Score band badge should render in the top section.
     expect(within(top).getAllByText(/Consider \(Caution\)/i).length).toBeGreaterThan(0);
 
-    // Top summary uses executive-summary section content when canonical deal_summary_v1 is not ready.
+    // Deal Summary is deterministic-first and comes from /report deal_summary_v1 when ready.
     expect(within(top).getAllByText(exec).length).toBeGreaterThan(0);
 
     // Stage badge prefers report metadata context.stage.
@@ -539,6 +544,13 @@ describe('DealWorkspace Job Center (live mode)', () => {
         overallScore: 10,
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: exec, evidence_ids: [] }],
+        deal_summary: {
+          version: 'deal_summary_v1',
+          ready: true,
+          tiers: { hero: exec, overview: '', deep: '' },
+          one_liner: { text: exec, sources: [] },
+          paragraphs: [{ text: exec, sources: [] }],
+        },
         structured_summary: {
           raise: {
             value: '$2M',
@@ -763,7 +775,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(within(top).getByText(/CANON HERO \(top\)/i)).toBeInTheDocument();
     expect(within(top).queryByText(/LEGACY EXEC SUMMARY/i)).toBeNull();
 
-    expect(screen.getAllByText('Canonical').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Authoritative \(deterministic\)/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/Product:\s*/i)).toBeInTheDocument();
     expect(screen.getByText('CANON product')).toBeInTheDocument();
     expect(screen.getByText('CANON market')).toBeInTheDocument();
@@ -827,7 +839,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(screen.queryByRole('button', { name: /view citations/i })).toBeNull();
   });
 
-  test('Top summary does not render literal \\n\\n sequences from executive summary content', async () => {
+  test('Top summary does not render literal \\n\\n sequences from deterministic deal summary content', async () => {
     vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: 'v1.0.0',
       dioStatus: 'ready',
@@ -835,7 +847,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     } as any);
 
     const { apiGetDealReport } = await import('../lib/apiClient');
-    const exec = 'Overall Score: 50/100\\n\\nRecommendation: PASS';
+    const exec = 'Overall Score: 50/100\\n\\nSecond line should render normally.';
 
     vi.mocked(apiGetDealReport).mockResolvedValueOnce({
       ready: true,
@@ -848,6 +860,13 @@ describe('DealWorkspace Job Center (live mode)', () => {
         overallScore: 50,
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: exec, evidence_ids: [] }],
+        deal_summary: {
+          version: 'deal_summary_v1',
+          ready: true,
+          tiers: { hero: exec, overview: '', deep: '' },
+          one_liner: { text: exec, sources: [] },
+          paragraphs: [{ text: exec, sources: [] }],
+        },
         metadata: { cycle_number: 1 },
       },
     } as any);
@@ -857,7 +876,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     const top = await screen.findByLabelText('Deal top summary');
     expect(top.textContent || '').not.toContain('\\n\\n');
     expect(within(top).getByText(/Overall Score: 50\/100/i)).toBeInTheDocument();
-    expect(within(top).queryByText(/Recommendation: PASS/i)).toBeNull();
+    expect(within(top).getByText(/Second line should render normally\./i)).toBeInTheDocument();
   });
 
   test('When decision_v1 exists, top summary never shows legacy section recommendation', async () => {

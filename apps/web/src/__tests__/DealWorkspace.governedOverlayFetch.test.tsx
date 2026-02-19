@@ -523,6 +523,141 @@ describe('DealWorkspace governed overlay fetch', () => {
     expect(screen.getAllByText(/RAW SNIPPET: Product does X for Y\./i).length).toBeGreaterThan(0);
   });
 
+  test('prefers deterministic structured product/market summaries and shows deterministic evidence refs when overlay points to wrong pages (Palm regression)', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'dio-1', dioStatus: 'ready', phase1: {} } as any);
+
+    vi.mocked(apiGetDealReport).mockResolvedValueOnce({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 50,
+        recommendation: 'no',
+        // Force deal_summary not-ready to ensure Product/Market come from structured_summary v1 (not deal_summary).
+        deal_summary: { ready: false },
+        sections: [],
+        structured_summary: {
+          raise: { value_json: { amount: { amount: 2000000 } }, sources: [{ document_id: 'doc-kpi', page_index: 0 }] },
+          kpis: { raise: { value: '$2M', sources: [{ document_id: 'doc-kpi', page_index: 0 }] } },
+          product_summary_v1: {
+            value: 'Deterministic product summary',
+            confidence: 0.82,
+            sources: [
+              { document_id: 'doc-det', page_index: 11, slide_title: 'Product', snippet: 'DET PRODUCT SNIP A' },
+              { document_id: 'doc-det', page_index: 12, slide_title: 'Product', snippet: 'DET PRODUCT SNIP B' },
+            ],
+          },
+          market_summary_v1: {
+            value: 'Deterministic market summary',
+            confidence: 0.77,
+            sources: [
+              { document_id: 'doc-det', page_index: 0, slide_title: 'Market', snippet: 'DET MARKET SNIP 1' },
+              { document_id: 'doc-det', page_index: 1, slide_title: 'Market', snippet: 'DET MARKET SNIP 2' },
+              { document_id: 'doc-det', page_index: 23, slide_title: 'Market', snippet: 'DET MARKET SNIP 24' },
+            ],
+          },
+        },
+        metadata: {
+          score_explanation: { context: { stage: 'in_diligence', deal_type: 'Primary equity' } },
+          decision_v1: { recommendation_key: 'consider', label: 'Consider', severity: 'warn', reasons: [] },
+        },
+      },
+    } as any);
+
+    // Overlay provides incorrect Product/Market + evidence refs (wrong page 21).
+    vi.mocked(apiGetDealGovernedOverlayPersisted).mockResolvedValueOnce({
+      overview: {
+        schema_version: 'governed_llm_overview_v1',
+        deal_id: 'deal-1',
+        input_hash: 'a'.repeat(64),
+        created_at: '2024-01-02T00:00:00.000Z',
+        llm_phase_mode: 'governed',
+        summary_text: 'Persisted overlay summary',
+        overview_json: {
+          phase1: {
+            governed_ui_copy_v1: {
+              schema_version: 'governed_ui_copy_v1',
+              hero_summary: 'Overlay one-liner',
+              deal_summary_mid: 'Overlay one-liner',
+              product_solution: 'Overlay product wrong',
+              market_icp: 'Overlay market wrong',
+              business_model: 'Overlay BM',
+              raise_terms: 'Overlay raise',
+              strengths: [],
+              concerns: [],
+              open_questions: [],
+              traction: [],
+              evidence_ids: {
+                product_solution: [],
+                market_icp: [],
+                business_model: [],
+                raise_terms: [],
+              },
+              evidence_map: {
+                deal_summary_mid: [{ source_document_id: 'doc-overlay', page_index: 21, snippet: 'Overlay summary evidence (wrong)' }],
+                product_solution: [{ source_document_id: 'doc-overlay', page_index: 21, snippet: 'Overlay product evidence (wrong)' }],
+                market_icp: [{ source_document_id: 'doc-overlay', page_index: 21, snippet: 'Overlay market evidence (wrong)' }],
+                business_model: [],
+                raise_terms: [],
+                strengths: [],
+                concerns: [],
+                open_questions: [],
+                traction: [],
+              },
+            },
+            deal_summary_v2: { summary: { one_liner: 'Overlay one-liner', paragraphs: [] } },
+            deal_overview_v2: {
+              product_solution: 'Raw product',
+              market_icp: 'Raw market',
+              business_model: 'Raw BM',
+              raise: 'Raw raise',
+              sources: [],
+            },
+          },
+        },
+        claims: [],
+        disclosures: [],
+      },
+    } as any);
+
+    renderWorkspace();
+
+    await waitFor(() => {
+      expect(apiGetDealGovernedOverlayPersisted).toHaveBeenCalledTimes(1);
+    });
+
+    const productFact = screen.getByTestId('key-fact-product');
+    expect(within(productFact).queryByText(/Overlay product wrong/i)).toBeNull();
+    expect(within(productFact).getByText(/Deterministic product summary/i)).toBeInTheDocument();
+    expect(within(productFact).getByText(/Authoritative \(deterministic\)/i)).toBeInTheDocument();
+
+    const productToggle = within(productFact).getByTestId('evidence-toggle-product-solution');
+    await userEvent.click(productToggle);
+    const productPanel = screen.getByTestId('evidence-panel-product-solution');
+    expect(within(productPanel).getAllByText(/doc-det/i).length).toBeGreaterThan(0);
+    expect(within(productPanel).getByText(/\bp12\b/i)).toBeInTheDocument();
+    expect(within(productPanel).getByText(/DET PRODUCT SNIP A/i)).toBeInTheDocument();
+    expect(within(productPanel).queryByText(/doc-overlay/i)).toBeNull();
+    expect(within(productPanel).queryByText(/p22/i)).toBeNull();
+
+    const marketFact = screen.getByTestId('key-fact-market');
+    expect(within(marketFact).queryByText(/Overlay market wrong/i)).toBeNull();
+    expect(within(marketFact).getByText(/Deterministic market summary/i)).toBeInTheDocument();
+    expect(within(marketFact).getByText(/Authoritative \(deterministic\)/i)).toBeInTheDocument();
+
+    const marketToggle = within(marketFact).getByTestId('evidence-toggle-market-icp');
+    await userEvent.click(marketToggle);
+    const marketPanel = screen.getByTestId('evidence-panel-market-icp');
+    expect(within(marketPanel).getAllByText(/doc-det/i).length).toBeGreaterThan(0);
+    expect(within(marketPanel).getByText(/\bp1\b/i)).toBeInTheDocument();
+    expect(within(marketPanel).getByText(/\bp24\b/i)).toBeInTheDocument();
+    expect(within(marketPanel).getByText(/DET MARKET SNIP 24/i)).toBeInTheDocument();
+    expect(within(marketPanel).queryByText(/doc-overlay/i)).toBeNull();
+  });
+
   test('missing governed overlay shows CTA and defaults to deterministic view', async () => {
     vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'dio-1', dioStatus: 'ready' } as any);
 
@@ -639,14 +774,14 @@ describe('DealWorkspace governed overlay fetch', () => {
     });
 
     // Overlay is available but collapsed by default.
-    expect(screen.getByText(/Overview \(governed overlay\)/i)).toBeInTheDocument();
-    expect(screen.getByText(/Governed overlay is degraded — deterministic output is shown by default\./i)).toBeInTheDocument();
+    expect(screen.getByText(/Overlay \(non-authoritative\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/Overlay is degraded — deterministic output is shown by default\./i)).toBeInTheDocument();
     expect(screen.getByText(/provider_error/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /refresh overlay/i })).toBeInTheDocument();
 
     // Collapsed => overlay one-liner isn't visible until expanded.
     expect(screen.queryByText(/Overlay one-liner \(degraded\)/i)).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: /show governed overlay/i }));
+    await userEvent.click(screen.getByRole('button', { name: /show overlay/i }));
     expect(screen.getByText(/Overlay one-liner \(degraded\)/i)).toBeInTheDocument();
   });
 
@@ -717,7 +852,7 @@ describe('DealWorkspace governed overlay fetch', () => {
 
     expect(screen.getByText(/guard_degraded/i)).toBeInTheDocument();
     expect(screen.queryByText(/Overlay one-liner \(guard degraded\)/i)).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: /show governed overlay/i }));
+    await userEvent.click(screen.getByRole('button', { name: /show overlay/i }));
     expect(screen.getByText(/Overlay one-liner \(guard degraded\)/i)).toBeInTheDocument();
   });
 
@@ -868,10 +1003,10 @@ describe('DealWorkspace governed overlay fetch', () => {
       }, { timeout: 10000 });
 
       await waitFor(() => {
-        expect(screen.getByText(/Overview \(governed overlay\)/i)).toBeInTheDocument();
+        expect(screen.getAllByText(/Overlay \(non-authoritative\)/i).length).toBeGreaterThan(0);
       }, { timeout: 10000 });
 
-      const maybeShow = screen.queryByRole('button', { name: /show governed overlay/i });
+      const maybeShow = screen.queryByRole('button', { name: /show overlay/i });
       if (maybeShow) {
         await user.click(maybeShow);
       }

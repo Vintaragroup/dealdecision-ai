@@ -8,6 +8,12 @@ import { buildScoreExplanationFromDIO } from './score-explanation.js';
 import { inferFundingStageModelV1, type FundingStageModelV1 } from '../models/funding-stage-model.js';
 import { inferFinancialCoverageProfileV1, type FinancialCoverageProfileV1 } from '../models/financial-coverage-profile.js';
 import { inferCapitalLogicProfileV1, type CapitalLogicProfileV1 } from '../models/capital-logic-profile.js';
+import { inferStageExpectationsProfileV1, type StageExpectationsProfileV1 } from '../models/stage-expectations-profile.js';
+import { inferBusinessModelSignalProfileV1, type BusinessModelSignalProfileV1 } from '../models/business-model-signal-profile.js';
+import { inferMarketAccessibilitySignalProfileV1, type MarketAccessibilitySignalProfileV1 } from '../models/market-accessibility-signal-profile.js';
+import { inferTractionSignalProfileV1, type TractionSignalProfileV1 } from '../models/traction-signal-profile.js';
+import { buildStageWeightedScoreInputsV1 } from '../scoring/stage-weighted-score-inputs-v1.js';
+import { scoreStageWeightedV1 } from '../scoring/dimension-scorer-v1.js';
 
 // Import ReportDTO types directly from contracts
 type ReportDTO = {
@@ -20,6 +26,10 @@ type ReportDTO = {
   funding_stage_v1?: FundingStageModelV1;
   financial_coverage_v1?: FinancialCoverageProfileV1;
   capital_logic_v1?: CapitalLogicProfileV1;
+  stage_expectations_v1?: StageExpectationsProfileV1;
+  business_model_signal_v1?: BusinessModelSignalProfileV1;
+  market_accessibility_signal_v1?: MarketAccessibilitySignalProfileV1;
+  traction_signal_v1?: TractionSignalProfileV1;
   structured_summary?: {
     raise: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
     business_model: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
@@ -1543,6 +1553,48 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     promoted_facts: null,
   });
 
+  const businessModelSignal = inferBusinessModelSignalProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: null,
+  });
+
+  const marketAccessibilitySignal = inferMarketAccessibilitySignalProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: null,
+  });
+
+  const tractionSignal = inferTractionSignalProfileV1({
+    financial_coverage_v1: financialCoverage,
+    structured_summary: structuredSummary,
+    promoted_facts: null,
+  });
+
+  const stageExpectations = inferStageExpectationsProfileV1({
+    funding_stage_v1: fundingStage,
+    financial_coverage_v1: financialCoverage,
+    capital_logic_v1: capitalLogic,
+  });
+
+  const stageWeighted = scoreStageWeightedV1(
+    buildStageWeightedScoreInputsV1({
+      funding_stage_v1: fundingStage,
+      financial_coverage_v1: financialCoverage,
+      capital_logic_v1: capitalLogic,
+      stage_expectations_v1: stageExpectations,
+      business_model_signal_v1: businessModelSignal,
+      market_accessibility_signal_v1: marketAccessibilitySignal,
+      traction_signal_v1: tractionSignal,
+      structured_summary: structuredSummary,
+    }),
+  );
+
+  const scoreExplanationAugmented = scoreExplanation && typeof scoreExplanation === 'object'
+    ? ({
+        ...(scoreExplanation as any),
+        stage_weighted_v1: stageWeighted,
+      } as any)
+    : scoreExplanation;
+
   return {
     dealId: dio.deal_id,
     generatedAt: new Date().toISOString(),
@@ -1552,6 +1604,10 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     funding_stage_v1: fundingStage,
     financial_coverage_v1: financialCoverage,
     capital_logic_v1: capitalLogic,
+    stage_expectations_v1: stageExpectations,
+    business_model_signal_v1: businessModelSignal,
+    market_accessibility_signal_v1: marketAccessibilitySignal,
+    traction_signal_v1: tractionSignal,
     structured_summary: structuredSummary,
     grade,
     recommendation,
@@ -1569,7 +1625,7 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
       documentCount: dio.inputs.documents.length,
       scoreAvailable,
       scoreConfidence: scoreExplanation?.totals?.confidence_score,
-      score_explanation: scoreExplanation,
+      score_explanation: scoreExplanationAugmented,
     }
   };
 }
@@ -1614,13 +1670,62 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
     structured_summary: structuredSummary,
     promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
   });
+
+  const businessModelSignal = inferBusinessModelSignalProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
+  });
+
+  const marketAccessibilitySignal = inferMarketAccessibilitySignalProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
+  });
+
+  const tractionSignal = inferTractionSignalProfileV1({
+    financial_coverage_v1: financialCoverage,
+    structured_summary: structuredSummary,
+    promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
+  });
+
+  const stageExpectations = inferStageExpectationsProfileV1({
+    funding_stage_v1: fundingStage,
+    financial_coverage_v1: financialCoverage,
+    capital_logic_v1: capitalLogic,
+  });
+
+  const stageWeighted = scoreStageWeightedV1(
+    buildStageWeightedScoreInputsV1({
+      funding_stage_v1: fundingStage,
+      financial_coverage_v1: financialCoverage,
+      capital_logic_v1: capitalLogic,
+      stage_expectations_v1: stageExpectations,
+      business_model_signal_v1: businessModelSignal,
+      market_accessibility_signal_v1: marketAccessibilitySignal,
+      traction_signal_v1: tractionSignal,
+      structured_summary: structuredSummary,
+    }),
+  );
+
+  const existingExplanation: any = (base as any)?.metadata?.score_explanation;
+  const scoreExplanationAugmented = existingExplanation && typeof existingExplanation === 'object'
+    ? { ...existingExplanation, stage_weighted_v1: stageWeighted }
+    : existingExplanation;
 	return {
 		...base,
     funding_stage_v1: fundingStage,
     financial_coverage_v1: financialCoverage,
     capital_logic_v1: capitalLogic,
+    stage_expectations_v1: stageExpectations,
+    business_model_signal_v1: businessModelSignal,
+    market_accessibility_signal_v1: marketAccessibilitySignal,
+    traction_signal_v1: tractionSignal,
     structured_summary: structuredSummary,
     sections,
+
+		metadata: {
+			...(base as any).metadata,
+			score_explanation: scoreExplanationAugmented,
+		},
 	};
 }
 

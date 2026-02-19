@@ -3,6 +3,7 @@ import type { DealIntelligenceObject, ScoringDiagnosticsV1 } from "../types/dio.
 import { getDealPolicy } from "../classification/deal-policy-registry";
 import { getSelectedPolicyIdFromAny } from "../classification/get-selected-policy-id";
 import { detectRealEstateUnderwritingProtections } from "../analyzers/risk-assessment";
+import type { StageWeightedScoringV1 } from "../scoring/dimension-scorer-v1.js";
 
 export type ScoreExplainExcludedReason = "status_not_ok" | "null_score" | "doc_type_excluded";
 
@@ -11,6 +12,9 @@ export type ScoreExplanation = {
   // Additive: investor-friendly explanation buckets (V1).
   // Intentionally additive to preserve backward compatibility with stored score_explanation blobs.
   understanding_v1?: ScoreUnderstandingV1;
+  // Additive: deterministic stage-weighted scoring (v1).
+  // Lives alongside existing explanation buckets without altering legacy score aggregation.
+  stage_weighted_v1?: StageWeightedScoringV1;
   aggregation: {
     method: "weighted_mean";
     policy_id: string | null;

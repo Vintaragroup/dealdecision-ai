@@ -190,12 +190,16 @@ describe('DealWorkspace deterministic deal_summary_v1 lock', () => {
     const top = await screen.findByLabelText('Deal top summary');
 
     // Top section deal summary must NOT be synthesized from report.deal_summary_v1 tiers.
-    // When structured_summary.deal_summary_v1.long_summary is absent, we show a degraded placeholder.
-    expect(within(top).getByText(/Deterministic deal summary unavailable\./i)).toBeInTheDocument();
+    // When structured_summary.deal_summary_v1.long_summary is absent, render blank (no degraded/unavailable copy).
+    expect(within(top).queryByText(/Deterministic deal summary unavailable\./i)).toBeNull();
     expect(within(top).queryByText('WebMax builds diligence tooling for investors.')).toBeNull();
     expect(within(top).queryByText(/Targets mid-market PE firms\. Raise: \$2M/i)).toBeNull();
     expect(within(top).queryByText(/Business model: SaaS\. Revenue: \$1M ARR\. Growth: 50%\./i)).toBeNull();
     expect(within(top).queryByText(overlayHeroSentence)).toBeNull();
+
+    const longSlot = top.querySelector('[data-slot="topSummary.dealSummary.long"]') as HTMLElement | null;
+    expect(longSlot).not.toBeNull();
+    expect((longSlot as HTMLElement).textContent?.trim() || '').toBe('');
 
     // Degraded overlay => deterministic panel defaults visible.
     const user = userEvent.setup();
@@ -304,10 +308,13 @@ describe('DealWorkspace deterministic deal_summary_v1 lock', () => {
     renderWorkspace('deal-ss-1');
 
     const top = await screen.findByLabelText('Deal top summary');
-    const headerSlot = top.querySelector('[data-slot="header.score.subsummary"]') as HTMLElement | null;
-    expect(headerSlot).not.toBeNull();
-    expect(headerSlot as HTMLElement).toHaveTextContent(shortOneLiner);
-    expect(headerSlot as HTMLElement).not.toHaveTextContent(longSummary);
+    const scoreSummarySlot = screen.getByTestId('score-summary-slot');
+    expect(scoreSummarySlot).not.toHaveTextContent(shortOneLiner);
+    expect(scoreSummarySlot).not.toHaveTextContent(longSummary);
+
+    const dealSummaryText = screen.getByTestId('deal-summary-text');
+    expect(dealSummaryText).toHaveTextContent(shortOneLiner);
+    expect(dealSummaryText).not.toHaveTextContent(longSummary);
 
     const longSlot = top.querySelector('[data-slot="topSummary.dealSummary.long"]') as HTMLElement | null;
     expect(longSlot).not.toBeNull();

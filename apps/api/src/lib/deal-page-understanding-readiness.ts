@@ -276,7 +276,7 @@ export async function fetchPageUnderstandingReadinessForDeal(pool: Pool, dealId:
     try {
       const res = await pool.query<{ latest_dpu_created_at: string | null }>(
         `
-        SELECT MAX(dpu.created_at)::text AS latest_dpu_created_at
+        SELECT MAX(GREATEST(dpu.created_at, COALESCE(dpu.updated_at, dpu.created_at)))::text AS latest_dpu_created_at
           FROM document_page_understanding dpu
           JOIN documents d ON d.id = dpu.document_id
          WHERE d.deal_id = $1

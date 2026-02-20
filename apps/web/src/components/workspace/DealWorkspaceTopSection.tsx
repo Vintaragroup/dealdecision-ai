@@ -1,7 +1,9 @@
 import { CheckCircle2, AlertTriangle, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { Skeleton } from '../ui/skeleton';
 
 export type DealWorkspaceTopSectionProps = {
   darkMode: boolean;
+  loading?: boolean;
   score: number; // 0-100
   scoreLabel?: string;
   scoreBandLabel?: string | null;
@@ -89,6 +91,7 @@ const scoreTone = (score0_100: number): { stroke: string; text: string; glow: st
 
 export function DealWorkspaceTopSection({
   darkMode,
+  loading = false,
   score,
   scoreLabel = 'Fundamentals score',
   scoreBandLabel = null,
@@ -165,7 +168,7 @@ export function DealWorkspaceTopSection({
   const guardrailNote = typeof hardPassGuardrailNote === 'string' && hardPassGuardrailNote.trim() ? hardPassGuardrailNote.trim() : null;
   const bandLabel = typeof scoreBandLabel === 'string' && scoreBandLabel.trim() ? scoreBandLabel.trim() : null;
 
-  const headerSubsummaryText = typeof dealSummaryShort === 'string' && dealSummaryShort.trim() ? dealSummaryShort.trim() : '';
+  const shortDealSummaryText = typeof dealSummaryShort === 'string' && dealSummaryShort.trim() ? dealSummaryShort.trim() : '';
 
   const showDecisionDetails = Boolean(decisionLabel || decisionReasons.length > 0 || hardPassGuardrailCriteriaSnapshot);
 
@@ -342,9 +345,18 @@ export function DealWorkspaceTopSection({
 
             <div
               data-slot="header.score.subsummary"
-              className={headerSubsummaryText ? 'mt-2 text-sm text-center text-zinc-200 leading-snug' : undefined}
+              data-testid="score-summary-slot"
+              className="mt-2"
             >
-              {headerSubsummaryText || null}
+              {loading ? (
+                <div className="mt-2 flex justify-center">
+                  <Skeleton className="h-4 w-4/5 max-w-[260px]" />
+                </div>
+              ) : (
+                <div className="text-[11px] text-center text-zinc-400">
+                  Overall Score: {score0_100}/100
+                </div>
+              )}
             </div>
 
             {showDecisionDetails ? (
@@ -395,18 +407,28 @@ export function DealWorkspaceTopSection({
                   key={m.label}
                   className={`${insetClass} p-4`}
                   data-slot={m.slotId}
-                  title={m.conflict
-                    ? `Conflict detected — overlay: ${m.conflictOverlayValue ?? '—'} · deterministic: ${typeof m.value === 'string' && m.value.trim() ? m.value.trim() : '—'}`
-                    : (m.tooltip || undefined)}
+                  title={(() => {
+                    const displayValue = typeof m.value === 'string' && m.value.trim() ? m.value.trim() : '—';
+                    if (m.conflict) {
+                      return `Conflict detected — overlay: ${m.conflictOverlayValue ?? '—'} · deterministic: ${displayValue}`;
+                    }
+                    // UX rule: no "missing" explanations in the primary tiles.
+                    // Only show tooltips when a value is present.
+                    if (!m.tooltip) return undefined;
+                    if (displayValue === '—') return undefined;
+                    return m.tooltip;
+                  })()}
                 >
                   {(() => {
                     const displayValue = typeof m.value === 'string' && m.value.trim() ? m.value.trim() : '—';
                     return (
                       <>
                   <div className="text-xs text-zinc-500 mb-1">{m.label}</div>
-                  <div className="text-2xl text-white mb-0.5 break-words">{displayValue}</div>
+                  <div className="text-2xl text-white mb-0.5 break-words">
+                    {loading ? <Skeleton className="h-7 w-24" /> : displayValue}
+                  </div>
                   <div className="flex items-center gap-2">
-                    <div className={`text-xs ${m.noteClass}`}>{m.note}</div>
+                    <div className={`text-xs ${m.noteClass}`}>{loading ? <Skeleton className="h-3 w-14" /> : m.note}</div>
                     {m.conflict ? (
                       <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-amber-500/15 text-amber-200 border border-amber-500/25">
                         Conflict
@@ -438,10 +460,6 @@ export function DealWorkspaceTopSection({
                 <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/15 text-emerald-200 border border-emerald-500/25">
                   Authoritative (deterministic)
                 </span>
-              ) : dealSummarySource === 'degraded' ? (
-                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-amber-500/15 text-amber-200 border border-amber-500/25">
-                  Deterministic (degraded)
-                </span>
               ) : dealSummarySource === 'overlay' ? (
                 <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-blue-500/15 text-blue-200 border border-blue-500/25">
                   Overlay (non-authoritative)
@@ -453,17 +471,27 @@ export function DealWorkspaceTopSection({
               )}
             </div>
 
-            {summaryParagraphs.length > 0 ? (
-              <div className="space-y-2" data-slot="topSummary.dealSummary.long">
-                {summaryParagraphs.map((p) => (
+            {!loading && shortDealSummaryText ? (
+              <div data-testid="deal-summary-text" className="text-zinc-200 leading-relaxed">
+                {shortDealSummaryText}
+              </div>
+            ) : null}
+
+            <div className="space-y-2" data-slot="topSummary.dealSummary.long">
+              {loading ? (
+                <>
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-11/12" />
+                  <Skeleton className="h-4 w-10/12" />
+                </>
+              ) : summaryParagraphs.length > 0 ? (
+                summaryParagraphs.map((p) => (
                   <p key={p} className="text-zinc-200 leading-relaxed">
                     {p}
                   </p>
-                ))}
-              </div>
-            ) : (
-              <p className="text-zinc-200 leading-relaxed">—</p>
-            )}
+                ))
+              ) : null}
+            </div>
           </div>
 
           <div className={`${insetClass} p-4 h-full min-h-[160px] flex flex-col justify-between`}>

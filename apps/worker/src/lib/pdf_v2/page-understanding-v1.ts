@@ -599,6 +599,7 @@ export async function persistPdfPageUnderstandingV1Shadow(params: {
 			 DO UPDATE SET
 			   deal_id = EXCLUDED.deal_id,
 			   payload = EXCLUDED.payload,
+			   created_at = now(),
 			   updated_at = now()`,
 			[params.documentId, params.dealId ?? null, pageIndex, "page_understanding_v1", safeJsonStringify(payload)]
 		);

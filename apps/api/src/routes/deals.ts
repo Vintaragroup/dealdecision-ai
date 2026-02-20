@@ -8590,6 +8590,7 @@ export async function registerDealRoutes(
       claims: any;
       disclosures: any;
       overview_json: any;
+      consistency_warnings: any;
       created_at: string;
     }>(
       `SELECT id,
@@ -8603,6 +8604,7 @@ export async function registerDealRoutes(
               claims,
               disclosures,
               overview_json,
+              COALESCE(consistency_warnings, '[]'::jsonb) as consistency_warnings,
               created_at
          FROM governed_llm_overviews
         WHERE deal_id = $1
@@ -8656,6 +8658,7 @@ export async function registerDealRoutes(
         claims: coerceJsonArray(latest.claims),
         disclosures: coerceJsonArray(latest.disclosures),
         overview_json: coerceJsonObject((latest as any).overview_json),
+        consistency_warnings: coerceJsonArray((latest as any).consistency_warnings),
       },
     });
   });
@@ -9170,15 +9173,35 @@ export async function registerDealRoutes(
         }
       }
     }
-    request.log.info(
+    const logLevel = readiness.ready ? "info" : (readiness.missing_pages_total > 0 ? "warn" : "info");
+    request.log[logLevel](
       {
         event: "READINESS_CHECK",
         deal_id: dealId,
         version: readiness.version,
         expected_pages_total: readiness.expected_pages_total,
         dpu_rows_total: readiness.dpu_rows_total,
+        dpu_rows_meaningful_total: (readiness as any).dpu_rows_meaningful_total ?? null,
         missing_pages_total: readiness.missing_pages_total,
         ready: readiness.ready,
+        blocked_reason: (readiness as any).blocked_reason ?? null,
+        latest_dpu_created_at: (readiness as any).latest_dpu_created_at ?? null,
+        min_dpu_created_at_param: (request.query as any)?.min_dpu_created_at ?? null,
+        // Per-document snapshot (suppressed in production to avoid noisy logs)
+        ...(process.env.NODE_ENV !== "production"
+          ? {
+              documents: (readiness.documents ?? []).map((d: any) => ({
+                document_id: d.document_id,
+                title: d.title ?? null,
+                page_count: d.page_count,
+                dpu_rows: d.dpu_rows,
+                dpu_rows_meaningful: d.dpu_rows_meaningful ?? null,
+                missing_pages_count: Array.isArray(d.missing_pages) ? d.missing_pages.length : null,
+                hard_missing_pages_count: Array.isArray(d.hard_missing_pages) ? d.hard_missing_pages.length : null,
+                missing_pages_sample: Array.isArray(d.missing_pages) ? d.missing_pages.slice(0, 5) : null,
+              })),
+            }
+          : {}),
       },
       "deal.page_understanding.readiness"
     );

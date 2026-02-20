@@ -88,7 +88,7 @@ describe('DealWorkspace canonical report binding', () => {
         version: 1,
         overallScore: 78,
         recommendation: 'yes',
-        // deterministic summary is missing / not-ready → should show deterministic degraded placeholder (not overlay)
+        // deterministic summary is missing / not-ready → should render blank (not overlay, no degraded copy)
         deal_summary: { ready: false },
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: 'Exec', evidence_ids: [] }],
         structured_summary: {
@@ -150,7 +150,11 @@ describe('DealWorkspace canonical report binding', () => {
 
     // Primary Deal Summary must not render overlay hero sentence when deterministic summary is missing.
     expect(within(top).queryByText(overlayHeroSentence)).toBeNull();
-    expect(within(top).getByText('Deterministic deal summary unavailable.')).toBeInTheDocument();
-    expect(within(top).getByText(/Deterministic \(degraded\)/i)).toBeInTheDocument();
+    expect(within(top).queryByText(/Deterministic deal summary unavailable\./i)).toBeNull();
+    expect(within(top).queryByText(/Deterministic \(degraded\)/i)).toBeNull();
+
+    const longSlot = top.querySelector('[data-slot="topSummary.dealSummary.long"]') as HTMLElement | null;
+    expect(longSlot).not.toBeNull();
+    expect((longSlot as HTMLElement).textContent?.trim() || '').toBe('');
   });
 });

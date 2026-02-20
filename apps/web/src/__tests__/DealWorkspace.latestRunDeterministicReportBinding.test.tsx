@@ -176,7 +176,9 @@ describe('DealWorkspace latest-run deterministic report binding', () => {
     // Slot-anchored assertions: the deterministic bindings must render from the v3 report.
     const headerSubsummarySlot = document.querySelector('[data-slot="header.score.subsummary"]');
     expect(headerSubsummarySlot).toBeInTheDocument();
-    expect(headerSubsummarySlot).toHaveTextContent('short');
+    expect(headerSubsummarySlot).not.toHaveTextContent('short');
+
+    expect(screen.getByTestId('deal-summary-text')).toHaveTextContent('short');
 
     const longSummarySlot = document.querySelector('[data-slot="topSummary.dealSummary.long"]');
     expect(longSummarySlot).toBeInTheDocument();

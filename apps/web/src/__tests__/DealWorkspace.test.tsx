@@ -1,9 +1,9 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { screen, waitFor, within, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { renderWorkspace } from './dealWorkspaceTestFixture';
-import { apiGetDeal, apiGetDealJobs, apiGetJob } from '../lib/apiClient';
+import { apiGetDeal, apiGetDealJobs, apiGetJob, apiGetDealGovernedOverlayPersisted } from '../lib/apiClient';
 
 vi.mock('../contexts/UserRoleContext', () => ({
   useUserRole: () => ({ isAnalyst: true, isInvestor: false }),
@@ -854,7 +854,9 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(top.textContent || '').not.toMatch(/\\\\n/);
 
     expect(scoreSubsummary!.textContent || '').toMatch(/Overall Score: 50\/100/i);
-    expect(scoreSubsummary!.textContent || '').toMatch(/Second line should render normally\./i);
+    expect(scoreSubsummary!.textContent || '').not.toMatch(/Second line should render normally\./i);
+
+    expect(screen.getByTestId('deal-summary-text')).toHaveTextContent(/Second line should render normally\./i);
   });
 
   test('When decision_v1 exists, top summary never shows legacy section recommendation', async () => {
@@ -1514,5 +1516,120 @@ describe('DealWorkspace Job Center (live mode)', () => {
     await waitFor(() => {
       expect(screen.getByText(/Done \(warn\)/i)).toBeInTheDocument();
     });
+  });
+
+  test('analyze_deal SSE succeeded: overlay polling fires once per unique job_id (dedup guard)', async () => {
+    // This test verifies that duplicate SSE deliveries for the same analyze_deal job_id
+    // do not spawn multiple overlay polling cycles, which would cause rapid API spamming
+    // and reset the backoff timer on every duplicate event.
+    const { subscribeToEvents, apiGetDealGovernedOverlayPersisted } = await import('../lib/apiClient');
+
+    // jsdom does not define EventSource — stub it so the component's SSE branch is entered.
+    const origEventSource = (global as any).EventSource;
+    (global as any).EventSource = class MockEventSource {};
+
+    let capturedOnJobUpdated: ((job: any) => void) | null = null;
+    vi.mocked(subscribeToEvents).mockImplementation((_dealId: string, handlers: any) => {
+      capturedOnJobUpdated = handlers.onJobUpdated;
+      return () => undefined;
+    });
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v7', dioStatus: 'ready' } as any);
+
+    renderWorkspace({ dealId: 'deal-overlay-dedup' });
+
+    // Wait for SSE subscription to be wired up (useEffect + subscribeToEvents call).
+    await waitFor(() => expect(capturedOnJobUpdated).not.toBeNull());
+
+    // Clear calls from the initial component mount.
+    vi.mocked(apiGetDealGovernedOverlayPersisted).mockClear();
+
+    const succeededEvent = {
+      job_id: 'job-analyze-dedup-xyz',
+      deal_id: 'deal-overlay-dedup',
+      type: 'analyze_deal',
+      status: 'succeeded',
+      progress_pct: 100,
+      message: 'Analysis complete',
+      updated_at: '2025-01-01T00:00:10.000Z',
+    };
+
+    // Emit the same succeeded event 3 times — simulates duplicate SSE delivery (reconnect /
+    // re-subscription) or repeated event dispatching from an unstable worker.
+    act(() => {
+      capturedOnJobUpdated!(succeededEvent);
+      capturedOnJobUpdated!(succeededEvent);
+      capturedOnJobUpdated!(succeededEvent);
+    });
+
+    // Allow the immediate (non-setTimeout) poll() to run — it issues a governed overlay fetch.
+    // Use a short deadline so backoff timers (2 s, 5 s, …) cannot inflate the count.
+    await new Promise<void>((resolve) => setTimeout(resolve, 150));
+
+    const callCount = vi.mocked(apiGetDealGovernedOverlayPersisted).mock.calls.length;
+
+    // With the job_id dedup guard: polling is started exactly once → 1 immediate overlay fetch.
+    // Without the guard: 3 polling cycles each fire their first poll immediately → 3 fetches.
+    expect(callCount).toBeGreaterThanOrEqual(1); // polling was started
+    expect(callCount).toBeLessThan(3);           // only one polling cycle (not one per event)
+
+    // Restore EventSource stub.
+    (global as any).EventSource = origEventSource;
+  });
+
+  test('debug-only UI elements do not render unless workspaceDebugEnabled', async () => {
+    // workspaceDebugEnabled requires ?debug=1 in the URL or localStorage ddai:debugDealWorkspace.
+    // In the test environment neither is set, so both protected elements must be absent.
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v1', dioStatus: 'ready' } as any);
+
+    renderWorkspace({ dealId: 'deal-no-debug' });
+
+    // Allow the workspace to fully mount and run its initial effects.
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /AI Assistant/i })).not.toBeNull();
+    });
+
+    // 1. Build stamp must be hidden — it exposes VITE_BUILD_STAMP to non-debug users.
+    expect(screen.queryByTestId('build-stamp')).toBeNull();
+
+    // 2. Debug → Missing Fields panel must be hidden — it contains internal diagnostics.
+    expect(screen.queryByText(/Debug.*Missing Fields/i)).toBeNull();
+    expect(screen.queryByText(/Missing Fields/i)).toBeNull();
+
+    // 3. Governed Consistency Warnings panel must be hidden outside debug mode.
+    expect(screen.queryByTestId('governed-consistency-warnings-panel')).toBeNull();
+  });
+
+  test('Governed Consistency Warnings panel renders codes when workspaceDebugEnabled is true', async () => {
+    // Enable workspace debug mode via localStorage.
+    window.localStorage.setItem('ddai:debugDealWorkspace', '1');
+
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v1', dioStatus: 'ready' } as any);
+    vi.mocked(apiGetDealGovernedOverlayPersisted).mockResolvedValue({
+      overview: {
+        schema_version: 'governed_llm_overview_v1',
+        input_hash: 'hash-test',
+        created_at: new Date().toISOString(),
+        llm_phase_mode: 'governed',
+        summary_text: 'Test deal.',
+        claims: [],
+        disclosures: [],
+        consistency_warnings: ['HERO_MISSING_RAISE_CONTEXT', 'ICP_NOT_REFLECTED'],
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-debug-warnings' });
+
+    // Allow the workspace to mount and the governed overlay hook to resolve.
+    await waitFor(() => {
+      expect(screen.queryByTestId('governed-consistency-warnings-panel')).not.toBeNull();
+    });
+
+    const panel = screen.getByTestId('governed-consistency-warnings-panel');
+    expect(panel).toBeInTheDocument();
+    expect(panel.textContent).toContain('HERO_MISSING_RAISE_CONTEXT');
+    expect(panel.textContent).toContain('ICP_NOT_REFLECTED');
+
+    // Clean up debug flag so other tests are unaffected.
+    window.localStorage.removeItem('ddai:debugDealWorkspace');
   });
 });

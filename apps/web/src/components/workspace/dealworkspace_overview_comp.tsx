@@ -224,7 +224,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
   const renderMaybeMissingValue = (value: string) => {
     const s = typeof value === 'string' ? value.trim() : '';
     const isMissing = isMissingValueString(s);
-    return <span className={isMissing ? 'text-zinc-500 text-sm' : 'text-zinc-200 text-sm'}>{s || 'Not extracted'}</span>;
+    return <span className={isMissing ? 'text-zinc-500 text-sm' : 'text-zinc-200 text-sm'}>{s || '—'}</span>;
   };
 
   const renderPersistedClaims = () => {
@@ -506,7 +506,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
           {/* One-liner */}
           <div className="mb-6">
             <p className={`${isMissingValueString(props.dealOneLiner) ? 'text-zinc-500' : 'text-zinc-100'} text-lg leading-relaxed`}>
-              {props.dealOneLiner || 'Not extracted'}
+              {props.dealOneLiner || '—'}
             </p>
             {renderFieldEvidence({
               fieldKey: 'deal-one-liner',
@@ -773,7 +773,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
                   </>
                 ) : interpretationStatus === 'error' ? (
                   <div className="text-zinc-300 text-sm">
-                    Interpretation unavailable{interpretationErrorCode ? ` (code=${interpretationErrorCode})` : ''}.
+                    Interpretation failed{interpretationErrorCode ? ` (code=${interpretationErrorCode})` : ''}.
                   </div>
                 ) : (
                   <div className="text-zinc-400 text-sm">Open to generate an interpretation.</div>

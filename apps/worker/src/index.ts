@@ -6766,6 +6766,20 @@ registerWorker("extract_visuals", async (job: Job) => {
 					})
 				: { upserted: 0, page_text_empty: 0 };
 
+			// Log DB connection details alongside upsert count so we can detect split-brain
+			// scenarios where worker and API talk to different DB hosts.
+			let finalizeDbHost: string | null = null;
+			let finalizeDbName: string | null = null;
+			try {
+				const meta = await pool.query<{ db_host: string | null; db_name: string }>(
+					"SELECT inet_server_addr()::text AS db_host, current_database() AS db_name"
+				);
+				finalizeDbHost = meta.rows?.[0]?.db_host ?? null;
+				finalizeDbName = meta.rows?.[0]?.db_name ?? null;
+			} catch {
+				// ignore metadata failures
+			}
+
 			console.log(
 				JSON.stringify({
 					event: "POPULATE_DOCUMENT_PAGE_UNDERSTANDING",
@@ -6773,7 +6787,12 @@ registerWorker("extract_visuals", async (job: Job) => {
 					job_id: extractJobId,
 					upserted: res.upserted,
 					page_text_empty: res.page_text_empty,
+					candidates_found: (res as any).candidates_found ?? null,
+					rows_with_text: (res as any).rows_with_text ?? null,
+					rows_missing_text: (res as any).rows_missing_text ?? null,
 					version: "page_understanding_v1",
+					db_host: finalizeDbHost,
+					db_name: finalizeDbName,
 					ts: new Date().toISOString(),
 				})
 			);

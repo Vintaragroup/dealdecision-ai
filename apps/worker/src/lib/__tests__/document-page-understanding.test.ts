@@ -92,4 +92,67 @@ describe("document_page_understanding population", () => {
 		expect(startLog?.deal_id).toBe("33333333-3333-3333-3333-333333333333");
 		spy.mockRestore();
 	});
-});
+
+	it("UPSERT conflict handler advances created_at for freshness anchor — deal-level rerun regression", async () => {
+		// Regression guard: when the same DPU rows are upserted a second time (rerun),
+		// the ON CONFLICT handler MUST set created_at = now() so the freshness query
+		// (MAX(GREATEST(created_at, COALESCE(updated_at, created_at)))) advances past
+		// min_dpu_created_at and the readiness gate does not stay stuck as DPU_STALE.
+		const { populateDocumentPageUnderstandingFromVisualExtractions } = await import("../document-page-understanding.js");
+
+		const capturedSql: string[] = [];
+		const pool: any = {
+			query: async (sql: string, _params?: any[]) => {
+				capturedSql.push(String(sql));
+				return { rows: [{ upserted: "5", page_text_empty: "0" }], rowCount: 1 };
+			},
+		};
+
+		await populateDocumentPageUnderstandingFromVisualExtractions(pool, {
+			dealId: "55555555-5555-5555-5555-555555555555",
+		});
+
+		// Find the deal-level UPSERT (no documentId supplied → uses sqlDeal path)
+		const dealUpsert = capturedSql.find(
+			(q) => q.includes("ON CONFLICT (document_id, page_index, version) DO UPDATE") &&
+			       !q.includes("generate_series") // exclude the missing-rows stub
+		);
+		expect(dealUpsert).toBeDefined();
+		// The conflict handler MUST advance created_at so reruns unlock the freshness gate.
+		expect(dealUpsert).toMatch(/created_at\s*=\s*now\(\)/);
+		expect(dealUpsert).toMatch(/updated_at\s*=\s*now\(\)/);
+	});
+
+	it("UPSERT conflict handler advances created_at for freshness anchor — document-range rerun regression", async () => {
+		// Same guarantee for the document-range code path (chunk-scoped UPSERT).
+		const { populateDocumentPageUnderstandingFromVisualExtractions } = await import("../document-page-understanding.js");
+
+		const capturedSql: string[] = [];
+		const pool: any = {
+			query: async (sql: string, _params?: any[]) => {
+				capturedSql.push(String(sql));
+				if (String(sql).includes("COUNT(*)::bigint")) {
+					return { rows: [{ inserted: "0" }], rowCount: 1 };
+				}
+				return { rows: [{ upserted: "12", page_text_empty: "0" }], rowCount: 1 };
+			},
+		};
+
+		await populateDocumentPageUnderstandingFromVisualExtractions(pool, {
+			documentId: "66666666-6666-6666-6666-666666666666",
+			dealId: "77777777-7777-7777-7777-777777777777",
+			pageStart: 0,
+			pageEnd: 12,
+			version: "page_understanding_v1",
+		});
+
+		// Find the document-range UPSERT (has page_index >= $2 filter)
+		const rangeUpsert = capturedSql.find(
+			(q) => q.includes("va.page_index >= $2") &&
+			       q.includes("ON CONFLICT (document_id, page_index, version) DO UPDATE")
+		);
+		expect(rangeUpsert).toBeDefined();
+		// Must advance created_at so rerun freshness anchor advances.
+		expect(rangeUpsert).toMatch(/created_at\s*=\s*now\(\)/);
+		expect(rangeUpsert).toMatch(/updated_at\s*=\s*now\(\)/);
+	});});

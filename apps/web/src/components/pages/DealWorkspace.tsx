@@ -129,6 +129,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     }
   }, []);
 
+  const buildStamp = import.meta.env.VITE_BUILD_STAMP ?? 'dev';
+
   const [investorScore, setInvestorScore] = useState(0);
   const [analyzing, setAnalyzing] = useState(false);
   const [toasts, setToasts] = useState<Array<{ id: string; type: ToastType; title: string; message?: string }>>([]);
@@ -608,6 +610,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const overlayPostAnalyzeTimerRef = useRef<number | null>(null);
   const overlayPostAnalyzeStartedAtRef = useRef<number>(0);
   const overlayPostAnalyzeAttemptsRef = useRef<number>(0);
+  // Dedup guard: track the last analyze job_id for which overlay polling was started.
+  // Prevents repeated SSE delivery (or re-subscription) from spawning multiple polling cycles.
+  const lastAnalyzedJobIdForOverlayRef = useRef<string | null>(null);
   const [showDeterministicAuthoritative, setShowDeterministicAuthoritative] = useState<boolean>(false);
   const deterministicToggleTouchedRef = useRef<boolean>(false);
   const [showGovernedOverlayPanel, setShowGovernedOverlayPanel] = useState<boolean>(true);
@@ -807,6 +812,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     clearOverlayPostAnalyzeTimer();
     overlayPostAnalyzeStartedAtRef.current = 0;
     overlayPostAnalyzeAttemptsRef.current = 0;
+    lastAnalyzedJobIdForOverlayRef.current = null;
     setOverlayPostAnalyzeState('idle');
   }, [dealId]);
 
@@ -3254,7 +3260,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       },
       overlay: {
         summaries: {
-          short: { value: overlayVM.hero_summary || governedInterpretationText || null },
+          short: { value: overlayVM.hero_summary || null },
           longParagraphs: overlayVM.deal_summary_paragraphs,
         },
         keyFacts: {
@@ -4174,6 +4180,27 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   }
                 })
                 .catch(() => {});
+            }
+            if (job.type === 'analyze_deal') {
+              // Dedup guard: only start overlay polling once per unique analyze job_id.
+              // SSE events can be delivered multiple times (reconnect, duplicate dispatch);
+              // each extra call would reset the polling timer and delay the overlay refresh.
+              const analyzeJobId = job.job_id ?? null;
+              if (analyzeJobId !== lastAnalyzedJobIdForOverlayRef.current) {
+                lastAnalyzedJobIdForOverlayRef.current = analyzeJobId;
+                // Start polling for the governed overlay so the workspace fields update after
+                // a successful analysis without needing a page reload.
+                startOverlayPostAnalyzePolling();
+              }
+              // Clear stale page-understanding readiness UI state — idempotent, safe to call
+              // on every succeeded event since it only moves to idle (no polling side effects).
+              setPageUnderstandingGate((prev) => ({
+                ...prev,
+                status: 'idle',
+                readiness: null,
+                error: null,
+                minDpuCreatedAt: null,
+              }));
             }
             if (job.type === 'extract_visuals') {
               setAnalystReloadKey((v) => v + 1);
@@ -5565,6 +5592,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   return (
     <div className="flex-1 overflow-auto">
+      {workspaceDebugEnabled ? (
+        <div
+          data-testid="build-stamp"
+          className={`px-4 sm:px-6 pt-2 text-[11px] opacity-70 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+        >
+          Build: {buildStamp}
+        </div>
+      ) : null}
       <div className="p-4 sm:p-6 space-y-4 sm:space-y-6">
         {/* Header Section */}
         <div className={`backdrop-blur-xl border rounded-2xl p-4 sm:p-6 ${ 
@@ -6190,6 +6225,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               return (
                 <DealWorkspaceTopSection
                   darkMode={darkMode}
+                  loading={!reportReady}
                   score={reportView.score}
                   scoreLabel={displayScoreLabel}
                   scoreBandLabel={safeText((reportMeta as any)?.score_band_v2?.label)}
@@ -6198,11 +6234,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   hardPassGuardrailCriteriaSnapshot={(reportMeta as any)?.hard_pass_guardrail_v2?.criteria_snapshot ?? null}
                   decisionV1={(reportMeta as any)?.decision_v1 ?? null}
                   dealSummaryShort={structuredDealSummaryOneLiner || null}
-                  dealSummary={structuredDealSummaryLong
-                    ? structuredDealSummaryLong
-                    : 'Deterministic deal summary unavailable.'}
+                  dealSummary={structuredDealSummaryLong ? structuredDealSummaryLong : ''}
                   dealSummaryTitle={'Deal Summary'}
-                  dealSummarySource={structuredDealSummaryLong ? 'canonical' : 'degraded'}
+                  dealSummarySource={'canonical'}
                   strengths={topSectionStrengths}
                   weaknesses={topSectionWeaknesses}
                   raise={selectedHeader.ready ? (selectedHeader.raise.value ?? null) : null}
@@ -6314,6 +6348,237 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   })}
                 </div>
               )}
+            </div>
+          </details>
+        )}
+
+        {workspaceDebugEnabled && (
+          <details
+            data-testid="governed-consistency-warnings-panel"
+            className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
+              darkMode
+                ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
+                : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
+            }`}
+          >
+            <summary className={`px-4 py-3 cursor-pointer select-none text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+              Debug → Governed Consistency Warnings
+            </summary>
+            <div className={`px-4 pb-4 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+              {(() => {
+                const WARNING_LABELS: Record<string, string> = {
+                  HERO_MISSING_RAISE_CONTEXT: 'Hero summary missing raise context',
+                  BUSINESS_MODEL_NOT_REFLECTED: 'Business model not reflected in governed copy',
+                  TRACTION_NOT_SURFACED: 'Traction signals not surfaced in summary',
+                  ICP_NOT_REFLECTED: 'ICP not reflected in market summary',
+                };
+
+                const raw = (governedOverview.overview as any)?.consistency_warnings;
+                const warnings: string[] = Array.isArray(raw) ? raw.filter((w: unknown) => typeof w === 'string') : [];
+
+                if (warnings.length === 0) {
+                  return (
+                    <div className={`mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>None</div>
+                  );
+                }
+
+                return (
+                  <ul className="mt-1 space-y-1 list-disc list-inside">
+                    {warnings.map((code) => (
+                      <li key={code}>
+                        <span className={`font-mono ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>{code}</span>
+                        {WARNING_LABELS[code] ? (
+                          <span className={`ml-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>— {WARNING_LABELS[code]}</span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                );
+              })()}
+            </div>
+          </details>
+        )}
+
+        {workspaceDebugEnabled && (
+          <details
+            className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
+              darkMode
+                ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
+                : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
+            }`}
+          >
+            <summary className={`px-4 py-3 cursor-pointer select-none text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+              Debug → Missing Fields
+            </summary>
+            <div className={`px-4 pb-4 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+              {(() => {
+                type Row = {
+                  key: string;
+                  label: string;
+                  status: 'loading' | 'present' | 'missing';
+                  reason: string | null;
+                };
+
+                const rows: Row[] = [];
+                const notExtracted = 'Not extracted from evidence.';
+
+                const hasText = (value: unknown): boolean => {
+                  if (typeof value !== 'string') return false;
+                  const s = value.trim();
+                  return s.length > 0 && s !== '—';
+                };
+
+                const push = (row: Row) => rows.push(row);
+
+                // Deterministic top-summary slots
+                push({
+                  key: 'header.score.subsummary',
+                  label: 'Header score subsummary (deterministic one-liner)',
+                  status: !reportReady ? 'loading' : hasText(structuredDealSummaryOneLiner) ? 'present' : 'missing',
+                  reason: !reportReady ? 'Waiting for /report.' : hasText(structuredDealSummaryOneLiner) ? null : notExtracted,
+                });
+
+                push({
+                  key: 'topSummary.dealSummary.long',
+                  label: 'Top summary long deal summary (deterministic)',
+                  status: !reportReady ? 'loading' : hasText(structuredDealSummaryLong) ? 'present' : 'missing',
+                  reason: !reportReady ? 'Waiting for /report.' : hasText(structuredDealSummaryLong) ? null : notExtracted,
+                });
+
+                // Header KPI tiles (deterministic)
+                push({
+                  key: 'kpi.raise',
+                  label: 'Raise (header KPI)',
+                  status: !selectedHeader.ready ? 'loading' : hasText(selectedHeader.raise.value) ? 'present' : 'missing',
+                  reason: !selectedHeader.ready
+                    ? 'Waiting for header KPI extraction.'
+                    : hasText(selectedHeader.raise.value)
+                      ? null
+                      : notExtracted,
+                });
+
+                push({
+                  key: 'kpi.revenue',
+                  label: 'Revenue (header KPI)',
+                  status: !selectedHeader.ready
+                    ? 'loading'
+                    : revenueCoveragePolicy.allow && hasText(selectedHeader.revenue.value)
+                      ? 'present'
+                      : 'missing',
+                  reason: !selectedHeader.ready
+                    ? 'Waiting for header KPI extraction.'
+                    : !revenueCoveragePolicy.allow
+                      ? (revenueCoveragePolicy.tooltipOverride ?? notExtracted)
+                      : hasText(selectedHeader.revenue.value)
+                        ? null
+                        : notExtracted,
+                });
+
+                push({
+                  key: 'kpi.burn',
+                  label: 'Burn (header KPI)',
+                  status: !selectedHeader.ready
+                    ? 'loading'
+                    : burnRunwayCoveragePolicy.allowBurn && hasText(burnTileValue)
+                      ? 'present'
+                      : 'missing',
+                  reason: !selectedHeader.ready
+                    ? 'Waiting for header KPI extraction.'
+                    : !burnRunwayCoveragePolicy.allowBurn
+                      ? notExtracted
+                      : hasText(burnTileValue)
+                        ? null
+                        : 'Coverage indicates burn is present, but a numeric value was not parsed.',
+                });
+
+                push({
+                  key: 'kpi.runway',
+                  label: 'Runway (header KPI)',
+                  status: !selectedHeader.ready
+                    ? 'loading'
+                    : burnRunwayCoveragePolicy.allowRunway && hasText(runwayTileValue)
+                      ? 'present'
+                      : 'missing',
+                  reason: !selectedHeader.ready
+                    ? 'Waiting for header KPI extraction.'
+                    : !burnRunwayCoveragePolicy.allowRunway
+                      ? notExtracted
+                      : hasText(runwayTileValue)
+                        ? null
+                        : 'Coverage indicates runway is present, but a numeric value was not parsed.',
+                });
+
+                // Key facts (authoritative deterministic view)
+                push({
+                  key: 'keyFacts.product',
+                  label: 'Product (key facts)',
+                  status: workspaceOverviewModel.keyFacts.product.origin === 'missing'
+                    ? 'missing'
+                    : hasText(workspaceOverviewModel.keyFacts.product.value)
+                      ? 'present'
+                      : 'missing',
+                  reason: workspaceOverviewModel.keyFacts.product.origin === 'missing'
+                    ? notExtracted
+                    : hasText(workspaceOverviewModel.keyFacts.product.value)
+                      ? null
+                      : notExtracted,
+                });
+
+                push({
+                  key: 'keyFacts.market',
+                  label: 'Market / ICP (key facts)',
+                  status: workspaceOverviewModel.keyFacts.market.origin === 'missing'
+                    ? 'missing'
+                    : hasText(workspaceOverviewModel.keyFacts.market.value)
+                      ? 'present'
+                      : 'missing',
+                  reason: workspaceOverviewModel.keyFacts.market.origin === 'missing'
+                    ? notExtracted
+                    : hasText(workspaceOverviewModel.keyFacts.market.value)
+                      ? null
+                      : notExtracted,
+                });
+
+                const badgeClass = (status: Row['status']) => {
+                  if (status === 'present') {
+                    return darkMode
+                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
+                      : 'bg-emerald-50 border-emerald-200 text-emerald-800';
+                  }
+                  if (status === 'loading') {
+                    return darkMode
+                      ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+                      : 'bg-amber-50 border-amber-200 text-amber-800';
+                  }
+                  return darkMode
+                    ? 'bg-white/5 border-white/10 text-gray-300'
+                    : 'bg-white border-gray-200 text-gray-700';
+                };
+
+                const statusLabel = (status: Row['status']) => (status === 'present' ? 'Present' : status === 'loading' ? 'Loading' : 'Missing');
+
+                return (
+                  <div className="space-y-2">
+                    {rows.map((r) => (
+                      <div
+                        key={r.key}
+                        className={`rounded-lg border px-3 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                          <div className="font-mono">{r.key}</div>
+                          <span className={`px-2 py-0.5 rounded-full border text-[11px] font-medium ${badgeClass(r.status)}`}>
+                            {statusLabel(r.status)}
+                          </span>
+                        </div>
+                        <div className={`mt-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{r.label}</div>
+                        {r.reason ? (
+                          <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} mt-1`}>reason: {r.reason}</div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
             </div>
           </details>
         )}
@@ -7142,9 +7407,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     </div>
 
                     {governedOverlayDegraded ? (
-                      <div className={`mt-4 rounded-lg border p-3 ${darkMode ? 'bg-amber-500/5 border-amber-500/40 text-amber-200' : 'bg-amber-50 border-amber-200/70 text-amber-800'}`}>
-                        Overlay is degraded — deterministic output is shown by default.
-                      </div>
+                      null
                     ) : null}
 
                     {(showGovernedOverlayPanel || !governedOverlayDegraded) ? (
@@ -7264,7 +7527,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         </div>
                       ) : (
                         <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                          Overlay is degraded — deterministic output is shown by default.
+                          {/* Overlay quality flags are shown via chips; detailed reasoning is in debug/diagnostics. */}
+                          
                         </div>
                       )}
                     </div>

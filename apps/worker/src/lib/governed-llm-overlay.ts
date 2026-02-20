@@ -521,14 +521,147 @@ function toEvidenceRefFromKpiClaim(claim: { document_id: string; page: number })
   };
 }
 
+// ---------------------------------------------------------------------------
+// Governed output consistency validator
+// Non-blocking post-generation check: verifies that the LLM-generated UI copy
+// properly reflects the deterministic input signals. Returns warning codes only.
+// ---------------------------------------------------------------------------
+
+/** Warning codes emitted by the governed output consistency validator. */
+export type GovernedOutputConsistencyWarning =
+  | "HERO_MISSING_RAISE_CONTEXT"
+  | "BUSINESS_MODEL_NOT_REFLECTED"
+  | "TRACTION_NOT_SURFACED"
+  | "ICP_NOT_REFLECTED";
+
+/**
+ * Pure function — no I/O. Returns an array of warning codes (empty = all good).
+ * Intended to run post-generation, pre-persistence as a sanity gate.
+ */
+export function validateGovernedOutputConsistency(args: {
+  heroSummary: string | null;
+  product: string | null;
+  market: string | null;
+  businessModel: string | null;
+  deterministicBasis: {
+    raise_terms?: { text?: string | null };
+    market_icp?: { text?: string | null };
+    business_model?: { text?: string | null };
+  } | null;
+  tractionSignals: string[];
+}): GovernedOutputConsistencyWarning[] {
+  const warnings: GovernedOutputConsistencyWarning[] = [];
+  const lo = (s: string | null | undefined): string => (s ?? "").toLowerCase();
+
+  // Rule 1 — HERO_MISSING_RAISE_CONTEXT
+  // If raise_terms basis contains a dollar amount (e.g. "$3M", "$500K"), the
+  // hero_summary should reference the raise or the amount. Missing it suggests
+  // the model either hallucinated or silently dropped a key context signal.
+  {
+    const raiseText = lo(args.deterministicBasis?.raise_terms?.text);
+    const hero = lo(args.heroSummary);
+    if (raiseText) {
+      const amountPattern = /\$[\d.,]+\s*[mbk]?i?l?l?i?o?n?|\d[\d.,]*\s*[mbk]\b|\d[\d.,]*\s*million/i;
+      const hasAmount = amountPattern.test(raiseText);
+      if (hasAmount) {
+        // Extract the first numeric token (e.g. "3" from "$3M" or "500" from "$500K")
+        const numericMatch = raiseText.match(/[\d.,]+/);
+        const numStr = numericMatch ? numericMatch[0].replace(/,/g, "") : null;
+        const heroMentionsRaise = /rais|fundrais|capital|investment|round|seeking|ask\b/.test(hero);
+        const heroMentionsAmount = numStr ? hero.includes(numStr) : false;
+        if (!heroMentionsRaise && !heroMentionsAmount) {
+          warnings.push("HERO_MISSING_RAISE_CONTEXT");
+        }
+      }
+    }
+  }
+
+  // Rule 2 — BUSINESS_MODEL_NOT_REFLECTED
+  // The governed business_model text should echo the revenue mechanism from the
+  // deterministic basis. If none of the revenue-type keywords from the basis
+  // appear in the generated copy, the model may have replaced them with vague prose.
+  {
+    const basisBm = lo(args.deterministicBasis?.business_model?.text);
+    const governedBm = lo(args.businessModel);
+    if (basisBm && governedBm) {
+      const revenueKeywords = [
+        "subscription", "licens", "wholesale", "transaction", "saas",
+        "fee", "revenue", "arr", "mrr", "recurring", "commission",
+        "marketplace", "usage", "per-seat", "per seat",
+      ];
+      const basisKeywords = revenueKeywords.filter((kw) => basisBm.includes(kw));
+      if (basisKeywords.length > 0) {
+        const governedHasAny = basisKeywords.some((kw) => governedBm.includes(kw));
+        if (!governedHasAny) {
+          warnings.push("BUSINESS_MODEL_NOT_REFLECTED");
+        }
+      }
+    }
+  }
+
+  // Rule 3 — TRACTION_NOT_SURFACED
+  // If traction signals contain numeric evidence (e.g. "3x YoY", "$2M ARR"),
+  // at least one numeric should appear in the hero summary or product text.
+  // Pure absence of any number suggests the overlay has no traction grounding.
+  {
+    const signals = args.tractionSignals;
+    if (signals.length > 0) {
+      // Extract all digit sequences from all signals
+      const numerics = signals.flatMap((s) => {
+        const matches = s.match(/\d[\d.,]*/g) ?? [];
+        return matches.map((m) => m.replace(/,/g, ""));
+      });
+      if (numerics.length > 0) {
+        const combined = lo(args.heroSummary) + " " + lo(args.product);
+        const anyFound = numerics.some((n) => combined.includes(n));
+        if (!anyFound) {
+          warnings.push("TRACTION_NOT_SURFACED");
+        }
+      }
+    }
+  }
+
+  // Rule 4 — ICP_NOT_REFLECTED
+  // The deterministic basis market_icp text contains the true ICP signal.
+  // The governed market_icp copy should echo at least one significant descriptor
+  // word from it (beyond stop-words). Absence suggests the model generalised.
+  {
+    const basisIcp = lo(args.deterministicBasis?.market_icp?.text);
+    const governedMarket = lo(args.market);
+    if (basisIcp && governedMarket) {
+      const STOP_WORDS = new Set([
+        "the", "and", "for", "with", "are", "that", "this", "have",
+        "from", "they", "will", "been", "has", "was", "not", "all",
+        "its", "who", "our", "their", "your", "can", "also", "into",
+        "more", "most", "very", "than", "but", "we", "in", "of",
+        "to", "a", "an", "is", "it", "at", "on", "or", "by",
+        "as", "be", "do", "up",
+      ]);
+      const significantWords = basisIcp
+        .split(/\W+/)
+        .filter((w) => w.length >= 4 && !STOP_WORDS.has(w))
+        .slice(0, 4);
+      if (significantWords.length > 0) {
+        const anyReflected = significantWords.some((w) => governedMarket.includes(w));
+        if (!anyReflected) {
+          warnings.push("ICP_NOT_REFLECTED");
+        }
+      }
+    }
+  }
+
+  return warnings;
+}
+
 type PersistableGovernedOverviewRow = GovernedLLMOverviewV1 & {
   overview_json?: unknown;
+  consistency_warnings?: unknown;
 };
 
 async function persistGovernedOverview(pool: Pool, overview: PersistableGovernedOverviewRow): Promise<{ inserted: boolean }> {
   const res = await pool.query(
-    `INSERT INTO governed_llm_overviews (deal_id, schema_version, llm_phase_mode, input_hash, run_id, step_run_id, summary_text, claims, disclosures, overview_json)
-     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb)
+    `INSERT INTO governed_llm_overviews (deal_id, schema_version, llm_phase_mode, input_hash, run_id, step_run_id, summary_text, claims, disclosures, overview_json, consistency_warnings)
+     VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb)
      ON CONFLICT (deal_id, input_hash, schema_version) DO NOTHING`,
     [
       overview.deal_id,
@@ -541,6 +674,7 @@ async function persistGovernedOverview(pool: Pool, overview: PersistableGoverned
       JSON.stringify(overview.claims ?? []),
       JSON.stringify(overview.disclosures ?? []),
       JSON.stringify((overview as any).overview_json ?? null),
+      JSON.stringify((overview as any).consistency_warnings ?? []),
     ]
   );
 
@@ -1034,9 +1168,35 @@ async function pickSourcesForField(pool: Pool, input: {
   field: "product_solution" | "market_icp" | "business_model" | "raise_terms";
   usedKeys: Set<string>;
   avoidDuplicateWithUsed?: boolean;
+  /** Source keys (via sourceKey()) already claimed by raise_terms; hard-excluded from product_solution unless pool exhausted. */
+  diversityExcludeSrcKeys?: Set<string>;
 }): Promise<Array<{ document_id: string; page_range?: [number, number]; note?: string }>> {
   const usable = input.sources.filter((s) => !isFallbackSource(s.note));
   if (usable.length === 0) return [];
+
+  // Diversity guard: exclude raise_terms-claimed pages from product_solution; fall back to full pool if needed.
+  const applyDiversityGuard = (
+    xs: Array<{ document_id: string; page_range?: [number, number]; note?: string }>
+  ) => {
+    if (!input.diversityExcludeSrcKeys?.size) return xs;
+    const filtered = xs.filter((s) => !input.diversityExcludeSrcKeys!.has(sourceKey(s)));
+    if (filtered.length === 0) {
+      if (process.env.NODE_ENV !== "production") {
+        try {
+          console.log(
+            JSON.stringify({
+              event: "GOVERNED_DIVERSITY_GUARD_FALLBACK",
+              field: input.field,
+              all_raise_pages_claimed: xs.length,
+            })
+          );
+        } catch { /* ignore */ }
+      }
+      return xs; // fallback: pool exhausted, allow reuse
+    }
+    return filtered;
+  };
+  const usableForField = applyDiversityGuard(usable);
 
   const noteRx =
     input.field === "raise_terms"
@@ -1056,7 +1216,7 @@ async function pickSourcesForField(pool: Pool, input: {
   };
 
   // 1) Note regex first.
-  let direct = usable.filter((s) => noteRx.test(String(s.note ?? "")));
+  let direct = usableForField.filter((s) => noteRx.test(String(s.note ?? "")));
   if (input.field === "product_solution") {
     // Hard guard: never pick raise-like sources for product_solution.
     direct = direct.filter((s) => !raiseLikeNoteRx.test(String(s.note ?? "")));
@@ -1066,7 +1226,7 @@ async function pickSourcesForField(pool: Pool, input: {
 
   // 2) Lightweight snippet classifier (first ~400 chars) as best-effort routing.
   const scored: Array<{ s: { document_id: string; page_range?: [number, number]; note?: string }; score: number }> = [];
-  for (const s of applyDedupePreference(usable)) {
+  for (const s of applyDedupePreference(usableForField)) {
     const startPage = s.page_range?.[0];
     const page = typeof startPage === "number" && Number.isFinite(startPage) ? startPage : null;
     const pageIndex = page != null ? Math.max(0, page - 1) : null;
@@ -1098,16 +1258,163 @@ async function pickSourcesForField(pool: Pool, input: {
   // but with a hard guard for product_solution to avoid raise-like notes.
   const preferredIdx =
     input.field === "product_solution" ? 0 : input.field === "market_icp" ? 1 : input.field === "raise_terms" ? 2 : 3;
-  const idx = Math.min(Math.max(0, preferredIdx), Math.max(0, usable.length - 1));
-  const sliced = usable.slice(idx, idx + 1);
+  const idx = Math.min(Math.max(0, preferredIdx), Math.max(0, usableForField.length - 1));
+  const sliced = usableForField.slice(idx, idx + 1);
   if (input.field === "product_solution" && sliced.length > 0) {
     const picked = sliced[0];
     if (raiseLikeNoteRx.test(String(picked.note ?? ""))) {
-      const alt = usable.find((s) => !raiseLikeNoteRx.test(String(s.note ?? "")));
+      const alt = usableForField.find((s) => !raiseLikeNoteRx.test(String(s.note ?? "")));
       if (alt) return [alt];
     }
   }
   return sliced;
+}
+
+export type GlobalSummarySource = {
+  document_id: string;
+  page_range: [number, number];
+  note: string;
+};
+
+/**
+ * Gathers a broad, deterministic source list spanning the full deck.
+ * Hard constraint: max 1 source per page.
+ * Pages are bucketed across the deck and top-scored entries per bucket are picked first,
+ * then remaining slots filled by score DESC for deck-wide coverage.
+ * Stable across repeated runs for the same database state.
+ */
+export async function gatherGlobalSummarySources(
+  pool: Pool,
+  input: {
+    documentIds: string[];
+    targetCount?: number;
+  }
+): Promise<{ sources: GlobalSummarySource[]; total_pages: number }> {
+  const { documentIds, targetCount = 30 } = input;
+  const validIds = documentIds.filter(
+    (id) => typeof id === "string" && id.trim().length > 8
+  );
+  if (!validIds.length) return { sources: [], total_pages: 0 };
+
+  let rows: Array<{ document_id: string; page_index: number; payload: unknown }> = [];
+  try {
+    const result = await pool.query<{
+      document_id: string;
+      page_index: number;
+      payload: unknown;
+    }>(
+      `SELECT document_id::text AS document_id, page_index, payload
+       FROM document_page_understanding
+       WHERE document_id = ANY($1::uuid[])
+         AND version = 'page_understanding_v1'
+       ORDER BY document_id, page_index`,
+      [validIds]
+    );
+    rows = Array.isArray(result.rows) ? result.rows : [];
+  } catch {
+    return { sources: [], total_pages: 0 };
+  }
+
+  type ScoredEntry = {
+    document_id: string;
+    page_index: number;
+    signals: ReturnType<typeof classifySnippetSignals>;
+    score: number;
+  };
+  const entries: ScoredEntry[] = [];
+  const seenPageKeys = new Set<string>();
+
+  for (const row of rows) {
+    const key = `${row.document_id}:${row.page_index}`;
+    if (seenPageKeys.has(key)) continue; // enforce max 1 per page
+    seenPageKeys.add(key);
+    const payload =
+      row.payload && typeof row.payload === "object" ? (row.payload as any) : null;
+    const snippet =
+      clampText(payload?.normalized_text, 2000) ||
+      clampText(payload?.text_blocks?.text_snippet, 2000) ||
+      clampText(payload?.page_text, 2000) ||
+      clampText(payload?.text_blocks?.ocr_text, 2000) ||
+      "";
+    if (!snippet || snippet.length < 20) continue;
+
+    const signals = classifySnippetSignals(snippet.slice(0, 400));
+    const score =
+      (signals.isProduct ? 2 : 0) +
+      (signals.isMarketIcp ? 2 : 0) +
+      (signals.isBusinessModel ? 2 : 0) +
+      (signals.isRaiseTerms ? 1 : 0) +
+      (snippet.length > 100 ? 1 : 0);
+
+    entries.push({ document_id: row.document_id, page_index: row.page_index, signals, score });
+  }
+
+  const total_pages = entries.length;
+  if (!total_pages) return { sources: [], total_pages: 0 };
+
+  const BUCKET_COUNT = Math.min(8, Math.max(5, Math.ceil(total_pages / 5)));
+  const bucketSize = Math.max(1, Math.ceil(total_pages / BUCKET_COUNT));
+  const buckets: ScoredEntry[][] = Array.from({ length: BUCKET_COUNT }, () => []);
+
+  for (let i = 0; i < entries.length; i++) {
+    const bucketIdx = Math.min(BUCKET_COUNT - 1, Math.floor(i / bucketSize));
+    buckets[bucketIdx].push(entries[i]);
+  }
+
+  // Sort each bucket: score DESC, page_index ASC for deterministic ordering.
+  for (const bucket of buckets) {
+    bucket.sort((a, b) => b.score - a.score || a.page_index - b.page_index);
+  }
+
+  const perBucketTarget = Math.max(1, Math.ceil(targetCount / BUCKET_COUNT));
+  const selected: ScoredEntry[] = [];
+  const selectedKeys = new Set<string>();
+
+  // Round 1: pick top-K per bucket for coverage.
+  for (const bucket of buckets) {
+    let picked = 0;
+    for (const e of bucket) {
+      if (picked >= perBucketTarget) break;
+      const key = `${e.document_id}:${e.page_index}`;
+      if (selectedKeys.has(key)) continue;
+      selectedKeys.add(key);
+      selected.push(e);
+      picked++;
+    }
+  }
+
+  // Round 2: fill remaining slots by score DESC from not-yet-selected entries.
+  if (selected.length < targetCount) {
+    const remaining = entries
+      .filter((e) => !selectedKeys.has(`${e.document_id}:${e.page_index}`))
+      .sort((a, b) => b.score - a.score || a.page_index - b.page_index);
+    for (const e of remaining) {
+      if (selected.length >= targetCount) break;
+      selected.push(e);
+    }
+  }
+
+  // Stable final sort: document_id ASC, page_index ASC.
+  selected.sort(
+    (a, b) => a.document_id.localeCompare(b.document_id) || a.page_index - b.page_index
+  );
+
+  const sources: GlobalSummarySource[] = selected.map((e) => {
+    const page1Based = e.page_index + 1;
+    const note =
+      e.signals.isProduct
+        ? "global_product"
+        : e.signals.isMarketIcp
+          ? "global_market"
+          : e.signals.isBusinessModel
+            ? "global_business_model"
+            : e.signals.isRaiseTerms
+              ? "global_raise_terms"
+              : "global_context";
+    return { document_id: e.document_id, page_range: [page1Based, page1Based], note };
+  });
+
+  return { sources, total_pages };
 }
 
 async function generateDisplayFactsV1BestEffort(args: {
@@ -1116,9 +1423,17 @@ async function generateDisplayFactsV1BestEffort(args: {
   nowIso: string;
   llm_phase_mode: LLMPhaseMode;
   phase1_deal_overview_v2?: unknown;
+  /** Broad coverage sources from gatherGlobalSummarySources; extends per-field evidence pool. */
+  global_summary_sources?: GlobalSummarySource[];
 }): Promise<{ display_facts_v1: DisplayFactsV1 | null; quality: DisplayFactsQualityV1; deterministic_input: unknown; providerMeta?: { model: string } }>{
   const overview = args.phase1_deal_overview_v2 && typeof args.phase1_deal_overview_v2 === "object" ? (args.phase1_deal_overview_v2 as any) : null;
-  const sources = coerceSourceArray(overview?.sources);
+  const narrowSources = coerceSourceArray(overview?.sources);
+  // Extend the candidate pool with global sources (narrow sources take priority; dups removed by sourceKey).
+  const narrowSrcKeys = new Set(narrowSources.map(sourceKey));
+  const globalFiltered = (args.global_summary_sources ?? []).filter(
+    (gs) => !narrowSrcKeys.has(sourceKey(gs))
+  );
+  const extendedPool = [...narrowSources, ...globalFiltered];
 
   type Ev = { evidence_id: string; document_id: string; page_index: number; snippet: string };
 
@@ -1149,27 +1464,32 @@ async function generateDisplayFactsV1BestEffort(args: {
     return out;
   };
 
-  // Source picking is order-sensitive because we prefer not to reuse the same (document_id,page_range)
-  // across fields (especially product_solution vs raise_terms) when alternatives exist.
+  // Source picking order: raise_terms first so its claimed pages can be excluded from product_solution
+  // via the diversity guard, preventing raise/hiring slides from polluting product copy.
   const usedKeys = new Set<string>();
-  const pickedProduct = await pickSourcesForField(args.pool, {
-    sources,
-    field: "product_solution",
-    usedKeys,
-    avoidDuplicateWithUsed: true,
-  });
-  for (const s of pickedProduct) usedKeys.add(sourceKey(s));
 
   const pickedRaise = await pickSourcesForField(args.pool, {
-    sources,
+    sources: extendedPool,
     field: "raise_terms",
     usedKeys,
     avoidDuplicateWithUsed: true,
   });
   for (const s of pickedRaise) usedKeys.add(sourceKey(s));
 
+  // Pages claimed by raise_terms are hard-excluded from product_solution (diversity guard).
+  const raiseClaimedSrcKeys = new Set(pickedRaise.map(sourceKey));
+
+  const pickedProduct = await pickSourcesForField(args.pool, {
+    sources: extendedPool,
+    field: "product_solution",
+    usedKeys,
+    avoidDuplicateWithUsed: true,
+    diversityExcludeSrcKeys: raiseClaimedSrcKeys,
+  });
+  for (const s of pickedProduct) usedKeys.add(sourceKey(s));
+
   const pickedMarket = await pickSourcesForField(args.pool, {
-    sources,
+    sources: extendedPool,
     field: "market_icp",
     usedKeys,
     avoidDuplicateWithUsed: true,
@@ -1177,7 +1497,7 @@ async function generateDisplayFactsV1BestEffort(args: {
   for (const s of pickedMarket) usedKeys.add(sourceKey(s));
 
   const pickedModel = await pickSourcesForField(args.pool, {
-    sources,
+    sources: extendedPool,
     field: "business_model",
     usedKeys,
     avoidDuplicateWithUsed: true,
@@ -1488,6 +1808,34 @@ function clampMaybeText(v: unknown, maxLen: number): string | null {
   return s ? s : null;
 }
 
+/**
+ * Phrases that indicate internal scoring mechanics and must never appear in
+ * UI-visible strengths / concerns / open_questions lists.
+ */
+export const SCORE_MECHANIC_BLOCK_PHRASES: readonly string[] = [
+  "narrative pacing",
+  "score computed",
+  "component weighting",
+  "score mechanic",
+  "weighted score",
+  "scoring component",
+  "deck score",
+  "slide score",
+  "scoring engine",
+  "score: ",
+];
+
+/**
+ * Filters a list of strings to remove any that contain score-mechanic language.
+ * Exported for unit testing.
+ */
+export function sanitizeGovernedListField(items: string[]): string[] {
+  return items.filter((s) => {
+    const lower = s.toLowerCase();
+    return !SCORE_MECHANIC_BLOCK_PHRASES.some((phrase) => lower.includes(phrase));
+  });
+}
+
 async function generateGovernedUiCopyV1BestEffort(args: {
   dealId: string;
   nowIso: string;
@@ -1572,10 +1920,15 @@ async function generateGovernedUiCopyV1BestEffort(args: {
 
   const phase1Summary = args.phase1_deal_summary_v2 && typeof args.phase1_deal_summary_v2 === "object" ? (args.phase1_deal_summary_v2 as any) : null;
   const tractionFromOverview = args.phase1_deal_overview_v2 && typeof args.phase1_deal_overview_v2 === "object" ? (args.phase1_deal_overview_v2 as any).traction_signals : null;
-  const strengths = coerceStringArray(phase1Summary?.strengths, 10);
-  const concerns = coerceStringArray(phase1Summary?.risks, 10);
-  const open_questions = coerceStringArray(phase1Summary?.open_questions, 10);
+  const rawStrengths = coerceStringArray(phase1Summary?.strengths, 10);
+  const rawConcerns = coerceStringArray(phase1Summary?.risks, 10);
+  const rawOpenQuestions = coerceStringArray(phase1Summary?.open_questions, 10);
   const traction = coerceStringArray(tractionFromOverview, 10);
+
+  // Sanitize internal score-mechanic language from any upstream source.
+  const strengths = sanitizeGovernedListField(rawStrengths);
+  const concerns = sanitizeGovernedListField(rawConcerns);
+  const open_questions = sanitizeGovernedListField(rawOpenQuestions);
 
   const deterministic_input = {
     schema_version: "governed_ui_copy_v1_input_v1",
@@ -1659,26 +2012,56 @@ async function generateGovernedUiCopyV1BestEffort(args: {
   const provider = new OpenAIGPT4oProvider(providerConfig);
 
   const system =
-    "You are a deal analyst writing UI copy. Rewrite ONLY the provided basis texts into concise, coherent investor-readable copy. " +
-    "DO NOT invent facts, numbers, dates, metrics, customers, or claims. " +
-    "Keep any numbers EXACTLY as shown in the basis texts. If a basis field has text=null, return null for that field. " +
-    "Output MUST be valid JSON only (no markdown). " +
+    "You are a deal analyst writing investor-grade UI copy. " +
+    "Rewrite ONLY the provided basis texts. DO NOT invent facts, numbers, features, customers, or claims not present in the basis. " +
+    "Use any number ONLY if it appears verbatim in the basis texts or traction_signals. " +
+    "If a basis field has text=null, return null for that field. " +
+    "Output MUST be valid JSON only (no markdown, no explanation). " +
     "Return JSON with EXACT keys: hero_summary, product_solution, market_icp, business_model, raise_terms. " +
     "Each value MUST be a string or null. " +
-    "hero_summary should be 1-2 sentences max, and should not add details beyond the basis. " +
+    // ── hero_summary ──────────────────────────────────────────────────────
+    "hero_summary MUST follow this 2–4 sentence composition contract: " +
+    "[S1] What the company does and who it serves — combine product_solution + market_icp into one sentence. " +
+    "[S2] How it makes money — from business_model; OMIT if business_model is null. " +
+    "[S3, optional] One traction fact — use FIRST item from traction_signals verbatim ONLY if non-empty; otherwise omit. " +
+    "[S4, optional] Raise context — one brief sentence from raise_terms ONLY if it has text; otherwise omit. " +
+    "hero_summary must be 2–4 sentences total. " +
+    // ── product_solution ─────────────────────────────────────────────────
+    "product_solution MUST be exactly 2 sentences: " +
+    "Sentence 1: what the product or service is AND who it serves (combine both into one sentence). " +
+    "Sentence 2: the differentiation, positioning, or delivery model as stated in the basis — " +
+    "if neither differentiation nor positioning is present, state the delivery mode or category context. " +
+    "Do NOT mention raise, funding, or investment. Do NOT speculate. " +
+    // ── market_icp ───────────────────────────────────────────────────────
+    "market_icp MUST be exactly 2 sentences: " +
+    "Sentence 1: define the ICP — who buys or uses the product (be specific, not generic). " +
+    "Sentence 2: industry context, TAM, competitive environment, or growth signal — ONLY if that evidence is present in the basis; " +
+    "if no TAM or industry-sizing evidence exists, write exactly: " +
+    "'Market size and growth dynamics are not quantified in the provided materials.' " +
+    "Do NOT write 'The market is growing' or similar unless the basis explicitly states it. " +
+    // ── business_model ───────────────────────────────────────────────────
+    "business_model MUST be 1–2 sentences: " +
+    "Sentence 1: state the revenue mechanism (subscription, licensing, wholesale, transaction fee, etc.) from the basis. " +
+    "Sentence 2 (optional): pricing tier, margin structure, or distribution channel — ONLY if evidence is present. " +
+    "If no business model information is present in the basis, return exactly: 'Business model not clearly defined in provided materials.' " +
+    // ── quality guards ───────────────────────────────────────────────────
+    "NEVER mention internal scoring, confidence levels, or narrative pacing in any field. " +
+    "NEVER use vague filler phrases such as 'strong presence', 'significant opportunity', or 'robust growth' unless the basis explicitly uses that language. " +
     "Keep each field under 320 characters.";
 
   const payload = {
     deal_id: args.dealId,
     llm_phase_mode: args.llm_phase_mode,
     basis,
+    // traction_signals are included for optional S3; do NOT fabricate — use verbatim or omit.
+    traction_signals: traction.slice(0, 3),
   };
 
   const response = await provider.complete({
     task: "synthesis",
     model: "gpt-4o-mini" as any,
     temperature: 0,
-    max_tokens: 600,
+    max_tokens: 700,
     messages: [
       { role: "system", content: system },
       { role: "user", content: JSON.stringify(payload) },
@@ -1724,7 +2107,14 @@ async function generateGovernedUiCopyV1BestEffort(args: {
     if (!basis[k].text && v) errors.push(`${String(k)}_present_without_basis`);
   }
 
-  const allBasisText = [basis.product_solution.text, basis.market_icp.text, basis.business_model.text, basis.raise_terms.text]
+  const allBasisText = [
+    basis.product_solution.text,
+    basis.market_icp.text,
+    basis.business_model.text,
+    basis.raise_terms.text,
+    // Include traction signals so numeric guard can verify numbers in S3 are sourced.
+    ...traction,
+  ]
     .filter((t): t is string => typeof t === "string" && t.trim().length > 0)
     .join(" \n");
 
@@ -1749,6 +2139,7 @@ async function generateGovernedUiCopyV1BestEffort(args: {
   }
 
   // Evidence ids are authoritative; do not accept any evidence ids from model.
+  // Sorted lexicographically for determinism across repeated calls.
   const heroEvidence = Array.from(
     new Set([
       ...basis.product_solution.evidence_ids,
@@ -1756,7 +2147,7 @@ async function generateGovernedUiCopyV1BestEffort(args: {
       ...basis.business_model.evidence_ids,
       ...basis.raise_terms.evidence_ids,
     ])
-  ).slice(0, 10);
+  ).sort().slice(0, 10);
 
   return {
     governed_ui_copy_v1: {
@@ -1880,6 +2271,27 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
         kpiClaims = [];
       }
 
+      // Gather broad deck-wide sources for expanded evidence coverage (fail-open).
+      let globalSummarySources: GlobalSummarySource[] = [];
+      let totalDpuPages = 0;
+      try {
+        const docs = Array.isArray(args.phase1_documents) ? args.phase1_documents : [];
+        const docIds = docs
+          .map((d) => String(d.document_id))
+          .filter((id) => id.trim().length > 8);
+        if (docIds.length > 0) {
+          const gathered = await gatherGlobalSummarySources(pool, {
+            documentIds: docIds,
+            targetCount: 30,
+          });
+          globalSummarySources = gathered.sources;
+          totalDpuPages = gathered.total_pages;
+        }
+      } catch {
+        globalSummarySources = [];
+        totalDpuPages = 0;
+      }
+
       // display_facts_v1: derived from deterministic evidence (DPU snippets) + guarded LLM paraphrase.
       let display_facts_v1: DisplayFactsV1 | null = null;
       let display_facts_v1_quality: DisplayFactsQualityV1 | null = null;
@@ -1891,6 +2303,7 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
           nowIso,
           llm_phase_mode,
           phase1_deal_overview_v2: args.phase1_deal_overview_v2 ?? null,
+          global_summary_sources: globalSummarySources,
         });
         display_facts_v1 = out.display_facts_v1;
         display_facts_v1_quality = out.quality;
@@ -1944,6 +2357,34 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
         governed_ui_copy_v1_input = null;
       }
 
+      // Non-blocking consistency check: verify the generated UI copy reflects
+      // the deterministic input signals (raise context, BM keywords, traction
+      // numerics, ICP descriptors). Warnings are stored alongside the row and
+      // logged in non-production environments for iterative prompt improvement.
+      const consistency_warnings = validateGovernedOutputConsistency({
+        heroSummary: governed_ui_copy_v1?.hero_summary ?? null,
+        product: governed_ui_copy_v1?.product_solution ?? null,
+        market: governed_ui_copy_v1?.market_icp ?? null,
+        businessModel: governed_ui_copy_v1?.business_model ?? null,
+        deterministicBasis: (governed_ui_copy_v1_input as any)?.basis ?? null,
+        tractionSignals: Array.isArray(governed_ui_copy_v1?.traction) ? governed_ui_copy_v1.traction : [],
+      });
+      if (process.env.NODE_ENV !== "production" && consistency_warnings.length > 0) {
+        try {
+          console.log(
+            JSON.stringify({
+              event: "GOVERNED_OUTPUT_VALIDATION",
+              deal_id: args.dealId,
+              llm_phase_mode,
+              warnings: consistency_warnings,
+              ts: new Date().toISOString(),
+            })
+          );
+        } catch {
+          // ignore dev-log failure
+        }
+      }
+
       const deterministicInputs = {
         schema_version: SCHEMA_VERSION,
         deal_id: args.dealId,
@@ -1967,6 +2408,64 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
       };
 
       input_hash = computeGovernedLlmOverviewInputHash(deterministicInputs);
+
+      // DEV-ONLY: log the deterministic packet fed to the governed LLM so evidence
+      // selection can be audited without changing the API response shape.
+      if (process.env.NODE_ENV !== "production") {
+        try {
+          const dfInput =
+            display_facts_v1_input && typeof display_facts_v1_input === "object"
+              ? (display_facts_v1_input as any)
+              : null;
+          const productEv: any[] = Array.isArray(dfInput?.product_solution) ? dfInput.product_solution : [];
+          const marketEv: any[] = Array.isArray(dfInput?.market_icp) ? dfInput.market_icp : [];
+          const modelEv: any[] = Array.isArray(dfInput?.business_model) ? dfInput.business_model : [];
+          const raiseEv: any[] = Array.isArray(dfInput?.raise_terms) ? dfInput.raise_terms : [];
+          const allEv = [...productEv, ...marketEv, ...modelEv, ...raiseEv];
+          const allEvidenceIds = new Set(
+            allEv.map((e: any) => e?.evidence_id).filter((id: any) => typeof id === "string" && id.trim())
+          );
+          const allPages = new Set(
+            allEv
+              .map((e: any) => `${String(e?.document_id ?? "")}:${e?.page_index}` )
+              .filter((k) => k !== ":undefined" && k.length > 1)
+          );
+          const pageCounts = new Map<string, number>();
+          for (const e of allEv) {
+            if (e?.document_id && typeof e?.page_index === "number") {
+              const pk = `page:${String(e.document_id).slice(-8)}:${e.page_index}`;
+              pageCounts.set(pk, (pageCounts.get(pk) ?? 0) + 1);
+            }
+          }
+          const topPages = Array.from(pageCounts.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5)
+            .map(([k, count]) => ({ page: k, source_count: count }));
+          console.log(
+            JSON.stringify({
+              event: "GOVERNED_OVERVIEW_PACKET_DEBUG",
+              deal_id: args.dealId,
+              llm_phase_mode,
+              input_hash,
+              evidence_id_count: allEvidenceIds.size,
+              distinct_page_count: allPages.size,
+              doc_page_coverage_pct:
+                totalDpuPages > 0
+                  ? Math.round((allPages.size / totalDpuPages) * 1000) / 10
+                  : null,
+              top_pages_by_source_count: topPages,
+              topic_breakdown: {
+                product: productEv.length,
+                market: marketEv.length,
+                business_model: modelEv.length,
+                raise_terms: raiseEv.length,
+              },
+            })
+          );
+        } catch {
+          // ignore debug log failure
+        }
+      }
 
       const summary_text = buildSummaryText({
         dealName: args.dealName ?? null,
@@ -2059,7 +2558,7 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
       // Diagnostics should be as complete as possible even if overlay persistence fails.
       overlayForDiagnostics = { llm_phase_mode, claims: Array.isArray(toPersist.claims) ? toPersist.claims : [] };
 
-      const persisted = await persistGovernedOverview(pool, { ...(toPersist as any), overview_json });
+      const persisted = await persistGovernedOverview(pool, { ...(toPersist as any), overview_json, consistency_warnings });
       inserted = persisted.inserted;
       validation_failed = !schemaValidated.ok;
 

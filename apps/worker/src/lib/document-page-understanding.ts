@@ -415,6 +415,7 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 		  FROM payloads
 		ON CONFLICT (document_id, page_index, version) DO UPDATE
 		  SET payload = EXCLUDED.payload,
+			  created_at = now(),
 			  updated_at = now(),
 			  deal_id = EXCLUDED.deal_id
 		RETURNING payload
@@ -682,6 +683,7 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 		  FROM payloads
 		ON CONFLICT (document_id, page_index, version) DO UPDATE
 		  SET payload = EXCLUDED.payload,
+			  created_at = now(),
 			  updated_at = now(),
 			  deal_id = EXCLUDED.deal_id
 		RETURNING payload

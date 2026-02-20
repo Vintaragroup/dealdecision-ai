@@ -775,7 +775,7 @@ describe('DealWorkspace governed overlay fetch', () => {
 
     // Overlay is available but collapsed by default.
     expect(screen.getByText(/Overlay \(non-authoritative\)/i)).toBeInTheDocument();
-    expect(screen.getByText(/Overlay is degraded — deterministic output is shown by default\./i)).toBeInTheDocument();
+    expect(screen.queryByText(/Overlay is degraded — deterministic output is shown by default\./i)).toBeNull();
     expect(screen.getByText(/provider_error/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /refresh overlay/i })).toBeInTheDocument();
 

@@ -537,7 +537,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
 
           {/* Key Facts */}
           <div className="mb-6 space-y-3">
-            <div className="flex items-start gap-3" data-testid="key-fact-product">
+            <div className="flex items-start gap-3" data-testid="key-fact-product" data-slot="keyFacts.product">
               <Package className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" strokeWidth={1.5} />
               <div>
                 <span className="text-zinc-400 text-sm">Product: </span>
@@ -552,7 +552,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
               </div>
             </div>
             
-            <div className="flex items-start gap-3" data-testid="key-fact-market">
+            <div className="flex items-start gap-3" data-testid="key-fact-market" data-slot="keyFacts.market">
               <Users className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" strokeWidth={1.5} />
               <div>
                 <span className="text-zinc-400 text-sm">Market: </span>
@@ -567,7 +567,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
               </div>
             </div>
             
-            <div className="flex items-start gap-3" data-testid="key-fact-business-model">
+            <div className="flex items-start gap-3" data-testid="key-fact-business-model" data-slot="keyFacts.business_model">
               <DollarSign className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" strokeWidth={1.5} />
               <div>
                 <span className="text-zinc-400 text-sm">Business Model: </span>
@@ -584,7 +584,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
           </div>
 
           {/* Raise / Terms */}
-          <div className={`mb-5 pb-5 border-b ${dividerClassName}`}>
+          <div className={`mb-5 pb-5 border-b ${dividerClassName}`} data-slot="keyFacts.raise_terms">
             <div className="flex items-center justify-between">
               <span className="text-zinc-400 text-sm" data-testid="key-fact-raise">
                 Raise / Terms
@@ -723,7 +723,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
 
           {/* Rationale */}
           <div className="mb-6">
-            <p className="text-zinc-200 text-sm leading-relaxed">
+            <p className="text-zinc-200 text-sm leading-relaxed" data-slot="investmentAnalysis.overview.summary">
               {props.rationale}
             </p>
           </div>

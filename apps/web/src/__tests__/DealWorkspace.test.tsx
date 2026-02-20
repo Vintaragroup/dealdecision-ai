@@ -1,9 +1,8 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { DealWorkspace } from '../components/pages/DealWorkspace';
-import { ScoreSourceProvider } from '../contexts/ScoreSourceContext';
+import { renderWorkspace } from './dealWorkspaceTestFixture';
 import { apiGetDeal, apiGetDealJobs, apiGetJob } from '../lib/apiClient';
 
 vi.mock('../contexts/UserRoleContext', () => ({
@@ -41,23 +40,6 @@ vi.mock('../lib/apiClient', async (importOriginal) => {
   };
 });
 
-const baseDeal = {
-  id: 'deal-1',
-  name: 'Demo Deal',
-  company: 'Demo Co',
-  type: 'series-a',
-  stage: 'Series A',
-  investmentAmount: 1000000,
-  industry: 'SaaS',
-  targetMarket: 'Enterprise',
-  fundingAmount: '$1M',
-  revenue: '$0',
-  customers: '0',
-  teamSize: '5',
-  description: 'Demo',
-  estimatedSavings: { money: 1000, hours: 10 },
-} as const;
-
 describe('DealWorkspace Job Center (live mode)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -70,19 +52,6 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
   const openJobsTab = async () => {
     await userEvent.click(screen.getByRole('tab', { name: /^jobs$/i }));
-  };
-
-  const renderWorkspace = (overrides?: Partial<React.ComponentProps<typeof DealWorkspace>>) => {
-    return render(
-      <ScoreSourceProvider>
-        <DealWorkspace
-          darkMode={false}
-          dealId="deal-1"
-          dealData={baseDeal}
-          {...overrides}
-        />
-      </ScoreSourceProvider>
-    );
   };
 
   test('renders DIO badges and Job Center placeholders', async () => {
@@ -250,6 +219,10 @@ describe('DealWorkspace Job Center (live mode)', () => {
           paragraphs: [{ text: exec, sources: [] }],
         },
         structured_summary: {
+          deal_summary_v1: {
+            one_liner: exec,
+            long_summary: exec,
+          },
           raise: {
             value: '$2M',
             round_label: 'Seed',
@@ -387,11 +360,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
       },
     } as any);
 
-    render(
-      <ScoreSourceProvider>
-        <DealWorkspace darkMode={false} dealId="deal-rpt-understanding-1" dealData={baseDeal} />
-      </ScoreSourceProvider>,
-    );
+    renderWorkspace({ dealId: 'deal-rpt-understanding-1' });
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: /Score Understanding/i })).toBeInTheDocument();
@@ -453,11 +422,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
       },
     } as any);
 
-    render(
-      <ScoreSourceProvider>
-        <DealWorkspace darkMode={false} dealId="deal-rpt-kpi-labels-1" dealData={baseDeal} />
-      </ScoreSourceProvider>,
-    );
+    renderWorkspace({ dealId: 'deal-rpt-kpi-labels-1' });
 
     await waitFor(() => {
       expect(screen.getByText(/Revenue \(2024\)/i)).toBeInTheDocument();
@@ -505,11 +470,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
       },
     } as any);
 
-    render(
-      <ScoreSourceProvider>
-        <DealWorkspace darkMode={false} dealId="deal-rpt-kpi-labels-2" dealData={baseDeal} />
-      </ScoreSourceProvider>,
-    );
+    renderWorkspace({ dealId: 'deal-rpt-kpi-labels-2' });
 
     await waitFor(() => {
       expect(screen.getByText(/Revenue \(Attributed\)/i)).toBeInTheDocument();
@@ -761,18 +722,24 @@ describe('DealWorkspace Job Center (live mode)', () => {
             },
           ],
         },
+        structured_summary: {
+          deal_summary_v1: {
+            one_liner: 'STRUCTURED ONE LINER',
+            long_summary: 'STRUCTURED LONG SUMMARY (top section)',
+          },
+        },
       },
     } as any);
 
     renderWorkspace({ dealId: 'deal-can-1' });
 
     await waitFor(() => {
-      expect(screen.getAllByText(/CANON HERO/i).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/STRUCTURED LONG SUMMARY/i).length).toBeGreaterThan(0);
     });
 
     const top = screen.getByLabelText('Deal top summary');
     expect(within(top).getByRole('heading', { name: 'Deal Summary' })).toBeInTheDocument();
-    expect(within(top).getByText(/CANON HERO \(top\)/i)).toBeInTheDocument();
+    expect(within(top).getByText(/STRUCTURED LONG SUMMARY \(top section\)/i)).toBeInTheDocument();
     expect(within(top).queryByText(/LEGACY EXEC SUMMARY/i)).toBeNull();
 
     expect(screen.getAllByText(/Authoritative \(deterministic\)/i).length).toBeGreaterThan(0);
@@ -867,6 +834,12 @@ describe('DealWorkspace Job Center (live mode)', () => {
           one_liner: { text: exec, sources: [] },
           paragraphs: [{ text: exec, sources: [] }],
         },
+        structured_summary: {
+          deal_summary_v1: {
+            one_liner: exec,
+            long_summary: exec,
+          },
+        },
         metadata: { cycle_number: 1 },
       },
     } as any);
@@ -874,9 +847,14 @@ describe('DealWorkspace Job Center (live mode)', () => {
     renderWorkspace({ dealId: 'deal-rpt-newlines-1' });
 
     const top = await screen.findByLabelText('Deal top summary');
-    expect(top.textContent || '').not.toContain('\\n\\n');
-    expect(within(top).getByText(/Overall Score: 50\/100/i)).toBeInTheDocument();
-    expect(within(top).getByText(/Second line should render normally\./i)).toBeInTheDocument();
+    const scoreSubsummary = top.querySelector('[data-slot="header.score.subsummary"]');
+    expect(scoreSubsummary).not.toBeNull();
+
+    // Guardrail: literal backslash-n sequences must not render.
+    expect(top.textContent || '').not.toMatch(/\\\\n/);
+
+    expect(scoreSubsummary!.textContent || '').toMatch(/Overall Score: 50\/100/i);
+    expect(scoreSubsummary!.textContent || '').toMatch(/Second line should render normally\./i);
   });
 
   test('When decision_v1 exists, top summary never shows legacy section recommendation', async () => {

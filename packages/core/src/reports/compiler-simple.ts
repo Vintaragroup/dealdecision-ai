@@ -5,6 +5,7 @@
 
 import type { DealIntelligenceObject } from '../types/dio.js';
 import { buildScoreExplanationFromDIO } from './score-explanation.js';
+import { buildDeterministicDealSummaryV1FromStructuredSummary, type DeterministicDealSummaryV1 } from './deal-summary-v1-deterministic.js';
 import { inferFundingStageModelV1, type FundingStageModelV1 } from '../models/funding-stage-model.js';
 import { inferFinancialCoverageProfileV1, type FinancialCoverageProfileV1 } from '../models/financial-coverage-profile.js';
 import { inferCapitalLogicProfileV1, type CapitalLogicProfileV1 } from '../models/capital-logic-profile.js';
@@ -87,6 +88,10 @@ type ReportDTO = {
     issues: string[];
     strengths: string[];
     recommendations: string[];
+
+    // Deterministic KPI-locked synthesis from structured_summary.
+    // API may override/augment this with node-derived citations.
+    deal_summary_v1?: DeterministicDealSummaryV1;
   };
 
   grade: 'Excellent' | 'Good' | 'Fair' | 'Needs Improvement' | 'Insufficient Information';
@@ -1132,6 +1137,16 @@ function buildStructuredSummary(
         sources: [{ kind: 'score_explanation.context', field: 'business_model' }],
       };
     }
+  }
+
+  // Deterministic summary derived from the structured KPIs.
+  // Always present for persistence; may be refined by API-side node summaries.
+  try {
+    (structured as any).deal_summary_v1 = buildDeterministicDealSummaryV1FromStructuredSummary({
+      structured_summary: structured,
+    });
+  } catch {
+    // Best-effort: never fail report compilation.
   }
 
   return structured;

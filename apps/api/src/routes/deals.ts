@@ -180,9 +180,7 @@ async function bestEffortReadinessJobPresenceCheck(args: {
 
   // Best-effort: verify at least one job ID exists in BullMQ/Redis.
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { Queue } = require("bullmq") as typeof import("bullmq");
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const qmod = require("../lib/queue") as typeof import("../lib/queue");
     const connection = qmod.getConnection();
 
@@ -4024,7 +4022,6 @@ export async function registerDealRoutes(
       };
 
       try {
-        // eslint-disable-next-line no-console
         console.log("[DEV dump_unknown structured]", { deal_id: dealId, summary });
       } catch {
         // ignore
@@ -4831,7 +4828,6 @@ export async function registerDealRoutes(
       if (process.env.DDAI_DEV_SLIDE_TITLE_LOG === "1" && !didLogSlideTitle && titleDerived.slide_title) {
         didLogSlideTitle = true;
         try {
-          // eslint-disable-next-line no-console
           console.log('[DEV slide_title]', {
             id: v.id,
             slide_title: titleDerived.slide_title,
@@ -7706,7 +7702,6 @@ export async function registerDealRoutes(
                 doc_hint_segment: hint,
               };
             });
-          // eslint-disable-next-line no-console
           console.log("[DEV docx_unknown structured_word]", { deal_id: dealId, n: unknowns.length, unknowns });
         } catch {
           // ignore
@@ -9137,7 +9132,16 @@ export async function registerDealRoutes(
         ? (readiness as any).non_meaningful_pages_total
         : 0;
 
-    if (readiness.expected_pages_total > 0 && readiness.missing_pages_total > 0) {
+    const hardMissingPagesTotal =
+      typeof (readiness as any)?.hard_missing_pages_total === "number" && Number.isFinite((readiness as any).hard_missing_pages_total)
+        ? Math.max(0, Math.trunc((readiness as any).hard_missing_pages_total))
+        : null;
+
+    // Only treat readiness as "blocked/stalled" when pages are truly missing (no payload row),
+    // not when pages exist but are empty.
+    const presenceMissingTotal = hardMissingPagesTotal != null ? hardMissingPagesTotal : readiness.missing_pages_total;
+
+    if (readiness.expected_pages_total > 0 && presenceMissingTotal > 0) {
       const shouldPresenceCheck = readiness.dpu_rows_total === 0 || nonMeaningfulPagesTotal > 0;
       if (shouldPresenceCheck) {
         const presence = await bestEffortReadinessJobPresenceCheck({ pool: pool as any, dealId, version });

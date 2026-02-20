@@ -14,6 +14,7 @@ export type DealWorkspaceTopSectionProps = {
     severity?: 'danger' | 'warn' | 'info' | 'success';
     reasons?: string[];
   } | null;
+  dealSummaryShort?: string | null;
   dealSummary: string;
   dealSummaryTitle?: string;
   dealSummarySource?: 'canonical' | 'legacy' | 'overlay' | 'degraded';
@@ -44,6 +45,16 @@ export type DealWorkspaceTopSectionProps = {
   businessModelTooltip?: string | null;
   businessModelConflict?: boolean;
   businessModelConflictOverlayValue?: string | null;
+  burn: string | null;
+  burnLabel?: string | null;
+  burnTooltip?: string | null;
+  burnConflict?: boolean;
+  burnConflictOverlayValue?: string | null;
+  runway: string | null;
+  runwayLabel?: string | null;
+  runwayTooltip?: string | null;
+  runwayConflict?: boolean;
+  runwayConflictOverlayValue?: string | null;
   dealType: string;
   confidence: 'High' | 'Medium' | 'Low';
   verified?: boolean;
@@ -85,6 +96,7 @@ export function DealWorkspaceTopSection({
   hardPassGuardrailNote = null,
   hardPassGuardrailCriteriaSnapshot = null,
   decisionV1 = null,
+  dealSummaryShort = null,
   dealSummary,
   dealSummaryTitle = 'Deal Summary',
   dealSummarySource = 'legacy',
@@ -115,6 +127,16 @@ export function DealWorkspaceTopSection({
   businessModelTooltip = null,
   businessModelConflict = false,
   businessModelConflictOverlayValue = null,
+  burn,
+  burnLabel = null,
+  burnTooltip = null,
+  burnConflict = false,
+  burnConflictOverlayValue = null,
+  runway,
+  runwayLabel = null,
+  runwayTooltip = null,
+  runwayConflict = false,
+  runwayConflictOverlayValue = null,
   dealType,
   confidence,
   verified = false,
@@ -143,6 +165,8 @@ export function DealWorkspaceTopSection({
   const guardrailNote = typeof hardPassGuardrailNote === 'string' && hardPassGuardrailNote.trim() ? hardPassGuardrailNote.trim() : null;
   const bandLabel = typeof scoreBandLabel === 'string' && scoreBandLabel.trim() ? scoreBandLabel.trim() : null;
 
+  const headerSubsummaryText = typeof dealSummaryShort === 'string' && dealSummaryShort.trim() ? dealSummaryShort.trim() : '';
+
   const showDecisionDetails = Boolean(decisionLabel || decisionReasons.length > 0 || hardPassGuardrailCriteriaSnapshot);
 
   // SVG ring math (match story: r=85, viewBox 220)
@@ -163,23 +187,47 @@ export function DealWorkspaceTopSection({
     return 'Annual';
   })();
 
-  const metricCards: Array<{ label: string; value: string | null; note: string; noteClass: string; tooltip?: string | null; badge?: string | null; conflict?: boolean; conflictOverlayValue?: string | null }> = [
-    { label: 'Raise', value: raise, note: 'Target', noteClass: 'text-emerald-400', badge: raiseLabel, conflict: raiseConflict, conflictOverlayValue: raiseConflictOverlayValue },
+  const metricCards: Array<{ label: string; value: string | null; note: string; noteClass: string; slotId?: string; tooltip?: string | null; badge?: string | null; conflict?: boolean; conflictOverlayValue?: string | null }> = [
+    { label: 'Raise', value: raise, note: 'Target', noteClass: 'text-emerald-400', slotId: 'header.tiles.raise', badge: raiseLabel, conflict: raiseConflict, conflictOverlayValue: raiseConflictOverlayValue },
     {
       label: 'Revenue',
       value: revenue,
       note: revenueNote,
       noteClass: 'text-blue-400',
+      slotId: 'header.tiles.revenue',
       tooltip: revenueTooltip,
       badge: revenueLabel,
       conflict: revenueConflict,
       conflictOverlayValue: revenueConflictOverlayValue,
     },
     {
+      label: 'Burn',
+      value: burn,
+      note: 'Monthly',
+      noteClass: 'text-zinc-400',
+      slotId: 'header.tiles.burn',
+      tooltip: burnTooltip,
+      badge: burnLabel,
+      conflict: burnConflict,
+      conflictOverlayValue: burnConflictOverlayValue,
+    },
+    {
+      label: 'Runway',
+      value: runway,
+      note: 'Months',
+      noteClass: 'text-zinc-400',
+      slotId: 'header.tiles.runway',
+      tooltip: runwayTooltip,
+      badge: runwayLabel,
+      conflict: runwayConflict,
+      conflictOverlayValue: runwayConflictOverlayValue,
+    },
+    {
       label: 'Growth',
       value: growth,
       note: growthNote || 'YoY',
       noteClass: 'text-emerald-400',
+      slotId: 'header.tiles.growth',
       tooltip: growthTooltip,
       badge: growthLabel,
       conflict: growthConflict,
@@ -190,6 +238,7 @@ export function DealWorkspaceTopSection({
       value: customers,
       note: 'Active',
       noteClass: 'text-zinc-400',
+      slotId: 'header.tiles.customers',
       tooltip: customersTooltip,
       badge: customersLabel,
       conflict: customersConflict,
@@ -205,7 +254,7 @@ export function DealWorkspaceTopSection({
       conflict: businessModelConflict,
       conflictOverlayValue: businessModelConflictOverlayValue,
     },
-    { label: 'Deal Type', value: dealType, note: 'Equity', noteClass: 'text-amber-400' },
+    { label: 'Deal Type', value: dealType, note: 'Equity', noteClass: 'text-amber-400', slotId: 'header.tiles.dealType' },
   ];
 
   const cardClass = `backdrop-blur-xl border rounded-xl ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`;
@@ -291,6 +340,13 @@ export function DealWorkspaceTopSection({
               </div>
             </div>
 
+            <div
+              data-slot="header.score.subsummary"
+              className={headerSubsummaryText ? 'mt-2 text-sm text-center text-zinc-200 leading-snug' : undefined}
+            >
+              {headerSubsummaryText || null}
+            </div>
+
             {showDecisionDetails ? (
               <details className="mt-3">
                 <summary className={`cursor-pointer select-none text-xs ${darkMode ? 'text-zinc-300' : 'text-zinc-700'}`}>
@@ -338,6 +394,7 @@ export function DealWorkspaceTopSection({
                 <div
                   key={m.label}
                   className={`${insetClass} p-4`}
+                  data-slot={m.slotId}
                   title={m.conflict
                     ? `Conflict detected — overlay: ${m.conflictOverlayValue ?? '—'} · deterministic: ${typeof m.value === 'string' && m.value.trim() ? m.value.trim() : '—'}`
                     : (m.tooltip || undefined)}
@@ -397,7 +454,7 @@ export function DealWorkspaceTopSection({
             </div>
 
             {summaryParagraphs.length > 0 ? (
-              <div className="space-y-2">
+              <div className="space-y-2" data-slot="topSummary.dealSummary.long">
                 {summaryParagraphs.map((p) => (
                   <p key={p} className="text-zinc-200 leading-relaxed">
                     {p}

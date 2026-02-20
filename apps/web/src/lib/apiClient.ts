@@ -41,10 +41,7 @@ try {
 }
 
 async function getAuthHeader(opts?: { forceRefresh?: boolean; refreshWithinSeconds?: number }): Promise<Record<string, string>> {
-  const clerkToken = await getAuthToken({
-    forceRefresh: !!opts?.forceRefresh,
-    refreshWithinSeconds: typeof opts?.refreshWithinSeconds === 'number' ? opts.refreshWithinSeconds : 30,
-  });
+  const clerkToken = await getAuthToken();
   const devAdminToken = getDevAdminToken();
   const fallbackBearer = !clerkToken && devAdminToken ? `Bearer ${devAdminToken}` : undefined;
   const bearer = clerkToken ? `Bearer ${clerkToken}` : fallbackBearer;
@@ -658,6 +655,7 @@ export type PageUnderstandingReadinessDocument = {
   page_count: number;
   dpu_rows: number;
   missing_pages: number[];
+  hard_missing_pages?: number[];
   dpu_rows_meaningful?: number;
   non_meaningful_pages?: number[];
 };
@@ -671,6 +669,7 @@ export type PageUnderstandingReadiness = {
   dpu_rows_meaningful_total?: number;
   non_meaningful_pages_total?: number;
   missing_pages_total: number;
+  hard_missing_pages_total?: number;
   ready: boolean;
   blocked_reason?: string | null;
   poll_after_ms?: number | null;
@@ -1474,12 +1473,18 @@ const normalizeReportEnvelope = (value: unknown): DealReportEnvelope => {
   return v as DealReportEnvelope;
 };
 
-export async function apiGetDealReport(dealId: string): Promise<DealReportEnvelope> {
-  return apiGetDealReportInternal(dealId, { narrate: false });
+export async function apiGetDealReport(
+  dealId: string,
+  opts?: { version?: number | null }
+): Promise<DealReportEnvelope> {
+  return apiGetDealReportInternal(dealId, { narrate: false, version: opts?.version ?? null });
 }
 
-export async function apiGetDealReportNarrated(dealId: string): Promise<DealReportEnvelope> {
-  return apiGetDealReportInternal(dealId, { narrate: true });
+export async function apiGetDealReportNarrated(
+  dealId: string,
+  opts?: { version?: number | null }
+): Promise<DealReportEnvelope> {
+  return apiGetDealReportInternal(dealId, { narrate: true, version: opts?.version ?? null });
 }
 
 export type PersistedGovernedOverlayOverview = {
@@ -1562,14 +1567,31 @@ export async function apiGetDealAnalysisDiagnostics(
   return request<{ diagnostics: DealAnalysisDiagnosticsSnapshot | null }>(`/api/v1/deals/${dealId}/analysis-diagnostics`);
 }
 
-async function apiGetDealReportInternal(dealId: string, opts: { narrate: boolean }): Promise<DealReportEnvelope> {
+const inFlightDealReportRequests = new Map<string, Promise<DealReportEnvelope>>();
+
+async function apiGetDealReportInternal(
+  dealId: string,
+  opts: { narrate: boolean; version: number | null }
+): Promise<DealReportEnvelope> {
+  const version = typeof opts.version === 'number' && Number.isFinite(opts.version) && opts.version >= 1
+    ? Math.trunc(opts.version)
+    : null;
+  const basePath = version != null
+    ? `/api/v1/deals/${dealId}/report/${version}`
+    : `/api/v1/deals/${dealId}/report`;
   const qs = opts.narrate ? '?narrate=1' : '';
-  const path = `/api/v1/deals/${dealId}/report${qs}`;
-  const debugEnabled = debugApiIsEnabled();
-  const startedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
-  let res: Response | undefined;
-  let responseJson: unknown = undefined;
-  let error: unknown = undefined;
+  const path = `${basePath}${qs}`;
+  const inFlightKey = `GET:${path}`;
+
+  const existing = inFlightDealReportRequests.get(inFlightKey);
+  if (existing) return existing;
+
+  const promise = (async (): Promise<DealReportEnvelope> => {
+    const debugEnabled = debugApiIsEnabled();
+    const startedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+    let res: Response | undefined;
+    let responseJson: unknown = undefined;
+    let error: unknown = undefined;
 
   const doFetch = async (forceRefreshToken: boolean): Promise<Response> => {
     const authHeader = await getAuthHeader({ forceRefresh: forceRefreshToken, refreshWithinSeconds: 30 });
@@ -1589,44 +1611,52 @@ async function apiGetDealReportInternal(dealId: string, opts: { narrate: boolean
     ) || t.includes('"exp" claim timestamp check failed') || t.includes('jwt expired');
   };
 
-  try {
-    res = await doFetch(false);
-    // New contract: /report should not 404 for normal pre-analysis states.
-    // Keep legacy handling in case older servers are still deployed.
-    if (res.status === 404) return { ready: false, reason: 'not_generated_yet' };
-    if (!res.ok) {
-      const text = await res.text();
+    try {
+      res = await doFetch(false);
+      // New contract: /report should not 404 for normal pre-analysis states.
+      // Keep legacy handling in case older servers are still deployed.
+      if (res.status === 404) return { ready: false, reason: 'not_generated_yet' };
+      if (!res.ok) {
+        const text = await res.text();
 
-      if (res.status === 401 && looksLikeJwtExpFailure(text || '')) {
-        const refreshed = await doFetch(true);
-        if (refreshed.status === 404) return { ready: false, reason: 'not_generated_yet' };
-        if (refreshed.ok) {
-          res = refreshed;
-          responseJson = await res.json();
-          return normalizeReportEnvelope(responseJson);
+        if (res.status === 401 && looksLikeJwtExpFailure(text || '')) {
+          const refreshed = await doFetch(true);
+          if (refreshed.status === 404) return { ready: false, reason: 'not_generated_yet' };
+          if (refreshed.ok) {
+            res = refreshed;
+            responseJson = await res.json();
+            return normalizeReportEnvelope(responseJson);
+          }
         }
-      }
 
-      throw new Error(text || `Request failed with ${res.status}`);
+        throw new Error(text || `Request failed with ${res.status}`);
+      }
+      responseJson = await res.json();
+      return normalizeReportEnvelope(responseJson);
+    } catch (err) {
+      error = err;
+      throw err;
+    } finally {
+      if (debugEnabled) {
+        const endedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+        debugApiLogCall({
+          method: 'GET',
+          path,
+          dealId,
+          status: typeof res?.status === 'number' ? res.status : 0,
+          duration_ms: endedAt - startedAt,
+          response: responseJson,
+          error,
+        });
+      }
     }
-    responseJson = await res.json();
-    return normalizeReportEnvelope(responseJson);
-  } catch (err) {
-    error = err;
-    throw err;
+  })();
+
+  inFlightDealReportRequests.set(inFlightKey, promise);
+  try {
+    return await promise;
   } finally {
-    if (debugEnabled) {
-      const endedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
-      debugApiLogCall({
-        method: 'GET',
-        path,
-        dealId,
-        status: typeof res?.status === 'number' ? res.status : 0,
-        duration_ms: endedAt - startedAt,
-        response: responseJson,
-        error,
-      });
-    }
+    inFlightDealReportRequests.delete(inFlightKey);
   }
 }
 
@@ -1922,10 +1952,11 @@ export function subscribeToEvents(
     // New controller per connection attempt.
     controller = new AbortController();
 
-    // Always fetch a fresh token immediately before opening SSE.
-    // This avoids long-lived sessions reusing stale JWTs.
-    const authHeader = await getAuthHeader({ forceRefresh: true, refreshWithinSeconds: 30 });
-    const clerkToken = await getAuthToken({ forceRefresh: true, refreshWithinSeconds: 30 });
+    const clerkToken = await getAuthToken();
+    const devAdminToken = getDevAdminToken();
+    const fallbackBearer = !clerkToken && devAdminToken ? `Bearer ${devAdminToken}` : undefined;
+    const bearer = clerkToken ? `Bearer ${clerkToken}` : fallbackBearer;
+    const authHeader: Record<string, string> = bearer ? { Authorization: bearer } : {};
 
     // Don't attempt to open SSE without credentials; wait for auth to become available.
     if (!authHeader.Authorization && !clerkToken) {

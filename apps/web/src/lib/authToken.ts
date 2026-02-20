@@ -2,9 +2,22 @@ export type AuthTokenProvider = (opts?: { forceRefresh?: boolean }) => Promise<s
 
 let provider: AuthTokenProvider | null = null;
 let cachedToken: string | null = null;
-let cachedExp: number | null = null; // epoch seconds
+let cachedTokenExpMs: number | null = null; // epoch ms
+let cachedTokenUsesJwtExp: boolean | null = null;
+let inFlightPromise: Promise<string | null> | null = null;
 
 const DEFAULT_REFRESH_WITHIN_SECONDS = 30;
+
+const JWT_EXP_SAFETY_BUFFER_MS = 60_000;
+const FALLBACK_CACHE_TTL_MS = 30_000;
+
+function isDev(): boolean {
+  try {
+    return Boolean((import.meta as any)?.env?.DEV);
+  } catch {
+    return false;
+  }
+}
 
 function base64UrlDecode(input: string): string {
   const pad = '='.repeat((4 - (input.length % 4)) % 4);
@@ -46,36 +59,56 @@ export function shouldRefreshToken(expEpochSeconds: number | null, nowEpochSecon
 export function setAuthTokenProvider(next: AuthTokenProvider | null) {
   provider = next;
   cachedToken = null;
-  cachedExp = null;
+  cachedTokenExpMs = null;
+  cachedTokenUsesJwtExp = null;
+  inFlightPromise = null;
 }
 
-export async function getAuthToken(opts?: { forceRefresh?: boolean; refreshWithinSeconds?: number }): Promise<string | null> {
+export async function getAuthToken(): Promise<string | null> {
+  // Safety guard: if no active session/provider, do not call Clerk.
   if (!provider) return null;
 
-  const refreshWithinSeconds =
-    typeof opts?.refreshWithinSeconds === 'number' && Number.isFinite(opts.refreshWithinSeconds)
-      ? Math.max(0, Math.floor(opts.refreshWithinSeconds))
-      : DEFAULT_REFRESH_WITHIN_SECONDS;
+  const nowMs = Date.now();
 
-  const nowEpoch = Math.floor(Date.now() / 1000);
-  if (!opts?.forceRefresh && cachedToken) {
-    if (!shouldRefreshToken(cachedExp, nowEpoch, refreshWithinSeconds)) {
+  if (cachedToken && typeof cachedTokenExpMs === 'number' && Number.isFinite(cachedTokenExpMs)) {
+    const effectiveExpiryMs = cachedTokenUsesJwtExp ? cachedTokenExpMs - JWT_EXP_SAFETY_BUFFER_MS : cachedTokenExpMs;
+    if (nowMs < effectiveExpiryMs) return cachedToken;
+  }
+
+  if (inFlightPromise) return inFlightPromise;
+
+  inFlightPromise = (async () => {
+    try {
+      if (isDev()) console.debug('[authToken] minting Clerk token');
+      const token = await provider();
+      if (typeof token !== 'string' || token.trim().length === 0) {
+        cachedToken = null;
+        cachedTokenExpMs = null;
+        cachedTokenUsesJwtExp = null;
+        return null;
+      }
+      cachedToken = token.trim();
+
+      const expSeconds = parseJwtExp(cachedToken);
+      if (typeof expSeconds === 'number' && Number.isFinite(expSeconds)) {
+        cachedTokenExpMs = expSeconds * 1000;
+        cachedTokenUsesJwtExp = true;
+      } else {
+        cachedTokenExpMs = nowMs + FALLBACK_CACHE_TTL_MS;
+        cachedTokenUsesJwtExp = false;
+      }
+
       return cachedToken;
-    }
-  }
-
-  try {
-    const token = await provider({ forceRefresh: !!opts?.forceRefresh });
-    if (typeof token !== 'string' || token.trim().length === 0) {
+    } catch (err) {
       cachedToken = null;
-      cachedExp = null;
+      cachedTokenExpMs = null;
+      cachedTokenUsesJwtExp = null;
+      if (isDev()) console.debug('[authToken] token mint failed', err);
       return null;
+    } finally {
+      inFlightPromise = null;
     }
-    const trimmed = token.trim();
-    cachedToken = trimmed;
-    cachedExp = parseJwtExp(trimmed);
-    return trimmed;
-  } catch {
-    return null;
-  }
+  })();
+
+  return inFlightPromise;
 }

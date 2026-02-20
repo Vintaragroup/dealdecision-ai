@@ -376,7 +376,12 @@ export async function ensureDocumentsReadyForAnalysis(args: {
 
   if (requirePageUnderstanding && !effective.ready && !hasRenderWorkEnqueued) {
     const missingDocs = (effective.readiness.documents ?? [])
-      .filter((d) => Array.isArray(d.missing_pages) && d.missing_pages.length > 0)
+      .filter((d: any) => {
+        const hard = Array.isArray(d?.hard_missing_pages) ? d.hard_missing_pages : null;
+        if (hard && hard.length > 0) return true;
+        // Back-compat: if hard-missing isn't present, fall back to missing_pages.
+        return Array.isArray(d?.missing_pages) && d.missing_pages.length > 0;
+      })
       .map((d) => d.document_id);
 
     const missingSet = new Set(missingDocs);

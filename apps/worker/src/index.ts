@@ -12,6 +12,8 @@ import {
 	generatePhase1DIOV1,
 	DealOrchestrator,
 	DIOStorageImpl,
+	compileDIOToReport,
+	compileDIOToReportWithPromotedFacts,
 	SlideSequenceAnalyzer,
 	MetricBenchmarkValidator,
 	VisualDesignScorer,
@@ -8829,6 +8831,135 @@ registerWorker("analyze_deal", async (job: Job) => {
 			}
 		}
 
+		// Persist a deterministic compiled report artifact alongside the stored DIO JSON.
+		// Goal: make /report read from a canonical persisted report (idempotent upsert).
+		// This is best-effort and should not fail the analysis job; API can still compile-on-demand as a fallback.
+		try {
+			const pool = getPool();
+			let dioIdToUpdate: string | null =
+				typeof (result.storage_result as any)?.dio_id === "string" && String((result.storage_result as any).dio_id).trim()
+					? String((result.storage_result as any).dio_id).trim()
+					: null;
+
+			if (!dioIdToUpdate) {
+				const versionRaw = (result.storage_result as any)?.version;
+				const version = typeof versionRaw === "number" && Number.isFinite(versionRaw) ? Math.trunc(versionRaw) : null;
+				try {
+					const lookup = version != null
+						? await pool.query<{ dio_id: string }>(
+							`SELECT dio_id
+							   FROM deal_intelligence_objects
+							  WHERE deal_id = $1::uuid
+							    AND analysis_version = $2::int
+							  ORDER BY updated_at DESC NULLS LAST, dio_id DESC
+							  LIMIT 1`,
+							[dealId, version]
+						)
+						: await pool.query<{ dio_id: string }>(
+							`SELECT dio_id
+							   FROM deal_intelligence_objects
+							  WHERE deal_id = $1::uuid
+							  ORDER BY analysis_version DESC, updated_at DESC NULLS LAST, dio_id DESC
+							  LIMIT 1`,
+							[dealId]
+						);
+					dioIdToUpdate = typeof lookup.rows?.[0]?.dio_id === "string" ? lookup.rows[0].dio_id : null;
+				} catch {
+					dioIdToUpdate = null;
+				}
+			}
+
+			if (!dioIdToUpdate) {
+				console.warn(
+					JSON.stringify({
+						event: "dio_report_persist_skipped",
+						deal_id: dealId,
+						job_id: job.id ? String(job.id) : null,
+						reason: "missing_dio_id",
+						ts: new Date().toISOString(),
+					})
+				);
+			} else {
+				// Load promoted facts (if evidence_items exists) to enrich structured_summary with citations.
+				let promotedFacts: any[] = [];
+				try {
+					const evidenceOk = await hasTable(pool, "evidence_items");
+					if (evidenceOk) {
+						await pool.query("SELECT 1 FROM evidence_items LIMIT 1");
+						const res = await pool.query(
+							`SELECT evidence_id::text,
+							        deal_id::text,
+							        source_type,
+							        source_path,
+							        source_document_id::text as source_document_id,
+							        confidence,
+							        extracted_at::text,
+							        content_json,
+							        meta
+						   FROM evidence_items
+						  WHERE deal_id = $1::uuid
+						    AND source_type IN ('promoted_slide_fact','business_model_fact')
+						    AND content_json IS NOT NULL
+						    AND (content_json->>'fact_type') IN (
+						      'raise_terms_v1',
+						      'business_model_v1',
+						      'revenue_v1',
+						      'customers_v1',
+						      'growth_v1',
+						      'growth_outlook_v1',
+						      'marketing_attributed_revenue_v1'
+						    )
+						  ORDER BY confidence DESC, extracted_at DESC, evidence_id ASC`,
+							[dealId]
+						);
+						promotedFacts = (res.rows ?? []) as any[];
+					}
+				} catch {
+					promotedFacts = [];
+				}
+
+				const compiledReport = promotedFacts.length > 0
+					? compileDIOToReportWithPromotedFacts(result.dio as any, { promotedFacts })
+					: compileDIOToReport(result.dio as any);
+
+				const persisted = await pool.query<{ persisted: boolean }>(
+					`UPDATE deal_intelligence_objects
+						SET dio_data = jsonb_set(
+							COALESCE(dio_data, '{}'::jsonb),
+							'{report}',
+							$1::jsonb,
+							true
+						)
+					 WHERE dio_id = $2::uuid
+					 RETURNING true as persisted`,
+					[JSON.stringify(compiledReport), dioIdToUpdate]
+				);
+
+				console.log(
+					JSON.stringify({
+						event: "dio_report_persisted",
+						deal_id: dealId,
+						job_id: job.id ? String(job.id) : null,
+						dio_id: dioIdToUpdate,
+						analysis_version: (result.storage_result as any)?.version ?? null,
+						row_count: persisted.rowCount,
+						report_version: (compiledReport as any)?.version ?? null,
+						ts: new Date().toISOString(),
+					})
+				);
+			}
+		} catch (err) {
+			console.warn(
+				JSON.stringify({
+					event: "dio_report_persist_failed",
+					deal_id: dealId,
+					job_id: job.id ? String(job.id) : null,
+					reason: err instanceof Error ? err.message : String(err),
+					ts: new Date().toISOString(),
+				})
+			);
+		}
+
 		const overallScore = (result.dio as any)?.overall_score
 			?? (result.dio as any)?.score_explanation?.totals?.overall_score
 			?? null;
@@ -9492,6 +9623,7 @@ registerWorker("generate_ingestion_report", async (job: Job) => {
 		await saveIngestionReport({
 			reportId,
 			dealId,
+			analysisVersion: 0,
 			summary,
 			documentIds,
 		});

@@ -70,7 +70,7 @@ describe('DealWorkspace deterministic deal_summary_v1 lock', () => {
     );
   };
 
-  test('renders hero/overview/deep from deterministic report.deal_summary_v1 and does not allow overlay to replace them', async () => {
+  test('does not concatenate deal_summary_v1 tiers into the top summary (structured_summary deal summary is the only source)', async () => {
     vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: 'v1.0.0',
       dioStatus: 'ready',
@@ -189,17 +189,19 @@ describe('DealWorkspace deterministic deal_summary_v1 lock', () => {
 
     const top = await screen.findByLabelText('Deal top summary');
 
-    // Top section must render deterministic hero/mid/long (and never overlay hero).
-    expect(within(top).getByText('WebMax builds diligence tooling for investors.')).toBeInTheDocument();
-    expect(within(top).getByText(/Targets mid-market PE firms\. Raise: \$2M/i)).toBeInTheDocument();
-    expect(within(top).getByText(/Business model: SaaS\. Revenue: \$1M ARR\. Growth: 50%\./i)).toBeInTheDocument();
+    // Top section deal summary must NOT be synthesized from report.deal_summary_v1 tiers.
+    // When structured_summary.deal_summary_v1.long_summary is absent, we show a degraded placeholder.
+    expect(within(top).getByText(/Deterministic deal summary unavailable\./i)).toBeInTheDocument();
+    expect(within(top).queryByText('WebMax builds diligence tooling for investors.')).toBeNull();
+    expect(within(top).queryByText(/Targets mid-market PE firms\. Raise: \$2M/i)).toBeNull();
+    expect(within(top).queryByText(/Business model: SaaS\. Revenue: \$1M ARR\. Growth: 50%\./i)).toBeNull();
     expect(within(top).queryByText(overlayHeroSentence)).toBeNull();
 
     // Degraded overlay => deterministic panel defaults visible.
     const user = userEvent.setup();
     await screen.findByRole('button', { name: /Hide Deterministic \(Authoritative\)/i });
 
-    // Deterministic Deal Summary card should show the deterministic hero (even if overlay exists elsewhere).
+    // Deterministic Deal Summary card (overview) should show deterministic hero (even if overlay exists elsewhere).
     const detHeading = await screen.findByRole('heading', { name: 'Deal Summary', level: 2 });
     const detCard = detHeading.parentElement?.parentElement?.parentElement?.parentElement as HTMLElement | null;
     expect(detCard).not.toBeNull();
@@ -209,5 +211,245 @@ describe('DealWorkspace deterministic deal_summary_v1 lock', () => {
     await user.click(within(detCard as HTMLElement).getByRole('button', { name: /View citations/i }));
     expect(await within(detCard as HTMLElement).findByText(/doc-ask · p1/i)).toBeInTheDocument();
     expect(within(detCard as HTMLElement).getAllByText(/doc-prod · p12/i).length).toBeGreaterThan(0);
+  });
+
+  test('renders structured_summary deal summary: header shows one-liner only and body shows long summary', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v1.0.0',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-01-02T00:00:00.000Z',
+    } as any);
+
+    const { apiGetDealReport, apiGetDealGovernedOverlayPersisted } = await import('../lib/apiClient');
+
+    const shortOneLiner = 'SHORT ONE-LINER (structured_summary)';
+    const longSummary = 'LONG SUMMARY (structured_summary) — should appear only in Deal Summary body.';
+
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-ss-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-ss-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 78,
+        recommendation: 'yes',
+        deal_summary_v1: {
+          version: 'deal_summary_v1',
+          ready: true,
+          reason: null,
+          tiers: {
+            hero: 'Fallback hero (should not be used when structured long exists).',
+            overview: 'Fallback overview.',
+            deep: 'Fallback deep.',
+          },
+          one_liner: { text: 'Fallback one-liner', sources: [] },
+          product: { text: 'Product', sources: [] },
+          market: { text: 'Market', sources: [] },
+          paragraphs: [],
+          warnings: [],
+        },
+        sections: [],
+        structured_summary: {
+          deal_summary_v1: {
+            one_liner: shortOneLiner,
+            long_summary: longSummary,
+          },
+          raise: {
+            value_json: { amount: { amount: 2000000 } },
+            sources: [{ source_document_id: 'doc-ask', page_index: 0 }],
+          },
+          kpis: {
+            raise: { value: '$2M', sources: [{ source_document_id: 'doc-ask', page_index: 0 }] },
+          },
+          product_summary_v1: { value: 'Product', sources: [] },
+          market_summary_v1: { value: 'Market', sources: [] },
+        },
+        metadata: {
+          score_band_v2: { key: 'good', label: 'Good', overall_score: 78, thresholds_version: 'v2' },
+        },
+      },
+    } as any);
+
+    // Overlay should not be used for either short or long summaries when structured_summary values exist.
+    vi.mocked(apiGetDealGovernedOverlayPersisted).mockResolvedValue({
+      overview: {
+        schema_version: 'governed_llm_overview_v1',
+        deal_id: 'deal-ss-1',
+        input_hash: 'a'.repeat(64),
+        created_at: new Date(0).toISOString(),
+        llm_phase_mode: 'v1',
+        summary_text: 'Overlay summary (should not be used)',
+        guard_degraded: true,
+        overview_json: {
+          phase1: {
+            deal_summary_v2: {
+              summary: {
+                one_liner: 'OVERLAY ONE-LINER (should not show)',
+                paragraphs: ['OVERLAY LONG (should not show)'],
+              },
+              strengths: [],
+              risks: [],
+              open_questions: [],
+            },
+            deal_overview_v2: {},
+          },
+        },
+        claims: [],
+        disclosures: [],
+      },
+    } as any);
+
+    renderWorkspace('deal-ss-1');
+
+    const top = await screen.findByLabelText('Deal top summary');
+    const headerSlot = top.querySelector('[data-slot="header.score.subsummary"]') as HTMLElement | null;
+    expect(headerSlot).not.toBeNull();
+    expect(headerSlot as HTMLElement).toHaveTextContent(shortOneLiner);
+    expect(headerSlot as HTMLElement).not.toHaveTextContent(longSummary);
+
+    const longSlot = top.querySelector('[data-slot="topSummary.dealSummary.long"]') as HTMLElement | null;
+    expect(longSlot).not.toBeNull();
+    expect(longSlot as HTMLElement).toHaveTextContent(longSummary);
+    expect(longSlot as HTMLElement).not.toHaveTextContent(shortOneLiner);
+  });
+
+  test('financial coverage guardrail: when historical revenue missing, revenue KPI shows — and overlay cannot inject a number', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v1.0.0',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-01-02T00:00:00.000Z',
+    } as any);
+
+    const { apiGetDealReport, apiGetDealGovernedOverlayPersisted } = await import('../lib/apiClient');
+
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-fin-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-fin-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 70,
+        recommendation: 'yes',
+        deal_summary_v1: {
+          version: 'deal_summary_v1',
+          ready: true,
+          reason: null,
+          tiers: {
+            hero: 'Hero',
+            overview: 'Overview',
+            deep: 'Deep',
+          },
+          one_liner: { text: 'Hero', sources: [] },
+          product: { text: 'Product', sources: [] },
+          market: { text: 'Market', sources: [] },
+          paragraphs: [],
+          warnings: [],
+        },
+        financial_coverage_v1: {
+          confidence: 'high',
+          coverage: {
+            historical_revenue_present: false,
+            forecast_revenue_present: false,
+            income_statement_present: false,
+            burn_rate_present: false,
+            runway_present: false,
+            unit_economics_present: false,
+          },
+          evidence: {
+            historical_revenue_present: { document_id: 'doc-fin', page_index: 0, snippet: 'No historical revenue found.' },
+          },
+          sources: [{ kind: 'deck', document_id: 'doc-fin' }],
+          notes: [],
+        },
+        structured_summary: {
+          raise: {
+            value_json: { amount: { amount: 1000000 } },
+            sources: [{ source_document_id: 'doc-ask', page_index: 0 }],
+          },
+          kpis: {
+            raise: {
+              value: '$1M',
+              sources: [{ source_document_id: 'doc-ask', page_index: 0 }],
+            },
+            // Guardrail must hide this even if it exists.
+            revenue: {
+              value: { raw: '$123M' },
+              sources: [{ source_document_id: 'doc-fin', page_index: 3, note_snippet: 'Revenue: $123M' }],
+            },
+          },
+        },
+        sections: [],
+        metadata: {
+          score_band_v2: { key: 'ok', label: 'OK', overall_score: 70, thresholds_version: 'v2' },
+        },
+      },
+    } as any);
+
+    vi.mocked(apiGetDealGovernedOverlayPersisted).mockResolvedValue({
+      overview: {
+        schema_version: 'governed_llm_overview_v1',
+        deal_id: 'deal-fin-1',
+        input_hash: 'b'.repeat(64),
+        created_at: new Date(0).toISOString(),
+        llm_phase_mode: 'v1',
+        summary_text: 'Overlay summary',
+        guard_degraded: false,
+        overview_json: {
+          phase1: {
+            deal_overview_v2: {
+              revenue: '$999M',
+            },
+            deal_summary_v2: {
+              summary: {
+                one_liner: 'Overlay one liner',
+                paragraphs: ['Overlay paragraph'],
+              },
+              strengths: [],
+              risks: [],
+              open_questions: [],
+            },
+          },
+        },
+        claims: [],
+        disclosures: [],
+      },
+    } as any);
+
+    renderWorkspace('deal-fin-1');
+
+    // Overlay is present and should not display the injected revenue.
+    await screen.findByText('Overlay (non-authoritative)');
+    const overlayHeading = await screen.findByRole('heading', { name: 'Deal Summary', level: 2 });
+    const overlayCard = overlayHeading.parentElement?.parentElement?.parentElement?.parentElement as HTMLElement | null;
+    expect(overlayCard).not.toBeNull();
+    expect(within(overlayCard as HTMLElement).queryByText('$999M')).toBeNull();
+    expect(within(overlayCard as HTMLElement).queryByText('$123M')).toBeNull();
+
+    const overlayRevenueLabel = within(overlayCard as HTMLElement).getByText('Revenue / ARR');
+    const overlayRevenueTile = overlayRevenueLabel.parentElement as HTMLElement;
+    expect(within(overlayRevenueTile).getByText('—')).toBeInTheDocument();
+
+    // Deterministic panel should also show Revenue as missing.
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /Show Deterministic \(Authoritative\)/i }));
+    await screen.findByLabelText('Financial coverage');
+
+    const headings = screen.getAllByRole('heading', { name: 'Deal Summary', level: 2 });
+    expect(headings.length).toBeGreaterThanOrEqual(2);
+    const detHeading = headings[headings.length - 1];
+    const detCard = detHeading.parentElement?.parentElement?.parentElement?.parentElement as HTMLElement | null;
+    expect(detCard).not.toBeNull();
+
+    const detRevenueLabel = within(detCard as HTMLElement).getByText('Revenue / ARR');
+    const detRevenueTile = detRevenueLabel.parentElement as HTMLElement;
+    expect(within(detRevenueTile).getByText('—')).toBeInTheDocument();
+
+    // Sanity: the injected values should not appear anywhere.
+    expect(screen.queryByText('$999M')).toBeNull();
+    expect(screen.queryByText('$123M')).toBeNull();
   });
 });

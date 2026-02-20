@@ -17,10 +17,15 @@ import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { DealWorkspaceTopSection } from '../workspace/DealWorkspaceTopSection';
 import { DealWorkspaceOverviewComp } from '../workspace/dealworkspace_overview_comp';
+import { FinancialCoveragePanel } from '../workspace/FinancialCoveragePanel';
 import { selectDealWorkspaceHeader } from '../../lib/selectDealWorkspaceHeader';
 import { selectAuthoritativeBusinessModelV1 } from '../../lib/selectors/selectAuthoritativeBusinessModelV1';
 import { selectAuthoritativeProductSummaryV1 } from '../../lib/selectors/selectAuthoritativeProductSummaryV1';
 import { selectAuthoritativeMarketSummaryV1 } from '../../lib/selectors/selectAuthoritativeMarketSummaryV1';
+import { selectAuthoritativeFinancialCoverageV1 } from '../../lib/selectors/selectAuthoritativeFinancialCoverageV1';
+import { selectAuthoritativeBurnV1 } from '../../lib/selectors/selectAuthoritativeBurnV1';
+import { selectAuthoritativeRunwayV1 } from '../../lib/selectors/selectAuthoritativeRunwayV1';
+import { selectDealWorkspaceOverviewModel } from '../../lib/selectors/selectDealWorkspaceOverviewModel';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
 import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealAnalysisDiagnostics, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness, type DealAnalysisDiagnosticsSnapshot } from '../../lib/apiClient';
 import { useGovernedLlmOverview } from '../../hooks/useGovernedLlmOverview';
@@ -31,6 +36,7 @@ import { derivePhaseBInsights } from '../../lib/phaseb-findings';
 import { buildOverlayViewModel } from '../../lib/overlay/overlayViewModel';
 import { buildWorkspaceMirrorOverviewVM } from '../../lib/workspaceMirrorPr2ViewModel';
 import { deterministicIsDisplayable } from '../../lib/deterministicDisplayPolicy';
+import { useAsyncStaleGuard } from '../../lib/hooks/useAsyncStaleGuard';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { useScoreSource } from '../../contexts/ScoreSourceContext';
 import { extractFundabilityScore0_100 } from '../../lib/dealScore';
@@ -668,17 +674,31 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return true;
   };
 
-  const loadReport = async (opts?: { force?: boolean }) => {
+  const { isStale, markKey } = useAsyncStaleGuard<string | null>(dealId ?? null);
+  useEffect(() => {
+    markKey(dealId ?? null);
+  }, [dealId, markKey]);
+
+  const loadReport = async (opts?: { force?: boolean; version?: number | null }) => {
     if (!dealId) {
       setReportFromApi(null);
       setReportEnvelope(null);
       return;
     }
+    const keyAtStart = dealId;
     const now = Date.now();
     if (!opts?.force && now - lastReportAttemptAtRef.current < 8000) return;
     lastReportAttemptAtRef.current = now;
+
+    const desiredVersion = (() => {
+      const v = opts?.version;
+      if (typeof v === 'number' && Number.isFinite(v) && v >= 1) return Math.trunc(v);
+      const metaV = dioMeta?.dioAnalysisVersion;
+      return typeof metaV === 'number' && Number.isFinite(metaV) && metaV >= 1 ? Math.trunc(metaV) : null;
+    })();
     try {
-      const envelope = await apiGetDealReport(dealId);
+      const envelope = await apiGetDealReport(dealId, { version: desiredVersion });
+      if (isStale(keyAtStart)) return;
       setReportEnvelope(envelope);
 
       const ready = Boolean((envelope as any)?.ready);
@@ -689,13 +709,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       // Treat { ready:false } as normal intermediate state.
       // Keep polling behavior driven by job state (not /report errors).
       reportMissingRef.current = !ready;
+      if (isStale(keyAtStart)) return;
       setReportMissing(!ready);
+      if (isStale(keyAtStart)) return;
       setReportFromApi((report && typeof report === 'object') ? (report as DealReport) : null);
 
       if (ready && typeof (report as any)?.overallScore === 'number' && Number.isFinite((report as any).overallScore)) {
+        if (isStale(keyAtStart)) return;
         setInvestorScore(Math.round((report as any).overallScore));
       }
     } catch (err: any) {
+      if (isStale(keyAtStart)) return;
       // Network / auth / server errors: keep report null but don't treat as "missing report".
       setReportFromApi(null);
     }
@@ -708,20 +732,29 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       setAnalysisDiagnosticsError(null);
       return;
     }
+    const keyAtStart = dealId;
     const now = Date.now();
     if (!opts?.force && now - lastDiagnosticsAttemptAtRef.current < 8000) return;
     lastDiagnosticsAttemptAtRef.current = now;
 
+    if (isStale(keyAtStart)) return;
     setAnalysisDiagnosticsStatus('loading');
+    if (isStale(keyAtStart)) return;
     setAnalysisDiagnosticsError(null);
     try {
       const res = await apiGetDealAnalysisDiagnostics(dealId);
+      if (isStale(keyAtStart)) return;
       const diag = res && typeof res === 'object' ? (res as any).diagnostics : null;
+      if (isStale(keyAtStart)) return;
       setAnalysisDiagnostics(diag && typeof diag === 'object' ? (diag as DealAnalysisDiagnosticsSnapshot) : null);
+      if (isStale(keyAtStart)) return;
       setAnalysisDiagnosticsStatus('ready');
     } catch (err) {
+      if (isStale(keyAtStart)) return;
       setAnalysisDiagnostics(null);
+      if (isStale(keyAtStart)) return;
       setAnalysisDiagnosticsStatus('ready');
+      if (isStale(keyAtStart)) return;
       setAnalysisDiagnosticsError(err instanceof Error ? err.message : 'Failed to load diagnostics');
     }
   };
@@ -992,21 +1025,28 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         if (!active) return;
         setDealFromApi(deal);
         debugLogger.logAPIData('DealWorkspace', 'dealFromApi', deal, `Fetched via apiGetDeal(${dealId})`);
-        setDioMeta({
+        const nextMeta = {
           dioVersionId: (deal as any).dioVersionId,
           dioStatus: (deal as any).dioStatus,
           lastAnalyzedAt: (deal as any).lastAnalyzedAt,
           dioRunCount: (deal as any).dioRunCount,
           dioAnalysisVersion: (deal as any).dioAnalysisVersion,
-        });
+        };
+        setDioMeta(nextMeta);
+
+        // Always bind the compiled report to the same DIO version shown in the header.
+        const v = nextMeta.dioAnalysisVersion;
+        loadReport({ force: true, version: typeof v === 'number' ? v : null }).catch(() => {});
       })
       .catch((err) => {
         if (!active) return;
         debugLogger.logMockData('DealWorkspace', 'dealFromApi', null, `API call failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
         addToast('error', 'Failed to load deal', err instanceof Error ? err.message : 'Unknown error');
+
+        // Fall back to the unversioned endpoint when we cannot resolve the latest version.
+        loadReport({ force: true, version: null }).catch(() => {});
       });
 
-    loadReport({ force: true });
 		loadDiagnostics({ force: true });
 
     return () => {
@@ -1097,7 +1137,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return () => {
       active = false;
     };
-  }, [highlightedEvidenceIds, evidence, displayFactsEvidenceIds]);
+  }, [highlightedEvidenceIds, evidence, displayFactsEvidenceIds, reportEvidenceIds]);
 
   const getConfidenceLabel = (v: unknown): 'High' | 'Med' | 'Low' => {
     const n = typeof v === 'number' && Number.isFinite(v) ? v : 0;
@@ -1994,6 +2034,19 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return s;
   };
 
+  // Like safeText, but preserves newlines so callers can keep paragraph breaks.
+  // We still normalize CRLF and trim, and we run the OCR junk check on a
+  // whitespace-collapsed version of the text.
+  const safeTextPreserveNewlines = (value: unknown): string => {
+    if (typeof value !== 'string') return '';
+    const normalized = value.replace(/\r\n/g, '\n').trim();
+    if (!normalized) return '';
+    const collapsedForOcr = normalized.replace(/\s+/g, ' ').trim();
+    if (!collapsedForOcr) return '';
+    if (isProbablyOcrJunk(collapsedForOcr)) return '';
+    return normalized;
+  };
+
   const formatMoneyAmountOnly = (amount: number): string => {
     const v = typeof amount === 'number' && Number.isFinite(amount) ? amount : NaN;
     if (!Number.isFinite(v)) return '—';
@@ -2023,6 +2076,24 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const roundLabel = safeText(structuredRaise?.round_label) || null;
     return { value: formatMoneyAmountOnly(amount), roundLabel };
   }, [reportFromApi]);
+
+  // Deterministic structured summary deal summary (v1)
+  // Canonical paths per spec:
+  // - report.structured_summary.deal_summary_v1.one_liner
+  // - report.structured_summary.deal_summary_v1.long_summary
+  const structuredSummaryRoot = (
+    ((reportFromApi as any)?.structured_summary && typeof (reportFromApi as any).structured_summary === 'object')
+      ? (reportFromApi as any).structured_summary
+      : (((reportEnvelope as any)?.report?.structured_summary && typeof (reportEnvelope as any).report.structured_summary === 'object')
+          ? (reportEnvelope as any).report.structured_summary
+          : null)
+  );
+  const structuredDealSummaryV1 = (structuredSummaryRoot && typeof structuredSummaryRoot === 'object')
+    ? (structuredSummaryRoot as any).deal_summary_v1
+    : null;
+  const structuredDealSummaryOneLiner = safeText((structuredDealSummaryV1 as any)?.one_liner) || safeText((structuredDealSummaryV1 as any)?.one_liner?.text);
+  const structuredDealSummaryLong = safeTextPreserveNewlines((structuredDealSummaryV1 as any)?.long_summary)
+    || safeTextPreserveNewlines((structuredDealSummaryV1 as any)?.long_summary?.text);
 
   // Overview-tab wiring helpers (derived only from existing dealFromApi/dealData state; no new API calls)
   const overviewDealOneLiner = (() => {
@@ -2141,6 +2212,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const authoritativeMarketSummaryV1 = useMemo(() => {
     return selectAuthoritativeMarketSummaryV1((reportFromApi as any) ?? null);
   }, [reportFromApi]);
+
+  const authoritativeFinancialCoverageV1 = useMemo(() => {
+    // financial_coverage_v1 is deterministic-only and lives on /report.
+    return selectAuthoritativeFinancialCoverageV1((reportFromApi as any) ?? (reportEnvelope as any) ?? null);
+  }, [reportFromApi, reportEnvelope]);
 
   const authoritativeProductTextV1 = authoritativeProductSummaryV1.value ?? '';
   const authoritativeMarketTextV1 = authoritativeMarketSummaryV1.value ?? '';
@@ -2883,6 +2959,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return (reportFromApi as any)?.structured_summary?.kpis ?? null;
   }, [reportFromApi]);
 
+  const authoritativeBurnV1 = useMemo(() => {
+    return selectAuthoritativeBurnV1((reportFromApi as any) ?? (reportEnvelope as any) ?? null);
+  }, [reportFromApi, reportEnvelope]);
+
+  const authoritativeRunwayV1 = useMemo(() => {
+    return selectAuthoritativeRunwayV1((reportFromApi as any) ?? (reportEnvelope as any) ?? null);
+  }, [reportFromApi, reportEnvelope]);
+
   const reportStructuredRaise = safeText(reportCanonicalRaise.value) || null;
   const reportStructuredBusinessModelLabel = authoritativeBusinessModel.label;
 
@@ -2899,11 +2983,90 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return selectDealWorkspaceHeader((reportFromApi as any) ?? null, phase1);
   }, [reportFromApi, overviewV2, executiveSummaryV1, dealFromApi]);
 
-  const reportStructuredRevenueLabel = selectedHeader.ready ? (selectedHeader.revenue.label ?? null) : null;
+  const revenueCoveragePolicy = useMemo(() => {
+    const cov: any = authoritativeFinancialCoverageV1.value && typeof authoritativeFinancialCoverageV1.value === 'object'
+      ? (authoritativeFinancialCoverageV1.value as any).coverage
+      : null;
+
+    if (!cov || typeof cov !== 'object') {
+      return {
+        allow: true,
+        forecastOnly: false,
+        kpiTileLabel: 'Revenue / ARR',
+        revenueLabelOverride: null as string | null,
+        tooltipOverride: null as string | null,
+      };
+    }
+
+    const historical = cov.historical_revenue_present === true;
+    const forecast = cov.forecast_revenue_present === true;
+
+    if (historical) {
+      return {
+        allow: true,
+        forecastOnly: false,
+        kpiTileLabel: 'Revenue / ARR',
+        revenueLabelOverride: null,
+        tooltipOverride: null,
+      };
+    }
+
+    if (forecast) {
+      return {
+        allow: true,
+        forecastOnly: true,
+        kpiTileLabel: 'Forecast revenue',
+        revenueLabelOverride: 'Forecast',
+        tooltipOverride: 'Forecast revenue only (no historical revenue extracted).',
+      };
+    }
+
+    return {
+      allow: false,
+      forecastOnly: false,
+      kpiTileLabel: 'Revenue / ARR',
+      revenueLabelOverride: null,
+      tooltipOverride: 'Not extracted from evidence.',
+    };
+  }, [authoritativeFinancialCoverageV1.value]);
+
+  const burnRunwayCoveragePolicy = useMemo(() => {
+    const cov: any = authoritativeFinancialCoverageV1.value && typeof authoritativeFinancialCoverageV1.value === 'object'
+      ? (authoritativeFinancialCoverageV1.value as any).coverage
+      : null;
+
+    const allowBurn = !!(cov && typeof cov === 'object' && cov.burn_rate_present === true);
+    const allowRunway = !!(cov && typeof cov === 'object' && cov.runway_present === true);
+
+    const evidence = (authoritativeFinancialCoverageV1.value as any)?.evidence;
+
+    return {
+      allowBurn,
+      allowRunway,
+      burnTooltip: allowBurn
+        ? (safeText(evidence?.burn_rate_present?.snippet) || null)
+        : 'Not extracted from evidence.',
+      runwayTooltip: allowRunway
+        ? (safeText(evidence?.runway_present?.snippet) || null)
+        : 'Not extracted from evidence.',
+    };
+  }, [authoritativeFinancialCoverageV1.value]);
+
+  const burnTileValue = burnRunwayCoveragePolicy.allowBurn ? (authoritativeBurnV1.value?.display ?? null) : null;
+  const runwayTileValue = burnRunwayCoveragePolicy.allowRunway ? (authoritativeRunwayV1.value?.display ?? null) : null;
+
+  const burnHasNumeric = burnRunwayCoveragePolicy.allowBurn ? authoritativeBurnV1.value != null : undefined;
+  const runwayHasNumeric = burnRunwayCoveragePolicy.allowRunway ? authoritativeRunwayV1.value != null : undefined;
+
+  const reportStructuredRevenueLabel = selectedHeader.ready
+    ? (revenueCoveragePolicy.revenueLabelOverride ?? selectedHeader.revenue.label ?? null)
+    : null;
   const reportStructuredCustomersLabel = selectedHeader.ready ? (selectedHeader.customers.label ?? null) : null;
   const reportStructuredGrowthLabel = selectedHeader.ready ? (selectedHeader.growth.label ?? null) : null;
 
-  const reportStructuredRevenueTooltip = safeText(reportStructuredKpis?.revenue?.sources?.[0]?.note_snippet);
+  const reportStructuredRevenueTooltip = revenueCoveragePolicy.tooltipOverride
+    ? revenueCoveragePolicy.tooltipOverride
+    : safeText(reportStructuredKpis?.revenue?.sources?.[0]?.note_snippet);
   const reportStructuredCustomersTooltip = safeText(reportStructuredKpis?.customers?.sources?.[0]?.note_snippet);
   const reportStructuredGrowthTooltip = safeText(reportStructuredKpis?.growth?.sources?.[0]?.note_snippet);
 
@@ -2945,9 +3108,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const overviewDealOneLinerCanonical = (() => {
     if (canonicalDealSummaryReady) {
-      // Prefer tier hero/mid/long deterministically.
-      if (canonicalTierHero) return canonicalTierHero;
+      // Overview tab prefers the more descriptive tier (overview) when present.
       if (canonicalTierOverview) return canonicalTierOverview;
+      if (canonicalTierHero) return canonicalTierHero;
       // Fallback only if the tier is missing.
       if (canonicalDealOneLiner) return canonicalDealOneLiner;
     }
@@ -3074,6 +3237,50 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const overlayBusinessModel = overlayVM.facts.business_model || overviewBusinessModelCanonical;
   const overlayRaiseTerms = overlayVM.facts.raise_terms || overviewRaiseTermsCanonical;
 
+  const workspaceOverviewModel = useMemo(() => {
+    return selectDealWorkspaceOverviewModel({
+      deterministic: {
+        summaries: {
+          short: { value: overviewDealOneLinerCanonical || null },
+          long: { value: null },
+          longParagraphsFallback: overviewDealSummaryParagraphsCanonical,
+        },
+        keyFacts: {
+          product: { value: overviewProductCanonical || null },
+          market: { value: overviewMarketIcpCanonical || null },
+          business_model: { value: overviewBusinessModelCanonical || null },
+          raise_terms: { value: overviewRaiseTermsCanonical || null },
+        },
+      },
+      overlay: {
+        summaries: {
+          short: { value: overlayVM.hero_summary || governedInterpretationText || null },
+          longParagraphs: overlayVM.deal_summary_paragraphs,
+        },
+        keyFacts: {
+          product: { value: overlayVM.facts.product || null },
+          market: { value: overlayVM.facts.market_icp || null },
+          business_model: { value: overlayVM.facts.business_model || null },
+          raise_terms: { value: overlayVM.facts.raise_terms || null },
+        },
+      },
+    });
+  }, [
+    overviewDealOneLinerCanonical,
+    overviewDealSummaryParagraphsCanonical,
+    overviewProductCanonical,
+    overviewMarketIcpCanonical,
+    overviewBusinessModelCanonical,
+    overviewRaiseTermsCanonical,
+    overlayVM.hero_summary,
+    overlayVM.deal_summary_paragraphs,
+    overlayVM.facts.product,
+    overlayVM.facts.market_icp,
+    overlayVM.facts.business_model,
+    overlayVM.facts.raise_terms,
+    governedInterpretationText,
+  ]);
+
   const kpiMissingTooltip = 'Not extracted from evidence';
   const overlayKpiTiles = useMemo(() => {
     // When /report is ready, keep the governed overlay KPIs consistent with report.structured_summary
@@ -3082,9 +3289,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       ? (selectedHeader.raise.value ?? null)
       : (safeText(reportStructuredRaise) || safeText(overviewRaiseTermsCanonical) || null);
 
-    const revenue = selectedHeader.ready
-      ? (selectedHeader.revenue.value ?? null)
-      : (overlayVM.kpis.revenue?.value ?? null);
+    const revenue = !revenueCoveragePolicy.allow
+      ? null
+      : selectedHeader.ready
+        ? (selectedHeader.revenue.value ?? null)
+        : (overlayVM.kpis.revenue?.value ?? null);
 
     const growth = selectedHeader.ready
       ? (selectedHeader.growth.value ?? null)
@@ -3095,24 +3304,28 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       : (overlayVM.kpis.customers?.value ?? null);
     return [
       { label: 'Raise', value: raise ?? '—', tooltipIfMissing: kpiMissingTooltip },
-      { label: 'Revenue / ARR', value: revenue ?? '—', tooltipIfMissing: kpiMissingTooltip },
+      { label: revenueCoveragePolicy.kpiTileLabel, value: revenue ?? '—', tooltipIfMissing: kpiMissingTooltip },
       { label: 'Growth', value: growth ?? '—', tooltipIfMissing: kpiMissingTooltip },
       { label: 'Customers', value: customers ?? '—', tooltipIfMissing: kpiMissingTooltip },
     ];
-  }, [overlayVM, reportStructuredRaise, overviewRaiseTermsCanonical, selectedHeader]);
+  }, [overlayVM, reportStructuredRaise, overviewRaiseTermsCanonical, selectedHeader, revenueCoveragePolicy.allow, revenueCoveragePolicy.kpiTileLabel]);
 
   const deterministicKpiTiles = useMemo(() => {
     const raise = safeText(reportStructuredRaise) || safeText(overviewRaiseTermsCanonical) || null;
-    const revenue = safeText(reportView.revenue) || safeText(topSectionRevenue) || null;
+    const revenue = !revenueCoveragePolicy.allow
+      ? null
+      : selectedHeader.ready
+        ? (selectedHeader.revenue.value ?? null)
+        : (safeText(reportView.revenue) || safeText(topSectionRevenue) || null);
     const growth = safeText(reportStructuredGrowthValue) || safeText(topSectionGrowth) || null;
     const customers = safeText(reportView.customers) || safeText(topSectionCustomers) || null;
     return [
       { label: 'Raise', value: raise ?? '—', tooltipIfMissing: kpiMissingTooltip },
-      { label: 'Revenue / ARR', value: revenue ?? '—', tooltipIfMissing: kpiMissingTooltip },
+      { label: revenueCoveragePolicy.kpiTileLabel, value: revenue ?? '—', tooltipIfMissing: kpiMissingTooltip },
       { label: 'Growth', value: growth ?? '—', tooltipIfMissing: kpiMissingTooltip },
       { label: 'Customers', value: customers ?? '—', tooltipIfMissing: kpiMissingTooltip },
     ];
-  }, [reportStructuredRaise, overviewRaiseTermsCanonical, reportView.revenue, topSectionRevenue, reportStructuredGrowthValue, topSectionGrowth, reportView.customers, topSectionCustomers]);
+  }, [reportStructuredRaise, overviewRaiseTermsCanonical, reportView.revenue, topSectionRevenue, reportStructuredGrowthValue, topSectionGrowth, reportView.customers, topSectionCustomers, selectedHeader.ready, selectedHeader.revenue.value, revenueCoveragePolicy.allow, revenueCoveragePolicy.kpiTileLabel]);
 
   type KeyFactProvenance = { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean };
   const keyFactMissingText = 'Not extracted from evidence';
@@ -3709,22 +3922,31 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               analysisToastMessage
             );
           }
-          if ((normalizedStatus === 'succeeded' || normalizedStatus === 'succeeded_with_warnings') && dealId) {
+            if ((normalizedStatus === 'succeeded' || normalizedStatus === 'succeeded_with_warnings') && dealId) {
             apiGetDeal(dealId)
               .then((deal) => {
                 setDealFromApi(deal);
-                setDioMeta({
+                const nextMeta = {
                   dioVersionId: (deal as any).dioVersionId,
                   dioStatus: (deal as any).dioStatus,
                   lastAnalyzedAt: (deal as any).lastAnalyzedAt,
                   dioRunCount: (deal as any).dioRunCount,
                   dioAnalysisVersion: (deal as any).dioAnalysisVersion,
-                });
+                };
+                setDioMeta(nextMeta);
+
+                if (job.type === 'analyze_deal') {
+                  reportMissingRef.current = false;
+                  loadReport({ force: true, version: typeof nextMeta.dioAnalysisVersion === 'number' ? nextMeta.dioAnalysisVersion : null }).catch(() => {});
+                }
               })
-              .catch(() => {});
+              .catch(() => {
+                if (job.type === 'analyze_deal') {
+                  reportMissingRef.current = false;
+                  loadReport({ force: true, version: null }).catch(() => {});
+                }
+              });
             if (job.type === 'analyze_deal') {
-              reportMissingRef.current = false;
-              loadReport({ force: true });
 
 			  // After analysis completion, force-refresh the persisted governed overlay.
 			  // If it's not present yet, bounded-poll for a short window.
@@ -3931,22 +4153,25 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             );
           }
           if (normalizedStatus === 'succeeded' || normalizedStatus === 'succeeded_with_warnings') {
-            if (job.type === 'analyze_deal') {
-              reportMissingRef.current = false;
-              loadReport({ force: true });
-            }
+            // Refresh report after analyze_deal only once the deal has been refreshed,
+            // so the requested report version matches the header.
             loadEvidence();
             if (dealId) {
               apiGetDeal(dealId)
                 .then((deal) => {
                   setDealFromApi(deal);
-                  setDioMeta({
+                  const nextMeta = {
                     dioVersionId: (deal as any).dioVersionId,
                     dioStatus: (deal as any).dioStatus,
                     lastAnalyzedAt: (deal as any).lastAnalyzedAt,
                     dioRunCount: (deal as any).dioRunCount,
                     dioAnalysisVersion: (deal as any).dioAnalysisVersion,
-                  });
+                  };
+                  setDioMeta(nextMeta);
+                  if (job.type === 'analyze_deal') {
+                    reportMissingRef.current = false;
+                    loadReport({ force: true, version: typeof nextMeta.dioAnalysisVersion === 'number' ? nextMeta.dioAnalysisVersion : null }).catch(() => {});
+                  }
                 })
                 .catch(() => {});
             }
@@ -5113,18 +5338,21 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       apiGetDeal(dealId)
         .then((deal) => {
           setDealFromApi(deal);
-          setDioMeta({
+          const nextMeta = {
             dioVersionId: (deal as any).dioVersionId,
             dioStatus: (deal as any).dioStatus,
             lastAnalyzedAt: (deal as any).lastAnalyzedAt,
             dioRunCount: (deal as any).dioRunCount,
             dioAnalysisVersion: (deal as any).dioAnalysisVersion,
-          });
+          };
+          setDioMeta(nextMeta);
+          reportMissingRef.current = false;
+          loadReport({ force: true, version: typeof nextMeta.dioAnalysisVersion === 'number' ? nextMeta.dioAnalysisVersion : null }).catch(() => {});
         })
-        .catch(() => {});
-
-      reportMissingRef.current = false;
-      loadReport({ force: true });
+        .catch(() => {
+          reportMissingRef.current = false;
+          loadReport({ force: true, version: null }).catch(() => {});
+        });
       loadEvidence();
 
       addToast('success', 'Full process completed', 'Documents, visuals, and analysis refreshed');
@@ -5969,32 +6197,33 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   hardPassGuardrailNote={safeText((reportMeta as any)?.hard_pass_guardrail_v2?.note)}
                   hardPassGuardrailCriteriaSnapshot={(reportMeta as any)?.hard_pass_guardrail_v2?.criteria_snapshot ?? null}
                   decisionV1={(reportMeta as any)?.decision_v1 ?? null}
-                  dealSummary={(() => {
-                    if (!canonicalDealSummaryReady) return 'Deterministic deal summary unavailable.';
-
-                    const parts = [canonicalTierHero, canonicalTierOverview, canonicalTierDeep]
-                      .map((s) => safeText(s))
-                      .filter((s) => s.length > 0);
-
-                    // Render hero/mid/long as separate paragraphs.
-                    if (parts.length > 0) return parts.join('\n\n');
-
-                    const fallback = safeText(canonicalDealOneLiner) || canonicalParagraphs[0] || '';
-                    return fallback || 'Deterministic deal summary unavailable.';
-                  })()}
+                  dealSummaryShort={structuredDealSummaryOneLiner || null}
+                  dealSummary={structuredDealSummaryLong
+                    ? structuredDealSummaryLong
+                    : 'Deterministic deal summary unavailable.'}
                   dealSummaryTitle={'Deal Summary'}
-                  dealSummarySource={canonicalDealSummaryReady ? 'canonical' : 'degraded'}
+                  dealSummarySource={structuredDealSummaryLong ? 'canonical' : 'degraded'}
                   strengths={topSectionStrengths}
                   weaknesses={topSectionWeaknesses}
                   raise={selectedHeader.ready ? (selectedHeader.raise.value ?? null) : null}
                   raiseLabel={selectedHeader.ready ? (selectedHeader.raise.label ?? null) : null}
                   raiseConflict={false}
                   raiseConflictOverlayValue={null}
-                  revenue={selectedHeader.ready ? (selectedHeader.revenue.value ?? null) : null}
+                  revenue={selectedHeader.ready ? (revenueCoveragePolicy.allow ? (selectedHeader.revenue.value ?? null) : null) : null}
                   revenueLabel={reportStructuredRevenueLabel}
                   revenueTooltip={reportStructuredRevenueTooltip}
                   revenueConflict={false}
                   revenueConflictOverlayValue={null}
+                  burn={selectedHeader.ready ? burnTileValue : null}
+                  burnLabel={null}
+                  burnTooltip={selectedHeader.ready ? burnRunwayCoveragePolicy.burnTooltip : null}
+                  burnConflict={false}
+                  burnConflictOverlayValue={null}
+                  runway={selectedHeader.ready ? runwayTileValue : null}
+                  runwayLabel={null}
+                  runwayTooltip={selectedHeader.ready ? burnRunwayCoveragePolicy.runwayTooltip : null}
+                  runwayConflict={false}
+                  runwayConflictOverlayValue={null}
                   growth={selectedHeader.ready ? (safeText(reportStructuredGrowthValue) || selectedHeader.growth.value || null) : null}
                   growthLabel={reportStructuredGrowthLabel}
                   growthNote={reportStructuredGrowthNote}
@@ -7076,16 +7305,16 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     <div className="mt-4">
                       <DealWorkspaceOverviewComp
                         darkMode={darkMode}
-                        dealOneLiner={overviewDealOneLinerCanonical}
-                        product={overviewProductCanonical}
-                        marketIcp={overviewMarketIcpCanonical}
-                        businessModel={overviewBusinessModelCanonical}
-                        raiseTerms={overviewRaiseTermsCanonical}
-                        productProvenance={{ source: normalizeKeyFactText(overviewProductCanonical) ? 'deterministic' : 'missing' }}
-                        marketIcpProvenance={{ source: normalizeKeyFactText(overviewMarketIcpCanonical) ? 'deterministic' : 'missing' }}
-                        businessModelProvenance={{ source: normalizeKeyFactText(overviewBusinessModelCanonical) ? 'deterministic' : 'missing' }}
-                        raiseTermsProvenance={{ source: normalizeKeyFactText(overviewRaiseTermsCanonical) ? 'deterministic' : 'missing' }}
-                        dealSummaryParagraphs={overviewDealSummaryParagraphsCanonical}
+                        dealOneLiner={workspaceOverviewModel.summaries.short.value}
+                        product={workspaceOverviewModel.keyFacts.product.value}
+                        marketIcp={workspaceOverviewModel.keyFacts.market.value}
+                        businessModel={workspaceOverviewModel.keyFacts.business_model.value}
+                        raiseTerms={workspaceOverviewModel.keyFacts.raise_terms.value}
+                        productProvenance={{ source: workspaceOverviewModel.keyFacts.product.origin === 'missing' ? 'missing' : workspaceOverviewModel.keyFacts.product.origin === 'overlay' ? 'governed' : 'deterministic' }}
+                        marketIcpProvenance={{ source: workspaceOverviewModel.keyFacts.market.origin === 'missing' ? 'missing' : workspaceOverviewModel.keyFacts.market.origin === 'overlay' ? 'governed' : 'deterministic' }}
+                        businessModelProvenance={{ source: workspaceOverviewModel.keyFacts.business_model.origin === 'missing' ? 'missing' : workspaceOverviewModel.keyFacts.business_model.origin === 'overlay' ? 'governed' : 'deterministic' }}
+                        raiseTermsProvenance={{ source: workspaceOverviewModel.keyFacts.raise_terms.origin === 'missing' ? 'missing' : workspaceOverviewModel.keyFacts.raise_terms.origin === 'overlay' ? 'governed' : 'deterministic' }}
+                        dealSummaryParagraphs={workspaceOverviewModel.summaries.long.paragraphs}
                         kpiTiles={deterministicKpiTiles}
                         dealSummarySourceLabel={dealSummarySourceLabel}
                         dealSummaryCitations={canonicalCitations ?? undefined}
@@ -7111,6 +7340,16 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         }}
                         onViewFullAnalysis={() => setActiveTab('evidence')}
                       />
+
+                      <div className="mt-6">
+                        <FinancialCoveragePanel
+                          darkMode={darkMode}
+                          financialCoverage={authoritativeFinancialCoverageV1.value}
+                          documentTitles={documentTitles}
+                          burnHasNumeric={burnHasNumeric}
+                          runwayHasNumeric={runwayHasNumeric}
+                        />
+                      </div>
                     </div>
                   ) : null}
                 </div>
@@ -7144,6 +7383,33 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Report</div>
                   <div className={`text-xs font-mono break-all ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{analysisDiagnostics.report_id}</div>
                   <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>phase: {String(analysisDiagnostics.llm_phase_mode ?? '—')}</div>
+
+                  <div className={`mt-2 text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    <span>
+                      Header latest: {typeof dioMeta?.dioAnalysisVersion === 'number' ? `v${dioMeta.dioAnalysisVersion}` : '—'}
+                    </span>
+                    <span className={`mx-2 ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>·</span>
+                    <span>
+                      Loaded: {typeof (reportEnvelope as any)?.version === 'number' ? `v${(reportEnvelope as any).version}` : '—'}
+                      {typeof (reportArtifact as any)?.analysis_version === 'number' ? ` (artifact v${(reportArtifact as any).analysis_version})` : ''}
+                    </span>
+                  </div>
+
+                  {(
+                    typeof dioMeta?.dioAnalysisVersion === 'number' &&
+                    typeof (reportArtifact as any)?.analysis_version === 'number' &&
+                    dioMeta.dioAnalysisVersion !== (reportArtifact as any).analysis_version
+                  ) ? (
+                    <div className={`mt-1 text-[11px] ${darkMode ? 'text-amber-200' : 'text-amber-700'}`}>
+                      Version mismatch: header v{dioMeta.dioAnalysisVersion} ≠ artifact v{String((reportArtifact as any).analysis_version)}
+                    </div>
+                  ) : null}
+
+                  {typeof (reportArtifact as any)?.dio_id === 'string' && (reportArtifact as any).dio_id ? (
+                    <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                      artifact.dio_id: <span className="font-mono break-all">{String((reportArtifact as any).dio_id)}</span>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>

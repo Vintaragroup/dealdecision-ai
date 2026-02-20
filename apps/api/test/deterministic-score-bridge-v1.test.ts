@@ -130,6 +130,13 @@ function mkMockPool(args: {
 	return {
 		query: async (sql: string, params?: unknown[]) => {
 			const q = String(sql);
+			if (q.includes('FROM ingestion_reports') && q.includes('analysis_version')) {
+				return { rows: [] };
+			}
+			if (q.includes('INSERT INTO ingestion_reports') && q.includes('ON CONFLICT (deal_id, analysis_version)')) {
+				return { rows: [{ report_id: 'ir-1' }] };
+			}
+
 			if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
 				assert.deepEqual(params, [args.dealId]);
 				return { rows: [{ id: args.dealId, llm_phase_mode: null }] };
@@ -253,6 +260,13 @@ test("unadjusted==50 => overall stays 50 even if adjustment changes", async () =
 	const pool = {
 		query: async (sql: string, params?: unknown[]) => {
 			const q = String(sql);
+			if (q.includes('FROM ingestion_reports') && q.includes('analysis_version')) {
+				return { rows: [] };
+			}
+			if (q.includes('INSERT INTO ingestion_reports') && q.includes('ON CONFLICT (deal_id, analysis_version)')) {
+				return { rows: [{ report_id: 'ir-1' }] };
+			}
+
 			if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
 				assert.deepEqual(params, [dealId]);
 				return { rows: [{ id: dealId, llm_phase_mode: null }] };
@@ -398,6 +412,13 @@ test("unadjusted>50 and higher adjustment => overall increases (Δ>=1)", async (
 	const pool = {
 		query: async (sql: string, params?: unknown[]) => {
 			const q = String(sql);
+			if (q.includes('FROM ingestion_reports') && q.includes('analysis_version')) {
+				return { rows: [] };
+			}
+			if (q.includes('INSERT INTO ingestion_reports') && q.includes('ON CONFLICT (deal_id, analysis_version)')) {
+				return { rows: [{ report_id: 'ir-1' }] };
+			}
+
 			if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
 				assert.deepEqual(params, [dealId]);
 				return { rows: [{ id: dealId, llm_phase_mode: null }] };

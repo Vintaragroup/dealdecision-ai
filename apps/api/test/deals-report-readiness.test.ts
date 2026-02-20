@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import Fastify from "fastify";
 import { registerReportRoutes } from "../src/routes/reports";
+import { compileDIOToReport } from "@dealdecision/core";
 
 // Minimal DIO-like payload for compileDIOToReport(). We don't need a fully realistic analysis,
 // just a schema-valid persisted artifact that can be compiled.
@@ -152,6 +153,64 @@ test("GET /api/v1/deals/:deal_id/report returns 200 {ready:true} when a DIO exis
     assert.equal(typeof body.dealId, "string");
     assert.equal(typeof body.generatedAt, "string");
     assert.equal(typeof body.overallScore, "number");
+  } finally {
+    await app.close();
+  }
+});
+
+test("GET /api/v1/deals/:deal_id/report prefers persisted dio_data.report when present", async () => {
+  const dealId = "00000000-0000-0000-0000-0000000000c2";
+  const dioId = "00000000-0000-4000-8000-00000000a0p2";
+
+  const dio = baseDio(dealId, 1);
+  dio.dio_id = dioId;
+  const persistedReport = compileDIOToReport(dio);
+
+  const mockPool = {
+    query: async (sql: string, params?: unknown[]) => {
+      const q = String(sql);
+      if (q.includes("FROM deals") && q.includes("WHERE id = $1") && q.includes("deleted_at IS NULL")) {
+        assert.deepEqual(params, [dealId]);
+        return { rows: [{ id: dealId, llm_phase_mode: null }] };
+      }
+      if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {
+        assert.deepEqual(params, [dealId]);
+        return {
+          rows: [
+            {
+              dio_id: dioId,
+              analysis_version: 1,
+              recommendation: null,
+              overall_score: null,
+              dio_data: { report: persistedReport },
+              updated_at: now,
+            },
+          ],
+        };
+      }
+      if (q.includes("MAX(dpu.created_at)")) {
+        return { rows: [{ latest_dpu_created_at: null }] };
+      }
+      if (q.includes("document_page_understanding") || q.includes("visual_assets") || q.includes("visual_extractions")) {
+        return { rows: [] };
+      }
+      if (q.includes("evidence_items")) {
+        return { rows: [] };
+      }
+      throw new Error(`Unexpected SQL in test: ${q}`);
+    },
+  } as any;
+
+  const app = Fastify();
+  try {
+    await registerReportRoutes(app, mockPool);
+
+    const res = await app.inject({ method: "GET", url: `/api/v1/deals/${dealId}/report` });
+    assert.equal(res.statusCode, 200);
+    const body = res.json() as any;
+    assert.equal(body.ready, true);
+    assert.equal(body.dealId, dealId);
+    assert.equal(body.structured_summary?.deal_summary_v1?.version, "deal_summary_v1");
   } finally {
     await app.close();
   }

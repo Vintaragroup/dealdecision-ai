@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DealPriority, DealStage, DealTrend, Deal } from '@dealdecision/contracts';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -87,6 +87,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
   const [sortBy, setSortBy] = useState('updated');
   const [selectedDeals, setSelectedDeals] = useState<string[]>([]);
   const [showExportModal, setShowExportModal] = useState(false);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [liveDeals, setLiveDeals] = useState<Deal[]>([]);
@@ -97,8 +98,25 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [deletingDealId, setDeletingDealId] = useState<string | null>(null);
 
+  const authStateRef = useRef<{ authLoaded: boolean; isSignedIn: boolean | undefined; orgId: string | null | undefined }>({
+    authLoaded,
+    isSignedIn,
+    orgId,
+  });
   useEffect(() => {
-    if (!authLoaded) return;
+    authStateRef.current = { authLoaded, isSignedIn, orgId };
+  }, [authLoaded, isSignedIn, orgId]);
+
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const fetchDealsAndDocuments = useCallback(async () => {
+    const state = authStateRef.current;
+    if (!state.authLoaded) return;
 
     // In true local dev, we may not have a Clerk org selected, but the API may still be reachable
     // (e.g. via VITE_ADMIN_TOKEN or dev-auth bypass). Prefer fetching and showing an error over
@@ -106,73 +124,80 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
     const allowDevWithoutOrg = isDev;
 
     // Do not call the API until an active org exists (unless local dev).
-    if ((!isSignedIn || !orgId) && !allowDevWithoutOrg) {
+    if ((!state.isSignedIn || !state.orgId) && !allowDevWithoutOrg) {
       setLoading(false);
       setError(null);
       setLiveDeals([]);
       return;
     }
 
-    let isMounted = true;
     setLoading(true);
     setError(null);
 
-    const fetchDealsAndDocuments = async () => {
-      try {
-        const deals = await apiGetDeals();
-        if (!isMounted) return;
+    try {
+      const deals = await apiGetDeals();
+      if (!isMountedRef.current) return;
 
-        if (debugDealsList) {
-          console.info('[DDAI][DealsList] apiGetDeals resolved', {
-            orgId,
-            count: Array.isArray(deals) ? deals.length : null,
-            first: Array.isArray(deals) && deals.length > 0 ? deals[0] : null,
-          });
-        }
-
-        // Fetch documents for each deal
-        const documentCounts: Record<string, number> = {};
-        for (const deal of deals) {
-          try {
-            const docsResponse = await apiGetDocuments(deal.id);
-            documentCounts[deal.id] = docsResponse.documents?.length || 0;
-          } catch (error) {
-            console.error(`Failed to fetch documents for deal ${deal.id}:`, error);
-            documentCounts[deal.id] = 0;
-          }
-        }
-
-        // Update deals with document counts
-        const dealsWithDocuments = deals.map(deal => ({
-          ...deal,
-          documents: documentCounts[deal.id] || 0
-        }));
-
-        if (!isMounted) return;
-        setLiveDeals(dealsWithDocuments);
-
-        if (debugDealsList) {
-          console.info('[DDAI][DealsList] setLiveDeals', {
-            count: dealsWithDocuments.length,
-            firstId: dealsWithDocuments[0]?.id,
-            firstName: dealsWithDocuments[0]?.name,
-          });
-        }
-      } catch (err) {
-        if (!isMounted) return;
-        setError(err instanceof Error ? err.message : 'Failed to load deals');
-      } finally {
-        if (!isMounted) return;
-        setLoading(false);
+      if (debugDealsList) {
+        console.info('[DDAI][DealsList] apiGetDeals resolved', {
+          orgId: state.orgId,
+          count: Array.isArray(deals) ? deals.length : null,
+          first: Array.isArray(deals) && deals.length > 0 ? deals[0] : null,
+        });
       }
+
+      // Fetch documents for each deal
+      const documentCounts: Record<string, number> = {};
+      for (const deal of deals) {
+        try {
+          const docsResponse = await apiGetDocuments(deal.id);
+          documentCounts[deal.id] = docsResponse.documents?.length || 0;
+        } catch (error) {
+          console.error(`Failed to fetch documents for deal ${deal.id}:`, error);
+          documentCounts[deal.id] = 0;
+        }
+      }
+
+      // Update deals with document counts
+      const dealsWithDocuments = deals.map(deal => ({
+        ...deal,
+        documents: documentCounts[deal.id] || 0
+      }));
+
+      if (!isMountedRef.current) return;
+      setLiveDeals(dealsWithDocuments);
+
+      if (debugDealsList) {
+        console.info('[DDAI][DealsList] setLiveDeals', {
+          count: dealsWithDocuments.length,
+          firstId: dealsWithDocuments[0]?.id,
+          firstName: dealsWithDocuments[0]?.name,
+        });
+      }
+    } catch (err) {
+      if (!isMountedRef.current) return;
+      setError(err instanceof Error ? err.message : 'Failed to load deals');
+    } finally {
+      if (!isMountedRef.current) return;
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      if (!authStateRef.current.authLoaded) {
+        window.setTimeout(tick, 50);
+        return;
+      }
+      fetchDealsAndDocuments();
     };
-
-    fetchDealsAndDocuments();
-
+    tick();
     return () => {
-      isMounted = false;
+      cancelled = true;
     };
-  }, [authLoaded, isSignedIn, orgId]);
+  }, []);
 
   const openDeleteModal = (deal: { id: string; name: string }) => {
     setError(null);

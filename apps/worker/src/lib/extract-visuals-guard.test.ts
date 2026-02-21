@@ -43,4 +43,45 @@ describe("evaluateVisualDocReadiness", () => {
 		expect(res.blocked).toBe(false);
 		expect(res.reason).toBe(null);
 	});
+
+	// Regression: documents where ingest left status='completed' (pre-fix path) must still
+	// be blocked by the guard. The fix to ingest changes the status to 'ready_for_analysis'
+	// going forward; older docs with 'completed' remain blocked until reconcile-ingest runs.
+	it("blocks docs with status=completed even when metaStatus=succeeded (old ingest path)", () => {
+		const res = evaluateVisualDocReadiness({
+			id: "old-ingest-1",
+			status: "completed",
+			deletedAt: null,
+			metaStatus: "succeeded",
+		});
+		expect(res.blocked).toBe(true);
+		expect(res.reason).toBe("ingest_not_complete");
+	});
+
+	// After the fix: ingest sets status='ready_for_analysis' + ready_for_analysis_at together.
+	// When ready_for_analysis_at is set, status is 'ready_for_analysis', so the guard passes.
+	it("does not block when ingest set status=ready_for_analysis (ready_for_analysis_at was populated)", () => {
+		const res = evaluateVisualDocReadiness({
+			id: "fixed-ingest-1",
+			status: "ready_for_analysis",
+			deletedAt: null,
+			metaStatus: "succeeded",
+		});
+		expect(res.blocked).toBe(false);
+		expect(res.reason).toBe(null);
+	});
+
+	// When ready_for_analysis_at is null (ingest hasn't completed or is still on old path),
+	// the status is not yet 'ready_for_analysis', so the guard blocks.
+	it("blocks when ready_for_analysis_at is null (ingest not yet completed)", () => {
+		// Simulates a document mid-ingest: status=processing, no metaStatus yet.
+		const res = evaluateVisualDocReadiness({
+			id: "pending-ingest-1",
+			status: "processing",
+			deletedAt: null,
+			metaStatus: null,
+		});
+		expect(res.blocked).toBe(true);
+		expect(res.reason).toBe("ingest_not_complete");
+	});
 });

@@ -2379,7 +2379,7 @@ async function ingestDocumentProcessor(job: Job) {
 				}
 			}
 
-			const finalDocStatus = runOcrFlow ? "needs_ocr" : "completed";
+			const finalDocStatus = runOcrFlow ? "needs_ocr" : "ready_for_analysis";
 			const finalJobStatus: JobStatus = runOcrFlow ? "succeeded_with_warnings" : "succeeded";
 			const finalAbsentReason =
 				runOcrFlow && (!fullText || fullText.trim().length === 0) ? "no_text_extracted_needs_ocr" : fullTextAbsentReason;
@@ -2393,6 +2393,10 @@ async function ingestDocumentProcessor(job: Job) {
 				fullText: fullText || undefined,
 				fullTextAbsentReason: finalAbsentReason ?? undefined,
 				pageCount: pageCount || undefined,
+				// Mark the document as ready for downstream steps (extract_visuals, analyze_deal).
+				// Only set when not entering the OCR remediation flow; COALESCE in SQL prevents
+				// overwriting an existing value if ingest ran more than once.
+				readyForAnalysisAt: finalDocStatus === "ready_for_analysis" ? new Date() : undefined,
 			});
 			await updateJob(
 				job,

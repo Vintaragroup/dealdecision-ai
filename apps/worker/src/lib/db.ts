@@ -76,6 +76,12 @@ export async function updateDocumentAnalysis(params: {
   fullText?: string;
   fullTextAbsentReason?: string;
   pageCount?: number;
+  /**
+   * When provided, sets ready_for_analysis_at = COALESCE(existing, value) for non-deleted rows.
+   * Use this when transitioning a document to 'ready_for_analysis' so the timestamp tracks
+   * when the document first became ready. Must not be set for the needs_ocr or error paths.
+   */
+  readyForAnalysisAt?: Date | null;
 }) {
   const currentPool = getPool();
   await currentPool.query(
@@ -92,7 +98,13 @@ export async function updateDocumentAnalysis(params: {
              WHEN $6 IS NOT NULL AND length(trim($6)) > 0 THEN NULL
              ELSE COALESCE($7, full_text_absent_reason)
            END,
-           page_count = COALESCE($8, page_count)
+           page_count = COALESCE($8, page_count),
+           ready_for_analysis_at = CASE
+             WHEN $9::timestamptz IS NOT NULL AND deleted_at IS NULL
+             THEN COALESCE(ready_for_analysis_at, $9::timestamptz)
+             ELSE ready_for_analysis_at
+           END,
+           updated_at = now()
      WHERE id = $1`,
     [
       sanitizeText(params.documentId),
@@ -103,6 +115,7 @@ export async function updateDocumentAnalysis(params: {
       params.fullText === undefined ? null : sanitizeText(params.fullText ?? null),
       params.fullTextAbsentReason === undefined ? null : sanitizeText(params.fullTextAbsentReason ?? null),
       params.pageCount ?? null,
+      params.readyForAnalysisAt ?? null,
     ]
   );
 }

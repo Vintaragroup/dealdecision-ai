@@ -10,6 +10,9 @@ const renderHealthSchema = z.object({
   uptime_seconds: z.number(),
   timestamp: z.string(),
   db: z.enum(["ok", "unreachable"]),
+  // [DDAI][build_fingerprint] — correlate API commit against web UI commit.
+  sha: z.string(),
+  build_time: z.string(),
 });
 
 type RenderHealthResponse = z.infer<typeof renderHealthSchema>;
@@ -67,8 +70,10 @@ export async function registerHealthRoutes(app: FastifyInstance) {
               uptime_seconds: { type: "number" },
               timestamp: { type: "string" },
               db: { type: "string" },
+              sha: { type: "string" },
+              build_time: { type: "string" },
             },
-            required: ["status", "service", "uptime_seconds", "timestamp", "db"],
+            required: ["status", "service", "uptime_seconds", "timestamp", "db", "sha", "build_time"],
           },
         },
       },
@@ -96,6 +101,10 @@ export async function registerHealthRoutes(app: FastifyInstance) {
         uptime_seconds: Math.floor(process.uptime()),
         timestamp,
         db,
+        // [DDAI][build_fingerprint] — Render auto-injects RENDER_GIT_COMMIT for all services.
+        // Fallback: API_BUILD_SHA set manually (e.g. via Render envVar or Dockerfile ARG).
+        sha: process.env.RENDER_GIT_COMMIT ?? process.env.API_BUILD_SHA ?? 'unknown',
+        build_time: process.env.API_BUILD_TIME ?? 'unknown',
       };
     }
   );

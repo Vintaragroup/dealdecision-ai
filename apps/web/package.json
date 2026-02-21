@@ -74,6 +74,7 @@
         "css:assert": "node ./scripts/assert-tailwind-output.mjs",
         "css:regen": "pnpm css:generate && pnpm css:assert",
         "build": "vite build",
+        "build:ci": "VITE_BUILD_SHA=$(git rev-parse --short HEAD) VITE_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) vite build",
         "preview": "vite preview --host --port 4173",
         "typecheck": "tsc -p tsconfig.json --noEmit",
         "test": "vitest run"

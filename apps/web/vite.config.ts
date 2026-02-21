@@ -4,6 +4,24 @@
   import path from 'path';
   import fs from 'fs';
 
+  // ---------------------------------------------------------------------------
+  // Build fingerprint — injected via Vite's standard VITE_* env injection.
+  // Only reads env vars; no execSync / git CLI calls (brittle in CI containers).
+  // Priority: VITE_BUILD_SHA env var > RENDER_GIT_COMMIT (Render auto-injects) > 'unknown'.
+  // ---------------------------------------------------------------------------
+  const _buildSha = (
+    process.env.VITE_BUILD_SHA ??
+    (process.env.RENDER_GIT_COMMIT ? process.env.RENDER_GIT_COMMIT.slice(0, 7) : undefined) ??
+    'unknown'
+  ).trim();
+  const _buildTime = (process.env.VITE_BUILD_TIME ?? 'unknown').trim();
+  const _appEnv = (process.env.VITE_APP_ENV ?? process.env.NODE_ENV ?? 'development').trim();
+
+  // Assign back so Vite picks them up through its normal VITE_* injection path.
+  process.env.VITE_BUILD_SHA = _buildSha;
+  process.env.VITE_BUILD_TIME = _buildTime;
+  process.env.VITE_APP_ENV = _appEnv;
+
   const isDocker = fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv');
   if (isDocker && !process.env.BROWSER) {
     // Prevent Vite from trying to spawn xdg-open in containers.

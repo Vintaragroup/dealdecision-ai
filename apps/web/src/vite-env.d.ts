@@ -10,6 +10,11 @@ interface ImportMetaEnv {
   readonly VITE_API_BASE_URL?: string;
   readonly VITE_BACKEND_MODE?: string;
   readonly VITE_CLERK_PUBLISHABLE_KEY?: string;
+
+  // Build-time fingerprint — injected by vite.config.ts via define; never undefined in prod.
+  readonly VITE_BUILD_SHA: string;
+  readonly VITE_BUILD_TIME: string;
+  readonly VITE_APP_ENV: string;
 }
 
 interface ImportMeta {

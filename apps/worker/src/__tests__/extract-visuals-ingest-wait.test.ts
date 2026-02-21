@@ -134,8 +134,9 @@ describe("extract_visuals ingest_not_complete wait", () => {
 					{ status: 200, headers: { "content-type": "application/json" } }
 				);
 			}
-			if (method === "HEAD") {
-				return new Response("", { status: 200, headers: { "content-type": "image/png" } });
+			// Image URI probe uses GET+Range, not HEAD. Return 206 for range requests.
+			if (method === "GET" && String((init as any)?.headers?.Range ?? "").startsWith("bytes=")) {
+				return new Response("", { status: 206, headers: { "content-type": "image/png" } });
 			}
 			return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
 		}) as any;

@@ -302,10 +302,11 @@ describe("extract_visuals chunking finalization", () => {
 				);
 			}
 
-			// Page image checks + local OCR fallback may fetch bytes.
+			// Page image probe uses GET+Range (presigned URLs return 403 for HEAD).
+			// Respond with 206 for range requests; full body for any other GET.
 			if (u.startsWith("https://example.com/page_")) {
-				if (method === "HEAD") {
-					return new Response("", { status: 200, headers: { "content-type": "image/png" } });
+				if (method === "GET" && String((init as any)?.headers?.Range ?? "").startsWith("bytes=")) {
+					return new Response("", { status: 206, headers: { "content-type": "image/png" } });
 				}
 				return new Response(fixtureBytes, { status: 200, headers: { "content-type": "image/png" } });
 			}

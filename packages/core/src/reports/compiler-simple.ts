@@ -4,8 +4,9 @@
  */
 
 import type { DealIntelligenceObject } from '../types/dio.js';
-import { buildScoreExplanationFromDIO } from './score-explanation.js';
+import { buildScoreExplanationFromDIO, type ScoreExplanation } from './score-explanation.js';
 import { buildDeterministicDealSummaryV1FromStructuredSummary, type DeterministicDealSummaryV1 } from './deal-summary-v1-deterministic.js';
+import { buildTopSectionV1FromScoreExplanation, type TopSectionV1 } from './topsection-v1-deterministic.js';
 import { inferFundingStageModelV1, type FundingStageModelV1 } from '../models/funding-stage-model.js';
 import { inferFinancialCoverageProfileV1, type FinancialCoverageProfileV1 } from '../models/financial-coverage-profile.js';
 import { inferCapitalLogicProfileV1, type CapitalLogicProfileV1 } from '../models/capital-logic-profile.js';
@@ -92,6 +93,9 @@ type ReportDTO = {
     // Deterministic KPI-locked synthesis from structured_summary.
     // API may override/augment this with node-derived citations.
     deal_summary_v1?: DeterministicDealSummaryV1;
+    // TopSection V1: score-driver summary (never company description, never governed overlay).
+    // See packages/core/src/reports/topsection-v1-deterministic.ts for the design contract.
+    topsection_v1?: TopSectionV1;
   };
 
   grade: 'Excellent' | 'Good' | 'Fair' | 'Needs Improvement' | 'Insufficient Information';
@@ -1145,6 +1149,19 @@ function buildStructuredSummary(
     (structured as any).deal_summary_v1 = buildDeterministicDealSummaryV1FromStructuredSummary({
       structured_summary: structured,
     });
+  } catch {
+    // Best-effort: never fail report compilation.
+  }
+
+  // TopSection V1: score-driver summary (why is the score X?).
+  // Separation contract: this is NEVER a company description.
+  // Overview tab uses governed overlay; TopSection uses this deterministic field.
+  try {
+    if (scoreExplanation) {
+      (structured as any).topsection_v1 = buildTopSectionV1FromScoreExplanation(
+        scoreExplanation as ScoreExplanation,
+      );
+    }
   } catch {
     // Best-effort: never fail report compilation.
   }

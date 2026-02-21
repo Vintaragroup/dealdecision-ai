@@ -127,6 +127,13 @@ describe('DealWorkspace latest-run deterministic report binding', () => {
                 one_liner: 'short',
                 long_summary: v3Summary,
               },
+              topsection_v1: {
+                schema_version: 'topsection_v1',
+                score_driver_one_liner: 'short',
+                strengths: [],
+                weaknesses: [],
+                actions_to_improve: [],
+              },
               kpis: {
                 raise: { value: '$2M', sources: [] },
               },

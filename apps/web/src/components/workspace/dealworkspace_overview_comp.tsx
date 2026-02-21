@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { ChevronDown, Package, Users, DollarSign, TrendingUp, Shield, ArrowRight, AlertCircle } from 'lucide-react';
 import type { EvidenceResolveResult } from '../../lib/apiClient';
 
@@ -72,6 +72,10 @@ export type DealWorkspaceOverviewCompProps = {
   };
 
   score0_100: number | null;
+  /** Provenance of score0_100 — matches resolveCanonicalScore source union. */
+  scoreSource?: 'score_band_v2.overall_score' | 'report.overallScore' | 'none';
+  /** Whether a finalized report is driving the score (false = not yet computed). */
+  reportApplied?: boolean;
   decisionLabel: 'PASS' | 'CONSIDER' | 'FUND' | '—' | string;
   confidenceLabel: string;
   confidenceVerified: boolean;
@@ -139,7 +143,36 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
 
   const coverageGaps = useMemo(() => safeLines(props.coverageGaps), [props.coverageGaps]);
   const decisionLabelText = String(props.decisionLabel ?? '').trim() || '—';
-  const scoreText = typeof props.score0_100 === 'number' && Number.isFinite(props.score0_100) ? `${Math.round(props.score0_100)} / 100` : '— / 100';
+  // When the report is not yet applied, show a neutral placeholder — never a stale DB number.
+  const scoreText = (() => {
+    if (props.reportApplied === false) return 'Not yet computed';
+    if (typeof props.score0_100 !== 'number' || !Number.isFinite(props.score0_100)) return '— / 100';
+    return `${Math.round(props.score0_100)} / 100`;
+  })();
+
+  // [DDAI][overview_score_binding] Dev-only: log what score value this component received at render.
+  // This confirms the Overview tab score display source without altering business logic.
+  // score0_100 now traces to canonicalScoreView (resolveCanonicalScore chain), not dealFromApi.score.
+  const _lastOverviewScoreRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const key = `${props.reportApplied}|${props.score0_100}|${props.scoreSource ?? 'none'}|${props.decisionLabel}`;
+    if (_lastOverviewScoreRef.current === key) return;
+    _lastOverviewScoreRef.current = key;
+    console.log('[DDAI][overview_score_binding]', {
+      reportApplied: props.reportApplied,
+      score0_100: props.score0_100,
+      scoreSource: props.scoreSource ?? 'none',
+      scoreText,
+      decisionLabel: props.decisionLabel,
+      confidenceLabel: props.confidenceLabel,
+      // NOTE: score0_100 now traces to resolveCanonicalScore (score_band_v2 → overallScore),
+      // passed from DealWorkspace.canonicalScoreView. null means report not applied = placeholder shown.
+      source_chain: props.reportApplied
+        ? 'resolveCanonicalScore → score_band_v2.overall_score | report.overallScore'
+        : 'report not applied → Not yet computed placeholder',
+    });
+  }, [props.score0_100, props.scoreSource, props.reportApplied, props.decisionLabel, props.confidenceLabel, scoreText]);
 
   const badgeBaseClassName = 'inline-flex items-center px-2 py-1 rounded-full border text-[11px] font-medium leading-none';
 
@@ -712,7 +745,11 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
             <div className="flex items-center gap-4 text-sm">
               <div className="flex items-center gap-2">
                 <span className="text-zinc-400">Score:</span>
-                <span className="text-white">{scoreText}</span>
+                <span
+                  className="text-white"
+                  data-testid="overview-score-text"
+                  data-canonical-score-source={props.scoreSource ?? 'none'}
+                >{scoreText}</span>
               </div>
               <div className="flex items-center gap-2">
                 <Shield className={`w-4 h-4 ${props.confidenceVerified ? 'text-emerald-400' : 'text-zinc-500'}`} strokeWidth={1.5} />

@@ -260,6 +260,13 @@ describe('DealWorkspace deterministic deal_summary_v1 lock', () => {
             one_liner: shortOneLiner,
             long_summary: longSummary,
           },
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: shortOneLiner,
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
           raise: {
             value_json: { amount: { amount: 2000000 } },
             sources: [{ source_document_id: 'doc-ask', page_index: 0 }],

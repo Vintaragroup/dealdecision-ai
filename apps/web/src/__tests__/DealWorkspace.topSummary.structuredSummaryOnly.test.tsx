@@ -79,6 +79,13 @@ describe('DealWorkspace top summary uses structured_summary deal_summary_v1 only
             one_liner: 'STRUCTURED ONE LINER',
             long_summary: 'STRUCTURED LONG SUMMARY\n\nSecond paragraph.',
           },
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: 'STRUCTURED ONE LINER',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
           kpis: {},
         },
         metadata: {

@@ -19,6 +19,7 @@ import { DealWorkspaceTopSection } from '../workspace/DealWorkspaceTopSection';
 import { DealWorkspaceOverviewComp } from '../workspace/dealworkspace_overview_comp';
 import { FinancialCoveragePanel } from '../workspace/FinancialCoveragePanel';
 import { selectDealWorkspaceHeader } from '../../lib/selectDealWorkspaceHeader';
+import { resolveCanonicalScore, type ResolvedScore } from '../../lib/resolveCanonicalScore';
 import { selectAuthoritativeBusinessModelV1 } from '../../lib/selectors/selectAuthoritativeBusinessModelV1';
 import { selectAuthoritativeProductSummaryV1 } from '../../lib/selectors/selectAuthoritativeProductSummaryV1';
 import { selectAuthoritativeMarketSummaryV1 } from '../../lib/selectors/selectAuthoritativeMarketSummaryV1';
@@ -40,6 +41,7 @@ import { useAsyncStaleGuard } from '../../lib/hooks/useAsyncStaleGuard';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { useScoreSource } from '../../contexts/ScoreSourceContext';
 import { extractFundabilityScore0_100 } from '../../lib/dealScore';
+import { filterMismatchedScoreItems, stripScoreFractions, stripScoreFractionsFromItems } from '../../lib/sanitizeScorePhrases';
 import {
   PolarAngleAxis,
   PolarGrid,
@@ -602,6 +604,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const lastProgressKeyRef = useRef<string | null>(null);
   const reportMissingRef = useRef<boolean>(false);
   const lastReportAttemptAtRef = useRef<number>(0);
+  /** Ratchet: tracks the highest analysis_version we have ever successfully requested or received.
+   * desiredVersion will never go below this value, preventing v3→v1 regressions on SSE / error-fallback re-fetches. */
+  const latestKnownVersionRef = useRef<number | null>(null);
 
   const [debugApiEntries, setDebugApiEntries] = useState<DebugApiEntry[]>(() => (debugApiIsEnabled() ? debugApiGetEntries() : []));
 
@@ -696,15 +701,53 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     lastReportAttemptAtRef.current = now;
 
     const desiredVersion = (() => {
+      const floor = latestKnownVersionRef.current;
       const v = opts?.version;
-      if (typeof v === 'number' && Number.isFinite(v) && v >= 1) return Math.trunc(v);
+      if (typeof v === 'number' && Number.isFinite(v) && v >= 1) {
+        const explicit = Math.trunc(v);
+        // Never silently regress below the highest version we have positively observed.
+        // A future user-version-picker would bypass this via a separate userSelectedVersionRef.
+        return floor != null && floor > explicit ? floor : explicit;
+      }
       const metaV = dioMeta?.dioAnalysisVersion;
-      return typeof metaV === 'number' && Number.isFinite(metaV) && metaV >= 1 ? Math.trunc(metaV) : null;
+      const fromMeta = typeof metaV === 'number' && Number.isFinite(metaV) && metaV >= 1 ? Math.trunc(metaV) : null;
+      if (fromMeta !== null && floor !== null) return Math.max(fromMeta, floor);
+      return fromMeta ?? floor ?? null;
     })();
+    // Ratchet: record the requested version before the fetch so concurrent no-version calls
+    // also benefit from the floor on their next invocation.
+    if (desiredVersion != null && (latestKnownVersionRef.current == null || desiredVersion > latestKnownVersionRef.current)) {
+      latestKnownVersionRef.current = desiredVersion;
+    }
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[DDAI][loadReport:start]', {
+        dealId,
+        desiredVersion,
+        latestKnownVersion: latestKnownVersionRef.current,
+        dioMetaVersion: dioMeta?.dioAnalysisVersion ?? null,
+      });
+    }
     try {
       const envelope = await apiGetDealReport(dealId, { version: desiredVersion });
       if (isStale(keyAtStart)) return;
       setReportEnvelope(envelope);
+
+      // Ratchet: update latestKnownVersionRef from the server-confirmed version.
+      const _envelopeVersion = typeof (envelope as any)?.version === 'number' && Number.isFinite((envelope as any).version)
+        ? Math.trunc((envelope as any).version as number)
+        : null;
+      if (_envelopeVersion != null && _envelopeVersion >= 1 &&
+          (latestKnownVersionRef.current == null || _envelopeVersion > latestKnownVersionRef.current)) {
+        latestKnownVersionRef.current = _envelopeVersion;
+      }
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[DDAI][loadReport:received]', {
+          dealId,
+          fetchedVersion: _envelopeVersion,
+          desiredVersion,
+          latestKnownVersion: latestKnownVersionRef.current,
+        });
+      }
 
       const ready = Boolean((envelope as any)?.ready);
       const report = ready
@@ -719,9 +762,18 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       if (isStale(keyAtStart)) return;
       setReportFromApi((report && typeof report === 'object') ? (report as DealReport) : null);
 
-      if (ready && typeof (report as any)?.overallScore === 'number' && Number.isFinite((report as any).overallScore)) {
-        if (isStale(keyAtStart)) return;
-        setInvestorScore(Math.round((report as any).overallScore));
+      // Use the canonical resolver so investorScore (and thus fundamentalsScore0_100 /
+      // decisionTileScore0_100) reflects the calibrated band score, not just overallScore.
+      // Priority: score_band_v2.overall_score → overallScore → (no update).
+      if (ready) {
+        const { score: _canonicalForInvestor } = resolveCanonicalScore(report);
+        if (_canonicalForInvestor != null) {
+          if (isStale(keyAtStart)) return;
+          setInvestorScore(_canonicalForInvestor);
+        } else if (typeof (report as any)?.overallScore === 'number' && Number.isFinite((report as any).overallScore)) {
+          if (isStale(keyAtStart)) return;
+          setInvestorScore(Math.round((report as any).overallScore));
+        }
       }
     } catch (err: any) {
       if (isStale(keyAtStart)) return;
@@ -1049,8 +1101,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         debugLogger.logMockData('DealWorkspace', 'dealFromApi', null, `API call failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
         addToast('error', 'Failed to load deal', err instanceof Error ? err.message : 'Unknown error');
 
-        // Fall back to the unversioned endpoint when we cannot resolve the latest version.
-        loadReport({ force: true, version: null }).catch(() => {});
+        // Fall back to the highest known version (or unversioned if unknown) to prevent v3→v1 regression.
+        loadReport({ force: true, version: latestKnownVersionRef.current ?? null }).catch(() => {});
       });
 
 		loadDiagnostics({ force: true });
@@ -2097,7 +2149,29 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const structuredDealSummaryV1 = (structuredSummaryRoot && typeof structuredSummaryRoot === 'object')
     ? (structuredSummaryRoot as any).deal_summary_v1
     : null;
-  const structuredDealSummaryOneLiner = safeText((structuredDealSummaryV1 as any)?.one_liner) || safeText((structuredDealSummaryV1 as any)?.one_liner?.text);
+  // [SEPARATION] TopSection short summary = deterministic one_liner ONLY (never governed overlay hero_summary).
+  // Reject sentinel placeholders that pass safeText() but are meaningless (e.g. LLM fallback strings).
+  const _TOPSECTION_SENTINEL_PLACEHOLDERS = new Set(['unknown', 'n/a', 'not available', 'none', 'n/a.', 'unknown.']);
+  const _filterSentinel = (s: string): string =>
+    _TOPSECTION_SENTINEL_PLACEHOLDERS.has(s.toLowerCase().trim()) ? '' : s;
+
+  // [SCORE-MECHANIC-FILTER] Phrases that expose INTERNAL scoring boilerplate — must never appear in
+  // TopSection strengths/weaknesses. Intentionally narrow: only strips true engine noise, NOT
+  // legitimate UX copy like "Provide benchmarkable KPIs" or "Insufficient unit economics data".
+  const _SCORE_MECHANIC_RE = /pacing score|score computed|narrative pacing|score.*mechanic|analyzer scored|analyzer score used|neutral baseline/i;
+  const structuredDealSummaryOneLiner =
+    _filterSentinel(safeText((structuredDealSummaryV1 as any)?.one_liner)) ||
+    _filterSentinel(safeText((structuredDealSummaryV1 as any)?.one_liner?.text));
+
+  // [TOPSECTION-V1] Score-driver deterministic summary — answers "Why is the score X?"
+  // This is the authority surface for TopSection.dealSummaryShort.
+  // Design contract: TopSection = score-driver summary; Overview tab = company summary (governed).
+  // NOTE: topSectionScoreDriverOneLiner (final, with client-side fallback) is defined AFTER
+  // canonicalScoreView below so it can reference the canonical score for the fallback message.
+  const topsectionV1 = (structuredSummaryRoot as any)?.topsection_v1 ?? null;
+  const _topSectionScoreDriverOneLinerRaw = _filterSentinel(
+    safeText(topsectionV1?.score_driver_one_liner),
+  );
   const structuredDealSummaryLong = safeTextPreserveNewlines((structuredDealSummaryV1 as any)?.long_summary)
     || safeTextPreserveNewlines((structuredDealSummaryV1 as any)?.long_summary?.text);
 
@@ -2295,6 +2369,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       if (r.includes('failed')) return true;
       if (r === 'analyzer score used') return true;
       if (r === 'neutral baseline used') return true;
+      // Block internal score-mechanic phrases that should never surface in TopSection strengths.
+      if (/pacing score|score computed|narrative pacing|computed.*score|score.*mechanic|analyzer.*scored/i.test(reason)) return true;
       return false;
     };
 
@@ -2769,35 +2845,89 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return out;
   };
 
-  const topSectionStrengths = (() => {
-    const understandingStrengths = extractUnderstandingTexts((understandingV1 as any)?.strengths);
-    if (understandingStrengths.length > 0) {
-      return Array.from(new Set(understandingStrengths.map((x) => x.trim()))).slice(0, 6);
-    }
+  // [SCORE-EXPLANATION-V1] Clean intermediate contract for TopSection copy.
+  // Derived exclusively from guardrail snapshot (score_band_v2) + scoring engine analytics
+  // (score_explanation.understanding_v1 + totals). No LLM, no DB write.
+  // null when no report is applied or band score is unavailable.
+  const scoreExplanationV1 = (() => {
+    if (!reportReady) return null;
+    const reportMeta = (reportFromApi as any)?.metadata;
+    const envelopeMeta = (reportEnvelope as any)?.metadata;
+    // Band from report metadata; fall back to envelope-level band (set independently by API).
+    const bandMeta = (reportMeta?.score_band_v2 && typeof reportMeta.score_band_v2 === 'object')
+      ? reportMeta.score_band_v2
+      : (envelopeMeta?.score_band_v2 && typeof envelopeMeta.score_band_v2 === 'object')
+        ? envelopeMeta.score_band_v2
+        : null;
+    const overallScore: number | null = (() => {
+      const v = bandMeta?.overall_score;
+      return typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : null;
+    })();
+    if (overallScore == null) return null;
 
-    const v2Strengths = Array.isArray((dealSummaryV2 as any)?.strengths) ? (dealSummaryV2 as any).strengths : [];
-    const merged = [...v2Strengths, ...decisionTileStrengths]
-      .filter((x: any): x is string => typeof x === 'string' && x.trim().length > 0)
-      .map((x: string) => x.trim());
-    return Array.from(new Set(merged)).slice(0, 6);
+    const se = decisionScoreExplanation; // = reportFromApi.metadata.score_explanation
+    const u1 = understandingV1; // = se?.understanding_v1
+    const band: string | null = safeText(bandMeta?.label || bandMeta?.key) || null;
+    const coverageRatio: number | null = (() => {
+      const v = se?.totals?.coverage_ratio;
+      return typeof v === 'number' && Number.isFinite(v) ? v : null;
+    })();
+
+    // Snapshot summary: understanding_v1.summary.text (or string form) — lightweight narrative
+    // explaining WHY the score landed where it did. Sanitize score fractions only; keep meaning.
+    const snapshotSummary: string | null = (() => {
+      const raw = u1?.summary;
+      const txt = typeof raw === 'object' && raw !== null
+        ? safeText((raw as any).text)
+        : safeText(raw as any);
+      if (!txt) return null;
+      const cleaned = stripScoreFractions(txt);
+      return cleaned.length >= 10 ? cleaned : null;
+    })();
+
+    // Strengths from understanding_v1.strengths — strip score fractions (not entire items).
+    const primaryStrengths = stripScoreFractionsFromItems(
+      extractUnderstandingTexts(u1?.strengths).filter((x) => !_SCORE_MECHANIC_RE.test(x)),
+    ).slice(0, 4);
+
+    // Diligence open items — split into weaknesses (gap flags, short / noun-phrase style)
+    // vs action recommendations (imperative verb-led suggestions, typically longer).
+    // Heuristic: starts with a common imperative verb → action; otherwise → weakness.
+    const _ACTION_VERB_RE = /^(provide|share|confirm|show|demonstrate|add|include|disclose|address|clarify|present|submit|explain|describe|quantify|detail|outline|document|define|identify|specify|validate|verify|run|get|build|prepare|develop|establish|conduct|illustrate|model)/i;
+    const allDiligenceItems = stripScoreFractionsFromItems(
+      extractUnderstandingTexts(u1?.diligence_open_items),
+    );
+    const primaryConstraints = allDiligenceItems
+      .filter((x) => !_SCORE_MECHANIC_RE.test(x) && !_ACTION_VERB_RE.test(x))
+      .slice(0, 5);
+    const longDiligenceActions = allDiligenceItems
+      .filter((x) => !_SCORE_MECHANIC_RE.test(x) && _ACTION_VERB_RE.test(x))
+      .slice(0, 4);
+
+    // Execution dependencies → action recommendations (merged with long diligence items).
+    const execActions = stripScoreFractionsFromItems(
+      extractUnderstandingTexts(u1?.execution_dependencies).filter((x) => !_SCORE_MECHANIC_RE.test(x)),
+    ).slice(0, 4);
+    const actionRecommendations = [...longDiligenceActions, ...execActions].slice(0, 6);
+
+    return {
+      overall_score: overallScore,
+      band,
+      coverage_ratio: coverageRatio,
+      snapshot_summary: snapshotSummary,
+      primary_strengths: primaryStrengths,
+      primary_constraints: primaryConstraints,
+      action_recommendations: actionRecommendations,
+    } as const;
   })();
 
-  const topSectionWeaknesses = (() => {
-    const understandingDiligence = extractUnderstandingTexts((understandingV1 as any)?.diligence_open_items);
-    const understandingDeps = extractUnderstandingTexts((understandingV1 as any)?.execution_dependencies);
-    const preferred = [...understandingDiligence, ...understandingDeps]
-      .filter((x) => x.trim().length > 0)
-      .map((x) => x.trim());
-    if (preferred.length > 0) {
-      return Array.from(new Set(preferred)).slice(0, 8);
-    }
-
-    const v2Risks = Array.isArray((dealSummaryV2 as any)?.risks) ? (dealSummaryV2 as any).risks : [];
-    const merged = [...v2Risks, ...decisionMissing]
-      .filter((x: any): x is string => typeof x === 'string' && x.trim().length > 0)
-      .map((x: string) => x.trim());
-    return Array.from(new Set(merged)).slice(0, 8);
-  })();
+  // [SCORE-CONTRACT] TopSection copy fields — sourced exclusively from scoreExplanationV1.
+  // All NN/100 fractions are stripped at source; mismatched ones are double-guarded at JSX
+  // call site via filterMismatchedScoreItems. No multi-tier fallbacks.
+  const topSectionStrengths: string[] = scoreExplanationV1?.primary_strengths ?? [];
+  const topSectionWeaknesses: string[] = scoreExplanationV1?.primary_constraints ?? [];
+  // Actions = verb-led diligence items + execution dependencies from scoreExplanationV1.
+  const topSectionActionsToImprove: string[] = scoreExplanationV1?.action_recommendations ?? [];
 
   const topSectionConfidence: 'High' | 'Medium' | 'Low' = decisionTileConfidenceBand === 'high'
     ? 'High'
@@ -2844,9 +2974,29 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       return map[stageRaw] ?? stageRaw.replace(/_/g, ' ');
     })();
 
-    const reportScore = reportReady && typeof (reportFromApi as any)?.overallScore === 'number' && Number.isFinite((reportFromApi as any).overallScore)
-      ? Math.round((reportFromApi as any).overallScore)
-      : null;
+    // [CANONICAL-SCORE] Two-pass band score logic:
+    //   Pass 1: resolve from inner reportFromApi.metadata (present when deck_archetype block succeeded).
+    //   Pass 2: if band score not found, try the envelope-level metadata.score_band_v2 which the API
+    //           writes independently via payload.metadata = nextMetadata (survives deck_archetype failures).
+    // This prevents the gauge from falling back to report.overallScore when the band IS available
+    // but was only attached to the envelope-level metadata and not the inner report object.
+    const { score: _innerReportScore, source: _innerReportSource } = resolveCanonicalScore(reportReady ? reportFromApi : null);
+    const _envelopeBandScore: number | null = (() => {
+      // Short-circuit: inner report already had the band score — no need to consult envelope.
+      if (_innerReportSource === 'score_band_v2.overall_score') return null;
+      if (!reportReady) return null;
+      const envelopeMeta = (reportEnvelope as any)?.metadata;
+      if (!envelopeMeta || typeof envelopeMeta !== 'object') return null;
+      const band = envelopeMeta.score_band_v2;
+      if (!band || typeof band !== 'object') return null;
+      const v = (band as Record<string, unknown>).overall_score;
+      return typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : null;
+    })();
+    // Merge: envelope band score wins if inner report lacked it; otherwise inner report wins.
+    const reportScore: number | null = _envelopeBandScore ?? _innerReportScore;
+    const _reportScoreSource: ResolvedScore['source'] = _envelopeBandScore != null
+      ? 'score_band_v2.overall_score'
+      : _innerReportSource;
 
     const sections = Array.isArray((reportFromApi as any)?.sections) ? (reportFromApi as any).sections : [];
     const structuredSummary = (reportFromApi as any)?.structured_summary;
@@ -2911,14 +3061,24 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       safeText(reportArtifact?.recommendation) ||
       null;
 
+    // [TOPSECTION-BINDING] When the report is applied (reportReady + reportFromApi present),
+    // the gauge score must come exclusively from the canonical resolver (score_band_v2 or overallScore).
+    // Never fall through to fallbackScore (which traces to dealFromApi.score) — that would cause
+    // the gauge to show the DB-calibrated deal score instead of the report-derived score.
+    const reportApplied = reportReady && !!reportFromApi;
+    const gaugeScore = reportApplied
+      ? (reportScore ?? 0) // canonical-only; 0 = "no band/overallScore" edge case
+      : (reportScore ?? fallbackScore); // pre-report: best estimate is fine
+
     return {
-      applied: reportReady && !!reportFromApi,
-      score: reportScore ?? fallbackScore,
+      applied: reportApplied,
+      score: gaugeScore,
+      scoreSource: _reportScoreSource,
       recommendation,
       stageRaw,
       stageLabel,
       dealSummary: showCanonicalTopSummary ? canonicalTopSummary : legacySummary,
-      dealSummaryTitle: showCanonicalTopSummary ? 'Deal Summary' : 'Executive Summary',
+      dealSummaryTitle: showCanonicalTopSummary ? 'Deal Snapshot' : 'Executive Summary',
       dealSummarySource: showCanonicalTopSummary ? 'canonical' : 'legacy',
       businessModel: businessModelFromReport || topSectionBusinessModel,
       businessModelLabel: businessModelLabelFromReport,
@@ -2931,6 +3091,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, [
     reportReady,
     reportFromApi,
+    reportEnvelope,
     reportArtifact,
     decisionScoreExplanation,
     displayScore,
@@ -2950,6 +3111,76 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     reportCanonicalRaise,
   ]);
 
+  // Canonical score label: when the report is loaded (score = report.overallScore),
+  // label it "Overall Score". Only use the sub-engine label ("Fundamentals" / "Fundability")
+  // as a fallback when showing a pre-report estimate.
+  const canonicalScoreLabel: string = reportView.applied ? 'Overall Score' : displayScoreLabel;
+
+  // canonicalScoreView: single score truth shared by ALL score-bearing UI surfaces
+  // (TopSection gauge AND Overview tab). score0_100 is null when report is not yet applied
+  // so we never show a stale DB number in the Overview tile.
+  const canonicalScoreView = {
+    score0_100: reportView.applied ? reportView.score : null,
+    scoreSource: reportView.scoreSource,
+    reportApplied: reportView.applied,
+  } as const;
+
+  // [SCORE-SANITIZER] Canonical reference for stripping mismatched NN/100 phrases from copy.
+  // Only active when a report is applied (we have a real canonical score to compare against).
+  // null = no sanitization (pre-report state).
+  const canonicalScoreForSanitizer: number | null = canonicalScoreView.reportApplied
+    ? canonicalScoreView.score0_100
+    : null;
+
+  // [SCORE-CONTRACT] Final one-liner for TopSection Deal Snapshot.
+  // Priority order (first non-empty wins):
+  //   1. score_driver_one_liner from structured_summary (topsection_v1 builder, deterministic).
+  //   2. understanding_v1.summary — explains WHY the score landed; strip score fractions.
+  //   3. Synthesize from band + top strength + top constraint.
+  //   4. Empty string — component renders a neutral placeholder; never "Score of N".
+  const topSectionScoreDriverOneLiner = _topSectionScoreDriverOneLinerRaw || (() => {
+    if (scoreExplanationV1) {
+      // Priority 2: understanding_v1.summary
+      if (scoreExplanationV1.snapshot_summary) return scoreExplanationV1.snapshot_summary;
+      // Priority 3: synthesize
+      const { band, primary_strengths, primary_constraints, coverage_ratio } = scoreExplanationV1;
+      const topStrength = primary_strengths[0] ?? null;
+      const topConstraint = primary_constraints[0] ?? null;
+      if (band && topStrength) {
+        return topConstraint
+          ? `${band}: ${topStrength} — Key constraint: ${topConstraint}`
+          : `${band}: ${topStrength}`;
+      }
+      if (band && coverage_ratio != null) {
+        return `${band} — scored from ${Math.round(coverage_ratio * 100)}% data coverage.`;
+      }
+      if (band) return `${band} — score details not yet computed for this run.`;
+    }
+    // Priority 4: placeholder; component handles empty one-liner gracefully.
+    return '';
+  })();
+
+  // [SCORE-CONTRACT] Dev-only log: emits once per unique score_explanation_v1 state.
+  // Logs the canonical score, the full explanation object, and the score source path.
+  const lastScoreContractLogRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const key = [
+      dealId ?? '',
+      String(canonicalScoreView.score0_100 ?? 'null'),
+      canonicalScoreView.scoreSource,
+      scoreExplanationV1 ? 'v1' : 'null',
+    ].join('|');
+    if (lastScoreContractLogRef.current === key) return;
+    lastScoreContractLogRef.current = key;
+    console.log('[DDAI][score_contract]', {
+      canonicalScore: canonicalScoreView.score0_100,
+      sourcePathUsed: canonicalScoreView.scoreSource,
+      reportApplied: canonicalScoreView.reportApplied,
+      explanationObject: scoreExplanationV1,
+    });
+  }, [dealId, canonicalScoreView, scoreExplanationV1]);
+
   const lastReportBindingsLogRef = useRef<string | null>(null);
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -2959,6 +3190,118 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     lastReportBindingsLogRef.current = key;
     console.log('[DDAI][report_bindings]', reportView);
   }, [dealId, reportVersion, reportView]);
+
+  // [SCORE-SOURCES] Consolidated dev-only log: emits once per unique score-state snapshot.
+  // Use this to diagnose mismatches between what each UI element shows and where it came from.
+  const lastScoreSourcesLogRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const _reportMeta = (reportFromApi as any)?.metadata ?? null;
+    const _bandScore = _reportMeta?.score_band_v2?.overall_score ?? null;
+    const _envelopeLevelBandScore = (reportEnvelope as any)?.metadata?.score_band_v2?.overall_score ?? null;
+    const _rawOverallScore = (reportFromApi as any)?.overallScore ?? null;
+    // Two-pass canonical resolution: inner report first, envelope-level band as fallback.
+    const { score: _innerCanonical, source: _innerSrc } = resolveCanonicalScore(reportFromApi);
+    const _canonical = (_innerSrc !== 'score_band_v2.overall_score' && _envelopeLevelBandScore != null)
+      ? _envelopeLevelBandScore
+      : _innerCanonical;
+    const _canonicalSrc: ResolvedScore['source'] = (_innerSrc !== 'score_band_v2.overall_score' && _envelopeLevelBandScore != null)
+      ? 'score_band_v2.overall_score'
+      : _innerSrc;
+    const key = [
+      dealId ?? '',
+      String(reportVersion ?? 'na'),
+      String(dioMeta?.dioAnalysisVersion ?? 'na'),
+      String(_rawOverallScore ?? 'na'),
+      String(_bandScore ?? 'na'),
+      String(_canonical ?? 'na'),
+      String(fundamentalsScore0_100 ?? 'na'),
+      String(investorScore),
+      String((dealFromApi as any)?.score ?? 'na'),
+      String(displayScore ?? 'na'),
+      String(reportView.score),
+      String(decisionTileScore0_100 ?? 'na'),
+    ].join('|');
+    if (lastScoreSourcesLogRef.current === key) return;
+    lastScoreSourcesLogRef.current = key;
+    console.log('[DDAI][score_sources]', {
+      dealId,
+      // Report version info
+      envelopeVersion: reportVersion,
+      dioMetaVersion: dioMeta?.dioAnalysisVersion ?? null,
+      reportReady,
+      // Raw values from fetched objects
+      raw: {
+        'reportFromApi.overallScore': _rawOverallScore,
+        'reportFromApi.metadata.score_band_v2.overall_score': _bandScore,
+        'reportEnvelope.metadata.score_band_v2.overall_score': _envelopeLevelBandScore,
+        'dealFromApi.score': (dealFromApi as any)?.score ?? null,
+        investorScore,
+      },
+      // Canonical resolution
+      resolved: {
+        canonicalScore: _canonical,
+        canonicalScoreSource: _canonicalSrc,
+        fundamentalsScore0_100,
+        displayScore,
+        displayScoreLabel,
+      },
+      // What each UI element shows
+      ui: {
+        'TopSection gauge (reportView.score)': reportView.score,
+        'TopSection scoreLabel': canonicalScoreLabel,
+        'TopSection canonicalScoreSource': reportView.applied ? reportView.scoreSource : 'none',
+        'Data-panel displayScore/100': displayScore != null ? `${Math.round(displayScore)}/100` : '—',
+        'Overview canonical score0_100': canonicalScoreView.score0_100,
+        'Overview reportApplied': canonicalScoreView.reportApplied,
+        'Overview scoreSource': canonicalScoreView.scoreSource,
+        'Decision tile label': decisionTileLabel,
+      },
+      // Hypothesis guide:
+      // A) bandScore missing or equals overallScore → resolver correctly shows overallScore (no divergence)
+      // B) bandScore exists and differs from overallScore → band score shown; overview and gauge agree
+      hypothesisGuide: {
+        bandScorePresent: _bandScore != null,
+        bandDiffersFromOverall: _bandScore != null && _rawOverallScore != null && _bandScore !== _rawOverallScore,
+        gaugeDiffersFromOverview: reportView.score !== canonicalScoreView.score0_100,
+        gaugeSource: _canonicalSrc,
+      },
+    });
+  }, [
+    dealId, reportVersion, dioMeta, reportFromApi, reportEnvelope, reportReady,
+    fundamentalsScore0_100, investorScore, dealFromApi, displayScore, displayScoreLabel,
+    reportView, canonicalScoreLabel, canonicalScoreView, decisionTileLabel,
+  ]);
+
+  // [TOPSECTION-BINDING] Dev-only log emitted once per unique gauge-binding state.
+  // Verifies at render time that the TopSection gauge is driven by the canonical resolver only,
+  // never by dealFromApi.score when the report is applied.
+  const lastTopSectionBindingLogRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const key = [
+      dealId ?? '',
+      String(reportView.applied),
+      String(reportView.score),
+      String(reportView.scoreSource),
+      String((dealFromApi as any)?.score ?? 'na'),
+    ].join('|');
+    if (lastTopSectionBindingLogRef.current === key) return;
+    lastTopSectionBindingLogRef.current = key;
+    const dealScore = (dealFromApi as any)?.score ?? null;
+    const leak = reportView.applied && dealScore != null && reportView.score === dealScore && reportView.scoreSource === 'none';
+    console.log('[DDAI][topsection_score_binding]', {
+      gaugeScore: reportView.score,
+      gaugeScoreSource: reportView.scoreSource,
+      reportApplied: reportView.applied,
+      dealFromApiScore: dealScore,
+      // If this is true, the gauge is incorrectly showing the DB deal score — file a bug.
+      LEAK_DETECTED: leak,
+    });
+    if (leak) {
+      console.warn('[DDAI][topsection_score_binding] LEAK: gauge is showing dealFromApi.score when report is applied. Expected canonical score from score_band_v2 or overallScore.');
+    }
+  }, [dealId, reportView, dealFromApi]);
 
   const reportStructuredKpis = useMemo(() => {
     // KPI normalization must occur server-side only to prevent drift.
@@ -3949,7 +4292,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               .catch(() => {
                 if (job.type === 'analyze_deal') {
                   reportMissingRef.current = false;
-                  loadReport({ force: true, version: null }).catch(() => {});
+                  loadReport({ force: true, version: latestKnownVersionRef.current ?? null }).catch(() => {});
                 }
               });
             if (job.type === 'analyze_deal') {
@@ -5378,7 +5721,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         })
         .catch(() => {
           reportMissingRef.current = false;
-          loadReport({ force: true, version: null }).catch(() => {});
+          loadReport({ force: true, version: latestKnownVersionRef.current ?? null }).catch(() => {});
         });
       loadEvidence();
 
@@ -6227,18 +6570,25 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   darkMode={darkMode}
                   loading={!reportReady}
                   score={reportView.score}
-                  scoreLabel={displayScoreLabel}
+                  scoreAvailable={reportView.applied}
+                  canonicalScoreSource={reportView.applied ? reportView.scoreSource : 'none'}
+                  scoreLabel={canonicalScoreLabel}
                   scoreBandLabel={safeText((reportMeta as any)?.score_band_v2?.label)}
                   hardPassGuardrailTriggered={Boolean((reportMeta as any)?.hard_pass_guardrail_v2?.triggered)}
                   hardPassGuardrailNote={safeText((reportMeta as any)?.hard_pass_guardrail_v2?.note)}
-                  hardPassGuardrailCriteriaSnapshot={(reportMeta as any)?.hard_pass_guardrail_v2?.criteria_snapshot ?? null}
+                  // Criteria snapshot: contains raw analytical scores. Keep debug-only so it never
+                  // contradicts the canonical score in user-facing UI.
+                  hardPassGuardrailCriteriaSnapshot={workspaceDebugEnabled ? ((reportMeta as any)?.hard_pass_guardrail_v2?.criteria_snapshot ?? null) : null}
+                  rawOverallScore={(reportFromApi as any)?.overallScore ?? null}
                   decisionV1={(reportMeta as any)?.decision_v1 ?? null}
-                  dealSummaryShort={structuredDealSummaryOneLiner || null}
+                  // [TOPSECTION-V1] TopSection summary = score_driver_one_liner (never governed overlay hero_summary).
+                  dealSummaryShort={topSectionScoreDriverOneLiner || null}
                   dealSummary={structuredDealSummaryLong ? structuredDealSummaryLong : ''}
-                  dealSummaryTitle={'Deal Summary'}
+                  dealSummaryTitle={'Deal Snapshot'}
                   dealSummarySource={'canonical'}
-                  strengths={topSectionStrengths}
-                  weaknesses={topSectionWeaknesses}
+                  strengths={filterMismatchedScoreItems(topSectionStrengths, canonicalScoreForSanitizer)}
+                  weaknesses={filterMismatchedScoreItems(topSectionWeaknesses, canonicalScoreForSanitizer)}
+                  actionsToImprove={filterMismatchedScoreItems(topSectionActionsToImprove, canonicalScoreForSanitizer)}
                   raise={selectedHeader.ready ? (selectedHeader.raise.value ?? null) : null}
                   raiseLabel={selectedHeader.ready ? (selectedHeader.raise.label ?? null) : null}
                   raiseConflict={false}
@@ -7447,13 +7797,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                           dealSummaryTractionSignalsEvidenceRefs={governedKeyFactEvidenceRefs.traction}
                           kpiTiles={overlayKpiTiles}
                           dealSummarySourceLabel={'Overlay (non-authoritative)'}
-                          score0_100={decisionTileScore0_100 ?? displayScore ?? investorScore}
+                          score0_100={canonicalScoreView.score0_100}
+                          scoreSource={canonicalScoreView.scoreSource}
+                          reportApplied={canonicalScoreView.reportApplied}
                           decisionLabel={decisionTileLabel}
                           confidenceLabel={`${decisionTileConfidenceLabelShort} confidence`}
                           confidenceVerified={decisionTileConfidenceBand !== 'unknown'}
                           rationale={decisionTileRationale}
-                          strengths={overlayStrengths}
-                          openItems={overlayOpenItems}
+                          strengths={filterMismatchedScoreItems(overlayStrengths, canonicalScoreForSanitizer)}
+                          openItems={filterMismatchedScoreItems(overlayOpenItems, canonicalScoreForSanitizer)}
                           coverageGaps={missingChips}
                           interpretationStatus={governedOverlayStatusUi}
                           interpretationSource={'persisted' as any}
@@ -7582,13 +7934,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         kpiTiles={deterministicKpiTiles}
                         dealSummarySourceLabel={dealSummarySourceLabel}
                         dealSummaryCitations={canonicalCitations ?? undefined}
-                        score0_100={decisionTileScore0_100 ?? displayScore ?? investorScore}
+                        score0_100={canonicalScoreView.score0_100}
+                        scoreSource={canonicalScoreView.scoreSource}
+                        reportApplied={canonicalScoreView.reportApplied}
                         decisionLabel={decisionTileLabel}
                         confidenceLabel={`${decisionTileConfidenceLabelShort} confidence`}
                         confidenceVerified={decisionTileConfidenceBand !== 'unknown'}
                         rationale={decisionTileRationale}
-                        strengths={decisionTileStrengths}
-                        openItems={decisionTileOpenItemsAll}
+                        strengths={filterMismatchedScoreItems(decisionTileStrengths, canonicalScoreForSanitizer)}
+                        openItems={filterMismatchedScoreItems(decisionTileOpenItemsAll, canonicalScoreForSanitizer)}
                         coverageGaps={missingChips}
                         interpretationStatus={governedOverlayStatusUi}
                         interpretationSource={hasGovernedOverview ? ('persisted' as any) : ('none' as any)}

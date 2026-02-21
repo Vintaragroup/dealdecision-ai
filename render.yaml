@@ -3,8 +3,34 @@
 # Goal: Docker-based deployment for both API + worker that matches local Docker dev.
 # - No shared filesystem assumptions between services.
 # - Worker image includes system tools for PDF/Office/image/OCR processing.
+#
+# Web UI (dealdecision-web) uses apps/web/Dockerfile which runs `pnpm run build`
+# (Vite output: apps/web/build/) and serves via `pnpm preview`. This matches
+# the local Docker dev stack exactly — no separate static-site service.
+# IMPORTANT: VITE_API_BASE_URL and VITE_CLERK_PUBLISHABLE_KEY must also be set
+# as Docker Build Arguments in the Render dashboard (Service → Settings →
+# Build & Deploy → Docker Build Arguments) so they are baked into the bundle.
 
 services:
+  - type: web
+    name: dealdecision-web
+    runtime: docker
+    plan: starter
+    dockerfilePath: apps/web/Dockerfile
+    dockerContext: .
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Baked into the Vite bundle at Docker build time via ARG/ENV in apps/web/Dockerfile.
+      # Must ALSO be set under Docker Build Arguments in the Render dashboard.
+      - key: VITE_API_BASE_URL
+        sync: false
+      - key: VITE_CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: VITE_BACKEND_MODE
+        value: live
+
   - type: web
     name: dealdecision-api
     runtime: docker

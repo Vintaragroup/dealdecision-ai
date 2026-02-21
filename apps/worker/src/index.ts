@@ -12,6 +12,8 @@ import {
 	generatePhase1DIOV1,
 	DealOrchestrator,
 	DIOStorageImpl,
+	compileDIOToReport,
+	compileDIOToReportWithPromotedFacts,
 	SlideSequenceAnalyzer,
 	MetricBenchmarkValidator,
 	VisualDesignScorer,
@@ -6764,6 +6766,20 @@ registerWorker("extract_visuals", async (job: Job) => {
 					})
 				: { upserted: 0, page_text_empty: 0 };
 
+			// Log DB connection details alongside upsert count so we can detect split-brain
+			// scenarios where worker and API talk to different DB hosts.
+			let finalizeDbHost: string | null = null;
+			let finalizeDbName: string | null = null;
+			try {
+				const meta = await pool.query<{ db_host: string | null; db_name: string }>(
+					"SELECT inet_server_addr()::text AS db_host, current_database() AS db_name"
+				);
+				finalizeDbHost = meta.rows?.[0]?.db_host ?? null;
+				finalizeDbName = meta.rows?.[0]?.db_name ?? null;
+			} catch {
+				// ignore metadata failures
+			}
+
 			console.log(
 				JSON.stringify({
 					event: "POPULATE_DOCUMENT_PAGE_UNDERSTANDING",
@@ -6771,7 +6787,12 @@ registerWorker("extract_visuals", async (job: Job) => {
 					job_id: extractJobId,
 					upserted: res.upserted,
 					page_text_empty: res.page_text_empty,
+					candidates_found: (res as any).candidates_found ?? null,
+					rows_with_text: (res as any).rows_with_text ?? null,
+					rows_missing_text: (res as any).rows_missing_text ?? null,
 					version: "page_understanding_v1",
+					db_host: finalizeDbHost,
+					db_name: finalizeDbName,
 					ts: new Date().toISOString(),
 				})
 			);
@@ -7934,6 +7955,11 @@ registerWorker("analyze_deal", async (job: Job) => {
 		typeof pageUnderstandingVersionRaw === "string" && pageUnderstandingVersionRaw.trim().length > 0
 			? pageUnderstandingVersionRaw.trim()
 			: "page_understanding_v1";
+	const minDpuCreatedAtRaw = (job.data as any)?.min_dpu_created_at ?? (job.data as any)?.payload?.min_dpu_created_at;
+	const minDpuCreatedAt =
+		typeof minDpuCreatedAtRaw === "string" && minDpuCreatedAtRaw.trim().length > 0
+			? minDpuCreatedAtRaw.trim()
+			: null;
 	if (!dealId) {
 		await updateJob(job, "failed", "Missing deal_id for analysis", 100);
 		return { ok: false };
@@ -8314,7 +8340,42 @@ registerWorker("analyze_deal", async (job: Job) => {
 				return out;
 			};
 
-			const promotedRaise = await loadPromoted("raise_terms_v1");
+			let promotedRaise = await loadPromoted("raise_terms_v1");
+			let promotedModel = await loadPromoted("business_model_v1");
+
+			// Best-effort self-heal: if evidence_items does not contain promoted facts yet,
+			// try promoting from existing document_page_understanding for pitch deck docs.
+			if (!promotedRaise || !promotedModel) {
+				try {
+					const dpuVersion = pageUnderstandingVersion;
+					const runId = job.id ? String(job.id) : null;
+					for (const doc of eligible) {
+						const structured = (doc.structured_data && typeof doc.structured_data === "object")
+							? (doc.structured_data as Record<string, unknown>)
+							: {};
+						const analysisType = inferAnalysisDocType({ ...doc, structured_data: structured });
+						if (analysisType !== "pitch_deck") continue;
+						const pageCount = typeof (doc as any)?.page_count === "number" && Number.isFinite((doc as any).page_count)
+							? Math.max(0, Math.floor((doc as any).page_count))
+							: 0;
+						await promoteSlideFactsFromDocumentPageUnderstanding(pool as any, {
+							dealId,
+							documentId: String(doc.id),
+							pageStart: 0,
+							// Allow promotion to infer page range if page_count is missing.
+							pageEnd: pageCount > 0 ? pageCount : 0,
+							version: dpuVersion,
+							runId,
+							stepRunId: null,
+						});
+					}
+				} catch {
+					// fail open
+				}
+				promotedRaise = promotedRaise ?? (await loadPromoted("raise_terms_v1"));
+				promotedModel = promotedModel ?? (await loadPromoted("business_model_v1"));
+			}
+
 			if (promotedRaise && typeof promotedRaise.display === "string" && promotedRaise.display.trim()) {
 				phase1_deal_overview_v2 = {
 					...phase1_deal_overview_v2,
@@ -8329,7 +8390,6 @@ registerWorker("analyze_deal", async (job: Job) => {
 				};
 			}
 
-			const promotedModel = await loadPromoted("business_model_v1");
 			if (promotedModel && typeof promotedModel.display === "string" && promotedModel.display.trim()) {
 				phase1_deal_overview_v2 = {
 					...phase1_deal_overview_v2,
@@ -8697,6 +8757,226 @@ registerWorker("analyze_deal", async (job: Job) => {
 		if (!result.success || !result.storage_result) {
 			await updateJob(job, "failed", result.error || "Analysis failed", 100);
 			return { ok: false, error: result.error || "Analysis failed" };
+		}
+
+		// Persist analysis provenance into the stored DIO JSON for correct downstream gating.
+		// This is best-effort and should never fail the analysis job.
+		if (minDpuCreatedAt) {
+			try {
+				const pool = getPool();
+				let dioIdToUpdate: string | null =
+					typeof (result.storage_result as any)?.dio_id === "string" && String((result.storage_result as any).dio_id).trim()
+						? String((result.storage_result as any).dio_id).trim()
+						: null;
+
+				// Some storage implementations may not return dio_id. Fall back to looking up the
+				// latest DIO row for this deal/version (or just the latest row for the deal).
+				if (!dioIdToUpdate) {
+					const versionRaw = (result.storage_result as any)?.version;
+					const version = typeof versionRaw === "number" && Number.isFinite(versionRaw) ? Math.trunc(versionRaw) : null;
+					try {
+						const lookup = version != null
+							? await pool.query<{ dio_id: string }>(
+								`SELECT dio_id
+								   FROM deal_intelligence_objects
+								  WHERE deal_id = $1::uuid
+								    AND analysis_version = $2::int
+								  ORDER BY updated_at DESC NULLS LAST, dio_id DESC
+								  LIMIT 1`,
+								[dealId, version]
+							)
+							: await pool.query<{ dio_id: string }>(
+								`SELECT dio_id
+								   FROM deal_intelligence_objects
+								  WHERE deal_id = $1::uuid
+								  ORDER BY analysis_version DESC, updated_at DESC NULLS LAST, dio_id DESC
+								  LIMIT 1`,
+								[dealId]
+							);
+						dioIdToUpdate = typeof lookup.rows?.[0]?.dio_id === "string" ? lookup.rows[0].dio_id : null;
+					} catch {
+						dioIdToUpdate = null;
+					}
+				}
+
+				if (!dioIdToUpdate) {
+					console.warn(
+						JSON.stringify({
+							event: "dio_meta_min_dpu_created_at_persist_skipped",
+							deal_id: dealId,
+							job_id: job.id ? String(job.id) : null,
+							reason: "missing_dio_id",
+							min_dpu_created_at: minDpuCreatedAt,
+							ts: new Date().toISOString(),
+						})
+					);
+				} else {
+					const persisted = await pool.query<{ persisted_min: string | null }>(
+						`UPDATE deal_intelligence_objects
+							SET dio_data = jsonb_set(
+								COALESCE(dio_data, '{}'::jsonb),
+								'{meta}',
+								COALESCE(dio_data->'meta', '{}'::jsonb) || jsonb_build_object('min_dpu_created_at', $1::text),
+								true
+							)
+						 WHERE dio_id = $2::uuid
+						 RETURNING (dio_data->'meta'->>'min_dpu_created_at')::text as persisted_min`,
+						[minDpuCreatedAt, dioIdToUpdate]
+					);
+					console.log(
+						JSON.stringify({
+							event: "dio_meta_min_dpu_created_at_persisted",
+							deal_id: dealId,
+							job_id: job.id ? String(job.id) : null,
+							dio_id: dioIdToUpdate,
+							min_dpu_created_at: minDpuCreatedAt,
+							row_count: persisted.rowCount,
+							persisted_min: persisted.rows?.[0]?.persisted_min ?? null,
+							ts: new Date().toISOString(),
+						})
+					);
+				}
+			} catch (err) {
+				console.warn(
+					JSON.stringify({
+						event: "dio_meta_min_dpu_created_at_persist_failed",
+						deal_id: dealId,
+						job_id: job.id ? String(job.id) : null,
+						min_dpu_created_at: minDpuCreatedAt,
+						reason: err instanceof Error ? err.message : String(err),
+						ts: new Date().toISOString(),
+					})
+				);
+			}
+		}
+
+		// Persist a deterministic compiled report artifact alongside the stored DIO JSON.
+		// Goal: make /report read from a canonical persisted report (idempotent upsert).
+		// This is best-effort and should not fail the analysis job; API can still compile-on-demand as a fallback.
+		try {
+			const pool = getPool();
+			let dioIdToUpdate: string | null =
+				typeof (result.storage_result as any)?.dio_id === "string" && String((result.storage_result as any).dio_id).trim()
+					? String((result.storage_result as any).dio_id).trim()
+					: null;
+
+			if (!dioIdToUpdate) {
+				const versionRaw = (result.storage_result as any)?.version;
+				const version = typeof versionRaw === "number" && Number.isFinite(versionRaw) ? Math.trunc(versionRaw) : null;
+				try {
+					const lookup = version != null
+						? await pool.query<{ dio_id: string }>(
+							`SELECT dio_id
+							   FROM deal_intelligence_objects
+							  WHERE deal_id = $1::uuid
+							    AND analysis_version = $2::int
+							  ORDER BY updated_at DESC NULLS LAST, dio_id DESC
+							  LIMIT 1`,
+							[dealId, version]
+						)
+						: await pool.query<{ dio_id: string }>(
+							`SELECT dio_id
+							   FROM deal_intelligence_objects
+							  WHERE deal_id = $1::uuid
+							  ORDER BY analysis_version DESC, updated_at DESC NULLS LAST, dio_id DESC
+							  LIMIT 1`,
+							[dealId]
+						);
+					dioIdToUpdate = typeof lookup.rows?.[0]?.dio_id === "string" ? lookup.rows[0].dio_id : null;
+				} catch {
+					dioIdToUpdate = null;
+				}
+			}
+
+			if (!dioIdToUpdate) {
+				console.warn(
+					JSON.stringify({
+						event: "dio_report_persist_skipped",
+						deal_id: dealId,
+						job_id: job.id ? String(job.id) : null,
+						reason: "missing_dio_id",
+						ts: new Date().toISOString(),
+					})
+				);
+			} else {
+				// Load promoted facts (if evidence_items exists) to enrich structured_summary with citations.
+				let promotedFacts: any[] = [];
+				try {
+					const evidenceOk = await hasTable(pool, "evidence_items");
+					if (evidenceOk) {
+						await pool.query("SELECT 1 FROM evidence_items LIMIT 1");
+						const res = await pool.query(
+							`SELECT evidence_id::text,
+							        deal_id::text,
+							        source_type,
+							        source_path,
+							        source_document_id::text as source_document_id,
+							        confidence,
+							        extracted_at::text,
+							        content_json,
+							        meta
+						   FROM evidence_items
+						  WHERE deal_id = $1::uuid
+						    AND source_type IN ('promoted_slide_fact','business_model_fact')
+						    AND content_json IS NOT NULL
+						    AND (content_json->>'fact_type') IN (
+						      'raise_terms_v1',
+						      'business_model_v1',
+						      'revenue_v1',
+						      'customers_v1',
+						      'growth_v1',
+						      'growth_outlook_v1',
+						      'marketing_attributed_revenue_v1'
+						    )
+						  ORDER BY confidence DESC, extracted_at DESC, evidence_id ASC`,
+							[dealId]
+						);
+						promotedFacts = (res.rows ?? []) as any[];
+					}
+				} catch {
+					promotedFacts = [];
+				}
+
+				const compiledReport = promotedFacts.length > 0
+					? compileDIOToReportWithPromotedFacts(result.dio as any, { promotedFacts })
+					: compileDIOToReport(result.dio as any);
+
+				const persisted = await pool.query<{ persisted: boolean }>(
+					`UPDATE deal_intelligence_objects
+						SET dio_data = jsonb_set(
+							COALESCE(dio_data, '{}'::jsonb),
+							'{report}',
+							$1::jsonb,
+							true
+						)
+					 WHERE dio_id = $2::uuid
+					 RETURNING true as persisted`,
+					[JSON.stringify(compiledReport), dioIdToUpdate]
+				);
+
+				console.log(
+					JSON.stringify({
+						event: "dio_report_persisted",
+						deal_id: dealId,
+						job_id: job.id ? String(job.id) : null,
+						dio_id: dioIdToUpdate,
+						analysis_version: (result.storage_result as any)?.version ?? null,
+						row_count: persisted.rowCount,
+						report_version: (compiledReport as any)?.version ?? null,
+						ts: new Date().toISOString(),
+					})
+				);
+			}
+		} catch (err) {
+			console.warn(
+				JSON.stringify({
+					event: "dio_report_persist_failed",
+					deal_id: dealId,
+					job_id: job.id ? String(job.id) : null,
+					reason: err instanceof Error ? err.message : String(err),
+					ts: new Date().toISOString(),
+				})
+			);
 		}
 
 		const overallScore = (result.dio as any)?.overall_score
@@ -9362,6 +9642,7 @@ registerWorker("generate_ingestion_report", async (job: Job) => {
 		await saveIngestionReport({
 			reportId,
 			dealId,
+			analysisVersion: 0,
 			summary,
 			documentIds,
 		});

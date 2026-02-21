@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { containsMarketSizingLanguage, inferIsRaiseAskSlide } from "@dealdecision/core";
 
 export type PromoteSlideFactsParams = {
 	dealId: string;
@@ -285,6 +286,13 @@ type BusinessModelSlideInput = {
 type BusinessModelSlideScore = {
 	input: BusinessModelSlideInput;
 	scores: { dtc: number; wholesale: number; saas: number; licensing: number; licensing_raw: number; title_boost: number };
+	signals: {
+		has_media_signals: boolean;
+		has_ecom_mechanics: boolean;
+		dtc_hits: string[];
+		media_hits: string[];
+		ecom_mechanics_hits: string[];
+	};
 	snippet: string | null;
 	quality: 'high' | 'med' | 'low';
 };
@@ -311,6 +319,37 @@ function scoreBusinessModelSlide(input: BusinessModelSlideInput): BusinessModelS
 	const title = (input.slide_title ?? '').toLowerCase().trim();
 	const segmentKey = (input.segment_key ?? '').toLowerCase().trim();
 
+	// Media / sponsorship language is often present in sports/content decks and can
+	// superficially look "online" without being ecommerce.
+	const mediaSignals: Array<{ rx: RegExp; kind: string }> = [
+		{ rx: /\btitle\s+sponsorship\b/i, kind: 'title_sponsorship' },
+		{ rx: /\bsponsorship\b/i, kind: 'sponsorship' },
+		{ rx: /\bsponsor\b/i, kind: 'sponsor' },
+		{ rx: /\bmedia\s+partner\b/i, kind: 'media_partner' },
+		{ rx: /\bmedia\s+rights?\b/i, kind: 'media_rights' },
+		{ rx: /\bbroadcast\b/i, kind: 'broadcast' },
+		{ rx: /\bstreaming\b/i, kind: 'streaming' },
+		{ rx: /\bweb\s*series\b/i, kind: 'webseries' },
+		{ rx: /\bwebseries\b/i, kind: 'webseries' },
+		{ rx: /\bcontent\s+distribution\b/i, kind: 'content_distribution' },
+		{ rx: /\bdistribution\b/i, kind: 'distribution' },
+		{ rx: /\bcontent\s+production\b/i, kind: 'content_production' },
+		{ rx: /\bviewership\b/i, kind: 'viewership' },
+		{ rx: /\beyeballs\b/i, kind: 'eyeballs' },
+	];
+
+	// Strict ecommerce mechanics: do NOT treat generic "ecommerce"/"website"/"digital" as mechanics.
+	const ecomMechanicsSignals: Array<{ rx: RegExp; neg: RegExp; kind: string }> = [
+		{ rx: /\bcheckout\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?checkout\b/i, kind: 'checkout' },
+		{ rx: /\bcart\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?cart\b/i, kind: 'cart' },
+		{ rx: /\borders?\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?orders?\b/i, kind: 'orders' },
+		{ rx: /\bskus?\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?skus?\b/i, kind: 'skus' },
+		{ rx: /\bstorefront\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?storefront\b/i, kind: 'storefront' },
+		{ rx: /\badd\s+to\s+cart\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?add\s+to\s+cart\b/i, kind: 'add_to_cart' },
+		{ rx: /\bfulfillment\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?fulfillment\b/i, kind: 'fulfillment' },
+		{ rx: /\binventory\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?inventory\b/i, kind: 'inventory' },
+	];
+
 	const titleCore = /(business\s+model|go\s*to\s*market|go[- ]?to[- ]?market|gtm|distribution|channels?|channel\s+strategy|sales\s+channels?|revenue\s+model|how\s+we\s+sell|where\s+we\s+sell|route\s+to\s+market)/i;
 	const titleLicensingExamples = /(licensing\s+examples?|examples\s+of\s+licensing)/i;
 	const titleLicensing = /\blicens(?:e|ing|ed)\b/i;
@@ -324,8 +363,9 @@ function scoreBusinessModelSlide(input: BusinessModelSlideInput): BusinessModelS
 	if (title && titleLicensing.test(title) && !titleCore.test(title)) titleBoost -= 1;
 
 	const dtcPatterns: Array<{ rx: RegExp; w: number; kind: string }> = [
-		{ rx: /\b(dt c|dtc|direct[- ]to[- ]consumer|direct to consumer|ecommerce|e-?commerce|shopify|online\s+store)\b/i, w: 3, kind: 'dtc_keyword' },
-		{ rx: /\b(website|online|web\s*site|shop|checkout)\b/i, w: 2, kind: 'web_channel' },
+		{ rx: /\b(dt c|dtc|d2c|direct[- ]to[- ]consumer|direct to consumer|ecommerce|e-?commerce|shopify|online\s+store)\b/i, w: 3, kind: 'dtc_keyword' },
+		// Keep ecommerce-mechanics tokens; avoid broad "online"/"website" which causes media false positives.
+		{ rx: /\b(checkout|cart|orders?|skus?|storefront|online\s+store|add\s+to\s+cart)\b/i, w: 2, kind: 'ecom_mechanics' },
 		{ rx: /\b(email|sms)\b/i, w: 1, kind: 'email_sms' },
 		{ rx: /\bpaid\s+search\b/i, w: 1, kind: 'paid_search' },
 		{ rx: /most\s+of\s+our\s+business\s+is\s+direct\b[^\n]{0,80}\bwebsite\b/i, w: 6, kind: 'direct_via_website_phrase' },
@@ -348,9 +388,20 @@ function scoreBusinessModelSlide(input: BusinessModelSlideInput): BusinessModelS
 		{ rx: /\blicens(?:e|ing|ed)\b/i, w: 3, kind: 'licensing' },
 		{ rx: /\broyalt(?:y|ies)\b/i, w: 2, kind: 'royalties' },
 		{ rx: /\b(ip\s+licens(?:e|ing)|brand\s+licens(?:e|ing))\b/i, w: 2, kind: 'ip_brand_licensing' },
+		// Treat media rights explicitly as licensing-like.
+		{ rx: /\bmedia\s+rights?\b/i, w: 3, kind: 'media_rights' },
 		{ rx: /\b(primary|core|main)\b[^\n]{0,40}\blicens(?:e|ing|ed)\b/i, w: 5, kind: 'licensing_primary_claim' },
 		{ rx: /\brevenue\b[^\n]{0,40}\blicens(?:e|ing|ed)\b/i, w: 4, kind: 'licensing_revenue' },
 	];
+
+	const collectKinds = (patterns: Array<{ rx: RegExp; kind: string; neg?: RegExp }>): string[] => {
+		const out: string[] = [];
+		for (const p of patterns) {
+			if (p.rx.test(t) && !p.neg?.test(t)) out.push(p.kind);
+		}
+		out.sort();
+		return Array.from(new Set(out));
+	};
 
 	const scoreFrom = (patterns: Array<{ rx: RegExp; w: number }>): number => {
 		let s = 0;
@@ -360,11 +411,24 @@ function scoreBusinessModelSlide(input: BusinessModelSlideInput): BusinessModelS
 		return s;
 	};
 
-	const dtc = scoreFrom(dtcPatterns);
+	const media_hits = collectKinds(mediaSignals);
+	const ecom_mechanics_hits = collectKinds(ecomMechanicsSignals);
+	const has_media_signals = media_hits.length > 0;
+	const has_ecom_mechanics = ecom_mechanics_hits.length > 0;
+	const dtc_hits = collectKinds(dtcPatterns);
+
+	let dtc = scoreFrom(dtcPatterns);
 	const wholesale = scoreFrom(wholesalePatterns);
 	const saas = scoreFrom(saasPatterns);
 	const licensingRaw = scoreFrom(licensingPatterns);
 	let licensing = licensingRaw;
+
+	// Hard exclusion: if media/sponsorship signals are present AND ecommerce mechanics are not,
+	// DTC cannot be selected (even if generic "ecommerce" appears).
+	if (has_media_signals && !has_ecom_mechanics) {
+		// Keep dtc_hits for diagnostics, but zero the DTC score to prevent selection.
+		dtc = 0;
+	}
 
 	// If this looks like “Licensing examples”, heavily downweight licensing for *primary* selection.
 	// (We still retain raw mention counts for secondary tagging.)
@@ -392,6 +456,13 @@ function scoreBusinessModelSlide(input: BusinessModelSlideInput): BusinessModelS
 	return {
 		input: { ...input, text: t },
 		scores: { dtc, wholesale, saas, licensing, licensing_raw: licensingRaw, title_boost: titleBoost },
+		signals: {
+			has_media_signals,
+			has_ecom_mechanics,
+			dtc_hits,
+			media_hits,
+			ecom_mechanics_hits,
+		},
 		snippet,
 		quality,
 	};
@@ -404,6 +475,12 @@ function resolveBusinessModelFromSlides(slides: BusinessModelSlideInput[]): { va
 		if (row) scored.push(row);
 	}
 	if (scored.length === 0) return null;
+
+	const has_media_signals = scored.some((r) => r.signals.has_media_signals);
+	const has_ecom_mechanics = scored.some((r) => r.signals.has_ecom_mechanics);
+	const dtc_hits = Array.from(new Set(scored.flatMap((r) => r.signals.dtc_hits))).slice().sort().slice(0, 24);
+	const media_hits = Array.from(new Set(scored.flatMap((r) => r.signals.media_hits))).slice().sort().slice(0, 24);
+	const applied_guards: string[] = [];
 
 	const rowTotalScore = (row: BusinessModelSlideScore): number => (
 		row.scores.dtc +
@@ -455,10 +532,15 @@ function resolveBusinessModelFromSlides(slides: BusinessModelSlideInput[]): { va
 	}
 	if (!bestOverall) return null;
 
-	const dtc = weightedTotals.dtc;
+	let dtc = weightedTotals.dtc;
 	const wholesale = weightedTotals.wholesale;
 	const saas = weightedTotals.saas;
 	const licensing = weightedTotals.licensing;
+
+	if (has_media_signals && !has_ecom_mechanics) {
+		applied_guards.push('media_blocks_dtc_without_ecom_mechanics');
+		dtc = 0;
+	}
 
 	const otherMax = Math.max(dtc, wholesale, saas);
 	const licensingIsPrimary = (
@@ -578,6 +660,14 @@ function resolveBusinessModelFromSlides(slides: BusinessModelSlideInput[]): { va
 		sources: topSources,
 		display: primaryLabel,
 		note_snippet: best.snippet,
+		diagnostics: {
+			has_media_signals,
+			has_ecom_mechanics,
+			dtc_hits,
+			media_hits,
+			applied_guards,
+			decision_reason: `totals(dtc=${Math.round(dtc * 100) / 100}, wholesale=${Math.round(wholesale * 100) / 100}, saas=${Math.round(saas * 100) / 100}, licensing=${Math.round(licensing * 100) / 100}) label=${primaryLabel}`,
+		},
 	};
 
 	return { value_json, confidence, extracted_at: maxExtractedAt, best };
@@ -651,6 +741,24 @@ async function upsertPromotedFact(
 	// Derive from the explicit dealId param (not from meta), so persistence is deterministic.
 	const evidenceId = stableEvidenceId(dealId, fact.fact_type);
 	const betterExpr = `(EXCLUDED.confidence > evidence_items.confidence OR (EXCLUDED.confidence = evidence_items.confidence AND EXCLUDED.extracted_at > evidence_items.extracted_at))`;
+	// Allow re-materializing a fact for the same slide candidate even if extracted_at/confidence are unchanged.
+	// This is important for deterministic rule updates: we want reruns to refresh content_json/diagnostics
+	// without letting a worse candidate overwrite the current winner.
+	const sameCandidateExpr = `(
+		EXCLUDED.source_document_id IS NOT DISTINCT FROM evidence_items.source_document_id
+		AND (EXCLUDED.meta->>'page_index') IS NOT DISTINCT FROM (evidence_items.meta->>'page_index')
+		AND (EXCLUDED.meta->>'segment_key') IS NOT DISTINCT FROM (evidence_items.meta->>'segment_key')
+	)`;
+	const refreshExpr = `(${betterExpr} OR ${sameCandidateExpr})`;
+
+	const meta = {
+		...(fact.meta ?? {}),
+		run_id: typeof _opts?.run_id === "string" && _opts.run_id.trim().length > 0 ? _opts.run_id.trim() : null,
+		step_run_id:
+			typeof _opts?.step_run_id === "string" && _opts.step_run_id.trim().length > 0 ? _opts.step_run_id.trim() : null,
+		promoter: "promoteSlideFactsFromDocumentPageUnderstanding",
+		promoter_version: "2026-02-17",
+	};
 	const sql = `INSERT INTO evidence_items (
 	evidence_id,
 	deal_id,
@@ -679,12 +787,12 @@ async function upsertPromotedFact(
 ON CONFLICT (evidence_id) DO UPDATE SET
 	confidence = GREATEST(evidence_items.confidence, EXCLUDED.confidence),
 	extracted_at = GREATEST(evidence_items.extracted_at, EXCLUDED.extracted_at),
-	tags = CASE WHEN ${betterExpr} THEN EXCLUDED.tags ELSE evidence_items.tags END,
-	source_path = CASE WHEN ${betterExpr} THEN EXCLUDED.source_path ELSE evidence_items.source_path END,
-	source_document_id = CASE WHEN ${betterExpr} THEN EXCLUDED.source_document_id ELSE evidence_items.source_document_id END,
-	content_text = CASE WHEN ${betterExpr} THEN EXCLUDED.content_text ELSE evidence_items.content_text END,
-	content_json = CASE WHEN ${betterExpr} THEN EXCLUDED.content_json ELSE evidence_items.content_json END,
-	meta = CASE WHEN ${betterExpr} THEN EXCLUDED.meta ELSE evidence_items.meta END,
+	tags = CASE WHEN ${refreshExpr} THEN EXCLUDED.tags ELSE evidence_items.tags END,
+	source_path = CASE WHEN ${refreshExpr} THEN EXCLUDED.source_path ELSE evidence_items.source_path END,
+	source_document_id = CASE WHEN ${refreshExpr} THEN EXCLUDED.source_document_id ELSE evidence_items.source_document_id END,
+	content_text = CASE WHEN ${refreshExpr} THEN EXCLUDED.content_text ELSE evidence_items.content_text END,
+	content_json = CASE WHEN ${refreshExpr} THEN EXCLUDED.content_json ELSE evidence_items.content_json END,
+	meta = CASE WHEN ${refreshExpr} THEN EXCLUDED.meta ELSE evidence_items.meta END,
 	updated_at = now()
 RETURNING (xmax = 0) as inserted`;
 
@@ -710,7 +818,7 @@ RETURNING (xmax = 0) as inserted`;
 				slide_title: fact.meta.slide_title ?? null,
 			},
 		}),
-		JSON.stringify(fact.meta),
+		JSON.stringify(meta),
 	];
 
 	const res = await pool.query(sql, params);
@@ -729,9 +837,9 @@ export async function promoteSlideFactsFromDocumentPageUnderstanding(pool: Pool,
 	const dealId = String(params.dealId ?? "").trim();
 	const documentId = String(params.documentId ?? "").trim();
 	const pageStart = Math.max(0, Math.floor(params.pageStart ?? 0));
-	const pageEnd = Math.max(pageStart, Math.floor(params.pageEnd ?? pageStart));
+	let pageEnd = Math.max(pageStart, Math.floor(params.pageEnd ?? pageStart));
 
-	if (!dealId || !documentId || pageEnd <= pageStart) return { ok: true, inserted: 0, updated: 0, facts: [], warnings: [] };
+	if (!dealId || !documentId) return { ok: true, inserted: 0, updated: 0, facts: [], warnings: [] };
 
 	try {
 		await pool.query("SELECT 1 FROM evidence_items LIMIT 1");
@@ -740,6 +848,29 @@ export async function promoteSlideFactsFromDocumentPageUnderstanding(pool: Pool,
 		warnings.push(`evidence_items_unavailable:${err?.code ?? "unknown"}`);
 		return { ok: true, inserted: 0, updated: 0, facts: [], warnings };
 	}
+
+	// If caller did not provide a usable pageEnd (common when documents.page_count is missing),
+	// infer the effective page range from existing DPU rows.
+	if (pageEnd <= pageStart) {
+		try {
+			const res = await pool.query(
+				`SELECT MAX(page_index) AS max_page_index
+				   FROM public.document_page_understanding
+				  WHERE document_id = $1::uuid
+				    AND deal_id = $2::uuid
+				    AND version = $3`,
+				[documentId, dealId, version]
+			);
+			const maxIdxRaw = (res.rows?.[0] as any)?.max_page_index;
+			const maxIdx = typeof maxIdxRaw === 'number' ? maxIdxRaw : Number(maxIdxRaw);
+			if (Number.isFinite(maxIdx) && maxIdx >= pageStart) pageEnd = Math.max(pageStart, Math.floor(maxIdx) + 1);
+		} catch (err: any) {
+			if (isMissingTableError(err)) return { ok: true, inserted: 0, updated: 0, facts: [], warnings: ["document_page_understanding_missing"] };
+			warnings.push(`dpu_range_infer_failed:${err?.code ?? "unknown"}`);
+		}
+	}
+
+	if (pageEnd <= pageStart) return { ok: true, inserted: 0, updated: 0, facts: [], warnings };
 
 	let dpuRows: Array<{ page_index: number; payload: any }> = [];
 	try {
@@ -782,7 +913,13 @@ export async function promoteSlideFactsFromDocumentPageUnderstanding(pool: Pool,
 			slide_title: slide.slide_title,
 		};
 
-		const raise = parseRaiseTermsFromText(slideText);
+		const raise = (() => {
+			// Guardrail: only promote raise_terms_v1 when the slide is truly an explicit "ask"
+			// and never when the slide looks like market sizing (TAM/SAM/SOM / market is $X).
+			if (containsMarketSizingLanguage(slideText)) return null;
+			if (!inferIsRaiseAskSlide(slideText)) return null;
+			return parseRaiseTermsFromText(slideText);
+		})();
 		if (raise) {
 			const fact: PromotedFact = {
 				fact_type: "raise_terms_v1",

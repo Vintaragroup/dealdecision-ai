@@ -56,6 +56,7 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 				? String(data.version)
 				: "page_understanding_v1";
 	const version = versionRaw.trim() || "page_understanding_v1";
+	const forceRefresh = Boolean(data.force_refresh ?? data?.payload?.force_refresh);
 
 	const retryAttemptRaw = parseFiniteInt(data.dpu_retry_attempt);
 	const retryAttempt = retryAttemptRaw != null ? Math.max(0, retryAttemptRaw) : 0;
@@ -98,6 +99,23 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 				pageEndRaw ?? (pageCount != null ? Math.max(1, pageCount) : Math.max(1, pageStart + 1))
 			)
 			: 0;
+
+		// Force refresh semantics: delete existing DPU rows so (re)inserts get a new created_at.
+		// This avoids stale /report fallbacks when rerunning analysis.
+		if (forceRefresh && docId) {
+			try {
+				await pool.query(
+					`DELETE FROM public.document_page_understanding
+					  WHERE document_id = $1::uuid
+					    AND version = $2::text
+					    AND page_index >= $3::int
+					    AND page_index < $4::int`,
+					[sanitizeText(docId), sanitizeText(version), pageStart, pageEnd]
+				);
+			} catch {
+				// best-effort
+			}
+		}
 
 	try {
 		const res = docId
@@ -193,6 +211,8 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 					pageStart,
 					pageEnd,
 					version,
+					runId: job.id ? String(job.id) : null,
+					stepRunId: null,
 				});
 				const attempted = Array.isArray(promoted.facts) ? promoted.facts.length : 0;
 				if (attempted <= 0) {

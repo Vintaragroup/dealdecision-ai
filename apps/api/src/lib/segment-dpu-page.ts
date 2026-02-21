@@ -1,3 +1,4 @@
+import { inferIsRaiseAskSlide } from "@dealdecision/core";
 import type { AnalystSegment } from "./analyst-segment";
 
 export type DpuSegmentReason = {
@@ -136,7 +137,15 @@ export function segmentDpuPage(input: {
   })();
 
   // ---- Title-first rules (high confidence, can be overridden by intent) ----
-  const titleHit = title ? TITLE_RULES.find((r) => r.re.test(title)) : null;
+  const titleHitRaw = title ? TITLE_RULES.find((r) => r.re.test(title)) : null;
+  const titleHit = ((): TitleRule | null => {
+    if (!titleHitRaw) return null;
+    if (titleHitRaw.segment !== "raise_terms") return titleHitRaw;
+
+    // Raise terms must not auto-lock based on the title alone.
+    // Require explicit ask/instrument language AND a nearby money amount; and block TAM/SAM/SOM/market-size slides.
+    return inferIsRaiseAskSlide(`${title}\n${bulletsText}`) ? titleHitRaw : null;
+  })();
   if (titleHit) {
     reason.title_rules_hit.push(titleHit.id);
     reason.keywords.push(...extractKeywordHits(title, titleHit.keywords));
@@ -198,11 +207,11 @@ export function segmentDpuPage(input: {
   // ---- Bullet fallback rules (medium confidence) ----
   const bulletRules: Array<{ id: string; when: () => boolean; segment: AnalystSegment; keywords: string[]; confidence: number }>= [
     {
-      id: "raise.bullets.valuation_equity_board",
-      when: () => anyMatch(bulletsL, [/\bvaluation\b/i, /\bequity\b/i, /\bboard\s*seat\b/i, /\bsafe\b/i, /\bcap\b/i]),
+      id: "raise.bullets.explicit_ask_with_amount",
+      when: () => inferIsRaiseAskSlide(`${title}\n${bulletsText}`),
       segment: "raise_terms",
-      keywords: ["valuation", "equity", "board seat", "safe", "cap"],
-      confidence: 0.75,
+      keywords: ["raise", "raising", "seeking", "the ask", "safe", "convertible", "equity"],
+      confidence: 0.8,
     },
     {
       id: "financials.bullets.year_money_forecast",

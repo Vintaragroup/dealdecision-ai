@@ -28,6 +28,7 @@ export * from './scoring/score-bands-v2';
 export * from './scoring/decision-v1';
 export * from './classification/content-archetypes';
 export * from './classification/business-model-arbitrator';
+export * from "./classifiers/raise-detector";
 
 // ============================================================================
 // DIO / Orchestration (Phase 4)
@@ -148,6 +149,7 @@ export * from "./services/purge-deal-cascade";
 
 // Reports
 export { compileDIOToReport, compileDIOToReportWithPromotedFacts } from "./reports/compiler-simple";
+export { buildDeterministicDealSummaryV1FromStructuredSummary } from "./reports/deal-summary-v1-deterministic";
 export { buildInvestmentAnalysisOverviewV2 } from "./reports/investment-analysis-overview-v2";
 export { buildScoreExplanationFromDIO, buildScoringDiagnosticsFromDIO } from "./reports/score-explanation";
 export type { ScoreExplanation } from "./reports/score-explanation";

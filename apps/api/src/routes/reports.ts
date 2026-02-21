@@ -10,9 +10,9 @@
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Pool } from 'pg';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { compileDIOToReport, compileDIOToReportWithPromotedFacts } from '@dealdecision/core';
+import { buildDeterministicDealSummaryV1FromStructuredSummary, compileDIOToReport, compileDIOToReportWithPromotedFacts } from '@dealdecision/core';
 import { buildDeterministicScoreInputsV1 } from '@dealdecision/core';
 import { computeDecisionV1, computeHardPassGuardrailV2, getScoreBandV2 } from '@dealdecision/core';
 import { LlmNarrationV1Schema, degradeNarrationV1, validateNoNewFacts } from '@dealdecision/core';
@@ -97,6 +97,52 @@ type NarrationDevCacheValue = {
 const narrationDevCache = new Map<string, NarrationDevCacheValue>();
 
 const stableHash = (input: string): string => createHash('sha256').update(input, 'utf8').digest('hex');
+
+async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
+  try {
+    const r = await pool.query<{ summary: any }>(
+      `SELECT summary
+         FROM ingestion_reports
+        WHERE deal_id = $1 AND analysis_version = $2
+        LIMIT 1`,
+      [dealId, analysisVersion]
+    );
+    const summary = r.rows?.[0]?.summary ?? null;
+    return summary && typeof summary === 'object' ? summary : null;
+  } catch (err) {
+    void err;
+    return null;
+  }
+}
+
+async function upsertIngestionReportSummaryByDealAndVersion(params: {
+  pool: Pool;
+  dealId: string;
+  analysisVersion: number;
+  summary: any;
+  documentIds: string[];
+}): Promise<{ report_id: string } | null> {
+  const { pool, dealId, analysisVersion, summary, documentIds } = params;
+  try {
+    const r = await pool.query<{ report_id: string }>(
+      `INSERT INTO ingestion_reports (report_id, deal_id, analysis_version, summary, document_ids)
+       VALUES ($1, $2, $3, $4::jsonb, $5::text[])
+       ON CONFLICT (deal_id, analysis_version)
+       DO UPDATE SET
+         updated_at = now(),
+         summary = EXCLUDED.summary,
+         document_ids = EXCLUDED.document_ids
+       RETURNING report_id`,
+      [randomUUID(), dealId, analysisVersion, summary ?? {}, documentIds ?? []]
+    );
+    const row = r.rows?.[0];
+    if (!row || typeof row.report_id !== 'string' || !row.report_id.trim()) return null;
+    return { report_id: row.report_id };
+  } catch (err) {
+    void err;
+    return null;
+  }
+}
 
 async function openaiChatCompletion(params: {
   model: string;
@@ -1904,6 +1950,146 @@ export async function registerReportRoutes(
   app: FastifyInstance,
   pool: Pool
 ) {
+
+  /**
+   * GET /api/v1/deals/:deal_id/report_diagnostics
+   * Debug endpoint: show selected business_model_v1 promoted fact (persisted or DPU-derived).
+   */
+  app.get<{ Params: ReportParams }>(
+    "/api/v1/deals/:deal_id/report_diagnostics",
+    async (request: FastifyRequest<{ Params: ReportParams }>, reply: FastifyReply) => {
+      const { deal_id } = request.params;
+      if (!isUuid(deal_id)) {
+        return reply.status(400).send({ ok: false, error: 'invalid_deal_id', message: 'deal_id must be a UUID' });
+      }
+
+      // Artifact metadata (best-effort).
+      let artifact: any = null;
+      let dioUpdatedAt: string | null = null;
+      let dioData: any = null;
+      try {
+        const r = await pool.query(
+          `SELECT dio_id, analysis_version, input_hash, updated_at, dio_data
+             FROM deal_intelligence_objects
+            WHERE deal_id = $1
+            ORDER BY analysis_version DESC, updated_at DESC NULLS LAST, dio_id DESC
+            LIMIT 1`,
+          [deal_id]
+        );
+        const row = r.rows?.[0] ?? null;
+        dioUpdatedAt = row && row.updated_at ? String(row.updated_at) : null;
+        dioData = row && (row as any).dio_data ? (row as any).dio_data : null;
+        artifact = row
+          ? {
+              dio_id: row.dio_id,
+              analysis_version: row.analysis_version,
+              input_hash: row.input_hash,
+              updated_at: row.updated_at,
+            }
+          : null;
+      } catch {
+        artifact = null;
+        dioUpdatedAt = null;
+        dioData = null;
+      }
+
+      // DPU freshness (best-effort)
+      let latestDpuCreatedAt: string | null = null;
+      try {
+        const r = await pool.query<{ latest_dpu_created_at: string | null }>(
+          `
+          SELECT MAX(dpu.created_at)::text AS latest_dpu_created_at
+            FROM document_page_understanding dpu
+            JOIN documents d ON d.id = dpu.document_id
+           WHERE d.deal_id = $1
+             AND d.deleted_at IS NULL
+             AND dpu.version = 'page_understanding_v1'
+          `,
+          [deal_id]
+        );
+        latestDpuCreatedAt = typeof r.rows?.[0]?.latest_dpu_created_at === 'string' ? String(r.rows[0].latest_dpu_created_at) : null;
+      } catch {
+        latestDpuCreatedAt = null;
+      }
+
+      const dioMinDpuCreatedAt = (() => {
+        const meta = dioData && typeof dioData === 'object' ? (dioData as any).meta : null;
+        const raw = meta && typeof meta === 'object' ? (meta as any).min_dpu_created_at : null;
+        return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null;
+      })();
+
+      // Correct freshness gating: compare DPU to the DPU-freshness floor used for the analysis run
+      // (not dio.updated_at, which is written after prerequisites and is not a valid DPU provenance signal).
+      const dpuStaleVsDio = (() => {
+        if (!latestDpuCreatedAt || !dioMinDpuCreatedAt) return null;
+        const a = Date.parse(latestDpuCreatedAt);
+        const b = Date.parse(dioMinDpuCreatedAt);
+        if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+        return a < b;
+      })();
+
+      // Facts: persisted evidence_items + deterministic DPU-derived fallback.
+      let promotedFacts: any[] = [];
+      try {
+        promotedFacts = await loadPromotedFactsForDeal(pool as any, deal_id);
+      } catch {
+        promotedFacts = [];
+      }
+
+      const factTypeOf = (r: any): string => String(r?.content_json?.fact_type ?? r?.fact_type ?? '').trim();
+      const hasModel = promotedFacts.some((r: any) => factTypeOf(r) === 'business_model_v1');
+      if (!hasModel) {
+        try {
+          const derived = await derivePromotedFactsFromDpuForDeal(pool as any, deal_id);
+          promotedFacts.push(...(derived as any[]));
+        } catch {
+          // fail open
+        }
+      }
+
+      const models = promotedFacts.filter((r: any) => factTypeOf(r) === 'business_model_v1');
+      const score = (f: any): number => {
+        const st = typeof f?.source_type === 'string' ? f.source_type : '';
+        const conf = typeof f?.confidence === 'number' && Number.isFinite(f.confidence) ? f.confidence : 0;
+        const bonus = st === 'business_model_fact' ? 0.25 : 0;
+        return conf + bonus;
+      };
+      const selected =
+        (models
+          .slice()
+          .sort(
+            (a: any, b: any) =>
+              score(b) - score(a) || String(b?.extracted_at ?? '').localeCompare(String(a?.extracted_at ?? ''))
+          )[0] as any) ?? null;
+
+      const value_json = selected?.content_json?.value_json ?? selected?.content_json?.valueJson ?? null;
+      const diagnostics = value_json && typeof value_json === 'object' ? (value_json as any).diagnostics ?? null : null;
+
+      return reply.send({
+        ok: true,
+        deal_id,
+        artifact,
+        dpu: {
+          version: 'page_understanding_v1',
+          latest_dpu_created_at: latestDpuCreatedAt,
+          stale_vs_dio_updated_at: dpuStaleVsDio,
+        },
+        business_model_v1: selected
+          ? {
+              evidence_id: selected.evidence_id ?? null,
+              source_type: selected.source_type ?? null,
+              source_path: selected.source_path ?? null,
+              source_document_id: selected.source_document_id ?? null,
+              extracted_at: selected.extracted_at ?? null,
+              confidence: selected.confidence ?? null,
+              value_json,
+              diagnostics,
+              meta: selected.meta ?? null,
+            }
+          : null,
+      });
+    }
+  );
   
   /**
    * GET /api/v1/deals/:deal_id/report
@@ -1935,6 +2121,8 @@ export async function registerReportRoutes(
       try {
         const { deal_id } = request.params;
         request.log.info({ msg: "deal.report.start", deal_id, start_ts: new Date(startTs).toISOString() });
+
+        const narrateEnabled = envFlagEnabled((request.query as any)?.narrate);
 
         if (!isUuid(deal_id)) {
           return reply.status(400).send({ error: 'invalid_deal_id', message: 'deal_id must be a UUID' });
@@ -2007,6 +2195,24 @@ export async function registerReportRoutes(
           ? row.analysis_version
           : undefined;
 
+        // Idempotent report cache (non-narrated only): ingestion_reports keyed by (deal_id, analysis_version).
+        // This must not change response shape; it only avoids duplicate rows and re-computation.
+        if (!narrateEnabled && typeof version === 'number' && Number.isFinite(version) && version >= 1) {
+          const cached = await timer.stage('db.ingestion_reports.read', async () =>
+            readIngestionReportSummaryByDealAndVersion(pool, deal_id, version)
+          );
+          logStage('db.ingestion_reports.read', cached.ms, true);
+
+          if (cached.value && typeof cached.value === 'object') {
+            // Touch updated_at on each access per UPSERT contract.
+            const touch = await timer.stage('db.ingestion_reports.upsert', async () =>
+              upsertIngestionReportSummaryByDealAndVersion({ pool, dealId: deal_id, analysisVersion: version, summary: cached.value, documentIds: [] })
+            );
+            logStage('db.ingestion_reports.upsert', touch.ms, true, { cache: 'hit' });
+            return reply.status(200).send(cached.value);
+          }
+        }
+
         const artifact = {
           kind: 'deal_intelligence_object',
           dio_id: row.dio_id,
@@ -2015,6 +2221,48 @@ export async function registerReportRoutes(
           recommendation: row.recommendation,
           overall_score: row.overall_score,
         };
+
+        // DPU freshness signal for safety gating of derived promoted facts.
+        let latestDpuCreatedAt: string | null = null;
+        let dpuStaleVsDio = false;
+        try {
+          const r = await timer.stage('db.dpu_latest_created_at', async () => {
+            return pool.query<{ latest_dpu_created_at: string | null }>(
+              `
+              SELECT MAX(dpu.created_at)::text AS latest_dpu_created_at
+                FROM document_page_understanding dpu
+                JOIN documents d ON d.id = dpu.document_id
+               WHERE d.deal_id = $1
+                 AND d.deleted_at IS NULL
+                 AND dpu.version = 'page_understanding_v1'
+              `,
+              [deal_id]
+            );
+          });
+          logStage('db.dpu_latest_created_at', r.ms, true);
+          latestDpuCreatedAt = typeof r.value.rows?.[0]?.latest_dpu_created_at === 'string' ? String(r.value.rows[0].latest_dpu_created_at) : null;
+
+          const dioMinDpuCreatedAt = (() => {
+            const dioData = row && (row as any).dio_data && typeof (row as any).dio_data === 'object' ? (row as any).dio_data : null;
+            const meta = dioData && typeof dioData === 'object' ? (dioData as any).meta : null;
+            const raw = meta && typeof meta === 'object' ? (meta as any).min_dpu_created_at : null;
+            return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null;
+          })();
+
+          if (latestDpuCreatedAt && dioMinDpuCreatedAt) {
+            const a = Date.parse(latestDpuCreatedAt);
+            const b = Date.parse(dioMinDpuCreatedAt);
+            if (Number.isFinite(a) && Number.isFinite(b)) dpuStaleVsDio = a < b;
+          } else {
+            // If we don't have a provenance token, fail open so /report can use deterministic
+            // DPU-derived facts rather than getting stuck in a permanent "stale" state.
+            dpuStaleVsDio = false;
+          }
+        } catch {
+          // best-effort
+          latestDpuCreatedAt = null;
+          dpuStaleVsDio = false;
+        }
 
         // Deterministic deal summary (no LLM): derived from segmented DPU nodes.
         // Best-effort: never fail the whole /report response if this compilation fails.
@@ -2031,11 +2279,52 @@ export async function registerReportRoutes(
           segmentedNodes = null;
         }
         try {
+          const q = (request.query ?? {}) as any;
+          const dbg = String(q?.debug_deal_summary ?? '').trim().toLowerCase();
+          const debugDealSummary = dbg === '1' || dbg === 'true' || dbg === 'yes' || dbg === 'on';
+
           const ds = await timer.stage('compile.deal_summary_v1', async () =>
-            compileDealSummaryV1(pool as any, deal_id, { prefetched: segmentedNodes ?? undefined } as any)
+            compileDealSummaryV1(pool as any, deal_id, {
+              prefetched: segmentedNodes ?? undefined,
+              includeDebug: debugDealSummary,
+              includeCandidates: debugDealSummary,
+            } as any)
           );
           logStage('compile.deal_summary_v1', ds.ms, true);
           dealSummaryV1 = ds.value;
+
+          if (debugDealSummary && dealSummaryV1 && typeof dealSummaryV1 === 'object') {
+            const dbgPayload = (dealSummaryV1 as any).debug ?? null;
+
+            request.log.info(
+              {
+                event: 'deal.report.deal_summary_debug',
+                deal_id,
+                dio_id: row.dio_id,
+                selected: {
+                  tiers: {
+                    hero: (dealSummaryV1 as any)?.tiers?.hero ?? null,
+                    mid: (dealSummaryV1 as any)?.tiers?.overview ?? null,
+                    long: (dealSummaryV1 as any)?.tiers?.deep ?? null,
+                  },
+                  sources: dbgPayload?.selected?.sources ?? null,
+                },
+                selection_path: dbgPayload?.selection_path ?? null,
+                candidates: dbgPayload?.candidates ?? null,
+                ready: (dealSummaryV1 as any)?.ready ?? null,
+                reason: (dealSummaryV1 as any)?.reason ?? null,
+                ts: new Date().toISOString(),
+              },
+              'deal_summary_debug'
+            );
+
+            // Do not leak debug payload to clients.
+            try {
+              delete (dealSummaryV1 as any).debug;
+            } catch {
+              // ignore
+            }
+          }
         } catch (err) {
           logStage('compile.deal_summary_v1', 0, false, { error: err instanceof Error ? err.message : String(err ?? 'unknown_error') });
           request.log.warn({ event: 'deal.report.deal_summary_v1_failed', deal_id, dio_id: row.dio_id, err }, 'deal_summary_v1 compilation failed');
@@ -2054,11 +2343,23 @@ export async function registerReportRoutes(
         // Backward compatibility: include the compiled report payload so existing clients
         // can continue to render without needing to understand the readiness envelope.
         let report: any = null;
+        // Prefer a canonical persisted report if present.
+        try {
+          const persisted = row && row.dio_data && typeof row.dio_data === 'object' ? (row.dio_data as any).report : null;
+          if (persisted && typeof persisted === 'object') {
+            report = persisted;
+            logStage('compile.report.persisted', 0, true, { source: 'dio_data.report' });
+          }
+        } catch {
+          // ignore
+        }
+
         let promotedFacts: any[] = [];
         try {
-          const pf = await timer.stage('db.promoted_facts', async () => loadPromotedFactsForDeal(pool as any, deal_id));
-          logStage('db.promoted_facts', pf.ms, true);
-          promotedFacts = pf.value;
+          if (!report) {
+            const pf = await timer.stage('db.promoted_facts', async () => loadPromotedFactsForDeal(pool as any, deal_id));
+            logStage('db.promoted_facts', pf.ms, true);
+            promotedFacts = pf.value;
 
       // Deterministic fallback: if evidence_items did not get populated yet, derive
       // promoted-like facts directly from document_page_understanding payloads.
@@ -2074,29 +2375,115 @@ export async function registerReportRoutes(
       // If any of the key structured_summary items are missing, derive them deterministically
       // from document_page_understanding and attach as promotedFacts inputs.
       if (!hasRaise || !hasModel || !hasKpi) {
-        const derivedStage = await timer.stage('db.promoted_facts_derived_from_dpu', async () => derivePromotedFactsFromDpuForDeal(pool as any, deal_id));
-        logStage('db.promoted_facts_derived_from_dpu', derivedStage.ms, true);
-        const derived = derivedStage.value;
-        const existingEvidenceIds = new Set(promotedFacts.map((r: any) => String(r?.evidence_id ?? '')).filter(Boolean));
-        for (const r of derived) {
-          const evidenceId = String((r as any)?.evidence_id ?? '');
-          if (evidenceId && existingEvidenceIds.has(evidenceId)) continue;
+        // Safety gate: do not rely on DPU-derived facts when DPU looks older than the DIO itself.
+        // This prevents stale fallbacks from "winning" after reruns where DPU did not refresh.
+        if (dpuStaleVsDio) {
+          request.log.warn(
+            {
+              event: 'deal.report.promoted_facts_dpu_fallback_skipped',
+              deal_id,
+              dio_id: row.dio_id,
+              dio_updated_at: row.updated_at ?? null,
+              latest_dpu_created_at: latestDpuCreatedAt,
+              reason: 'dpu_stale_vs_dio',
+            },
+            'Skipping DPU-derived promoted fact fallback due to stale DPU'
+          );
+        } else {
+          const derivedStage = await timer.stage('db.promoted_facts_derived_from_dpu', async () => derivePromotedFactsFromDpuForDeal(pool as any, deal_id));
+          logStage('db.promoted_facts_derived_from_dpu', derivedStage.ms, true);
+          const derived = derivedStage.value;
+          const existingEvidenceIds = new Set(promotedFacts.map((r: any) => String(r?.evidence_id ?? '')).filter(Boolean));
+          for (const r of derived) {
+            const evidenceId = String((r as any)?.evidence_id ?? '');
+            if (evidenceId && existingEvidenceIds.has(evidenceId)) continue;
 
-          const ft = factTypeOf(r);
-          if (ft === 'raise_terms_v1' && hasRaise) continue;
-          if (ft === 'business_model_v1' && hasModel) continue;
-          promotedFacts.push(r as any);
-          if (evidenceId) existingEvidenceIds.add(evidenceId);
+            const ft = factTypeOf(r);
+            if (ft === 'raise_terms_v1' && hasRaise) continue;
+            if (ft === 'business_model_v1' && hasModel) continue;
+            promotedFacts.push(r as any);
+            if (evidenceId) existingEvidenceIds.add(evidenceId);
+          }
         }
       }
 
-          const compiled = await timer.stage('compile.report', async () =>
-            promotedFacts.length > 0
-              ? compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts })
-              : compileDIOToReport(row.dio_data)
-          );
-          logStage('compile.report', compiled.ms, true);
-          report = compiled.value;
+            const compiled = await timer.stage('compile.report', async () =>
+              promotedFacts.length > 0
+                ? compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts })
+                : compileDIOToReport(row.dio_data)
+            );
+            logStage('compile.report', compiled.ms, true);
+            report = compiled.value;
+          }
+
+          // TEMP DEBUG: trace where structured_summary.business_model is sourced from.
+          // Enable by passing ?debug_business_model=1 on /report requests.
+          try {
+            const q = (request.query ?? {}) as any;
+            const dbg = String(q?.debug_business_model ?? '').trim().toLowerCase();
+            const debugBusinessModel = dbg === '1' || dbg === 'true' || dbg === 'yes' || dbg === 'on';
+            if (debugBusinessModel && report && typeof report === 'object') {
+              const bm = (report as any)?.structured_summary?.business_model ?? null;
+              const bmValue = typeof bm?.value === 'string' ? bm.value : null;
+              const bmSources = Array.isArray(bm?.sources) ? bm.sources : [];
+              const kinds = bmSources.map((s: any) => String(s?.kind ?? '')).filter(Boolean);
+              const evidenceIds = bmSources.map((s: any) => s?.evidence_id ?? null).filter((x: any) => typeof x === 'string' && x.trim());
+
+              const phase1 = (row as any)?.dio_data?.dio?.phase1;
+              const overviewModel = phase1?.deal_overview_v2?.business_model ?? null;
+              const overviewSourcesCount = Array.isArray(phase1?.deal_overview_v2?.sources) ? phase1.deal_overview_v2.sources.length : 0;
+              const execModel = phase1?.executive_summary_v1?.business_model ?? null;
+              const arbitrationModel = phase1?.business_model_arbitration_v1?.business_model ?? null;
+
+              const factTypeOf = (r: any): string => String(r?.content_json?.fact_type ?? r?.fact_type ?? '').trim();
+              const promotedModels = Array.isArray(promotedFacts)
+                ? promotedFacts
+                    .filter((r: any) => factTypeOf(r) === 'business_model_v1')
+                    .map((r: any) => ({
+                      evidence_id: r?.evidence_id ?? null,
+                      extracted_at: r?.extracted_at ?? null,
+                      confidence: r?.confidence ?? null,
+                      source_path: r?.source_path ?? null,
+                      run_id: r?.meta?.run_id ?? r?.meta?.runId ?? null,
+                    }))
+                : [];
+
+              request.log.info(
+                {
+                  event: 'deal.report.business_model_debug',
+                  deal_id,
+                  dio_id: row.dio_id,
+                  dio_updated_at: row.updated_at ?? null,
+                  dio_meta_min_dpu_created_at: (() => {
+                    const dioData = row && (row as any).dio_data && typeof (row as any).dio_data === 'object' ? (row as any).dio_data : null;
+                    const meta = dioData && typeof dioData === 'object' ? (dioData as any).meta : null;
+                    const raw = meta && typeof meta === 'object' ? (meta as any).min_dpu_created_at : null;
+                    return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null;
+                  })(),
+                  latest_dpu_created_at: latestDpuCreatedAt ?? null,
+                  dpu_stale_vs_dio: dpuStaleVsDio,
+                  selected: {
+                    value: bmValue,
+                    source_kinds: kinds.slice(0, 6),
+                    evidence_ids: evidenceIds.slice(0, 6),
+                  },
+                  dio_phase1: {
+                    deal_overview_v2_business_model: overviewModel,
+                    deal_overview_v2_sources_count: overviewSourcesCount,
+                    executive_summary_v1_business_model: execModel,
+                    business_model_arbitration_v1_business_model: arbitrationModel,
+                  },
+                  promoted_fact_candidates: {
+                    business_model_v1: promotedModels,
+                  },
+                  ts: new Date().toISOString(),
+                },
+                'business_model_debug'
+              );
+            }
+          } catch {
+            // never fail /report for debug logging
+          }
 
           // Deterministic structured_summary additions (no LLM): market/product/gtm/deal summaries.
           try {
@@ -2106,6 +2493,84 @@ export async function registerReportRoutes(
             }
           } catch (err) {
             request.log.warn({ event: 'deal.report.structured_summary_extras_failed', deal_id, dio_id: row.dio_id, err }, 'structured_summary extras compilation failed');
+          }
+
+          // Back-compat display overrides:
+          // - Prefer promoted fact display strings for raise + business_model (when present)
+          // - Fall back to Phase1 executive_summary strings when promoted facts are missing
+          // - IMPORTANT: do NOT override valuation-structured raises (they are intentionally normalized to amount-only)
+          try {
+            if (report && typeof report === 'object' && (report as any).structured_summary && typeof (report as any).structured_summary === 'object') {
+              const structured = (report as any).structured_summary as any;
+
+              const factTypeOf = (r: any): string => String(r?.content_json?.fact_type ?? r?.fact_type ?? '').trim();
+              const pickBestFact = (factType: string): any | null => {
+                const rows = Array.isArray(promotedFacts) ? promotedFacts : [];
+                const cands = rows.filter((r: any) => factTypeOf(r) === factType);
+                if (cands.length === 0) return null;
+                return (
+                  cands
+                    .slice()
+                    .sort((a: any, b: any) => {
+                      const ca = typeof a?.confidence === 'number' && Number.isFinite(a.confidence) ? a.confidence : 0;
+                      const cb = typeof b?.confidence === 'number' && Number.isFinite(b.confidence) ? b.confidence : 0;
+                      if (cb !== ca) return cb - ca;
+                      return String(b?.extracted_at ?? '').localeCompare(String(a?.extracted_at ?? ''));
+                    })[0] ?? null
+                );
+              };
+
+              const execPhase1 = (row as any)?.dio_data?.dio?.phase1 ?? null;
+              const execRaiseRaw = execPhase1?.executive_summary_v1?.raise;
+              const execRaise = typeof execRaiseRaw === 'string' && execRaiseRaw.trim() && execRaiseRaw.trim().toLowerCase() !== 'unknown' ? execRaiseRaw.trim() : null;
+
+              const execModelRaw = execPhase1?.executive_summary_v1?.business_model;
+              const execModel = typeof execModelRaw === 'string' && execModelRaw.trim() ? execModelRaw.trim() : null;
+
+              const raiseFact = pickBestFact('raise_terms_v1');
+              const raiseValueJson = raiseFact?.content_json?.value_json ?? raiseFact?.content_json?.valueJson ?? null;
+              const raiseDisplay = typeof raiseValueJson?.display === 'string' && raiseValueJson.display.trim() ? raiseValueJson.display.trim() : null;
+              const raiseHasStructuredValuation = Boolean(raiseValueJson && typeof raiseValueJson === 'object' && (raiseValueJson as any).valuation && typeof (raiseValueJson as any).valuation === 'object');
+
+              let nextRaiseValue: string | null = null;
+              if (raiseFact) {
+                if (!raiseHasStructuredValuation && raiseDisplay) nextRaiseValue = raiseDisplay;
+              } else if (execRaise) {
+                nextRaiseValue = execRaise;
+              }
+
+              if (nextRaiseValue) {
+                if (!structured.raise || typeof structured.raise !== 'object') structured.raise = {};
+                structured.raise.value = nextRaiseValue;
+              }
+
+              const modelFact = pickBestFact('business_model_v1');
+              const modelValueJson = modelFact?.content_json?.value_json ?? modelFact?.content_json?.valueJson ?? null;
+              const modelDisplay = typeof modelValueJson?.display === 'string' && modelValueJson.display.trim() ? modelValueJson.display.trim() : null;
+
+              const nextBusinessModelValue = modelFact ? modelDisplay : execModel;
+              if (nextBusinessModelValue) {
+                if (!structured.business_model || typeof structured.business_model !== 'object') structured.business_model = {};
+                structured.business_model.value = nextBusinessModelValue;
+              }
+            }
+          } catch (err) {
+            request.log.warn({ event: 'deal.report.display_overrides_failed', deal_id, dio_id: row.dio_id, err }, 'display override patch failed');
+          }
+
+          // Deterministic deal_summary_v1: KPI-locked synthesis from structured_summary.
+          // Goal: provide stable hero/overview/deep and citations without overlay drift.
+          try {
+            if (report && typeof report === 'object' && (report as any).structured_summary && typeof (report as any).structured_summary === 'object') {
+              const det = buildDeterministicDealSummaryV1FromStructuredSummary({
+                structured_summary: (report as any).structured_summary,
+              });
+              (report as any).structured_summary.deal_summary_v1 = det;
+              // Back-compat: keep the older top-level location too.
+              (report as any).deal_summary_v1 = det;
+            }
+          } catch (err) {
+            request.log.warn({ event: 'deal.report.deal_summary_v1_failed', deal_id, dio_id: row.dio_id, err }, 'deal_summary_v1 synthesis failed');
           }
 
           // Deterministic synthesized business model summary (non-promoted, node-derived).
@@ -2320,7 +2785,7 @@ export async function registerReportRoutes(
         if (Array.isArray(promotedFactsForExcerpt) && promotedFactsForExcerpt.length > 0) {
           payload.promoted_facts = promotedFactsForExcerpt;
         }
-        const narrateEnabled = envFlagEnabled((request.query as any)?.narrate);
+        // narrateEnabled computed above for cache gating
 
         const llmContext = {
           deal_id,
@@ -2470,6 +2935,14 @@ export async function registerReportRoutes(
           'REPORT_TIMING_SUMMARY'
         );
 
+        // Persist a canonical deterministic response snapshot for idempotency.
+        if (!narrateEnabled && typeof version === 'number' && Number.isFinite(version) && version >= 1) {
+          const up = await timer.stage('db.ingestion_reports.upsert', async () =>
+            upsertIngestionReportSummaryByDealAndVersion({ pool, dealId: deal_id, analysisVersion: version, summary: payload, documentIds: [] })
+          );
+          logStage('db.ingestion_reports.upsert', up.ms, true, { cache: 'miss', ok: Boolean(up.value) });
+        }
+
         return reply.status(200).send(payload);
         
       } catch (error) {
@@ -2492,6 +2965,8 @@ export async function registerReportRoutes(
       try {
         const { deal_id, version } = request.params;
         request.log.info({ msg: "deal.report.version.start", deal_id, version, start_ts: new Date(startTs).toISOString() });
+
+        const narrateEnabled = envFlagEnabled((request.query as any)?.narrate);
         if (!isUuid(deal_id)) {
           return reply.status(400).send({ error: 'invalid_deal_id', message: 'deal_id must be a UUID' });
         }
@@ -2513,10 +2988,24 @@ export async function registerReportRoutes(
         }
         
         // Get specific DIO version (persisted canonical artifact).
-        let dioRows: Array<{ dio_data: any }> = [];
+        let dioRows: Array<{
+          dio_id: string;
+          analysis_version: number | null;
+          recommendation: string | null;
+          overall_score: number | null;
+          dio_data: any;
+          updated_at: string | null;
+        }> = [];
         try {
-          const r = await pool.query<{ dio_data: any }>(
-            `SELECT dio_data
+          const r = await pool.query<{
+            dio_id: string;
+            analysis_version: number | null;
+            recommendation: string | null;
+            overall_score: number | null;
+            dio_data: any;
+            updated_at: string | null;
+          }>(
+            `SELECT dio_id, analysis_version, recommendation, overall_score, dio_data, updated_at
                FROM deal_intelligence_objects
               WHERE deal_id = $1 AND analysis_version = $2
               ORDER BY updated_at DESC NULLS LAST,
@@ -2537,27 +3026,163 @@ export async function registerReportRoutes(
         }
 
         if (dioRows.length === 0) {
-          return reply.status(404).send({
-            error: `No DIO found for deal ${deal_id} version ${version}`
-          });
+          // Versioned endpoint should fail-open like /report (no 404 for normal pre-analysis/in-progress states).
+          return reply.status(200).send({ ready: false, reason: 'not_generated_yet', version: versionNum });
+        }
+
+        const row = dioRows[0];
+        const artifact = {
+          kind: 'deal_intelligence_object',
+          dio_id: row.dio_id,
+          analysis_version: row.analysis_version,
+          updated_at: row.updated_at,
+          recommendation: row.recommendation,
+          overall_score: row.overall_score,
+        };
+
+        // Idempotent report cache (non-narrated only): ingestion_reports keyed by (deal_id, analysis_version).
+        if (!narrateEnabled && Number.isFinite(versionNum) && versionNum >= 1) {
+          const cached = await readIngestionReportSummaryByDealAndVersion(pool, deal_id, versionNum);
+          if (cached && typeof cached === 'object') {
+            await upsertIngestionReportSummaryByDealAndVersion({ pool, dealId: deal_id, analysisVersion: versionNum, summary: cached, documentIds: [] });
+            return reply.status(200).send(cached);
+          }
+        }
+
+        // Best-effort: prefetch segmented nodes for deterministic structured_summary additions.
+        let segmentedNodes: { nodes: any[]; warnings: string[] } | null = null;
+        try {
+          segmentedNodes = await getSegmentedNodesForDeal(pool as any, deal_id);
+        } catch (err) {
+          request.log.warn(
+            { event: 'deal.report.version.segmented_nodes_failed', deal_id, version: versionNum, err },
+            'segmented nodes lookup failed (versioned)'
+          );
+          segmentedNodes = null;
         }
 
         // Compile DIO into ReportDTO
-        let promotedFacts: any[] = [];
+        let report: any = null;
+        // Prefer persisted canonical report if present.
         try {
-          promotedFacts = await loadPromotedFactsForDeal(pool as any, deal_id);
+          const persisted = row && row.dio_data && typeof row.dio_data === 'object' ? (row.dio_data as any).report : null;
+          if (persisted && typeof persisted === 'object') {
+            report = persisted;
+          }
         } catch {
-          promotedFacts = [];
+          // ignore
         }
-        const report = promotedFacts.length > 0
-          ? compileDIOToReportWithPromotedFacts(dioRows[0].dio_data, { promotedFacts })
-          : compileDIOToReport(dioRows[0].dio_data);
+
+        let promotedFacts: any[] = [];
+        if (!report) {
+          try {
+            promotedFacts = await loadPromotedFactsForDeal(pool as any, deal_id);
+          } catch {
+            promotedFacts = [];
+          }
+          report = promotedFacts.length > 0
+            ? compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts })
+            : compileDIOToReport(row.dio_data);
+        }
 
         // Backward compatibility: normalize structured KPI shape (order matters).
         ensureStructuredRevenueSelectionReason(report);
         ensureStructuredSummaryKpis(report);
 
-        const narrateEnabled = envFlagEnabled((request.query as any)?.narrate);
+        // Deterministic structured_summary additions (node-derived): deal/product/market summaries.
+        try {
+          if (report && typeof report === 'object' && (report as any).structured_summary && Array.isArray(segmentedNodes?.nodes)) {
+            const extras = compileStructuredSummaryExtras({
+              nodes: segmentedNodes!.nodes as any,
+              structured_summary: (report as any).structured_summary,
+            });
+            Object.assign((report as any).structured_summary, extras);
+          }
+        } catch (err) {
+          request.log.warn(
+            { event: 'deal.report.version.structured_summary_extras_failed', deal_id, version: versionNum, err },
+            'structured_summary extras compilation failed (versioned)'
+          );
+        }
+
+        // Deterministic deal_summary_v1: KPI-locked synthesis from structured_summary.
+        try {
+          if (report && typeof report === 'object' && (report as any).structured_summary && typeof (report as any).structured_summary === 'object') {
+            // Back-compat display overrides:
+            // - Prefer promoted fact display strings for raise + business_model (when present)
+            // - Fall back to Phase1 executive_summary strings when promoted facts are missing
+            // - IMPORTANT: do NOT override valuation-structured raises (they are intentionally normalized to amount-only)
+            try {
+              const structured = (report as any).structured_summary as any;
+              const factTypeOf = (r: any): string => String(r?.content_json?.fact_type ?? r?.fact_type ?? '').trim();
+              const pickBestFact = (factType: string): any | null => {
+                const rows = Array.isArray(promotedFacts) ? promotedFacts : [];
+                const cands = rows.filter((r: any) => factTypeOf(r) === factType);
+                if (cands.length === 0) return null;
+                return (
+                  cands
+                    .slice()
+                    .sort((a: any, b: any) => {
+                      const ca = typeof a?.confidence === 'number' && Number.isFinite(a.confidence) ? a.confidence : 0;
+                      const cb = typeof b?.confidence === 'number' && Number.isFinite(b.confidence) ? b.confidence : 0;
+                      if (cb !== ca) return cb - ca;
+                      return String(b?.extracted_at ?? '').localeCompare(String(a?.extracted_at ?? ''));
+                    })[0] ?? null
+                );
+              };
+
+              const execPhase1 = (row as any)?.dio_data?.dio?.phase1 ?? null;
+              const execRaiseRaw = execPhase1?.executive_summary_v1?.raise;
+              const execRaise = typeof execRaiseRaw === 'string' && execRaiseRaw.trim() && execRaiseRaw.trim().toLowerCase() !== 'unknown' ? execRaiseRaw.trim() : null;
+
+              const execModelRaw = execPhase1?.executive_summary_v1?.business_model;
+              const execModel = typeof execModelRaw === 'string' && execModelRaw.trim() ? execModelRaw.trim() : null;
+
+              const raiseFact = pickBestFact('raise_terms_v1');
+              const raiseValueJson = raiseFact?.content_json?.value_json ?? raiseFact?.content_json?.valueJson ?? null;
+              const raiseDisplay = typeof raiseValueJson?.display === 'string' && raiseValueJson.display.trim() ? raiseValueJson.display.trim() : null;
+              const raiseHasStructuredValuation = Boolean(raiseValueJson && typeof raiseValueJson === 'object' && (raiseValueJson as any).valuation && typeof (raiseValueJson as any).valuation === 'object');
+
+              let nextRaiseValue: string | null = null;
+              if (raiseFact) {
+                if (!raiseHasStructuredValuation && raiseDisplay) nextRaiseValue = raiseDisplay;
+              } else if (execRaise) {
+                nextRaiseValue = execRaise;
+              }
+
+              if (nextRaiseValue) {
+                if (!structured.raise || typeof structured.raise !== 'object') structured.raise = {};
+                structured.raise.value = nextRaiseValue;
+              }
+
+              const modelFact = pickBestFact('business_model_v1');
+              const modelValueJson = modelFact?.content_json?.value_json ?? modelFact?.content_json?.valueJson ?? null;
+              const modelDisplay = typeof modelValueJson?.display === 'string' && modelValueJson.display.trim() ? modelValueJson.display.trim() : null;
+
+              const nextBusinessModelValue = modelFact ? modelDisplay : execModel;
+              if (nextBusinessModelValue) {
+                if (!structured.business_model || typeof structured.business_model !== 'object') structured.business_model = {};
+                structured.business_model.value = nextBusinessModelValue;
+              }
+            } catch {
+              // ignore
+            }
+
+            const det = buildDeterministicDealSummaryV1FromStructuredSummary({
+              structured_summary: (report as any).structured_summary,
+            });
+            (report as any).structured_summary.deal_summary_v1 = det;
+            // Back-compat: keep the older top-level location too.
+            (report as any).deal_summary_v1 = det;
+          }
+        } catch (err) {
+          request.log.warn(
+            { event: 'deal.report.version.deal_summary_v1_failed', deal_id, version: versionNum, err },
+            'deal_summary_v1 synthesis failed (versioned)'
+          );
+        }
+
+        // narrateEnabled computed above for cache gating
 
         // Best-effort: attach deterministic deck archetype metadata for versioned reports too.
         try {
@@ -2582,8 +3207,8 @@ export async function registerReportRoutes(
                 structured_summary: (report as any)?.structured_summary ?? null,
                 segmented_nodes: segmented.nodes as any,
                 metadata: nextMetadata,
-				input_documents: Array.isArray((dioRows[0] as any)?.dio_data?.inputs?.documents)
-					? (((dioRows[0] as any).dio_data.inputs.documents as any[]) ?? [])
+				input_documents: Array.isArray((row as any)?.dio_data?.inputs?.documents)
+					? (((row as any).dio_data.inputs.documents as any[]) ?? [])
 					: [],
               });
               (nextMetadata as any).deterministic_score_inputs_v1 = inputs;
@@ -2613,7 +3238,7 @@ export async function registerReportRoutes(
         try {
           const nextMetadata = { ...((report as any)?.metadata ?? {}) };
           (nextMetadata as any).investment_analysis_overview_v2 = buildInvestmentAnalysisOverviewV2({
-            dio: dioRows[0].dio_data as any,
+            dio: row.dio_data as any,
             report,
           });
           (report as any).metadata = nextMetadata;
@@ -2653,7 +3278,16 @@ export async function registerReportRoutes(
           duration_ms: endTs - startTs,
         });
 
-        return reply.status(200).send(report);
+        const payload: any = { ready: true, version: versionNum, artifact };
+        payload.report = report;
+        // Spread the report into the response for compatibility with older consumers.
+        Object.assign(payload, report);
+
+        if (!narrateEnabled && Number.isFinite(versionNum) && versionNum >= 1) {
+          await upsertIngestionReportSummaryByDealAndVersion({ pool, dealId: deal_id, analysisVersion: versionNum, summary: payload, documentIds: [] });
+        }
+
+        return reply.status(200).send(payload);
         
       } catch (error) {
         app.log.error(error, 'Failed to generate versioned report');

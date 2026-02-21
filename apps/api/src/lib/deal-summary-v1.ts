@@ -86,6 +86,36 @@ export type DealSummaryV1 = {
   warnings: string[];
   debug?: {
     used_node_ids: string[];
+    selection_path?: {
+      identity_pick: string;
+      overview_pick: string;
+      product_pick: string;
+      market_target_pick: string;
+      market_context_pick: string;
+    };
+    selected?: {
+      tiers: { hero: string; mid: string; long: string };
+      sources: {
+        one_liner: Array<{ node_id: string; page_index: number; segment_key: AnalystSegment | null; slide_title: string | null }>;
+        product: Array<{ node_id: string; page_index: number; segment_key: AnalystSegment | null; slide_title: string | null }>;
+        market_target: Array<{ node_id: string; page_index: number; segment_key: AnalystSegment | null; slide_title: string | null }>;
+        market_context: Array<{ node_id: string; page_index: number; segment_key: AnalystSegment | null; slide_title: string | null }>;
+      };
+    };
+    candidates?: Record<
+      string,
+      Array<{
+        node_id: string;
+        page_index: number;
+        segment_key: AnalystSegment | null;
+        slide_title: string | null;
+        score: number;
+        rank: number;
+        eligible_primary: boolean;
+        primary_exclude_reasons: string[];
+        text_preview: string | null;
+      }>
+    >;
   };
 };
 
@@ -102,6 +132,11 @@ function tokenizeLoose(s: string): string {
 function hasAny(text: string, keywords: string[]): boolean {
   const t = tokenizeLoose(text);
   return keywords.some((k) => t.includes(k));
+}
+
+function hasAnyPhrase(text: string, phrases: string[]): boolean {
+  const t = ` ${tokenizeLoose(text)} `;
+  return phrases.some((p) => t.includes(` ${tokenizeLoose(p)} `));
 }
 
 const FLUFF_PREFIXES = ["unlock the potential", "thank you", "next steps", "who we are"];
@@ -414,6 +449,114 @@ function scoreNodeForSegment(node: SegmentedDealNode, segment: AnalystSegment): 
   if (hasAny(`${title}\n${bullets}`, ["team", "advisors", "leadership", "equipment"])) score -= 20;
 
   return score;
+}
+
+// Deal summary primary evidence gating rules:
+// - Prefer overview/product/problem/solution/market/traction segments.
+// - Hard-exclude Team/Financials/Raise-terms slides (and similar fundraising/hiring pages)
+//   from being the PRIMARY evidence for identity/one-liner.
+// - If there is no good overview/product/problem/solution candidate, fail closed:
+//   return reason = "insufficient_overview_evidence" rather than summarizing from Team/Raise.
+const DEAL_SUMMARY_PRIMARY_ALLOWED_SEGMENTS: ReadonlySet<AnalystSegment> = new Set([
+  'overview',
+  'problem',
+  'solution',
+  'product',
+  'market',
+  'traction',
+]);
+
+const DEAL_SUMMARY_PRIMARY_DISALLOWED_SEGMENTS: ReadonlySet<AnalystSegment> = new Set([
+  'team',
+  'financials',
+  'raise_terms',
+]);
+
+function primaryExcludeReasonsForNode(node: SegmentedDealNode): string[] {
+  const reasons: string[] = [];
+  const seg = node.segment_key;
+  if (seg && DEAL_SUMMARY_PRIMARY_DISALLOWED_SEGMENTS.has(seg)) reasons.push(`segment_key:${seg}`);
+
+  const title = tokenizeLoose(node.slide_title ?? '');
+  const bullets = tokenizeLoose(node.bullets.join(' \n '));
+  const all = `${title} ${bullets}`;
+
+  // Content-based fallback guards: these catch "Team/Hiring/Capital Raise/Use of Funds" pages
+  // even if the segment classifier mislabels them.
+  // NOTE: Be conservative with the token "team"; many legitimate overview/product slides mention
+  // "teams" (e.g. "operations teams") and should NOT be excluded.
+  if (
+    hasAnyPhrase(node.slide_title ?? '', ['team', 'our team', 'founders', 'leadership', 'management team']) ||
+    hasAnyPhrase(all, ['founder', 'co founder', 'cofounder', 'advisor', 'advisors', 'leadership', 'executive team', 'management team', 'hiring', 'headcount', 'recruit']) ||
+    hasAnyPhrase(all, ['ceo', 'cto', 'cfo', 'coo', 'cmo'])
+  ) {
+    reasons.push('content:team_or_hiring');
+  }
+  if (hasAnyPhrase(all, ['capital raise', 'raising', 'raised', 'funding', 'use of funds', 'use of proceeds', 'proceeds', 'valuation', 'post money', 'pre money', 'safe', 'term sheet'])) {
+    reasons.push('content:fundraising');
+  }
+  if (hasAnyPhrase(all, ['financials', 'projection', 'projections', 'income statement', 'balance sheet', 'cash flow'])) {
+    reasons.push('content:financials');
+  }
+
+  return Array.from(new Set(reasons));
+}
+
+function isEligiblePrimaryDealSummaryNode(node: SegmentedDealNode): boolean {
+  const seg = node.segment_key;
+  if (seg && DEAL_SUMMARY_PRIMARY_DISALLOWED_SEGMENTS.has(seg)) return false;
+  const reasons = primaryExcludeReasonsForNode(node);
+  // Allow only if there are no exclude reasons.
+  return reasons.length === 0;
+}
+
+function summarizeSources(line: DealSummaryLine | null): Array<{ node_id: string; page_index: number; segment_key: AnalystSegment | null; slide_title: string | null }> {
+  const sources = Array.isArray(line?.sources) ? line!.sources : [];
+  return sources.map((s: any) => ({
+    node_id: String(s?.node_id ?? ''),
+    page_index: typeof s?.page_index === 'number' ? s.page_index : Number(s?.page_index ?? 0),
+    segment_key: normalizeAnalystSegment(s?.segment_key) ?? null,
+    slide_title: typeof s?.slide_title === 'string' ? s.slide_title : null,
+  }));
+}
+
+function buildCandidateDebug(nodes: SegmentedDealNode[], segment: AnalystSegment, limit = 8) {
+  const rows: Array<{
+    node_id: string;
+    page_index: number;
+    segment_key: AnalystSegment | null;
+    slide_title: string | null;
+    score: number;
+    rank: number;
+    eligible_primary: boolean;
+    primary_exclude_reasons: string[];
+    text_preview: string | null;
+  }> = [];
+
+  for (const n of nodes) {
+    const score = scoreNodeForSegment(n, segment);
+    const rawText = candidateTextFromNodeForSegment(n, segment, 240) ?? candidateTextFromNode(n, 240);
+    const assessed = rawText ? assessCandidateText(rawText) : null;
+    const text_preview = assessed?.display ?? (rawText ? truncateForDisplay(rawText, 160) : null);
+    const rank = assessed ? rankTextQuality(assessed) : -999;
+    const primary_exclude_reasons = primaryExcludeReasonsForNode(n);
+    const eligible_primary = isEligiblePrimaryDealSummaryNode(n) && (n.segment_key ? DEAL_SUMMARY_PRIMARY_ALLOWED_SEGMENTS.has(n.segment_key) : true);
+    rows.push({
+      node_id: n.node_id,
+      page_index: n.page_index,
+      segment_key: n.segment_key,
+      slide_title: n.slide_title,
+      score,
+      rank,
+      eligible_primary,
+      primary_exclude_reasons,
+      text_preview,
+    });
+  }
+
+  return rows
+    .sort((a, b) => (b.score - a.score) || (b.rank - a.rank) || (a.page_index - b.page_index))
+    .slice(0, Math.max(1, limit));
 }
 
 function buildCitation(node: SegmentedDealNode, snippet: string): DealSummaryCitation {
@@ -759,17 +902,42 @@ function pickBestMarket(nodes: SegmentedDealNode[], kind: 'target' | 'context'):
   return bestEligible?.pick ?? bestRejected?.pick ?? null;
 }
 
-export async function compileDealSummaryV1(pool: Pool, dealId: string, opts?: { includeDebug?: boolean }): Promise<DealSummaryV1> {
+export async function compileDealSummaryV1(
+  pool: Pool,
+  dealId: string,
+  opts?: { includeDebug?: boolean; includeCandidates?: boolean }
+): Promise<DealSummaryV1> {
   const prefetched = (opts as any)?.prefetched as { nodes: SegmentedDealNode[]; warnings: string[] } | undefined;
   const { nodes, warnings } = prefetched ?? (await getSegmentedNodesForDeal(pool, dealId));
 
-  const productPick = pickBest(nodes, "product");
+  const primaryEligibleNodes = nodes.filter((n) => {
+    // Only allow the whitelisted segments for primary deal summary evidence.
+    const seg = n.segment_key;
+    if (seg && !DEAL_SUMMARY_PRIMARY_ALLOWED_SEGMENTS.has(seg)) return false;
+    return isEligiblePrimaryDealSummaryNode(n);
+  });
+
+  const primaryEligibilitySummary = {
+    total_nodes: nodes.length,
+    eligible_primary_nodes: primaryEligibleNodes.length,
+  };
+
+  const productPick = pickBest(primaryEligibleNodes, 'product');
+  const overviewPick = pickBest(primaryEligibleNodes, 'overview');
+  const problemPick = pickBest(primaryEligibleNodes, 'problem');
+  const solutionPick = pickBest(primaryEligibleNodes, 'solution');
+  const tractionPick = pickBest(primaryEligibleNodes, 'traction');
+
+  // Market target/context are still selected from the full node pool (they can legitimately live
+  // on market / GTM / traction pages), but primary gating above ensures identity/one-liner will
+  // not fall back to Team/Raise/Financials.
   const marketTargetPick = pickBestMarket(nodes, 'target') ?? pickBest(nodes, 'market');
   const marketContextPick = pickBestMarket(nodes, 'context');
-  const overviewPick = pickBest(nodes, "overview");
 
   const usedNodeIds: string[] = [];
   const meta: NonNullable<DealSummaryV1['meta']> = {};
+
+  const INSUFFICIENT_OVERVIEW_MESSAGE = 'Insufficient overview evidence.';
 
   const product: DealSummaryLine | null = productPick
     ? (() => {
@@ -943,7 +1111,8 @@ export async function compileDealSummaryV1(pool: Pool, dealId: string, opts?: { 
     };
   })();
 
-  const oneLinerPick = overviewPick ?? productPick ?? marketTargetPick ?? marketContextPick;
+  // One-liner is identity; do not fall back to market/gtm context when identity evidence is missing.
+  const oneLinerPick = overviewPick ?? productPick ?? problemPick ?? solutionPick ?? tractionPick;
   const one_liner: DealSummaryLine | null = oneLinerPick
     ? (() => {
         usedNodeIds.push(oneLinerPick.node.node_id);
@@ -963,23 +1132,31 @@ export async function compileDealSummaryV1(pool: Pool, dealId: string, opts?: { 
     }
   }
 
-  const tiers = buildDealSummaryTiers({
-    identityText: overviewPick?.assessed.display ?? one_liner?.display_text ?? null,
-    productText: product?.display_text ?? null,
-    marketText: market_target?.display_text ?? null,
-    extraText: [market_context?.display_text ?? null, ...paragraphs.map((p) => p.display_text).filter((v): v is string => Boolean(v))].filter(Boolean).join(" \n "),
-  });
+  // Fail-closed: if the identity one-liner cannot be displayed from primary-eligible segments,
+  // do not produce an identity tier that might be sourced from unrelated slides.
+  const insufficientOverviewEvidence = !one_liner?.display_text;
 
-  const ready = Boolean(one_liner?.display_text && product?.display_text && market_target?.display_text);
-  const reason = ready
-    ? null
-    : [
-        !product ? "missing_product" : product.display_text ? null : "suppressed_product",
-        !market_target ? "missing_market_target" : market_target.display_text ? null : "suppressed_market_target",
-        !one_liner ? "missing_one_liner" : one_liner.display_text ? null : "suppressed_one_liner",
-      ]
-        .filter((v): v is string => Boolean(v))
-        .join(",");
+  const tiers = insufficientOverviewEvidence
+    ? {
+        hero: INSUFFICIENT_OVERVIEW_MESSAGE,
+        overview: INSUFFICIENT_OVERVIEW_MESSAGE,
+        deep: INSUFFICIENT_OVERVIEW_MESSAGE,
+      }
+    : buildDealSummaryTiers({
+        identityText: overviewPick?.assessed.display ?? one_liner?.display_text ?? null,
+        productText: product?.display_text ?? null,
+        marketText: market_target?.display_text ?? null,
+        extraText: [market_context?.display_text ?? null, ...paragraphs.map((p) => p.display_text).filter((v): v is string => Boolean(v))].filter(Boolean).join(" \n "),
+      });
+
+  const ready = !insufficientOverviewEvidence && Boolean(one_liner?.display_text && product?.display_text && market_target?.display_text);
+  const reasonParts = [
+    insufficientOverviewEvidence ? 'insufficient_overview_evidence' : null,
+    !product ? "missing_product" : product.display_text ? null : "suppressed_product",
+    !market_target ? "missing_market_target" : market_target.display_text ? null : "suppressed_market_target",
+    !one_liner ? "missing_one_liner" : one_liner.display_text ? null : "suppressed_one_liner",
+  ].filter((v): v is string => Boolean(v));
+  const reason = ready ? null : reasonParts.join(',');
 
   const out: DealSummaryV1 = {
     version: "deal_summary_v1",
@@ -999,6 +1176,47 @@ export async function compileDealSummaryV1(pool: Pool, dealId: string, opts?: { 
   if (opts?.includeDebug) {
     out.debug = {
       used_node_ids: Array.from(new Set(usedNodeIds)),
+      selection_path: {
+        identity_pick:
+          oneLinerPick === overviewPick
+            ? 'overview_first'
+            : oneLinerPick === productPick
+              ? 'fallback_product'
+              : oneLinerPick === problemPick
+                ? 'fallback_problem'
+                : oneLinerPick === solutionPick
+                  ? 'fallback_solution'
+                  : oneLinerPick === tractionPick
+                    ? 'fallback_traction'
+                    : oneLinerPick
+                      ? 'unknown'
+                      : 'none',
+        overview_pick: overviewPick ? 'picked' : 'none',
+        product_pick: productPick ? 'picked' : 'none',
+        market_target_pick: marketTargetPick ? 'picked' : 'none',
+        market_context_pick: marketContextPick ? 'picked' : 'none',
+      },
+      selected: {
+        tiers: { hero: tiers.hero, mid: tiers.overview, long: tiers.deep },
+        sources: {
+          one_liner: summarizeSources(one_liner),
+          product: summarizeSources(product),
+          market_target: summarizeSources(market_target),
+          market_context: summarizeSources(market_context),
+        },
+      },
+      ...(opts?.includeCandidates
+        ? {
+            candidates: {
+              overview: buildCandidateDebug(nodes, 'overview'),
+              product: buildCandidateDebug(nodes, 'product'),
+              problem: buildCandidateDebug(nodes, 'problem'),
+              solution: buildCandidateDebug(nodes, 'solution'),
+              traction: buildCandidateDebug(nodes, 'traction'),
+              market: buildCandidateDebug(nodes, 'market'),
+            },
+          }
+        : null),
     };
   }
 

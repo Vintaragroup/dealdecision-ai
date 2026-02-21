@@ -180,9 +180,7 @@ async function bestEffortReadinessJobPresenceCheck(args: {
 
   // Best-effort: verify at least one job ID exists in BullMQ/Redis.
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { Queue } = require("bullmq") as typeof import("bullmq");
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const qmod = require("../lib/queue") as typeof import("../lib/queue");
     const connection = qmod.getConnection();
 
@@ -4024,7 +4022,6 @@ export async function registerDealRoutes(
       };
 
       try {
-        // eslint-disable-next-line no-console
         console.log("[DEV dump_unknown structured]", { deal_id: dealId, summary });
       } catch {
         // ignore
@@ -4831,7 +4828,6 @@ export async function registerDealRoutes(
       if (process.env.DDAI_DEV_SLIDE_TITLE_LOG === "1" && !didLogSlideTitle && titleDerived.slide_title) {
         didLogSlideTitle = true;
         try {
-          // eslint-disable-next-line no-console
           console.log('[DEV slide_title]', {
             id: v.id,
             slide_title: titleDerived.slide_title,
@@ -7706,7 +7702,6 @@ export async function registerDealRoutes(
                 doc_hint_segment: hint,
               };
             });
-          // eslint-disable-next-line no-console
           console.log("[DEV docx_unknown structured_word]", { deal_id: dealId, n: unknowns.length, unknowns });
         } catch {
           // ignore
@@ -8595,6 +8590,7 @@ export async function registerDealRoutes(
       claims: any;
       disclosures: any;
       overview_json: any;
+      consistency_warnings: any;
       created_at: string;
     }>(
       `SELECT id,
@@ -8608,6 +8604,7 @@ export async function registerDealRoutes(
               claims,
               disclosures,
               overview_json,
+              COALESCE(consistency_warnings, '[]'::jsonb) as consistency_warnings,
               created_at
          FROM governed_llm_overviews
         WHERE deal_id = $1
@@ -8661,6 +8658,7 @@ export async function registerDealRoutes(
         claims: coerceJsonArray(latest.claims),
         disclosures: coerceJsonArray(latest.disclosures),
         overview_json: coerceJsonObject((latest as any).overview_json),
+        consistency_warnings: coerceJsonArray((latest as any).consistency_warnings),
       },
     });
   });
@@ -8806,12 +8804,26 @@ export async function registerDealRoutes(
 		if (!isUuid(dealId)) {
 			return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
 		}
-    const requirePageUnderstanding = Boolean((request.body as any)?.require_page_understanding);
+    const forceRefresh = Boolean((request.body as any)?.force_refresh);
+    const requirePageUnderstanding = Boolean((request.body as any)?.require_page_understanding) || forceRefresh;
     const pageUnderstandingVersionRaw = (request.body as any)?.page_understanding_version;
     const pageUnderstandingVersion =
       typeof pageUnderstandingVersionRaw === "string" && pageUnderstandingVersionRaw.trim().length > 0
         ? pageUnderstandingVersionRaw.trim()
         : "page_understanding_v1";
+    const minDpuCreatedAtRaw = (request.body as any)?.min_dpu_created_at;
+    const minDpuCreatedAtFromClient =
+      typeof minDpuCreatedAtRaw === "string" && minDpuCreatedAtRaw.trim().length > 0
+        ? minDpuCreatedAtRaw.trim()
+        : null;
+
+    // For reruns/force-refresh flows, callers should treat min_dpu_created_at as a stable
+    // token across retries so readiness + subsequent analysis are anchored to the same
+    // DPU freshness floor.
+    const minDpuCreatedAt =
+      (forceRefresh || minDpuCreatedAtFromClient)
+        ? (minDpuCreatedAtFromClient ?? new Date().toISOString())
+        : null;
 
     const { rows } = await pool.query<DealRow>(
       `SELECT * FROM deals WHERE id = $1 AND deleted_at IS NULL`,
@@ -8829,6 +8841,8 @@ export async function registerDealRoutes(
           dealId,
           requirePageUnderstanding: true,
           pageUnderstandingVersion,
+          forceRefresh,
+          minDpuCreatedAt,
           logger: request.log,
           enqueue,
         });
@@ -8857,6 +8871,7 @@ export async function registerDealRoutes(
             blocked_reason: prep.blocked_reason,
             poll_after_ms: prep.poll_after_ms,
             enqueued: prep.enqueued,
+            ...(minDpuCreatedAt ? { min_dpu_created_at: minDpuCreatedAt } : {}),
             readiness: prep.readiness,
           });
         }
@@ -8883,6 +8898,8 @@ export async function registerDealRoutes(
           payload: {
             require_page_understanding: requirePageUnderstanding,
             page_understanding_version: pageUnderstandingVersion,
+            ...(minDpuCreatedAt ? { min_dpu_created_at: minDpuCreatedAt } : {}),
+            ...(forceRefresh ? { force_refresh: true } : {}),
           },
         },
         { dedupe: { by: "deal" } }
@@ -9018,6 +9035,26 @@ export async function registerDealRoutes(
 
     const readiness = await fetchPageUnderstandingReadinessForDeal(pool as any, dealId, version);
 
+    // Optional freshness gate: callers (UI) may pass min_dpu_created_at to ensure readiness
+    // reflects a forced refresh completion, not just missing pages.
+    try {
+      const minRaw = (request.query as any)?.min_dpu_created_at;
+      const min = typeof minRaw === "string" && minRaw.trim().length > 0 ? minRaw.trim() : null;
+      const latest = typeof (readiness as any)?.latest_dpu_created_at === "string" ? String((readiness as any).latest_dpu_created_at) : null;
+      if (min && latest) {
+        const a = Date.parse(latest);
+        const b = Date.parse(min);
+        if (Number.isFinite(a) && Number.isFinite(b) && a < b) {
+          (readiness as any).ready = false;
+          (readiness as any).blocked_reason = (readiness as any).blocked_reason ?? "DPU_STALE";
+          (readiness as any).poll_after_ms = (readiness as any).poll_after_ms ?? 2000;
+          (readiness as any).action = (readiness as any).action ?? { type: "rebuild_page_understanding", deal_id: dealId, version };
+        }
+      }
+    } catch {
+      // best-effort
+    }
+
     // If any visual document still has unknown page_count (0), treat readiness as not ready.
     // This prevents analysis from proceeding (or the UI from flipping to ready) before
     // render_document_pages has established page_count + rendered pages.
@@ -9098,7 +9135,16 @@ export async function registerDealRoutes(
         ? (readiness as any).non_meaningful_pages_total
         : 0;
 
-    if (readiness.expected_pages_total > 0 && readiness.missing_pages_total > 0) {
+    const hardMissingPagesTotal =
+      typeof (readiness as any)?.hard_missing_pages_total === "number" && Number.isFinite((readiness as any).hard_missing_pages_total)
+        ? Math.max(0, Math.trunc((readiness as any).hard_missing_pages_total))
+        : null;
+
+    // Only treat readiness as "blocked/stalled" when pages are truly missing (no payload row),
+    // not when pages exist but are empty.
+    const presenceMissingTotal = hardMissingPagesTotal != null ? hardMissingPagesTotal : readiness.missing_pages_total;
+
+    if (readiness.expected_pages_total > 0 && presenceMissingTotal > 0) {
       const shouldPresenceCheck = readiness.dpu_rows_total === 0 || nonMeaningfulPagesTotal > 0;
       if (shouldPresenceCheck) {
         const presence = await bestEffortReadinessJobPresenceCheck({ pool: pool as any, dealId, version });
@@ -9127,15 +9173,35 @@ export async function registerDealRoutes(
         }
       }
     }
-    request.log.info(
+    const logLevel = readiness.ready ? "info" : (readiness.missing_pages_total > 0 ? "warn" : "info");
+    request.log[logLevel](
       {
         event: "READINESS_CHECK",
         deal_id: dealId,
         version: readiness.version,
         expected_pages_total: readiness.expected_pages_total,
         dpu_rows_total: readiness.dpu_rows_total,
+        dpu_rows_meaningful_total: (readiness as any).dpu_rows_meaningful_total ?? null,
         missing_pages_total: readiness.missing_pages_total,
         ready: readiness.ready,
+        blocked_reason: (readiness as any).blocked_reason ?? null,
+        latest_dpu_created_at: (readiness as any).latest_dpu_created_at ?? null,
+        min_dpu_created_at_param: (request.query as any)?.min_dpu_created_at ?? null,
+        // Per-document snapshot (suppressed in production to avoid noisy logs)
+        ...(process.env.NODE_ENV !== "production"
+          ? {
+              documents: (readiness.documents ?? []).map((d: any) => ({
+                document_id: d.document_id,
+                title: d.title ?? null,
+                page_count: d.page_count,
+                dpu_rows: d.dpu_rows,
+                dpu_rows_meaningful: d.dpu_rows_meaningful ?? null,
+                missing_pages_count: Array.isArray(d.missing_pages) ? d.missing_pages.length : null,
+                hard_missing_pages_count: Array.isArray(d.hard_missing_pages) ? d.hard_missing_pages.length : null,
+                missing_pages_sample: Array.isArray(d.missing_pages) ? d.missing_pages.slice(0, 5) : null,
+              })),
+            }
+          : {}),
       },
       "deal.page_understanding.readiness"
     );

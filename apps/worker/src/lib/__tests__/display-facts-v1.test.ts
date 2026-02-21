@@ -75,7 +75,7 @@ describe("display_facts_v1 (governed overlay)", () => {
         }
         if (sql.includes("INSERT INTO governed_llm_overviews")) {
           // params: ... overview_json is last
-          capturedOverviewJson = Array.isArray(params) ? (params as any[])[(params as any[]).length - 1] : null;
+          capturedOverviewJson = Array.isArray(params) ? (params as any[])[9] : null;
           return { rows: [], rowCount: 1 } as any;
         }
         throw new Error(`Unexpected query: ${sql}`);
@@ -206,7 +206,7 @@ describe("display_facts_v1 (governed overlay)", () => {
           return { rows: [] };
         }
         if (sql.includes("INSERT INTO governed_llm_overviews")) {
-          capturedOverviewJson = Array.isArray(params) ? (params as any[])[(params as any[]).length - 1] : null;
+          capturedOverviewJson = Array.isArray(params) ? (params as any[])[9] : null;
           return { rows: [], rowCount: 1 } as any;
         }
         throw new Error(`Unexpected query: ${sql}`);
@@ -312,7 +312,7 @@ describe("display_facts_v1 (governed overlay)", () => {
           return { rows: [] };
         }
         if (sql.includes("INSERT INTO governed_llm_overviews")) {
-          capturedOverviewJson = Array.isArray(params) ? (params as any[])[(params as any[]).length - 1] : null;
+          capturedOverviewJson = Array.isArray(params) ? (params as any[])[9] : null;
           return { rows: [], rowCount: 1 } as any;
         }
         throw new Error(`Unexpected query: ${sql}`);
@@ -416,7 +416,7 @@ describe("display_facts_v1 (governed overlay)", () => {
           return { rows: [] };
         }
         if (sql.includes("INSERT INTO governed_llm_overviews")) {
-          capturedOverviewJson = Array.isArray(params) ? (params as any[])[(params as any[]).length - 1] : null;
+          capturedOverviewJson = Array.isArray(params) ? (params as any[])[9] : null;
           return { rows: [], rowCount: 1 } as any;
         }
         throw new Error(`Unexpected query: ${sql}`);
@@ -513,7 +513,7 @@ describe("display_facts_v1 (governed overlay)", () => {
           return { rows: [] };
         }
         if (sql.includes("INSERT INTO governed_llm_overviews")) {
-          capturedOverviewJson = Array.isArray(params) ? (params as any[])[(params as any[]).length - 1] : null;
+          capturedOverviewJson = Array.isArray(params) ? (params as any[])[9] : null;
           return { rows: [], rowCount: 1 } as any;
         }
         throw new Error(`Unexpected query: ${sql}`);
@@ -640,7 +640,7 @@ describe("display_facts_v1 (governed overlay)", () => {
         }
 
         if (sql.includes("INSERT INTO governed_llm_overviews")) {
-          capturedOverviewJson = Array.isArray(params) ? (params as any[])[(params as any[]).length - 1] : null;
+          capturedOverviewJson = Array.isArray(params) ? (params as any[])[9] : null;
           return { rows: [], rowCount: 1 } as any;
         }
 

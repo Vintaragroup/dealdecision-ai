@@ -4,7 +4,19 @@
  */
 
 import type { DealIntelligenceObject } from '../types/dio.js';
-import { buildScoreExplanationFromDIO } from './score-explanation.js';
+import { buildScoreExplanationFromDIO, type ScoreExplanation } from './score-explanation.js';
+import { buildDeterministicDealSummaryV1FromStructuredSummary, type DeterministicDealSummaryV1 } from './deal-summary-v1-deterministic.js';
+import { buildTopSectionV1FromScoreExplanation, type TopSectionV1 } from './topsection-v1-deterministic.js';
+import { inferFundingStageModelV1, type FundingStageModelV1 } from '../models/funding-stage-model.js';
+import { inferFinancialCoverageProfileV1, type FinancialCoverageProfileV1 } from '../models/financial-coverage-profile.js';
+import { inferCapitalLogicProfileV1, type CapitalLogicProfileV1 } from '../models/capital-logic-profile.js';
+import { inferStageExpectationsProfileV1, type StageExpectationsProfileV1 } from '../models/stage-expectations-profile.js';
+import { inferBusinessModelSignalProfileV1, type BusinessModelSignalProfileV1 } from '../models/business-model-signal-profile.js';
+import { inferMarketAccessibilitySignalProfileV1, type MarketAccessibilitySignalProfileV1 } from '../models/market-accessibility-signal-profile.js';
+import { inferTractionSignalProfileV1, type TractionSignalProfileV1 } from '../models/traction-signal-profile.js';
+import { inferTeamSignalProfileV1, type TeamSignalProfileV1 } from '../models/team-signal-profile.js';
+import { buildStageWeightedScoreInputsV1 } from '../scoring/stage-weighted-score-inputs-v1.js';
+import { scoreStageWeightedV1 } from '../scoring/dimension-scorer-v1.js';
 
 // Import ReportDTO types directly from contracts
 type ReportDTO = {
@@ -12,8 +24,27 @@ type ReportDTO = {
   generatedAt: string;
   version: number;
   overallScore: number;
+
+  // Additive deterministic artifact (v1)
+  funding_stage_v1?: FundingStageModelV1;
+  financial_coverage_v1?: FinancialCoverageProfileV1;
+  capital_logic_v1?: CapitalLogicProfileV1;
+  stage_expectations_v1?: StageExpectationsProfileV1;
+  business_model_signal_v1?: BusinessModelSignalProfileV1;
+  market_accessibility_signal_v1?: MarketAccessibilitySignalProfileV1;
+  traction_signal_v1?: TractionSignalProfileV1;
+  team_signal_v1?: TeamSignalProfileV1;
   structured_summary?: {
-    raise: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
+    raise: {
+      value: string | null;
+      confidence: number;
+      sources: Array<Record<string, any>>;
+      label?: string | null;
+      round_label?: string | null;
+      value_json?: {
+        amount?: { amount: number | null; currency?: string | null };
+      };
+    };
     business_model: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
     revenue: {
       value: { amount: number | null; currency: string | null; period: string | null; raw: string | null } | null;
@@ -58,6 +89,13 @@ type ReportDTO = {
     issues: string[];
     strengths: string[];
     recommendations: string[];
+
+    // Deterministic KPI-locked synthesis from structured_summary.
+    // API may override/augment this with node-derived citations.
+    deal_summary_v1?: DeterministicDealSummaryV1;
+    // TopSection V1: score-driver summary (never company description, never governed overlay).
+    // See packages/core/src/reports/topsection-v1-deterministic.ts for the design contract.
+    topsection_v1?: TopSectionV1;
   };
 
   grade: 'Excellent' | 'Good' | 'Fair' | 'Needs Improvement' | 'Insufficient Information';
@@ -345,6 +383,35 @@ function buildStructuredSummary(
     });
   };
 
+  const inferRaiseRoundLabel = (raw: string): string | null => {
+    const s = raw.toLowerCase();
+    if (/\bpre[-\s]?seed\b/i.test(s)) return 'Pre-Seed';
+    if (/\bseed\+\b/i.test(s)) return 'Seed+';
+    if (/\bseed\b/i.test(s)) return 'Seed';
+    if (/\bseries\s*-?\s*a\b/i.test(s) || /\bseries_a\b/i.test(s)) return 'Series A';
+    if (/\bgrowth\b/i.test(s) || /\bseries\s*[b-z]\b/i.test(s)) return 'Growth';
+    return null;
+  };
+
+  const normalizeRaiseFromTextOrAmount = (
+    raw: string | null | undefined,
+    amountHint?: number | null
+  ): { value: string; amount: number | null; currency: string | null; round_label: string | null } | null => {
+    const text = asNonEmptyString(raw);
+    const parsed = text ? parseMoneyLike(text) : { amount: null, currency: null, raw: null };
+    const amount = (typeof amountHint === 'number' && Number.isFinite(amountHint))
+      ? amountHint
+      : (typeof parsed.amount === 'number' && Number.isFinite(parsed.amount) ? parsed.amount : null);
+    if (amount == null && !text) return null;
+
+    const currency = amount != null ? (asNonEmptyString(parsed.currency) ?? 'USD') : null;
+
+    // Non-negotiable: if we have an amount, the display must be amount-only.
+    const value = amount != null ? (formatUsdShort(amount) ?? (text ?? String(amount))) : (text as string);
+    const round_label = text ? inferRaiseRoundLabel(text) : null;
+    return { value, amount, currency, round_label };
+  };
+
   const promotedRaise = promoted.find((f) => factTypeOf(f) === 'raise_terms_v1');
   if (promotedRaise) {
     const vj = getPromotedValueJson(promotedRaise) ?? {};
@@ -354,21 +421,16 @@ function buildStructuredSummary(
     const amount = typeof amountRaw === 'number' && Number.isFinite(amountRaw) ? amountRaw : null;
     const valuation = typeof valuationRaw === 'number' && Number.isFinite(valuationRaw) ? valuationRaw : null;
 
-    const value = (() => {
-      if (amount != null && display && shouldCollapseRaiseDisplay(display)) {
-        return formatUsdShort(amount) ?? display;
-      }
-      if (amount != null && !display) return formatUsdShort(amount);
-      return display;
-    })();
-
-    if (value) {
+    const normalized = normalizeRaiseFromTextOrAmount(display, amount);
+    if (normalized?.value) {
       const sources = promotedSourcesFor(promotedRaise);
       const noteFromValueJson = asNonEmptyString((vj as any)?.note_snippet);
       const valuationNote = valuation != null ? `on ${formatUsdShort(valuation) ?? '$' + String(valuation)} valuation` : null;
       const note = noteFromValueJson ?? valuationNote;
       structured.raise = {
-        value,
+        value: normalized.value,
+        value_json: { amount: { amount: normalized.amount, currency: normalized.currency } },
+        round_label: normalized.round_label,
         confidence: clamp01(typeof promotedRaise.confidence === 'number' ? promotedRaise.confidence : 0.7),
         sources: note ? sources.map((s) => ({ ...s, note })) : sources,
       };
@@ -535,7 +597,14 @@ function buildStructuredSummary(
 
   const overviewRaise = asNonEmptyString(overview?.raise);
   if (overviewRaise && !structured.raise.value) {
-    structured.raise = { value: overviewRaise, confidence: 0.9, sources: overviewSources };
+    const normalized = normalizeRaiseFromTextOrAmount(overviewRaise);
+    structured.raise = {
+      value: normalized?.value ?? overviewRaise,
+      value_json: normalized ? { amount: { amount: normalized.amount, currency: normalized.currency } } : undefined,
+      round_label: normalized?.round_label ?? null,
+      confidence: 0.9,
+      sources: overviewSources,
+    };
   }
   const overviewModel = asNonEmptyString(overview?.business_model);
   if (overviewModel && !structured.business_model.value && hasPrimaryCitation(overviewSources)) {
@@ -546,7 +615,14 @@ function buildStructuredSummary(
     const execRaise = asNonEmptyString(exec?.raise);
     if (execRaise) {
       const band = (exec as any)?.confidence?.sections?.raise ?? (exec as any)?.confidence?.overall;
-      structured.raise = { value: execRaise, confidence: confidenceBandToNumber(band), sources: execEvidence };
+      const normalized = normalizeRaiseFromTextOrAmount(execRaise);
+      structured.raise = {
+        value: normalized?.value ?? execRaise,
+        value_json: normalized ? { amount: { amount: normalized.amount, currency: normalized.currency } } : undefined,
+        round_label: normalized?.round_label ?? null,
+        confidence: confidenceBandToNumber(band),
+        sources: execEvidence,
+      };
     }
   }
   if (!structured.business_model.value) {
@@ -1045,7 +1121,16 @@ function buildStructuredSummary(
   const scoreExplanationAny = scoreExplanation ?? (dio as any)?.score_explanation;
   if (!structured.raise.value) {
     const raise = asNonEmptyString(scoreExplanationAny?.context?.raise);
-    if (raise) structured.raise = { value: raise, confidence: 0.55, sources: [{ kind: 'score_explanation.context', field: 'raise' }] };
+    if (raise) {
+      const normalized = normalizeRaiseFromTextOrAmount(raise);
+      structured.raise = {
+        value: normalized?.value ?? raise,
+        value_json: normalized ? { amount: { amount: normalized.amount, currency: normalized.currency } } : undefined,
+        round_label: normalized?.round_label ?? null,
+        confidence: 0.55,
+        sources: [{ kind: 'score_explanation.context', field: 'raise' }],
+      };
+    }
   }
   if (!structured.business_model.value) {
     const businessModel = asNonEmptyString(scoreExplanationAny?.context?.business_model);
@@ -1056,6 +1141,29 @@ function buildStructuredSummary(
         sources: [{ kind: 'score_explanation.context', field: 'business_model' }],
       };
     }
+  }
+
+  // Deterministic summary derived from the structured KPIs.
+  // Always present for persistence; may be refined by API-side node summaries.
+  try {
+    (structured as any).deal_summary_v1 = buildDeterministicDealSummaryV1FromStructuredSummary({
+      structured_summary: structured,
+    });
+  } catch {
+    // Best-effort: never fail report compilation.
+  }
+
+  // TopSection V1: score-driver summary (why is the score X?).
+  // Separation contract: this is NEVER a company description.
+  // Overview tab uses governed overlay; TopSection uses this deterministic field.
+  try {
+    if (scoreExplanation) {
+      (structured as any).topsection_v1 = buildTopSectionV1FromScoreExplanation(
+        scoreExplanation as ScoreExplanation,
+      );
+    }
+  } catch {
+    // Best-effort: never fail report compilation.
   }
 
   return structured;
@@ -1354,6 +1462,20 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
 
   const structuredSummary = buildStructuredSummary(dio, scoreExplanation, undefined);
   const canonicalRevenueDisplay = revenueDisplayFromStructuredSummary(structuredSummary);
+
+  const fundingStage = inferFundingStageModelV1({
+    funding_round_label: null,
+    company_phase_label: (dio as any)?.dio?.phase_inference_v1?.company_phase ?? null,
+    raise_amount: parseMoneyLike(structuredSummary?.raise?.value ?? null).amount ?? null,
+    raise_sources: Array.isArray(structuredSummary?.raise?.sources)
+      ? structuredSummary.raise.sources.map((s: any) => ({
+          document_id: s?.source_document_id ?? s?.document_id ?? undefined,
+          page_index: typeof s?.page_index === 'number' ? s.page_index : undefined,
+          page: typeof s?.page === 'number' ? s.page : undefined,
+          source_path: s?.source_path ?? undefined,
+        }))
+      : null,
+  });
   
   // Executive Summary
   const overallScoreText = scoreAvailable ? `${overallScoreFinal}/100 (${grade})` : 'N/A (insufficient data)';
@@ -1503,12 +1625,86 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     evidence_ids: []
   });
   
+  const financialCoverage = inferFinancialCoverageProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: null,
+    documents: Array.isArray((dio as any)?.inputs?.documents)
+      ? (dio as any).inputs.documents.map((d: any) => ({
+          document_id: d?.document_id,
+          kind: d?.kind,
+          mime_type: d?.mime_type,
+          filename: d?.filename,
+        }))
+      : null,
+  });
+
+  const capitalLogic = inferCapitalLogicProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: null,
+  });
+
+  const businessModelSignal = inferBusinessModelSignalProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: null,
+  });
+
+  const marketAccessibilitySignal = inferMarketAccessibilitySignalProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: null,
+  });
+
+  const tractionSignal = inferTractionSignalProfileV1({
+    financial_coverage_v1: financialCoverage,
+    structured_summary: structuredSummary,
+    promoted_facts: null,
+  });
+
+  const teamSignal = inferTeamSignalProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: null,
+  });
+
+  const stageExpectations = inferStageExpectationsProfileV1({
+    funding_stage_v1: fundingStage,
+    financial_coverage_v1: financialCoverage,
+    capital_logic_v1: capitalLogic,
+  });
+
+  const stageWeighted = scoreStageWeightedV1(
+    buildStageWeightedScoreInputsV1({
+      funding_stage_v1: fundingStage,
+      financial_coverage_v1: financialCoverage,
+      capital_logic_v1: capitalLogic,
+      stage_expectations_v1: stageExpectations,
+      business_model_signal_v1: businessModelSignal,
+      market_accessibility_signal_v1: marketAccessibilitySignal,
+      traction_signal_v1: tractionSignal,
+      team_signal_v1: teamSignal,
+      structured_summary: structuredSummary,
+    }),
+  );
+
+  const scoreExplanationAugmented = scoreExplanation && typeof scoreExplanation === 'object'
+    ? ({
+        ...(scoreExplanation as any),
+        stage_weighted_v1: stageWeighted,
+      } as any)
+    : scoreExplanation;
+
   return {
     dealId: dio.deal_id,
     generatedAt: new Date().toISOString(),
     version: dio.analysis_version,
 
     overallScore: overallScoreFinal,
+    funding_stage_v1: fundingStage,
+    financial_coverage_v1: financialCoverage,
+    capital_logic_v1: capitalLogic,
+    stage_expectations_v1: stageExpectations,
+    business_model_signal_v1: businessModelSignal,
+    market_accessibility_signal_v1: marketAccessibilitySignal,
+    traction_signal_v1: tractionSignal,
+    team_signal_v1: teamSignal,
     structured_summary: structuredSummary,
     grade,
     recommendation,
@@ -1526,7 +1722,7 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
       documentCount: dio.inputs.documents.length,
       scoreAvailable,
       scoreConfidence: scoreExplanation?.totals?.confidence_score,
-      score_explanation: scoreExplanation,
+      score_explanation: scoreExplanationAugmented,
     }
   };
 }
@@ -1539,10 +1735,101 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
   const sections = revenueDisplay
     ? base.sections.map((s) => (s.id === 'metric-benchmark' ? { ...s, content: applyRevenueOverrideToMetricBenchmarkContent(s.content, revenueDisplay) } : s))
     : base.sections;
+
+  const fundingStage = inferFundingStageModelV1({
+    funding_round_label: null,
+    company_phase_label: (dio as any)?.dio?.phase_inference_v1?.company_phase ?? null,
+    raise_amount: parseMoneyLike(structuredSummary?.raise?.value ?? null).amount ?? null,
+    raise_sources: Array.isArray(structuredSummary?.raise?.sources)
+      ? structuredSummary.raise.sources.map((s: any) => ({
+          document_id: s?.source_document_id ?? s?.document_id ?? undefined,
+          page_index: typeof s?.page_index === 'number' ? s.page_index : undefined,
+          page: typeof s?.page === 'number' ? s.page : undefined,
+          source_path: s?.source_path ?? undefined,
+        }))
+      : null,
+  });
+
+  const financialCoverage = inferFinancialCoverageProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
+    documents: Array.isArray((dio as any)?.inputs?.documents)
+      ? (dio as any).inputs.documents.map((d: any) => ({
+          document_id: d?.document_id,
+          kind: d?.kind,
+          mime_type: d?.mime_type,
+          filename: d?.filename,
+        }))
+      : null,
+  });
+
+  const capitalLogic = inferCapitalLogicProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
+  });
+
+  const businessModelSignal = inferBusinessModelSignalProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
+  });
+
+  const marketAccessibilitySignal = inferMarketAccessibilitySignalProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
+  });
+
+  const tractionSignal = inferTractionSignalProfileV1({
+    financial_coverage_v1: financialCoverage,
+    structured_summary: structuredSummary,
+    promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
+  });
+
+  const teamSignal = inferTeamSignalProfileV1({
+    structured_summary: structuredSummary,
+    promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
+  });
+
+  const stageExpectations = inferStageExpectationsProfileV1({
+    funding_stage_v1: fundingStage,
+    financial_coverage_v1: financialCoverage,
+    capital_logic_v1: capitalLogic,
+  });
+
+  const stageWeighted = scoreStageWeightedV1(
+    buildStageWeightedScoreInputsV1({
+      funding_stage_v1: fundingStage,
+      financial_coverage_v1: financialCoverage,
+      capital_logic_v1: capitalLogic,
+      stage_expectations_v1: stageExpectations,
+      business_model_signal_v1: businessModelSignal,
+      market_accessibility_signal_v1: marketAccessibilitySignal,
+      traction_signal_v1: tractionSignal,
+      team_signal_v1: teamSignal,
+      structured_summary: structuredSummary,
+    }),
+  );
+
+  const existingExplanation: any = (base as any)?.metadata?.score_explanation;
+  const scoreExplanationAugmented = existingExplanation && typeof existingExplanation === 'object'
+    ? { ...existingExplanation, stage_weighted_v1: stageWeighted }
+    : existingExplanation;
 	return {
 		...base,
+    funding_stage_v1: fundingStage,
+    financial_coverage_v1: financialCoverage,
+    capital_logic_v1: capitalLogic,
+    stage_expectations_v1: stageExpectations,
+    business_model_signal_v1: businessModelSignal,
+    market_accessibility_signal_v1: marketAccessibilitySignal,
+    traction_signal_v1: tractionSignal,
+    team_signal_v1: teamSignal,
     structured_summary: structuredSummary,
     sections,
+
+		metadata: {
+			...(base as any).metadata,
+			score_explanation: scoreExplanationAugmented,
+		},
 	};
 }
 

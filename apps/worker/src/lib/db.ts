@@ -388,21 +388,35 @@ export async function updateDocumentVerification(params: {
 export async function saveIngestionReport(params: {
   reportId: string;
   dealId: string;
+  analysisVersion: number;
   summary: unknown;
   documentIds: string[];
-}) {
+}): Promise<{ report_id: string }> {
   const currentPool = getPool();
-  await currentPool.query(
-    `INSERT INTO ingestion_reports (report_id, deal_id, summary, document_ids)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT DO NOTHING`,
+
+  const analysisVersion = typeof params.analysisVersion === 'number' && Number.isFinite(params.analysisVersion)
+    ? Math.max(0, Math.trunc(params.analysisVersion))
+    : 0;
+
+  const res = await currentPool.query<{ report_id: string }>(
+    `INSERT INTO ingestion_reports (report_id, deal_id, analysis_version, summary, document_ids)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (deal_id, analysis_version)
+       DO UPDATE SET updated_at = now(),
+                     summary = EXCLUDED.summary,
+                     document_ids = EXCLUDED.document_ids
+       RETURNING report_id`,
     [
       sanitizeText(params.reportId),
       sanitizeText(params.dealId),
+      analysisVersion,
       params.summary === undefined ? null : sanitizeDeep(params.summary ?? null),
       (params.documentIds || []).map((id) => sanitizeText(id)),
     ]
   );
+
+  const report_id = typeof res.rows?.[0]?.report_id === 'string' ? res.rows[0].report_id : sanitizeText(params.reportId);
+  return { report_id };
 }
 
 export type DocumentWithVerification = {

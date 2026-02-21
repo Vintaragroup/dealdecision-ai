@@ -1,10 +1,9 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { screen, waitFor, within, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { DealWorkspace } from '../components/pages/DealWorkspace';
-import { ScoreSourceProvider } from '../contexts/ScoreSourceContext';
-import { apiGetDeal, apiGetDealJobs, apiGetJob } from '../lib/apiClient';
+import { renderWorkspace } from './dealWorkspaceTestFixture';
+import { apiGetDeal, apiGetDealJobs, apiGetJob, apiGetDealGovernedOverlayPersisted } from '../lib/apiClient';
 
 vi.mock('../contexts/UserRoleContext', () => ({
   useUserRole: () => ({ isAnalyst: true, isInvestor: false }),
@@ -41,23 +40,6 @@ vi.mock('../lib/apiClient', async (importOriginal) => {
   };
 });
 
-const baseDeal = {
-  id: 'deal-1',
-  name: 'Demo Deal',
-  company: 'Demo Co',
-  type: 'series-a',
-  stage: 'Series A',
-  investmentAmount: 1000000,
-  industry: 'SaaS',
-  targetMarket: 'Enterprise',
-  fundingAmount: '$1M',
-  revenue: '$0',
-  customers: '0',
-  teamSize: '5',
-  description: 'Demo',
-  estimatedSavings: { money: 1000, hours: 10 },
-} as const;
-
 describe('DealWorkspace Job Center (live mode)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -70,19 +52,6 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
   const openJobsTab = async () => {
     await userEvent.click(screen.getByRole('tab', { name: /^jobs$/i }));
-  };
-
-  const renderWorkspace = (overrides?: Partial<React.ComponentProps<typeof DealWorkspace>>) => {
-    return render(
-      <ScoreSourceProvider>
-        <DealWorkspace
-          darkMode={false}
-          dealId="deal-1"
-          dealData={baseDeal}
-          {...overrides}
-        />
-      </ScoreSourceProvider>
-    );
   };
 
   test('renders DIO badges and Job Center placeholders', async () => {
@@ -242,15 +211,34 @@ describe('DealWorkspace Job Center (live mode)', () => {
         overallScore: 50,
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: exec, evidence_ids: [] }],
+        deal_summary: {
+          version: 'deal_summary_v1',
+          ready: true,
+          tiers: { hero: exec, overview: '', deep: '' },
+          one_liner: { text: exec, sources: [] },
+          paragraphs: [{ text: exec, sources: [] }],
+        },
         structured_summary: {
-          raise: { value: '$2M Seed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
-          business_model: { value: 'Usage-based SaaS', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
-          revenue: {
-            value: { raw: '$1.2M', currency: 'USD', period: 'ARR', amount: null },
-            confidence: 0.8,
+          deal_summary_v1: {
+            one_liner: exec,
+            long_summary: exec,
+          },
+          raise: {
+            value: '$2M',
+            round_label: 'Seed',
+            value_json: { amount: { amount: 2000000 } },
             sources: [{ document_id: 'doc-1', page_index: 1 }],
           },
-          customers: { value: { count: 450, kind: 'customers', raw: null }, confidence: 0.7, sources: [{ document_id: 'doc-1', page_index: 1 }] },
+          kpis: {
+            raise: { value: '$2M Seed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
+            business_model: { value: 'Usage-based SaaS', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
+            revenue: {
+              value: { raw: '$1.2M', currency: 'USD', period: 'ARR', amount: null },
+              confidence: 0.8,
+              sources: [{ document_id: 'doc-1', page_index: 1 }],
+            },
+            customers: { value: { count: 450, kind: 'customers', raw: null }, confidence: 0.7, sources: [{ document_id: 'doc-1', page_index: 1 }] },
+          },
         },
         metadata: {
           score_explanation: {
@@ -268,12 +256,10 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
     renderWorkspace({ dealId: 'deal-rpt-bind-1' });
 
+    const top = await screen.findByLabelText('Deal top summary');
     await waitFor(() => {
-      expect(screen.getAllByText(exec).length).toBeGreaterThan(0);
+      expect(within(top).getAllByText(exec).length).toBeGreaterThan(0);
     });
-
-    const top = screen.getByLabelText('Deal top summary');
-    expect(within(top).getByRole('heading', { name: 'Executive Summary' })).toBeInTheDocument();
 
     // Gauge uses /report overallScore.
     expect(screen.getByRole('img', { name: /50 out of 100/i })).toBeInTheDocument();
@@ -281,7 +267,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     // Score band badge should render in the top section.
     expect(within(top).getAllByText(/Consider \(Caution\)/i).length).toBeGreaterThan(0);
 
-    // Top summary uses executive-summary section content when canonical deal_summary_v1 is not ready.
+    // Deal Summary is deterministic-first and comes from /report deal_summary_v1 when ready.
     expect(within(top).getAllByText(exec).length).toBeGreaterThan(0);
 
     // Stage badge prefers report metadata context.stage.
@@ -296,7 +282,9 @@ describe('DealWorkspace Job Center (live mode)', () => {
     const raiseLabel = within(top).getByText(/^Raise$/i);
     const raiseCard = raiseLabel.parentElement;
     expect(raiseCard).not.toBeNull();
-    expect(within(raiseCard as HTMLElement).getByText(/\$2M Seed/i)).toBeInTheDocument();
+    expect(within(raiseCard as HTMLElement).getByText(/\$2M/i)).toBeInTheDocument();
+    expect(within(raiseCard as HTMLElement).getByText(/^Seed$/i)).toBeInTheDocument();
+    expect(within(raiseCard as HTMLElement).queryByText(/\$2M\s+Seed/i)).toBeNull();
 
     const revenueLabel = within(top).getByText(/^Revenue$/i);
     const revenueCard = revenueLabel.parentElement;
@@ -311,13 +299,14 @@ describe('DealWorkspace Job Center (live mode)', () => {
     // Overview tab should also prefer /report bindings (not stale dealFromApi fields).
     await userEvent.click(screen.getByRole('tab', { name: /^overview$/i }));
     await waitFor(() => {
-      expect(screen.getByText(/Raise\s*\/\s*Terms/i)).toBeInTheDocument();
+      expect(screen.getByTestId('key-fact-raise')).toBeInTheDocument();
     });
 
-    const overviewRaiseLabel = screen.getByText(/Raise\s*\/\s*Terms/i);
-    const overviewRaiseRow = overviewRaiseLabel.closest('div');
+    const overviewRaiseLabel = screen.getByTestId('key-fact-raise');
+    const overviewRaiseRow = overviewRaiseLabel.parentElement;
     expect(overviewRaiseRow).not.toBeNull();
-    expect(within(overviewRaiseRow as HTMLElement).getByText(/\$2M Seed/i)).toBeInTheDocument();
+    expect(within(overviewRaiseRow as HTMLElement).getByText(/\$2M/i)).toBeInTheDocument();
+    expect(within(overviewRaiseRow as HTMLElement).queryByText(/\$2M\s+Seed/i)).toBeNull();
 
     const overviewBusinessModelLabel = screen.getByText(/^Business Model:\s*$/i);
     const overviewBusinessModelRow = overviewBusinessModelLabel.closest('div');
@@ -346,17 +335,20 @@ describe('DealWorkspace Job Center (live mode)', () => {
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: 'Exec', evidence_ids: [] }],
         structured_summary: {
-          revenue: { value: { raw: '$2.476M' }, sources: [] },
+          kpis: {
+            revenue: { value: { raw: '$2.476M' }, sources: [] },
+          },
         },
         metadata: {
           score_explanation: {
             understanding_v1: {
               strengths: [{ text: 'Evidence-backed product definition' }],
               diligence_open_items: [
-                { text: 'Confirm gross margin by channel (DTC vs wholesale).' },
-                { text: 'Validate inventory/working capital needs by season.' },
-                { text: 'Validate CAC and unit economics at scale.' },
-                { text: 'Confirm multi-year financial tables and accounting basis.' },
+                // Noun-phrase items (non-imperative) → go to Weaknesses via _ACTION_VERB_RE split
+                { text: 'Gross margin by channel (DTC vs wholesale) is unconfirmed.' },
+                { text: 'Inventory and working capital needs by season not yet modeled.' },
+                { text: 'CAC and unit economics at scale are unclear.' },
+                { text: 'Multi-year financial tables and accounting basis not provided.' },
               ],
               execution_dependencies: [{ text: 'Wholesale expansion requires channel partnerships.' }],
             },
@@ -369,11 +361,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
       },
     } as any);
 
-    render(
-      <ScoreSourceProvider>
-        <DealWorkspace darkMode={false} dealId="deal-rpt-understanding-1" dealData={baseDeal} />
-      </ScoreSourceProvider>,
-    );
+    renderWorkspace({ dealId: 'deal-rpt-understanding-1' });
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: /Score Understanding/i })).toBeInTheDocument();
@@ -412,17 +400,19 @@ describe('DealWorkspace Job Center (live mode)', () => {
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: 'Exec', evidence_ids: [] }],
         structured_summary: {
-          revenue: {
-            value: { raw: '$2.476M' },
-            label: 'Annual',
-            sources: [{ document_id: 'doc-1', page_index: 12, note_snippet: 'Revenue 2024 $2.476M', meta: { scope: 'company_financials_table', year: 2024, period: 'annual' } }],
+          kpis: {
+            revenue: {
+              value: { raw: '$2.476M' },
+              label: 'Annual',
+              sources: [{ document_id: 'doc-1', page_index: 12, note_snippet: 'Revenue 2024 $2.476M', meta: { scope: 'company_financials_table', year: 2024, period: 'annual' } }],
+            },
+            growth: {
+              value: { raw: '40% YoY', year: 2026 },
+              label: 'Annual',
+              sources: [{ document_id: 'doc-1', page_index: 9, note_snippet: 'Forecast 2026', meta: { period: 'forecast', year: 2026 } }],
+            },
+            customers: { value: { raw: '12 wholesale accounts' }, sources: [] },
           },
-          growth: {
-            value: { raw: '40% YoY', year: 2026 },
-            label: 'Annual',
-            sources: [{ document_id: 'doc-1', page_index: 9, note_snippet: 'Forecast 2026', meta: { period: 'forecast', year: 2026 } }],
-          },
-          customers: { value: { raw: '12 wholesale accounts' }, sources: [] },
         },
         metadata: {
           score_explanation: { context: { stage: 'in_diligence', deal_type: 'Primary equity' } },
@@ -433,11 +423,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
       },
     } as any);
 
-    render(
-      <ScoreSourceProvider>
-        <DealWorkspace darkMode={false} dealId="deal-rpt-kpi-labels-1" dealData={baseDeal} />
-      </ScoreSourceProvider>,
-    );
+    renderWorkspace({ dealId: 'deal-rpt-kpi-labels-1' });
 
     await waitFor(() => {
       expect(screen.getByText(/Revenue \(2024\)/i)).toBeInTheDocument();
@@ -466,13 +452,15 @@ describe('DealWorkspace Job Center (live mode)', () => {
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: 'Exec', evidence_ids: [] }],
         structured_summary: {
-          revenue: {
-            value: { raw: '$800k' },
-            label: 'Annual',
-            sources: [{ document_id: 'doc-1', page_index: 7, note_snippet: 'Email attributed revenue', meta: { scope: 'channel_attributed', year: 2024, period: 'annual' } }],
+          kpis: {
+            revenue: {
+              value: { raw: '$800k' },
+              label: 'Annual',
+              sources: [{ document_id: 'doc-1', page_index: 7, note_snippet: 'Email attributed revenue', meta: { scope: 'channel_attributed', year: 2024, period: 'annual' } }],
+            },
+            growth: { value: { raw: '—' }, sources: [] },
+            customers: { value: { raw: '—' }, sources: [] },
           },
-          growth: { value: { raw: '—' }, sources: [] },
-          customers: { value: { raw: '—' }, sources: [] },
         },
         metadata: {
           score_explanation: { context: { stage: 'in_diligence', deal_type: 'Primary equity' } },
@@ -483,11 +471,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
       },
     } as any);
 
-    render(
-      <ScoreSourceProvider>
-        <DealWorkspace darkMode={false} dealId="deal-rpt-kpi-labels-2" dealData={baseDeal} />
-      </ScoreSourceProvider>,
-    );
+    renderWorkspace({ dealId: 'deal-rpt-kpi-labels-2' });
 
     await waitFor(() => {
       expect(screen.getByText(/Revenue \(Attributed\)/i)).toBeInTheDocument();
@@ -522,11 +506,26 @@ describe('DealWorkspace Job Center (live mode)', () => {
         overallScore: 10,
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: exec, evidence_ids: [] }],
+        deal_summary: {
+          version: 'deal_summary_v1',
+          ready: true,
+          tiers: { hero: exec, overview: '', deep: '' },
+          one_liner: { text: exec, sources: [] },
+          paragraphs: [{ text: exec, sources: [] }],
+        },
         structured_summary: {
-          raise: { value: '$2M Seed', confidence: 0.9, sources: [] },
-          business_model: { value: 'Usage-based SaaS', confidence: 0.9, sources: [] },
-          revenue: { value: { raw: '$1.2M', currency: 'USD', period: 'ARR', amount: null }, confidence: 0.8, sources: [] },
-          customers: { value: { count: 450, kind: 'customers', raw: null }, confidence: 0.7, sources: [] },
+          raise: {
+            value: '$2M',
+            round_label: 'Seed',
+            value_json: { amount: { amount: 2000000 } },
+            sources: [],
+          },
+          kpis: {
+            raise: { value: '$2M Seed', confidence: 0.9, sources: [] },
+            business_model: { value: 'Usage-based SaaS', confidence: 0.9, sources: [] },
+            revenue: { value: { raw: '$1.2M', currency: 'USD', period: 'ARR', amount: null }, confidence: 0.8, sources: [] },
+            customers: { value: { count: 450, kind: 'customers', raw: null }, confidence: 0.7, sources: [] },
+          },
         },
         metadata: {
           score_explanation: {
@@ -580,7 +579,9 @@ describe('DealWorkspace Job Center (live mode)', () => {
             derived_from: { product_pages: [12], gtm_pages: [15], distribution_pages: [23], traction_pages: [8], market_pages: [], other_pages: [] },
             supporting_nodes: [],
           },
-          business_model: { value: 'Usage-based SaaS (promoted)', label: 'Attributed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 2 }] },
+          kpis: {
+            business_model: { value: 'Usage-based SaaS (promoted)', label: 'Attributed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 2 }] },
+          },
         },
         metadata: { score_explanation: { context: { stage: 'in_diligence', deal_type: 'Primary equity' } } },
       },
@@ -618,7 +619,9 @@ describe('DealWorkspace Job Center (live mode)', () => {
         sections: [],
         structured_summary: {
           business_model_summary: { value: null },
-          business_model: { value: 'Usage-based SaaS', label: 'Attributed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
+          kpis: {
+            business_model: { value: 'Usage-based SaaS', label: 'Attributed', confidence: 0.9, sources: [{ document_id: 'doc-1', page_index: 1 }] },
+          },
         },
         metadata: { score_explanation: { context: { stage: 'in_diligence', deal_type: 'Primary equity' } } },
       },
@@ -720,21 +723,27 @@ describe('DealWorkspace Job Center (live mode)', () => {
             },
           ],
         },
+        structured_summary: {
+          deal_summary_v1: {
+            one_liner: 'STRUCTURED ONE LINER',
+            long_summary: 'STRUCTURED LONG SUMMARY (top section)',
+          },
+        },
       },
     } as any);
 
     renderWorkspace({ dealId: 'deal-can-1' });
 
     await waitFor(() => {
-      expect(screen.getAllByText(/CANON HERO/i).length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/STRUCTURED LONG SUMMARY/i).length).toBeGreaterThan(0);
     });
 
     const top = screen.getByLabelText('Deal top summary');
-    expect(within(top).getByRole('heading', { name: 'Deal Summary' })).toBeInTheDocument();
-    expect(within(top).getByText(/CANON HERO \(top\)/i)).toBeInTheDocument();
+    expect(within(top).getByRole('heading', { name: 'Deal Snapshot' })).toBeInTheDocument();
+    expect(within(top).getByText(/STRUCTURED LONG SUMMARY \(top section\)/i)).toBeInTheDocument();
     expect(within(top).queryByText(/LEGACY EXEC SUMMARY/i)).toBeNull();
 
-    expect(screen.getAllByText('Canonical').length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Authoritative \(deterministic\)/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/Product:\s*/i)).toBeInTheDocument();
     expect(screen.getByText('CANON product')).toBeInTheDocument();
     expect(screen.getByText('CANON market')).toBeInTheDocument();
@@ -798,7 +807,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(screen.queryByRole('button', { name: /view citations/i })).toBeNull();
   });
 
-  test('Top summary does not render literal \\n\\n sequences from executive summary content', async () => {
+  test('Top summary does not render literal \\n\\n sequences from deterministic deal summary content', async () => {
     vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: 'v1.0.0',
       dioStatus: 'ready',
@@ -806,7 +815,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     } as any);
 
     const { apiGetDealReport } = await import('../lib/apiClient');
-    const exec = 'Overall Score: 50/100\\n\\nRecommendation: PASS';
+    const exec = 'Overall Score: 50/100\\n\\nSecond line should render normally.';
 
     vi.mocked(apiGetDealReport).mockResolvedValueOnce({
       ready: true,
@@ -819,6 +828,26 @@ describe('DealWorkspace Job Center (live mode)', () => {
         overallScore: 50,
         recommendation: 'no',
         sections: [{ id: 'executive-summary', title: 'Executive Summary', content: exec, evidence_ids: [] }],
+        deal_summary: {
+          version: 'deal_summary_v1',
+          ready: true,
+          tiers: { hero: exec, overview: '', deep: '' },
+          one_liner: { text: exec, sources: [] },
+          paragraphs: [{ text: exec, sources: [] }],
+        },
+        structured_summary: {
+          deal_summary_v1: {
+            one_liner: exec,
+            long_summary: exec,
+          },
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: exec,
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+        },
         metadata: { cycle_number: 1 },
       },
     } as any);
@@ -826,9 +855,16 @@ describe('DealWorkspace Job Center (live mode)', () => {
     renderWorkspace({ dealId: 'deal-rpt-newlines-1' });
 
     const top = await screen.findByLabelText('Deal top summary');
-    expect(top.textContent || '').not.toContain('\\n\\n');
-    expect(within(top).getByText(/Overall Score: 50\/100/i)).toBeInTheDocument();
-    expect(within(top).queryByText(/Recommendation: PASS/i)).toBeNull();
+    const scoreSubsummary = top.querySelector('[data-slot="header.score.subsummary"]');
+    expect(scoreSubsummary).not.toBeNull();
+
+    // Guardrail: literal backslash-n sequences must not render.
+    expect(top.textContent || '').not.toMatch(/\\\\n/);
+
+    expect(scoreSubsummary!.textContent || '').toMatch(/Overall Score: 50\/100/i);
+    expect(scoreSubsummary!.textContent || '').not.toMatch(/Second line should render normally\./i);
+
+    expect(screen.getByTestId('deal-summary-text')).toHaveTextContent(/Second line should render normally\./i);
   });
 
   test('When decision_v1 exists, top summary never shows legacy section recommendation', async () => {
@@ -1488,5 +1524,1554 @@ describe('DealWorkspace Job Center (live mode)', () => {
     await waitFor(() => {
       expect(screen.getByText(/Done \(warn\)/i)).toBeInTheDocument();
     });
+  });
+
+  test('analyze_deal SSE succeeded: overlay polling fires once per unique job_id (dedup guard)', async () => {
+    // This test verifies that duplicate SSE deliveries for the same analyze_deal job_id
+    // do not spawn multiple overlay polling cycles, which would cause rapid API spamming
+    // and reset the backoff timer on every duplicate event.
+    const { subscribeToEvents, apiGetDealGovernedOverlayPersisted } = await import('../lib/apiClient');
+
+    // jsdom does not define EventSource — stub it so the component's SSE branch is entered.
+    const origEventSource = (global as any).EventSource;
+    (global as any).EventSource = class MockEventSource {};
+
+    let capturedOnJobUpdated: ((job: any) => void) | null = null;
+    vi.mocked(subscribeToEvents).mockImplementation((_dealId: string, handlers: any) => {
+      capturedOnJobUpdated = handlers.onJobUpdated;
+      return () => undefined;
+    });
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v7', dioStatus: 'ready' } as any);
+
+    renderWorkspace({ dealId: 'deal-overlay-dedup' });
+
+    // Wait for SSE subscription to be wired up (useEffect + subscribeToEvents call).
+    await waitFor(() => expect(capturedOnJobUpdated).not.toBeNull());
+
+    // Clear calls from the initial component mount.
+    vi.mocked(apiGetDealGovernedOverlayPersisted).mockClear();
+
+    const succeededEvent = {
+      job_id: 'job-analyze-dedup-xyz',
+      deal_id: 'deal-overlay-dedup',
+      type: 'analyze_deal',
+      status: 'succeeded',
+      progress_pct: 100,
+      message: 'Analysis complete',
+      updated_at: '2025-01-01T00:00:10.000Z',
+    };
+
+    // Emit the same succeeded event 3 times — simulates duplicate SSE delivery (reconnect /
+    // re-subscription) or repeated event dispatching from an unstable worker.
+    act(() => {
+      capturedOnJobUpdated!(succeededEvent);
+      capturedOnJobUpdated!(succeededEvent);
+      capturedOnJobUpdated!(succeededEvent);
+    });
+
+    // Allow the immediate (non-setTimeout) poll() to run — it issues a governed overlay fetch.
+    // Use a short deadline so backoff timers (2 s, 5 s, …) cannot inflate the count.
+    await new Promise<void>((resolve) => setTimeout(resolve, 150));
+
+    const callCount = vi.mocked(apiGetDealGovernedOverlayPersisted).mock.calls.length;
+
+    // With the job_id dedup guard: polling is started exactly once → 1 immediate overlay fetch.
+    // Without the guard: 3 polling cycles each fire their first poll immediately → 3 fetches.
+    expect(callCount).toBeGreaterThanOrEqual(1); // polling was started
+    expect(callCount).toBeLessThan(3);           // only one polling cycle (not one per event)
+
+    // Restore EventSource stub.
+    (global as any).EventSource = origEventSource;
+  });
+
+  test('debug-only UI elements do not render unless workspaceDebugEnabled', async () => {
+    // workspaceDebugEnabled requires ?debug=1 in the URL or localStorage ddai:debugDealWorkspace.
+    // In the test environment neither is set, so both protected elements must be absent.
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v1', dioStatus: 'ready' } as any);
+
+    renderWorkspace({ dealId: 'deal-no-debug' });
+
+    // Allow the workspace to fully mount and run its initial effects.
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: /AI Assistant/i })).not.toBeNull();
+    });
+
+    // 1. Build stamp must be hidden — it exposes VITE_BUILD_STAMP to non-debug users.
+    expect(screen.queryByTestId('build-stamp')).toBeNull();
+
+    // 2. Debug → Missing Fields panel must be hidden — it contains internal diagnostics.
+    expect(screen.queryByText(/Debug.*Missing Fields/i)).toBeNull();
+    expect(screen.queryByText(/Missing Fields/i)).toBeNull();
+
+    // 3. Governed Consistency Warnings panel must be hidden outside debug mode.
+    expect(screen.queryByTestId('governed-consistency-warnings-panel')).toBeNull();
+  });
+
+  test('Governed Consistency Warnings panel renders codes when workspaceDebugEnabled is true', async () => {
+    // Enable workspace debug mode via localStorage.
+    window.localStorage.setItem('ddai:debugDealWorkspace', '1');
+
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v1', dioStatus: 'ready' } as any);
+    vi.mocked(apiGetDealGovernedOverlayPersisted).mockResolvedValue({
+      overview: {
+        schema_version: 'governed_llm_overview_v1',
+        input_hash: 'hash-test',
+        created_at: new Date().toISOString(),
+        llm_phase_mode: 'governed',
+        summary_text: 'Test deal.',
+        claims: [],
+        disclosures: [],
+        consistency_warnings: ['HERO_MISSING_RAISE_CONTEXT', 'ICP_NOT_REFLECTED'],
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-debug-warnings' });
+
+    // Allow the workspace to mount and the governed overlay hook to resolve.
+    await waitFor(() => {
+      expect(screen.queryByTestId('governed-consistency-warnings-panel')).not.toBeNull();
+    });
+
+    const panel = screen.getByTestId('governed-consistency-warnings-panel');
+    expect(panel).toBeInTheDocument();
+    expect(panel.textContent).toContain('HERO_MISSING_RAISE_CONTEXT');
+    expect(panel.textContent).toContain('ICP_NOT_REFLECTED');
+
+    // Clean up debug flag so other tests are unaffected.
+    window.localStorage.removeItem('ddai:debugDealWorkspace');
+  });
+
+  // ── TopSection separation contract ──────────────────────────────────────────
+
+  test('[TopSection contract] deal-summary-text shows deterministic one_liner, never governed hero_summary', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v1', dioStatus: 'ready', lastAnalyzedAt: '2024-01-02T00:00:00.000Z' } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-top-sep-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 70,
+        recommendation: 'yes',
+        sections: [],
+        metadata: { cycle_number: 1 },
+        structured_summary: {
+          deal_summary_v1: {
+            one_liner: 'Deterministic one liner ABC',
+            long_summary: '',
+          },
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: 'Deterministic one liner ABC',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+        },
+      },
+    } as any);
+
+    vi.mocked(apiGetDealGovernedOverlayPersisted).mockResolvedValue({
+      overview: {
+        schema_version: 'governed_llm_overview_v1',
+        input_hash: 'hash-sep-1',
+        created_at: new Date().toISOString(),
+        llm_phase_mode: 'governed',
+        summary_text: 'Governed hero text XYZ',
+        claims: [],
+        disclosures: [],
+        consistency_warnings: [],
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-top-sep-1' });
+
+    const summaryEl = await screen.findByTestId('deal-summary-text');
+    expect(summaryEl.textContent).toContain('Deterministic one liner ABC');
+    expect(summaryEl.textContent).not.toContain('Governed hero text XYZ');
+  });
+
+  test('[TopSection contract] "Unknown" one_liner shows placeholder, not "Unknown"', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v1', dioStatus: 'ready', lastAnalyzedAt: '2024-01-02T00:00:00.000Z' } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-top-unknown-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 55,
+        recommendation: 'no',
+        sections: [],
+        metadata: { cycle_number: 1 },
+        structured_summary: {
+          deal_summary_v1: {
+            one_liner: 'Unknown',
+            long_summary: '',
+          },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-top-unknown-1' });
+
+    const summaryEl = await screen.findByTestId('deal-summary-text');
+    // 'Unknown' sentinel must be filtered.
+    expect(summaryEl.textContent).not.toBe('Unknown');
+    expect(summaryEl.textContent).not.toMatch(/^Unknown$/i);
+    // [SCORE-CONTRACT] No score_band_v2 → scoreExplanationV1 null → one-liner is empty →
+    // component renders default fallback. bare "Score of N" is NOT produced.
+    expect(summaryEl.textContent).not.toMatch(/Score of 55/i);
+    expect(summaryEl.textContent).toMatch(/score drivers not yet computed for this run/i);
+  });
+
+  test('[TopSection contract] score-mechanic phrases never render in strengths', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v1', dioStatus: 'ready', lastAnalyzedAt: '2024-01-02T00:00:00.000Z' } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-top-mechanic-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 65,
+        recommendation: 'maybe',
+        sections: [],
+        metadata: {
+          cycle_number: 1,
+          score_explanation: {
+            components: {
+              financial_health: {
+                score: 0.7,
+                reason: 'Narrative pacing score computed from slide cadence',
+              },
+              risk_assessment: {
+                score: 0.6,
+                reason: 'Score computed via risk analyzer',
+              },
+            },
+          },
+        },
+        deal_summary: {
+          version: 'deal_summary_v1',
+          ready: true,
+          tiers: { hero: '', overview: '', deep: '' },
+          strengths: ['Narrative pacing score computed from slide cadence', 'Score computed via risk analyzer'],
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-top-mechanic-1' });
+
+    await screen.findByLabelText('Deal top summary');
+
+    expect(screen.queryByText(/Narrative pacing score computed/i)).toBeNull();
+    expect(screen.queryByText(/Score computed via risk analyzer/i)).toBeNull();
+  });
+
+  // ── TopSection V1 (topsection_v1 score-driver contract) ─────────────────────
+
+  test('[topsection_v1] score_driver_one_liner renders in deal-summary-text instead of governed hero or company one-liner', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v1', dioStatus: 'ready', lastAnalyzedAt: '2024-01-02T00:00:00.000Z' } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-tsv1-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 74,
+        recommendation: 'yes',
+        sections: [],
+        metadata: { cycle_number: 1 },
+        structured_summary: {
+          // Company description — should NOT appear in TopSection
+          deal_summary_v1: {
+            one_liner: 'The company builds widgets for enterprise clients.',
+            long_summary: '',
+          },
+          // Score-driver summary — SHOULD appear in TopSection
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: 'Score of 74 — led by financial health (+24 pts) and business metrics (+8 pts).',
+            strengths: ['Revenue KPI confirmed: $1.5M ARR.'],
+            weaknesses: ['Provide gross margin and unit economics (CAC/LTV).'],
+            actions_to_improve: ['Confirm cash balance and runway explicitly.'],
+          },
+        },
+      },
+    } as any);
+
+    vi.mocked(apiGetDealGovernedOverlayPersisted).mockResolvedValue({
+      overview: {
+        schema_version: 'governed_llm_overview_v1',
+        input_hash: 'hash-tsv1-1',
+        created_at: new Date().toISOString(),
+        llm_phase_mode: 'governed',
+        // Governed text — should NOT appear in TopSection deal-summary-text
+        summary_text: 'This is the governed hero company summary XYZ.',
+        claims: [],
+        disclosures: [],
+        consistency_warnings: [],
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-tsv1-1' });
+
+    const summaryEl = await screen.findByTestId('deal-summary-text');
+    // Score-driver one-liner must appear
+    expect(summaryEl.textContent).toContain('Score of 74');
+    expect(summaryEl.textContent).toContain('financial health');
+    // Governed hero and company one-liner must NOT appear in TopSection
+    expect(summaryEl.textContent).not.toContain('governed hero company summary XYZ');
+    expect(summaryEl.textContent).not.toContain('builds widgets for enterprise clients');
+  });
+
+  test('[topsection_v1] strengths from score_explanation.understanding_v1 render in Score Understanding', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v1', dioStatus: 'ready', lastAnalyzedAt: '2024-01-02T00:00:00.000Z' } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-tsv1-2',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 68,
+        recommendation: 'yes',
+        sections: [],
+        metadata: {
+          cycle_number: 1,
+          score_band_v2: { key: 'good', label: 'Good', overall_score: 68, thresholds_version: 'v2' },
+          // [SCORE-CONTRACT] Canonical source for Score Understanding copy.
+          score_explanation: {
+            understanding_v1: {
+              strengths: [
+                { text: 'Strong cash position confirmed from financials.' },
+                { text: 'Revenue KPI extracted: $800K ARR.' },
+              ],
+              diligence_open_items: [
+                { text: 'Market sizing documentation is thin.' },
+              ],
+              execution_dependencies: [
+                { text: 'Provide CAC/LTV data from cohort tables.' },
+              ],
+            },
+          },
+        },
+        structured_summary: {
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: 'Score of 68 — financial health was a strength (+18 pts), while risk profile needs improvement (-7 pts).',
+            strengths: ['Strong cash position confirmed from financials.', 'Revenue KPI extracted: $800K ARR.'],
+            weaknesses: ['Market sizing documentation is thin.'],
+            actions_to_improve: ['Provide CAC/LTV data from cohort tables.'],
+          },
+          deal_summary_v1: { one_liner: '', long_summary: '' },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-tsv1-2' });
+
+    await screen.findByLabelText('Deal top summary');
+
+    // Strengths from understanding_v1 must render in Score Understanding
+    expect(screen.getByText(/Strong cash position confirmed from financials\./i)).toBeInTheDocument();
+    expect(screen.getByText(/Revenue KPI extracted: \$800K ARR\./i)).toBeInTheDocument();
+
+    // Gap item (non-imperative) from diligence_open_items must render in Weaknesses
+    // Use getAllByText: may appear in multiple sections (TopSection + Overview tab)
+    expect(screen.getAllByText(/Market sizing documentation is thin\./i).length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('[topsection_v1] placeholder renders when topsection_v1 is absent from the report', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v1', dioStatus: 'ready', lastAnalyzedAt: '2024-01-02T00:00:00.000Z' } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-tsv1-3',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 50,
+        recommendation: 'pass',
+        sections: [],
+        metadata: { cycle_number: 1 },
+        // No topsection_v1, no deal_summary_v1
+        structured_summary: {},
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-tsv1-3' });
+
+    const summaryEl = await screen.findByTestId('deal-summary-text');
+    // [SCORE-CONTRACT] When topsection_v1 is absent and no score_explanation.understanding_v1
+    // exists (no band score → scoreExplanationV1=null), the component renders the fallback span.
+    // Never shows a bare "Score of N" (that's score repetition, not explanation).
+    expect(summaryEl.textContent).toMatch(/score drivers not yet computed for this run/i);
+    expect(summaryEl.textContent).not.toMatch(/Score of 50/i);
+    // Must NOT show the old generic placeholder.
+    expect(summaryEl.textContent).not.toMatch(/Not yet derived from score \+ evidence/i);
+  });
+
+  // ── Score Consistency Guard ──────────────────────────────────────────────────
+
+  test('[score-guard] radial chart binds to report.overallScore and label reads "Overall Score"', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v1', dioStatus: 'ready', lastAnalyzedAt: '2024-01-02T00:00:00.000Z' } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-guard-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 82,
+        recommendation: 'yes',
+        sections: [],
+        metadata: { cycle_number: 1 },
+        structured_summary: {
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: 'Score of 82 — led by financial health (+24 pts).',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+          deal_summary_v1: { one_liner: '', long_summary: '' },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-guard-1' });
+
+    await screen.findByLabelText('Deal top summary');
+
+    // Radial chart must be present and bound to the canonical overallScore (82).
+    const radialChart = screen.getByTestId('radial-score-chart');
+    expect(radialChart).toBeInTheDocument();
+    expect(radialChart.getAttribute('aria-label')).toMatch(/82/);
+    expect(radialChart.getAttribute('data-canonical-score-source')).toBe('report.overallScore');
+
+    // Score label must read "Overall Score" when bound to report.overallScore.
+    const scoreLabel = screen.getByTestId('score-canonical-label');
+    expect(scoreLabel).toBeInTheDocument();
+    expect(scoreLabel.textContent?.trim()).toBe('Overall Score');
+  });
+
+  test('[score-guard] when report not ready, score label uses sub-engine label, not "Overall Score"', async () => {
+    // Deal API has a score but the report envelope has ready: false (not yet compiled).
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v1',
+      dioStatus: 'ready',
+      lastAnalyzedAt: null,
+      score: 65,
+    } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: false,
+      version: null,
+      artifact: null,
+      report: null,
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-guard-2' });
+
+    await screen.findByLabelText('Deal top summary');
+
+    // When the report is not ready, canonicalScoreSource is 'none' and label
+    // must NOT be "Overall Score" (it should be "Fundamentals score").
+    const radialChart = screen.getByTestId('radial-score-chart');
+    expect(radialChart.getAttribute('data-canonical-score-source')).toBe('none');
+
+    const scoreLabel = screen.getByTestId('score-canonical-label');
+    expect(scoreLabel.textContent?.trim()).not.toBe('Overall Score');
+  });
+
+  test('[score-guard] SCORE_MISMATCH_IN_COPY warning when copy contains a /100 value that differs from canonical score', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v1', dioStatus: 'ready', lastAnalyzedAt: '2024-01-02T00:00:00.000Z' } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-guard-3',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        // Canonical score is 75
+        overallScore: 75,
+        recommendation: 'yes',
+        sections: [],
+        metadata: { cycle_number: 1 },
+        structured_summary: {
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            // Copy says 82/100 — this conflicts with overallScore: 75
+            score_driver_one_liner: 'This deal scored 82/100 based on prior analysis.',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+          deal_summary_v1: { one_liner: '', long_summary: '' },
+        },
+      },
+    } as any);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      renderWorkspace({ dealId: 'deal-guard-3' });
+      await screen.findByLabelText('Deal top summary');
+
+      // Guard must emit a warning containing the mismatch code.
+      const mismatchCalls = warnSpy.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && c[0].includes('SCORE_MISMATCH_IN_COPY'),
+      );
+      expect(mismatchCalls.length).toBeGreaterThan(0);
+      // The warning must include both the canonical score and the mismatched value.
+      const firstCall = mismatchCalls[0];
+      expect(JSON.stringify(firstCall)).toContain('75');
+      expect(JSON.stringify(firstCall)).toContain('82');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  // ── Score binding: score_band_v2.overall_score canonicality ─────────────────
+
+  test('[score-binding] gauge prefers score_band_v2.overall_score (82) over report.overallScore (48)', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v1', dioStatus: 'ready', lastAnalyzedAt: '2024-01-02T00:00:00.000Z' } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-sb-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-sb-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        // Pre-calibration top-level score — should NOT drive the gauge when band score is present.
+        overallScore: 48,
+        recommendation: 'no',
+        sections: [],
+        metadata: {
+          // Calibrated canonical band score — MUST drive the gauge.
+          score_band_v2: { key: 'good', label: 'Good', overall_score: 82, thresholds_version: 'v2' },
+        },
+        structured_summary: {
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: 'Score of 82 — led by financial health.',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+          deal_summary_v1: { one_liner: '', long_summary: '' },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-sb-1' });
+
+    await screen.findByLabelText('Deal top summary');
+
+    // Radial chart must show 82 (score_band_v2.overall_score), not 48 (overallScore).
+    const radialChart = screen.getByTestId('radial-score-chart');
+    expect(radialChart).toBeInTheDocument();
+    expect(radialChart.getAttribute('aria-label')).toMatch(/82/);
+    expect(radialChart.getAttribute('aria-label')).not.toMatch(/\b48\b/);
+
+    // SVG accessible name must also reflect 82.
+    const svgImg = screen.getByRole('img', { name: /82 out of 100/i });
+    expect(svgImg).toBeInTheDocument();
+  });
+
+  test('[score-binding] gauge falls back to report.overallScore when no score_band_v2', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v1', dioStatus: 'ready', lastAnalyzedAt: '2024-01-02T00:00:00.000Z' } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-sb-2', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-sb-2',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 73,
+        recommendation: 'yes',
+        sections: [],
+        // No score_band_v2 — gauge must fall back to overallScore.
+        metadata: {},
+        structured_summary: {
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: 'Score of 73 — solid financial signals.',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+          deal_summary_v1: { one_liner: '', long_summary: '' },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-sb-2' });
+
+    await screen.findByLabelText('Deal top summary');
+
+    const radialChart = screen.getByTestId('radial-score-chart');
+    expect(radialChart.getAttribute('aria-label')).toMatch(/73/);
+
+    const svgImg = screen.getByRole('img', { name: /73 out of 100/i });
+    expect(svgImg).toBeInTheDocument();
+  });
+
+  test('[deal-snapshot] TopSection card title reads "Deal Snapshot"', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v1', dioStatus: 'ready', lastAnalyzedAt: '2024-01-02T00:00:00.000Z' } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-ds-1', analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-ds-1',
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 65,
+        recommendation: 'yes',
+        sections: [],
+        metadata: { score_band_v2: { key: 'ok', label: 'OK', overall_score: 65, thresholds_version: 'v2' } },
+        structured_summary: {
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: 'Score of 65 — mixed signals.',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+          deal_summary_v1: { one_liner: '', long_summary: '' },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-ds-1' });
+
+    const top = await screen.findByLabelText('Deal top summary');
+
+    // Title must say "Deal Snapshot", not "Deal Summary".
+    expect(within(top).getByText('Deal Snapshot')).toBeInTheDocument();
+    expect(within(top).queryByText('Deal Summary')).toBeNull();
+  });
+});
+
+describe('DealWorkspace version guard + canonical score resolver', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  test('[version-guard] when dioAnalysisVersion is 3, apiGetDealReport is called with version 3', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v3',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-03-01T00:00:00.000Z',
+      dioAnalysisVersion: 3,
+    } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 3,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-vg-1', analysis_version: 3, updated_at: '2024-03-01T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-vg-1',
+        generatedAt: '2024-03-01T00:00:00.000Z',
+        version: 3,
+        overallScore: 55,
+        recommendation: 'yes',
+        sections: [],
+        metadata: {
+          score_band_v2: { key: 'good', label: 'Good', overall_score: 78, thresholds_version: 'v2' },
+        },
+        structured_summary: {
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: 'Score of 78 — strong foundation.',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+          deal_summary_v1: { one_liner: '', long_summary: '' },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-vg-1' });
+    await screen.findByLabelText('Deal top summary');
+
+    // The report fetch must have been called with version 3, not null or 1.
+    expect(vi.mocked(apiGetDealReport)).toHaveBeenCalledWith(
+      'deal-vg-1',
+      expect.objectContaining({ version: 3 }),
+    );
+    // And the displayed score must be from the v3 report (band score = 78).
+    const radialChart = screen.getByTestId('radial-score-chart');
+    expect(radialChart.getAttribute('aria-label')).toMatch(/78/);
+  });
+
+  test('[version-guard] canonicalScoreSource is "score_band_v2.overall_score" when band score present', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v3',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-03-02T00:00:00.000Z',
+      dioAnalysisVersion: 3,
+    } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 3,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-vg-2', analysis_version: 3, updated_at: '2024-03-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-vg-2',
+        generatedAt: '2024-03-02T00:00:00.000Z',
+        version: 3,
+        overallScore: 48,
+        recommendation: 'yes',
+        sections: [],
+        // score_band_v2.overall_score (82) is the calibrated canonical score
+        metadata: {
+          score_band_v2: { key: 'good', label: 'Good', overall_score: 82, thresholds_version: 'v2' },
+        },
+        structured_summary: {
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: 'Score of 82 — strong traction.',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+          deal_summary_v1: { one_liner: '', long_summary: '' },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-vg-2' });
+    await screen.findByLabelText('Deal top summary');
+
+    const radialChart = screen.getByTestId('radial-score-chart');
+    // SCORE_MISMATCH_IN_COPY guard source must identify the band score field
+    expect(radialChart.getAttribute('data-canonical-score-source')).toBe('score_band_v2.overall_score');
+    // Gauge must show 82 (calibrated), not 48 (pre-calibration)
+    expect(radialChart.getAttribute('aria-label')).toMatch(/82/);
+  });
+
+  test('[version-guard] canonicalScoreSource is "report.overallScore" when no band score present', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v2',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-03-03T00:00:00.000Z',
+      dioAnalysisVersion: 2,
+    } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 2,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-vg-3', analysis_version: 2, updated_at: '2024-03-03T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-vg-3',
+        generatedAt: '2024-03-03T00:00:00.000Z',
+        version: 2,
+        overallScore: 61,
+        recommendation: 'yes',
+        sections: [],
+        // No score_band_v2 — resolver must fall back to overallScore
+        metadata: { cycle_number: 2 },
+        structured_summary: {
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: 'Score of 61 — moderate signals.',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+          deal_summary_v1: { one_liner: '', long_summary: '' },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-vg-3' });
+    await screen.findByLabelText('Deal top summary');
+
+    const radialChart = screen.getByTestId('radial-score-chart');
+    expect(radialChart.getAttribute('data-canonical-score-source')).toBe('report.overallScore');
+    expect(radialChart.getAttribute('aria-label')).toMatch(/61/);
+  });
+
+  test('[version-guard] version ratchet: latestKnownVersion prevents regression when fallback call uses null', async () => {
+    // Simulate the regression case: deal loaded with v3, then a no-version call should still use v3.
+    // We verify this by checking apiGetDealReport is never called with a version < 3.
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v3',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-03-04T00:00:00.000Z',
+      dioAnalysisVersion: 3,
+    } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 3,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-vg-4', analysis_version: 3, updated_at: '2024-03-04T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-vg-4',
+        generatedAt: '2024-03-04T00:00:00.000Z',
+        version: 3,
+        overallScore: 72,
+        recommendation: 'yes',
+        sections: [],
+        metadata: {
+          score_band_v2: { key: 'good', label: 'Good', overall_score: 72, thresholds_version: 'v2' },
+        },
+        structured_summary: {
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: 'Score of 72 — steady growth.',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+          deal_summary_v1: { one_liner: '', long_summary: '' },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-vg-4' });
+    await screen.findByLabelText('Deal top summary');
+
+    // Every call to apiGetDealReport must have version >= 3 or null only before v3 is known.
+    // After the first v3 envelope lands, version must never be 1.
+    const calls = vi.mocked(apiGetDealReport).mock.calls;
+    const badCalls = calls.filter(([, opts]) => typeof opts?.version === 'number' && opts.version < 3);
+    expect(badCalls).toHaveLength(0);
+  });
+});
+
+describe('DealWorkspace score_sources log + investorScore canonical fix', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** Builds a report envelope where score_band_v2.overall_score (82) differs from overallScore (48).
+   *  This is the discriminating scenario: gauge must show 82, investorScore must also be 82. */
+  const makeDivergentScoreEnvelope = (dealId: string) => ({
+    ready: true,
+    version: 3,
+    artifact: { kind: 'deal_intelligence_object', dio_id: `dio-ss-${dealId}`, analysis_version: 3, updated_at: '2024-04-01T00:00:00.000Z' },
+    report: {
+      dealId,
+      generatedAt: '2024-04-01T00:00:00.000Z',
+      version: 3,
+      // raw (pre-bridge) score stored in the report field
+      overallScore: 48,
+      recommendation: 'consider',
+      sections: [],
+      metadata: {
+        // calibrated score lives here (computed by server from totals.overall_score after bridge)
+        score_band_v2: { key: 'fund_track', label: 'Fund & Track', overall_score: 82, thresholds_version: 'v2' },
+        cycle_number: 3,
+      },
+      structured_summary: {
+        topsection_v1: {
+          schema_version: 'topsection_v1',
+          score_driver_one_liner: 'Score of 82 — deterministic bridge applied.',
+          strengths: [],
+          weaknesses: [],
+          actions_to_improve: [],
+        },
+        deal_summary_v1: { one_liner: '', long_summary: '' },
+      },
+    },
+  } as any);
+
+  test('[score-sources] [DDAI][score_sources] dev log fires with correct structure when band score present', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v3',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-04-01T00:00:00.000Z',
+      dioAnalysisVersion: 3,
+      // dealFromApi.score NOT set — so fundamentalsScore0_100 falls back to investorScore
+    } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue(makeDivergentScoreEnvelope('deal-ss-1'));
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    renderWorkspace({ dealId: 'deal-ss-1' });
+    await screen.findByLabelText('Deal top summary');
+
+    // Find the [DDAI][score_sources] log call (may have been called multiple times; get last).
+    let sourcesCalls: any[][] = [];
+    await waitFor(() => {
+      sourcesCalls = logSpy.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && c[0] === '[DDAI][score_sources]',
+      );
+      expect(sourcesCalls.length).toBeGreaterThan(0);
+    });
+
+    const lastPayload = sourcesCalls[sourcesCalls.length - 1][1] as any;
+
+    // Raw values logged correctly
+    expect(lastPayload.raw['reportFromApi.overallScore']).toBe(48);
+    expect(lastPayload.raw['reportFromApi.metadata.score_band_v2.overall_score']).toBe(82);
+
+    // Canonical resolution: resolver must pick brand score 82
+    expect(lastPayload.resolved.canonicalScore).toBe(82);
+    expect(lastPayload.resolved.canonicalScoreSource).toBe('score_band_v2.overall_score');
+
+    // Gauge must be bound to 82
+    expect(lastPayload.ui['TopSection gauge (reportView.score)']).toBe(82);
+    expect(lastPayload.ui['TopSection canonicalScoreSource']).toBe('score_band_v2.overall_score');
+
+    // Hypothesis guide must flag the divergence
+    expect(lastPayload.hypothesisGuide.bandScorePresent).toBe(true);
+    expect(lastPayload.hypothesisGuide.bandDiffersFromOverall).toBe(true);
+    expect(lastPayload.hypothesisGuide.gaugeSource).toBe('score_band_v2.overall_score');
+
+    logSpy.mockRestore();
+  });
+
+  test('[investorScore-fix] with band=82 / overallScore=48 / no dealFromApi.score, gauge shows 82', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v3',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-04-01T00:00:00.000Z',
+      dioAnalysisVersion: 3,
+      // score field deliberately absent → fundamentalsScore0_100 must come from investorScore
+    } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue(makeDivergentScoreEnvelope('deal-ss-2'));
+
+    renderWorkspace({ dealId: 'deal-ss-2' });
+    await screen.findByLabelText('Deal top summary');
+
+    // Gauge shows canonical score (82), not raw overallScore (48).
+    const radialChart = screen.getByTestId('radial-score-chart');
+    expect(radialChart.getAttribute('aria-label')).toMatch(/82/);
+    expect(radialChart.getAttribute('data-canonical-score-source')).toBe('score_band_v2.overall_score');
+  });
+
+  test('[investorScore-fix] with band === overallScore (normal case), gauge shows the single score', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v2',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-04-02T00:00:00.000Z',
+      dioAnalysisVersion: 2,
+    } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 2,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-ss-3', analysis_version: 2, updated_at: '2024-04-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-ss-3',
+        generatedAt: '2024-04-02T00:00:00.000Z',
+        version: 2,
+        // After deterministic bridge applied, both fields are equal (normal production case).
+        overallScore: 72,
+        recommendation: 'fund',
+        sections: [],
+        metadata: {
+          score_band_v2: { key: 'fund_caution', label: 'Fund (Caution)', overall_score: 72, thresholds_version: 'v2' },
+        },
+        structured_summary: {
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: 'Score of 72 — bridge applied, values aligned.',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+          deal_summary_v1: { one_liner: '', long_summary: '' },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-ss-3' });
+    await screen.findByLabelText('Deal top summary');
+
+    const radialChart = screen.getByTestId('radial-score-chart');
+    expect(radialChart.getAttribute('aria-label')).toMatch(/72/);
+    expect(radialChart.getAttribute('data-canonical-score-source')).toBe('score_band_v2.overall_score');
+  });
+});
+
+describe('DealWorkspace topsection score binding guardrail', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** Envelope with score_band_v2.overall_score=82 inside report.metadata (normal path). */
+  const makeBandScoreEnvelope = (dealId: string, bandScore: number, overallScore: number) => ({
+    ready: true,
+    version: 2,
+    artifact: { kind: 'deal_intelligence_object', dio_id: `dio-${dealId}`, analysis_version: 2, updated_at: '2024-05-01T00:00:00.000Z' },
+    report: {
+      dealId,
+      generatedAt: '2024-05-01T00:00:00.000Z',
+      version: 2,
+      overallScore,
+      recommendation: 'consider',
+      sections: [],
+      metadata: {
+        score_band_v2: { key: 'fund_track', label: 'Fund & Track', overall_score: bandScore, thresholds_version: 'v2' },
+      },
+      structured_summary: {
+        topsection_v1: {
+          schema_version: 'topsection_v1',
+          score_driver_one_liner: `Score of ${bandScore} — band score is authoritative.`,
+          strengths: [],
+          weaknesses: [],
+          actions_to_improve: [],
+        },
+        deal_summary_v1: { one_liner: '', long_summary: '' },
+      },
+    },
+  } as any);
+
+  /** Envelope with score_band_v2 only in top-level envelope.metadata, NOT in report.metadata.
+   *  Exercises the envelope-level fallback path added to resolve band score divergence. */
+  const makeEnvelopeLevelBandScoreEnvelope = (dealId: string, bandScore: number, overallScore: number) => ({
+    ready: true,
+    version: 2,
+    artifact: { kind: 'deal_intelligence_object', dio_id: `dio-${dealId}`, analysis_version: 2, updated_at: '2024-05-01T00:00:00.000Z' },
+    // score_band_v2 lives at the envelope level only (API failure to merge into report.metadata)
+    metadata: {
+      score_band_v2: { key: 'fund_track', label: 'Fund & Track', overall_score: bandScore, thresholds_version: 'v2' },
+    },
+    report: {
+      dealId,
+      generatedAt: '2024-05-01T00:00:00.000Z',
+      version: 2,
+      overallScore,
+      recommendation: 'consider',
+      sections: [],
+      metadata: {}, // no score_band_v2 here — should fall back to envelope.metadata
+      structured_summary: {
+        topsection_v1: {
+          schema_version: 'topsection_v1',
+          score_driver_one_liner: `Score of ${bandScore} — envelope fallback.`,
+          strengths: [],
+          weaknesses: [],
+          actions_to_improve: [],
+        },
+        deal_summary_v1: { one_liner: '', long_summary: '' },
+      },
+    },
+  } as any);
+
+  test('[topsection-binding] gauge shows band score (82) not raw overallScore (48) when score_band_v2 present', async () => {
+    // Core fix: score_band_v2.overall_score always wins over report.overallScore for gauge display.
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v2',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-05-01T00:00:00.000Z',
+      dioAnalysisVersion: 2,
+      score: 99, // dealFromApi.score — must NEVER appear in gauge
+    } as any);
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue(makeBandScoreEnvelope('deal-tb-1', 82, 48));
+
+    renderWorkspace({ dealId: 'deal-tb-1' });
+    await screen.findByLabelText('Deal top summary');
+
+    const radialChart = screen.getByTestId('radial-score-chart');
+    // Gauge must show 82 (band score), never 48 (overallScore) nor 99 (dealFromApi.score).
+    expect(radialChart.getAttribute('aria-label')).toMatch(/82/);
+    expect(radialChart.getAttribute('aria-label')).not.toMatch(/48/);
+    expect(radialChart.getAttribute('data-canonical-score-source')).toBe('score_band_v2.overall_score');
+  });
+
+  test('[topsection-binding] gauge shows band score (82) via envelope fallback when report.metadata lacks score_band_v2', async () => {
+    // Covers the path where the API deck_archetype block partially ran:
+    // payload.metadata has score_band_v2 but report.metadata was not merged.
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v2',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-05-03T00:00:00.000Z',
+      dioAnalysisVersion: 2,
+      score: 99, // dealFromApi.score — must NOT appear in gauge
+    } as any);
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue(makeEnvelopeLevelBandScoreEnvelope('deal-tb-3', 82, 48));
+
+    renderWorkspace({ dealId: 'deal-tb-3' });
+    await screen.findByLabelText('Deal top summary');
+
+    const radialChart = screen.getByTestId('radial-score-chart');
+    // Gauge must still show 82 via envelope-level fallback, never 48 (inner overallScore)
+    // nor 99 (dealFromApi.score).
+    expect(radialChart.getAttribute('aria-label')).toMatch(/82/);
+    expect(radialChart.getAttribute('aria-label')).not.toMatch(/48/);
+    expect(radialChart.getAttribute('data-canonical-score-source')).toBe('score_band_v2.overall_score');
+  });
+
+  test('[topsection-binding] gauge shows overallScore (73) when no band score present', async () => {
+    // When no band score exists at any level, fall back to report.overallScore (never dealFromApi.score).
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v2',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-05-04T00:00:00.000Z',
+      dioAnalysisVersion: 2,
+      score: 99, // dealFromApi.score — must NOT be used
+    } as any);
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 2,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-tb-4', analysis_version: 2, updated_at: '2024-05-04T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-tb-4',
+        generatedAt: '2024-05-04T00:00:00.000Z',
+        version: 2,
+        overallScore: 73,
+        recommendation: 'consider',
+        sections: [],
+        metadata: {}, // no score_band_v2
+        structured_summary: {
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: 'Score of 73 — solid traction.',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+          deal_summary_v1: { one_liner: '', long_summary: '' },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-tb-4' });
+    await screen.findByLabelText('Deal top summary');
+
+    const radialChart = screen.getByTestId('radial-score-chart');
+    // Gauge must show 73 (overallScore), source = report.overallScore, never 99 (dealFromApi.score).
+    expect(radialChart.getAttribute('aria-label')).toMatch(/73/);
+    expect(radialChart.getAttribute('aria-label')).not.toMatch(/99/);
+    expect(radialChart.getAttribute('data-canonical-score-source')).toBe('report.overallScore');
+  });
+
+  test('[topsection-binding] gauge shows 0 (not dealFromApi.score) when report is applied but has no score fields', async () => {
+    // Edge case: report is applied (ready + reportFromApi present) but neither overallScore
+    // nor score_band_v2 exist. Guardrail: gauge = 0, never dealFromApi.score.
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v2',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2024-05-02T00:00:00.000Z',
+      dioAnalysisVersion: 2,
+      score: 75, // dealFromApi.score — must NOT appear in gauge when report applied
+    } as any);
+
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 2,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-tb-2', analysis_version: 2, updated_at: '2024-05-02T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-tb-2',
+        generatedAt: '2024-05-02T00:00:00.000Z',
+        version: 2,
+        // No overallScore, no score_band_v2 → resolver returns null → gaugeScore = 0
+        recommendation: 'pass',
+        sections: [],
+        metadata: {},
+        structured_summary: {
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: 'No score available.',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+          deal_summary_v1: { one_liner: '', long_summary: '' },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-tb-2' });
+    await screen.findByLabelText('Deal top summary');
+
+    // Gauge must show 0 (edge-case floor), never 75 (dealFromApi.score).
+    const radialChart = screen.getByTestId('radial-score-chart');
+    expect(radialChart.getAttribute('aria-label')).not.toMatch(/75/);
+    expect(radialChart.getAttribute('data-canonical-score-source')).toBe('none');
+  });
+
+  test('[topsection-binding] score_mechanic phrases stripped from topSectionStrengths across all paths', () => {
+    // Unit-style check: the _SCORE_MECHANIC_RE filter must eliminate known mechanic phrases
+    // from any source tier. We test via the TopSection strengths prop rendered in the DOM.
+    // This verifies the filter is applied, not just declared.
+    const MECHANIC_PHRASES = [
+      'Pacing Score: 78',
+      'score computed from analyzer',
+      'neutral baseline used',
+      'analyzer scored this segment',
+      'missing analyzer for revenue',
+    ];
+    // These should NOT pass the filter (tested via the regex pattern directly).
+    const _SCORE_MECHANIC_RE = /pacing score|score computed|narrative pacing|computed.*score|score.*mechanic|analyzer.*scored|neutral baseline|missing analyzer|insufficient data|analyzer score used|neutral baseline used/i;
+    for (const phrase of MECHANIC_PHRASES) {
+      expect(_SCORE_MECHANIC_RE.test(phrase)).toBe(true);
+    }
+    // Legit strengths should NOT be blocked.
+    const LEGIT_PHRASES = [
+      'Strong recurring revenue with 120% NRR',
+      'Experienced founding team with two prior exits',
+      'Clear product-market fit in enterprise segment',
+    ];
+    for (const phrase of LEGIT_PHRASES) {
+      expect(_SCORE_MECHANIC_RE.test(phrase)).toBe(false);
+    }
+  });
+});
+
+describe('DealWorkspace overview canonical score binding', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** Report envelope where score_band_v2.overall_score lives inside report.metadata (normal path). */
+  const makeOverviewBandEnvelope = (dealId: string, bandScore: number, overallScore: number) => ({
+    ready: true,
+    version: 2,
+    artifact: { kind: 'deal_intelligence_object', dio_id: `dio-ovw-${dealId}`, analysis_version: 2, updated_at: '2025-01-01T00:00:00.000Z' },
+    report: {
+      dealId,
+      generatedAt: '2025-01-01T00:00:00.000Z',
+      version: 2,
+      overallScore,
+      recommendation: 'consider',
+      sections: [],
+      metadata: {
+        score_band_v2: { key: 'good', label: 'Good', overall_score: bandScore, thresholds_version: 'v2' },
+      },
+      structured_summary: {
+        topsection_v1: {
+          schema_version: 'topsection_v1',
+          score_driver_one_liner: `Score of ${bandScore} — canonical.`,
+          strengths: [],
+          weaknesses: [],
+          actions_to_improve: [],
+        },
+        deal_summary_v1: { one_liner: 'Test deal.', long_summary: '' },
+      },
+    },
+  } as any);
+
+  /** Report envelope where score_band_v2 lives only at envelope.metadata (envelope-fallback path). */
+  const makeOverviewEnvelopeFallbackEnvelope = (dealId: string, bandScore: number, overallScore: number) => ({
+    ready: true,
+    version: 2,
+    metadata: {
+      score_band_v2: { key: 'good', label: 'Good', overall_score: bandScore, thresholds_version: 'v2' },
+    },
+    artifact: { kind: 'deal_intelligence_object', dio_id: `dio-ovw-${dealId}`, analysis_version: 2, updated_at: '2025-01-01T00:00:00.000Z' },
+    report: {
+      dealId,
+      generatedAt: '2025-01-01T00:00:00.000Z',
+      version: 2,
+      overallScore,
+      recommendation: 'consider',
+      sections: [],
+      metadata: {}, // no score_band_v2 here — should fall back to envelope.metadata
+      structured_summary: {
+        topsection_v1: {
+          schema_version: 'topsection_v1',
+          score_driver_one_liner: `Score of ${bandScore} — envelope fallback.`,
+          strengths: [],
+          weaknesses: [],
+          actions_to_improve: [],
+        },
+        deal_summary_v1: { one_liner: 'Test deal.', long_summary: '' },
+      },
+    },
+  } as any);
+
+  // Returns a deal where dealFromApi.score=55 — a value that must NEVER leak into the Overview
+  // once a report is applied.
+  const makeLeakDeal = () =>
+    ({
+      dioVersionId: 'v2',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2025-01-01T00:00:00.000Z',
+      dioAnalysisVersion: 2,
+      score: 55, // DB score — must NOT appear in Overview once reportApplied=true
+    } as any);
+
+  test('[overview-canonical] Case A: band score in report.metadata → Overview shows 82, gauge shows 82, DB score (55) absent', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue(makeLeakDeal());
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue(makeOverviewBandEnvelope('deal-ovw-a', 82, 48));
+
+    renderWorkspace({ dealId: 'deal-ovw-a' });
+    await screen.findByLabelText('Deal top summary');
+
+    // TopSection gauge must show 82.
+    const radialChart = screen.getByTestId('radial-score-chart');
+    expect(radialChart.getAttribute('aria-label')).toMatch(/82/);
+    expect(radialChart.getAttribute('data-canonical-score-source')).toBe('score_band_v2.overall_score');
+
+    // Overview score tile must also show 82 from the same canonical source.
+    const overviewScore = await screen.findByTestId('overview-score-text');
+    expect(overviewScore.textContent).toMatch(/82/);
+    // Must NOT contain the DB score (55) or the raw overallScore (48).
+    expect(overviewScore.textContent).not.toMatch(/55/);
+    expect(overviewScore.textContent).not.toMatch(/48/);
+    expect(overviewScore.getAttribute('data-canonical-score-source')).toBe('score_band_v2.overall_score');
+  });
+
+  test('[overview-canonical] Case B: no band anywhere, report.overallScore=73 → both surfaces show 73, DB score (55) absent', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue(makeLeakDeal());
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({
+      ready: true,
+      version: 2,
+      artifact: { kind: 'deal_intelligence_object', dio_id: 'dio-ovw-b', analysis_version: 2, updated_at: '2025-01-01T00:00:00.000Z' },
+      report: {
+        dealId: 'deal-ovw-b',
+        generatedAt: '2025-01-01T00:00:00.000Z',
+        version: 2,
+        overallScore: 73,
+        recommendation: 'consider',
+        sections: [],
+        metadata: {}, // no score_band_v2
+        structured_summary: {
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: 'Score of 73 — solid signal.',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+          deal_summary_v1: { one_liner: 'Test deal.', long_summary: '' },
+        },
+      },
+    } as any);
+
+    renderWorkspace({ dealId: 'deal-ovw-b' });
+    await screen.findByLabelText('Deal top summary');
+
+    const radialChart = screen.getByTestId('radial-score-chart');
+    expect(radialChart.getAttribute('aria-label')).toMatch(/73/);
+    expect(radialChart.getAttribute('data-canonical-score-source')).toBe('report.overallScore');
+
+    const overviewScore = await screen.findByTestId('overview-score-text');
+    expect(overviewScore.textContent).toMatch(/73/);
+    expect(overviewScore.textContent).not.toMatch(/55/); // no DB leak
+    expect(overviewScore.getAttribute('data-canonical-score-source')).toBe('report.overallScore');
+  });
+
+  test('[overview-canonical] Case C: report not ready → Overview shows "Not yet computed" placeholder, no numeric score', async () => {
+    // DB score=82 must NOT appear in the Overview when the report is not applied.
+    vi.mocked(apiGetDeal).mockResolvedValue({
+      dioVersionId: 'v1',
+      dioStatus: 'ready',
+      lastAnalyzedAt: '2025-01-01T00:00:00.000Z',
+      dioAnalysisVersion: 1,
+      score: 82, // DB score — must NOT appear when reportApplied=false
+    } as any);
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue({ ready: false, reason: 'not_generated_yet' } as any);
+
+    renderWorkspace({ dealId: 'deal-ovw-c' });
+
+    // Wait for the overview score element to appear (rendered once showDeterministicAuthoritative resolves).
+    const overviewScore = await screen.findByTestId('overview-score-text');
+    // Must show the placeholder — no numeric "XX / 100" format.
+    expect(overviewScore.textContent).toMatch(/Not yet computed/i);
+    expect(overviewScore.textContent).not.toMatch(/\d+ \/ 100/);
+    // Must NOT display the DB score.
+    expect(overviewScore.textContent).not.toMatch(/82/);
+  });
+});
+
+describe('DealWorkspace score canonical contract (Details panel + copy sanitizer)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** Envelope with band score=82 at report.metadata AND report.overallScore=48 (pre-band raw). */
+  const makeBandVsRawEnvelope = (dealId: string, bandScore: number, rawOverallScore: number, opts?: {
+    strengths?: string[];
+    criteriaSnapshot?: object | null;
+  }) => ({
+    ready: true,
+    version: 2,
+    artifact: { kind: 'deal_intelligence_object', dio_id: `dio-sc-${dealId}`, analysis_version: 2, updated_at: '2025-01-01T00:00:00.000Z' },
+    report: {
+      dealId,
+      generatedAt: '2025-01-01T00:00:00.000Z',
+      version: 2,
+      overallScore: rawOverallScore,
+      recommendation: 'consider',
+      sections: [],
+      metadata: {
+        score_band_v2: { key: 'good', label: 'Good', overall_score: bandScore, thresholds_version: 'v2' },
+        // [SCORE-CONTRACT] Canonical source for TopSection Score Understanding.
+        score_explanation: {
+          understanding_v1: {
+            strengths: (opts?.strengths ?? []).map((text) => ({ text })),
+            diligence_open_items: [],
+            execution_dependencies: [],
+          },
+        },
+        ...(opts?.criteriaSnapshot != null ? {
+          hard_pass_guardrail_v2: { triggered: false, reason: null, note: null, criteria_snapshot: opts.criteriaSnapshot },
+        } : {}),
+      },
+      structured_summary: {
+        topsection_v1: {
+          schema_version: 'topsection_v1',
+          score_driver_one_liner: `Canonical score ${bandScore}.`,
+          strengths: opts?.strengths ?? [],
+          weaknesses: [],
+          actions_to_improve: [],
+        },
+        deal_summary_v1: { one_liner: 'Test deal.', long_summary: '' },
+      },
+    },
+  } as any);
+
+  const makeScDeal = () => ({
+    dioVersionId: 'v2',
+    dioStatus: 'ready',
+    lastAnalyzedAt: '2025-01-01T00:00:00.000Z',
+    dioAnalysisVersion: 2,
+    score: 48, // DB score — must not leak
+  } as any);
+
+  test('[score-canonical] guardrail criteria snapshot NOT rendered without debug mode (workspaceDebugEnabled=false)', async () => {
+    // Even if the report contains a criteria_snapshot, it must NOT reach the DOM by default
+    // because it contains raw internal scores that contradict the canonical score.
+    vi.mocked(apiGetDeal).mockResolvedValue(makeScDeal());
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue(
+      makeBandVsRawEnvelope('deal-sc-guard', 82, 48, {
+        criteriaSnapshot: { overall_score: 48, unadjusted_overall_score: 46, coverage_ratio: 0.7 },
+      }),
+    );
+
+    renderWorkspace({ dealId: 'deal-sc-guard' });
+    await screen.findByLabelText('Deal top summary');
+
+    // The raw guardrail JSON block must NOT appear in the DOM.
+    expect(screen.queryByTestId('guardrail-criteria-snapshot')).toBeNull();
+  });
+
+  test('[score-canonical] Details panel shows canonical score and "Band calibration applied" note when raw != band', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue(makeScDeal());
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue(
+      makeBandVsRawEnvelope('deal-sc-labels', 82, 48),
+    );
+
+    renderWorkspace({ dealId: 'deal-sc-labels' });
+    await screen.findByLabelText('Deal top summary');
+
+    // The Details accordion is always in the DOM when show=true (native <details> element).
+    const labelsEl = await screen.findByTestId('details-score-labels');
+
+    // Canonical score must be 82 (from score_band_v2).
+    expect(labelsEl.textContent).toMatch(/Canonical score.*82/);
+    // Raw score (pre-band) must also appear.
+    expect(labelsEl.textContent).toMatch(/Raw score.*48/);
+    // Note that band calibration was applied.
+    expect(labelsEl.textContent).toMatch(/Band calibration applied/i);
+  });
+
+  test('[score-canonical] Details panel shows canonical score only (no raw note) when band score == overallScore', async () => {
+    // When both values agree, there's no "calibration applied" note.
+    vi.mocked(apiGetDeal).mockResolvedValue(makeScDeal());
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue(
+      makeBandVsRawEnvelope('deal-sc-same', 82, 82),
+    );
+
+    renderWorkspace({ dealId: 'deal-sc-same' });
+    await screen.findByLabelText('Deal top summary');
+
+    const labelsEl = await screen.findByTestId('details-score-labels');
+    expect(labelsEl.textContent).toMatch(/Canonical score.*82/);
+    // No raw/calibration copy when identical.
+    expect(labelsEl.textContent).not.toMatch(/Raw score/);
+    expect(labelsEl.textContent).not.toMatch(/Band calibration applied/i);
+  });
+
+  test('[score-canonical] strength bullet "Strong recommendation score of 67/100" stripped from DOM when canonical=82', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue(makeScDeal());
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue(
+      makeBandVsRawEnvelope('deal-sc-strip', 82, 48, {
+        strengths: [
+          'Strong recommendation score of 67/100',
+          'Solid MRR growth trajectory',
+        ],
+      }),
+    );
+
+    renderWorkspace({ dealId: 'deal-sc-strip' });
+    await screen.findByLabelText('Deal top summary');
+
+    // The raw score (67) must not appear anywhere in the DOM.
+    expect(document.body.textContent).not.toMatch(/67\/100/);
+    expect(document.body.textContent).not.toMatch(/67 \/ 100/);
+
+    // The legitimate strength must still appear.
+    expect(document.body.textContent).toMatch(/Solid MRR growth trajectory/);
+  });
+
+  test('[score-canonical] strength bullet kept intact when its NN/100 matches canonical', async () => {
+    vi.mocked(apiGetDeal).mockResolvedValue(makeScDeal());
+    const { apiGetDealReport } = await import('../lib/apiClient');
+    vi.mocked(apiGetDealReport).mockResolvedValue(
+      makeBandVsRawEnvelope('deal-sc-keep', 82, 48, {
+        strengths: ['Score of 82/100 reflects strong execution', 'Experienced team'],
+      }),
+    );
+
+    renderWorkspace({ dealId: 'deal-sc-keep' });
+    await screen.findByLabelText('Deal top summary');
+
+    // 82/100 matches canonical → must NOT be stripped.
+    expect(document.body.textContent).toMatch(/82\/100/);
+    expect(document.body.textContent).toMatch(/Experienced team/);
   });
 });

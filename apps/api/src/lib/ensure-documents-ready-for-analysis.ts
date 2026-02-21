@@ -82,11 +82,23 @@ export async function ensureDocumentsReadyForAnalysis(args: {
   dealId: string;
   requirePageUnderstanding: boolean;
   pageUnderstandingVersion: string;
+  forceRefresh?: boolean;
+  minDpuCreatedAt?: string | null;
   logger?: FastifyBaseLogger;
   enqueue: (input: EnqueueJobInput, opts?: EnqueueJobOptions) => Promise<{ job_id: string; status: string }>;
 }): Promise<EnsureDocumentsReadyResult> {
   const { pool, dealId, requirePageUnderstanding, pageUnderstandingVersion, enqueue } = args;
   const log = args.logger;
+  const forceRefresh = args.forceRefresh === true;
+  const minDpuCreatedAt = typeof args.minDpuCreatedAt === 'string' && args.minDpuCreatedAt.trim().length > 0 ? args.minDpuCreatedAt.trim() : null;
+
+  const isAfterOrEqualIso = (actual: string | null | undefined, min: string | null | undefined): boolean => {
+    if (!actual || !min) return true;
+    const a = Date.parse(actual);
+    const b = Date.parse(min);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return true;
+    return a >= b;
+  };
 
   const hasMimeType = await hasColumn(pool, "documents", "mime_type");
   const hasFileName = await hasColumn(pool, "documents", "file_name");
@@ -123,6 +135,16 @@ export async function ensureDocumentsReadyForAnalysis(args: {
     [sanitizeText(dealId)]
   );
 
+  const hasRenderedPagesInMeta = (d: DocRow): boolean => {
+    const metaObj = d.extraction_metadata && typeof d.extraction_metadata === 'object' ? (d.extraction_metadata as any) : null;
+    const renderedR2 = metaObj?.rendered_pages_r2 && typeof metaObj.rendered_pages_r2 === 'object' ? (metaObj.rendered_pages_r2 as any) : null;
+    const renderedDir = typeof metaObj?.rendered_pages_dir === 'string' ? metaObj.rendered_pages_dir.trim() : '';
+    const renderedCount = typeof metaObj?.rendered_pages_count === 'number' && Number.isFinite(metaObj.rendered_pages_count)
+      ? Math.max(0, Math.trunc(metaObj.rendered_pages_count))
+      : 0;
+    return !!renderedR2 || renderedDir.length > 0 || renderedCount > 0;
+  };
+
   const visualDocs = (docs ?? []).filter((d) => {
     const caps = getDocumentCapabilities({
       fileName: typeof d.file_name === "string" ? d.file_name : null,
@@ -130,6 +152,17 @@ export async function ensureDocumentsReadyForAnalysis(args: {
     });
     return !!caps.visualExtractable;
   });
+
+  // Fallback: some legacy rows may not have mime_type/file_name populated, but still have rendered_pages_*.
+  // For force_refresh, we prefer refreshing DPU when we can see rendered pages metadata.
+  const visualDocsOrRenderedFallback = (() => {
+    if (visualDocs.length > 0) return visualDocs;
+    return (docs ?? []).filter((d) => {
+      const pageCount = Math.max(0, toInt(d.page_count, 0));
+      if (pageCount <= 0) return false;
+      return hasRenderedPagesInMeta(d);
+    });
+  })();
 
   const renderChunkSize = (() => {
     const raw = toInt(process.env.VISUAL_PAGE_IMAGE_MAX_PAGES, 10);
@@ -243,6 +276,68 @@ export async function ensureDocumentsReadyForAnalysis(args: {
     }
   }
 
+  // 1b) Force refresh path: enqueue DPU rebuild + document intelligence extraction even if readiness is already satisfied.
+  // This is used for "rerun analysis" flows to avoid using stale DPU-derived promoted facts.
+  if (requirePageUnderstanding && forceRefresh) {
+    for (const d of visualDocsOrRenderedFallback) {
+      const docId = String(d.id);
+      const pageCount = Math.max(0, toInt(d.page_count, 0));
+      if (!docId || pageCount <= 0) continue;
+
+      try {
+        await enqueue(
+          {
+            deal_id: dealId,
+            document_id: docId,
+            type: "populate_document_page_understanding",
+            payload: {
+              page_understanding_version: pageUnderstandingVersion,
+              page_start: 0,
+              page_end: pageCount,
+              force_refresh: true,
+              ...(minDpuCreatedAt ? { min_dpu_created_at: minDpuCreatedAt } : {}),
+              reason: "analysis_force_refresh",
+            },
+          },
+          // IMPORTANT: avoid dedupe so reruns actually enqueue fresh work.
+          undefined
+        );
+        enqueued.populate_document_page_understanding.push(docId);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log?.warn(
+          { event: "populate_document_page_understanding.enqueue_failed", deal_id: dealId, document_id: docId, err: msg },
+          "Failed to enqueue populate_document_page_understanding (force_refresh)"
+        );
+      }
+
+      try {
+        await enqueue(
+          {
+            deal_id: dealId,
+            document_id: docId,
+            type: "document_intelligence_extract",
+            payload: {
+              deal_id: dealId,
+              document_id: docId,
+              reason: "analysis_force_refresh",
+              force: true,
+            },
+          },
+          // IMPORTANT: avoid dedupe so reruns can refresh evidence_items with new provenance.
+          undefined
+        );
+        enqueued.document_intelligence_extract.push(docId);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log?.warn(
+          { event: "document_intelligence_extract.enqueue_failed", deal_id: dealId, document_id: docId, err: msg },
+          "Failed to enqueue document_intelligence_extract (force_refresh)"
+        );
+      }
+    }
+  }
+
   // 2) Page understanding readiness
   const readiness = requirePageUnderstanding
     ? await fetchPageUnderstandingReadinessForDeal(pool as any, dealId, pageUnderstandingVersion)
@@ -261,12 +356,32 @@ export async function ensureDocumentsReadyForAnalysis(args: {
 
   const effective = computeEffectiveReadiness({ readiness, visualDocsMissingPageCount });
 
+  // Freshness gate: when a caller supplies a min_dpu_created_at token (typically from force_refresh),
+  // treat readiness as not-ready until DPU has been recreated at/after that timestamp.
+  if (requirePageUnderstanding && minDpuCreatedAt) {
+    const latest = (effective.readiness as any)?.latest_dpu_created_at as string | null | undefined;
+    if (!isAfterOrEqualIso(latest, minDpuCreatedAt)) {
+      (effective.readiness as any).ready = false;
+      (effective.readiness as any).blocked_reason = (effective.readiness as any).blocked_reason ?? "DPU_STALE";
+      (effective.readiness as any).poll_after_ms = (effective.readiness as any).poll_after_ms ?? 2000;
+      (effective.readiness as any).action = (effective.readiness as any).action ?? { type: "rebuild_page_understanding", deal_id: dealId, version: effective.readiness.version };
+      (effective as any).ready = false;
+      (effective as any).blocked_reason = (effective.readiness as any).blocked_reason;
+      (effective as any).poll_after_ms = (effective.readiness as any).poll_after_ms;
+    }
+  }
+
   // If we're still missing render prerequisites, don't enqueue downstream visual extraction yet.
   const hasRenderWorkEnqueued = enqueued.render_document_pages.length > 0;
 
   if (requirePageUnderstanding && !effective.ready && !hasRenderWorkEnqueued) {
     const missingDocs = (effective.readiness.documents ?? [])
-      .filter((d) => Array.isArray(d.missing_pages) && d.missing_pages.length > 0)
+      .filter((d: any) => {
+        const hard = Array.isArray(d?.hard_missing_pages) ? d.hard_missing_pages : null;
+        if (hard && hard.length > 0) return true;
+        // Back-compat: if hard-missing isn't present, fall back to missing_pages.
+        return Array.isArray(d?.missing_pages) && d.missing_pages.length > 0;
+      })
       .map((d) => d.document_id);
 
     const missingSet = new Set(missingDocs);

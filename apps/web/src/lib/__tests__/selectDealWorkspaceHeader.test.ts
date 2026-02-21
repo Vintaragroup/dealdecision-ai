@@ -9,6 +9,9 @@ describe('selectDealWorkspaceHeader', () => {
       structured_summary: {
         business_model_summary: { value: 'Real estate investment (synthesized)' },
         business_model: { value: 'Real estate investment (promoted)', label: 'Attributed', sources: [] },
+        kpis: {
+          business_model: { value: 'Real estate investment (promoted)', label: 'Attributed', sources: [] },
+        },
       },
     };
 
@@ -30,11 +33,13 @@ describe('selectDealWorkspaceHeader', () => {
     const report: any = {
       ready: true,
       structured_summary: {
-        raise: { value: '$5M', label: 'Attributed', sources: sourcesRef },
-        business_model: { value: 'SaaS', label: 'Attributed', sources: [] },
-        revenue: { value: { raw: '$850K ARR' }, label: 'Forecast', sources: sourcesRef },
-        growth: { value: { raw: '40% MoM' }, label: 'Forecast', sources: sourcesRef },
-        customers: { value: { raw: '15 customers' }, label: 'Wholesale', sources: sourcesRef },
+        raise: { value: '$5M', round_label: 'Seed', value_json: { amount: { amount: 5_000_000 } }, sources: sourcesRef },
+        kpis: {
+          business_model: { value: 'SaaS', label: 'Attributed', sources: [] },
+          revenue: { value: { raw: '$850K ARR' }, label: 'Forecast', sources: sourcesRef },
+          growth: { value: { raw: '40% MoM' }, label: 'Forecast', sources: sourcesRef },
+          customers: { value: { raw: '15 customers' }, label: 'Wholesale', sources: sourcesRef },
+        },
       },
     };
 
@@ -50,7 +55,7 @@ describe('selectDealWorkspaceHeader', () => {
 
     expect(selected.ready).toBe(true);
     expect(selected.raise.value).toBe('$5M');
-    expect(selected.raise.label).toBe('Attributed');
+    expect(selected.raise.label).toBe('Seed');
     expect(selected.raise.sources).toBe(sourcesRef);
 
     expect(selected.business_model_synthesized.value).toBeNull();
@@ -61,6 +66,41 @@ describe('selectDealWorkspaceHeader', () => {
 
     expect(selected.growth.value).toBe('40% MoM');
     expect(selected.customers.value).toBe('15 customers');
+  });
+
+  test('when report is ready and structured_summary contains both top-level + kpis: prefers structured_summary.kpis.*', () => {
+    const sourcesRef = [{ document_id: 'doc-1', page_index: 3, note_snippet: 'from deck' }];
+
+    const report: any = {
+      ready: true,
+      structured_summary: {
+        // Canonical raise amount lives on structured_summary.raise (should win)
+        raise: { value: '$2M Seed', round_label: 'Seed', value_json: { amount: { amount: 2_000_000 } }, sources: sourcesRef },
+        business_model: { value: 'Top BM', label: 'Top', sources: sourcesRef },
+        revenue: { value: { raw: '$800K ARR' }, label: 'Top', sources: sourcesRef },
+        growth: { value: { raw: '30% MoM' }, label: 'Top', sources: sourcesRef },
+        customers: { value: { raw: '12 customers' }, label: 'Top', sources: sourcesRef },
+        // Nested canonical values (should win)
+        kpis: {
+          raise: { value: '$3M Seed', label: 'KPI', sources: sourcesRef },
+          business_model: { value: 'KPI BM', label: 'KPI', sources: sourcesRef },
+          revenue: { value: { raw: '$900K ARR' }, label: 'KPI', sources: sourcesRef },
+          growth: { value: { raw: '40% MoM' }, label: 'KPI', sources: sourcesRef },
+          customers: { value: { raw: '15 customers' }, label: 'KPI', sources: sourcesRef },
+        },
+      },
+    };
+
+    const selected = selectDealWorkspaceHeader(report, null);
+
+    expect(selected.ready).toBe(true);
+    expect(selected.raise.value).toBe('$2M');
+    expect(selected.raise.label).toBe('Seed');
+    expect(selected.revenue.value).toBe('$900K ARR');
+    expect(selected.growth.value).toBe('40% MoM');
+    expect(selected.customers.value).toBe('15 customers');
+    expect(selected.business_model.value).toBe('KPI BM');
+    expect(selected.business_model.label).toBe('KPI');
   });
 
   test('when report is not ready: routes only from Phase 1 (ignores structured_summary)', () => {
@@ -118,6 +158,9 @@ describe('selectDealWorkspaceHeader', () => {
           supporting_nodes: [],
         },
         business_model: { value: 'Usage-based SaaS', label: 'Attributed', sources: [{ document_id: 'doc-x', page_index: 3 }] },
+        kpis: {
+          business_model: { value: 'Usage-based SaaS', label: 'Attributed', sources: [{ document_id: 'doc-x', page_index: 3 }] },
+        },
       },
     };
 
@@ -135,6 +178,9 @@ describe('selectDealWorkspaceHeader', () => {
       structured_summary: {
         business_model_summary: { value: null },
         business_model: { value: 'Usage-based SaaS', label: 'Attributed', sources: [{ document_id: 'doc-1', page_index: 1 }] },
+        kpis: {
+          business_model: { value: 'Usage-based SaaS', label: 'Attributed', sources: [{ document_id: 'doc-1', page_index: 1 }] },
+        },
       },
     };
 

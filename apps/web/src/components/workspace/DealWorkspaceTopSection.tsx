@@ -1,25 +1,46 @@
+import { useEffect } from 'react';
 import { CheckCircle2, AlertTriangle, ShieldCheck, ShieldAlert } from 'lucide-react';
+import { Skeleton } from '../ui/skeleton';
 
 export type DealWorkspaceTopSectionProps = {
   darkMode: boolean;
+  loading?: boolean;
   score: number; // 0-100
+  /** Whether a real canonical score is available; when false renders a 'Not yet scored' placeholder. */
+  scoreAvailable?: boolean;
+  /** Which canonical field the score prop is bound to — used by dev consistency guard. */
+  canonicalScoreSource?: 'score_band_v2.overall_score' | 'report.overallScore' | 'none';
   scoreLabel?: string;
   scoreBandLabel?: string | null;
   hardPassGuardrailTriggered?: boolean;
   hardPassGuardrailNote?: string | null;
   hardPassGuardrailCriteriaSnapshot?: any | null;
+  /**
+   * The pre-band `report.overallScore` (raw analytical score before band calibration).
+   * When provided and different from `score`, the Details panel labels both values so users
+   * understand why "Canonical: 82" differs from "Raw: 48".
+   * Only shown in the Details accordion — never as a top-level UI figure.
+   */
+  rawOverallScore?: number | null;
   decisionV1?: {
     recommendation_key?: string;
     label?: string;
     severity?: 'danger' | 'warn' | 'info' | 'success';
     reasons?: string[];
   } | null;
+  dealSummaryShort?: string | null;
   dealSummary: string;
   dealSummaryTitle?: string;
-  dealSummarySource?: 'canonical' | 'legacy' | 'overlay';
+  dealSummarySource?: 'canonical' | 'legacy' | 'overlay' | 'degraded';
   strengths: string[];
   weaknesses: string[];
+  /**
+   * [SCORE-CONTRACT] Execution-dependency / coverage-gap actions.
+   * Sourced from score_explanation_v1.action_recommendations (never governed overlay).
+   */
+  actionsToImprove?: string[];
   raise: string | null;
+  raiseLabel?: string | null;
   raiseConflict?: boolean;
   raiseConflictOverlayValue?: string | null;
   revenue: string | null;
@@ -43,6 +64,16 @@ export type DealWorkspaceTopSectionProps = {
   businessModelTooltip?: string | null;
   businessModelConflict?: boolean;
   businessModelConflictOverlayValue?: string | null;
+  burn: string | null;
+  burnLabel?: string | null;
+  burnTooltip?: string | null;
+  burnConflict?: boolean;
+  burnConflictOverlayValue?: string | null;
+  runway: string | null;
+  runwayLabel?: string | null;
+  runwayTooltip?: string | null;
+  runwayConflict?: boolean;
+  runwayConflictOverlayValue?: string | null;
   dealType: string;
   confidence: 'High' | 'Medium' | 'Low';
   verified?: boolean;
@@ -77,19 +108,26 @@ const scoreTone = (score0_100: number): { stroke: string; text: string; glow: st
 
 export function DealWorkspaceTopSection({
   darkMode,
+  loading = false,
   score,
+  scoreAvailable = true,
+  canonicalScoreSource = 'none',
   scoreLabel = 'Fundamentals score',
   scoreBandLabel = null,
   hardPassGuardrailTriggered = false,
   hardPassGuardrailNote = null,
   hardPassGuardrailCriteriaSnapshot = null,
+  rawOverallScore = null,
   decisionV1 = null,
+  dealSummaryShort = null,
   dealSummary,
-  dealSummaryTitle = 'Deal Summary',
+  dealSummaryTitle = 'Deal Snapshot',
   dealSummarySource = 'legacy',
   strengths,
   weaknesses,
+  actionsToImprove,
   raise,
+  raiseLabel = null,
   raiseConflict = false,
   raiseConflictOverlayValue = null,
   revenue,
@@ -113,6 +151,16 @@ export function DealWorkspaceTopSection({
   businessModelTooltip = null,
   businessModelConflict = false,
   businessModelConflictOverlayValue = null,
+  burn,
+  burnLabel = null,
+  burnTooltip = null,
+  burnConflict = false,
+  burnConflictOverlayValue = null,
+  runway,
+  runwayLabel = null,
+  runwayTooltip = null,
+  runwayConflict = false,
+  runwayConflictOverlayValue = null,
   dealType,
   confidence,
   verified = false,
@@ -136,12 +184,51 @@ export function DealWorkspaceTopSection({
   const score0_100 = clampScore0_100(score);
   const tone = scoreTone(score0_100);
 
+  // [SCORE-GUARD] Dev-only consistency guard: warn when any copy text references a
+  // numeric XX/100 value that does not match the canonical score bound to this component.
+  useEffect(() => {
+    if (typeof process !== 'undefined' && process.env.NODE_ENV === 'production') return;
+    const copyToScan = [
+      dealSummaryShort,
+      ...(Array.isArray(strengths) ? strengths : []),
+      ...(Array.isArray(weaknesses) ? weaknesses : []),
+    ]
+      .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+      .join(' ');
+    const mentions = copyToScan.match(/(\d{1,3})\/100/g) ?? [];
+    const mismatched = mentions.filter((m) => {
+      const n = parseInt(m.split('/')[0], 10);
+      return Number.isFinite(n) && n !== score0_100;
+    });
+    if (mismatched.length > 0) {
+      console.warn(
+        '[SCORE_MISMATCH_IN_COPY] Copy contains /100 value(s) that do not match canonical score.',
+        { canonicalScore: score0_100, canonicalScoreSource, mismatchedValues: mismatched },
+      );
+    }
+  }, [score0_100, dealSummaryShort, strengths, weaknesses, canonicalScoreSource]);
+
   const decisionLabel = typeof decisionV1?.label === 'string' && decisionV1.label.trim() ? decisionV1.label.trim() : null;
   const decisionReasons = Array.isArray(decisionV1?.reasons) ? decisionV1!.reasons!.filter((r) => typeof r === 'string' && r.trim()).slice(0, 12) : [];
   const guardrailNote = typeof hardPassGuardrailNote === 'string' && hardPassGuardrailNote.trim() ? hardPassGuardrailNote.trim() : null;
   const bandLabel = typeof scoreBandLabel === 'string' && scoreBandLabel.trim() ? scoreBandLabel.trim() : null;
 
-  const showDecisionDetails = Boolean(decisionLabel || decisionReasons.length > 0 || hardPassGuardrailCriteriaSnapshot);
+  const shortDealSummaryText = typeof dealSummaryShort === 'string' && dealSummaryShort.trim() ? dealSummaryShort.trim() : '';
+
+  // Show the Details accordion when there's a decision label, reasons, the guardrail snapshot
+  // (debug-only, only passed when workspaceDebugEnabled), or when band calibration was applied
+  // (rawOverallScore present and differs from the displayed canonical score).
+  const bandCalibrationApplied =
+    typeof rawOverallScore === 'number' &&
+    Number.isFinite(rawOverallScore) &&
+    Math.round(rawOverallScore) !== score0_100;
+  const showDecisionDetails = Boolean(
+    scoreAvailable ||
+    decisionLabel ||
+    decisionReasons.length > 0 ||
+    hardPassGuardrailCriteriaSnapshot ||
+    bandCalibrationApplied,
+  );
 
   // SVG ring math (match story: r=85, viewBox 220)
   const radius = 85;
@@ -152,6 +239,7 @@ export function DealWorkspaceTopSection({
   const visibleStrengths = (Array.isArray(strengths) ? strengths : []).filter(Boolean).slice(0, 3);
   const extraStrengths = Math.max(0, (Array.isArray(strengths) ? strengths : []).filter(Boolean).length - visibleStrengths.length);
   const weaknessList = (Array.isArray(weaknesses) ? weaknesses : []).filter(Boolean);
+  const actionsToImproveList = (Array.isArray(actionsToImprove) ? actionsToImprove : []).filter(Boolean);
 
   const revenueNote = (() => {
     const b = String(revenueLabel ?? '').trim().toLowerCase();
@@ -161,23 +249,47 @@ export function DealWorkspaceTopSection({
     return 'Annual';
   })();
 
-  const metricCards: Array<{ label: string; value: string | null; note: string; noteClass: string; tooltip?: string | null; badge?: string | null; conflict?: boolean; conflictOverlayValue?: string | null }> = [
-    { label: 'Raise', value: raise, note: 'Target', noteClass: 'text-emerald-400', conflict: raiseConflict, conflictOverlayValue: raiseConflictOverlayValue },
+  const metricCards: Array<{ label: string; value: string | null; note: string; noteClass: string; slotId?: string; tooltip?: string | null; badge?: string | null; conflict?: boolean; conflictOverlayValue?: string | null }> = [
+    { label: 'Raise', value: raise, note: 'Target', noteClass: 'text-emerald-400', slotId: 'header.tiles.raise', badge: raiseLabel, conflict: raiseConflict, conflictOverlayValue: raiseConflictOverlayValue },
     {
       label: 'Revenue',
       value: revenue,
       note: revenueNote,
       noteClass: 'text-blue-400',
+      slotId: 'header.tiles.revenue',
       tooltip: revenueTooltip,
       badge: revenueLabel,
       conflict: revenueConflict,
       conflictOverlayValue: revenueConflictOverlayValue,
     },
     {
+      label: 'Burn',
+      value: burn,
+      note: 'Monthly',
+      noteClass: 'text-zinc-400',
+      slotId: 'header.tiles.burn',
+      tooltip: burnTooltip,
+      badge: burnLabel,
+      conflict: burnConflict,
+      conflictOverlayValue: burnConflictOverlayValue,
+    },
+    {
+      label: 'Runway',
+      value: runway,
+      note: 'Months',
+      noteClass: 'text-zinc-400',
+      slotId: 'header.tiles.runway',
+      tooltip: runwayTooltip,
+      badge: runwayLabel,
+      conflict: runwayConflict,
+      conflictOverlayValue: runwayConflictOverlayValue,
+    },
+    {
       label: 'Growth',
       value: growth,
       note: growthNote || 'YoY',
       noteClass: 'text-emerald-400',
+      slotId: 'header.tiles.growth',
       tooltip: growthTooltip,
       badge: growthLabel,
       conflict: growthConflict,
@@ -188,6 +300,7 @@ export function DealWorkspaceTopSection({
       value: customers,
       note: 'Active',
       noteClass: 'text-zinc-400',
+      slotId: 'header.tiles.customers',
       tooltip: customersTooltip,
       badge: customersLabel,
       conflict: customersConflict,
@@ -203,7 +316,7 @@ export function DealWorkspaceTopSection({
       conflict: businessModelConflict,
       conflictOverlayValue: businessModelConflictOverlayValue,
     },
-    { label: 'Deal Type', value: dealType, note: 'Equity', noteClass: 'text-amber-400' },
+    { label: 'Deal Type', value: dealType, note: 'Equity', noteClass: 'text-amber-400', slotId: 'header.tiles.dealType' },
   ];
 
   const cardClass = `backdrop-blur-xl border rounded-xl ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`;
@@ -211,7 +324,7 @@ export function DealWorkspaceTopSection({
 
   return (
     <section aria-label="Deal top summary" className="w-full space-y-4">
-      <h2 className="sr-only">Deal summary and key metrics</h2>
+      <h2 className="sr-only">Deal snapshot and key metrics</h2>
 
       {/* Top: Score + Key Metrics */}
       <div className={`${cardClass} p-4`}>
@@ -250,17 +363,19 @@ export function DealWorkspaceTopSection({
 
               <div
                 className="relative w-full max-w-[260px] mx-auto flex items-center justify-center"
-                aria-label={`${scoreLabel}: ${score0_100} out of 100`}
+                data-testid="radial-score-chart"
+                data-canonical-score-source={canonicalScoreSource}
+                aria-label={scoreAvailable ? `${scoreLabel}: ${score0_100} out of 100` : `${scoreLabel}: Not yet scored`}
               >
               <svg
                 width="220"
                 height="220"
                 viewBox="0 0 220 220"
                 role="img"
-                aria-label={`${scoreLabel} ${score0_100} out of 100`}
+                aria-label={scoreAvailable ? `${scoreLabel} ${score0_100} out of 100` : `${scoreLabel} not yet scored`}
                 className="transform -rotate-90"
               >
-                <title>{`${scoreLabel}: ${score0_100}/100`}</title>
+                <title>{scoreAvailable ? `${scoreLabel}: ${score0_100}/100` : `${scoreLabel}: Not yet scored`}</title>
 
                 {/* Background ring */}
                 <circle cx="110" cy="110" r={radius} fill="none" stroke="rgba(63, 63, 70, 0.3)" strokeWidth="22" />
@@ -281,12 +396,46 @@ export function DealWorkspaceTopSection({
 
               {/* Center text */}
               <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <div className={`text-4xl font-semibold ${tone.text}`}>
-                  {score0_100}
-                  <span className="text-zinc-400 text-3xl">/100</span>
+                {scoreAvailable ? (
+                  <div className={`text-4xl font-semibold ${tone.text}`}>
+                    {score0_100}
+                    <span className="text-zinc-400 text-3xl">/100</span>
+                  </div>
+                ) : (
+                  <div
+                    className="text-sm text-zinc-400 text-center px-2"
+                    data-testid="score-not-yet-scored"
+                  >
+                    Not yet scored
+                  </div>
+                )}
+                <div
+                  className="text-xs text-zinc-400 mt-2"
+                  data-testid="score-canonical-label"
+                >
+                  {scoreLabel}
                 </div>
-                <div className="text-xs text-zinc-400 mt-2">{scoreLabel}</div>
               </div>
+            </div>
+
+            <div
+              data-slot="header.score.subsummary"
+              data-testid="score-summary-slot"
+              className="mt-2"
+            >
+              {loading ? (
+                <div className="mt-2 flex justify-center">
+                  <Skeleton className="h-4 w-4/5 max-w-[260px]" />
+                </div>
+              ) : scoreAvailable ? (
+                <div className="text-[11px] text-center text-zinc-400">
+                  {scoreLabel}: {score0_100}/100
+                </div>
+              ) : (
+                <div className="text-[11px] text-center text-zinc-400">
+                  {scoreLabel}: Not yet scored
+                </div>
+              )}
             </div>
 
             {showDecisionDetails ? (
@@ -295,6 +444,25 @@ export function DealWorkspaceTopSection({
                   Details
                 </summary>
                 <div className={`mt-2 text-xs space-y-2 ${darkMode ? 'text-zinc-200' : 'text-zinc-800'}`}>
+                  {/* Score provenance — always visible in Details when report is applied */}
+                  {scoreAvailable ? (
+                    <div data-testid="details-score-labels">
+                      <div>
+                        <span className="text-zinc-400">Canonical score:</span>{' '}
+                        <span className="font-semibold">{score0_100}</span>
+                        <span className="text-zinc-400 ml-1 text-[10px]">({canonicalScoreSource ?? 'unknown source'})</span>
+                      </div>
+                      {bandCalibrationApplied ? (
+                        <>
+                          <div className="mt-0.5">
+                            <span className="text-zinc-400">Raw score (pre-band):</span>{' '}
+                            <span className="font-semibold">{Math.round(rawOverallScore as number)}</span>
+                          </div>
+                          <div className="mt-0.5 text-zinc-500 italic">Band calibration applied</div>
+                        </>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {decisionLabel ? (
                     <div>
                       <span className="text-zinc-400">Recommendation:</span> <span className="font-semibold">{decisionLabel}</span>
@@ -313,8 +481,8 @@ export function DealWorkspaceTopSection({
                   ) : null}
 
                   {hardPassGuardrailCriteriaSnapshot ? (
-                    <div>
-                      <div className="text-zinc-400">Guardrail snapshot</div>
+                    <div data-testid="guardrail-criteria-snapshot">
+                      <div className="text-zinc-400">Guardrail snapshot <span className="text-zinc-600">(debug)</span></div>
                       <div className={`mt-1 border rounded-lg p-2 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
                         <pre className="whitespace-pre-wrap break-words text-[11px] leading-snug">
                           {JSON.stringify(hardPassGuardrailCriteriaSnapshot, null, 2)}
@@ -336,18 +504,29 @@ export function DealWorkspaceTopSection({
                 <div
                   key={m.label}
                   className={`${insetClass} p-4`}
-                  title={m.conflict
-                    ? `Conflict detected — overlay: ${m.conflictOverlayValue ?? '—'} · deterministic: ${typeof m.value === 'string' && m.value.trim() ? m.value.trim() : '—'}`
-                    : (m.tooltip || undefined)}
+                  data-slot={m.slotId}
+                  title={(() => {
+                    const displayValue = typeof m.value === 'string' && m.value.trim() ? m.value.trim() : '—';
+                    if (m.conflict) {
+                      return `Conflict detected — overlay: ${m.conflictOverlayValue ?? '—'} · deterministic: ${displayValue}`;
+                    }
+                    // UX rule: no "missing" explanations in the primary tiles.
+                    // Only show tooltips when a value is present.
+                    if (!m.tooltip) return undefined;
+                    if (displayValue === '—') return undefined;
+                    return m.tooltip;
+                  })()}
                 >
                   {(() => {
                     const displayValue = typeof m.value === 'string' && m.value.trim() ? m.value.trim() : '—';
                     return (
                       <>
                   <div className="text-xs text-zinc-500 mb-1">{m.label}</div>
-                  <div className="text-2xl text-white mb-0.5 break-words">{displayValue}</div>
+                  <div className="text-2xl text-white mb-0.5 break-words">
+                    {loading ? <Skeleton className="h-7 w-24" /> : displayValue}
+                  </div>
                   <div className="flex items-center gap-2">
-                    <div className={`text-xs ${m.noteClass}`}>{m.note}</div>
+                    <div className={`text-xs ${m.noteClass}`}>{loading ? <Skeleton className="h-3 w-14" /> : m.note}</div>
                     {m.conflict ? (
                       <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-amber-500/15 text-amber-200 border border-amber-500/25">
                         Conflict
@@ -377,7 +556,7 @@ export function DealWorkspaceTopSection({
               <h3 className="text-sm text-zinc-300">{dealSummaryTitle}</h3>
               {dealSummarySource === 'canonical' ? (
                 <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/15 text-emerald-200 border border-emerald-500/25">
-                  Canonical
+                  Authoritative (deterministic)
                 </span>
               ) : dealSummarySource === 'overlay' ? (
                 <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-blue-500/15 text-blue-200 border border-blue-500/25">
@@ -390,17 +569,29 @@ export function DealWorkspaceTopSection({
               )}
             </div>
 
-            {summaryParagraphs.length > 0 ? (
-              <div className="space-y-2">
-                {summaryParagraphs.map((p) => (
+            {!loading && (
+              <div data-testid="deal-summary-text" className="text-zinc-200 leading-relaxed">
+                {shortDealSummaryText || (
+                  <span className="text-zinc-500 italic text-sm">Score drivers not yet computed for this run.</span>
+                )}
+              </div>
+            )}
+
+            <div className="space-y-2" data-slot="topSummary.dealSummary.long">
+              {loading ? (
+                <>
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-11/12" />
+                  <Skeleton className="h-4 w-10/12" />
+                </>
+              ) : summaryParagraphs.length > 0 ? (
+                summaryParagraphs.map((p) => (
                   <p key={p} className="text-zinc-200 leading-relaxed">
                     {p}
                   </p>
-                ))}
-              </div>
-            ) : (
-              <p className="text-zinc-200 leading-relaxed">—</p>
-            )}
+                ))
+              ) : null}
+            </div>
           </div>
 
           <div className={`${insetClass} p-4 h-full min-h-[160px] flex flex-col justify-between`}>
@@ -430,11 +621,15 @@ export function DealWorkspaceTopSection({
         </div>
       </div>
 
-      {/* Bottom: Score understanding */}
+      {/* Bottom: Score understanding
+          TopSection is score-driver summary; Overview tab is company summary (governed overlay).
+          strengths / weaknesses / actionsToImprove all sourced from score_explanation_v1
+          (primary_strengths / primary_constraints+missing_kpis / action_recommendations).
+          Never reads governed overlay output. */}
       <div className={`${cardClass} p-4`}>
         <h3 className="text-sm text-zinc-300 mb-5">Score Understanding</h3>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className={`grid grid-cols-1 gap-6 ${actionsToImproveList.length > 0 ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
           <div>
             <div className="flex items-center gap-2 mb-3">
               <CheckCircle2 className="w-4 h-4 text-emerald-400" strokeWidth={1.5} aria-hidden="true" />
@@ -473,6 +668,22 @@ export function DealWorkspaceTopSection({
               <p className="text-sm text-zinc-400">No weaknesses flagged yet.</p>
             )}
           </div>
+
+          {actionsToImproveList.length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <ShieldCheck className="w-4 h-4 text-blue-400" strokeWidth={1.5} aria-hidden="true" />
+                <span className="text-xs text-blue-300" data-testid="actions-to-improve-header">Actions to improve</span>
+              </div>
+              <ul className="space-y-2 ml-6 list-disc" data-testid="actions-to-improve-list">
+                {actionsToImproveList.map((action, index) => (
+                  <li key={`${action}-${index}`} className="text-sm text-zinc-200">
+                    {action}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       </div>
     </section>

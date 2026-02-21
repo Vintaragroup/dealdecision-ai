@@ -75,6 +75,7 @@ test("GET /api/v1/deals/:deal_id/governed-llm-overview returns latest overview",
               ],
               disclosures: [],
               created_at: new Date().toISOString(),
+              consistency_warnings: ["HERO_MISSING_RAISE_CONTEXT"],
             },
           ],
         };
@@ -98,6 +99,63 @@ test("GET /api/v1/deals/:deal_id/governed-llm-overview returns latest overview",
   assert.equal(body?.overview?.schema_version, "governed_llm_overview_v1");
   assert.equal(body?.overview?.input_hash, "hash-1");
   assert.ok(Array.isArray(body?.overview?.claims));
+  assert.deepEqual(body?.overview?.consistency_warnings, ["HERO_MISSING_RAISE_CONTEXT"]);
+
+  await app.close();
+});
+
+test("GET /api/v1/deals/:deal_id/governed-llm-overview defaults consistency_warnings to [] when absent", async () => {
+  const dealId = "00000000-0000-0000-0000-000000000042";
+
+  const mockPool = {
+    query: async (sql: string, params?: unknown[]) => {
+      if (sql.includes("SELECT to_regclass")) {
+        return { rows: [{ oid: "governed_llm_overviews" }] };
+      }
+
+      if (sql.includes("SELECT id FROM deals WHERE id = $1")) {
+        return { rows: [{ id: String((params ?? [])[0]) }] };
+      }
+
+      if (sql.includes("FROM governed_llm_overviews") && sql.includes("ORDER BY created_at DESC")) {
+        return {
+          rows: [
+            {
+              id: "ov-2",
+              deal_id: dealId,
+              schema_version: "governed_llm_overview_v1",
+              llm_phase_mode: "governed",
+              input_hash: "hash-2",
+              run_id: null,
+              step_run_id: null,
+              summary_text: "No warnings deal.",
+              claims: [],
+              disclosures: [],
+              created_at: new Date().toISOString(),
+              // consistency_warnings intentionally absent (simulates old row without column)
+              consistency_warnings: null,
+            },
+          ],
+        };
+      }
+
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as any;
+
+  const app = Fastify();
+  await registerDealRoutes(app, mockPool, { enqueueJob: async () => ({ id: 1, job_id: "job-1", status: "queued" as any }) });
+
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/v1/deals/${dealId}/governed-llm-overview`,
+  });
+
+  assert.equal(res.statusCode, 200);
+  const body = res.json() as any;
+  assert.equal(body?.overview?.deal_id, dealId);
+  // Absent/null column must default to empty array — never undefined.
+  assert.deepEqual(body?.overview?.consistency_warnings, []);
 
   await app.close();
 });

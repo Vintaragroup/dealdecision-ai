@@ -96,13 +96,17 @@ export function selectAuthoritativeBusinessModelV1(params: {
 
   if (reportLooksReady(report)) {
     const structured = report?.structured_summary as any;
-    const promoted = asNonEmptyString(structured?.business_model?.value);
-    if (promoted && hasEvidenceSources(structured?.business_model?.sources)) {
-      const label = asNonEmptyString(structured?.business_model?.label);
+
+    // KPI normalization must occur server-side only to prevent drift.
+    const businessModel = structured?.kpis?.business_model as any;
+
+    const promoted = asNonEmptyString(businessModel?.value);
+    if (promoted && hasEvidenceSources(businessModel?.sources)) {
+      const label = asNonEmptyString(businessModel?.label);
       return {
         value: promoted,
         label,
-        confidence: clamp01(structured?.business_model?.confidence) ?? null,
+        confidence: clamp01(businessModel?.confidence) ?? null,
         is_arbitrated: false,
         source: 'report.business_model',
       };

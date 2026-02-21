@@ -42,6 +42,28 @@ describe("SlideSequenceAnalyzer", () => {
     expect(result.pattern_match).toBeTruthy();
   });
 
+  test("classifies ask only with explicit raise + amount (TAM slide is market)", async () => {
+    const result = await slideSequenceAnalyzer.analyze({
+      headings: [
+        "Problem",
+        "Solution",
+        "Raise $8B TAM",
+        "Product",
+        "Traction",
+        "Team",
+        "Business Model",
+        "Competition",
+        "Financials",
+        "Raising $2M via SAFE",
+      ],
+      evidence_ids: [EVIDENCE_ID],
+    });
+
+    expect(result.status).toBe("ok");
+    expect(result.sequence_detected[2]).toBe("market");
+    expect(result.sequence_detected[result.sequence_detected.length - 1]).toBe("ask");
+  });
+
   test("insufficient_data returns null score", async () => {
     const result = await slideSequenceAnalyzer.analyze({
       headings: ["", "   "],

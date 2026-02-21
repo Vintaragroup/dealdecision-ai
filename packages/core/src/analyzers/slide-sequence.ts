@@ -10,6 +10,7 @@
 import { BaseAnalyzer, AnalyzerMetadata, ValidationResult } from "./base";
 import type { DebugScoringTrace, SlideSequenceInput, SlideSequenceResult } from "../types/dio";
 import { buildRulesFromBaseAndDeltas } from "./debug-scoring";
+import { inferIsRaiseAskSlide } from "../classifiers/raise-detector";
 
 // ============================================================================
 // Ideal Patterns (from 25 funded decks analysis)
@@ -403,6 +404,7 @@ export class SlideSequenceAnalyzer extends BaseAnalyzer<SlideSequenceInput, Slid
     return headings.map((heading, index) => {
       const body = Array.isArray(slideBodies) && typeof slideBodies[index] === "string" ? slideBodies[index] : "";
       const normalized = `${heading} ${body}`.toLowerCase().trim();
+      const askCandidateText = `${heading}\n${body}`.trim();
       
       // Find best matching category
       let best_category = "unknown";
@@ -410,6 +412,11 @@ export class SlideSequenceAnalyzer extends BaseAnalyzer<SlideSequenceInput, Slid
 
       for (const [category, keywords] of Object.entries(SLIDE_KEYWORDS)) {
         let score = 0;
+
+        // Harden raise/ask classification only.
+        if (category === "ask") {
+          score = inferIsRaiseAskSlide(askCandidateText) ? 3 : 0;
+        } else {
         for (const keyword of keywords) {
           if (!keyword) continue;
           if (!normalized.includes(keyword)) continue;
@@ -419,6 +426,7 @@ export class SlideSequenceAnalyzer extends BaseAnalyzer<SlideSequenceInput, Slid
           const leading = normalized.startsWith(keyword);
           const labelLike = normalized.includes(`${keyword}:`);
           score += leading || labelLike ? 2 : 1;
+        }
         }
         if (score > best_score) {
           best_score = score;

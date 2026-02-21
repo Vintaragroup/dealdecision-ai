@@ -6,12 +6,14 @@ export type PageUnderstandingReadinessDocument = {
   page_count: number;
   /** Total DPU rows present for expected pages (including placeholders). */
   dpu_rows: number;
-  /** DPU rows considered meaningful (non-placeholder + has content/structure). */
+  /** Pages considered "done" for completion metrics (page_text_empty=false). */
   dpu_rows_meaningful?: number;
   /** Pages that have a DPU row but it is placeholder/empty. */
   non_meaningful_pages?: number[];
-  /** Pages that do not have any DPU row at all (no payload). */
+  /** Pages missing for completion metrics (expected - done). Includes empty pages + hard-missing pages. */
   missing_pages: number[];
+  /** Pages that do not have any DPU row at all (payload is NULL). */
+  hard_missing_pages?: number[];
 };
 
 export type PageUnderstandingReadiness = {
@@ -23,6 +25,10 @@ export type PageUnderstandingReadiness = {
   dpu_rows_meaningful_total?: number;
   non_meaningful_pages_total?: number;
   missing_pages_total: number;
+  /** Pages that are truly missing (no DPU payload row) across all documents. */
+  hard_missing_pages_total?: number;
+  /** Max(document_page_understanding.created_at) for the deal+version, when available. */
+  latest_dpu_created_at?: string | null;
   /**
    * When readiness indicates missing pages but the pipeline has no work enqueued,
    * this field explains why readiness may not be progressing.
@@ -72,6 +78,7 @@ export function computePageUnderstandingReadiness(args: {
     dpu_rows_meaningful?: number | null;
     non_meaningful_pages?: unknown;
     missing_pages: unknown;
+    hard_missing_pages?: unknown;
   }>;
 }): PageUnderstandingReadiness {
   const docs: PageUnderstandingReadinessDocument[] = (args.documents ?? []).map((d) => {
@@ -83,6 +90,9 @@ export function computePageUnderstandingReadiness(args: {
         : undefined;
     const missingPages = normalizeMissingPages(d.missing_pages);
     const nonMeaningfulPages = normalizeMissingPages((d as any).non_meaningful_pages);
+    const hardMissingRaw = (d as any).hard_missing_pages;
+    const hasHardMissing = Array.isArray(hardMissingRaw);
+    const hardMissingPages = normalizeMissingPages(hardMissingRaw);
 
     return {
       document_id: String(d.document_id),
@@ -92,6 +102,7 @@ export function computePageUnderstandingReadiness(args: {
       ...(typeof dpuRowsMeaningful === "number" ? { dpu_rows_meaningful: dpuRowsMeaningful } : {}),
       ...(nonMeaningfulPages.length > 0 ? { non_meaningful_pages: nonMeaningfulPages } : {}),
       missing_pages: missingPages,
+      ...(hasHardMissing ? { hard_missing_pages: hardMissingPages } : {}),
     };
   });
 
@@ -100,6 +111,8 @@ export function computePageUnderstandingReadiness(args: {
   let dpuRowsMeaningfulTotal = 0;
   let nonMeaningfulPagesTotal = 0;
   let missingPagesTotal = 0;
+  let hardMissingPagesTotal = 0;
+  const hasHardMissingFieldAny = docs.some((d: any) => Array.isArray(d?.hard_missing_pages));
 
   for (const d of docs) {
     expectedPagesTotal += d.page_count;
@@ -107,6 +120,10 @@ export function computePageUnderstandingReadiness(args: {
     dpuRowsMeaningfulTotal += typeof d.dpu_rows_meaningful === "number" ? d.dpu_rows_meaningful : 0;
     nonMeaningfulPagesTotal += Array.isArray(d.non_meaningful_pages) ? d.non_meaningful_pages.length : 0;
     missingPagesTotal += d.missing_pages.length;
+    // Back-compat: if hard_missing_pages is not provided, treat missing_pages as hard-missing.
+    hardMissingPagesTotal += Array.isArray((d as any).hard_missing_pages)
+      ? (d as any).hard_missing_pages.length
+      : d.missing_pages.length;
   }
 
   return {
@@ -118,10 +135,12 @@ export function computePageUnderstandingReadiness(args: {
     ...(dpuRowsMeaningfulTotal > 0 ? { dpu_rows_meaningful_total: dpuRowsMeaningfulTotal } : {}),
     ...(nonMeaningfulPagesTotal > 0 ? { non_meaningful_pages_total: nonMeaningfulPagesTotal } : {}),
     missing_pages_total: missingPagesTotal,
+    ...(hasHardMissingFieldAny ? { hard_missing_pages_total: hardMissingPagesTotal } : {}),
     blocked_reason: null,
     poll_after_ms: null,
     action: null,
-    ready: missingPagesTotal === 0,
+    // Ready for analysis when no pages are truly missing (payload row absent).
+    ready: hardMissingPagesTotal === 0,
   };
 }
 
@@ -136,6 +155,7 @@ export async function fetchPageUnderstandingReadinessForDeal(pool: Pool, dealId:
     dpu_rows_meaningful?: number | null;
     non_meaningful_pages?: number[] | null;
     missing_pages: number[] | null;
+    hard_missing_pages?: number[] | null;
   };
 
   let rows: Row[] = [];
@@ -169,58 +189,42 @@ export async function fetchPageUnderstandingReadinessForDeal(pool: Pool, dealId:
             ON a.document_id = e.document_id
            AND a.page_index = e.page_index
       ),
-      dpu_meaningful AS (
-        SELECT
-          document_id,
-          page_index
-        FROM dpu_expected
-        WHERE payload IS NOT NULL
-          AND (
-            -- Placeholder markers (new + legacy)
-            COALESCE((payload->'metadata'->>'is_placeholder')::boolean, false) = false
-            AND COALESCE((payload->'quality_flags'->>'missing_visual_extraction')::boolean, false) = false
-            AND COALESCE(payload->>'page_type','') <> 'no_visual_extraction'
-          )
-          AND (
-            -- Any structured object counts as meaningful.
-            (payload ? 'structured' AND payload->'structured' IS NOT NULL AND payload->'structured' <> '{}'::jsonb AND payload->'structured' <> 'null'::jsonb)
-            OR NULLIF(BTRIM(COALESCE(payload->>'page_text','')), '') IS NOT NULL
-            OR NULLIF(BTRIM(COALESCE(payload->>'normalized_text','')), '') IS NOT NULL
-            OR NULLIF(BTRIM(COALESCE(payload->'text_blocks'->>'title','')), '') IS NOT NULL
-            OR NULLIF(BTRIM(COALESCE(payload->'text_blocks'->>'notes','')), '') IS NOT NULL
-            OR NULLIF(BTRIM(COALESCE(payload->'text_blocks'->>'text_snippet','')), '') IS NOT NULL
-            OR NULLIF(BTRIM(COALESCE(payload->'text_blocks'->>'ocr_text','')), '') IS NOT NULL
-            -- pdf_v2/page-understanding-v1 payload: treat summary/regions/metrics as meaningful
-            OR NULLIF(BTRIM(COALESCE(payload->>'resolved_summary','')), '') IS NOT NULL
-            OR (payload ? 'regions' AND jsonb_typeof(payload->'regions') = 'array' AND jsonb_array_length(payload->'regions') > 0)
-            OR (payload ? 'key_metrics' AND jsonb_typeof(payload->'key_metrics') = 'array' AND jsonb_array_length(payload->'key_metrics') > 0)
-          )
+      dpu_done AS (
+        -- Done pages: a row exists AND page_text_empty=false.
+        SELECT document_id, page_index
+          FROM dpu_expected
+         WHERE payload IS NOT NULL
+           AND COALESCE((payload->'quality_flags'->>'page_text_empty')::boolean, false) = false
       ),
-      missing AS (
-        -- Missing pages are those with no DPU payload at all.
-        -- Non-meaningful pages are tracked separately.
+      hard_missing AS (
+        -- Hard-missing pages: no DPU payload row at all.
         SELECT document_id, page_index
           FROM dpu_expected
          WHERE payload IS NULL
       ),
       non_meaningful AS (
+        -- Non-meaningful pages: a row exists but page_text_empty=true.
+        SELECT document_id, page_index
+          FROM dpu_expected
+         WHERE payload IS NOT NULL
+           AND COALESCE((payload->'quality_flags'->>'page_text_empty')::boolean, false) = true
+      ),
+      missing AS (
+        -- Missing for completion metrics: expected pages that are not done.
         SELECT e.document_id, e.page_index
           FROM expected e
-          JOIN dpu_all a
-            ON a.document_id = e.document_id
-           AND a.page_index = e.page_index
-          LEFT JOIN dpu_meaningful m
-            ON m.document_id = e.document_id
-           AND m.page_index = e.page_index
-         WHERE m.page_index IS NULL
+          LEFT JOIN dpu_done d
+            ON d.document_id = e.document_id
+           AND d.page_index = e.page_index
+         WHERE d.page_index IS NULL
       ),
       dpu_counts AS (
         SELECT d.document_id,
           COUNT(*) FILTER (WHERE e.payload IS NOT NULL) AS dpu_rows,
-          COUNT(*) FILTER (WHERE m.page_index IS NOT NULL) AS dpu_rows_meaningful
+          COUNT(*) FILTER (WHERE dn.page_index IS NOT NULL) AS dpu_rows_meaningful
           FROM docs d
         LEFT JOIN dpu_expected e ON e.document_id = d.document_id
-        LEFT JOIN dpu_meaningful m ON m.document_id = e.document_id AND m.page_index = e.page_index
+        LEFT JOIN dpu_done dn ON dn.document_id = e.document_id AND dn.page_index = e.page_index
          GROUP BY d.document_id
       )
       SELECT d.document_id,
@@ -229,7 +233,8 @@ export async function fetchPageUnderstandingReadinessForDeal(pool: Pool, dealId:
              COALESCE(c.dpu_rows, 0) AS dpu_rows,
              COALESCE(c.dpu_rows_meaningful, 0) AS dpu_rows_meaningful,
              COALESCE((SELECT array_agg(n.page_index ORDER BY n.page_index) FROM non_meaningful n WHERE n.document_id = d.document_id), '{}'::int[]) AS non_meaningful_pages,
-             COALESCE((SELECT array_agg(m.page_index ORDER BY m.page_index) FROM missing m WHERE m.document_id = d.document_id), '{}'::int[]) AS missing_pages
+             COALESCE((SELECT array_agg(m.page_index ORDER BY m.page_index) FROM missing m WHERE m.document_id = d.document_id), '{}'::int[]) AS missing_pages,
+             COALESCE((SELECT array_agg(h.page_index ORDER BY h.page_index) FROM hard_missing h WHERE h.document_id = d.document_id), '{}'::int[]) AS hard_missing_pages
         FROM docs d
         LEFT JOIN dpu_counts c ON c.document_id = d.document_id
        ORDER BY d.title NULLS LAST, d.document_id;
@@ -265,5 +270,26 @@ export async function fetchPageUnderstandingReadinessForDeal(pool: Pool, dealId:
   }
 
   const readiness = computePageUnderstandingReadiness({ dealId, version, documents: rows });
+
+  // Best-effort: attach a freshness signal so callers can gate on "new enough" DPU.
+  if (dpuTableOk) {
+    try {
+      const res = await pool.query<{ latest_dpu_created_at: string | null }>(
+        `
+        SELECT MAX(GREATEST(dpu.created_at, COALESCE(dpu.updated_at, dpu.created_at)))::text AS latest_dpu_created_at
+          FROM document_page_understanding dpu
+          JOIN documents d ON d.id = dpu.document_id
+         WHERE d.deal_id = $1
+           AND d.deleted_at IS NULL
+           AND dpu.version = $2
+        `,
+        [dealId, version]
+      );
+      const v = res.rows?.[0]?.latest_dpu_created_at ?? null;
+      (readiness as any).latest_dpu_created_at = typeof v === 'string' ? v : null;
+    } catch {
+      // ignore
+    }
+  }
   return readiness;
 }

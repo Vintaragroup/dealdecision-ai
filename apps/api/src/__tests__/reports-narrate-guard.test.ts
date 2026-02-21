@@ -73,6 +73,13 @@ test("GET /api/v1/deals/:deal_id/report?narrate=1 attaches llm_narration_v1 when
 
   const mockPool = {
     query: async (sql: string, params: unknown[] = []) => {
+      if (sql.includes("FROM ingestion_reports") && sql.includes("analysis_version")) {
+        return { rows: [] };
+      }
+      if (sql.includes("INSERT INTO ingestion_reports") && sql.includes("ON CONFLICT (deal_id, analysis_version)")) {
+        return { rows: [{ report_id: "ir-1" }] };
+      }
+
       if (sql.includes("FROM deals") && sql.includes("WHERE id = $1") && sql.includes("deleted_at IS NULL")) {
         return { rows: [{ id: String(params[0] ?? dealId), llm_phase_mode: "exploratory" }] };
       }
@@ -242,6 +249,13 @@ test("GET /api/v1/deals/:deal_id/report?narrate=1 degrades invalid sections inst
 
   const mockPool = {
     query: async (sql: string, params: unknown[] = []) => {
+      if (sql.includes("FROM ingestion_reports") && sql.includes("analysis_version")) {
+        return { rows: [] };
+      }
+      if (sql.includes("INSERT INTO ingestion_reports") && sql.includes("ON CONFLICT (deal_id, analysis_version)")) {
+        return { rows: [{ report_id: "ir-1" }] };
+      }
+
       if (sql.includes("FROM deals") && sql.includes("WHERE id = $1") && sql.includes("deleted_at IS NULL")) {
         return { rows: [{ id: String(params[0] ?? dealId), llm_phase_mode: "exploratory" }] };
       }

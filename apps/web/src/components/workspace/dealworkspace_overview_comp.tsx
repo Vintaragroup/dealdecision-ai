@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { ChevronDown, Package, Users, DollarSign, TrendingUp, Shield, ArrowRight, AlertCircle } from 'lucide-react';
 import type { EvidenceResolveResult } from '../../lib/apiClient';
 
@@ -72,6 +72,10 @@ export type DealWorkspaceOverviewCompProps = {
   };
 
   score0_100: number | null;
+  /** Provenance of score0_100 — matches resolveCanonicalScore source union. */
+  scoreSource?: 'score_band_v2.overall_score' | 'report.overallScore' | 'none';
+  /** Whether a finalized report is driving the score (false = not yet computed). */
+  reportApplied?: boolean;
   decisionLabel: 'PASS' | 'CONSIDER' | 'FUND' | '—' | string;
   confidenceLabel: string;
   confidenceVerified: boolean;
@@ -139,7 +143,36 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
 
   const coverageGaps = useMemo(() => safeLines(props.coverageGaps), [props.coverageGaps]);
   const decisionLabelText = String(props.decisionLabel ?? '').trim() || '—';
-  const scoreText = typeof props.score0_100 === 'number' && Number.isFinite(props.score0_100) ? `${Math.round(props.score0_100)} / 100` : '— / 100';
+  // When the report is not yet applied, show a neutral placeholder — never a stale DB number.
+  const scoreText = (() => {
+    if (props.reportApplied === false) return 'Not yet computed';
+    if (typeof props.score0_100 !== 'number' || !Number.isFinite(props.score0_100)) return '— / 100';
+    return `${Math.round(props.score0_100)} / 100`;
+  })();
+
+  // [DDAI][overview_score_binding] Dev-only: log what score value this component received at render.
+  // This confirms the Overview tab score display source without altering business logic.
+  // score0_100 now traces to canonicalScoreView (resolveCanonicalScore chain), not dealFromApi.score.
+  const _lastOverviewScoreRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const key = `${props.reportApplied}|${props.score0_100}|${props.scoreSource ?? 'none'}|${props.decisionLabel}`;
+    if (_lastOverviewScoreRef.current === key) return;
+    _lastOverviewScoreRef.current = key;
+    console.log('[DDAI][overview_score_binding]', {
+      reportApplied: props.reportApplied,
+      score0_100: props.score0_100,
+      scoreSource: props.scoreSource ?? 'none',
+      scoreText,
+      decisionLabel: props.decisionLabel,
+      confidenceLabel: props.confidenceLabel,
+      // NOTE: score0_100 now traces to resolveCanonicalScore (score_band_v2 → overallScore),
+      // passed from DealWorkspace.canonicalScoreView. null means report not applied = placeholder shown.
+      source_chain: props.reportApplied
+        ? 'resolveCanonicalScore → score_band_v2.overall_score | report.overallScore'
+        : 'report not applied → Not yet computed placeholder',
+    });
+  }, [props.score0_100, props.scoreSource, props.reportApplied, props.decisionLabel, props.confidenceLabel, scoreText]);
 
   const badgeBaseClassName = 'inline-flex items-center px-2 py-1 rounded-full border text-[11px] font-medium leading-none';
 
@@ -224,7 +257,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
   const renderMaybeMissingValue = (value: string) => {
     const s = typeof value === 'string' ? value.trim() : '';
     const isMissing = isMissingValueString(s);
-    return <span className={isMissing ? 'text-zinc-500 text-sm' : 'text-zinc-200 text-sm'}>{s || 'Not extracted'}</span>;
+    return <span className={isMissing ? 'text-zinc-500 text-sm' : 'text-zinc-200 text-sm'}>{s || '—'}</span>;
   };
 
   const renderPersistedClaims = () => {
@@ -506,7 +539,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
           {/* One-liner */}
           <div className="mb-6">
             <p className={`${isMissingValueString(props.dealOneLiner) ? 'text-zinc-500' : 'text-zinc-100'} text-lg leading-relaxed`}>
-              {props.dealOneLiner || 'Not extracted'}
+              {props.dealOneLiner || '—'}
             </p>
             {renderFieldEvidence({
               fieldKey: 'deal-one-liner',
@@ -537,7 +570,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
 
           {/* Key Facts */}
           <div className="mb-6 space-y-3">
-            <div className="flex items-start gap-3" data-testid="key-fact-product">
+            <div className="flex items-start gap-3" data-testid="key-fact-product" data-slot="keyFacts.product">
               <Package className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" strokeWidth={1.5} />
               <div>
                 <span className="text-zinc-400 text-sm">Product: </span>
@@ -552,7 +585,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
               </div>
             </div>
             
-            <div className="flex items-start gap-3" data-testid="key-fact-market">
+            <div className="flex items-start gap-3" data-testid="key-fact-market" data-slot="keyFacts.market">
               <Users className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" strokeWidth={1.5} />
               <div>
                 <span className="text-zinc-400 text-sm">Market: </span>
@@ -567,7 +600,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
               </div>
             </div>
             
-            <div className="flex items-start gap-3" data-testid="key-fact-business-model">
+            <div className="flex items-start gap-3" data-testid="key-fact-business-model" data-slot="keyFacts.business_model">
               <DollarSign className="w-5 h-5 text-blue-400 flex-shrink-0 mt-0.5" strokeWidth={1.5} />
               <div>
                 <span className="text-zinc-400 text-sm">Business Model: </span>
@@ -584,7 +617,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
           </div>
 
           {/* Raise / Terms */}
-          <div className={`mb-5 pb-5 border-b ${dividerClassName}`}>
+          <div className={`mb-5 pb-5 border-b ${dividerClassName}`} data-slot="keyFacts.raise_terms">
             <div className="flex items-center justify-between">
               <span className="text-zinc-400 text-sm" data-testid="key-fact-raise">
                 Raise / Terms
@@ -712,7 +745,11 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
             <div className="flex items-center gap-4 text-sm">
               <div className="flex items-center gap-2">
                 <span className="text-zinc-400">Score:</span>
-                <span className="text-white">{scoreText}</span>
+                <span
+                  className="text-white"
+                  data-testid="overview-score-text"
+                  data-canonical-score-source={props.scoreSource ?? 'none'}
+                >{scoreText}</span>
               </div>
               <div className="flex items-center gap-2">
                 <Shield className={`w-4 h-4 ${props.confidenceVerified ? 'text-emerald-400' : 'text-zinc-500'}`} strokeWidth={1.5} />
@@ -723,7 +760,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
 
           {/* Rationale */}
           <div className="mb-6">
-            <p className="text-zinc-200 text-sm leading-relaxed">
+            <p className="text-zinc-200 text-sm leading-relaxed" data-slot="investmentAnalysis.overview.summary">
               {props.rationale}
             </p>
           </div>
@@ -773,7 +810,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
                   </>
                 ) : interpretationStatus === 'error' ? (
                   <div className="text-zinc-300 text-sm">
-                    Interpretation unavailable{interpretationErrorCode ? ` (code=${interpretationErrorCode})` : ''}.
+                    Interpretation failed{interpretationErrorCode ? ` (code=${interpretationErrorCode})` : ''}.
                   </div>
                 ) : (
                   <div className="text-zinc-400 text-sm">Open to generate an interpretation.</div>

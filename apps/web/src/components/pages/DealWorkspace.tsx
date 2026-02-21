@@ -17,8 +17,16 @@ import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { DealWorkspaceTopSection } from '../workspace/DealWorkspaceTopSection';
 import { DealWorkspaceOverviewComp } from '../workspace/dealworkspace_overview_comp';
+import { FinancialCoveragePanel } from '../workspace/FinancialCoveragePanel';
 import { selectDealWorkspaceHeader } from '../../lib/selectDealWorkspaceHeader';
+import { resolveCanonicalScore, type ResolvedScore } from '../../lib/resolveCanonicalScore';
 import { selectAuthoritativeBusinessModelV1 } from '../../lib/selectors/selectAuthoritativeBusinessModelV1';
+import { selectAuthoritativeProductSummaryV1 } from '../../lib/selectors/selectAuthoritativeProductSummaryV1';
+import { selectAuthoritativeMarketSummaryV1 } from '../../lib/selectors/selectAuthoritativeMarketSummaryV1';
+import { selectAuthoritativeFinancialCoverageV1 } from '../../lib/selectors/selectAuthoritativeFinancialCoverageV1';
+import { selectAuthoritativeBurnV1 } from '../../lib/selectors/selectAuthoritativeBurnV1';
+import { selectAuthoritativeRunwayV1 } from '../../lib/selectors/selectAuthoritativeRunwayV1';
+import { selectDealWorkspaceOverviewModel } from '../../lib/selectors/selectDealWorkspaceOverviewModel';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
 import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealAnalysisDiagnostics, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness, type DealAnalysisDiagnosticsSnapshot } from '../../lib/apiClient';
 import { useGovernedLlmOverview } from '../../hooks/useGovernedLlmOverview';
@@ -29,9 +37,11 @@ import { derivePhaseBInsights } from '../../lib/phaseb-findings';
 import { buildOverlayViewModel } from '../../lib/overlay/overlayViewModel';
 import { buildWorkspaceMirrorOverviewVM } from '../../lib/workspaceMirrorPr2ViewModel';
 import { deterministicIsDisplayable } from '../../lib/deterministicDisplayPolicy';
+import { useAsyncStaleGuard } from '../../lib/hooks/useAsyncStaleGuard';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { useScoreSource } from '../../contexts/ScoreSourceContext';
 import { extractFundabilityScore0_100 } from '../../lib/dealScore';
+import { filterMismatchedScoreItems, stripScoreFractions, stripScoreFractionsFromItems } from '../../lib/sanitizeScorePhrases';
 import {
   PolarAngleAxis,
   PolarGrid,
@@ -120,6 +130,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       return false;
     }
   }, []);
+
+  const buildStamp = import.meta.env.VITE_BUILD_STAMP ?? 'dev';
 
   const [investorScore, setInvestorScore] = useState(0);
   const [analyzing, setAnalyzing] = useState(false);
@@ -383,113 +395,90 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   type StageBadgeStatus = 'not_started' | 'running' | 'failed' | 'complete';
 
   const getLatestStageStatus = (
-    rows: DealJobRowV2[],
-    stageType: string,
-    opts?: {
-      sinceCreatedMs?: number | null;
-      cutoffStageType?: string;
-    }
+    rows: DealJobRowV2[] | null | undefined,
+    jobType: string,
+    opts?: { cutoffStageType?: string }
   ): { status: StageBadgeStatus; job: DealJobRowV2 | null } => {
-    const desired = String(stageType ?? '').trim().toLowerCase();
-    if (!desired) return { status: 'not_started', job: null };
+    const arr = Array.isArray(rows) ? rows : [];
 
-    const normalizedRows = Array.isArray(rows) ? rows : [];
-    const matchesStage = (r: DealJobRowV2): boolean => {
-      const t = String(r.type ?? '').trim().toLowerCase();
-      const q = String(r.queue ?? '').trim().toLowerCase();
-      return t === desired || q === desired;
-    };
-
-    const cutoffType = opts?.cutoffStageType ? String(opts.cutoffStageType).trim().toLowerCase() : '';
-    const cutoffMsFromJobs = (() => {
-      if (!cutoffType) return null;
-      let best: number | null = null;
-      for (const r of normalizedRows) {
-        const t = String(r.type ?? '').trim().toLowerCase();
-        const q = String(r.queue ?? '').trim().toLowerCase();
-        if (t !== cutoffType && q !== cutoffType) continue;
-        const createdMs = parseIsoMs(r.created_at ?? null) ?? parseIsoMs(r.updated_at ?? null);
-        if (createdMs == null) continue;
-        if (best == null || createdMs > best) best = createdMs;
-      }
-      return best;
-    })();
-
-    const sinceMs = typeof opts?.sinceCreatedMs === 'number' ? opts.sinceCreatedMs : cutoffMsFromJobs;
-
-    const candidates: Array<{ row: DealJobRowV2; createdMs: number }> = [];
-    for (const r of normalizedRows) {
-      if (!matchesStage(r)) continue;
-      const createdMs = parseIsoMs(r.created_at ?? null) ?? parseIsoMs(r.updated_at ?? null);
-      if (createdMs == null) continue;
-      if (typeof sinceMs === 'number' && createdMs < sinceMs) continue;
-      candidates.push({ row: r, createdMs });
+    let cutoffMs: number | null = null;
+    const cutoffType = opts?.cutoffStageType;
+    if (cutoffType) {
+      const latestCutoff = arr
+        .filter((r) => (r.type ?? '') === cutoffType)
+        .sort((a, b) => parseJobSortTs(b) - parseJobSortTs(a))[0];
+      const cutoffCandidateMs = parseIsoMs(latestCutoff?.created_at ?? null);
+      cutoffMs = cutoffCandidateMs ?? null;
     }
 
-    if (candidates.length === 0) return { status: 'not_started', job: null };
-    candidates.sort((a, b) => b.createdMs - a.createdMs);
-    const latest = candidates[0]?.row ?? null;
-    const normalizedStatus = String(latest?.status ?? '').toLowerCase();
+    const candidates = arr.filter((r) => {
+      if ((r.type ?? '') !== jobType) return false;
+      if (cutoffMs == null) return true;
+      const createdMs = parseIsoMs(r.created_at ?? null) ?? parseJobSortTs(r);
+      return createdMs >= cutoffMs;
+    });
 
-    if (normalizedStatus === 'succeeded' || normalizedStatus === 'succeeded_with_warnings') {
-      return { status: 'complete', job: latest };
+    if (candidates.length === 0) {
+      return { status: 'not_started', job: null };
     }
-    if (normalizedStatus === 'failed') return { status: 'failed', job: latest };
-    if (normalizedStatus === 'running' || normalizedStatus === 'queued' || normalizedStatus === 'retrying') {
-      return { status: 'running', job: latest };
-    }
-    // Unknown statuses: treat as running (best-effort) to avoid false “Not started”.
-    return { status: 'running', job: latest };
+
+    const latest = [...candidates].sort((a, b) => parseJobSortTs(b) - parseJobSortTs(a))[0] ?? null;
+    const status = latest
+      ? isSucceededJobStatus(latest.status)
+        ? 'complete'
+        : isFailedJobStatus(latest.status)
+          ? 'failed'
+          : isRunningOrRetryingJobStatus(latest.status)
+            ? 'running'
+            : 'running'
+      : 'not_started';
+
+    return { status, job: latest };
   };
 
-  const dealJobsById = useMemo(() => {
-    const map = new Map<string, DealJobRowV2>();
-    for (const row of dealJobs) map.set(row.job_id, row);
-    return map;
-  }, [dealJobs]);
+  // Full-process UX uses the extract_visuals job as the anchor for the run window.
+  // (Alias kept for historical naming; `fullProcessExtractJobId` is the actual state.)
+  const fullProcessRunExtractJobId = fullProcessExtractJobId;
 
   const pinnedJobRow = useMemo(() => {
     if (!jobId) return null;
-    return dealJobsById.get(jobId) ?? null;
-  }, [dealJobsById, jobId]);
+    const rows = Array.isArray(dealJobs) ? dealJobs : [];
+    return rows.find((r) => r.job_id === jobId) ?? null;
+  }, [dealJobs, jobId]);
 
-  const fullProcessRunExtractJobId = fullProcessExtractJobId ?? fullProcessUi?.steps?.extract_visuals?.job_id ?? null;
+  const pinnedIsAnalyze = Boolean(pinnedJobRow && (pinnedJobRow.type ?? '') === 'analyze_deal');
 
   const derivedAnalyzeForRun = useMemo(() => {
-    if (!fullProcessRunExtractJobId) return { job: null as DealJobRowV2 | null, treatFailedAsPending: false };
-    const window = getFullProcessRunWindowMs();
-    if (!window) return { job: null as DealJobRowV2 | null, treatFailedAsPending: false };
+    const extractJobIdForRun = fullProcessRunExtractJobId;
+    const window = extractJobIdForRun ? getFullProcessRunWindowMs() : null;
+    if (!window) {
+      return { job: null as DealJobRowV2 | null, treatFailedAsPending: false };
+    }
 
-    const job = selectAnalyzeJobInWindow(dealJobs, window);
-    if (!job) return { job: null as DealJobRowV2 | null, treatFailedAsPending: false };
-
+    const rows = Array.isArray(dealJobs) ? dealJobs : [];
+    const best = selectAnalyzeJobInWindow(rows, window);
     const treatFailedAsPending =
-      (job.type ?? '') === 'analyze_deal' &&
-      isFailedJobStatus(job.status) &&
-      // Only suppress the known fast-fail during the run.
-      isSupersedableAnalyzeFailure(job) &&
-      // Treat as pending while Full process is active, or shortly after extraction finishes.
+      !!best &&
+      (best.type ?? '') === 'analyze_deal' &&
+      isFailedJobStatus(best.status) &&
+      isSupersedableAnalyzeFailure(best) &&
       (isFullProcessActive || shouldTreatRunAnalyzeFailureAsPending({ extractFinishedAt: fullProcessExtractFinishedAt ?? null }));
 
-    return { job, treatFailedAsPending };
-  }, [dealJobs, fullProcessExtractCreatedAt, fullProcessExtractFinishedAt, fullProcessRunExtractJobId, isFullProcessActive, jobUpdatedAt]);
-
-  const pinnedIsAnalyze = jobType === 'analyze_deal' || (pinnedJobRow?.type ?? null) === 'analyze_deal';
+    return { job: best, treatFailedAsPending };
+  }, [dealJobs, fullProcessExtractCreatedAt, fullProcessExtractFinishedAt, fullProcessRunExtractJobId, isFullProcessActive]);
 
   const selectedAnalyzeJobForPinned = useMemo(() => {
     if (!pinnedIsAnalyze) return null;
-    // During Full process, only override pinned failed analyzes when a succeeded analyze exists within the run window.
-    if (fullProcessRunExtractJobId) {
-      const pinned = pinnedJobRow;
-      if (pinned && isFailedJobStatus(pinned.status) && derivedAnalyzeForRun.job && isSucceededJobStatus(derivedAnalyzeForRun.job.status)) {
-        if (parseJobSortTs(derivedAnalyzeForRun.job) > parseJobSortTs(pinned)) {
-          return derivedAnalyzeForRun.job;
-        }
-      }
-      return selectBestAnalyzeJob(dealJobs, jobId);
+
+    // If we're in the middle of a full-process run, follow the best analyze job in that run window.
+    if (isFullProcessActive && fullProcessRunExtractJobId && derivedAnalyzeForRun.job) {
+      return derivedAnalyzeForRun.job;
     }
-    return selectBestAnalyzeJob(dealJobs, jobId);
-  }, [dealJobs, derivedAnalyzeForRun.job, fullProcessRunExtractJobId, jobId, pinnedIsAnalyze, pinnedJobRow]);
+
+    // Otherwise keep the pinned analyze job (if present), or fall back to the newest analyze job.
+    if (pinnedJobRow) return pinnedJobRow;
+    return selectBestAnalyzeJob(Array.isArray(dealJobs) ? dealJobs : [], jobId);
+  }, [dealJobs, derivedAnalyzeForRun.job, fullProcessRunExtractJobId, isFullProcessActive, jobId, pinnedIsAnalyze, pinnedJobRow]);
 
   const activeJobId = pinnedIsAnalyze ? (selectedAnalyzeJobForPinned?.job_id ?? jobId) : jobId;
 
@@ -615,6 +604,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const lastProgressKeyRef = useRef<string | null>(null);
   const reportMissingRef = useRef<boolean>(false);
   const lastReportAttemptAtRef = useRef<number>(0);
+  /** Ratchet: tracks the highest analysis_version we have ever successfully requested or received.
+   * desiredVersion will never go below this value, preventing v3→v1 regressions on SSE / error-fallback re-fetches. */
+  const latestKnownVersionRef = useRef<number | null>(null);
 
   const [debugApiEntries, setDebugApiEntries] = useState<DebugApiEntry[]>(() => (debugApiIsEnabled() ? debugApiGetEntries() : []));
 
@@ -623,6 +615,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const overlayPostAnalyzeTimerRef = useRef<number | null>(null);
   const overlayPostAnalyzeStartedAtRef = useRef<number>(0);
   const overlayPostAnalyzeAttemptsRef = useRef<number>(0);
+  // Dedup guard: track the last analyze job_id for which overlay polling was started.
+  // Prevents repeated SSE delivery (or re-subscription) from spawning multiple polling cycles.
+  const lastAnalyzedJobIdForOverlayRef = useRef<string | null>(null);
   const [showDeterministicAuthoritative, setShowDeterministicAuthoritative] = useState<boolean>(false);
   const deterministicToggleTouchedRef = useRef<boolean>(false);
   const [showGovernedOverlayPanel, setShowGovernedOverlayPanel] = useState<boolean>(true);
@@ -689,18 +684,70 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return true;
   };
 
-  const loadReport = async (opts?: { force?: boolean }) => {
+  const { isStale, markKey } = useAsyncStaleGuard<string | null>(dealId ?? null);
+  useEffect(() => {
+    markKey(dealId ?? null);
+  }, [dealId, markKey]);
+
+  const loadReport = async (opts?: { force?: boolean; version?: number | null }) => {
     if (!dealId) {
       setReportFromApi(null);
       setReportEnvelope(null);
       return;
     }
+    const keyAtStart = dealId;
     const now = Date.now();
     if (!opts?.force && now - lastReportAttemptAtRef.current < 8000) return;
     lastReportAttemptAtRef.current = now;
+
+    const desiredVersion = (() => {
+      const floor = latestKnownVersionRef.current;
+      const v = opts?.version;
+      if (typeof v === 'number' && Number.isFinite(v) && v >= 1) {
+        const explicit = Math.trunc(v);
+        // Never silently regress below the highest version we have positively observed.
+        // A future user-version-picker would bypass this via a separate userSelectedVersionRef.
+        return floor != null && floor > explicit ? floor : explicit;
+      }
+      const metaV = dioMeta?.dioAnalysisVersion;
+      const fromMeta = typeof metaV === 'number' && Number.isFinite(metaV) && metaV >= 1 ? Math.trunc(metaV) : null;
+      if (fromMeta !== null && floor !== null) return Math.max(fromMeta, floor);
+      return fromMeta ?? floor ?? null;
+    })();
+    // Ratchet: record the requested version before the fetch so concurrent no-version calls
+    // also benefit from the floor on their next invocation.
+    if (desiredVersion != null && (latestKnownVersionRef.current == null || desiredVersion > latestKnownVersionRef.current)) {
+      latestKnownVersionRef.current = desiredVersion;
+    }
+    if (process.env.NODE_ENV !== 'production') {
+      console.debug('[DDAI][loadReport:start]', {
+        dealId,
+        desiredVersion,
+        latestKnownVersion: latestKnownVersionRef.current,
+        dioMetaVersion: dioMeta?.dioAnalysisVersion ?? null,
+      });
+    }
     try {
-      const envelope = await apiGetDealReport(dealId);
+      const envelope = await apiGetDealReport(dealId, { version: desiredVersion });
+      if (isStale(keyAtStart)) return;
       setReportEnvelope(envelope);
+
+      // Ratchet: update latestKnownVersionRef from the server-confirmed version.
+      const _envelopeVersion = typeof (envelope as any)?.version === 'number' && Number.isFinite((envelope as any).version)
+        ? Math.trunc((envelope as any).version as number)
+        : null;
+      if (_envelopeVersion != null && _envelopeVersion >= 1 &&
+          (latestKnownVersionRef.current == null || _envelopeVersion > latestKnownVersionRef.current)) {
+        latestKnownVersionRef.current = _envelopeVersion;
+      }
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[DDAI][loadReport:received]', {
+          dealId,
+          fetchedVersion: _envelopeVersion,
+          desiredVersion,
+          latestKnownVersion: latestKnownVersionRef.current,
+        });
+      }
 
       const ready = Boolean((envelope as any)?.ready);
       const report = ready
@@ -710,13 +757,26 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       // Treat { ready:false } as normal intermediate state.
       // Keep polling behavior driven by job state (not /report errors).
       reportMissingRef.current = !ready;
+      if (isStale(keyAtStart)) return;
       setReportMissing(!ready);
+      if (isStale(keyAtStart)) return;
       setReportFromApi((report && typeof report === 'object') ? (report as DealReport) : null);
 
-      if (ready && typeof (report as any)?.overallScore === 'number' && Number.isFinite((report as any).overallScore)) {
-        setInvestorScore(Math.round((report as any).overallScore));
+      // Use the canonical resolver so investorScore (and thus fundamentalsScore0_100 /
+      // decisionTileScore0_100) reflects the calibrated band score, not just overallScore.
+      // Priority: score_band_v2.overall_score → overallScore → (no update).
+      if (ready) {
+        const { score: _canonicalForInvestor } = resolveCanonicalScore(report);
+        if (_canonicalForInvestor != null) {
+          if (isStale(keyAtStart)) return;
+          setInvestorScore(_canonicalForInvestor);
+        } else if (typeof (report as any)?.overallScore === 'number' && Number.isFinite((report as any).overallScore)) {
+          if (isStale(keyAtStart)) return;
+          setInvestorScore(Math.round((report as any).overallScore));
+        }
       }
     } catch (err: any) {
+      if (isStale(keyAtStart)) return;
       // Network / auth / server errors: keep report null but don't treat as "missing report".
       setReportFromApi(null);
     }
@@ -729,20 +789,29 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       setAnalysisDiagnosticsError(null);
       return;
     }
+    const keyAtStart = dealId;
     const now = Date.now();
     if (!opts?.force && now - lastDiagnosticsAttemptAtRef.current < 8000) return;
     lastDiagnosticsAttemptAtRef.current = now;
 
+    if (isStale(keyAtStart)) return;
     setAnalysisDiagnosticsStatus('loading');
+    if (isStale(keyAtStart)) return;
     setAnalysisDiagnosticsError(null);
     try {
       const res = await apiGetDealAnalysisDiagnostics(dealId);
+      if (isStale(keyAtStart)) return;
       const diag = res && typeof res === 'object' ? (res as any).diagnostics : null;
+      if (isStale(keyAtStart)) return;
       setAnalysisDiagnostics(diag && typeof diag === 'object' ? (diag as DealAnalysisDiagnosticsSnapshot) : null);
+      if (isStale(keyAtStart)) return;
       setAnalysisDiagnosticsStatus('ready');
     } catch (err) {
+      if (isStale(keyAtStart)) return;
       setAnalysisDiagnostics(null);
+      if (isStale(keyAtStart)) return;
       setAnalysisDiagnosticsStatus('ready');
+      if (isStale(keyAtStart)) return;
       setAnalysisDiagnosticsError(err instanceof Error ? err.message : 'Failed to load diagnostics');
     }
   };
@@ -795,6 +864,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     clearOverlayPostAnalyzeTimer();
     overlayPostAnalyzeStartedAtRef.current = 0;
     overlayPostAnalyzeAttemptsRef.current = 0;
+    lastAnalyzedJobIdForOverlayRef.current = null;
     setOverlayPostAnalyzeState('idle');
   }, [dealId]);
 
@@ -1013,21 +1083,28 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         if (!active) return;
         setDealFromApi(deal);
         debugLogger.logAPIData('DealWorkspace', 'dealFromApi', deal, `Fetched via apiGetDeal(${dealId})`);
-        setDioMeta({
+        const nextMeta = {
           dioVersionId: (deal as any).dioVersionId,
           dioStatus: (deal as any).dioStatus,
           lastAnalyzedAt: (deal as any).lastAnalyzedAt,
           dioRunCount: (deal as any).dioRunCount,
           dioAnalysisVersion: (deal as any).dioAnalysisVersion,
-        });
+        };
+        setDioMeta(nextMeta);
+
+        // Always bind the compiled report to the same DIO version shown in the header.
+        const v = nextMeta.dioAnalysisVersion;
+        loadReport({ force: true, version: typeof v === 'number' ? v : null }).catch(() => {});
       })
       .catch((err) => {
         if (!active) return;
         debugLogger.logMockData('DealWorkspace', 'dealFromApi', null, `API call failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
         addToast('error', 'Failed to load deal', err instanceof Error ? err.message : 'Unknown error');
+
+        // Fall back to the highest known version (or unversioned if unknown) to prevent v3→v1 regression.
+        loadReport({ force: true, version: latestKnownVersionRef.current ?? null }).catch(() => {});
       });
 
-    loadReport({ force: true });
 		loadDiagnostics({ force: true });
 
     return () => {
@@ -1118,7 +1195,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return () => {
       active = false;
     };
-  }, [highlightedEvidenceIds, evidence, displayFactsEvidenceIds]);
+  }, [highlightedEvidenceIds, evidence, displayFactsEvidenceIds, reportEvidenceIds]);
 
   const getConfidenceLabel = (v: unknown): 'High' | 'Med' | 'Low' => {
     const n = typeof v === 'number' && Number.isFinite(v) ? v : 0;
@@ -2015,6 +2092,89 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return s;
   };
 
+  // Like safeText, but preserves newlines so callers can keep paragraph breaks.
+  // We still normalize CRLF and trim, and we run the OCR junk check on a
+  // whitespace-collapsed version of the text.
+  const safeTextPreserveNewlines = (value: unknown): string => {
+    if (typeof value !== 'string') return '';
+    const normalized = value.replace(/\r\n/g, '\n').trim();
+    if (!normalized) return '';
+    const collapsedForOcr = normalized.replace(/\s+/g, ' ').trim();
+    if (!collapsedForOcr) return '';
+    if (isProbablyOcrJunk(collapsedForOcr)) return '';
+    return normalized;
+  };
+
+  const formatMoneyAmountOnly = (amount: number): string => {
+    const v = typeof amount === 'number' && Number.isFinite(amount) ? amount : NaN;
+    if (!Number.isFinite(v)) return '—';
+    if (v >= 1e9) {
+      const x = v / 1e9;
+      const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+      return `$${s}B`;
+    }
+    if (v >= 1e6) {
+      const x = v / 1e6;
+      const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+      return `$${s}M`;
+    }
+    if (v >= 1e3) {
+      const x = v / 1e3;
+      const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+      return `$${s}K`;
+    }
+    return `$${Math.round(v).toLocaleString()}`;
+  };
+
+  const reportCanonicalRaise = useMemo(() => {
+    const structuredRaise = (reportFromApi as any)?.structured_summary?.raise;
+    const amountRaw = structuredRaise?.value_json?.amount?.amount;
+    const amount = typeof amountRaw === 'number' && Number.isFinite(amountRaw) ? amountRaw : null;
+    if (amount == null) return { value: null as string | null, roundLabel: null as string | null };
+    const roundLabel = safeText(structuredRaise?.round_label) || null;
+    return { value: formatMoneyAmountOnly(amount), roundLabel };
+  }, [reportFromApi]);
+
+  // Deterministic structured summary deal summary (v1)
+  // Canonical paths per spec:
+  // - report.structured_summary.deal_summary_v1.one_liner
+  // - report.structured_summary.deal_summary_v1.long_summary
+  const structuredSummaryRoot = (
+    ((reportFromApi as any)?.structured_summary && typeof (reportFromApi as any).structured_summary === 'object')
+      ? (reportFromApi as any).structured_summary
+      : (((reportEnvelope as any)?.report?.structured_summary && typeof (reportEnvelope as any).report.structured_summary === 'object')
+          ? (reportEnvelope as any).report.structured_summary
+          : null)
+  );
+  const structuredDealSummaryV1 = (structuredSummaryRoot && typeof structuredSummaryRoot === 'object')
+    ? (structuredSummaryRoot as any).deal_summary_v1
+    : null;
+  // [SEPARATION] TopSection short summary = deterministic one_liner ONLY (never governed overlay hero_summary).
+  // Reject sentinel placeholders that pass safeText() but are meaningless (e.g. LLM fallback strings).
+  const _TOPSECTION_SENTINEL_PLACEHOLDERS = new Set(['unknown', 'n/a', 'not available', 'none', 'n/a.', 'unknown.']);
+  const _filterSentinel = (s: string): string =>
+    _TOPSECTION_SENTINEL_PLACEHOLDERS.has(s.toLowerCase().trim()) ? '' : s;
+
+  // [SCORE-MECHANIC-FILTER] Phrases that expose INTERNAL scoring boilerplate — must never appear in
+  // TopSection strengths/weaknesses. Intentionally narrow: only strips true engine noise, NOT
+  // legitimate UX copy like "Provide benchmarkable KPIs" or "Insufficient unit economics data".
+  const _SCORE_MECHANIC_RE = /pacing score|score computed|narrative pacing|score.*mechanic|analyzer scored|analyzer score used|neutral baseline/i;
+  const structuredDealSummaryOneLiner =
+    _filterSentinel(safeText((structuredDealSummaryV1 as any)?.one_liner)) ||
+    _filterSentinel(safeText((structuredDealSummaryV1 as any)?.one_liner?.text));
+
+  // [TOPSECTION-V1] Score-driver deterministic summary — answers "Why is the score X?"
+  // This is the authority surface for TopSection.dealSummaryShort.
+  // Design contract: TopSection = score-driver summary; Overview tab = company summary (governed).
+  // NOTE: topSectionScoreDriverOneLiner (final, with client-side fallback) is defined AFTER
+  // canonicalScoreView below so it can reference the canonical score for the fallback message.
+  const topsectionV1 = (structuredSummaryRoot as any)?.topsection_v1 ?? null;
+  const _topSectionScoreDriverOneLinerRaw = _filterSentinel(
+    safeText(topsectionV1?.score_driver_one_liner),
+  );
+  const structuredDealSummaryLong = safeTextPreserveNewlines((structuredDealSummaryV1 as any)?.long_summary)
+    || safeTextPreserveNewlines((structuredDealSummaryV1 as any)?.long_summary?.text);
+
   // Overview-tab wiring helpers (derived only from existing dealFromApi/dealData state; no new API calls)
   const overviewDealOneLiner = (() => {
     const v2Summary = (dealSummaryV2 as any)?.summary;
@@ -2112,12 +2272,34 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return out.slice(0, 6);
   })();
 
-  // Deterministic deal_summary_v1 from /report (derived from segmented DPU nodes).
-  // UI rule: use canonical only when deal_summary.ready=true; otherwise show legacy and label it.
+  // Deterministic deal_summary_v1 from /report (KPI-locked synthesis).
+  // UI rule: use canonical only when *.ready=true; otherwise show deterministic degraded placeholder.
   const canonicalDealSummaryV1 = reportReady
-    ? ((reportFromApi as any)?.deal_summary ?? (reportFromApi as any)?.report?.deal_summary ?? null)
+    ? (
+        (reportFromApi as any)?.deal_summary_v1 ??
+        (reportFromApi as any)?.report?.deal_summary_v1 ??
+        (reportFromApi as any)?.deal_summary ??
+        (reportFromApi as any)?.report?.deal_summary ??
+        null
+      )
     : null;
   const canonicalDealSummaryReady = canonicalDealSummaryV1 && typeof canonicalDealSummaryV1 === 'object' && (canonicalDealSummaryV1 as any).ready === true;
+
+  const authoritativeProductSummaryV1 = useMemo(() => {
+    return selectAuthoritativeProductSummaryV1((reportFromApi as any) ?? null);
+  }, [reportFromApi]);
+
+  const authoritativeMarketSummaryV1 = useMemo(() => {
+    return selectAuthoritativeMarketSummaryV1((reportFromApi as any) ?? null);
+  }, [reportFromApi]);
+
+  const authoritativeFinancialCoverageV1 = useMemo(() => {
+    // financial_coverage_v1 is deterministic-only and lives on /report.
+    return selectAuthoritativeFinancialCoverageV1((reportFromApi as any) ?? (reportEnvelope as any) ?? null);
+  }, [reportFromApi, reportEnvelope]);
+
+  const authoritativeProductTextV1 = authoritativeProductSummaryV1.value ?? '';
+  const authoritativeMarketTextV1 = authoritativeMarketSummaryV1.value ?? '';
 
   const canonicalTiers = canonicalDealSummaryReady && (canonicalDealSummaryV1 as any)?.tiers && typeof (canonicalDealSummaryV1 as any).tiers === 'object'
     ? (canonicalDealSummaryV1 as any).tiers
@@ -2187,13 +2369,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       if (r.includes('failed')) return true;
       if (r === 'analyzer score used') return true;
       if (r === 'neutral baseline used') return true;
+      // Block internal score-mechanic phrases that should never surface in TopSection strengths.
+      if (/pacing score|score computed|narrative pacing|computed.*score|score.*mechanic|analyzer.*scored/i.test(reason)) return true;
       return false;
     };
 
     const product = safeNonEmpty(canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : overviewProduct);
     const market = safeNonEmpty(canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : overviewMarketIcp);
     const businessModel = safeNonEmpty(overviewBusinessModel);
-    const raise = safeNonEmpty(overviewRaiseTerms);
+    const raise = safeNonEmpty(reportCanonicalRaise.value || overviewRaiseTerms);
 
     const kpis: any[] = deterministicScoreInputsV1 && Array.isArray(deterministicScoreInputsV1.kpis)
       ? deterministicScoreInputsV1.kpis
@@ -2567,7 +2751,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const pickMoney = (): string => {
     if (reportReady) {
-      const fromReport = safeText((reportFromApi as any)?.structured_summary?.raise?.value);
+      // Canonical: amount-only from report.structured_summary.raise.value_json.amount.amount.
+      const fromReport = safeText(reportCanonicalRaise.value);
       if (fromReport) return fromReport;
     }
     const direct = safeText(overviewV2?.raise);
@@ -2660,35 +2845,89 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return out;
   };
 
-  const topSectionStrengths = (() => {
-    const understandingStrengths = extractUnderstandingTexts((understandingV1 as any)?.strengths);
-    if (understandingStrengths.length > 0) {
-      return Array.from(new Set(understandingStrengths.map((x) => x.trim()))).slice(0, 6);
-    }
+  // [SCORE-EXPLANATION-V1] Clean intermediate contract for TopSection copy.
+  // Derived exclusively from guardrail snapshot (score_band_v2) + scoring engine analytics
+  // (score_explanation.understanding_v1 + totals). No LLM, no DB write.
+  // null when no report is applied or band score is unavailable.
+  const scoreExplanationV1 = (() => {
+    if (!reportReady) return null;
+    const reportMeta = (reportFromApi as any)?.metadata;
+    const envelopeMeta = (reportEnvelope as any)?.metadata;
+    // Band from report metadata; fall back to envelope-level band (set independently by API).
+    const bandMeta = (reportMeta?.score_band_v2 && typeof reportMeta.score_band_v2 === 'object')
+      ? reportMeta.score_band_v2
+      : (envelopeMeta?.score_band_v2 && typeof envelopeMeta.score_band_v2 === 'object')
+        ? envelopeMeta.score_band_v2
+        : null;
+    const overallScore: number | null = (() => {
+      const v = bandMeta?.overall_score;
+      return typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : null;
+    })();
+    if (overallScore == null) return null;
 
-    const v2Strengths = Array.isArray((dealSummaryV2 as any)?.strengths) ? (dealSummaryV2 as any).strengths : [];
-    const merged = [...v2Strengths, ...decisionTileStrengths]
-      .filter((x: any): x is string => typeof x === 'string' && x.trim().length > 0)
-      .map((x: string) => x.trim());
-    return Array.from(new Set(merged)).slice(0, 6);
+    const se = decisionScoreExplanation; // = reportFromApi.metadata.score_explanation
+    const u1 = understandingV1; // = se?.understanding_v1
+    const band: string | null = safeText(bandMeta?.label || bandMeta?.key) || null;
+    const coverageRatio: number | null = (() => {
+      const v = se?.totals?.coverage_ratio;
+      return typeof v === 'number' && Number.isFinite(v) ? v : null;
+    })();
+
+    // Snapshot summary: understanding_v1.summary.text (or string form) — lightweight narrative
+    // explaining WHY the score landed where it did. Sanitize score fractions only; keep meaning.
+    const snapshotSummary: string | null = (() => {
+      const raw = u1?.summary;
+      const txt = typeof raw === 'object' && raw !== null
+        ? safeText((raw as any).text)
+        : safeText(raw as any);
+      if (!txt) return null;
+      const cleaned = stripScoreFractions(txt);
+      return cleaned.length >= 10 ? cleaned : null;
+    })();
+
+    // Strengths from understanding_v1.strengths — strip score fractions (not entire items).
+    const primaryStrengths = stripScoreFractionsFromItems(
+      extractUnderstandingTexts(u1?.strengths).filter((x) => !_SCORE_MECHANIC_RE.test(x)),
+    ).slice(0, 4);
+
+    // Diligence open items — split into weaknesses (gap flags, short / noun-phrase style)
+    // vs action recommendations (imperative verb-led suggestions, typically longer).
+    // Heuristic: starts with a common imperative verb → action; otherwise → weakness.
+    const _ACTION_VERB_RE = /^(provide|share|confirm|show|demonstrate|add|include|disclose|address|clarify|present|submit|explain|describe|quantify|detail|outline|document|define|identify|specify|validate|verify|run|get|build|prepare|develop|establish|conduct|illustrate|model)/i;
+    const allDiligenceItems = stripScoreFractionsFromItems(
+      extractUnderstandingTexts(u1?.diligence_open_items),
+    );
+    const primaryConstraints = allDiligenceItems
+      .filter((x) => !_SCORE_MECHANIC_RE.test(x) && !_ACTION_VERB_RE.test(x))
+      .slice(0, 5);
+    const longDiligenceActions = allDiligenceItems
+      .filter((x) => !_SCORE_MECHANIC_RE.test(x) && _ACTION_VERB_RE.test(x))
+      .slice(0, 4);
+
+    // Execution dependencies → action recommendations (merged with long diligence items).
+    const execActions = stripScoreFractionsFromItems(
+      extractUnderstandingTexts(u1?.execution_dependencies).filter((x) => !_SCORE_MECHANIC_RE.test(x)),
+    ).slice(0, 4);
+    const actionRecommendations = [...longDiligenceActions, ...execActions].slice(0, 6);
+
+    return {
+      overall_score: overallScore,
+      band,
+      coverage_ratio: coverageRatio,
+      snapshot_summary: snapshotSummary,
+      primary_strengths: primaryStrengths,
+      primary_constraints: primaryConstraints,
+      action_recommendations: actionRecommendations,
+    } as const;
   })();
 
-  const topSectionWeaknesses = (() => {
-    const understandingDiligence = extractUnderstandingTexts((understandingV1 as any)?.diligence_open_items);
-    const understandingDeps = extractUnderstandingTexts((understandingV1 as any)?.execution_dependencies);
-    const preferred = [...understandingDiligence, ...understandingDeps]
-      .filter((x) => x.trim().length > 0)
-      .map((x) => x.trim());
-    if (preferred.length > 0) {
-      return Array.from(new Set(preferred)).slice(0, 8);
-    }
-
-    const v2Risks = Array.isArray((dealSummaryV2 as any)?.risks) ? (dealSummaryV2 as any).risks : [];
-    const merged = [...v2Risks, ...decisionMissing]
-      .filter((x: any): x is string => typeof x === 'string' && x.trim().length > 0)
-      .map((x: string) => x.trim());
-    return Array.from(new Set(merged)).slice(0, 8);
-  })();
+  // [SCORE-CONTRACT] TopSection copy fields — sourced exclusively from scoreExplanationV1.
+  // All NN/100 fractions are stripped at source; mismatched ones are double-guarded at JSX
+  // call site via filterMismatchedScoreItems. No multi-tier fallbacks.
+  const topSectionStrengths: string[] = scoreExplanationV1?.primary_strengths ?? [];
+  const topSectionWeaknesses: string[] = scoreExplanationV1?.primary_constraints ?? [];
+  // Actions = verb-led diligence items + execution dependencies from scoreExplanationV1.
+  const topSectionActionsToImprove: string[] = scoreExplanationV1?.action_recommendations ?? [];
 
   const topSectionConfidence: 'High' | 'Medium' | 'Low' = decisionTileConfidenceBand === 'high'
     ? 'High'
@@ -2735,12 +2974,34 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       return map[stageRaw] ?? stageRaw.replace(/_/g, ' ');
     })();
 
-    const reportScore = reportReady && typeof (reportFromApi as any)?.overallScore === 'number' && Number.isFinite((reportFromApi as any).overallScore)
-      ? Math.round((reportFromApi as any).overallScore)
-      : null;
+    // [CANONICAL-SCORE] Two-pass band score logic:
+    //   Pass 1: resolve from inner reportFromApi.metadata (present when deck_archetype block succeeded).
+    //   Pass 2: if band score not found, try the envelope-level metadata.score_band_v2 which the API
+    //           writes independently via payload.metadata = nextMetadata (survives deck_archetype failures).
+    // This prevents the gauge from falling back to report.overallScore when the band IS available
+    // but was only attached to the envelope-level metadata and not the inner report object.
+    const { score: _innerReportScore, source: _innerReportSource } = resolveCanonicalScore(reportReady ? reportFromApi : null);
+    const _envelopeBandScore: number | null = (() => {
+      // Short-circuit: inner report already had the band score — no need to consult envelope.
+      if (_innerReportSource === 'score_band_v2.overall_score') return null;
+      if (!reportReady) return null;
+      const envelopeMeta = (reportEnvelope as any)?.metadata;
+      if (!envelopeMeta || typeof envelopeMeta !== 'object') return null;
+      const band = envelopeMeta.score_band_v2;
+      if (!band || typeof band !== 'object') return null;
+      const v = (band as Record<string, unknown>).overall_score;
+      return typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : null;
+    })();
+    // Merge: envelope band score wins if inner report lacked it; otherwise inner report wins.
+    const reportScore: number | null = _envelopeBandScore ?? _innerReportScore;
+    const _reportScoreSource: ResolvedScore['source'] = _envelopeBandScore != null
+      ? 'score_band_v2.overall_score'
+      : _innerReportSource;
 
     const sections = Array.isArray((reportFromApi as any)?.sections) ? (reportFromApi as any).sections : [];
     const structuredSummary = (reportFromApi as any)?.structured_summary;
+    // KPI normalization must occur server-side only to prevent drift.
+    const kpis = structuredSummary && typeof structuredSummary === 'object' ? (structuredSummary as any).kpis : null;
 
     const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
       ? (reportFromApi as any).metadata
@@ -2763,10 +3024,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const businessModelFromReport = authoritativeBusinessModel.value || safeText(ctx?.business_model);
     const businessModelLabelFromReport = authoritativeBusinessModel.label;
     const dealTypeFromReport = safeText(ctx?.deal_type);
-    const raiseFromReport = safeText(structuredSummary?.raise?.value) || safeText(ctx?.raise);
+    const raiseFromReport = safeText(reportCanonicalRaise.value);
 
     const revenueFromReport = (() => {
-      const v = structuredSummary?.revenue?.value;
+      const v = kpis?.revenue?.value;
       if (!v || typeof v !== 'object') return null;
       const raw = safeText((v as any).raw);
       if (raw) return raw;
@@ -2782,7 +3043,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     })();
 
     const customersFromReport = (() => {
-      const v = structuredSummary?.customers?.value;
+      const v = kpis?.customers?.value;
       if (!v || typeof v !== 'object') return null;
       const raw = safeText((v as any).raw);
       if (raw) return raw;
@@ -2800,14 +3061,24 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       safeText(reportArtifact?.recommendation) ||
       null;
 
+    // [TOPSECTION-BINDING] When the report is applied (reportReady + reportFromApi present),
+    // the gauge score must come exclusively from the canonical resolver (score_band_v2 or overallScore).
+    // Never fall through to fallbackScore (which traces to dealFromApi.score) — that would cause
+    // the gauge to show the DB-calibrated deal score instead of the report-derived score.
+    const reportApplied = reportReady && !!reportFromApi;
+    const gaugeScore = reportApplied
+      ? (reportScore ?? 0) // canonical-only; 0 = "no band/overallScore" edge case
+      : (reportScore ?? fallbackScore); // pre-report: best estimate is fine
+
     return {
-      applied: reportReady && !!reportFromApi,
-      score: reportScore ?? fallbackScore,
+      applied: reportApplied,
+      score: gaugeScore,
+      scoreSource: _reportScoreSource,
       recommendation,
       stageRaw,
       stageLabel,
       dealSummary: showCanonicalTopSummary ? canonicalTopSummary : legacySummary,
-      dealSummaryTitle: showCanonicalTopSummary ? 'Deal Summary' : 'Executive Summary',
+      dealSummaryTitle: showCanonicalTopSummary ? 'Deal Snapshot' : 'Executive Summary',
       dealSummarySource: showCanonicalTopSummary ? 'canonical' : 'legacy',
       businessModel: businessModelFromReport || topSectionBusinessModel,
       businessModelLabel: businessModelLabelFromReport,
@@ -2820,6 +3091,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, [
     reportReady,
     reportFromApi,
+    reportEnvelope,
     reportArtifact,
     decisionScoreExplanation,
     displayScore,
@@ -2836,7 +3108,78 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     topSectionRevenue,
     topSectionCustomers,
     authoritativeBusinessModel,
+    reportCanonicalRaise,
   ]);
+
+  // Canonical score label: when the report is loaded (score = report.overallScore),
+  // label it "Overall Score". Only use the sub-engine label ("Fundamentals" / "Fundability")
+  // as a fallback when showing a pre-report estimate.
+  const canonicalScoreLabel: string = reportView.applied ? 'Overall Score' : displayScoreLabel;
+
+  // canonicalScoreView: single score truth shared by ALL score-bearing UI surfaces
+  // (TopSection gauge AND Overview tab). score0_100 is null when report is not yet applied
+  // so we never show a stale DB number in the Overview tile.
+  const canonicalScoreView = {
+    score0_100: reportView.applied ? reportView.score : null,
+    scoreSource: reportView.scoreSource,
+    reportApplied: reportView.applied,
+  } as const;
+
+  // [SCORE-SANITIZER] Canonical reference for stripping mismatched NN/100 phrases from copy.
+  // Only active when a report is applied (we have a real canonical score to compare against).
+  // null = no sanitization (pre-report state).
+  const canonicalScoreForSanitizer: number | null = canonicalScoreView.reportApplied
+    ? canonicalScoreView.score0_100
+    : null;
+
+  // [SCORE-CONTRACT] Final one-liner for TopSection Deal Snapshot.
+  // Priority order (first non-empty wins):
+  //   1. score_driver_one_liner from structured_summary (topsection_v1 builder, deterministic).
+  //   2. understanding_v1.summary — explains WHY the score landed; strip score fractions.
+  //   3. Synthesize from band + top strength + top constraint.
+  //   4. Empty string — component renders a neutral placeholder; never "Score of N".
+  const topSectionScoreDriverOneLiner = _topSectionScoreDriverOneLinerRaw || (() => {
+    if (scoreExplanationV1) {
+      // Priority 2: understanding_v1.summary
+      if (scoreExplanationV1.snapshot_summary) return scoreExplanationV1.snapshot_summary;
+      // Priority 3: synthesize
+      const { band, primary_strengths, primary_constraints, coverage_ratio } = scoreExplanationV1;
+      const topStrength = primary_strengths[0] ?? null;
+      const topConstraint = primary_constraints[0] ?? null;
+      if (band && topStrength) {
+        return topConstraint
+          ? `${band}: ${topStrength} — Key constraint: ${topConstraint}`
+          : `${band}: ${topStrength}`;
+      }
+      if (band && coverage_ratio != null) {
+        return `${band} — scored from ${Math.round(coverage_ratio * 100)}% data coverage.`;
+      }
+      if (band) return `${band} — score details not yet computed for this run.`;
+    }
+    // Priority 4: placeholder; component handles empty one-liner gracefully.
+    return '';
+  })();
+
+  // [SCORE-CONTRACT] Dev-only log: emits once per unique score_explanation_v1 state.
+  // Logs the canonical score, the full explanation object, and the score source path.
+  const lastScoreContractLogRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const key = [
+      dealId ?? '',
+      String(canonicalScoreView.score0_100 ?? 'null'),
+      canonicalScoreView.scoreSource,
+      scoreExplanationV1 ? 'v1' : 'null',
+    ].join('|');
+    if (lastScoreContractLogRef.current === key) return;
+    lastScoreContractLogRef.current = key;
+    console.log('[DDAI][score_contract]', {
+      canonicalScore: canonicalScoreView.score0_100,
+      sourcePathUsed: canonicalScoreView.scoreSource,
+      reportApplied: canonicalScoreView.reportApplied,
+      explanationObject: scoreExplanationV1,
+    });
+  }, [dealId, canonicalScoreView, scoreExplanationV1]);
 
   const lastReportBindingsLogRef = useRef<string | null>(null);
   useEffect(() => {
@@ -2848,7 +3191,132 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     console.log('[DDAI][report_bindings]', reportView);
   }, [dealId, reportVersion, reportView]);
 
-  const reportStructuredRaise = safeText((reportFromApi as any)?.structured_summary?.raise?.value);
+  // [SCORE-SOURCES] Consolidated dev-only log: emits once per unique score-state snapshot.
+  // Use this to diagnose mismatches between what each UI element shows and where it came from.
+  const lastScoreSourcesLogRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const _reportMeta = (reportFromApi as any)?.metadata ?? null;
+    const _bandScore = _reportMeta?.score_band_v2?.overall_score ?? null;
+    const _envelopeLevelBandScore = (reportEnvelope as any)?.metadata?.score_band_v2?.overall_score ?? null;
+    const _rawOverallScore = (reportFromApi as any)?.overallScore ?? null;
+    // Two-pass canonical resolution: inner report first, envelope-level band as fallback.
+    const { score: _innerCanonical, source: _innerSrc } = resolveCanonicalScore(reportFromApi);
+    const _canonical = (_innerSrc !== 'score_band_v2.overall_score' && _envelopeLevelBandScore != null)
+      ? _envelopeLevelBandScore
+      : _innerCanonical;
+    const _canonicalSrc: ResolvedScore['source'] = (_innerSrc !== 'score_band_v2.overall_score' && _envelopeLevelBandScore != null)
+      ? 'score_band_v2.overall_score'
+      : _innerSrc;
+    const key = [
+      dealId ?? '',
+      String(reportVersion ?? 'na'),
+      String(dioMeta?.dioAnalysisVersion ?? 'na'),
+      String(_rawOverallScore ?? 'na'),
+      String(_bandScore ?? 'na'),
+      String(_canonical ?? 'na'),
+      String(fundamentalsScore0_100 ?? 'na'),
+      String(investorScore),
+      String((dealFromApi as any)?.score ?? 'na'),
+      String(displayScore ?? 'na'),
+      String(reportView.score),
+      String(decisionTileScore0_100 ?? 'na'),
+    ].join('|');
+    if (lastScoreSourcesLogRef.current === key) return;
+    lastScoreSourcesLogRef.current = key;
+    console.log('[DDAI][score_sources]', {
+      dealId,
+      // Report version info
+      envelopeVersion: reportVersion,
+      dioMetaVersion: dioMeta?.dioAnalysisVersion ?? null,
+      reportReady,
+      // Raw values from fetched objects
+      raw: {
+        'reportFromApi.overallScore': _rawOverallScore,
+        'reportFromApi.metadata.score_band_v2.overall_score': _bandScore,
+        'reportEnvelope.metadata.score_band_v2.overall_score': _envelopeLevelBandScore,
+        'dealFromApi.score': (dealFromApi as any)?.score ?? null,
+        investorScore,
+      },
+      // Canonical resolution
+      resolved: {
+        canonicalScore: _canonical,
+        canonicalScoreSource: _canonicalSrc,
+        fundamentalsScore0_100,
+        displayScore,
+        displayScoreLabel,
+      },
+      // What each UI element shows
+      ui: {
+        'TopSection gauge (reportView.score)': reportView.score,
+        'TopSection scoreLabel': canonicalScoreLabel,
+        'TopSection canonicalScoreSource': reportView.applied ? reportView.scoreSource : 'none',
+        'Data-panel displayScore/100': displayScore != null ? `${Math.round(displayScore)}/100` : '—',
+        'Overview canonical score0_100': canonicalScoreView.score0_100,
+        'Overview reportApplied': canonicalScoreView.reportApplied,
+        'Overview scoreSource': canonicalScoreView.scoreSource,
+        'Decision tile label': decisionTileLabel,
+      },
+      // Hypothesis guide:
+      // A) bandScore missing or equals overallScore → resolver correctly shows overallScore (no divergence)
+      // B) bandScore exists and differs from overallScore → band score shown; overview and gauge agree
+      hypothesisGuide: {
+        bandScorePresent: _bandScore != null,
+        bandDiffersFromOverall: _bandScore != null && _rawOverallScore != null && _bandScore !== _rawOverallScore,
+        gaugeDiffersFromOverview: reportView.score !== canonicalScoreView.score0_100,
+        gaugeSource: _canonicalSrc,
+      },
+    });
+  }, [
+    dealId, reportVersion, dioMeta, reportFromApi, reportEnvelope, reportReady,
+    fundamentalsScore0_100, investorScore, dealFromApi, displayScore, displayScoreLabel,
+    reportView, canonicalScoreLabel, canonicalScoreView, decisionTileLabel,
+  ]);
+
+  // [TOPSECTION-BINDING] Dev-only log emitted once per unique gauge-binding state.
+  // Verifies at render time that the TopSection gauge is driven by the canonical resolver only,
+  // never by dealFromApi.score when the report is applied.
+  const lastTopSectionBindingLogRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const key = [
+      dealId ?? '',
+      String(reportView.applied),
+      String(reportView.score),
+      String(reportView.scoreSource),
+      String((dealFromApi as any)?.score ?? 'na'),
+    ].join('|');
+    if (lastTopSectionBindingLogRef.current === key) return;
+    lastTopSectionBindingLogRef.current = key;
+    const dealScore = (dealFromApi as any)?.score ?? null;
+    const leak = reportView.applied && dealScore != null && reportView.score === dealScore && reportView.scoreSource === 'none';
+    console.log('[DDAI][topsection_score_binding]', {
+      gaugeScore: reportView.score,
+      gaugeScoreSource: reportView.scoreSource,
+      reportApplied: reportView.applied,
+      dealFromApiScore: dealScore,
+      // If this is true, the gauge is incorrectly showing the DB deal score — file a bug.
+      LEAK_DETECTED: leak,
+    });
+    if (leak) {
+      console.warn('[DDAI][topsection_score_binding] LEAK: gauge is showing dealFromApi.score when report is applied. Expected canonical score from score_band_v2 or overallScore.');
+    }
+  }, [dealId, reportView, dealFromApi]);
+
+  const reportStructuredKpis = useMemo(() => {
+    // KPI normalization must occur server-side only to prevent drift.
+    return (reportFromApi as any)?.structured_summary?.kpis ?? null;
+  }, [reportFromApi]);
+
+  const authoritativeBurnV1 = useMemo(() => {
+    return selectAuthoritativeBurnV1((reportFromApi as any) ?? (reportEnvelope as any) ?? null);
+  }, [reportFromApi, reportEnvelope]);
+
+  const authoritativeRunwayV1 = useMemo(() => {
+    return selectAuthoritativeRunwayV1((reportFromApi as any) ?? (reportEnvelope as any) ?? null);
+  }, [reportFromApi, reportEnvelope]);
+
+  const reportStructuredRaise = safeText(reportCanonicalRaise.value) || null;
   const reportStructuredBusinessModelLabel = authoritativeBusinessModel.label;
 
   const selectedHeader = useMemo(() => {
@@ -2864,16 +3332,95 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return selectDealWorkspaceHeader((reportFromApi as any) ?? null, phase1);
   }, [reportFromApi, overviewV2, executiveSummaryV1, dealFromApi]);
 
-  const reportStructuredRevenueLabel = selectedHeader.ready ? (selectedHeader.revenue.label ?? null) : null;
+  const revenueCoveragePolicy = useMemo(() => {
+    const cov: any = authoritativeFinancialCoverageV1.value && typeof authoritativeFinancialCoverageV1.value === 'object'
+      ? (authoritativeFinancialCoverageV1.value as any).coverage
+      : null;
+
+    if (!cov || typeof cov !== 'object') {
+      return {
+        allow: true,
+        forecastOnly: false,
+        kpiTileLabel: 'Revenue / ARR',
+        revenueLabelOverride: null as string | null,
+        tooltipOverride: null as string | null,
+      };
+    }
+
+    const historical = cov.historical_revenue_present === true;
+    const forecast = cov.forecast_revenue_present === true;
+
+    if (historical) {
+      return {
+        allow: true,
+        forecastOnly: false,
+        kpiTileLabel: 'Revenue / ARR',
+        revenueLabelOverride: null,
+        tooltipOverride: null,
+      };
+    }
+
+    if (forecast) {
+      return {
+        allow: true,
+        forecastOnly: true,
+        kpiTileLabel: 'Forecast revenue',
+        revenueLabelOverride: 'Forecast',
+        tooltipOverride: 'Forecast revenue only (no historical revenue extracted).',
+      };
+    }
+
+    return {
+      allow: false,
+      forecastOnly: false,
+      kpiTileLabel: 'Revenue / ARR',
+      revenueLabelOverride: null,
+      tooltipOverride: 'Not extracted from evidence.',
+    };
+  }, [authoritativeFinancialCoverageV1.value]);
+
+  const burnRunwayCoveragePolicy = useMemo(() => {
+    const cov: any = authoritativeFinancialCoverageV1.value && typeof authoritativeFinancialCoverageV1.value === 'object'
+      ? (authoritativeFinancialCoverageV1.value as any).coverage
+      : null;
+
+    const allowBurn = !!(cov && typeof cov === 'object' && cov.burn_rate_present === true);
+    const allowRunway = !!(cov && typeof cov === 'object' && cov.runway_present === true);
+
+    const evidence = (authoritativeFinancialCoverageV1.value as any)?.evidence;
+
+    return {
+      allowBurn,
+      allowRunway,
+      burnTooltip: allowBurn
+        ? (safeText(evidence?.burn_rate_present?.snippet) || null)
+        : 'Not extracted from evidence.',
+      runwayTooltip: allowRunway
+        ? (safeText(evidence?.runway_present?.snippet) || null)
+        : 'Not extracted from evidence.',
+    };
+  }, [authoritativeFinancialCoverageV1.value]);
+
+  const burnTileValue = burnRunwayCoveragePolicy.allowBurn ? (authoritativeBurnV1.value?.display ?? null) : null;
+  const runwayTileValue = burnRunwayCoveragePolicy.allowRunway ? (authoritativeRunwayV1.value?.display ?? null) : null;
+
+  const burnHasNumeric = burnRunwayCoveragePolicy.allowBurn ? authoritativeBurnV1.value != null : undefined;
+  const runwayHasNumeric = burnRunwayCoveragePolicy.allowRunway ? authoritativeRunwayV1.value != null : undefined;
+
+  const reportStructuredRevenueLabel = selectedHeader.ready
+    ? (revenueCoveragePolicy.revenueLabelOverride ?? selectedHeader.revenue.label ?? null)
+    : null;
   const reportStructuredCustomersLabel = selectedHeader.ready ? (selectedHeader.customers.label ?? null) : null;
   const reportStructuredGrowthLabel = selectedHeader.ready ? (selectedHeader.growth.label ?? null) : null;
 
-  const reportStructuredRevenueTooltip = safeText((reportFromApi as any)?.structured_summary?.revenue?.sources?.[0]?.note_snippet);
-  const reportStructuredCustomersTooltip = safeText((reportFromApi as any)?.structured_summary?.customers?.sources?.[0]?.note_snippet);
-  const reportStructuredGrowthTooltip = safeText((reportFromApi as any)?.structured_summary?.growth?.sources?.[0]?.note_snippet);
+  const reportStructuredRevenueTooltip = revenueCoveragePolicy.tooltipOverride
+    ? revenueCoveragePolicy.tooltipOverride
+    : safeText(reportStructuredKpis?.revenue?.sources?.[0]?.note_snippet);
+  const reportStructuredCustomersTooltip = safeText(reportStructuredKpis?.customers?.sources?.[0]?.note_snippet);
+  const reportStructuredGrowthTooltip = safeText(reportStructuredKpis?.growth?.sources?.[0]?.note_snippet);
 
   const reportStructuredGrowthValue = (() => {
-    const growth = (reportFromApi as any)?.structured_summary?.growth;
+    const growth = reportStructuredKpis?.growth as any;
     const raw = safeText(growth?.value?.raw);
     const pct = growth?.value?.percent;
     const label = safeText(growth?.label);
@@ -2886,14 +3433,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   })();
 
   const reportStructuredGrowthNote = (() => {
-    const growth = (reportFromApi as any)?.structured_summary?.growth;
+    const growth = reportStructuredKpis?.growth as any;
     const year = growth?.value?.year;
     if (typeof year === 'number' && Number.isFinite(year)) return String(year);
     return null;
   })();
 
-  const overviewProductCanonical = canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : overviewProduct;
-  const overviewMarketIcpCanonical = canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : overviewMarketIcp;
+  const overviewProductCanonical = authoritativeProductTextV1 || (canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : overviewProduct);
+  const overviewMarketIcpCanonical = authoritativeMarketTextV1 || (canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : overviewMarketIcp);
   const overviewBusinessModelCanonical = authoritativeBusinessModel.value || (reportView.applied ? reportView.businessModel : overviewBusinessModel);
   const overviewRaiseTermsCanonical = reportStructuredRaise || (reportView.applied ? reportView.raise : overviewRaiseTerms);
   const splitTierDeepToParagraphs = (raw: string): string[] => {
@@ -2910,8 +3457,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const overviewDealOneLinerCanonical = (() => {
     if (canonicalDealSummaryReady) {
-      // Prefer the dedicated overview tier (1–2 short paragraphs).
+      // Overview tab prefers the more descriptive tier (overview) when present.
       if (canonicalTierOverview) return canonicalTierOverview;
+      if (canonicalTierHero) return canonicalTierHero;
       // Fallback only if the tier is missing.
       if (canonicalDealOneLiner) return canonicalDealOneLiner;
     }
@@ -2920,8 +3468,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const overviewDealSummaryParagraphsCanonical: string[] = (() => {
     if (canonicalDealSummaryReady) {
+      const out: string[] = [];
+      if (canonicalTierOverview) out.push(canonicalTierOverview);
       const fromTier = canonicalTierDeep ? splitTierDeepToParagraphs(canonicalTierDeep) : [];
-      if (fromTier.length > 0) return fromTier;
+      out.push(...fromTier);
+      if (out.length > 0) return out.slice(0, 6);
       // Fallback only if the deep tier is missing.
       if (canonicalParagraphs.length > 0) return canonicalParagraphs;
     }
@@ -3035,32 +3586,95 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const overlayBusinessModel = overlayVM.facts.business_model || overviewBusinessModelCanonical;
   const overlayRaiseTerms = overlayVM.facts.raise_terms || overviewRaiseTermsCanonical;
 
+  const workspaceOverviewModel = useMemo(() => {
+    return selectDealWorkspaceOverviewModel({
+      deterministic: {
+        summaries: {
+          short: { value: overviewDealOneLinerCanonical || null },
+          long: { value: null },
+          longParagraphsFallback: overviewDealSummaryParagraphsCanonical,
+        },
+        keyFacts: {
+          product: { value: overviewProductCanonical || null },
+          market: { value: overviewMarketIcpCanonical || null },
+          business_model: { value: overviewBusinessModelCanonical || null },
+          raise_terms: { value: overviewRaiseTermsCanonical || null },
+        },
+      },
+      overlay: {
+        summaries: {
+          short: { value: overlayVM.hero_summary || null },
+          longParagraphs: overlayVM.deal_summary_paragraphs,
+        },
+        keyFacts: {
+          product: { value: overlayVM.facts.product || null },
+          market: { value: overlayVM.facts.market_icp || null },
+          business_model: { value: overlayVM.facts.business_model || null },
+          raise_terms: { value: overlayVM.facts.raise_terms || null },
+        },
+      },
+    });
+  }, [
+    overviewDealOneLinerCanonical,
+    overviewDealSummaryParagraphsCanonical,
+    overviewProductCanonical,
+    overviewMarketIcpCanonical,
+    overviewBusinessModelCanonical,
+    overviewRaiseTermsCanonical,
+    overlayVM.hero_summary,
+    overlayVM.deal_summary_paragraphs,
+    overlayVM.facts.product,
+    overlayVM.facts.market_icp,
+    overlayVM.facts.business_model,
+    overlayVM.facts.raise_terms,
+    governedInterpretationText,
+  ]);
+
   const kpiMissingTooltip = 'Not extracted from evidence';
   const overlayKpiTiles = useMemo(() => {
-    const raise = safeText(reportStructuredRaise) || safeText(overviewRaiseTermsCanonical) || (overlayVM.kpis.raise?.value ?? null);
-    const revenue = overlayVM.kpis.revenue?.value ?? null;
-    const growth = overlayVM.kpis.growth?.value ?? null;
-    const customers = overlayVM.kpis.customers?.value ?? null;
+    // When /report is ready, keep the governed overlay KPIs consistent with report.structured_summary
+    // (overlay KPI strings are treated as narrative-only, since they can drift).
+    const raise = selectedHeader.ready
+      ? (selectedHeader.raise.value ?? null)
+      : (safeText(reportStructuredRaise) || safeText(overviewRaiseTermsCanonical) || null);
+
+    const revenue = !revenueCoveragePolicy.allow
+      ? null
+      : selectedHeader.ready
+        ? (selectedHeader.revenue.value ?? null)
+        : (overlayVM.kpis.revenue?.value ?? null);
+
+    const growth = selectedHeader.ready
+      ? (selectedHeader.growth.value ?? null)
+      : (overlayVM.kpis.growth?.value ?? null);
+
+    const customers = selectedHeader.ready
+      ? (selectedHeader.customers.value ?? null)
+      : (overlayVM.kpis.customers?.value ?? null);
     return [
       { label: 'Raise', value: raise ?? '—', tooltipIfMissing: kpiMissingTooltip },
-      { label: 'Revenue / ARR', value: revenue ?? '—', tooltipIfMissing: kpiMissingTooltip },
+      { label: revenueCoveragePolicy.kpiTileLabel, value: revenue ?? '—', tooltipIfMissing: kpiMissingTooltip },
       { label: 'Growth', value: growth ?? '—', tooltipIfMissing: kpiMissingTooltip },
       { label: 'Customers', value: customers ?? '—', tooltipIfMissing: kpiMissingTooltip },
     ];
-  }, [overlayVM, reportStructuredRaise, overviewRaiseTermsCanonical]);
+  }, [overlayVM, reportStructuredRaise, overviewRaiseTermsCanonical, selectedHeader, revenueCoveragePolicy.allow, revenueCoveragePolicy.kpiTileLabel]);
 
   const deterministicKpiTiles = useMemo(() => {
     const raise = safeText(reportStructuredRaise) || safeText(overviewRaiseTermsCanonical) || null;
-    const revenue = safeText(reportView.revenue) || safeText(topSectionRevenue) || null;
+    const revenue = !revenueCoveragePolicy.allow
+      ? null
+      : selectedHeader.ready
+        ? (selectedHeader.revenue.value ?? null)
+        : (safeText(reportView.revenue) || safeText(topSectionRevenue) || null);
     const growth = safeText(reportStructuredGrowthValue) || safeText(topSectionGrowth) || null;
     const customers = safeText(reportView.customers) || safeText(topSectionCustomers) || null;
     return [
       { label: 'Raise', value: raise ?? '—', tooltipIfMissing: kpiMissingTooltip },
-      { label: 'Revenue / ARR', value: revenue ?? '—', tooltipIfMissing: kpiMissingTooltip },
+      { label: revenueCoveragePolicy.kpiTileLabel, value: revenue ?? '—', tooltipIfMissing: kpiMissingTooltip },
       { label: 'Growth', value: growth ?? '—', tooltipIfMissing: kpiMissingTooltip },
       { label: 'Customers', value: customers ?? '—', tooltipIfMissing: kpiMissingTooltip },
     ];
-  }, [reportStructuredRaise, overviewRaiseTermsCanonical, reportView.revenue, topSectionRevenue, reportStructuredGrowthValue, topSectionGrowth, reportView.customers, topSectionCustomers]);
+  }, [reportStructuredRaise, overviewRaiseTermsCanonical, reportView.revenue, topSectionRevenue, reportStructuredGrowthValue, topSectionGrowth, reportView.customers, topSectionCustomers, selectedHeader.ready, selectedHeader.revenue.value, revenueCoveragePolicy.allow, revenueCoveragePolicy.kpiTileLabel]);
 
   type KeyFactProvenance = { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean };
   const keyFactMissingText = 'Not extracted from evidence';
@@ -3140,16 +3754,22 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const chooseGovernedFirst = (opts: {
       deterministic: string;
       overlay?: { value: string | null; quality?: string; source?: 'governed' | 'deterministic' | 'missing' } | null;
+      preferDeterministic?: boolean;
     }): { value: string; provenance: { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean }; fromOverlay: boolean } => {
       const overlayVal = asClean(opts.overlay?.value);
       const overlaySource = opts.overlay?.source;
       const overlayQuality = opts.overlay?.quality;
 
+      const detVal = asClean(opts.deterministic);
+      if (opts.preferDeterministic) {
+        if (detVal) return { value: detVal, provenance: { source: 'deterministic' }, fromOverlay: false };
+        if (overlayVal) return { value: overlayVal, provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' }, fromOverlay: true };
+        return { value: keyFactMissingText, provenance: { source: 'missing' }, fromOverlay: false };
+      }
+
       if (overlayVal && overlaySource === 'governed') {
         return { value: overlayVal, provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' }, fromOverlay: true };
       }
-
-      const detVal = asClean(opts.deterministic);
       const detDisplayable = detVal ? deterministicIsDisplayable(detVal) : false;
 
       // Deterministic may override overlay only when it looks display-safe.
@@ -3171,24 +3791,52 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     };
 
     const product = chooseGovernedFirst({
-      deterministic: canonicalDealSummaryReady ? canonicalProduct : overviewProductCanonical,
+      deterministic: overviewProductCanonical,
       overlay: ovFacts ? { value: ovFacts.product_solution?.value ?? null, quality: ovFacts.product_solution?.quality, source: ovFacts.product_solution?.source } : null,
+      preferDeterministic: Boolean(authoritativeProductTextV1),
     });
     const market = chooseGovernedFirst({
-      deterministic: canonicalDealSummaryReady ? canonicalMarket : overviewMarketIcpCanonical,
+      deterministic: overviewMarketIcpCanonical,
       overlay: ovFacts ? { value: ovFacts.market_icp?.value ?? null, quality: ovFacts.market_icp?.quality, source: ovFacts.market_icp?.source } : null,
+      preferDeterministic: Boolean(authoritativeMarketTextV1),
     });
     const businessModel = chooseGovernedFirst({
       deterministic: overviewBusinessModelCanonical,
       overlay: ovFacts ? { value: ovFacts.business_model?.value ?? null, quality: ovFacts.business_model?.quality, source: ovFacts.business_model?.source } : null,
+      // When report is ready, keep Business Model consistent with /report (overlay can still render narrative).
+      preferDeterministic: selectedHeader.ready,
     });
     const raise = chooseGovernedFirst({
       deterministic: overviewRaiseTermsCanonical,
       overlay: ovFacts ? { value: ovFacts.raise?.value ?? null, quality: ovFacts.raise?.quality, source: ovFacts.raise?.source } : null,
+      // When report is ready, keep Raise terms consistent with /report.
+      preferDeterministic: selectedHeader.ready,
     });
 
     return { product, market, businessModel, raise };
-  }, [workspaceMirrorVM, canonicalDealSummaryReady, canonicalProduct, canonicalMarket, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical]);
+  }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, authoritativeProductTextV1, authoritativeMarketTextV1]);
+
+  const lastWorkspaceSourcesLogRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    if (!workspaceDebugEnabled) return;
+    if (!dealId) return;
+
+    const overlaySig = `${governedOverview.created_at ?? 'na'}|${String(governedOverview.input_hash ?? '').slice(0, 12)}`;
+    const reportSig = `${reportReady ? 'ready' : 'not_ready'}|${typeof reportVersion === 'number' ? reportVersion : 'na'}`;
+    const key = `${dealId}|${reportSig}|${overlaySig}`;
+    if (lastWorkspaceSourcesLogRef.current === key) return;
+    lastWorkspaceSourcesLogRef.current = key;
+
+    console.info('[DDAI][dealworkspace_sources]', {
+      dealId,
+      report: { ready: reportReady, version: reportVersion ?? null },
+      overlay: { status: governedOverview.status, created_at: governedOverview.created_at ?? null },
+      selectedHeader,
+      overlayKpisRaw: overlayVM.kpis,
+      governedKeyFacts,
+    });
+  }, [workspaceDebugEnabled, dealId, reportReady, reportVersion, governedOverview.status, governedOverview.created_at, governedOverview.input_hash, selectedHeader, overlayVM, governedKeyFacts]);
 
   const overviewProvenanceDebugEnabled = useMemo(() => {
     try {
@@ -3324,8 +3972,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     return {
       one_liner: toRefsOrEmpty(refBlock?.deal_one_liner),
-      product: governedKeyFacts.product.provenance.source === 'governed' ? toRefsOrUndefined(facts?.product_solution?.evidence_refs) : undefined,
-      market: governedKeyFacts.market.provenance.source === 'governed' ? toRefsOrUndefined(facts?.market_icp?.evidence_refs) : undefined,
+      product: governedKeyFacts.product.provenance.source === 'governed'
+        ? toRefsOrUndefined(facts?.product_solution?.evidence_refs)
+        : (authoritativeProductSummaryV1.sources.length > 0 ? authoritativeProductSummaryV1.sources : undefined),
+      market: governedKeyFacts.market.provenance.source === 'governed'
+        ? toRefsOrUndefined(facts?.market_icp?.evidence_refs)
+        : (authoritativeMarketSummaryV1.sources.length > 0 ? authoritativeMarketSummaryV1.sources : undefined),
       businessModel: governedKeyFacts.businessModel.provenance.source === 'governed' ? toRefsOrUndefined(facts?.business_model?.evidence_refs) : undefined,
       raise: governedKeyFacts.raise.provenance.source === 'governed' ? toRefsOrUndefined(facts?.raise?.evidence_refs) : undefined,
       strengths: toRefsOrEmpty(refBlock?.strengths),
@@ -3333,7 +3985,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       open_questions: toRefsOrEmpty(refBlock?.open_questions),
       traction: toRefsOrEmpty(refBlock?.traction),
     };
-  }, [workspaceMirrorVM, governedKeyFacts]);
+  }, [workspaceMirrorVM, governedKeyFacts, authoritativeProductSummaryV1.sources, authoritativeMarketSummaryV1.sources]);
 
   const governedDealOneLinerDisplay = useMemo(() => {
     // Priority:
@@ -3354,62 +4006,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return 'Not extracted';
   }, [workspaceMirrorVM, governedOverview.overview, canonicalTierOverview, canonicalTierHero]);
 
-  const overlayListsWellFormed = overlayStrengths.length > 0 && overlayOpenItems.length > 0;
-
-  const heroDet = useMemo(() => {
-    return {
-      dealSummaryText: reportView.dealSummary,
-      dealSummaryTitle: reportView.dealSummaryTitle,
-      dealSummarySource: reportView.dealSummarySource as 'canonical' | 'legacy',
-      strengths: topSectionStrengths,
-      weaknesses: topSectionWeaknesses,
-      raise: selectedHeader.raise.value,
-      revenue: selectedHeader.revenue.value,
-      growth: selectedHeader.growth.value,
-      customers: selectedHeader.customers.value,
-      businessModel: selectedHeader.business_model.value,
-    };
-  }, [reportView, topSectionStrengths, topSectionWeaknesses, selectedHeader]);
-
-  const heroOverlay = useMemo(() => {
-    return {
-      dealSummaryText: overlayOneLiner,
-      dealSummaryTitle: 'Deal Summary',
-      dealSummarySource: 'overlay' as const,
-      strengths: overlayListsWellFormed ? overlayStrengths : topSectionStrengths,
-      weaknesses: overlayListsWellFormed ? overlayOpenItems : topSectionWeaknesses,
-      raise: overlayVM.kpis.raise?.value ?? overlayRaiseTerms,
-      revenue: overlayVM.kpis.revenue?.value ?? null,
-      growth: overlayVM.kpis.growth?.value ?? null,
-      customers: overlayVM.kpis.customers?.value ?? null,
-      businessModel: overlayBusinessModel,
-    };
-  }, [overlayOneLiner, overlayListsWellFormed, overlayStrengths, overlayOpenItems, topSectionStrengths, topSectionWeaknesses, overlayVM, overlayRaiseTerms, overlayBusinessModel]);
-
-  const heroMerged = useMemo(() => {
-    const base = useOverlayForHero ? heroOverlay : heroDet;
-
-    const raise = buildHeroFact({ key: 'raise', det: heroDet.raise, overlay: heroOverlay.raise });
-    const revenue = buildHeroFact({ key: 'revenue', det: heroDet.revenue, overlay: heroOverlay.revenue });
-    const growth = buildHeroFact({ key: 'growth', det: heroDet.growth, overlay: heroOverlay.growth });
-    const customers = buildHeroFact({ key: 'customers', det: heroDet.customers, overlay: heroOverlay.customers });
-    const businessModel = buildHeroFact({ key: 'business_model', det: heroDet.businessModel, overlay: heroOverlay.businessModel });
-
-    return {
-      dealSummaryText: base.dealSummaryText,
-      dealSummaryTitle: base.dealSummaryTitle,
-      dealSummarySource: base.dealSummarySource,
-      strengths: base.strengths,
-      weaknesses: base.weaknesses,
-      raise,
-      revenue,
-      growth,
-      customers,
-      businessModel,
-    };
-  }, [useOverlayForHero, heroDet, heroOverlay]);
-
-  const dealSummarySourceLabel = canonicalDealSummaryReady ? 'Canonical' : 'Legacy';
+  const dealSummarySourceLabel = canonicalDealSummaryReady ? 'Authoritative (deterministic)' : 'Legacy';
 
   useEffect(() => {
     if (!debugApiIsEnabled()) return;
@@ -3674,22 +4271,31 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               analysisToastMessage
             );
           }
-          if ((normalizedStatus === 'succeeded' || normalizedStatus === 'succeeded_with_warnings') && dealId) {
+            if ((normalizedStatus === 'succeeded' || normalizedStatus === 'succeeded_with_warnings') && dealId) {
             apiGetDeal(dealId)
               .then((deal) => {
                 setDealFromApi(deal);
-                setDioMeta({
+                const nextMeta = {
                   dioVersionId: (deal as any).dioVersionId,
                   dioStatus: (deal as any).dioStatus,
                   lastAnalyzedAt: (deal as any).lastAnalyzedAt,
                   dioRunCount: (deal as any).dioRunCount,
                   dioAnalysisVersion: (deal as any).dioAnalysisVersion,
-                });
+                };
+                setDioMeta(nextMeta);
+
+                if (job.type === 'analyze_deal') {
+                  reportMissingRef.current = false;
+                  loadReport({ force: true, version: typeof nextMeta.dioAnalysisVersion === 'number' ? nextMeta.dioAnalysisVersion : null }).catch(() => {});
+                }
               })
-              .catch(() => {});
+              .catch(() => {
+                if (job.type === 'analyze_deal') {
+                  reportMissingRef.current = false;
+                  loadReport({ force: true, version: latestKnownVersionRef.current ?? null }).catch(() => {});
+                }
+              });
             if (job.type === 'analyze_deal') {
-              reportMissingRef.current = false;
-              loadReport({ force: true });
 
 			  // After analysis completion, force-refresh the persisted governed overlay.
 			  // If it's not present yet, bounded-poll for a short window.
@@ -3896,24 +4502,48 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             );
           }
           if (normalizedStatus === 'succeeded' || normalizedStatus === 'succeeded_with_warnings') {
-            if (job.type === 'analyze_deal') {
-              reportMissingRef.current = false;
-              loadReport({ force: true });
-            }
+            // Refresh report after analyze_deal only once the deal has been refreshed,
+            // so the requested report version matches the header.
             loadEvidence();
             if (dealId) {
               apiGetDeal(dealId)
                 .then((deal) => {
                   setDealFromApi(deal);
-                  setDioMeta({
+                  const nextMeta = {
                     dioVersionId: (deal as any).dioVersionId,
                     dioStatus: (deal as any).dioStatus,
                     lastAnalyzedAt: (deal as any).lastAnalyzedAt,
                     dioRunCount: (deal as any).dioRunCount,
                     dioAnalysisVersion: (deal as any).dioAnalysisVersion,
-                  });
+                  };
+                  setDioMeta(nextMeta);
+                  if (job.type === 'analyze_deal') {
+                    reportMissingRef.current = false;
+                    loadReport({ force: true, version: typeof nextMeta.dioAnalysisVersion === 'number' ? nextMeta.dioAnalysisVersion : null }).catch(() => {});
+                  }
                 })
                 .catch(() => {});
+            }
+            if (job.type === 'analyze_deal') {
+              // Dedup guard: only start overlay polling once per unique analyze job_id.
+              // SSE events can be delivered multiple times (reconnect, duplicate dispatch);
+              // each extra call would reset the polling timer and delay the overlay refresh.
+              const analyzeJobId = job.job_id ?? null;
+              if (analyzeJobId !== lastAnalyzedJobIdForOverlayRef.current) {
+                lastAnalyzedJobIdForOverlayRef.current = analyzeJobId;
+                // Start polling for the governed overlay so the workspace fields update after
+                // a successful analysis without needing a page reload.
+                startOverlayPostAnalyzePolling();
+              }
+              // Clear stale page-understanding readiness UI state — idempotent, safe to call
+              // on every succeeded event since it only moves to idle (no polling side effects).
+              setPageUnderstandingGate((prev) => ({
+                ...prev,
+                status: 'idle',
+                readiness: null,
+                error: null,
+                minDpuCreatedAt: null,
+              }));
             }
             if (job.type === 'extract_visuals') {
               setAnalystReloadKey((v) => v + 1);
@@ -4266,7 +4896,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     startedAtMs: number | null;
     lastPolledAtMs: number | null;
     error: string | null;
-  }>({ status: 'idle', version: 'page_understanding_v1', readiness: null, startedAtMs: null, lastPolledAtMs: null, error: null });
+    minDpuCreatedAt: string | null;
+  }>({ status: 'idle', version: 'page_understanding_v1', readiness: null, startedAtMs: null, lastPolledAtMs: null, error: null, minDpuCreatedAt: null });
   const [showPageUnderstandingDetails, setShowPageUnderstandingDetails] = useState(false);
   const readinessPollRef = useRef<{ token: number; timerId: number | null }>({ token: 0, timerId: null });
 
@@ -4280,7 +4911,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     };
   }, []);
 
-  const runAnalysisWithReadinessGate = async (dealId: string, version = 'page_understanding_v1') => {
+  const runAnalysisWithReadinessGate = async (
+    dealId: string,
+    version = 'page_understanding_v1',
+    opts?: { forceRefresh?: boolean }
+  ) => {
     const dev = !!(import.meta as any)?.env?.DEV;
     const logDev = (msg: string, meta?: any) => {
       if (!dev) return;
@@ -4292,6 +4927,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     };
 
     let lastReady: boolean | null = null;
+    let minDpuCreatedAtToken: string | null = null;
 
     readinessPollRef.current.token += 1;
     const token = readinessPollRef.current.token;
@@ -4305,13 +4941,18 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     }
 
     const startedAtMs = Date.now();
-    setPageUnderstandingGate({ status: 'idle', version, readiness: null, startedAtMs, lastPolledAtMs: null, error: null });
+    setPageUnderstandingGate({ status: 'idle', version, readiness: null, startedAtMs, lastPolledAtMs: null, error: null, minDpuCreatedAt: null });
 
-    const tryAnalyze = async (): Promise<{ job_id: string; status: string } | null> => {
-      logDev('analyze_attempt', { version, require_page_understanding: true });
+    const requestedForceRefresh = opts?.forceRefresh === true;
+
+    const tryAnalyze = async (input?: { force_refresh?: boolean }): Promise<{ job_id: string; status: string } | null> => {
+      const force_refresh = input?.force_refresh === true;
+      logDev('analyze_attempt', { version, require_page_understanding: true, force_refresh });
       const res = await apiPostAnalyzeWithStatus(dealId, {
         require_page_understanding: true,
         page_understanding_version: version,
+        ...(minDpuCreatedAtToken ? { min_dpu_created_at: minDpuCreatedAtToken } : {}),
+        ...(force_refresh ? { force_refresh: true } : {}),
       });
 
       logDev('analyze_response', { ok: res.ok, status: res.status, json: res.json ?? null, text: res.text ?? null });
@@ -4324,6 +4965,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       const notReadyError = res.json && typeof (res.json as any).error === 'string' ? String((res.json as any).error) : null;
       if ((res.status === 202 || res.status === 409) && notReadyError === 'page_understanding_not_ready') {
         const readiness = (res.json as any).readiness as PageUnderstandingReadiness | undefined;
+        const minDpuCreatedAt = (res.json && typeof (res.json as any).min_dpu_created_at === 'string')
+          ? String((res.json as any).min_dpu_created_at)
+          : null;
+        minDpuCreatedAtToken = minDpuCreatedAt;
         const missingTotal = typeof readiness?.missing_pages_total === 'number' ? readiness.missing_pages_total : null;
         const blockedReason = res.json && typeof (res.json as any).blocked_reason === 'string' ? String((res.json as any).blocked_reason) : null;
         logDev('preflight_not_ready', { missing_pages_total: missingTotal, version, blocked_reason: blockedReason });
@@ -4339,6 +4984,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           startedAtMs,
           lastPolledAtMs: Date.now(),
           error: null,
+          minDpuCreatedAt,
         });
         lastReady = typeof readiness?.ready === 'boolean' ? readiness.ready : null;
         return null;
@@ -4395,7 +5041,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
       let readiness: PageUnderstandingReadiness | null = null;
       try {
-        readiness = await apiGetDealReadiness(dealId, version);
+        readiness = await apiGetDealReadiness(dealId, version, { min_dpu_created_at: minDpuCreatedAtToken });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         logDev('poll_failed', { err: msg });
@@ -4429,9 +5075,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       if (ready) {
         logDev('ready_transition', { version });
         try {
-          const job = await tryAnalyze();
+          // Once readiness is truly ready (including freshness token, if any), enqueue analysis without force_refresh
+          // to avoid re-triggering refresh loops.
+          const job = await tryAnalyze({ force_refresh: false });
           if (job) {
-            setPageUnderstandingGate((prev) => ({ ...prev, status: 'idle', readiness: null, error: null }));
+            setPageUnderstandingGate((prev) => ({ ...prev, status: 'idle', readiness: null, error: null, minDpuCreatedAt: null }));
             setJobId(job.job_id);
             setJobStatus(job.status);
             addToast('info', 'Job queued', `Job ${job.job_id}`);
@@ -4451,7 +5099,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       }, pollMs);
     };
 
-    const job = await tryAnalyze();
+    const job = await tryAnalyze({ force_refresh: requestedForceRefresh });
     if (job) {
       setJobId(job.job_id);
       setJobStatus(job.status);
@@ -4479,7 +5127,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     addToast('info', 'Starting analysis…', 'Checking page understanding readiness');
     try {
-      await runAnalysisWithReadinessGate(dealId, 'page_understanding_v1');
+      await runAnalysisWithReadinessGate(dealId, 'page_understanding_v1', { forceRefresh: true });
     } catch (err) {
       addToast('error', 'Analysis failed to start', err instanceof Error ? err.message : 'Unknown error');
       setAnalyzing(false);
@@ -5060,18 +5708,21 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       apiGetDeal(dealId)
         .then((deal) => {
           setDealFromApi(deal);
-          setDioMeta({
+          const nextMeta = {
             dioVersionId: (deal as any).dioVersionId,
             dioStatus: (deal as any).dioStatus,
             lastAnalyzedAt: (deal as any).lastAnalyzedAt,
             dioRunCount: (deal as any).dioRunCount,
             dioAnalysisVersion: (deal as any).dioAnalysisVersion,
-          });
+          };
+          setDioMeta(nextMeta);
+          reportMissingRef.current = false;
+          loadReport({ force: true, version: typeof nextMeta.dioAnalysisVersion === 'number' ? nextMeta.dioAnalysisVersion : null }).catch(() => {});
         })
-        .catch(() => {});
-
-      reportMissingRef.current = false;
-      loadReport({ force: true });
+        .catch(() => {
+          reportMissingRef.current = false;
+          loadReport({ force: true, version: latestKnownVersionRef.current ?? null }).catch(() => {});
+        });
       loadEvidence();
 
       addToast('success', 'Full process completed', 'Documents, visuals, and analysis refreshed');
@@ -5284,6 +5935,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   return (
     <div className="flex-1 overflow-auto">
+      {workspaceDebugEnabled ? (
+        <div
+          data-testid="build-stamp"
+          className={`px-4 sm:px-6 pt-2 text-[11px] opacity-70 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+        >
+          Build: {buildStamp}
+        </div>
+      ) : null}
       <div className="p-4 sm:p-6 space-y-4 sm:space-y-6">
         {/* Header Section */}
         <div className={`backdrop-blur-xl border rounded-2xl p-4 sm:p-6 ${ 
@@ -5909,50 +6568,64 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               return (
                 <DealWorkspaceTopSection
                   darkMode={darkMode}
+                  loading={!reportReady}
                   score={reportView.score}
-                  scoreLabel={displayScoreLabel}
+                  scoreAvailable={reportView.applied}
+                  canonicalScoreSource={reportView.applied ? reportView.scoreSource : 'none'}
+                  scoreLabel={canonicalScoreLabel}
                   scoreBandLabel={safeText((reportMeta as any)?.score_band_v2?.label)}
                   hardPassGuardrailTriggered={Boolean((reportMeta as any)?.hard_pass_guardrail_v2?.triggered)}
                   hardPassGuardrailNote={safeText((reportMeta as any)?.hard_pass_guardrail_v2?.note)}
-                  hardPassGuardrailCriteriaSnapshot={(reportMeta as any)?.hard_pass_guardrail_v2?.criteria_snapshot ?? null}
+                  // Criteria snapshot: contains raw analytical scores. Keep debug-only so it never
+                  // contradicts the canonical score in user-facing UI.
+                  hardPassGuardrailCriteriaSnapshot={workspaceDebugEnabled ? ((reportMeta as any)?.hard_pass_guardrail_v2?.criteria_snapshot ?? null) : null}
+                  rawOverallScore={(reportFromApi as any)?.overallScore ?? null}
                   decisionV1={(reportMeta as any)?.decision_v1 ?? null}
-                  dealSummary={heroMerged.dealSummaryText}
-                  dealSummaryTitle={heroMerged.dealSummaryTitle}
-                  dealSummarySource={heroMerged.dealSummarySource === 'overlay' ? 'overlay' : heroMerged.dealSummarySource}
-                  strengths={heroMerged.strengths}
-                  weaknesses={heroMerged.weaknesses}
-                  raise={heroMerged.raise.value}
-                  raiseConflict={heroMerged.raise.conflict}
-                  raiseConflictOverlayValue={heroMerged.raise.overlayValueIfConflicted}
-                  revenue={heroMerged.revenue.value}
+                  // [TOPSECTION-V1] TopSection summary = score_driver_one_liner (never governed overlay hero_summary).
+                  dealSummaryShort={topSectionScoreDriverOneLiner || null}
+                  dealSummary={structuredDealSummaryLong ? structuredDealSummaryLong : ''}
+                  dealSummaryTitle={'Deal Snapshot'}
+                  dealSummarySource={'canonical'}
+                  strengths={filterMismatchedScoreItems(topSectionStrengths, canonicalScoreForSanitizer)}
+                  weaknesses={filterMismatchedScoreItems(topSectionWeaknesses, canonicalScoreForSanitizer)}
+                  actionsToImprove={filterMismatchedScoreItems(topSectionActionsToImprove, canonicalScoreForSanitizer)}
+                  raise={selectedHeader.ready ? (selectedHeader.raise.value ?? null) : null}
+                  raiseLabel={selectedHeader.ready ? (selectedHeader.raise.label ?? null) : null}
+                  raiseConflict={false}
+                  raiseConflictOverlayValue={null}
+                  revenue={selectedHeader.ready ? (revenueCoveragePolicy.allow ? (selectedHeader.revenue.value ?? null) : null) : null}
                   revenueLabel={reportStructuredRevenueLabel}
-                  revenueTooltip={heroMerged.revenue.conflict
-                    ? `Conflict detected — overlay: ${heroMerged.revenue.overlayValueIfConflicted ?? '—'} · deterministic: ${heroMerged.revenue.value ?? '—'}`
-                    : reportStructuredRevenueTooltip}
-                  revenueConflict={heroMerged.revenue.conflict}
-                  revenueConflictOverlayValue={heroMerged.revenue.overlayValueIfConflicted}
-                  growth={heroMerged.growth.value}
+                  revenueTooltip={reportStructuredRevenueTooltip}
+                  revenueConflict={false}
+                  revenueConflictOverlayValue={null}
+                  burn={selectedHeader.ready ? burnTileValue : null}
+                  burnLabel={null}
+                  burnTooltip={selectedHeader.ready ? burnRunwayCoveragePolicy.burnTooltip : null}
+                  burnConflict={false}
+                  burnConflictOverlayValue={null}
+                  runway={selectedHeader.ready ? runwayTileValue : null}
+                  runwayLabel={null}
+                  runwayTooltip={selectedHeader.ready ? burnRunwayCoveragePolicy.runwayTooltip : null}
+                  runwayConflict={false}
+                  runwayConflictOverlayValue={null}
+                  growth={selectedHeader.ready ? (safeText(reportStructuredGrowthValue) || selectedHeader.growth.value || null) : null}
                   growthLabel={reportStructuredGrowthLabel}
                   growthNote={reportStructuredGrowthNote}
-                  growthTooltip={heroMerged.growth.conflict
-                    ? `Conflict detected — overlay: ${heroMerged.growth.overlayValueIfConflicted ?? '—'} · deterministic: ${heroMerged.growth.value ?? '—'}`
-                    : reportStructuredGrowthTooltip}
-                  growthConflict={heroMerged.growth.conflict}
-                  growthConflictOverlayValue={heroMerged.growth.overlayValueIfConflicted}
-                  customers={heroMerged.customers.value}
+                  growthTooltip={reportStructuredGrowthTooltip}
+                  growthConflict={false}
+                  growthConflictOverlayValue={null}
+                  customers={selectedHeader.ready ? (selectedHeader.customers.value ?? null) : null}
                   customersLabel={reportStructuredCustomersLabel}
-                  customersTooltip={heroMerged.customers.conflict
-                    ? `Conflict detected — overlay: ${heroMerged.customers.overlayValueIfConflicted ?? '—'} · deterministic: ${heroMerged.customers.value ?? '—'}`
-                    : reportStructuredCustomersTooltip}
-                  customersConflict={heroMerged.customers.conflict}
-                  customersConflictOverlayValue={heroMerged.customers.overlayValueIfConflicted}
-                  businessModel={heroMerged.businessModel.value}
+                  customersTooltip={reportStructuredCustomersTooltip}
+                  customersConflict={false}
+                  customersConflictOverlayValue={null}
+                  businessModel={selectedHeader.ready ? (selectedHeader.business_model.value ?? null) : null}
                   businessModelLabel={selectedHeader.business_model.label ?? null}
                   businessModelTooltip={authoritativeBusinessModel.is_arbitrated
                     ? `Evidence-backed arbitration${typeof authoritativeBusinessModel.confidence === 'number' ? ` (confidence ${Math.round(authoritativeBusinessModel.confidence * 100)}%)` : ''}`
                     : null}
-                  businessModelConflict={heroMerged.businessModel.conflict}
-                  businessModelConflictOverlayValue={heroMerged.businessModel.overlayValueIfConflicted}
+                  businessModelConflict={false}
+                  businessModelConflictOverlayValue={null}
                   dealType={reportView.dealType}
                   confidence={topSectionConfidence}
                   verified={decisionTileConfidenceBand === 'high'}
@@ -6025,6 +6698,237 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   })}
                 </div>
               )}
+            </div>
+          </details>
+        )}
+
+        {workspaceDebugEnabled && (
+          <details
+            data-testid="governed-consistency-warnings-panel"
+            className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
+              darkMode
+                ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
+                : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
+            }`}
+          >
+            <summary className={`px-4 py-3 cursor-pointer select-none text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+              Debug → Governed Consistency Warnings
+            </summary>
+            <div className={`px-4 pb-4 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+              {(() => {
+                const WARNING_LABELS: Record<string, string> = {
+                  HERO_MISSING_RAISE_CONTEXT: 'Hero summary missing raise context',
+                  BUSINESS_MODEL_NOT_REFLECTED: 'Business model not reflected in governed copy',
+                  TRACTION_NOT_SURFACED: 'Traction signals not surfaced in summary',
+                  ICP_NOT_REFLECTED: 'ICP not reflected in market summary',
+                };
+
+                const raw = (governedOverview.overview as any)?.consistency_warnings;
+                const warnings: string[] = Array.isArray(raw) ? raw.filter((w: unknown) => typeof w === 'string') : [];
+
+                if (warnings.length === 0) {
+                  return (
+                    <div className={`mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>None</div>
+                  );
+                }
+
+                return (
+                  <ul className="mt-1 space-y-1 list-disc list-inside">
+                    {warnings.map((code) => (
+                      <li key={code}>
+                        <span className={`font-mono ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>{code}</span>
+                        {WARNING_LABELS[code] ? (
+                          <span className={`ml-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>— {WARNING_LABELS[code]}</span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                );
+              })()}
+            </div>
+          </details>
+        )}
+
+        {workspaceDebugEnabled && (
+          <details
+            className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
+              darkMode
+                ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
+                : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
+            }`}
+          >
+            <summary className={`px-4 py-3 cursor-pointer select-none text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+              Debug → Missing Fields
+            </summary>
+            <div className={`px-4 pb-4 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+              {(() => {
+                type Row = {
+                  key: string;
+                  label: string;
+                  status: 'loading' | 'present' | 'missing';
+                  reason: string | null;
+                };
+
+                const rows: Row[] = [];
+                const notExtracted = 'Not extracted from evidence.';
+
+                const hasText = (value: unknown): boolean => {
+                  if (typeof value !== 'string') return false;
+                  const s = value.trim();
+                  return s.length > 0 && s !== '—';
+                };
+
+                const push = (row: Row) => rows.push(row);
+
+                // Deterministic top-summary slots
+                push({
+                  key: 'header.score.subsummary',
+                  label: 'Header score subsummary (deterministic one-liner)',
+                  status: !reportReady ? 'loading' : hasText(structuredDealSummaryOneLiner) ? 'present' : 'missing',
+                  reason: !reportReady ? 'Waiting for /report.' : hasText(structuredDealSummaryOneLiner) ? null : notExtracted,
+                });
+
+                push({
+                  key: 'topSummary.dealSummary.long',
+                  label: 'Top summary long deal summary (deterministic)',
+                  status: !reportReady ? 'loading' : hasText(structuredDealSummaryLong) ? 'present' : 'missing',
+                  reason: !reportReady ? 'Waiting for /report.' : hasText(structuredDealSummaryLong) ? null : notExtracted,
+                });
+
+                // Header KPI tiles (deterministic)
+                push({
+                  key: 'kpi.raise',
+                  label: 'Raise (header KPI)',
+                  status: !selectedHeader.ready ? 'loading' : hasText(selectedHeader.raise.value) ? 'present' : 'missing',
+                  reason: !selectedHeader.ready
+                    ? 'Waiting for header KPI extraction.'
+                    : hasText(selectedHeader.raise.value)
+                      ? null
+                      : notExtracted,
+                });
+
+                push({
+                  key: 'kpi.revenue',
+                  label: 'Revenue (header KPI)',
+                  status: !selectedHeader.ready
+                    ? 'loading'
+                    : revenueCoveragePolicy.allow && hasText(selectedHeader.revenue.value)
+                      ? 'present'
+                      : 'missing',
+                  reason: !selectedHeader.ready
+                    ? 'Waiting for header KPI extraction.'
+                    : !revenueCoveragePolicy.allow
+                      ? (revenueCoveragePolicy.tooltipOverride ?? notExtracted)
+                      : hasText(selectedHeader.revenue.value)
+                        ? null
+                        : notExtracted,
+                });
+
+                push({
+                  key: 'kpi.burn',
+                  label: 'Burn (header KPI)',
+                  status: !selectedHeader.ready
+                    ? 'loading'
+                    : burnRunwayCoveragePolicy.allowBurn && hasText(burnTileValue)
+                      ? 'present'
+                      : 'missing',
+                  reason: !selectedHeader.ready
+                    ? 'Waiting for header KPI extraction.'
+                    : !burnRunwayCoveragePolicy.allowBurn
+                      ? notExtracted
+                      : hasText(burnTileValue)
+                        ? null
+                        : 'Coverage indicates burn is present, but a numeric value was not parsed.',
+                });
+
+                push({
+                  key: 'kpi.runway',
+                  label: 'Runway (header KPI)',
+                  status: !selectedHeader.ready
+                    ? 'loading'
+                    : burnRunwayCoveragePolicy.allowRunway && hasText(runwayTileValue)
+                      ? 'present'
+                      : 'missing',
+                  reason: !selectedHeader.ready
+                    ? 'Waiting for header KPI extraction.'
+                    : !burnRunwayCoveragePolicy.allowRunway
+                      ? notExtracted
+                      : hasText(runwayTileValue)
+                        ? null
+                        : 'Coverage indicates runway is present, but a numeric value was not parsed.',
+                });
+
+                // Key facts (authoritative deterministic view)
+                push({
+                  key: 'keyFacts.product',
+                  label: 'Product (key facts)',
+                  status: workspaceOverviewModel.keyFacts.product.origin === 'missing'
+                    ? 'missing'
+                    : hasText(workspaceOverviewModel.keyFacts.product.value)
+                      ? 'present'
+                      : 'missing',
+                  reason: workspaceOverviewModel.keyFacts.product.origin === 'missing'
+                    ? notExtracted
+                    : hasText(workspaceOverviewModel.keyFacts.product.value)
+                      ? null
+                      : notExtracted,
+                });
+
+                push({
+                  key: 'keyFacts.market',
+                  label: 'Market / ICP (key facts)',
+                  status: workspaceOverviewModel.keyFacts.market.origin === 'missing'
+                    ? 'missing'
+                    : hasText(workspaceOverviewModel.keyFacts.market.value)
+                      ? 'present'
+                      : 'missing',
+                  reason: workspaceOverviewModel.keyFacts.market.origin === 'missing'
+                    ? notExtracted
+                    : hasText(workspaceOverviewModel.keyFacts.market.value)
+                      ? null
+                      : notExtracted,
+                });
+
+                const badgeClass = (status: Row['status']) => {
+                  if (status === 'present') {
+                    return darkMode
+                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
+                      : 'bg-emerald-50 border-emerald-200 text-emerald-800';
+                  }
+                  if (status === 'loading') {
+                    return darkMode
+                      ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+                      : 'bg-amber-50 border-amber-200 text-amber-800';
+                  }
+                  return darkMode
+                    ? 'bg-white/5 border-white/10 text-gray-300'
+                    : 'bg-white border-gray-200 text-gray-700';
+                };
+
+                const statusLabel = (status: Row['status']) => (status === 'present' ? 'Present' : status === 'loading' ? 'Loading' : 'Missing');
+
+                return (
+                  <div className="space-y-2">
+                    {rows.map((r) => (
+                      <div
+                        key={r.key}
+                        className={`rounded-lg border px-3 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                          <div className="font-mono">{r.key}</div>
+                          <span className={`px-2 py-0.5 rounded-full border text-[11px] font-medium ${badgeClass(r.status)}`}>
+                            {statusLabel(r.status)}
+                          </span>
+                        </div>
+                        <div className={`mt-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{r.label}</div>
+                        {r.reason ? (
+                          <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} mt-1`}>reason: {r.reason}</div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
             </div>
           </details>
         )}
@@ -6805,7 +7709,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Overview (governed overlay)</div>
+                        <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Overlay (non-authoritative)</div>
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('muted')}`}>
                             phase: {String(governedOverview.llm_phase_mode ?? '—')}
@@ -6831,12 +7735,16 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                             onClick={() => setShowGovernedOverlayPanel((v) => !v)}
                             className="text-xs"
                           >
-                            {showGovernedOverlayPanel ? 'Hide governed overlay' : 'Show governed overlay'}
+                            {showGovernedOverlayPanel ? 'Hide overlay' : 'Show overlay'}
                           </Button>
                         ) : null}
                         <Button
                           variant={darkMode ? 'secondary' : 'outline'}
                           onClick={() => {
+                            // Keep overlay + cards in sync by refreshing both persisted overlay and /report.
+                            loadReport({ force: true }).catch(() => {
+                              // handled via state
+                            });
                             governedOverview.refresh({ force: true }).catch(() => {
                               // handled via hook state
                             });
@@ -6849,9 +7757,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     </div>
 
                     {governedOverlayDegraded ? (
-                      <div className={`mt-4 rounded-lg border p-3 ${darkMode ? 'bg-amber-500/5 border-amber-500/40 text-amber-200' : 'bg-amber-50 border-amber-200/70 text-amber-800'}`}>
-                        Governed overlay is degraded — deterministic output is shown by default.
-                      </div>
+                      null
                     ) : null}
 
                     {(showGovernedOverlayPanel || !governedOverlayDegraded) ? (
@@ -6890,14 +7796,16 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                           dealSummaryOpenQuestionsEvidenceRefs={governedKeyFactEvidenceRefs.open_questions}
                           dealSummaryTractionSignalsEvidenceRefs={governedKeyFactEvidenceRefs.traction}
                           kpiTiles={overlayKpiTiles}
-                          dealSummarySourceLabel={'Governed'}
-                          score0_100={decisionTileScore0_100 ?? displayScore ?? investorScore}
+                          dealSummarySourceLabel={'Overlay (non-authoritative)'}
+                          score0_100={canonicalScoreView.score0_100}
+                          scoreSource={canonicalScoreView.scoreSource}
+                          reportApplied={canonicalScoreView.reportApplied}
                           decisionLabel={decisionTileLabel}
                           confidenceLabel={`${decisionTileConfidenceLabelShort} confidence`}
                           confidenceVerified={decisionTileConfidenceBand !== 'unknown'}
                           rationale={decisionTileRationale}
-                          strengths={overlayStrengths}
-                          openItems={overlayOpenItems}
+                          strengths={filterMismatchedScoreItems(overlayStrengths, canonicalScoreForSanitizer)}
+                          openItems={filterMismatchedScoreItems(overlayOpenItems, canonicalScoreForSanitizer)}
                           coverageGaps={missingChips}
                           interpretationStatus={governedOverlayStatusUi}
                           interpretationSource={'persisted' as any}
@@ -6926,7 +7834,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Governed overlay</div>
+                        <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Overlay (non-authoritative)</div>
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass(governedOverlayDegraded ? 'warning' : 'muted')}`}>
                             phase: {String(governedOverview.llm_phase_mode ?? '—')}
@@ -6971,7 +7879,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         </div>
                       ) : (
                         <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                          Governed overlay is degraded — deterministic output is shown by default.
+                          {/* Overlay quality flags are shown via chips; detailed reasoning is in debug/diagnostics. */}
+                          
                         </div>
                       )}
                     </div>
@@ -7012,26 +7921,28 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     <div className="mt-4">
                       <DealWorkspaceOverviewComp
                         darkMode={darkMode}
-                        dealOneLiner={overviewDealOneLinerCanonical}
-                        product={overviewProductCanonical}
-                        marketIcp={overviewMarketIcpCanonical}
-                        businessModel={overviewBusinessModelCanonical}
-                        raiseTerms={overviewRaiseTermsCanonical}
-                        productProvenance={{ source: normalizeKeyFactText(overviewProductCanonical) ? 'deterministic' : 'missing' }}
-                        marketIcpProvenance={{ source: normalizeKeyFactText(overviewMarketIcpCanonical) ? 'deterministic' : 'missing' }}
-                        businessModelProvenance={{ source: normalizeKeyFactText(overviewBusinessModelCanonical) ? 'deterministic' : 'missing' }}
-                        raiseTermsProvenance={{ source: normalizeKeyFactText(overviewRaiseTermsCanonical) ? 'deterministic' : 'missing' }}
-                        dealSummaryParagraphs={overviewDealSummaryParagraphsCanonical}
+                        dealOneLiner={workspaceOverviewModel.summaries.short.value}
+                        product={workspaceOverviewModel.keyFacts.product.value}
+                        marketIcp={workspaceOverviewModel.keyFacts.market.value}
+                        businessModel={workspaceOverviewModel.keyFacts.business_model.value}
+                        raiseTerms={workspaceOverviewModel.keyFacts.raise_terms.value}
+                        productProvenance={{ source: workspaceOverviewModel.keyFacts.product.origin === 'missing' ? 'missing' : workspaceOverviewModel.keyFacts.product.origin === 'overlay' ? 'governed' : 'deterministic' }}
+                        marketIcpProvenance={{ source: workspaceOverviewModel.keyFacts.market.origin === 'missing' ? 'missing' : workspaceOverviewModel.keyFacts.market.origin === 'overlay' ? 'governed' : 'deterministic' }}
+                        businessModelProvenance={{ source: workspaceOverviewModel.keyFacts.business_model.origin === 'missing' ? 'missing' : workspaceOverviewModel.keyFacts.business_model.origin === 'overlay' ? 'governed' : 'deterministic' }}
+                        raiseTermsProvenance={{ source: workspaceOverviewModel.keyFacts.raise_terms.origin === 'missing' ? 'missing' : workspaceOverviewModel.keyFacts.raise_terms.origin === 'overlay' ? 'governed' : 'deterministic' }}
+                        dealSummaryParagraphs={workspaceOverviewModel.summaries.long.paragraphs}
                         kpiTiles={deterministicKpiTiles}
                         dealSummarySourceLabel={dealSummarySourceLabel}
                         dealSummaryCitations={canonicalCitations ?? undefined}
-                        score0_100={decisionTileScore0_100 ?? displayScore ?? investorScore}
+                        score0_100={canonicalScoreView.score0_100}
+                        scoreSource={canonicalScoreView.scoreSource}
+                        reportApplied={canonicalScoreView.reportApplied}
                         decisionLabel={decisionTileLabel}
                         confidenceLabel={`${decisionTileConfidenceLabelShort} confidence`}
                         confidenceVerified={decisionTileConfidenceBand !== 'unknown'}
                         rationale={decisionTileRationale}
-                        strengths={decisionTileStrengths}
-                        openItems={decisionTileOpenItemsAll}
+                        strengths={filterMismatchedScoreItems(decisionTileStrengths, canonicalScoreForSanitizer)}
+                        openItems={filterMismatchedScoreItems(decisionTileOpenItemsAll, canonicalScoreForSanitizer)}
                         coverageGaps={missingChips}
                         interpretationStatus={governedOverlayStatusUi}
                         interpretationSource={hasGovernedOverview ? ('persisted' as any) : ('none' as any)}
@@ -7047,6 +7958,16 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         }}
                         onViewFullAnalysis={() => setActiveTab('evidence')}
                       />
+
+                      <div className="mt-6">
+                        <FinancialCoveragePanel
+                          darkMode={darkMode}
+                          financialCoverage={authoritativeFinancialCoverageV1.value}
+                          documentTitles={documentTitles}
+                          burnHasNumeric={burnHasNumeric}
+                          runwayHasNumeric={runwayHasNumeric}
+                        />
+                      </div>
                     </div>
                   ) : null}
                 </div>
@@ -7080,6 +8001,33 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Report</div>
                   <div className={`text-xs font-mono break-all ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{analysisDiagnostics.report_id}</div>
                   <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>phase: {String(analysisDiagnostics.llm_phase_mode ?? '—')}</div>
+
+                  <div className={`mt-2 text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    <span>
+                      Header latest: {typeof dioMeta?.dioAnalysisVersion === 'number' ? `v${dioMeta.dioAnalysisVersion}` : '—'}
+                    </span>
+                    <span className={`mx-2 ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>·</span>
+                    <span>
+                      Loaded: {typeof (reportEnvelope as any)?.version === 'number' ? `v${(reportEnvelope as any).version}` : '—'}
+                      {typeof (reportArtifact as any)?.analysis_version === 'number' ? ` (artifact v${(reportArtifact as any).analysis_version})` : ''}
+                    </span>
+                  </div>
+
+                  {(
+                    typeof dioMeta?.dioAnalysisVersion === 'number' &&
+                    typeof (reportArtifact as any)?.analysis_version === 'number' &&
+                    dioMeta.dioAnalysisVersion !== (reportArtifact as any).analysis_version
+                  ) ? (
+                    <div className={`mt-1 text-[11px] ${darkMode ? 'text-amber-200' : 'text-amber-700'}`}>
+                      Version mismatch: header v{dioMeta.dioAnalysisVersion} ≠ artifact v{String((reportArtifact as any).analysis_version)}
+                    </div>
+                  ) : null}
+
+                  {typeof (reportArtifact as any)?.dio_id === 'string' && (reportArtifact as any).dio_id ? (
+                    <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                      artifact.dio_id: <span className="font-mono break-all">{String((reportArtifact as any).dio_id)}</span>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>

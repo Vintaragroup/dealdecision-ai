@@ -127,3 +127,34 @@ test("buildDisplayFactsV1 emits explicit missing reasons", () => {
   assert.equal(out.why_it_wins.value, null);
   assert.equal(out.why_it_wins.missing_reason, "not_available_deterministically");
 });
+
+test("buildDisplayFactsV1 raise_terms guard: '$8B TAM' must not emit raise_terms", () => {
+  const report = {
+    deal_summary: null,
+    structured_summary: {
+      raise: {
+        value_raw: "$8B TAM",
+        sources: [{ document_id: "doc-1", page_range: [7, 7], note: "$8B TAM" }],
+      },
+    },
+  };
+
+  const out = buildDisplayFactsV1(report);
+  assert.equal(out.raise_terms.value, null);
+});
+
+test("buildDisplayFactsV1 raise_terms guard: explicit ask may emit raise_terms", () => {
+  const report = {
+    deal_summary: null,
+    structured_summary: {
+      raise: {
+        value_raw: "The Ask: Raising $2M via SAFE",
+        sources: [{ document_id: "doc-1", page_range: [7, 7], note: "The Ask: Raising $2M via SAFE" }],
+      },
+    },
+  };
+
+  const out = buildDisplayFactsV1(report);
+  assert.ok(out.raise_terms.value);
+  assert.ok(out.raise_terms.value?.includes("$2M"));
+});

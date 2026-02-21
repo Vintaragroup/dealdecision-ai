@@ -67,3 +67,15 @@ test("Palm deck bullet intent overrides regressions", () => {
     assert.ok(res.reason.override_rules_hit.includes(c.expectOverrideRule), `Expected override rule '${c.expectOverrideRule}' for: ${c.title}`);
   }
 });
+
+test("Raise terms hardening: '$8B TAM' does not classify as raise_terms", () => {
+  const res = segmentDpuPage({ title: "$8B TAM", bullets: ["Total addressable market", "$8B market size"] });
+  assert.notEqual(res.segment_key, "raise_terms", `Expected not raise_terms, got ${res.segment_key}`);
+});
+
+test("Raise terms hardening: '$2M raise' classifies as raise_terms", () => {
+  const res = segmentDpuPage({ title: "$2M raise", bullets: [] });
+  assert.equal(res.segment_key, "raise_terms", `Expected raise_terms, got ${res.segment_key}`);
+  assert.ok(res.confidence >= 0.9, `Expected high confidence for raise_terms, got ${res.confidence}`);
+  assert.ok(res.reason.title_rules_hit.includes("raise.title.raise_terms"), "Expected raise title rule hit");
+});

@@ -43,6 +43,13 @@ test('Report shape normalization ensures kpis.revenue.selection_reason (latest +
 
   const mockPool = {
     query: async (sql: string, params: unknown[] = []) => {
+      if (sql.includes("FROM ingestion_reports") && sql.includes("analysis_version")) {
+        return { rows: [] };
+      }
+      if (sql.includes("INSERT INTO ingestion_reports") && sql.includes("ON CONFLICT (deal_id, analysis_version)")) {
+        return { rows: [{ report_id: "ir-1" }] };
+      }
+
       // Deal existence check
       if (sql.includes('FROM deals') && sql.includes('WHERE id = $1') && sql.includes('deleted_at IS NULL')) {
         return { rows: [{ id: String(params[0] ?? dealId), llm_phase_mode: 'exploratory' }] };

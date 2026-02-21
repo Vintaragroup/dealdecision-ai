@@ -18,6 +18,27 @@ export type Phase1DealOverview = {
   customers?: unknown;
 };
 
+const formatMoney = (amount: number): string => {
+  const v = typeof amount === 'number' && Number.isFinite(amount) ? amount : NaN;
+  if (!Number.isFinite(v)) return '—';
+  if (v >= 1e9) {
+    const x = v / 1e9;
+    const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+    return `$${s}B`;
+  }
+  if (v >= 1e6) {
+    const x = v / 1e6;
+    const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+    return `$${s}M`;
+  }
+  if (v >= 1e3) {
+    const x = v / 1e3;
+    const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+    return `$${s}K`;
+  }
+  return `$${Math.round(v).toLocaleString()}`;
+};
+
 type FactProvenance = {
   scope: string | null;
   year: number | null;
@@ -28,20 +49,6 @@ const asNonEmptyString = (v: unknown): string | null => {
   if (typeof v !== 'string') return null;
   const s = v.trim();
   return s.length > 0 ? s : null;
-};
-
-const hasEvidenceSources = (sources: unknown): boolean => {
-  if (!Array.isArray(sources) || sources.length === 0) return false;
-  return sources.some((s) => {
-    if (!s || typeof s !== 'object') return false;
-    const docId = typeof (s as any).document_id === 'string'
-      ? (s as any).document_id
-      : typeof (s as any).source_document_id === 'string'
-        ? (s as any).source_document_id
-        : '';
-    const page = (s as any).page_index;
-    return Boolean(String(docId ?? '').trim()) && typeof page === 'number' && Number.isFinite(page);
-  });
 };
 
 const fieldFromUnknown = (input: unknown): HeaderField => {
@@ -197,11 +204,20 @@ export function selectDealWorkspaceHeader(
   if (ready) {
     const structuredSummary = ((report as any)?.structured_summary ?? null) as any;
 
-    const raise = structuredSummary?.raise;
-    const businessModel = structuredSummary?.business_model;
-    const revenue = structuredSummary?.revenue;
-    const growth = structuredSummary?.growth;
-    const customers = structuredSummary?.customers;
+    // KPI normalization must occur server-side only to prevent drift.
+    const kpis = structuredSummary && typeof structuredSummary === 'object' ? (structuredSummary as any).kpis : null;
+
+    const structuredRaise = structuredSummary && typeof structuredSummary === 'object' ? (structuredSummary as any).raise : null;
+    const raiseAmountRaw = structuredRaise?.value_json?.amount?.amount;
+    const raiseAmount = typeof raiseAmountRaw === 'number' && Number.isFinite(raiseAmountRaw) ? raiseAmountRaw : null;
+    const raiseRoundLabel = asNonEmptyString(structuredRaise?.round_label);
+
+    const kpiRaise = kpis?.raise;
+
+    const businessModel = kpis?.business_model;
+    const revenue = kpis?.revenue;
+    const growth = kpis?.growth;
+    const customers = kpis?.customers;
 
     const bm = selectAuthoritativeBusinessModelV1({ report, phase1 });
     const promotedValue = asNonEmptyString(businessModel?.value);
@@ -209,12 +225,22 @@ export function selectDealWorkspaceHeader(
     const revenueLabel = computeRevenueBadgeLabel(revenue);
     const growthLabel = computeGrowthBadgeLabel(growth);
 
+    const raiseValue = (() => {
+      if (raiseAmount != null) return formatMoney(raiseAmount);
+      return asNonEmptyString(kpiRaise?.value) ?? asNonEmptyString(kpiRaise?.value?.raw) ?? null;
+    })();
+    const raiseLabel = raiseRoundLabel ?? asNonEmptyString(kpiRaise?.label);
+    const raiseSources = Array.isArray(structuredRaise?.sources)
+      ? (structuredRaise.sources as Source[])
+      : (Array.isArray(kpiRaise?.sources) ? (kpiRaise.sources as Source[]) : undefined);
+
     return {
       ready: true,
       raise: {
-        value: hasEvidenceSources(raise?.sources) ? asNonEmptyString(raise?.value) : null,
-        label: asNonEmptyString(raise?.label) ?? undefined,
-        sources: Array.isArray(raise?.sources) ? (raise.sources as Source[]) : undefined,
+        value: raiseValue,
+        // Optional stage/round label is separate from the numeric value.
+        label: raiseValue != null ? (raiseLabel ?? undefined) : undefined,
+        sources: raiseSources,
       },
       business_model_synthesized: {
         value: null,
@@ -231,24 +257,21 @@ export function selectDealWorkspaceHeader(
           : (Array.isArray(businessModel?.sources) ? (businessModel.sources as Source[]) : undefined),
       },
       revenue: {
-        value: hasEvidenceSources(revenue?.sources) ? asNonEmptyString(revenue?.value?.raw) : null,
+        value: asNonEmptyString(revenue?.value?.raw),
         label: revenueLabel,
         sources: Array.isArray(revenue?.sources) ? (revenue.sources as Source[]) : undefined,
       },
       growth: {
-        value: hasEvidenceSources(growth?.sources) ? asNonEmptyString(growth?.value?.raw) : null,
+        value: asNonEmptyString(growth?.value?.raw),
         label: growthLabel,
         sources: Array.isArray(growth?.sources) ? (growth.sources as Source[]) : undefined,
       },
       customers: {
-        value: hasEvidenceSources(customers?.sources)
-          ? (
-              asNonEmptyString(customers?.value?.raw) ??
-              (typeof customers?.value?.count === 'number' && Number.isFinite(customers.value.count)
-                ? `${Math.round(customers.value.count)} customers`
-                : null)
-            )
-          : null,
+        value:
+          asNonEmptyString(customers?.value?.raw) ??
+          (typeof customers?.value?.count === 'number' && Number.isFinite(customers.value.count)
+            ? `${Math.round(customers.value.count)} customers`
+            : null),
         label: asNonEmptyString(customers?.label) ?? undefined,
         sources: Array.isArray(customers?.sources) ? (customers.sources as Source[]) : undefined,
       },

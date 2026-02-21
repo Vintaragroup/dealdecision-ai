@@ -206,7 +206,7 @@ test("GET /api/v1/deals/:deal_id/readiness returns INGEST_PENDING_OCR when docs 
   await app.close();
 });
 
-test("GET /api/v1/deals/:deal_id/readiness reports placeholder/empty DPU as non-meaningful (but not missing)", async () => {
+test("GET /api/v1/deals/:deal_id/readiness reports placeholder/empty DPU as non-meaningful (and missing-for-completion) but ready=true", async () => {
   const dealId = "00000000-0000-0000-0000-000000000013";
 
   const mockPool = {
@@ -230,7 +230,10 @@ test("GET /api/v1/deals/:deal_id/readiness reports placeholder/empty DPU as non-
               dpu_rows: 3,
               dpu_rows_meaningful: 0,
               non_meaningful_pages: [0, 1, 2],
-              missing_pages: [],
+              // Missing-for-completion = expected - done.
+              missing_pages: [0, 1, 2],
+              // Hard missing (no payload row) is empty, so readiness.ready should be true.
+              hard_missing_pages: [],
             },
           ],
         };
@@ -264,7 +267,7 @@ test("GET /api/v1/deals/:deal_id/readiness reports placeholder/empty DPU as non-
   assert.equal(body.ready, true);
   assert.equal(body.expected_pages_total, 3);
   assert.equal(body.dpu_rows_total, 3);
-  assert.equal(body.missing_pages_total, 0);
+  assert.equal(body.missing_pages_total, 3);
   assert.equal(body.non_meaningful_pages_total, 3);
   assert.equal(body.blocked_reason, null);
 

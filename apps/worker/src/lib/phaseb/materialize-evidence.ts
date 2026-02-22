@@ -47,9 +47,16 @@ function normalizeSnippet(raw: unknown): string | null {
   return s.length > 2000 ? `${s.slice(0, 1997)}...` : s;
 }
 
-function coerceJsonObject(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
+/**
+ * Returns true when `value` contains any usable ref signal — either a non-empty
+ * object (keyed citation) or a non-empty array (list of citation anchors).
+ * A row with a valid ref is a concrete citation anchor and must be materialized
+ * even when the OCR snippet is absent or confidence is 0 ("unset/not computed").
+ */
+function hasAnyRefSignal(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return (value as unknown[]).length > 0;
+  return Object.keys(value as Record<string, unknown>).length > 0;
 }
 
 export async function materializePhaseBVisualEvidenceForDeal(
@@ -166,18 +173,13 @@ export async function materializePhaseBVisualEvidenceForDeal(
       : "visual";
 
     const snippet = normalizeSnippet(row.snippet);
-    const refObj = coerceJsonObject(row.ref) ?? {};
-
-    const hasRefSignal = Object.keys(refObj).length > 0;
+    const hasRefSignal = hasAnyRefSignal(row.ref);
     const confidence = typeof row.confidence === "number" && Number.isFinite(row.confidence) ? row.confidence : 0.5;
-    if (!snippet && !hasRefSignal) {
-      skipped += 1;
-      continue;
-    }
 
-    // Avoid flooding the evidence list with low-signal items that have neither OCR snippet
-    // nor strong model confidence.
-    if (!snippet && confidence < 0.55) {
+    // Skip only when we have neither snippet nor usable ref signal AND confidence is below
+    // threshold. A ref alone is a valid citation anchor (confidence = 0 means "unset", not
+    // "low quality"), so ref-only rows are always materialized regardless of confidence.
+    if (!snippet && !hasRefSignal && confidence < 0.55) {
       skipped += 1;
       continue;
     }

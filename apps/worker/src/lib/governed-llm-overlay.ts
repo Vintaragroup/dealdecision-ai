@@ -23,6 +23,21 @@ const SCHEMA_VERSION = "governed_llm_overview_v1" as const;
 
 type DisplayFactsBasisV1 = "direct_snippet" | "no_evidence";
 
+/** Shared evidence-snippet record used in display-facts building. */
+type DisplayFactEv = { evidence_id: string; document_id: string; page_index: number; snippet: string };
+
+/** Enriched phaseb evidence row returned by loadPhasebVisualEvidenceItems. */
+export type PhasebEvidenceItem = {
+  evidence_id: string;
+  source_document_id: string;
+  source_visual_asset_id: string | null;
+  /** 1-based page number parsed from source_path, or null if absent. */
+  page_number: number | null;
+  content_text: string;
+  tags: string[];
+  confidence: number | null;
+};
+
 type DisplayFactFieldV1 = {
   text: string | null;
   evidence_ids: string[];
@@ -768,6 +783,9 @@ async function persistDiagnosticsSnapshotBestEffort(args: {
 
       const uniqueLinkedIds = Array.from(new Set(linkedIdsAll)).filter(isUuidLike);
 
+      // Always initialize the map so that phaseb_visual rows can always be added.
+      evidenceVisualAssetById = new Map();
+
       if (uniqueLinkedIds.length > 0) {
         const { rows: evRows } = await pool.query<{ id: string; visual_asset_id: string | null }>(
           `SELECT id::text AS id, visual_asset_id::text AS visual_asset_id
@@ -776,12 +794,40 @@ async function persistDiagnosticsSnapshotBestEffort(args: {
               AND id = ANY($2::uuid[])`,
           [args.dealId, uniqueLinkedIds]
         );
-        evidenceVisualAssetById = new Map();
         for (const r of evRows) {
           const id = typeof r?.id === "string" ? r.id.trim() : "";
           const va = typeof r?.visual_asset_id === "string" ? r.visual_asset_id.trim() : "";
           if (id) evidenceVisualAssetById.set(id, va);
         }
+      }
+
+      // Also load phaseb_visual evidence_items which carry source_visual_asset_id.
+      // These are not registered in score_breakdown_v1.evidence_ids_linked, so they
+      // must be loaded separately to populate the visual-asset coverage map.
+      try {
+        const hasEI = await hasTable(pool, "evidence_items");
+        if (hasEI) {
+          const { rows: pbRows } = await pool.query<{
+            evidence_id: string;
+            source_visual_asset_id: string | null;
+          }>(
+            `SELECT evidence_id::text,
+                    source_visual_asset_id::text
+               FROM evidence_items
+              WHERE deal_id = $1::uuid
+                AND source_type = 'phaseb_visual'
+                AND source_visual_asset_id IS NOT NULL`,
+            [args.dealId]
+          );
+          for (const r of pbRows) {
+            const id = typeof r?.evidence_id === "string" ? r.evidence_id.trim() : "";
+            const va =
+              typeof r?.source_visual_asset_id === "string" ? r.source_visual_asset_id.trim() : "";
+            if (id) evidenceVisualAssetById.set(id, va);
+          }
+        }
+      } catch {
+        // Non-fatal: map already initialized with DIO-linked entries.
       }
     } catch {
       evidenceVisualAssetById = null;
@@ -1137,6 +1183,100 @@ function isFallbackSource(note: string | undefined): boolean {
   return n.includes("fallback_") || n.includes("du fallback_");
 }
 
+/** Classify a phaseb_visual evidence row's tags into one of the four display-fact fields. */
+export function classifyPhasebField(
+  tags: string[] | null | undefined
+): "product_solution" | "market_icp" | "business_model" | "raise_terms" {
+  const joined = (tags ?? []).join(" ").toLowerCase();
+  if (/raise|round|funding|valuation|terms|ask|invest/.test(joined)) return "raise_terms";
+  if (/market|tam|sam|icp|customer|audience|segment/.test(joined)) return "market_icp";
+  if (/revenue|arr|subscription|pricing|saas|ecommerce|financial|business_model|unit.?economics|gross.?margin/.test(joined))
+    return "business_model";
+  return "product_solution";
+}
+
+/**
+ * Load phaseb_visual evidence_items for the deal, classified by display-fact field.
+ * Used to supplement field arrays that came up empty from the DPU-based picking path.
+ */
+export async function loadPhasebVisualEvidenceItems(
+  pool: Pool,
+  dealId: string
+): Promise<Record<"product_solution" | "market_icp" | "business_model" | "raise_terms", PhasebEvidenceItem[]>> {
+  type Field = "product_solution" | "market_icp" | "business_model" | "raise_terms";
+  const empty = (): Record<Field, PhasebEvidenceItem[]> => ({
+    product_solution: [],
+    market_icp: [],
+    business_model: [],
+    raise_terms: [],
+  });
+  try {
+    const tableOk = await hasTable(pool, "evidence_items");
+    if (!tableOk) return empty();
+
+    const { rows } = await pool.query<{
+      evidence_id: string;
+      source_document_id: string | null;
+      source_visual_asset_id: string | null;
+      source_path: string | null;
+      tags: string[] | null;
+      content_text: string | null;
+      confidence: number | null;
+    }>(
+      `SELECT evidence_id::text,
+              source_document_id::text,
+              source_visual_asset_id::text,
+              source_path,
+              tags,
+              content_text,
+              confidence
+         FROM evidence_items
+        WHERE deal_id = $1::uuid
+          AND source_type = 'phaseb_visual'
+          AND content_text IS NOT NULL
+          AND LENGTH(content_text) >= 30
+        ORDER BY created_at DESC NULLS LAST, evidence_id`,
+      [dealId]
+    );
+
+    const result = empty();
+    for (const r of rows) {
+      if (!r.evidence_id || !r.source_document_id || !r.content_text) continue;
+      const pageMatch = r.source_path?.match(/page:(\d+)/);
+      const pageNumber = pageMatch ? parseInt(pageMatch[1], 10) : null;
+      const tags = Array.isArray(r.tags) ? r.tags.map(String) : [];
+      const field = classifyPhasebField(tags);
+      const vaId = typeof r.source_visual_asset_id === "string" && r.source_visual_asset_id.trim()
+        ? r.source_visual_asset_id.trim()
+        : null;
+      if (result[field].length < 3) {
+        result[field].push({
+          evidence_id: r.evidence_id,
+          source_document_id: r.source_document_id,
+          source_visual_asset_id: vaId,
+          page_number: pageNumber,
+          content_text: r.content_text.slice(0, 2000),
+          tags,
+          confidence: typeof r.confidence === "number" ? r.confidence : null,
+        });
+      }
+    }
+    return result;
+  } catch {
+    return empty();
+  }
+}
+
+/** Convert a PhasebEvidenceItem to the DisplayFactEv shape expected by buildEvidenceForField consumers. */
+function phasebItemToDisplayFactEv(item: PhasebEvidenceItem): DisplayFactEv {
+  return {
+    evidence_id: item.evidence_id,
+    document_id: item.source_document_id,
+    page_index: item.page_number != null ? Math.max(0, item.page_number - 1) : 0,
+    snippet: item.content_text,
+  };
+}
+
 function sourceKey(s: { document_id: string; page_range?: [number, number] }): string {
   const pr = s.page_range;
   if (!pr) return `${s.document_id}|_`;
@@ -1435,7 +1575,8 @@ async function generateDisplayFactsV1BestEffort(args: {
   );
   const extendedPool = [...narrowSources, ...globalFiltered];
 
-  type Ev = { evidence_id: string; document_id: string; page_index: number; snippet: string };
+  // Use the module-level DisplayFactEv type.
+  type Ev = DisplayFactEv;
 
   const buildEvidenceForField = async (
     field: "product_solution" | "market_icp" | "business_model" | "raise_terms",
@@ -1509,6 +1650,26 @@ async function generateDisplayFactsV1BestEffort(args: {
     buildEvidenceForField("market_icp", pickedMarket),
     buildEvidenceForField("business_model", pickedModel),
   ]);
+
+  // Supplement any empty field arrays with phaseb_visual evidence_items content_text snippets.
+  // This ensures deals whose documents lack document_page_understanding rows can still
+  // produce LLM-narrated display facts from PhaseB visual evidence.
+  if (
+    productEvidence.length === 0 ||
+    raiseEvidence.length === 0 ||
+    marketEvidence.length === 0 ||
+    modelEvidence.length === 0
+  ) {
+    const phasebItems = await loadPhasebVisualEvidenceItems(args.pool, args.dealId);
+    if (productEvidence.length === 0)
+      productEvidence.push(...phasebItems.product_solution.map(phasebItemToDisplayFactEv));
+    if (raiseEvidence.length === 0)
+      raiseEvidence.push(...phasebItems.raise_terms.map(phasebItemToDisplayFactEv));
+    if (marketEvidence.length === 0)
+      marketEvidence.push(...phasebItems.market_icp.map(phasebItemToDisplayFactEv));
+    if (modelEvidence.length === 0)
+      modelEvidence.push(...phasebItems.business_model.map(phasebItemToDisplayFactEv));
+  }
 
   const deterministic_input = {
     schema_version: "display_facts_v1_input_v1",

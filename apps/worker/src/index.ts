@@ -4175,6 +4175,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 		let docMeta: {
 			deal_id?: string | null;
 			type?: string | null;
+			mime_type?: string | null;
 			extraction_metadata?: unknown;
 			structured_data?: unknown;
 			full_content?: unknown;
@@ -4185,7 +4186,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 		} | null = null;
 		try {
 			const { rows } = await pool.query(
-				"SELECT deal_id, type, title, extraction_metadata, structured_data, full_content, full_text, full_text_absent_reason, page_count FROM documents WHERE id = $1 LIMIT 1",
+				"SELECT deal_id, type, mime_type, title, extraction_metadata, structured_data, full_content, full_text, full_text_absent_reason, page_count FROM documents WHERE id = $1 LIMIT 1",
 				[sanitizeText(docId)]
 			);
 			docMeta = rows?.[0] ?? null;
@@ -4322,9 +4323,9 @@ registerWorker("extract_visuals", async (job: Job) => {
 				// understanding here in the coordinator pass so readiness can advance.
 				try {
 					const docKind = deduceDocKind({ extraction_metadata: docMeta?.extraction_metadata, type: docMeta?.type ?? null });
-					const mimeType = typeof docMeta?.type === "string" ? docMeta.type : "";
+					const mimeType = typeof docMeta?.mime_type === "string" ? docMeta.mime_type : "";
 					const isPdfByMime = mimeType.trim().toLowerCase().startsWith("application/pdf");
-					const isPdf = isPdfByMime || docKind === "pdf";
+					const isPdf = isPdfByMime || (docMeta?.type ?? "").toLowerCase() === "pdf" || docKind === "pdf";
 					if (isPdf) {
 						// Ensure pdf_v2.pages[*].understanding_v1 exists; persist helpers require it.
 						try {
@@ -4447,9 +4448,9 @@ registerWorker("extract_visuals", async (job: Job) => {
 		}
 
 		const docKind = deduceDocKind({ extraction_metadata: docMeta?.extraction_metadata, type: docMeta?.type ?? null });
-		const mimeType = typeof docMeta?.type === "string" ? docMeta.type : "";
+		const mimeType = typeof docMeta?.mime_type === "string" ? docMeta.mime_type : "";
 		const isPdfByMime = mimeType.trim().toLowerCase().startsWith("application/pdf");
-		const isPdf = isPdfByMime || docKind === "pdf";
+		const isPdf = isPdfByMime || (docMeta?.type ?? "").toLowerCase() === "pdf" || docKind === "pdf";
 		const fullTextRaw = typeof docMeta?.full_text === "string" ? docMeta.full_text : "";
 		const fullTextIsEmpty = fullTextRaw.trim().length === 0;
 		const fullTextAbsentReason = typeof docMeta?.full_text_absent_reason === "string" ? docMeta.full_text_absent_reason : null;

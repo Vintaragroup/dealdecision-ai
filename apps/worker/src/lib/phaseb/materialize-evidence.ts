@@ -78,9 +78,14 @@ export async function materializePhaseBVisualEvidenceForDeal(
     return { ok: true, reason: "disabled" };
   }
 
-  const tablesOk = (await hasTable(pool as unknown as PoolLike, "evidence")) &&
-    (await hasTable(pool as unknown as PoolLike, "evidence_links")) &&
-    (await hasTable(pool as unknown as PoolLike, "documents"));
+  const [evidenceExists, evidenceLinksExists, documentsExists, evidenceItemsExists] = await Promise.all([
+    hasTable(pool as unknown as PoolLike, "evidence"),
+    hasTable(pool as unknown as PoolLike, "evidence_links"),
+    hasTable(pool as unknown as PoolLike, "documents"),
+    hasTable(pool as unknown as PoolLike, "evidence_items"),
+  ]);
+
+  const tablesOk = evidenceExists && evidenceLinksExists && documentsExists;
 
   if (!tablesOk) {
     return { ok: true, reason: "missing_tables" };
@@ -117,13 +122,21 @@ export async function materializePhaseBVisualEvidenceForDeal(
 
   const hasVisualAssetId = await hasColumn(pool as unknown as PoolLike, "evidence", "visual_asset_id");
 
-  // Clear prior Phase B visual evidence for the deal so evidence doesn't go stale
-  // when evidence_links are removed or updated.
+  // Clear prior Phase B visual evidence for the deal so rows don't go stale
+  // when evidence_links are removed or updated. Delete from both legacy `evidence`
+  // and canonical `evidence_items`.
   const deleteRes = await pool.query(
     `DELETE FROM evidence WHERE deal_id = $1 AND source = 'phaseb_visual'`,
     [sanitizeText(dealId)]
   );
   const deleted = typeof (deleteRes as any)?.rowCount === "number" ? (deleteRes as any).rowCount : 0;
+
+  if (evidenceItemsExists) {
+    await pool.query(
+      `DELETE FROM evidence_items WHERE deal_id = $1::uuid AND source_type = 'phaseb_visual'`,
+      [sanitizeText(dealId)]
+    );
+  }
 
   type LinkRow = {
     document_id: string;
@@ -240,6 +253,59 @@ export async function materializePhaseBVisualEvidenceForDeal(
        ON CONFLICT (${evidenceIdCol}) DO UPDATE SET ${updateAssignments}`,
       values.map((v) => (typeof v === "object" && v !== null && !(v instanceof Date) ? JSON.stringify(sanitizeDeep(v)) : v))
     );
+
+    // ── Canonical evidence_items upsert ──────────────────────────────────────
+    // This feeds the governed-LLM citation catalog so narration picks up PhaseB
+    // visual evidence rather than falling back to evidence_basis="no_evidence".
+    if (evidenceItemsExists) {
+      // source_path uses 1-based page number so the citation-catalog page parser
+      // (regex /\bpage:(\d+)\b/) returns a sensible slide/page number.
+      const sourcePath = `doc:${sanitizeText(row.document_id)}:page:${pageNumber ?? 0}:type:${evidenceType}:asset:${row.visual_asset_id ?? ""}`;
+      const contentJsonObj = sanitizeDeep({
+        ref: row.ref ?? null,
+        page_index: row.page_index ?? null,
+        evidence_type: row.evidence_type,
+      });
+      const metaObj = { materializer: "phaseb", source_table: "evidence_links" };
+      const tags = ["signal:phaseb_visual", `evidence_type:${evidenceType.replace(/[^\w.-]/g, "_")}`];
+
+      await pool.query(
+        `INSERT INTO evidence_items (
+           evidence_id,
+           deal_id,
+           source_type,
+           source_path,
+           source_document_id,
+           source_visual_asset_id,
+           tags,
+           confidence,
+           extracted_at,
+           content_text,
+           content_json,
+           meta
+         )
+         VALUES ($1, $2::uuid, $3, $4, $5::uuid, $6::uuid, $7::text[], $8, now(), $9, $10::jsonb, $11::jsonb)
+         ON CONFLICT (evidence_id) DO UPDATE SET
+           content_text = EXCLUDED.content_text,
+           content_json = EXCLUDED.content_json,
+           confidence = EXCLUDED.confidence,
+           tags = EXCLUDED.tags,
+           updated_at = now()`,
+        [
+          id,
+          sanitizeText(dealId),
+          "phaseb_visual",
+          sourcePath,
+          sanitizeText(row.document_id),
+          row.visual_asset_id ? sanitizeText(row.visual_asset_id) : null,
+          tags,
+          confidence,
+          sanitizeText(text),
+          JSON.stringify(contentJsonObj),
+          JSON.stringify(metaObj),
+        ]
+      );
+    }
 
     materialized += 1;
   }

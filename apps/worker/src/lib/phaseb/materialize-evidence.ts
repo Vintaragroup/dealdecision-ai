@@ -78,11 +78,12 @@ export async function materializePhaseBVisualEvidenceForDeal(
     return { ok: true, reason: "disabled" };
   }
 
-  const [evidenceExists, evidenceLinksExists, documentsExists, evidenceItemsExists] = await Promise.all([
+  const [evidenceExists, evidenceLinksExists, documentsExists, evidenceItemsExists, visualExtractionsExists] = await Promise.all([
     hasTable(pool as unknown as PoolLike, "evidence"),
     hasTable(pool as unknown as PoolLike, "evidence_links"),
     hasTable(pool as unknown as PoolLike, "documents"),
     hasTable(pool as unknown as PoolLike, "evidence_items"),
+    hasTable(pool as unknown as PoolLike, "visual_extractions"),
   ]);
 
   const tablesOk = evidenceExists && evidenceLinksExists && documentsExists;
@@ -146,6 +147,9 @@ export async function materializePhaseBVisualEvidenceForDeal(
     ref: unknown;
     snippet: string | null;
     confidence: number | null;
+    /** Populated via LEFT JOIN visual_extractions when the table exists. */
+    ocr_text: string | null;
+    ocr_confidence: number | null;
   };
 
   const limitFromEnv = (() => {
@@ -158,6 +162,19 @@ export async function materializePhaseBVisualEvidenceForDeal(
   // Default to a small sample so Phase B evidence doesn't crowd out other sources
   // in the Evidence tab (which currently shows the latest 50 rows).
   const limit = options?.limit ?? limitFromEnv ?? 25;
+  // Conditionally JOIN visual_extractions for OCR fallback when the table exists.
+  // If the table is absent (e.g. older migration) the columns are projected as NULL
+  // so all downstream logic degrades gracefully.
+  const ocrSelectAndJoin = visualExtractionsExists
+    ? {
+        select: ",\n            ve.ocr_text,\n            ve.confidence AS ocr_confidence",
+        join: "\n      LEFT JOIN visual_extractions ve ON ve.visual_asset_id = el.visual_asset_id",
+      }
+    : {
+        select: ",\n            NULL::text AS ocr_text,\n            NULL::double precision AS ocr_confidence",
+        join: "",
+      };
+
   const { rows } = await pool.query<LinkRow>(
     `SELECT el.document_id,
             el.page_index,
@@ -165,9 +182,9 @@ export async function materializePhaseBVisualEvidenceForDeal(
             el.visual_asset_id,
             el.ref,
             el.snippet,
-            el.confidence
+            el.confidence${ocrSelectAndJoin.select}
        FROM evidence_links el
-       JOIN documents d ON d.id = el.document_id
+       JOIN documents d ON d.id = el.document_id${ocrSelectAndJoin.join}
       WHERE d.deal_id = $1
       ORDER BY (el.snippet IS NOT NULL AND length(el.snippet) > 0) DESC,
                COALESCE(el.confidence, 0) DESC,
@@ -186,21 +203,37 @@ export async function materializePhaseBVisualEvidenceForDeal(
       : "visual";
 
     const snippet = normalizeSnippet(row.snippet);
+    // OCR text from visual_extractions — acts as fallback when the evidence_link
+    // has no snippet (common for OCR-heavy PDFs where el.snippet is null).
+    // Require >= 40 chars to be considered "usable": shorter strings are typically
+    // noise, stray labels, or the placeholder written by prior materialize runs.
+    const MIN_USABLE_OCR_LENGTH = 40;
+    const ocrRaw = normalizeSnippet(row.ocr_text);
+    const ocr = ocrRaw && ocrRaw.length >= MIN_USABLE_OCR_LENGTH ? ocrRaw : null;
     const hasRefSignal = hasAnyRefSignal(row.ref);
-    const confidence = typeof row.confidence === "number" && Number.isFinite(row.confidence) ? row.confidence : 0.5;
 
-    // Skip only when we have neither snippet nor usable ref signal AND confidence is below
-    // threshold. A ref alone is a valid citation anchor (confidence = 0 means "unset", not
-    // "low quality"), so ref-only rows are always materialized regardless of confidence.
-    if (!snippet && !hasRefSignal && confidence < 0.55) {
+    // Effective confidence = max(link confidence, OCR confidence, 0.5).
+    const rawConf = typeof row.confidence === "number" && Number.isFinite(row.confidence) ? row.confidence : null;
+    const ocrConf = typeof row.ocr_confidence === "number" && Number.isFinite(row.ocr_confidence) ? row.ocr_confidence : null;
+    const confidence = Math.max(rawConf ?? 0, ocrConf ?? 0, 0.5);
+
+    // "Real text" = snippet (any length) OR usable OCR (>= MIN_USABLE_OCR_LENGTH).
+    // Used as content_text in evidence_items — placeholder strings must never reach
+    // the governed overlay, as they are indistinguishable from no evidence.
+    const realText: string | null = snippet ?? ocr;
+
+    // Legacy evidence.text may use a short placeholder so the row remains a valid
+    // citation anchor in the evidence tab. Rows with neither real text nor a ref
+    // signal are always skipped (they have no evidence value).
+    const text: string | null = realText ?? (hasRefSignal ? `${evidenceType} (no OCR snippet)` : null);
+
+    if (!text) {
       skipped += 1;
       continue;
     }
 
     const pageIndex = typeof row.page_index === "number" && Number.isFinite(row.page_index) ? row.page_index : null;
     const pageNumber = pageIndex != null ? pageIndex + 1 : null;
-
-    const text = snippet ?? `${evidenceType} (no OCR snippet)`;
 
     const idKey = `phaseb_visual|${dealId}|${row.document_id}|${pageIndex ?? ""}|${evidenceType}|${row.visual_asset_id ?? ""}`;
     const id = deterministicUuidFromKey(idKey);
@@ -255,9 +288,9 @@ export async function materializePhaseBVisualEvidenceForDeal(
     );
 
     // ── Canonical evidence_items upsert ──────────────────────────────────────
-    // This feeds the governed-LLM citation catalog so narration picks up PhaseB
-    // visual evidence rather than falling back to evidence_basis="no_evidence".
-    if (evidenceItemsExists) {
+    // Only written when realText exists — placeholder strings must not reach the
+    // governed-LLM citation catalog, which would treat them as no_evidence anyway.
+    if (evidenceItemsExists && realText) {
       // source_path uses 1-based page number so the citation-catalog page parser
       // (regex /\bpage:(\d+)\b/) returns a sensible slide/page number.
       const sourcePath = `doc:${sanitizeText(row.document_id)}:page:${pageNumber ?? 0}:type:${evidenceType}:asset:${row.visual_asset_id ?? ""}`;
@@ -300,7 +333,7 @@ export async function materializePhaseBVisualEvidenceForDeal(
           row.visual_asset_id ? sanitizeText(row.visual_asset_id) : null,
           tags,
           confidence,
-          sanitizeText(text),
+          sanitizeText(realText),
           JSON.stringify(contentJsonObj),
           JSON.stringify(metaObj),
         ]

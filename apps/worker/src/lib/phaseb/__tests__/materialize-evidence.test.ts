@@ -77,7 +77,7 @@ const ENV = { DDAI_ENABLE_PHASEB_VISUAL_EVIDENCE: "1" };
 // ---------------------------------------------------------------------------
 
 describe("materializePhaseBVisualEvidenceForDeal — evidence_items upsert", () => {
-  it("inserts into evidence_items when snippet=null, confidence=0, ref has keys (regression)", async () => {
+  it("ref-only (snippet=null, ocr=null): legacy evidence written with placeholder, evidence_items NOT written", async () => {
     const { pool, queryCalls } = makeMockPool({
       linkRows: [
         {
@@ -88,6 +88,8 @@ describe("materializePhaseBVisualEvidenceForDeal — evidence_items upsert", () 
           ref: { slide: "Financials", anchor: "chart_1" },
           snippet: null,
           confidence: 0,
+          ocr_text: null,
+          ocr_confidence: null,
         },
       ],
     });
@@ -102,32 +104,18 @@ describe("materializePhaseBVisualEvidenceForDeal — evidence_items upsert", () 
     expect(result.skipped).toBe(0);
     expect(result.materialized).toBe(1);
 
-    const items = evidenceItemsInserts(queryCalls);
-    expect(items.length).toBe(1);
+    // evidence_items must NOT be written — placeholder pollutes governed overlay.
+    expect(evidenceItemsInserts(queryCalls).length).toBe(0);
 
-    const { sql, params } = items[0]!;
-    // evidence_id = deterministic UUID derived from the idKey
-    expect(typeof params[0]).toBe("string");
-    // deal_id
-    expect(params[1]).toBe(DEAL_ID);
-    // source_type
-    expect(params[2]).toBe("phaseb_visual");
-    // source_path — must contain page:3 (page_number = page_index+1 = 3)
-    expect(String(params[3])).toMatch(/page:3/);
-    // source_document_id
-    expect(params[4]).toBe(DOC_ID);
-    // source_visual_asset_id
-    expect(params[5]).toBe(ASSET_ID);
-    // tags: array containing phaseb_visual signal tag
-    expect(Array.isArray(params[6])).toBe(true);
-    expect((params[6] as string[]).some((t) => t.includes("phaseb_visual"))).toBe(true);
-    // content_text falls back to the evidence_type label when snippet is null
-    expect(String(params[8])).toContain("revenue");
-    // SQL must include ON CONFLICT upsert
-    expect(sql).toContain("ON CONFLICT (evidence_id)");
+    // Legacy evidence row IS written (placeholder keeps the citation anchor alive).
+    const legacy = legacyEvidenceInserts(queryCalls);
+    expect(legacy.length).toBe(1);
+    // evidence.text is the placeholder
+    const textParam = legacy[0]!.params.find((p) => typeof p === "string" && (p as string).includes("no OCR snippet"));
+    expect(textParam).toBeTruthy();
   });
 
-  it("inserts into evidence_items when ref is a non-empty array (array ref signal)", async () => {
+  it("ref-only array signal (snippet=null, ocr=null): legacy evidence written, evidence_items NOT written", async () => {
     const { pool, queryCalls } = makeMockPool({
       linkRows: [
         {
@@ -138,6 +126,8 @@ describe("materializePhaseBVisualEvidenceForDeal — evidence_items upsert", () 
           ref: [{ anchor: "chart_a" }, { anchor: "chart_b" }],
           snippet: null,
           confidence: 0,
+          ocr_text: null,
+          ocr_confidence: null,
         },
       ],
     });
@@ -150,7 +140,67 @@ describe("materializePhaseBVisualEvidenceForDeal — evidence_items upsert", () 
 
     expect(result.materialized).toBe(1);
     expect(result.skipped).toBe(0);
-    expect(evidenceItemsInserts(queryCalls).length).toBe(1);
+    expect(evidenceItemsInserts(queryCalls).length).toBe(0);
+    expect(legacyEvidenceInserts(queryCalls).length).toBe(1);
+  });
+
+  it("evidence_items IS written when ref-only row has long enough OCR text (>= 40 chars)", async () => {
+    const LONG_OCR = "Market size is $4.2B growing at 18% CAGR with strong SaaS tailwinds.";
+    const { pool, queryCalls } = makeMockPool({
+      linkRows: [
+        {
+          document_id: DOC_ID,
+          page_index: 5,
+          evidence_type: "market",
+          visual_asset_id: ASSET_ID,
+          ref: { slide: "Market" },
+          snippet: null,
+          confidence: 0,
+          ocr_text: LONG_OCR,
+          ocr_confidence: 0.8,
+        },
+      ],
+    });
+
+    const result = await materializePhaseBVisualEvidenceForDeal(
+      pool as any,
+      DEAL_ID,
+      { env: ENV }
+    );
+
+    expect(result.materialized).toBe(1);
+    const items = evidenceItemsInserts(queryCalls);
+    expect(items.length).toBe(1);
+    // content_text must be the real OCR text, not a placeholder
+    expect(String(items[0]!.params[8])).toBe(LONG_OCR);
+    expect(String(items[0]!.params[8])).not.toContain("no OCR snippet");
+  });
+
+  it("evidence_items NOT written when OCR is short (< 40 chars) and snippet is null", async () => {
+    const { pool, queryCalls } = makeMockPool({
+      linkRows: [
+        {
+          document_id: DOC_ID,
+          page_index: 1,
+          evidence_type: "chart",
+          visual_asset_id: ASSET_ID,
+          ref: { slide: "Overview" },
+          snippet: null,
+          confidence: 0.6,
+          ocr_text: "Short OCR",   // < 40 chars — not usable
+          ocr_confidence: 0.9,
+        },
+      ],
+    });
+
+    const result = await materializePhaseBVisualEvidenceForDeal(
+      pool as any,
+      DEAL_ID,
+      { env: ENV }
+    );
+
+    expect(result.materialized).toBe(1);  // legacy evidence still written (placeholder)
+    expect(evidenceItemsInserts(queryCalls).length).toBe(0);
   });
 
   it("skips a row with no snippet, no ref, and confidence=0 — and emits no evidence_items insert", async () => {
@@ -206,6 +256,8 @@ describe("materializePhaseBVisualEvidenceForDeal — evidence_items upsert", () 
           ref: { key: "val" },
           snippet: "The team has 10 years experience.",
           confidence: 0.8,
+          ocr_text: null,
+          ocr_confidence: null,
         },
       ],
     });
@@ -225,5 +277,148 @@ describe("materializePhaseBVisualEvidenceForDeal — evidence_items upsert", () 
 
     // Both tables receive the same deterministic evidence_id.
     expect(legacy[0]!.params[0]).toBe(items[0]!.params[0]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // OCR fallback tests
+  // ---------------------------------------------------------------------------
+
+  it("Case A: snippet=null, ve.ocr_text present => content_text = OCR text (not placeholder)", async () => {
+    const OCR_TEXT = "Revenue grew 40% YoY reaching $2.4M ARR in Q4. Gross margin 72%.";
+    const { pool, queryCalls } = makeMockPool({
+      linkRows: [
+        {
+          document_id: DOC_ID,
+          page_index: 3,
+          evidence_type: "financial_metrics",
+          visual_asset_id: ASSET_ID,
+          ref: { slide: "Financials" },
+          snippet: null,
+          confidence: 0,
+          ocr_text: OCR_TEXT,
+          ocr_confidence: 0.85,
+        },
+      ],
+    });
+
+    const result = await materializePhaseBVisualEvidenceForDeal(
+      pool as any,
+      DEAL_ID,
+      { env: ENV }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.skipped).toBe(0);
+    expect(result.materialized).toBe(1);
+
+    const items = evidenceItemsInserts(queryCalls);
+    expect(items.length).toBe(1);
+    // content_text param is at index 8 in the evidence_items INSERT
+    const contentText = String(items[0]!.params[8]);
+    expect(contentText).toBe(OCR_TEXT);
+    expect(contentText).not.toContain("no OCR snippet");
+
+    // confidence should be max(0, 0.85, 0.5) = 0.85
+    const confidenceParam = items[0]!.params[7] as number;
+    expect(confidenceParam).toBeCloseTo(0.85, 5);
+  });
+
+  it("Case B: snippet present, ocr_text present => snippet wins, OCR ignored (no regression)", async () => {
+    const SNIPPET = "Platform automates invoice reconciliation saving 4 hours/week per user.";
+    const OCR_TEXT = "This OCR text should not be used since snippet is available.";
+    const { pool, queryCalls } = makeMockPool({
+      linkRows: [
+        {
+          document_id: DOC_ID,
+          page_index: 2,
+          evidence_type: "product",
+          visual_asset_id: ASSET_ID,
+          ref: { tag: "product_overview" },
+          snippet: SNIPPET,
+          confidence: 0.9,
+          ocr_text: OCR_TEXT,
+          ocr_confidence: 0.6,
+        },
+      ],
+    });
+
+    const result = await materializePhaseBVisualEvidenceForDeal(
+      pool as any,
+      DEAL_ID,
+      { env: ENV }
+    );
+
+    expect(result.materialized).toBe(1);
+    expect(result.skipped).toBe(0);
+
+    const items = evidenceItemsInserts(queryCalls);
+    expect(items.length).toBe(1);
+    const contentText = String(items[0]!.params[8]);
+    // Must use snippet, NOT ocr_text
+    expect(contentText).toBe(SNIPPET);
+    expect(contentText).not.toContain("OCR text should not be used");
+
+    // confidence = max(0.9, 0.6, 0.5) = 0.9
+    const confidenceParam = items[0]!.params[7] as number;
+    expect(confidenceParam).toBeCloseTo(0.9, 5);
+  });
+
+  it("Case C: snippet=null, ocr_text=null, ref={} (empty) => skipped, no inserts", async () => {
+    const { pool, queryCalls } = makeMockPool({
+      linkRows: [
+        {
+          document_id: DOC_ID,
+          page_index: 0,
+          evidence_type: "unknown",
+          visual_asset_id: null,
+          ref: {},       // empty object — hasAnyRefSignal returns false
+          snippet: null,
+          confidence: 0.9, // high confidence should NOT prevent skip when no text
+          ocr_text: null,
+          ocr_confidence: null,
+        },
+      ],
+    });
+
+    const result = await materializePhaseBVisualEvidenceForDeal(
+      pool as any,
+      DEAL_ID,
+      { env: ENV }
+    );
+
+    expect(result.materialized).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(evidenceItemsInserts(queryCalls).length).toBe(0);
+    expect(legacyEvidenceInserts(queryCalls).length).toBe(0);
+  });
+
+  it("PPTX-style: snippet present on non-PDF row behaves identically (no regression)", async () => {
+    const SNIPPET = "B2B SaaS platform for HR compliance. 120 customers, $1.2M ARR.";
+    const { pool, queryCalls } = makeMockPool({
+      linkRows: [
+        {
+          document_id: DOC_ID,
+          page_index: 0,
+          evidence_type: "overview",
+          visual_asset_id: ASSET_ID,
+          ref: [{ slide: 1 }],
+          snippet: SNIPPET,
+          confidence: 0.75,
+          // Both OCR fields absent, simulating PPTX path where visual_extractions has no OCR
+          ocr_text: null,
+          ocr_confidence: null,
+        },
+      ],
+    });
+
+    const result = await materializePhaseBVisualEvidenceForDeal(
+      pool as any,
+      DEAL_ID,
+      { env: ENV }
+    );
+
+    expect(result.materialized).toBe(1);
+    const items = evidenceItemsInserts(queryCalls);
+    expect(String(items[0]!.params[8])).toBe(SNIPPET);
   });
 });

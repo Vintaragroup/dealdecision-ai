@@ -40,6 +40,8 @@ export function getQueueNameForJobType(type: JobType): QueueName {
       return QUEUE_NAMES.analyze_deal;
     case "classify_document":
       return QUEUE_NAMES.ingest_documents;
+    case "investor_insights":
+      return QUEUE_NAMES.investor_insights;
     default: {
       const _exhaustive: never = type;
       return _exhaustive;
@@ -70,6 +72,7 @@ function getQueueForType(type: JobType): QueueLike {
     generate_report: queues.analyzeDealQueue,
     sync_crm: queues.analyzeDealQueue,
     classify_document: queues.ingestQueue,
+    investor_insights: queues.investorInsightsQueue,
   };
 
   return queueMap[type];

@@ -105,6 +105,7 @@ import { makeJobId } from "./lib/job-id";
 import { reextractDocumentsProcessor } from "./jobs/reextract-documents";
 import { documentIntelligenceExtractProcessor } from "./jobs/document-intelligence-extract";
 import { populateDocumentPageUnderstandingProcessor } from "./jobs/populate-document-page-understanding";
+import { generateInvestorInsightsProcessor } from "./jobs/investor-insights/processor";
 
 // Deterministic startup instrumentation (must run at boot, before any queues are registered).
 (() => {
@@ -9766,6 +9767,10 @@ registerWorker("generate_ingestion_report", async (job: Job) => {
 	}
 });
 
+
+// Investor Insight Engine – Stage 0 (PR1)
+// Queue: "investor_insights" | Job: "generate_investor_insights" | Concurrency: 1
+registerWorker("investor_insights", generateInvestorInsightsProcessor, { concurrency: 1 });
 
 logWorkerQueueConfig("worker", Array.from(new Set(registeredWorkers)));
 

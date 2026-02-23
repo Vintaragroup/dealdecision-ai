@@ -41,6 +41,7 @@ export type ApiQueues = {
   verifyDocumentsQueue: Queue;
   remediateExtractionQueue: Queue;
   reextractDocumentsQueue: Queue;
+  investorInsightsQueue: Queue;
 };
 
 function assertQueueNamesRuntimeExport() {
@@ -169,6 +170,7 @@ export function getQueues(): ApiQueues {
     verifyDocumentsQueue: new Queue(QUEUE_NAMES.verify_documents, { connection }),
     remediateExtractionQueue: new Queue(QUEUE_NAMES.remediate_extraction, { connection }),
     reextractDocumentsQueue: new Queue(QUEUE_NAMES.reextract_documents, { connection }),
+    investorInsightsQueue: new Queue(QUEUE_NAMES.investor_insights, { connection }),
   };
 
   if (!didLogQueueConfig && process.env.NODE_ENV !== "production") {
@@ -192,6 +194,7 @@ export function getQueues(): ApiQueues {
         QUEUE_NAMES.verify_documents,
         QUEUE_NAMES.remediate_extraction,
         QUEUE_NAMES.reextract_documents,
+        QUEUE_NAMES.investor_insights,
       ];
       console.log(
         JSON.stringify({
@@ -235,7 +238,8 @@ export async function closeQueues() {
       queues.analyzeDealQueue.close(),
       queues.verifyDocumentsQueue.close(),
       queues.remediateExtractionQueue.close(),
-      queues.reextractDocumentsQueue.close()
+      queues.reextractDocumentsQueue.close(),
+      queues.investorInsightsQueue.close()
     );
   }
 

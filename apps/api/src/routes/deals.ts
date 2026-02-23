@@ -9828,6 +9828,55 @@ export async function registerDealRoutes(
     }
   });
 
+  // Investor Insight Engine – Stage 0: read the latest persisted report for a deal.
+  // Returns { status: "not_started" } when the table is absent or no row exists.
+  // report_payload is intentionally excluded to keep the response light.
+  app.get("/api/v1/deals/:deal_id/investor-insights", async (request, reply) => {
+    const rawDealId = (request.params as { deal_id: string }).deal_id;
+    const parsed = z.object({ deal_id: z.string().uuid() }).safeParse({ deal_id: rawDealId });
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+    const dealId = parsed.data.deal_id;
+
+    const tableOk = await hasTable(pool as any, "investor_insight_reports");
+    if (!tableOk) {
+      return reply.status(200).send({ status: "not_started" });
+    }
+
+    const { rows } = await pool.query<{
+      status: string;
+      engine_version: string;
+      upstream_fingerprint: string;
+      gate_state: unknown;
+      compliance_state: unknown;
+      render_package: unknown;
+      updated_at: string;
+    }>(
+      `SELECT status, engine_version, upstream_fingerprint, gate_state, compliance_state, render_package, updated_at
+         FROM investor_insight_reports
+        WHERE deal_id = $1
+        ORDER BY updated_at DESC
+        LIMIT 1`,
+      [dealId]
+    );
+
+    if (rows.length === 0) {
+      return reply.status(200).send({ status: "not_started" });
+    }
+
+    const row = rows[0];
+    return reply.status(200).send({
+      status: row.status,
+      engine_version: row.engine_version,
+      upstream_fingerprint: row.upstream_fingerprint,
+      gate_state: row.gate_state,
+      compliance_state: row.compliance_state,
+      render_package: row.render_package,
+      updated_at: row.updated_at,
+    });
+  });
+
   if (debugRoutesEnabled) {
     app.get<{ Params: { dealId: string } }>(
       "/api/v1/debug/deals/:dealId/phaseb",

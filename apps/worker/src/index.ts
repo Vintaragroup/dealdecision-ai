@@ -9150,6 +9150,39 @@ registerWorker("analyze_deal", async (job: Job) => {
 			);
 		}
 
+		// Investor Insight Engine – enqueue Stage 0 once the governed overlay is confirmed complete.
+		// Gated by INVESTOR_INSIGHTS_ENABLED=true; fail-open so a queue error never blocks the
+		// analyze_deal terminal status update.
+		if (overviewOk && process.env.INVESTOR_INSIGHTS_ENABLED === "true") {
+			try {
+				const insightsQueue = getQueue("investor_insights");
+				const insightsJobId = makeJobId("investor_insights", [dealId, "v1", "overlay_complete"]);
+				await insightsQueue.add(
+					"generate_investor_insights",
+					{ deal_id: dealId, engine_version: "v1", triggered_by: "overlay_complete" },
+					{ jobId: insightsJobId, removeOnComplete: true, removeOnFail: false }
+				);
+				console.log(
+					JSON.stringify({
+						event: "INVESTOR_INSIGHTS_ENQUEUED",
+						deal_id: dealId,
+						job_id: insightsJobId,
+						triggered_by: "overlay_complete",
+						ts: new Date().toISOString(),
+					})
+				);
+			} catch (err) {
+				console.warn(
+					JSON.stringify({
+						event: "INVESTOR_INSIGHTS_ENQUEUE_FAILED",
+						deal_id: dealId,
+						reason: err instanceof Error ? err.message : String(err),
+						ts: new Date().toISOString(),
+					})
+				);
+			}
+		}
+
 		const terminalStatus: JobStatus = overviewOk ? "succeeded" : "succeeded_with_warnings";
 		const terminalSuffix = result.storage_result.is_duplicate ? ", refreshed" : "";
 		const warningSuffix = overviewOk ? "" : "; governed overview pending/failed";

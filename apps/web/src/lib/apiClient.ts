@@ -2084,6 +2084,48 @@ export function subscribeToEvents(
   };
 }
 
+// ── Investor Insights Engine ───────────────────────────────────────────────
+
+export type InvestorInsightsGateResult = {
+  gate: string;
+  passed: boolean;
+  reason_code?: string;
+  threshold?: number;
+  actual?: number;
+};
+
+export type InvestorInsightsSection = {
+  key: string;
+  title: string;
+  kind: string;
+  items?: unknown[];
+  body?: string;
+  fallback?: string;
+};
+
+export type InvestorInsightsReport = {
+  status: string;
+  engine_version?: string;
+  upstream_fingerprint?: string;
+  gate_state?: {
+    all_passed: boolean;
+    results: InvestorInsightsGateResult[];
+  };
+  compliance_state?: {
+    status: string;
+    events: unknown[];
+  };
+  render_package?: {
+    sections?: InvestorInsightsSection[];
+    [key: string]: unknown;
+  };
+  updated_at?: string;
+};
+
+export async function apiGetInvestorInsights(dealId: string): Promise<InvestorInsightsReport> {
+  return request<InvestorInsightsReport>(`/api/v1/deals/${dealId}/investor-insights`);
+}
+
 export const apiClient = {
   get: request,
   post: <T>(path: string, body?: unknown) =>

@@ -12,6 +12,7 @@ import { TemplateExportModal } from '../TemplateExportModal';
 import { AnalysisTab } from '../workspace/AnalysisTab';
 import { DataTab } from '../workspace/DataTab';
 import { DealAnalystTab } from '../deals/tabs/DealAnalystTab';
+import { InvestorInsightsTab } from '../workspace/InvestorInsightsTab';
 import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
@@ -4576,7 +4577,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     { id: 'diligence', label: 'Due Diligence', icon: <Shield className="w-4 h-4" /> },
     { id: 'feedback', label: 'Investment Thesis', icon: <Target className="w-4 h-4" /> },
     { id: 'data', label: 'Data', icon: <Eye className="w-4 h-4" /> },
-    { id: 'reports', label: 'Reports Generated', icon: <FileCode className="w-4 h-4" />, badge: 2 }
+    { id: 'reports', label: 'Reports Generated', icon: <FileCode className="w-4 h-4" />, badge: 2 },
+    { id: 'investor-insights', label: 'Investor Insights', icon: <Lightbulb className="w-4 h-4" /> },
   ];
 
   // Role-specific accordion items (Due Diligence vs Pitch Checklist)
@@ -8677,6 +8679,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             {/* Data Tab */}
             {activeTab === 'data' && (
               <DataTab dealId={dealId || 'demo'} darkMode={darkMode} />
+            )}
+
+            {/* Investor Insights Tab */}
+            {activeTab === 'investor-insights' && (
+              <InvestorInsightsTab dealId={dealId || 'demo'} darkMode={darkMode} />
             )}
 
             {/* Reports Generated Tab */}

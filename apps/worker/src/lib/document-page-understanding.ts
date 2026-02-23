@@ -414,7 +414,12 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 		SELECT document_id, deal_id, page_index, version, payload
 		  FROM payloads
 		ON CONFLICT (document_id, page_index, version) DO UPDATE
-		  SET payload = EXCLUDED.payload,
+		  SET payload = CASE
+			  WHEN COALESCE(document_page_understanding.payload->>'page_text', '') <> ''
+			   AND COALESCE(EXCLUDED.payload->>'page_text', '') = ''
+			  THEN document_page_understanding.payload
+			  ELSE EXCLUDED.payload
+			  END,
 			  created_at = now(),
 			  updated_at = now(),
 			  deal_id = EXCLUDED.deal_id
@@ -682,7 +687,12 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 		SELECT document_id, deal_id, page_index, version, payload
 		  FROM payloads
 		ON CONFLICT (document_id, page_index, version) DO UPDATE
-		  SET payload = EXCLUDED.payload,
+		  SET payload = CASE
+			  WHEN COALESCE(document_page_understanding.payload->>'page_text', '') <> ''
+			   AND COALESCE(EXCLUDED.payload->>'page_text', '') = ''
+			  THEN document_page_understanding.payload
+			  ELSE EXCLUDED.payload
+			  END,
 			  created_at = now(),
 			  updated_at = now(),
 			  deal_id = EXCLUDED.deal_id
@@ -818,6 +828,38 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			}
 		}
 
+		// Enrich DPU rows where page_text is empty by pulling embedded text from
+		// documents.full_content.pages[i].text. This is the authoritative source for
+		// text PDFs (textProbe.decision='text_ok_skip_ocr') where vision extraction
+		// skips OCR and leaves page_text empty.
+		try {
+			const enrichArgs = hasDocument
+				? { documentId, dealId: dealIdForLogs || undefined, pageStart, pageEnd, version }
+				: { dealId, version };
+			const { enriched } = await enrichDpuWithEmbeddedPdfText(pool, enrichArgs);
+			if (enriched > 0) {
+				try {
+					console.log(
+						JSON.stringify({
+							event: "POPULATE_DOCUMENT_PAGE_UNDERSTANDING_PDF_ENRICH",
+							mode: hasDocument ? "document_range" : "deal_wide",
+							deal_id: dealIdForLogs || null,
+							document_id: documentId || null,
+							page_start: hasDocument ? pageStart : null,
+							page_end: hasDocument ? pageEnd : null,
+							version,
+							enriched,
+							ts: new Date().toISOString(),
+						})
+					);
+				} catch {
+					// ignore
+				}
+			}
+		} catch {
+			// PDF text enrichment is best-effort; do not fail the main operation
+		}
+
 		return {
 			upserted: upsertedNum,
 			page_text_empty: emptyNum,
@@ -827,6 +869,213 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 		};
 	} catch (err: any) {
 		if (isMissingTableError(err)) return { upserted: 0, page_text_empty: 0 };
+		throw err;
+	}
+}
+
+/**
+ * Deterministic resolver for the "best" page text content to store in DPU.
+ *
+ * Priority order (highest → lowest):
+ *   1. PDF embedded text (pdfText ≥ minPdfLength chars)
+ *      → extractor = "worker.pdf", pageType = "pdf_text"   ← preferred for text PDFs
+ *   2. Vision-structured text assembled from title/bullets/notes/snippet (≥ minStructuredLength)
+ *      → extractor = visionExtractorVersion, pageType = "page_image"
+ *   3. OCR text from visual_extractions.ocr_text (any non-empty length)
+ *      → extractor = "ocr", pageType = "page_image"
+ *   4. Raw vision page_text fallback
+ *   5. Empty — no usable text found
+ *
+ * Mirrors the SQL priority chain inside populateDocumentPageUnderstandingFromVisualExtractions
+ * as a testable TypeScript function.
+ */
+export function resolveBestDpuPageText(candidates: {
+	/** Text from documents.full_content.pages[page_index].text (native PDF text layer) */
+	pdfText?: string | null;
+	/** Assembled text from visual extraction structured fields (title+bullets+notes+snippet) */
+	structuredText?: string | null;
+	/** Raw OCR text from visual_extractions.ocr_text */
+	ocrText?: string | null;
+	/** Fallback page_text from vision model output */
+	visionPageText?: string | null;
+	/** Minimum chars for PDF text to be usable (default: 25) */
+	minPdfLength?: number;
+	/** Minimum chars for structured text to be ok (default: 40) */
+	minStructuredLength?: number;
+	/** extractor label when vision/structured wins (default: "vision_v1") */
+	visionExtractorVersion?: string;
+}): {
+	text: string;
+	extractor: string;
+	pageType: string;
+	source: "pdf_text" | "structured" | "ocr" | "vision" | "empty";
+} {
+	const minPdf = typeof candidates.minPdfLength === "number" ? Math.max(0, candidates.minPdfLength) : 25;
+	const minStructured = typeof candidates.minStructuredLength === "number" ? Math.max(0, candidates.minStructuredLength) : 40;
+	const visionExtractor =
+		typeof candidates.visionExtractorVersion === "string" && candidates.visionExtractorVersion.trim().length > 0
+			? candidates.visionExtractorVersion.trim()
+			: "vision_v1";
+
+	const pdfText = (candidates.pdfText ?? "").trim();
+	if (pdfText.length >= minPdf) {
+		return { text: pdfText, extractor: "worker.pdf", pageType: "pdf_text", source: "pdf_text" };
+	}
+
+	const structuredText = (candidates.structuredText ?? "").trim();
+	if (structuredText.length >= minStructured) {
+		return { text: structuredText, extractor: visionExtractor, pageType: "page_image", source: "structured" };
+	}
+
+	const ocrText = (candidates.ocrText ?? "").trim();
+	if (ocrText.length > 0) {
+		return { text: ocrText, extractor: "ocr", pageType: "page_image", source: "ocr" };
+	}
+
+	const visionPageText = (candidates.visionPageText ?? "").trim();
+	if (visionPageText.length > 0) {
+		return { text: visionPageText, extractor: visionExtractor, pageType: "page_image", source: "vision" };
+	}
+
+	return { text: "", extractor: visionExtractor, pageType: "page_image", source: "empty" };
+}
+
+/**
+ * Post-upsert enrichment: for DPU rows where page_text is currently empty, pull
+ * per-page text from documents.full_content.pages[i].text and UPDATE the payload.
+ *
+ * Handles text PDFs (textProbe.decision = "text_ok_skip_ocr") where vision extraction
+ * never produces OCR text. Safety rules enforced by SQL:
+ *   - Only updates rows where payload->>'page_text' = '' (never overwrites existing text)
+ *   - Only uses pdf pages where length(trim(text)) >= minPdfTextLength (default 25)
+ *   - Sets source.extractor = "worker.pdf", page_type = "pdf_text"
+ *   - Sets quality_flags.used_pdf_text = true, page_text_empty = false
+ */
+export async function enrichDpuWithEmbeddedPdfText(
+	pool: Pool,
+	args: {
+		documentId?: string;
+		dealId?: string;
+		pageStart?: number;
+		pageEnd?: number;
+		version?: string;
+		/** Minimum trimmed char count for PDF page text to be used (default: 25) */
+		minPdfTextLength?: number;
+	}
+): Promise<{ enriched: number }> {
+	const version = (args.version ?? "page_understanding_v1").trim();
+	const minLen =
+		typeof args.minPdfTextLength === "number" && Number.isFinite(args.minPdfTextLength)
+			? Math.max(1, Math.floor(args.minPdfTextLength))
+			: 25;
+	const hasDocumentId = typeof args.documentId === "string" && args.documentId.trim().length > 0;
+	const hasDealId = !hasDocumentId && typeof args.dealId === "string" && args.dealId.trim().length > 0;
+	if (!hasDocumentId && !hasDealId) return { enriched: 0 };
+
+	// Patch page_text, normalized_text, text_blocks.text_snippet, page_type, source.extractor,
+	// and quality_flags in a single jsonb expression. The || merge at the top level replaces
+	// quality_flags with the original flags augmented by used_pdf_text=true, page_text_empty=false.
+	const jsonbSetChain = [
+		`jsonb_set(`,
+		`  jsonb_set(`,
+		`    jsonb_set(`,
+		`      jsonb_set(`,
+		`        jsonb_set(`,
+		`          dpu.payload,`,
+		`          '{page_text}', to_jsonb(pp.pdf_text)`,
+		`        ),`,
+		`        '{normalized_text}', to_jsonb(pp.pdf_text)`,
+		`      ),`,
+		`      '{text_blocks,text_snippet}', to_jsonb(LEFT(pp.pdf_text, 900))`,
+		`    ),`,
+		`    '{page_type}', '"pdf_text"'::jsonb`,
+		`  ),`,
+		`  '{source,extractor}', '"worker.pdf"'::jsonb`,
+		`) || jsonb_build_object(`,
+		`  'quality_flags',`,
+		`  COALESCE(dpu.payload->'quality_flags', '{}'::jsonb)`,
+		`    || '{"used_pdf_text": true, "page_text_empty": false}'::jsonb`,
+		`)`,
+	].join("\n\t\t");
+
+	let sql: string;
+	let queryParams: Array<string | number>;
+
+	if (hasDocumentId) {
+		const docId = args.documentId!.trim();
+		const pageStart =
+			typeof args.pageStart === "number" && Number.isFinite(args.pageStart)
+				? Math.max(0, Math.floor(args.pageStart))
+				: 0;
+		const pageEndRaw =
+			typeof args.pageEnd === "number" && Number.isFinite(args.pageEnd)
+				? Math.floor(args.pageEnd)
+				: null;
+		const hasRange = pageEndRaw !== null && pageEndRaw > pageStart;
+		const versionParam = hasRange ? "$5" : "$3";
+		sql = `WITH pdf_pages AS (
+	SELECT
+		d.id AS document_id,
+		(p.ordinality - 1)::int AS page_index,
+		NULLIF(BTRIM(COALESCE(p.value->>'text', '')), '') AS pdf_text
+	  FROM public.documents d,
+	  jsonb_array_elements(COALESCE(d.full_content->'pages', '[]'::jsonb)) WITH ORDINALITY AS p(value, ordinality)
+	 WHERE d.id = $1::uuid
+	   AND length(BTRIM(COALESCE(p.value->>'text', ''))) >= $2::int${hasRange ? `
+	   AND (p.ordinality - 1) >= $3::int
+	   AND (p.ordinality - 1) < $4::int` : ""}
+),
+updated AS (
+	UPDATE public.document_page_understanding dpu
+	  SET
+		payload = ${jsonbSetChain},
+		updated_at = now()
+	  FROM pdf_pages pp
+	 WHERE dpu.document_id = pp.document_id
+	   AND dpu.page_index = pp.page_index
+	   AND dpu.version = ${versionParam}::text
+	   AND COALESCE(dpu.payload->>'page_text', '') = ''
+	RETURNING 1
+)
+SELECT COUNT(*)::bigint AS enriched FROM updated;`;
+		queryParams = hasRange
+			? [docId, minLen, pageStart, pageEndRaw!, version]
+			: [docId, minLen, version];
+	} else {
+		const dealId = args.dealId!.trim();
+		sql = `WITH pdf_pages AS (
+	SELECT
+		d.id AS document_id,
+		(p.ordinality - 1)::int AS page_index,
+		NULLIF(BTRIM(COALESCE(p.value->>'text', '')), '') AS pdf_text
+	  FROM public.documents d,
+	  jsonb_array_elements(COALESCE(d.full_content->'pages', '[]'::jsonb)) WITH ORDINALITY AS p(value, ordinality)
+	 WHERE d.deal_id = $1::uuid
+	   AND length(BTRIM(COALESCE(p.value->>'text', ''))) >= $2::int
+),
+updated AS (
+	UPDATE public.document_page_understanding dpu
+	  SET
+		payload = ${jsonbSetChain},
+		updated_at = now()
+	  FROM pdf_pages pp
+	 WHERE dpu.document_id = pp.document_id
+	   AND dpu.page_index = pp.page_index
+	   AND dpu.version = $3::text
+	   AND COALESCE(dpu.payload->>'page_text', '') = ''
+	RETURNING 1
+)
+SELECT COUNT(*)::bigint AS enriched FROM updated;`;
+		queryParams = [dealId, minLen, version];
+	}
+
+	try {
+		const { rows } = await pool.query<{ enriched: string | number }>(sql, queryParams);
+		const raw = rows?.[0]?.enriched ?? 0;
+		const n = typeof raw === "string" ? Number.parseInt(raw, 10) : Number(raw);
+		return { enriched: Number.isFinite(n) ? n : 0 };
+	} catch (err: any) {
+		if (isMissingTableError(err)) return { enriched: 0 };
 		throw err;
 	}
 }

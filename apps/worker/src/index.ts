@@ -55,6 +55,8 @@ import {
 	buildExtractVisualsExtractionMetadataPatchV1,
 	buildExtractVisualsPageSummaryV1,
 	computeExtractVisualsOutcomeStatusV1,
+	shouldSkipExtractVisualsPage,
+	isAuditVisionFailure,
 	buildDeepScanExtractionMetadataPatch,
 	buildDeepScanPageSummaryV1,
 	computeDeepScanOutcomeStatus,
@@ -5645,39 +5647,118 @@ registerWorker("extract_visuals", async (job: Job) => {
 
 			// If we've already extracted this page for this extractor version, don't re-run.
 			// This prevents repeated OCR/vision-understanding passes on the same slide across extractions.
+			// IMPORTANT: We require a visual_extractions row to confirm OCR/vision actually ran.
+			// A visual_assets row alone is NOT sufficient — it can exist when vision was skipped
+			// (e.g., audit status="skipped", reason="vision_unavailable"). In that case we must
+			// re-attempt so that visual_extractions rows are produced for downstream evidence.
 			if (!forceReextract && !forceOcr) {
-				try {
-					const { rows } = await pool.query(
-						`
-							SELECT 1
-							  FROM visual_assets va
-							 WHERE va.document_id = $1
-							   AND va.page_index = $2
-							   AND va.extractor_version = $3
-							 LIMIT 1
-						`,
-						[sanitizeText(docId), i, sanitizeText(pageExtractorVersion)]
-					);
-					if ((rows?.length ?? 0) > 0) {
-						pagesSkippedExisting += 1;
-						docPagesSkippedExisting += 1;
-						docPagesSkipped += 1;
-						pagesCompletedInJob += 1;
-						try {
-							console.log(
-								JSON.stringify({
-									event: "EXTRACT_VISUALS_PAGE_SKIPPED",
-									job_id: job.id ? String(job.id) : null,
-									deal_id: derivedDealId ?? null,
-									document_id: docId,
-									page_index: i,
-									reason_code: "already_has_assets",
-									ts: new Date().toISOString(),
-								})
-							);
-						} catch {
-							// ignore
+				// If the doc-level audit recorded a skipped or failed extraction, treat every page
+				// as not-extracted regardless of what visual_assets contains. This covers the case
+				// where vision was unavailable when assets were first written.
+				// Pull all three audit signals for robust failure detection.
+				const docAuditStatus =
+					typeof existingVisualExtraction?.status === "string"
+						? existingVisualExtraction.status
+						: null;
+				const docAuditReason =
+					typeof existingVisualExtraction?.reason === "string"
+						? existingVisualExtraction.reason
+						: null;
+				const docAuditHealthStatus =
+					typeof existingVisualExtraction?.health_status === "number"
+						? existingVisualExtraction.health_status
+						: null;
+
+				// Fast-path: if the audit already tells us vision failed, bypass the DB query.
+				// isAuditVisionFailure covers status strings, reason substrings, and HTTP codes.
+				const docAuditFailed = isAuditVisionFailure({
+					status: docAuditStatus,
+					reason: docAuditReason,
+					healthStatus: docAuditHealthStatus,
+				});
+
+				if (!docAuditFailed) {
+					try {
+						// Query returns one aggregate row with two boolean flags:
+						//   has_va  – a visual_assets row exists for this page + extractor version
+						//   has_ve  – a visual_extractions row exists (OCR/vision actually ran)
+						//
+						// Using LEFT JOIN + aggregate lets us fire the canary log when va exists
+						// but ve is absent — the exact signature of the old bug.
+						//
+						// Extractor-version aware: both va and ve_row are filtered on $3 so a
+						// page reprocessed with a newer extractor is never incorrectly skipped.
+						const { rows } = await pool.query(
+							`
+								SELECT
+								  (COUNT(va.id) > 0)               AS has_va,
+								  (COUNT(ve_row.visual_asset_id) > 0) AS has_ve
+								  FROM visual_assets va
+								  LEFT JOIN visual_extractions ve_row
+								    ON ve_row.visual_asset_id = va.id
+								   AND ve_row.extractor_version = $3
+								 WHERE va.document_id = $1
+								   AND va.page_index = $2
+								   AND va.extractor_version = $3
+							`,
+							[sanitizeText(docId), i, sanitizeText(pageExtractorVersion)]
+						);
+						const hasVisualAssetRow      = rows[0]?.has_va === true;
+						const hasVisualExtractionRow = rows[0]?.has_ve === true;
+
+						// Canary guardrail: log the old-bug signature so it is detectable in
+						// production logs even if somehow the fix regresses. This event MUST
+						// never continue to a `skip` decision (the gate below prevents it).
+						if (hasVisualAssetRow && !hasVisualExtractionRow) {
+							try {
+								console.log(
+									JSON.stringify({
+										event: "EXTRACT_VISUALS_SKIPPED_WITHOUT_VE_ROW",
+										job_id: job.id ? String(job.id) : null,
+										deal_id: derivedDealId ?? null,
+										document_id: docId,
+										page_index: i,
+										extractor_version: pageExtractorVersion,
+										doc_audit_status: docAuditStatus,
+										doc_audit_reason: docAuditReason,
+										note: "visual_assets row exists but visual_extractions absent — will NOT skip (regression guard)",
+										ts: new Date().toISOString(),
+									})
+								);
+							} catch {
+								// ignore
+							}
 						}
+
+						if (shouldSkipExtractVisualsPage({
+							docAuditStatus,
+							docAuditReason,
+							docAuditHealthStatus,
+							hasVisualExtractionRow,
+						})) {
+							pagesSkippedExisting += 1;
+							docPagesSkippedExisting += 1;
+							docPagesSkipped += 1;
+							pagesCompletedInJob += 1;
+							try {
+								console.log(
+									JSON.stringify({
+										event: "EXTRACT_VISUALS_PAGE_SKIPPED",
+										job_id: job.id ? String(job.id) : null,
+										deal_id: derivedDealId ?? null,
+										document_id: docId,
+										page_index: i,
+										reason_code: "already_has_visual_extraction",
+										has_visual_extractions: hasVisualExtractionRow,
+										extractor_version: pageExtractorVersion,
+										doc_audit_status: docAuditStatus,
+										doc_audit_reason: docAuditReason,
+										ts: new Date().toISOString(),
+									})
+								);
+							} catch {
+								// ignore
+							}
 						const nowMs = Date.now();
 						const shouldReport =
 							(pagesCompletedInJob - lastReportedCompleted) >= 3 ||
@@ -5710,6 +5791,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 						`[extract_visuals] existing-page precheck failed doc=${docId} page=${i}: ${err instanceof Error ? err.message : String(err)}`
 					);
 				}
+				} // end if (!docAuditFailed)
 			}
 
 				const dealIdForVision: string | null =
@@ -7497,14 +7579,19 @@ registerWorker("deep_scan_visuals", async (job: Job) => {
 			pagesConsidered += 1;
 			const image_uri = uris[pageIndex];
 
-			// Strict rerun guard: if this page already has a visual_assets row for the canonical
-			// extractor version, do not call vision again (unless force_reextract is true).
+			// Strict rerun guard: only skip this page if BOTH a visual_assets row AND a
+			// visual_extractions row exist for it. A visual_assets row alone is insufficient —
+			// it can be present even when OCR/vision was skipped (e.g., vision_unavailable),
+			// leaving visual_extractions empty. In that case, we must re-attempt.
 			if (!forceReextract) {
 				try {
 					const { rows } = await pool.query(
 						`
 							SELECT 1
 							  FROM visual_assets va
+							  JOIN visual_extractions ve_row
+							    ON ve_row.visual_asset_id = va.id
+							   AND ve_row.extractor_version = $3
 							 WHERE va.document_id = $1
 							   AND va.page_index = $2
 							   AND va.extractor_version = $3

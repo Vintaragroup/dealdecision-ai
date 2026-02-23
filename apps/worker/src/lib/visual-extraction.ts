@@ -1712,6 +1712,77 @@ export function buildExtractVisualsExtractionMetadataPatchV1(params: {
 	};
 }
 
+/**
+ * Determines whether an `extract_visuals` page-loop iteration should skip re-processing.
+ *
+ * A page MUST NOT be skipped unless BOTH of these conditions hold:
+ *   1. The doc-level audit status does NOT indicate a prior skipped/failed extraction.
+ *   2. A `visual_extractions` row already exists, confirming OCR/vision actually ran.
+ *
+ * Why `visual_assets` alone is insufficient:
+ *   A `visual_assets` row can be written even when vision is unavailable (audit.status=
+ *   "skipped" / "vision_unavailable"), which leaves `visual_extractions` empty. Downstream
+ *   evidence pipelines (materialize-evidence, governed overlay) require `visual_extractions`
+ *   rows — so pages in this state must be re-attempted on every rerun until they succeed.
+ *
+ * @param docAuditStatus      - value of `extraction_metadata.visual_extraction.status`, or null
+ * @param docAuditReason      - optional `reason` field from the same audit object
+ * @param docAuditHealthStatus - optional `health_status` (HTTP code) recorded during the run
+ * @param hasVisualExtractionRow - whether a `visual_extractions` row exists for this page
+ * @returns true  → caller should skip this page (already fully extracted)
+ *          false → caller must attempt extraction for this page
+ */
+
+/**
+ * Robustly determine whether a doc-level audit object indicates that vision/OCR
+ * extraction previously failed or was unavailable.
+ *
+ * Coverage:
+ *   - `status` is one of "skipped" | "failed" | "vision_unavailable"
+ *   - `reason` contains the substring "vision_unavailable" or "health_check_failed"
+ *   - `healthStatus` (HTTP response code from the vision worker) is ≥ 400
+ *
+ * All three axes are checked independently so that partial audit records (e.g.
+ * only reason recorded, no status) are still caught.
+ */
+export function isAuditVisionFailure(params: {
+	status: string | null | undefined;
+	reason?: string | null | undefined;
+	healthStatus?: number | null | undefined;
+}): boolean {
+	const { status, reason, healthStatus } = params;
+
+	// 1. Canonical status strings.
+	const FAILURE_STATUSES = new Set(["skipped", "failed", "vision_unavailable"]);
+	if (typeof status === "string" && FAILURE_STATUSES.has(status)) return true;
+
+	// 2. Reason substrings (handles free-form reason fields from varied code paths).
+	if (typeof reason === "string") {
+		const r = reason.toLowerCase();
+		if (r.includes("vision_unavailable") || r.includes("health_check_failed")) return true;
+	}
+
+	// 3. HTTP health-check status from vision worker (≥400 = server or client error).
+	if (typeof healthStatus === "number" && Number.isFinite(healthStatus) && healthStatus >= 400) return true;
+
+	return false;
+}
+
+export function shouldSkipExtractVisualsPage(params: {
+	docAuditStatus: string | null | undefined;
+	/** Optional reason field from the same audit object — enables substring-based failure detection. */
+	docAuditReason?: string | null | undefined;
+	/** Optional HTTP status code from the vision-worker health check recorded in the audit. */
+	docAuditHealthStatus?: number | null | undefined;
+	hasVisualExtractionRow: boolean;
+}): boolean {
+	const { docAuditStatus, docAuditReason, docAuditHealthStatus, hasVisualExtractionRow } = params;
+	if (isAuditVisionFailure({ status: docAuditStatus, reason: docAuditReason, healthStatus: docAuditHealthStatus })) {
+		return false; // must re-attempt regardless of DB state
+	}
+	return hasVisualExtractionRow; // skip only when extraction row is confirmed
+}
+
 type ExcelXlsxExtractRequest = {
 	document_id: string;
 	xlsx_b64: string;

@@ -637,7 +637,7 @@ describe("Stage 2 – Clean Value Extraction", () => {
 		expect(valueMatch![1]).toBe("€5.6M");
 	});
 
-	it("raise_amount value is '$1.5MM' (not full sentence) for Palm-style text", async () => {
+	it("raise_amount value is '$1.5M' (normalized MM→M) for Palm-style text", async () => {
 		mockPool = makeSinglePagePool("Equity $1.5MM raise on a $6MM Valuation.");
 
 		await generateInvestorInsightsProcessor(makeJob());
@@ -648,10 +648,10 @@ describe("Stage 2 – Clean Value Extraction", () => {
 		expect(valueLine).toBeTruthy();
 		const valueMatch = /\| value="([^"]+)"/.exec(valueLine!);
 		expect(valueMatch).toBeTruthy();
-		expect(valueMatch![1]).toBe("$1.5MM");
+		expect(valueMatch![1]).toBe("$1.5M");
 	});
 
-	it("valuation_post value is '$6MM' (money-only) for Palm-style text", async () => {
+	it("valuation_post value is '$6M' (normalized MM→M) for Palm-style text", async () => {
 		mockPool = makeSinglePagePool("$6MM Valuation for this seed round.");
 
 		await generateInvestorInsightsProcessor(makeJob());
@@ -662,7 +662,7 @@ describe("Stage 2 – Clean Value Extraction", () => {
 		expect(valueLine).toBeTruthy();
 		const valueMatch = /\| value="([^"]+)"/.exec(valueLine!);
 		expect(valueMatch).toBeTruthy();
-		expect(valueMatch![1]).toBe("$6MM");
+		expect(valueMatch![1]).toBe("$6M");
 	});
 
 	it("clean value fields still carry Computable status and evidence ref", async () => {

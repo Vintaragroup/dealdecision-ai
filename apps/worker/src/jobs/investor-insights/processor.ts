@@ -33,6 +33,7 @@ import {
 } from "../../contracts/investor-insights/validators";
 import { getPool } from "../../lib/db";
 import { evaluateGates } from "./gates";
+import { normalizeForExtraction, type NormalizationEvent } from "./normalize";
 
 // ─── Binding constants (version-pins.md) ───────────────────────────────────────
 
@@ -348,9 +349,10 @@ function buildDeterministicOnlySections(
 	gateState: GateState,
 	coverage: CoverageSnapshot,
 	insightSlotsSections: Array<RenderPackage["sections"][number]>,
-	phase2Sections: Array<RenderPackage["sections"][number]>
+	phase2Sections: Array<RenderPackage["sections"][number]>,
+	thesisSection: RenderPackage["sections"][number] | null
 ): RenderPackage["sections"] {
-	return [
+	const sections: RenderPackage["sections"] = [
 		{
 			key: "gate_state",
 			title: "Readiness Gates",
@@ -372,8 +374,10 @@ function buildDeterministicOnlySections(
 		},
 		...insightSlotsSections,
 		...phase2Sections,
-		buildCoverageSnapshotSection(coverage, gateState),
 	];
+	if (thesisSection) sections.push(thesisSection);
+	sections.push(buildCoverageSnapshotSection(coverage, gateState));
+	return sections;
 }
 
 /**
@@ -384,9 +388,10 @@ function buildG3OnlyFailSections(
 	gateState: GateState,
 	coverage: CoverageSnapshot,
 	insightSlotsSections: Array<RenderPackage["sections"][number]>,
-	phase2Sections: Array<RenderPackage["sections"][number]>
+	phase2Sections: Array<RenderPackage["sections"][number]>,
+	thesisSection: RenderPackage["sections"][number] | null
 ): RenderPackage["sections"] {
-	return [
+	const sections: RenderPackage["sections"] = [
 		{
 			key: "gate_state",
 			title: "Readiness Gates",
@@ -414,8 +419,10 @@ function buildG3OnlyFailSections(
 		},
 		...insightSlotsSections,
 		...phase2Sections,
-		buildCoverageSnapshotSection(coverage, gateState),
 	];
+	if (thesisSection) sections.push(thesisSection);
+	sections.push(buildCoverageSnapshotSection(coverage, gateState));
+	return sections;
 }
 // ─── Stage 1: Deterministic Insight Slots ───────────────────────────────────────
 
@@ -445,12 +452,19 @@ interface SlotResult {
 interface DpuPage {
 	document_id: string;
 	page_index: number;
+	/** Normalized OCR text — used by all detectors. */
 	text: string;
+	/** Original OCR output before normalization. */
+	text_raw: string;
+	/** Number of normalization transform events applied to this page. */
+	norm_events_count: number;
 }
 
 interface EvidenceSnippet {
 	id: string;
 	claim_text: string | null;
+	/** Normalized form of claim_text, or null when claim_text was empty/null. */
+	claim_text_norm: string | null;
 }
 
 interface DpuDiagnostics {
@@ -470,6 +484,8 @@ interface InsightSlotInputs {
 	/** Derived from G3 gate result. */
 	g3Passed: boolean;
 	dpuDiag: DpuDiagnostics;
+	/** All normalization transform events collected during data load. */
+	normEvents: NormalizationEvent[];
 }
 
 // ── Slot detection patterns (compile once) ───────────────────────────────────
@@ -543,6 +559,7 @@ async function loadInsightSlotInputs(
 	let evidenceSnippets: EvidenceSnippet[] = [];
 	let dpuLoadFailed = false;
 	const dpuDiag: DpuDiagnostics = { queryOk: false, rowCount: 0, usablePageCount: 0, sample: "n/a" };
+	const allNormEvents: NormalizationEvent[] = [];
 
 	try {
 		const { rows } = await pool.query<{ document_id: string; page_index: number; payload: unknown }>(
@@ -559,8 +576,17 @@ async function loadInsightSlotInputs(
 		dpuDiag.rowCount = rows.length;
 		dpuPages = rows
 			.map((r) => {
-				const text = extractDpuText(r.payload);
-				return text ? { document_id: r.document_id, page_index: r.page_index, text } : null;
+				const raw = extractDpuText(r.payload);
+				if (!raw) return null;
+				const norm = normalizeForExtraction(raw);
+				allNormEvents.push(...norm.events);
+				return {
+					document_id: r.document_id,
+					page_index: r.page_index,
+					text: norm.text,
+					text_raw: raw,
+					norm_events_count: norm.events.length,
+				};
 			})
 			.filter((p): p is DpuPage => p !== null);
 		dpuDiag.usablePageCount = dpuPages.length;
@@ -589,13 +615,18 @@ async function loadInsightSlotInputs(
 			[dealId]
 		)
 		.then(({ rows }) => {
-			evidenceSnippets = rows;
+			evidenceSnippets = rows.map((row) => {
+				if (!row.claim_text) return { ...row, claim_text_norm: null };
+				const norm = normalizeForExtraction(row.claim_text);
+				allNormEvents.push(...norm.events);
+				return { ...row, claim_text_norm: norm.text };
+			});
 		})
 		.catch(() => {
 			// Evidence snippets are supplemental; failure is non-fatal.
 		});
 
-	return { dpuPages, evidenceSnippets, dpuLoadFailed, g3Passed, dpuDiag };
+	return { dpuPages, evidenceSnippets, dpuLoadFailed, g3Passed, dpuDiag, normEvents: allNormEvents };
 }
 
 // ── Slot detectors ───────────────────────────────────────────────────────────
@@ -634,7 +665,7 @@ function detectInTextSources(
 	const dpuHit = detectInPages(dpuPages, pattern);
 	if (dpuHit) return dpuHit;
 	for (const ev of evidenceSnippets) {
-		const text = ev.claim_text ?? "";
+		const text = ev.claim_text_norm ?? ev.claim_text ?? "";
 		const m = pattern.exec(text);
 		if (m) {
 			const prefix = ev.id.replace(/-/g, "").slice(0, 8);
@@ -819,7 +850,49 @@ function buildSignalVisibilitySection(
 }
 
 /**
- * Return the insight_slots section plus optional DPU diagnostics and signal visibility sections.
+ * Dev-only section summarising OCR normalization events collected during data load.
+ * Omitted in production and when no transformations occurred.
+ */
+function buildNormalizationSummarySection(
+	inputs: InsightSlotInputs
+): RenderPackage["sections"][number] | null {
+	if (process.env["NODE_ENV"] === "production") return null;
+	if (inputs.normEvents.length === 0) return null;
+
+	const byRule = new Map<string, number>();
+	for (const ev of inputs.normEvents) {
+		byRule.set(ev.rule, (byRule.get(ev.rule) ?? 0) + 1);
+	}
+	const ruleLines = Array.from(byRule.entries())
+		.sort((a, b) => b[1] - a[1])
+		.map(([rule, count]) => `  ${rule}: ${count}`);
+
+	// Sample up to 5 events for quick inspection.
+	const samples = inputs.normEvents.slice(0, 5).map(
+		(ev) => `  [${ev.rule}] "${ev.before}" → "${ev.after}" | ctx: …${ev.context.slice(0, 60)}…`
+	);
+
+	const lines: string[] = [
+		"(dev-only) Omitted in production.",
+		`total_events: ${inputs.normEvents.length}`,
+		"--- events by rule ---",
+		...ruleLines,
+		"--- samples (first 5) ---",
+		...samples,
+	];
+
+	return {
+		key: "debug.normalization_summary",
+		title: "Debug \u2014 OCR Normalization Summary",
+		kind: "message",
+		body: lines.join("\n"),
+		fallback: "Normalization summary unavailable.",
+	};
+}
+
+/**
+ * Return the insight_slots section plus optional DPU diagnostics, signal visibility,
+ * and normalization summary sections.
  */
 function buildInsightSlotsSections(
 	dealId: string,
@@ -828,9 +901,11 @@ function buildInsightSlotsSections(
 	const slotsSection = buildInsightSlotsSection(inputs);
 	const diagSection = buildDpuDiagnosticsSection(dealId, inputs.dpuDiag);
 	const signalSection = buildSignalVisibilitySection(inputs);
+	const normSection = buildNormalizationSummarySection(inputs);
 	const sections: Array<RenderPackage["sections"][number]> = [slotsSection];
 	if (diagSection) sections.push(diagSection);
 	if (signalSection) sections.push(signalSection);
+	if (normSection) sections.push(normSection);
 	return sections;
 }
 
@@ -1025,6 +1100,28 @@ interface CompletenessRow {
 interface Phase2Result {
 	fields: CanonicalField[];
 	conflicts: ConflictEntry[];
+	completeness: CompletenessRow[];
+}
+
+/**
+ * Structured inputs for the deterministic investor thesis stub (Phase 3.0).
+ * Derived entirely from canonical fields + completeness — no LLM required.
+ */
+export interface ThesisInputsV1 {
+	raise_amount: string | null;
+	raise_round: string | null;
+	raise_instrument: string | null;
+	valuation_pre: string | null;
+	valuation_post: string | null;
+	tam_value: string | null;
+	mrr_value: string | null;
+	arr_value: string | null;
+	revenue_value: string | null;
+	/** Fraction of canonical fields that are Computable (0–1). */
+	coverage_ratio: number;
+	/** True when at least one cross-page field conflict was detected. */
+	conflicts_present: boolean;
+	/** Per-category completeness rows from Phase 2. */
 	completeness: CompletenessRow[];
 }
 
@@ -1300,6 +1397,104 @@ function buildPhase2Sections(
 	if (conflictsSection) sections.push(conflictsSection);
 	sections.push(buildCompletenessSummarySection(result));
 	return sections;
+}
+
+// ─── Phase 3.0: Deterministic Investor Thesis Stub ───────────────────────────
+
+/**
+ * Map Phase 2 canonical fields and completeness into ThesisInputsV1.
+ * Calls extractPhase2Result — pure/cheap (no DB).
+ */
+function buildThesisInputs(inputs: InsightSlotInputs): ThesisInputsV1 {
+	const result = extractPhase2Result(inputs);
+	const get = (field: string): string | null =>
+		result.fields.find((f) => f.field === field)?.value ?? null;
+
+	const computable = result.fields.filter((f) => f.computability === "Computable").length;
+	const total = result.fields.length;
+	const coverage_ratio = total > 0 ? computable / total : 0;
+
+	return {
+		raise_amount: get("raise_amount"),
+		raise_round: get("raise_round"),
+		raise_instrument: get("raise_instrument"),
+		valuation_pre: get("valuation_pre"),
+		valuation_post: get("valuation_post"),
+		tam_value: get("tam_value"),
+		mrr_value: get("mrr_value"),
+		arr_value: get("arr_value"),
+		revenue_value: get("revenue_value"),
+		coverage_ratio,
+		conflicts_present: result.conflicts.length > 0,
+		completeness: result.completeness,
+	};
+}
+
+/**
+ * Determine confidence cap based on coverage, conflicts, and missing-category count.
+ *
+ * Rules (evaluated in order):
+ *   1. coverage_ratio < 0.5             → Low
+ *   2. ≥3 categories Missing            → Low
+ *   3. conflicts_present OR ≥2 Missing  → Moderate ("max" cap: cannot be High)
+ *   4. else                             → High
+ */
+export function computeConfidenceCap(t: ThesisInputsV1): "High" | "Moderate" | "Low" {
+	if (t.coverage_ratio < 0.5) return "Low";
+	const missingCount = t.completeness.filter((c) => c.status === "Missing").length;
+	if (missingCount >= 3) return "Low";
+	if (t.conflicts_present || missingCount >= 2) return "Moderate";
+	return "High";
+}
+
+/** Deterministic open question for each Missing completeness category. */
+const THESIS_OPEN_QUESTIONS: Record<string, string> = {
+	raise_terms:    "What is the target raise amount, round type, and instrument?",
+	valuation_terms: "What is the pre/post-money valuation or SAFE cap?",
+	use_of_funds:   "How will the proceeds be allocated across the business?",
+	market_claims:  "What is the total addressable market (TAM) and target segment size?",
+	traction_signal: "What are the current revenue or MRR/ARR metrics and customer count?",
+};
+
+/**
+ * Build the investor_thesis section — a deterministic stub derived from Phase 2 data.
+ * Present in deterministic_only packages only; no LLM required.
+ */
+export function buildInvestorThesisStubSection(
+	thesisInputs: ThesisInputsV1
+): RenderPackage["sections"][number] {
+	const cap = computeConfidenceCap(thesisInputs);
+
+	const disclosureLines = thesisInputs.completeness.map(
+		(c) => `  ${c.category}: ${c.status}`
+	);
+
+	const missingCategories = thesisInputs.completeness
+		.filter((c) => c.status === "Missing")
+		.map((c) => c.category);
+
+	const openQuestionLines = missingCategories.map(
+		(cat) => `  - ${THESIS_OPEN_QUESTIONS[cat] ?? `No data available for ${cat}.`}`
+	);
+
+	const lines: string[] = [
+		`Confidence Cap: ${cap}`,
+		"Disclosure Summary:",
+		...disclosureLines,
+	];
+
+	if (openQuestionLines.length > 0) {
+		lines.push("Open Questions:");
+		lines.push(...openQuestionLines);
+	}
+
+	return {
+		key: "investor_thesis",
+		title: "Investor Thesis (Deterministic Stub)",
+		kind: "message",
+		body: lines.join("\n"),
+		fallback: "Investor thesis stub unavailable.",
+	};
 }
 
 // ─── G3 diagnostic section (dev/staging only) ───────────────────────────────
@@ -1639,8 +1834,11 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		]);
 		const insightSlotsSections = buildInsightSlotsSections(dealId, insightSlotInputs);
 		const phase2Sections = buildPhase2Sections(insightSlotInputs);
+		const thesisSection = g3OnlyFail
+			? buildInvestorThesisStubSection(buildThesisInputs(insightSlotInputs))
+			: null;
 		const sections = g3OnlyFail
-			? buildG3OnlyFailSections(gateState, coverage, insightSlotsSections, phase2Sections)
+			? buildG3OnlyFailSections(gateState, coverage, insightSlotsSections, phase2Sections, thesisSection)
 			: buildGateFailedSections(gateState, coverage, insightSlotsSections, phase2Sections);
 
 		// Append diagnostics for any structural G3 failure (QUERY_FAILED is excluded
@@ -1784,7 +1982,8 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	]);
 	const insightSlotsSections = buildInsightSlotsSections(dealId, insightSlotInputs);
 	const phase2Sections = buildPhase2Sections(insightSlotInputs);
-	const sections = buildDeterministicOnlySections(gateState, coverage, insightSlotsSections, phase2Sections);
+	const thesisSection = buildInvestorThesisStubSection(buildThesisInputs(insightSlotInputs));
+	const sections = buildDeterministicOnlySections(gateState, coverage, insightSlotsSections, phase2Sections, thesisSection);
 	const renderPackage = buildRenderPackage({
 		dealId,
 		status: "deterministic_only",

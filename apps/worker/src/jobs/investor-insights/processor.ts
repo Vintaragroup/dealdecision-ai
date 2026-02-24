@@ -778,18 +778,41 @@ const P2_REASON = {
 // ── Phase 2 sub-field patterns (compile once) ────────────────────────────────
 
 /**
+ * Shared money fragment – matches optional "$", digits (with optional commas),
+ * optional decimal part, and an optional magnitude suffix.
+ * Compiled into RegExp patterns below.
+ * Examples that MUST match: "$1.5MM", "$6MM", "$800,000", "1.5MM", "$1.5 million"
+ */
+const MONEY_FRAGMENT = String.raw`\$?[\d,]+(?:\.\d+)?(?:\s*(?:MM|BB|[KMBT]|thousand|million|billion|trillion)\b)?`;
+
+/**
  * raise_amount: dollar amount anchored to a fundraising verb or round type.
  * Form A: "Raising $2M seed", "raise $5M Series A", "seeking $1M"
- * Form B: "$2M seed round", "$3M bridge raise"
+ * Form B: "$1.5MM raise", "Equity $1.5MM raise on a $6MM Valuation"
+ * Form C: "Capital Raise ... $1.5MM"
+ * Form D: "$2M seed round", "$3M bridge raise"
  */
-const RAISE_AMOUNT_PATTERN =
-	/(?:rais(?:e|ing|ed)|seeking)\s+\$[\d,.]+\s*[BMKbmk]?(?:\s*(?:million|billion|thousand))?|\$[\d,.]+\s*[BMKbmk]?(?:\s*(?:million|billion|thousand))?\s+(?:seed|series\s+[a-cA-C]|pre[-\s]seed|bridge)\s+(?:round|raise|funding)?/i;
+const RAISE_AMOUNT_PATTERN = new RegExp(
+	// Form A: raise-verb or "seeking" immediately followed by money
+	`(?:rais(?:e|ing|ed)|seeking)\\s+${MONEY_FRAGMENT}` +
+	// Form B: money then raise-word within ~40 chars (handles "Equity $1.5MM raise")
+	`|${MONEY_FRAGMENT}[^$\\n]{0,40}?\\brais(?:e|ing|ed)\\b` +
+	// Form C: "capital raise" header then money within ~40 chars
+	`|\\bcapital\\s+raise\\b[^$\\n]{0,40}?${MONEY_FRAGMENT}` +
+	// Form D: money immediately before a round-type keyword
+	`|${MONEY_FRAGMENT}\\s+(?:seed|series\\s+[a-cA-C]|pre[-\\s]seed|bridge)\\s*(?:round|raise|funding)?`,
+	"i"
+);
 
 /** raise_round: seed, series A/B/C, pre-seed, bridge, angel */
 const RAISE_ROUND_PATTERN = /\b(seed|series\s+[a-cA-C]|pre[-\s]seed|bridge|angel)\b/i;
 
-/** raise_instrument: SAFE, convertible note, priced round, equity round */
-const RAISE_INSTRUMENT_PATTERN = /\b(SAFE|convertible\s+note|priced\s+round|equity\s+round)\b/i;
+/**
+ * raise_instrument: SAFE, convertible note, priced round, equity (round), common/preferred stock.
+ * "Equity" alone is treated as Computable (Palm deck format: "Capital Raise. Equity").
+ */
+const RAISE_INSTRUMENT_PATTERN =
+	/\b(SAFE|convertible\s+note|priced\s+round|equity(?:\s+round)?|common(?:\s+(?:stock|equity|shares?))?|preferred(?:\s+(?:stock|equity|shares?))?)\b/i;
 
 /** raise_cap: "cap $X", "valuation cap $X", "SAFE cap $X", "cap of $X" */
 const RAISE_CAP_PATTERN =
@@ -802,9 +825,21 @@ const RAISE_DISCOUNT_PATTERN = /\b(\d+)%\s+discount\b/i;
 const VALUATION_PRE_PATTERN =
 	/pre[-\s]money\s+(?:valuation\s+)?(?:of\s+|is\s+|at\s+)?\$[\d,.]+\s*[BMKbmk]?/i;
 
-/** valuation_post: post-money valuation with dollar figure */
-const VALUATION_POST_PATTERN =
-	/post[-\s]money\s+(?:valuation\s+)?(?:of\s+|is\s+|at\s+)?\$[\d,.]+\s*[BMKbmk]?/i;
+/**
+ * valuation_post: post-money valuation with dollar figure, or bare "$XMM Valuation".
+ * Form A: "post-money valuation $10M", "post-money $10M"
+ * Form B: "$6MM Valuation", "$6MM post-money valuation" (money then "valuation" within ~30 chars)
+ * Form C: "valuation $6MM" (valuation keyword then money within ~20 chars)
+ */
+const VALUATION_POST_PATTERN = new RegExp(
+	// Form A: explicit post-money prefix (classic)
+	`post[-\\s]money\\s+(?:valuation\\s+)?(?:of\\s+|is\\s+|at\\s+)?${MONEY_FRAGMENT}` +
+	// Form B: money then "valuation" keyword within ~30 chars
+	`|${MONEY_FRAGMENT}[^$\\n]{0,30}?\\bvaluation\\b` +
+	// Form C: "valuation" keyword then money within ~20 chars
+	`|\\bvaluation\\b[^$\\n]{0,20}?${MONEY_FRAGMENT}`,
+	"i"
+);
 
 /** valuation_safe_cap: standalone "safe cap $X" — does not require raise context */
 const VALUATION_SAFE_CAP_PATTERN =
@@ -885,11 +920,24 @@ interface Phase2Result {
 
 /**
  * Normalize a dollar figure within a snippet for conflict deduplication.
- * "$2M" and "$2m" will both normalize to "$2m"; "$5M" → "$5m" (distinct).
+ * "$2M" and "$2m" → "$2m"; "$1.5MM" and "$1.5M" → "$1.5m" (no false conflict);
+ * "$1.5 million" → "$1.5m". "$5M" → "$5m" (still distinct from "$2m").
  */
 function normalizeAmountForConflict(s: string): string {
-	const m = /\$[\d,.]+\s*[BMKbmkTt]?/i.exec(s);
-	return m ? m[0].replace(/\s/g, "").toLowerCase() : s.trim().toLowerCase().slice(0, 30);
+	// Capture double-letter suffixes (MM, BB) and word suffixes (million, billion, etc.)
+	const m = /\$[\d,]+(?:\.\d+)?(?:\s*(?:MM|BB|[BMKbmkTt]|million|billion|thousand|trillion))?/i.exec(s);
+	if (!m) return s.trim().toLowerCase().slice(0, 30);
+	return m[0]
+		.replace(/\s/g, "")
+		.toLowerCase()
+		// Collapse double-letter magnitude suffixes to single (mm→m, bb→b)
+		.replace(/mm$/, "m")
+		.replace(/bb$/, "b")
+		// Collapse word magnitude suffixes to single letter
+		.replace(/million$/, "m")
+		.replace(/billion$/, "b")
+		.replace(/thousand$/, "k")
+		.replace(/trillion$/, "t");
 }
 
 /**

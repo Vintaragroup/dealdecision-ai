@@ -499,3 +499,60 @@ describe("Stage 2 – Section Ordering", () => {
 		expect(conflictsIdx).toBeLessThan(csIdx);
 	});
 });
+
+// ── Tests: Palm deck formats ──────────────────────────────────────────────────
+
+describe("Stage 2 – Palm Deck Formats", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockEvaluateGates.mockResolvedValue(g3OnlyFailGateState());
+	});
+
+	it("raise_amount is Computable from 'Equity $1.5MM raise on a $6MM Valuation.'", async () => {
+		mockPool = makeSinglePagePool("Equity $1.5MM raise on a $6MM Valuation.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf).toBeTruthy();
+		expect(cf.body).toMatch(/field=raise_amount \| computability=Computable/);
+		expect(cf.body).toMatch(/evidence=dpu:doc:[0-9a-f]{8}:page:\d+/);
+	});
+
+	it("valuation_post is Computable from '$6MM Valuation'", async () => {
+		mockPool = makeSinglePagePool("We are raising $1.5MM on a $6MM Valuation.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf).toBeTruthy();
+		expect(cf.body).toMatch(/field=valuation_post \| computability=Computable/);
+		expect(cf.body).toMatch(/evidence=dpu:doc:[0-9a-f]{8}:page:\d+/);
+	});
+
+	it("raise_instrument is Computable from 'Capital Raise. Equity'", async () => {
+		mockPool = makeSinglePagePool("Capital Raise. Equity");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf).toBeTruthy();
+		expect(cf.body).toMatch(/field=raise_instrument \| computability=Computable/);
+	});
+
+	it("no conflict between '$1.5MM' and '$1.5M' after normalization", async () => {
+		mockPool = makePool([
+			{ docId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890", pageIndex: 1, text: "Raising $1.5MM seed round." },
+			{ docId: "b2c3d4e5-f6a7-8901-bcde-f12345678901", pageIndex: 5, text: "Seeking $1.5M seed capital." },
+		]);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const conflictsSection = pkg.sections.find((s: any) => s.key === "conflicts");
+		expect(conflictsSection).toBeUndefined();
+	});
+});

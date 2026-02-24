@@ -26,6 +26,10 @@ function shouldUseSsl(cs: string): boolean {
 }
 
 let shuttingDown = false;
+// Rate-limit the "closePool called while active" warning to at most once per minute
+// so a misbehaving caller can't flood the log.
+let lastClosePoolWarnMs = 0;
+const CLOSEPOOL_WARN_INTERVAL_MS = 60_000;
 
 export function markDbShuttingDown() {
   shuttingDown = true;
@@ -48,7 +52,19 @@ export function getPool() {
 // execution. Only close it as part of an explicit process shutdown.
 export async function closePool() {
   if (!shuttingDown) {
-    console.warn("[db] closePool() called while not shutting down; ignoring to avoid breaking active jobs");
+    const now = Date.now();
+    if (now - lastClosePoolWarnMs >= CLOSEPOOL_WARN_INTERVAL_MS) {
+      lastClosePoolWarnMs = now;
+      console.warn("[db] closePool() called while not shutting down; ignoring to avoid breaking active jobs");
+      if (process.env["NODE_ENV"] !== "production") {
+        console.error(
+          JSON.stringify({
+            event: "DB_CLOSEPOOL_CALLED_WHILE_ACTIVE",
+            stack: new Error().stack?.split("\n").slice(0, 8).join("\n") ?? null,
+          })
+        );
+      }
+    }
     return;
   }
   if (pool) {

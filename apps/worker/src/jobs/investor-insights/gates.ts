@@ -12,8 +12,8 @@
  */
 
 import type { Pool } from "pg";
+import { z } from "zod";
 import { type GateState, GateResultSchema } from "../../contracts/investor-insights/schemas";
-import type { z } from "zod";
 
 export type GateResult = z.infer<typeof GateResultSchema>;
 export interface GateContext {
@@ -119,26 +119,77 @@ async function evalG2(pool: Pool, dealId: string): Promise<GateResult> {
 }
 
 /**
- * G3 – Structured artifact present (visual_assets with structured_json).
- * Reason codes: GATE_STRUCTURED_JSON_MISSING, GATE_STRUCTURED_JSON_UNREADABLE
+ * G3 – Structured artifact present (visual_extractions.structured_json).
+ * structured_json lives on visual_extractions, joined via:
+ *   visual_extractions → visual_assets → documents
+ *
+ * Reason codes:
+ *   GATE_STRUCTURED_JSON_MISSING        – no rows exist or all are NULL
+ *   GATE_STRUCTURED_JSON_PARSE_FAILED   – JSON.parse throws (parse error is dev-only, not surfaced here)
+ *   GATE_STRUCTURED_JSON_SCHEMA_MISMATCH – parses but fails minimal Zod schema
+ *   GATE_STRUCTURED_JSON_QUERY_FAILED   – DB query throws (fail-closed, not eligible for fail-soft)
  */
+
+/** Minimal Stage 0 schema: structured_json must be a non-empty plain object. */
+const StructuredJsonMinimalSchema = z
+	.record(z.unknown())
+	.refine((obj) => Object.keys(obj).length > 0, { message: "empty object" });
+
 async function evalG3(pool: Pool, dealId: string): Promise<GateResult> {
 	try {
-		const { rows } = await pool.query<{ c: string }>(
-			`SELECT COUNT(*)::bigint AS c
-			   FROM public.visual_assets va
-			   JOIN public.documents d ON d.id = va.document_id
-			  WHERE d.deal_id = $1::uuid
-			    AND va.structured_json IS NOT NULL`,
+		// 1. Existence check via correct join path.
+		const existsRes = await pool.query<{ exists: boolean }>(
+			`SELECT EXISTS (
+			   SELECT 1
+			     FROM public.visual_extractions ve
+			     JOIN public.visual_assets va ON va.id = ve.visual_asset_id
+			     JOIN public.documents d ON d.id = va.document_id
+			    WHERE d.deal_id = $1::uuid
+			      AND ve.structured_json IS NOT NULL
+			 ) AS exists`,
 			[dealId]
 		);
-		const count = Number(rows[0]?.c ?? 0);
-		if (count === 0) {
+		const rowExists = existsRes.rows[0]?.exists === true;
+		if (!rowExists) {
 			return { gate: "G3", passed: false, reason_code: "GATE_STRUCTURED_JSON_MISSING", actual: 0 };
 		}
-		return { gate: "G3", passed: true, actual: count };
+
+		// 2. Sample one row for parse + schema check.
+		const sampleRes = await pool.query<{ raw_json: string | null }>(
+			`SELECT ve.structured_json::text AS raw_json
+			   FROM public.visual_extractions ve
+			   JOIN public.visual_assets va ON va.id = ve.visual_asset_id
+			   JOIN public.documents d ON d.id = va.document_id
+			  WHERE d.deal_id = $1::uuid
+			    AND ve.structured_json IS NOT NULL
+			  LIMIT 1`,
+			[dealId]
+		);
+		const rawJson = sampleRes.rows[0]?.raw_json ?? null;
+		if (rawJson === null) {
+			// Row disappeared between EXISTS and SELECT (race condition).
+			return { gate: "G3", passed: false, reason_code: "GATE_STRUCTURED_JSON_MISSING", actual: 0 };
+		}
+
+		// 3. Parse check. Parse error details are intentionally omitted from gate_state
+		//    (surfaced in dev diagnostics only via buildG3DiagnosticsSection in processor).
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(rawJson);
+		} catch {
+			return { gate: "G3", passed: false, reason_code: "GATE_STRUCTURED_JSON_PARSE_FAILED" };
+		}
+
+		// 4. Schema check: must be a non-empty plain object.
+		const schemaResult = StructuredJsonMinimalSchema.safeParse(parsed);
+		if (!schemaResult.success) {
+			return { gate: "G3", passed: false, reason_code: "GATE_STRUCTURED_JSON_SCHEMA_MISMATCH" };
+		}
+
+		return { gate: "G3", passed: true, actual: 1 };
 	} catch {
-		return { gate: "G3", passed: false, reason_code: "GATE_STRUCTURED_JSON_UNREADABLE" };
+		// DB-level failure: fail-closed (not eligible for fail-soft).
+		return { gate: "G3", passed: false, reason_code: "GATE_STRUCTURED_JSON_QUERY_FAILED" };
 	}
 }
 

@@ -26,6 +26,7 @@ import { evaluateVisualDocReadiness, getVisualIngestBlockReason } from "./lib/vi
 import {
 	getPool,
 	closePool,
+	markDbShuttingDown,
 	updateDocumentStatus,
 	updateDocumentAnalysis,
 	mergeDocumentExtractionMetadata,
@@ -140,6 +141,12 @@ import { generateInvestorInsightsProcessor } from "./jobs/investor-insights/proc
 		})
 	);
 })();
+
+// ── Shutdown state ───────────────────────────────────────────────────────────
+// Module-level guards so shutdown() is idempotent and handlers are registered
+// exactly once, even if the startup path calls process.exit for schema errors.
+let isShuttingDown = false;
+let handlersRegistered = false;
 
 async function countVisualAssetsForDeal(pool: ReturnType<typeof getPool>, dealId: string): Promise<number | null> {
 	try {
@@ -9953,6 +9960,7 @@ if (__isWorkerEntrypoint) {
 					...fingerprint,
 				})
 			);
+			markDbShuttingDown();
 			await closePool();
 			process.exit(1);
 		}
@@ -10061,13 +10069,22 @@ if (__isWorkerEntrypoint) {
 		setInterval(() => void tick(), safeIntervalMs);
 	})();
 
-	const shutdown = async () => {
+	const shutdown = async (source: string = "unknown") => {
+		if (isShuttingDown) return;
+		isShuttingDown = true;
+		console.log(
+			JSON.stringify({ event: "shutdown_start", source, service: "worker" })
+		);
+		markDbShuttingDown();
 		await closePool();
 		process.exit(0);
 	};
 
-	process.on("SIGINT", shutdown);
-	process.on("SIGTERM", shutdown);
+	if (!handlersRegistered) {
+		handlersRegistered = true;
+		process.on("SIGINT", () => void shutdown("SIGINT"));
+		process.on("SIGTERM", () => void shutdown("SIGTERM"));
+	}
 
 	console.log("DealDecision worker started");
 

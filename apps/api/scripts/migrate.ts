@@ -23,6 +23,19 @@ async function main() {
 
   const after = await applyPendingMigrations(pool);
   console.log(`Migrations complete. applied=${after.applied.length} pending=${after.pending.length}`);
+
+  // Post-migration verification: confirm investor_insight_reports table exists.
+  // This ensures the 2026-02-23-001 migration (and any idempotent follow-ups) were applied.
+  const { rows: regclassRows } = await pool.query<{ oid: string | null }>(
+    "SELECT to_regclass('public.investor_insight_reports') AS oid"
+  );
+  if (!regclassRows[0]?.oid) {
+    throw new Error(
+      "investor_insight_reports migration not applied. " +
+      "Ensure 2026-02-23-001-add-investor-insight-reports.sql is present in infra/migrations and re-run migrate."
+    );
+  }
+  console.log("Verification passed: investor_insight_reports table exists.");
 }
 
 main()

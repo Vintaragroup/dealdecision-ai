@@ -268,7 +268,8 @@ function buildComplianceState(events: ComplianceState["events"] = []): Complianc
  */
 function buildCoverageSnapshotSection(
 	coverage: CoverageSnapshot,
-	gateState: GateState
+	gateState: GateState,
+	normMetrics?: { normalizationEvents: number; normalizedPages: number }
 ): RenderPackage["sections"][number] {
 	const g3 = gateState.results.find((r) => r.gate === "G3");
 	const g5 = gateState.results.find((r) => r.gate === "G5");
@@ -290,6 +291,10 @@ function buildCoverageSnapshotSection(
 		`overlay_available: ${overlayAvailable}`,
 		`coverage_query_errors: ${errorLabel}`,
 	];
+	if (normMetrics) {
+		lines.push(`normalization_events: ${normMetrics.normalizationEvents}`);
+		lines.push(`normalized_pages: ${normMetrics.normalizedPages}`);
+	}
 
 	return {
 		key: "coverage_snapshot",
@@ -301,6 +306,16 @@ function buildCoverageSnapshotSection(
 }
 
 /**
+ * Compute normalization metrics from loaded InsightSlotInputs for coverage_snapshot.
+ */
+function normMetricsFromInputs(inputs: InsightSlotInputs): { normalizationEvents: number; normalizedPages: number } {
+	return {
+		normalizationEvents: inputs.normEvents.length,
+		normalizedPages: inputs.dpuPages.filter((p) => p.norm_events_count > 0).length,
+	};
+}
+
+/**
  * Build deterministic-only sections for a gate-failed (status="failed") render package.
  * Each section must satisfy validateNoEmptyBlocks: has items, body, or fallback.
  */
@@ -308,7 +323,8 @@ function buildGateFailedSections(
 	gateState: GateState,
 	coverage: CoverageSnapshot,
 	insightSlotsSections: Array<RenderPackage["sections"][number]>,
-	phase2Sections: Array<RenderPackage["sections"][number]>
+	phase2Sections: Array<RenderPackage["sections"][number]>,
+	normMetrics?: { normalizationEvents: number; normalizedPages: number }
 ): RenderPackage["sections"] {
 	const failedGates = gateState.results.filter((r) => !r.passed);
 	const failSummary =
@@ -338,7 +354,7 @@ function buildGateFailedSections(
 		},
 		...insightSlotsSections,
 		...phase2Sections,
-		buildCoverageSnapshotSection(coverage, gateState),
+		buildCoverageSnapshotSection(coverage, gateState, normMetrics),
 	];
 }
 
@@ -350,7 +366,8 @@ function buildDeterministicOnlySections(
 	coverage: CoverageSnapshot,
 	insightSlotsSections: Array<RenderPackage["sections"][number]>,
 	phase2Sections: Array<RenderPackage["sections"][number]>,
-	thesisSection: RenderPackage["sections"][number] | null
+	thesisSection: RenderPackage["sections"][number] | null,
+	normMetrics?: { normalizationEvents: number; normalizedPages: number }
 ): RenderPackage["sections"] {
 	const sections: RenderPackage["sections"] = [
 		{
@@ -376,7 +393,7 @@ function buildDeterministicOnlySections(
 		...phase2Sections,
 	];
 	if (thesisSection) sections.push(thesisSection);
-	sections.push(buildCoverageSnapshotSection(coverage, gateState));
+	sections.push(buildCoverageSnapshotSection(coverage, gateState, normMetrics));
 	return sections;
 }
 
@@ -389,7 +406,8 @@ function buildG3OnlyFailSections(
 	coverage: CoverageSnapshot,
 	insightSlotsSections: Array<RenderPackage["sections"][number]>,
 	phase2Sections: Array<RenderPackage["sections"][number]>,
-	thesisSection: RenderPackage["sections"][number] | null
+	thesisSection: RenderPackage["sections"][number] | null,
+	normMetrics?: { normalizationEvents: number; normalizedPages: number }
 ): RenderPackage["sections"] {
 	const sections: RenderPackage["sections"] = [
 		{
@@ -421,7 +439,7 @@ function buildG3OnlyFailSections(
 		...phase2Sections,
 	];
 	if (thesisSection) sections.push(thesisSection);
-	sections.push(buildCoverageSnapshotSection(coverage, gateState));
+	sections.push(buildCoverageSnapshotSection(coverage, gateState, normMetrics));
 	return sections;
 }
 // ─── Stage 1: Deterministic Insight Slots ───────────────────────────────────────
@@ -869,7 +887,7 @@ function buildNormalizationSummarySection(
 
 	// Sample up to 5 events for quick inspection.
 	const samples = inputs.normEvents.slice(0, 5).map(
-		(ev) => `  [${ev.rule}] "${ev.before}" → "${ev.after}" | ctx: …${ev.context.slice(0, 60)}…`
+		(ev) => `  [${ev.rule}] "${ev.before}" \u2192 "${ev.after}" | ctx: \u2026${ev.context.slice(0, 60)}\u2026`
 	);
 
 	const lines: string[] = [
@@ -891,6 +909,61 @@ function buildNormalizationSummarySection(
 }
 
 /**
+ * Debug section showing the highest-impact pages where normalization occurred.
+ * Sorted by event count descending, capped at 20 entries.
+ * Uses DpuPage.text_raw and DpuPage.text (already computed during loadInsightSlotInputs).
+ * Re-runs normalizeForExtraction on text_raw to recover per-page rule list (pure/deterministic).
+ *
+ * How to verify:
+ *   1. curl -X POST http://localhost:9001/api/v1/deals/<id>/investor-insights/generate
+ *   2. curl http://localhost:9001/api/v1/deals/<id>/investor-insights | \
+ *        jq -r '.render_package.sections[] | select(.key=="debug.normalization_diff") | .body'
+ */
+function buildNormalizationDiffSection(
+	inputs: InsightSlotInputs
+): RenderPackage["sections"][number] | null {
+	if (process.env["NODE_ENV"] === "production") return null;
+
+	const affectedPages = inputs.dpuPages.filter((p) => p.norm_events_count > 0);
+	if (affectedPages.length === 0) return null;
+
+	// Sort high-impact pages first, cap at 20 to keep body readable.
+	const top20 = [...affectedPages]
+		.sort((a, b) => b.norm_events_count - a.norm_events_count)
+		.slice(0, 20);
+
+	// Truncate a preview string, replacing pipe chars so the | delimiter stays unambiguous.
+	const preview = (s: string, len = 120) =>
+		s.replace(/\|/g, "/").replace(/\s+/g, " ").trim().slice(0, len);
+
+	const entryLines = top20.map((page) => {
+		const docPrefix = page.document_id.replace(/-/g, "").slice(0, 8);
+		const ref = `dpu:doc:${docPrefix}:page:${page.page_index}`;
+		// Re-run pure normalization to recover which rules fired on this exact page.
+		const { events } = normalizeForExtraction(page.text_raw);
+		const rules = [...new Set(events.map((e) => e.rule))].join(",") || "none";
+		const raw = preview(page.text_raw);
+		const norm = preview(page.text);
+		return `page=${page.page_index} | ref=${ref} | events=${page.norm_events_count} | rules=${rules} | raw=${raw} | norm=${norm}`;
+	});
+
+	const lines: string[] = [
+		"(dev-only) Omitted in production.",
+		`total_events: ${inputs.normEvents.length}`,
+		`affected_pages: ${affectedPages.length}`,
+		...entryLines,
+	];
+
+	return {
+		key: "debug.normalization_diff",
+		title: "Debug \u2014 OCR Normalization Diff",
+		kind: "message",
+		body: lines.join("\n"),
+		fallback: "Normalization diff unavailable.",
+	};
+}
+
+/**
  * Return the insight_slots section plus optional DPU diagnostics, signal visibility,
  * and normalization summary sections.
  */
@@ -902,10 +975,12 @@ function buildInsightSlotsSections(
 	const diagSection = buildDpuDiagnosticsSection(dealId, inputs.dpuDiag);
 	const signalSection = buildSignalVisibilitySection(inputs);
 	const normSection = buildNormalizationSummarySection(inputs);
+	const normDiffSection = buildNormalizationDiffSection(inputs);
 	const sections: Array<RenderPackage["sections"][number]> = [slotsSection];
 	if (diagSection) sections.push(diagSection);
 	if (signalSection) sections.push(signalSection);
 	if (normSection) sections.push(normSection);
+	if (normDiffSection) sections.push(normDiffSection);
 	return sections;
 }
 
@@ -1845,9 +1920,10 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		const thesisSection = g3OnlyFail
 			? buildInvestorThesisStubSection(buildThesisInputs(insightSlotInputs))
 			: null;
+		const nm = normMetricsFromInputs(insightSlotInputs);
 		const sections = g3OnlyFail
-			? buildG3OnlyFailSections(gateState, coverage, insightSlotsSections, phase2Sections, thesisSection)
-			: buildGateFailedSections(gateState, coverage, insightSlotsSections, phase2Sections);
+			? buildG3OnlyFailSections(gateState, coverage, insightSlotsSections, phase2Sections, thesisSection, nm)
+			: buildGateFailedSections(gateState, coverage, insightSlotsSections, phase2Sections, nm);
 
 		// Append diagnostics for any structural G3 failure (QUERY_FAILED is excluded
 		// since it indicates a DB problem, not a readability one).
@@ -1991,7 +2067,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	const insightSlotsSections = buildInsightSlotsSections(dealId, insightSlotInputs);
 	const phase2Sections = buildPhase2Sections(insightSlotInputs);
 	const thesisSection = buildInvestorThesisStubSection(buildThesisInputs(insightSlotInputs));
-	const sections = buildDeterministicOnlySections(gateState, coverage, insightSlotsSections, phase2Sections, thesisSection);
+	const sections = buildDeterministicOnlySections(gateState, coverage, insightSlotsSections, phase2Sections, thesisSection, normMetricsFromInputs(insightSlotInputs));
 	const renderPackage = buildRenderPackage({
 		dealId,
 		status: "deterministic_only",

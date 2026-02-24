@@ -604,6 +604,107 @@ function ConflictsSection({ section, darkMode }: { section: InvestorInsightsSect
   );
 }
 
+// ── Normalization Diff ─────────────────────────────────────────────────────
+
+interface NormDiffRow {
+  pageIndex: number;
+  ref: string;
+  events: number;
+  rules: string;
+  rawPreview: string;
+  normPreview: string;
+}
+
+function parseNormalizationDiffBody(body: string): NormDiffRow[] {
+  return body
+    .split('\n')
+    .filter((line) => line.startsWith('page='))
+    .flatMap((line): NormDiffRow[] => {
+      const parts = line.split(' | ');
+      const pick = (key: string) => {
+        const p = parts.find((x) => x.startsWith(`${key}=`));
+        return p ? p.slice(key.length + 1) : '';
+      };
+      const pageIdx = parseInt(pick('page'), 10);
+      const ref = pick('ref');
+      const events = parseInt(pick('events'), 10);
+      const rules = pick('rules');
+      const raw = pick('raw');
+      const norm = pick('norm');
+      if (isNaN(pageIdx) || !ref) return [];
+      return [{ pageIndex: pageIdx, ref, events, rules, rawPreview: raw, normPreview: norm }];
+    });
+}
+
+function NormalizationDiffSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+  const body = typeof section.body === 'string' ? section.body : '';
+  const rows = parseNormalizationDiffBody(body);
+
+  const headerLines = body.split('\n').slice(0, 3);
+  const findStat = (prefix: string) => {
+    const l = headerLines.find((x) => x.startsWith(prefix));
+    return l ? l.slice(prefix.length) : '?';
+  };
+  const totalEvents = findStat('total_events: ');
+  const affectedPages = findStat('affected_pages: ');
+
+  if (rows.length === 0) {
+    return <EmptyFallback text={section.fallback ?? 'No normalization diff data available.'} darkMode={darkMode} />;
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-4 text-xs">
+        <span className={`font-mono px-2 py-0.5 rounded ${darkMode ? 'bg-white/10 text-gray-300' : 'bg-gray-100 text-gray-600'}`}>
+          total events: {totalEvents}
+        </span>
+        <span className={`font-mono px-2 py-0.5 rounded ${darkMode ? 'bg-white/10 text-gray-300' : 'bg-gray-100 text-gray-600'}`}>
+          affected pages: {affectedPages}
+        </span>
+      </div>
+      <div className={`overflow-x-auto rounded-lg border ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
+        <table className="w-full text-xs">
+          <thead>
+            <tr className={`border-b ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'}`}>
+              <th className={`text-left px-3 py-2 font-semibold uppercase tracking-wide ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Page</th>
+              <th className={`text-left px-3 py-2 font-semibold uppercase tracking-wide ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Ref</th>
+              <th className={`text-left px-3 py-2 font-semibold uppercase tracking-wide ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Events</th>
+              <th className={`text-left px-3 py-2 font-semibold uppercase tracking-wide ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Raw → Normalized</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, idx) => (
+              <tr key={idx} className={`border-b last:border-0 ${darkMode ? 'border-white/5 hover:bg-white/5' : 'border-gray-100 hover:bg-gray-50/50'}`}>
+                <td className={`px-3 py-2.5 font-mono font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{row.pageIndex}</td>
+                <td className="px-3 py-2.5">
+                  <EvidencePill evidenceRef={row.ref} darkMode={darkMode} />
+                </td>
+                <td className="px-3 py-2.5">
+                  <span className={`inline-block font-mono px-1.5 py-0.5 rounded ${darkMode ? 'bg-white/10 text-gray-300' : 'bg-gray-100 text-gray-600'}`}>
+                    {row.events}
+                  </span>
+                </td>
+                <td className={`px-3 py-2.5 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  <div className="space-y-1">
+                    <div className={`font-mono text-xs ${darkMode ? 'text-red-300/80' : 'text-red-700/80'}`}>
+                      <span className={`text-xs font-semibold mr-1 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>raw:</span>
+                      {row.rawPreview || <span className={darkMode ? 'text-gray-600' : 'text-gray-400'}>(empty)</span>}
+                    </div>
+                    <div className={`font-mono text-xs ${darkMode ? 'text-emerald-300/80' : 'text-emerald-700/80'}`}>
+                      <span className={`text-xs font-semibold mr-1 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>norm:</span>
+                      {row.normPreview || <span className={darkMode ? 'text-gray-600' : 'text-gray-400'}>(empty)</span>}
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ── Coverage Snapshot ──────────────────────────────────────────────────────
 
 interface CoverageRow {
@@ -738,7 +839,7 @@ function CoverageSnapshotSection({ section, darkMode }: { section: InvestorInsig
   );
 }
 
-const PHASE2_KEYS = new Set(['insight_slots', 'coverage_snapshot', 'canonical_fields', 'completeness_summary', 'conflicts']);
+const PHASE2_KEYS = new Set(['insight_slots', 'coverage_snapshot', 'canonical_fields', 'completeness_summary', 'conflicts', 'debug.normalization_diff']);
 
 function SectionCard({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const isSpecialKey = PHASE2_KEYS.has(section.key);
@@ -765,6 +866,9 @@ function SectionCard({ section, darkMode }: { section: InvestorInsightsSection; 
       )}
       {section.key === 'coverage_snapshot' && section.kind !== 'gate_state' && (
         <CoverageSnapshotSection section={section} darkMode={darkMode} />
+      )}
+      {section.key === 'debug.normalization_diff' && section.kind !== 'gate_state' && (
+        <NormalizationDiffSection section={section} darkMode={darkMode} />
       )}
       {!isSpecialKey && section.kind === 'message' && (
         <MessageSection section={section} darkMode={darkMode} />

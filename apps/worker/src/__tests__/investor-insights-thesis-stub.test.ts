@@ -255,7 +255,7 @@ describe("buildInvestorThesisStubSection – open questions for Missing categori
 			],
 		});
 		const s = buildInvestorThesisStubSection(t);
-		const lines = s.body.split("\n");
+		const lines = (s.body ?? "").split("\n");
 		const questionLines = lines.filter((l) => l.trim().startsWith("-"));
 		expect(questionLines.length).toBe(2);
 	});

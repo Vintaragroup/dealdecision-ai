@@ -351,6 +351,121 @@ describe("enrichDpuWithEmbeddedPdfText", () => {
 	});
 });
 
+describe("populateDocumentPageUnderstandingFromVisualExtractions — excel_range DPU population", () => {
+	it("deal-level SQL contains excel_range WHEN arm, prepared fields, and rows_preview extraction", async () => {
+		const { populateDocumentPageUnderstandingFromVisualExtractions } = await import("../document-page-understanding.js");
+
+		const capturedSql: string[] = [];
+		const pool: any = {
+			query: async (sql: string, _params?: any[]) => {
+				capturedSql.push(String(sql));
+				return { rows: [{ upserted: "1", page_text_empty: "0" }], rowCount: 1 };
+			},
+		};
+
+		await populateDocumentPageUnderstandingFromVisualExtractions(pool, {
+			dealId: "aaaabbbb-aaaa-bbbb-cccc-ddddeeeeeeee",
+		});
+
+		const dealSql = capturedSql.find(
+			(q) => q.includes("FROM docs d") && q.includes("ON CONFLICT (document_id, page_index, version)")
+		);
+		expect(dealSql).toBeDefined();
+
+		// New prepared fields
+		expect(dealSql).toContain("structured_json->>'kind' AS sj_kind");
+		expect(dealSql).toContain("jsonb_array_elements_text(structured_json->'headers')");
+		expect(dealSql).toContain("END AS excel_headers_text");
+		expect(dealSql).toContain("jsonb_array_elements(structured_json->'rows_preview')");
+		expect(dealSql).toContain("END AS excel_rows_text");
+		expect(dealSql).toContain("r.rn <= 12");
+		expect(dealSql).toContain("c.value #>> '{}'");
+
+		// New passthrough columns in computed SELECT
+		expect(dealSql).toContain("sj_kind,");
+		expect(dealSql).toContain("excel_headers_text,");
+		expect(dealSql).toContain("excel_rows_text,");
+
+		// New top-priority WHEN arm in page_text CASE
+		expect(dealSql).toContain("WHEN sj_kind = 'excel_range'");
+		expect(dealSql).toContain("'Headers: ' || excel_headers_text");
+
+		// Existing PDF/PPTX arms preserved
+		expect(dealSql).toContain("ocr_text_clean");
+		expect(dealSql).toContain("ON CONFLICT (document_id, page_index, version)");
+	});
+
+	it("document-range SQL also contains excel_range WHEN arm and prepared fields", async () => {
+		const { populateDocumentPageUnderstandingFromVisualExtractions } = await import("../document-page-understanding.js");
+
+		const capturedSql: string[] = [];
+		const pool: any = {
+			query: async (sql: string, _params?: any[]) => {
+				capturedSql.push(String(sql));
+				if (String(sql).includes("COUNT(*)::bigint AS inserted")) {
+					return { rows: [{ inserted: "0" }], rowCount: 1 };
+				}
+				return { rows: [{ upserted: "2", page_text_empty: "0" }], rowCount: 1 };
+			},
+		};
+
+		await populateDocumentPageUnderstandingFromVisualExtractions(pool, {
+			documentId: "11112222-1111-2222-3333-444455556666",
+			dealId: "66665555-4444-3333-2222-111100009999",
+			pageStart: 0,
+			pageEnd: 3,
+		});
+
+		const rangeSql = capturedSql.find(
+			(q) => q.includes("va.page_index >= $2") && q.includes("ON CONFLICT (document_id, page_index, version)")
+		);
+		expect(rangeSql).toBeDefined();
+
+		expect(rangeSql).toContain("structured_json->>'kind' AS sj_kind");
+		expect(rangeSql).toContain("END AS excel_headers_text");
+		expect(rangeSql).toContain("END AS excel_rows_text");
+		expect(rangeSql).toContain("WHEN sj_kind = 'excel_range'");
+		expect(rangeSql).toContain("'Headers: ' || excel_headers_text");
+
+		// Page-range params still present
+		expect(rangeSql).toContain("va.page_index >= $2");
+		expect(rangeSql).toContain("va.page_index < $3");
+	});
+
+	it("excel_range page_text CASE arm is BEFORE (higher priority than) the structured-ok arm", async () => {
+		const { populateDocumentPageUnderstandingFromVisualExtractions } = await import("../document-page-understanding.js");
+
+		const capturedSql: string[] = [];
+		const pool: any = {
+			query: async (sql: string, _params?: any[]) => {
+				capturedSql.push(String(sql));
+				return { rows: [{ upserted: "1", page_text_empty: "0" }], rowCount: 1 };
+			},
+		};
+
+		await populateDocumentPageUnderstandingFromVisualExtractions(pool, {
+			dealId: "ffffffff-1111-2222-3333-444444444444",
+		});
+
+		const dealSql = capturedSql.find((q) => q.includes("FROM docs d") && q.includes("ON CONFLICT"));
+		expect(dealSql).toBeDefined();
+
+		// excel_range WHEN must appear inside the page_text CASE.
+		// The structured-ok WHEN arm inside page_text CASE also starts with "WHEN COALESCE(length..." but
+		// appears AFTER the excel_range WHEN. Search for it starting from just after excelWhenPos to confirm ordering.
+		const excelWhenPos = dealSql!.indexOf("WHEN sj_kind = 'excel_range'");
+		expect(excelWhenPos).toBeGreaterThan(0);
+
+		// First "WHEN COALESCE(length..." after the excel_range WHEN is the structured-40 arm in page_text CASE
+		const structuredWhenInPageTextPos = dealSql!.indexOf("WHEN COALESCE(length(NULLIF(BTRIM(concat_ws", excelWhenPos + 1);
+		expect(structuredWhenInPageTextPos).toBeGreaterThan(excelWhenPos);
+
+		// The excel_range WHEN arm must also appear before END AS page_text (i.e. it IS inside page_text CASE)
+		const endPageTextPos = dealSql!.indexOf("END AS page_text,");
+		expect(excelWhenPos).toBeLessThan(endPageTextPos);
+	});
+});
+
 describe("populateDocumentPageUnderstandingFromVisualExtractions — PDF enrichment wiring", () => {
 	it("calls enrichDpuWithEmbeddedPdfText after the main upsert for deal-level runs", async () => {
 		const { populateDocumentPageUnderstandingFromVisualExtractions } = await import("../document-page-understanding.js");

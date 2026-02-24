@@ -217,6 +217,29 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 				)
 				ELSE NULL
 			END AS tb_bullets_text
+			-- excel_range: kind identifier + headers list + up to 12 preview rows
+			,structured_json->>'kind' AS sj_kind
+			,CASE
+				WHEN jsonb_typeof(structured_json->'headers') = 'array' THEN (
+					SELECT NULLIF(BTRIM(string_agg(NULLIF(BTRIM(h.value), ''), ', ')), '')
+					  FROM jsonb_array_elements_text(structured_json->'headers') AS h(value)
+				)
+				ELSE NULL
+			END AS excel_headers_text
+			,CASE
+				WHEN jsonb_typeof(structured_json->'rows_preview') = 'array' THEN (
+					SELECT NULLIF(BTRIM(string_agg(row_line, E'\n')), '')
+					  FROM (
+						SELECT '- ' || (
+							SELECT COALESCE(string_agg(COALESCE(NULLIF(BTRIM(c.value #>> '{}'), ''), ''), ' | ' ORDER BY c.ord), '')
+							  FROM jsonb_array_elements(r.row_val) WITH ORDINALITY AS c(value, ord)
+						) AS row_line
+						  FROM jsonb_array_elements(structured_json->'rows_preview') WITH ORDINALITY AS r(row_val, rn)
+						 WHERE r.rn <= 12
+					  ) row_lines
+				)
+				ELSE NULL
+			END AS excel_rows_text
 		  FROM candidate
 	),
 	computed AS (
@@ -233,6 +256,9 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			labels,
 			structured_json,
 			ocr_text,
+			sj_kind,
+			excel_headers_text,
+			excel_rows_text,
 			COALESCE(title_text, tb_title_text) AS title_text,
 			COALESCE(notes_text, tb_notes_text) AS notes_text,
 			COALESCE(snippet_text, tb_snippet_text) AS snippet_text,
@@ -252,6 +278,12 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '') AS ocr_text_clean,
 			CASE WHEN COALESCE(length(NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')), 0) >= 40 THEN true ELSE false END AS structured_ok,
 			CASE
+				WHEN sj_kind = 'excel_range'
+					THEN NULLIF(BTRIM(concat_ws(E'\n',
+						COALESCE(title_text, tb_title_text),
+						CASE WHEN excel_headers_text IS NOT NULL THEN 'Headers: ' || excel_headers_text ELSE NULL END,
+						excel_rows_text
+					)), '')
 				WHEN COALESCE(length(NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')), 0) >= 40
 					THEN NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')
 				WHEN NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '') IS NOT NULL
@@ -514,6 +546,29 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 				)
 				ELSE NULL
 			END AS tb_bullets_text
+			-- excel_range: kind identifier + headers list + up to 12 preview rows
+			,structured_json->>'kind' AS sj_kind
+			,CASE
+				WHEN jsonb_typeof(structured_json->'headers') = 'array' THEN (
+					SELECT NULLIF(BTRIM(string_agg(NULLIF(BTRIM(h.value), ''), ', ')), '')
+					  FROM jsonb_array_elements_text(structured_json->'headers') AS h(value)
+				)
+				ELSE NULL
+			END AS excel_headers_text
+			,CASE
+				WHEN jsonb_typeof(structured_json->'rows_preview') = 'array' THEN (
+					SELECT NULLIF(BTRIM(string_agg(row_line, E'\n')), '')
+					  FROM (
+						SELECT '- ' || (
+							SELECT COALESCE(string_agg(COALESCE(NULLIF(BTRIM(c.value #>> '{}'), ''), ''), ' | ' ORDER BY c.ord), '')
+							  FROM jsonb_array_elements(r.row_val) WITH ORDINALITY AS c(value, ord)
+						) AS row_line
+						  FROM jsonb_array_elements(structured_json->'rows_preview') WITH ORDINALITY AS r(row_val, rn)
+						 WHERE r.rn <= 12
+					  ) row_lines
+				)
+				ELSE NULL
+			END AS excel_rows_text
 		  FROM candidate
 	),
 	computed AS (
@@ -530,6 +585,9 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			labels,
 			structured_json,
 			ocr_text,
+			sj_kind,
+			excel_headers_text,
+			excel_rows_text,
 			COALESCE(title_text, tb_title_text) AS title_text,
 			COALESCE(notes_text, tb_notes_text) AS notes_text,
 			COALESCE(snippet_text, tb_snippet_text) AS snippet_text,
@@ -549,6 +607,12 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '') AS ocr_text_clean,
 			CASE WHEN COALESCE(length(NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')), 0) >= 40 THEN true ELSE false END AS structured_ok,
 			CASE
+				WHEN sj_kind = 'excel_range'
+					THEN NULLIF(BTRIM(concat_ws(E'\n',
+						COALESCE(title_text, tb_title_text),
+						CASE WHEN excel_headers_text IS NOT NULL THEN 'Headers: ' || excel_headers_text ELSE NULL END,
+						excel_rows_text
+					)), '')
 				WHEN COALESCE(length(NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')), 0) >= 40
 					THEN NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')
 				WHEN NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '') IS NOT NULL

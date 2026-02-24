@@ -250,6 +250,359 @@ function InsightSlotsSection({ section, darkMode }: { section: InvestorInsightsS
   );
 }
 
+// ── Canonical Fields ─────────────────────────────────────────────────────────
+
+interface CanonicalFieldRow {
+  category: string;
+  field: string;
+  computability: 'Computable' | 'NotComputable' | string;
+  value: string | null;
+  evidence: string | null;
+  reason: string | null;
+}
+
+function parseCanonicalFieldsBody(body: string): CanonicalFieldRow[] {
+  return body
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .flatMap((line): CanonicalFieldRow[] => {
+      const tokens = line.split(' | ');
+      const pick = (key: string): string => {
+        const token = tokens.find((t) => t.startsWith(`${key}=`));
+        if (!token) return 'none';
+        return token.slice(key.length + 1).trim();
+      };
+      const category = pick('category');
+      const field = pick('field');
+      if (!category || category === 'none' || !field || field === 'none') return [];
+      const computability = pick('computability');
+      const rawValue = pick('value');
+      const rawEvidence = pick('evidence');
+      const rawReason = pick('reason');
+
+      const parseNullable = (raw: string): string | null => {
+        if (raw === 'none' || raw === '') return null;
+        // Strip surrounding quotes, then trim trailing whitespace
+        if (raw.startsWith('"') && raw.endsWith('"') && raw.length > 1) {
+          return raw.slice(1, -1).trimEnd();
+        }
+        return raw.trimEnd();
+      };
+
+      return [{
+        category,
+        field,
+        computability,
+        value: parseNullable(rawValue),
+        evidence: parseNullable(rawEvidence),
+        reason: parseNullable(rawReason),
+      }];
+    });
+}
+
+function fieldLabel(raw: string): string {
+  return raw.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function CanonicalFieldsSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+  const body = typeof section.body === 'string' ? section.body : '';
+  const rows = parseCanonicalFieldsBody(body);
+
+  if (rows.length === 0) {
+    return <EmptyFallback text={section.fallback ?? 'No canonical field data available.'} darkMode={darkMode} />;
+  }
+
+  return (
+    <div className={`overflow-x-auto rounded-lg border ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className={`border-b ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'}`}>
+            {(['Category', 'Field', 'Status', 'Value', 'Evidence', 'Reason'] as const).map((col) => (
+              <th
+                key={col}
+                className={`text-left px-4 py-2.5 font-semibold text-xs uppercase tracking-wide whitespace-nowrap ${
+                  darkMode ? 'text-gray-400' : 'text-gray-500'
+                }`}
+              >
+                {col}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, idx) => {
+            const isComputable = row.computability === 'Computable';
+            return (
+              <tr
+                key={`${row.category}-${row.field}-${idx}`}
+                className={`border-b last:border-0 ${
+                  darkMode ? 'border-white/5 hover:bg-white/5' : 'border-gray-100 hover:bg-gray-50/50'
+                }`}
+              >
+                {/* Category */}
+                <td className={`px-4 py-3 text-xs font-medium whitespace-nowrap ${
+                  darkMode ? 'text-gray-400' : 'text-gray-500'
+                }`}>
+                  {fieldLabel(row.category)}
+                </td>
+                {/* Field */}
+                <td className={`px-4 py-3 font-medium text-sm whitespace-nowrap ${
+                  darkMode ? 'text-white' : 'text-gray-900'
+                }`}>
+                  {fieldLabel(row.field)}
+                </td>
+                {/* Status */}
+                <td className="px-4 py-3 whitespace-nowrap">
+                  {isComputable ? (
+                    <span
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${
+                        darkMode
+                          ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                          : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                      }`}
+                    >
+                      <CheckCircle2 className="w-3 h-3 shrink-0" />
+                      Computable
+                    </span>
+                  ) : (
+                    <span
+                      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${
+                        darkMode
+                          ? 'bg-white/5 border-white/15 text-gray-400'
+                          : 'bg-gray-100 border-gray-200 text-gray-500'
+                      }`}
+                    >
+                      NotComputable
+                    </span>
+                  )}
+                </td>
+                {/* Value */}
+                <td className={`px-4 py-3 text-xs max-w-[180px] truncate ${
+                  darkMode ? 'text-gray-300' : 'text-gray-700'
+                }`}>
+                  {row.value ?? <span className={darkMode ? 'text-gray-500' : 'text-gray-400'}>—</span>}
+                </td>
+                {/* Evidence */}
+                <td className="px-4 py-3 text-xs">
+                  {row.evidence ? (
+                    <EvidencePill evidenceRef={row.evidence} darkMode={darkMode} />
+                  ) : (
+                    <span className={darkMode ? 'text-gray-500' : 'text-gray-400'}>—</span>
+                  )}
+                </td>
+                {/* Reason */}
+                <td className={`px-4 py-3 text-xs font-mono ${
+                  darkMode ? 'text-gray-400' : 'text-gray-500'
+                }`}>
+                  {row.reason ?? <span className={darkMode ? 'text-gray-600' : 'text-gray-400'}>—</span>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Completeness Summary ───────────────────────────────────────────────────────
+
+interface CompletenessRow {
+  category: string;
+  status: 'Present' | 'Missing' | 'Conflicting' | string;
+}
+
+function parseCompletenessBody(body: string): CompletenessRow[] {
+  return body
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .flatMap((line): CompletenessRow[] => {
+      const colonIdx = line.indexOf(':');
+      if (colonIdx === -1) return [];
+      return [{ category: line.slice(0, colonIdx).trim(), status: line.slice(colonIdx + 1).trim() }];
+    });
+}
+
+function CompletenessStatusBadge({ status, darkMode }: { status: string; darkMode: boolean }) {
+  if (status === 'Present') {
+    return (
+      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${
+        darkMode
+          ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+          : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+      }`}>
+        <CheckCircle2 className="w-3 h-3 shrink-0" />
+        Present
+      </span>
+    );
+  }
+  if (status === 'Conflicting') {
+    return (
+      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${
+        darkMode
+          ? 'bg-amber-500/15 border-amber-500/30 text-amber-300'
+          : 'bg-amber-50 border-amber-200 text-amber-700'
+      }`}>
+        <AlertCircle className="w-3 h-3 shrink-0" />
+        Conflicting
+      </span>
+    );
+  }
+  // Missing (default)
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${
+      darkMode
+        ? 'bg-white/5 border-white/15 text-gray-400'
+        : 'bg-gray-100 border-gray-200 text-gray-500'
+    }`}>
+      Missing
+    </span>
+  );
+}
+
+function CompletenessSummarySection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+  const body = typeof section.body === 'string' ? section.body : '';
+  const rows = parseCompletenessBody(body);
+
+  if (rows.length === 0) {
+    return <EmptyFallback text={section.fallback ?? 'No completeness data available.'} darkMode={darkMode} />;
+  }
+
+  return (
+    <div className={`overflow-x-auto rounded-lg border ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className={`border-b ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'}`}>
+            <th className={`text-left px-4 py-2.5 font-semibold text-xs uppercase tracking-wide ${
+              darkMode ? 'text-gray-400' : 'text-gray-500'
+            }`}>Category</th>
+            <th className={`text-left px-4 py-2.5 font-semibold text-xs uppercase tracking-wide ${
+              darkMode ? 'text-gray-400' : 'text-gray-500'
+            }`}>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, idx) => (
+            <tr
+              key={row.category ?? idx}
+              className={`border-b last:border-0 ${
+                darkMode ? 'border-white/5 hover:bg-white/5' : 'border-gray-100 hover:bg-gray-50/50'
+              }`}
+            >
+              <td className={`px-4 py-3 font-medium text-sm whitespace-nowrap ${
+                darkMode ? 'text-white' : 'text-gray-900'
+              }`}>
+                {fieldLabel(row.category)}
+              </td>
+              <td className="px-4 py-3">
+                <CompletenessStatusBadge status={row.status} darkMode={darkMode} />
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Conflicts ─────────────────────────────────────────────────────────────────
+
+interface ConflictRow {
+  field: string;
+  valueA: string;
+  evidenceA: string;
+  valueB: string;
+  evidenceB: string;
+}
+
+function parseConflictsBody(body: string): ConflictRow[] {
+  return body
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .flatMap((line): ConflictRow[] => {
+      const tokens = line.split(' | ');
+      const pick = (key: string): string => {
+        const token = tokens.find((t) => t.startsWith(`${key}=`));
+        if (!token) return '';
+        const raw = token.slice(key.length + 1).trim();
+        if (raw.startsWith('"') && raw.endsWith('"') && raw.length > 1) return raw.slice(1, -1).trimEnd();
+        return raw.trimEnd();
+      };
+      const field = pick('field');
+      if (!field) return [];
+      return [{ field, valueA: pick('value_a'), evidenceA: pick('evidence_a'), valueB: pick('value_b'), evidenceB: pick('evidence_b') }];
+    });
+}
+
+function ConflictsSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+  const body = typeof section.body === 'string' ? section.body : '';
+  const rows = parseConflictsBody(body);
+
+  return (
+    <div className="space-y-3">
+      <div
+        className={`flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 ${
+          darkMode ? 'bg-amber-500/10 border-amber-500/30' : 'bg-amber-50 border-amber-200'
+        }`}
+        role="alert"
+      >
+        <AlertCircle className={`w-4 h-4 mt-0.5 shrink-0 ${darkMode ? 'text-amber-400' : 'text-amber-600'}`} />
+        <p className={`text-xs font-medium ${darkMode ? 'text-amber-300' : 'text-amber-800'}`}>
+          Conflicting values were detected across documents. Review evidence refs before relying on these fields.
+        </p>
+      </div>
+      {rows.length === 0 ? (
+        <EmptyFallback text={section.fallback ?? 'No conflict detail available.'} darkMode={darkMode} />
+      ) : (
+        <div className={`overflow-x-auto rounded-lg border ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className={`border-b ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'}`}>
+                {(['Field', 'Value A', 'Evidence A', 'Value B', 'Evidence B'] as const).map((col) => (
+                  <th key={col} className={`text-left px-4 py-2.5 font-semibold text-xs uppercase tracking-wide whitespace-nowrap ${
+                    darkMode ? 'text-gray-400' : 'text-gray-500'
+                  }`}>{col}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, idx) => (
+                <tr
+                  key={`${row.field}-${idx}`}
+                  className={`border-b last:border-0 ${
+                    darkMode ? 'border-white/5 hover:bg-white/5' : 'border-gray-100 hover:bg-gray-50/50'
+                  }`}
+                >
+                  <td className={`px-4 py-3 font-medium text-sm whitespace-nowrap ${
+                    darkMode ? 'text-white' : 'text-gray-900'
+                  }`}>
+                    {fieldLabel(row.field)}
+                  </td>
+                  <td className={`px-4 py-3 text-xs max-w-[140px] truncate ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    {row.valueA || <span className={darkMode ? 'text-gray-500' : 'text-gray-400'}>—</span>}
+                  </td>
+                  <td className="px-4 py-3 text-xs">
+                    {row.evidenceA ? <EvidencePill evidenceRef={row.evidenceA} darkMode={darkMode} /> : <span className={darkMode ? 'text-gray-500' : 'text-gray-400'}>—</span>}
+                  </td>
+                  <td className={`px-4 py-3 text-xs max-w-[140px] truncate ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    {row.valueB || <span className={darkMode ? 'text-gray-500' : 'text-gray-400'}>—</span>}
+                  </td>
+                  <td className="px-4 py-3 text-xs">
+                    {row.evidenceB ? <EvidencePill evidenceRef={row.evidenceB} darkMode={darkMode} /> : <span className={darkMode ? 'text-gray-500' : 'text-gray-400'}>—</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Coverage Snapshot ──────────────────────────────────────────────────────
 
 interface CoverageRow {
@@ -355,8 +708,10 @@ function CoverageSnapshotSection({ section, darkMode }: { section: InvestorInsig
   );
 }
 
+const PHASE2_KEYS = new Set(['insight_slots', 'coverage_snapshot', 'canonical_fields', 'completeness_summary', 'conflicts']);
+
 function SectionCard({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
-  const isSpecialKey = section.key === 'insight_slots' || section.key === 'coverage_snapshot';
+  const isSpecialKey = PHASE2_KEYS.has(section.key);
   return (
     <div className={`rounded-xl border p-5 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
       <div className="flex items-center gap-2 mb-4">
@@ -368,6 +723,15 @@ function SectionCard({ section, darkMode }: { section: InvestorInsightsSection; 
       )}
       {section.key === 'insight_slots' && section.kind !== 'gate_state' && (
         <InsightSlotsSection section={section} darkMode={darkMode} />
+      )}
+      {section.key === 'canonical_fields' && section.kind !== 'gate_state' && (
+        <CanonicalFieldsSection section={section} darkMode={darkMode} />
+      )}
+      {section.key === 'completeness_summary' && section.kind !== 'gate_state' && (
+        <CompletenessSummarySection section={section} darkMode={darkMode} />
+      )}
+      {section.key === 'conflicts' && section.kind !== 'gate_state' && (
+        <ConflictsSection section={section} darkMode={darkMode} />
       )}
       {section.key === 'coverage_snapshot' && section.kind !== 'gate_state' && (
         <CoverageSnapshotSection section={section} darkMode={darkMode} />

@@ -90,7 +90,7 @@ const g3OnlyFailGateState = (): GateState => ({
 const mockEvaluateGates = vi.fn(async (): Promise<GateState> => g3OnlyFailGateState());
 
 vi.mock("../jobs/investor-insights/gates", () => ({
-	evaluateGates: (...args: [unknown, ...unknown[]]) => mockEvaluateGates(...args),
+	evaluateGates: () => mockEvaluateGates(),
 }));
 
 // ── Import processor after mocks ──────────────────────────────────────────────

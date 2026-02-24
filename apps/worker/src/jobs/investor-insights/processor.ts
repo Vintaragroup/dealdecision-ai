@@ -306,7 +306,8 @@ function buildCoverageSnapshotSection(
 function buildGateFailedSections(
 	gateState: GateState,
 	coverage: CoverageSnapshot,
-	insightSlotsSections: Array<RenderPackage["sections"][number]>
+	insightSlotsSections: Array<RenderPackage["sections"][number]>,
+	phase2Sections: Array<RenderPackage["sections"][number]>
 ): RenderPackage["sections"] {
 	const failedGates = gateState.results.filter((r) => !r.passed);
 	const failSummary =
@@ -335,6 +336,7 @@ function buildGateFailedSections(
 			body: `Investor analysis cannot proceed until readiness gates are met. ${failSummary}. Required remediation: resolve ${failedGates.map((g) => g.reason_code ?? g.gate).join(", ")}.`,
 		},
 		...insightSlotsSections,
+		...phase2Sections,
 		buildCoverageSnapshotSection(coverage, gateState),
 	];
 }
@@ -345,7 +347,8 @@ function buildGateFailedSections(
 function buildDeterministicOnlySections(
 	gateState: GateState,
 	coverage: CoverageSnapshot,
-	insightSlotsSections: Array<RenderPackage["sections"][number]>
+	insightSlotsSections: Array<RenderPackage["sections"][number]>,
+	phase2Sections: Array<RenderPackage["sections"][number]>
 ): RenderPackage["sections"] {
 	return [
 		{
@@ -368,6 +371,7 @@ function buildDeterministicOnlySections(
 			body: "Deterministic Stage 0 analysis complete. Full analytical interpretation (Stages 1–7) pending.",
 		},
 		...insightSlotsSections,
+		...phase2Sections,
 		buildCoverageSnapshotSection(coverage, gateState),
 	];
 }
@@ -379,7 +383,8 @@ function buildDeterministicOnlySections(
 function buildG3OnlyFailSections(
 	gateState: GateState,
 	coverage: CoverageSnapshot,
-	insightSlotsSections: Array<RenderPackage["sections"][number]>
+	insightSlotsSections: Array<RenderPackage["sections"][number]>,
+	phase2Sections: Array<RenderPackage["sections"][number]>
 ): RenderPackage["sections"] {
 	return [
 		{
@@ -408,6 +413,7 @@ function buildG3OnlyFailSections(
 			body: "Remediation steps: (1) Re-run document extraction to regenerate structured_json rows in visual_extractions. (2) Verify the extraction worker completes without error for all documents in this deal. (3) Re-trigger investor insight generation once visual_extractions rows are present.\nrecommended_queue: document_intelligence_extract\nrecommended_action: rerun_upstream_extraction\nrecommended_reason: structured_json_unreadable",
 		},
 		...insightSlotsSections,
+		...phase2Sections,
 		buildCoverageSnapshotSection(coverage, gateState),
 	];
 }
@@ -742,6 +748,343 @@ function buildInsightSlotsSections(
 	const diagSection = buildDpuDiagnosticsSection(dealId, inputs.dpuDiag);
 	return diagSection ? [slotsSection, diagSection] : [slotsSection];
 }
+
+// ─── Stage 2: Canonical Fields + Conflicts + Completeness ────────────────────
+
+/**
+ * Phase 2 reason codes for canonical sub-field extractors.
+ * All UPPER_SNAKE_CASE per reason-code format enforcement.
+ */
+const P2_REASON = {
+	NO_RAISE_AMOUNT_MENTION: "NO_RAISE_AMOUNT_MENTION",
+	NO_RAISE_ROUND_MENTION: "NO_RAISE_ROUND_MENTION",
+	NO_RAISE_INSTRUMENT_MENTION: "NO_RAISE_INSTRUMENT_MENTION",
+	NO_RAISE_CAP_MENTION: "NO_RAISE_CAP_MENTION",
+	NO_RAISE_DISCOUNT_MENTION: "NO_RAISE_DISCOUNT_MENTION",
+	NO_VALUATION_PRE_MENTION: "NO_VALUATION_PRE_MENTION",
+	NO_VALUATION_POST_MENTION: "NO_VALUATION_POST_MENTION",
+	NO_VALUATION_SAFE_CAP_MENTION: "NO_VALUATION_SAFE_CAP_MENTION",
+	NO_USE_OF_FUNDS_BUCKETS_MENTION: "NO_USE_OF_FUNDS_BUCKETS_MENTION",
+	NO_TAM_VALUE_MENTION: "NO_TAM_VALUE_MENTION",
+	NO_SAM_VALUE_MENTION: "NO_SAM_VALUE_MENTION",
+	NO_SOM_VALUE_MENTION: "NO_SOM_VALUE_MENTION",
+	NO_MRR_VALUE_MENTION: "NO_MRR_VALUE_MENTION",
+	NO_ARR_VALUE_MENTION: "NO_ARR_VALUE_MENTION",
+	NO_REVENUE_VALUE_MENTION: "NO_REVENUE_VALUE_MENTION",
+	NO_GROWTH_RATE_MENTION: "NO_GROWTH_RATE_MENTION",
+	NO_CUSTOMER_COUNT_MENTION: "NO_CUSTOMER_COUNT_MENTION",
+} as const;
+
+// ── Phase 2 sub-field patterns (compile once) ────────────────────────────────
+
+/**
+ * raise_amount: dollar amount anchored to a fundraising verb or round type.
+ * Form A: "Raising $2M seed", "raise $5M Series A", "seeking $1M"
+ * Form B: "$2M seed round", "$3M bridge raise"
+ */
+const RAISE_AMOUNT_PATTERN =
+	/(?:rais(?:e|ing|ed)|seeking)\s+\$[\d,.]+\s*[BMKbmk]?(?:\s*(?:million|billion|thousand))?|\$[\d,.]+\s*[BMKbmk]?(?:\s*(?:million|billion|thousand))?\s+(?:seed|series\s+[a-cA-C]|pre[-\s]seed|bridge)\s+(?:round|raise|funding)?/i;
+
+/** raise_round: seed, series A/B/C, pre-seed, bridge, angel */
+const RAISE_ROUND_PATTERN = /\b(seed|series\s+[a-cA-C]|pre[-\s]seed|bridge|angel)\b/i;
+
+/** raise_instrument: SAFE, convertible note, priced round, equity round */
+const RAISE_INSTRUMENT_PATTERN = /\b(SAFE|convertible\s+note|priced\s+round|equity\s+round)\b/i;
+
+/** raise_cap: "cap $X", "valuation cap $X", "SAFE cap $X", "cap of $X" */
+const RAISE_CAP_PATTERN =
+	/(?:valuation\s+)?cap\s+(?:of\s+)?\$[\d,.]+\s*[BMKbmk]?|\bSAFE\s+cap\s+\$[\d,.]+\s*[BMKbmk]?/i;
+
+/** raise_discount: "X% discount" */
+const RAISE_DISCOUNT_PATTERN = /\b(\d+)%\s+discount\b/i;
+
+/** valuation_pre: pre-money valuation with dollar figure */
+const VALUATION_PRE_PATTERN =
+	/pre[-\s]money\s+(?:valuation\s+)?(?:of\s+|is\s+|at\s+)?\$[\d,.]+\s*[BMKbmk]?/i;
+
+/** valuation_post: post-money valuation with dollar figure */
+const VALUATION_POST_PATTERN =
+	/post[-\s]money\s+(?:valuation\s+)?(?:of\s+|is\s+|at\s+)?\$[\d,.]+\s*[BMKbmk]?/i;
+
+/** valuation_safe_cap: standalone "safe cap $X" — does not require raise context */
+const VALUATION_SAFE_CAP_PATTERN =
+	/safe\s+cap\s+(?:of\s+|is\s+|at\s+)?\$[\d,.]+\s*[BMKbmk]?/i;
+
+/**
+ * use_of_funds_buckets: captures use-of-funds section headers plus trailing context.
+ * Conservative: requires the header phrase, then grabs up to 200 chars of allocation text.
+ */
+const USE_OF_FUNDS_BUCKET_PATTERN =
+	/(?:use\s+of\s+(?:funds|proceeds)|allocation\s+of\s+proceeds|proceeds\s+will\s+be\s+used)\b[^.]{0,200}/i;
+
+/** tam_value: TAM with explicit dollar amount (Form A + B) */
+const TAM_VALUE_PATTERN =
+	/(?:\bTAM\b[^$\n]{0,60}?\$[\d,.]+\s*[BbMmKkTt]?|\$[\d,.]+\s*[BbMmKkTt]\+?[^$\n]{0,60}?\bTAM\b)/i;
+
+/** sam_value: SAM with explicit dollar amount */
+const SAM_VALUE_PATTERN =
+	/(?:\bSAM\b[^$\n]{0,60}?\$[\d,.]+\s*[BbMmKkTt]?|\$[\d,.]+\s*[BbMmKkTt]\+?[^$\n]{0,60}?\bSAM\b)/i;
+
+/** som_value: SOM with explicit dollar amount */
+const SOM_VALUE_PATTERN =
+	/(?:\bSOM\b[^$\n]{0,60}?\$[\d,.]+\s*[BbMmKkTt]?|\$[\d,.]+\s*[BbMmKkTt]\+?[^$\n]{0,60}?\bSOM\b)/i;
+
+/** mrr_value: MRR keyword with dollar figure within 40 chars */
+const MRR_VALUE_PATTERN = /\bMRR\b[^$\n]{0,40}?\$[\d,.]+\s*[BMKbmk]?/i;
+
+/** arr_value: ARR keyword with dollar figure within 40 chars */
+const ARR_VALUE_PATTERN = /\bARR\b[^$\n]{0,40}?\$[\d,.]+\s*[BMKbmk]?/i;
+
+/**
+ * revenue_value: explicit annual/quarterly/total revenue — conservative to prevent
+ * false positives against raise amounts.
+ */
+const REVENUE_VALUE_PATTERN =
+	/(?:annual\s+revenue|quarterly\s+revenue|total\s+revenue)\s+(?:of\s+|is\s+)?\$[\d,.]+\s*[BMKbmk]?/i;
+
+/** growth_rate: "growing X%", "X% MoM/YoY/month over month" */
+const GROWTH_RATE_PATTERN =
+	/(?:growing|growth(?:\s+rate)?(?:\s+of)?)\s+\d+%|\b\d+%\s+(?:month\s+over\s+month|MoM\b|YoY\b|year\s+over\s+year|annually)/i;
+
+/** customer_count: explicit count followed by customers/users/clients */
+const CUSTOMER_COUNT_PATTERN = /\b(\d[\d,]+)\s+(?:customers?|active\s+users?|clients?)\b/i;
+
+// ── Phase 2 types ────────────────────────────────────────────────────────────
+
+interface CanonicalField {
+	category: string;
+	field: string;
+	computability: "Computable" | "NotComputable";
+	value: string | null;
+	evidenceRef: string | null;
+	reasonCode: string | null;
+}
+
+interface ConflictEntry {
+	field: string;
+	valueA: string;
+	evidenceA: string;
+	valueB: string;
+	evidenceB: string;
+}
+
+type CompletenessStatus = "Present" | "Missing" | "Conflicting";
+
+interface CompletenessRow {
+	category: string;
+	status: CompletenessStatus;
+}
+
+interface Phase2Result {
+	fields: CanonicalField[];
+	conflicts: ConflictEntry[];
+	completeness: CompletenessRow[];
+}
+
+// ── Phase 2 helpers ──────────────────────────────────────────────────────────
+
+/**
+ * Normalize a dollar figure within a snippet for conflict deduplication.
+ * "$2M" and "$2m" will both normalize to "$2m"; "$5M" → "$5m" (distinct).
+ */
+function normalizeAmountForConflict(s: string): string {
+	const m = /\$[\d,.]+\s*[BMKbmkTt]?/i.exec(s);
+	return m ? m[0].replace(/\s/g, "").toLowerCase() : s.trim().toLowerCase().slice(0, 30);
+}
+
+/**
+ * Collect ALL first-match results across all pages for conflict detection.
+ * Unlike detectInPages (stops at first match), this scans every page.
+ */
+function detectAllMatchesForConflict(
+	pages: DpuPage[],
+	pattern: RegExp
+): Array<{ snippet: string; ref: string; normalized: string }> {
+	return pages.flatMap((page) => {
+		const m = pattern.exec(page.text ?? "");
+		if (!m) return [];
+		const snippet = m[0].slice(0, 80);
+		return [{
+			snippet,
+			ref: dpuEvidenceRef(page.document_id, page.page_index),
+			normalized: normalizeAmountForConflict(snippet),
+		}];
+	});
+}
+
+/**
+ * Find a conflict: two distinct normalized dollar amounts on different evidence refs.
+ * Same page cannot conflict with itself.
+ */
+function findConflictInMatches(
+	fieldName: string,
+	matches: Array<{ snippet: string; ref: string; normalized: string }>
+): ConflictEntry | null {
+	if (matches.length < 2) return null;
+	const seen = new Map<string, { snippet: string; ref: string }>();
+	for (const m of matches) {
+		if (!seen.has(m.normalized)) {
+			seen.set(m.normalized, { snippet: m.snippet, ref: m.ref });
+		}
+	}
+	if (seen.size < 2) return null;
+	const entries = [...seen.values()];
+	const a = entries[0]!;
+	const b = entries[1]!;
+	if (a.ref === b.ref) return null; // same page — not a cross-page conflict
+	return { field: fieldName, valueA: a.snippet, evidenceA: a.ref, valueB: b.snippet, evidenceB: b.ref };
+}
+
+/** Evaluate a single canonical sub-field via first-match detection. */
+function evalCanonicalField(
+	category: string,
+	field: string,
+	pages: DpuPage[],
+	pattern: RegExp,
+	reasonCode: string,
+	dpuLoadFailed: boolean
+): CanonicalField {
+	if (dpuLoadFailed) {
+		return { category, field, computability: "NotComputable", value: null, evidenceRef: null, reasonCode: SLOT_REASON_CODES.DPU_LOAD_FAILED };
+	}
+	const hit = detectInPages(pages, pattern);
+	if (hit) {
+		return { category, field, computability: "Computable", value: hit.snippet, evidenceRef: hit.ref, reasonCode: null };
+	}
+	return { category, field, computability: "NotComputable", value: null, evidenceRef: null, reasonCode };
+}
+
+/**
+ * Extract all Phase 2 canonical fields, detect conflicts, and compute per-category completeness.
+ * No extra DB calls — reuses the same InsightSlotInputs fetched in Stage 1.
+ */
+function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
+	const { dpuPages, dpuLoadFailed } = inputs;
+	const fields: CanonicalField[] = [];
+	const conflicts: ConflictEntry[] = [];
+
+	// ── Raise Terms ────────────────────────────────────────────────────────────
+	// Conflict detection: scan ALL pages to find distinct raise amounts.
+	const raiseAmountMatches = dpuLoadFailed
+		? []
+		: detectAllMatchesForConflict(dpuPages, RAISE_AMOUNT_PATTERN);
+	const raiseAmountConflict = findConflictInMatches("raise_amount", raiseAmountMatches);
+	if (raiseAmountConflict) conflicts.push(raiseAmountConflict);
+
+	fields.push(evalCanonicalField("raise_terms", "raise_amount", dpuPages, RAISE_AMOUNT_PATTERN, P2_REASON.NO_RAISE_AMOUNT_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("raise_terms", "raise_round", dpuPages, RAISE_ROUND_PATTERN, P2_REASON.NO_RAISE_ROUND_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("raise_terms", "raise_instrument", dpuPages, RAISE_INSTRUMENT_PATTERN, P2_REASON.NO_RAISE_INSTRUMENT_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("raise_terms", "raise_cap", dpuPages, RAISE_CAP_PATTERN, P2_REASON.NO_RAISE_CAP_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("raise_terms", "raise_discount", dpuPages, RAISE_DISCOUNT_PATTERN, P2_REASON.NO_RAISE_DISCOUNT_MENTION, dpuLoadFailed));
+
+	// ── Valuation Terms ────────────────────────────────────────────────────────
+	fields.push(evalCanonicalField("valuation_terms", "valuation_pre", dpuPages, VALUATION_PRE_PATTERN, P2_REASON.NO_VALUATION_PRE_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("valuation_terms", "valuation_post", dpuPages, VALUATION_POST_PATTERN, P2_REASON.NO_VALUATION_POST_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("valuation_terms", "valuation_safe_cap", dpuPages, VALUATION_SAFE_CAP_PATTERN, P2_REASON.NO_VALUATION_SAFE_CAP_MENTION, dpuLoadFailed));
+
+	// ── Use of Funds ───────────────────────────────────────────────────────────
+	fields.push(evalCanonicalField("use_of_funds", "use_of_funds_buckets", dpuPages, USE_OF_FUNDS_BUCKET_PATTERN, P2_REASON.NO_USE_OF_FUNDS_BUCKETS_MENTION, dpuLoadFailed));
+
+	// ── Market Claims ──────────────────────────────────────────────────────────
+	fields.push(evalCanonicalField("market_claims", "tam_value", dpuPages, TAM_VALUE_PATTERN, P2_REASON.NO_TAM_VALUE_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("market_claims", "sam_value", dpuPages, SAM_VALUE_PATTERN, P2_REASON.NO_SAM_VALUE_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("market_claims", "som_value", dpuPages, SOM_VALUE_PATTERN, P2_REASON.NO_SOM_VALUE_MENTION, dpuLoadFailed));
+
+	// ── Traction Signal ────────────────────────────────────────────────────────
+	fields.push(evalCanonicalField("traction_signal", "mrr_value", dpuPages, MRR_VALUE_PATTERN, P2_REASON.NO_MRR_VALUE_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("traction_signal", "arr_value", dpuPages, ARR_VALUE_PATTERN, P2_REASON.NO_ARR_VALUE_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("traction_signal", "revenue_value", dpuPages, REVENUE_VALUE_PATTERN, P2_REASON.NO_REVENUE_VALUE_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("traction_signal", "growth_rate", dpuPages, GROWTH_RATE_PATTERN, P2_REASON.NO_GROWTH_RATE_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("traction_signal", "customer_count", dpuPages, CUSTOMER_COUNT_PATTERN, P2_REASON.NO_CUSTOMER_COUNT_MENTION, dpuLoadFailed));
+
+	// ── Completeness ───────────────────────────────────────────────────────────
+	const COMPLETENESS_CATEGORIES = [
+		"raise_terms",
+		"valuation_terms",
+		"use_of_funds",
+		"market_claims",
+		"traction_signal",
+	] as const;
+	const completeness: CompletenessRow[] = COMPLETENESS_CATEGORIES.map((cat) => {
+		const catFields = fields.filter((f) => f.category === cat);
+		const hasConflict = conflicts.some((c) => catFields.some((f) => f.field === c.field));
+		if (hasConflict) return { category: cat, status: "Conflicting" };
+		const hasComputable = catFields.some((f) => f.computability === "Computable");
+		return { category: cat, status: hasComputable ? "Present" : "Missing" };
+	});
+
+	return { fields, conflicts, completeness };
+}
+
+// ── Phase 2 section builders ──────────────────────────────────────────────────
+
+function formatCanonicalFieldLine(f: CanonicalField): string {
+	if (f.computability === "Computable" && f.value !== null && f.evidenceRef !== null) {
+		return `category=${f.category} | field=${f.field} | computability=Computable | value="${f.value}" | evidence=${f.evidenceRef} | reason=none`;
+	}
+	return `category=${f.category} | field=${f.field} | computability=NotComputable | value=none | evidence=none | reason=${f.reasonCode ?? "UNKNOWN"}`;
+}
+
+function formatConflictLine(c: ConflictEntry): string {
+	return `field=${c.field} | value_a="${c.valueA}" | evidence_a=${c.evidenceA} | value_b="${c.valueB}" | evidence_b=${c.evidenceB}`;
+}
+
+function buildCanonicalFieldsSection(
+	result: Phase2Result
+): RenderPackage["sections"][number] {
+	const body = result.fields.map(formatCanonicalFieldLine).join("\n");
+	return {
+		key: "canonical_fields",
+		title: "Canonical Fields",
+		kind: "message",
+		body,
+		fallback: "Canonical field extraction unavailable.",
+	};
+}
+
+function buildConflictsSectionP2(
+	result: Phase2Result
+): RenderPackage["sections"][number] | null {
+	if (result.conflicts.length === 0) return null;
+	const body = result.conflicts.map(formatConflictLine).join("\n");
+	return {
+		key: "conflicts",
+		title: "Conflicting Field Values",
+		kind: "message",
+		body,
+		fallback: "No conflicts detected.",
+	};
+}
+
+function buildCompletenessSummarySection(
+	result: Phase2Result
+): RenderPackage["sections"][number] {
+	const body = result.completeness.map((row) => `${row.category}: ${row.status}`).join("\n");
+	return {
+		key: "completeness_summary",
+		title: "Completeness Summary",
+		kind: "message",
+		body,
+		fallback: "Completeness summary unavailable.",
+	};
+}
+
+/**
+ * Build all Phase 2 sections: canonical_fields, optional conflicts, completeness_summary.
+ * Returns 2–3 sections. Reuses pre-fetched InsightSlotInputs — no additional DB calls.
+ */
+function buildPhase2Sections(
+	inputs: InsightSlotInputs
+): Array<RenderPackage["sections"][number]> {
+	const result = extractPhase2Result(inputs);
+	const sections: Array<RenderPackage["sections"][number]> = [];
+	sections.push(buildCanonicalFieldsSection(result));
+	const conflictsSection = buildConflictsSectionP2(result);
+	if (conflictsSection) sections.push(conflictsSection);
+	sections.push(buildCompletenessSummarySection(result));
+	return sections;
+}
+
 // ─── G3 diagnostic section (dev/staging only) ───────────────────────────────
 
 const DIAG_TRUNCATE = 300;
@@ -1078,9 +1421,10 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			loadInsightSlotInputs(pool, dealId, gateState),
 		]);
 		const insightSlotsSections = buildInsightSlotsSections(dealId, insightSlotInputs);
+		const phase2Sections = buildPhase2Sections(insightSlotInputs);
 		const sections = g3OnlyFail
-			? buildG3OnlyFailSections(gateState, coverage, insightSlotsSections)
-			: buildGateFailedSections(gateState, coverage, insightSlotsSections);
+			? buildG3OnlyFailSections(gateState, coverage, insightSlotsSections, phase2Sections)
+			: buildGateFailedSections(gateState, coverage, insightSlotsSections, phase2Sections);
 
 		// Append diagnostics for any structural G3 failure (QUERY_FAILED is excluded
 		// since it indicates a DB problem, not a readability one).
@@ -1222,7 +1566,8 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		loadInsightSlotInputs(pool, dealId, gateState),
 	]);
 	const insightSlotsSections = buildInsightSlotsSections(dealId, insightSlotInputs);
-	const sections = buildDeterministicOnlySections(gateState, coverage, insightSlotsSections);
+	const phase2Sections = buildPhase2Sections(insightSlotInputs);
+	const sections = buildDeterministicOnlySections(gateState, coverage, insightSlotsSections, phase2Sections);
 	const renderPackage = buildRenderPackage({
 		dealId,
 		status: "deterministic_only",

@@ -2127,6 +2127,8 @@ export async function apiGetInvestorInsights(dealId: string): Promise<InvestorIn
 }
 
 export async function apiGenerateInvestorInsights(dealId: string): Promise<{ ok: boolean }> {
+  // eslint-disable-next-line no-console
+  console.log('[InvestorInsights] POST generate', dealId);
   return request<{ ok: boolean }>(`/api/v1/deals/${dealId}/investor-insights/generate`, {
     method: 'POST',
   });

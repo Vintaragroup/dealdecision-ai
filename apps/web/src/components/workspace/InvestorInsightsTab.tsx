@@ -785,7 +785,8 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
   const showGenerateFailedBanner = reportStatus === 'failed';
 
   const handleGenerate = async () => {
-    console.log("generate_click", dealId);
+    // eslint-disable-next-line no-console
+    console.log('[InvestorInsights] generate_click', dealId);
     setGenerateState('loading');
     setGenerateError(null);
     try {

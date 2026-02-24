@@ -527,6 +527,24 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const dealJobsRef = useRef<DealJobRowV2[]>([]);
   const fullProcessRunWindowRef = useRef<{ startMs: number; endMs: number } | null>(null);
 
+  // Refs for volatile poll-interval state — updated every render so the deal-jobs
+  // polling effect can read the latest values without restarting the interval on
+  // every SSE-driven state change (jobStatus, jobType, isFullProcessActive, etc.).
+  const dealJobsPollStateRef = useRef({
+    isFullProcessActive: false,
+    jobStatus: null as string | null,
+    jobType: null as string | null,
+    fullProcessExtractFinishedAt: null as string | null,
+    fullProcessRunExtractJobId: null as string | null,
+  });
+  dealJobsPollStateRef.current = {
+    isFullProcessActive,
+    jobStatus,
+    jobType,
+    fullProcessExtractFinishedAt: fullProcessExtractFinishedAt ?? null,
+    fullProcessRunExtractJobId: fullProcessRunExtractJobId ?? null,
+  };
+
   useEffect(() => {
     dealJobsRef.current = dealJobs;
   }, [dealJobs]);
@@ -4384,12 +4402,21 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
         // Full process UX: keep following the run-scoped analyze job even if the pinned extract_visuals job
         // has already reached a terminal status (and job polling/SSE quiets down).
-        if (isFullProcessActive) {
+        // Read via ref so this logic uses the latest values without adding them to the
+        // effect's dep array (which would cause the interval to restart on every SSE event).
+        const {
+          isFullProcessActive: fpActive,
+          jobType: latestJobType,
+          fullProcessExtractFinishedAt: fpExtractFinishedAt,
+          fullProcessRunExtractJobId: fpRunExtractJobId,
+        } = dealJobsPollStateRef.current;
+
+        if (fpActive) {
           const runWindow = fullProcessRunWindowRef.current;
           const trackingThisRunExtract =
-            !!fullProcessRunExtractJobId &&
+            !!fpRunExtractJobId &&
             !!activeJobId &&
-            (activeJobId === fullProcessRunExtractJobId || jobType === 'extract_visuals');
+            (activeJobId === fpRunExtractJobId || latestJobType === 'extract_visuals');
 
           if (runWindow && trackingThisRunExtract) {
             const best = selectAnalyzeJobInWindow(normalizedRows, runWindow);
@@ -4398,7 +4425,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 (best.type ?? '') === 'analyze_deal' &&
                 isFailedJobStatus(best.status) &&
                 isSupersedableAnalyzeFailure(best) &&
-                (isFullProcessActive || shouldTreatRunAnalyzeFailureAsPending({ extractFinishedAt: fullProcessExtractFinishedAt ?? null }));
+                (fpActive || shouldTreatRunAnalyzeFailureAsPending({ extractFinishedAt: fpExtractFinishedAt ?? null }));
 
               if (!treatFailedAsPending) {
                 setJobId(best.job_id);
@@ -4412,7 +4439,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         setDealJobsError(msg);
       } finally {
         if (cancelled) return;
-        const isActive = isFullProcessActive || jobStatus === 'queued' || jobStatus === 'running' || jobStatus === 'retrying';
+        // Read latest volatile state from ref to pick the right interval without
+        // restarting the whole effect every time jobStatus/isFullProcessActive changes.
+        const { isFullProcessActive: fpActive, jobStatus: latestStatus } = dealJobsPollStateRef.current;
+        const isActive = fpActive || latestStatus === 'queued' || latestStatus === 'running' || latestStatus === 'retrying';
         pollTimer = window.setTimeout(poll, isActive ? 2500 : 15000);
       }
     };
@@ -4422,7 +4452,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       cancelled = true;
       clearTimer();
     };
-  }, [activeJobId, dealId, fullProcessExtractFinishedAt, fullProcessRunExtractJobId, isFullProcessActive, jobStatus, jobType]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeJobId, dealId]);
 
   useEffect(() => {
     if (!dealId || typeof EventSource === 'undefined') {

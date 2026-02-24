@@ -11,6 +11,7 @@ import type { Deal } from "@dealdecision/contracts";
 import type { JobStatus, JobType } from "@dealdecision/contracts";
 import { QUEUE_NAMES } from "@dealdecision/core";
 import { enqueueBullmqJob, enqueueJob, insertJobRow } from "../services/jobs";
+import { getQueues } from "../lib/queue";
 import { runIdempotentOperation } from "../lib/jobs";
 import { getStorageDriver } from "../lib/storage-contract";
 import { autoProgressDealStage } from "../services/stageProgression";
@@ -2428,12 +2429,42 @@ export async function registerDealRoutes(
     r2?: {
       objectExistsInR2?: typeof objectExistsInR2;
     };
+    investorInsightsQueue?: { add: (name: string, data: unknown, opts?: unknown) => Promise<unknown> };
   }
 ) {
   const pool = (poolOverride ?? getPool()) as DealRoutesPool;
   const enqueue = deps?.enqueueJob ?? enqueueJob;
   const r2 = deps?.r2 ?? { objectExistsInR2 };
   const debugRoutesEnabled = process.env.DEBUG_ROUTES === "1" || process.env.NODE_ENV !== "production";
+
+  // Investor Insight Engine – Stage 0: manually enqueue (re)generation for a deal.
+  // Returns 202 { ok: true } on success, 500 { error: "enqueue_failed" } if the queue throws.
+  app.post("/api/v1/deals/:deal_id/investor-insights/generate", async (request, reply) => {
+    const rawDealId = (request.params as { deal_id: string }).deal_id;
+    const parsed = z.object({ deal_id: z.string().uuid() }).safeParse({ deal_id: rawDealId });
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+    const dealId = parsed.data.deal_id;
+
+    // Deterministic dedup key: allows one queued/running manual-generate per deal per version.
+    // Format mirrors makeJobId("investor_insights", [dealId, "v1", "manual_generate"]) from worker.
+    const jobId = `investor_insights__${dealId}__v1__manual_generate`;
+
+    const insightsQueue = deps?.investorInsightsQueue ?? (getQueues().investorInsightsQueue as any);
+    try {
+      await insightsQueue.add(
+        "generate_investor_insights",
+        { deal_id: dealId, engine_version: "v1", triggered_by: "manual_generate", force_recompute: true },
+        { jobId, removeOnComplete: true, removeOnFail: false }
+      );
+    } catch (err) {
+      console.error("[investor-insights] enqueue_failed", { dealId, err: err instanceof Error ? err.message : String(err) });
+      return reply.status(500).send({ error: "enqueue_failed" });
+    }
+
+    return reply.status(202).send({ ok: true });
+  });
 
   if (debugRoutesEnabled) {
     // DEV-only: dump standardized segment features for sample assets.

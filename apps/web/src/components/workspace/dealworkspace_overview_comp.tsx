@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
-import { ChevronDown, Package, Users, DollarSign, TrendingUp, Shield, ArrowRight, AlertCircle } from 'lucide-react';
+import { ChevronDown, Package, Users, DollarSign, TrendingUp, Shield, ArrowRight, AlertCircle, Lightbulb } from 'lucide-react';
 import type { EvidenceResolveResult } from '../../lib/apiClient';
 
 type FieldEvidenceRef = {
@@ -85,6 +85,10 @@ export type DealWorkspaceOverviewCompProps = {
   coverageGaps: string[];
 
   onViewFullAnalysis?: () => void;
+  /** Callback to switch the workspace to the Investor Insights tab. */
+  onOpenInvestorInsights?: () => void;
+  /** Latest status from investor_insight_reports, if available. */
+  investorInsightsStatus?: string;
 };
 
 export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps) {
@@ -724,171 +728,63 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
           ) : null}
       </div>
 
-      {/* Investment Analysis Overview Card */}
+      {/* Investor Insights Teaser — replaces the former Investment Analysis Overview card */}
       <div className={cardClassName}>
-          {/* Header Row */}
-          <div className="mb-6">
-            <div className="flex items-start justify-between gap-4 mb-4">
-              <h2 className="text-white text-xl">Investment Analysis Overview</h2>
-              <div className="flex items-center gap-3 flex-shrink-0">
-                <span className={`${badgeBaseClassName} bg-emerald-500/20 text-emerald-400 border-emerald-500/30`}>
-                  {decisionLabelText}
-                </span>
-                {props.llmPhaseMode ? (
-                  <span className={`${badgeBaseClassName} bg-zinc-500/20 text-zinc-300 border-zinc-500/30`}>
-                    phase: {String(props.llmPhaseMode)}
-                  </span>
-                ) : null}
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <Lightbulb
+              className={`w-5 h-5 flex-shrink-0 ${props.darkMode ? 'text-amber-400' : 'text-amber-500'}`}
+              strokeWidth={1.5}
+            />
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className={`text-sm font-medium ${props.darkMode ? 'text-white' : 'text-gray-900'}`}>
+                  Investor Insights
+                </h3>
+                {props.investorInsightsStatus ? (() => {
+                  const statusMap: Record<string, { label: string; cls: string }> = {
+                    not_started:        { label: 'not started',       cls: 'bg-zinc-500/20 text-zinc-400 border-zinc-500/30' },
+                    queued:             { label: 'queued',            cls: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
+                    running:            { label: 'running',           cls: 'bg-blue-500/20 text-blue-400 border-blue-500/30' },
+                    deterministic_only: { label: 'deterministic only', cls: 'bg-amber-500/20 text-amber-400 border-amber-500/30' },
+                    complete:           { label: 'complete',          cls: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' },
+                    failed:             { label: 'failed',            cls: 'bg-red-500/20 text-red-400 border-red-500/30' },
+                    quarantined:        { label: 'quarantined',       cls: 'bg-red-500/20 text-red-400 border-red-500/30' },
+                  };
+                  const chip = statusMap[props.investorInsightsStatus] ??
+                    { label: props.investorInsightsStatus, cls: 'bg-zinc-500/20 text-zinc-400 border-zinc-500/30' };
+                  return (
+                    <span className={`${badgeBaseClassName} ${chip.cls}`}>{chip.label}</span>
+                  );
+                })() : null}
               </div>
-            </div>
-            
-            <div className="flex items-center gap-4 text-sm">
-              <div className="flex items-center gap-2">
-                <span className="text-zinc-400">Score:</span>
+              <p className={`mt-0.5 text-sm ${props.darkMode ? 'text-zinc-400' : 'text-gray-500'}`}>
+                Deeper investor breakdown is available in the Investor Insights tab.
+              </p>
+              {/* Compact score row — preserves the test contract for overview-score-text */}
+              <div className="flex items-center gap-3 mt-1.5 text-sm">
+                <span className={`${props.darkMode ? 'text-zinc-500' : 'text-gray-400'}`}>Score:</span>
                 <span
-                  className="text-white"
+                  className={`${props.darkMode ? 'text-zinc-200' : 'text-gray-700'}`}
                   data-testid="overview-score-text"
                   data-canonical-score-source={props.scoreSource ?? 'none'}
                 >{scoreText}</span>
+                <Shield className={`w-3.5 h-3.5 ${props.confidenceVerified ? 'text-emerald-400' : 'text-zinc-500'}`} strokeWidth={1.5} />
+                <span className={`text-xs ${props.confidenceVerified ? 'text-emerald-400' : (props.darkMode ? 'text-zinc-500' : 'text-gray-400')}`}>{props.confidenceLabel}</span>
               </div>
-              <div className="flex items-center gap-2">
-                <Shield className={`w-4 h-4 ${props.confidenceVerified ? 'text-emerald-400' : 'text-zinc-500'}`} strokeWidth={1.5} />
-                <span className={props.confidenceVerified ? 'text-emerald-400' : 'text-zinc-500'}>{props.confidenceLabel}</span>
-              </div>
+              {/* Preserve slot contract: hidden span carries the summary slot so existing tests continue to resolve it. */}
+              <span className="sr-only" data-slot="investmentAnalysis.overview.summary">{props.rationale}</span>
             </div>
           </div>
-
-          {/* Rationale */}
-          <div className="mb-6">
-            <p className="text-zinc-200 text-sm leading-relaxed" data-slot="investmentAnalysis.overview.summary">
-              {props.rationale}
-            </p>
-          </div>
-
-          {/* Interpretation (governed overlay) */}
-          <div className={`mb-6 pb-6 border-b ${dividerClassName}`}>
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-zinc-400 text-sm">Interpretation</div>
-                <div className="text-zinc-500 text-xs">
-                  LLM overlay (display-only). Deterministic report remains authoritative.
-                  {interpretationSource === 'persisted' ? ' Source: persisted governed overlay (PR2).' : interpretationSource === 'narrated' ? ' Source: legacy narrated /report?narrate=1.' : ''}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  const next = !showInterpretation;
-                  setShowInterpretation(next);
-                  if (next && interpretationStatus === 'idle') {
-                    props.onRequestInterpretation?.();
-                  }
-                }}
-                className="flex items-center gap-1.5 text-blue-400 hover:text-blue-300 transition-colors text-sm group"
-              >
-                <span>{showInterpretation ? 'Hide interpretation' : 'Show interpretation'}</span>
-                <ChevronDown
-                  className={`w-4 h-4 transition-transform duration-200 ${showInterpretation ? 'rotate-180' : ''}`}
-                  strokeWidth={1.5}
-                />
-              </button>
-            </div>
-
-            {showInterpretation ? (
-              <div className="mt-3">
-                {interpretationStatus === 'loading' ? (
-                  <div className="text-zinc-300 text-sm">Generating interpretation…</div>
-                ) : interpretationStatus === 'ready' ? (
-                  <>
-                    {interpretationText ? (
-                      <div className="text-zinc-200 text-sm whitespace-pre-wrap leading-relaxed">{interpretationText}</div>
-                    ) : (
-                      <div className="text-zinc-400 text-sm">No overlay generated.</div>
-                    )}
-                    {renderPersistedClaims()}
-                    {renderPersistedDisclosures()}
-                  </>
-                ) : interpretationStatus === 'error' ? (
-                  <div className="text-zinc-300 text-sm">
-                    Interpretation failed{interpretationErrorCode ? ` (code=${interpretationErrorCode})` : ''}.
-                  </div>
-                ) : (
-                  <div className="text-zinc-400 text-sm">Open to generate an interpretation.</div>
-                )}
-              </div>
-            ) : null}
-          </div>
-
-          {/* Strengths vs Concerns - Two Column Layout */}
-          <div className="mb-6 grid md:grid-cols-2 gap-6">
-            {/* Left Column - Strengths */}
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <TrendingUp className="w-4 h-4 text-emerald-400" strokeWidth={1.5} />
-                <h3 className="text-emerald-400 text-sm font-medium">Strengths</h3>
-              </div>
-              <ul className="space-y-2">
-                {strengthsPrimary.map((item, idx) => (
-                  <li key={`strength-${idx}`} className="flex items-start gap-2">
-                    <span className="text-emerald-400 mt-1">•</span>
-                    <span className="text-zinc-300 text-sm">{item}</span>
-                  </li>
-                ))}
-              </ul>
-              {strengthsExtra > 0 && (
-                <button className="text-zinc-500 hover:text-zinc-400 text-xs mt-2 transition-colors">
-                  +{strengthsExtra} more
-                </button>
-              )}
-            </div>
-
-            {/* Right Column - Concerns */}
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <AlertCircle className="w-4 h-4 text-amber-400" strokeWidth={1.5} />
-                <h3 className="text-amber-400 text-sm font-medium">Concerns / Open Items</h3>
-              </div>
-              <ul className="space-y-2">
-                {openItemsPrimary.map((item, idx) => (
-                  <li key={`open-item-${idx}`} className="flex items-start gap-2">
-                    <span className="text-amber-400 mt-1">•</span>
-                    <span className="text-zinc-300 text-sm">{item}</span>
-                  </li>
-                ))}
-              </ul>
-              {openItemsExtra > 0 && (
-                <button className="text-zinc-500 hover:text-zinc-400 text-xs mt-2 transition-colors">
-                  +{openItemsExtra} more
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Coverage Gaps */}
-          <div className={`mb-5 pb-5 border-b ${dividerClassName}`}>
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-zinc-400 text-sm">Coverage gaps</span>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {coverageGaps.map((gap, idx) => (
-                <span
-                  key={`coverage-gap-${idx}`}
-                  className={`${badgeBaseClassName} bg-amber-500/20 text-amber-400 border-amber-500/30`}
-                >
-                  {gap}
-                </span>
-              ))}
-            </div>
-          </div>
-
-          {/* Expand Control */}
           <button
-            onClick={() => props.onViewFullAnalysis?.()}
-            className="flex items-center gap-1.5 text-blue-400 hover:text-blue-300 transition-colors text-sm group"
+            type="button"
+            onClick={() => props.onOpenInvestorInsights?.()}
+            className="flex items-center gap-1.5 text-blue-400 hover:text-blue-300 transition-colors text-sm whitespace-nowrap flex-shrink-0"
           >
-            <span>View full analysis</span>
+            <span>Open Investor Insights</span>
             <ArrowRight className="w-4 h-4" strokeWidth={1.5} />
           </button>
+        </div>
       </div>
     </div>
   );

@@ -31,7 +31,7 @@ function Tabs({ tabs, activeTab, onTabChange, darkMode, className }: TabsProps) 
       <TabsPrimitive.List
         data-slot="tabs-list"
         className={cn(
-          "inline-flex h-10 w-full items-center gap-2 rounded-xl bg-muted/60 p-1", 
+          "flex h-10 w-full items-center gap-1 rounded-xl bg-muted/60 p-1 overflow-x-auto scrollbar-none", 
           darkMode ? "text-gray-300" : "text-gray-700",
         )}
       >
@@ -41,7 +41,7 @@ function Tabs({ tabs, activeTab, onTabChange, darkMode, className }: TabsProps) 
             value={tab.id}
             data-slot="tabs-trigger"
             className={cn(
-              "data-[state=active]:bg-card inline-flex flex-1 items-center justify-center gap-2 rounded-lg border border-transparent px-3 py-2 text-sm font-medium transition-colors",
+              "data-[state=active]:bg-card inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-lg border border-transparent px-3 py-2 text-sm font-medium transition-colors",
               "focus-visible:outline-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
               "data-[state=active]:border-input data-[state=active]:shadow-sm",
               darkMode

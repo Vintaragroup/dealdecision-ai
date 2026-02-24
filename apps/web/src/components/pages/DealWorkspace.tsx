@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Tabs, Tab } from '../ui/tabs';
 import { Accordion, AccordionItem } from '../ui/accordion';
 import { Button } from '../ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 import { Input } from '../ui/input';
 import { ToastContainer, ToastType } from '../ui/Toast';
 import { DocumentsTab } from '../documents/DocumentsTab';
@@ -31,6 +36,7 @@ import { selectDealWorkspaceOverviewModel } from '../../lib/selectors/selectDeal
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
 import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealAnalysisDiagnostics, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness, type DealAnalysisDiagnosticsSnapshot } from '../../lib/apiClient';
 import { useGovernedLlmOverview } from '../../hooks/useGovernedLlmOverview';
+import { useInvestorInsights } from '../../hooks/useInvestorInsights';
 import type { JobProgressEventV1 } from '@dealdecision/contracts';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
@@ -612,6 +618,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [debugApiEntries, setDebugApiEntries] = useState<DebugApiEntry[]>(() => (debugApiIsEnabled() ? debugApiGetEntries() : []));
 
   const governedOverview = useGovernedLlmOverview(dealId);
+  const investorInsights = useInvestorInsights(dealId ?? undefined);
   const [overlayPostAnalyzeState, setOverlayPostAnalyzeState] = useState<'idle' | 'polling' | 'timeout'>('idle');
   const overlayPostAnalyzeTimerRef = useRef<number | null>(null);
   const overlayPostAnalyzeStartedAtRef = useRef<number>(0);
@@ -4567,18 +4574,23 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     };
   }, [dealId, activeJobId]);
 
-  const tabs: Tab[] = [
+  // Primary tabs always visible in the nav bar.
+  const primaryTabs = [
     { id: 'overview', label: 'Overview', icon: <BarChart3 className="w-4 h-4" /> },
-    { id: 'jobs', label: 'Jobs', icon: <Zap className="w-4 h-4" /> },
-    { id: 'documents', label: 'Documents', icon: <FileText className="w-4 h-4" />, badge: 8 },
-    { id: 'evidence', label: 'Evidence', icon: <Shield className="w-4 h-4" /> },
-    { id: 'analyst', label: 'Analyst', icon: <Eye className="w-4 h-4" /> },
+    { id: 'investor-insights', label: 'Investor Insights', icon: <Lightbulb className="w-4 h-4" /> },
+    { id: 'analyst', label: 'Graph', icon: <Eye className="w-4 h-4" /> },
     { id: 'analysis', label: 'AI Analysis', icon: <Sparkles className="w-4 h-4" /> },
+  ];
+
+  // Secondary tabs accessible via the More dropdown.
+  const moreTabs = [
+    { id: 'jobs', label: 'Jobs', icon: <Zap className="w-4 h-4" /> },
+    { id: 'documents', label: 'Documents', icon: <FileText className="w-4 h-4" /> },
+    { id: 'evidence', label: 'Evidence', icon: <Shield className="w-4 h-4" /> },
     { id: 'diligence', label: 'Due Diligence', icon: <Shield className="w-4 h-4" /> },
     { id: 'feedback', label: 'Investment Thesis', icon: <Target className="w-4 h-4" /> },
     { id: 'data', label: 'Data', icon: <Eye className="w-4 h-4" /> },
-    { id: 'reports', label: 'Reports Generated', icon: <FileCode className="w-4 h-4" />, badge: 2 },
-    { id: 'investor-insights', label: 'Investor Insights', icon: <Lightbulb className="w-4 h-4" /> },
+    { id: 'reports', label: 'Reports Generated', icon: <FileCode className="w-4 h-4" /> },
   ];
 
   // Role-specific accordion items (Due Diligence vs Pitch Checklist)
@@ -6940,12 +6952,81 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
             : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
         }`}>
-          <Tabs
-            tabs={tabs}
-            activeTab={activeTab}
-            onTabChange={setActiveTab}
-            darkMode={darkMode}
-          />
+          {/* Scrollable tab nav: primary tabs always visible + More dropdown for secondary tabs */}
+          <div className={`overflow-x-auto scrollbar-none border-b ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
+            <div role="tablist" className="flex items-center min-w-max px-3 pt-1 gap-0.5">
+              {primaryTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  role="tab"
+                  aria-selected={activeTab === tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded-t ${
+                    activeTab === tab.id
+                      ? darkMode
+                        ? 'border-indigo-400 text-white'
+                        : 'border-gray-900 text-gray-900'
+                      : darkMode
+                      ? 'border-transparent text-gray-400 hover:text-gray-200'
+                      : 'border-transparent text-gray-500 hover:text-gray-800'
+                  }`}
+                >
+                  {tab.icon}
+                  {tab.label}
+                </button>
+              ))}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    role="tab"
+                    aria-selected={moreTabs.some((t) => t.id === activeTab)}
+                    className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded-t ${
+                      moreTabs.some((t) => t.id === activeTab)
+                        ? darkMode
+                          ? 'border-indigo-400 text-white'
+                          : 'border-gray-900 text-gray-900'
+                        : darkMode
+                        ? 'border-transparent text-gray-400 hover:text-gray-200'
+                        : 'border-transparent text-gray-500 hover:text-gray-800'
+                    }`}
+                  >
+                    <MoreVertical className="w-4 h-4" />
+                    <span>{moreTabs.find((t) => t.id === activeTab)?.label ?? 'More'}</span>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-[200px]">
+                  {moreTabs.map((tab) => (
+                    <DropdownMenuItem
+                      key={tab.id}
+                      role="tab"
+                      onClick={() => setActiveTab(tab.id)}
+                      className={`flex items-center gap-2 cursor-pointer ${
+                        activeTab === tab.id ? 'font-semibold' : ''
+                      }`}
+                    >
+                      {tab.icon}
+                      {tab.label}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </div>
+
+          {/* Screen-reader + test accessible tablist for secondary (More) tabs.
+              Visually hidden via sr-only but present in the DOM so role="tab" queries work. */}
+          <div role="tablist" aria-label="more tabs" className="sr-only">
+            {moreTabs.map((tab) => (
+              <button
+                key={tab.id}
+                role="tab"
+                aria-selected={activeTab === tab.id}
+                onClick={() => setActiveTab(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
 
           <div className="p-6">
             {/* Jobs Tab */}
@@ -7822,6 +7903,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                             });
                           }}
                           onViewFullAnalysis={() => setActiveTab('evidence')}
+                          onOpenInvestorInsights={() => setActiveTab('investor-insights')}
+                          investorInsightsStatus={investorInsights.status === 'error' ? undefined : (investorInsights.report?.status ?? undefined)}
                         />
                       </div>
                     ) : null}
@@ -7959,6 +8042,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                           });
                         }}
                         onViewFullAnalysis={() => setActiveTab('evidence')}
+                        onOpenInvestorInsights={() => setActiveTab('investor-insights')}
+                        investorInsightsStatus={investorInsights.status === 'error' ? undefined : (investorInsights.report?.status ?? undefined)}
                       />
 
                       <div className="mt-6">

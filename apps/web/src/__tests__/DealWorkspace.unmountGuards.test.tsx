@@ -33,6 +33,7 @@ vi.mock('../lib/apiClient', async (importOriginal) => {
     apiGetDealReportNarrated: vi.fn(async () => ({ ready: false, reason: 'not_generated_yet' } as any)),
     apiGetDealGovernedOverlayPersisted: vi.fn(async () => ({ overview: null } as any)),
     apiGetDealDeterministicUnderstanding: vi.fn(async () => null as any),
+    apiGetInvestorInsights: vi.fn(async () => ({ status: 'not_started' } as any)),
     apiPostDealDeterministicUnderstanding: vi.fn(async () => ({
       analysis_version: 'deterministic_understanding_v1',
       input_hash: 'test',

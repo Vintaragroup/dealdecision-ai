@@ -2126,6 +2126,12 @@ export async function apiGetInvestorInsights(dealId: string): Promise<InvestorIn
   return request<InvestorInsightsReport>(`/api/v1/deals/${dealId}/investor-insights`);
 }
 
+export async function apiGenerateInvestorInsights(dealId: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/api/v1/deals/${dealId}/investor-insights/generate`, {
+    method: 'POST',
+  });
+}
+
 export const apiClient = {
   get: request,
   post: <T>(path: string, body?: unknown) =>

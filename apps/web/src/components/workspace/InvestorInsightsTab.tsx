@@ -1,6 +1,7 @@
-import { CheckCircle2, XCircle, Lightbulb, RefreshCw, AlertCircle, ChevronRight } from 'lucide-react';
+import { CheckCircle2, XCircle, Lightbulb, RefreshCw, AlertCircle, ChevronRight, Zap } from 'lucide-react';
 import { Button } from '../ui/button';
 import { useInvestorInsights } from '../../hooks/useInvestorInsights';
+import { useState } from 'react';
 import type { InvestorInsightsSection, InvestorInsightsGateResult } from '../../lib/apiClient';
 
 interface InvestorInsightsTabProps {
@@ -101,11 +102,31 @@ function SectionCard({ section, darkMode }: { section: InvestorInsightsSection; 
 // ── Main component ───────────────────────────────────────────────────────────
 
 export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabProps) {
-  const { status, report, error, refresh } = useInvestorInsights(dealId);
+  const { status, report, error, refresh, generate } = useInvestorInsights(dealId);
+  const [generateState, setGenerateState] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
+  const [generateError, setGenerateError] = useState<string | null>(null);
 
-  const isNotStarted =
+  const reportStatus = report?.status ?? null;
+  const isGeneratable =
     status === 'ready' &&
-    (!report || report.status === 'not_started');
+    (reportStatus === null ||
+      reportStatus === 'not_started' ||
+      reportStatus === 'failed' ||
+      reportStatus === 'quarantined');
+
+  const isNotStarted = status === 'ready' && (!report || reportStatus === 'not_started');
+
+  const handleGenerate = async () => {
+    setGenerateState('loading');
+    setGenerateError(null);
+    try {
+      await generate();
+      setGenerateState('ok');
+    } catch (err) {
+      setGenerateError(err instanceof Error ? err.message : String(err));
+      setGenerateState('error');
+    }
+  };
 
   const sections: InvestorInsightsSection[] =
     (report?.render_package?.sections as InvestorInsightsSection[] | undefined) ?? [];
@@ -157,20 +178,49 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
         </div>
       )}
 
+      {/* Generate feedback */}
+      {generateState === 'ok' && (
+        <div className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 ${darkMode ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200'}`}>
+          <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+          <span className={`text-sm font-medium ${darkMode ? 'text-emerald-200' : 'text-emerald-800'}`}>Generation queued</span>
+        </div>
+      )}
+      {generateState === 'error' && (
+        <div className={`flex items-start gap-3 rounded-xl border px-4 py-3 ${darkMode ? 'bg-red-500/10 border-red-500/30' : 'bg-red-50 border-red-200'}`}>
+          <AlertCircle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
+          <div>
+            <p className={`text-sm font-medium ${darkMode ? 'text-red-200' : 'text-red-800'}`}>Generation failed</p>
+            {generateError && <p className={`text-xs mt-0.5 ${darkMode ? 'text-red-300/80' : 'text-red-700/70'}`}>{generateError}</p>}
+          </div>
+        </div>
+      )}
+
       {/* Not started placeholder */}
       {isNotStarted && (
         <div className={`text-center py-14 rounded-xl border-2 border-dashed ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50/50'}`}>
           <Lightbulb className={`w-10 h-10 mx-auto mb-3 opacity-40 ${darkMode ? 'text-gray-400' : 'text-gray-400'}`} />
           <h4 className={`text-sm font-semibold mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Not generated yet</h4>
-          <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+          <p className={`text-xs mb-4 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
             Insights are generated automatically after analysis completes.
           </p>
+          {isGeneratable && generateState !== 'ok' && (
+            <Button
+              size="sm"
+              variant="primary"
+              icon={<Zap className="w-3.5 h-3.5" />}
+              onClick={handleGenerate}
+              loading={generateState === 'loading'}
+              disabled={generateState === 'loading'}
+            >
+              Generate Investor Insights
+            </Button>
+          )}
         </div>
       )}
 
-      {/* Report status badge */}
+      {/* Report status badge + generate action for retriable states */}
       {status === 'ready' && report && report.status !== 'not_started' && (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${
             report.status === 'deterministic_only' || report.status === 'complete'
               ? (darkMode ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300' : 'bg-emerald-50 border-emerald-200 text-emerald-700')
@@ -189,6 +239,18 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
             <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
               · {new Date(report.updated_at).toLocaleString()}
             </span>
+          )}
+          {isGeneratable && generateState !== 'ok' && (
+            <Button
+              size="sm"
+              variant={darkMode ? 'secondary' : 'outline'}
+              icon={<Zap className="w-3.5 h-3.5" />}
+              onClick={handleGenerate}
+              loading={generateState === 'loading'}
+              disabled={generateState === 'loading'}
+            >
+              Regenerate
+            </Button>
           )}
         </div>
       )}

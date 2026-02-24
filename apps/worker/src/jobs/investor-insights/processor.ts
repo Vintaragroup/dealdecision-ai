@@ -965,13 +965,15 @@ const _NO_CUR = `[^$€£\\n]`;
  * Form C: "Capital Raise ... $1.5MM"
  * Form D: "$2M seed round", "$3M bridge raise"
  * Form E: "€5.6M raised to date", "EUR 5.6M funded" (money-first, past-tense)
- * Form F: "raised €5.6M", "has raised USD 2.0M to date" (verb-first, past-tense with gap)
+ * Form F: "raised €5.6M", "has raised USD 2.0M to date", "Total raised: €5.6M" (verb-first)
+ * Form G: "Raise: $4M", "Raised: €5.6M", "Seeking: a $2M" (colon + optional article — OCR label)
+ * Form H: "Financial Strategy Raise: a $4M" (slide-layout label prefix + raise + money)
  *
  * _NO_CUR prevents wildcard spans from crossing neighbouring currency tokens.
  */
 /**
  * RAISE_ANCHOR: full list of word anchors signalling a raise context.
- * Used in Forms A, B, G of RAISE_AMOUNT_PATTERN.
+ * Used in Forms A, B, G, H of RAISE_AMOUNT_PATTERN.
  */
 const RAISE_ANCHOR = String.raw`(?:rais(?:e|ing|ed)|seeking|fund(?:ed|ing)?|financ(?:ed|ing)?|invest(?:ment|ing)?|offer(?:ing)?|proceeds|allocation)`;
 
@@ -986,8 +988,14 @@ const RAISE_AMOUNT_PATTERN = new RegExp(
 	`|${MONEY_FRAGMENT}\\s+(?:seed|series\\s+[a-cA-C]|pre[-\\s]seed|bridge)\\s*(?:round|raise|funding)?` +
 	// Form E: money first, then past-tense funding phrase within ~60 chars
 	`|${MONEY_FRAGMENT}${_NO_CUR}{0,60}?\\b(?:raised(?:\\s+to\\s+date)?|funded|funding\\s+to\\s+date|financed|investment)\\b` +
-	// Form F: past-tense funding phrase first, then money within ~60 chars
-	`|\\b(?:raised(?:\\s+to\\s+date)?|funded|funding\\s+to\\s+date|financed|investment)\\b${_NO_CUR}{0,60}?${MONEY_FRAGMENT}`,
+	// Form F: past-tense funding phrase first, then money within ~60 chars; colon between is allowed
+	`|\\b(?:raised(?:\\s+to\\s+date)?|funded|funding\\s+to\\s+date|financed|investment)\\b${_NO_CUR}{0,60}?${MONEY_FRAGMENT}` +
+	// Form G: raise-anchor + colon + optional indefinite article + money
+	// Matches: "Raise: $4M", "Raised: €5.6M", "Seeking: a $2M seed", "Total raised: €5.6M"
+	`|\\b${RAISE_ANCHOR}\\s*:\\s*(?:a\\b\\s*|an\\b\\s*)?${MONEY_FRAGMENT}` +
+	// Form H: slide-layout label prefix, then raise keyword (with optional colon/article), then money
+	// Matches: "Financial Strategy Raise: a $4M", "Investment Strategy Raise $5M"
+	`|\\b(?:financial\\s+strategy|capital\\s+strategy|investment\\s+strategy|funding\\s+strategy)\\b${_NO_CUR}{0,60}?\\braise\\b${_NO_CUR}{0,20}?${MONEY_FRAGMENT}`,
 	"i"
 );
 

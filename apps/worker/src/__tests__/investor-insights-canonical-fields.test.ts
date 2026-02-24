@@ -896,3 +896,143 @@ describe("Stage 2 – Expanded Raise Anchors", () => {
 	});
 });
 
+// ── Tests: grammar expansion — colon & label forms (Phase 2.2) ───────────────
+
+describe("Stage 2 – Grammar Expansion: Colon & Label Forms", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockEvaluateGates.mockResolvedValue(g3OnlyFailGateState());
+	});
+
+	// Form G: raise-anchor + colon form
+	it("raise_amount is Computable for 'Raise: $4M'", async () => {
+		mockPool = makeSinglePagePool("Raise: $4M seed round for product expansion.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf).toBeTruthy();
+		const line = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		expect(line).toBeTruthy();
+		expect(line).toMatch(/computability=Computable/);
+		expect(line).toMatch(/evidence=dpu:doc:[0-9a-f]{8}:page:\d+/);
+	});
+
+	it("raise_amount value is '$4M' for 'Raise: $4M'", async () => {
+		mockPool = makeSinglePagePool("Raise: $4M seed round.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		const line = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		const valueMatch = /\| value="([^"]+)"/.exec(line!);
+		expect(valueMatch).toBeTruthy();
+		expect(valueMatch![1]).toBe("$4M");
+	});
+
+	// Form H: slide-layout label prefix — "Financial Strategy Raise: a $4M"
+	it("raise_amount is Computable for 'Financial Strategy Raise: a $4M'", async () => {
+		mockPool = makeSinglePagePool("Financial Strategy Raise: a $4M seed investment to scale operations.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf).toBeTruthy();
+		const line = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		expect(line).toBeTruthy();
+		expect(line).toMatch(/computability=Computable/);
+	});
+
+	it("raise_amount value is '$4M' for 'Financial Strategy Raise: a $4M'", async () => {
+		mockPool = makeSinglePagePool("Financial Strategy Raise: a $4M seed round.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		const line = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		const valueMatch = /\| value="([^"]+)"/.exec(line!);
+		expect(valueMatch).toBeTruthy();
+		expect(valueMatch![1]).toBe("$4M");
+	});
+
+	// Form G variant: "Raised: $5M" (past tense + colon)
+	it("raise_amount is Computable for 'Raised: $5M' (past tense colon form)", async () => {
+		mockPool = makeSinglePagePool("Raised: $5M in Series A from strategic investors.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		const line = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		expect(line).toBeTruthy();
+		expect(line).toMatch(/computability=Computable/);
+	});
+
+	// "Total raised to date €5.6M" — Form F handles verb-first with colon gap
+	it("raise_amount is Computable for 'Total raised to date €5.6M'", async () => {
+		mockPool = makeSinglePagePool("Total raised to date €5.6M across three rounds.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		const line = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		expect(line).toBeTruthy();
+		expect(line).toMatch(/computability=Computable/);
+		const valueMatch = /\| value="([^"]+)"/.exec(line!);
+		expect(valueMatch).toBeTruthy();
+		expect(valueMatch![1]).toBe("€5.6M");
+	});
+
+	// "Valuation: $6MM" — Form C of VALUATION_POST_PATTERN handles colon within 20 chars
+	// Use isolated input to avoid the raise amount token being picked up by Form B.
+	it("valuation_post is Computable for 'Valuation: $6MM' (colon form, normalized $6M)", async () => {
+		mockPool = makeSinglePagePool("Valuation: $6MM post-money.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		const line = cf.body.split("\n").find((l: string) => l.includes("field=valuation_post"));
+		expect(line).toBeTruthy();
+		expect(line).toMatch(/computability=Computable/);
+		const valueMatch = /\| value="([^"]+)"/.exec(line!);
+		expect(valueMatch).toBeTruthy();
+		expect(valueMatch![1]).toBe("$6M");
+	});
+
+	// Revenue-only guard: "$2M revenue" must NOT produce a raise_amount Computable
+	it("raise_amount is NotComputable for '$2M revenue' (revenue-only, no raise context)", async () => {
+		mockPool = makeSinglePagePool("$2M revenue last fiscal year.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		const line = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		expect(line).toBeTruthy();
+		expect(line).toMatch(/computability=NotComputable/);
+		expect(line).toMatch(/reason=NO_RAISE_AMOUNT_MENTION/);
+	});
+
+	// Colon form for non-USD currency
+	it("raise_amount is Computable for 'Seeking: €3M Series A'", async () => {
+		mockPool = makeSinglePagePool("Seeking: €3M Series A for EMEA expansion.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		const line = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		expect(line).toBeTruthy();
+		expect(line).toMatch(/computability=Computable/);
+		const valueMatch = /\| value="([^"]+)"/.exec(line!);
+		expect(valueMatch).toBeTruthy();
+		expect(valueMatch![1]).toBe("€3M");
+	});
+});
+

@@ -351,6 +351,155 @@ describe("enrichDpuWithEmbeddedPdfText", () => {
 	});
 });
 
+describe("populateDocumentPageUnderstandingFromVisualExtractions — excel_sheet DPU population", () => {
+	it("deal-level SQL contains excel_sheet prepared fields, passthrough columns, and CASE arm", async () => {
+		const { populateDocumentPageUnderstandingFromVisualExtractions } = await import("../document-page-understanding.js");
+
+		const capturedSql: string[] = [];
+		const pool: any = {
+			query: async (sql: string, _params?: any[]) => {
+				capturedSql.push(String(sql));
+				return { rows: [{ upserted: "1", page_text_empty: "0" }], rowCount: 1 };
+			},
+		};
+
+		await populateDocumentPageUnderstandingFromVisualExtractions(pool, {
+			dealId: "11110000-aaaa-bbbb-cccc-dddd00001111",
+		});
+
+		const dealSql = capturedSql.find(
+			(q) => q.includes("FROM docs d") && q.includes("ON CONFLICT (document_id, page_index, version)")
+		);
+		expect(dealSql).toBeDefined();
+
+		// prepared: new excel_sheet fields (NULLIF/COALESCE form, check field ref and alias separately)
+		expect(dealSql).toContain("structured_json->>'sheet_name'");
+		expect(dealSql).toContain("AS excel_sheet_name");
+		expect(dealSql).toContain("structured_json->>'summary_text_investor'");
+		expect(dealSql).toContain("AS excel_summary_investor");
+		expect(dealSql).toContain("END AS excel_grid_preview_text");
+
+		// grid_preview aggregation tokens
+		expect(dealSql).toContain("{grid_preview,cells}");
+		expect(dealSql).toContain("cell.value->>'w'");
+		expect(dealSql).toContain("cell.value->>'v'");
+		expect(dealSql).toContain("cell.value->>'a'");
+		expect(dealSql).toContain("LIMIT 12");
+
+		// computed passthrough
+		expect(dealSql).toContain("excel_sheet_name,");
+		expect(dealSql).toContain("excel_summary_investor,");
+		expect(dealSql).toContain("excel_grid_preview_text,");
+
+		// page_text CASE arm
+		expect(dealSql).toContain("WHEN sj_kind = 'excel_sheet'");
+		expect(dealSql).toContain("'Sheet: ' || excel_sheet_name");
+		expect(dealSql).toContain("'Summary: ' || excel_summary_investor");
+		expect(dealSql).toContain("'Headers: ' || excel_headers_text");
+	});
+
+	it("document-range SQL also contains excel_sheet fields and CASE arm", async () => {
+		const { populateDocumentPageUnderstandingFromVisualExtractions } = await import("../document-page-understanding.js");
+
+		const capturedSql: string[] = [];
+		const pool: any = {
+			query: async (sql: string, _params?: any[]) => {
+				capturedSql.push(String(sql));
+				if (String(sql).includes("COUNT(*)::bigint AS inserted")) {
+					return { rows: [{ inserted: "0" }], rowCount: 1 };
+				}
+				return { rows: [{ upserted: "1", page_text_empty: "0" }], rowCount: 1 };
+			},
+		};
+
+		await populateDocumentPageUnderstandingFromVisualExtractions(pool, {
+			documentId: "22220000-aaaa-bbbb-cccc-dddd00002222",
+			dealId: "33330000-aaaa-bbbb-cccc-dddd00003333",
+			pageStart: 0,
+			pageEnd: 2,
+		});
+
+		const rangeSql = capturedSql.find(
+			(q) => q.includes("va.page_index >= $2") && q.includes("ON CONFLICT (document_id, page_index, version)")
+		);
+		expect(rangeSql).toBeDefined();
+
+		expect(rangeSql).toContain("structured_json->>'sheet_name'");
+		expect(rangeSql).toContain("AS excel_sheet_name");
+		expect(rangeSql).toContain("AS excel_summary_investor");
+		expect(rangeSql).toContain("END AS excel_grid_preview_text");
+		expect(rangeSql).toContain("{grid_preview,cells}");
+		expect(rangeSql).toContain("WHEN sj_kind = 'excel_sheet'");
+		expect(rangeSql).toContain("'Sheet: ' || excel_sheet_name");
+		expect(rangeSql).toContain("'Summary: ' || excel_summary_investor");
+	});
+
+	it("excel_sheet CASE arm is before excel_range arm, which is before structured_ok arm", async () => {
+		const { populateDocumentPageUnderstandingFromVisualExtractions } = await import("../document-page-understanding.js");
+
+		const capturedSql: string[] = [];
+		const pool: any = {
+			query: async (sql: string, _params?: any[]) => {
+				capturedSql.push(String(sql));
+				return { rows: [{ upserted: "1", page_text_empty: "0" }], rowCount: 1 };
+			},
+		};
+
+		await populateDocumentPageUnderstandingFromVisualExtractions(pool, {
+			dealId: "44440000-aaaa-bbbb-cccc-dddd00004444",
+		});
+
+		const dealSql = capturedSql.find((q) => q.includes("FROM docs d") && q.includes("ON CONFLICT"));
+		expect(dealSql).toBeDefined();
+
+		const sheetPos = dealSql!.indexOf("WHEN sj_kind = 'excel_sheet'");
+		const rangePos = dealSql!.indexOf("WHEN sj_kind = 'excel_range'");
+		const endPageTextPos = dealSql!.indexOf("END AS page_text,");
+
+		expect(sheetPos).toBeGreaterThan(0);
+		expect(rangePos).toBeGreaterThan(sheetPos);   // excel_sheet before excel_range
+
+		// structured_ok arm follows excel_range inside same CASE
+		const structuredAfterRange = dealSql!.indexOf("WHEN COALESCE(length(NULLIF(BTRIM(concat_ws", rangePos + 1);
+		expect(structuredAfterRange).toBeGreaterThan(rangePos);
+
+		// All arms are before END AS page_text,
+		expect(sheetPos).toBeLessThan(endPageTextPos);
+		expect(rangePos).toBeLessThan(endPageTextPos);
+		expect(structuredAfterRange).toBeLessThan(endPageTextPos);
+	});
+
+	it("grid_preview SQL uses address 'a' for row grouping and 'w'/'v' for display values", async () => {
+		const { populateDocumentPageUnderstandingFromVisualExtractions } = await import("../document-page-understanding.js");
+
+		const capturedSql: string[] = [];
+		const pool: any = {
+			query: async (sql: string, _params?: any[]) => {
+				capturedSql.push(String(sql));
+				return { rows: [{ upserted: "1", page_text_empty: "0" }], rowCount: 1 };
+			},
+		};
+
+		await populateDocumentPageUnderstandingFromVisualExtractions(pool, {
+			dealId: "55550000-aaaa-bbbb-cccc-dddd00005555",
+		});
+
+		const dealSql = capturedSql.find((q) => q.includes("FROM docs d") && q.includes("ON CONFLICT"));
+		expect(dealSql).toBeDefined();
+
+		// Row number extraction from address field 'a' using regexp
+		expect(dealSql).toContain("regexp_replace(cell.value->>'a', '[^0-9]', '', 'g')::int");
+		// Column letter ordering from address field 'a'
+		expect(dealSql).toContain("ORDER BY regexp_replace(cell.value->>'a', '[^A-Z]', '', 'g')");
+		// Prefer 'w' (display text) over 'v' (raw value)
+		expect(dealSql).toContain("COALESCE(cell.value->>'w', cell.value->>'v', '')");
+		// GROUP BY and ORDER BY row_num with LIMIT 12
+		expect(dealSql).toContain("GROUP BY row_num");
+		expect(dealSql).toContain("ORDER BY row_num");
+		expect(dealSql).toContain("LIMIT 12");
+	});
+});
+
 describe("populateDocumentPageUnderstandingFromVisualExtractions — excel_range DPU population", () => {
 	it("deal-level SQL contains excel_range WHEN arm, prepared fields, and rows_preview extraction", async () => {
 		const { populateDocumentPageUnderstandingFromVisualExtractions } = await import("../document-page-understanding.js");

@@ -217,8 +217,9 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 				)
 				ELSE NULL
 			END AS tb_bullets_text
-			-- excel_range: kind identifier + headers list + up to 12 preview rows
+			-- excel_range/excel_sheet: kind + sheet metadata + rows
 			,structured_json->>'kind' AS sj_kind
+			,NULLIF(BTRIM(COALESCE(structured_json->>'sheet_name', '')), '') AS excel_sheet_name
 			,CASE
 				WHEN jsonb_typeof(structured_json->'headers') = 'array' THEN (
 					SELECT NULLIF(BTRIM(string_agg(NULLIF(BTRIM(h.value), ''), ', ')), '')
@@ -226,6 +227,7 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 				)
 				ELSE NULL
 			END AS excel_headers_text
+			,NULLIF(BTRIM(COALESCE(structured_json->>'summary_text_investor', '')), '') AS excel_summary_investor
 			,CASE
 				WHEN jsonb_typeof(structured_json->'rows_preview') = 'array' THEN (
 					SELECT NULLIF(BTRIM(string_agg(row_line, E'\n')), '')
@@ -240,6 +242,25 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 				)
 				ELSE NULL
 			END AS excel_rows_text
+			,CASE
+				WHEN jsonb_typeof(structured_json #> '{grid_preview,cells}') = 'array' THEN (
+					SELECT NULLIF(BTRIM(string_agg(row_line, E'\n')), '')
+					  FROM (
+						SELECT
+							'- ' || row_num::text || ': ' || string_agg(
+								COALESCE(NULLIF(BTRIM(COALESCE(cell.value->>'w', cell.value->>'v', '')), ''), ''),
+								' | '
+								ORDER BY regexp_replace(cell.value->>'a', '[^A-Z]', '', 'g')
+							) AS row_line
+						  FROM jsonb_array_elements(structured_json #> '{grid_preview,cells}') AS cell(value),
+						       LATERAL (SELECT regexp_replace(cell.value->>'a', '[^0-9]', '', 'g')::int) AS rn(row_num)
+						 GROUP BY row_num
+						 ORDER BY row_num
+						 LIMIT 12
+					  ) rows
+				)
+				ELSE NULL
+			END AS excel_grid_preview_text
 		  FROM candidate
 	),
 	computed AS (
@@ -257,8 +278,11 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			structured_json,
 			ocr_text,
 			sj_kind,
+			excel_sheet_name,
 			excel_headers_text,
+			excel_summary_investor,
 			excel_rows_text,
+			excel_grid_preview_text,
 			COALESCE(title_text, tb_title_text) AS title_text,
 			COALESCE(notes_text, tb_notes_text) AS notes_text,
 			COALESCE(snippet_text, tb_snippet_text) AS snippet_text,
@@ -278,6 +302,13 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '') AS ocr_text_clean,
 			CASE WHEN COALESCE(length(NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')), 0) >= 40 THEN true ELSE false END AS structured_ok,
 			CASE
+				WHEN sj_kind = 'excel_sheet'
+					THEN NULLIF(BTRIM(concat_ws(E'\n',
+						CASE WHEN excel_sheet_name IS NOT NULL THEN 'Sheet: ' || excel_sheet_name ELSE NULL END,
+						CASE WHEN excel_summary_investor IS NOT NULL THEN 'Summary: ' || excel_summary_investor ELSE NULL END,
+						CASE WHEN excel_headers_text IS NOT NULL THEN 'Headers: ' || excel_headers_text ELSE NULL END,
+						excel_grid_preview_text
+					)), '')
 				WHEN sj_kind = 'excel_range'
 					THEN NULLIF(BTRIM(concat_ws(E'\n',
 						COALESCE(title_text, tb_title_text),
@@ -546,8 +577,9 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 				)
 				ELSE NULL
 			END AS tb_bullets_text
-			-- excel_range: kind identifier + headers list + up to 12 preview rows
+			-- excel_range/excel_sheet: kind + sheet metadata + rows
 			,structured_json->>'kind' AS sj_kind
+			,NULLIF(BTRIM(COALESCE(structured_json->>'sheet_name', '')), '') AS excel_sheet_name
 			,CASE
 				WHEN jsonb_typeof(structured_json->'headers') = 'array' THEN (
 					SELECT NULLIF(BTRIM(string_agg(NULLIF(BTRIM(h.value), ''), ', ')), '')
@@ -555,6 +587,7 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 				)
 				ELSE NULL
 			END AS excel_headers_text
+			,NULLIF(BTRIM(COALESCE(structured_json->>'summary_text_investor', '')), '') AS excel_summary_investor
 			,CASE
 				WHEN jsonb_typeof(structured_json->'rows_preview') = 'array' THEN (
 					SELECT NULLIF(BTRIM(string_agg(row_line, E'\n')), '')
@@ -569,6 +602,25 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 				)
 				ELSE NULL
 			END AS excel_rows_text
+			,CASE
+				WHEN jsonb_typeof(structured_json #> '{grid_preview,cells}') = 'array' THEN (
+					SELECT NULLIF(BTRIM(string_agg(row_line, E'\n')), '')
+					  FROM (
+						SELECT
+							'- ' || row_num::text || ': ' || string_agg(
+								COALESCE(NULLIF(BTRIM(COALESCE(cell.value->>'w', cell.value->>'v', '')), ''), ''),
+								' | '
+								ORDER BY regexp_replace(cell.value->>'a', '[^A-Z]', '', 'g')
+							) AS row_line
+						  FROM jsonb_array_elements(structured_json #> '{grid_preview,cells}') AS cell(value),
+						       LATERAL (SELECT regexp_replace(cell.value->>'a', '[^0-9]', '', 'g')::int) AS rn(row_num)
+						 GROUP BY row_num
+						 ORDER BY row_num
+						 LIMIT 12
+					  ) rows
+				)
+				ELSE NULL
+			END AS excel_grid_preview_text
 		  FROM candidate
 	),
 	computed AS (
@@ -586,8 +638,11 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			structured_json,
 			ocr_text,
 			sj_kind,
+			excel_sheet_name,
 			excel_headers_text,
+			excel_summary_investor,
 			excel_rows_text,
+			excel_grid_preview_text,
 			COALESCE(title_text, tb_title_text) AS title_text,
 			COALESCE(notes_text, tb_notes_text) AS notes_text,
 			COALESCE(snippet_text, tb_snippet_text) AS snippet_text,
@@ -607,6 +662,13 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			NULLIF(BTRIM(COALESCE(ocr_text, tb_ocr_text, structured_json->>'ocr_text', '')), '') AS ocr_text_clean,
 			CASE WHEN COALESCE(length(NULLIF(BTRIM(concat_ws(E'\n', COALESCE(title_text, tb_title_text), COALESCE(bullets_text, tb_bullets_text), COALESCE(notes_text, tb_notes_text), COALESCE(snippet_text, tb_snippet_text))), '')), 0) >= 40 THEN true ELSE false END AS structured_ok,
 			CASE
+				WHEN sj_kind = 'excel_sheet'
+					THEN NULLIF(BTRIM(concat_ws(E'\n',
+						CASE WHEN excel_sheet_name IS NOT NULL THEN 'Sheet: ' || excel_sheet_name ELSE NULL END,
+						CASE WHEN excel_summary_investor IS NOT NULL THEN 'Summary: ' || excel_summary_investor ELSE NULL END,
+						CASE WHEN excel_headers_text IS NOT NULL THEN 'Headers: ' || excel_headers_text ELSE NULL END,
+						excel_grid_preview_text
+					)), '')
 				WHEN sj_kind = 'excel_range'
 					THEN NULLIF(BTRIM(concat_ws(E'\n',
 						COALESCE(title_text, tb_title_text),

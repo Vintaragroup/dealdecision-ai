@@ -7,8 +7,8 @@ export type UseInvestorInsightsResult = {
   status: UseInvestorInsightsStatus;
   report: InvestorInsightsReport | null;
   error: string | null;
-  refresh: () => Promise<void>;
-  generate: () => Promise<void>;
+  refresh: () => Promise<InvestorInsightsReport | null>;
+  generate: () => Promise<InvestorInsightsReport | null>;
 };
 
 export function useInvestorInsights(dealId: string | undefined): UseInvestorInsightsResult {
@@ -20,21 +20,23 @@ export function useInvestorInsights(dealId: string | undefined): UseInvestorInsi
   // Tracks whether the consuming component is still mounted to prevent post-unmount setState.
   const mountedRef = useRef(true);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<InvestorInsightsReport | null> => {
     const id = dealIdRef.current;
-    if (!id) return;
+    if (!id) return null;
     setFetchStatus('loading');
     try {
       const data = await apiGetInvestorInsights(id);
       // Discard if unmounted or if dealId changed since fetch started.
-      if (!mountedRef.current || dealIdRef.current !== id) return;
+      if (!mountedRef.current || dealIdRef.current !== id) return null;
       setReport(data);
       setFetchStatus('ready');
       setError(null);
+      return data;
     } catch (err) {
-      if (!mountedRef.current || dealIdRef.current !== id) return;
+      if (!mountedRef.current || dealIdRef.current !== id) return null;
       setError(err instanceof Error ? err.message : String(err));
       setFetchStatus('error');
+      return null;
     }
   }, []);
 
@@ -51,11 +53,11 @@ export function useInvestorInsights(dealId: string | undefined): UseInvestorInsi
     };
   }, []);
 
-  const generate = useCallback(async () => {
+  const generate = useCallback(async (): Promise<InvestorInsightsReport | null> => {
     const id = dealIdRef.current;
-    if (!id) return;
+    if (!id) return null;
     await apiGenerateInvestorInsights(id);
-    await refresh();
+    return refresh();
   }, [refresh]);
 
   return { status: fetchStatus, report, error, refresh, generate };

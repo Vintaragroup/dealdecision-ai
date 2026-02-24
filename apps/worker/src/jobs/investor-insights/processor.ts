@@ -476,10 +476,12 @@ interface InsightSlotInputs {
 
 /**
  * RAISE_TERMS: matches "Raising $2M seed", "raise $5M Series A", "$3M seed round",
- * "seeking $10M", "raised $1.5M".
+ * "seeking $10M", "raised $1.5M", "funding $2M", "round size $3M", "proceeds $5M", etc.
+ * Anchors: raise/raising/raised, seeking, funding/funded, financing/financed,
+ *   investment/investing, offering, round size, ticket size, capital raise, proceeds, allocation.
  */
 const RAISE_PATTERN =
-	/(?:rais(?:e|ing|ed)|seeking)\s+\$[\d,.]+\s*[BMKbmk]?(?:\s*(?:million|billion|thousand))?|\$[\d,.]+\s*[BMKbmk]?(?:\s*(?:million|billion|thousand))?\s*(?:seed|series\s+[a-cA-C]|pre[-\s]seed|round)/i;
+	/(?:rais(?:e|ing|ed)|seeking|fund(?:ed|ing)?|financ(?:ed|ing)?|invest(?:ment|ing)?|offer(?:ing)?|round\s+size|ticket\s+size|capital\s+raise|proceeds|allocation)\s+\$[\d,.]+\s*[BMKbmk]?(?:\s*(?:million|billion|thousand))?|\$[\d,.]+\s*[BMKbmk]?(?:\s*(?:million|billion|thousand))?\s*(?:seed|series\s+[a-cA-C]|pre[-\s]seed|round|fund(?:ed|ing)?|raise|financing|investment)/i;
 
 /**
  * MARKET_CLAIMS: matches both keyword-first and dollar-first forms:
@@ -620,11 +622,33 @@ function detectInPages(pages: DpuPage[], pattern: RegExp): { snippet: string; re
 	return null;
 }
 
+/**
+ * Try DPU pages first; fall back to evidence_items claim_text when DPU yields nothing.
+ * Evidence ref format: `evidence:item:<8hex>` (UUID without hyphens, first 8 chars).
+ */
+function detectInTextSources(
+	pattern: RegExp,
+	dpuPages: DpuPage[],
+	evidenceSnippets: EvidenceSnippet[]
+): { snippet: string; ref: string } | null {
+	const dpuHit = detectInPages(dpuPages, pattern);
+	if (dpuHit) return dpuHit;
+	for (const ev of evidenceSnippets) {
+		const text = ev.claim_text ?? "";
+		const m = pattern.exec(text);
+		if (m) {
+			const prefix = ev.id.replace(/-/g, "").slice(0, 8);
+			return { snippet: m[0].slice(0, 80), ref: `evidence:item:${prefix}` };
+		}
+	}
+	return null;
+}
+
 function evalRaiseTermsSlot(inputs: InsightSlotInputs): SlotResult {
 	if (inputs.dpuLoadFailed) {
 		return { computable: false, value: null, evidence: null, reasonCode: SLOT_REASON_CODES.DPU_LOAD_FAILED };
 	}
-	const hit = detectInPages(inputs.dpuPages, RAISE_PATTERN);
+	const hit = detectInTextSources(RAISE_PATTERN, inputs.dpuPages, inputs.evidenceSnippets);
 	if (hit) {
 		return { computable: true, value: hit.snippet, evidence: hit.ref, reasonCode: null };
 	}
@@ -635,7 +659,7 @@ function evalMarketClaimsSlot(inputs: InsightSlotInputs): SlotResult {
 	if (inputs.dpuLoadFailed) {
 		return { computable: false, value: null, evidence: null, reasonCode: SLOT_REASON_CODES.DPU_LOAD_FAILED };
 	}
-	const hit = detectInPages(inputs.dpuPages, MARKET_PATTERN);
+	const hit = detectInTextSources(MARKET_PATTERN, inputs.dpuPages, inputs.evidenceSnippets);
 	if (hit) {
 		return { computable: true, value: hit.snippet, evidence: hit.ref, reasonCode: null };
 	}
@@ -646,7 +670,7 @@ function evalTractionSignalSlot(inputs: InsightSlotInputs): SlotResult {
 	if (inputs.dpuLoadFailed) {
 		return { computable: false, value: null, evidence: null, reasonCode: SLOT_REASON_CODES.DPU_LOAD_FAILED };
 	}
-	const hit = detectInPages(inputs.dpuPages, TRACTION_PATTERN);
+	const hit = detectInTextSources(TRACTION_PATTERN, inputs.dpuPages, inputs.evidenceSnippets);
 	if (hit) {
 		return { computable: true, value: hit.snippet, evidence: hit.ref, reasonCode: null };
 	}
@@ -657,7 +681,7 @@ function evalValuationTermsSlot(inputs: InsightSlotInputs): SlotResult {
 	if (inputs.dpuLoadFailed) {
 		return { computable: false, value: null, evidence: null, reasonCode: SLOT_REASON_CODES.DPU_LOAD_FAILED };
 	}
-	const hit = detectInPages(inputs.dpuPages, VALUATION_PATTERN);
+	const hit = detectInTextSources(VALUATION_PATTERN, inputs.dpuPages, inputs.evidenceSnippets);
 	if (hit) {
 		return { computable: true, value: hit.snippet, evidence: hit.ref, reasonCode: null };
 	}
@@ -668,7 +692,7 @@ function evalUseOfFundsSlot(inputs: InsightSlotInputs): SlotResult {
 	if (inputs.dpuLoadFailed) {
 		return { computable: false, value: null, evidence: null, reasonCode: SLOT_REASON_CODES.DPU_LOAD_FAILED };
 	}
-	const hit = detectInPages(inputs.dpuPages, USE_OF_FUNDS_PATTERN);
+	const hit = detectInTextSources(USE_OF_FUNDS_PATTERN, inputs.dpuPages, inputs.evidenceSnippets);
 	if (hit) {
 		return { computable: true, value: hit.snippet, evidence: hit.ref, reasonCode: null };
 	}
@@ -738,7 +762,64 @@ function buildDpuDiagnosticsSection(
 }
 
 /**
- * Return the insight_slots section plus an optional DPU diagnostics section (dev-mode only).
+ * Build a dev-only signal visibility section showing which pages contain the
+ * strongest money and keyword signals for manual debugging of low-DPU-coverage deals.
+ * Returns null in production (NODE_ENV === 'production').
+ */
+function buildSignalVisibilitySection(
+	inputs: InsightSlotInputs
+): RenderPackage["sections"][number] | null {
+	if (process.env["NODE_ENV"] === "production") return null;
+	if (inputs.dpuPages.length === 0) return null;
+
+	const MONEY_SIGNAL_RE = /[$€£%]|(?:[KMBT])\b/gi;
+	const KEYWORD_RE = /\b(?:raise|raising|raised|valuation|post-money|pre-money|post money|pre money|TAM|SAM|SOM|ARR|MRR|revenue|use of funds|proceeds)\b/gi;
+
+	function scoreAndTop(pages: DpuPage[], re: RegExp): Array<{ page: DpuPage; score: number }> {
+		return pages
+			.map((page) => {
+				const text = page.text ?? "";
+				const matches = text.match(new RegExp(re.source, re.flags)) ?? [];
+				return { page, score: matches.length };
+			})
+			.filter((entry) => entry.score > 0)
+			.sort((a, b) => b.score - a.score)
+			.slice(0, 10);
+	}
+
+	const moneyTop = scoreAndTop(inputs.dpuPages, MONEY_SIGNAL_RE);
+	const keywordTop = scoreAndTop(inputs.dpuPages, KEYWORD_RE);
+
+	function formatEntry(entry: { page: DpuPage; score: number }): string {
+		const ref = dpuEvidenceRef(entry.page.document_id, entry.page.page_index);
+		const preview = (entry.page.text ?? "").slice(0, 120).replace(/\r?\n/g, " ");
+		return `page=${entry.page.page_index} | ref=${ref} | score=${entry.score} | preview=${preview}`;
+	}
+
+	const lines: string[] = ["(dev-only) Omitted in production.", `dpu_page_count: ${inputs.dpuPages.length}`, "--- top money-signal pages ---"];
+	if (moneyTop.length === 0) {
+		lines.push("none");
+	} else {
+		lines.push(...moneyTop.map(formatEntry));
+	}
+	lines.push("--- top keyword pages ---");
+	if (keywordTop.length === 0) {
+		lines.push("none");
+	} else {
+		lines.push(...keywordTop.map(formatEntry));
+	}
+
+	return {
+		key: "debug.signal_visibility",
+		title: "Debug \u2014 Signal Visibility",
+		kind: "message",
+		body: lines.join("\n"),
+		fallback: "Signal visibility data unavailable.",
+	};
+}
+
+/**
+ * Return the insight_slots section plus optional DPU diagnostics and signal visibility sections.
  */
 function buildInsightSlotsSections(
 	dealId: string,
@@ -746,7 +827,11 @@ function buildInsightSlotsSections(
 ): Array<RenderPackage["sections"][number]> {
 	const slotsSection = buildInsightSlotsSection(inputs);
 	const diagSection = buildDpuDiagnosticsSection(dealId, inputs.dpuDiag);
-	return diagSection ? [slotsSection, diagSection] : [slotsSection];
+	const signalSection = buildSignalVisibilitySection(inputs);
+	const sections: Array<RenderPackage["sections"][number]> = [slotsSection];
+	if (diagSection) sections.push(diagSection);
+	if (signalSection) sections.push(signalSection);
+	return sections;
 }
 
 // ─── Stage 2: Canonical Fields + Conflicts + Completeness ────────────────────
@@ -778,29 +863,56 @@ const P2_REASON = {
 // ── Phase 2 sub-field patterns (compile once) ────────────────────────────────
 
 /**
- * Shared money fragment – matches optional "$", digits (with optional commas),
- * optional decimal part, and an optional magnitude suffix.
- * Compiled into RegExp patterns below.
- * Examples that MUST match: "$1.5MM", "$6MM", "$800,000", "1.5MM", "$1.5 million"
+ * Building blocks for currency-aware money fragments.
+ *   CURRENCY: "$", "€", "£", or word codes USD / EUR / GBP.
+ *   AMOUNT:   digit sequence with optional comma separators and decimal.
+ *   SUFFIX:   optional magnitude suffix (K/M/B/T, double-letter MM/BB, or words).
+ *   MONEY_FRAGMENT: full currency-amount-suffix token used across all extraction patterns.
+ *
+ * Examples that MUST match: "$1.5MM", "$6MM", "$800,000", "€5.6M", "EUR 5.6M",
+ *                            "£2M", "USD 2.5M", "1.5MM", "$1.5 million"
  */
-const MONEY_FRAGMENT = String.raw`\$?[\d,]+(?:\.\d+)?(?:\s*(?:MM|BB|[KMBT]|thousand|million|billion|trillion)\b)?`;
+const CURRENCY       = String.raw`(?:\$|€|£|\bUSD\b|\bEUR\b|\bGBP\b)`;
+const AMOUNT         = String.raw`\d{1,3}(?:[,\d]{0,3})*(?:\.\d+)?`;
+const SUFFIX         = String.raw`(?:\s*(?:MM|BB|[KMBTkmbt]|thousand|million|billion|trillion)\b)?`;
+const MONEY_FRAGMENT = String.raw`${CURRENCY}\s*${AMOUNT}${SUFFIX}`;
 
 /**
- * raise_amount: dollar amount anchored to a fundraising verb or round type.
+ * Wildcard span that refuses to cross another currency token or a newline.
+ * Used in patterns that allow free text between a money token and a keyword.
+ */
+const _NO_CUR = `[^$€£\\n]`;
+
+/**
+ * raise_amount: amount anchored to a fundraising verb, round type, or past-tense funding.
  * Form A: "Raising $2M seed", "raise $5M Series A", "seeking $1M"
  * Form B: "$1.5MM raise", "Equity $1.5MM raise on a $6MM Valuation"
  * Form C: "Capital Raise ... $1.5MM"
  * Form D: "$2M seed round", "$3M bridge raise"
+ * Form E: "€5.6M raised to date", "EUR 5.6M funded" (money-first, past-tense)
+ * Form F: "raised €5.6M", "has raised USD 2.0M to date" (verb-first, past-tense with gap)
+ *
+ * _NO_CUR prevents wildcard spans from crossing neighbouring currency tokens.
  */
+/**
+ * RAISE_ANCHOR: full list of word anchors signalling a raise context.
+ * Used in Forms A, B, G of RAISE_AMOUNT_PATTERN.
+ */
+const RAISE_ANCHOR = String.raw`(?:rais(?:e|ing|ed)|seeking|fund(?:ed|ing)?|financ(?:ed|ing)?|invest(?:ment|ing)?|offer(?:ing)?|proceeds|allocation)`;
+
 const RAISE_AMOUNT_PATTERN = new RegExp(
-	// Form A: raise-verb or "seeking" immediately followed by money
-	`(?:rais(?:e|ing|ed)|seeking)\\s+${MONEY_FRAGMENT}` +
-	// Form B: money then raise-word within ~40 chars (handles "Equity $1.5MM raise")
-	`|${MONEY_FRAGMENT}[^$\\n]{0,40}?\\brais(?:e|ing|ed)\\b` +
-	// Form C: "capital raise" header then money within ~40 chars
-	`|\\bcapital\\s+raise\\b[^$\\n]{0,40}?${MONEY_FRAGMENT}` +
+	// Form A: raise/seek/fund/finance/invest/offer verb/noun immediately followed by money
+	`${RAISE_ANCHOR}\\s+${MONEY_FRAGMENT}` +
+	// Form B: money then raise-word within ~40 chars
+	`|${MONEY_FRAGMENT}${_NO_CUR}{0,40}?\\b${RAISE_ANCHOR}\\b` +
+	// Form C: label-first — capital raise / round size / ticket size / proceeds / allocation then money
+	`|\\b(?:capital\\s+raise|round\\s+size|ticket\\s+size|proceeds|allocation)\\b${_NO_CUR}{0,40}?${MONEY_FRAGMENT}` +
 	// Form D: money immediately before a round-type keyword
-	`|${MONEY_FRAGMENT}\\s+(?:seed|series\\s+[a-cA-C]|pre[-\\s]seed|bridge)\\s*(?:round|raise|funding)?`,
+	`|${MONEY_FRAGMENT}\\s+(?:seed|series\\s+[a-cA-C]|pre[-\\s]seed|bridge)\\s*(?:round|raise|funding)?` +
+	// Form E: money first, then past-tense funding phrase within ~60 chars
+	`|${MONEY_FRAGMENT}${_NO_CUR}{0,60}?\\b(?:raised(?:\\s+to\\s+date)?|funded|funding\\s+to\\s+date|financed|investment)\\b` +
+	// Form F: past-tense funding phrase first, then money within ~60 chars
+	`|\\b(?:raised(?:\\s+to\\s+date)?|funded|funding\\s+to\\s+date|financed|investment)\\b${_NO_CUR}{0,60}?${MONEY_FRAGMENT}`,
 	"i"
 );
 
@@ -835,9 +947,9 @@ const VALUATION_POST_PATTERN = new RegExp(
 	// Form A: explicit post-money prefix (classic)
 	`post[-\\s]money\\s+(?:valuation\\s+)?(?:of\\s+|is\\s+|at\\s+)?${MONEY_FRAGMENT}` +
 	// Form B: money then "valuation" keyword within ~30 chars
-	`|${MONEY_FRAGMENT}[^$\\n]{0,30}?\\bvaluation\\b` +
+	`|${MONEY_FRAGMENT}${_NO_CUR}{0,30}?\\bvaluation\\b` +
 	// Form C: "valuation" keyword then money within ~20 chars
-	`|\\bvaluation\\b[^$\\n]{0,20}?${MONEY_FRAGMENT}`,
+	`|\\bvaluation\\b${_NO_CUR}{0,20}?${MONEY_FRAGMENT}`,
 	"i"
 );
 
@@ -919,17 +1031,21 @@ interface Phase2Result {
 // ── Phase 2 helpers ──────────────────────────────────────────────────────────
 
 /**
- * Normalize a dollar figure within a snippet for conflict deduplication.
- * "$2M" and "$2m" → "$2m"; "$1.5MM" and "$1.5M" → "$1.5m" (no false conflict);
- * "$1.5 million" → "$1.5m". "$5M" → "$5m" (still distinct from "$2m").
+ * Normalize a currency+amount token for conflict deduplication.
+ * Handles $, €, £, and word codes USD/EUR/GBP.
+ * "$2M" / "$2m" → "$2m"; "$1.5MM" / "$1.5M" → "$1.5m" (no false conflict);
+ * "€5.6M" / "EUR 5.6M" → "€5.6m"; "$1.5 million" → "$1.5m".
  */
 function normalizeAmountForConflict(s: string): string {
-	// Capture double-letter suffixes (MM, BB) and word suffixes (million, billion, etc.)
-	const m = /\$[\d,]+(?:\.\d+)?(?:\s*(?:MM|BB|[BMKbmkTt]|million|billion|thousand|trillion))?/i.exec(s);
+	const m = /(?:[€£$]|EUR|USD|GBP)\s*[\d,]+(?:\.\d+)?(?:\s*(?:MM|BB|[BMKbmkTt]|million|billion|thousand|trillion))?/i.exec(s);
 	if (!m) return s.trim().toLowerCase().slice(0, 30);
 	return m[0]
 		.replace(/\s/g, "")
 		.toLowerCase()
+		// Normalize word currency codes to their symbol equivalents
+		.replace(/^eur/, "€")
+		.replace(/^usd/, "\$")
+		.replace(/^gbp/, "£")
 		// Collapse double-letter magnitude suffixes to single (mm→m, bb→b)
 		.replace(/mm$/, "m")
 		.replace(/bb$/, "b")
@@ -938,6 +1054,58 @@ function normalizeAmountForConflict(s: string): string {
 		.replace(/billion$/, "b")
 		.replace(/thousand$/, "k")
 		.replace(/trillion$/, "t");
+}
+
+/**
+ * Compiled form of MONEY_FRAGMENT for use in value-extraction helpers.
+ * Captures the first currency+amount+suffix token from a snippet.
+ */
+const MONEY_RE = new RegExp(MONEY_FRAGMENT, "i");
+
+/**
+ * Extract the first clean money token from a matched snippet.
+ * "€5.6M raised to date" → "€5.6M"
+ * "Equity $1.5MM raise on a $6MM Valuation" → "$1.5MM"
+ * "USD 2.0M funded" → "USD 2.0M"
+ * Returns null when no currency token is found.
+ */
+function extractFirstMoney(snippet: string): string | null {
+	const m = MONEY_RE.exec(snippet);
+	if (!m) return null;
+	return m[0].replace(/\s+/g, " ").trim();
+}
+
+/** Field names where the value should be a clean money token. */
+const AMOUNT_FIELDS = new Set([
+	"raise_amount", "raise_cap",
+	"valuation_post", "valuation_pre", "valuation_safe_cap",
+	"tam_value", "sam_value", "som_value",
+	"mrr_value", "arr_value", "revenue_value",
+]);
+
+/**
+ * Return a clean, presentation-safe value string for a canonical field.
+ * - Amount fields: first matched money token only (e.g. "€5.6M", "$1.5MM")
+ * - growth_rate: first percentage token (e.g. "20%", "15% MoM")
+ * - customer_count: first numeric count token (e.g. "1,200")
+ * - All others: trimmed snippet with collapsed whitespace
+ *
+ * Always strips surrounding quotes and collapses internal whitespace.
+ */
+function cleanCanonicalValue(field: string, snippet: string): string {
+	const base = snippet.replace(/^["']+|["']+$/g, "").replace(/\s+/g, " ").trim();
+	if (AMOUNT_FIELDS.has(field)) {
+		return extractFirstMoney(base) ?? base;
+	}
+	if (field === "growth_rate") {
+		const m = /\b\d+(?:\.\d+)?%(?:\s*(?:YoY|MoM|month[-\s]over[-\s]month|year[-\s]over[-\s]year|annually))?/i.exec(base);
+		return m ? m[0].trim() : base;
+	}
+	if (field === "customer_count") {
+		const m = /\b(\d[\d,]*)\+?(?:\s*(?:customers?|active\s+users?|clients?))?\b/.exec(base);
+		return m ? m[0].trim() : base;
+	}
+	return base;
 }
 
 /**
@@ -983,11 +1151,12 @@ function findConflictInMatches(
 	return { field: fieldName, valueA: a.snippet, evidenceA: a.ref, valueB: b.snippet, evidenceB: b.ref };
 }
 
-/** Evaluate a single canonical sub-field via first-match detection. */
+/** Evaluate a single canonical sub-field via first-match detection (DPU → evidence fallback). */
 function evalCanonicalField(
 	category: string,
 	field: string,
 	pages: DpuPage[],
+	evidenceSnippets: EvidenceSnippet[],
 	pattern: RegExp,
 	reasonCode: string,
 	dpuLoadFailed: boolean
@@ -995,9 +1164,9 @@ function evalCanonicalField(
 	if (dpuLoadFailed) {
 		return { category, field, computability: "NotComputable", value: null, evidenceRef: null, reasonCode: SLOT_REASON_CODES.DPU_LOAD_FAILED };
 	}
-	const hit = detectInPages(pages, pattern);
+	const hit = detectInTextSources(pattern, pages, evidenceSnippets);
 	if (hit) {
-		return { category, field, computability: "Computable", value: hit.snippet, evidenceRef: hit.ref, reasonCode: null };
+		return { category, field, computability: "Computable", value: cleanCanonicalValue(field, hit.snippet), evidenceRef: hit.ref, reasonCode: null };
 	}
 	return { category, field, computability: "NotComputable", value: null, evidenceRef: null, reasonCode };
 }
@@ -1007,7 +1176,7 @@ function evalCanonicalField(
  * No extra DB calls — reuses the same InsightSlotInputs fetched in Stage 1.
  */
 function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
-	const { dpuPages, dpuLoadFailed } = inputs;
+	const { dpuPages, evidenceSnippets, dpuLoadFailed } = inputs;
 	const fields: CanonicalField[] = [];
 	const conflicts: ConflictEntry[] = [];
 
@@ -1019,31 +1188,31 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 	const raiseAmountConflict = findConflictInMatches("raise_amount", raiseAmountMatches);
 	if (raiseAmountConflict) conflicts.push(raiseAmountConflict);
 
-	fields.push(evalCanonicalField("raise_terms", "raise_amount", dpuPages, RAISE_AMOUNT_PATTERN, P2_REASON.NO_RAISE_AMOUNT_MENTION, dpuLoadFailed));
-	fields.push(evalCanonicalField("raise_terms", "raise_round", dpuPages, RAISE_ROUND_PATTERN, P2_REASON.NO_RAISE_ROUND_MENTION, dpuLoadFailed));
-	fields.push(evalCanonicalField("raise_terms", "raise_instrument", dpuPages, RAISE_INSTRUMENT_PATTERN, P2_REASON.NO_RAISE_INSTRUMENT_MENTION, dpuLoadFailed));
-	fields.push(evalCanonicalField("raise_terms", "raise_cap", dpuPages, RAISE_CAP_PATTERN, P2_REASON.NO_RAISE_CAP_MENTION, dpuLoadFailed));
-	fields.push(evalCanonicalField("raise_terms", "raise_discount", dpuPages, RAISE_DISCOUNT_PATTERN, P2_REASON.NO_RAISE_DISCOUNT_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("raise_terms", "raise_amount", dpuPages, evidenceSnippets, RAISE_AMOUNT_PATTERN, P2_REASON.NO_RAISE_AMOUNT_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("raise_terms", "raise_round", dpuPages, evidenceSnippets, RAISE_ROUND_PATTERN, P2_REASON.NO_RAISE_ROUND_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("raise_terms", "raise_instrument", dpuPages, evidenceSnippets, RAISE_INSTRUMENT_PATTERN, P2_REASON.NO_RAISE_INSTRUMENT_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("raise_terms", "raise_cap", dpuPages, evidenceSnippets, RAISE_CAP_PATTERN, P2_REASON.NO_RAISE_CAP_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("raise_terms", "raise_discount", dpuPages, evidenceSnippets, RAISE_DISCOUNT_PATTERN, P2_REASON.NO_RAISE_DISCOUNT_MENTION, dpuLoadFailed));
 
 	// ── Valuation Terms ────────────────────────────────────────────────────────
-	fields.push(evalCanonicalField("valuation_terms", "valuation_pre", dpuPages, VALUATION_PRE_PATTERN, P2_REASON.NO_VALUATION_PRE_MENTION, dpuLoadFailed));
-	fields.push(evalCanonicalField("valuation_terms", "valuation_post", dpuPages, VALUATION_POST_PATTERN, P2_REASON.NO_VALUATION_POST_MENTION, dpuLoadFailed));
-	fields.push(evalCanonicalField("valuation_terms", "valuation_safe_cap", dpuPages, VALUATION_SAFE_CAP_PATTERN, P2_REASON.NO_VALUATION_SAFE_CAP_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("valuation_terms", "valuation_pre", dpuPages, evidenceSnippets, VALUATION_PRE_PATTERN, P2_REASON.NO_VALUATION_PRE_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("valuation_terms", "valuation_post", dpuPages, evidenceSnippets, VALUATION_POST_PATTERN, P2_REASON.NO_VALUATION_POST_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("valuation_terms", "valuation_safe_cap", dpuPages, evidenceSnippets, VALUATION_SAFE_CAP_PATTERN, P2_REASON.NO_VALUATION_SAFE_CAP_MENTION, dpuLoadFailed));
 
 	// ── Use of Funds ───────────────────────────────────────────────────────────
-	fields.push(evalCanonicalField("use_of_funds", "use_of_funds_buckets", dpuPages, USE_OF_FUNDS_BUCKET_PATTERN, P2_REASON.NO_USE_OF_FUNDS_BUCKETS_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("use_of_funds", "use_of_funds_buckets", dpuPages, evidenceSnippets, USE_OF_FUNDS_BUCKET_PATTERN, P2_REASON.NO_USE_OF_FUNDS_BUCKETS_MENTION, dpuLoadFailed));
 
 	// ── Market Claims ──────────────────────────────────────────────────────────
-	fields.push(evalCanonicalField("market_claims", "tam_value", dpuPages, TAM_VALUE_PATTERN, P2_REASON.NO_TAM_VALUE_MENTION, dpuLoadFailed));
-	fields.push(evalCanonicalField("market_claims", "sam_value", dpuPages, SAM_VALUE_PATTERN, P2_REASON.NO_SAM_VALUE_MENTION, dpuLoadFailed));
-	fields.push(evalCanonicalField("market_claims", "som_value", dpuPages, SOM_VALUE_PATTERN, P2_REASON.NO_SOM_VALUE_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("market_claims", "tam_value", dpuPages, evidenceSnippets, TAM_VALUE_PATTERN, P2_REASON.NO_TAM_VALUE_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("market_claims", "sam_value", dpuPages, evidenceSnippets, SAM_VALUE_PATTERN, P2_REASON.NO_SAM_VALUE_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("market_claims", "som_value", dpuPages, evidenceSnippets, SOM_VALUE_PATTERN, P2_REASON.NO_SOM_VALUE_MENTION, dpuLoadFailed));
 
 	// ── Traction Signal ────────────────────────────────────────────────────────
-	fields.push(evalCanonicalField("traction_signal", "mrr_value", dpuPages, MRR_VALUE_PATTERN, P2_REASON.NO_MRR_VALUE_MENTION, dpuLoadFailed));
-	fields.push(evalCanonicalField("traction_signal", "arr_value", dpuPages, ARR_VALUE_PATTERN, P2_REASON.NO_ARR_VALUE_MENTION, dpuLoadFailed));
-	fields.push(evalCanonicalField("traction_signal", "revenue_value", dpuPages, REVENUE_VALUE_PATTERN, P2_REASON.NO_REVENUE_VALUE_MENTION, dpuLoadFailed));
-	fields.push(evalCanonicalField("traction_signal", "growth_rate", dpuPages, GROWTH_RATE_PATTERN, P2_REASON.NO_GROWTH_RATE_MENTION, dpuLoadFailed));
-	fields.push(evalCanonicalField("traction_signal", "customer_count", dpuPages, CUSTOMER_COUNT_PATTERN, P2_REASON.NO_CUSTOMER_COUNT_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("traction_signal", "mrr_value", dpuPages, evidenceSnippets, MRR_VALUE_PATTERN, P2_REASON.NO_MRR_VALUE_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("traction_signal", "arr_value", dpuPages, evidenceSnippets, ARR_VALUE_PATTERN, P2_REASON.NO_ARR_VALUE_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("traction_signal", "revenue_value", dpuPages, evidenceSnippets, REVENUE_VALUE_PATTERN, P2_REASON.NO_REVENUE_VALUE_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("traction_signal", "growth_rate", dpuPages, evidenceSnippets, GROWTH_RATE_PATTERN, P2_REASON.NO_GROWTH_RATE_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("traction_signal", "customer_count", dpuPages, evidenceSnippets, CUSTOMER_COUNT_PATTERN, P2_REASON.NO_CUSTOMER_COUNT_MENTION, dpuLoadFailed));
 
 	// ── Completeness ───────────────────────────────────────────────────────────
 	const COMPLETENESS_CATEGORIES = [

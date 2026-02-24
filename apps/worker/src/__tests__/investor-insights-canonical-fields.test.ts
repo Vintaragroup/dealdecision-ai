@@ -16,7 +16,7 @@
  *   - conflicts section absent when no conflicts
  *   - completeness_summary always present
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 process.env["NODE_ENV"] = "production";
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://user:pass@localhost:5432/test";
@@ -556,3 +556,343 @@ describe("Stage 2 – Palm Deck Formats", () => {
 		expect(conflictsSection).toBeUndefined();
 	});
 });
+
+// ── Tests: Non-USD / multi-currency formats ───────────────────────────────────
+
+describe("Stage 2 – Non-USD / Cinco Deck Formats", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockEvaluateGates.mockResolvedValue(g3OnlyFailGateState());
+	});
+
+	it("raise_amount is Computable from '€5.6M raised to date'", async () => {
+		mockPool = makeSinglePagePool("€5.6M raised to date from strategic investors.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf).toBeTruthy();
+		expect(cf.body).toMatch(/field=raise_amount \| computability=Computable/);
+		expect(cf.body).toMatch(/evidence=dpu:doc:[0-9a-f]{8}:page:\d+/);
+	});
+
+	it("raise_amount is Computable from 'Raised €5.6M to date'", async () => {
+		mockPool = makeSinglePagePool("Raised €5.6M to date across three funding rounds.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf).toBeTruthy();
+		expect(cf.body).toMatch(/field=raise_amount \| computability=Computable/);
+	});
+
+	it("raise_amount is Computable from 'USD 2.0M funded'", async () => {
+		mockPool = makeSinglePagePool("USD 2.0M funded by angel investors in 2024.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf).toBeTruthy();
+		expect(cf.body).toMatch(/field=raise_amount \| computability=Computable/);
+	});
+
+	it("no conflict between '€5.6M' and 'EUR 5.6M' after normalization", async () => {
+		mockPool = makePool([
+			{ docId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890", pageIndex: 1, text: "€5.6M raised to date." },
+			{ docId: "b2c3d4e5-f6a7-8901-bcde-f12345678901", pageIndex: 5, text: "EUR 5.6M funded by investors." },
+		]);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const conflictsSection = pkg.sections.find((s: any) => s.key === "conflicts");
+		expect(conflictsSection).toBeUndefined();
+	});
+});
+
+// ── Tests: clean value extraction ─────────────────────────────────────────────
+
+describe("Stage 2 – Clean Value Extraction", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockEvaluateGates.mockResolvedValue(g3OnlyFailGateState());
+	});
+
+	it("raise_amount value is '€5.6M' (not noisy OCR) for Cinco-style text", async () => {
+		mockPool = makeSinglePagePool("€5.6M raised to date from strategic investors.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf).toBeTruthy();
+		// Extract the value= token from the body line for raise_amount
+		const valueLine = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		expect(valueLine).toBeTruthy();
+		const valueMatch = /\| value="([^"]+)"/.exec(valueLine!);
+		expect(valueMatch).toBeTruthy();
+		expect(valueMatch![1]).toBe("€5.6M");
+	});
+
+	it("raise_amount value is '$1.5MM' (not full sentence) for Palm-style text", async () => {
+		mockPool = makeSinglePagePool("Equity $1.5MM raise on a $6MM Valuation.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		const valueLine = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		expect(valueLine).toBeTruthy();
+		const valueMatch = /\| value="([^"]+)"/.exec(valueLine!);
+		expect(valueMatch).toBeTruthy();
+		expect(valueMatch![1]).toBe("$1.5MM");
+	});
+
+	it("valuation_post value is '$6MM' (money-only) for Palm-style text", async () => {
+		mockPool = makeSinglePagePool("$6MM Valuation for this seed round.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		const valueLine = cf.body.split("\n").find((l: string) => l.includes("field=valuation_post"));
+		expect(valueLine).toBeTruthy();
+		const valueMatch = /\| value="([^"]+)"/.exec(valueLine!);
+		expect(valueMatch).toBeTruthy();
+		expect(valueMatch![1]).toBe("$6MM");
+	});
+
+	it("clean value fields still carry Computable status and evidence ref", async () => {
+		mockPool = makeSinglePagePool("€5.6M raised to date.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf.body).toMatch(/field=raise_amount \| computability=Computable/);
+		expect(cf.body).toMatch(/evidence=dpu:doc:[0-9a-f]{8}:page:\d+/);
+	});
+});
+
+// ── Pool factory: evidence snippet fallback ───────────────────────────────────
+
+/**
+ * Build a mock pool with evidence items and optionally empty DPU pages.
+ * Used for testing the evidence snippet fallback path.
+ */
+function makePoolWithEvidence(
+	evidenceItems: Array<{ id: string; claim_text: string }>,
+	dpuPages: Array<{ docId: string; pageIndex: number; text: string }> = []
+) {
+	return {
+		query: vi.fn(async (sql: string) => {
+			if (sql.includes("current_database")) return { rows: [{ db: "testdb", schema: "public" }] };
+			if (sql.includes("investor_insight_reports") && (sql as string).trimStart().startsWith("INSERT")) {
+				return { rows: [{ id: "mock-report-id" }] };
+			}
+			if (sql.includes("investor_insight_reports")) return { rows: [] };
+			// DPU slot query
+			if (sql.includes("document_id") && sql.includes("document_page_understanding")) {
+				return {
+					rows: dpuPages.map((p) => ({
+						document_id: p.docId,
+						page_index: p.pageIndex,
+						payload: { page_text: p.text },
+					})),
+				};
+			}
+			// Coverage snapshot DPU count
+			if (sql.includes("COUNT") && sql.includes("document_page_understanding")) {
+				return { rows: [{ total: String(dpuPages.length), non_empty: String(dpuPages.length) }] };
+			}
+			// Evidence items SELECT (for slot inputs) — must come before COUNT check
+			if (sql.includes("evidence_items") && sql.includes("claim_text")) {
+				return { rows: evidenceItems };
+			}
+			// Evidence count (coverage snapshot)
+			if (sql.includes("evidence_items")) {
+				return { rows: [{ c: String(evidenceItems.length) }] };
+			}
+			if (sql.includes("documents") && sql.includes("COUNT") && !sql.includes("visual_assets")) {
+				return { rows: [{ c: "2" }] };
+			}
+			if (sql.includes("visual_assets")) return { rows: [{ c: "3" }] };
+			return { rows: [] };
+		}),
+	};
+}
+
+// ── Tests: evidence snippet fallback ─────────────────────────────────────────
+
+describe("Stage 2 – Evidence Snippet Fallback", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockEvaluateGates.mockResolvedValue(g3OnlyFailGateState());
+	});
+
+	it("raise_amount is Computable from evidence_items when DPU pages are empty", async () => {
+		mockPool = makePoolWithEvidence(
+			[{ id: "11223344-5566-7788-99aa-bbccddeeff00", claim_text: "$2M raise seed round" }],
+			[] // empty DPU
+		);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf).toBeTruthy();
+		const raiseAmountLine = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		expect(raiseAmountLine).toBeTruthy();
+		expect(raiseAmountLine).toMatch(/computability=Computable/);
+		expect(raiseAmountLine).toMatch(/evidence=evidence:item:[0-9a-f]{8}/);
+		expect(raiseAmountLine).toMatch(/reason=none/);
+	});
+
+	it("evidence ref prefix is first 8 hex chars of id (no hyphens)", async () => {
+		mockPool = makePoolWithEvidence(
+			[{ id: "aabbccdd-eeff-0011-2233-445566778899", claim_text: "$5M seed raise" }],
+			[]
+		);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		const raiseAmountLine = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		expect(raiseAmountLine).toMatch(/evidence=evidence:item:aabbccdd/);
+	});
+
+	it("raise_terms slot visible is Computable from evidence fallback", async () => {
+		mockPool = makePoolWithEvidence(
+			[{ id: "feedface-dead-beef-cafe-123456789abc", claim_text: "raising $3M pre-seed" }],
+			[]
+		);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		// raise_terms slot should be Computable via evidence fallback
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+		expect(slots.body).toMatch(/evidence=evidence:item:[0-9a-f]{8}/);
+	});
+
+	it("DPU hit takes priority over evidence snippets", async () => {
+		mockPool = makePoolWithEvidence(
+			[{ id: "11223344-5566-7788-99aa-bbccddeeff00", claim_text: "$99M raise huge" }],
+			[{ docId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890", pageIndex: 2, text: "$2M seed round" }]
+		);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		const raiseAmountLine = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		expect(raiseAmountLine).toMatch(/evidence=dpu:doc:[0-9a-f]{8}:page:2/);
+		// Should NOT use the evidence item
+		expect(raiseAmountLine).not.toMatch(/evidence=evidence:item:/);
+	});
+});
+
+// ── Tests: signal visibility section ─────────────────────────────────────────
+
+describe("Stage 2 – Signal Visibility Section", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockEvaluateGates.mockResolvedValue(g3OnlyFailGateState());
+	});
+
+	afterEach(() => {
+		// Always restore production mode after each test in this suite
+		process.env["NODE_ENV"] = "production";
+	});
+
+	it("debug.signal_visibility section is absent in production", async () => {
+		process.env["NODE_ENV"] = "production";
+		mockPool = makeSinglePagePool("$2M seed round raising valuation $10M post-money.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const sigVis = pkg.sections.find((s: any) => s.key === "debug.signal_visibility");
+		expect(sigVis).toBeUndefined();
+	});
+
+	it("debug.signal_visibility section is present in non-production with money signal pages", async () => {
+		process.env["NODE_ENV"] = "development";
+		mockPool = makeSinglePagePool("Raising $2M seed round. Valuation $10M post-money.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const sigVis = pkg.sections.find((s: any) => s.key === "debug.signal_visibility");
+		expect(sigVis).toBeTruthy();
+		expect(sigVis.body).toMatch(/dev-only/);
+		expect(sigVis.body).toMatch(/dpu_page_count:/);
+		expect(sigVis.body).toMatch(/--- top money-signal pages ---/);
+		expect(sigVis.body).toMatch(/--- top keyword pages ---/);
+		// The test page should appear in at least one of the scored lists
+		expect(sigVis.body).toMatch(/page=3/);
+	});
+});
+
+// ── Tests: expanded raise anchors ─────────────────────────────────────────────
+
+describe("Stage 2 – Expanded Raise Anchors", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockEvaluateGates.mockResolvedValue(g3OnlyFailGateState());
+	});
+
+	it("raise_amount is Computable when DPU contains 'funding $4M'", async () => {
+		mockPool = makeSinglePagePool("Total funding $4M raised to expand our engineering team.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf).toBeTruthy();
+		const line = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		expect(line).toBeTruthy();
+		expect(line).toMatch(/computability=Computable/);
+		expect(line).toMatch(/evidence=dpu:doc:[0-9a-f]{8}:page:\d+/);
+	});
+
+	it("raise_amount is Computable when DPU contains 'round size $3M'", async () => {
+		mockPool = makeSinglePagePool("Round size $3M. Ticket size $3M. Use of proceeds: product and sales.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		const line = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		expect(line).toBeTruthy();
+		expect(line).toMatch(/computability=Computable/);
+	});
+
+	it("raise_terms slot is Computable when DPU contains 'financing $5M'", async () => {
+		mockPool = makeSinglePagePool("We are financing $5M of our growth via this round.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+	});
+
+	it("raise_terms slot is Computable when DPU uses 'investment $2M'", async () => {
+		mockPool = makeSinglePagePool("Total investment $2M for this seed stage.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+	});
+});
+

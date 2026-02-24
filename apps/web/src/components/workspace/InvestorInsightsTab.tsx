@@ -1,7 +1,8 @@
 import { CheckCircle2, XCircle, Lightbulb, RefreshCw, AlertCircle, ChevronRight, Zap } from 'lucide-react';
 import { Button } from '../ui/button';
 import { useInvestorInsights } from '../../hooks/useInvestorInsights';
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { apiGetInvestorInsights } from '../../lib/apiClient';
 import type { InvestorInsightsSection, InvestorInsightsGateResult } from '../../lib/apiClient';
 
 interface InvestorInsightsTabProps {
@@ -637,8 +638,37 @@ function CoverageSnapshotSection({ section, darkMode }: { section: InvestorInsig
   const errorRow = rows.find((r) => r.key === 'coverage_query_errors');
   const hasErrors = errorRow !== undefined && errorRow.value !== 'none';
 
+  const dpuTotalRow = rows.find((r) => r.key === 'dpu_page_count');
+  const dpuNonEmptyRow = rows.find((r) => r.key === 'dpu_nonempty_pages');
+  const dpuTotal = dpuTotalRow ? parseInt(dpuTotalRow.value, 10) : 0;
+  const dpuNonEmpty = dpuNonEmptyRow ? parseInt(dpuNonEmptyRow.value, 10) : 0;
+  const showLowCoverageBanner = dpuTotal > 0 && dpuNonEmpty / dpuTotal < 0.6;
+
   return (
     <div className="space-y-3">
+      {showLowCoverageBanner && (
+        <div
+          className={`flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 ${
+            darkMode
+              ? 'bg-amber-500/10 border-amber-500/30'
+              : 'bg-amber-50 border-amber-200'
+          }`}
+          role="alert"
+          data-testid="low-coverage-banner"
+        >
+          <AlertCircle
+            className={`w-4 h-4 mt-0.5 shrink-0 ${
+              darkMode ? 'text-amber-400' : 'text-amber-600'
+            }`}
+          />
+          <p className={`text-xs font-medium ${
+            darkMode ? 'text-amber-300' : 'text-amber-800'
+          }`}>
+            Low text coverage detected ({dpuNonEmpty}/{dpuTotal} pages have text). Missing fields may
+            result from limited OCR output — consider re-running document extraction.
+          </p>
+        </div>
+      )}
       {hasErrors && (
         <div
           className={`flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 ${
@@ -753,6 +783,15 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
   const [generateState, setGenerateState] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
   const [generateError, setGenerateError] = useState<string | null>(null);
 
+  // Track mount status so the poll loop does not call setState after unmount.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const reportStatus = report?.status ?? null;
   const isGeneratable =
     status === 'ready' &&
@@ -789,9 +828,30 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
     console.log('[InvestorInsights] generate_click', dealId);
     setGenerateState('loading');
     setGenerateError(null);
+    const capturedUpdatedAt = report?.updated_at;
     try {
-      await generate();
+      const freshReport = await generate();
       setGenerateState('ok');
+      // Skip polling if generate's immediate refresh already returned a terminal state.
+      const TERMINAL_STATUSES = new Set(['deterministic_only', 'complete', 'failed']);
+      if (freshReport && TERMINAL_STATUSES.has(freshReport.status)) return;
+      // Bounded poll: every 2s for up to 60s — stop when the report lands.
+      const POLL_INTERVAL_MS = 2000;
+      const MAX_POLLS = 30;
+      for (let i = 0; i < MAX_POLLS; i++) {
+        await new Promise<void>((res) => setTimeout(res, POLL_INTERVAL_MS));
+        if (!mountedRef.current) break;
+        let latest = null;
+        try { latest = await apiGetInvestorInsights(dealId); } catch { break; }
+        if (!mountedRef.current) break;
+        const hasAuditFooter = !!(latest?.render_package as Record<string, unknown> | undefined)?.['audit_footer'];
+        const isTerminal = TERMINAL_STATUSES.has(latest?.status ?? '');
+        const updatedChanged = !!latest?.updated_at && latest.updated_at !== capturedUpdatedAt;
+        if (hasAuditFooter || isTerminal || updatedChanged) {
+          await refresh();
+          break;
+        }
+      }
     } catch (err) {
       setGenerateError(err instanceof Error ? err.message : String(err));
       setGenerateState('error');

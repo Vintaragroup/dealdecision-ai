@@ -128,4 +128,65 @@ describe('InvestorInsightsTab – coverage_snapshot section', () => {
     // No table columns — this section is plain text
     expect(screen.queryByText('Metric')).toBeNull();
   });
+
+  test('low-coverage amber banner shown when dpu_nonempty_pages / dpu_page_count < 0.6', async () => {
+    const lowCoverageBody = [
+      'docs_count: 2',
+      'dpu_page_count: 10',
+      'dpu_nonempty_pages: 3',   // 3/10 = 0.3 < 0.6
+      'evidence_count: 0',
+      'visuals_count: 0',
+      'structured_json_available: false',
+      'overlay_available: false',
+      'coverage_query_errors: none',
+    ].join('\n');
+
+    vi.mocked(apiGetInvestorInsights).mockResolvedValue(makeReport(lowCoverageBody));
+
+    render(<InvestorInsightsTab darkMode={false} dealId="deal-cov-lc" />);
+
+    await screen.findByText('Docs Count');
+
+    const banner = screen.getByTestId('low-coverage-banner');
+    expect(banner).toBeTruthy();
+    expect(banner.textContent).toMatch(/low text coverage/i);
+    expect(banner.textContent).toMatch(/3\/10/);
+  });
+
+  test('low-coverage banner NOT shown when ratio >= 0.6', async () => {
+    const okBody = [
+      'docs_count: 2',
+      'dpu_page_count: 10',
+      'dpu_nonempty_pages: 7',   // 7/10 = 0.7 >= 0.6
+      'evidence_count: 0',
+      'visuals_count: 0',
+      'structured_json_available: false',
+      'overlay_available: false',
+      'coverage_query_errors: none',
+    ].join('\n');
+
+    vi.mocked(apiGetInvestorInsights).mockResolvedValue(makeReport(okBody));
+
+    render(<InvestorInsightsTab darkMode={false} dealId="deal-cov-ok" />);
+
+    await screen.findByText('Docs Count');
+
+    expect(screen.queryByTestId('low-coverage-banner')).toBeNull();
+  });
+
+  test('low-coverage banner NOT shown when dpu_page_count is 0', async () => {
+    const noPages = [
+      'dpu_page_count: 0',
+      'dpu_nonempty_pages: 0',
+      'coverage_query_errors: none',
+    ].join('\n');
+
+    vi.mocked(apiGetInvestorInsights).mockResolvedValue(makeReport(noPages));
+
+    render(<InvestorInsightsTab darkMode={false} dealId="deal-cov-zero" />);
+
+    await screen.findByText('Dpu Page Count');
+
+    expect(screen.queryByTestId('low-coverage-banner')).toBeNull();
+  });
 });

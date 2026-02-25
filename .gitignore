@@ -130,3 +130,5 @@ apps/api/test/fixtures/decks/**
 DEBUG_FACT_EVIDENCE_TRACE_QREDIBLE*.md
 scripts/overview_runtime_vs_truth_table_diff.md
 verification_e2e_cinco_analysis_*.md
+apps/worker/tmp/
+tmp/

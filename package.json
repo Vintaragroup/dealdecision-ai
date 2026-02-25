@@ -43,7 +43,15 @@
     "audit:unknown-segments": "tsx scripts/audit-unknown-segments.ts",
     "backfill:document-metadata": "tsx scripts/backfill-document-metadata.ts",
     "report:fundability:compare": "tsx scripts/compare-fundability-v1.ts",
-    "report:fundability:compare:md": "tsx scripts/compare-fundability-v1.ts --format md --out-md docs/Active/audit/analizer-debug/fundability-compare.md"
+    "report:fundability:compare:md": "tsx scripts/compare-fundability-v1.ts --format md --out-md docs/Active/audit/analizer-debug/fundability-compare.md",
+
+    "audit:portfolio:baseline": "pnpm --filter worker audit:investor-insights -- --deal-list tmp/audit_deals.json --concurrency 4",
+    "audit:portfolio:delta": "pnpm --filter worker audit:investor-insights -- --deal-list tmp/audit_deals.json --baseline tmp/investor-insights-audit.json --concurrency 4",
+    "audit:portfolio:gate:soft": "pnpm --filter worker audit:investor-insights -- --deal-list tmp/audit_deals.json --fail-on PARSE_HAZARD,BAD_EVIDENCE_REF --max-failures 0",
+    "audit:portfolio:gate:strict": "pnpm --filter worker audit:investor-insights -- --deal-list tmp/audit_deals.json --fail-on PARSE_HAZARD,BAD_EVIDENCE_REF,MISSING_DPU --max-failures 0",
+
+    "repair:portfolio:insight-slots": "pnpm --filter worker repair:insight-slots -- --deal-list tmp/audit_deals.json --concurrency 2",
+    "repair:portfolio:insight-slots:dry-run": "pnpm --filter worker repair:insight-slots -- --deal-list tmp/audit_deals.json --dry-run"
   },
   "devDependencies": {
     "@jest/globals": "^30.2.0",

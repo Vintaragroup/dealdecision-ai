@@ -142,30 +142,34 @@ vi.mock("pg", () => {
 				};
 			}
 
-			// Per-doc metadata load
-			if (q.includes("SELECT deal_id, type, title, extraction_metadata") && q.includes("FROM documents WHERE id = $1")) {
+			// Per-doc metadata load (query now includes mime_type, full_text, full_text_absent_reason)
+			if (q.includes("SELECT deal_id, type, mime_type, title") && q.includes("FROM documents WHERE id = $1")) {
 				return {
 					rows: [
 						{
 							deal_id: "deal-1",
 							type: "application/pdf",
+							mime_type: "application/pdf",
 							title: "Doc",
 							extraction_metadata: { doc_kind: "pdf" },
 							structured_data: {},
 							full_content: {},
+							full_text: "",
+							full_text_absent_reason: null,
 							page_count: 1,
 						},
 					],
 				};
 			}
 
-			// Existing extraction preflight: strict on (document_id, page_index, extractor_version)
-			if (q.includes("FROM visual_assets") && q.includes("va.document_id") && q.includes("va.page_index") && q.includes("va.extractor_version") && q.includes("LIMIT 1")) {
+			// Existing extraction preflight: LEFT JOIN COUNT query (no LIMIT 1 since refactor)
+			if (q.includes("FROM visual_assets") && q.includes("va.document_id") && q.includes("va.page_index") && q.includes("va.extractor_version") && (q.includes("has_va") || q.includes("ve_row.visual_asset_id"))) {
 				const docId = String((params as any)?.[0] ?? "");
 				const pageIndex = String((params as any)?.[1] ?? "");
 				const extractorVersion = String((params as any)?.[2] ?? "");
 				const key = `${docId}::${pageIndex}::${extractorVersion}`;
-				return { rows: (m.existingPages as Set<string>).has(key) ? [{ ok: 1 }] : [] };
+				const exists = (m.existingPages as Set<string>).has(key);
+				return { rows: [{ has_va: exists, has_ve: exists }] };
 			}
 
 			// Anything else: no-op

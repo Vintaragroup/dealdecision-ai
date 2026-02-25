@@ -97,4 +97,32 @@ describe('InvestorInsightsTab – insight_slots section', () => {
     // Surrounding quotes should be stripped: "$2M SAFE" → $2M SAFE
     expect(screen.getByText('$2M SAFE')).toBeTruthy();
   });
+
+  test('value containing "/" (sanitized from "|") is rendered fully — pipe-in-value regression', async () => {
+    // Guard against the bug where a "|" inside the value (e.g. from Excel structured text
+    // "Retention ratio | 60.00%") fractures the pipe-delimited line and the value is truncated.
+    // The worker sanitizes "|" → "/" before persisting, so the body uses "/".
+    const reportWithPipeValue = {
+      status: 'deterministic_only',
+      render_package: {
+        sections: [
+          {
+            key: 'insight_slots',
+            title: 'Insight Slots',
+            kind: 'message',
+            body: 'traction_signal: Computable | value="Retention ratio / 60.00%" | evidence=dpu:doc:58595eb2:page:1 | reason=none',
+          },
+        ],
+      },
+    } as any;
+
+    vi.mocked(apiGetInvestorInsights).mockResolvedValue(reportWithPipeValue);
+    render(<InvestorInsightsTab darkMode={false} dealId="deal-test-pipe" />);
+
+    await screen.findByText('Traction Signal');
+    // Full value must appear (not truncated at the slash)
+    expect(screen.getByText('Retention ratio / 60.00%')).toBeTruthy();
+    // Evidence ref must also survive
+    expect(screen.getByText('dpu:doc:58595eb2:page:1')).toBeTruthy();
+  });
 });

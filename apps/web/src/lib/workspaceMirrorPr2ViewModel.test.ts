@@ -244,4 +244,93 @@ describe('buildWorkspaceMirrorOverviewVM', () => {
     if (vm.missing) throw new Error('expected non-missing');
     expect(vm.one_liner).toBe('Fallback summary text');
   });
+
+  // Regression: field-level basis guard — when governed_ui_copy_v1 has business_model: null
+  // (because the guard nulled it out for lacking evidence basis), the VM must NOT be missing.
+  // Governed fields that passed the guard remain governed; the nulled field falls back to deterministic.
+  test('governed_ui_copy_v1 with business_model:null is not missing — falls back per-field', () => {
+    const vm = buildWorkspaceMirrorOverviewVM({
+      overview_json: {
+        display_facts_v1: {
+          product_solution: { text: 'Real product basis.', evidence_ids: ['ev-ps'], evidence_basis: 'direct_snippet' },
+          market_icp: { text: 'ICP basis.', evidence_ids: ['ev-mi'], evidence_basis: 'direct_snippet' },
+          business_model: { text: null, evidence_ids: [], evidence_basis: 'no_evidence' },
+          raise_terms: { text: 'Raising $2M.', evidence_ids: ['ev-r'], evidence_basis: 'direct_snippet' },
+        },
+        phase1: {
+          governed_ui_copy_v1: {
+            schema_version: 'governed_ui_copy_v1',
+            hero_summary: 'Governed hero.',
+            product_solution: 'Governed product.',
+            market_icp: 'Governed market.',
+            business_model: null, // nulled by per-field basis guard (no evidence basis)
+            raise_terms: 'Governed raise $2M.',
+            evidence_ids: {
+              hero_summary: ['ev-h'],
+              product_solution: ['ev-ps'],
+              market_icp: ['ev-mi'],
+              business_model: [],
+              raise_terms: ['ev-r'],
+            },
+          },
+          deal_overview_v2: {
+            product_solution: 'Raw product',
+            market_icp: 'Raw market',
+            business_model: 'SaaS subscription model',
+            raise: '$2M',
+          },
+          deal_summary_v2: {
+            summary: { one_liner: 'Deterministic one-liner', paragraphs: [] },
+          },
+        },
+      },
+    });
+
+    // Panel must NOT be missing — the partial governed object is still valid
+    expect(vm.missing).toBe(false);
+    if (vm.missing) throw new Error('expected non-missing');
+
+    expect(vm.source).toBe('phase1');
+
+    // Governed fields render with governed source
+    expect(vm.facts.product_solution.value).toBe('Governed product.');
+    expect(vm.facts.market_icp.value).toBe('Governed market.');
+    expect(vm.facts.raise.value).toBe('Governed raise $2M.');
+
+    // business_model was nulled by guard → falls back to deterministic
+    expect(vm.facts.business_model.value).toBe('SaaS subscription model');
+
+    // field_sources reflect the provenance correctly
+    expect(vm.field_sources.product_solution).toBe('governed');
+    expect(vm.field_sources.market_icp).toBe('governed');
+    expect(vm.field_sources.raise_terms).toBe('governed');
+    expect(vm.field_sources.business_model).not.toBe('governed');
+  });
+
+  // Regression: consistency_warnings present (HERO_MISSING_RAISE_CONTEXT) must not block the VM —
+  // the panel still renders and uses governed data.
+  test('VM is not missing when consistency_warnings includes HERO_MISSING_RAISE_CONTEXT', () => {
+    const vm = buildWorkspaceMirrorOverviewVM({
+      consistency_warnings: ['HERO_MISSING_RAISE_CONTEXT'],
+      overview_json: {
+        phase1: {
+          governed_ui_copy_v1: {
+            schema_version: 'governed_ui_copy_v1',
+            hero_summary: 'Hero without raise context.',
+            product_solution: 'Product copy.',
+            market_icp: 'Market copy.',
+            business_model: null,
+            raise_terms: 'Raise $2M.',
+            evidence_ids: { hero_summary: [], product_solution: [], market_icp: [], business_model: [], raise_terms: [] },
+          },
+          deal_overview_v2: { product_solution: 'Raw product', market_icp: 'Raw market', business_model: 'Raw BM', raise: '$2M' },
+          deal_summary_v2: { summary: { one_liner: 'Hero without raise context.', paragraphs: [] } },
+        },
+      },
+    });
+
+    // Warnings on the wrapper object do not affect VM.missing
+    expect(vm.missing).toBe(false);
+    expect(vm.one_liner).toBe('Hero without raise context.');
+  });
 });

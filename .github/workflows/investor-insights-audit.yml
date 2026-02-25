@@ -1,0 +1,158 @@
+name: Investor Insights Audit
+
+# ─────────────────────────────────────────────────────────────────────
+# Triggers
+#   workflow_dispatch  → run manually at any time (safe default)
+#   push develop/main  → automatic, but ONLY if DATABASE_URL secret is
+#                        configured in the repo (job skips otherwise)
+# ─────────────────────────────────────────────────────────────────────
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - develop
+      - main
+
+concurrency:
+  group: investor-insights-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────
+  # Prerequisite check — if DATABASE_URL is absent the audit can't run.
+  # All downstream jobs depend on this gate so they are skipped cleanly
+  # rather than failing with a cryptic error.
+  # ───────────────────────────────────────────────────────────────────
+  preflight:
+    name: Preflight — check DB secret
+    runs-on: ubuntu-latest
+    outputs:
+      db_available: ${{ steps.check.outputs.db_available }}
+    steps:
+      - name: Check for DATABASE_URL secret
+        id: check
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::warning::DATABASE_URL secret is not set — investor-insights audit will be skipped."
+            echo "db_available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "db_available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ───────────────────────────────────────────────────────────────────
+  # Soft gate (enforced)
+  #   Fails the job on PARSE_HAZARD or BAD_EVIDENCE_REF regressions.
+  #   Positioned after test suite runs, before build / deploy.
+  # ───────────────────────────────────────────────────────────────────
+  investor-insights-soft-gate:
+    name: Investor Insights Audit (Soft Gate)
+    runs-on: ubuntu-latest
+    needs: preflight
+    if: needs.preflight.outputs.db_available == 'true'
+    timeout-minutes: 15
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PGSSLMODE: ${{ secrets.PGSSLMODE || 'require' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Enable corepack + activate pnpm
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          if corepack prepare --activate 2>/dev/null; then
+            echo "Activated pnpm via repo packageManager."
+            pnpm --version
+            exit 0
+          fi
+          corepack prepare pnpm@9.15.0 --activate
+          echo "Activated pnpm via fallback pnpm@9.15.0."
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build @dealdecision/core (required by worker)
+        run: pnpm --filter @dealdecision/core build
+
+      # Position: after tests, before build / deploy.
+      # This step enforces parse integrity and evidence reference
+      # correctness across the full deal portfolio.
+      # MISSING_DPU is intentionally NOT gated here (use gate:strict
+      # once DPU coverage reaches acceptable baseline).
+      - name: Investor Insights Audit (Soft Gate)
+        run: pnpm audit:portfolio:gate:soft
+
+      # ── Artifact upload (always, so the report is inspectable) ─────
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: investor-insights-audit-${{ github.sha }}
+          path: |
+            apps/worker/tmp/investor-insights-audit.json
+            apps/worker/tmp/investor-insights-audit.md
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ───────────────────────────────────────────────────────────────────
+  # Strict gate (DEFINED — not enabled yet)
+  #   Adds MISSING_DPU to the failure classes.
+  #   Enable by changing `if: false` to
+  #     if: needs.preflight.outputs.db_available == 'true'
+  #   once DPU coverage across the portfolio is acceptable.
+  # ───────────────────────────────────────────────────────────────────
+  investor-insights-strict-gate:
+    name: Investor Insights Audit (Strict Gate — not enabled)
+    runs-on: ubuntu-latest
+    needs: preflight
+    # ⚠️  DISABLED: change `false` to enable once DPU baseline is met
+    if: false
+    timeout-minutes: 15
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PGSSLMODE: ${{ secrets.PGSSLMODE || 'require' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Enable corepack + activate pnpm
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          if corepack prepare --activate 2>/dev/null; then
+            pnpm --version
+            exit 0
+          fi
+          corepack prepare pnpm@9.15.0 --activate
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build @dealdecision/core
+        run: pnpm --filter @dealdecision/core build
+
+      - name: Investor Insights Audit (Strict Gate)
+        run: pnpm audit:portfolio:gate:strict

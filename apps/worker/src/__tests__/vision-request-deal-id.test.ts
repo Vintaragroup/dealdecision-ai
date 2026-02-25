@@ -113,17 +113,20 @@ vi.mock("pg", () => {
 					})),
 				};
 			}
-			// Per-doc metadata load
-			if (q.includes("SELECT deal_id, type, title, extraction_metadata") && q.includes("FROM documents WHERE id = $1")) {
+			// Per-doc metadata load (query now includes mime_type, full_text, full_text_absent_reason)
+			if (q.includes("SELECT deal_id, type, mime_type, title") && q.includes("FROM documents WHERE id = $1")) {
 				return {
 					rows: [
 						{
 							deal_id: mockedDocState.deal_id,
 							type: mockedDocState.type,
+							mime_type: mockedDocState.type,
 							title: "Doc",
 							extraction_metadata: mockedDocState.extraction_metadata,
 							structured_data: {},
 							full_content: {},
+							full_text: mockedDocState.full_text_len > 0 ? "x".repeat(mockedDocState.full_text_len) : "",
+							full_text_absent_reason: null,
 							page_count: 1,
 						},
 					],

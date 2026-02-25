@@ -13,7 +13,9 @@
     "test": "vitest run",
     "test:vitest": "vitest run",
     "debug:visual-artifacts": "tsx src/scripts/debug-visual-artifacts.ts",
-    "trace:financial-readiness": "node scripts/trace_audit/financial_readiness.js"
+    "trace:financial-readiness": "node scripts/trace_audit/financial_readiness.js",
+    "audit:investor-insights": "tsx --require ./src/bin/load-env.cjs src/bin/audit-investor-insights.ts",
+    "repair:insight-slots": "tsx --require ./src/bin/load-env.cjs src/bin/repair-insight-slots.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.975.0",

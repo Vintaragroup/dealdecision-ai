@@ -100,11 +100,18 @@ function parseInsightSlotBody(body: string): SlotRow[] {
       if (colonIdx === -1) return [];
       const slot = line.slice(0, colonIdx).trim();
       const rest = line.slice(colonIdx + 1).trim();
-      const parts = rest.split('|').map((p) => p.trim());
+      // Split on " | " (with spaces) to avoid false splits inside a quoted value like
+      // value="Retention ratio / 60.00%". The worker sanitizes | → / in values,
+      // but we parse defensively here anyway.
+      const parts = rest.split(/ \| /).map((p) => p.trim());
       const state = (parts[0] ?? '').trim();
       const pick = (key: string) => {
         const part = parts.find((p) => p.startsWith(`${key}=`));
-        return part ? part.slice(key.length + 1).trim() : 'none';
+        if (!part) return 'none';
+        const raw = part.slice(key.length + 1).trim();
+        // Strip surrounding double-quotes if present (value="...").
+        if (raw.startsWith('"') && raw.endsWith('"') && raw.length > 1) return raw.slice(1, -1);
+        return raw;
       };
       return [{ slot, state, value: pick('value'), evidence: pick('evidence'), reason: pick('reason') }];
     });

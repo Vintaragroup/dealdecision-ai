@@ -244,16 +244,20 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			END AS excel_rows_text
 			,CASE
 				WHEN jsonb_typeof(structured_json #> '{grid_preview,cells}') = 'array' THEN (
-					SELECT NULLIF(BTRIM(string_agg(row_line, E'\n')), '')
+					SELECT string_agg(row_line, E'\n')
 					  FROM (
 						SELECT
-							'- ' || row_num::text || ': ' || string_agg(
-								COALESCE(NULLIF(BTRIM(COALESCE(cell.value->>'w', cell.value->>'v', '')), ''), ''),
+							'- ' || row_num || ': ' ||
+							string_agg(
+								COALESCE(value->>'w', value->>'v', ''),
 								' | '
-								ORDER BY regexp_replace(cell.value->>'a', '[^A-Z]', '', 'g')
+								ORDER BY regexp_replace(value->>'a', '[^A-Z]', '', 'g')
 							) AS row_line
-						  FROM jsonb_array_elements(structured_json #> '{grid_preview,cells}') AS cell(value),
-						       LATERAL (SELECT regexp_replace(cell.value->>'a', '[^0-9]', '', 'g')::int) AS rn(row_num)
+						  FROM jsonb_array_elements(structured_json #> '{grid_preview,cells}') AS cell(value)
+						  CROSS JOIN LATERAL (
+							SELECT NULLIF(regexp_replace(value->>'a', '[^0-9]', '', 'g'), '')::int AS row_num
+						  ) rn
+						 WHERE row_num IS NOT NULL
 						 GROUP BY row_num
 						 ORDER BY row_num
 						 LIMIT 12
@@ -604,16 +608,20 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 			END AS excel_rows_text
 			,CASE
 				WHEN jsonb_typeof(structured_json #> '{grid_preview,cells}') = 'array' THEN (
-					SELECT NULLIF(BTRIM(string_agg(row_line, E'\n')), '')
+					SELECT string_agg(row_line, E'\n')
 					  FROM (
 						SELECT
-							'- ' || row_num::text || ': ' || string_agg(
-								COALESCE(NULLIF(BTRIM(COALESCE(cell.value->>'w', cell.value->>'v', '')), ''), ''),
+							'- ' || row_num || ': ' ||
+							string_agg(
+								COALESCE(value->>'w', value->>'v', ''),
 								' | '
-								ORDER BY regexp_replace(cell.value->>'a', '[^A-Z]', '', 'g')
+								ORDER BY regexp_replace(value->>'a', '[^A-Z]', '', 'g')
 							) AS row_line
-						  FROM jsonb_array_elements(structured_json #> '{grid_preview,cells}') AS cell(value),
-						       LATERAL (SELECT regexp_replace(cell.value->>'a', '[^0-9]', '', 'g')::int) AS rn(row_num)
+						  FROM jsonb_array_elements(structured_json #> '{grid_preview,cells}') AS cell(value)
+						  CROSS JOIN LATERAL (
+							SELECT NULLIF(regexp_replace(value->>'a', '[^0-9]', '', 'g'), '')::int AS row_num
+						  ) rn
+						 WHERE row_num IS NOT NULL
 						 GROUP BY row_num
 						 ORDER BY row_num
 						 LIMIT 12

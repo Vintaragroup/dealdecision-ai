@@ -807,5 +807,41 @@ describe("governed-llm-overlay", () => {
       });
       expect(result).toEqual([]);
     });
+
+    // Regression: when governed_ui_copy_v1.business_model is null (per-field basis guard nulled it),
+    // BUSINESS_MODEL_NOT_REFLECTED must NOT fire — the field is intentionally absent.
+    it("does NOT emit BUSINESS_MODEL_NOT_REFLECTED when governed businessModel is null (per-field guard)", () => {
+      const result = validateGovernedOutputConsistency({
+        heroSummary: "WebMax builds a predictive scoring engine for lenders.",
+        product: "AI-driven origination decisioning tool for commercial lenders.",
+        market: "Community banks and non-bank lenders seeking automation.",
+        businessModel: null, // nulled by per-field basis guard — no basis text available
+        deterministicBasis: {
+          market_icp: { text: "Community banks." },
+          business_model: { text: null }, // no business model basis
+          raise_terms: { text: "$2M–$4M raise." },
+        },
+        tractionSignals: [],
+      });
+      expect(result).not.toContain("BUSINESS_MODEL_NOT_REFLECTED");
+    });
+
+    // Regression: HERO_MISSING_RAISE_CONTEXT fires when hero does not mention raise keywords,
+    // even if raise_terms basis exists.
+    it("emits HERO_MISSING_RAISE_CONTEXT when hero omits raise and basis has raise_terms", () => {
+      const result = validateGovernedOutputConsistency({
+        heroSummary: "WebMax builds an AI scoring engine for community banks.",
+        product: "AI-driven origination decisioning tool.",
+        market: "Community banks.",
+        businessModel: null,
+        deterministicBasis: {
+          market_icp: { text: "Community banks." },
+          business_model: { text: null },
+          raise_terms: { text: "$2M–$4M raise." },
+        },
+        tractionSignals: [],
+      });
+      expect(result).toContain("HERO_MISSING_RAISE_CONTEXT");
+    });
   });
 });

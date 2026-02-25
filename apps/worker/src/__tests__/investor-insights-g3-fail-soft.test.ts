@@ -310,7 +310,9 @@ describe("Stage 0 – G3 fail-soft", () => {
 		await generateInvestorInsightsProcessor(makeJob());
 
 		const insertCall = mockPool.query.mock.calls.find((c: any[]) =>
-			typeof c[0] === "string" && c[0].includes("investor_insight_reports")
+			typeof c[0] === "string" &&
+			c[0].includes("investor_insight_reports") &&
+			(c[0] as string).trimStart().startsWith("INSERT")
 		);
 		expect(insertCall).toBeTruthy();
 

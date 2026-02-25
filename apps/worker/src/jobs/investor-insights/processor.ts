@@ -34,6 +34,11 @@ import {
 import { getPool } from "../../lib/db";
 import { evaluateGates } from "./gates";
 import { normalizeForExtraction, type NormalizationEvent } from "./normalize";
+import {
+	fuseDealCanonicalFacts,
+	buildDealFusionSection,
+	type FusedFact,
+} from "./deal-fusion";
 
 // ─── Binding constants (version-pins.md) ───────────────────────────────────────
 
@@ -509,15 +514,6 @@ interface InsightSlotInputs {
 // ── Slot detection patterns (compile once) ───────────────────────────────────
 
 /**
- * RAISE_TERMS: matches "Raising $2M seed", "raise $5M Series A", "$3M seed round",
- * "seeking $10M", "raised $1.5M", "funding $2M", "round size $3M", "proceeds $5M", etc.
- * Anchors: raise/raising/raised, seeking, funding/funded, financing/financed,
- *   investment/investing, offering, round size, ticket size, capital raise, proceeds, allocation.
- */
-const RAISE_PATTERN =
-	/(?:rais(?:e|ing|ed)|seeking|fund(?:ed|ing)?|financ(?:ed|ing)?|invest(?:ment|ing)?|offer(?:ing)?|round\s+size|ticket\s+size|capital\s+raise|proceeds|allocation)\s+\$[\d,.]+\s*[BMKbmk]?(?:\s*(?:million|billion|thousand))?|\$[\d,.]+\s*[BMKbmk]?(?:\s*(?:million|billion|thousand))?\s*(?:seed|series\s+[a-cA-C]|pre[-\s]seed|round|fund(?:ed|ing)?|raise|financing|investment)/i;
-
-/**
  * MARKET_CLAIMS: matches both keyword-first and dollar-first forms:
  *   Form A (keyword → $): "TAM $10B", "total addressable market $10B"
  *   Form B ($ → keyword): "$10.5B+ TAM", "$600-900M TAM SAM SOM"
@@ -536,6 +532,30 @@ const TRACTION_PATTERN =
 	/(?:\bMRR\b|\bARR\b|\bmonthly\s+recurring\s+revenue\b|\bannual\s+recurring\s+revenue\b)(?:[^$\n]{0,60})?\$[\d,.]+\s*[BMKbmk]?/i;
 
 /**
+ * TRACTION_PCT_PATTERN: matches percentage-based traction claims that don't
+ * carry a dollar amount. Anchored to recognised traction metric keywords so
+ * that non-traction percentages (e.g. "30% allocation", "50% equity stake")
+ * are excluded.
+ *
+ * Keyword-first forms (kw → %):
+ *   "demo-to-close 50%", "retention ratio of 60%", "churn rate 5%",
+ *   "lift 20–300%", "win rate 40%", "NPS 72"
+ * Percent-first forms (% → kw):
+ *   "50% demo-to-close", "20% churn", "300% lift"
+ *
+ * PCT_VALUE: supports plain integers, decimals, and ranges (20–300%, 5-10%).
+ */
+const _TRACTION_PCT_KW = String.raw`(?:demo[- ]to[- ]close|close\s+rate|conversion\s+rate?|retention(?:\s+(?:ratio|rate))?|churn(?:\s+rate)?|lift|engagement(?:\s+rate)?|activation(?:\s+rate)?|nps\b|net\s+promoter|upsell(?:\s+rate)?|win\s+rate)`;
+const _PCT_VALUE = String.raw`\d+(?:\.\d+)?(?:\s*[–\-]\s*\d+(?:\.\d+)?)?\s*%`;
+const TRACTION_PCT_PATTERN = new RegExp(
+	// keyword → % (up to 60 chars of non-newline between them)
+	`\\b${_TRACTION_PCT_KW}\\b[^\\n]{0,60}?${_PCT_VALUE}` +
+	// % → keyword (up to 60 chars between them)
+	`|${_PCT_VALUE}[^\\n]{0,60}?\\b${_TRACTION_PCT_KW}\\b`,
+	"i"
+);
+
+/**
  * VALUATION_TERMS: matches "valuation", "post-money", "pre-money", "safe cap", "cap".
  */
 const VALUATION_PATTERN = /(valuation|post[- ]money|pre[- ]money|safe cap|cap)\b/i;
@@ -546,6 +566,98 @@ const VALUATION_PATTERN = /(valuation|post[- ]money|pre[- ]money|safe cap|cap)\b
  */
 const USE_OF_FUNDS_PATTERN =
 	/(use of (funds|proceeds)|allocation of proceeds|proceeds will be used)\b/i;
+
+// ── Shared currency/money building blocks (used by both Stage 1 slots and Phase 2 canonical) ──
+
+/**
+ * Building blocks for currency-aware money fragments.
+ *   CURRENCY: "$", "€", "£", or word codes USD / EUR / GBP.
+ *   AMOUNT:   digit sequence with optional comma separators and decimal.
+ *   SUFFIX:   optional magnitude suffix (K/M/B/T, double-letter MM/BB, or words).
+ *   MONEY_FRAGMENT: full currency-amount-suffix token used across all extraction patterns.
+ *
+ * Examples that MUST match: "$1.5MM", "$6MM", "$800,000", "€5.6M", "EUR 5.6M",
+ *                            "£2M", "USD 2.5M", "1.5MM", "$1.5 million"
+ */
+const CURRENCY       = String.raw`(?:\$|€|£|\bUSD\b|\bEUR\b|\bGBP\b)`;
+const AMOUNT         = String.raw`\d{1,3}(?:[,\d]{0,3})*(?:\.\d+)?`;
+const SUFFIX         = String.raw`(?:\s*(?:MM|BB|[KMBTkmbt]|thousand|million|billion|trillion)\b)?`;
+const MONEY_FRAGMENT = String.raw`${CURRENCY}\s*${AMOUNT}${SUFFIX}`;
+
+/**
+ * Wildcard span that refuses to cross another currency token or a newline.
+ * Used in patterns that allow free text between a money token and a keyword.
+ */
+const _NO_CUR = `[^$€£\\n]`;
+
+/**
+ * RAISE_ANCHOR: full list of word anchors signalling a raise context.
+ * Used in RAISE_AMOUNT_PATTERN Forms A, B, G, H.
+ */
+const RAISE_ANCHOR = String.raw`(?:rais(?:e|ing|ed)|seeking|fund(?:ed|ing)?|financ(?:ed|ing)?|invest(?:ment|ing)?|offer(?:ing)?|proceeds|allocation)`;
+
+/**
+ * RAISE_AMOUNT_PATTERN: comprehensive raise-detection covering Forms A–H.
+ * Used for BOTH Stage 1 raise_terms slot and Phase 2 canonical raise_amount field.
+ *
+ * Form A: "Raising $2M seed", "raise $5M Series A", "seeking $1M"
+ * Form B: "$1.5MM raise", "Equity $1.5MM raise on a $6MM Valuation"
+ * Form C: "Capital Raise ... $1.5MM"
+ * Form D: "$2M seed round", "$3M bridge raise"
+ * Form E: "€5.6M raised to date", "EUR 5.6M funded" (money-first, past-tense)
+ * Form F: "raised €5.6M", "has raised USD 2.0M to date", "Total raised: €5.6M" (verb-first)
+ * Form G: "Raise: $4M", "Raised: €5.6M", "Seeking: a $2M" (colon + optional article — OCR label)
+ * Form H: "Financial Strategy Raise: a $4M" (slide-layout label prefix + raise + money)
+ *
+ */
+const RAISE_AMOUNT_PATTERN = new RegExp(
+	// Form A: raise/seek/fund/finance/invest/offer verb/noun immediately followed by money
+	`${RAISE_ANCHOR}\\s+${MONEY_FRAGMENT}` +
+	// Form B: money then raise-word within ~40 chars
+	`|${MONEY_FRAGMENT}${_NO_CUR}{0,40}?\\b${RAISE_ANCHOR}\\b` +
+	// Form C: label-first — capital raise / round size / ticket size / proceeds / allocation then money
+	`|\\b(?:capital\\s+raise|round\\s+size|ticket\\s+size|proceeds|allocation)\\b${_NO_CUR}{0,40}?${MONEY_FRAGMENT}` +
+	// Form D: money immediately before a round-type keyword
+	`|${MONEY_FRAGMENT}\\s+(?:seed|series\\s+[a-cA-C]|pre[-\\s]seed|bridge)\\s*(?:round|raise|funding)?` +
+	// Form E: money first, then past-tense funding phrase within ~60 chars
+	`|${MONEY_FRAGMENT}${_NO_CUR}{0,60}?\\b(?:raised(?:\\s+to\\s+date)?|funded|funding\\s+to\\s+date|financed|investment)\\b` +
+	// Form F: past-tense funding phrase first, then money within ~60 chars; colon between is allowed
+	`|\\b(?:raised(?:\\s+to\\s+date)?|funded|funding\\s+to\\s+date|financed|investment)\\b${_NO_CUR}{0,60}?${MONEY_FRAGMENT}` +
+	// Form G: raise-anchor + colon + optional indefinite article + money
+	// Matches: "Raise: $4M", "Raised: €5.6M", "Seeking: a $2M seed", "Total raised: €5.6M"
+	`|\\b${RAISE_ANCHOR}\\s*:\\s*(?:a\\b\\s*|an\\b\\s*)?${MONEY_FRAGMENT}` +
+	// Form H: slide-layout label prefix, then raise keyword (with optional colon/article), then money
+	// Matches: "Financial Strategy Raise: a $4M", "Investment Strategy Raise $5M"
+	`|\\b(?:financial\\s+strategy|capital\\s+strategy|investment\\s+strategy|funding\\s+strategy)\\b${_NO_CUR}{0,60}?\\braise\\b${_NO_CUR}{0,20}?${MONEY_FRAGMENT}`,
+	"i"
+);
+
+/**
+ * RAISE_RANGE_PATTERN: variant of RAISE_AMOUNT_PATTERN that captures the full
+ * low–high range when the deck expresses a range instead of a single figure.
+ *
+ * Range separator: en-dash (–), hyphen (-), or the word "to".
+ *
+ * Form R-A: "raising $2M–$4M", "raise $2M to $4M", "seeking $500K-$1M"
+ * Form R-B: "$2M–$4M Raise", "$500K-$1M raise" (money-range then anchor)
+ * Form R-G: "Raise: $2M–$4M", "Seeking: $500K-$1M"  (colon-label form)
+ * Form R-H: "Financial Strategy Raise: $2M–$4M"      (slide-layout prefix)
+ *
+ * Evaluated BEFORE RAISE_AMOUNT_PATTERN in evalRaiseTermsSlot so the range
+ * is preserved rather than only the first figure being captured.
+ */
+const _RANGE_SEP = String.raw`\s*(?:–|-|to)\s*`;
+const RAISE_RANGE_PATTERN = new RegExp(
+	// Form R-A: raise-anchor immediately followed by money RANGE
+	`${RAISE_ANCHOR}\\s+${MONEY_FRAGMENT}${_RANGE_SEP}${MONEY_FRAGMENT}` +
+	// Form R-B: money RANGE then raise-anchor within ~40 chars (e.g. "$2M–$4M Raise")
+	`|${MONEY_FRAGMENT}${_RANGE_SEP}${MONEY_FRAGMENT}${_NO_CUR}{0,40}?\\b${RAISE_ANCHOR}\\b` +
+	// Form R-G: raise-anchor + colon + optional article + money RANGE
+	`|\\b${RAISE_ANCHOR}\\s*:\\s*(?:a\\b\\s*|an\\b\\s*)?${MONEY_FRAGMENT}${_RANGE_SEP}${MONEY_FRAGMENT}` +
+	// Form R-H: slide-layout prefix + raise keyword + money RANGE
+	`|\\b(?:financial\\s+strategy|capital\\s+strategy|investment\\s+strategy|funding\\s+strategy)\\b${_NO_CUR}{0,60}?\\braise\\b${_NO_CUR}{0,20}?${MONEY_FRAGMENT}${_RANGE_SEP}${MONEY_FRAGMENT}`,
+	"i"
+);
 
 // ── Data loader ───────────────────────────────────────────────────────────────
 
@@ -586,8 +698,8 @@ async function loadInsightSlotInputs(
 			        payload
 			   FROM public.document_page_understanding
 			  WHERE deal_id = $1
-			  ORDER BY page_index ASC
-			  LIMIT 50`,
+			  ORDER BY document_id ASC, page_index ASC
+			  LIMIT 500`,
 			[dealId]
 		);
 		dpuDiag.queryOk = true;
@@ -697,7 +809,15 @@ function evalRaiseTermsSlot(inputs: InsightSlotInputs): SlotResult {
 	if (inputs.dpuLoadFailed) {
 		return { computable: false, value: null, evidence: null, reasonCode: SLOT_REASON_CODES.DPU_LOAD_FAILED };
 	}
-	const hit = detectInTextSources(RAISE_PATTERN, inputs.dpuPages, inputs.evidenceSnippets);
+	// Try RAISE_RANGE_PATTERN first so that "$2M–$4M" ranges are preserved in the
+	// output value rather than being truncated to only the first figure.
+	// Fall back to RAISE_AMOUNT_PATTERN (Forms A–H) for single-figure raises.
+	// Both share the same building blocks as Phase 2 canonical raise_amount.
+	const rangeHit = detectInTextSources(RAISE_RANGE_PATTERN, inputs.dpuPages, inputs.evidenceSnippets);
+	if (rangeHit) {
+		return { computable: true, value: rangeHit.snippet, evidence: rangeHit.ref, reasonCode: null };
+	}
+	const hit = detectInTextSources(RAISE_AMOUNT_PATTERN, inputs.dpuPages, inputs.evidenceSnippets);
 	if (hit) {
 		return { computable: true, value: hit.snippet, evidence: hit.ref, reasonCode: null };
 	}
@@ -719,6 +839,14 @@ function evalTractionSignalSlot(inputs: InsightSlotInputs): SlotResult {
 	if (inputs.dpuLoadFailed) {
 		return { computable: false, value: null, evidence: null, reasonCode: SLOT_REASON_CODES.DPU_LOAD_FAILED };
 	}
+	// TRACTION_PCT_PATTERN covers percentage-based traction claims (demo-to-close,
+	// retention ratio, lift, churn rate, etc.) that carry no dollar amount.
+	// Evaluated first so that %-based signals are not missed when MRR/ARR is absent.
+	const pctHit = detectInTextSources(TRACTION_PCT_PATTERN, inputs.dpuPages, inputs.evidenceSnippets);
+	if (pctHit) {
+		return { computable: true, value: pctHit.snippet, evidence: pctHit.ref, reasonCode: null };
+	}
+	// Fall back to MRR/ARR dollar-amount traction signal.
 	const hit = detectInTextSources(TRACTION_PATTERN, inputs.dpuPages, inputs.evidenceSnippets);
 	if (hit) {
 		return { computable: true, value: hit.snippet, evidence: hit.ref, reasonCode: null };
@@ -748,10 +876,19 @@ function evalUseOfFundsSlot(inputs: InsightSlotInputs): SlotResult {
 	return { computable: false, value: null, evidence: null, reasonCode: SLOT_REASON_CODES.NO_USE_OF_FUNDS_MENTION };
 }
 
-/** Format a single slot result as a pipe-delimited output line. */
+/**
+ * Format a single slot result as a pipe-delimited output line.
+ *
+ * The value snippet is sanitized before embedding:
+ * - Pipe characters are replaced with "/" so the line format `name: state | value="..." | ...`
+ *   is never broken by a `|` that appears inside the matched text (e.g. Excel cell separators).
+ * - Double-quote characters inside the snippet are replaced with single quotes so the
+ *   surrounding `value="..."` delimiters remain unambiguous.
+ */
 function formatSlotLine(name: string, result: SlotResult): string {
 	if (result.computable && result.value !== null && result.evidence !== null) {
-		return `${name}: Computable | value="${result.value}" | evidence=${result.evidence} | reason=none`;
+		const safeValue = result.value.replace(/\|/g, "/").replace(/"/g, "'");
+		return `${name}: Computable | value="${safeValue}" | evidence=${result.evidence} | reason=none`;
 	}
 	return `${name}: NotComputable | value=none | evidence=none | reason=${result.reasonCode ?? "UNKNOWN"}`;
 }
@@ -1011,68 +1148,9 @@ const P2_REASON = {
 } as const;
 
 // ── Phase 2 sub-field patterns (compile once) ────────────────────────────────
-
-/**
- * Building blocks for currency-aware money fragments.
- *   CURRENCY: "$", "€", "£", or word codes USD / EUR / GBP.
- *   AMOUNT:   digit sequence with optional comma separators and decimal.
- *   SUFFIX:   optional magnitude suffix (K/M/B/T, double-letter MM/BB, or words).
- *   MONEY_FRAGMENT: full currency-amount-suffix token used across all extraction patterns.
- *
- * Examples that MUST match: "$1.5MM", "$6MM", "$800,000", "€5.6M", "EUR 5.6M",
- *                            "£2M", "USD 2.5M", "1.5MM", "$1.5 million"
- */
-const CURRENCY       = String.raw`(?:\$|€|£|\bUSD\b|\bEUR\b|\bGBP\b)`;
-const AMOUNT         = String.raw`\d{1,3}(?:[,\d]{0,3})*(?:\.\d+)?`;
-const SUFFIX         = String.raw`(?:\s*(?:MM|BB|[KMBTkmbt]|thousand|million|billion|trillion)\b)?`;
-const MONEY_FRAGMENT = String.raw`${CURRENCY}\s*${AMOUNT}${SUFFIX}`;
-
-/**
- * Wildcard span that refuses to cross another currency token or a newline.
- * Used in patterns that allow free text between a money token and a keyword.
- */
-const _NO_CUR = `[^$€£\\n]`;
-
-/**
- * raise_amount: amount anchored to a fundraising verb, round type, or past-tense funding.
- * Form A: "Raising $2M seed", "raise $5M Series A", "seeking $1M"
- * Form B: "$1.5MM raise", "Equity $1.5MM raise on a $6MM Valuation"
- * Form C: "Capital Raise ... $1.5MM"
- * Form D: "$2M seed round", "$3M bridge raise"
- * Form E: "€5.6M raised to date", "EUR 5.6M funded" (money-first, past-tense)
- * Form F: "raised €5.6M", "has raised USD 2.0M to date", "Total raised: €5.6M" (verb-first)
- * Form G: "Raise: $4M", "Raised: €5.6M", "Seeking: a $2M" (colon + optional article — OCR label)
- * Form H: "Financial Strategy Raise: a $4M" (slide-layout label prefix + raise + money)
- *
- * _NO_CUR prevents wildcard spans from crossing neighbouring currency tokens.
- */
-/**
- * RAISE_ANCHOR: full list of word anchors signalling a raise context.
- * Used in Forms A, B, G, H of RAISE_AMOUNT_PATTERN.
- */
-const RAISE_ANCHOR = String.raw`(?:rais(?:e|ing|ed)|seeking|fund(?:ed|ing)?|financ(?:ed|ing)?|invest(?:ment|ing)?|offer(?:ing)?|proceeds|allocation)`;
-
-const RAISE_AMOUNT_PATTERN = new RegExp(
-	// Form A: raise/seek/fund/finance/invest/offer verb/noun immediately followed by money
-	`${RAISE_ANCHOR}\\s+${MONEY_FRAGMENT}` +
-	// Form B: money then raise-word within ~40 chars
-	`|${MONEY_FRAGMENT}${_NO_CUR}{0,40}?\\b${RAISE_ANCHOR}\\b` +
-	// Form C: label-first — capital raise / round size / ticket size / proceeds / allocation then money
-	`|\\b(?:capital\\s+raise|round\\s+size|ticket\\s+size|proceeds|allocation)\\b${_NO_CUR}{0,40}?${MONEY_FRAGMENT}` +
-	// Form D: money immediately before a round-type keyword
-	`|${MONEY_FRAGMENT}\\s+(?:seed|series\\s+[a-cA-C]|pre[-\\s]seed|bridge)\\s*(?:round|raise|funding)?` +
-	// Form E: money first, then past-tense funding phrase within ~60 chars
-	`|${MONEY_FRAGMENT}${_NO_CUR}{0,60}?\\b(?:raised(?:\\s+to\\s+date)?|funded|funding\\s+to\\s+date|financed|investment)\\b` +
-	// Form F: past-tense funding phrase first, then money within ~60 chars; colon between is allowed
-	`|\\b(?:raised(?:\\s+to\\s+date)?|funded|funding\\s+to\\s+date|financed|investment)\\b${_NO_CUR}{0,60}?${MONEY_FRAGMENT}` +
-	// Form G: raise-anchor + colon + optional indefinite article + money
-	// Matches: "Raise: $4M", "Raised: €5.6M", "Seeking: a $2M seed", "Total raised: €5.6M"
-	`|\\b${RAISE_ANCHOR}\\s*:\\s*(?:a\\b\\s*|an\\b\\s*)?${MONEY_FRAGMENT}` +
-	// Form H: slide-layout label prefix, then raise keyword (with optional colon/article), then money
-	// Matches: "Financial Strategy Raise: a $4M", "Investment Strategy Raise $5M"
-	`|\\b(?:financial\\s+strategy|capital\\s+strategy|investment\\s+strategy|funding\\s+strategy)\\b${_NO_CUR}{0,60}?\\braise\\b${_NO_CUR}{0,20}?${MONEY_FRAGMENT}`,
-	"i"
-);
+// NOTE: CURRENCY, AMOUNT, SUFFIX, MONEY_FRAGMENT, _NO_CUR, RAISE_ANCHOR, and
+// RAISE_AMOUNT_PATTERN are defined in the "Shared building blocks" section above
+// (before the data loader) so they are available to both Stage 1 and Phase 2.
 
 /** raise_round: seed, series A/B/C, pre-seed, bridge, angel */
 const RAISE_ROUND_PATTERN = /\b(seed|series\s+[a-cA-C]|pre[-\s]seed|bridge|angel)\b/i;
@@ -1724,6 +1802,8 @@ async function persistReport(
 		complianceState: ComplianceState;
 		renderPackage: RenderPackage;
 		auditLog: unknown[];
+		/** Fused canonical facts to persist in report_payload. */
+		fusedFacts?: FusedFact[];
 	}
 ): Promise<string> {
 	// ── Debug: log DB context once per call ─────────────────────────────────
@@ -1777,7 +1857,7 @@ async function persistReport(
 				JSON.stringify(opts.gateState),
 				JSON.stringify(opts.complianceState),
 				JSON.stringify(opts.renderPackage),
-				JSON.stringify({}), // report_payload reserved for Stage 1+
+				JSON.stringify(opts.fusedFacts ? { fused_facts: opts.fusedFacts } : {}), // report_payload: fused facts when available
 				JSON.stringify(opts.auditLog),
 			]
 		);
@@ -1816,6 +1896,39 @@ async function persistReport(
 	);
 
 	return insertedId;
+}
+
+// ─── Previous fused facts loader ──────────────────────────────────────────────
+
+/**
+ * Load the most-recent set of fused canonical facts for a deal from
+ * the report_payload of the last persisted report.
+ * Returns [] when no prior run exists or the payload has no fused_facts key.
+ * Fail-open: any DB error returns [] so history tracking is best-effort and
+ * never blocks report generation.
+ */
+async function loadPreviousFusedFacts(pool: Pool, dealId: string): Promise<FusedFact[]> {
+	try {
+		const { rows } = await pool.query<{ report_payload: unknown }>(
+			`SELECT report_payload
+			   FROM public.investor_insight_reports
+			  WHERE deal_id = $1::uuid
+			    AND report_payload != '{}'::jsonb
+			  ORDER BY created_at DESC
+			  LIMIT 1`,
+			[dealId]
+		);
+		const payload = rows[0]?.report_payload;
+		if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+			const p = payload as Record<string, unknown>;
+			if (Array.isArray(p["fused_facts"])) {
+				return p["fused_facts"] as FusedFact[];
+			}
+		}
+	} catch {
+		// Fail-open: history is best-effort; never block report generation
+	}
+	return [];
 }
 
 // ─── Main processor ───────────────────────────────────────────────────────────
@@ -1911,9 +2024,10 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		);
 
 		const fallbackFp = buildFallbackFingerprint(dealId, engineVersion);
-		const [coverage, insightSlotInputs] = await Promise.all([
+		const [coverage, insightSlotInputs, previousFusedFacts] = await Promise.all([
 			loadCoverageSnapshot(pool, dealId),
 			loadInsightSlotInputs(pool, dealId, gateState),
+			loadPreviousFusedFacts(pool, dealId),
 		]);
 		const insightSlotsSections = buildInsightSlotsSections(dealId, insightSlotInputs);
 		const phase2Sections = buildPhase2Sections(insightSlotInputs);
@@ -1921,9 +2035,14 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			? buildInvestorThesisStubSection(buildThesisInputs(insightSlotInputs))
 			: null;
 		const nm = normMetricsFromInputs(insightSlotInputs);
+		const fusionResult = fuseDealCanonicalFacts(
+			insightSlotInputs.dpuPages, insightSlotInputs.evidenceSnippets, previousFusedFacts
+		);
+		const fusionSection = buildDealFusionSection(fusionResult);
 		const sections = g3OnlyFail
 			? buildG3OnlyFailSections(gateState, coverage, insightSlotsSections, phase2Sections, thesisSection, nm)
 			: buildGateFailedSections(gateState, coverage, insightSlotsSections, phase2Sections, nm);
+		sections.push(fusionSection);
 
 		// Append diagnostics for any structural G3 failure (QUERY_FAILED is excluded
 		// since it indicates a DB problem, not a readability one).
@@ -1990,6 +2109,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			complianceState,
 			renderPackage: validatedPkg,
 			auditLog,
+			fusedFacts: fusionResult.facts,
 		});
 
 		return {
@@ -2060,14 +2180,20 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	}
 
 	// ── 6. Persist deterministic-only render package ──────────────────────────
-	const [coverage, insightSlotInputs] = await Promise.all([
+	const [coverage, insightSlotInputs, previousFusedFacts] = await Promise.all([
 		loadCoverageSnapshot(pool, dealId),
 		loadInsightSlotInputs(pool, dealId, gateState),
+		loadPreviousFusedFacts(pool, dealId),
 	]);
 	const insightSlotsSections = buildInsightSlotsSections(dealId, insightSlotInputs);
 	const phase2Sections = buildPhase2Sections(insightSlotInputs);
 	const thesisSection = buildInvestorThesisStubSection(buildThesisInputs(insightSlotInputs));
+	const fusionResult = fuseDealCanonicalFacts(
+		insightSlotInputs.dpuPages, insightSlotInputs.evidenceSnippets, previousFusedFacts
+	);
+	const fusionSection = buildDealFusionSection(fusionResult);
 	const sections = buildDeterministicOnlySections(gateState, coverage, insightSlotsSections, phase2Sections, thesisSection, normMetricsFromInputs(insightSlotInputs));
+	sections.push(fusionSection);
 	const renderPackage = buildRenderPackage({
 		dealId,
 		status: "deterministic_only",
@@ -2121,6 +2247,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		complianceState,
 		renderPackage: validatedPkg,
 		auditLog,
+		fusedFacts: fusionResult.facts,
 	});
 
 	console.log(
@@ -2143,4 +2270,164 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		report_id: reportId,
 		upstream_fingerprint: upstreamFingerprint,
 	};
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Repair exports — offline slot backfill
+//
+// Used by apps/worker/src/bin/repair-insight-slots.ts to fix stale reports
+// where DPU data was finalized after the investor-insights job last ran.
+// These functions WRITE to the DB and must NOT be called from the audit runner.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Recompute the insight_slots section body for a deal using current DPU data.
+ *
+ * Runs the same Stage-1 slot evaluation as the main processor, but without
+ * requiring a BullMQ Job object or gate state. Intended for offline repair.
+ *
+ * @returns The newline-joined slot body string.
+ */
+export async function recomputeInsightSlotBody(
+	pool: Pool,
+	dealId: string,
+): Promise<string> {
+	let dpuPages: DpuPage[] = [];
+	let evidenceSnippets: EvidenceSnippet[] = [];
+	let dpuLoadFailed = false;
+	const normEvents: NormalizationEvent[] = [];
+
+	try {
+		const { rows } = await pool.query<{ document_id: string; page_index: number; payload: unknown }>(
+			`SELECT document_id, page_index, payload
+			   FROM public.document_page_understanding
+			  WHERE deal_id = $1
+			  ORDER BY document_id ASC, page_index ASC
+			  LIMIT 500`,
+			[dealId]
+		);
+		dpuPages = rows
+			.map((r) => {
+				const raw = extractDpuText(r.payload);
+				if (!raw) return null;
+				const norm = normalizeForExtraction(raw);
+				normEvents.push(...norm.events);
+				return {
+					document_id: r.document_id,
+					page_index:  r.page_index,
+					text:        norm.text,
+					text_raw:    raw,
+					norm_events_count: norm.events.length,
+				};
+			})
+			.filter((p): p is DpuPage => p !== null);
+	} catch {
+		dpuLoadFailed = true;
+	}
+
+	await pool
+		.query<{ id: string; claim_text: string | null }>(
+			`SELECT id, claim_text FROM public.evidence_items WHERE deal_id = $1::uuid LIMIT 50`,
+			[dealId]
+		)
+		.then(({ rows }) => {
+			evidenceSnippets = rows.map((row) => {
+				if (!row.claim_text) return { ...row, claim_text_norm: null };
+				const norm = normalizeForExtraction(row.claim_text);
+				normEvents.push(...norm.events);
+				return { ...row, claim_text_norm: norm.text };
+			});
+		})
+		.catch(() => { /* evidence_items is supplemental; failure is non-fatal */ });
+
+	const inputs: InsightSlotInputs = {
+		dpuPages,
+		evidenceSnippets,
+		dpuLoadFailed,
+		g3Passed: true, // repair assumes gates already passed for persisted reports
+		dpuDiag: {
+			queryOk:        !dpuLoadFailed,
+			rowCount:       dpuPages.length,
+			usablePageCount: dpuPages.length,
+			sample:         dpuPages[0] ? `${dpuPages[0].page_index}: ${dpuPages[0].text.slice(0, 80)}` : "n/a",
+		},
+		normEvents,
+	};
+
+	return buildInsightSlotsSection(inputs).body;
+}
+
+/**
+ * Repair the stored insight_slots section for a deal.
+ *
+ * Reads the current DPU data, re-evaluates all 5 slot detectors, and replaces
+ * the insight_slots body in the most recent investor_insight_reports row.
+ * If the insight_slots section is absent from render_package.sections it is
+ * appended; if no report row exists the deal is skipped.
+ *
+ * All other render_package fields are left untouched.
+ *
+ * @returns Object with updated flag, newBody, and oldBody (null when absent).
+ */
+export async function repairInsightSlotsInReport(
+	pool: Pool,
+	dealId: string,
+): Promise<{ updated: boolean; newBody: string; oldBody: string | null }> {
+	const newBody = await recomputeInsightSlotBody(pool, dealId);
+
+	// Fetch the latest report row
+	const { rows: existing } = await pool.query<{
+		id: string;
+		render_package: unknown;
+	}>(
+		`SELECT id, render_package
+		   FROM public.investor_insight_reports
+		  WHERE deal_id = $1
+		  ORDER BY updated_at DESC
+		  LIMIT 1`,
+		[dealId]
+	);
+
+	if (existing.length === 0) {
+		// No report exists for this deal — cannot repair in-place
+		return { updated: false, newBody, oldBody: null };
+	}
+
+	const { id: reportId, render_package } = existing[0]!;
+	const rp = (render_package ?? {}) as { sections?: Array<Record<string, unknown>> };
+	const sections: Array<Record<string, unknown>> = Array.isArray(rp.sections) ? [...rp.sections] : [];
+
+	// Find existing insight_slots section
+	const existingIdx = sections.findIndex((s) => s["key"] === "insight_slots");
+	const oldBody: string | null =
+		existingIdx >= 0 && typeof sections[existingIdx]!["body"] === "string"
+			? (sections[existingIdx]!["body"] as string)
+			: null;
+
+	const newSection = {
+		key:      "insight_slots",
+		title:    "Deterministic Insight Slots",
+		kind:     "message",
+		body:     newBody,
+		fallback: "Insight slot extraction unavailable.",
+	};
+
+	if (existingIdx >= 0) {
+		sections[existingIdx] = newSection;
+	} else {
+		// Section absent (very old report) — append it
+		sections.push(newSection);
+	}
+
+	const updatedRp = { ...rp, sections };
+
+	await pool.query(
+		`UPDATE public.investor_insight_reports
+		    SET render_package = $2::jsonb,
+		        updated_at     = NOW()
+		  WHERE id = $1`,
+		[reportId, JSON.stringify(updatedRp)]
+	);
+
+	return { updated: true, newBody, oldBody };
 }

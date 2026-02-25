@@ -2204,7 +2204,7 @@ async function generateGovernedUiCopyV1BestEffort(args: {
     "business_model MUST be 1–2 sentences: " +
     "Sentence 1: state the revenue mechanism (subscription, licensing, wholesale, transaction fee, etc.) from the basis. " +
     "Sentence 2 (optional): pricing tier, margin structure, or distribution channel — ONLY if evidence is present. " +
-    "If no business model information is present in the basis, return exactly: 'Business model not clearly defined in provided materials.' " +
+    "If no business model information is present in the basis (business_model basis text is null), return null for that field. " +
     // ── quality guards ───────────────────────────────────────────────────
     "NEVER mention internal scoring, confidence levels, or narrative pacing in any field. " +
     "NEVER use vague filler phrases such as 'strong presence', 'significant opportunity', or 'robust growth' unless the basis explicitly uses that language. " +
@@ -2239,33 +2239,44 @@ async function generateGovernedUiCopyV1BestEffort(args: {
     };
   }
 
-  const errors: string[] = [];
+  // Accumulate non-fatal quality notes (field-level corrections that don't warrant object rejection).
+  const qualityNotes: string[] = [];
   const coerceText = (key: "hero_summary" | "product_solution" | "market_icp" | "business_model" | "raise_terms"): string | null => {
     const raw = (parsed as any)[key];
     if (raw === null) return null;
     const clamped = clampMaybeText(raw, 320);
     if (!clamped) {
-      errors.push(`${key}_empty_or_invalid`);
+      qualityNotes.push(`${key}_empty_or_invalid`);
       return null;
     }
     return clamped;
   };
 
   const hero_summary = coerceText("hero_summary");
-  const product_solution = coerceText("product_solution");
-  const market_icp = coerceText("market_icp");
-  const business_model = coerceText("business_model");
-  const raise_terms = coerceText("raise_terms");
+  // Use mutable variables — the per-field basis guard below may null specific fields out.
+  let safe_product_solution = coerceText("product_solution");
+  let safe_market_icp = coerceText("market_icp");
+  let safe_business_model = coerceText("business_model");
+  let safe_raise_terms = coerceText("raise_terms");
 
-  // Fail closed: if basis text is null, output must be null.
-  const mustBeNull: Array<[keyof typeof basis, string | null]> = [
-    ["product_solution", product_solution],
-    ["market_icp", market_icp],
-    ["business_model", business_model],
-    ["raise_terms", raise_terms],
+  // Per-field basis guard: if the basis text for a field is null, the LLM output must be null.
+  // Null out the specific offending field rather than rejecting the whole object — the other
+  // fields that passed basis coverage remain valid governed output.
+  type BasisField = "product_solution" | "market_icp" | "business_model" | "raise_terms";
+  const basisGuardChecks: Array<[BasisField, string | null]> = [
+    ["product_solution", safe_product_solution],
+    ["market_icp", safe_market_icp],
+    ["business_model", safe_business_model],
+    ["raise_terms", safe_raise_terms],
   ];
-  for (const [k, v] of mustBeNull) {
-    if (!basis[k].text && v) errors.push(`${String(k)}_present_without_basis`);
+  for (const [k, v] of basisGuardChecks) {
+    if (!basis[k].text && v) {
+      qualityNotes.push(`${k}_present_without_basis`);
+      if (k === "product_solution") safe_product_solution = null;
+      if (k === "market_icp") safe_market_icp = null;
+      if (k === "business_model") safe_business_model = null;
+      if (k === "raise_terms") safe_raise_terms = null;
+    }
   }
 
   const allBasisText = [
@@ -2279,22 +2290,25 @@ async function generateGovernedUiCopyV1BestEffort(args: {
     .filter((t): t is string => typeof t === "string" && t.trim().length > 0)
     .join(" \n");
 
+  // Numeric citation guard runs on corrected (safe) values — still fail-closed for hallucinated numbers.
+  const fatalErrors: string[] = [];
   const numericChecks: Array<[string, string | null]> = [
     ["hero_summary", hero_summary],
-    ["product_solution", product_solution],
-    ["market_icp", market_icp],
-    ["business_model", business_model],
-    ["raise_terms", raise_terms],
+    ["product_solution", safe_product_solution],
+    ["market_icp", safe_market_icp],
+    ["business_model", safe_business_model],
+    ["raise_terms", safe_raise_terms],
   ];
   for (const [k, v] of numericChecks) {
     if (!v) continue;
-    if (violatesNumericCitationGuard({ output: v, input: allBasisText })) errors.push(`${k}_numeric_not_in_basis`);
+    if (violatesNumericCitationGuard({ output: v, input: allBasisText })) fatalErrors.push(`${k}_numeric_not_in_basis`);
   }
 
-  if (errors.length > 0) {
+  // Hallucinated numbers are unsafe — fail the whole object.
+  if (fatalErrors.length > 0) {
     return {
       governed_ui_copy_v1: null,
-      quality: { ...qualityBase, model: "gpt-4o-mini", ok: false, guard_degraded: true, errors },
+      quality: { ...qualityBase, model: "gpt-4o-mini", ok: false, guard_degraded: true, errors: [...fatalErrors, ...qualityNotes] },
       deterministic_input,
     };
   }
@@ -2310,15 +2324,19 @@ async function generateGovernedUiCopyV1BestEffort(args: {
     ])
   ).sort().slice(0, 10);
 
+  // Partial degradation: one or more fields were nulled by the basis guard, but the object
+  // is still produced with the remaining valid governed fields intact.
+  const hasPartialDegradation = qualityNotes.length > 0;
+
   return {
     governed_ui_copy_v1: {
       schema_version: "governed_ui_copy_v1",
       deal_summary_mid: hero_summary,
       hero_summary,
-      product_solution,
-      market_icp,
-      business_model,
-      raise_terms,
+      product_solution: safe_product_solution,
+      market_icp: safe_market_icp,
+      business_model: safe_business_model,
+      raise_terms: safe_raise_terms,
       traction,
       strengths,
       concerns,
@@ -2342,7 +2360,13 @@ async function generateGovernedUiCopyV1BestEffort(args: {
         hero_summary: heroEvidence,
       },
     },
-    quality: { ...qualityBase, model: "gpt-4o-mini", ok: true, guard_degraded: false },
+    quality: {
+      ...qualityBase,
+      model: "gpt-4o-mini",
+      ok: !hasPartialDegradation,
+      guard_degraded: hasPartialDegradation,
+      ...(qualityNotes.length > 0 ? { errors: qualityNotes } : {}),
+    },
     deterministic_input,
   };
 }

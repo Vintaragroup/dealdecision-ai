@@ -369,6 +369,132 @@ describe("Stage 1 – DPU diagnostics (dev mode)", () => {
 		expect(diagSection.body).toMatch(/error: relation does not exist/);
 	});
 
+	// ── Regression: RAISE_AMOUNT_PATTERN Form G / H (OCR-label patterns) ───────
+	//
+	// Bug: raise_terms slot used a simpler RAISE_PATTERN that required the dollar
+	// sign to immediately follow the raise keyword.  OCR slide-layout labels such as
+	// "Raise: $4M" (Form G) and "Financial Strategy Raise: a $4M" (Form H) were
+	// skipped, producing slot=NotComputable while canonical raise_amount=Computable
+	// on the same page.  The fix delegates the slot to RAISE_AMOUNT_PATTERN.
+
+	it("raise_terms is Computable for Form G OCR label 'Raise: $4M' (colon-separated)", async () => {
+		mockPool = makeDpuPool("Financial Strategy Raise: $4M post close to scale operations.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+		expect(slots.body).toMatch(/evidence=dpu:doc:[0-9a-f]{8}:page:\d+/);
+		expect(slots.body).toMatch(/reason=none/);
+	});
+
+	it("raise_terms is Computable for Form H WebMax OCR text 'Financial Strategy Raise: a $4M'", async () => {
+		mockPool = makeDpuPool(
+			"DIGITAL MORTGAGE SOLUTIONS Financial Strategy Raise: a $4M Financial WebMax > $2M-$4M"
+		);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+		expect(slots.body).toMatch(/reason=none/);
+	});
+
+	it("raise_terms is Computable for Form G bare label 'Raising: a $2.5M seed'", async () => {
+		mockPool = makeDpuPool("Raising: a $2.5M seed round to fund product development.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+	});
+
+	it("raise_terms remains NotComputable when page has money but no raise context", async () => {
+		// Dollar amounts near TAM/MRR keywords should NOT trigger raise_terms.
+		// Avoid any RAISE_ANCHOR words (fund/raise/invest/proceed) in this text.
+		mockPool = makeDpuPool(
+			"The TAM is $50B globally. Monthly recurring revenue $80K growing 15% month over month. Market leader in space."
+		);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots.body).toMatch(/raise_terms: NotComputable.*reason=NO_RAISE_MENTION/);
+		// But market_claims and traction should be detectable
+		expect(slots.body).toMatch(/market_claims: Computable/);
+		expect(slots.body).toMatch(/traction_signal: Computable/);
+	});
+
+	it("multi-doc: raise_terms Computable from XLSX page 10, evidence ref matches, other slots NotComputable", async () => {
+		// Simulate WebMax layout: PDF doc has no raise; XLSX doc has Form H text on page 10.
+		// Using ae9a45e5-prefixed UUID so evidence ref is dpu:doc:ae9a45e5:page:10.
+		const PDF_DOC_ID  = "aaaa1111-bbbb-cccc-dddd-000000000001";
+		const XLSX_DOC_ID = "ae9a45e5-e5f6-7890-abcd-ef1234567890";
+
+		mockPool = {
+			query: vi.fn(async (sql: string) => {
+				if (sql.includes("current_database")) return { rows: [{ db: "testdb", schema: "public" }] };
+				if (sql.includes("investor_insight_reports") && (sql as string).trimStart().startsWith("INSERT")) {
+					return { rows: [{ id: "mock-report-id" }] };
+				}
+				if (sql.includes("investor_insight_reports")) return { rows: [] };
+				if (sql.includes("document_id") && sql.includes("document_page_understanding")) {
+					return {
+						rows: [
+							// PDF page 0: pitch deck intro — no raise mention
+							{
+								document_id: PDF_DOC_ID,
+								page_index: 0,
+								payload: { page_text: "WebMax CRM-agnostic predictive scoring engine for mortgage teams." },
+							},
+							// XLSX page 10: financial strategy slide with OCR label (Form H) —
+							// THE page that was previously missed by RAISE_PATTERN
+							{
+								document_id: XLSX_DOC_ID,
+								page_index: 10,
+								payload: {
+									page_text:
+										"DIGITAL MORTGAGE SOLUTIONS Financial Strategy Raise: a $4M " +
+										"Financial WebMax DIGITAL > $2M-$4M",
+								},
+							},
+						],
+					};
+				}
+				if (sql.includes("COUNT") && sql.includes("document_page_understanding")) {
+					return { rows: [{ total: "2", non_empty: "2" }] };
+				}
+				if (sql.includes("evidence_items")) return { rows: [] };
+				if (sql.includes("documents") && !sql.includes("visual_assets")) return { rows: [{ c: "2" }] };
+				if (sql.includes("visual_assets")) return { rows: [{ c: "4" }] };
+				return { rows: [] };
+			}),
+		} as any;
+
+		await generateInvestorInsightsProcessor(makeJob("23b2fa42-e6d1-4aa3-8fbc-f7aa083846e4"));
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+
+		// raise_terms MUST be Computable — regression guard for WebMax
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+		// Evidence ref must point to the XLSX doc (ae9a45e5) at page 10
+		expect(slots.body).toMatch(/evidence=dpu:doc:ae9a45e5:page:10/);
+		expect(slots.body).toMatch(/reason=none/);
+
+		// Slots without evidence must remain NotComputable (no false positives)
+		expect(slots.body).toMatch(/market_claims: NotComputable.*reason=NO_MARKET_CLAIM_MENTION/);
+		expect(slots.body).toMatch(/traction_signal: NotComputable.*reason=NO_TRACTION_SIGNAL_MENTION/);
+		expect(slots.body).toMatch(/valuation_terms: NotComputable.*reason=NO_VALUATION_MENTION/);
+	});
+
 	it("DPU query ok but 0 usable pages → NO_*_MENTION reasons and debug.dpu_diagnostics with usable_pages: 0", async () => {
 		// Pool returning DPU rows whose payloads have no extractable text.
 		mockPool = {
@@ -406,5 +532,110 @@ describe("Stage 1 – DPU diagnostics (dev mode)", () => {
 		expect(diagSection.body).toMatch(/row_count: 1/);
 		expect(diagSection.body).toMatch(/usable_pages: 0/);
 		expect(diagSection.body).toMatch(/error: none/);
+	});
+});
+// ── Raise range + Traction % level-up regression tests ───────────────────────
+
+describe("Level-up: raise range + traction % detection", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockEvaluateGates.mockResolvedValue(g3OnlyFailGateState());
+	});
+
+	// ── Raise range ────────────────────────────────────────────────────────
+
+	it("raise_terms is Computable and value preserves en-dash range '$2M–$4M Raise'", async () => {
+		mockPool = makeDpuPool("$2M–$4M Raise to accelerate growth.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+		// The captured value must contain both the low and high figure
+		expect(slots.body).toMatch(/value="[^"]*\$2M[^"]*\$4M[^"]*"|value="[^"]*2M[^"]*4M[^"]*"/);
+	});
+
+	it("raise_terms is Computable for colon-label range 'Raise: $2M-$4M'", async () => {
+		mockPool = makeDpuPool("Raise: $2M-$4M seed financing");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+		expect(slots.body).toMatch(/evidence=dpu:doc:[0-9a-f]{8}:page:\d+/);
+	});
+
+	it("raise_terms is Computable for word-separator range 'raising $500K to $1M'", async () => {
+		mockPool = makeDpuPool("We are raising $500K to $1M in this bridge round.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+	});
+
+	it("raise_terms is Computable for slide-layout prefix with range 'Financial Strategy Raise: $2M–$4M'", async () => {
+		mockPool = makeDpuPool("Financial Strategy Raise: $2M–$4M total investment ask.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+	});
+
+	// ── Traction % ─────────────────────────────────────────────────────────
+
+	it("traction_signal is Computable for keyword-first '50% demo-to-close conversion'", async () => {
+		mockPool = makeDpuPool("Our team achieves a 50% demo-to-close conversion rate.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/traction_signal: Computable/);
+		expect(slots.body).toMatch(/evidence=dpu:doc:[0-9a-f]{8}:page:\d+/);
+	});
+
+	it("traction_signal is Computable for percent-first range '20-300% lift in engagement'", async () => {
+		mockPool = makeDpuPool("Our product delivers a 20-300% lift in engagement across cohorts.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/traction_signal: Computable/);
+	});
+
+	it("traction_signal is Computable for 'retention ratio of 60%'", async () => {
+		mockPool = makeDpuPool("We maintain a retention ratio of 60% across all cohorts.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/traction_signal: Computable/);
+	});
+
+	it("traction_signal is NOT Computable for non-traction percent '30% allocation of proceeds'", async () => {
+		// "allocation of proceeds" is a use-of-funds phrase — must NOT trigger traction_signal.
+		mockPool = makeDpuPool("30% allocation of proceeds will go to product development.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/traction_signal: NotComputable.*reason=NO_TRACTION_SIGNAL_MENTION/);
 	});
 });

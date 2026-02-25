@@ -381,9 +381,11 @@ describe("populateDocumentPageUnderstandingFromVisualExtractions — excel_sheet
 
 		// grid_preview aggregation tokens
 		expect(dealSql).toContain("{grid_preview,cells}");
-		expect(dealSql).toContain("cell.value->>'w'");
-		expect(dealSql).toContain("cell.value->>'v'");
-		expect(dealSql).toContain("cell.value->>'a'");
+		expect(dealSql).toContain("value->>'w'");
+		expect(dealSql).toContain("value->>'v'");
+		expect(dealSql).toContain("value->>'a'");
+		expect(dealSql).toContain("CROSS JOIN LATERAL");
+		expect(dealSql).toContain("WHERE row_num IS NOT NULL");
 		expect(dealSql).toContain("LIMIT 12");
 
 		// computed passthrough
@@ -487,12 +489,15 @@ describe("populateDocumentPageUnderstandingFromVisualExtractions — excel_sheet
 		const dealSql = capturedSql.find((q) => q.includes("FROM docs d") && q.includes("ON CONFLICT"));
 		expect(dealSql).toBeDefined();
 
-		// Row number extraction from address field 'a' using regexp
-		expect(dealSql).toContain("regexp_replace(cell.value->>'a', '[^0-9]', '', 'g')::int");
+		// Row number extraction from address field 'a' using regexp (NULLIF-guarded cast)
+		expect(dealSql).toContain("NULLIF(regexp_replace(value->>'a', '[^0-9]', '', 'g'), '')::int");
 		// Column letter ordering from address field 'a'
-		expect(dealSql).toContain("ORDER BY regexp_replace(cell.value->>'a', '[^A-Z]', '', 'g')");
+		expect(dealSql).toContain("ORDER BY regexp_replace(value->>'a', '[^A-Z]', '', 'g')");
 		// Prefer 'w' (display text) over 'v' (raw value)
-		expect(dealSql).toContain("COALESCE(cell.value->>'w', cell.value->>'v', '')");
+		expect(dealSql).toContain("COALESCE(value->>'w', value->>'v', '')");
+		// Safe CROSS JOIN LATERAL pattern with NULL guard
+		expect(dealSql).toContain("CROSS JOIN LATERAL");
+		expect(dealSql).toContain("WHERE row_num IS NOT NULL");
 		// GROUP BY and ORDER BY row_num with LIMIT 12
 		expect(dealSql).toContain("GROUP BY row_num");
 		expect(dealSql).toContain("ORDER BY row_num");
@@ -691,5 +696,103 @@ describe("populateDocumentPageUnderstandingFromVisualExtractions — PDF enrichm
 		expect(enrichIdx).toBeGreaterThan(backfillIdx);
 
 		spy.mockRestore();
+	});
+});
+
+describe("populateDocumentPageUnderstandingFromVisualExtractions — cross-document partition regression", () => {
+	it("sqlDeal best CTE uses DISTINCT ON (document_id, page_index) not (deal_id, page_index)", async () => {
+		const { populateDocumentPageUnderstandingFromVisualExtractions } = await import("../document-page-understanding.js");
+
+		const capturedSql: string[] = [];
+		const pool: any = {
+			query: async (sql: string, _params?: any[]) => {
+				capturedSql.push(String(sql));
+				return { rows: [{ upserted: "1", page_text_empty: "0" }], rowCount: 1 };
+			},
+		};
+
+		await populateDocumentPageUnderstandingFromVisualExtractions(pool, {
+			dealId: "aa000000-0000-0000-0000-000000000001",
+		});
+
+		const dealSql = capturedSql.find((q) => q.includes("FROM docs d") && q.includes("ON CONFLICT"));
+		expect(dealSql).toBeDefined();
+
+		// Must partition/dedup per document, NOT per deal
+		expect(dealSql).toContain("DISTINCT ON (document_id, page_index)");
+		// Must not collapse across all docs in the deal
+		expect(dealSql).not.toContain("DISTINCT ON (deal_id, page_index)");
+		expect(dealSql).not.toContain("PARTITION BY deal_id, page_index");
+
+		// The outer ORDER BY for the best CTE must start with document_id then page_index then structured_ok DESC
+		// (required for DISTINCT ON to be deterministic)
+		expect(dealSql).toMatch(/ORDER BY\s+document_id,\s+page_index,\s+structured_ok DESC/);
+	});
+
+	it("sqlDocumentRange best CTE uses DISTINCT ON (document_id, page_index) not (deal_id, page_index)", async () => {
+		const { populateDocumentPageUnderstandingFromVisualExtractions } = await import("../document-page-understanding.js");
+
+		const capturedSql: string[] = [];
+		const pool: any = {
+			query: async (sql: string, _params?: any[]) => {
+				capturedSql.push(String(sql));
+				if (String(sql).includes("COUNT(*)::bigint AS inserted")) {
+					return { rows: [{ inserted: "0" }], rowCount: 1 };
+				}
+				return { rows: [{ upserted: "1", page_text_empty: "0" }], rowCount: 1 };
+			},
+		};
+
+		await populateDocumentPageUnderstandingFromVisualExtractions(pool, {
+			documentId: "aa000000-0000-0000-0000-000000000002",
+			dealId: "aa000000-0000-0000-0000-000000000003",
+			pageStart: 0,
+			pageEnd: 5,
+		});
+
+		const rangeSql = capturedSql.find((q) => q.includes("va.page_index >= $2") && q.includes("ON CONFLICT"));
+		expect(rangeSql).toBeDefined();
+
+		// Same partition regression guard for the document-range path
+		expect(rangeSql).toContain("DISTINCT ON (document_id, page_index)");
+		expect(rangeSql).not.toContain("DISTINCT ON (deal_id, page_index)");
+		expect(rangeSql).not.toContain("PARTITION BY deal_id, page_index");
+	});
+
+	it("upsert conflict target is (document_id, page_index, version) in both SQL paths", async () => {
+		const { populateDocumentPageUnderstandingFromVisualExtractions } = await import("../document-page-understanding.js");
+
+		const capturedSql: string[] = [];
+		const pool: any = {
+			query: async (sql: string, _params?: any[]) => {
+				capturedSql.push(String(sql));
+				if (String(sql).includes("COUNT(*)::bigint AS inserted")) {
+					return { rows: [{ inserted: "0" }], rowCount: 1 };
+				}
+				return { rows: [{ upserted: "2", page_text_empty: "0" }], rowCount: 1 };
+			},
+		};
+
+		// deal-level
+		await populateDocumentPageUnderstandingFromVisualExtractions(pool, {
+			dealId: "aa000000-0000-0000-0000-000000000004",
+		});
+		// document-range
+		await populateDocumentPageUnderstandingFromVisualExtractions(pool, {
+			documentId: "aa000000-0000-0000-0000-000000000005",
+			dealId: "aa000000-0000-0000-0000-000000000006",
+			pageStart: 0,
+			pageEnd: 3,
+		});
+
+		const allConflicts = capturedSql.filter((q) =>
+			q.includes("ON CONFLICT") && !q.includes("generate_series")
+		);
+		// Both paths must use document-scoped conflict target
+		expect(allConflicts.length).toBeGreaterThanOrEqual(2);
+		for (const sql of allConflicts) {
+			expect(sql).toContain("ON CONFLICT (document_id, page_index, version)");
+			expect(sql).not.toContain("ON CONFLICT (deal_id, page_index");
+		}
 	});
 });

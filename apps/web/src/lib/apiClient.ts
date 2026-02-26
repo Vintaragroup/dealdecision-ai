@@ -2107,16 +2107,22 @@ export type InvestorInsightsReport = {
   status: string;
   engine_version?: string;
   upstream_fingerprint?: string;
-  gate_state?: {
-    all_passed: boolean;
-    results: InvestorInsightsGateResult[];
-  };
   compliance_state?: {
     status: string;
     events: unknown[];
   };
+  /**
+   * render_package is the canonical rendering payload returned by the worker.
+   * gate_state lives HERE (inside render_package), not at the report top level.
+   * sections[gate_state].items is intentionally left empty by the real API;
+   * use render_package.gate_state.results as the source of truth for gates.
+   */
   render_package?: {
     sections?: InvestorInsightsSection[];
+    gate_state?: {
+      all_passed: boolean;
+      results: InvestorInsightsGateResult[];
+    };
     [key: string]: unknown;
   };
   updated_at?: string;
@@ -2132,6 +2138,20 @@ export async function apiGenerateInvestorInsights(dealId: string): Promise<{ ok:
   return request<{ ok: boolean }>(`/api/v1/deals/${dealId}/investor-insights/generate`, {
     method: 'POST',
   });
+}
+
+/**
+ * Force-regenerate investor insights for a deal, bypassing BullMQ dedup.
+ * Each call enqueues a fresh job (timestamp-keyed jobId). Use this for the
+ * explicit "Regenerate Report" UI action.
+ */
+export async function apiRegenerateInvestorInsights(dealId: string): Promise<{ ok: boolean; deal_id: string; enqueued: boolean }> {
+  // eslint-disable-next-line no-console
+  console.log('[InvestorInsights] POST regenerate', dealId);
+  return request<{ ok: boolean; deal_id: string; enqueued: boolean }>(
+    `/api/v1/deals/${dealId}/investor-insights/regenerate`,
+    { method: 'POST' },
+  );
 }
 
 export const apiClient = {

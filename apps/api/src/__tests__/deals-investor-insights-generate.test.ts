@@ -109,3 +109,99 @@ test("POST /api/v1/deals/:deal_id/investor-insights/generate returns 500 when en
 
   await app.close();
 });
+
+// ── POST /regenerate tests ────────────────────────────────────────────────────
+
+test("POST /api/v1/deals/:deal_id/investor-insights/regenerate returns 400 for non-UUID deal_id", async () => {
+  const app = Fastify();
+  await registerDealRoutes(app, noopPool, {
+    enqueueJob: async () => ({ id: 1, job_id: "job-1", status: "queued" as any }),
+    investorInsightsQueue: {
+      add: async () => { throw new Error("should not be called"); },
+    },
+  });
+
+  const res = await app.inject({
+    method: "POST",
+    url: "/api/v1/deals/not-a-uuid/investor-insights/regenerate",
+  });
+
+  assert.equal(res.statusCode, 400);
+  const body = res.json() as any;
+  assert.equal(body.error, "invalid_deal_id");
+
+  await app.close();
+});
+
+test("POST /api/v1/deals/:deal_id/investor-insights/regenerate returns 202 { ok, deal_id, enqueued } bypassing dedup", async () => {
+  const dealId = "00000000-0000-0000-0000-000000000072";
+
+  let capturedName: string | undefined;
+  let capturedData: unknown;
+  let capturedOpts: unknown;
+
+  const app = Fastify();
+  await registerDealRoutes(app, noopPool, {
+    enqueueJob: async () => ({ id: 1, job_id: "job-1", status: "queued" as any }),
+    investorInsightsQueue: {
+      add: async (name: string, data: unknown, opts?: unknown) => {
+        capturedName = name;
+        capturedData = data;
+        capturedOpts = opts;
+        return {};
+      },
+    },
+  });
+
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/v1/deals/${dealId}/investor-insights/regenerate`,
+  });
+
+  assert.equal(res.statusCode, 202);
+  const body = res.json() as any;
+  assert.equal(body.ok, true);
+  assert.equal(body.deal_id, dealId);
+  assert.equal(body.enqueued, true);
+
+  // Job name and payload
+  assert.equal(capturedName, "generate_investor_insights");
+  assert.deepEqual(capturedData, {
+    deal_id: dealId,
+    engine_version: "v1",
+    triggered_by: "manual_regenerate",
+    force_recompute: true,
+  });
+
+  // jobId must be unique (includes timestamp) — not the deterministic generate key
+  const opts = capturedOpts as any;
+  assert.match(opts.jobId, new RegExp(`investor_insights__${dealId}__v1__manual_regenerate__\\d+`));
+  assert.notEqual(opts.jobId, `investor_insights__${dealId}__v1__manual_generate`);
+  assert.equal(opts.removeOnComplete, true);
+  assert.equal(opts.removeOnFail, false);
+
+  await app.close();
+});
+
+test("POST /api/v1/deals/:deal_id/investor-insights/regenerate returns 500 when enqueue throws", async () => {
+  const dealId = "00000000-0000-0000-0000-000000000073";
+
+  const app = Fastify();
+  await registerDealRoutes(app, noopPool, {
+    enqueueJob: async () => ({ id: 1, job_id: "job-1", status: "queued" as any }),
+    investorInsightsQueue: {
+      add: async () => { throw new Error("Redis connection refused"); },
+    },
+  });
+
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/v1/deals/${dealId}/investor-insights/regenerate`,
+  });
+
+  assert.equal(res.statusCode, 500);
+  const body2 = res.json() as any;
+  assert.equal(body2.error, "enqueue_failed");
+
+  await app.close();
+});

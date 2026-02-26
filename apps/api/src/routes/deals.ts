@@ -2466,6 +2466,35 @@ export async function registerDealRoutes(
     return reply.status(202).send({ ok: true });
   });
 
+  // Investor Insight Engine – Stage 0: force a fresh regeneration, bypassing BullMQ dedup.
+  // Uses a timestamp-keyed jobId so every call enqueues a new job regardless of prior state.
+  // Returns 202 { ok: true, deal_id, enqueued: true }.
+  app.post("/api/v1/deals/:deal_id/investor-insights/regenerate", async (request, reply) => {
+    const rawDealId = (request.params as { deal_id: string }).deal_id;
+    const parsed = z.object({ deal_id: z.string().uuid() }).safeParse({ deal_id: rawDealId });
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+    const dealId = parsed.data.deal_id;
+
+    // Unique per-request jobId — bypasses BullMQ dedup so regenerate always enqueues.
+    const jobId = `investor_insights__${dealId}__v1__manual_regenerate__${Date.now()}`;
+
+    const insightsQueue = deps?.investorInsightsQueue ?? (getQueues().investorInsightsQueue as any);
+    try {
+      await insightsQueue.add(
+        "generate_investor_insights",
+        { deal_id: dealId, engine_version: "v1", triggered_by: "manual_regenerate", force_recompute: true },
+        { jobId, removeOnComplete: true, removeOnFail: false }
+      );
+    } catch (err) {
+      console.error("[investor-insights] regenerate_enqueue_failed", { dealId, err: err instanceof Error ? err.message : String(err) });
+      return reply.status(500).send({ error: "enqueue_failed" });
+    }
+
+    return reply.status(202).send({ ok: true, deal_id: dealId, enqueued: true });
+  });
+
   if (debugRoutesEnabled) {
     // DEV-only: dump standardized segment features for sample assets.
     // Helps verify PPTX/DOCX/XLSX structured_json normalization and vision OCR title extraction.

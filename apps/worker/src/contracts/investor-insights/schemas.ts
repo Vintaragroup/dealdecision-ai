@@ -12,6 +12,10 @@ export const GateResultSchema = z.object({
   reason_code: z.string().optional(),
   threshold: z.number().optional(),
   actual: z.number().optional(),
+  /** Optional diagnostic map attached by G3 on parse / schema failures.
+   *  Includes payload_length, preview (first 200 chars), and schema_version.
+   *  Never present on passing gates; stripped from UI output. */
+  diag: z.record(z.unknown()).optional(),
 });
 
 export const GateStateSchema = z.object({

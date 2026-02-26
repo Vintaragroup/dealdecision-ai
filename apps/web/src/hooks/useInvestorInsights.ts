@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { apiGetInvestorInsights, apiGenerateInvestorInsights, type InvestorInsightsReport } from '../lib/apiClient';
+import { apiGetInvestorInsights, apiGenerateInvestorInsights, apiRegenerateInvestorInsights, type InvestorInsightsReport } from '../lib/apiClient';
 
 export type UseInvestorInsightsStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -28,6 +28,21 @@ export function useInvestorInsights(dealId: string | undefined): UseInvestorInsi
       const data = await apiGetInvestorInsights(id);
       // Discard if unmounted or if dealId changed since fetch started.
       if (!mountedRef.current || dealIdRef.current !== id) return null;
+      if (import.meta.env.DEV) {
+        // Dev-only diagnostic: confirms data binding path for investor insights.
+        const sectionKeys = data.render_package?.sections?.map((s) => s.key) ?? [];
+        const insightSlotsBody = data.render_package?.sections
+          ?.find((s) => s.key === 'insight_slots')?.body
+          ?.slice(0, 80) ?? null;
+        const hasRenderPackageGateState = !!(data.render_package?.gate_state);
+        // eslint-disable-next-line no-console
+        console.log('[InvestorInsights] fetch', {
+          dealId: id,
+          sectionKeys,
+          insightSlotsBodyPreview: insightSlotsBody,
+          hasRenderPackageGateState,
+        });
+      }
       setReport(data);
       setFetchStatus('ready');
       setError(null);
@@ -56,7 +71,8 @@ export function useInvestorInsights(dealId: string | undefined): UseInvestorInsi
   const generate = useCallback(async (): Promise<InvestorInsightsReport | null> => {
     const id = dealIdRef.current;
     if (!id) return null;
-    await apiGenerateInvestorInsights(id);
+    // Use /regenerate (unique jobId, no dedup) so force-regenerate always enqueues.
+    await apiRegenerateInvestorInsights(id);
     return refresh();
   }, [refresh]);
 

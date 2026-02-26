@@ -856,26 +856,29 @@ function SectionCard({ section, darkMode }: { section: InvestorInsightsSection; 
         <ChevronRight className={`w-4 h-4 shrink-0 ${darkMode ? 'text-gray-400' : 'text-gray-400'}`} />
         <h4 className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{section.title}</h4>
       </div>
-      {section.kind === 'gate_state' && (
-        <GateStateSection section={section} darkMode={darkMode} />
-      )}
-      {section.key === 'insight_slots' && section.kind !== 'gate_state' && (
+      {/* Key-specific renderers take absolute priority over kind-based routing.        */}
+      {/* This prevents a gate_state-kinded section from swallowing insight_slots body.  */}
+      {section.key === 'insight_slots' && (
         <InsightSlotsSection section={section} darkMode={darkMode} />
       )}
-      {section.key === 'canonical_fields' && section.kind !== 'gate_state' && (
+      {section.key === 'canonical_fields' && (
         <CanonicalFieldsSection section={section} darkMode={darkMode} />
       )}
-      {section.key === 'completeness_summary' && section.kind !== 'gate_state' && (
+      {section.key === 'completeness_summary' && (
         <CompletenessSummarySection section={section} darkMode={darkMode} />
       )}
-      {section.key === 'conflicts' && section.kind !== 'gate_state' && (
+      {section.key === 'conflicts' && (
         <ConflictsSection section={section} darkMode={darkMode} />
       )}
-      {section.key === 'coverage_snapshot' && section.kind !== 'gate_state' && (
+      {section.key === 'coverage_snapshot' && (
         <CoverageSnapshotSection section={section} darkMode={darkMode} />
       )}
-      {section.key === 'debug.normalization_diff' && section.kind !== 'gate_state' && (
+      {section.key === 'debug.normalization_diff' && (
         <NormalizationDiffSection section={section} darkMode={darkMode} />
+      )}
+      {/* Kind-based fallback only for sections whose key has no dedicated renderer. */}
+      {!isSpecialKey && section.kind === 'gate_state' && (
+        <GateStateSection section={section} darkMode={darkMode} />
       )}
       {!isSpecialKey && section.kind === 'message' && (
         <MessageSection section={section} darkMode={darkMode} />
@@ -909,13 +912,26 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
     (reportStatus === null ||
       reportStatus === 'not_started' ||
       reportStatus === 'failed' ||
-      reportStatus === 'quarantined');
+      reportStatus === 'quarantined' ||
+      reportStatus === 'deterministic_only' ||
+      reportStatus === 'complete');
 
-  const sections: InvestorInsightsSection[] =
-    ((report?.render_package?.sections ??
-      (report as Record<string, unknown> | null | undefined)?.["sections"]) as
-      | InvestorInsightsSection[]
-      | undefined) ?? [];
+  // Gate results live at render_package.gate_state (top-level inside render_package).
+  // The sections array's gate_state section intentionally has no items in real API responses.
+  // We inject the results into the section so GateStateSection can render without knowing the
+  // full report shape. Fall back gracefully when render_package.gate_state is absent (test mocks
+  // that still populate section.items directly will continue to work unchanged).
+  const gateResultsFromPkg = report?.render_package?.gate_state?.results ?? null;
+
+  const sections: InvestorInsightsSection[] = (report?.render_package?.sections ?? []).map(
+    (section) => {
+      if (section.key === 'gate_state' && gateResultsFromPkg !== null) {
+        // Prefer render_package.gate_state over whatever section.items says.
+        return { ...section, items: gateResultsFromPkg };
+      }
+      return section;
+    }
+  );
 
   const hasSections = sections.length > 0;
 
@@ -940,13 +956,16 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
     setGenerateState('loading');
     setGenerateError(null);
     const capturedUpdatedAt = report?.updated_at;
+    const capturedFingerprint = report?.render_package?.upstream_fingerprint as string | undefined;
     try {
       const freshReport = await generate();
       setGenerateState('ok');
-      // Skip polling if generate's immediate refresh already returned a terminal state.
+      // Only skip polling when the IMMEDIATE refresh returned a NEW terminal report.
+      // If updated_at is unchanged the worker hasn't finished yet — keep polling.
       const TERMINAL_STATUSES = new Set(['deterministic_only', 'complete', 'failed']);
-      if (freshReport && TERMINAL_STATUSES.has(freshReport.status)) return;
-      // Bounded poll: every 2s for up to 60s — stop when the report lands.
+      const reportIsNew = freshReport?.updated_at !== capturedUpdatedAt;
+      if (freshReport && TERMINAL_STATUSES.has(freshReport.status) && reportIsNew) return;
+      // Bounded poll: every 2s for up to 60s — stop when the report changes.
       const POLL_INTERVAL_MS = 2000;
       const MAX_POLLS = 30;
       for (let i = 0; i < MAX_POLLS; i++) {
@@ -955,10 +974,12 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
         let latest = null;
         try { latest = await apiGetInvestorInsights(dealId); } catch { break; }
         if (!mountedRef.current) break;
-        const hasAuditFooter = !!(latest?.render_package as Record<string, unknown> | undefined)?.['audit_footer'];
-        const isTerminal = TERMINAL_STATUSES.has(latest?.status ?? '');
         const updatedChanged = !!latest?.updated_at && latest.updated_at !== capturedUpdatedAt;
-        if (hasAuditFooter || isTerminal || updatedChanged) {
+        const fpChanged = !!latest?.render_package?.upstream_fingerprint &&
+          latest.render_package.upstream_fingerprint !== capturedFingerprint;
+        const isTerminal = TERMINAL_STATUSES.has(latest?.status ?? '');
+        const hasAuditFooter = !!(latest?.render_package as Record<string, unknown> | undefined)?.['audit_footer'];
+        if (updatedChanged || fpChanged || (isTerminal && hasAuditFooter)) {
           await refresh();
           break;
         }
@@ -981,16 +1002,28 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
             Stage 0 deterministic analysis — gates, signals, and coverage summary.
           </p>
         </div>
-        <Button
-          size="sm"
-          variant={darkMode ? 'secondary' : 'outline'}
-          icon={<RefreshCw className="w-3.5 h-3.5" />}
-          onClick={refresh}
-          loading={status === 'loading'}
-          disabled={status === 'loading'}
-        >
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<RefreshCw className="w-3.5 h-3.5" />}
+            onClick={refresh}
+            loading={status === 'loading'}
+            disabled={status === 'loading' || generateState === 'loading'}
+          >
+            Refresh
+          </Button>
+          <Button
+            size="sm"
+            variant={darkMode ? 'secondary' : 'outline'}
+            icon={<Zap className="w-3.5 h-3.5" />}
+            onClick={handleGenerate}
+            loading={generateState === 'loading'}
+            disabled={generateState === 'loading' || status === 'loading'}
+          >
+            {generateState === 'loading' ? 'Regenerating…' : 'Regenerate Report'}
+          </Button>
+        </div>
       </div>
 
       {/* Loading skeleton */}

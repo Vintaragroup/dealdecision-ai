@@ -51,7 +51,15 @@
     "audit:portfolio:gate:strict": "pnpm --filter worker audit:investor-insights -- --deal-list tmp/audit_deals.json --fail-on PARSE_HAZARD,BAD_EVIDENCE_REF,MISSING_DPU --max-failures 0",
 
     "repair:portfolio:insight-slots": "pnpm --filter worker repair:insight-slots -- --deal-list tmp/audit_deals.json --concurrency 2",
-    "repair:portfolio:insight-slots:dry-run": "pnpm --filter worker repair:insight-slots -- --deal-list tmp/audit_deals.json --dry-run"
+    "repair:portfolio:insight-slots:dry-run": "pnpm --filter worker repair:insight-slots -- --deal-list tmp/audit_deals.json --dry-run",
+
+    "repair:portfolio:gate-state": "pnpm --filter worker repair:gate-state -- --deal-list tmp/audit_deals.json --concurrency 2",
+    "repair:portfolio:gate-state:dry-run": "pnpm --filter worker repair:gate-state -- --deal-list tmp/audit_deals.json --dry-run",
+
+    "audit:portfolio:coverage:baseline": "pnpm --filter worker audit:investor-insights:coverage -- --deal-list tmp/audit_deals.json --concurrency 4",
+    "audit:portfolio:coverage:baseline:out": "TS=$(date +%Y%m%dT%H%M%SZ) && pnpm --filter worker audit:investor-insights:coverage -- --deal-list tmp/audit_deals.json --concurrency 4 --out tmp/coverage-baseline-$TS && echo BASELINE_TS=$TS",
+    "audit:portfolio:coverage:current:out": "TS=$(date +%Y%m%dT%H%M%SZ) && pnpm --filter worker audit:investor-insights:coverage -- --deal-list tmp/audit_deals.json --concurrency 4 --out tmp/coverage-current-$TS && echo CURRENT_TS=$TS",
+    "audit:portfolio:coverage:single": "pnpm --filter worker audit:investor-insights:coverage -- --deal-id"
   },
   "devDependencies": {
     "@jest/globals": "^30.2.0",

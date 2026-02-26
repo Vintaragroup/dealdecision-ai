@@ -4,7 +4,7 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { InvestorInsightsTab } from '../components/workspace/InvestorInsightsTab';
-import { apiGenerateInvestorInsights, apiGetInvestorInsights } from '../lib/apiClient';
+import { apiGenerateInvestorInsights, apiGetInvestorInsights, apiRegenerateInvestorInsights } from '../lib/apiClient';
 
 vi.mock('../lib/apiClient', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/apiClient')>();
@@ -12,6 +12,7 @@ vi.mock('../lib/apiClient', async (importOriginal) => {
     ...actual,
     apiGetInvestorInsights: vi.fn(async () => ({ status: 'not_started' } as any)),
     apiGenerateInvestorInsights: vi.fn(async () => ({ ok: true })),
+    apiRegenerateInvestorInsights: vi.fn(async () => ({ ok: true, deal_id: 'deal-abc-123', enqueued: true })),
   };
 });
 
@@ -49,9 +50,9 @@ describe('InvestorInsightsTab – generate button', () => {
     await userEvent.click(btn);
 
     await waitFor(() => {
-      expect(vi.mocked(apiGenerateInvestorInsights)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(apiRegenerateInvestorInsights)).toHaveBeenCalledTimes(1);
     });
-    expect(vi.mocked(apiGenerateInvestorInsights)).toHaveBeenCalledWith('deal-abc-123');
+    expect(vi.mocked(apiRegenerateInvestorInsights)).toHaveBeenCalledWith('deal-abc-123');
   });
 
   test('renders gate table when report status is failed with sections, no "Not generated yet" placeholder', async () => {
@@ -73,7 +74,7 @@ describe('InvestorInsightsTab – generate button', () => {
     vi.mocked(apiGetInvestorInsights)
       .mockResolvedValueOnce({ status: 'not_started' } as any)
       .mockResolvedValue(FAILED_REPORT);
-    vi.mocked(apiGenerateInvestorInsights).mockResolvedValue({ ok: true });
+    vi.mocked(apiRegenerateInvestorInsights).mockResolvedValue({ ok: true, deal_id: 'deal-abc-123', enqueued: true });
 
     render(<InvestorInsightsTab darkMode={false} dealId="deal-abc-123" />);
 
@@ -103,7 +104,7 @@ describe('InvestorInsightsTab – generate button', () => {
       .mockResolvedValueOnce({ status: 'deterministic_only', updated_at: T2 } as any)
       .mockResolvedValue({ status: 'deterministic_only', updated_at: T2 } as any);
 
-    vi.mocked(apiGenerateInvestorInsights).mockResolvedValue({ ok: true });
+    vi.mocked(apiRegenerateInvestorInsights).mockResolvedValue({ ok: true, deal_id: 'deal-poll-1', enqueued: true });
 
     const { unmount } = render(<InvestorInsightsTab darkMode={false} dealId="deal-poll-1" />);
 
@@ -137,3 +138,121 @@ describe('InvestorInsightsTab – generate button', () => {
   });
 });
 
+// ── Regenerate Report button — deterministic_only reports ────────────────────
+
+const DETERMINISTIC_REPORT = {
+  status: 'deterministic_only',
+  updated_at: '2026-02-25T21:28:27.000Z',
+  render_package: {
+    upstream_fingerprint: 'fp-001',
+    gate_state: {
+      all_passed: true,
+      results: [
+        { gate: 'G0', passed: true, actual: 1 },
+        { gate: 'G3', passed: true, actual: 1 },
+      ],
+    },
+    sections: [
+      {
+        key: 'gate_state',
+        title: 'Gates',
+        kind: 'gate_state',
+        items: [{ gate: 'G3', passed: true, actual: 1, reason_code: null }],
+      },
+      {
+        key: 'analysis_status',
+        title: 'Analysis Status',
+        kind: 'message',
+        body: 'Deterministic Stage 0 analysis complete.',
+      },
+    ],
+  },
+} as any;
+
+describe('InvestorInsightsTab – Regenerate Report button (deterministic_only)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  test('"Regenerate Report" header button is always visible for deterministic_only reports', async () => {
+    vi.mocked(apiGetInvestorInsights).mockResolvedValue(DETERMINISTIC_REPORT);
+
+    render(<InvestorInsightsTab darkMode={false} dealId="deal-regen-1" />);
+
+    // The header "Regenerate Report" button should be visible
+    const regenBtn = await screen.findByRole('button', { name: /regenerate report/i });
+    expect(regenBtn).toBeTruthy();
+  });
+
+  test('clicking "Regenerate Report" calls apiRegenerateInvestorInsights once', async () => {
+    vi.mocked(apiGetInvestorInsights).mockResolvedValue(DETERMINISTIC_REPORT);
+    vi.mocked(apiRegenerateInvestorInsights).mockResolvedValue({ ok: true, deal_id: 'deal-regen-2', enqueued: true });
+
+    render(<InvestorInsightsTab darkMode={false} dealId="deal-regen-2" />);
+
+    const regenBtn = await screen.findByRole('button', { name: /regenerate report/i });
+    await userEvent.click(regenBtn);
+
+    await waitFor(() => {
+      expect(vi.mocked(apiRegenerateInvestorInsights)).toHaveBeenCalledTimes(1);
+    });
+    expect(vi.mocked(apiRegenerateInvestorInsights)).toHaveBeenCalledWith('deal-regen-2');
+  });
+
+  test('Carmoola regression: deterministic_only report polls for update after regenerate (no early return on same updated_at)', async () => {
+    vi.useFakeTimers();
+
+    const OLD_TS = '2026-02-25T21:28:27.000Z';
+    const NEW_TS = '2026-02-25T21:35:00.000Z';
+
+    // 1st call (mount): deterministic_only with stale G3 sections (same updated_at)
+    // 2nd call (generate hook refresh after POST): same deterministic_only with same updated_at — NOT new
+    // 3rd call (poll at 2s): fresh deterministic_only with new updated_at — triggers final refresh
+    // 4th call (final refresh): fresh report
+    vi.mocked(apiGetInvestorInsights)
+      .mockResolvedValueOnce({ ...DETERMINISTIC_REPORT, updated_at: OLD_TS } as any) // mount
+      .mockResolvedValueOnce({ ...DETERMINISTIC_REPORT, updated_at: OLD_TS } as any) // gen hook refresh
+      .mockResolvedValueOnce({ ...DETERMINISTIC_REPORT, updated_at: NEW_TS } as any) // poll
+      .mockResolvedValue({ ...DETERMINISTIC_REPORT, updated_at: NEW_TS } as any);    // final refresh
+
+    vi.mocked(apiRegenerateInvestorInsights).mockResolvedValue({ ok: true, deal_id: 'deal-regen-3', enqueued: true });
+
+    const { unmount } = render(<InvestorInsightsTab darkMode={false} dealId="deal-regen-3" />);
+
+    // Flush mount microtasks
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    const regenBtn = screen.getByRole('button', { name: /regenerate report/i });
+
+    // Click — fires handleGenerate: POST → hook refresh → detects same updated_at → starts polling
+    await act(async () => {
+      regenBtn.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // At this point, the OLD updated_at matched so polling started (no early return).
+    // Advance 2s to fire the poll cycle.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2001);
+    });
+
+    // mount(1) + gen hook refresh(2) + poll(3) + final refresh(4) ≥ 3
+    expect(vi.mocked(apiGetInvestorInsights).mock.calls.length).toBeGreaterThanOrEqual(3);
+
+    unmount();
+    vi.useRealTimers();
+  });
+
+  test('analysis_status does NOT contain "unreadable" when API returns G3 passed', async () => {
+    vi.mocked(apiGetInvestorInsights).mockResolvedValue(DETERMINISTIC_REPORT);
+
+    render(<InvestorInsightsTab darkMode={false} dealId="deal-regen-4" />);
+
+    await screen.findByText(/Deterministic Stage 0 analysis complete/i);
+    expect(screen.queryByText(/unreadable/i)).toBeNull();
+    expect(screen.queryByText(/g3 remediation/i)).toBeNull();
+  });
+});

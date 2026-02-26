@@ -638,4 +638,84 @@ describe("Level-up: raise range + traction % detection", () => {
 		expect(slots).toBeTruthy();
 		expect(slots.body).toMatch(/traction_signal: NotComputable.*reason=NO_TRACTION_SIGNAL_MENTION/);
 	});
+
+	// ── Regression: _RAISE_ADVERB (Form A with approximation adverb) ──────────
+	//
+	// Fix: "raising approximately $10M" — the word "approximately" sits between the
+	// RAISE_ANCHOR verb and the money token.  Form A previously used \s+ between verb
+	// and money, causing a miss.  _RAISE_ADVERB now absorbs such adverbs so the
+	// slot correctly resolves to Computable.
+	//
+	// Real-world source: 3ICE DPU page 33 — "Weare raising approximately $10M"
+
+	it("raise_terms is Computable for '…raising approximately $10M…' (3ICE real DPU text)", async () => {
+		mockPool = makeDpuPool(
+			"» Weare raising approximately $10M » Expanding to a city-based model in 8 US Markets"
+		);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+		expect(slots.body).toMatch(/evidence=dpu:doc:[0-9a-f]{8}:page:\d+/);
+		expect(slots.body).toMatch(/reason=none/);
+	});
+
+	it("raise_terms is Computable for 'seeking about $2M seed' (_RAISE_ADVERB: about)", async () => {
+		mockPool = makeDpuPool("We are seeking about $2M seed to close our first customer cohort.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+	});
+
+	it("raise_terms is Computable for 'raise roughly £3M' (_RAISE_ADVERB: roughly)", async () => {
+		mockPool = makeDpuPool("Our goal is to raise roughly £3M over the next 18 months.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+	});
+
+	it("raise_terms is Computable for 'offering up to $5M' (_RAISE_ADVERB: up to)", async () => {
+		mockPool = makeDpuPool("The company is offering up to $5M in convertible notes.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+	});
+
+	it("raise_terms is Computable for 'raising around $1.5MM' (_RAISE_ADVERB: around)", async () => {
+		mockPool = makeDpuPool("Management is currently raising around $1.5MM at a $6MM valuation.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+	});
+
+	it("raise_terms remains NotComputable when 'approximately' appears with no money token", async () => {
+		// Adverb alone without a money amount must NOT trigger raise_terms.
+		mockPool = makeDpuPool("We are raising approximately the same number of customers as last year.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/raise_terms: NotComputable.*reason=NO_RAISE_MENTION/);
+	});
 });

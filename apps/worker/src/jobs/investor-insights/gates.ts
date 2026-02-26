@@ -131,7 +131,7 @@ async function evalG2(pool: Pool, dealId: string): Promise<GateResult> {
  */
 
 /** Minimal Stage 0 schema: structured_json must be a non-empty plain object. */
-const StructuredJsonMinimalSchema = z
+export const StructuredJsonMinimalSchema = z
 	.record(z.unknown())
 	.refine((obj) => Object.keys(obj).length > 0, { message: "empty object" });
 
@@ -171,19 +171,36 @@ async function evalG3(pool: Pool, dealId: string): Promise<GateResult> {
 			return { gate: "G3", passed: false, reason_code: "GATE_STRUCTURED_JSON_MISSING", actual: 0 };
 		}
 
-		// 3. Parse check. Parse error details are intentionally omitted from gate_state
-		//    (surfaced in dev diagnostics only via buildG3DiagnosticsSection in processor).
+		// 3. Parse check.
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(rawJson);
 		} catch {
-			return { gate: "G3", passed: false, reason_code: "GATE_STRUCTURED_JSON_PARSE_FAILED" };
+			return {
+				gate: "G3",
+				passed: false,
+				reason_code: "GATE_STRUCTURED_JSON_PARSE_FAILED",
+				diag: {
+					payload_length: rawJson.length,
+					preview: rawJson.slice(0, 200),
+					schema_version: "StructuredJsonMinimalSchema_v1",
+				},
+			};
 		}
 
 		// 4. Schema check: must be a non-empty plain object.
 		const schemaResult = StructuredJsonMinimalSchema.safeParse(parsed);
 		if (!schemaResult.success) {
-			return { gate: "G3", passed: false, reason_code: "GATE_STRUCTURED_JSON_SCHEMA_MISMATCH" };
+			return {
+				gate: "G3",
+				passed: false,
+				reason_code: "GATE_STRUCTURED_JSON_SCHEMA_MISMATCH",
+				diag: {
+					payload_length: rawJson.length,
+					preview: rawJson.slice(0, 200),
+					schema_version: "StructuredJsonMinimalSchema_v1",
+				},
+			};
 		}
 
 		return { gate: "G3", passed: true, actual: 1 };
@@ -253,4 +270,66 @@ export async function evaluateGates(pool: Pool, ctx: GateContext): Promise<GateS
 	const results: GateResult[] = [g0, g1, g2, g3, g4, g5];
 	const allPassed = results.every((r) => r.passed);
 	return { all_passed: allPassed, results };
+}
+
+/**
+ * Re-evaluate all gates for a deal and patch the stored gate_state in the
+ * most recent investor_insight_reports row.
+ *
+ * Why this is needed:
+ *   When gates.ts evolves (reason codes renamed, gate logic corrected), previously
+ *   stored reports may carry stale/obsolete gate results. The standard slot-repair
+ *   tool (`repairInsightSlotsInReport`) only patches render_package.sections,
+ *   leaving gate_state untouched. This function specifically refreshes gate_state.
+ *
+ * @returns Object with: updated flag, new and old GateState, deal_id.
+ */
+export async function repairGateStateInReport(
+	pool: Pool,
+	dealId: string,
+	engineVersion = "v1",
+): Promise<{
+	updated: boolean;
+	newGateState: GateState;
+	oldGateState: GateState | null;
+}> {
+	// 1. Re-evaluate all gates fresh
+	const newGateState = await evaluateGates(pool, { dealId, engineVersion });
+
+	// 2. Fetch the most recent report row
+	const { rows: existing } = await pool.query<{
+		id: string;
+		render_package: unknown;
+	}>(
+		`SELECT id, render_package
+		   FROM public.investor_insight_reports
+		  WHERE deal_id = $1
+		  ORDER BY updated_at DESC
+		  LIMIT 1`,
+		[dealId]
+	);
+
+	if (existing.length === 0) {
+		// No report exists for this deal
+		return { updated: false, newGateState, oldGateState: null };
+	}
+
+	const { id: reportId, render_package } = existing[0]!;
+	const rp = (render_package ?? {}) as Record<string, unknown>;
+
+	// 3. Extract old gate_state (may be stale / use obsolete reason codes)
+	const oldGateState = (rp["gate_state"] as GateState | null | undefined) ?? null;
+
+	// 4. Patch render_package.gate_state with fresh results
+	const updatedRp = { ...rp, gate_state: newGateState };
+
+	await pool.query(
+		`UPDATE public.investor_insight_reports
+		    SET render_package = $2::jsonb,
+		        updated_at     = NOW()
+		  WHERE id = $1`,
+		[reportId, JSON.stringify(updatedRp)]
+	);
+
+	return { updated: true, newGateState, oldGateState };
 }

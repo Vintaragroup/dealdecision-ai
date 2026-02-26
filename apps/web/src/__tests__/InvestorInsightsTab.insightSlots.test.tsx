@@ -125,4 +125,182 @@ describe('InvestorInsightsTab – insight_slots section', () => {
     // Evidence ref must also survive
     expect(screen.getByText('dpu:doc:58595eb2:page:1')).toBeTruthy();
   });
+
+  // ── Regression: 3ICE — "raising approximately $10M" adverb fix ──────────────
+  //
+  // The worker's _RAISE_ADVERB fix lets processor.ts detect "raising approximately $10M".
+  // This test verifies the UI correctly renders the unquoted value "raising approximately $10M"
+  // and shows Computable status with the correct evidence ref.
+
+  test('renders "raising approximately $10M" value — 3ICE real DPU reference (adverb regression)', async () => {
+    const REPORT_3ICE = {
+      status: 'deterministic_only',
+      render_package: {
+        sections: [
+          {
+            key: 'insight_slots',
+            title: 'Insight Slots',
+            kind: 'message',
+            body: [
+              'raise_terms: Computable | value="raising approximately $10M" | evidence=dpu:doc:6af4720f:page:33 | reason=none',
+              'market_claims: NotComputable | value=none | evidence=none | reason=NO_MARKET_CLAIM_MENTION',
+            ].join('\n'),
+          },
+        ],
+      },
+    } as any;
+
+    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_3ICE);
+    render(<InvestorInsightsTab darkMode={false} dealId="61ef36dd-391a-4a4e-b30b-1f5d1f19f91e" />);
+
+    await screen.findByText('Raise Terms');
+
+    // Value must be displayed with surrounding quotes stripped.
+    expect(screen.getByText('raising approximately $10M')).toBeTruthy();
+    // Evidence ref must be present as a copyable pill.
+    expect(screen.getByText('dpu:doc:6af4720f:page:33')).toBeTruthy();
+    // Status badge must show Computable.
+    expect(screen.getAllByText('Computable').length).toBeGreaterThanOrEqual(1);
+    // Market Claims must be NotComputable — no false positives.
+    expect(screen.getByText('Market Claims')).toBeTruthy();
+  });
+});
+
+// ── Gate rendering from render_package.gate_state ─────────────────────────────
+//
+// BUG: The real API returns gate results at render_package.gate_state.results.
+//      The gate_state section in sections[] intentionally has NO items.
+//      Previously, GateStateSection read section.items → got [] → showed
+//      "Gate data unavailable." instead of the actual gate table.
+//
+// FIX: InvestorInsightsTab now injects render_package.gate_state.results into
+//      the gate_state section items before rendering, so GateStateSection always
+//      has the right data.
+
+describe('InvestorInsightsTab – gate rendering from render_package.gate_state', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  test('renders G3 Fail from render_package.gate_state when gate_state section has no items — Carmoola regression', async () => {
+    const REPORT_WITH_PKG_GATES = {
+      status: 'deterministic_only',
+      render_package: {
+        // Source of truth for gates — real API shape.
+        gate_state: {
+          all_passed: false,
+          results: [
+            { gate: 'G0', passed: true },
+            { gate: 'G1', passed: true },
+            { gate: 'G2', passed: true },
+            { gate: 'G3', passed: false, reason_code: 'GATE_STRUCTURED_JSON_UNREADABLE' },
+            { gate: 'G4', passed: true },
+            { gate: 'G5', passed: true },
+          ],
+        },
+        sections: [
+          {
+            key: 'gate_state',
+            title: 'Gate Evaluation',
+            kind: 'gate_state',
+            // No items — this is exactly how the real API responds.
+          },
+          {
+            key: 'insight_slots',
+            title: 'Insight Slots',
+            kind: 'message',
+            body: 'raise_terms: Computable | value="raising approximately $10M" | evidence=dpu:doc:6af4720f:page:33 | reason=none',
+          },
+        ],
+      },
+    } as any;
+
+    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_PKG_GATES);
+    render(<InvestorInsightsTab darkMode={false} dealId="61ef36dd-391a-4a4e-b30b-1f5d1f19f91e" />);
+
+    // Gate rows must be present from render_package.gate_state (not section.items).
+    await screen.findByText('G3');
+    expect(screen.getByText('GATE_STRUCTURED_JSON_UNREADABLE')).toBeTruthy();
+
+    // G0 must show Pass (confirming multiple rows render, not just G3).
+    expect(screen.getByText('G0')).toBeTruthy();
+
+    // insight_slots section must ALSO render correctly alongside gate_state.
+    expect(screen.getByText('Raise Terms')).toBeTruthy();
+    expect(screen.getByText('raising approximately $10M')).toBeTruthy();
+
+    // Must NOT show the empty fallback text.
+    expect(screen.queryByText(/gate data unavailable/i)).toBeNull();
+  });
+
+  test('gate section shows all-pass when render_package.gate_state.all_passed is true', async () => {
+    const ALL_PASS_REPORT = {
+      status: 'deterministic_only',
+      render_package: {
+        gate_state: {
+          all_passed: true,
+          results: [
+            { gate: 'G0', passed: true },
+            { gate: 'G1', passed: true },
+            { gate: 'G2', passed: true },
+            { gate: 'G3', passed: true },
+            { gate: 'G4', passed: true },
+            { gate: 'G5', passed: true },
+          ],
+        },
+        sections: [
+          {
+            key: 'gate_state',
+            title: 'Gate Evaluation',
+            kind: 'gate_state',
+            // No items — real API shape.
+          },
+        ],
+      },
+    } as any;
+
+    vi.mocked(apiGetInvestorInsights).mockResolvedValue(ALL_PASS_REPORT);
+    render(<InvestorInsightsTab darkMode={false} dealId="deal-all-pass" />);
+
+    await screen.findByText('G0');
+
+    // All 6 gates should be present.
+    ['G0', 'G1', 'G2', 'G3', 'G4', 'G5'].forEach((gate) => {
+      expect(screen.getByText(gate)).toBeTruthy();
+    });
+
+    // No reason codes — all passed.
+    expect(screen.queryByText(/GATE_/)).toBeNull();
+
+    // Must NOT show empty fallback.
+    expect(screen.queryByText(/gate data unavailable/i)).toBeNull();
+  });
+
+  test('legacy test mocks with section.items still work when render_package.gate_state is absent', async () => {
+    // Backward compat: test mocks that haven't been updated to use render_package.gate_state
+    // should continue to work because the injection only happens when render_package.gate_state
+    // is present.
+    const LEGACY_MOCK = {
+      status: 'failed',
+      render_package: {
+        // No gate_state at render_package level (legacy / test mock shape).
+        sections: [
+          {
+            key: 'gate_state',
+            title: 'Gate Evaluation',
+            kind: 'gate_state',
+            items: [{ gate: 'G1', passed: false, reason_code: 'GATE_DPU_MISSING' }],
+          },
+        ],
+      },
+    } as any;
+
+    vi.mocked(apiGetInvestorInsights).mockResolvedValue(LEGACY_MOCK);
+    render(<InvestorInsightsTab darkMode={false} dealId="deal-legacy" />);
+
+    // section.items is preserved when render_package.gate_state is absent.
+    await screen.findByText('G1');
+    expect(screen.getByText('GATE_DPU_MISSING')).toBeTruthy();
+    expect(screen.queryByText(/gate data unavailable/i)).toBeNull();
+  });
 });

@@ -517,12 +517,16 @@ interface InsightSlotInputs {
  * MARKET_CLAIMS: matches both keyword-first and dollar-first forms:
  *   Form A (keyword → $): "TAM $10B", "total addressable market $10B"
  *   Form B ($ → keyword): "$10.5B+ TAM", "$600-900M TAM SAM SOM"
+ *   Form C (market size → $): "Market Sizes (USD) $212B"
+ *   Form D ($ → market size): "$212B ... Market Sizes (USD)"
  *
  * Amount format: $<digits>[,<digits>][.<digits>][-<range>][K|M|B|T][+]
- * Anchor tokens: TAM, SAM, SOM, "total addressable market", "addressable market"
+ * Anchor tokens: TAM, SAM, SOM, "total addressable market", "addressable market",
+ *                "market size[s]"
+ * Added Forms C+D on 20260225 (detector_gap=7, Carmoola evidence: "$212B Market Sizes").
  */
 const MARKET_PATTERN =
-	/(?:\bTAM\b|\bSAM\b|\bSOM\b|\btotal\s+addressable\s+market\b|\baddressable\s+market\b)[^$\n]{0,60}?\$[\d,]+(?:\.\d+)?(?:\s*-\s*[\d,]+(?:\.\d+)?)?\s*[BbMmKkTt]?\+?|\$[\d,]+(?:\.\d+)?(?:\s*-\s*[\d,]+(?:\.\d+)?)?\s*[BbMmKkTt]\+?[^$\n]{0,60}?(?:\bTAM\b|\bSAM\b|\bSOM\b|\btotal\s+addressable\s+market\b|\baddressable\s+market\b)/i;
+	/(?:\bTAM\b|\bSAM\b|\bSOM\b|\btotal\s+addressable\s+market\b|\baddressable\s+market\b)[^$\n]{0,60}?\$[\d,]+(?:\.\d+)?(?:\s*-\s*[\d,]+(?:\.\d+)?)?\s*[BbMmKkTt]?\+?|\$[\d,]+(?:\.\d+)?(?:\s*-\s*[\d,]+(?:\.\d+)?)?\s*[BbMmKkTt]\+?[^$\n]{0,60}?(?:\bTAM\b|\bSAM\b|\bSOM\b|\btotal\s+addressable\s+market\b|\baddressable\s+market\b)|\bmarket\s+size[s]?\b[^$\n]{0,80}?\$[\d,]+(?:\.\d+)?(?:\s*-\s*[\d,]+(?:\.\d+)?)?\s*[BbMmKkTt]?\+?|\$[\d,]+(?:\.\d+)?(?:\s*-\s*[\d,]+(?:\.\d+)?)?\s*[BbMmKkTt]\+?[^$\n]{0,80}?\bmarket\s+size[s]?\b/i;
 
 /**
  * TRACTION_SIGNAL: matches "MRR $50K", "ARR $600K",
@@ -561,11 +565,25 @@ const TRACTION_PCT_PATTERN = new RegExp(
 const VALUATION_PATTERN = /(valuation|post[- ]money|pre[- ]money|safe cap|cap)\b/i;
 
 /**
- * USE_OF_FUNDS: matches "use of funds", "use of proceeds",
- * "allocation of proceeds", "proceeds will be used".
+ * USE_OF_FUNDS: matches investor-deck phrases that signal a use-of-funds section.
+ *
+ * Original forms:
+ *   "use of funds", "use of proceeds", "allocation of proceeds",
+ *   "proceeds will be used"
+ *
+ * Added (audit-evidence driven — 20260225 coverage baseline, detector_gap=8):
+ *   Form U1: "use of capital"          — common slide-header variant (e.g. "Use of Capital")
+ *   Form U2: "allocation of funds"     — e.g. "allocation of funds: 40% marketing, 30% R&D"
+ *   Form U3: "capital allocation"      — repeated pattern in Palm / Palm3 decks:
+ *                                         "CAPITAL ALLOCATION", "Capital Allocation Detail"
+ *   Form U4: "funds will be (used|deployed|allocated)" — conservative verb-phrase form
+ *
+ * Conservative anchoring: all new forms are compound keyword phrases unlikely to appear
+ * in non-use-of-funds contexts (e.g. "capital allocation" on an investor pitch always
+ * refers to deployment of raise proceeds, not cap-structure or equity).
  */
 const USE_OF_FUNDS_PATTERN =
-	/(use of (funds|proceeds)|allocation of proceeds|proceeds will be used)\b/i;
+	/(?:use\s+of\s+(?:funds|proceeds|capital)|allocation\s+of\s+(?:funds|proceeds)|proceeds\s+will\s+be\s+used|capital\s+allocation|funds\s+will\s+be\s+(?:used|deployed|allocated))\b/i;
 
 // ── Shared currency/money building blocks (used by both Stage 1 slots and Phase 2 canonical) ──
 
@@ -591,6 +609,16 @@ const MONEY_FRAGMENT = String.raw`${CURRENCY}\s*${AMOUNT}${SUFFIX}`;
 const _NO_CUR = `[^$€£\\n]`;
 
 /**
+ * _RAISE_ADVERB: optional quantifier / approximation adverb that may appear
+ * between a RAISE_ANCHOR verb and the money amount.
+ * Handles real-world OCR output such as "raising approximately $10M" (3ICE),
+ * "seeking about $2M", "raise roughly £3M", "offering up to $5M".
+ * The trailing `\s*` absorbs any whitespace after the adverb so that
+ * MONEY_FRAGMENT begins immediately.
+ */
+const _RAISE_ADVERB = String.raw`(?:approximately|about|around|roughly|~\s*|over|under|nearly|some|a\s+total\s+of|up\s+to|at\s+least|just\s+over)?\s*`;
+
+/**
  * RAISE_ANCHOR: full list of word anchors signalling a raise context.
  * Used in RAISE_AMOUNT_PATTERN Forms A, B, G, H.
  */
@@ -600,7 +628,8 @@ const RAISE_ANCHOR = String.raw`(?:rais(?:e|ing|ed)|seeking|fund(?:ed|ing)?|fina
  * RAISE_AMOUNT_PATTERN: comprehensive raise-detection covering Forms A–H.
  * Used for BOTH Stage 1 raise_terms slot and Phase 2 canonical raise_amount field.
  *
- * Form A: "Raising $2M seed", "raise $5M Series A", "seeking $1M"
+ * Form A: "Raising $2M seed", "raise $5M Series A", "seeking $1M",
+ *           "raising approximately $10M" (3ICE — adverb between verb and amount)
  * Form B: "$1.5MM raise", "Equity $1.5MM raise on a $6MM Valuation"
  * Form C: "Capital Raise ... $1.5MM"
  * Form D: "$2M seed round", "$3M bridge raise"
@@ -611,8 +640,10 @@ const RAISE_ANCHOR = String.raw`(?:rais(?:e|ing|ed)|seeking|fund(?:ed|ing)?|fina
  *
  */
 const RAISE_AMOUNT_PATTERN = new RegExp(
-	// Form A: raise/seek/fund/finance/invest/offer verb/noun immediately followed by money
-	`${RAISE_ANCHOR}\\s+${MONEY_FRAGMENT}` +
+	// Form A: raise/seek/fund/finance/invest/offer verb/noun optionally followed by an
+	// approximation adverb (e.g. "approximately", "about", "roughly") then money.
+	// FIX(3ICE): "raising approximately $10M" — _RAISE_ADVERB absorbs the adverb.
+	`${RAISE_ANCHOR}\\s+${_RAISE_ADVERB}${MONEY_FRAGMENT}` +
 	// Form B: money then raise-word within ~40 chars
 	`|${MONEY_FRAGMENT}${_NO_CUR}{0,40}?\\b${RAISE_ANCHOR}\\b` +
 	// Form C: label-first — capital raise / round size / ticket size / proceeds / allocation then money
@@ -648,8 +679,9 @@ const RAISE_AMOUNT_PATTERN = new RegExp(
  */
 const _RANGE_SEP = String.raw`\s*(?:–|-|to)\s*`;
 const RAISE_RANGE_PATTERN = new RegExp(
-	// Form R-A: raise-anchor immediately followed by money RANGE
-	`${RAISE_ANCHOR}\\s+${MONEY_FRAGMENT}${_RANGE_SEP}${MONEY_FRAGMENT}` +
+	// Form R-A: raise-anchor + optional adverb immediately followed by money RANGE
+	// e.g. "raising approximately $2M–$4M"
+	`${RAISE_ANCHOR}\\s+${_RAISE_ADVERB}${MONEY_FRAGMENT}${_RANGE_SEP}${MONEY_FRAGMENT}` +
 	// Form R-B: money RANGE then raise-anchor within ~40 chars (e.g. "$2M–$4M Raise")
 	`|${MONEY_FRAGMENT}${_RANGE_SEP}${MONEY_FRAGMENT}${_NO_CUR}{0,40}?\\b${RAISE_ANCHOR}\\b` +
 	// Form R-G: raise-anchor + colon + optional article + money RANGE
@@ -2431,3 +2463,15 @@ export async function repairInsightSlotsInReport(
 
 	return { updated: true, newBody, oldBody };
 }
+
+// ── Internal exports (unit tests only — not part of public API) ────────────────
+/**
+ * @internal
+ * Exposes deterministic section-builder functions for unit testing.
+ * Do not import these in production code paths.
+ */
+export const _sectionBuilders = {
+	buildDeterministicOnlySections,
+	buildG3OnlyFailSections,
+	buildGateFailedSections,
+};

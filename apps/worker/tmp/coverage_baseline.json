@@ -1,0 +1,2045 @@
+{
+  "generated_at": "2026-02-26T00:18:58.444Z",
+  "deals": [
+    {
+      "deal_id": "adb2a1cf-bbb1-4f3b-8735-e2249415124f",
+      "deal_label": "StackFactor",
+      "audit_status": "partial",
+      "error": null,
+      "dpu_pages_total": 50,
+      "slot_results": [
+        {
+          "slot": "raise_terms",
+          "stored_status": "Computable",
+          "stored_value": "$750K investment",
+          "recomputed_status": "Computable",
+          "recomputed_value": "$750K investment",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 50
+        },
+        {
+          "slot": "market_claims",
+          "stored_status": "Computable",
+          "stored_value": "TAM Global Corporate Training & L&D : = $350 B",
+          "recomputed_status": "Computable",
+          "recomputed_value": "TAM Global Corporate Training & L&D : = $350 B",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 50
+        },
+        {
+          "slot": "traction_signal",
+          "stored_status": "Computable",
+          "stored_value": "15% Year 1-2 churn",
+          "recomputed_status": "Computable",
+          "recomputed_value": "15% Year 1-2 churn",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 50
+        },
+        {
+          "slot": "valuation_terms",
+          "stored_status": "Computable",
+          "stored_value": "valuation",
+          "recomputed_status": "Computable",
+          "recomputed_value": "valuation",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 50
+        },
+        {
+          "slot": "use_of_funds",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:1cc11a36:page:1",
+              "triggeredKeywords": [
+                "budget",
+                "headcount"
+              ],
+              "snippet": "Sheet: Budget Summary: Budget is classified as financial model. Time-series headers were not clearly detected. Structure"
+            },
+            {
+              "ref": "dpu:doc:1cc11a36:page:9",
+              "triggeredKeywords": [
+                "headcount"
+              ],
+              "snippet": "3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 - 2: G&A Headcount | 0 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 - 3: R&D Headcount | 2 | 7.5 |"
+            },
+            {
+              "ref": "dpu:doc:e41c0599:page:11",
+              "triggeredKeywords": [
+                "spend"
+              ],
+              "snippet": "ll 3 $350 B forms of workforce training spend: instructor-led, = digital, leadership, compliance, etc. Digital & Al-Read"
+            },
+            {
+              "ref": "dpu:doc:e41c0599:page:23",
+              "triggeredKeywords": [
+                "spend"
+              ],
+              "snippet": "affected due to unresolved attributed — spend stays “just capability gaps in case” S=— S=— S— S=— YE wz SS Assessments i"
+            }
+          ],
+          "dpu_pages_scanned": 50
+        }
+      ],
+      "summary": {
+        "ok_match": 4,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 1,
+        "true_absence": 0,
+        "dpu_load_failed": 0,
+        "evidence_ref_missing": 0
+      }
+    },
+    {
+      "deal_id": "42be8b30-2b7d-45e0-ade0-99427a505c59",
+      "deal_label": "Probability AI",
+      "audit_status": "partial",
+      "error": null,
+      "dpu_pages_total": 32,
+      "slot_results": [
+        {
+          "slot": "raise_terms",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:586c116b:page:1",
+              "triggeredKeywords": [
+                "round",
+                "$"
+              ],
+              "snippet": " 2022 Cost to Acquire: fe. _~ ° Three i Round Draft Picks Pa a ae C4. tah ¢ $230M, fully guaranteed . & - \"e- te * Wgame"
+            },
+            {
+              "ref": "dpu:doc:586c116b:page:2",
+              "triggeredKeywords": [
+                "$"
+              ],
+              "snippet": "Sportsbook Executive General Managers | $12.4M TAM Sportsbook Operators $12M TAM a | $238B TAM at 12.2% CAGR reasonably "
+            },
+            {
+              "ref": "dpu:doc:586c116b:page:3",
+              "triggeredKeywords": [
+                "EUR"
+              ],
+              "snippet": "liability ARG Index 4d Profile | Faye Fueures, Inse arelat on | G18 Casch Satety | 595 AL Search > pet Belting | Injury "
+            },
+            {
+              "ref": "dpu:doc:586c116b:page:5",
+              "triggeredKeywords": [
+                "£"
+              ],
+              "snippet": " @ be a \"\\ gl od Sky, aS wy) ed Bae | = £9 RR Ss ‘& ZF 2] So ta \\Z A — 2 IN ey [= 4 ¢ Free Aqente Tradec Contract Neqoti"
+            },
+            {
+              "ref": "dpu:doc:586c116b:page:6",
+              "triggeredKeywords": [
+                "$"
+              ],
+              "snippet": "kets 9% Market Share = Soccer, Cricket, $1M ARR Rugby, F1 - Betting Consumers 2% Market Share (1.7M Users) = | $139M ARR"
+            },
+            {
+              "ref": "dpu:doc:586c116b:page:7",
+              "triggeredKeywords": [
+                "$"
+              ],
+              "snippet": " pros J one else can.” use. § S| - : 7, $100K SAQ ae ae & Annual Subscription Annual Subscription 20 fo i a a eee eee ie"
+            },
+            {
+              "ref": "dpu:doc:586c116b:page:8",
+              "triggeredKeywords": [
+                "$"
+              ],
+              "snippet": "l seinglit all a a ‘race || @ | @ | v | $$ Evarv Diavar in tha | | a"
+            },
+            {
+              "ref": "dpu:doc:586c116b:page:10",
+              "triggeredKeywords": [
+                "$"
+              ],
+              "snippet": "\\ S4M produces automated B2C MVPs for NFL, NHL, MLB, and NBA in 5 months Automate data intake and modeling Lead Time: 5 "
+            },
+            {
+              "ref": "dpu:doc:90cde35d:page:0",
+              "triggeredKeywords": [
+                "investment",
+                "round"
+              ],
+              "snippet": "y Al Revolutionizing Sports Analytics _ Investment Update July 11, 2025 The past two weeks have seen remarkable progress"
+            },
+            {
+              "ref": "dpu:doc:d5f887e5:page:1",
+              "triggeredKeywords": [
+                "$"
+              ],
+              "snippet": "Mid-level Manager, Office WorkerIncome: $75,000 - $150,000Location: Suburban North America | Age: 25-35Occupation: IT Pr"
+            },
+            {
+              "ref": "dpu:doc:d5f887e5:page:5",
+              "triggeredKeywords": [
+                "$"
+              ],
+              "snippet": "iven Market Entry Our confidence in the $49/year pricing is based on current market data. There are 81 million sports be"
+            },
+            {
+              "ref": "dpu:doc:d5f887e5:page:6",
+              "triggeredKeywords": [
+                "$"
+              ],
+              "snippet": "Scalable Growth Model: While the $18 CAC and $30M marketing spend mentioned earlier in the Assessment are accurate, it i"
+            },
+            {
+              "ref": "dpu:doc:d5f887e5:page:10",
+              "triggeredKeywords": [
+                "rais",
+                "raising",
+                "capital"
+              ],
+              "snippet": "tion. That’s precisely why Probility is raising capital now - to accelerate market penetration before competitors can cl"
+            },
+            {
+              "ref": "dpu:doc:d5f887e5:page:11",
+              "triggeredKeywords": [
+                "rais",
+                "raising",
+                "funding",
+                "investment",
+                "capital"
+              ],
+              "snippet": "Probility is raising capital to accelerate the modernization and automation of its data infrastructure - specifically th"
+            },
+            {
+              "ref": "dpu:doc:d5f887e5:page:15",
+              "triggeredKeywords": [
+                "rais",
+                "raise",
+                "raised",
+                "$"
+              ],
+              "snippet": " to the concerns and questions you have raised, providing additional context and clarity to reinforce our value proposit"
+            },
+            {
+              "ref": "dpu:doc:d5f887e5:page:17",
+              "triggeredKeywords": [
+                "capital",
+                "$"
+              ],
+              "snippet": "e. What are the key milestones for this capital? For instance, number of sports launched, number of paying users or B2B "
+            }
+          ],
+          "dpu_pages_scanned": 32
+        },
+        {
+          "slot": "market_claims",
+          "stored_status": "Computable",
+          "stored_value": "$12.4M TAM",
+          "recomputed_status": "Computable",
+          "recomputed_value": "$12.4M TAM",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 32
+        },
+        {
+          "slot": "traction_signal",
+          "stored_status": "Computable",
+          "stored_value": "churn rate of 15%",
+          "recomputed_status": "Computable",
+          "recomputed_value": "churn rate of 15%",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 32
+        },
+        {
+          "slot": "valuation_terms",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:586c116b:page:0",
+              "triggeredKeywords": [
+                "safe"
+              ],
+              "snippet": "r Futures Trade Simy'ativa | GM & Coach Safety 7 _ ; ARC Search Player Metrics Injury Simulation Sezson Game Load | leed"
+            },
+            {
+              "ref": "dpu:doc:d5f887e5:page:6",
+              "triggeredKeywords": [
+                "note"
+              ],
+              "snippet": "ssment are accurate, it is important to note that these figures are distributed across a five-year strategic growth plan"
+            },
+            {
+              "ref": "dpu:doc:d5f887e5:page:16",
+              "triggeredKeywords": [
+                "note"
+              ],
+              "snippet": "platform is designed to be flexible. As noted in your Assessment, our value lies in our proprietary data and sports-spec"
+            }
+          ],
+          "dpu_pages_scanned": 32
+        },
+        {
+          "slot": "use_of_funds",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:d5f887e5:page:5",
+              "triggeredKeywords": [
+                "spend"
+              ],
+              "snippet": "most responsive audiences, and optimize spend across the highest-ROI platforms – maximizing customer lifetime value. Inf"
+            },
+            {
+              "ref": "dpu:doc:d5f887e5:page:6",
+              "triggeredKeywords": [
+                "spend"
+              ],
+              "snippet": "l: While the $18 CAC and $30M marketing spend mentioned earlier in the Assessment are accurate, it is important to note "
+            },
+            {
+              "ref": "dpu:doc:d5f887e5:page:17",
+              "triggeredKeywords": [
+                "runway"
+              ],
+              "snippet": "ate for the award. Question 9:Financial Runway & Metrics: The plan mentions $4M needed to build out B2C MVPs for major l"
+            }
+          ],
+          "dpu_pages_scanned": 32
+        }
+      ],
+      "summary": {
+        "ok_match": 2,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 3,
+        "true_absence": 0,
+        "dpu_load_failed": 0,
+        "evidence_ref_missing": 0
+      }
+    },
+    {
+      "deal_id": "da96b5a9-e5b2-46c1-a6ef-da037f876426",
+      "deal_label": "Carmoola",
+      "audit_status": "partial",
+      "error": null,
+      "dpu_pages_total": 21,
+      "slot_results": [
+        {
+          "slot": "raise_terms",
+          "stored_status": "Computable",
+          "stored_value": "$29.3M Cars financed",
+          "recomputed_status": "Computable",
+          "recomputed_value": "$29.3M Cars financed",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 21
+        },
+        {
+          "slot": "market_claims",
+          "stored_status": "Computable",
+          "stored_value": "$212B D2C seg er 2024 Used Car Finance Market Sizes",
+          "recomputed_status": "Computable",
+          "recomputed_value": "$212B D2C seg er 2024 Used Car Finance Market Sizes",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 21
+        },
+        {
+          "slot": "traction_signal",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:b5c3b04e:page:0",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": " Platform a — ™ S a > @ Pay at least 215% deposit a a “ a _ . h eeu © Buy asensible car from this list at . Peas Here’s "
+            },
+            {
+              "ref": "dpu:doc:b5c3b04e:page:1",
+              "triggeredKeywords": [
+                "arr",
+                "engagement"
+              ],
+              "snippet": "owered _ Y Record-breaking Leanest & $0 to $28M ARR Operationally customer best-in-class in 3 years profitable Q4 25 eng"
+            },
+            {
+              "ref": "dpu:doc:b5c3b04e:page:5",
+              "triggeredKeywords": [
+                "customers",
+                "%"
+              ],
+              "snippet": "e (Normally $19.99 per check) Empowering customers to make smarter financial decisions x Experience’ a @ ad o Experience"
+            },
+            {
+              "ref": "dpu:doc:b5c3b04e:page:8",
+              "triggeredKeywords": [
+                "revenue",
+                "customers",
+                "%"
+              ],
+              "snippet": "2023 ———_______—_ 2024 2025 ———— >$490k Revenue per FTE in . ae the UK Alone From vO to oZIYM+t IN 3 Years, a in the UK "
+            },
+            {
+              "ref": "dpu:doc:b5c3b04e:page:9",
+              "triggeredKeywords": [
+                "customers",
+                "%"
+              ],
+              "snippet": "oe ny oye : “ + LPN { r, $65 billion . Lhe 7M+ customers buy a used car each year ~ ‘ “| Europe Q $65B used car finance "
+            },
+            {
+              "ref": "dpu:doc:b5c3b04e:page:10",
+              "triggeredKeywords": [
+                "customers",
+                "growth",
+                "%"
+              ],
+              "snippet": "fA e e We're Acquiring Customers for $600 1 ° and Reducing CAC ~35% YoY New Customers Direct Customer Acquisition Cost b"
+            },
+            {
+              "ref": "dpu:doc:b5c3b04e:page:11",
+              "triggeredKeywords": [
+                "customers",
+                "engagement",
+                "%"
+              ],
+              "snippet": "ted! Just a Fast-growing base of repeat customers A few days later, | was driving away with my car. The whole process wa"
+            },
+            {
+              "ref": "dpu:doc:b5c3b04e:page:12",
+              "triggeredKeywords": [
+                "revenue",
+                "growth",
+                "%"
+              ],
+              "snippet": " Driving Efficiency, Growth & Scale ( ) Revenue per Employee Built for Al From the Ground Up 4.500.000 $1,000,000 Modern"
+            },
+            {
+              "ref": "dpu:doc:b5c3b04e:page:13",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": "ale Lending model moving towards off 100% 5 / ) ¢ : balance sheet | | | | (via forward flow deals) 715% | | Balance shee"
+            },
+            {
+              "ref": "dpu:doc:b5c3b04e:page:14",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": " this asset class Early stage RCF S+ 4.8% & NatWest : : : Improved RCF : : S+ 3.6% : : : $127M : ahabolywniadinal @& Nat"
+            },
+            {
+              "ref": "dpu:doc:b5c3b04e:page:15",
+              "triggeredKeywords": [
+                "retention",
+                "growth"
+              ],
+              "snippet": "and and tech = Better margins Vv. Drive retention -7- “-—=— —@ and repeat usage <q-\"~ j = High LTV I I S Expanding into "
+            },
+            {
+              "ref": "dpu:doc:b5c3b04e:page:16",
+              "triggeredKeywords": [
+                "revenue",
+                "retention",
+                "growth"
+              ],
+              "snippet": "s to ‘S f Finance Approved Vv $500M+ in revenue by 2030 i | i : ‘ We'’re Investing neds ; Where We re Investing Next ~ W"
+            },
+            {
+              "ref": "dpu:doc:b5c3b04e:page:17",
+              "triggeredKeywords": [
+                "customers"
+              ],
+              "snippet": "d Engine uses data to deeply understand customers’ needs and wants to deliver personalised product offerings, vehicle re"
+            },
+            {
+              "ref": "dpu:doc:b5c3b04e:page:18",
+              "triggeredKeywords": [
+                "revenue"
+              ],
+              "snippet": " Capital Injection Gets Us To $500M+ In Revenue By 2030... Available on request §500Me in Revenue By 2030... ~pIQ-40M Ca"
+            },
+            {
+              "ref": "dpu:doc:b5c3b04e:page:19",
+              "triggeredKeywords": [
+                "customers",
+                "growth",
+                "%"
+              ],
+              "snippet": " them. high-growth, high-volume lending customers love environments. DAY ae ON “ [M. movebubbie a . [Z] ocetsche Bank , "
+            }
+          ],
+          "dpu_pages_scanned": 21
+        },
+        {
+          "slot": "valuation_terms",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:b5c3b04e:page:13",
+              "triggeredKeywords": [
+                "equity"
+              ],
+              "snippet": "5% 94% in 2023 > 99%+ in 2025 te: 0% 1% equity in the balance sheet . 2023 2024 2025 2026+ loan book Balance Sheet & For"
+            },
+            {
+              "ref": "dpu:doc:b5c3b04e:page:19",
+              "triggeredKeywords": [
+                "note"
+              ],
+              "snippet": "Kellett Danny Armstrong Rachel Kaplan yanote CEO Credit Risk and Data Analytics Finance Brand & Marketing Second-time fo"
+            }
+          ],
+          "dpu_pages_scanned": 21
+        },
+        {
+          "slot": "use_of_funds",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:b5c3b04e:page:17",
+              "triggeredKeywords": [
+                "budget"
+              ],
+              "snippet": "la Concierge yw a carmoola < £200/morer budget, Ive tound carmoola Customise your quote Gi oh rice! What've you got @ivH"
+            }
+          ],
+          "dpu_pages_scanned": 21
+        }
+      ],
+      "summary": {
+        "ok_match": 2,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 3,
+        "true_absence": 0,
+        "dpu_load_failed": 0,
+        "evidence_ref_missing": 0
+      }
+    },
+    {
+      "deal_id": "517be946-cab9-4bc1-8982-9522ff9dab32",
+      "deal_label": "Deal Decision",
+      "audit_status": "partial",
+      "error": null,
+      "dpu_pages_total": 16,
+      "slot_results": [
+        {
+          "slot": "raise_terms",
+          "stored_status": "Computable",
+          "stored_value": "$600-900M TAM SAM SOM Alternative Investment",
+          "recomputed_status": "Computable",
+          "recomputed_value": "$600-900M TAM SAM SOM Alternative Investment",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 16
+        },
+        {
+          "slot": "market_claims",
+          "stored_status": "Computable",
+          "stored_value": "$600-900M TAM",
+          "recomputed_status": "Computable",
+          "recomputed_value": "$600-900M TAM",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 16
+        },
+        {
+          "slot": "traction_signal",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:6557c7c2:page:3",
+              "triggeredKeywords": [
+                "arr"
+              ],
+              "snippet": " —~> LP-ready contracts, CIMs generate narratives align IC, invest Track portfolio health. outputs 4 —_— —_— — —_— ee NR"
+            },
+            {
+              "ref": "dpu:doc:6557c7c2:page:4",
+              "triggeredKeywords": [
+                "arr"
+              ],
+              "snippet": "ag gaps Output: Audit-ready investment narrative with explicit next steps Risks & mitigations * Key assumptions « Eviden"
+            },
+            {
+              "ref": "dpu:doc:6557c7c2:page:5",
+              "triggeredKeywords": [
+                "pipeline",
+                "%"
+              ],
+              "snippet": " DealDecision Al [232] @ = Pages — Deal Pipeline Search dea s, decuments, mye 7 8 o a D a B .: : © woe G “4 -~ © eo sai "
+            },
+            {
+              "ref": "dpu:doc:6557c7c2:page:6",
+              "triggeredKeywords": [
+                "arr",
+                "revenue",
+                "growth",
+                "%"
+              ],
+              "snippet": " . . _. © Svong revenue traction ($100K + ARR) Competitive differentiation unclear @ Cleatiy articulate your unique va'u"
+            },
+            {
+              "ref": "dpu:doc:6557c7c2:page:7",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": "90x 98%ot 100% Faster Deal Screens Accuracy Source-Linked Seconds, not days Less than 2% hallucination rate Every conclu"
+            },
+            {
+              "ref": "dpu:doc:6557c7c2:page:9",
+              "triggeredKeywords": [
+                "pipeline"
+              ],
+              "snippet": "ers What They Do Our Relationship CRM / Pipeline Affinity, DealCloud, Dynamo Track relationships & deals Import from / e"
+            },
+            {
+              "ref": "dpu:doc:6557c7c2:page:11",
+              "triggeredKeywords": [
+                "pipeline",
+                "%"
+              ],
+              "snippet": "RM * Serves law firms, not investors. * Pipeline tracking, not analysis. * LP reporting focused. * Generative Al with ha"
+            },
+            {
+              "ref": "dpu:doc:6557c7c2:page:12",
+              "triggeredKeywords": [
+                "conversion",
+                "sales",
+                "pipeline",
+                "demo",
+                "%"
+              ],
+              "snippet": "ne & Traction Beta / Pilot Phase — Paid Conversion + Lean teams (2-5 people) feel diligence pain acutely * 60 day trial "
+            },
+            {
+              "ref": "dpu:doc:6557c7c2:page:13",
+              "triggeredKeywords": [
+                "growth"
+              ],
+              "snippet": "tion tiers scaled to firm size Emerging Growth Scale Enterprise $10M-$100M $100M-$500M $500M-$1B S1B+ $1,500-$2,500 $4,0"
+            },
+            {
+              "ref": "dpu:doc:6557c7c2:page:14",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": ", build team, accelerate go-to-market 40% 30% 20% 10% People / Hiring Go-to-Market Product / Engineering Contingency 15 "
+            }
+          ],
+          "dpu_pages_scanned": 16
+        },
+        {
+          "slot": "valuation_terms",
+          "stored_status": "Computable",
+          "stored_value": "valuation",
+          "recomputed_status": "Computable",
+          "recomputed_value": "valuation",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 16
+        },
+        {
+          "slot": "use_of_funds",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:6557c7c2:page:3",
+              "triggeredKeywords": [
+                "headcount"
+              ],
+              "snippet": "eal scored the same way. without adding headcount. Surface risks humans miss. Team-wide visibility. Seconds, not days. E"
+            },
+            {
+              "ref": "dpu:doc:6557c7c2:page:12",
+              "triggeredKeywords": [
+                "budget"
+              ],
+              "snippet": "30 Conversations / Demos * Limited / no budget for dedicated analysts * End-User License Agreement + Evaluate 50-200+ de"
+            }
+          ],
+          "dpu_pages_scanned": 16
+        }
+      ],
+      "summary": {
+        "ok_match": 3,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 2,
+        "true_absence": 0,
+        "dpu_load_failed": 0,
+        "evidence_ref_missing": 0
+      }
+    },
+    {
+      "deal_id": "5c8c7d6e-c992-4be7-8b10-268eac36f663",
+      "deal_label": "Palm3",
+      "audit_status": "partial",
+      "error": null,
+      "dpu_pages_total": 30,
+      "slot_results": [
+        {
+          "slot": "raise_terms",
+          "stored_status": "Computable",
+          "stored_value": "$1.5M raise",
+          "recomputed_status": "Computable",
+          "recomputed_value": "$1.5M raise",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 30
+        },
+        {
+          "slot": "market_claims",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:3a8a0ef8:page:0",
+              "triggeredKeywords": [
+                "som"
+              ],
+              "snippet": "tion has been set. Palm needs to inject some strategic investment to unlock the tremendous potential that lies ahead. Pr"
+            },
+            {
+              "ref": "dpu:doc:3a8a0ef8:page:4",
+              "triggeredKeywords": [
+                "som"
+              ],
+              "snippet": "ch the game of golf, we decided to find something we could improve- the style. We started with the often neglected, but "
+            },
+            {
+              "ref": "dpu:doc:3a8a0ef8:page:5",
+              "triggeredKeywords": [
+                "som"
+              ],
+              "snippet": "eneur and has the benefit of working in some successful start-ups along the way. Prior to Palm he managed graphic design"
+            },
+            {
+              "ref": "dpu:doc:3a8a0ef8:page:13",
+              "triggeredKeywords": [
+                "som"
+              ],
+              "snippet": "– Golf Channel. Golf Digest Collab with some of Golf’s Coolest Brands. “Best lifestyle glove 2018, 2019, 2025” - MYGOLFS"
+            },
+            {
+              "ref": "dpu:doc:3a8a0ef8:page:20",
+              "triggeredKeywords": [
+                "som"
+              ],
+              "snippet": "unders’ energy toward strategic growth. Some of the areas of need is within product design, social media, operations, an"
+            },
+            {
+              "ref": "dpu:doc:3a8a0ef8:page:26",
+              "triggeredKeywords": [
+                "sam",
+                "som"
+              ],
+              "snippet": "d to add some additional storage on the same property in 2023. Lease expires in April 2026 and at capacity. Consolidatin"
+            }
+          ],
+          "dpu_pages_scanned": 30
+        },
+        {
+          "slot": "traction_signal",
+          "stored_status": "Computable",
+          "stored_value": "Engagement – golf’s digital footprints is soaring with over 25%",
+          "recomputed_status": "Computable",
+          "recomputed_value": "Engagement – golf’s digital footprints is soaring with over 25%",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 30
+        },
+        {
+          "slot": "valuation_terms",
+          "stored_status": "Computable",
+          "stored_value": "Cap",
+          "recomputed_status": "Computable",
+          "recomputed_value": "Cap",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 30
+        },
+        {
+          "slot": "use_of_funds",
+          "stored_status": "Computable",
+          "stored_value": "Capital Allocation",
+          "recomputed_status": "Computable",
+          "recomputed_value": "Capital Allocation",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 30
+        }
+      ],
+      "summary": {
+        "ok_match": 4,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 1,
+        "true_absence": 0,
+        "dpu_load_failed": 0,
+        "evidence_ref_missing": 0
+      }
+    },
+    {
+      "deal_id": "61ef36dd-391a-4a4e-b30b-1f5d1f19f91e",
+      "deal_label": "3ICE",
+      "audit_status": "partial",
+      "error": null,
+      "dpu_pages_total": 40,
+      "slot_results": [
+        {
+          "slot": "raise_terms",
+          "stored_status": "Computable",
+          "stored_value": "raising approximately $10M",
+          "recomputed_status": "Computable",
+          "recomputed_value": "raising approximately $10M",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 40
+        },
+        {
+          "slot": "market_claims",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:6af4720f:page:25",
+              "triggeredKeywords": [
+                "sam"
+              ],
+              "snippet": "l take a (| ye cs Sat Neat place in the same Summer season window as 3ICE USA (June through August), but simply start 1 "
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:26",
+              "triggeredKeywords": [
+                "sam"
+              ],
+              "snippet": "ches in 2025 and will take place in the same Summer season qf . \\ ,. as window as 3ICE USA (June through August), but pl"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:32",
+              "triggeredKeywords": [
+                "tam"
+              ],
+              "snippet": "Phase 2 tying »» in — os ‘aa, aaa, | an tam ame ame"
+            }
+          ],
+          "dpu_pages_scanned": 40
+        },
+        {
+          "slot": "traction_signal",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:6af4720f:page:0",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": "o£ Bs ‘SS <a March 1, 202 “Gy See, & eR % | [a mrt 3 a ‘ ; : - . ‘ . ys. oe . a. q a g : Nd ye. ; . re % “gh a , : { Q F"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:1",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": "media. Bee See ed ees: peli » We own 100% of our teams, IP and Media i a ie Rights as a single-entity ownership group al"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:2",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": "E HOCKEY EQUIVALENT OF THE NFL BEING 100% RED ZONE FOOTBALL.” —- UNKNOWN FAN iM THIN GAME. Fy nity 8 ED HEAD,.COACH, xfi"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:3",
+              "triggeredKeywords": [
+                "sales"
+              ],
+              "snippet": "O & CRO-EAST ARENA RELATIONS VP, TICKET SALES = faa vied Pee GT he | - SJ? N , Ove yi ne ; te Ys Zi : ; mx ~ y a J CROLL"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:5",
+              "triggeredKeywords": [
+                "arr",
+                "%"
+              ],
+              "snippet": "d campaign. L.: a Sapse on be PIERRE é LARRY MURPHY wo t po Te TURGEON 4x Stanley Cup Winner, oe — | iz — Dk ate 1987 Fi"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:6",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": " JOHNSTON MULLEN BOURQUE Comprised of 30% former NHLers looking to stay involved in the game they love as well as young "
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:8",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": "_ — alee NT ee > of ——— _aes a —e-— es =% “jailbreak” penalty pick) %, | 4s NN — yy %, wv | i ‘oo —4j Fo"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:10",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": "n Ag ; ww “ial Ca n oy . ay mY 4 earn 4 %, a : ——_ wap easaeshe To as Aches ae” Ras 4 7 “ i Coe > ae Virtual Dashers and"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:11",
+              "triggeredKeywords": [
+                "%",
+                "percent"
+              ],
+              "snippet": " NHL experience expected to grow from 30% to 45% 7 ? a ha MORE CONTENT n - | »» Podcasts, player social media takeovers,"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:15",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": " NL) eg) i aig SL al See r’ TVA | 0, K “% a! YO} ist 6:20 HEART “n° CY Ps 5 ste = Dis = a. Ls 'y — Se. ¥ & ¥ , NG On"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:17",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": " / war” i a rae AGE RANGE wep! ys SOR 67% j ee | J MALE ee - i re HOUSEHOLD INCOME | i Sey | eae S T 10 0 0 O+ ‘Qeaws SO"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:18",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": "but of 3ICE Hockey a raging success, ae %:. Be SN a / hockey. Virtual dasherboard hockey. Eventual should spark changes "
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:19",
+              "triggeredKeywords": [
+                "arr"
+              ],
+              "snippet": " the oxymoron summer extravaganza lf ET ARRON ey EEE / G6 3-on-3’s always fun to watch, the pace is RRR ATS ON Aig ; YC "
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:22",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": "ckey » 3ICE Live Breakaway Shootout - A % hour made-for-betting breakaway battle shot live on the day of the 3ICE games "
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:27",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": "i gw -..~% » This made-for-TV event held on the first weekend in June each year is a global invitational . P| a \" 4 i: t"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:28",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": "nd —- .\\. ss. wo RRS: vs forehand, save %, scoring %, etc. | \\ ey quatre TRY om |’ PENN 08 » 3ICE LIVE BREAKAWAY SERIES "
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:32",
+              "triggeredKeywords": [
+                "revenue",
+                "sales"
+              ],
+              "snippet": " valuations often exit at 10X to 15X of revenues- this is our goal ae Uy Sat pel Be) expansion hase 1 is KPls stage on-i"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:33",
+              "triggeredKeywords": [
+                "revenue"
+              ],
+              "snippet": "strong multiple, e.g. 10X to 15X off of Revenues LU ae) NN BG ESAS yi), LG eae ES) cm eZ) 7 a rae, SS IE ey a ea <= i e "
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:34",
+              "triggeredKeywords": [
+                "sales"
+              ],
+              "snippet": "ach market/franchise to focus on ticket sales and in-market marketing » Bigger/better strategic marketing collaborations"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:35",
+              "triggeredKeywords": [
+                "revenue",
+                "%"
+              ],
+              "snippet": "2026 (YS) 2027 (Y6) 2028 (Y7) 2029 (Y8) REVENUES Media Rights $40,000 $1.2M $3.5M $5M S6M $6.5M $6.6M Sponsorships $210,"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:36",
+              "triggeredKeywords": [
+                "revenue"
+              ],
+              "snippet": "INE ITEMS 2025 2026 2027 2028 2029 2030 REVENUES Entry Fees $460,000 $920,000 $920,000 $967,000 $1M $1M Media Rights $45"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:37",
+              "triggeredKeywords": [
+                "revenue",
+                "%"
+              ],
+              "snippet": "INE ITEMS 2026 2027 2028 2029 2030 2031 REVENUES Sponsorships $825,000 $900,000 $1,000,000 $1,100,000 $1,150,000 $1,184,"
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:38",
+              "triggeredKeywords": [
+                "revenue"
+              ],
+              "snippet": "LINE ITEMS 2026 2027 2028 2029 2030 REVENUES Media Rights $725,000 $2M $2.5M $3.5M S4mM Sponsorships $1.3M $2M $2.4M $2."
+            },
+            {
+              "ref": "dpu:doc:6af4720f:page:39",
+              "triggeredKeywords": [
+                "revenue",
+                "sales",
+                "%"
+              ],
+              "snippet": "LINE ITEMS 2025 PAOPAS) 2027 2028 2029 REVENUES Sponsorships $175,000 $210,000 $300,000 $500,000 $550,000 Tickets (ATP ="
+            }
+          ],
+          "dpu_pages_scanned": 40
+        },
+        {
+          "slot": "valuation_terms",
+          "stored_status": "Computable",
+          "stored_value": "CAP",
+          "recomputed_status": "Computable",
+          "recomputed_value": "CAP",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 40
+        },
+        {
+          "slot": "use_of_funds",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:6af4720f:page:34",
+              "triggeredKeywords": [
+                "runway"
+              ],
+              "snippet": "In addition to providing the needed runway, the funds allow us to realize the “hockey stick moment” of securing that nex"
+            }
+          ],
+          "dpu_pages_scanned": 40
+        }
+      ],
+      "summary": {
+        "ok_match": 2,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 3,
+        "true_absence": 0,
+        "dpu_load_failed": 0,
+        "evidence_ref_missing": 0
+      }
+    },
+    {
+      "deal_id": "c4f10092-1c94-4116-b4f0-78874868f92b",
+      "deal_label": "Palm",
+      "audit_status": "partial",
+      "error": null,
+      "dpu_pages_total": 31,
+      "slot_results": [
+        {
+          "slot": "raise_terms",
+          "stored_status": "Computable",
+          "stored_value": "$100,000) see oe Bootstrapped investment",
+          "recomputed_status": "Computable",
+          "recomputed_value": "$100,000) see oe Bootstrapped investment",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 31
+        },
+        {
+          "slot": "market_claims",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:cbfd93a8:page:1",
+              "triggeredKeywords": [
+                "som"
+              ],
+              "snippet": "s been set. world. Palm needs to inject some strategic Palm has proven to meet their needs investment to unlock the year"
+            },
+            {
+              "ref": "dpu:doc:cbfd93a8:page:5",
+              "triggeredKeywords": [
+                "som"
+              ],
+              "snippet": "ch the game of golf, we decided to find something we could improve- the style. Our Values. We started with the often neg"
+            },
+            {
+              "ref": "dpu:doc:cbfd93a8:page:6",
+              "triggeredKeywords": [
+                "som"
+              ],
+              "snippet": "ary marketing the benefit of working in some successful experience in product development, experience. Palm is Craig's 3"
+            },
+            {
+              "ref": "dpu:doc:cbfd93a8:page:14",
+              "triggeredKeywords": [
+                "som"
+              ],
+              "snippet": "Brands : . , ae Golf Digest Collab with some of Golf’s Coolest nytt ih sem hin Brands. m Ps () ie = a — TRUTH DIGEST AG."
+            },
+            {
+              "ref": "dpu:doc:cbfd93a8:page:21",
+              "triggeredKeywords": [
+                "som"
+              ],
+              "snippet": "unders’ energy toward strategic growth. Some of the areas of need is within product design, social media, operations, an"
+            },
+            {
+              "ref": "dpu:doc:cbfd93a8:page:27",
+              "triggeredKeywords": [
+                "sam",
+                "som"
+              ],
+              "snippet": "sale add some additional storage on the same space. property in 2023. Lease expires in April 2025 ~~ and at capacity. Co"
+            }
+          ],
+          "dpu_pages_scanned": 31
+        },
+        {
+          "slot": "traction_signal",
+          "stored_status": "Computable",
+          "stored_value": "Engagement pxelelléxellejixel/ double digit growth over the last 5 11%",
+          "recomputed_status": "Computable",
+          "recomputed_value": "Engagement pxelelléxellejixel| double digit growth over the last 5 11%",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 31
+        },
+        {
+          "slot": "valuation_terms",
+          "stored_status": "Computable",
+          "stored_value": "Cap",
+          "recomputed_status": "Computable",
+          "recomputed_value": "Cap",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 31
+        },
+        {
+          "slot": "use_of_funds",
+          "stored_status": "Computable",
+          "stored_value": "CAPITAL ALLOCATION",
+          "recomputed_status": "Computable",
+          "recomputed_value": "CAPITAL ALLOCATION",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 31
+        }
+      ],
+      "summary": {
+        "ok_match": 4,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 1,
+        "true_absence": 0,
+        "dpu_load_failed": 0,
+        "evidence_ref_missing": 0
+      }
+    },
+    {
+      "deal_id": "bcd59d33-7887-41cd-80b9-742bc5ba945a",
+      "deal_label": "Dephil Trade",
+      "audit_status": "partial",
+      "error": null,
+      "dpu_pages_total": 17,
+      "slot_results": [
+        {
+          "slot": "raise_terms",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:aa43e081:page:0",
+              "triggeredKeywords": [
+                "seed"
+              ],
+              "snippet": "CELEBRATE TOMORROW'S DREAMS SEED DECK Confidential & Proprietary DO NOT share or duplicate without explicit permission f"
+            },
+            {
+              "ref": "dpu:doc:aa43e081:page:5",
+              "triggeredKeywords": [
+                "rais",
+                "raising",
+                "fundrais",
+                "$"
+              ],
+              "snippet": "ps w/ luxury beverage companies and Fundraising & Hiring Talent -_ Nightlife influencers pro other premium consumer bran"
+            },
+            {
+              "ref": "dpu:doc:aa43e081:page:8",
+              "triggeredKeywords": [
+                "round"
+              ],
+              "snippet": "ld be recognized lying broken on the o ground\" — @ugy Bottle Design Brief 1915 ; LEGACY BRANDS HAD 3 GENERATIONS OF BRAN"
+            },
+            {
+              "ref": "dpu:doc:aa43e081:page:10",
+              "triggeredKeywords": [
+                "round",
+                "$"
+              ],
+              "snippet": "ly at 80% win rate industry average is around 30% woe x Aviation 2 month On-boarding Journey with staff education, kick-"
+            },
+            {
+              "ref": "dpu:doc:aa43e081:page:13",
+              "triggeredKeywords": [
+                "$"
+              ],
+              "snippet": "Talent & Culture Innovative commercial- $100k t d beati Comprehensive marketing A+ talent in the beverage and formula-re"
+            },
+            {
+              "ref": "dpu:doc:aa43e081:page:14",
+              "triggeredKeywords": [
+                "$"
+              ],
+              "snippet": "l) g J Onboarding back log of accounts ~$30k in I Continue to design the best a MCV and maximize average account product"
+            },
+            {
+              "ref": "dpu:doc:aa43e081:page:15",
+              "triggeredKeywords": [
+                "rais",
+                "raise",
+                "raised",
+                "round",
+                "$"
+              ],
+              "snippet": " brand awareness : ape ert ; ’ aS) pe & Raised F&F round from Angel Investors + F&F to date Ny ¥ C . d 7 Let's chat a S "
+            }
+          ],
+          "dpu_pages_scanned": 17
+        },
+        {
+          "slot": "market_claims",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:aa43e081:page:1",
+              "triggeredKeywords": [
+                "market size"
+              ],
+              "snippet": " Bottle. 2. 2. 2 ee 09 8. Target Demo | Market Size. 2 2 10 9. Go-to-Market - Sales Strategy. 6 0. ee ee 11 10. Go-to-Ma"
+            },
+            {
+              "ref": "dpu:doc:aa43e081:page:7",
+              "triggeredKeywords": [
+                "tam"
+              ],
+              "snippet": "nal Layer wt Premium Electrolytes ae. Vitamins, & Minerals or ate | . } & Adaptogens: natural herbs, BN oe ee Ss . mushr"
+            },
+            {
+              "ref": "dpu:doc:aa43e081:page:8",
+              "triggeredKeywords": [
+                "sam"
+              ],
+              "snippet": "LCOHOLIC CONSUMPTION EXPERIENCES TO THE SAME STATUS LEVEL AS ALCOHOL (ec) Grooves & engravings that plug into end glassw"
+            },
+            {
+              "ref": "dpu:doc:aa43e081:page:9",
+              "triggeredKeywords": [
+                "market size"
+              ],
+              "snippet": "mise Services Los Angeles Target Demo | Market Size V 10 PROFESIONAL IN HGHLINCOME HOUSE HOLDS & ZIPCODES WHICH VALUE L/"
+            },
+            {
+              "ref": "dpu:doc:aa43e081:page:10",
+              "triggeredKeywords": [
+                "sam"
+              ],
+              "snippet": "ing support like point of sales assets, sampling, influencer tastings to drive velocity Go-to-market: Sales Strategy V u"
+            },
+            {
+              "ref": "dpu:doc:aa43e081:page:15",
+              "triggeredKeywords": [
+                "billion"
+              ],
+              "snippet": " OF HEALTHY SOCIAL BEVERAGES AND BUILDA BILLION-DOLLAR COMPANY STANDARD YC POST-MONEY SAFE RY” Hire give them great tool"
+            }
+          ],
+          "dpu_pages_scanned": 17
+        },
+        {
+          "slot": "traction_signal",
+          "stored_status": "Computable",
+          "stored_value": "80% win rate",
+          "recomputed_status": "Computable",
+          "recomputed_value": "80% win rate",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 17
+        },
+        {
+          "slot": "valuation_terms",
+          "stored_status": "Computable",
+          "stored_value": "POST-MONEY",
+          "recomputed_status": "Computable",
+          "recomputed_value": "POST-MONEY",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 17
+        },
+        {
+          "slot": "use_of_funds",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "TRUE_ABSENCE",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 17
+        }
+      ],
+      "summary": {
+        "ok_match": 2,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 2,
+        "true_absence": 1,
+        "dpu_load_failed": 0,
+        "evidence_ref_missing": 0
+      }
+    },
+    {
+      "deal_id": "62c1eb0e-a046-4288-a6e7-4d528d04fe4c",
+      "deal_label": "Bear",
+      "audit_status": "no_report",
+      "error": null,
+      "dpu_pages_total": 5,
+      "slot_results": [
+        {
+          "slot": "raise_terms",
+          "stored_status": "Missing",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "MISSING_REPORT",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 5
+        },
+        {
+          "slot": "market_claims",
+          "stored_status": "Missing",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "MISSING_REPORT",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 5
+        },
+        {
+          "slot": "traction_signal",
+          "stored_status": "Missing",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "MISSING_REPORT",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 5
+        },
+        {
+          "slot": "valuation_terms",
+          "stored_status": "Missing",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "MISSING_REPORT",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 5
+        },
+        {
+          "slot": "use_of_funds",
+          "stored_status": "Missing",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "MISSING_REPORT",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 5
+        }
+      ],
+      "summary": {
+        "ok_match": 0,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 0,
+        "true_absence": 0,
+        "dpu_load_failed": 0,
+        "evidence_ref_missing": 0
+      }
+    },
+    {
+      "deal_id": "05042123-6c4f-4dcb-9131-a95fce3cd28c",
+      "deal_label": "Health",
+      "audit_status": "partial",
+      "error": null,
+      "dpu_pages_total": 32,
+      "slot_results": [
+        {
+          "slot": "raise_terms",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "TRUE_ABSENCE",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 32
+        },
+        {
+          "slot": "market_claims",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:78181041:page:1",
+              "triggeredKeywords": [
+                "tam"
+              ],
+              "snippet": "ure to lead can also come from lead- contaminated dust, water, and soil, as well as brought home on clothing by adults t"
+            },
+            {
+              "ref": "dpu:doc:78181041:page:2",
+              "triggeredKeywords": [
+                "tam"
+              ],
+              "snippet": "eviewed journal JAMA Pediatrics Lead Contamination Found in Blood of Half of Young Kids in US The Number of Children wit"
+            },
+            {
+              "ref": "dpu:doc:78181041:page:9",
+              "triggeredKeywords": [
+                "som"
+              ],
+              "snippet": " people, be tested at ages one and two. Some other states mandate tests for all children in areas with exposure risks, s"
+            },
+            {
+              "ref": "dpu:doc:78181041:page:10",
+              "triggeredKeywords": [
+                "tam",
+                "sam"
+              ],
+              "snippet": "SS HIGHER RISK OF INFECTION OR CROSS CONTAMINATION INTEGRITY OF SAMPLES BASED ON HANDLING AND TESTING PROCEDURES ToxyScr"
+            },
+            {
+              "ref": "dpu:doc:78181041:page:11",
+              "triggeredKeywords": [
+                "tam",
+                "sam"
+              ],
+              "snippet": "N REDUCED RISK OF INFECTION OR CROSS CONTAMINATION SAMPLE INTEGRITY SHIPPING SECURE CONTAINER SHELF LIFE 1 YEAR ToxyScre"
+            },
+            {
+              "ref": "dpu:doc:78181041:page:16",
+              "triggeredKeywords": [
+                "sam"
+              ],
+              "snippet": "ody Control Form (CCF) Requisition Form Sample Collection Instructions Packaging and Mailing of Samples Reporting of Res"
+            },
+            {
+              "ref": "dpu:doc:78181041:page:17",
+              "triggeredKeywords": [
+                "tam",
+                "sam"
+              ],
+              "snippet": " evidence seals with kit. Place one (1) tamper evidence seal on specimen container and one (1) on the requisition form. "
+            },
+            {
+              "ref": "dpu:doc:78181041:page:26",
+              "triggeredKeywords": [
+                "sam"
+              ],
+              "snippet": "opy Form) Original first page goes with sample to lab Copy to donor/guardian, and clinic retains final copy. Completed s"
+            },
+            {
+              "ref": "dpu:doc:78181041:page:27",
+              "triggeredKeywords": [
+                "sam"
+              ],
+              "snippet": " padded/cushioned Shipping envelope Ten Samples per White Envelope, a Total of Three(3) White Envelopes per Pre-Paid Bro"
+            },
+            {
+              "ref": "dpu:doc:78181041:page:29",
+              "triggeredKeywords": [
+                "tam",
+                "sam"
+              ],
+              "snippet": "N REDUCED RISK OF INFECTION OR CROSS CONTAMINATION THE END ToxyScreen CLEAR ADVANTAGES OF TOXYScreen HAVE LEAD SCREENING"
+            }
+          ],
+          "dpu_pages_scanned": 32
+        },
+        {
+          "slot": "traction_signal",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:78181041:page:2",
+              "triggeredKeywords": [
+                "percent"
+              ],
+              "snippet": "under age 6 who were tested, half (50.5 percent) had detectable levels of blood lead (1.0 microgram per deciliter or hig"
+            },
+            {
+              "ref": "dpu:doc:78181041:page:3",
+              "triggeredKeywords": [
+                "growth"
+              ],
+              "snippet": " to the brain and nervous system Slowed growth and development Learning and behavior problems Hearing and speech problem"
+            },
+            {
+              "ref": "dpu:doc:78181041:page:5",
+              "triggeredKeywords": [
+                "arr"
+              ],
+              "snippet": "uced sperm count and abnormal sperm Miscarriage, stillbirth or premature birth in pregnant women ToxyScreen EFFECTS OF L"
+            },
+            {
+              "ref": "dpu:doc:78181041:page:6",
+              "triggeredKeywords": [
+                "arr"
+              ],
+              "snippet": " disorders Headaches Abdominal pain Miscarriages or stillbirths ToxyScreen SYMPTONS OF ELAVATED BLOOD LEVELS IN ADULTS H"
+            },
+            {
+              "ref": "dpu:doc:78181041:page:9",
+              "triggeredKeywords": [
+                "percent"
+              ],
+              "snippet": "ozen U.S. states, Reuters found just 41 percent of Medicaid-enrolled one- and two-year-olds had been tested as required."
+            },
+            {
+              "ref": "dpu:doc:78181041:page:10",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": "AR AND ANXIETY JALM SURVEY IDENTIFIED 68% OF CHILDREN AFRAID WITH STRESS AND ANXIETY OF BLOOD DRAW AND 63% OF PARENTS.. "
+            },
+            {
+              "ref": "dpu:doc:78181041:page:12",
+              "triggeredKeywords": [
+                "%"
+              ],
+              "snippet": "WHAT ABOUT ACCURACY ? BLOOD 94.7% TOXYScreen 99.1% ToxyScreen WHAT ABOUT ACCURACY ? BLOOD 94.7% TOXYScreen 99.1% ToxyScr"
+            }
+          ],
+          "dpu_pages_scanned": 32
+        },
+        {
+          "slot": "valuation_terms",
+          "stored_status": "Computable",
+          "stored_value": "cap",
+          "recomputed_status": "Computable",
+          "recomputed_value": "cap",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 32
+        },
+        {
+          "slot": "use_of_funds",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "TRUE_ABSENCE",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 32
+        }
+      ],
+      "summary": {
+        "ok_match": 1,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 2,
+        "true_absence": 2,
+        "dpu_load_failed": 0,
+        "evidence_ref_missing": 0
+      }
+    },
+    {
+      "deal_id": "5c85f4f1-e38d-426f-b2ad-40db97f97b27",
+      "deal_label": "Delphi",
+      "audit_status": "partial",
+      "error": null,
+      "dpu_pages_total": 2,
+      "slot_results": [
+        {
+          "slot": "raise_terms",
+          "stored_status": "Computable",
+          "stored_value": "€2B reuenns PRINCIPAL INVESTMENT",
+          "recomputed_status": "Computable",
+          "recomputed_value": "€2B reuenns PRINCIPAL INVESTMENT",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 2
+        },
+        {
+          "slot": "market_claims",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:88123bda:page:0",
+              "triggeredKeywords": [
+                "tam",
+                "som"
+              ],
+              "snippet": " in area primarily Summary: a payment only ALIITAMATIVE"
+            },
+            {
+              "ref": "dpu:doc:88123bda:page:1",
+              "triggeredKeywords": [
+                "sam"
+              ],
+              "snippet": "ast chain transactions yielding [1.5% the same time shifting payment member Options Advisory — to 3%) per month. It will"
+            }
+          ],
+          "dpu_pages_scanned": 2
+        },
+        {
+          "slot": "traction_signal",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:88123bda:page:0",
+              "triggeredKeywords": [
+                "arr",
+                "%",
+                "percent"
+              ],
+              "snippet": "sche Bank] as trustee, WY PIV-I serves as deal arranger and manager, that makes principal investments in \\ earning fees "
+            },
+            {
+              "ref": "dpu:doc:88123bda:page:1",
+              "triggeredKeywords": [
+                "arr",
+                "conversion",
+                "sales",
+                "%"
+              ],
+              "snippet": "preneur. working capital through the ; J Darren Wilcox, MBA- Investment Objectives: developed countries. This will _ 20 "
+            }
+          ],
+          "dpu_pages_scanned": 2
+        },
+        {
+          "slot": "valuation_terms",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:88123bda:page:1",
+              "triggeredKeywords": [
+                "equity"
+              ],
+              "snippet": "sor of Viking Asset additional permanent equity OTBOINE 1572070 gross Margin on Securitisation Ltd. (€2bb capital. Delph"
+            }
+          ],
+          "dpu_pages_scanned": 2
+        },
+        {
+          "slot": "use_of_funds",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "TRUE_ABSENCE",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 2
+        }
+      ],
+      "summary": {
+        "ok_match": 1,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 3,
+        "true_absence": 1,
+        "dpu_load_failed": 0,
+        "evidence_ref_missing": 0
+      }
+    },
+    {
+      "deal_id": "0fcec035-9aa3-4f6e-88fa-818c323add09",
+      "deal_label": "Cinco",
+      "audit_status": "partial",
+      "error": null,
+      "dpu_pages_total": 17,
+      "slot_results": [
+        {
+          "slot": "raise_terms",
+          "stored_status": "Computable",
+          "stored_value": "€5.6M ised tod raised",
+          "recomputed_status": "Computable",
+          "recomputed_value": "€5.6M ised tod raised",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 17
+        },
+        {
+          "slot": "market_claims",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "TRUE_ABSENCE",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 17
+        },
+        {
+          "slot": "traction_signal",
+          "stored_status": "Computable",
+          "stored_value": "retention 50%",
+          "recomputed_status": "Computable",
+          "recomputed_value": "retention 50%",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 17
+        },
+        {
+          "slot": "valuation_terms",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "TRUE_ABSENCE",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 17
+        },
+        {
+          "slot": "use_of_funds",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "DETECTOR_GAP",
+          "candidate_pages": [
+            {
+              "ref": "dpu:doc:b3fecf8f:page:0",
+              "triggeredKeywords": [
+                "spend"
+              ],
+              "snippet": "Ad SHARED PAYMENTS g f Designed to make spending | | money together seamless. = $ mes GO) Cina y (2 ®&’S K) -€82 @) -«82"
+            },
+            {
+              "ref": "dpu:doc:b3fecf8f:page:4",
+              "triggeredKeywords": [
+                "spend"
+              ],
+              "snippet": "8m . 43% growth in Aug €2.4m ‘25 . Avg. spend per user doubled YoY « Blended CAC €12.5 May ‘25 June ‘25 July ‘25 Aug *25"
+            },
+            {
+              "ref": "dpu:doc:b3fecf8f:page:13",
+              "triggeredKeywords": [
+                "spend"
+              ],
+              "snippet": "no captures 5% conversion at all shared spend, from daily payments to rent. €10 The Social Spending Hub (Next) +€20B +€2"
+            },
+            {
+              "ref": "dpu:doc:b3fecf8f:page:15",
+              "triggeredKeywords": [
+                "runway"
+              ],
+              "snippet": "hs+ payment o Embedded Cino at Checkout runway and features g o Engineers (6) (incl. automation engineer) o ML/Data Engi"
+            },
+            {
+              "ref": "dpu:doc:b3fecf8f:page:16",
+              "triggeredKeywords": [
+                "budget"
+              ],
+              "snippet": "e) ie You 632500 2 x ee o Collaborative Budgeting (goal: growth) a > . . a Olivia €325.00 x o Friendship Maps v.2 (goal:"
+            }
+          ],
+          "dpu_pages_scanned": 17
+        }
+      ],
+      "summary": {
+        "ok_match": 2,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 1,
+        "true_absence": 2,
+        "dpu_load_failed": 0,
+        "evidence_ref_missing": 0
+      }
+    },
+    {
+      "deal_id": "23b2fa42-e6d1-4aa3-8fbc-f7aa083846e4",
+      "deal_label": "WebMax",
+      "audit_status": "ok",
+      "error": null,
+      "dpu_pages_total": 18,
+      "slot_results": [
+        {
+          "slot": "raise_terms",
+          "stored_status": "Computable",
+          "stored_value": "Financial Strategy Raise: a $4M",
+          "recomputed_status": "Computable",
+          "recomputed_value": "Financial Strategy Raise: a $4M",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 18
+        },
+        {
+          "slot": "market_claims",
+          "stored_status": "NotComputable",
+          "stored_value": null,
+          "recomputed_status": "NotComputable",
+          "recomputed_value": null,
+          "classification": "TRUE_ABSENCE",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 18
+        },
+        {
+          "slot": "traction_signal",
+          "stored_status": "Computable",
+          "stored_value": "Retention ratio / 60.00%",
+          "recomputed_status": "Computable",
+          "recomputed_value": "Retention ratio | 60.00%",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 18
+        },
+        {
+          "slot": "valuation_terms",
+          "stored_status": "Computable",
+          "stored_value": "Valuation",
+          "recomputed_status": "Computable",
+          "recomputed_value": "Valuation",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 18
+        },
+        {
+          "slot": "use_of_funds",
+          "stored_status": "Computable",
+          "stored_value": "Allocation of Funds",
+          "recomputed_status": "Computable",
+          "recomputed_value": "Allocation of Funds",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 18
+        }
+      ],
+      "summary": {
+        "ok_match": 4,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 0,
+        "true_absence": 1,
+        "dpu_load_failed": 0,
+        "evidence_ref_missing": 0
+      }
+    },
+    {
+      "deal_id": "b21b894e-4020-46bd-b753-93b2d2d5fa8f",
+      "deal_label": "Qredible",
+      "audit_status": "ok",
+      "error": null,
+      "dpu_pages_total": 46,
+      "slot_results": [
+        {
+          "slot": "raise_terms",
+          "stored_status": "Computable",
+          "stored_value": "Seeking $3M",
+          "recomputed_status": "Computable",
+          "recomputed_value": "Seeking $3M",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 46
+        },
+        {
+          "slot": "market_claims",
+          "stored_status": "Computable",
+          "stored_value": "$200B+ 500K* TAM",
+          "recomputed_status": "Computable",
+          "recomputed_value": "$200B+ 500K* TAM",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 46
+        },
+        {
+          "slot": "traction_signal",
+          "stored_status": "Computable",
+          "stored_value": "ARR Merchant ARR Total ARR Potential 7,450 745 372 $340K",
+          "recomputed_status": "Computable",
+          "recomputed_value": "ARR Merchant ARR Total ARR Potential 7,450 745 372 $340K",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 46
+        },
+        {
+          "slot": "valuation_terms",
+          "stored_status": "Computable",
+          "stored_value": "Valuation",
+          "recomputed_status": "Computable",
+          "recomputed_value": "Valuation",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 46
+        },
+        {
+          "slot": "use_of_funds",
+          "stored_status": "Computable",
+          "stored_value": "Use of Funds",
+          "recomputed_status": "Computable",
+          "recomputed_value": "Use of Funds",
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 46
+        }
+      ],
+      "summary": {
+        "ok_match": 5,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 0,
+        "true_absence": 0,
+        "dpu_load_failed": 0,
+        "evidence_ref_missing": 0
+      }
+    }
+  ],
+  "portfolio_summary": {
+    "total_deals": 14,
+    "deals_ok": 2,
+    "deals_with_gaps": 11,
+    "deals_with_stale": 0,
+    "deals_with_regressions": 0,
+    "slot_breakdown": [
+      {
+        "slot": "raise_terms",
+        "ok_match": 10,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 2,
+        "true_absence": 1
+      },
+      {
+        "slot": "market_claims",
+        "ok_match": 5,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 6,
+        "true_absence": 2
+      },
+      {
+        "slot": "traction_signal",
+        "ok_match": 8,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 5,
+        "true_absence": 0
+      },
+      {
+        "slot": "valuation_terms",
+        "ok_match": 9,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 3,
+        "true_absence": 1
+      },
+      {
+        "slot": "use_of_funds",
+        "ok_match": 4,
+        "stale_stored": 0,
+        "regressed": 0,
+        "detector_gap": 6,
+        "true_absence": 3
+      }
+    ]
+  }
+}

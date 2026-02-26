@@ -108,6 +108,106 @@ jobs:
           retention-days: 30
 
   # ───────────────────────────────────────────────────────────────────
+  # Coverage trend gate (soft — enforced, non-blocking on first usage)
+  #   Runs coverage audit and compares against the committed baseline.
+  #   Fails if DETECTOR_GAP INCREASES for the global total OR for the
+  #   selected slot (currently: use_of_funds).
+  #   Skips gracefully when DATABASE_URL secret is absent (same preflight
+  #   pattern as the soft gate above).
+  #
+  #   Strict version (disabled with `if: false`) would require week-over-week
+  #   improvement by rolling the baseline forward periodically.
+  # ───────────────────────────────────────────────────────────────────
+  coverage-trend-gate:
+    name: Coverage Trend Gate (use_of_funds + market_claims — soft)
+    runs-on: ubuntu-latest
+    needs: [preflight, investor-insights-soft-gate]
+    if: needs.preflight.outputs.db_available == 'true'
+    timeout-minutes: 15
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PGSSLMODE: ${{ secrets.PGSSLMODE || 'require' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Enable corepack + activate pnpm
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          if corepack prepare --activate 2>/dev/null; then
+            pnpm --version
+            exit 0
+          fi
+          corepack prepare pnpm@9.15.0 --activate
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build @dealdecision/core (required by worker)
+        run: pnpm --filter @dealdecision/core build
+
+      # Generate current coverage audit snapshot
+      - name: Run coverage audit (current snapshot)
+        run: |
+          TS=$(date +%Y%m%dT%H%M%SZ)
+          pnpm --filter worker audit:investor-insights:coverage -- \
+            --deal-list apps/worker/tmp/audit_deals.json \
+            --concurrency 4 \
+            --out apps/worker/tmp/coverage-ci-${TS}
+          echo "COVERAGE_CURRENT=apps/worker/tmp/coverage-ci-${TS}.json" >> "$GITHUB_ENV"
+
+      # Compare against committed baseline — fail if DETECTOR_GAP increased
+      - name: Run coverage trend gate
+        run: |
+          pnpm --filter worker coverage-trend-gate -- \
+            --baseline apps/worker/tmp/coverage_baseline.json \
+            --current  "$COVERAGE_CURRENT" \
+            --slot     use_of_funds
+          pnpm --filter worker coverage-trend-gate -- \
+            --baseline apps/worker/tmp/coverage_baseline.json \
+            --current  "$COVERAGE_CURRENT" \
+            --slot     market_claims
+
+      # Always upload the current audit artifact for inspection
+      - name: Upload coverage audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-audit-${{ github.sha }}
+          path: apps/worker/tmp/coverage-ci-*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ───────────────────────────────────────────────────────────────────
+  # (DISABLED — strict improvement gate, enable when rolling baseline forward)
+  # Requires DETECTOR_GAP to strictly decrease vs baseline week-over-week.
+  # Enable by removing `if: false` and wiring a baseline-update job.
+  # ───────────────────────────────────────────────────────────────────
+  coverage-trend-gate-strict:
+    name: Coverage Trend Gate (strict improvement — not enabled)
+    runs-on: ubuntu-latest
+    needs: preflight
+    # ⚠️  DISABLED: enable once baseline roll-forward automation is in place
+    if: false
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PGSSLMODE: ${{ secrets.PGSSLMODE || 'require' }}
+    steps:
+      - run: echo "Strict improvement gate — not yet enabled"
+
+  # ───────────────────────────────────────────────────────────────────
   # Strict gate (DEFINED — not enabled yet)
   #   Adds MISSING_DPU to the failure classes.
   #   Enable by changing `if: false` to

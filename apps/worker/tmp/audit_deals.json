@@ -1,0 +1,61 @@
+{
+  "_note": "Canonical coverage audit portfolio list. Committed intentionally — see .gitignore exception. To add/remove deals, edit this file and re-run pnpm audit:portfolio:coverage:baseline.",
+  "deals": [
+    {
+      "name": "StackFactor",
+      "deal_id": "adb2a1cf-bbb1-4f3b-8735-e2249415124f"
+    },
+    {
+      "name": "Probability AI",
+      "deal_id": "42be8b30-2b7d-45e0-ade0-99427a505c59"
+    },
+    {
+      "name": "Carmoola",
+      "deal_id": "da96b5a9-e5b2-46c1-a6ef-da037f876426"
+    },
+    {
+      "name": "Deal Decision",
+      "deal_id": "517be946-cab9-4bc1-8982-9522ff9dab32"
+    },
+    {
+      "name": "Palm3",
+      "deal_id": "5c8c7d6e-c992-4be7-8b10-268eac36f663"
+    },
+    {
+      "name": "3ICE",
+      "deal_id": "61ef36dd-391a-4a4e-b30b-1f5d1f19f91e"
+    },
+    {
+      "name": "Palm",
+      "deal_id": "c4f10092-1c94-4116-b4f0-78874868f92b"
+    },
+    {
+      "name": "Dephil Trade",
+      "deal_id": "bcd59d33-7887-41cd-80b9-742bc5ba945a"
+    },
+    {
+      "name": "Bear",
+      "deal_id": "62c1eb0e-a046-4288-a6e7-4d528d04fe4c"
+    },
+    {
+      "name": "Health",
+      "deal_id": "05042123-6c4f-4dcb-9131-a95fce3cd28c"
+    },
+    {
+      "name": "Delphi",
+      "deal_id": "5c85f4f1-e38d-426f-b2ad-40db97f97b27"
+    },
+    {
+      "name": "Cinco",
+      "deal_id": "0fcec035-9aa3-4f6e-88fa-818c323add09"
+    },
+    {
+      "name": "WebMax",
+      "deal_id": "23b2fa42-e6d1-4aa3-8fbc-f7aa083846e4"
+    },
+    {
+      "name": "Qredible",
+      "deal_id": "b21b894e-4020-46bd-b753-93b2d2d5fa8f"
+    }
+  ]
+}

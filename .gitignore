@@ -132,3 +132,15 @@ scripts/overview_runtime_vs_truth_table_diff.md
 verification_e2e_cinco_analysis_*.md
 apps/worker/tmp/
 tmp/
+# Allow git to traverse apps/worker/tmp/ for specific committed fixtures.
+# git won't descend into an excluded directory, so we un-ignore the dir,
+# re-ignore all its contents, then carve out the specific committed files.
+#
+# audit_deals.json  — canonical portfolio list for coverage audit + trend gate.
+#                     Edit intentionally; never auto-generated.
+# coverage_baseline.json — committed baseline snapshot for CI trend gate.
+#                          Updated via the `update-coverage-baseline` workflow.
+!apps/worker/tmp/
+apps/worker/tmp/*
+!apps/worker/tmp/audit_deals.json
+!apps/worker/tmp/coverage_baseline.json

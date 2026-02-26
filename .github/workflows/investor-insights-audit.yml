@@ -2,20 +2,36 @@ name: Investor Insights Audit
 
 # ─────────────────────────────────────────────────────────────────────
 # Triggers
-#   workflow_dispatch  → run manually at any time (safe default)
-#   push develop/main  → automatic, but ONLY if DATABASE_URL secret is
+#   schedule         → twice daily at ≈09:00 ET and ≈17:00 ET
+#                       09:00 ET = 14:00 UTC (09:00 EST / 10:00 EDT)
+#                       17:00 ET = 21:00 UTC (17:00 EDT / 16:00 EST)
+#                       GitHub Actions cron runs in UTC; clocks shift ±1 h with DST.
+#   workflow_dispatch → run manually at any time (safe default)
+#   push develop/main → automatic, but ONLY if DATABASE_URL secret is
 #                        configured in the repo (job skips otherwise)
 # ─────────────────────────────────────────────────────────────────────
 on:
+  schedule:
+    - cron: "0 14 * * *"  # ≈09:00 ET (14:00 UTC; shifts ±1 h with DST)
+    - cron: "0 21 * * *"  # ≈17:00 ET (21:00 UTC; shifts ±1 h with DST)
   workflow_dispatch:
   push:
     branches:
       - develop
       - main
 
+# ─────────────────────────────────────────────────────────────────────
+# Concurrency
+#   Push/dispatch: cancel in-progress runs on the same ref (fast-feedback).
+#   Schedule:      each run gets its own group (run_id) so two daily runs
+#                  never cancel each other.
+# ─────────────────────────────────────────────────────────────────────
 concurrency:
-  group: investor-insights-audit-${{ github.ref }}
-  cancel-in-progress: true
+  group: >
+    ${{ github.event_name == 'schedule'
+        && format('investor-insights-audit-scheduled-{0}', github.run_id)
+        || format('investor-insights-audit-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 jobs:
   # ───────────────────────────────────────────────────────────────────
@@ -185,7 +201,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage-audit-${{ github.sha }}
-          path: apps/worker/tmp/coverage-ci-*.json
+          path: |
+            apps/worker/tmp/coverage-ci-*.json
+            apps/worker/tmp/coverage-ci-*.md
+            apps/worker/tmp/investor-insights-coverage-audit-*.json
+            apps/worker/tmp/investor-insights-coverage-audit-*.md
+            apps/worker/tmp/investor-insights-audit.json
+            apps/worker/tmp/investor-insights-audit.md
           if-no-files-found: warn
           retention-days: 30
 

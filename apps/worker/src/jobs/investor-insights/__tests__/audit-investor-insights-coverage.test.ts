@@ -13,9 +13,14 @@ import {
 	STRICT_DETECTORS,
 	runCoverageAudit,
 	printCoverageMarkdown,
+	extractHeaderLike,
+	computeTighteningCandidates,
+	selectNextSlot,
 	type StrictPage,
 	type ParsedStoredSlot,
 	type CoverageAuditReport,
+	type TighteningCandidate,
+	type DealCoverageResult,
 } from "../audit-investor-insights-coverage";
 import type { Pool } from "pg";
 
@@ -691,8 +696,10 @@ describe("printCoverageMarkdown", () => {
 	it("includes generated_at in the Markdown header", async () => {
 		const report: CoverageAuditReport = {
 			generated_at: "2026-01-01T00:00:00.000Z",
+			meta: { selected_slot: null, selected_slot_rationale: "no DETECTOR_GAP slots found" },
 			deals: [],
 			portfolio_summary: { total_deals: 0, deals_ok: 0, deals_with_gaps: 0, deals_with_stale: 0, deals_with_regressions: 0, slot_breakdown: [] },
+			tightening_candidates: [],
 		};
 		const md = printCoverageMarkdown(report);
 		expect(md).toContain("**Generated:** 2026-01-01T00:00:00.000Z");
@@ -704,5 +711,394 @@ describe("printCoverageMarkdown", () => {
 		const md = printCoverageMarkdown(report);
 		expect(typeof md).toBe("string");
 		expect(md.length).toBeGreaterThan(100);
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// extractHeaderLike
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("extractHeaderLike", () => {
+	// ── Positive cases ─────────────────────────────────────────────────────────────
+	it("detects ALL CAPS header with keyword: 'CAPITAL ALLOCATION'", () => {
+		const headers = extractHeaderLike("CAPITAL ALLOCATION\nsome other text");
+		expect(headers).toContain("CAPITAL ALLOCATION");
+	});
+
+	it("detects ALL CAPS header: 'USE OF FUNDS'", () => {
+		const headers = extractHeaderLike("USE OF FUNDS\nline 2");
+		expect(headers).toContain("USE OF FUNDS");
+	});
+
+	it("detects ALL CAPS: 'VALUATION'", () => {
+		const headers = extractHeaderLike("VALUATION\npost-money valuation of $20M");
+		expect(headers).toContain("VALUATION");
+	});
+
+	it("detects ALL CAPS multi-word: 'MARKET SIZE OVERVIEW'", () => {
+		const headers = extractHeaderLike("MARKET SIZE OVERVIEW");
+		expect(headers).toContain("MARKET SIZE OVERVIEW");
+	});
+
+	it("detects Title Case: 'Capital Allocation Detail'", () => {
+		const headers = extractHeaderLike("Capital Allocation Detail");
+		expect(headers).toContain("Capital Allocation Detail");
+	});
+
+	it("detects Title Case: 'Use of Funds Breakdown'", () => {
+		const headers = extractHeaderLike("Use of Funds Breakdown");
+		expect(headers).toContain("Use of Funds Breakdown");
+	});
+
+	it("detects Title Case: 'Market Opportunity'", () => {
+		const headers = extractHeaderLike("Market Opportunity");
+		expect(headers).toContain("Market Opportunity");
+	});
+
+	it("detects mixed with other lines in snippet", () => {
+		const text = "some random lowercase text here\nCAPITAL ALLOCATION\nmore text below";
+		const headers = extractHeaderLike(text);
+		expect(headers).toContain("CAPITAL ALLOCATION");
+		expect(headers).toHaveLength(1);
+	});
+
+	// ── Negative controls ─────────────────────────────────────────────────────
+	it("does NOT match lowercase prose", () => {
+		const headers = extractHeaderLike("the allocation of funds will be determined later");
+		expect(headers).toHaveLength(0);
+	});
+
+	it("does NOT match a long ALL-CAPS sentence (>60 chars)", () => {
+		const long = "CAPITAL ALLOCATION BREAKDOWN INTO MARKETING AND ENGINEERING AND SALES AND OPS";
+		expect(long.length).toBeGreaterThan(60);
+		const headers = extractHeaderLike(long);
+		expect(headers).toHaveLength(0);
+	});
+
+	it("does NOT match ALL CAPS without domain keyword", () => {
+		const headers = extractHeaderLike("TEAM COMPOSITION");
+		expect(headers).toHaveLength(0);
+	});
+
+	it("does NOT match Title Case without domain keyword", () => {
+		const headers = extractHeaderLike("Product Roadmap Overview");
+		expect(headers).toHaveLength(0);
+	});
+
+	it("does NOT match empty string", () => {
+		expect(extractHeaderLike("")).toHaveLength(0);
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// computeTighteningCandidates
+// ═══════════════════════════════════════════════════════════════════════
+
+/** Build a minimal DealCoverageResult with one DETECTOR_GAP slot result. */
+function makeGapDeal(
+	dealId: string,
+	slot: string,
+	keywords: string[],
+	snippet = "some snippet text"
+): DealCoverageResult {
+	return {
+		deal_id:        dealId,
+		deal_label:     dealId.slice(0, 8),
+		audit_status:   "partial",
+		error:          null,
+		dpu_pages_total: 10,
+		slot_results: [
+			{
+				slot,
+				stored_status:     "NotComputable",
+				stored_value:      null,
+				recomputed_status: "NotComputable",
+				recomputed_value:  null,
+				classification:    "DETECTOR_GAP",
+				dpu_pages_scanned: 10,
+				candidate_pages: [
+					{ ref: `dpu:doc:${dealId.slice(0, 8)}:page:1`, triggeredKeywords: keywords, snippet },
+				],
+			},
+		],
+		summary: { ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 1, true_absence: 0, dpu_load_failed: 0, evidence_ref_missing: 0 },
+	};
+}
+
+describe("computeTighteningCandidates", () => {
+	it("returns empty array when no DETECTOR_GAP slots", () => {
+		const result = computeTighteningCandidates([], [{ slot: "raise_terms", ok_match: 5, stale_stored: 0, regressed: 0, detector_gap: 0, true_absence: 0 }]);
+		expect(result).toHaveLength(0);
+	});
+
+	it("maps keyword counts correctly", () => {
+		const deals: DealCoverageResult[] = [
+			makeGapDeal("aaaa0000-0000-0000-0000-000000000001", "use_of_funds", ["budget", "spend"]),
+			makeGapDeal("aaaa0000-0000-0000-0000-000000000002", "use_of_funds", ["budget", "runway"]),
+		];
+		const breakdown = [{ slot: "use_of_funds", ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 2, true_absence: 0 }];
+		const result = computeTighteningCandidates(deals, breakdown);
+		expect(result).toHaveLength(1);
+		const uof = result[0]!;
+		expect(uof.slot).toBe("use_of_funds");
+		expect(uof.detector_gap).toBe(2);
+		// "budget" appears in both deals → count=2; should be top keyword
+		expect(uof.top_keywords[0]?.keyword).toBe("budget");
+		expect(uof.top_keywords[0]?.count).toBe(2);
+	});
+
+	it("sorts descending by detector_gap, then slot name alphabetically", () => {
+		const deals: DealCoverageResult[] = [
+			makeGapDeal("dd000000-0000-0000-0000-000000000001", "use_of_funds",    ["budget"]),
+			makeGapDeal("dd000000-0000-0000-0000-000000000002", "market_claims",   ["tam"]),
+			makeGapDeal("dd000000-0000-0000-0000-000000000003", "market_claims",   ["tam"]),
+			makeGapDeal("dd000000-0000-0000-0000-000000000004", "traction_signal", ["arr"]),
+			makeGapDeal("dd000000-0000-0000-0000-000000000005", "traction_signal", ["arr"]),
+			makeGapDeal("dd000000-0000-0000-0000-000000000006", "traction_signal", ["arr"]),
+		];
+		const breakdown = [
+			{ slot: "use_of_funds",    ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 1, true_absence: 0 },
+			{ slot: "market_claims",   ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 2, true_absence: 0 },
+			{ slot: "traction_signal", ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 3, true_absence: 0 },
+		];
+		const result = computeTighteningCandidates(deals, breakdown);
+		// Sorted descending by detector_gap
+		expect(result[0]?.slot).toBe("traction_signal"); // gap=3
+		expect(result[1]?.slot).toBe("market_claims");   // gap=2
+		expect(result[2]?.slot).toBe("use_of_funds");    // gap=1
+	});
+
+	it("breaks gap tie alphabetically by slot name", () => {
+		const deals: DealCoverageResult[] = [
+			makeGapDeal("ee000000-0000-0000-0000-000000000001", "market_claims",   ["tam"]),
+			makeGapDeal("ee000000-0000-0000-0000-000000000002", "traction_signal", ["arr"]),
+		];
+		const breakdown = [
+			{ slot: "market_claims",   ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 1, true_absence: 0 },
+			{ slot: "traction_signal", ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 1, true_absence: 0 },
+		];
+		const result = computeTighteningCandidates(deals, breakdown);
+		// Tied at gap=1 → alpha: market_claims < traction_signal
+		expect(result[0]?.slot).toBe("market_claims");
+		expect(result[1]?.slot).toBe("traction_signal");
+	});
+
+	it("surfaces top-3 unique refs", () => {
+		const deals: DealCoverageResult[] = [
+			{
+				deal_id: "ff000000-0000-0000-0000-000000000001", deal_label: "A",
+				audit_status: "partial", error: null, dpu_pages_total: 10,
+				slot_results: [{
+					slot: "market_claims", stored_status: "NotComputable", stored_value: null,
+					recomputed_status: "NotComputable", recomputed_value: null,
+					classification: "DETECTOR_GAP", dpu_pages_scanned: 10,
+					candidate_pages: [
+						{ ref: "dpu:doc:aaaa0000:page:1", triggeredKeywords: ["tam"], snippet: "snippet1" },
+						{ ref: "dpu:doc:bbbb0000:page:2", triggeredKeywords: ["tam"], snippet: "snippet2" },
+						{ ref: "dpu:doc:cccc0000:page:3", triggeredKeywords: ["tam"], snippet: "snippet3" },
+						{ ref: "dpu:doc:dddd0000:page:4", triggeredKeywords: ["tam"], snippet: "snippet4" },
+					],
+				}],
+				summary: { ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 1, true_absence: 0, dpu_load_failed: 0, evidence_ref_missing: 0 },
+			},
+		];
+		const breakdown = [{ slot: "market_claims", ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 1, true_absence: 0 }];
+		const result = computeTighteningCandidates(deals, breakdown);
+		expect(result[0]?.top_refs).toHaveLength(3); // capped at 3
+		expect(result[0]?.top_refs[0]?.ref).toBe("dpu:doc:aaaa0000:page:1");
+	});
+
+	it("extracts header-like patterns from snippet text", () => {
+		const deals: DealCoverageResult[] = [
+			makeGapDeal(
+				"gg000000-0000-0000-0000-000000000001", "use_of_funds", ["budget"],
+				"CAPITAL ALLOCATION\nbudget 40% engineering 60% sales"
+			),
+			makeGapDeal(
+				"gg000000-0000-0000-0000-000000000002", "use_of_funds", ["budget"],
+				"CAPITAL ALLOCATION\nbudget for Q4 operations"
+			),
+		];
+		const breakdown = [{ slot: "use_of_funds", ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 2, true_absence: 0 }];
+		const result = computeTighteningCandidates(deals, breakdown);
+		const headers = result[0]?.top_headers ?? [];
+		expect(headers.find((h) => h.text === "CAPITAL ALLOCATION")?.count).toBe(2);
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// selectNextSlot
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("selectNextSlot", () => {
+	function makeCandidate(slot: string, gap: number, topKw = "retention", kwCount = 3): TighteningCandidate {
+		return {
+			slot, detector_gap: gap,
+			top_keywords: [{ keyword: topKw, count: kwCount }],
+			top_headers: [], top_refs: [],
+		};
+	}
+
+	it("returns null for empty candidates", () => {
+		const { slot } = selectNextSlot([]);
+		expect(slot).toBeNull();
+	});
+
+	it("selects single highest-gap slot directly", () => {
+		const candidates = [
+			makeCandidate("market_claims",   6),
+			makeCandidate("traction_signal", 5),
+			makeCandidate("use_of_funds",    6),
+		].sort((a, b) => b.detector_gap - a.detector_gap || a.slot.localeCompare(b.slot));
+		const { slot } = selectNextSlot(candidates);
+		// Both market_claims and use_of_funds have gap=6; tie-break by priority
+		// SLOT_PRIORITY: raise_terms > traction_signal > valuation_terms > use_of_funds > market_claims
+		// use_of_funds = index 3, market_claims = index 4 → use_of_funds wins
+		expect(slot).toBe("use_of_funds");
+	});
+
+	it("breaks tie by keyword concentration", () => {
+		// Both slots have gap=3
+		// market_claims: topKw=8, totalKw=8 → concentration=1.0
+		// traction_signal: topKw=2, totalKw=8 → concentration=0.25
+		const candidates: TighteningCandidate[] = [
+			{
+				slot: "market_claims", detector_gap: 3,
+				top_keywords: [{ keyword: "tam", count: 8 }],
+				top_headers: [], top_refs: [],
+			},
+			{
+				slot: "traction_signal", detector_gap: 3,
+				top_keywords: [{ keyword: "arr", count: 2 }, { keyword: "retention", count: 2 }, { keyword: "%", count: 2 }, { keyword: "churn", count: 2 }],
+				top_headers: [], top_refs: [],
+			},
+		];
+		// market_claims has higher concentration (1.0 vs 0.25) → market_claims wins
+		const { slot } = selectNextSlot(candidates);
+		expect(slot).toBe("market_claims");
+	});
+
+	it("breaks tie by priority order when concentration is equal", () => {
+		const candidates: TighteningCandidate[] = [
+			makeCandidate("use_of_funds",    4),
+			makeCandidate("market_claims",   4),
+		]; // both concentration = 1.0 (single keyword each)
+		const { slot } = selectNextSlot(candidates);
+		// SLOT_PRIORITY: use_of_funds (index 3) < market_claims (index 4) → use_of_funds wins
+		expect(slot).toBe("use_of_funds");
+	});
+
+	it("rationale includes gap count and top keywords", () => {
+		const candidates = [makeCandidate("traction_signal", 5, "retention", 3)];
+		const { rationale } = selectNextSlot(candidates);
+		expect(rationale).toContain("gaps=5");
+		expect(rationale).toContain("retention");
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// printCoverageMarkdown — Top Tightening Candidates section
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("printCoverageMarkdown — Top Tightening Candidates", () => {
+	function makeMinimalReport(candidates: TighteningCandidate[], selected: string | null): CoverageAuditReport {
+		return {
+			generated_at: "2026-01-01T00:00:00.000Z",
+			meta: {
+				selected_slot: selected,
+				selected_slot_rationale: selected ? `highest gaps=6; top keywords: tam(3)` : "no DETECTOR_GAP slots found",
+			},
+			deals: [],
+			portfolio_summary: {
+				total_deals: 0, deals_ok: 0, deals_with_gaps: 0,
+				deals_with_stale: 0, deals_with_regressions: 0,
+				slot_breakdown: [],
+			},
+			tightening_candidates: candidates,
+		};
+	}
+
+	it("includes '## 🎯 Top Tightening Candidates' section in Markdown output", () => {
+		const report = makeMinimalReport(
+			[{ slot: "market_claims", detector_gap: 6, top_keywords: [{ keyword: "tam", count: 3 }], top_headers: [], top_refs: [] }],
+			"market_claims"
+		);
+		const md = printCoverageMarkdown(report);
+		expect(md).toContain("## 🎯 Top Tightening Candidates");
+	});
+
+	it("shows selected slot callout when slot is set", () => {
+		const report = makeMinimalReport(
+			[{ slot: "use_of_funds", detector_gap: 5, top_keywords: [], top_headers: [], top_refs: [] }],
+			"use_of_funds"
+		);
+		const md = printCoverageMarkdown(report);
+		expect(md).toContain("`use_of_funds`");
+		expect(md).toContain("Next slot to tighten");
+	});
+
+	it("shows fully-covered message when no candidates", () => {
+		const report = makeMinimalReport([], null);
+		const md = printCoverageMarkdown(report);
+		expect(md).toContain("No DETECTOR");
+	});
+
+	it("renders candidates in descending gap order (summary table rows)", () => {
+		// tightening_candidates is pre-sorted descending by computeTighteningCandidates;
+		// printCoverageMarkdown renders them in the order provided.
+		const report = makeMinimalReport(
+			[
+				// market_claims (gap=6) must come first in the pre-sorted array
+				{ slot: "market_claims",   detector_gap: 6, top_keywords: [{ keyword: "tam", count: 3 }], top_headers: [], top_refs: [] },
+				{ slot: "traction_signal", detector_gap: 5, top_keywords: [{ keyword: "arr", count: 2 }], top_headers: [], top_refs: [] },
+			],
+			"market_claims"
+		);
+		const md = printCoverageMarkdown(report);
+		// market_claims should appear in rank-1 row, traction_signal in rank-2
+		const mcIdx = md.indexOf("| 1 | market_claims");
+		const tsIdx = md.indexOf("| 2 | traction_signal");
+		expect(mcIdx).toBeGreaterThanOrEqual(0);
+		expect(tsIdx).toBeGreaterThanOrEqual(0);
+		expect(mcIdx).toBeLessThan(tsIdx);
+	});
+
+	it("appended section appears before Portfolio Summary", () => {
+		const report = makeMinimalReport(
+			[{ slot: "valuation_terms", detector_gap: 3, top_keywords: [], top_headers: [], top_refs: [] }],
+			"valuation_terms"
+		);
+		const md = printCoverageMarkdown(report);
+		const tcIdx     = md.indexOf("🎯 Top Tightening Candidates");
+		const summaryIdx = md.indexOf("## Portfolio Summary");
+		expect(tcIdx).toBeGreaterThanOrEqual(0);
+		expect(summaryIdx).toBeGreaterThan(tcIdx);
+	});
+
+	it("runCoverageAudit report has meta.selected_slot set", async () => {
+		const storedBody = `raise_terms: NotComputable | value=none | evidence=none | reason=NO_RAISE_MENTION\nmarket_claims: NotComputable | value=none | evidence=none | reason=NO_MARKET_CLAIM_MENTION\ntraction_signal: NotComputable | value=none | evidence=none | reason=NO_TRACTION_SIGNAL_MENTION\nvaluation_terms: NotComputable | value=none | evidence=none | reason=NO_VALUATION_MENTION\nuse_of_funds: NotComputable | value=none | evidence=none | reason=NO_USE_OF_FUNDS_MENTION`;
+		const pool = mockPool({
+			dpu_pages: [
+				{ document_id: "doc10000-0000-0000-0000-000000000001", page_index: 0, page_text: "our retention rate is 80%; churn dropped 5% YoY" },
+			],
+			report: {
+				status: "complete", engine_version: "v1", upstream_fingerprint: "fp",
+				render_package: { sections: [{ key: "insight_slots", title: "Slots", kind: "message", body: storedBody, fallback: "" }] },
+				gate_state: null, updated_at: "2026-01-01T00:00:00",
+			},
+		});
+		const report = await runCoverageAudit(pool, ["adb2a1cf-bbb1-4f3b-8735-e2249415124f"], { labels: { "adb2a1cf-bbb1-4f3b-8735-e2249415124f": "TestDeal" } });
+		// meta should exist
+		expect(report.meta).toBeDefined();
+		// tightening_candidates should be an array
+		expect(Array.isArray(report.tightening_candidates)).toBe(true);
+		// If any DETECTOR_GAP exists, selected_slot should be a non-empty string
+		const anyGap = report.portfolio_summary.slot_breakdown.some((s) => s.detector_gap > 0);
+		if (anyGap) {
+			expect(typeof report.meta.selected_slot).toBe("string");
+			expect(report.meta.selected_slot).toBeTruthy();
+		} else {
+			expect(report.meta.selected_slot).toBeNull();
+		}
 	});
 });

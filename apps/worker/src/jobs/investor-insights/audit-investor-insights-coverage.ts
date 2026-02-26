@@ -260,8 +260,24 @@ export interface DealCoverageResult {
 	};
 }
 
+export interface TighteningCandidate {
+	slot: string;
+	detector_gap: number;
+	/** Top-5 semantic keywords by occurrence count across all DETECTOR_GAP pages. */
+	top_keywords: Array<{ keyword: string; count: number }>;
+	/** Top-5 header-like text patterns from candidate page snippets. */
+	top_headers: Array<{ text: string; count: number }>;
+	/** Top-3 candidate evidence refs with a snippet preview. */
+	top_refs: Array<{ ref: string; snippet: string }>;
+}
+
 export interface CoverageAuditReport {
 	generated_at: string;
+	/** Auto-selected slot + rationale for the next tightening iteration. */
+	meta: {
+		selected_slot: string | null;
+		selected_slot_rationale: string;
+	};
 	deals: DealCoverageResult[];
 	portfolio_summary: {
 		total_deals: number;
@@ -278,6 +294,8 @@ export interface CoverageAuditReport {
 			true_absence: number;
 		}>;
 	};
+	/** Per-slot tightening candidates sorted by detector_gap desc, then slot name. */
+	tightening_candidates: TighteningCandidate[];
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -617,8 +635,15 @@ export async function runCoverageAudit(
 	const dealsWithStale   = results.filter((d) => d.summary.stale_stored > 0).length;
 	const dealsWithRegress = results.filter((d) => d.summary.regressed > 0).length;
 
+	const tighteningCandidates = computeTighteningCandidates(results, slotBreakdown);
+	const { slot: selectedSlot, rationale: selectedRationale } = selectNextSlot(tighteningCandidates);
+
 	return {
 		generated_at: new Date().toISOString(),
+		meta: {
+			selected_slot:            selectedSlot,
+			selected_slot_rationale:  selectedRationale,
+		},
 		deals: results,
 		portfolio_summary: {
 			total_deals:            dealIds.length,
@@ -628,6 +653,7 @@ export async function runCoverageAudit(
 			deals_with_regressions: dealsWithRegress,
 			slot_breakdown:         slotBreakdown,
 		},
+		tightening_candidates: tighteningCandidates,
 	};
 }
 
@@ -646,12 +672,82 @@ const CLASSIFICATION_EMOJI: Record<SlotCoverageClassification, string> = {
 	EVIDENCE_REF_MISSING: "🔗",
 };
 
+// ─────────────────────────────────────────────────────────────────────
+// Helper: render a single tightening-candidate subsection
+// ─────────────────────────────────────────────────────────────────────
+function renderTighteningCandidate(c: TighteningCandidate): string[] {
+	const lines: string[] = [];
+	lines.push(`### ${c.slot} (${c.detector_gap} gap${c.detector_gap === 1 ? "" : "s"})`);
+	lines.push("");
+
+	if (c.top_keywords.length > 0) {
+		const kwStr = c.top_keywords.map((k) => `\`${k.keyword}\`(${k.count})`).join(", ");
+		lines.push(`**Top keywords:** ${kwStr}`);
+	} else {
+		lines.push("**Top keywords:** _none_");
+	}
+
+	if (c.top_headers.length > 0) {
+		const hStr = c.top_headers.map((h) => `\`${h.text}\`(${h.count})`).join(", ");
+		lines.push(`**Header-like patterns:** ${hStr}`);
+	} else {
+		lines.push("**Header-like patterns:** _none found_");
+	}
+
+	if (c.top_refs.length > 0) {
+		lines.push("");
+		lines.push("**Top evidence refs:**");
+		for (const r of c.top_refs) {
+			lines.push(`- \`${r.ref}\``);
+			lines.push(`  > ${r.snippet.slice(0, 100)}`);
+		}
+	}
+	lines.push("");
+	return lines;
+}
+
 export function printCoverageMarkdown(report: CoverageAuditReport): string {
+	// ── Top Tightening Candidates section ────────────────────────────────
+	const tcLines: string[] = [
+		"## 🎯 Top Tightening Candidates",
+		"",
+	];
+
+	if (report.meta.selected_slot) {
+		tcLines.push(`> **Next slot to tighten:** \`${report.meta.selected_slot}\``);
+		tcLines.push(`> _Rationale: ${report.meta.selected_slot_rationale}_`);
+		tcLines.push("");
+	} else {
+		tcLines.push("> _No DETECTOR\_GAP slots — portfolio fully covered by strict detectors!_ 🎉");
+		tcLines.push("");
+	}
+
+	if (report.tightening_candidates.length > 0) {
+		// Summary table
+		tcLines.push("| Rank | Slot | 🔍 Gaps | Top Keywords |");
+		tcLines.push("|------|------|---------|--------------|" );
+		for (const [i, c] of report.tightening_candidates.entries()) {
+			const kwStr = c.top_keywords.slice(0, 3).map((k) => `${k.keyword}(${k.count})`).join(", ") || "—";
+			tcLines.push(`| ${i + 1} | ${c.slot} | ${c.detector_gap} | ${kwStr} |`);
+		}
+		tcLines.push("");
+
+		// Per-slot subsections
+		for (const c of report.tightening_candidates) {
+			tcLines.push(...renderTighteningCandidate(c));
+		}
+	}
+
+	tcLines.push("---");
+	tcLines.push("");
+
+	// ── Main report ───────────────────────────────────────────────────────
 	const lines: string[] = [
 		"# Investor Insights — Portfolio DPU Coverage Audit",
 		"",
 		`**Generated:** ${report.generated_at}`,
 		"",
+		...tcLines,
 		"## Portfolio Summary",
 		"",
 		`| Metric | Value |`,
@@ -745,3 +841,178 @@ export function printCoverageMarkdown(report: CoverageAuditReport): string {
 
 export { parseDealListFile, wrapPoolReadOnly };
 export type { DealListFile };
+
+// ═══════════════════════════════════════════════════════════════════════
+// SECTION 11 — Header-like text detection
+//
+// Flags text lines that look like slide/section headers: ALL CAPS or
+// Title Case (≥60 % capitalised words), ≤60 chars, containing at least
+// one of the domain keywords below.
+// ═══════════════════════════════════════════════════════════════════════
+
+/** Domain keywords that signal an investor-deck section header. */
+export const HEADER_KEYWORDS_UPPER = [
+	"ALLOCATION", "PROCEEDS", "MARKET", "TAM", "SAM", "SOM",
+	"USE OF FUNDS", "USE OF CAPITAL", "CAPITAL ALLOCATION",
+	"CAP", "VALUATION", "RAISE", "RAISING", "TRACTION",
+	"RETENTION", "REVENUE", "FUNDING", "INVESTMENT",
+] as const;
+
+/**
+ * Return any lines from `text` that look like domain-relevant slide headers.
+ * Line must be ≤60 chars, ALL CAPS or Title Case, and contain at least one
+ * HEADER_KEYWORDS_UPPER keyword.
+ */
+export function extractHeaderLike(text: string): string[] {
+	const headers: string[] = [];
+	for (const raw of text.split(/\n/)) {
+		const trimmed = raw.trim();
+		if (trimmed.length === 0 || trimmed.length > 60) continue;
+
+		// ALL CAPS: every alpha char is uppercase
+		const isAllCaps = /[A-Z]/.test(trimmed) && trimmed === trimmed.toUpperCase();
+
+		// Title Case: first word starts with uppercase AND ≥60 % of words start uppercase
+		if (!isAllCaps) {
+			const words = trimmed.split(/\s+/).filter(Boolean);
+			if (words.length === 0 || !/^[A-Z]/.test(words[0]!)) continue;
+			const capitalised = words.filter((w) => /^[A-Z]/.test(w)).length;
+			if (capitalised / words.length < 0.6) continue;
+		}
+
+		const upper = trimmed.toUpperCase();
+		if (!HEADER_KEYWORDS_UPPER.some((kw) => upper.includes(kw))) continue;
+		headers.push(trimmed);
+	}
+	return headers;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SECTION 12 — Tightening candidate computation + slot selection
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Investor-value priority order used for tie-breaking when two slots share
+ * the same DETECTOR_GAP count.
+ */
+export const SLOT_PRIORITY: readonly string[] = [
+	"raise_terms",
+	"traction_signal",
+	"valuation_terms",
+	"use_of_funds",
+	"market_claims",
+];
+
+/**
+ * Build the ranked list of tightening candidates from a completed report's
+ * deals and slot_breakdown. Exported for unit-testing.
+ */
+export function computeTighteningCandidates(
+	deals: DealCoverageResult[],
+	slotBreakdown: CoverageAuditReport["portfolio_summary"]["slot_breakdown"]
+): TighteningCandidate[] {
+	return slotBreakdown
+		.filter((s) => s.detector_gap > 0)
+		.map((s) => {
+			const slot = s.slot;
+
+			// Collect all candidate pages for DETECTOR_GAP instances of this slot
+			const allCandidatePages = deals.flatMap((deal) =>
+				deal.slot_results
+					.filter((sr) => sr.slot === slot && sr.classification === "DETECTOR_GAP")
+					.flatMap((sr) => sr.candidate_pages)
+			);
+
+			// Keyword frequency map
+			const kwCounts = new Map<string, number>();
+			for (const cp of allCandidatePages) {
+				for (const kw of cp.triggeredKeywords) {
+					const n = kw.toLowerCase();
+					kwCounts.set(n, (kwCounts.get(n) ?? 0) + 1);
+				}
+			}
+
+			// Header-like patterns from candidate snippets
+			const headerCounts = new Map<string, number>();
+			for (const cp of allCandidatePages) {
+				for (const h of extractHeaderLike(cp.snippet)) {
+					const norm = h.toUpperCase().trim();
+					headerCounts.set(norm, (headerCounts.get(norm) ?? 0) + 1);
+				}
+			}
+
+			// Top-3 unique refs
+			const seenRefs = new Set<string>();
+			const topRefs: TighteningCandidate["top_refs"] = [];
+			for (const cp of allCandidatePages) {
+				if (!seenRefs.has(cp.ref) && topRefs.length < 3) {
+					seenRefs.add(cp.ref);
+					topRefs.push({ ref: cp.ref, snippet: cp.snippet.slice(0, 100) });
+				}
+			}
+
+			return {
+				slot,
+				detector_gap: s.detector_gap,
+				top_keywords: [...kwCounts.entries()]
+					.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+					.slice(0, 5)
+					.map(([keyword, count]) => ({ keyword, count })),
+				top_headers: [...headerCounts.entries()]
+					.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+					.slice(0, 5)
+					.map(([text, count]) => ({ text, count })),
+				top_refs: topRefs,
+			};
+		})
+		// Sort: descending gap count, then slot name alphabetically (stable)
+		.sort((a, b) => b.detector_gap - a.detector_gap || a.slot.localeCompare(b.slot));
+}
+
+/**
+ * Pick the next slot to tighten from a ranked candidate list.
+ *
+ * Tie-break order:
+ *  1. Highest keyword concentration (top-keyword count / total keyword counts)
+ *  2. Investor-value priority: raise_terms > traction_signal > valuation_terms
+ *     > use_of_funds > market_claims
+ */
+export function selectNextSlot(
+	candidates: TighteningCandidate[]
+): { slot: string | null; rationale: string } {
+	const gapped = candidates.filter((c) => c.detector_gap > 0); // already sorted desc
+	if (gapped.length === 0) return { slot: null, rationale: "no DETECTOR_GAP slots found" };
+
+	const maxGap = gapped[0]!.detector_gap;
+	const tied   = gapped.filter((c) => c.detector_gap === maxGap);
+
+	let winner: TighteningCandidate;
+	if (tied.length === 1) {
+		winner = tied[0]!;
+	} else {
+		// Tie-break 1: keyword concentration
+		const withConc = tied.map((c) => {
+			const total    = c.top_keywords.reduce((s, k) => s + k.count, 0);
+			const topCount = c.top_keywords[0]?.count ?? 0;
+			return { c, conc: total > 0 ? topCount / total : 0 };
+		});
+		const maxConc   = Math.max(...withConc.map((w) => w.conc));
+		const afterConc = withConc.filter((w) => Math.abs(w.conc - maxConc) < 0.001).map((w) => w.c);
+
+		// Tie-break 2: priority order
+		winner = [...afterConc].sort((a, b) => {
+			const ia = SLOT_PRIORITY.indexOf(a.slot);
+			const ib = SLOT_PRIORITY.indexOf(b.slot);
+			return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+		})[0]!;
+	}
+
+	const topKw = winner.top_keywords
+		.slice(0, 3)
+		.map((k) => `${k.keyword}(${k.count})`)
+		.join(", ");
+	return {
+		slot:      winner.slot,
+		rationale: `highest gaps=${maxGap}; top keywords: ${topKw || "(none)"}`,
+	};
+}

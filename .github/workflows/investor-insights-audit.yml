@@ -183,17 +183,16 @@ jobs:
             --out apps/worker/tmp/coverage-ci-${TS}
           echo "COVERAGE_CURRENT=apps/worker/tmp/coverage-ci-${TS}.json" >> "$GITHUB_ENV"
 
-      # Compare against committed baseline — fail if DETECTOR_GAP increased
-      - name: Run coverage trend gate
+      # Compare against committed baseline.
+      # No --slot flag — the script auto-detects all slots and checks:
+      #   • Total DETECTOR_GAP must not increase
+      #   • Per-slot DETECTOR_GAP must not increase for any slot in the breakdown
+      # On failure a per-slot table and top-3 regressing deals are printed.
+      - name: Run coverage trend gate (all slots)
         run: |
           pnpm --filter worker coverage-trend-gate -- \
             --baseline apps/worker/tmp/coverage_baseline.json \
-            --current  "$COVERAGE_CURRENT" \
-            --slot     use_of_funds
-          pnpm --filter worker coverage-trend-gate -- \
-            --baseline apps/worker/tmp/coverage_baseline.json \
-            --current  "$COVERAGE_CURRENT" \
-            --slot     market_claims
+            --current  "$COVERAGE_CURRENT"
 
       # Always upload the current audit artifact for inspection
       - name: Upload coverage audit artifact
@@ -278,3 +277,94 @@ jobs:
 
       - name: Investor Insights Audit (Strict Gate)
         run: pnpm audit:portfolio:gate:strict
+
+  # ───────────────────────────────────────────────────────────────────
+  # Repair-and-reaudit job (DISABLED — staging use only)
+  #
+  # ⚠️  WARNING: This job WRITES to the database.
+  #         Enable only in a staging environment with a non-production DATABASE_URL.
+  #         Never enable on production without explicit approval.
+  #
+  # Purpose:
+  #   1. Repair per-deal insight-slot values (fills in missing computed outputs).
+  #   2. Repair per-deal gate-state records (resets stale gate evaluations).
+  #   3. Re-runs the coverage audit so the post-repair state is captured.
+  #   4. Uploads the timestamped audit artifacts for diffing.
+  #
+  # To enable in staging:
+  #   - Set DATABASE_URL to the staging database connection string.
+  #   - Change `if: false` → `if: needs.preflight.outputs.db_available == 'true'`.
+  #   - Re-disable once the repair cycle is complete.
+  # ───────────────────────────────────────────────────────────────────
+  repair-and-reaudit:
+    name: Repair insight slots + gate state, then reaudit (DISABLED — staging only)
+    runs-on: ubuntu-latest
+    needs: preflight
+    # ⚠️  DISABLED: enable only in staging; this job writes to the database
+    if: false
+    timeout-minutes: 30
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PGSSLMODE: ${{ secrets.PGSSLMODE || 'require' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Enable corepack + activate pnpm
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          if corepack prepare --activate 2>/dev/null; then
+            pnpm --version
+            exit 0
+          fi
+          corepack prepare pnpm@9.15.0 --activate
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build @dealdecision/core
+        run: pnpm --filter @dealdecision/core build
+
+      # Step 1: Repair per-deal insight-slot computed values.
+      # ⚠️  This WRITES to the database; always staging-only.
+      - name: Repair portfolio insight slots
+        run: pnpm --filter worker repair:portfolio:insight-slots
+
+      # Step 2: Repair per-deal gate-state records.
+      # ⚠️  This WRITES to the database; always staging-only.
+      - name: Repair portfolio gate state
+        run: pnpm --filter worker repair:portfolio:gate-state
+
+      # Step 3: Re-run the coverage audit (read-only) to capture post-repair state.
+      - name: Re-run coverage audit (post-repair snapshot)
+        run: |
+          TS=$(date +%Y%m%dT%H%M%SZ)
+          pnpm --filter worker audit:investor-insights:coverage -- \
+            --deal-list apps/worker/tmp/audit_deals.json \
+            --concurrency 4 \
+            --out apps/worker/tmp/coverage-post-repair-${TS}
+          echo "REPAIR_COVERAGE=apps/worker/tmp/coverage-post-repair-${TS}.json" >> "$GITHUB_ENV"
+          echo "REPAIR_TS=${TS}" >> "$GITHUB_ENV"
+
+      # Step 4: Upload repair + reaudit artifacts.
+      - name: Upload repair-and-reaudit artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repair-reaudit-${{ github.sha }}-${{ env.REPAIR_TS || 'unknown' }}
+          path: |
+            apps/worker/tmp/coverage-post-repair-*.json
+            apps/worker/tmp/coverage-post-repair-*.md
+          if-no-files-found: warn
+          retention-days: 14

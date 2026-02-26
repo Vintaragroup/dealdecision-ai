@@ -1,0 +1,210 @@
+name: Update Coverage Baseline
+
+# ─────────────────────────────────────────────────────────────────────
+# Manual baseline update workflow
+#
+# WHEN TO RUN
+#   Run this workflow after you have intentionally tightened a detector
+#   (i.e. you made detectors better and the DETECTOR_GAP count legitimately
+#   decreased).  Running this workflow "ratchets" the gate: once the new
+#   baseline is merged the trend gate will reject any future run that
+#   regresses back to the old counts.
+#
+#   Do NOT run this workflow to suppress a failing trend gate caused by a
+#   genuine regression in production detectors.  Fix the regression first.
+#
+# WHAT IT DOES
+#   1. Runs the full portfolio coverage audit (read-only, same as CI).
+#   2. Writes the result to apps/worker/tmp/coverage_baseline.json.
+#   3. Opens a pull request with:
+#        branch:  chore/update-coverage-baseline-<timestamp>
+#        title:   Update coverage baseline
+#        body:    Per-slot DETECTOR_GAP totals + selected_slot meta
+#   4. If DATABASE_URL is absent the workflow exits cleanly without
+#      opening a PR or failing the run.
+#
+# GATE RATCHET NOTE
+#   Merging the PR produced by this workflow updates the committed
+#   baseline used by the coverage-trend-gate job.  After merge, the gate
+#   will reject any run whose TOTAL or per-slot DETECTOR_GAP is higher
+#   than the new baseline.
+# ─────────────────────────────────────────────────────────────────────
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why are you updating the baseline? (optional, shown in PR body)"
+        required: false
+        default: ""
+
+# Only one baseline update should run at a time from any trigger.
+concurrency:
+  group: update-coverage-baseline
+  cancel-in-progress: false
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────
+  # Quick DB check — skip cleanly when DATABASE_URL is absent.
+  # ───────────────────────────────────────────────────────────────────
+  preflight:
+    name: Preflight — check DB secret
+    runs-on: ubuntu-latest
+    outputs:
+      db_available: ${{ steps.check.outputs.db_available }}
+    steps:
+      - name: Check for DATABASE_URL secret
+        id: check
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::warning::DATABASE_URL secret is not set — cannot run coverage audit.  Baseline update skipped."
+            echo "db_available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "db_available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ───────────────────────────────────────────────────────────────────
+  # Main job: audit → write baseline → open PR
+  # ───────────────────────────────────────────────────────────────────
+  update-baseline:
+    name: Run audit, write baseline, open PR
+    runs-on: ubuntu-latest
+    needs: preflight
+    if: needs.preflight.outputs.db_available == 'true'
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PGSSLMODE: ${{ secrets.PGSSLMODE || 'require' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history so create-pull-request can branch off HEAD
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Enable corepack + activate pnpm
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          if corepack prepare --activate 2>/dev/null; then
+            pnpm --version
+            exit 0
+          fi
+          corepack prepare pnpm@9.15.0 --activate
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build @dealdecision/core (required by worker)
+        run: pnpm --filter @dealdecision/core build
+
+      # ── Run the coverage audit and write the new baseline ──────────
+      - name: Run coverage audit
+        id: audit
+        run: |
+          TS=$(date +%Y%m%dT%H%M%SZ)
+          OUT_BASE="apps/worker/tmp/coverage-baseline-update-${TS}"
+          pnpm --filter worker audit:investor-insights:coverage -- \
+            --deal-list apps/worker/tmp/audit_deals.json \
+            --concurrency 4 \
+            --out "${OUT_BASE}"
+
+          # Copy the result to the committed baseline path
+          cp "${OUT_BASE}.json" apps/worker/tmp/coverage_baseline.json
+
+          echo "AUDIT_JSON=${OUT_BASE}.json" >> "$GITHUB_ENV"
+          echo "AUDIT_TS=${TS}"               >> "$GITHUB_ENV"
+
+      # ── Build a human-readable PR body from the new baseline ───────
+      - name: Generate PR body
+        id: pr-body
+        run: |
+          # Extract per-slot DETECTOR_GAP counts and meta from the new baseline
+          node - << 'EOF'
+          const fs   = require("fs");
+          const path = require("path");
+          const baseline = JSON.parse(fs.readFileSync("apps/worker/tmp/coverage_baseline.json", "utf-8"));
+          const breakdown = baseline.portfolio_summary?.slot_breakdown ?? [];
+          const total = breakdown.reduce((s, r) => s + (r.detector_gap ?? 0), 0);
+          const meta  = baseline.meta ?? {};
+          const reason = process.env.INPUT_REASON?.trim() || "(not provided)";
+          const ts     = process.env.AUDIT_TS || "unknown";
+
+          const rows = breakdown
+            .sort((a, b) => b.detector_gap - a.detector_gap || a.slot.localeCompare(b.slot))
+            .map((r) =>
+              `| ${r.slot} | ${r.detector_gap} | ${r.ok_match} | ${r.stale_stored} |`
+            )
+            .join("\n");
+
+          const body = [
+            "## Coverage Baseline Update",
+            "",
+            `**Generated:** ${ts}`,
+            `**Reason:** ${reason}`,
+            "",
+            "### Per-slot DETECTOR\\_GAP counts",
+            "",
+            "| Slot | DETECTOR\\_GAP | OK\\_MATCH | STALE\\_STORED |",
+            "| --- | --- | --- | --- |",
+            rows,
+            "",
+            `**Total DETECTOR\\_GAP:** ${total}`,
+            "",
+            "### Selected slot for next tightening",
+            "",
+            meta.selected_slot
+              ? `\`${meta.selected_slot}\` — ${meta.selected_slot_rationale ?? ""}`
+              : "_No DETECTOR_GAP slots remain._",
+            "",
+            "---",
+            "_Merging this PR ratchets the trend gate: future CI runs must not exceed these counts._",
+          ].join("\n");
+
+          fs.writeFileSync("/tmp/pr_body.md", body);
+          console.log("PR body written to /tmp/pr_body.md");
+          EOF
+        env:
+          INPUT_REASON: ${{ github.event.inputs.reason }}
+
+      # ── Upload the full audit artifact (always, even on PR failure) ─
+      - name: Upload audit artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-baseline-update-${{ env.AUDIT_TS || github.run_id }}
+          path: |
+            apps/worker/tmp/coverage-baseline-update-*.json
+            apps/worker/tmp/coverage-baseline-update-*.md
+            apps/worker/tmp/coverage_baseline.json
+          if-no-files-found: warn
+          retention-days: 60
+
+      # ── Open (or update) the pull request ──────────────────────────
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore(coverage): update baseline"
+          branch: "chore/update-coverage-baseline-${{ env.AUDIT_TS }}"
+          title: "Update coverage baseline"
+          body-path: /tmp/pr_body.md
+          labels: "coverage,automated"
+          # Do not auto-delete; keep around for review
+          delete-branch: false
+          add-paths: |
+            apps/worker/tmp/coverage_baseline.json

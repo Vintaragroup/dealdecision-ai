@@ -15,7 +15,12 @@
     "debug:visual-artifacts": "tsx src/scripts/debug-visual-artifacts.ts",
     "trace:financial-readiness": "node scripts/trace_audit/financial_readiness.js",
     "audit:investor-insights": "tsx --require ./src/bin/load-env.cjs src/bin/audit-investor-insights.ts",
-    "repair:insight-slots": "tsx --require ./src/bin/load-env.cjs src/bin/repair-insight-slots.ts"
+    "repair:insight-slots": "tsx --require ./src/bin/load-env.cjs src/bin/repair-insight-slots.ts",
+    "repair:gate-state": "tsx --require ./src/bin/load-env.cjs src/bin/repair-gate-state.ts",
+    "repair:portfolio:insight-slots": "tsx --require ./src/bin/load-env.cjs src/bin/repair-insight-slots.ts",
+    "repair:portfolio:gate-state": "tsx --require ./src/bin/load-env.cjs src/bin/repair-gate-state.ts",
+    "audit:investor-insights:coverage": "tsx --require ./src/bin/load-env.cjs src/bin/audit-investor-insights-coverage.ts",
+    "coverage-trend-gate": "tsx --require ./src/bin/load-env.cjs src/bin/coverage-trend-gate.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.975.0",

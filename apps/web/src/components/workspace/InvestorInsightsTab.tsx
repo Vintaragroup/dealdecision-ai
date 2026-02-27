@@ -846,7 +846,105 @@ function CoverageSnapshotSection({ section, darkMode }: { section: InvestorInsig
   );
 }
 
-const PHASE2_KEYS = new Set(['insight_slots', 'coverage_snapshot', 'canonical_fields', 'completeness_summary', 'conflicts', 'debug.normalization_diff']);
+// ── Governed Summary V1 ─────────────────────────────────────────────────────
+
+interface GovernedSummaryV1 {
+  schema_version: 'governed_summary_v1';
+  executive_summary: string;
+  strengths: string[];
+  risks: string[];
+  open_questions: string[];
+  validated: boolean;
+}
+
+function parseGovernedSummaryBody(body: string): GovernedSummaryV1 | null {
+  const delimiter = '---governed_summary_v1_json---\n';
+  const idx = body.indexOf(delimiter);
+  if (idx === -1) return null;
+  try {
+    const json = body.slice(idx + delimiter.length).trim();
+    const parsed = JSON.parse(json) as GovernedSummaryV1;
+    if (parsed?.schema_version !== 'governed_summary_v1') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function GovernedSummarySection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+  const body = typeof section.body === 'string' ? section.body : '';
+  const data = parseGovernedSummaryBody(body);
+
+  if (!data) {
+    return <EmptyFallback text={section.fallback ?? 'Executive summary unavailable.'} darkMode={darkMode} />;
+  }
+
+  const colClass = `rounded-lg border p-4 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-100 bg-gray-50'}`;
+  const headingClass = `text-xs font-semibold uppercase tracking-wide mb-2 ${
+    darkMode ? 'text-blue-400' : 'text-blue-600'
+  }`;
+  const bulletClass = `text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`;
+
+  return (
+    <div className="space-y-4">
+      {/* Executive summary */}
+      <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+        {data.executive_summary}
+      </p>
+
+      {/* Three-column grid */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {/* Strengths */}
+        <div className={colClass}>
+          <div className={headingClass}>Strengths</div>
+          <ul className="space-y-1">
+            {data.strengths.map((s, i) => (
+              <li key={i} className={bulletClass}>• {s}</li>
+            ))}
+            {data.strengths.length === 0 && (
+              <li className={bulletClass + ' opacity-50'}>None identified</li>
+            )}
+          </ul>
+        </div>
+
+        {/* Risks */}
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-red-400' : 'text-red-600'}`}>Risks</div>
+          <ul className="space-y-1">
+            {data.risks.map((r, i) => (
+              <li key={i} className={bulletClass}>• {r}</li>
+            ))}
+            {data.risks.length === 0 && (
+              <li className={bulletClass + ' opacity-50'}>None identified</li>
+            )}
+          </ul>
+        </div>
+
+        {/* Open Questions */}
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-yellow-400' : 'text-yellow-600'}`}>Open Questions</div>
+          <ul className="space-y-1">
+            {data.open_questions.map((q, i) => (
+              <li key={i} className={bulletClass}>• {q}</li>
+            ))}
+            {data.open_questions.length === 0 && (
+              <li className={bulletClass + ' opacity-50'}>None identified</li>
+            )}
+          </ul>
+        </div>
+      </div>
+
+      {/* Validation badge */}
+      {data.validated && (
+        <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+          ✓ Numeric-parity validated — no hallucinated figures
+        </p>
+      )}
+    </div>
+  );
+}
+
+const PHASE2_KEYS = new Set(['insight_slots', 'coverage_snapshot', 'canonical_fields', 'completeness_summary', 'conflicts', 'debug.normalization_diff', 'governed_summary_v1']);
 
 function SectionCard({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const isSpecialKey = PHASE2_KEYS.has(section.key);
@@ -875,6 +973,9 @@ function SectionCard({ section, darkMode }: { section: InvestorInsightsSection; 
       )}
       {section.key === 'debug.normalization_diff' && (
         <NormalizationDiffSection section={section} darkMode={darkMode} />
+      )}
+      {section.key === 'governed_summary_v1' && (
+        <GovernedSummarySection section={section} darkMode={darkMode} />
       )}
       {/* Kind-based fallback only for sections whose key has no dedicated renderer. */}
       {!isSpecialKey && section.kind === 'gate_state' && (

@@ -66,6 +66,71 @@ def _cell_kind(v: Any) -> str:
     return "other"
 
 
+# ─── Use-of-Funds sheet detection ─────────────────────────────────────────────
+
+import re as _re
+
+# Sheet-name keywords that strongly indicate a Use-of-Funds sheet.
+_UOF_SHEET_NAME_PATTERNS: List[_re.Pattern] = [
+    _re.compile(r"use[\s_-]+of[\s_-]+(?:funds|proceeds|capital|raise|investment)", _re.I),
+    _re.compile(r"allocation[\s_-]+of[\s_-]+(?:funds|proceeds|capital)", _re.I),
+    _re.compile(r"capital[\s_-]+alloc", _re.I),
+    _re.compile(r"proceed[s]?[\s_-]+alloc", _re.I),
+    _re.compile(r"fund[s]?[\s_-]+alloc", _re.I),
+    _re.compile(r"budget[\s_-]+alloc", _re.I),
+    _re.compile(r"round[\s_-]+alloc", _re.I),
+    _re.compile(r"funding[\s_-]+(?:breakdown|plan|use|alloc)", _re.I),
+    _re.compile(r"investment[\s_-]+(?:breakdown|plan|allocation)", _re.I),
+    _re.compile(r"(?:fund|money|capital|proceeds?|raise)[\s_-]+deploy", _re.I),
+    _re.compile(r"how[\s_-]+(?:we[\s_-]+)?use", _re.I),
+]
+
+# Row-level keywords that, if found in the first rows of a sheet, indicate a UoF table.
+_UOF_ROW_PATTERNS: List[_re.Pattern] = [
+    _re.compile(r"use[\s]+of[\s]+(?:funds|proceeds|capital|raise|investment)", _re.I),
+    _re.compile(r"allocation[\s]+of[\s]+(?:funds|proceeds)", _re.I),
+    _re.compile(r"capital[\s]+allocation", _re.I),
+    _re.compile(r"how[\s]+(?:we[\s]+(?:will[\s]+)?use|funds[\s]+(?:will[\s]+be[\s]+)?used|we[\s]+plan[\s]+to[\s]+use)", _re.I),
+    _re.compile(r"where[\s]+(?:the[\s]+)?(?:money|funds?|capital)\s+(?:goes|will[\s]+go|is[\s]+going)", _re.I),
+    _re.compile(r"(?:fund|money|capital|proceeds?|raise)[\s]+deploy", _re.I),
+    _re.compile(r"round[\s]+alloc", _re.I),
+    _re.compile(r"funding[\s]+(?:breakdown|plan|use)", _re.I),
+]
+
+
+def _detect_segment_key(sheet_name: str, ws_f, max_scan_rows: int) -> str:
+    """Return 'use_of_funds' when the sheet appears to contain a Use-of-Funds table,
+    otherwise return 'financials'.
+
+    Detection priority:
+      1. Sheet name keyword match (fast)
+      2. First-row scan for UoF header patterns (up to 15 rows)
+    """
+    name_lower = (sheet_name or "").strip().lower()
+    for pat in _UOF_SHEET_NAME_PATTERNS:
+        if pat.search(name_lower):
+            return "use_of_funds"
+
+    # Scan the first 15 rows for a UoF header string in any cell
+    scan_limit = min(15, max_scan_rows)
+    try:
+        for r in range(1, scan_limit + 1):
+            for c in range(1, 16):  # cap col scan at 15 for speed
+                v = ws_f.cell(row=r, column=c).value
+                if not v or not isinstance(v, str):
+                    continue
+                s = v.strip()
+                if not s:
+                    continue
+                for pat in _UOF_ROW_PATTERNS:
+                    if pat.search(s):
+                        return "use_of_funds"
+    except Exception:
+        pass  # never crash extraction due to segment detection
+
+    return "financials"
+
+
 def _header_like_score(values: List[Any]) -> float:
     non_empty = [v for v in values if not _is_empty(v)]
     if len(non_empty) < 2:
@@ -157,6 +222,8 @@ def extract_xlsx_structured_pages(
         ws_f = wb_formula[name]
         ws_v = wb_values[name]
 
+        # Detect whether this sheet is a Use-of-Funds sheet or a financials sheet.
+        sheet_segment_key = _detect_segment_key(name, ws_f, max_scan_rows)
         max_row = min(int(ws_f.max_row or 0), max_scan_rows)
         max_col = min(int(ws_f.max_column or 0), max_scan_cols)
         if max_row <= 0 or max_col <= 0:
@@ -245,7 +312,7 @@ def extract_xlsx_structured_pages(
 
             structured_json = {
                 "kind": "excel_range",
-                "segment_key": "financials",
+                "segment_key": sheet_segment_key,
                 "sheet_name": name,
                 "range": {"start": start, "end": end},
                 "header_row": int(best_hr),
@@ -267,7 +334,7 @@ def extract_xlsx_structured_pages(
                 "confidence": 0.9,
                 "quality_flags": {
                     "source": "structured_excel_py",
-                    "segment_key": "financials",
+                    "segment_key": sheet_segment_key,
                     "sheet_name": name,
                     "range": f"{start}:{end}",
                     "reason": reason,
@@ -352,7 +419,7 @@ def extract_xlsx_structured_pages(
 
             structured_json = {
                 "kind": "excel_range",
-                "segment_key": "financials",
+                "segment_key": sheet_segment_key,
                 "sheet_name": name,
                 "range": {"start": start, "end": end},
                 "header_row": int(best_hr),
@@ -375,7 +442,7 @@ def extract_xlsx_structured_pages(
                 "confidence": 0.9,
                 "quality_flags": {
                     "source": "structured_excel_py",
-                    "segment_key": "financials",
+                    "segment_key": sheet_segment_key,
                     "sheet_name": name,
                     "range": f"{start}:{end}",
                 },
@@ -418,7 +485,7 @@ def extract_xlsx_structured_pages(
         # Always include a sheet overview node.
         overview_structured = {
             "kind": "excel_sheet_overview",
-            "segment_key": "financials",
+            "segment_key": sheet_segment_key,
             "sheet_name": name,
             "sheet_index": sheet_index,
             "tables_detected": min(len(table_assets), max_tables_per_sheet),
@@ -427,7 +494,7 @@ def extract_xlsx_structured_pages(
             "asset_type": "table",
             "bbox": {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0},
             "confidence": 0.85,
-            "quality_flags": {"source": "structured_excel_py", "segment_key": "financials", "sheet_name": name},
+            "quality_flags": {"source": "structured_excel_py", "segment_key": sheet_segment_key, "sheet_name": name},
             "image_uri": None,
             "image_hash": _sha256_hex(f"{document_id}|{extractor_version}|{name}|overview"),
             "extraction": {

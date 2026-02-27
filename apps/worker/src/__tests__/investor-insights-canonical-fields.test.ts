@@ -246,6 +246,54 @@ describe("Stage 2 – Canonical Fields: market_claims + traction_signal", () => 
 		expect(cf.body).toMatch(/field=tam_value \| computability=NotComputable.*reason=NO_TAM_VALUE_MENTION/);
 	});
 
+	// ── Market-sizing triad (column-layout: values before labels) ──────────────
+
+	it("tam/sam/som all Computable when DPU has column-layout triad (values before labels)", async () => {
+		// Mirrors exact OCR layout from deal 517be946 page 8:
+		//   "$10.5B+  $3.5B  $600-900M  TAM  SAM  SOM  ..."
+		mockPool = makeSinglePagePool(
+			"$10.5B+ $3.5B $600-900M TAM SAM SOM Alternative Investment analytics PE/VC due diligence tools"
+		);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf.body).toMatch(/field=tam_value \| computability=Computable/);
+		expect(cf.body).toMatch(/field=sam_value \| computability=Computable/);
+		expect(cf.body).toMatch(/field=som_value \| computability=Computable/);
+		// Evidence must point to this page
+		expect(cf.body).toMatch(/field=tam_value.*evidence=dpu:doc:[0-9a-f]{8}:page:\d+/);
+	});
+
+	it("tam/sam/som triad: raise_amount not affected by TAM slide values", async () => {
+		// Two pages: page 0 has the TAM/SAM/SOM triad; page 1 is the Ask slide.
+		// raise_amount must remain $2M (from Ask slide), not $10.5B (from TAM).
+		mockPool = makePool([
+			{
+				docId: "aaaaaaaa-0000-0000-0000-000000000001",
+				pageIndex: 8,
+				text: "$10.5B+ $3.5B $600-900M TAM SAM SOM Alternative Investment analytics PE/VC due diligence",
+			},
+			{
+				docId: "aaaaaaaa-0000-0000-0000-000000000001",
+				pageIndex: 14,
+				text: "The Ask $2M Pre-Seed Scale product, build team, accelerate go-to-market 40% 30% 20% 10% People / Hiring Go-to-Market Product / Engineering Contingency",
+			},
+		]);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		// raise_amount must be Computable and sourced from the Ask slide (page 14), NOT $10.5B
+		expect(cf.body).toMatch(/field=raise_amount \| computability=Computable/);
+		expect(cf.body).toMatch(/field=raise_amount.*evidence=dpu:doc:aaaaaaaa:page:14/);
+		// TAM should be Computable from the TAM slide (page 8)
+		expect(cf.body).toMatch(/field=tam_value \| computability=Computable/);
+		expect(cf.body).toMatch(/field=tam_value.*evidence=dpu:doc:aaaaaaaa:page:8/);
+	});
+
 	it("mrr_value is Computable when DPU contains 'MRR $80K'", async () => {
 		mockPool = makeSinglePagePool("MRR $80K and doubling every two quarters.");
 
@@ -300,6 +348,40 @@ describe("Stage 2 – Canonical Fields: use_of_funds", () => {
 
 	it("use_of_funds_buckets is NotComputable when no use-of-funds header present", async () => {
 		mockPool = makeSinglePagePool("MRR $50K and growing 10% MoM.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf.body).toMatch(
+			/field=use_of_funds_buckets \| computability=NotComputable.*reason=NO_USE_OF_FUNDS_BUCKETS_MENTION/
+		);
+	});
+
+	// ── Ask-slide allocation fallback ───────────────────────────────────────────
+
+	it("use_of_funds_buckets is Computable from Ask-slide percentage table (no UoF header)", async () => {
+		// Mirrors exact OCR layout from deal 517be946 page 14.
+		mockPool = makeSinglePagePool(
+			"The Ask $2M Pre-Seed Scale product, build team, accelerate go-to-market " +
+				"40% 30% 20% 10% People / Hiring Go-to-Market Product / Engineering Contingency 15 Ask"
+		);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf.body).toMatch(/field=use_of_funds_buckets \| computability=Computable/);
+		expect(cf.body).toMatch(/People \/ Hiring 40%/);
+		expect(cf.body).toMatch(/Go-to-Market 30%/);
+		expect(cf.body).toMatch(/evidence=dpu:doc:[0-9a-f]{8}:page:\d+/);
+	});
+
+	it("use_of_funds_buckets: ask-slide not triggered when percentages don't sum near 100%", async () => {
+		// 5% + 5% + 5% = 15%, must NOT produce a bucket result
+		mockPool = makeSinglePagePool(
+			"The Ask $2M We are raising for growth. Revenue grew 5% last quarter, 5% the quarter before, 5% historically."
+		);
 
 		await generateInvestorInsightsProcessor(makeJob());
 		const pkg = getInsertedRenderPkg();
@@ -1036,3 +1118,102 @@ describe("Stage 2 – Grammar Expansion: Colon & Label Forms", () => {
 	});
 });
 
+// ── Raise context-gating: TAM/SAM/SOM exclusion + Ask-slide priority ─────────
+
+describe("Stage 2 – Raise context-gating: TAM exclusion + Ask-slide priority", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockEvaluateGates.mockResolvedValue(g3OnlyFailGateState());
+	});
+
+	it("raise_amount picks Ask-slide amount ($2M) not TAM slide ($8B) when both pages present", async () => {
+		// Page 8 (earlier): TAM/SAM/SOM slide with "$8B investment opportunity" — must be excluded.
+		// Page 14 (later): explicit Ask slide with "$2M Pre-Seed" — must win.
+		mockPool = makePoolWithEvidence([], [
+			{
+				docId: "cccccccc-0000-0000-0000-000000000001",
+				pageIndex: 8,
+				text:
+					"Market Opportunity. Total Addressable Market (TAM) $8B investment opportunity. " +
+					"SAM: $600M Serviceable Addressable Market. SOM: $50M Serviceable Obtainable Market.",
+			},
+			{
+				docId: "cccccccc-0000-0000-0000-000000000001",
+				pageIndex: 14,
+				text: "The Ask. We are raising $2M Pre-Seed Round. Use of funds: product 60%, sales 40%.",
+			},
+		]);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf).toBeTruthy();
+
+		const raiseAmountLine = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		expect(raiseAmountLine).toBeTruthy();
+		// Must be Computable with Ask-slide amount
+		expect(raiseAmountLine).toMatch(/computability=Computable/);
+		// Value must be $2M from Ask slide
+		const valueMatch = /\| value="([^"]+)"/.exec(raiseAmountLine!);
+		expect(valueMatch).toBeTruthy();
+		expect(valueMatch![1]).toMatch(/2M/);
+		// Evidence must point to page 14 (The Ask), not page 8 (TAM)
+		expect(raiseAmountLine).toMatch(/evidence=dpu:doc:cccccccc:page:14/);
+		// Must NOT contain $8B or $600M as the raise value
+		expect(raiseAmountLine).not.toMatch(/8B/);
+		expect(raiseAmountLine).not.toMatch(/600M/);
+	});
+
+	it("raise_amount is NotComputable when only a TAM slide is present (no Ask slide)", async () => {
+		// Only a TAM/SAM/SOM slide — no explicit raise amount should be extracted.
+		mockPool = makePoolWithEvidence([], [
+			{
+				docId: "dddddddd-0000-0000-0000-000000000001",
+				pageIndex: 8,
+				text:
+					"Total Addressable Market $8B investment opportunity. " +
+					"SAM $600M. SOM $50M.",
+			},
+		]);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf).toBeTruthy();
+		const raiseAmountLine = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		expect(raiseAmountLine).toBeTruthy();
+		expect(raiseAmountLine).toMatch(/computability=NotComputable/);
+		expect(raiseAmountLine).toMatch(/reason=NO_RAISE_AMOUNT_MENTION/);
+	});
+
+	it("raise_amount conflict is NOT emitted when only TAM amounts differ (both are gated out)", async () => {
+		// Two pages with different TAM-tainted amounts — neither should be counted as raise conflict.
+		mockPool = makePoolWithEvidence([], [
+			{
+				docId: "eeeeeeee-0000-0000-0000-000000000001",
+				pageIndex: 3,
+				text: "Total Addressable Market $8B investment opportunity.",
+			},
+			{
+				docId: "eeeeeeee-0000-0000-0000-000000000001",
+				pageIndex: 5,
+				text: "SAM $600M investment opportunity.",
+			},
+		]);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const conflictsSection = pkg.sections.find((s: any) => s.key === "conflicts");
+		// Should not emit a raise_amount conflict since all matches were TAM-tainted
+		if (conflictsSection) {
+			expect(conflictsSection.body).not.toMatch(/field=raise_amount/);
+		}
+		// raise_amount still NotComputable
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		const raiseAmountLine = cf.body.split("\n").find((l: string) => l.includes("field=raise_amount"));
+		expect(raiseAmountLine).toMatch(/computability=NotComputable/);
+	});
+});

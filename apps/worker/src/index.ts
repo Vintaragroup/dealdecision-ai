@@ -9160,6 +9160,10 @@ registerWorker("analyze_deal", async (job: Job) => {
 		// Investor Insight Engine – enqueue Stage 0 once the governed overlay is confirmed complete.
 		// Gated by INVESTOR_INSIGHTS_ENABLED=true; fail-open so a queue error never blocks the
 		// analyze_deal terminal status update.
+		//
+		// Phase J invariant: governed summary must resolve via resolveGovernedSummaryWithCache.
+		// This trigger enqueues the same worker job as the API /generate and /regenerate routes.
+		// All governed summary generation is handled exclusively inside the worker processor.
 		if (overviewOk && process.env.INVESTOR_INSIGHTS_ENABLED === "true") {
 			try {
 				const insightsQueue = getQueue("investor_insights");

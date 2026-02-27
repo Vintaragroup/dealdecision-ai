@@ -2439,6 +2439,11 @@ export async function registerDealRoutes(
 
   // Investor Insight Engine – Stage 0: manually enqueue (re)generation for a deal.
   // Returns 202 { ok: true } on success, 500 { error: "enqueue_failed" } if the queue throws.
+  //
+  // Phase J invariant: governed summary must resolve via resolveGovernedSummaryWithCache.
+  // This route ONLY enqueues — all governed summary generation flows through the
+  // worker processor (generateInvestorInsightsProcessor → buildGovernedSummarySection
+  // → resolveGovernedSummaryWithCache). No summary logic lives in the API layer.
   app.post("/api/v1/deals/:deal_id/investor-insights/generate", async (request, reply) => {
     const rawDealId = (request.params as { deal_id: string }).deal_id;
     const parsed = z.object({ deal_id: z.string().uuid() }).safeParse({ deal_id: rawDealId });
@@ -2469,6 +2474,11 @@ export async function registerDealRoutes(
   // Investor Insight Engine – Stage 0: force a fresh regeneration, bypassing BullMQ dedup.
   // Uses a timestamp-keyed jobId so every call enqueues a new job regardless of prior state.
   // Returns 202 { ok: true, deal_id, enqueued: true }.
+  //
+  // Phase J invariant: governed summary must resolve via resolveGovernedSummaryWithCache.
+  // force_recompute=true bypasses the upstream-fingerprint dedup index, but the governed
+  // summary cache (fingerprint-based) is evaluated independently inside the worker —
+  // unchanged inputs will still produce a cache hit even on a forced regenerate.
   app.post("/api/v1/deals/:deal_id/investor-insights/regenerate", async (request, reply) => {
     const rawDealId = (request.params as { deal_id: string }).deal_id;
     const parsed = z.object({ deal_id: z.string().uuid() }).safeParse({ deal_id: rawDealId });

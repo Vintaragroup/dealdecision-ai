@@ -167,8 +167,9 @@ const MRR_VALUE_PATTERN = /\bMRR\b[^$\n]{0,40}?\$[\d,.]+\s*[BMKbmk]?/i;
 
 const ARR_VALUE_PATTERN = /\bARR\b[^$\n]{0,40}?\$[\d,.]+\s*[BMKbmk]?/i;
 
+// Updated to match plural "revenues" and allow pipe-separated columns from XLSX DPU
 const REVENUE_VALUE_PATTERN =
-	/(?:annual\s+revenue|quarterly\s+revenue|total\s+revenue)\s+(?:of\s+|is\s+)?\$[\d,.]+\s*[BMKbmk]?/i;
+	/(?:annual\s+revenues?|quarterly\s+revenues?|total\s+revenues?|gross\s+revenues?)[^$\n]{0,50}?\$[\d,.]+\s*[BMKbmk]?/i;
 
 const GROWTH_RATE_PATTERN =
 	/(?:growing|growth(?:\s+rate)?(?:\s+of)?)\s+\d+%|\b\d+%\s+(?:month\s+over\s+month|MoM\b|YoY\b|year\s+over\s+year|annually)/i;

@@ -18,6 +18,93 @@ function isMissingTableError(err: any): boolean {
 	return code === "42P01";
 }
 
+// ─── Excel row currency-formatting utilities ────────────────────────────────────
+
+/**
+ * Allowlist of money-denominated financial row labels (matched case-insensitively,
+ * after trimming). Keep this conservative — only expand with audit evidence.
+ *
+ * Mirrored by the SQL `~*` pattern in the excel_rows_text CTE.
+ * Both must be kept in sync when the allowlist changes.
+ */
+const MONEY_ROW_LABEL_RE =
+	/^(total\s+revenues?|revenues?|sales|total\s+expenses?|expenses?|gross\s+profit|net\s+income|operating\s+income|ebitda|cogs|cost\s+of\s+goods\s+sold|contribution\s+margin|cash|burn)$/i;
+
+/**
+ * Returns true when the row label refers to a money-denominated financial
+ * line-item. Matching is case-insensitive and trims surrounding whitespace.
+ */
+export function isMoneyRowLabel(label: string): boolean {
+	return MONEY_ROW_LABEL_RE.test(label.trim());
+}
+
+/** Bare integer or decimal, with optional leading minus. */
+const BARE_NUMBER_RE = /^-?\d+(\.\d+)?$/;
+/** Minimum absolute value to be treated as a currency amount. */
+const MONEY_ROW_MIN_ABS = 1000;
+
+/**
+ * Format a bare numeric string as a USD currency token ($X,XXX or $X,XXX.YY).
+ *
+ * Rules:
+ * - Input must be a bare integer or decimal (no currency prefix, no %).
+ * - abs(value) must be >= MONEY_ROW_MIN_ABS (avoids formatting "1", "12", "0.6").
+ * - Integers: no trailing ".00" → "$3,337,000".
+ * - Decimals: preserved to 2 dp  → "$3,018,437.36".
+ * - Negative values: "-$495,790".
+ */
+export function formatExcelRowValueAsCurrency(rawValue: string): string {
+	const trimmed = rawValue.trim();
+	if (!BARE_NUMBER_RE.test(trimmed)) return rawValue;
+	if (/^[$€£]/.test(trimmed) || trimmed.includes("%")) return rawValue;
+	const num = parseFloat(trimmed);
+	if (!isFinite(num) || Math.abs(num) < MONEY_ROW_MIN_ABS) return rawValue;
+	const isInteger = !trimmed.includes(".");
+	const formatted = Math.abs(num).toLocaleString("en-US", {
+		minimumFractionDigits: isInteger ? 0 : 2,
+		maximumFractionDigits: isInteger ? 0 : 2,
+	});
+	return (num < 0 ? "-$" : "$") + formatted;
+}
+
+/**
+ * Build the excel-range rows text from a rows_preview array.
+ * Mirrors the SQL excel_rows_text CTE logic, with currency-formatting applied
+ * to numeric cells in money-label rows.
+ *
+ * This function is exported for unit testing; the SQL CTE is authoritative
+ * for database writes. Both must produce identical output for object-style rows.
+ *
+ * @param rowsPreview  The rows_preview array from structured_json.
+ * @param maxRows      Max rows to include (default 12, mirroring SQL rn <= 12).
+ */
+export function buildExcelRangePageText(
+	rowsPreview: unknown[],
+	maxRows = 12,
+): string {
+	const lines: string[] = [];
+	for (let i = 0; i < Math.min(rowsPreview.length, maxRows); i++) {
+		const row = rowsPreview[i];
+		if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+		const obj = row as Record<string, unknown>;
+		// Sort keys to match SQL ORDER BY kv.k
+		const sortedKeys = Object.keys(obj).sort();
+		const label = typeof obj["col_A"] === "string" ? (obj["col_A"] as string) : "";
+		const isMoney = isMoneyRowLabel(label);
+		const cells = sortedKeys.map((k) => {
+			const v = obj[k];
+			if (v === null || v === undefined) return "";
+			const raw = String(v).trim();
+			if (isMoney && typeof v === "number") {
+				return formatExcelRowValueAsCurrency(raw);
+			}
+			return raw;
+		});
+		lines.push("- " + cells.join(" | "));
+	}
+	return lines.join("\n");
+}
+
 async function backfillMissingDpuPlaceholdersForDocumentRange(
 	pool: Pool,
 	args: {
@@ -232,9 +319,35 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 				WHEN jsonb_typeof(structured_json->'rows_preview') = 'array' THEN (
 					SELECT NULLIF(BTRIM(string_agg(row_line, E'\n')), '')
 					  FROM (
-						SELECT '- ' || (
-							SELECT COALESCE(string_agg(COALESCE(NULLIF(BTRIM(c.value #>> '{}'), ''), ''), ' | ' ORDER BY c.ord), '')
-							  FROM jsonb_array_elements(r.row_val) WITH ORDINALITY AS c(value, ord)
+						SELECT '- ' || COALESCE(
+							CASE
+								WHEN jsonb_typeof(r.row_val) = 'array' THEN (
+									SELECT COALESCE(string_agg(COALESCE(NULLIF(BTRIM(c.value #>> '{}'), ''), ''), ' | ' ORDER BY c.ord), '')
+									  FROM jsonb_array_elements(r.row_val) WITH ORDINALITY AS c(value, ord)
+								)
+								-- object rows (XLSX col_A/col_B/... format): currency-format money-label rows
+								WHEN jsonb_typeof(r.row_val) = 'object' THEN (
+									SELECT COALESCE(string_agg(
+										CASE
+											WHEN LOWER(BTRIM(COALESCE(r.row_val->>'col_A', ''))) ~*
+													'^(total\s+revenues?|revenues?|sales|total\s+expenses?|expenses?|gross\s+profit|net\s+income|operating\s+income|ebitda|cogs|cost\s+of\s+goods\s+sold|contribution\s+margin|cash|burn)$'
+												AND kv.v ~ '^-?\d+(\.\d+)?$'
+												AND ABS(kv.v::numeric) >= 1000
+											THEN '$' || regexp_replace(
+													to_char(kv.v::numeric, 'FM999,999,999,999.00'),
+													'\\.00$',
+													''
+												)
+											ELSE COALESCE(NULLIF(BTRIM(kv.v), ''), '')
+										END,
+										' | '
+										ORDER BY kv.k
+									), '')
+									  FROM jsonb_each_text(r.row_val) AS kv(k, v)
+								)
+								ELSE ''
+							END,
+							''
 						) AS row_line
 						  FROM jsonb_array_elements(structured_json->'rows_preview') WITH ORDINALITY AS r(row_val, rn)
 						 WHERE r.rn <= 12
@@ -596,9 +709,35 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 				WHEN jsonb_typeof(structured_json->'rows_preview') = 'array' THEN (
 					SELECT NULLIF(BTRIM(string_agg(row_line, E'\n')), '')
 					  FROM (
-						SELECT '- ' || (
-							SELECT COALESCE(string_agg(COALESCE(NULLIF(BTRIM(c.value #>> '{}'), ''), ''), ' | ' ORDER BY c.ord), '')
-							  FROM jsonb_array_elements(r.row_val) WITH ORDINALITY AS c(value, ord)
+						SELECT '- ' || COALESCE(
+							CASE
+								WHEN jsonb_typeof(r.row_val) = 'array' THEN (
+									SELECT COALESCE(string_agg(COALESCE(NULLIF(BTRIM(c.value #>> '{}'), ''), ''), ' | ' ORDER BY c.ord), '')
+									  FROM jsonb_array_elements(r.row_val) WITH ORDINALITY AS c(value, ord)
+								)
+								-- object rows (XLSX col_A/col_B/... format): currency-format money-label rows
+								WHEN jsonb_typeof(r.row_val) = 'object' THEN (
+									SELECT COALESCE(string_agg(
+										CASE
+											WHEN LOWER(BTRIM(COALESCE(r.row_val->>'col_A', ''))) ~*
+													'^(total\s+revenues?|revenues?|sales|total\s+expenses?|expenses?|gross\s+profit|net\s+income|operating\s+income|ebitda|cogs|cost\s+of\s+goods\s+sold|contribution\s+margin|cash|burn)$'
+												AND kv.v ~ '^-?\d+(\.\d+)?$'
+												AND ABS(kv.v::numeric) >= 1000
+											THEN '$' || regexp_replace(
+													to_char(kv.v::numeric, 'FM999,999,999,999.00'),
+													'\\.00$',
+													''
+												)
+											ELSE COALESCE(NULLIF(BTRIM(kv.v), ''), '')
+										END,
+										' | '
+										ORDER BY kv.k
+									), '')
+									  FROM jsonb_each_text(r.row_val) AS kv(k, v)
+								)
+								ELSE ''
+							END,
+							''
 						) AS row_line
 						  FROM jsonb_array_elements(structured_json->'rows_preview') WITH ORDINALITY AS r(row_val, rn)
 						 WHERE r.rn <= 12

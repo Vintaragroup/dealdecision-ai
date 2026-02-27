@@ -258,6 +258,13 @@ export interface DealCoverageResult {
 		dpu_load_failed: number;
 		evidence_ref_missing: number;
 	};
+	/** Structured-data section presence detected in the stored render_package. */
+	structured_coverage: {
+		/** True when a financial_statement_v1 section is present in the stored render_package. */
+		financial_statement_v1: boolean;
+		/** True when a use_of_funds_v1 section is present in the stored render_package. */
+		use_of_funds_v1: boolean;
+	};
 }
 
 export interface TighteningCandidate {
@@ -293,6 +300,11 @@ export interface CoverageAuditReport {
 			detector_gap: number;
 			true_absence: number;
 		}>;
+		/** Counts of deals that have structured XLSX sections in their stored render_package. */
+		structured_coverage_summary: {
+			deals_with_financial_statement_v1: number;
+			deals_with_use_of_funds_v1: number;
+		};
 	};
 	/** Per-slot tightening candidates sorted by detector_gap desc, then slot name. */
 	tightening_candidates: TighteningCandidate[];
@@ -309,6 +321,8 @@ export interface ParsedStoredSlot {
 	status: "Computable" | "NotComputable";
 	value: string | null;
 	evidence: string | null;
+	/** The reason code emitted by formatSlotLine, e.g. "DERIVED_FROM_FINANCIALS" or null. */
+	reasonCode: string | null;
 }
 
 export function parseStoredSlots(body: string): Map<string, ParsedStoredSlot> {
@@ -326,16 +340,20 @@ export function parseStoredSlots(body: string): Map<string, ParsedStoredSlot> {
 		const computable = statusPart.startsWith("Computable");
 		let value: string | null = null;
 		let evidence: string | null = null;
+		let reasonCode: string | null = null;
 		for (const part of parts.slice(1)) {
 			const valM = /^value="(.*)"$/.exec(part);
 			if (valM) { value = valM[1] ?? null; continue; }
 			const evM = /^evidence=(.+)$/.exec(part);
-			if (evM && evM[1] !== "none") { evidence = evM[1] ?? null; }
+			if (evM && evM[1] !== "none") { evidence = evM[1] ?? null; continue; }
+			const reaM = /^reason=(.+)$/.exec(part);
+			if (reaM && reaM[1] !== "none") { reasonCode = reaM[1] ?? null; }
 		}
 		result.set(slotName, {
-			status:   computable ? "Computable" : "NotComputable",
-			value:    computable ? value : null,
-			evidence: computable ? evidence : null,
+			status:     computable ? "Computable" : "NotComputable",
+			value:      computable ? value : null,
+			evidence:   computable ? evidence : null,
+			reasonCode: computable ? reasonCode : null,
 		});
 	}
 	return result;
@@ -399,6 +417,7 @@ async function runDealCoverage(
 			dpu_pages_total: 0,
 			slot_results: [],
 			summary: { ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 0, true_absence: 0, dpu_load_failed: 5, evidence_ref_missing: 0 },
+			structured_coverage: { financial_statement_v1: false, use_of_funds_v1: false },
 		};
 	}
 
@@ -417,9 +436,11 @@ async function runDealCoverage(
 
 	const dpuEmpty = pages.length === 0;
 
-	// ── Parse stored slots body ──────────────────────────────────────────
+	// ── Parse stored slots body + structured-coverage flags ─────────────
 	let storedSlots = new Map<string, ParsedStoredSlot>();
 	let hasReport = false;
+	let hasFinancialStatementV1 = false;
+	let hasUseOfFundsV1 = false;
 
 	if (raw.report) {
 		hasReport = true;
@@ -428,6 +449,8 @@ async function runDealCoverage(
 		const slotSection = sections.find((s) => s["key"] === "insight_slots");
 		const body = typeof slotSection?.["body"] === "string" ? (slotSection["body"] as string) : "";
 		storedSlots = parseStoredSlots(body);
+		hasFinancialStatementV1 = sections.some((s) => s["key"] === "financial_statement_v1");
+		hasUseOfFundsV1 = sections.some((s) => s["key"] === "use_of_funds_v1");
 	}
 
 	// ── Evaluate each slot ───────────────────────────────────────────────
@@ -453,8 +476,26 @@ async function runDealCoverage(
 			continue;
 		}
 
-		// Handle DPU unavailable
+		// Handle DPU unavailable — but exempt XLSX-derived slots which never rely on text pages.
 		if (dpuEmpty) {
+			const isXlsxDerived =
+				stored?.reasonCode === "DERIVED_FROM_FINANCIALS" ||
+				stored?.reasonCode === "DERIVED_FROM_USE_OF_FUNDS";
+			if (isXlsxDerived && stored?.status === "Computable") {
+				// XLSX-promoted slots are valid without text DPU pages — classify OK_MATCH.
+				slotResults.push({
+					slot: slotName,
+					stored_status: stored.status,
+					stored_value: stored.value ?? null,
+					recomputed_status: "NotComputable",
+					recomputed_value: null,
+					classification: "OK_MATCH",
+					candidate_pages: [],
+					dpu_pages_scanned: 0,
+				});
+				summaryCounts.ok_match++;
+				continue;
+			}
 			slotResults.push({
 				slot: slotName,
 				stored_status: stored?.status ?? "Missing",
@@ -497,7 +538,15 @@ async function runDealCoverage(
 			classification = "OK_MATCH";
 			summaryCounts.ok_match++;
 		} else if (storedStatus === "Computable" && !recomputed.computable) {
-			// Stored says Computable but recompute can't find it — regression or evidence issue
+			// Stored says Computable but recompute can't find it.
+			//
+			// Special case: DERIVED_FROM_FINANCIALS and DERIVED_FROM_USE_OF_FUNDS slots are promoted
+			// from XLSX structured data, NOT from text patterns.  The strict-detector recompute will
+			// never match them, so a NotComputable recompute result is expected and correct — classify OK_MATCH.
+			if (stored?.reasonCode === "DERIVED_FROM_FINANCIALS" || stored?.reasonCode === "DERIVED_FROM_USE_OF_FUNDS") {
+				classification = "OK_MATCH";
+				summaryCounts.ok_match++;
+			} else {
 			// Check whether stored evidence ref exists in DPU pages
 			const evRef = stored?.evidence ?? null;
 			if (evRef) {
@@ -523,6 +572,7 @@ async function runDealCoverage(
 				classification = "REGRESSED";
 				summaryCounts.regressed++;
 			}
+			} // end else (not DERIVED_FROM_FINANCIALS)
 		} else if (storedStatus === "NotComputable" && recomputed.computable) {
 			// Stored is stale — pattern improved and now finds it
 			classification = "STALE_STORED";
@@ -563,13 +613,17 @@ async function runDealCoverage(
 		: "ok";
 
 	return {
-		deal_id:         dealId,
-		deal_label:      dealLabel,
-		audit_status:    auditStatus,
-		error:           null,
-		dpu_pages_total: pages.length,
-		slot_results:    slotResults,
-		summary:         summaryCounts,
+		deal_id:           dealId,
+		deal_label:        dealLabel,
+		audit_status:      auditStatus,
+		error:             null,
+		dpu_pages_total:   pages.length,
+		slot_results:      slotResults,
+		summary:           summaryCounts,
+		structured_coverage: {
+			financial_statement_v1: hasFinancialStatementV1,
+			use_of_funds_v1:        hasUseOfFundsV1,
+		},
 	};
 }
 
@@ -638,6 +692,9 @@ export async function runCoverageAudit(
 	const tighteningCandidates = computeTighteningCandidates(results, slotBreakdown);
 	const { slot: selectedSlot, rationale: selectedRationale } = selectNextSlot(tighteningCandidates);
 
+	const dealsWithFinancialStmt = results.filter((d) => d.structured_coverage?.financial_statement_v1).length;
+	const dealsWithUoF = results.filter((d) => d.structured_coverage?.use_of_funds_v1).length;
+
 	return {
 		generated_at: new Date().toISOString(),
 		meta: {
@@ -652,6 +709,10 @@ export async function runCoverageAudit(
 			deals_with_stale:       dealsWithStale,
 			deals_with_regressions: dealsWithRegress,
 			slot_breakdown:         slotBreakdown,
+			structured_coverage_summary: {
+				deals_with_financial_statement_v1: dealsWithFinancialStmt,
+				deals_with_use_of_funds_v1:        dealsWithUoF,
+			},
 		},
 		tightening_candidates: tighteningCandidates,
 	};
@@ -765,6 +826,13 @@ export function printCoverageMarkdown(report: CoverageAuditReport): string {
 		...report.portfolio_summary.slot_breakdown.map((s) =>
 			`| ${s.slot} | ${s.ok_match} | ${s.stale_stored} | ${s.regressed} | ${s.detector_gap} | ${s.true_absence} |`
 		),
+		"",
+		"## Structured Coverage (XLSX)",
+		"",
+		`| Section | Deals with data |`,
+		`|---------|-----------------|`,
+		`| financial_statement_v1 | ${report.portfolio_summary.structured_coverage_summary.deals_with_financial_statement_v1} / ${report.portfolio_summary.total_deals} |`,
+		`| use_of_funds_v1 | ${report.portfolio_summary.structured_coverage_summary.deals_with_use_of_funds_v1} / ${report.portfolio_summary.total_deals} |`,
 		"",
 		"---",
 		"",

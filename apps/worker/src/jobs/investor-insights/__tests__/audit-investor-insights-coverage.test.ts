@@ -699,7 +699,7 @@ describe("printCoverageMarkdown", () => {
 			generated_at: "2026-01-01T00:00:00.000Z",
 			meta: { selected_slot: null, selected_slot_rationale: "no DETECTOR_GAP slots found" },
 			deals: [],
-			portfolio_summary: { total_deals: 0, deals_ok: 0, deals_with_gaps: 0, deals_with_stale: 0, deals_with_regressions: 0, slot_breakdown: [] },
+			portfolio_summary: { total_deals: 0, deals_ok: 0, deals_with_gaps: 0, deals_with_stale: 0, deals_with_regressions: 0, slot_breakdown: [], structured_coverage_summary: { deals_with_financial_statement_v1: 0, deals_with_use_of_funds_v1: 0 } },
 			tightening_candidates: [],
 		};
 		const md = printCoverageMarkdown(report);
@@ -823,6 +823,7 @@ function makeGapDeal(
 			},
 		],
 		summary: { ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 1, true_absence: 0, dpu_load_failed: 0, evidence_ref_missing: 0 },
+		structured_coverage: { financial_statement_v1: false, use_of_funds_v1: false },
 	};
 }
 
@@ -901,6 +902,7 @@ describe("computeTighteningCandidates", () => {
 					],
 				}],
 				summary: { ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 1, true_absence: 0, dpu_load_failed: 0, evidence_ref_missing: 0 },
+				structured_coverage: { financial_statement_v1: false, use_of_funds_v1: false },
 			},
 		];
 		const breakdown = [{ slot: "market_claims", ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 1, true_absence: 0 }];
@@ -942,6 +944,7 @@ describe("computeTighteningCandidates", () => {
 				],
 			}],
 			summary: { ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 1, true_absence: 0, dpu_load_failed: 0, evidence_ref_missing: 0 },
+			structured_coverage: { financial_statement_v1: false, use_of_funds_v1: false },
 		};
 		const breakdown = [{ slot: "traction_signal", ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 1, true_absence: 0 }];
 		const result = computeTighteningCandidates([deal], breakdown);
@@ -969,6 +972,7 @@ describe("computeTighteningCandidates", () => {
 				}],
 			}],
 			summary: { ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 1, true_absence: 0, dpu_load_failed: 0, evidence_ref_missing: 0 },
+			structured_coverage: { financial_statement_v1: false, use_of_funds_v1: false },
 		};
 		const breakdown = [{ slot: "market_claims", ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 1, true_absence: 0 }];
 		const result = computeTighteningCandidates([deal], breakdown);
@@ -1004,6 +1008,7 @@ describe("computeTighteningCandidates", () => {
 				candidate_pages: [{ ref: "dpu:doc:kk:page:1", triggeredKeywords: ["budget"], snippet: longSnippet }],
 			}],
 			summary: { ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 1, true_absence: 0, dpu_load_failed: 0, evidence_ref_missing: 0 },
+			structured_coverage: { financial_statement_v1: false, use_of_funds_v1: false },
 		};
 		const breakdown = [{ slot: "use_of_funds", ok_match: 0, stale_stored: 0, regressed: 0, detector_gap: 1, true_absence: 0 }];
 		const result = computeTighteningCandidates([deal], breakdown);
@@ -1165,6 +1170,7 @@ describe("printCoverageMarkdown — Top Tightening Candidates", () => {
 				total_deals: 0, deals_ok: 0, deals_with_gaps: 0,
 				deals_with_stale: 0, deals_with_regressions: 0,
 				slot_breakdown: [],
+				structured_coverage_summary: { deals_with_financial_statement_v1: 0, deals_with_use_of_funds_v1: 0 },
 			},
 			tightening_candidates: candidates,
 		};
@@ -1252,5 +1258,163 @@ describe("printCoverageMarkdown — Top Tightening Candidates", () => {
 		} else {
 			expect(report.meta.selected_slot).toBeNull();
 		}
+	});
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// DERIVED_FROM_USE_OF_FUNDS — audit classification
+// ═══════════════════════════════════════════════════════════════════════
+
+describe("DERIVED_FROM_USE_OF_FUNDS → OK_MATCH classification", () => {
+	it("classifies use_of_funds slot as OK_MATCH when reason=DERIVED_FROM_USE_OF_FUNDS (no text pages)", async () => {
+		// Stored report has use_of_funds Computable via XLSX bridge; no text DPU pages exist
+		// so recomputed would be NotComputable without the reason-code guard.
+		const storedBody = [
+			`raise_terms: Computable | value="raising $5M" | evidence=dpu:doc:uof0001:page:3 | reason=none`,
+			`market_claims: NotComputable | value=none | evidence=none | reason=NO_MARKET_CLAIM_MENTION`,
+			`traction_signal: NotComputable | value=none | evidence=none | reason=NO_TRACTION_SIGNAL_MENTION`,
+			`valuation_terms: NotComputable | value=none | evidence=none | reason=NO_VALUATION_MENTION`,
+			`use_of_funds: Computable | value="Use of funds: Product 40%, Sales 30%, G&A 30% / total $5,000,000 (XLSX)" | evidence=dpu:doc:uof0001:page:0 | reason=DERIVED_FROM_USE_OF_FUNDS`,
+		].join("\n");
+		const pool = mockPool({
+			dpu_pages: [], // No text pages — text patterns cannot fire
+			report: {
+				status: "complete", engine_version: "v1", upstream_fingerprint: "fp-uof",
+				render_package: {
+					sections: [
+						{ key: "insight_slots", title: "Slots", kind: "message", body: storedBody, fallback: "" },
+						{ key: "use_of_funds_v1", title: "Use of Funds", kind: "message", body: "buckets present", fallback: "" },
+					],
+				},
+				gate_state: null, updated_at: "2026-06-01T00:00:00",
+			},
+		});
+		const report = await runCoverageAudit(pool, ["uof00001-0000-0000-0000-000000000001"], {
+			labels: { "uof00001-0000-0000-0000-000000000001": "UoFDeal" },
+		});
+
+		const deal = report.deals[0];
+		expect(deal).toBeDefined();
+
+		// use_of_funds slot must be classified OK_MATCH (not REGRESSED)
+		const uofResult = deal!.slot_results.find((r) => r.slot === "use_of_funds");
+		expect(uofResult).toBeDefined();
+		expect(uofResult!.classification).toBe("OK_MATCH");
+
+		// The portfolio summary ok_match count must include this deal's slot
+		const uofBreakdown = report.portfolio_summary.slot_breakdown.find((b) => b.slot === "use_of_funds");
+		expect(uofBreakdown?.ok_match).toBeGreaterThanOrEqual(1);
+		expect(uofBreakdown?.regressed ?? 0).toBe(0);
+	});
+
+	it("classifies use_of_funds slot as REGRESSED when stored=Computable,reason=none but text detectors find nothing", async () => {
+		// Stored as Computable with reason=none (text-derived) but DPU page doesn't contain a match.
+		// The evidence page ref must exist in dpu_pages so it hits REGRESSED rather than EVIDENCE_REF_MISSING.
+		const storedBody = [
+			`raise_terms: NotComputable | value=none | evidence=none | reason=NO_RAISE_MENTION`,
+			`market_claims: NotComputable | value=none | evidence=none | reason=NO_MARKET_CLAIM_MENTION`,
+			`traction_signal: NotComputable | value=none | evidence=none | reason=NO_TRACTION_SIGNAL_MENTION`,
+			`valuation_terms: NotComputable | value=none | evidence=none | reason=NO_VALUATION_MENTION`,
+			`use_of_funds: Computable | value="spending plan: 40% product" | evidence=dpu:doc:uof00020:page:0 | reason=none`,
+		].join("\n");
+		const pool = mockPool({
+			// Provide a DPU page whose doc prefix matches the evidence ref, but text has no UoF pattern
+			dpu_pages: [
+				{ document_id: "uof00002-0000-0000-0000-000000000002", page_index: 0, page_text: "company overview: we are a SaaS startup" },
+			],
+			report: {
+				status: "complete", engine_version: "v1", upstream_fingerprint: "fp-reg",
+				render_package: {
+					sections: [
+						{ key: "insight_slots", title: "Slots", kind: "message", body: storedBody, fallback: "" },
+					],
+				},
+				gate_state: null, updated_at: "2026-06-01T00:00:00",
+			},
+		});
+		const report = await runCoverageAudit(pool, ["uof00002-0000-0000-0000-000000000002"], {
+			labels: { "uof00002-0000-0000-0000-000000000002": "RegressedDeal" },
+		});
+
+		const deal = report.deals[0];
+		expect(deal).toBeDefined();
+
+		const uofResult = deal!.slot_results.find((r) => r.slot === "use_of_funds");
+		expect(uofResult).toBeDefined();
+		// Without XLSX reason code, the slot is NOT exempt → REGRESSED or EVIDENCE_REF_MISSING
+		expect(["REGRESSED", "EVIDENCE_REF_MISSING"]).toContain(uofResult!.classification);
+	});
+
+	it("DealCoverageResult.structured_coverage.use_of_funds_v1 is true when section present in render_package", async () => {
+		const storedBody = `use_of_funds: Computable | value="Use of funds: Product 50%, Sales 50% (XLSX)" | evidence=dpu:doc:uof0003:page:0 | reason=DERIVED_FROM_USE_OF_FUNDS`;
+		const pool = mockPool({
+			dpu_pages: [],
+			report: {
+				status: "complete", engine_version: "v1", upstream_fingerprint: "fp-sc",
+				render_package: {
+					sections: [
+						{ key: "insight_slots", title: "Slots", kind: "message", body: storedBody, fallback: "" },
+						{ key: "use_of_funds_v1", title: "Use of Funds", kind: "message", body: "data", fallback: "" },
+					],
+				},
+				gate_state: null, updated_at: "2026-06-01T00:00:00",
+			},
+		});
+		const report = await runCoverageAudit(pool, ["uof00003-0000-0000-0000-000000000003"], {});
+
+		const deal = report.deals[0];
+		expect(deal?.structured_coverage.use_of_funds_v1).toBe(true);
+		expect(deal?.structured_coverage.financial_statement_v1).toBe(false);
+
+		// portfolio_summary must aggregate
+		expect(report.portfolio_summary.structured_coverage_summary.deals_with_use_of_funds_v1).toBe(1);
+		expect(report.portfolio_summary.structured_coverage_summary.deals_with_financial_statement_v1).toBe(0);
+	});
+
+	it("DealCoverageResult.structured_coverage false when no structured sections in render_package", async () => {
+		const storedBody = `use_of_funds: NotComputable | value=none | evidence=none | reason=NO_USE_OF_FUNDS_MENTION`;
+		const pool = mockPool({
+			dpu_pages: [],
+			report: {
+				status: "complete", engine_version: "v1", upstream_fingerprint: "fp-no-sc",
+				render_package: {
+					sections: [
+						{ key: "insight_slots", title: "Slots", kind: "message", body: storedBody, fallback: "" },
+					],
+				},
+				gate_state: null, updated_at: "2026-06-01T00:00:00",
+			},
+		});
+		const report = await runCoverageAudit(pool, ["uof00004-0000-0000-0000-000000000004"], {});
+
+		const deal = report.deals[0];
+		expect(deal?.structured_coverage.use_of_funds_v1).toBe(false);
+		expect(deal?.structured_coverage.financial_statement_v1).toBe(false);
+
+		expect(report.portfolio_summary.structured_coverage_summary.deals_with_use_of_funds_v1).toBe(0);
+	});
+
+	it("printCoverageMarkdown includes Structured Coverage section", () => {
+		const report: CoverageAuditReport = {
+			generated_at: "2026-06-01T00:00:00.000Z",
+			meta: { selected_slot: null, selected_slot_rationale: "no DETECTOR_GAP slots found" },
+			deals: [],
+			portfolio_summary: {
+				total_deals: 3, deals_ok: 3, deals_with_gaps: 0,
+				deals_with_stale: 0, deals_with_regressions: 0,
+				slot_breakdown: [],
+				structured_coverage_summary: {
+					deals_with_financial_statement_v1: 2,
+					deals_with_use_of_funds_v1: 1,
+				},
+			},
+			tightening_candidates: [],
+		};
+		const md = printCoverageMarkdown(report);
+		expect(md).toContain("Structured Coverage");
+		expect(md).toContain("financial_statement_v1");
+		expect(md).toContain("use_of_funds_v1");
+		expect(md).toContain("2 / 3");
+		expect(md).toContain("1 / 3");
 	});
 });

@@ -796,3 +796,167 @@ describe("populateDocumentPageUnderstandingFromVisualExtractions — cross-docum
 		}
 	});
 });
+
+// ─── Excel row currency-formatting utilities ─────────────────────────────────
+
+describe("isMoneyRowLabel", () => {
+	it("returns true for canonical money-row labels (case-insensitive, plural/singular)", async () => {
+		const { isMoneyRowLabel } = await import("../document-page-understanding.js");
+		expect(isMoneyRowLabel("Total Revenues")).toBe(true);
+		expect(isMoneyRowLabel("total revenues")).toBe(true);
+		expect(isMoneyRowLabel("Total Revenue")).toBe(true);
+		expect(isMoneyRowLabel("Gross Profit")).toBe(true);
+		expect(isMoneyRowLabel("gross profit")).toBe(true);
+		expect(isMoneyRowLabel("Total Expenses")).toBe(true);
+		expect(isMoneyRowLabel("Total Expense")).toBe(true);
+		expect(isMoneyRowLabel("Net Income")).toBe(true);
+		expect(isMoneyRowLabel("Operating Income")).toBe(true);
+		expect(isMoneyRowLabel("EBITDA")).toBe(true);
+		expect(isMoneyRowLabel("cogs")).toBe(true);
+		expect(isMoneyRowLabel("Cost of Goods Sold")).toBe(true);
+		expect(isMoneyRowLabel("Contribution Margin")).toBe(true);
+		expect(isMoneyRowLabel("Sales")).toBe(true);
+		expect(isMoneyRowLabel("Revenue")).toBe(true);
+		expect(isMoneyRowLabel("Cash")).toBe(true);
+		expect(isMoneyRowLabel("Burn")).toBe(true);
+	});
+
+	it("returns false for non-money labels", async () => {
+		const { isMoneyRowLabel } = await import("../document-page-understanding.js");
+		expect(isMoneyRowLabel("Revenue Projections 2026 - 2028")).toBe(false);
+		expect(isMoneyRowLabel("2026 Revenue Projections")).toBe(false);
+		expect(isMoneyRowLabel("Active customers")).toBe(false);
+		expect(isMoneyRowLabel("Retention ratio")).toBe(false);
+		expect(isMoneyRowLabel("Monthly Totals")).toBe(false);
+		expect(isMoneyRowLabel("VC Subscriptions")).toBe(false);
+		expect(isMoneyRowLabel("Summary Results")).toBe(false);
+		expect(isMoneyRowLabel("")).toBe(false);
+	});
+});
+
+describe("formatExcelRowValueAsCurrency", () => {
+	it("formats integer values >= 1000 with $ and commas", async () => {
+		const { formatExcelRowValueAsCurrency } = await import("../document-page-understanding.js");
+		expect(formatExcelRowValueAsCurrency("3337000")).toBe("$3,337,000");
+		expect(formatExcelRowValueAsCurrency("15502000")).toBe("$15,502,000");
+		expect(formatExcelRowValueAsCurrency("35778000")).toBe("$35,778,000");
+		expect(formatExcelRowValueAsCurrency("1000")).toBe("$1,000");
+	});
+
+	it("formats decimal values >= 1000 with 2dp", async () => {
+		const { formatExcelRowValueAsCurrency } = await import("../document-page-understanding.js");
+		expect(formatExcelRowValueAsCurrency("3018437.36")).toBe("$3,018,437.36");
+		expect(formatExcelRowValueAsCurrency("6615082.08")).toBe("$6,615,082.08");
+	});
+
+	it("formats negative integer values with leading minus", async () => {
+		const { formatExcelRowValueAsCurrency } = await import("../document-page-understanding.js");
+		expect(formatExcelRowValueAsCurrency("-495790")).toBe("-$495,790");
+	});
+
+	it("does NOT format small numbers (abs < 1000)", async () => {
+		const { formatExcelRowValueAsCurrency } = await import("../document-page-understanding.js");
+		expect(formatExcelRowValueAsCurrency("1")).toBe("1");
+		expect(formatExcelRowValueAsCurrency("12")).toBe("12");
+		expect(formatExcelRowValueAsCurrency("999")).toBe("999");
+		expect(formatExcelRowValueAsCurrency("0")).toBe("0");
+	});
+
+	it("does NOT format percentage-like values", async () => {
+		const { formatExcelRowValueAsCurrency } = await import("../document-page-understanding.js");
+		expect(formatExcelRowValueAsCurrency("60.00%")).toBe("60.00%");
+		expect(formatExcelRowValueAsCurrency("18000%")).toBe("18000%"); // %-suffix blocks formatting
+	});
+
+	it("does NOT format values already carrying a currency prefix", async () => {
+		const { formatExcelRowValueAsCurrency } = await import("../document-page-understanding.js");
+		expect(formatExcelRowValueAsCurrency("$3,337,000")).toBe("$3,337,000");
+	});
+
+	it("does NOT format non-numeric strings", async () => {
+		const { formatExcelRowValueAsCurrency } = await import("../document-page-understanding.js");
+		expect(formatExcelRowValueAsCurrency("Total Revenues")).toBe("Total Revenues");
+		expect(formatExcelRowValueAsCurrency("2026-01-01 00:00:00")).toBe("2026-01-01 00:00:00");
+		expect(formatExcelRowValueAsCurrency("")).toBe("");
+	});
+});
+
+describe("buildExcelRangePageText", () => {
+	it("currency-formats numeric cells in Total Revenues and Total Expenses rows", async () => {
+		const { buildExcelRangePageText } = await import("../document-page-understanding.js");
+		const rows = [
+			{ col_A: "Total Revenues", col_B: null, col_C: 3337000, col_D: 15502000, col_E: 35778000 },
+			{ col_A: "Total Expenses", col_B: null, col_C: 3018437.36, col_D: 6615082.08, col_E: 12599570 },
+		];
+		const text = buildExcelRangePageText(rows);
+		expect(text).toContain("$3,337,000");
+		expect(text).toContain("$15,502,000");
+		expect(text).toContain("$35,778,000");
+		expect(text).toContain("$3,018,437.36");
+		expect(text).toContain("$6,615,082.08");
+		expect(text).toContain("$12,599,570");
+	});
+
+	it("currency-formats Gross Profit rows including decimals", async () => {
+		const { buildExcelRangePageText } = await import("../document-page-understanding.js");
+		const rows = [
+			{ col_A: "Gross Profit", col_B: null, col_C: 318562.64, col_D: 8886917.92, col_E: 23178430 },
+		];
+		const text = buildExcelRangePageText(rows);
+		expect(text).toContain("$318,562.64");
+		expect(text).toContain("$8,886,917.92");
+		expect(text).toContain("$23,178,430");
+	});
+
+	it("does NOT currency-format non-money label rows (Active customers)", async () => {
+		const { buildExcelRangePageText } = await import("../document-page-understanding.js");
+		const rows = [
+			{ col_A: "Active customers", col_B: null, col_C: 18000 },
+		];
+		const text = buildExcelRangePageText(rows);
+		expect(text).not.toContain("$18,000");
+		expect(text).toContain("18000");
+	});
+
+	it("does NOT format percentage strings even in money-label rows", async () => {
+		const { buildExcelRangePageText } = await import("../document-page-understanding.js");
+		// Retention ratio is NOT in the allowlist — no currency formatting
+		const rows = [
+			{ col_A: "Retention ratio", col_B: "60.00%" },
+		];
+		const text = buildExcelRangePageText(rows);
+		expect(text).not.toContain("$60");
+		expect(text).toContain("60.00%");
+	});
+
+	it("preserves null/empty cells as empty strings in pipe format", async () => {
+		const { buildExcelRangePageText } = await import("../document-page-understanding.js");
+		const rows = [
+			{ col_A: "Total Revenues", col_B: null, col_C: 3337000 },
+		];
+		const text = buildExcelRangePageText(rows);
+		// Should be "- Total Revenues |  | $3,337,000"
+		expect(text).toMatch(/Total Revenues.*\|\s*\|\s*\$3,337,000/);
+	});
+
+	it("respects maxRows limit", async () => {
+		const { buildExcelRangePageText } = await import("../document-page-understanding.js");
+		const rows = Array.from({ length: 20 }, (_, i) => ({ col_A: `Row ${i}`, col_B: i * 1000 }));
+		const text = buildExcelRangePageText(rows, 5);
+		const lineCount = text.split("\n").length;
+		expect(lineCount).toBe(5);
+	});
+
+	// Regression: ensure the generated page_text is matchable by the updated REVENUE_VALUE_PATTERN
+	it("generates text where REVENUE_VALUE_PATTERN matches 'Total Revenues' rows", async () => {
+		const { buildExcelRangePageText } = await import("../document-page-understanding.js");
+		const rows = [
+			{ col_A: "Total Revenues", col_B: null, col_C: 3337000, col_D: 15502000, col_E: 35778000 },
+		];
+		const text = buildExcelRangePageText(rows);
+		// Updated pattern: total\s+revenues?  + [^$\n]{0,50}? + $amount
+		const REVENUE_VALUE_PATTERN =
+			/(?:annual\s+revenues?|quarterly\s+revenues?|total\s+revenues?|gross\s+revenues?)[^$\n]{0,50}?\$[\d,.]+\s*[BMKbmk]?/i;
+		expect(REVENUE_VALUE_PATTERN.test(text)).toBe(true);
+	});
+});

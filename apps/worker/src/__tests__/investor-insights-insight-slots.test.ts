@@ -317,6 +317,25 @@ describe("Stage 1 – Deterministic Insight Slots", () => {
 			/use_of_funds: NotComputable \| value=none \| evidence=none \| reason=NO_USE_OF_FUNDS_MENTION/
 		);
 	});
+
+	it("use_of_funds is Computable from Ask-slide percentage table (no 'use of funds' header)", async () => {
+		// Deck layout: The Ask slide presents budget splits as a percentage table
+		// without any explicit "Use of funds" phrase. Should be detected via
+		// detectAskSlideAllocation and returned as Computable.
+		mockPool = makeDpuPool(
+			"The Ask $2M Pre-Seed Scale product, build team, accelerate go-to-market " +
+				"40% 30% 20% 10% People / Hiring Go-to-Market Product / Engineering Contingency 15 Ask"
+		);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slotsSection = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slotsSection).toBeTruthy();
+		expect(slotsSection.body).toMatch(/use_of_funds: Computable/);
+		expect(slotsSection.body).toMatch(/evidence=dpu:doc:[0-9a-f]{8}:page:\d+/);
+		expect(slotsSection.body).toMatch(/People \/ Hiring 40%/);
+	});
 });
 
 // ── DPU Diagnostics tests (dev mode) ─────────────────────────────────────────
@@ -710,6 +729,108 @@ describe("Level-up: raise range + traction % detection", () => {
 	it("raise_terms remains NotComputable when 'approximately' appears with no money token", async () => {
 		// Adverb alone without a money amount must NOT trigger raise_terms.
 		mockPool = makeDpuPool("We are raising approximately the same number of customers as last year.");
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		expect(slots.body).toMatch(/raise_terms: NotComputable.*reason=NO_RAISE_MENTION/);
+	});
+});
+
+// ── Raise context-gating: TAM/SAM/SOM exclusion + Ask-slide priority ─────────
+
+/**
+ * Multi-page pool factory for TAM-vs-Ask regression tests.
+ * Simulates a pitch deck where page 8 contains TAM/SAM/SOM market sizing
+ * (with an incidental "$8B investment opportunity" phrase that would falsely
+ * trigger the raise detector) and page 14 is the explicit "The Ask" slide.
+ */
+function makeTamVsAskPool() {
+	const pages = [
+		{
+			document_id: "bbbbbbbb-0000-0000-0000-000000000001",
+			page_index: 8,
+			payload: {
+				page_text:
+					"Market Opportunity. Total Addressable Market (TAM) $8B investment opportunity. " +
+					"SAM: $600M Serviceable Addressable Market. SOM: $50M Serviceable Obtainable Market.",
+			},
+		},
+		{
+			document_id: "bbbbbbbb-0000-0000-0000-000000000001",
+			page_index: 14,
+			payload: {
+				page_text:
+					"The Ask. We are raising $2M Pre-Seed Round. Use of funds: product 60%, sales 40%.",
+			},
+		},
+	];
+	return {
+		query: vi.fn(async (sql: string) => {
+			if (sql.includes("current_database")) return { rows: [{ db: "testdb", schema: "public" }] };
+			if (sql.includes("investor_insight_reports")) return { rows: [{ id: "mock-report-id" }] };
+			if (sql.includes("document_id") && sql.includes("document_page_understanding")) {
+				return { rows: pages };
+			}
+			if (sql.includes("COUNT") && sql.includes("document_page_understanding")) {
+				return { rows: [{ total: "2", non_empty: "2" }] };
+			}
+			if (sql.includes("evidence_items")) return { rows: [] };
+			if (sql.includes("documents") && sql.includes("COUNT") && !sql.includes("visual_assets")) {
+				return { rows: [{ c: "1" }] };
+			}
+			if (sql.includes("visual_assets")) return { rows: [{ c: "4" }] };
+			return { rows: [] };
+		}),
+	} as any;
+}
+
+describe("Stage 1 – Raise context-gating: TAM exclusion + Ask-slide priority", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockEvaluateGates.mockResolvedValue(g3OnlyFailGateState());
+	});
+
+	it("raise_terms picks Ask-slide amount ($2M) NOT the TAM slide amount ($8B) when both pages present", async () => {
+		mockPool = makeTamVsAskPool();
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		// Must resolve to Computable with the Ask-slide value
+		expect(slots.body).toMatch(/raise_terms: Computable/);
+		// Value must reference $2M from Ask slide
+		expect(slots.body).toMatch(/value="[^"]*2M[^"]*"/);
+		// Evidence must point to page 14 (The Ask), not page 8 (TAM)
+		expect(slots.body).toMatch(/evidence=dpu:doc:bbbbbbbb:page:14/);
+		// Must NOT contain $8B or $600M as the raise value
+		const raiseLine = (slots.body as string).split("\n").find((l: string) => l.includes("raise_terms:"));
+		expect(raiseLine).toBeTruthy();
+		expect(raiseLine).not.toMatch(/8B/);
+		expect(raiseLine).not.toMatch(/600M/);
+	});
+
+	it("market_claims remains Computable from TAM slide even when raise is gated away from it", async () => {
+		mockPool = makeTamVsAskPool();
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const slots = pkg.sections.find((s: any) => s.key === "insight_slots");
+		expect(slots).toBeTruthy();
+		// TAM detection must still fire on page 8 — gating is ONLY for raise detection
+		expect(slots.body).toMatch(/market_claims: Computable/);
+	});
+
+	it("raise_terms is NotComputable when ONLY a TAM slide is present (no Ask slide)", async () => {
+		// Single page with only TAM/SAM/SOM market sizing — no raise amount should be extracted.
+		mockPool = makeDpuPool(
+			"Total Addressable Market $8B investment opportunity. SAM $600M. SOM $50M."
+		);
 
 		await generateInvestorInsightsProcessor(makeJob());
 		const pkg = getInsertedRenderPkg();

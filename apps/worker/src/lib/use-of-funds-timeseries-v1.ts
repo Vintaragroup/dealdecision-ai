@@ -171,7 +171,7 @@ interface ParsedTextRow {
 	cells: string[];
 }
 
-const ROW_LINE_RE = /^-\s*row_(\d+):\s*(.+)$/;
+const ROW_LINE_RE = /^-\s*(?:row_)?(\d+):\s*(.+)$/;
 
 function parsePageTextRows(pageText: string): ParsedTextRow[] {
 	const results: ParsedTextRow[] = [];

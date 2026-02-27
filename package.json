@@ -69,6 +69,7 @@
     "verify:uof-and-implied:3deals": "pnpm --filter worker verify:uof-and-implied:3deals",
     "proof:uof-and-implied:api": "pnpm --filter worker proof:uof-and-implied:api",
     "proof:financial-reconciliation:3deals": "pnpm --filter worker proof:financial-reconciliation:3deals",
+    "proof:multisource-financials:3deals": "pnpm --filter worker proof:multisource-financials:3deals",
     "verify:governed-summary-cache": "pnpm --filter worker verify:governed-summary-cache"
   },
   "devDependencies": {

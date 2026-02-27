@@ -43,7 +43,7 @@ async function main() {
   );
   if (!repRes.rows.length) { console.log("No report found."); } else {
     const rp = repRes.rows[0].render_package as Record<string, unknown>;
-    const slotsBody = (rp?.insight_slots ?? rp?.sections?.insight_slots ?? null) as string | null;
+    const slotsBody = (rp?.insight_slots ?? (rp?.sections as Record<string, unknown> | undefined)?.insight_slots ?? null) as string | null;
     console.log("Updated at:", repRes.rows[0].updated_at);
     const traction = typeof slotsBody === "string"
       ? slotsBody.split("\n").find(l => l.includes("traction_signal"))

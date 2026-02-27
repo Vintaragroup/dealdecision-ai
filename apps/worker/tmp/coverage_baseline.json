@@ -1,5 +1,9 @@
 {
-  "generated_at": "2026-02-26T00:18:58.444Z",
+  "generated_at": "2026-02-26T16:22:42.315Z",
+  "meta": {
+    "selected_slot": "use_of_funds",
+    "selected_slot_rationale": "highest gaps=6; top keywords: spend(7), budget(4), headcount(3)"
+  },
   "deals": [
     {
       "deal_id": "adb2a1cf-bbb1-4f3b-8735-e2249415124f",
@@ -554,7 +558,7 @@
       "deal_label": "Deal Decision",
       "audit_status": "partial",
       "error": null,
-      "dpu_pages_total": 16,
+      "dpu_pages_total": 18,
       "slot_results": [
         {
           "slot": "raise_terms",
@@ -564,7 +568,7 @@
           "recomputed_value": "$600-900M TAM SAM SOM Alternative Investment",
           "classification": "OK_MATCH",
           "candidate_pages": [],
-          "dpu_pages_scanned": 16
+          "dpu_pages_scanned": 18
         },
         {
           "slot": "market_claims",
@@ -574,97 +578,17 @@
           "recomputed_value": "$600-900M TAM",
           "classification": "OK_MATCH",
           "candidate_pages": [],
-          "dpu_pages_scanned": 16
+          "dpu_pages_scanned": 18
         },
         {
           "slot": "traction_signal",
-          "stored_status": "NotComputable",
-          "stored_value": null,
+          "stored_status": "Computable",
+          "stored_value": "Revenue detected: $3,337,000 (2026, XLSX)",
           "recomputed_status": "NotComputable",
           "recomputed_value": null,
-          "classification": "DETECTOR_GAP",
-          "candidate_pages": [
-            {
-              "ref": "dpu:doc:6557c7c2:page:3",
-              "triggeredKeywords": [
-                "arr"
-              ],
-              "snippet": " —~> LP-ready contracts, CIMs generate narratives align IC, invest Track portfolio health. outputs 4 —_— —_— — —_— ee NR"
-            },
-            {
-              "ref": "dpu:doc:6557c7c2:page:4",
-              "triggeredKeywords": [
-                "arr"
-              ],
-              "snippet": "ag gaps Output: Audit-ready investment narrative with explicit next steps Risks & mitigations * Key assumptions « Eviden"
-            },
-            {
-              "ref": "dpu:doc:6557c7c2:page:5",
-              "triggeredKeywords": [
-                "pipeline",
-                "%"
-              ],
-              "snippet": " DealDecision Al [232] @ = Pages — Deal Pipeline Search dea s, decuments, mye 7 8 o a D a B .: : © woe G “4 -~ © eo sai "
-            },
-            {
-              "ref": "dpu:doc:6557c7c2:page:6",
-              "triggeredKeywords": [
-                "arr",
-                "revenue",
-                "growth",
-                "%"
-              ],
-              "snippet": " . . _. © Svong revenue traction ($100K + ARR) Competitive differentiation unclear @ Cleatiy articulate your unique va'u"
-            },
-            {
-              "ref": "dpu:doc:6557c7c2:page:7",
-              "triggeredKeywords": [
-                "%"
-              ],
-              "snippet": "90x 98%ot 100% Faster Deal Screens Accuracy Source-Linked Seconds, not days Less than 2% hallucination rate Every conclu"
-            },
-            {
-              "ref": "dpu:doc:6557c7c2:page:9",
-              "triggeredKeywords": [
-                "pipeline"
-              ],
-              "snippet": "ers What They Do Our Relationship CRM / Pipeline Affinity, DealCloud, Dynamo Track relationships & deals Import from / e"
-            },
-            {
-              "ref": "dpu:doc:6557c7c2:page:11",
-              "triggeredKeywords": [
-                "pipeline",
-                "%"
-              ],
-              "snippet": "RM * Serves law firms, not investors. * Pipeline tracking, not analysis. * LP reporting focused. * Generative Al with ha"
-            },
-            {
-              "ref": "dpu:doc:6557c7c2:page:12",
-              "triggeredKeywords": [
-                "conversion",
-                "sales",
-                "pipeline",
-                "demo",
-                "%"
-              ],
-              "snippet": "ne & Traction Beta / Pilot Phase — Paid Conversion + Lean teams (2-5 people) feel diligence pain acutely * 60 day trial "
-            },
-            {
-              "ref": "dpu:doc:6557c7c2:page:13",
-              "triggeredKeywords": [
-                "growth"
-              ],
-              "snippet": "tion tiers scaled to firm size Emerging Growth Scale Enterprise $10M-$100M $100M-$500M $500M-$1B S1B+ $1,500-$2,500 $4,0"
-            },
-            {
-              "ref": "dpu:doc:6557c7c2:page:14",
-              "triggeredKeywords": [
-                "%"
-              ],
-              "snippet": ", build team, accelerate go-to-market 40% 30% 20% 10% People / Hiring Go-to-Market Product / Engineering Contingency 15 "
-            }
-          ],
-          "dpu_pages_scanned": 16
+          "classification": "OK_MATCH",
+          "candidate_pages": [],
+          "dpu_pages_scanned": 18
         },
         {
           "slot": "valuation_terms",
@@ -674,7 +598,7 @@
           "recomputed_value": "valuation",
           "classification": "OK_MATCH",
           "candidate_pages": [],
-          "dpu_pages_scanned": 16
+          "dpu_pages_scanned": 18
         },
         {
           "slot": "use_of_funds",
@@ -699,14 +623,14 @@
               "snippet": "30 Conversations / Demos * Limited / no budget for dedicated analysts * End-User License Agreement + Evaluate 50-200+ de"
             }
           ],
-          "dpu_pages_scanned": 16
+          "dpu_pages_scanned": 18
         }
       ],
       "summary": {
-        "ok_match": 3,
+        "ok_match": 4,
         "stale_stored": 0,
         "regressed": 0,
-        "detector_gap": 2,
+        "detector_gap": 1,
         "true_absence": 0,
         "dpu_load_failed": 0,
         "evidence_ref_missing": 0
@@ -2018,10 +1942,10 @@
       },
       {
         "slot": "traction_signal",
-        "ok_match": 8,
+        "ok_match": 9,
         "stale_stored": 0,
         "regressed": 0,
-        "detector_gap": 5,
+        "detector_gap": 4,
         "true_absence": 0
       },
       {
@@ -2041,5 +1965,200 @@
         "true_absence": 3
       }
     ]
-  }
+  },
+  "tightening_candidates": [
+    {
+      "slot": "market_claims",
+      "detector_gap": 6,
+      "top_keywords": [
+        {
+          "keyword": "sam",
+          "count": 14
+        },
+        {
+          "keyword": "som",
+          "count": 14
+        },
+        {
+          "keyword": "tam",
+          "count": 9
+        },
+        {
+          "keyword": "market size",
+          "count": 2
+        },
+        {
+          "keyword": "billion",
+          "count": 1
+        }
+      ],
+      "top_headers": [],
+      "top_refs": [
+        {
+          "ref": "dpu:doc:3a8a0ef8:page:0",
+          "snippet": "tion has been set. Palm needs to inject some strategic investment to unlock the tremendous potential"
+        },
+        {
+          "ref": "dpu:doc:3a8a0ef8:page:4",
+          "snippet": "ch the game of golf, we decided to find something we could improve- the style. We started with the o"
+        },
+        {
+          "ref": "dpu:doc:3a8a0ef8:page:5",
+          "snippet": "eneur and has the benefit of working in some successful start-ups along the way. Prior to Palm he ma"
+        }
+      ]
+    },
+    {
+      "slot": "use_of_funds",
+      "detector_gap": 6,
+      "top_keywords": [
+        {
+          "keyword": "spend",
+          "count": 7
+        },
+        {
+          "keyword": "budget",
+          "count": 4
+        },
+        {
+          "keyword": "headcount",
+          "count": 3
+        },
+        {
+          "keyword": "runway",
+          "count": 3
+        }
+      ],
+      "top_headers": [],
+      "top_refs": [
+        {
+          "ref": "dpu:doc:1cc11a36:page:1",
+          "snippet": "Sheet: Budget Summary: Budget is classified as financial model. Time-series headers were not clearly"
+        },
+        {
+          "ref": "dpu:doc:1cc11a36:page:9",
+          "snippet": "3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 - 2: G&A Headcount | 0 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 | 2 - 3: R&D H"
+        },
+        {
+          "ref": "dpu:doc:e41c0599:page:11",
+          "snippet": "ll 3 $350 B forms of workforce training spend: instructor-led, = digital, leadership, compliance, et"
+        }
+      ]
+    },
+    {
+      "slot": "traction_signal",
+      "detector_gap": 4,
+      "top_keywords": [
+        {
+          "keyword": "%",
+          "count": 31
+        },
+        {
+          "keyword": "revenue",
+          "count": 11
+        },
+        {
+          "keyword": "arr",
+          "count": 7
+        },
+        {
+          "keyword": "customers",
+          "count": 7
+        },
+        {
+          "keyword": "growth",
+          "count": 6
+        }
+      ],
+      "top_headers": [],
+      "top_refs": [
+        {
+          "ref": "dpu:doc:b5c3b04e:page:0",
+          "snippet": " Platform a — ™ S a > @ Pay at least 215% deposit a a “ a _ . h eeu © Buy asensible car from this li"
+        },
+        {
+          "ref": "dpu:doc:b5c3b04e:page:1",
+          "snippet": "owered _ Y Record-breaking Leanest & $0 to $28M ARR Operationally customer best-in-class in 3 years "
+        },
+        {
+          "ref": "dpu:doc:b5c3b04e:page:5",
+          "snippet": "e (Normally $19.99 per check) Empowering customers to make smarter financial decisions x Experience’"
+        }
+      ]
+    },
+    {
+      "slot": "valuation_terms",
+      "detector_gap": 3,
+      "top_keywords": [
+        {
+          "keyword": "note",
+          "count": 3
+        },
+        {
+          "keyword": "equity",
+          "count": 2
+        },
+        {
+          "keyword": "safe",
+          "count": 1
+        }
+      ],
+      "top_headers": [],
+      "top_refs": [
+        {
+          "ref": "dpu:doc:586c116b:page:0",
+          "snippet": "r Futures Trade Simy'ativa | GM & Coach Safety 7 _ ; ARC Search Player Metrics Injury Simulation Sez"
+        },
+        {
+          "ref": "dpu:doc:d5f887e5:page:6",
+          "snippet": "ssment are accurate, it is important to note that these figures are distributed across a five-year s"
+        },
+        {
+          "ref": "dpu:doc:d5f887e5:page:16",
+          "snippet": "platform is designed to be flexible. As noted in your Assessment, our value lies in our proprietary "
+        }
+      ]
+    },
+    {
+      "slot": "raise_terms",
+      "detector_gap": 2,
+      "top_keywords": [
+        {
+          "keyword": "$",
+          "count": 16
+        },
+        {
+          "keyword": "rais",
+          "count": 5
+        },
+        {
+          "keyword": "round",
+          "count": 5
+        },
+        {
+          "keyword": "capital",
+          "count": 3
+        },
+        {
+          "keyword": "raising",
+          "count": 3
+        }
+      ],
+      "top_headers": [],
+      "top_refs": [
+        {
+          "ref": "dpu:doc:586c116b:page:1",
+          "snippet": " 2022 Cost to Acquire: fe. _~ ° Three i Round Draft Picks Pa a ae C4. tah ¢ $230M, fully guaranteed "
+        },
+        {
+          "ref": "dpu:doc:586c116b:page:2",
+          "snippet": "Sportsbook Executive General Managers | $12.4M TAM Sportsbook Operators $12M TAM a | $238B TAM at 12"
+        },
+        {
+          "ref": "dpu:doc:586c116b:page:3",
+          "snippet": "liability ARG Index 4d Profile | Faye Fueures, Inse arelat on | G18 Casch Satety | 595 AL Search > p"
+        }
+      ]
+    }
+  ]
 }

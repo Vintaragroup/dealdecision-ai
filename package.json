@@ -59,7 +59,17 @@
     "audit:portfolio:coverage:baseline": "pnpm --filter worker audit:investor-insights:coverage -- --deal-list tmp/audit_deals.json --concurrency 4",
     "audit:portfolio:coverage:baseline:out": "TS=$(date +%Y%m%dT%H%M%SZ) && pnpm --filter worker audit:investor-insights:coverage -- --deal-list tmp/audit_deals.json --concurrency 4 --out tmp/coverage-baseline-$TS && echo BASELINE_TS=$TS",
     "audit:portfolio:coverage:current:out": "TS=$(date +%Y%m%dT%H%M%SZ) && pnpm --filter worker audit:investor-insights:coverage -- --deal-list tmp/audit_deals.json --concurrency 4 --out tmp/coverage-current-$TS && echo CURRENT_TS=$TS",
-    "audit:portfolio:coverage:single": "pnpm --filter worker audit:investor-insights:coverage -- --deal-id"
+    "audit:portfolio:coverage:single": "pnpm --filter worker audit:investor-insights:coverage -- --deal-id",
+    "regen:portfolio:3deals": "pnpm --filter worker regen:investor-insights -- --deal-list tmp/audit_3deals.json",
+    "coverage:audit:3deals": "pnpm --filter worker audit:investor-insights:coverage -- --deal-list tmp/audit_3deals.json --out tmp/coverage-3deals",
+    "coverage:delta:3deals": "pnpm --filter worker coverage:delta:3deals",
+    "verify:deal:uof": "pnpm --filter worker verify:uof:e2e --",
+    "verify:uof:3deals": "pnpm --filter worker verify:uof:3deals",
+    "verify:implied-capital:3deals": "pnpm --filter worker verify:implied-capital:3deals",
+    "verify:uof-and-implied:3deals": "pnpm --filter worker verify:uof-and-implied:3deals",
+    "proof:uof-and-implied:api": "pnpm --filter worker proof:uof-and-implied:api",
+    "proof:financial-reconciliation:3deals": "pnpm --filter worker proof:financial-reconciliation:3deals",
+    "verify:governed-summary-cache": "pnpm --filter worker verify:governed-summary-cache"
   },
   "devDependencies": {
     "@jest/globals": "^30.2.0",

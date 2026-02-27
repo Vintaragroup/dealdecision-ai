@@ -360,4 +360,58 @@ describe("classifyDealLayouts", () => {
 		expect(docAId?.dominant_layout).toBe("income_statement");
 		expect(docBId?.dominant_layout).toBe("use_of_funds");
 	});
+
+	// Phase K: saas_kpis and bank_transactions detection
+	it("detects saas_kpis from sheet_name containing 'saas kpi'", () => {
+		const result = classifyDealLayouts("deal-saas", [
+			makeExcelRange({ sheet_name: "SaaS KPIs Dashboard" }),
+		]);
+		expect(result.has_saas_kpis).toBe(true);
+		const page = result.documents[0]!.layout_map[0];
+		expect(page.layout).toBe("saas_kpis");
+	});
+
+	it("detects saas_kpis from content signals (MRR + churn)", () => {
+		const result = classifyDealLayouts("deal-saas-content", [
+			makeExcelRange({ rowLabels: ["MRR", "Churn Rate", "CAC", "LTV"] }),
+		]);
+		expect(result.has_saas_kpis).toBe(true);
+	});
+
+	it("detects bank_transactions from sheet_name containing 'bank statement'", () => {
+		const result = classifyDealLayouts("deal-bank", [
+			makeExcelRange({ sheet_name: "Bank Statement Jan 2024" }),
+		]);
+		expect(result.has_bank_txns).toBe(true);
+		const page = result.documents[0]!.layout_map[0];
+		expect(page.layout).toBe("bank_transactions");
+	});
+
+	it("has_saas_kpis defaults to false when no saas_kpis pages", () => {
+		const result = classifyDealLayouts("deal-no-saas", [
+			makeExcelRange({ sheet_name: "Income Statement" }),
+		]);
+		expect(result.has_saas_kpis).toBe(false);
+	});
+
+	it("has_bank_txns defaults to false when no bank_txns pages", () => {
+		const result = classifyDealLayouts("deal-no-bank", [
+			makeExcelRange({ sheet_name: "Use of Funds" }),
+		]);
+		expect(result.has_bank_txns).toBe(false);
+	});
+
+	it("has_cash_flow flag set from cash_flow page", () => {
+		const result = classifyDealLayouts("deal-cf", [
+			makeExcelRange({ sheet_name: "Cash Flow Statement" }),
+		]);
+		expect(result.has_cash_flow).toBe(true);
+	});
+
+	it("has_balance_sheet flag set from balance_sheet page", () => {
+		const result = classifyDealLayouts("deal-bs", [
+			makeExcelRange({ sheet_name: "Balance Sheet" }),
+		]);
+		expect(result.has_balance_sheet).toBe(true);
+	});
 });

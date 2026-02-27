@@ -48,6 +48,10 @@ import type { FinancialStatementV1 } from "./financial-statement-parser.js";
 import type { UseOfFundsV1 } from "./use-of-funds-parser-v1.js";
 import type { ImpliedCapitalAllocationV1 } from "./implied-capital-allocation-v1.js";
 import type { IncomeStatementAllocationV1 } from "./implied-capital-income-statement-v1.js";
+import type { BalanceSheetV1 } from "./balance-sheet-parser-v1.js";
+import type { CashFlowStatementV1 } from "./cash-flow-parser-v1.js";
+import type { CapTableV1 } from "./cap-table-parser-v1.js";
+import type { SaasKpisV1 } from "./saas-kpis-parser-v1.js";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -68,13 +72,20 @@ export interface FinancialReconciliationV1 {
 	schema_version: "financial_reconciliation_v1";
 	deal_id: string;
 	flags: {
-		revenue_vs_headcount_flag:   ReconciliationFlag;
-		allocation_vs_growth_flag:   ReconciliationFlag;
-		raise_vs_burn_flag:          ReconciliationFlag;
-		margin_vs_infra_ratio_flag:  ReconciliationFlag;
+		revenue_vs_headcount_flag:         ReconciliationFlag;
+		allocation_vs_growth_flag:         ReconciliationFlag;
+		raise_vs_burn_flag:                ReconciliationFlag;
+		margin_vs_infra_ratio_flag:        ReconciliationFlag;
+		// Phase K new flags
+		burn_vs_runway_flag:               ReconciliationFlag;
+		revenue_vs_cac_flag:               ReconciliationFlag;
+		churn_vs_growth_flag:              ReconciliationFlag;
+		cap_table_vs_raise_instrument_flag: ReconciliationFlag;
+		// Phase L new flag
+		dilution_visibility_flag:           ReconciliationFlag;
 	};
 	/**
-	 * Fraction of the four flags that had sufficient data to evaluate (0–1.0).
+	 * Fraction of the (now 9) flags that had sufficient data to evaluate (0–1.0).
 	 * Rounds to 2 decimal places.
 	 */
 	confidence_score: number;
@@ -92,6 +103,11 @@ export interface ReconciliationInputs {
 	useOfFunds:                 UseOfFundsV1 | null;
 	impliedCapitalAllocation:   ImpliedCapitalAllocationV1 | null;
 	incomeStatementAllocation:  IncomeStatementAllocationV1 | null;
+	// Phase K: new optional inputs
+	balanceSheet?:              BalanceSheetV1 | null;
+	cashFlow?:                  CashFlowStatementV1 | null;
+	capTable?:                  CapTableV1 | null;
+	saasKpis?:                  SaasKpisV1 | null;
 }
 
 // ─── Flag-level thresholds (exported for test assertion) ─────────────────────
@@ -439,17 +455,312 @@ function evalMarginVsInfra(
 	};
 }
 
+// ─── Phase K: new flag evaluators ─────────────────────────────────────────────
+
+/**
+ * burn_vs_runway_flag
+ * Cross: cash_balance (balance_sheet OR cash_flow.ending_cash) vs monthly_burn (cash_flow OR financial_statement).
+ * FAIL: runway < 6 months
+ * WARN: runway 6–11 months
+ * PASS: runway ≥ 12 months
+ * SKIP: either cash or burn absent
+ */
+function evalBurnVsRunway(
+	bs:   BalanceSheetV1 | null | undefined,
+	cf:   CashFlowStatementV1 | null | undefined,
+	stmt: FinancialStatementV1 | null,
+): ReconciliationFlag {
+	// Resolve cash balance: prefer balance_sheet cash, fall back to cash_flow ending_cash
+	let cashBalance: number | null = null;
+	const cashRef: string[] = [];
+
+	if (bs?.derived?.cash_latest != null) {
+		cashBalance = bs.derived.cash_latest;
+		cashRef.push(bs.source.page_ref);
+	} else if (cf?.ending_cash && bs == null) {
+		const p0 = cf.periods[0];
+		if (p0) cashBalance = cf.ending_cash[p0] ?? null;
+		if (cashBalance !== null) cashRef.push(cf.source.page_ref);
+	}
+
+	if (cashBalance == null) return skip("Cash balance unavailable (no balance_sheet or cash_flow ending_cash)");
+
+	// Resolve monthly burn: prefer cash_flow.derived, fall back to financial_statement expenses/12
+	let monthlyBurn: number | null = null;
+	const burnRef: string[] = [];
+
+	if (cf?.derived?.monthly_burn_from_ops != null) {
+		monthlyBurn = cf.derived.monthly_burn_from_ops;
+		burnRef.push(cf.source.page_ref);
+	} else if (stmt?.total_expenses) {
+		const p0 = stmt.periods[0];
+		const annualBurn = p0 ? stmt.total_expenses[p0] : null;
+		if (annualBurn != null && annualBurn > 0) {
+			monthlyBurn = annualBurn / 12;
+			burnRef.push(stmt.source.page_ref);
+		}
+	}
+
+	if (monthlyBurn == null || monthlyBurn <= 0) return skip("Monthly burn unavailable or zero");
+
+	const runwayMonths = cashBalance / monthlyBurn;
+	const refs = dedupeRefs([...cashRef, ...burnRef]);
+	const values = { cash_balance: cashBalance, monthly_burn: monthlyBurn, runway_months: runwayMonths };
+
+	if (runwayMonths < THRESHOLDS.RUNWAY_FAIL_MONTHS) {
+		return { status: "FAIL", reason: `Cash runway is ${runwayMonths.toFixed(1)} months (below ${THRESHOLDS.RUNWAY_FAIL_MONTHS}-month minimum)`, values, evidence_refs: refs };
+	}
+	if (runwayMonths < THRESHOLDS.RUNWAY_WARN_MONTHS) {
+		return { status: "WARN", reason: `Cash runway is ${runwayMonths.toFixed(1)} months (below ${THRESHOLDS.RUNWAY_WARN_MONTHS}-month target)`, values, evidence_refs: refs };
+	}
+	return { status: "PASS", reason: `Cash runway is ${runwayMonths.toFixed(1)} months — adequate`, values, evidence_refs: refs };
+}
+
+/**
+ * revenue_vs_cac_flag
+ * Cross: revenue_latest vs cac (SaaS KPIs), checking CAC payback period.
+ * WARN: CAC payback period > 24 months (cac / (arpu || mrr_per_customer) > 24)
+ * WARN: LTV/CAC < 3 when both present
+ * PASS: metrics within range
+ * SKIP: SaaS KPIs absent
+ */
+function evalRevenueVsCac(
+	saas: SaasKpisV1 | null | undefined,
+): ReconciliationFlag {
+	if (!saas) return skip("SaaS KPIs absent (no saas_kpis_v1 parsed)");
+
+	const p0 = saas.periods[0];
+	if (!p0) return skip("SaaS KPIs: no period data");
+
+	const cac    = saas.cac?.[p0] ?? null;
+	const ltv    = saas.ltv?.[p0] ?? null;
+	const arpu   = saas.arpu?.[p0] ?? null;
+	const mrr    = saas.mrr?.[p0] ?? null;
+
+	if (cac == null) return skip("CAC not present in SaaS KPIs");
+
+	const refs = dedupeRefs([saas.source.page_ref]);
+	const values: Record<string, number | null> = { cac, ltv, arpu, mrr };
+
+	// LTV/CAC check
+	if (ltv != null && ltv > 0 && cac > 0) {
+		const ltvCacRatio = ltv / cac;
+		values["ltv_cac_ratio"] = Math.round(ltvCacRatio * 10) / 10;
+		if (ltvCacRatio < 3) {
+			return {
+				status: "WARN",
+				reason: `LTV/CAC ratio is ${values["ltv_cac_ratio"]} — below the 3× SaaS benchmark`,
+				values,
+				evidence_refs: refs,
+			};
+		}
+	}
+
+	// CAC payback via ARPU (monthly)
+	const monthly = arpu ?? mrr;
+	if (monthly != null && monthly > 0 && cac > 0) {
+		const paybackMonths = cac / monthly;
+		values["cac_payback_months"] = Math.round(paybackMonths * 10) / 10;
+		if (paybackMonths > 24) {
+			return {
+				status: "WARN",
+				reason: `CAC payback period is ${values["cac_payback_months"]} months (>24-month threshold)`,
+				values,
+				evidence_refs: refs,
+			};
+		}
+	}
+
+	return {
+		status: "PASS",
+		reason:  ltv != null ? `LTV/CAC ratio ${values["ltv_cac_ratio"]} and CAC payback within range` : "CAC within acceptable range",
+		values,
+		evidence_refs: refs,
+	};
+}
+
+/**
+ * churn_vs_growth_flag
+ * Cross: churn_pct (SaaS KPIs) vs revenue_yoy_growth_pct (financial_statement).
+ * FAIL: churn > 10% AND growth < 0% (contracting AND high churn)
+ * WARN: churn > 10% (elevated churn for any SaaS biz)
+ * WARN: churn > growth_pct/12 (monthly churn exceeds implied monthly growth)
+ * PASS: neither condition triggered
+ * SKIP: churn absent
+ */
+function evalChurnVsGrowth(
+	saas: SaasKpisV1 | null | undefined,
+	stmt: FinancialStatementV1 | null,
+): ReconciliationFlag {
+	if (!saas) return skip("SaaS KPIs absent");
+	const p0 = saas.periods[0];
+	if (!p0) return skip("SaaS KPIs: no period data");
+
+	const churn = saas.churn_pct?.[p0] ?? null;
+	if (churn == null) return skip("Churn rate not present in SaaS KPIs");
+
+	const growthPct = stmt?.derived?.revenue_yoy_growth_pct ?? null;
+	const refs = dedupeRefs([saas.source.page_ref, ...(stmt ? [stmt.source.page_ref] : [])]);
+	const values: Record<string, number | null> = { churn_pct: churn, revenue_yoy_growth_pct: growthPct };
+
+	if (churn > 10 && growthPct != null && growthPct < 0) {
+		return {
+			status: "FAIL",
+			reason: `Churn is ${churn.toFixed(1)}% and revenue is contracting ${growthPct.toFixed(1)}% — compounding decline`,
+			values, evidence_refs: refs,
+		};
+	}
+	if (churn > 10) {
+		return {
+			status: "WARN",
+			reason: `Churn rate of ${churn.toFixed(1)}% exceeds 10% threshold for SaaS businesses`,
+			values, evidence_refs: refs,
+		};
+	}
+	if (growthPct != null) {
+		const impliedMonthlyGrowth = growthPct / 12;
+		if (churn > impliedMonthlyGrowth && impliedMonthlyGrowth > 0) {
+			return {
+				status: "WARN",
+				reason: `Monthly churn (${churn.toFixed(1)}%) exceeds implied monthly revenue growth (${impliedMonthlyGrowth.toFixed(1)}%)`,
+				values, evidence_refs: refs,
+			};
+		}
+	}
+	return {
+		status: "PASS",
+		reason: `Churn rate ${churn.toFixed(1)}% within acceptable range`,
+		values, evidence_refs: refs,
+	};
+}
+
+/**
+ * cap_table_vs_raise_instrument_flag
+ * Cross: cap_table.safe_notes_present vs raise_instrument text (from UoF / evidence).
+ * WARN: cap_table shows SAFEs/notes but no raise instrument identified in deal docs
+ * WARN: cap_table option_pool_pct missing when raise_round is Series A or later (expected for dilution modelling)
+ * PASS: consistent or insufficient data
+ * SKIP: no cap table
+ */
+function evalCapTableVsRaiseInstrument(
+	cap: CapTableV1 | null | undefined,
+	uof: UseOfFundsV1 | null,
+): ReconciliationFlag {
+	if (!cap) return skip("Cap table absent");
+
+	const refs = dedupeRefs([cap.source.page_ref, ...(uof ? [uof.source.page_ref] : [])]);
+	const values: Record<string, number | null> = {
+		option_pool_pct: cap.option_pool_pct,
+		total_pct: cap.total_pct,
+	};
+
+	if (cap.safe_notes_present && !uof) {
+		return {
+			status: "WARN",
+			reason: "Cap table references SAFEs / convertible notes but no Use-of-Funds table found — instrument consistency unverifiable",
+			values, evidence_refs: refs,
+		};
+	}
+
+	if (cap.option_pool_pct == null && cap.stakeholders.length > 2) {
+		return {
+			status: "WARN",
+			reason: "Cap table has multiple stakeholder rows but no option pool percentage identified",
+			values, evidence_refs: refs,
+		};
+	}
+
+	const totalPct = cap.total_pct;
+	if (totalPct != null && Math.abs(totalPct - 100) > 5) {
+		return {
+			status: "WARN",
+			reason: `Cap table ownership percentages sum to ${totalPct.toFixed(1)}% — does not add to ~100%`,
+			values, evidence_refs: refs,
+		};
+	}
+
+	return {
+		status: "PASS",
+		reason: "Cap table structure is consistent with available raise information",
+		values, evidence_refs: refs,
+	};
+}
+
+/**
+ * dilution_visibility_flag
+ * Checks whether the cap table exposes sufficient dilution data for a
+ * prospective investor to model their ownership post-investment.
+ * WARN: cap table present but no ownership percentages in any stakeholder row
+ * WARN: cap table present but post_money_shares is null (no fully-diluted share count)
+ * WARN: option pool missing when cap table has multiple stakeholders (≥3 rows)
+ * PASS: cap table has both pct column AND post_money_shares
+ * SKIP: no cap table data
+ */
+function evalDilutionVisibility(
+	cap: CapTableV1 | null | undefined,
+): ReconciliationFlag {
+	if (!cap) return skip("Cap table absent — dilution visibility cannot be assessed");
+
+	const refs = dedupeRefs([cap.source.page_ref]);
+	const hasPctData    = cap.stakeholders.some((s) => s.pct !== null);
+	const hasShareCount = cap.post_money_shares !== null;
+	const hasOptionPool = cap.option_pool_pct !== null;
+
+	const values: Record<string, number | null> = {
+		stakeholder_count:  cap.stakeholders.length,
+		option_pool_pct:    cap.option_pool_pct,
+		post_money_shares:  cap.post_money_shares,
+		total_pct:          cap.total_pct,
+	};
+
+	if (!hasPctData && !hasShareCount) {
+		return {
+			status: "WARN",
+			reason: "Cap table present but no ownership percentages or share counts found — dilution modelling not possible",
+			values,
+			evidence_refs: refs,
+		};
+	}
+
+	if (!hasShareCount) {
+		return {
+			status: "WARN",
+			reason: "Cap table has ownership % but no post-money fully-diluted share count — dilution modelling incomplete",
+			values,
+			evidence_refs: refs,
+		};
+	}
+
+	if (!hasOptionPool && cap.stakeholders.length >= 3) {
+		return {
+			status: "WARN",
+			reason: "Cap table has multiple stakeholders but no option pool percentage identified — potential undisclosed dilution",
+			values,
+			evidence_refs: refs,
+		};
+	}
+
+	return {
+		status: "PASS",
+		reason: "Cap table exposes sufficient dilution data (ownership % and post-money share count present)",
+		values,
+		evidence_refs: refs,
+	};
+}
+
 // ─── Main entry point ─────────────────────────────────────────────────────────
 
 /**
- * Run all four reconciliation checks against available parsed financial data.
+ * Run all nine reconciliation checks against available parsed financial data.
  *
  * Pure function — no DB calls, no side-effects.
  */
 export function reconcileFinancialsV1(inputs: ReconciliationInputs): FinancialReconciliationV1 {
-	const { dealId, financialStatement, useOfFunds, impliedCapitalAllocation, incomeStatementAllocation } = inputs;
+	const { dealId, financialStatement, useOfFunds, impliedCapitalAllocation, incomeStatementAllocation,
+	        balanceSheet, cashFlow, capTable, saasKpis } = inputs;
 
 	const flags: FinancialReconciliationV1["flags"] = {
+		// Phase I original flags
 		revenue_vs_headcount_flag:  evalRevenueVsHeadcount(
 			financialStatement, impliedCapitalAllocation, incomeStatementAllocation
 		),
@@ -462,19 +773,31 @@ export function reconcileFinancialsV1(inputs: ReconciliationInputs): FinancialRe
 		margin_vs_infra_ratio_flag: evalMarginVsInfra(
 			financialStatement, useOfFunds, impliedCapitalAllocation
 		),
+		// Phase K new flags
+		burn_vs_runway_flag:                evalBurnVsRunway(balanceSheet, cashFlow, financialStatement),
+		revenue_vs_cac_flag:                evalRevenueVsCac(saasKpis),
+		churn_vs_growth_flag:               evalChurnVsGrowth(saasKpis, financialStatement),
+		cap_table_vs_raise_instrument_flag: evalCapTableVsRaiseInstrument(capTable, useOfFunds),
+		// Phase L new flag
+		dilution_visibility_flag:            evalDilutionVisibility(capTable),
 	};
 
 	const flagValues = Object.values(flags);
 	const nonSkipCount = flagValues.filter((f) => f.status !== "SKIP").length;
-	const confidenceScore = Math.round((nonSkipCount / 4) * 100) / 100;
+	// Confidence now out of 9 flags
+	const confidenceScore = Math.round((nonSkipCount / 9) * 100) / 100;
 
 	const allRefs = dedupeRefs(flagValues.flatMap((f) => f.evidence_refs));
 
 	const sourcesUsed: string[] = [];
-	if (financialStatement)       sourcesUsed.push(financialStatement.schema_version);
-	if (useOfFunds)               sourcesUsed.push(useOfFunds.schema_version);
-	if (impliedCapitalAllocation) sourcesUsed.push(impliedCapitalAllocation.schema_version);
+	if (financialStatement)        sourcesUsed.push(financialStatement.schema_version);
+	if (useOfFunds)                sourcesUsed.push(useOfFunds.schema_version);
+	if (impliedCapitalAllocation)  sourcesUsed.push(impliedCapitalAllocation.schema_version);
 	if (incomeStatementAllocation) sourcesUsed.push(incomeStatementAllocation.schema_version);
+	if (balanceSheet)              sourcesUsed.push(balanceSheet.schema_version);
+	if (cashFlow)                  sourcesUsed.push(cashFlow.schema_version);
+	if (capTable)                  sourcesUsed.push(capTable.schema_version);
+	if (saasKpis)                  sourcesUsed.push(saasKpis.schema_version);
 
 	return {
 		schema_version:    "financial_reconciliation_v1",

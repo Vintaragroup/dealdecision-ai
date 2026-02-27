@@ -49,6 +49,8 @@ export type LayoutType =
 	| "cap_table"
 	| "cash_flow"
 	| "balance_sheet"
+	| "saas_kpis"
+	| "bank_transactions"
 	| "other"
 	| "unknown";
 
@@ -72,16 +74,20 @@ export interface DocumentLayoutSummaryV1 {
 }
 
 export interface DealLayoutClassificationV1 {
-	schema_version:     "financial_layout_classifier_v1";
-	deal_id:            string;
-	documents:          DocumentLayoutSummaryV1[];
+	schema_version:       "financial_layout_classifier_v1";
+	deal_id:              string;
+	documents:            DocumentLayoutSummaryV1[];
 	has_income_statement: boolean;
-	has_use_of_funds:   boolean;
-	has_budget_model:   boolean;
-	has_cap_table:      boolean;
-	classified_pages:   number;
-	total_xl_pages:     number;
-	layout_coverage_pct: number;
+	has_use_of_funds:     boolean;
+	has_budget_model:     boolean;
+	has_cap_table:        boolean;
+	has_cash_flow:        boolean;
+	has_balance_sheet:    boolean;
+	has_saas_kpis:        boolean;
+	has_bank_txns:        boolean;
+	classified_pages:     number;
+	total_xl_pages:       number;
+	layout_coverage_pct:  number;
 }
 
 // ─── Classification input ─────────────────────────────────────────────────────
@@ -219,6 +225,12 @@ const LAYOUT_RULES: LayoutRule[] = [
 			/option\s+pool/i,
 			/\bsafe\b/i,
 			/convertible\s+note/i,
+			// Phase L additions: dilution / raise-terms signals
+			/pre[-\s]money/i,
+			/post[-\s]money/i,
+			/valuation\s+cap/i,
+			/\bdiscount\s+%/i,
+			/post[-\s]money\s+shares/i,
 		],
 		pageTypes: ["excel_range", "excel_sheet"],
 		highThreshold:   2,
@@ -251,17 +263,66 @@ const LAYOUT_RULES: LayoutRule[] = [
 		layout: "balance_sheet",
 		titleRegs: [
 			/balance\s+sheet/i,
+			/statement\s+of\s+financial\s+position/i,
 		],
 		contentRegs: [
 			/total\s+assets?/i,
 			/total\s+liabilities?/i,
-			/stockholders?\s+equity/i,
+			/stockholders?\s+equity|shareholders?\s+equity/i,
 			/current\s+assets?/i,
 			/current\s+liabilities?/i,
+			/accounts?\s+receivable/i,
+			/accounts?\s+payable/i,
 		],
 		pageTypes: ["excel_range", "excel_sheet"],
 		highThreshold:   2,
 		mediumThreshold: 1,
+	},
+
+	// ── SaaS KPIs ────────────────────────────────────────────────────────────
+	{
+		layout: "saas_kpis",
+		titleRegs: [
+			/saas\s+(?:kpis?|metrics?|dashboard)/i,
+			/kpi\s+(?:summary|dashboard|overview)/i,
+			/[Kk]ey\s+[Mm]etrics?/i,
+			/[Ss]ubscription\s+[Mm]etrics?/i,
+			/[Gg]rowth\s+[Mm]etrics?/i,
+		],
+		contentRegs: [
+			/\bMRR\b/i,
+			/\bARR\b/i,
+			/\bchurn(?:\s+rate)?\b/i,
+			/\bretention(?:\s+rate)?\b/i,
+			/\bCAC\b/i,
+			/\bLTV\b|customer\s+lifetime\s+value/i,
+			/\bARPU\b|average\s+revenue\s+per\s+user/i,
+			/\bcohort/i,
+		],
+		pageTypes: ["excel_range", "excel_sheet"],
+		highThreshold:   2,
+		mediumThreshold: 1,
+	},
+
+	// ── Bank Transactions ────────────────────────────────────────────────────
+	{
+		layout: "bank_transactions",
+		titleRegs: [
+			/bank\s+(?:statement|transactions?|export|activity)/i,
+			/transaction\s+(?:history|log|export|detail)/i,
+			/account\s+(?:statement|activity|transactions?)/i,
+		],
+		contentRegs: [
+			/\bdebit\b/i,
+			/\bcredit\b/i,
+			/running\s+balance|account\s+balance/i,
+			/\bACH\b|\bwire\b|\bpayroll\b/i,
+			/\bmerchant\b|\bdescription\b/i,
+			/transaction\s+(?:date|type|id)/i,
+		],
+		pageTypes: ["excel_range", "excel_sheet"],
+		highThreshold:   3,
+		mediumThreshold: 2,
 	},
 ];
 
@@ -412,7 +473,11 @@ export function classifyPage(input: ClassifierPageInput): FinancialLayoutClassif
 		else prereqs.push("requires excel_range with rows_preview");
 	}
 	if (layout === "budget_model")      prereqs.push("requires excel_sheet with structured_native_v1 sheets");
-	if (layout === "cap_table")         prereqs.push("cap_table parser not yet implemented — stub only");
+	if (layout === "cap_table")         prereqs.push("requires excel_range with rows_preview (shares/pct columns)");
+	if (layout === "cash_flow")         prereqs.push("requires excel_range with rows_preview");
+	if (layout === "balance_sheet")     prereqs.push("requires excel_range with rows_preview");
+	if (layout === "saas_kpis")         prereqs.push("requires excel_range with rows_preview (MRR/ARR/churn rows)");
+	if (layout === "bank_transactions") prereqs.push("requires excel_range with debit/credit/balance columns");
 
 	const notes: string[] = [];
 	if (confidence === "low") notes.push("low confidence — single weak signal");
@@ -497,6 +562,10 @@ export function classifyDealLayouts(
 		has_use_of_funds:     allLayouts.includes("use_of_funds"),
 		has_budget_model:     allLayouts.includes("budget_model"),
 		has_cap_table:        allLayouts.includes("cap_table"),
+		has_cash_flow:        allLayouts.includes("cash_flow"),
+		has_balance_sheet:    allLayouts.includes("balance_sheet"),
+		has_saas_kpis:        allLayouts.includes("saas_kpis"),
+		has_bank_txns:        allLayouts.includes("bank_transactions"),
 		classified_pages:     classifiedCount,
 		total_xl_pages:       totalXlCount,
 		layout_coverage_pct:  totalXlCount > 0

@@ -53,6 +53,7 @@ import type { FinancialStatementV1 } from "../lib/financial-statement-parser";
 import type { UseOfFundsV1 } from "../lib/use-of-funds-parser-v1";
 import type { ImpliedCapitalAllocationV1 } from "../lib/implied-capital-allocation-v1";
 import type { IncomeStatementAllocationV1 } from "../lib/implied-capital-income-statement-v1";
+import type { CapTableV1 } from "../lib/cap-table-parser-v1";
 
 // ─── Fixture factories ────────────────────────────────────────────────────────
 
@@ -416,7 +417,7 @@ describe("reconcileFinancialsV1", () => {
 		expect(r.flags.margin_vs_infra_ratio_flag.status).toBe("SKIP");
 	});
 
-	it("25. confidence_score = 1.0 when all 4 flags have sufficient data", () => {
+	it("25. confidence_score = 4/9 when 4 original flags have data (denominator is 9 after Phase L expansion)", () => {
 		const r = reconcileFinancialsV1(baseInputs({
 			financialStatement: makeStmt({
 				revenue:        600_000,
@@ -437,7 +438,8 @@ describe("reconcileFinancialsV1", () => {
 				buckets: [{ category: "Infrastructure / Cloud", pct: 10 }],
 			}),
 		}));
-		expect(r.confidence_score).toBe(1.0);
+		// 4 original flags pass, 5 new Phase K+L flags SKIP → 4/9 ≈ 0.44
+		expect(r.confidence_score).toBe(0.44);
 	});
 
 	it("26. data_sources_used contains schema versions of contributing parsers", () => {
@@ -479,5 +481,140 @@ describe("reconcileFinancialsV1", () => {
 		expect(THRESHOLDS.RUNWAY_WARN_MONTHS).toBe(12);
 		expect(THRESHOLDS.MARGIN_LOW_PCT).toBe(40);
 		expect(THRESHOLDS.INFRA_HIGH_PCT).toBe(20);
+	});
+});
+
+// ─── dilution_visibility_flag ─────────────────────────────────────────────────
+
+function makeCapTable(opts: {
+	stakeholders?: Array<{ name: string; shares?: number | null; pct?: number | null; row_type?: CapTableV1["stakeholders"][number]["row_type"] }>;
+	option_pool_pct?: number | null;
+	total_shares?: number | null;
+	post_money_shares?: number | null;
+	total_pct?: number | null;
+	safe_notes_present?: boolean;
+}): CapTableV1 {
+	return {
+		schema_version: "cap_table_v1",
+		source: { document_id: DOC_ID, page_ref: "dpu:doc:doc-1234-abcd:page:5" },
+		stakeholders: (opts.stakeholders ?? []).map((s) => ({
+			name:     s.name,
+			shares:   s.shares ?? null,
+			pct:      s.pct ?? null,
+			row_type: s.row_type ?? "common",
+		})),
+		option_pool_pct:     opts.option_pool_pct ?? null,
+		total_shares:        opts.total_shares ?? null,
+		post_money_shares:   opts.post_money_shares ?? null,
+		total_pct:           opts.total_pct ?? null,
+		post_money_valuation: null,
+		safe_notes_present:  opts.safe_notes_present ?? false,
+		diagnostics: { parsed_rows: opts.stakeholders?.length ?? 0, parse_warnings: [] },
+	};
+}
+
+describe("dilution_visibility_flag", () => {
+	it("31. SKIP when no cap table", () => {
+		const r = reconcileFinancialsV1(baseInputs());
+		expect(r.flags.dilution_visibility_flag.status).toBe("SKIP");
+	});
+
+	it("32. WARN when cap table has no pct data and no post_money_shares", () => {
+		const r = reconcileFinancialsV1(baseInputs({
+			capTable: makeCapTable({
+				stakeholders: [{ name: "Founder", shares: 1_000_000, pct: null }],
+				post_money_shares: null,
+			}),
+		}));
+		expect(r.flags.dilution_visibility_flag.status).toBe("WARN");
+		expect(r.flags.dilution_visibility_flag.reason).toMatch(/no ownership percentages or share counts/i);
+	});
+
+	it("33. WARN when cap table has pct data but no post_money_shares", () => {
+		const r = reconcileFinancialsV1(baseInputs({
+			capTable: makeCapTable({
+				stakeholders: [{ name: "Founder", shares: null, pct: 60 }],
+				post_money_shares: null,
+			}),
+		}));
+		expect(r.flags.dilution_visibility_flag.status).toBe("WARN");
+		expect(r.flags.dilution_visibility_flag.reason).toMatch(/post-money fully-diluted share count/i);
+	});
+
+	it("34. WARN when cap table has post_money_shares but no option pool and >= 3 stakeholders", () => {
+		const r = reconcileFinancialsV1(baseInputs({
+			capTable: makeCapTable({
+				stakeholders: [
+					{ name: "Founder A", pct: 40 },
+					{ name: "Founder B", pct: 30 },
+					{ name: "Series A",  pct: 30, row_type: "preferred" },
+				],
+				post_money_shares: 3_000_000,
+				option_pool_pct: null,
+			}),
+		}));
+		expect(r.flags.dilution_visibility_flag.status).toBe("WARN");
+		expect(r.flags.dilution_visibility_flag.reason).toMatch(/no option pool percentage/i);
+	});
+
+	it("35. PASS when cap table has pct data, post_money_shares, and option pool", () => {
+		const r = reconcileFinancialsV1(baseInputs({
+			capTable: makeCapTable({
+				stakeholders: [
+					{ name: "Founder A",   pct: 45 },
+					{ name: "Founder B",   pct: 35 },
+					{ name: "Option Pool", pct: 20, row_type: "option_pool" },
+				],
+				post_money_shares: 2_000_000,
+				option_pool_pct: 20,
+			}),
+		}));
+		expect(r.flags.dilution_visibility_flag.status).toBe("PASS");
+		expect(r.flags.dilution_visibility_flag.reason).toMatch(/sufficient dilution data/i);
+	});
+
+	it("36. PASS for 2-stakeholder cap table without option pool (< 3 stakeholders threshold)", () => {
+		const r = reconcileFinancialsV1(baseInputs({
+			capTable: makeCapTable({
+				stakeholders: [
+					{ name: "Founder", pct: 100 },
+				],
+				post_money_shares: 1_000_000,
+				option_pool_pct: null,
+			}),
+		}));
+		expect(r.flags.dilution_visibility_flag.status).toBe("PASS");
+	});
+
+	it("37. dilution_visibility_flag appears in schema counts (denominator = 9)", () => {
+		// Supply enough data for all 9 flags to evaluate:
+		// revenue_vs_headcount, allocation_vs_growth, raise_vs_burn, margin_vs_infra → 4 via finStmt+uof+implied
+		// dilution_visibility → 1 via capTable with full data = 5 non-SKIP
+		const r = reconcileFinancialsV1(baseInputs({
+			financialStatement: makeStmt({
+				revenue:        600_000,
+				total_expenses: 800_000,
+				gross_margin:   55,
+				yoy_growth:     30,
+			}),
+			useOfFunds: makeUof({
+				total_amount: 2_000_000,
+				buckets: [
+					{ category: "Sales & Marketing", percent: 25 },
+					{ category: "Engineering",       percent: 50 },
+					{ category: "G&A",               percent: 25 },
+				],
+			}),
+			impliedCapitalAllocation: makeImplied({
+				total_cost: 800_000,
+				buckets: [{ category: "Infrastructure / Cloud", pct: 10 }],
+			}),
+			capTable: makeCapTable({
+				stakeholders: [{ name: "Founder", pct: 80 }, { name: "Investor", pct: 20, row_type: "preferred" }],
+				post_money_shares: 1_000_000,
+			}),
+		}));
+		// 4 original + cap_table_vs_raise_instrument (PASS) + dilution_visibility (PASS) = 6 non-SKIP → 6/9 ≈ 0.67
+		expect(r.confidence_score).toBeCloseTo(6 / 9, 2);
 	});
 });

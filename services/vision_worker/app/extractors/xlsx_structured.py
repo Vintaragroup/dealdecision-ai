@@ -98,24 +98,142 @@ _UOF_ROW_PATTERNS: List[_re.Pattern] = [
 ]
 
 
-def _detect_segment_key(sheet_name: str, ws_f, max_scan_rows: int) -> str:
-    """Return 'use_of_funds' when the sheet appears to contain a Use-of-Funds table,
-    otherwise return 'financials'.
+# ─── SaaS KPI sheet detection ─────────────────────────────────────────────────
 
-    Detection priority:
-      1. Sheet name keyword match (fast)
-      2. First-row scan for UoF header patterns (up to 15 rows)
+_SAAS_KPI_SHEET_NAME_PATTERNS: List[_re.Pattern] = [
+    _re.compile(r"saas[\s_-]+(?:kpi|metric|dashboard|report)", _re.I),
+    _re.compile(r"kpi[\s_-]+(?:dashboard|summary|report|tracker)", _re.I),
+    _re.compile(r"subscription[\s_-]+metric", _re.I),
+    _re.compile(r"mrr[\s_-]+(?:dashboard|tracker)", _re.I),
+    _re.compile(r"arr[\s_-]+(?:dashboard|tracker)", _re.I),
+    _re.compile(r"cohort[\s_-]", _re.I),
+]
+
+_SAAS_KPI_ROW_CONTENT_KEYWORDS = {"MRR", "ARR", "churn", "retention", "CAC", "LTV", "ARPU", "cohort"}
+_SAAS_KPI_ROW_PATTERNS: List[_re.Pattern] = [
+    _re.compile(r"\bm(?:onthly[\s]+)?r(?:ecurring[\s]+)?r(?:evenue)?\b", _re.I),
+    _re.compile(r"\ba(?:nnual(?:ized)?[\s]+)?r(?:ecurring[\s]+)?r(?:evenue)?\b", _re.I),
+    _re.compile(r"\bchurn\s*(?:rate|%|percent)?\b", _re.I),
+    _re.compile(r"\bnet\s+(?:revenue\s+)?retention\b", _re.I),
+    _re.compile(r"\bcustomer[\s]+acquisition[\s]+cost\b", _re.I),
+    _re.compile(r"\bltv\s*[/:]?\s*cac\b", _re.I),
+    _re.compile(r"\blifetime[\s]+value\b", _re.I),
+    _re.compile(r"\barpu\b", _re.I),
+]
+
+# ─── Bank transaction sheet detection ─────────────────────────────────────────
+
+_BANK_TXN_SHEET_NAME_PATTERNS: List[_re.Pattern] = [
+    _re.compile(r"bank[\s_-]+(?:statement|transaction|activity|history)", _re.I),
+    _re.compile(r"transaction[\s_-]+(?:history|log|export|statement)", _re.I),
+    _re.compile(r"account[\s_-]+(?:statement|activity|history)", _re.I),
+]
+
+_BANK_TXN_ROW_PATTERNS: List[_re.Pattern] = [
+    _re.compile(r"\bdebit\b", _re.I),
+    _re.compile(r"\bcredit\b", _re.I),
+    _re.compile(r"\bACH\b"),
+    _re.compile(r"\bwire\s+transfer\b", _re.I),
+    _re.compile(r"\brunning\s+balance\b", _re.I),
+    _re.compile(r"\btransaction\s+(?:id|date|type|description)\b", _re.I),
+]
+
+# ─── Balance sheet detection ──────────────────────────────────────────────────
+
+_BALANCE_SHEET_SHEET_NAME_PATTERNS: List[_re.Pattern] = [
+    _re.compile(r"balance[\s_-]+sheet", _re.I),
+    _re.compile(r"statement[\s_-]+of[\s_-]+financial[\s_-]+position", _re.I),
+    _re.compile(r"financial[\s_-]+position", _re.I),
+]
+
+_BALANCE_SHEET_ROW_PATTERNS: List[_re.Pattern] = [
+    _re.compile(r"\btotal\s+assets?\b", _re.I),
+    _re.compile(r"\btotal\s+liabilit", _re.I),
+    _re.compile(r"\btotal\s+(?:shareholders?[\s\']+)?equity\b", _re.I),
+    _re.compile(r"\baccounts?\s+(?:receivable|payable)\b", _re.I),
+    _re.compile(r"\bcurrent\s+assets?\b", _re.I),
+]
+
+# ─── Cash flow statement detection ────────────────────────────────────────────
+
+_CASH_FLOW_SHEET_NAME_PATTERNS: List[_re.Pattern] = [
+    _re.compile(r"cash[\s_-]+flow[\s_-]+(?:statement|summary|forecast)?", _re.I),
+    _re.compile(r"statement[\s_-]+of[\s_-]+cash[\s_-]+flow", _re.I),
+    _re.compile(r"cash[\s_-]+(?:usage|position|movement)", _re.I),
+]
+
+_CASH_FLOW_ROW_PATTERNS: List[_re.Pattern] = [
+    _re.compile(r"\bnet\s+cash\s+from\s+(?:operating|investing|financing)\b", _re.I),
+    _re.compile(r"\bcash\s+(?:from|used\s+in)\s+operations?\b", _re.I),
+    _re.compile(r"\boperating\s+(?:cash\s+flow|activities)\b", _re.I),
+    _re.compile(r"\bending\s+cash\s+(?:balance|position)?\b", _re.I),
+    _re.compile(r"\bnet\s+change\s+in\s+cash\b", _re.I),
+]
+
+# ─── Cap table detection ──────────────────────────────────────────────────────
+
+_CAP_TABLE_SHEET_NAME_PATTERNS: List[_re.Pattern] = [
+    _re.compile(r"cap[\s_-]+table", _re.I),
+    _re.compile(r"captable", _re.I),
+    _re.compile(r"equity[\s_-]+(?:structure|breakdown|summary)", _re.I),
+    _re.compile(r"ownership[\s_-]+(?:table|summary|structure)", _re.I),
+    _re.compile(r"shareholder[s]?[\s_-](?:register|table|breakdown)", _re.I),
+]
+
+_CAP_TABLE_ROW_PATTERNS: List[_re.Pattern] = [
+    _re.compile(r"\bshares?\s+outstanding\b", _re.I),
+    _re.compile(r"\boption[\s_-]+pool\b", _re.I),
+    _re.compile(r"\bfully[\s_-]+diluted\b", _re.I),
+    _re.compile(r"\bcommon\s+stock\b", _re.I),
+    _re.compile(r"\bpreferred\s+(?:stock|shares?)\b", _re.I),
+    _re.compile(r"\bconvertible\s+note\b", _re.I),
+]
+
+def _detect_segment_key(sheet_name: str, ws_f, max_scan_rows: int) -> str:
+    """Return the most specific segment type for this sheet.
+
+    Priority (sheet-name fast path, then first-row scan):
+      use_of_funds → balance_sheet → cash_flow → cap_table → saas_kpis → bank_txns → financials
+
+    Detection strategy:
+      - Sheet-name keyword match triggers immediately (fast, high-precision).
+      - Row scan counts pattern hits; each type has a minimum threshold before it fires
+        (prevents false positives from incidental keyword mentions).
     """
     name_lower = (sheet_name or "").strip().lower()
+
+    # ── 1. Sheet-name fast path ────────────────────────────────────────────────
     for pat in _UOF_SHEET_NAME_PATTERNS:
         if pat.search(name_lower):
             return "use_of_funds"
+    for pat in _BALANCE_SHEET_SHEET_NAME_PATTERNS:
+        if pat.search(name_lower):
+            return "balance_sheet"
+    for pat in _CASH_FLOW_SHEET_NAME_PATTERNS:
+        if pat.search(name_lower):
+            return "cash_flow"
+    for pat in _CAP_TABLE_SHEET_NAME_PATTERNS:
+        if pat.search(name_lower):
+            return "cap_table"
+    for pat in _SAAS_KPI_SHEET_NAME_PATTERNS:
+        if pat.search(name_lower):
+            return "saas_kpis"
+    for pat in _BANK_TXN_SHEET_NAME_PATTERNS:
+        if pat.search(name_lower):
+            return "bank_txns"
 
-    # Scan the first 15 rows for a UoF header string in any cell
-    scan_limit = min(15, max_scan_rows)
+    # ── 2. Row scan (content-based, with per-type hit thresholds) ─────────────
+    scan_limit = min(20, max_scan_rows)
+    uof_hits        = 0
+    balance_hits    = 0
+    cash_flow_hits  = 0
+    cap_table_hits  = 0
+    saas_hits       = 0
+    bank_hits       = 0
+
     try:
         for r in range(1, scan_limit + 1):
-            for c in range(1, 16):  # cap col scan at 15 for speed
+            for c in range(1, 16):
                 v = ws_f.cell(row=r, column=c).value
                 if not v or not isinstance(v, str):
                     continue
@@ -124,9 +242,45 @@ def _detect_segment_key(sheet_name: str, ws_f, max_scan_rows: int) -> str:
                     continue
                 for pat in _UOF_ROW_PATTERNS:
                     if pat.search(s):
-                        return "use_of_funds"
+                        uof_hits += 1
+                        break
+                for pat in _BALANCE_SHEET_ROW_PATTERNS:
+                    if pat.search(s):
+                        balance_hits += 1
+                        break
+                for pat in _CASH_FLOW_ROW_PATTERNS:
+                    if pat.search(s):
+                        cash_flow_hits += 1
+                        break
+                for pat in _CAP_TABLE_ROW_PATTERNS:
+                    if pat.search(s):
+                        cap_table_hits += 1
+                        break
+                for pat in _SAAS_KPI_ROW_PATTERNS:
+                    if pat.search(s):
+                        saas_hits += 1
+                        break
+                for pat in _BANK_TXN_ROW_PATTERNS:
+                    if pat.search(s):
+                        bank_hits += 1
+                        break
     except Exception:
         pass  # never crash extraction due to segment detection
+
+    # Apply thresholds in priority order. UoF needs just 1 hit; others need 2+;
+    # bank_txns needs 3+ (debit/credit can appear in non-bank sheets).
+    if uof_hits >= 1:
+        return "use_of_funds"
+    if balance_hits >= 2:
+        return "balance_sheet"
+    if cash_flow_hits >= 2:
+        return "cash_flow"
+    if cap_table_hits >= 2:
+        return "cap_table"
+    if saas_hits >= 2:
+        return "saas_kpis"
+    if bank_hits >= 3:
+        return "bank_txns"
 
     return "financials"
 

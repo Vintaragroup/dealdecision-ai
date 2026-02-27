@@ -72,6 +72,30 @@ import {
 	type FinancialReconciliationV1,
 } from "../../lib/financial-reconciliation-v1.js";
 import {
+	parseBalanceSheetV1,
+	pickBestBalanceSheet,
+	type BalanceSheetV1,
+} from "../../lib/balance-sheet-parser-v1.js";
+import {
+	parseCashFlowStatementV1,
+	pickBestCashFlow,
+	type CashFlowStatementV1,
+} from "../../lib/cash-flow-parser-v1.js";
+import {
+	parseCapTableV1,
+	pickBestCapTable,
+	type CapTableV1,
+} from "../../lib/cap-table-parser-v1.js";
+import {
+	parseSaasKpisV1,
+	pickBestSaasKpis,
+	type SaasKpisV1,
+} from "../../lib/saas-kpis-parser-v1.js";
+import {
+	parseBankTransactionsV1,
+	type BankTransactionsV1,
+} from "../../lib/bank-transactions-parser-v1.js";
+import {
 	generateGovernedSummaryV1,
 	serializeGovernedSummaryBody,
 	resolveGovernedSummaryWithCache,
@@ -507,6 +531,14 @@ const SLOT_REASON_CODES = {
 	DERIVED_FROM_BUDGET_MODEL: "DERIVED_FROM_BUDGET_MODEL",
 	/** Slot was promoted from an income-statement expense breakdown (implied allocation — not stated raise). */
 	DERIVED_FROM_INCOME_STATEMENT: "DERIVED_FROM_INCOME_STATEMENT",
+	/** Phase 2 canonical field derived from SaaS KPI XLSX data. */
+	DERIVED_FROM_SAAS_KPI: "DERIVED_FROM_SAAS_KPI",
+	/** Phase 2 canonical field derived from balance sheet XLSX data. */
+	DERIVED_FROM_BALANCE_SHEET: "DERIVED_FROM_BALANCE_SHEET",
+	/** Phase 2 canonical field derived from cash flow XLSX data. */
+	DERIVED_FROM_CASH_FLOW: "DERIVED_FROM_CASH_FLOW",
+	/** Phase 2 canonical field derived from cap table XLSX data. */
+	DERIVED_FROM_CAP_TABLE: "DERIVED_FROM_CAP_TABLE",
 } as const;
 
 type SlotReasonCode = (typeof SLOT_REASON_CODES)[keyof typeof SLOT_REASON_CODES];
@@ -583,6 +615,12 @@ interface InsightSlotInputs {
 	 * and raise data.  Built after all parsers have run.
 	 */
 	financialReconciliation: FinancialReconciliationV1 | null;
+	// Phase K: new parsed financial document types
+	balanceSheet:  BalanceSheetV1 | null;
+	cashFlow:      CashFlowStatementV1 | null;
+	capTable:      CapTableV1 | null;
+	saasKpis:      SaasKpisV1 | null;
+	bankTransactions: BankTransactionsV1 | null;
 }
 
 // ── Slot detection patterns (compile once) ───────────────────────────────────
@@ -1077,6 +1115,12 @@ async function loadInsightSlotInputs(
 	let impliedFromIncomeStatement: IncomeStatementAllocationV1 | null = null;
 	let financialLayoutClassification: DealLayoutClassificationV1 | null = null;
 	let financialReconciliation: FinancialReconciliationV1 | null = null;
+	// Phase K: new financial document type accumulators
+	const balanceSheets:    BalanceSheetV1[] = [];
+	const cashFlows:        CashFlowStatementV1[] = [];
+	const capTables:        CapTableV1[] = [];
+	const saasKpisAll:      SaasKpisV1[] = [];
+	let   bankTransactions: BankTransactionsV1 | null = null;
 
 	try {
 		const { rows } = await pool.query<{ document_id: string; page_index: number; payload: unknown }>(
@@ -1122,6 +1166,17 @@ async function loadInsightSlotInputs(
 			if (uof) useOfFundsStatements.push(uof);
 			const incomeStmt = parseImpliedCapitalIncomeStatementV1(r.payload, { documentId: r.document_id, pageRef });
 			if (incomeStmt && impliedFromIncomeStatement === null) impliedFromIncomeStatement = incomeStmt;
+			// Phase K: new financial document parsers
+			const bs = parseBalanceSheetV1(r.payload, { documentId: r.document_id, pageRef });
+			if (bs) balanceSheets.push(bs);
+			const cf = parseCashFlowStatementV1(r.payload, { documentId: r.document_id, pageRef });
+			if (cf) cashFlows.push(cf);
+			const ct = parseCapTableV1(r.payload, { documentId: r.document_id, pageRef });
+			if (ct) capTables.push(ct);
+			const kpi = parseSaasKpisV1(r.payload, { documentId: r.document_id, pageRef });
+			if (kpi) saasKpisAll.push(kpi);
+			const btxn = parseBankTransactionsV1(r.payload, { documentId: r.document_id, pageRef });
+			if (btxn && bankTransactions === null) bankTransactions = btxn;
 		}
 
 		// Parse implied capital allocation from excel_sheet DPU pages (structured_native_v1 fallback).
@@ -1199,12 +1254,20 @@ async function loadInsightSlotInputs(
 
 	const _bestStmt = pickBestStatement(financialStatements);
 	const _bestUof  = pickBestUseOfFunds(useOfFundsStatements);
+	const _bestBs   = pickBestBalanceSheet(balanceSheets);
+	const _bestCf   = pickBestCashFlow(cashFlows);
+	const _bestCt   = pickBestCapTable(capTables);
+	const _bestKpi  = pickBestSaasKpis(saasKpisAll);
 	financialReconciliation = reconcileFinancialsV1({
 		dealId,
 		financialStatement:        _bestStmt,
 		useOfFunds:                _bestUof,
 		impliedCapitalAllocation,
 		incomeStatementAllocation: impliedFromIncomeStatement,
+		balanceSheet:              _bestBs,
+		cashFlow:                  _bestCf,
+		capTable:                  _bestCt,
+		saasKpis:                  _bestKpi,
 	});
 
 	return {
@@ -1222,6 +1285,11 @@ async function loadInsightSlotInputs(
 		impliedFromIncomeStatement,
 		financialLayoutClassification,
 		financialReconciliation,
+		balanceSheet:     _bestBs,
+		cashFlow:         _bestCf,
+		capTable:         _bestCt,
+		saasKpis:         _bestKpi,
+		bankTransactions,
 	};
 }
 
@@ -1829,6 +1897,10 @@ function buildFinancialLayoutClassifierSection(
 		`has_use_of_funds: ${classification.has_use_of_funds}`,
 		`has_budget_model: ${classification.has_budget_model}`,
 		`has_cap_table: ${classification.has_cap_table}`,
+		`has_cash_flow: ${classification.has_cash_flow}`,
+		`has_balance_sheet: ${classification.has_balance_sheet}`,
+		`has_saas_kpis: ${classification.has_saas_kpis}`,
+		`has_bank_txns: ${classification.has_bank_txns}`,
 	];
 
 	for (const doc of classification.documents) {
@@ -2168,6 +2240,8 @@ const P2_REASON = {
 	NO_RAISE_INSTRUMENT_MENTION: "NO_RAISE_INSTRUMENT_MENTION",
 	NO_RAISE_CAP_MENTION: "NO_RAISE_CAP_MENTION",
 	NO_RAISE_DISCOUNT_MENTION: "NO_RAISE_DISCOUNT_MENTION",
+	NO_NOTE_INTEREST_RATE_MENTION: "NO_NOTE_INTEREST_RATE_MENTION",
+	NO_NOTE_MATURITY_MENTION: "NO_NOTE_MATURITY_MENTION",
 	NO_VALUATION_PRE_MENTION: "NO_VALUATION_PRE_MENTION",
 	NO_VALUATION_POST_MENTION: "NO_VALUATION_POST_MENTION",
 	NO_VALUATION_SAFE_CAP_MENTION: "NO_VALUATION_SAFE_CAP_MENTION",
@@ -2197,12 +2271,29 @@ const RAISE_ROUND_PATTERN = /\b(seed|series\s+[a-cA-C]|pre[-\s]seed|bridge|angel
 const RAISE_INSTRUMENT_PATTERN =
 	/\b(SAFE|convertible\s+note|priced\s+round|equity(?:\s+round)?|common(?:\s+(?:stock|equity|shares?))?|preferred(?:\s+(?:stock|equity|shares?))?)\b/i;
 
-/** raise_cap: "cap $X", "valuation cap $X", "SAFE cap $X", "cap of $X" */
+/** raise_cap: "cap $X", "valuation cap $X", "SAFE cap $X", "cap of $X" — with optional SAFE/note proximity context */
 const RAISE_CAP_PATTERN =
-	/(?:valuation\s+)?cap\s+(?:of\s+)?\$[\d,.]+\s*[BMKbmk]?|\bSAFE\s+cap\s+\$[\d,.]+\s*[BMKbmk]?/i;
+	/(?:(?:SAFE|convertible\s+note)[^.]{0,200}?)?(?:valuation\s+)?cap\s+(?:of\s+)?\$[\d,.]+\s*[BMKbmk]?|\bSAFE\s+cap\s+\$[\d,.]+\s*[BMKbmk]?/i;
 
-/** raise_discount: "X% discount" */
+/** raise_discount: "X% discount" — requires explicit "discount" word */
 const RAISE_DISCOUNT_PATTERN = /\b(\d+)%\s+discount\b/i;
+
+/**
+ * note_interest_rate: interest rate on a convertible note / SAFE.
+ * Matches patterns like "6% interest", "interest rate of 8%", "6% p.a.", "5% per annum"
+ * anchored within a SAFE / convertible-note context (up to 150 chars preceding).
+ */
+const NOTE_INTEREST_RATE_PATTERN =
+	/\b(\d+(?:\.\d+)?)\s*%\s*(?:interest(?:\s+rate)?|p\.a\.|per\s+annum)\b|interest\s+rate\s+of\s+(\d+(?:\.\d+)?)\s*%/i;
+
+/**
+ * note_maturity: maturity date or term of a convertible note.
+ * Matches: "matures in 24 months", "maturity date: Dec 2025", "2-year term",
+ * "18-month maturity", "maturity of 24 months".
+ * Uses \bmatur (not \bmaturi) to cover both "matures" and "maturity".
+ */
+const NOTE_MATURITY_PATTERN =
+	/\bmatur(?:ity|es?|e[ds]|ing)\s+(?:date\s+)?(?:of\s+|in\s+|:\s*)?(?:\d+\s+months?|[A-Za-z]+\s+\d{4}|\d{4})|\b\d+[-\s](?:month|year)\s+(?:term|maturity|note)\b|\bmaturity\s+(?:date\s+)?(?:of\s+)?\d+\s+months?\b/i;
 
 /** valuation_pre: pre-money valuation with dollar figure */
 const VALUATION_PRE_PATTERN =
@@ -2277,6 +2368,8 @@ interface CanonicalField {
 	value: string | null;
 	evidenceRef: string | null;
 	reasonCode: string | null;
+	/** Explicit source classification: "xlsx" for XLSX-derived, "deck" for PDF/text, "derived" for computed. */
+	source?: "xlsx" | "deck" | "derived" | null;
 }
 
 interface ConflictEntry {
@@ -2314,6 +2407,10 @@ export interface ThesisInputsV1 {
 	raise_amount: string | null;
 	raise_round: string | null;
 	raise_instrument: string | null;
+	raise_cap: string | null;
+	raise_discount: string | null;
+	note_interest_rate: string | null;
+	note_maturity: string | null;
 	valuation_pre: string | null;
 	valuation_post: string | null;
 	tam_value: string | null;
@@ -2500,6 +2597,8 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 	fields.push(evalCanonicalField("raise_terms", "raise_instrument", dpuPages, evidenceSnippets, RAISE_INSTRUMENT_PATTERN, P2_REASON.NO_RAISE_INSTRUMENT_MENTION, dpuLoadFailed));
 	fields.push(evalCanonicalField("raise_terms", "raise_cap", dpuPages, evidenceSnippets, RAISE_CAP_PATTERN, P2_REASON.NO_RAISE_CAP_MENTION, dpuLoadFailed));
 	fields.push(evalCanonicalField("raise_terms", "raise_discount", dpuPages, evidenceSnippets, RAISE_DISCOUNT_PATTERN, P2_REASON.NO_RAISE_DISCOUNT_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("raise_terms", "note_interest_rate", dpuPages, evidenceSnippets, NOTE_INTEREST_RATE_PATTERN, P2_REASON.NO_NOTE_INTEREST_RATE_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("raise_terms", "note_maturity", dpuPages, evidenceSnippets, NOTE_MATURITY_PATTERN, P2_REASON.NO_NOTE_MATURITY_MENTION, dpuLoadFailed));
 
 	// ── Valuation Terms ────────────────────────────────────────────────────────
 	fields.push(evalCanonicalField("valuation_terms", "valuation_pre", dpuPages, evidenceSnippets, VALUATION_PRE_PATTERN, P2_REASON.NO_VALUATION_PRE_MENTION, dpuLoadFailed));
@@ -2535,8 +2634,46 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 	}
 
 	// ── Traction Signal ────────────────────────────────────────────────────────
-	fields.push(evalCanonicalField("traction_signal", "mrr_value", dpuPages, evidenceSnippets, MRR_VALUE_PATTERN, P2_REASON.NO_MRR_VALUE_MENTION, dpuLoadFailed));
-	fields.push(evalCanonicalField("traction_signal", "arr_value", dpuPages, evidenceSnippets, ARR_VALUE_PATTERN, P2_REASON.NO_ARR_VALUE_MENTION, dpuLoadFailed));
+	// mrr_value: prefer XLSX saas_kpis; fall back to text pattern.
+	{
+		const textResult = evalCanonicalField("traction_signal", "mrr_value", dpuPages, evidenceSnippets, MRR_VALUE_PATTERN, P2_REASON.NO_MRR_VALUE_MENTION, dpuLoadFailed);
+		const kpi = inputs.saasKpis;
+		if (kpi?.derived?.mrr_latest != null) {
+			const xlsxValue = `$${kpi.derived.mrr_latest.toLocaleString("en-US")} MRR (${kpi.periods[0] ?? "latest"}, XLSX)`;
+			if (textResult.computability === "Computable" && textResult.value) {
+				conflicts.push({
+					field: "mrr_value",
+					valueA: xlsxValue, evidenceA: kpi.source.page_ref, sourceTypeA: "xlsx",
+					valueB: textResult.value, evidenceB: textResult.evidenceRef ?? "unknown", sourceTypeB: "deck",
+					conflictReason: "XLSX SaaS KPI sheet and deck text disagree on MRR; XLSX preferred",
+				});
+			}
+			fields.push({ category: "traction_signal", field: "mrr_value", computability: "Computable", value: xlsxValue, evidenceRef: kpi.source.page_ref, reasonCode: SLOT_REASON_CODES.DERIVED_FROM_SAAS_KPI, source: "xlsx" });
+		} else {
+			fields.push(textResult);
+		}
+	}
+	// arr_value: prefer XLSX saas_kpis (derived ARR or ARR from MRR×12); fall back to text pattern.
+	{
+		const textResult = evalCanonicalField("traction_signal", "arr_value", dpuPages, evidenceSnippets, ARR_VALUE_PATTERN, P2_REASON.NO_ARR_VALUE_MENTION, dpuLoadFailed);
+		const kpi = inputs.saasKpis;
+		const arrVal = kpi?.derived?.arr_latest ?? null;
+		if (arrVal != null && kpi) {
+			const label = kpi.derived?.arr_from_mrr === true ? "ARR (×12 from MRR, XLSX)" : `ARR (${kpi.periods[0] ?? "latest"}, XLSX)`;
+			const xlsxValue = `$${arrVal.toLocaleString("en-US")} ${label}`;
+			if (textResult.computability === "Computable" && textResult.value) {
+				conflicts.push({
+					field: "arr_value",
+					valueA: xlsxValue, evidenceA: kpi.source.page_ref, sourceTypeA: "xlsx",
+					valueB: textResult.value, evidenceB: textResult.evidenceRef ?? "unknown", sourceTypeB: "deck",
+					conflictReason: "XLSX SaaS KPI sheet and deck text disagree on ARR; XLSX preferred",
+				});
+			}
+			fields.push({ category: "traction_signal", field: "arr_value", computability: "Computable", value: xlsxValue, evidenceRef: kpi.source.page_ref, reasonCode: SLOT_REASON_CODES.DERIVED_FROM_SAAS_KPI, source: "xlsx" });
+		} else {
+			fields.push(textResult);
+		}
+	}
 
 	// revenue_value: prefer XLSX financial statement; fall back to text pattern.
 	// Rule: XLSX is authoritative for revenue when available (structured data > OCR text).
@@ -2561,7 +2698,8 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 				computability: "Computable",
 				value: xlsxValue,
 				evidenceRef: fs.source.page_ref,
-				reasonCode: null,
+				reasonCode: SLOT_REASON_CODES.DERIVED_FROM_FINANCIALS,
+				source: "xlsx",
 			});
 		} else {
 			fields.push(textResult);
@@ -2583,7 +2721,8 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 				computability: "Computable",
 				value: xlsxValue,
 				evidenceRef: fs.source.page_ref,
-				reasonCode: null,
+				reasonCode: SLOT_REASON_CODES.DERIVED_FROM_FINANCIALS,
+				source: "xlsx",
 			});
 		} else {
 			fields.push(textResult);
@@ -2592,12 +2731,45 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 
 	fields.push(evalCanonicalField("traction_signal", "customer_count", dpuPages, evidenceSnippets, CUSTOMER_COUNT_PATTERN, P2_REASON.NO_CUSTOMER_COUNT_MENTION, dpuLoadFailed));
 
-	// ── Use of Funds (text → ask-slide → XLSX cascade) ────────────────────────
-	// Priority: (1) USE_OF_FUNDS_BUCKET_PATTERN text match, (2) ask-slide allocation
-	// detector, (3) XLSX UoF parser. Deck-sourced values preferred.
+	// ── Use of Funds (XLSX structured → text → ask-slide → ICA cascade) ────────
+	// Priority: (1) XLSX UoF parser (most reliable structured data),
+	//           (2) USE_OF_FUNDS_BUCKET_PATTERN text match (deck text),
+	//           (3) Ask-slide allocation detector,
+	//           (4) Implied capital allocation (budget model).
+	// Structured XLSX data is preferred over OCR text pattern matches.
 	{
 		const textResult = evalCanonicalField("use_of_funds", "use_of_funds_buckets", dpuPages, evidenceSnippets, USE_OF_FUNDS_BUCKET_PATTERN, P2_REASON.NO_USE_OF_FUNDS_BUCKETS_MENTION, dpuLoadFailed);
-		if (textResult.computability === "Computable") {
+		// 1st: XLSX UoF statement (highest confidence when available)
+		const uof = inputs.bestUseOfFundsStatement;
+		if (uof && uof.buckets.length > 0) {
+			const bucketSummary = uof.buckets
+				.map((b) => {
+					const parts: string[] = [b.category];
+					if (b.amount !== null) parts.push(`$${b.amount.toLocaleString("en-US")}`);
+					if (b.percent !== null) parts.push(`${b.percent}%`);
+					return parts.join(" ");
+				})
+				.join(", ");
+			if (textResult.computability === "Computable" && textResult.value) {
+				// Emit a conflict when text also found UoF data
+				conflicts.push({
+					field: "use_of_funds_buckets",
+					valueA: bucketSummary, evidenceA: uof.source.page_ref, sourceTypeA: "xlsx",
+					valueB: textResult.value, evidenceB: textResult.evidenceRef ?? "unknown", sourceTypeB: "deck",
+					conflictReason: "XLSX structured UoF and deck text disagree on use-of-funds buckets; XLSX preferred",
+				});
+			}
+			fields.push({
+				category: "use_of_funds",
+				field: "use_of_funds_buckets",
+				computability: "Computable",
+				value: bucketSummary,
+				evidenceRef: uof.source.page_ref,
+				reasonCode: SLOT_REASON_CODES.DERIVED_FROM_USE_OF_FUNDS,
+				source: "xlsx",
+			});
+		} else if (textResult.computability === "Computable") {
+			// 2nd: text pattern hit on deck pages
 			fields.push(textResult);
 		} else {
 			// Ask-slide fallback: allocation table on the Ask/raise slide.
@@ -2612,14 +2784,15 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 					reasonCode: null,
 				});
 			} else {
-				// XLSX fallback.
-				const uof = inputs.bestUseOfFundsStatement;
-				if (uof && uof.buckets.length > 0) {
-					const bucketSummary = uof.buckets
+				// 4th fallback: implied capital allocation (budget-model derived from excel_sheet pages).
+				const ica = inputs.impliedCapitalAllocation;
+				const icaBuckets = ica?.buckets.filter((b) => b.annual_cost_usd != null && b.annual_cost_usd > 0) ?? [];
+				if (ica && icaBuckets.length > 0 && ica.source.page_refs.length > 0) {
+					const bucketSummary = icaBuckets
 						.map((b) => {
 							const parts: string[] = [b.category];
-							if (b.amount !== null) parts.push(`$${b.amount.toLocaleString("en-US")}`);
-							if (b.percent !== null) parts.push(`${b.percent}%`);
+							if (b.annual_cost_usd != null) parts.push(`$${b.annual_cost_usd.toLocaleString("en-US")}`);
+							if (b.pct_of_total != null) parts.push(`${(b.pct_of_total * 100).toFixed(1)}%`);
 							return parts.join(" ");
 						})
 						.join(", ");
@@ -2627,14 +2800,119 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 						category: "use_of_funds",
 						field: "use_of_funds_buckets",
 						computability: "Computable",
-						value: bucketSummary,
-						evidenceRef: uof.source.page_ref,
-						reasonCode: null,
+						value: `${bucketSummary} (IMPLIED from budget model)`,
+						evidenceRef: ica.source.page_refs[0]!,
+						reasonCode: SLOT_REASON_CODES.DERIVED_FROM_BUDGET_MODEL,
+						source: "xlsx",
 					});
 				} else {
 					fields.push(textResult);
 				}
 			}
+		}
+	}
+
+	// ── Financial Health (Phase K — balance sheet + cash flow + bank txns) ────
+	{
+		const bs  = inputs.balanceSheet;
+		const cf  = inputs.cashFlow;
+		const btx = inputs.bankTransactions;
+
+		// cash_balance: balance sheet > cash flow ending cash > bank ending balance
+		const cfEndingCash = cf?.ending_cash?.[cf?.periods?.[0] ?? ""] ?? null;
+		const cashLatest = bs?.derived?.cash_latest ?? cfEndingCash ?? btx?.ending_balance ?? null;
+		if (cashLatest != null) {
+			const src = bs ? bs.source.page_ref : cf ? cf.source.page_ref : btx!.source.page_ref;
+			fields.push({ category: "financial_health", field: "cash_balance", computability: "Computable", value: `$${cashLatest.toLocaleString("en-US")} (XLSX)`, evidenceRef: src, reasonCode: SLOT_REASON_CODES.DERIVED_FROM_BALANCE_SHEET, source: "xlsx" });
+		} else {
+			fields.push({ category: "financial_health", field: "cash_balance", computability: "NotComputable", value: null, evidenceRef: null, reasonCode: "NO_CASH_BALANCE_DATA" });
+		}
+
+		// debt_outstanding: from balance sheet
+		const debtLatest = bs?.derived?.debt_latest ?? null;
+		if (debtLatest != null) {
+			fields.push({ category: "financial_health", field: "debt_outstanding", computability: "Computable", value: `$${debtLatest.toLocaleString("en-US")} (XLSX)`, evidenceRef: bs!.source.page_ref, reasonCode: SLOT_REASON_CODES.DERIVED_FROM_BALANCE_SHEET, source: "xlsx" });
+		} else {
+			fields.push({ category: "financial_health", field: "debt_outstanding", computability: "NotComputable", value: null, evidenceRef: null, reasonCode: "NO_DEBT_DATA" });
+		}
+
+		// net_cash_burn_monthly: cash flow ops > bank transactions
+		const burnMonthly = cf?.derived?.monthly_burn_from_ops ?? btx?.derived?.monthly_burn ?? null;
+		const burnSrc     = cf ? cf.source.page_ref : btx ? btx.source.page_ref : null;
+		if (burnMonthly != null && burnSrc) {
+			fields.push({ category: "financial_health", field: "net_cash_burn_monthly", computability: "Computable", value: `$${burnMonthly.toLocaleString("en-US")}/mo (XLSX)`, evidenceRef: burnSrc, reasonCode: SLOT_REASON_CODES.DERIVED_FROM_CASH_FLOW, source: "xlsx" });
+		} else {
+			fields.push({ category: "financial_health", field: "net_cash_burn_monthly", computability: "NotComputable", value: null, evidenceRef: null, reasonCode: "NO_BURN_DATA" });
+		}
+
+		// runway_months: derived when both cash and burn available
+		const runwayMonths = cf?.derived?.runway_months ?? null;
+		if (runwayMonths != null) {
+			fields.push({ category: "financial_health", field: "runway_months", computability: "Computable", value: `${runwayMonths.toFixed(1)} months (XLSX)`, evidenceRef: cf!.source.page_ref, reasonCode: SLOT_REASON_CODES.DERIVED_FROM_CASH_FLOW, source: "xlsx" });
+		} else if (cashLatest != null && burnMonthly != null && burnMonthly > 0) {
+			const computed = cashLatest / burnMonthly;
+			const src2 = burnSrc ?? (bs ? bs.source.page_ref : null);
+			fields.push({ category: "financial_health", field: "runway_months", computability: "Computable", value: `${computed.toFixed(1)} months (computed: cash ÷ burn)`, evidenceRef: src2 ?? "unknown", reasonCode: SLOT_REASON_CODES.DERIVED_FROM_CASH_FLOW, source: "xlsx" });
+		} else {
+			fields.push({ category: "financial_health", field: "runway_months", computability: "NotComputable", value: null, evidenceRef: null, reasonCode: "NO_RUNWAY_DATA" });
+		}
+	}
+
+	// ── SaaS Metrics (Phase K — saas_kpis sheet) ──────────────────────────────
+	{
+		const kpi    = inputs.saasKpis;
+		const latest = kpi?.periods?.[0] ?? null;
+
+		// Period-keyed records — use first period or "P0" key
+		const churnPct     = typeof latest === "string" && latest ? (kpi?.churn_pct?.[latest] ?? kpi?.churn_pct?.["P0"] ?? null) : (kpi?.churn_pct?.["P0"] ?? null);
+		const retentionPct = typeof latest === "string" && latest ? (kpi?.retention_pct?.[latest] ?? kpi?.retention_pct?.["P0"] ?? null) : (kpi?.retention_pct?.["P0"] ?? null);
+		const cacVal       = typeof latest === "string" && latest ? (kpi?.cac?.[latest] ?? kpi?.cac?.["P0"] ?? null) : (kpi?.cac?.["P0"] ?? null);
+		const ltvVal       = typeof latest === "string" && latest ? (kpi?.ltv?.[latest] ?? kpi?.ltv?.["P0"] ?? null) : (kpi?.ltv?.["P0"] ?? null);
+
+		if (churnPct != null && kpi) {
+			fields.push({ category: "saas_metrics", field: "churn_pct", computability: "Computable", value: `${churnPct.toFixed(2)}% (${latest ?? "latest"}, XLSX)`, evidenceRef: kpi.source.page_ref, reasonCode: SLOT_REASON_CODES.DERIVED_FROM_SAAS_KPI, source: "xlsx" });
+		} else {
+			fields.push({ category: "saas_metrics", field: "churn_pct", computability: "NotComputable", value: null, evidenceRef: null, reasonCode: "NO_CHURN_PCT_DATA" });
+		}
+
+		if (retentionPct != null && kpi) {
+			fields.push({ category: "saas_metrics", field: "retention_pct", computability: "Computable", value: `${retentionPct.toFixed(2)}% (${latest ?? "latest"}, XLSX)`, evidenceRef: kpi.source.page_ref, reasonCode: SLOT_REASON_CODES.DERIVED_FROM_SAAS_KPI, source: "xlsx" });
+		} else {
+			fields.push({ category: "saas_metrics", field: "retention_pct", computability: "NotComputable", value: null, evidenceRef: null, reasonCode: "NO_RETENTION_PCT_DATA" });
+		}
+
+		if (cacVal != null && kpi) {
+			fields.push({ category: "saas_metrics", field: "cac", computability: "Computable", value: `$${cacVal.toLocaleString("en-US")} CAC (${latest ?? "latest"}, XLSX)`, evidenceRef: kpi.source.page_ref, reasonCode: SLOT_REASON_CODES.DERIVED_FROM_SAAS_KPI, source: "xlsx" });
+		} else {
+			fields.push({ category: "saas_metrics", field: "cac", computability: "NotComputable", value: null, evidenceRef: null, reasonCode: "NO_CAC_DATA" });
+		}
+
+		if (ltvVal != null && kpi) {
+			fields.push({ category: "saas_metrics", field: "ltv", computability: "Computable", value: `$${ltvVal.toLocaleString("en-US")} LTV (${latest ?? "latest"}, XLSX)`, evidenceRef: kpi.source.page_ref, reasonCode: SLOT_REASON_CODES.DERIVED_FROM_SAAS_KPI, source: "xlsx" });
+		} else {
+			fields.push({ category: "saas_metrics", field: "ltv", computability: "NotComputable", value: null, evidenceRef: null, reasonCode: "NO_LTV_DATA" });
+		}
+	}
+
+	// ── Cap Table (Phase K) ───────────────────────────────────────────────────
+	{
+		const ct = inputs.capTable;
+		const optionPool = ct?.option_pool_pct ?? null;
+		if (optionPool != null && ct) {
+			fields.push({ category: "cap_table", field: "option_pool_pct", computability: "Computable", value: `${optionPool.toFixed(2)}% (XLSX)`, evidenceRef: ct.source.page_ref, reasonCode: SLOT_REASON_CODES.DERIVED_FROM_CAP_TABLE, source: "xlsx" });
+		} else {
+			fields.push({ category: "cap_table", field: "option_pool_pct", computability: "NotComputable", value: null, evidenceRef: null, reasonCode: "NO_OPTION_POOL_DATA" });
+		}
+
+		if (ct && ct.stakeholders.length > 0) {
+			const ownershipSummary = ct.stakeholders
+				.filter((s) => s.row_type !== "total")
+				.slice(0, 6)
+				.map((s) => `${s.name}${s.pct != null ? ` ${s.pct.toFixed(1)}%` : ""}`)
+				.join(", ");
+			fields.push({ category: "cap_table", field: "ownership_summary", computability: "Computable", value: ownershipSummary, evidenceRef: ct.source.page_ref, reasonCode: SLOT_REASON_CODES.DERIVED_FROM_CAP_TABLE, source: "xlsx" });
+		} else {
+			fields.push({ category: "cap_table", field: "ownership_summary", computability: "NotComputable", value: null, evidenceRef: null, reasonCode: "NO_CAP_TABLE_DATA" });
 		}
 	}
 
@@ -2661,9 +2939,10 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 
 function formatCanonicalFieldLine(f: CanonicalField): string {
 	if (f.computability === "Computable" && f.value !== null && f.evidenceRef !== null) {
-		return `category=${f.category} | field=${f.field} | computability=Computable | value="${f.value}" | evidence=${f.evidenceRef} | reason=none`;
+		const src = f.source ?? "deck";
+		return `category=${f.category} | field=${f.field} | computability=Computable | value="${f.value}" | evidence=${f.evidenceRef} | reason=${f.reasonCode ?? "none"} | source=${src}`;
 	}
-	return `category=${f.category} | field=${f.field} | computability=NotComputable | value=none | evidence=none | reason=${f.reasonCode ?? "UNKNOWN"}`;
+	return `category=${f.category} | field=${f.field} | computability=NotComputable | value=none | evidence=none | reason=${f.reasonCode ?? "UNKNOWN"} | source=unknown`;
 }
 
 function formatConflictLine(c: ConflictEntry): string {
@@ -2745,6 +3024,10 @@ function buildThesisInputs(inputs: InsightSlotInputs): ThesisInputsV1 {
 		raise_amount: get("raise_amount"),
 		raise_round: get("raise_round"),
 		raise_instrument: get("raise_instrument"),
+		raise_cap: get("raise_cap"),
+		raise_discount: get("raise_discount"),
+		note_interest_rate: get("note_interest_rate"),
+		note_maturity: get("note_maturity"),
 		valuation_pre: get("valuation_pre"),
 		valuation_post: get("valuation_post"),
 		tam_value: get("tam_value"),
@@ -3611,6 +3894,11 @@ export async function recomputeInsightSlotBody(
 		impliedFromIncomeStatement: null,
 		financialLayoutClassification: null,
 		financialReconciliation: null,
+		balanceSheet: null,
+		cashFlow: null,
+		capTable: null,
+		saasKpis: null,
+		bankTransactions: null,
 	};
 
 	return buildInsightSlotsSection(inputs).body ?? "";

@@ -1217,3 +1217,82 @@ describe("Stage 2 – Raise context-gating: TAM exclusion + Ask-slide priority",
 		expect(raiseAmountLine).toMatch(/computability=NotComputable/);
 	});
 });
+// ─── Phase L: note_interest_rate + note_maturity canonical fields ─────────────
+
+describe("note_interest_rate canonical field (Phase L)", () => {
+        it("note_interest_rate is Computable when DPU contains '6% interest'", async () => {
+                mockPool = makeSinglePagePool(
+                        "The convertible note carries a 6% interest rate per annum, maturing in 24 months."
+                );
+
+                await generateInvestorInsightsProcessor(makeJob());
+                const pkg = getInsertedRenderPkg();
+
+                const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+                expect(cf).toBeTruthy();
+                expect(cf.body).toMatch(/field=note_interest_rate \| computability=Computable/);
+        });
+
+        it("note_interest_rate is NotComputable when no interest rate in DPU", async () => {
+                mockPool = makeSinglePagePool("We are raising $2M via a SAFE note with a $10M valuation cap.");
+
+                await generateInvestorInsightsProcessor(makeJob());
+                const pkg = getInsertedRenderPkg();
+
+                const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+                expect(cf.body).toMatch(
+                        /field=note_interest_rate \| computability=NotComputable \| value=none \| evidence=none \| reason=NO_NOTE_INTEREST_RATE_MENTION/
+                );
+        });
+
+        it("note_interest_rate matches 'interest rate of 8%' format", async () => {
+                mockPool = makeSinglePagePool(
+                        "The note has an interest rate of 8% per annum convertible at maturity."
+                );
+
+                await generateInvestorInsightsProcessor(makeJob());
+                const pkg = getInsertedRenderPkg();
+
+                const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+                expect(cf.body).toMatch(/field=note_interest_rate \| computability=Computable/);
+        });
+});
+
+describe("note_maturity canonical field (Phase L)", () => {
+        it("note_maturity is Computable when DPU contains 'matures in 24 months'", async () => {
+                mockPool = makeSinglePagePool(
+                        "This convertible note matures in 24 months from the issue date."
+                );
+
+                await generateInvestorInsightsProcessor(makeJob());
+                const pkg = getInsertedRenderPkg();
+
+                const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+                expect(cf).toBeTruthy();
+                expect(cf.body).toMatch(/field=note_maturity \| computability=Computable/);
+        });
+
+        it("note_maturity is Computable for '2-year term' phrasing", async () => {
+                mockPool = makeSinglePagePool(
+                        "The bridge financing is structured as a 2-year term convertible note."
+                );
+
+                await generateInvestorInsightsProcessor(makeJob());
+                const pkg = getInsertedRenderPkg();
+
+                const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+                expect(cf.body).toMatch(/field=note_maturity \| computability=Computable/);
+        });
+
+        it("note_maturity is NotComputable when no maturity in DPU", async () => {
+                mockPool = makeSinglePagePool("We are raising $1.5M via equity at a $10M pre-money valuation.");
+
+                await generateInvestorInsightsProcessor(makeJob());
+                const pkg = getInsertedRenderPkg();
+
+                const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+                expect(cf.body).toMatch(
+                        /field=note_maturity \| computability=NotComputable \| value=none \| evidence=none \| reason=NO_NOTE_MATURITY_MENTION/
+                );
+        });
+});

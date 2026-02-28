@@ -12,7 +12,7 @@ interface InvestorInsightsTabProps {
 
 // ── Section renderers ────────────────────────────────────────────────────────
 
-function GateStateSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+export function GateStateSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const items = (section.items ?? []) as InvestorInsightsGateResult[];
   const fallback = section.fallback ?? 'Gate data unavailable.';
 
@@ -74,7 +74,7 @@ function MessageSection({ section, darkMode }: { section: InvestorInsightsSectio
   );
 }
 
-function EmptyFallback({ text, darkMode }: { text: string; darkMode: boolean }) {
+export function EmptyFallback({ text, darkMode }: { text: string; darkMode: boolean }) {
   return (
     <p className={`text-sm italic ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>{text}</p>
   );
@@ -82,7 +82,7 @@ function EmptyFallback({ text, darkMode }: { text: string; darkMode: boolean }) 
 
 // ── Insight Slots ─────────────────────────────────────────────────────────────
 
-interface SlotRow {
+export interface SlotRow {
   slot: string;
   state: 'Computable' | 'NotComputable' | string;
   value: string;
@@ -90,7 +90,7 @@ interface SlotRow {
   reason: string;
 }
 
-function parseInsightSlotBody(body: string): SlotRow[] {
+export function parseInsightSlotBody(body: string): SlotRow[] {
   return body
     .split('\n')
     .map((line) => line.trim())
@@ -117,19 +117,19 @@ function parseInsightSlotBody(body: string): SlotRow[] {
     });
 }
 
-function slotLabel(raw: string): string {
+export function slotLabel(raw: string): string {
   // "raise_terms" → "Raise Terms"
   return raw.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function displayValue(raw: string): string {
+export function displayValue(raw: string): string {
   if (raw === 'none') return '—';
   // Strip surrounding quotes if present
   if (raw.startsWith('"') && raw.endsWith('"') && raw.length > 1) return raw.slice(1, -1);
   return raw;
 }
 
-function EvidencePill({ evidenceRef, darkMode }: { evidenceRef: string; darkMode: boolean }) {
+export function EvidencePill({ evidenceRef, darkMode }: { evidenceRef: string; darkMode: boolean }) {
   const [copied, setCopied] = useState(false);
 
   const handleClick = () => {
@@ -260,7 +260,7 @@ function InsightSlotsSection({ section, darkMode }: { section: InvestorInsightsS
 
 // ── Canonical Fields ─────────────────────────────────────────────────────────
 
-interface CanonicalFieldRow {
+export interface CanonicalFieldRow {
   category: string;
   field: string;
   computability: 'Computable' | 'NotComputable' | string;
@@ -269,7 +269,7 @@ interface CanonicalFieldRow {
   reason: string | null;
 }
 
-function parseCanonicalFieldsBody(body: string): CanonicalFieldRow[] {
+export function parseCanonicalFieldsBody(body: string): CanonicalFieldRow[] {
   return body
     .split('\n')
     .map((line) => line.trim())
@@ -309,11 +309,11 @@ function parseCanonicalFieldsBody(body: string): CanonicalFieldRow[] {
     });
 }
 
-function fieldLabel(raw: string): string {
+export function fieldLabel(raw: string): string {
   return raw.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function CanonicalFieldsSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+export function CanonicalFieldsSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const body = typeof section.body === 'string' ? section.body : '';
   const rows = parseCanonicalFieldsBody(body);
 
@@ -517,7 +517,7 @@ function CompletenessSummarySection({ section, darkMode }: { section: InvestorIn
 
 // ── Conflicts ─────────────────────────────────────────────────────────────────
 
-interface ConflictRow {
+export interface ConflictRow {
   field: string;
   valueA: string;
   evidenceA: string;
@@ -525,7 +525,7 @@ interface ConflictRow {
   evidenceB: string;
 }
 
-function parseConflictsBody(body: string): ConflictRow[] {
+export function parseConflictsBody(body: string): ConflictRow[] {
   return body
     .split('\n')
     .map((line) => line.trim())
@@ -545,7 +545,7 @@ function parseConflictsBody(body: string): ConflictRow[] {
     });
 }
 
-function ConflictsSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+export function ConflictsSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const body = typeof section.body === 'string' ? section.body : '';
   const rows = parseConflictsBody(body);
 
@@ -735,7 +735,7 @@ function metricLabel(raw: string): string {
   return raw.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function CoverageSnapshotSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+export function CoverageSnapshotSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const body = typeof section.body === 'string' ? section.body : '';
   const rows = parseCoverageBody(body);
 
@@ -848,7 +848,7 @@ function CoverageSnapshotSection({ section, darkMode }: { section: InvestorInsig
 
 // ── Governed Summary V1 ─────────────────────────────────────────────────────
 
-interface GovernedSummaryV1 {
+export interface GovernedSummaryV1 {
   schema_version: 'governed_summary_v1';
   executive_summary: string;
   strengths: string[];
@@ -857,7 +857,7 @@ interface GovernedSummaryV1 {
   validated: boolean;
 }
 
-function parseGovernedSummaryBody(body: string): GovernedSummaryV1 | null {
+export function parseGovernedSummaryBody(body: string): GovernedSummaryV1 | null {
   const delimiter = '---governed_summary_v1_json---\n';
   const idx = body.indexOf(delimiter);
   if (idx === -1) return null;
@@ -871,7 +871,7 @@ function parseGovernedSummaryBody(body: string): GovernedSummaryV1 | null {
   }
 }
 
-function GovernedSummarySection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+export function GovernedSummarySection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const body = typeof section.body === 'string' ? section.body : '';
   const data = parseGovernedSummaryBody(body);
 
@@ -944,7 +944,91 @@ function GovernedSummarySection({ section, darkMode }: { section: InvestorInsigh
   );
 }
 
-const PHASE2_KEYS = new Set(['insight_slots', 'coverage_snapshot', 'canonical_fields', 'completeness_summary', 'conflicts', 'debug.normalization_diff', 'governed_summary_v1']);
+const PHASE2_KEYS = new Set([
+  'insight_slots', 'coverage_snapshot', 'canonical_fields', 'completeness_summary',
+  'conflicts', 'debug.normalization_diff', 'governed_summary_v1',
+  'governed_executive_summary_v1',  // AI-governed sections require dedicated renderers
+]);
+
+// ─── Governed Executive Summary V1 renderer (inline — cannot import from InvestorReportView due to circular dep) ────
+
+interface GovernedExecSummaryV1 {
+  schema_version: 'governed_executive_summary_v1';
+  headline: string;
+  one_liner?: string;
+  summary_paragraphs?: string[];
+  paragraphs?: string[]; // compat
+  strengths: string[];
+  risks: string[];
+  open_questions: string[];
+  coverage_note: string;
+  validated: boolean;
+}
+
+function parseGovernedExecSummaryV1Body(body: string): GovernedExecSummaryV1 | null {
+  const delimiter = '---governed_executive_summary_v1_json---\n';
+  const idx = body.indexOf(delimiter);
+  if (idx === -1) return null;
+  try {
+    const parsed = JSON.parse(body.slice(idx + delimiter.length).trim()) as GovernedExecSummaryV1;
+    if (parsed?.schema_version !== 'governed_executive_summary_v1') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function GovernedExecSummaryV1Section({
+  section, darkMode,
+}: { section: InvestorInsightsSection; darkMode: boolean }) {
+  const body = typeof section.body === 'string' ? section.body : '';
+  const data = parseGovernedExecSummaryV1Body(body);
+  if (!data) {
+    return <EmptyFallback text={section.fallback ?? 'Executive summary unavailable.'} darkMode={darkMode} />;
+  }
+  const paras = data.summary_paragraphs ?? data.paragraphs ?? [];
+  const colClass = `rounded-lg border p-4 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-100 bg-gray-50'}`;
+  const headingClass = `text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`;
+  const bulletClass = `text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`;
+  return (
+    <div className="space-y-4">
+      <p className={`text-sm font-semibold leading-snug ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+        {data.headline}
+      </p>
+      {paras.map((p, i) => (
+        <p key={i} className={`text-sm leading-relaxed ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{p}</p>
+      ))}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className={colClass}>
+          <div className={headingClass}>Strengths</div>
+          <ul className="space-y-1">
+            {data.strengths.map((s, i) => <li key={i} className={bulletClass}>• {s}</li>)}
+            {data.strengths.length === 0 && <li className={bulletClass + ' opacity-50'}>None identified</li>}
+          </ul>
+        </div>
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-red-400' : 'text-red-600'}`}>Risks</div>
+          <ul className="space-y-1">
+            {data.risks.map((r, i) => <li key={i} className={bulletClass}>• {r}</li>)}
+            {data.risks.length === 0 && <li className={bulletClass + ' opacity-50'}>None identified</li>}
+          </ul>
+        </div>
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-yellow-400' : 'text-yellow-600'}`}>Open Questions</div>
+          <ul className="space-y-1">
+            {data.open_questions.map((q, i) => <li key={i} className={bulletClass}>• {q}</li>)}
+            {data.open_questions.length === 0 && <li className={bulletClass + ' opacity-50'}>None identified</li>}
+          </ul>
+        </div>
+      </div>
+      {data.validated && (
+        <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+          ✓ Numeric-parity validated — no hallucinated figures
+        </p>
+      )}
+    </div>
+  );
+}
 
 function SectionCard({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const isSpecialKey = PHASE2_KEYS.has(section.key);
@@ -976,6 +1060,9 @@ function SectionCard({ section, darkMode }: { section: InvestorInsightsSection; 
       )}
       {section.key === 'governed_summary_v1' && (
         <GovernedSummarySection section={section} darkMode={darkMode} />
+      )}
+      {section.key === 'governed_executive_summary_v1' && (
+        <GovernedExecSummaryV1Section section={section} darkMode={darkMode} />
       )}
       {/* Kind-based fallback only for sections whose key has no dedicated renderer. */}
       {!isSpecialKey && section.kind === 'gate_state' && (

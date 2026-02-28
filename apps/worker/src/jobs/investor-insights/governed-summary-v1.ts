@@ -50,6 +50,8 @@ export interface GovernedSummaryArgs {
 	financialReconciliationBody: string | null;
 	conflictsBody: string | null;
 	dealName?: string;
+	/** Product/narrative text from deck pages (not financial tables). */
+	productNarrativeBody?: string | null;
 }
 
 export type GovernedSummaryResult =
@@ -106,6 +108,10 @@ export interface GovernedSummaryFingerprintInputs {
 	conflictsText?: string | null;
 	engineVersion?: string | null;
 	governanceVersion?: string | null;
+	/** Deal name for cache invalidation when name is first set. */
+	dealNameText?: string | null;
+	/** Product narrative text for cache invalidation. */
+	productNarrativeText?: string | null;
 }
 
 /**
@@ -144,6 +150,8 @@ export function computeGovernedSummaryFingerprintV1(
 		conflicts: inputs.conflictsText ? normalizeForFingerprint(inputs.conflictsText) : null,
 		engine_version: inputs.engineVersion ?? null,
 		governance_version: inputs.governanceVersion ?? null,
+		deal_name: inputs.dealNameText ?? null,
+		product_narrative: inputs.productNarrativeText ? normalizeForFingerprint(inputs.productNarrativeText) : null,
 	};
 	// JSON.stringify with sorted keys for determinism
 	const orderedKeys = Object.keys(obj).sort() as Array<keyof typeof obj>;
@@ -178,8 +186,10 @@ export interface ResolveGovernedSummaryArgs {
 	engineVersion: string;
 	/** GOVERNANCE_VERSION pin for fingerprint. */
 	governanceVersion: string;
-	/** Optional deal name for LLM context. */
+	/** Optional deal name for LLM context and fingerprint invalidation. */
 	dealName?: string;
+	/** Product/narrative text from non-financial deck pages. */
+	productNarrativeBody?: string | null;
 	/**
 	 * Injectable generate function — defaults to `generateGovernedSummaryV1`.
 	 * Overriding this in tests avoids any real LLM calls.
@@ -216,6 +226,7 @@ export async function resolveGovernedSummaryWithCache(
 		engineVersion,
 		governanceVersion,
 		dealName,
+		productNarrativeBody,
 		generateFn = generateGovernedSummaryV1,
 	} = args;
 
@@ -236,6 +247,8 @@ export async function resolveGovernedSummaryWithCache(
 		conflictsText: conflictsBody,
 		engineVersion,
 		governanceVersion,
+		dealNameText: dealName ?? null,
+		productNarrativeText: productNarrativeBody ?? null,
 	});
 
 	// ── Determine cache miss reason (for observability) ──────────────────────
@@ -288,8 +301,7 @@ export async function resolveGovernedSummaryWithCache(
 		financialHealthBody,
 		financialReconciliationBody,
 		conflictsBody,
-		dealName,
-	});
+		dealName,		productNarrativeBody,	});
 
 	if (result.ok) {
 		return {
@@ -396,19 +408,50 @@ export function validateNoNewNumbers(
 	return { ok: unknown.length === 0, unknown };
 }
 
+/**
+ * Validate that the LLM output uses the real company name and not a placeholder.
+ *
+ * Checks:
+ *  1. Output does not contain known placeholder strings ("Startup Corp", "[Company]", etc.)
+ *  2. When dealName is provided, the output mentions it (case-insensitive substring match).
+ *
+ * @returns { ok: true } when all checks pass, or
+ *          { ok: false, issues: string[] } listing every violation.
+ */
+export function validateCompanyName(
+	dealName: string | undefined | null,
+	output: string
+): { ok: boolean; issues: string[] } {
+	const issues: string[] = [];
+	const PLACEHOLDER_RE = /\bstartup\s+corp\b|\[company(?:\s+name)?\]|\bcompany\s+name\b/i;
+	if (PLACEHOLDER_RE.test(output)) {
+		issues.push(
+			dealName
+				? `LLM output contains a placeholder name instead of "${dealName}"`
+				: "LLM output contains a placeholder company name"
+		);
+	}
+	if (dealName && !output.toLowerCase().includes(dealName.toLowerCase())) {
+		issues.push(`LLM output does not mention the expected deal name "${dealName}"`);
+	}
+	return { ok: issues.length === 0, issues };
+}
+
 // ─── LLM call ─────────────────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT =
-	"You are a financial analyst summarizing a startup investment opportunity for an investor. " +
-	"You will be given structured canonical data extracted deterministically from deal documents. " +
+	"You are an investment memo writer producing a concise, evidence-grounded summary of a startup deal. " +
+	"You will be given structured canonical data extracted deterministically from deal documents, " +
+	"plus optional product/narrative context from pitch deck slides. " +
 	"\n\nSTRICT RULES — violation will cause your output to be discarded:\n" +
-	"1. Do NOT introduce any numbers, dollar amounts, percentages, or year values that are NOT present in the provided canonical data below.\n" +
-	"2. Do NOT guess, extrapolate, or infer metrics not explicitly stated.\n" +
-	"3. If a section has insufficient data, use concise neutral language (e.g. 'Not disclosed.').\n" +
-	"4. Keep executive_summary to 2–4 sentences. Each bullet in strengths/risks ≤100 chars. Each open_question ≤120 chars.\n" +
-	"5. Return ONLY valid JSON with exactly these keys:\n" +
+	"1. Use the exact company name from the Deal Identity section. NEVER substitute 'Startup Corp' or any placeholder.\n" +
+	"2. Do NOT introduce any numbers, dollar amounts, percentages, or year values that are NOT present in the canonical data.\n" +
+	"3. Do NOT guess, extrapolate, or infer metrics not explicitly stated.\n" +
+	"4. If a section has insufficient data, use concise neutral language (e.g. 'Not disclosed.').\n" +
+	"5. Keep executive_summary to 2–4 sentences. Each bullet in strengths/risks ≤100 chars. Each open_question ≤120 chars.\n" +
+	"6. Return ONLY valid JSON with exactly these keys:\n" +
 	'   { "executive_summary": "...", "strengths": [...], "risks": [...], "open_questions": [...] }\n' +
-	"6. No markdown. No code fences. No extra keys.";
+	"7. No markdown. No code fences. No extra keys.";
 
 /**
  * Call gpt-4o-mini to generate a governed executive summary from canonical inputs.
@@ -418,7 +461,10 @@ export async function generateGovernedSummaryV1(
 	args: GovernedSummaryArgs
 ): Promise<GovernedSummaryResult> {
 	// Build canonical corpus for validation and LLM context
+	// Order: identity → product → market/financials (most context-rich first)
 	const parts: string[] = [];
+	if (args.dealName) parts.push(`## Deal Identity\nDeal name: ${args.dealName}`);
+	if (args.productNarrativeBody) parts.push(`## Product Narrative\n${args.productNarrativeBody}`);
 	if (args.canonicalFieldsBody) parts.push(`## Canonical Fields\n${args.canonicalFieldsBody}`);
 	if (args.insightSlotsBody) parts.push(`## Insight Slots\n${args.insightSlotsBody}`);
 	if (args.financialStmtBody) parts.push(`## Financial Statement\n${args.financialStmtBody}`);
@@ -456,9 +502,7 @@ export async function generateGovernedSummaryV1(
 
 	const provider = new OpenAIGPT4oProvider(providerConfig);
 
-	const userContent = args.dealName
-		? `Deal: ${args.dealName}\n\n${canonicalCorpus}`
-		: canonicalCorpus;
+	const userContent = canonicalCorpus;
 
 	let response: Awaited<ReturnType<typeof provider.complete>>;
 	try {

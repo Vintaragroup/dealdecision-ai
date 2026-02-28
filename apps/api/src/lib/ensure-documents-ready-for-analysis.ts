@@ -435,6 +435,74 @@ export async function ensureDocumentsReadyForAnalysis(args: {
     }
   }
 
+  // DPU_STALE self-heal: when the freshness gate is the only blocker (rows exist but
+  // predate min_dpu_created_at), re-enqueue populate_document_page_understanding so that
+  // any failed or evicted jobs get a fresh nudge.
+  //
+  // This fires on non-force_refresh calls — typically the web polling retry that comes
+  // after the initial force_refresh 202 response.  It intentionally does NOT delete
+  // existing rows (no force_refresh flag), keeping the worker's backfill + enrich path
+  // in play.  A job-existence guard prevents queue spam on every poll tick.
+  if (
+    requirePageUnderstanding &&
+    !forceRefresh &&
+    minDpuCreatedAt &&
+    (effective as any).blocked_reason === "DPU_STALE" &&
+    !hasRenderWorkEnqueued &&
+    enqueued.populate_document_page_understanding.length === 0
+  ) {
+    let hasRecentDpuJob = false;
+    try {
+      const res = await pool.query<{ c: number }>(
+        `SELECT 1::int AS c
+           FROM jobs
+          WHERE deal_id = $1
+            AND type = 'populate_document_page_understanding'
+            AND created_at >= (now() - interval '5 minutes')
+          LIMIT 1`,
+        [dealId]
+      );
+      hasRecentDpuJob = Array.isArray((res as any).rows) && (res as any).rows.length > 0;
+    } catch {
+      // best-effort: if the check fails, allow re-enqueue (conservative)
+    }
+
+    if (!hasRecentDpuJob) {
+      for (const d of visualDocs) {
+        const docId = String(d.id);
+        const pageCount = Math.max(0, toInt(d.page_count, 0));
+        if (!docId || pageCount <= 0) continue;
+        try {
+          await enqueue(
+            {
+              deal_id: dealId,
+              document_id: docId,
+              type: "populate_document_page_understanding",
+              payload: {
+                page_understanding_version: pageUnderstandingVersion,
+                reason: "dpu_stale_self_heal",
+              },
+            },
+            { dedupe: { by: "document" } }
+          );
+          enqueued.populate_document_page_understanding.push(docId);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          log?.warn(
+            { event: "populate_document_page_understanding.stale_heal_enqueue_failed", deal_id: dealId, document_id: docId, err: msg },
+            "Failed to enqueue populate_document_page_understanding for DPU_STALE self-heal"
+          );
+        }
+      }
+      if (enqueued.populate_document_page_understanding.length > 0) {
+        log?.info(
+          { event: "DPU_STALE_SELF_HEAL", deal_id: dealId, enqueued_docs: enqueued.populate_document_page_understanding },
+          "DPU_STALE detected with no recent jobs — re-enqueued populate_document_page_understanding"
+        );
+      }
+    }
+  }
+
   const pollAfter = effective.poll_after_ms ?? 2000;
 
   return {

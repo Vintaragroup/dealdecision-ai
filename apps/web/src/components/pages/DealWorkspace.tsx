@@ -4973,6 +4973,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     let lastReady: boolean | null = null;
     let minDpuCreatedAtToken: string | null = null;
+    // Tracks when we last sent a /analyze nudge to trigger server-side DPU_STALE self-heal.
+    let lastNudgeAtMs: number | null = null;
 
     readinessPollRef.current.token += 1;
     const token = readinessPollRef.current.token;
@@ -5135,6 +5137,23 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           addToast('error', 'Analysis failed to start', msg);
         }
         return;
+      }
+
+      // Periodic self-heal nudge: after the first 30 s, call POST /analyze (no
+      // force_refresh, with min_dpu_created_at) every 60 s to trigger the server-side
+      // DPU_STALE recovery path which re-enqueues populate_document_page_understanding
+      // jobs if the initial ones failed or were evicted from the queue.
+      const NUDGE_INTERVAL_MS = 60000;
+      if (
+        minDpuCreatedAtToken &&
+        elapsedMs >= 30_000 &&
+        (lastNudgeAtMs === null || Date.now() - lastNudgeAtMs >= NUDGE_INTERVAL_MS)
+      ) {
+        lastNudgeAtMs = Date.now();
+        logDev('dpu_stale_nudge', { elapsed_ms: elapsedMs, min_dpu_created_at: minDpuCreatedAtToken });
+        tryAnalyze({ force_refresh: false }).catch(() => {
+          // best-effort nudge — suppress errors
+        });
       }
 
       readinessPollRef.current.timerId = window.setTimeout(() => {
@@ -8700,6 +8719,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             {/* AI Analysis Tab */}
             {activeTab === 'analysis' && (
               <AnalysisTab 
+                dealId={dealId ?? undefined}
                 dealData={dealData || {
                   id: 'deal-fallback',
                   name: 'TechVision AI Platform',
@@ -8717,7 +8737,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   estimatedSavings: { money: 18500, hours: 85 }
                 }} 
                 darkMode={darkMode}
-					onRunAnalysis={runAIAnalysis}
+                onRunAnalysis={runAIAnalysis}
               />
             )}
 

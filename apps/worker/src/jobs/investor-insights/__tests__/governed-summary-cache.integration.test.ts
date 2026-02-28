@@ -367,6 +367,7 @@ describe("Phase 5.2 — raw DPU page_text is never passed to generateFn", () => 
 			"financialHealthBody",
 			"financialReconciliationBody",
 			"conflictsBody",
+			"productNarrativeBody",
 			"dealName",
 		]);
 

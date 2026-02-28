@@ -101,6 +101,12 @@ import {
 	resolveGovernedSummaryWithCache,
 	type GovernedSummaryRecord,
 } from "./governed-summary-v1";
+import {
+	resolveGovernedExecSummaryWithCache,
+	serializeGovernedExecSummaryBody,
+	formatCoverageNote,
+	type GovernedExecutiveSummaryRecord,
+} from "./governed-executive-summary-v1";
 
 // ─── Binding constants (version-pins.md) ───────────────────────────────────────
 
@@ -315,6 +321,61 @@ async function loadCoverageSnapshot(pool: Pool, dealId: string): Promise<Coverag
 		.filter((label): label is string => label !== null);
 
 	return { docsCount, dpuPageCount, dpuNonemptyPages, evidenceCount, visualsCount, coverageQueryErrors };
+}
+
+// ─── Deal name loader ─────────────────────────────────────────────────────────
+
+/**
+ * Load the human-readable deal name from the deals table.
+ * Best-effort: returns null on any error rather than blocking the processor.
+ * Used to anchor the LLM to use the real company name instead of placeholders.
+ */
+async function loadDealName(pool: Pool, dealId: string): Promise<string | null> {
+	try {
+		const { rows } = await pool.query<{ name: string }>(
+			`SELECT name FROM public.deals WHERE id = $1::uuid LIMIT 1`,
+			[dealId]
+		);
+		return rows[0]?.name ?? null;
+	} catch {
+		return null;
+	}
+}
+
+// ─── Product narrative builder ────────────────────────────────────────────────
+
+/**
+ * Build a product narrative body from non-financial DPU deck pages.
+ *
+ * Filters deck pages (excluding heavy financial tables) for pages that
+ * contain product/value-proposition keywords. Returns up to ~800 chars of
+ * context for the LLM to draw company identity and product description from.
+ *
+ * Returns null when no suitable pages are found (e.g. XLSX-only deals).
+ */
+function buildProductNarrativeBody(inputs: InsightSlotInputs): string | null {
+	const PRODUCT_KW_RE =
+		/\b(?:product|platform|solution|technology|we\s+(?:help|build|provide|enable|serve|power)|our\s+(?:platform|product|solution|technology|tool|software)|problem|pain\s+point|customers?|users?|clients?|mission|vision|founded|raises?|builds?)\b/i;
+	const MAX_CHARS = 800;
+	const productParts: string[] = [];
+	let totalLen = 0;
+
+	for (const page of inputs.dpuPages) {
+		const text = page.text ?? "";
+		// Skip pages that look like financial tables (high density of money tokens)
+		const moneyCount = (text.match(/\$[\d,]/g) ?? []).length;
+		const totalWords = text.split(/\s+/).filter(Boolean).length;
+		if (totalWords > 0 && moneyCount / totalWords >= 0.12) continue;
+		if (!PRODUCT_KW_RE.test(text)) continue;
+		const excerpt = text.slice(0, 500).replace(/\s+/g, " ").trim();
+		if (!excerpt || excerpt.length < 30) continue;
+		productParts.push(excerpt);
+		totalLen += excerpt.length;
+		if (totalLen >= MAX_CHARS) break;
+	}
+
+	if (productParts.length === 0) return null;
+	return productParts.join("\n\n").slice(0, MAX_CHARS);
 }
 
 // ─── Compliance state builder ─────────────────────────────────────────────────
@@ -2076,7 +2137,9 @@ async function buildGovernedSummarySection(
 	inputs: InsightSlotInputs,
 	previousRecord: GovernedSummaryRecord | null,
 	engineVersion: string,
-	governanceVersion: string
+	governanceVersion: string,
+	dealName?: string,
+	productNarrativeBody?: string
 ): Promise<{ section: RenderPackage["sections"][number]; record: GovernedSummaryRecord } | null> {
 	try {
 		const phase2Result = extractPhase2Result(inputs);
@@ -2118,6 +2181,8 @@ async function buildGovernedSummarySection(
 			previousRecord,
 			engineVersion,
 			governanceVersion,
+			dealName: dealName ?? undefined,
+			productNarrativeBody: productNarrativeBody ?? undefined,
 		});
 
 		if (!record || !record.validation_ok) {
@@ -2181,6 +2246,135 @@ async function buildGovernedSummarySection(
 		console.error(
 			JSON.stringify({
 				event: "GOVERNED_SUMMARY_V1_ERROR",
+				error: err instanceof Error ? err.message : String(err),
+			})
+		);
+		return null;
+	}
+}
+
+/**
+ * Asynchronously build the governed_executive_summary_v1 section using a
+ * cache-first strategy that mirrors buildGovernedSummarySection.
+ *
+ * Uses the same corpus as governed_summary_v1 PLUS coverage and gate state so
+ * the fingerprint invalidates when data coverage changes.
+ *
+ * Returns both the UI section and the GovernedExecutiveSummaryRecord for
+ * persistence in report_payload.governed_executive_summary_v1.
+ */
+async function buildGovernedExecutiveSummarySection(
+	inputs: InsightSlotInputs,
+	coverage: CoverageSnapshot,
+	gateState: GateState,
+	previousRecord: GovernedExecutiveSummaryRecord | null,
+	engineVersion: string,
+	governanceVersion: string,
+	dealName?: string,
+	productNarrativeBody?: string
+): Promise<{
+	section: RenderPackage["sections"][number];
+	record: GovernedExecutiveSummaryRecord;
+} | null> {
+	try {
+		const phase2Result = extractPhase2Result(inputs);
+		const canonicalFieldsBody = phase2Result.fields.map(formatCanonicalFieldLine).join("\n");
+		const conflictsBody =
+			phase2Result.conflicts.length > 0
+				? phase2Result.conflicts.map(formatConflictLine).join("\n")
+				: null;
+		const slotsSection = buildInsightSlotsSection(inputs);
+		const insightSlotsBody =
+			typeof slotsSection.body === "string" && slotsSection.body.trim().length > 0
+				? slotsSection.body
+				: null;
+		const financialStmtBody = inputs.bestFinancialStatement
+			? (buildFinancialStatementSection(inputs.bestFinancialStatement).body ?? null)
+			: null;
+		const useOfFundsBody = inputs.bestUseOfFundsStatement
+			? (buildUseOfFundsV1Section(inputs.bestUseOfFundsStatement).body ?? null)
+			: null;
+		const impliedCapitalBody = inputs.impliedCapitalAllocation
+			? formatImpliedCapitalForCorpus(inputs.impliedCapitalAllocation)
+			: null;
+		const financialHealthBody = inputs.bestFinancialStatement
+			? (buildFinancialHealthMetricsSection(inputs.bestFinancialStatement)?.body ?? null)
+			: null;
+		const financialReconciliationBody = inputs.financialReconciliation
+			? (buildFinancialReconciliationSection(inputs.financialReconciliation).body ?? null)
+			: null;
+
+		// Deterministic coverage note (not passed to LLM — injected after generation)
+		const coverageNote = formatCoverageNote({
+			dpuNonemptyPages: coverage.dpuNonemptyPages,
+			dpuPageCount: coverage.dpuPageCount,
+			evidenceCount: coverage.evidenceCount,
+		});
+
+		// Deterministic gate state text for fingerprint only (not sent to LLM)
+		const gateResults = gateState.results ?? [];
+		const passCount = gateResults.filter((g) => g.passed).length;
+		const failCount = gateResults.filter((g) => !g.passed).length;
+		const gateStateText = `gates=${gateResults.length} pass=${passCount} fail=${failCount}`;
+
+		const record = await resolveGovernedExecSummaryWithCache({
+			canonicalFieldsBody,
+			insightSlotsBody,
+			financialStmtBody,
+			useOfFundsBody,
+			impliedCapitalBody,
+			financialHealthBody,
+			financialReconciliationBody,
+			conflictsBody,
+			coverageText: coverageNote,
+			gateStateText,
+			coverageNote,
+			previousRecord,
+			engineVersion,
+			governanceVersion,
+			dealName: dealName ?? undefined,
+			productNarrativeBody: productNarrativeBody ?? undefined,
+		});
+
+		if (!record || !record.validation_ok) {
+			if (record && !record.validation_ok) {
+				console.log(
+					JSON.stringify({
+						event: "GOVERNED_EXECUTIVE_SUMMARY_V1_SKIP",
+						reason: "validation_failed",
+						unknown_tokens: record.unknown_tokens,
+					})
+				);
+			}
+			return null;
+		}
+
+		console.log(
+			JSON.stringify({
+				event: "GOVERNED_EXECUTIVE_SUMMARY_V1_RESOLVED",
+				source: record.source,
+				fingerprint: record.fingerprint,
+				engine_version: engineVersion,
+				governance_version: governanceVersion,
+			})
+		);
+
+		const body = serializeGovernedExecSummaryBody(record.summary);
+
+		return {
+			section: {
+				key: "governed_executive_summary_v1",
+				title: "AI Executive Summary",
+				kind: "message",
+				body,
+				fallback: "Executive summary unavailable.",
+			},
+			record,
+		};
+	} catch (err) {
+		console.error(
+			JSON.stringify({
+				event: "GOVERNED_EXECUTIVE_SUMMARY_V1_ERROR",
 				error: err instanceof Error ? err.message : String(err),
 			})
 		);
@@ -3257,6 +3451,8 @@ async function persistReport(
 		financialFacts?: FinancialFactsV1 | null;
 		/** Governed summary record (with fingerprint) to persist in report_payload. */
 		governedSummaryRecord?: GovernedSummaryRecord | null;
+		/** Governed executive summary record to persist in report_payload. */
+		governedExecutiveSummaryRecord?: GovernedExecutiveSummaryRecord | null;
 	}
 ): Promise<string> {
 	// ── Debug: log DB context once per call ─────────────────────────────────
@@ -3315,6 +3511,7 @@ async function persistReport(
 					...(opts.fusedFacts ? { fused_facts: opts.fusedFacts } : {}),
 					...(opts.financialFacts ? { financial_facts_v1: opts.financialFacts } : {}),
 					...(opts.governedSummaryRecord ? { governed_summary_v1: opts.governedSummaryRecord } : {}),
+					...(opts.governedExecutiveSummaryRecord ? { governed_executive_summary_v1: opts.governedExecutiveSummaryRecord } : {}),
 				}),
 				JSON.stringify(opts.auditLog),
 			]
@@ -3420,6 +3617,51 @@ async function loadPreviousGovernedSummary(
 				// Basic structural guard before trusting the record
 				if (
 					r.schema_version === "governed_summary_v1" &&
+					typeof r.fingerprint === "string" &&
+					r.fingerprint.length > 0 &&
+					r.summary !== null &&
+					r.summary !== undefined &&
+					typeof r.validation_ok === "boolean"
+				) {
+					return r;
+				}
+			}
+		}
+	} catch {
+		// Fail-open: cache is best-effort; never block report generation
+	}
+	return null;
+}
+
+// ─── Previous governed executive summary loader ───────────────────────────────
+
+/**
+ * Load the most-recent GovernedExecutiveSummaryRecord for a deal from report_payload.
+ * Returns null when no prior run exists or the record is malformed / absent.
+ * Fail-open: any DB error returns null so cache misses are safe.
+ */
+async function loadPreviousGovernedExecSummary(
+	pool: Pool,
+	dealId: string
+): Promise<GovernedExecutiveSummaryRecord | null> {
+	try {
+		const { rows } = await pool.query<{ report_payload: unknown }>(
+			`SELECT report_payload
+			   FROM public.investor_insight_reports
+			  WHERE deal_id = $1::uuid
+			    AND report_payload != '{}'::jsonb
+			  ORDER BY created_at DESC
+			  LIMIT 1`,
+			[dealId]
+		);
+		const payload = rows[0]?.report_payload;
+		if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+			const p = payload as Record<string, unknown>;
+			const gesv1 = p["governed_executive_summary_v1"];
+			if (gesv1 && typeof gesv1 === "object" && !Array.isArray(gesv1)) {
+				const r = gesv1 as GovernedExecutiveSummaryRecord;
+				if (
+					r.schema_version === "governed_executive_summary_v1" &&
 					typeof r.fingerprint === "string" &&
 					r.fingerprint.length > 0 &&
 					r.summary !== null &&
@@ -3688,11 +3930,13 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	}
 
 	// ── 6. Persist deterministic-only render package ──────────────────────────
-	const [coverage, insightSlotInputs, previousFusedFacts, previousGovernedSummary] = await Promise.all([
+	const [coverage, insightSlotInputs, previousFusedFacts, previousGovernedSummary, previousGovernedExecSummary, dealName] = await Promise.all([
 		loadCoverageSnapshot(pool, dealId),
 		loadInsightSlotInputs(pool, dealId, gateState),
 		loadPreviousFusedFacts(pool, dealId),
 		loadPreviousGovernedSummary(pool, dealId),
+		loadPreviousGovernedExecSummary(pool, dealId),
+		loadDealName(pool, dealId),
 	]);
 	const insightSlotsSections = buildInsightSlotsSections(dealId, insightSlotInputs);
 	const phase2Sections = buildPhase2Sections(insightSlotInputs);
@@ -3701,17 +3945,36 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		insightSlotInputs.dpuPages, insightSlotInputs.evidenceSnippets, previousFusedFacts
 	);
 	const fusionSection = buildDealFusionSection(fusionResult);
+	const productNarrativeBody = buildProductNarrativeBody(insightSlotInputs);
 	const governedResult = await buildGovernedSummarySection(
 		insightSlotInputs,
 		previousGovernedSummary,
 		engineVersion,
-		VERSION_PINS.governance_version
+		VERSION_PINS.governance_version,
+		dealName ?? undefined,
+		productNarrativeBody ?? undefined
+	);
+	const governedExecResult = await buildGovernedExecutiveSummarySection(
+		insightSlotInputs,
+		coverage,
+		gateState,
+		previousGovernedExecSummary,
+		engineVersion,
+		VERSION_PINS.governance_version,
+		dealName ?? undefined,
+		productNarrativeBody ?? undefined
 	);
 	const sections = buildDeterministicOnlySections(gateState, coverage, insightSlotsSections, phase2Sections, thesisSection, normMetricsFromInputs(insightSlotInputs));
 	if (governedResult) {
 		const statusIdx = sections.findIndex((s) => s.key === "analysis_status");
 		const insertAt = statusIdx >= 0 ? statusIdx + 1 : 2;
 		sections.splice(insertAt, 0, governedResult.section);
+	}
+	if (governedExecResult) {
+		// Insert the exec summary immediately before governed_summary_v1 (or at position 2)
+		const govSummaryIdx = sections.findIndex((s) => s.key === "governed_summary_v1");
+		const insertAt = govSummaryIdx >= 0 ? govSummaryIdx : 2;
+		sections.splice(insertAt, 0, governedExecResult.section);
 	}
 	sections.push(fusionSection);
 	const renderPackage = buildRenderPackage({
@@ -3772,6 +4035,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			? deriveFinancialFactsV1(insightSlotInputs.bestFinancialStatement)
 			: null,
 		governedSummaryRecord: governedResult?.record ?? null,
+		governedExecutiveSummaryRecord: governedExecResult?.record ?? null,
 	});
 
 	console.log(

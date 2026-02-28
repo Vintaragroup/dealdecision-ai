@@ -2154,6 +2154,151 @@ export async function apiRegenerateInvestorInsights(dealId: string): Promise<{ o
   );
 }
 
+// ─── AI Analysis Tab: Deal Terms Synthesis ───────────────────────────────────
+// Used ONLY by AnalysisTab → DealTermsCard. Not part of Investor Insights pipeline.
+
+export type DealTermsAssessmentLevel = 'High' | 'Medium' | 'Low';
+
+export type DealTermsAssessment = {
+  simplicity: DealTermsAssessmentLevel;
+  dilution_visibility: DealTermsAssessmentLevel;
+  valuation_clarity: DealTermsAssessmentLevel;
+  downside_protection: DealTermsAssessmentLevel;
+};
+
+export type DealTermsAnalysisResult = {
+  structure_summary: string;
+  structure_assessment: DealTermsAssessment;
+  missing_terms: string[];
+};
+
+/**
+ * POST /api/v1/deals/:dealId/analysis/deal-terms
+ * Lightweight LLM synthesis of deal structure from canonical fields.
+ * Used exclusively by the AI Analysis Tab DealTermsCard.
+ */
+export async function apiPostDealTermsAnalysis(
+  dealId: string,
+  canonicalFields: Record<string, string | null>,
+): Promise<DealTermsAnalysisResult> {
+  return request<DealTermsAnalysisResult>(`/api/v1/deals/${dealId}/analysis/deal-terms`, {
+    method: 'POST',
+    body: JSON.stringify({ canonical_fields: canonicalFields }),
+  });
+}
+
+// ─── AI Analysis Tab: Market Analysis Synthesis ──────────────────────────────
+// Used ONLY by AnalysisTab → MarketAnalysisCard. Not part of Investor Insights pipeline.
+
+export type MarketAnalysisKpis = {
+  tailwind: string;
+  launch_plan: string;
+  priority_markets: string;
+};
+
+export type MarketAnalysisResult = {
+  schema_version: 'market_analysis_v1';
+  score: number;           // 0–100
+  kpis: MarketAnalysisKpis;
+  strengths: string[];
+  concerns: string[];
+  ai_insight: string;
+  missing_inputs: string[];
+};
+
+/**
+ * POST /api/v1/deals/:dealId/analysis/market
+ * Lightweight LLM market analysis from canonical fields.
+ * Used exclusively by the AI Analysis Tab MarketAnalysisCard.
+ */
+export async function apiPostMarketAnalysis(
+  dealId: string,
+  canonicalFields: Record<string, string | null>,
+  dealName?: string,
+): Promise<MarketAnalysisResult> {
+  return request<MarketAnalysisResult>(`/api/v1/deals/${dealId}/analysis/market`, {
+    method: 'POST',
+    body: JSON.stringify({ canonical_fields: canonicalFields, deal_name: dealName }),
+  });
+}
+
+// ─── Financial Analysis AI Narrative ─────────────────────────────────────────
+
+export type FinancialNarrativeResult = {
+  schema_version: 'financial_analysis_v1';
+  summary_paragraphs: string[];   // 2–4 sentences
+  strengths: string[];             // 3–6 bullets
+  considerations: string[];        // 3–6 bullets
+};
+
+/**
+ * POST /api/v1/deals/:dealId/analysis/financial-analysis
+ * Lightweight LLM financial narrative synthesis (AI Governed panel only).
+ * All KPIs/score/highlights are computed deterministically on the client.
+ * This endpoint provides only the AI Governed narrative box.
+ * Used exclusively by the AI Analysis Tab FinancialAnalysisSection component.
+ */
+export async function apiPostFinancialAnalysis(
+  dealId: string,
+  payload: {
+    deal_name?: string;
+    layout_coverage_pct?: number;
+    has_statement: boolean;
+    has_implied_allocation: boolean;
+    has_health_metrics: boolean;
+    revenue_latest?: string;
+    gross_margin_pct?: string;
+    total_annual_cost?: string;
+    reconciliation_confidence?: number;
+    warn_fail_flags?: string[];
+    missing_sections?: string[];
+  },
+): Promise<FinancialNarrativeResult> {
+  return request<FinancialNarrativeResult>(`/api/v1/deals/${dealId}/analysis/financial-analysis`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+// ─── Risk Verification narrative ─────────────────────────────────────────────
+
+export type RiskVerificationNarrativeResult = {
+  schema_version: 'risk_verification_v1';
+  summary_paragraphs: string[];
+  top_risks: string[];
+  verification_requests: string[];
+};
+
+export type RiskVerificationPayload = {
+  deal_name?: string;
+  gates?: { id: string; status: 'pass' | 'fail' | 'not_run'; reason?: string }[];
+  missing_critical_terms?: string[];
+  conflicts?: { field: string; value_a: string; value_b: string }[];
+  coverage?: {
+    docs_count?: number;
+    dpu_pages?: number;
+    nonempty_pages?: number;
+    evidence_count?: number;
+    text_coverage_pct?: number;
+  };
+  reconciliation?: {
+    confidence_score?: number;
+    flags?: { name: string; status: 'PASS' | 'WARN' | 'FAIL' | 'SKIP'; reason?: string }[];
+  };
+};
+
+export async function apiPostRiskVerification(
+  dealId: string,
+  payload: RiskVerificationPayload,
+): Promise<RiskVerificationNarrativeResult> {
+  return request<RiskVerificationNarrativeResult>(
+    `/api/v1/deals/${dealId}/analysis/risk-verification`,
+    { method: 'POST', body: JSON.stringify(payload) },
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const apiClient = {
   get: request,
   post: <T>(path: string, body?: unknown) =>

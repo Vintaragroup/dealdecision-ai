@@ -183,7 +183,11 @@ async function backfillMissingDpuPlaceholdersForDocumentRange(
 			) AS payload
 		  FROM missing m
 		 WHERE (SELECT status FROM doc) = 'ready_for_analysis'
-		ON CONFLICT (document_id, page_index, version) DO NOTHING
+		ON CONFLICT (document_id, page_index, version) DO UPDATE
+		  -- Touch updated_at so the GREATEST(created_at, updated_at) freshness gate
+		  -- advances even when force_refresh's best-effort DELETE left old rows behind.
+		  -- Payload is intentionally not overwritten — real content rows are preserved.
+		  SET updated_at = now()
 		RETURNING 1
 	)
 	SELECT COUNT(*)::bigint AS inserted FROM ins;`;

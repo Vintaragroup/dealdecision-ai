@@ -29,6 +29,8 @@
     "proof:uof-and-implied:api": "tsx --require ./src/bin/load-env.cjs src/bin/proof-uof-and-implied-api.ts",
     "proof:financial-reconciliation:3deals": "tsx --require ./src/bin/load-env.cjs src/bin/proof-financial-reconciliation-3deals.ts",
     "proof:multisource-financials:3deals": "tsx --require ./src/bin/load-env.cjs src/bin/proof-multisource-financials-3deals.ts",
+    "proof:company-name": "tsx --require ./src/bin/load-env.cjs src/bin/proof-governed-company-name.ts",
+    "proof:exec-summary-sections": "tsx --require ./src/bin/load-env.cjs src/bin/proof-exec-summary-sections.ts",
     "coverage:delta:3deals": "tsx --require ./src/bin/load-env.cjs src/bin/coverage-delta-3deals.ts",
     "debug:db:stackfactor-xlsx": "tsx --require ./src/bin/load-env.cjs src/bin/debug-stackfactor-xlsx-db.ts",
     "debug:db:stackfactor-sheets": "tsx --require ./src/bin/load-env.cjs src/bin/debug-stackfactor-sheet-names.ts",

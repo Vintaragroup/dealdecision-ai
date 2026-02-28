@@ -80,7 +80,11 @@ describe("document_page_understanding population", () => {
 		const q1 = queries[1];
 		expect(q1?.sql.includes("generate_series($2::int, ($3::int) - 1)")).toBe(true);
 		expect(q1?.sql.includes("missing_visual_extraction")).toBe(true);
-		expect(q1?.sql.includes("ON CONFLICT (document_id, page_index, version) DO NOTHING")).toBe(true);
+		// Freshness fix: backfill ON CONFLICT must use DO UPDATE SET updated_at = now()
+		// (not DO NOTHING) so existing placeholder rows get a fresh updated_at timestamp
+		// even when the force_refresh best-effort DELETE fails.
+		expect(q1?.sql.includes("ON CONFLICT (document_id, page_index, version) DO UPDATE")).toBe(true);
+		expect(q1?.sql).toMatch(/SET\s+updated_at\s*=\s*now\(\)/s);
 		expect(q1?.params).toEqual([
 			"22222222-2222-2222-2222-222222222222",
 			10,

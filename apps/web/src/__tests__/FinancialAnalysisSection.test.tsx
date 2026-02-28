@@ -502,3 +502,68 @@ describe('16 — Implied-only path: revenue and margin are TBD', () => {
     expect(tbdValues.length).toBeGreaterThanOrEqual(1);
   });
 });
+
+// ─── 17. Deck-only path (PDF/PPT deal, no XLSX) ───────────────────────────────
+
+/** Deck financial signals body — matches buildDeckFinancialSignalsSection format */
+const DECK_SIGNALS_BODY = [
+  'has_revenue: true',
+  'has_arr_mrr: true',
+  'has_burn: false',
+  'has_runway: false',
+  'has_margin: false',
+  'has_pricing: false',
+  'has_unit_economics: false',
+  'pages_scanned: 18',
+  '  revenue: $1.2M ARR | doc:abc12345 | page:3',
+  '  revenue: growing 50% YoY | doc:abc12345 | page:5',
+  '  arr_mrr: $1.2M ARR run-rate | doc:abc12345 | page:3',
+].join('\n');
+
+describe('17 — Deck-only path: PDF/PPT deal with no XLSX data', () => {
+  test('score panel renders (not no-data) when only deck_financial_signals_v1 present', async () => {
+    await renderFullDeal({
+      sections: [
+        { key: 'deck_financial_signals_v1', body: DECK_SIGNALS_BODY },
+      ],
+      narrative: MOCK_NARRATIVE,
+    });
+    // Should NOT be in no-data state
+    expect(screen.queryByTestId('fin-no-data')).not.toBeInTheDocument();
+    // Score panel should appear
+    await screen.findByTestId('fin-score-panel');
+  });
+
+  test('apiPostFinancialAnalysis called with has_deck_signals true for deck-only deal', async () => {
+    const { mockFn } = await renderFullDeal({
+      sections: [
+        { key: 'deck_financial_signals_v1', body: DECK_SIGNALS_BODY },
+      ],
+      narrative: MOCK_NARRATIVE,
+    });
+    await screen.findByTestId('fin-narrative-panel');
+
+    // Verify API was called and the payload includes deck signal fields
+    expect(mockFn).toHaveBeenCalledTimes(1);
+    const callArg = mockFn.mock.calls[0][1] as Record<string, unknown>;
+    expect(callArg.has_deck_signals).toBe(true);
+    expect(callArg.deck_has_revenue).toBe(true);
+    expect(callArg.deck_has_arr_mrr).toBe(true);
+    expect(callArg.deck_has_burn).toBe(false);
+  });
+
+  test('all XLSX has_* flags are false when only deck signals present', async () => {
+    const { mockFn } = await renderFullDeal({
+      sections: [
+        { key: 'deck_financial_signals_v1', body: DECK_SIGNALS_BODY },
+      ],
+      narrative: MOCK_NARRATIVE,
+    });
+    await screen.findByTestId('fin-narrative-panel');
+
+    const callArg = mockFn.mock.calls[0][1] as Record<string, unknown>;
+    expect(callArg.has_statement).toBe(false);
+    expect(callArg.has_implied_allocation).toBe(false);
+    expect(callArg.has_health_metrics).toBe(false);
+  });
+});

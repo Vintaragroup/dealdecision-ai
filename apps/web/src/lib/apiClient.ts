@@ -2252,6 +2252,16 @@ export async function apiPostFinancialAnalysis(
     reconciliation_confidence?: number;
     warn_fail_flags?: string[];
     missing_sections?: string[];
+    /** PDF/PPT-only deals: deck financial signal presence flag */
+    has_deck_signals?: boolean;
+    deck_has_revenue?: boolean;
+    deck_has_arr_mrr?: boolean;
+    deck_has_burn?: boolean;
+    deck_has_runway?: boolean;
+    deck_has_unit_economics?: boolean;
+    deck_revenue_snippets?: string[];
+    deck_burn_snippets?: string[];
+    deck_pages_scanned?: number;
   },
 ): Promise<FinancialNarrativeResult> {
   return request<FinancialNarrativeResult>(`/api/v1/deals/${dealId}/analysis/financial-analysis`, {

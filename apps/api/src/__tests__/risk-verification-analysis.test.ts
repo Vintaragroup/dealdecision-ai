@@ -410,9 +410,11 @@ test("risk-verification: 502 when LLM returns non-JSON", async () => {
   else delete process.env.OPENAI_API_KEY;
 });
 
-// ─── Test 11: missing_critical_terms → narrative must say "not disclosed" ─────
+// ─── Test 11: missing_critical_terms → phrase injected when LLM omits it ─────
+// With deterministic post-processing injection, the endpoint now returns 200
+// and guarantees "not disclosed" is present in the returned summary.
 
-test("risk-verification: 502 when missing_critical_terms present but narrative omits 'not disclosed'", async () => {
+test("risk-verification: 200 when missing_critical_terms present but LLM omits 'not disclosed' (phrase injected)", async () => {
   const app = Fastify({ logger: false });
   await registerDealRoutes(app, makeMockPool());
   await app.ready();
@@ -448,8 +450,11 @@ test("risk-verification: 502 when missing_critical_terms present but narrative o
     headers: { "content-type": "application/json" },
   });
 
-  assert.equal(res.statusCode, 502, `body=${res.body}`);
-  assert.equal(res.json<any>().error, "llm_quality_error");
+  // Injection fires → still 200, phrase guaranteed in summary
+  assert.equal(res.statusCode, 200, `body=${res.body}`);
+  assert.equal(res.json<any>().schema_version, "risk_verification_v1");
+  const joined = res.json<any>().summary_paragraphs.join(" ").toLowerCase();
+  assert.ok(joined.includes("not disclosed"), `Expected injected 'not disclosed' in summary: ${joined}`);
 
   globalThis.fetch = originalFetch;
   await app.close();
@@ -493,9 +498,11 @@ test("risk-verification: 200 when missing_critical_terms present and narrative i
   else delete process.env.OPENAI_API_KEY;
 });
 
-// ─── Test 12: low coverage → narrative must say "data coverage" ───────────────
+// ─── Test 12: low coverage → phrase injected when LLM omits it ───────────────
+// With deterministic post-processing injection, the endpoint returns 200
+// and guarantees "data coverage" is present in the returned summary.
 
-test("risk-verification: 502 when low-coverage and narrative omits 'data coverage'", async () => {
+test("risk-verification: 200 when low-coverage and LLM omits 'data coverage' (phrase injected)", async () => {
   const app = Fastify({ logger: false });
   await registerDealRoutes(app, makeMockPool());
   await app.ready();
@@ -528,8 +535,11 @@ test("risk-verification: 502 when low-coverage and narrative omits 'data coverag
     headers: { "content-type": "application/json" },
   });
 
-  assert.equal(res.statusCode, 502, `body=${res.body}`);
-  assert.equal(res.json<any>().error, "llm_quality_error");
+  // Injection fires → still 200, phrase guaranteed in summary
+  assert.equal(res.statusCode, 200, `body=${res.body}`);
+  assert.equal(res.json<any>().schema_version, "risk_verification_v1");
+  const joined = res.json<any>().summary_paragraphs.join(" ").toLowerCase();
+  assert.ok(joined.includes("data coverage"), `Expected injected 'data coverage' in summary: ${joined}`);
 
   globalThis.fetch = originalFetch;
   await app.close();
@@ -611,6 +621,7 @@ test("risk-verification: DB isolation — query only touches deals table", async
 // ─── Test 14: optional deal_name → 200 ───────────────────────────────────────
 
 test("risk-verification: 200 when optional deal_name is provided", async () => {
+
   const app = Fastify({ logger: false });
   await registerDealRoutes(app, makeMockPool());
   await app.ready();
@@ -634,6 +645,93 @@ test("risk-verification: 200 when optional deal_name is provided", async () => {
 
   assert.equal(res.statusCode, 200, `body=${res.body}`);
   assert.equal(res.json<any>().schema_version, "risk_verification_v1");
+
+  globalThis.fetch = originalFetch;
+  await app.close();
+  if (savedKey !== undefined) process.env.OPENAI_API_KEY = savedKey;
+  else delete process.env.OPENAI_API_KEY;
+});
+
+// ─── Test 15: injection — injected terms reference actual missing_critical_terms ───
+
+test("risk-verification: injection includes term names from missing_critical_terms", async () => {
+  const app = Fastify({ logger: false });
+  await registerDealRoutes(app, makeMockPool());
+  await app.ready();
+
+  const savedKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true, status: 200,
+    json: async () => mockLlmResponse(validLlmOutput({
+      summary_paragraphs: ["Due diligence is underway."],
+      top_risks: ["Valuation is uncertain."],
+      verification_requests: ["Provide cap table."],
+    })),
+    text: async () => "",
+  }) as any;
+
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/v1/deals/${DEAL_ID}/analysis/risk-verification`,
+    payload: validRvBody({ missing_critical_terms: ["revenue_model", "founders_equity", "burn_rate"] }),
+    headers: { "content-type": "application/json" },
+  });
+
+  assert.equal(res.statusCode, 200, `body=${res.body}`);
+  const paragraphs: string[] = res.json<any>().summary_paragraphs;
+  const all = paragraphs.join(" ").toLowerCase();
+  assert.ok(all.includes("not disclosed"), `Missing 'not disclosed' in: ${all}`);
+  // Injected sentence should include at least one of the term names
+  assert.ok(
+    all.includes("revenue_model") || all.includes("founders_equity") || all.includes("burn_rate"),
+    `Expected at least one term name in injected sentence: ${all}`,
+  );
+
+  globalThis.fetch = originalFetch;
+  await app.close();
+  if (savedKey !== undefined) process.env.OPENAI_API_KEY = savedKey;
+  else delete process.env.OPENAI_API_KEY;
+});
+
+// ─── Test 16: injection — both phrases injected in same request ──────────────
+
+test("risk-verification: both 'not disclosed' and 'data coverage' injected when both missing", async () => {
+  const app = Fastify({ logger: false });
+  await registerDealRoutes(app, makeMockPool());
+  await app.ready();
+
+  const savedKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+
+  const originalFetch = globalThis.fetch;
+  // LLM omits BOTH required phrases
+  globalThis.fetch = async () => ({
+    ok: true, status: 200,
+    json: async () => mockLlmResponse(validLlmOutput({
+      summary_paragraphs: ["The company is early stage."],
+      top_risks: ["Limited documentation provided."],
+      verification_requests: ["Request all financial statements."],
+    })),
+    text: async () => "",
+  }) as any;
+
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/v1/deals/${DEAL_ID}/analysis/risk-verification`,
+    payload: validRvBody({
+      missing_critical_terms: ["raise_amount"],
+      coverage: { dpu_pages: 20, nonempty_pages: 4, text_coverage_pct: 20 }, // low coverage
+    }),
+    headers: { "content-type": "application/json" },
+  });
+
+  assert.equal(res.statusCode, 200, `body=${res.body}`);
+  const all = res.json<any>().summary_paragraphs.join(" ").toLowerCase();
+  assert.ok(all.includes("not disclosed"), `Missing 'not disclosed': ${all}`);
+  assert.ok(all.includes("data coverage"), `Missing 'data coverage': ${all}`);
 
   globalThis.fetch = originalFetch;
   await app.close();

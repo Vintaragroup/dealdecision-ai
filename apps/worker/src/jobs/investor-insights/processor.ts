@@ -96,6 +96,10 @@ import {
 	type BankTransactionsV1,
 } from "../../lib/bank-transactions-parser-v1.js";
 import {
+	extractDeckFinancialSignalsV1,
+	type DeckFinancialSignalsV1,
+} from "../../lib/deck-financial-signals-v1.js";
+import {
 	generateGovernedSummaryV1,
 	serializeGovernedSummaryBody,
 	resolveGovernedSummaryWithCache,
@@ -682,6 +686,11 @@ interface InsightSlotInputs {
 	capTable:      CapTableV1 | null;
 	saasKpis:      SaasKpisV1 | null;
 	bankTransactions: BankTransactionsV1 | null;
+	/**
+	 * Deck-derived financial signal mentions extracted from pitch-deck DPU text.
+	 * Present for PDF/PPT-only deals; null when no financial mentions found.
+	 */
+	deckFinancialSignals: DeckFinancialSignalsV1 | null;
 }
 
 // ── Slot detection patterns (compile once) ───────────────────────────────────
@@ -1176,6 +1185,7 @@ async function loadInsightSlotInputs(
 	let impliedFromIncomeStatement: IncomeStatementAllocationV1 | null = null;
 	let financialLayoutClassification: DealLayoutClassificationV1 | null = null;
 	let financialReconciliation: FinancialReconciliationV1 | null = null;
+	let deckFinancialSignals: DeckFinancialSignalsV1 | null = null;
 	// Phase K: new financial document type accumulators
 	const balanceSheets:    BalanceSheetV1[] = [];
 	const cashFlows:        CashFlowStatementV1[] = [];
@@ -1216,6 +1226,8 @@ async function loadInsightSlotInputs(
 			const first = dpuPages[0]!;
 			dpuDiag.sample = `${first.page_index}: ${first.text.slice(0, 120)}`;
 		}
+		// Extract deck financial signals from pitch-deck text pages.
+		deckFinancialSignals = extractDeckFinancialSignalsV1(dpuPages);
 		// Parse financial statements and use-of-funds from excel_range DPU pages.
 		for (const r of rows) {
 			const p = r.payload as Record<string, unknown> | null;
@@ -1351,6 +1363,7 @@ async function loadInsightSlotInputs(
 		capTable:         _bestCt,
 		saasKpis:         _bestKpi,
 		bankTransactions,
+		deckFinancialSignals,
 	};
 }
 
@@ -2383,6 +2396,47 @@ async function buildGovernedExecutiveSummarySection(
 }
 
 /**
+ * Build the deck_financial_signals_v1 section from pitch-deck–derived signal mentions.
+ * Only emitted when extractDeckFinancialSignalsV1 found at least one mention.
+ */
+function buildDeckFinancialSignalsSection(
+	signals: DeckFinancialSignalsV1
+): RenderPackage["sections"][number] {
+	const lines: string[] = [
+		`schema_version: ${signals.schema_version}`,
+		`pages_scanned: ${signals.pages_scanned}`,
+		`has_revenue: ${signals.has_revenue}`,
+		`has_burn: ${signals.has_burn}`,
+		`has_runway: ${signals.has_runway}`,
+		`has_pricing: ${signals.has_pricing}`,
+		`has_arr_mrr: ${signals.has_arr_mrr}`,
+		`has_unit_economics: ${signals.has_unit_economics}`,
+	];
+	const addMentions = (label: string, mentions: DeckFinancialSignalsV1["revenue_mentions"]) => {
+		if (mentions.length === 0) return;
+		lines.push(`${label}_count: ${mentions.length}`);
+		for (const m of mentions.slice(0, 4)) {
+			lines.push(`  ${label}: ${m.text} | doc:${m.doc_id.slice(0, 8)} | page:${m.page_index}`);
+		}
+	};
+	addMentions("revenue", signals.revenue_mentions);
+	addMentions("arr_mrr", signals.arr_mrr_mentions);
+	addMentions("burn", signals.burn_mentions);
+	addMentions("runway", signals.runway_mentions);
+	addMentions("margin", signals.margin_mentions);
+	addMentions("pricing", signals.pricing_mentions);
+	addMentions("unit_econ", signals.unit_econ_mentions);
+
+	return {
+		key: "deck_financial_signals_v1",
+		title: "Deck Financial Signals (PDF/PPT)",
+		kind: "message",
+		body: lines.join("\n"),
+		fallback: "No financial signals detected in deck text.",
+	};
+}
+
+/**
  * Return the insight_slots section plus optional DPU diagnostics, signal visibility,
  * and normalization summary sections.
  */
@@ -2418,6 +2472,9 @@ function buildInsightSlotsSections(
 	}
 	if (inputs.financialReconciliation) {
 		sections.push(buildFinancialReconciliationSection(inputs.financialReconciliation));
+	}
+	if (inputs.deckFinancialSignals) {
+		sections.push(buildDeckFinancialSignalsSection(inputs.deckFinancialSignals));
 	}
 	return sections;
 }

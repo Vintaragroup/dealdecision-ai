@@ -553,3 +553,103 @@ test("financial-analysis: 200 when optional deal_name is provided", async () => 
   if (savedKey !== undefined) process.env.OPENAI_API_KEY = savedKey;
   else delete process.env.OPENAI_API_KEY;
 });
+
+// ─── Test 14: deck-only — 200 when no xlsx but deck_financial_signals present ───
+
+test("financial-analysis: 200 when no XLSX data but deck_financial_signals present (PDF-only deal)", async () => {
+  const app = Fastify({ logger: false });
+  await registerDealRoutes(app, makeMockPool());
+  await app.ready();
+
+  const savedKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true, status: 200,
+    json: async () => mockLlmResponse(validLlmOutput({
+      summary_paragraphs: [
+        "Revenue signals were identified in the pitch deck narrative.",
+        "Burn rate is not disclosed in the available materials.",
+      ],
+      strengths: ["Revenue traction referenced in deck ($1.2M ARR)"],
+      considerations: ["No structured financials available — deck signals only"],
+    })),
+    text: async () => "",
+  }) as any;
+
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/v1/deals/${DEAL_ID}/analysis/financial-analysis`,
+    payload: {
+      // All XLSX flags false (PDF-only deal)
+      has_statement: false,
+      has_implied_allocation: false,
+      has_health_metrics: false,
+      layout_coverage_pct: 0,
+      warn_fail_flags: [],
+      missing_sections: [],
+      // Deck signal flags
+      has_deck_signals: true,
+      deck_has_revenue: true,
+      deck_has_arr_mrr: true,
+      deck_has_burn: false,
+      deck_has_runway: false,
+      deck_has_unit_economics: false,
+      deck_revenue_snippets: ["$1.2M ARR", "growing 50% YoY"],
+      deck_burn_snippets: [],
+      deck_pages_scanned: 18,
+    },
+    headers: { "content-type": "application/json" },
+  });
+
+  assert.equal(res.statusCode, 200, `body=${res.body}`);
+  assert.equal(res.json<any>().schema_version, "financial_analysis_v1");
+
+  globalThis.fetch = originalFetch;
+  await app.close();
+  if (savedKey !== undefined) process.env.OPENAI_API_KEY = savedKey;
+  else delete process.env.OPENAI_API_KEY;
+});
+
+// ─── Test 15: deck-only — 400 when deck signals present but all deck_has_* false ───
+
+test("financial-analysis: 400 (insufficient_data) when deck signals present but all deck_has_* are false", async () => {
+  const app = Fastify({ logger: false });
+  await registerDealRoutes(app, makeMockPool());
+  await app.ready();
+
+  const savedKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/v1/deals/${DEAL_ID}/analysis/financial-analysis`,
+    payload: {
+      has_statement: false,
+      has_implied_allocation: false,
+      has_health_metrics: false,
+      layout_coverage_pct: 0,
+      warn_fail_flags: [],
+      missing_sections: [],
+      // has_deck_signals true but no meaningful signals
+      has_deck_signals: true,
+      deck_has_revenue: false,
+      deck_has_arr_mrr: false,
+      deck_has_burn: false,
+      deck_has_runway: false,
+      deck_has_unit_economics: false,
+      deck_revenue_snippets: [],
+      deck_burn_snippets: [],
+      deck_pages_scanned: 5,
+    },
+    headers: { "content-type": "application/json" },
+  });
+
+  assert.equal(res.statusCode, 400, `body=${res.body}`);
+  assert.equal(res.json<any>().error, "insufficient_data");
+
+  await app.close();
+  if (savedKey !== undefined) process.env.OPENAI_API_KEY = savedKey;
+  else delete process.env.OPENAI_API_KEY;
+});

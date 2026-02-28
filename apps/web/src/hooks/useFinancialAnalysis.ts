@@ -27,6 +27,7 @@ const STATEMENT_KEY       = 'financial_statement_v1';
 const HEALTH_KEY          = 'financial_health_metrics_v1';
 const RECONCILIATION_KEY  = 'financial_reconciliation_v1';
 const IMPLIED_KEY         = 'implied_capital_allocation_v1';
+const DECK_SIGNALS_KEY    = 'deck_financial_signals_v1';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Domain types (opaque to the outside world)
@@ -89,12 +90,29 @@ export type ReconciliationSummary = {
   flags: ReconciliationFlag[];
 };
 
+export type DeckFinancialSignals = {
+  has_revenue: boolean;
+  has_burn: boolean;
+  has_runway: boolean;
+  has_pricing: boolean;
+  has_arr_mrr: boolean;
+  has_unit_economics: boolean;
+  /** Top revenue/ARR-MRR text snippets for prompt context (max 4 each). */
+  revenue_mentions: string[];
+  arr_mrr_mentions: string[];
+  burn_mentions: string[];
+  runway_mentions: string[];
+  pages_scanned: number;
+};
+
 export type FinancialSections = {
-  layoutFlags: LayoutFlags | null;
-  healthMetrics: HealthMetrics | null;
-  statement: FinancialStatement | null;
+  layoutFlags:      LayoutFlags | null;
+  healthMetrics:    HealthMetrics | null;
+  statement:        FinancialStatement | null;
   impliedAllocation: ImpliedAllocation | null;
-  reconciliation: ReconciliationSummary | null;
+  reconciliation:   ReconciliationSummary | null;
+  /** Deck-derived financial signals (PDF/PPT-only deals). */
+  deckSignals:      DeckFinancialSignals | null;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -237,6 +255,38 @@ export function parseReconciliation(body: string): ReconciliationSummary {
   return { confidence_score: confidence, flags };
 }
 
+/** Parse deck_financial_signals_v1 body into key booleans + top mentions. */
+export function parseDeckFinancialSignals(body: string): DeckFinancialSignals {
+  const kv = parseKV(body);
+  const parseBoolF = (k: string) => kv[k]?.toLowerCase() === 'true';
+
+  const collectMentions = (label: string): string[] => {
+    const results: string[] = [];
+    for (const line of body.split('\n')) {
+      const t = line.trim();
+      if (t.startsWith(`  ${label}:`)) {
+        const snippet = t.slice(label.length + 3).split('|')[0]?.trim() ?? '';
+        if (snippet) results.push(snippet);
+      }
+    }
+    return results.slice(0, 4);
+  };
+
+  return {
+    has_revenue:        parseBoolF('has_revenue'),
+    has_burn:           parseBoolF('has_burn'),
+    has_runway:         parseBoolF('has_runway'),
+    has_pricing:        parseBoolF('has_pricing'),
+    has_arr_mrr:        parseBoolF('has_arr_mrr'),
+    has_unit_economics: parseBoolF('has_unit_economics'),
+    revenue_mentions:   collectMentions('revenue'),
+    arr_mrr_mentions:   collectMentions('arr_mrr'),
+    burn_mentions:      collectMentions('burn'),
+    runway_mentions:    collectMentions('runway'),
+    pages_scanned:      parseNum(kv['pages_scanned']) ?? 0,
+  };
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Section extractor
 // ─────────────────────────────────────────────────────────────────────────────
@@ -264,6 +314,7 @@ export function extractFinancialSections(
   const stmtBody      = sectionBody(getSection(sections, STATEMENT_KEY));
   const impliedBody   = sectionBody(getSection(sections, IMPLIED_KEY));
   const reconcBody    = sectionBody(getSection(sections, RECONCILIATION_KEY));
+  const deckBody      = sectionBody(getSection(sections, DECK_SIGNALS_KEY));
 
   return {
     layoutFlags:      layoutBody    ? parseLayoutFlags(layoutBody)         : null,
@@ -271,6 +322,7 @@ export function extractFinancialSections(
     statement:        stmtBody      ? parseFinancialStatement(stmtBody)   : null,
     impliedAllocation: impliedBody  ? parseImpliedAllocation(impliedBody) : null,
     reconciliation:   reconcBody    ? parseReconciliation(reconcBody)     : null,
+    deckSignals:      deckBody      ? parseDeckFinancialSignals(deckBody) : null,
   };
 }
 
@@ -281,7 +333,7 @@ export function extractFinancialSections(
 export function computeFinancialScore(
   sections: FinancialSections,
 ): { score: number; label: string } {
-  const { layoutFlags, healthMetrics, statement, impliedAllocation, reconciliation } = sections;
+  const { layoutFlags, healthMetrics, statement, impliedAllocation, reconciliation, deckSignals } = sections;
 
   let score = 50;
   if (statement !== null && statement.rows.length > 0) score += 15;
@@ -289,6 +341,14 @@ export function computeFinancialScore(
   if (layoutFlags?.has_cash_flow || layoutFlags?.has_balance_sheet) score += 10;
   if (layoutFlags?.has_saas_kpis) score += 10;
   if (impliedAllocation !== null) score += 5;
+
+  // Deck-signal partial credit (PDF/PPT-only deals)
+  if (deckSignals !== null && statement === null && impliedAllocation === null) {
+    if (deckSignals.has_revenue || deckSignals.has_arr_mrr) score += 8;
+    if (deckSignals.has_burn || deckSignals.has_runway) score += 5;
+    if (deckSignals.has_unit_economics) score += 4;
+    if (deckSignals.has_pricing) score += 3;
+  }
 
   // Reconciliation confidence adjustment: +round(confidence * 20) − 10
   if (reconciliation !== null) {
@@ -313,7 +373,7 @@ export function buildHighlights(sections: FinancialSections): {
   strengths: string[];
   considerations: string[];
 } {
-  const { layoutFlags, healthMetrics, statement, impliedAllocation, reconciliation } = sections;
+  const { layoutFlags, healthMetrics, statement, impliedAllocation, reconciliation, deckSignals } = sections;
   const strengths: string[] = [];
   const considerations: string[] = [];
 
@@ -378,6 +438,22 @@ export function buildHighlights(sections: FinancialSections): {
     considerations.push('No SaaS KPIs (ARR/MRR, churn) extracted from materials');
   }
 
+  // Deck-only strengths when no XLSX data is present
+  if (deckSignals !== null && statement === null && impliedAllocation === null) {
+    const top = [...deckSignals.arr_mrr_mentions, ...deckSignals.revenue_mentions].slice(0, 2);
+    if (top.length > 0) {
+      strengths.push(`Revenue signals found in deck: ${top.join('; ')}`);
+    }
+    if (deckSignals.has_burn || deckSignals.has_runway) {
+      strengths.push('Burn/runway signals mentioned in pitch materials');
+    }
+    if (deckSignals.has_unit_economics) {
+      strengths.push('Unit economics (LTV/CAC) referenced in deck');
+    }
+    // Caveat consideration
+    considerations.push('Financial data sourced from pitch narrative — no structured spreadsheet present');
+  }
+
   // Cap arrays
   return {
     strengths:      strengths.slice(0, 6),
@@ -396,6 +472,7 @@ function fingerprint(sections: FinancialSections): string {
     sections.statement      ? sections.statement.periods.join(',')    : '',
     sections.impliedAllocation ? sections.impliedAllocation.total_annual_cost ?? '' : '',
     sections.reconciliation ? String(sections.reconciliation.confidence_score) : '',
+    sections.deckSignals    ? `${sections.deckSignals.has_revenue}|${sections.deckSignals.has_arr_mrr}|${sections.deckSignals.pages_scanned}` : '',
   ];
   return keys.join('|');
 }
@@ -452,7 +529,8 @@ export function useFinancialAnalysis(
     sections.layoutFlags !== null ||
     sections.healthMetrics !== null ||
     sections.statement !== null ||
-    sections.impliedAllocation !== null;
+    sections.impliedAllocation !== null ||
+    sections.deckSignals !== null;
 
   // Fingerprint guards against stale closures and duplicate calls
   const currentFp  = fingerprint(sections);
@@ -474,7 +552,8 @@ export function useFinancialAnalysis(
       snap.layoutFlags === null &&
       snap.healthMetrics === null &&
       snap.statement === null &&
-      snap.impliedAllocation === null
+      snap.impliedAllocation === null &&
+      snap.deckSignals === null
     ) {
       setNarrativeStatus('no_data');
       return;
@@ -483,6 +562,7 @@ export function useFinancialAnalysis(
     const hm  = snap.healthMetrics;
     const ica = snap.impliedAllocation;
     const rec = snap.reconciliation;
+    const ds  = snap.deckSignals;
 
     // Collect WARN/FAIL flags
     const warnFail = (rec?.flags ?? [])
@@ -496,6 +576,21 @@ export function useFinancialAnalysis(
     if (!snap.layoutFlags?.has_cash_flow && !snap.layoutFlags?.has_balance_sheet)
       missingSections.push('Cash flow / Balance sheet');
     if (!snap.layoutFlags?.has_cap_table) missingSections.push('Cap table');
+
+    // Deck financial signals for PDF/PPT-only deals
+    const deckSignalPayload = ds
+      ? {
+          has_deck_signals: true,
+          deck_has_revenue:        ds.has_revenue,
+          deck_has_arr_mrr:        ds.has_arr_mrr,
+          deck_has_burn:           ds.has_burn,
+          deck_has_runway:         ds.has_runway,
+          deck_has_unit_economics: ds.has_unit_economics,
+          deck_revenue_snippets:   [...ds.arr_mrr_mentions, ...ds.revenue_mentions].slice(0, 3),
+          deck_burn_snippets:      [...ds.burn_mentions, ...ds.runway_mentions].slice(0, 2),
+          deck_pages_scanned:      ds.pages_scanned,
+        }
+      : undefined;
 
     setNarrativeStatus('loading');
     try {
@@ -512,6 +607,7 @@ export function useFinancialAnalysis(
         reconciliation_confidence: rec?.confidence_score,
         warn_fail_flags:           warnFail.length ? warnFail : undefined,
         missing_sections:          missingSections.length ? missingSections : undefined,
+        ...deckSignalPayload,
       });
 
       if (!mountedRef.current || dealIdRef.current !== id || fpRef.current !== fp) return;

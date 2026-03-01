@@ -644,8 +644,8 @@ export function AIStudio({ darkMode }: AIStudioProps) {
         darkMode ? 'bg-[#0f0f0f]/95 border-white/5' : 'bg-white/95 border-gray-200/50'
       }`}>
         {/* Chat History */}
-        <div className="px-6 py-4 max-h-64 overflow-y-auto">
-          <div className="max-w-4xl mx-auto space-y-3">
+        <div className="py-4 max-h-64 overflow-y-auto">
+          <div className="max-w-4xl mx-auto px-6 space-y-3">
             <div className="flex items-center gap-2 mb-2">
               <Sparkles className="w-4 h-4 text-[#6366f1]" />
               <h3 className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
@@ -696,8 +696,8 @@ export function AIStudio({ darkMode }: AIStudioProps) {
         </div>
 
         {/* Input Area */}
-        <div className={`px-6 py-4 border-t ${darkMode ? 'border-white/5' : 'border-gray-200/50'}`}>
-          <div className="max-w-4xl mx-auto space-y-3">
+        <div className={`py-4 border-t ${darkMode ? 'border-white/5' : 'border-gray-200/50'}`}>
+          <div className="max-w-4xl mx-auto px-6 space-y-3">
             {/* Tone Selector */}
             <div className="flex items-center gap-2">
               <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>Tone:</span>

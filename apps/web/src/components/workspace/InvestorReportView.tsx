@@ -49,6 +49,7 @@ import { FinancialAnalysisSection } from './analysis/FinancialAnalysisSection';
 import { RiskVerificationSection } from './analysis/RiskVerificationSection';
 import { OrchestratorSummaryCard } from './analysis/OrchestratorSummaryCard';
 import { DecisionOverlay } from './analysis/DecisionOverlay';
+import { Stack } from '../ui/layout';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Governed Executive Summary V1 — inline types + parser
@@ -662,7 +663,7 @@ function GateFailureTable({
   return (
     <div className="space-y-2">
       <div
-        className={`flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 ${
+        className={`flex items-start gap-2.5 rounded-lg border px-4 py-2.5 ${
           darkMode ? 'bg-red-500/10 border-red-500/30' : 'bg-red-50 border-red-200'
         }`}
       >
@@ -1029,7 +1030,7 @@ export function InvestorReportView({ report, darkMode, dealId }: InvestorReportV
       </nav>
 
       {/* ── Report body ── */}
-      <div className="flex-1 min-w-0 space-y-10">
+      <Stack gap={10} className="flex-1 min-w-0">
         {/* Report metadata */}
         <ReportMetaBar report={report} darkMode={darkMode} hasGovernedExecSummary={hasGovernedExecSummary} />
 
@@ -1145,7 +1146,7 @@ export function InvestorReportView({ report, darkMode, dealId }: InvestorReportV
         >
           <AppendixSection sections={rawSections} darkMode={darkMode} />
         </ReportSection>
-      </div>
+      </Stack>
     </div>
   );
 }

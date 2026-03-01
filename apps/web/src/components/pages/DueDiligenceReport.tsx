@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Button } from '../ui/button';
+import { PageContainer } from '../ui/layout';
 import { ScoreCircle } from '../ui/ScoreCircle';
 import { RiskMapGrid } from '../ui/RiskMapGrid';
 import { ValidationChecklist } from '../ui/ValidationChecklist';
@@ -179,7 +180,7 @@ export function DueDiligenceReport({ darkMode, dealId, onBack, onCompare }: DueD
       <div className={`sticky top-0 z-20 backdrop-blur-xl border-b ${ 
         darkMode ? 'bg-[#0f0f0f]/95 border-white/5' : 'bg-white/95 border-gray-200/50'
       }`}>
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 sm:py-4">
+        <PageContainer className="py-3 sm:py-4">
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0">
             <div className="flex items-center gap-4">
               {onBack && (
@@ -228,11 +229,11 @@ export function DueDiligenceReport({ darkMode, dealId, onBack, onCompare }: DueD
               </Button>
             </div>
           </div>
-        </div>
+        </PageContainer>
       </div>
 
       {/* Main Content with Sticky Sidebar */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 sm:py-6 flex gap-6">
+      <PageContainer className="py-4 sm:py-6 flex gap-6">
         {/* Sticky Side Navigation - Hidden on mobile */}
         <aside className={`hidden lg:block lg:w-64 flex-shrink-0`}>
           <div className="sticky top-24">
@@ -875,7 +876,7 @@ export function DueDiligenceReport({ darkMode, dealId, onBack, onCompare }: DueD
             </div>
           </section>
         </main>
-      </div>
+      </PageContainer>
 
       {/* Export Report Modal */}
       <ExportReportModal

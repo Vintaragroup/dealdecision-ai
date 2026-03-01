@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Button } from '../ui/button';
+import { PageContainer } from '../ui/layout';
 import { AchievementBadge } from '../ui/AchievementBadge';
 import { StreakTracker } from '../ui/StreakTracker';
 import { ChallengeCard } from '../ui/ChallengeCard';
@@ -386,7 +387,7 @@ export function Gamification({ darkMode, onBack }: GamificationProps) {
       <div className={`sticky top-0 z-20 backdrop-blur-xl border-b ${
         darkMode ? 'bg-[#0f0f0f]/95 border-white/5' : 'bg-white/95 border-gray-200/50'
       }`}>
-        <div className="max-w-7xl mx-auto px-6 py-4">
+        <PageContainer className="px-6 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               {onBack && (
@@ -472,11 +473,11 @@ export function Gamification({ darkMode, onBack }: GamificationProps) {
               </button>
             </div>
           </div>
-        </div>
+        </PageContainer>
       </div>
 
       {/* Main Content */}
-      <div className="max-w-7xl mx-auto px-6 py-6">
+      <PageContainer className="px-6 py-6">
         {/* Overview Tab */}
         {activeTab === 'overview' && (
           <div className="space-y-6">
@@ -712,7 +713,7 @@ export function Gamification({ darkMode, onBack }: GamificationProps) {
             ))}
           </div>
         )}
-      </div>
+      </PageContainer>
     </div>
   );
 }

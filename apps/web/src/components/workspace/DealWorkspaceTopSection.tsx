@@ -1,6 +1,8 @@
 import { useEffect } from 'react';
 import { CheckCircle2, AlertTriangle, ShieldCheck, ShieldAlert } from 'lucide-react';
 import { Skeleton } from '../ui/skeleton';
+import { Stack } from '../ui/layout';
+import { H3 } from '../ui/typography';
 
 export type DealWorkspaceTopSectionProps = {
   darkMode: boolean;
@@ -323,7 +325,7 @@ export function DealWorkspaceTopSection({
   const insetClass = `border rounded-xl ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`;
 
   return (
-    <section aria-label="Deal top summary" className="w-full space-y-4">
+    <Stack gap={4} as="section" aria-label="Deal top summary" className="w-full">
       <h2 className="sr-only">Deal snapshot and key metrics</h2>
 
       {/* Top: Score + Key Metrics */}
@@ -553,7 +555,7 @@ export function DealWorkspaceTopSection({
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
           <div className="h-full min-h-[160px]">
             <div className="flex items-center gap-2 mb-3">
-              <h3 className="text-sm text-zinc-300">{dealSummaryTitle}</h3>
+              <H3 className="text-sm text-zinc-300 font-normal">{dealSummaryTitle}</H3>
               {dealSummarySource === 'canonical' ? (
                 <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/15 text-emerald-200 border border-emerald-500/25">
                   Authoritative (deterministic)
@@ -627,7 +629,7 @@ export function DealWorkspaceTopSection({
           (primary_strengths / primary_constraints+missing_kpis / action_recommendations).
           Never reads governed overlay output. */}
       <div className={`${cardClass} p-4`}>
-        <h3 className="text-sm text-zinc-300 mb-5">Score Understanding</h3>
+        <H3 className="text-sm text-zinc-300 font-normal mb-5">Score Understanding</H3>
 
         <div className={`grid grid-cols-1 gap-6 ${actionsToImproveList.length > 0 ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
           <div>
@@ -686,6 +688,6 @@ export function DealWorkspaceTopSection({
           )}
         </div>
       </div>
-    </section>
+    </Stack>
   );
 }

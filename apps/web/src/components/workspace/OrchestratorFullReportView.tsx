@@ -885,7 +885,7 @@ export function OrchestratorFullReportView({
     return (
       <div className="space-y-4 p-6" data-testid="orchestrator-full-not-started">
         <div
-          className={`text-center py-14 rounded-xl border-2 border-dashed ${
+          className={`text-center py-12 rounded-xl border-2 border-dashed ${
             darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50/50'
           }`}
         >

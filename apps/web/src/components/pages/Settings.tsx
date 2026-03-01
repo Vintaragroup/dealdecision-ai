@@ -1,6 +1,8 @@
 import { Bell, DollarSign, FileText, Sparkles, Users, MessageSquare, Mail, Smartphone, Volume2, Moon, Palette, Shield, Globe, Save, RotateCcw, Check } from 'lucide-react';
 import { useState } from 'react';
 import { useUserRole } from '../../contexts/UserRoleContext';
+import { PageContainer, Stack } from '../ui/layout';
+import { H1, H3, MutedText } from '../ui/typography';
 
 export interface NotificationPreferences {
   roiSavings: {
@@ -105,15 +107,15 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
 
   return (
     <div className="h-full overflow-auto">
-      <div className="max-w-6xl mx-auto p-8">
+      <PageContainer maxWidth="6xl" className="p-8">
         {/* Header */}
         <div className="mb-8">
-          <h1 className={`text-3xl mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+          <H1 darkMode={darkMode} className="mb-2">
             Settings
-          </h1>
-          <p className={darkMode ? 'text-gray-400' : 'text-gray-600'}>
+          </H1>
+          <MutedText darkMode={darkMode}>
             Manage your account settings and preferences
-          </p>
+          </MutedText>
         </div>
 
         {/* Tabs */}
@@ -186,7 +188,7 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
 
         {/* Content */}
         {activeTab === 'notifications' && (
-          <div className="space-y-6">
+          <Stack gap={6}>
             {/* ROI & Savings */}
             <div className={cardClass}>
               <div className="flex items-start justify-between mb-6">
@@ -195,9 +197,9 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
                     <DollarSign className="w-5 h-5 text-white" />
                   </div>
                   <div>
-                    <h3 className={`mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    <H3 darkMode={darkMode} className="mb-1">
                       ROI & Savings
-                    </h3>
+                    </H3>
                     <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                       Get notified about ROI milestones and summaries
                     </p>
@@ -230,7 +232,7 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
               </div>
               
               {prefs.roiSavings.enabled && (
-                <div className="space-y-3 pl-13">
+                <div className="space-y-3 pl-12">
                   <label className="flex items-center justify-between cursor-pointer">
                     <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                       Savings milestones reached
@@ -276,9 +278,9 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
                     <FileText className="w-5 h-5 text-white" />
                   </div>
                   <div>
-                    <h3 className={`mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    <H3 darkMode={darkMode} className="mb-1">
                       Deal Updates
-                    </h3>
+                    </H3>
                     <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                       Stay informed about changes to your deals
                     </p>
@@ -304,7 +306,7 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
               </div>
               
               {prefs.dealUpdates.enabled && (
-                <div className="space-y-3 pl-13">
+                <div className="space-y-3 pl-12">
                   <label className="flex items-center justify-between cursor-pointer">
                     <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                       Deal status changes
@@ -350,9 +352,9 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
                     <Sparkles className="w-5 h-5 text-white" />
                   </div>
                   <div>
-                    <h3 className={`mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    <H3 darkMode={darkMode} className="mb-1">
                       AI & Analysis
-                    </h3>
+                    </H3>
                     <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                       Get notified when AI completes analysis or generates documents
                     </p>
@@ -378,7 +380,7 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
               </div>
               
               {prefs.aiAnalysis.enabled && (
-                <div className="space-y-3 pl-13">
+                <div className="space-y-3 pl-12">
                   <label className="flex items-center justify-between cursor-pointer">
                     <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                       Analysis complete
@@ -424,9 +426,9 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
                     <Users className="w-5 h-5 text-white" />
                   </div>
                   <div>
-                    <h3 className={`mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    <H3 darkMode={darkMode} className="mb-1">
                       Team & Collaboration
-                    </h3>
+                    </H3>
                     <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                       Stay connected with your team's activity
                     </p>
@@ -452,7 +454,7 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
               </div>
               
               {prefs.teamCollaboration.enabled && (
-                <div className="space-y-3 pl-13">
+                <div className="space-y-3 pl-12">
                   <label className="flex items-center justify-between cursor-pointer">
                     <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                       @Mentions
@@ -498,9 +500,9 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
                     <FileText className="w-5 h-5 text-white" />
                   </div>
                   <div>
-                    <h3 className={`mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                    <H3 darkMode={darkMode} className="mb-1">
                       Documents
-                    </h3>
+                    </H3>
                     <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                       Track document changes and updates
                     </p>
@@ -526,7 +528,7 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
               </div>
               
               {prefs.documents.enabled && (
-                <div className="space-y-3 pl-13">
+                <div className="space-y-3 pl-12">
                   <label className="flex items-center justify-between cursor-pointer">
                     <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                       Document uploaded
@@ -563,16 +565,16 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
                 </div>
               )}
             </div>
-          </div>
+          </Stack>
         )}
 
         {activeTab === 'appearance' && (
           <div className={cardClass}>
             <div className="flex items-center gap-3 mb-4">
               <Palette className={`w-5 h-5 ${darkMode ? 'text-white' : 'text-gray-900'}`} />
-              <h3 className={darkMode ? 'text-white' : 'text-gray-900'}>
+              <H3 darkMode={darkMode}>
                 Appearance Settings
-              </h3>
+              </H3>
             </div>
             <p className={darkMode ? 'text-gray-400' : 'text-gray-600'}>
               Appearance settings coming soon...
@@ -581,7 +583,7 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
         )}
 
         {activeTab === 'account' && (
-          <div className="space-y-6">
+          <Stack gap={6}>
             {/* User Role */}
             <div className={cardClass}>
               <div className="flex items-center gap-3 mb-6">
@@ -589,9 +591,9 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
                   <Shield className="w-5 h-5 text-white" />
                 </div>
                 <div>
-                  <h3 className={`mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                    User Role
-                  </h3>
+                   <H3 darkMode={darkMode} className="mb-1">
+                     User Role
+                   </H3>
                   <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                     Choose your role to customize your experience
                   </p>
@@ -707,24 +709,24 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
             <div className={cardClass}>
               <div className="flex items-center gap-3 mb-4">
                 <Shield className={`w-5 h-5 ${darkMode ? 'text-white' : 'text-gray-900'}`} />
-                <h3 className={darkMode ? 'text-white' : 'text-gray-900'}>
+                <H3 darkMode={darkMode}>
                   Account Information
-                </h3>
+                </H3>
               </div>
               <p className={darkMode ? 'text-gray-400' : 'text-gray-600'}>
                 Profile and account management coming soon...
               </p>
             </div>
-          </div>
+          </Stack>
         )}
 
         {activeTab === 'privacy' && (
           <div className={cardClass}>
             <div className="flex items-center gap-3 mb-4">
               <Globe className={`w-5 h-5 ${darkMode ? 'text-white' : 'text-gray-900'}`} />
-              <h3 className={darkMode ? 'text-white' : 'text-gray-900'}>
+              <H3 darkMode={darkMode}>
                 Privacy Settings
-              </h3>
+              </H3>
             </div>
             <p className={darkMode ? 'text-gray-400' : 'text-gray-600'}>
               Privacy settings coming soon...
@@ -733,24 +735,24 @@ export function Settings({ darkMode, notificationPreferences, onSavePreferences 
         )}
 
         {activeTab === 'admin' && (
-          <div className="space-y-6">
+          <Stack gap={6}>
             {/* Future admin features placeholder */}
             <div className={cardClass}>
               <div className="flex items-center gap-3 mb-4">
                 <Sparkles className={`w-5 h-5 ${darkMode ? 'text-white' : 'text-gray-900'}`} />
                 <div>
-                  <h3 className={darkMode ? 'text-white' : 'text-gray-900'}>
+                  <H3 darkMode={darkMode}>
                     Additional Admin Features
-                  </h3>
+                  </H3>
                   <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                     More admin controls coming soon...
                   </p>
                 </div>
               </div>
             </div>
-          </div>
+          </Stack>
         )}
-      </div>
+      </PageContainer>
 
       {/* Success Toast */}
       {showSavedToast && (

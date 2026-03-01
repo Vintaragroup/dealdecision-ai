@@ -97,7 +97,7 @@ export function ActivityFeed({ darkMode, activities, onActivityClick }: Activity
               </div>
             </div>
             {index < activities.length - 1 && (
-              <div className={`w-px h-2 ml-7 ${darkMode ? 'bg-white/5' : 'bg-gray-200'}`}></div>
+              <div className={`w-px h-2 ml-8 ${darkMode ? 'bg-white/5' : 'bg-gray-200'}`}></div>
             )}
           </div>
         ))}

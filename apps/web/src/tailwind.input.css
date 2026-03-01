@@ -14,3 +14,32 @@
 
 /* Explicit: Deal workspace components (keeps this from regressing) */
 @source "./src/components/workspace/**/*.{ts,tsx}";
+
+/* =============================================================================
+   SPACING SCALE LOCK
+   ==============================================================================
+   Only the following numeric spacing keys are approved for use in this app.
+   Any other step (e.g. p-9, gap-15, mb-17) or arbitrary bracket value
+   (e.g. p-[18px], gap-[10rem]) will fail CI via the `tailwind-spacing-scale`
+   and `tailwind-arbitrary-spacing` rules in scripts/check-style-drift.ts.
+
+   APPROVED KEYS:
+     0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8,
+     10, 11, 12, 13, 14, 16, 20, 24, 28, 32, 36, 40, 48, 64, 96
+
+   Keys currently used (as of 2026-03-01):
+     0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 16, 24
+
+   Future-safe additions (standard Tailwind scale, not yet used):
+     20, 28, 32, 36, 40, 48, 64, 96
+
+   EXCLUDED FROM ENFORCEMENT (positional/structural, not spacing-semantic):
+     top-*, left-*, right-*, bottom-*, translate-*, rotate-*, scale-*,
+     w-*, h-*, size-*, max-w-*, min-w-*, max-h-*, min-h-*, ring-*, inset-*
+     and any calc(...) or percentage arbitrary values in those properties.
+
+   TO ADJUST THE ALLOWLIST:
+     1. Update SPACING_ALLOWLIST in scripts/check-style-drift.ts
+     2. Update the comment above to reflect the change
+     3. Run: pnpm style:drift:update
+   ============================================================================= */

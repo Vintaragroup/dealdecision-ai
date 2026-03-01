@@ -265,7 +265,7 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
               </div>
 
               {message.citations && message.citations.length > 0 && (
-                <div className="ml-11 flex flex-wrap gap-2">
+                <div className="ml-12 flex flex-wrap gap-2">
                   {message.citations.map((citation) => (
                     <EvidenceChip
                       key={citation.evidence_id}
@@ -278,7 +278,7 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
               )}
 
               {message.actions && message.actions.length > 0 && (
-                <div className="ml-11 flex flex-wrap gap-2">
+                <div className="ml-12 flex flex-wrap gap-2">
                   {message.actions.map((action, idx) => (
                     <button
                       key={`${action.type}-${idx}`}
@@ -301,7 +301,7 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
 
               {/* Suggestions */}
               {message.suggestions && message.suggestions.length > 0 && (
-                <div className="ml-11 space-y-2">
+                <div className="ml-12 space-y-2">
                   <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                     💡 Suggested questions:
                   </p>

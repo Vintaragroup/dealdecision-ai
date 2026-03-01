@@ -223,10 +223,10 @@ function OverlayContent({
   return (
     <div className="space-y-4">
       {/* ── Row 1: Decision badge + ORS + stage + DCI ── */}
-      <div className={`flex flex-wrap items-center gap-3 rounded-xl border p-3.5 ${style.bg} ${style.border}`}>
+      <div className={`flex flex-wrap items-center gap-3 rounded-xl border p-4 ${style.bg} ${style.border}`}>
         {/* Decision badge */}
         <div
-          className={`inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1 text-sm font-bold ${style.badgeBg} ${style.badgeText}`}
+          className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1 text-sm font-bold ${style.badgeBg} ${style.badgeText}`}
           data-testid="decision-overlay-badge"
           data-decision={decision.label}
         >
@@ -338,7 +338,7 @@ function OverlayContent({
       {/* ── Row 4: Data limitations callout ── */}
       {hasLimitations && (
         <div
-          className={`flex items-start gap-2.5 rounded-xl border p-3.5 text-sm
+          className={`flex items-start gap-2.5 rounded-xl border p-4 text-sm
             ${darkMode ? 'bg-amber-500/8 border-amber-400/20 text-amber-300' : 'bg-amber-50 border-amber-200 text-amber-800'}`}
           data-testid="limitations-callout"
         >
@@ -395,7 +395,7 @@ export function DecisionOverlay({ dealId, darkMode = false }: DecisionOverlayPro
 
       {status === 'error' && error && (
         <div
-          className={`flex items-center gap-2 rounded-xl border p-3.5 text-sm
+          className={`flex items-center gap-2 rounded-xl border p-4 text-sm
             ${darkMode ? 'bg-red-500/8 border-red-400/20 text-red-400' : 'bg-red-50 border-red-200 text-red-700'}`}
           data-testid="decision-overlay-error"
         >

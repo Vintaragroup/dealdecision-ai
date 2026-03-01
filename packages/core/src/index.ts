@@ -187,3 +187,23 @@ export { degradeNarrationV1, validateNoNewFacts } from "./llm/narration-guard";
 export type { NarrationGuardResult, NarrationGuardViolation } from "./llm/narration-guard";
 export { degradeOverviewV1 } from "./llm/overview-guard";
 export type { OverviewDegradeResult, OverviewGuardError, OverviewGuardViolation } from "./llm/overview-guard";
+
+// ============================================================================
+// DDAI Orchestrator Composition Layer (v1)
+// ============================================================================
+// Deterministic report builder that composes existing render_package data
+// into the ddai_orchestrator_report_v1 schema. No new LLM calls. No DB writes.
+export { buildOrchestratorReportV1, type InvestorInsightsRenderPackage } from "./orchestrator/build-orchestrator-report-v1";
+export type { OrchestratorRenderPackageInput } from "./orchestrator/render-package-input";
+export type {
+  OrchestratorReportV1,
+  OrchestratorDecision,
+  OrchestratorScores,
+  DocumentConfidence,
+  StageContext,
+  DecisionLabel,
+  StageLabel,
+  DciBand,
+  FinancialHealthScore,
+  MarketScore,
+} from "./orchestrator/types";

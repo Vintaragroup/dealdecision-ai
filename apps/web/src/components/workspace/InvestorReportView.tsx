@@ -19,6 +19,7 @@
 
 import { useRef } from 'react';
 import {
+  Activity,
   FileText,
   DollarSign,
   TrendingUp,
@@ -28,6 +29,7 @@ import {
   CheckCircle2,
   XCircle,
   AlertCircle,
+  Zap,
 } from 'lucide-react';
 import type { InvestorInsightsReport, InvestorInsightsSection } from '../../lib/apiClient';
 import {
@@ -45,6 +47,8 @@ import { DealTermsCard } from './DealTermsCard';
 import { MarketAnalysisCard } from './MarketAnalysisCard';
 import { FinancialAnalysisSection } from './analysis/FinancialAnalysisSection';
 import { RiskVerificationSection } from './analysis/RiskVerificationSection';
+import { OrchestratorSummaryCard } from './analysis/OrchestratorSummaryCard';
+import { DecisionOverlay } from './analysis/DecisionOverlay';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Governed Executive Summary V1 — inline types + parser
@@ -310,8 +314,10 @@ function findFirstSection(
 // ─────────────────────────────────────────────────────────────────────────────
 
 const NAV_ITEMS = [
+  { id: 'decision-overlay', label: 'Decision', icon: Activity },
   { id: 'exec-summary', label: 'Executive Summary', icon: FileText },
   { id: 'deal-terms', label: 'Deal Terms', icon: Scale },
+  { id: 'orchestrator-summary', label: 'Deal Score', icon: Zap },
   { id: 'market', label: 'Market', icon: TrendingUp },
   { id: 'financials', label: 'Financials', icon: DollarSign },
   { id: 'risk-verification', label: 'Risk & Verification', icon: AlertTriangle },
@@ -1027,6 +1033,11 @@ export function InvestorReportView({ report, darkMode, dealId }: InvestorReportV
         {/* Report metadata */}
         <ReportMetaBar report={report} darkMode={darkMode} hasGovernedExecSummary={hasGovernedExecSummary} />
 
+        {/* 0. Decision Overlay — top of report, above Exec Summary */}
+        <section id="decision-overlay" className="scroll-mt-6">
+          <DecisionOverlay dealId={dealId} darkMode={darkMode} />
+        </section>
+
         {/* 1. Executive Summary — governed_executive_summary_v1 only, no deterministic fallback */}
         <ReportSection
           id="exec-summary"
@@ -1063,6 +1074,16 @@ export function InvestorReportView({ report, darkMode, dealId }: InvestorReportV
             ? <DealTermsCard dealId={dealId} report={report} darkMode={darkMode} embedded />
             : <DealTermsSection section={canonicalSection} darkMode={darkMode} />
           }
+        </ReportSection>
+
+        {/* 2.5. Orchestrator Summary */}
+        <ReportSection
+          id="orchestrator-summary"
+          title="Deal Intelligence Score"
+          icon={Zap}
+          darkMode={darkMode}
+        >
+          <OrchestratorSummaryCard dealId={dealId} darkMode={darkMode} />
         </ReportSection>
 
         {/* 3. Market */}

@@ -31,8 +31,7 @@ import { ProfessionalReportGenerator } from '../reports/ProfessionalReportGenera
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { ToastContainer } from '../ui/Toast';
 import { useLocalToasts } from '../../lib/useLocalToasts';
-import { useInvestorInsights } from '../../hooks/useInvestorInsights';
-import { InvestorReportView } from './InvestorReportView';
+import { OrchestratorFullReportView } from './OrchestratorFullReportView';
 
 interface AnalysisTabProps {
   darkMode: boolean;
@@ -76,15 +75,7 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId }: Analy
   const [selectedPerspective, setSelectedPerspective] = useState<string | null>(null);
   const [runningDeepAnalysis, setRunningDeepAnalysis] = useState(false);
 
-  // Real investor report — used when dealId is provided.
-  // Hook is always called (Rules of Hooks); its result is only consumed when dealId is truthy.
-  const {
-    status: insightStatus,
-    report: insightReport,
-    error: insightError,
-    generate: generateInsights,
-    refresh: refreshInsights,
-  } = useInvestorInsights(dealId);
+  // Real investor report path is owned by OrchestratorFullReportView.
 
   useEffect(() => {
     // Auto-run local analysis on mount only when there is no dealId
@@ -514,117 +505,16 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId }: Analy
   };
 
   // ── Real investor report path ─────────────────────────────────────────────
-  // When a dealId is wired in, render the real Investor Report View instead of
-  // the local form-field scoring UI below.
+  // When a dealId is wired in, delegate to OrchestratorFullReportView which
+  // owns the data-fetching lifecycle and composes all analysis sections.
   if (dealId) {
-    // Loading skeleton
-    if (insightStatus === 'loading' || insightStatus === 'idle') {
-      return (
-        <div className="flex items-center justify-center h-full">
-          <div className="text-center">
-            <div className="relative w-20 h-20 mx-auto mb-4">
-              <div className="absolute inset-0 border-4 border-[#6366f1]/20 rounded-full" />
-              <div className="absolute inset-0 border-4 border-[#6366f1] rounded-full border-t-transparent animate-spin" />
-              <Sparkles className="absolute inset-0 m-auto w-8 h-8 text-[#6366f1]" />
-            </div>
-            <h3 className={`text-lg mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              Loading Investor Report…
-            </h3>
-            <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              Fetching deal analysis and verification data
-            </p>
-          </div>
-        </div>
-      );
-    }
-
-    // Error state
-    if (insightStatus === 'error') {
-      return (
-        <div className="space-y-4 p-6">
-          <div className={`flex items-start gap-3 rounded-xl border px-4 py-3 ${darkMode ? 'bg-red-500/10 border-red-500/30' : 'bg-red-50 border-red-200'}`}>
-            <AlertCircle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
-            <div>
-              <p className={`text-sm font-medium ${darkMode ? 'text-red-200' : 'text-red-800'}`}>Failed to load investor report</p>
-              {insightError && <p className={`text-xs mt-0.5 ${darkMode ? 'text-red-300/80' : 'text-red-700/70'}`}>{insightError}</p>}
-            </div>
-          </div>
-          <Button variant="outline" size="sm" darkMode={darkMode} onClick={() => void refreshInsights()} icon={<RefreshCw className="w-4 h-4" />}>
-            Retry
-          </Button>
-        </div>
-      );
-    }
-
-    // Not yet generated
-    const isNotStarted =
-      insightStatus === 'ready' &&
-      (!insightReport || insightReport.status === 'not_started');
-
-    if (isNotStarted || !insightReport) {
-      return (
-        <div className="space-y-4 p-6">
-          <div className={`text-center py-14 rounded-xl border-2 border-dashed ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50/50'}`}>
-            <Sparkles className={`w-10 h-10 mx-auto mb-3 opacity-40 ${darkMode ? 'text-gray-400' : 'text-gray-400'}`} />
-            <h4 className={`text-sm font-semibold mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Investor report not generated yet</h4>
-            <p className={`text-xs mb-4 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-              Generate insights to see the full due-diligence report.
-            </p>
-            <Button
-              size="sm"
-              variant="primary"
-              darkMode={darkMode}
-              icon={<Zap className="w-3.5 h-3.5" />}
-              onClick={() => void generateInsights()}
-            >
-              Generate Report
-            </Button>
-          </div>
-        </div>
-      );
-    }
-
     return (
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className={`text-xl font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-              AI Analysis
-            </h2>
-            <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              Investor report for {dealData.companyName || dealData.name || 'this deal'}
-            </p>
-          </div>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              darkMode={darkMode}
-              onClick={() => void refreshInsights()}
-              icon={<RefreshCw className="w-4 h-4" />}
-            >
-              Refresh
-            </Button>
-            <Button
-              variant={darkMode ? 'secondary' : 'outline'}
-              size="sm"
-              darkMode={darkMode}
-              icon={<Zap className="w-4 h-4" />}
-              onClick={async () => {
-                if (onRunAnalysis) await onRunAnalysis();
-                void generateInsights();
-              }}
-            >
-              Regenerate
-            </Button>
-          </div>
-        </div>
-
-        {/* Full investor report — Deal Terms rendered inside report via DealTermsCard */}
-        <InvestorReportView report={insightReport} darkMode={darkMode} dealId={dealId} />
-
-        <ToastContainer toasts={toasts} onClose={removeToast} darkMode={darkMode} />
-      </div>
+      <OrchestratorFullReportView
+        dealId={dealId}
+        darkMode={darkMode}
+        dealName={dealData.companyName || dealData.name || undefined}
+        onRunAnalysis={onRunAnalysis}
+      />
     );
   }
   // ─────────────────────────────────────────────────────────────────────────

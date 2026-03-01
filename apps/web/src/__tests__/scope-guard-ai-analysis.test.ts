@@ -52,6 +52,23 @@ const PERMITTED_NEW_FILES = [
   'apps/web/src/hooks/useRiskVerification.ts',
   'apps/web/src/__tests__/RiskVerificationSection.test.tsx',
   'apps/api/src/__tests__/risk-verification-analysis.test.ts',
+  // Orchestrator Deal Intelligence Score feature
+  'apps/web/src/components/workspace/analysis/OrchestratorSummaryCard.tsx',
+  'apps/web/src/hooks/useOrchestratorReport.ts',
+  'apps/web/src/__tests__/OrchestratorSummaryCard.test.tsx',
+  'apps/web/src/__tests__/OrchestratorSummaryCard.integration.test.tsx',
+  'apps/api/src/__tests__/orchestrator-report.test.ts',
+  'packages/core/src/orchestrator',
+  // Decision Overlay feature
+  'apps/web/src/components/workspace/analysis/DecisionOverlay.tsx',
+  'apps/web/src/__tests__/DecisionOverlay.test.tsx',
+  'apps/web/src/__tests__/DecisionOverlay.integration.test.tsx',
+  // OrchestratorFullReportView composition component
+  'apps/web/src/components/workspace/OrchestratorFullReportView.tsx',
+  'apps/web/src/__tests__/OrchestratorFullReportView.test.tsx',
+  // Gate 1 DPU backfill — auto-enqueue DPU when missing/stale/partial
+  'apps/api/src/__tests__/gate1-dpu-backfill.test.ts',
+  'apps/web/src/__tests__/OrchestratorFullReportView.dpuBackfill.test.tsx',
 ];
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
@@ -106,6 +123,38 @@ describe('Scope guard — DealTermsCard import isolation', () => {
     const src = readWebFile('components/workspace/InvestorReportView.tsx');
     expect(src).toContain('RiskVerificationSection');
   });
+
+  test('InvestorInsightsTab.tsx does NOT import OrchestratorSummaryCard', () => {
+    const src = readWebFile('components/workspace/InvestorInsightsTab.tsx');
+    expect(src).not.toContain('OrchestratorSummaryCard');
+    expect(src).not.toContain('useOrchestratorReport');
+  });
+
+  test('InvestorReportView.tsx imports OrchestratorSummaryCard (approved embedded consumer)', () => {
+    const src = readWebFile('components/workspace/InvestorReportView.tsx');
+    expect(src).toContain('OrchestratorSummaryCard');
+  });
+
+  test('InvestorInsightsTab.tsx does NOT import DecisionOverlay', () => {
+    const src = readWebFile('components/workspace/InvestorInsightsTab.tsx');
+    expect(src).not.toContain('DecisionOverlay');
+  });
+
+  test('InvestorReportView.tsx imports DecisionOverlay (approved embedded consumer)', () => {
+    const src = readWebFile('components/workspace/InvestorReportView.tsx');
+    expect(src).toContain('DecisionOverlay');
+  });
+
+  test('InvestorInsightsTab.tsx does NOT import OrchestratorFullReportView', () => {
+    const src = readWebFile('components/workspace/InvestorInsightsTab.tsx');
+    expect(src).not.toContain('OrchestratorFullReportView');
+  });
+
+  test('AnalysisTab.tsx imports OrchestratorFullReportView (approved composition consumer)', () => {
+    const src = readWebFile('components/workspace/AnalysisTab.tsx');
+    expect(src).toContain('OrchestratorFullReportView');
+  });
+
   test('DueDiligenceReport files do NOT import MarketAnalysisCard', () => {
     const pagesDir = resolve(WEB_ROOT, 'src/components/pages');
     if (!existsSync(pagesDir)) return;
@@ -151,9 +200,10 @@ describe('Scope guard — DealTermsCard import isolation', () => {
     scanDir(reportsDir);
   });
 
-  test('DealTermsCard.tsx, MarketAnalysisCard.tsx, and FinancialAnalysisSection.tsx are exclusively imported by AnalysisTab.tsx and InvestorReportView.tsx', () => {
+  test('DealTermsCard.tsx, MarketAnalysisCard.tsx, FinancialAnalysisSection.tsx, OrchestratorSummaryCard.tsx, and DecisionOverlay.tsx are exclusively imported by AnalysisTab.tsx and InvestorReportView.tsx', () => {
     // Scan the entire workspace/* components directory (except approved consumers and tests)
-    // and verify no unexpected file imports DealTermsCard, MarketAnalysisCard, or FinancialAnalysisSection.
+    // and verify no unexpected file imports DealTermsCard, MarketAnalysisCard, FinancialAnalysisSection,
+    // RiskVerificationSection, or OrchestratorSummaryCard.
     const componentsDir = resolve(WEB_ROOT, 'src/components');
     const hooksDir = resolve(WEB_ROOT, 'src/hooks');
     if (!existsSync(componentsDir)) return;
@@ -173,17 +223,28 @@ describe('Scope guard — DealTermsCard import isolation', () => {
           entry.name === 'MarketAnalysisCard.tsx' ||
           entry.name === 'FinancialAnalysisSection.tsx' ||
           entry.name === 'RiskVerificationSection.tsx' ||
+          entry.name === 'OrchestratorSummaryCard.tsx' ||
+          entry.name === 'DecisionOverlay.tsx' ||
+          entry.name === 'OrchestratorFullReportView.tsx' ||
           entry.name === 'useFinancialAnalysis.ts' ||
           entry.name === 'useRiskVerification.ts' ||
           entry.name === 'useMarketAnalysis.ts' ||
           entry.name === 'useDealTermsAnalysis.ts' ||
+          entry.name === 'useOrchestratorReport.ts' ||
           full.includes('__tests__')
         ) continue;
         if (entry.isDirectory()) {
           scanDir(full);
         } else if (entry.isFile() && /\.(tsx?|jsx?)$/.test(entry.name)) {
           const src = readFileSync(full, 'utf-8');
-          if (src.includes('DealTermsCard') || src.includes('MarketAnalysisCard') || src.includes('FinancialAnalysisSection') || src.includes('RiskVerificationSection')) {
+          if (
+            src.includes('DealTermsCard') ||
+            src.includes('MarketAnalysisCard') ||
+            src.includes('FinancialAnalysisSection') ||
+            src.includes('RiskVerificationSection') ||
+            src.includes('OrchestratorSummaryCard') ||
+            src.includes('DecisionOverlay')
+          ) {
             violations.push(entry.name);
           }
         }
@@ -192,7 +253,7 @@ describe('Scope guard — DealTermsCard import isolation', () => {
     scanDir(componentsDir);
     if (existsSync(hooksDir)) scanDir(hooksDir);
 
-    expect(violations, `Unexpected files import DealTermsCard, MarketAnalysisCard, FinancialAnalysisSection, or RiskVerificationSection: ${violations.join(', ')}`).toHaveLength(0);
+    expect(violations, `Unexpected files import DealTermsCard, MarketAnalysisCard, FinancialAnalysisSection, RiskVerificationSection, OrchestratorSummaryCard, or DecisionOverlay: ${violations.join(', ')}`).toHaveLength(0);
   });
 
   test('apiPostDealTermsAnalysis is only called from useDealTermsAnalysis hook and tests', () => {

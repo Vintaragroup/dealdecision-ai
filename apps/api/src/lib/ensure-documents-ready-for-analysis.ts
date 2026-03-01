@@ -20,6 +20,18 @@ export type EnsureDocumentsReadyResult = {
   readiness: PageUnderstandingReadiness;
   blocked_reason: string | null;
   poll_after_ms: number;
+  /**
+   * Machine-readable action hint for callers.
+   * 'enqueue_dpu_backfill' — DPU rows are missing, stale, or partially covered;
+   * the caller should display a waiting UI and poll until DPU is ready.
+   * null — no DPU-specific action required (may still be not-ready for other reasons).
+   */
+  action: 'enqueue_dpu_backfill' | null;
+  /**
+   * Stable content-address string derived from deal + DPU counts.
+   * Used by callers for idempotency checks (no duplicate backfill for same state).
+   */
+  docs_fingerprint: string | null;
 };
 
 async function hasColumn(pool: PoolLike, table: string, column: string): Promise<boolean> {
@@ -505,11 +517,35 @@ export async function ensureDocumentsReadyForAnalysis(args: {
 
   const pollAfter = effective.poll_after_ms ?? 2000;
 
+  // Compute machine-readable action field for Gate 1 DPU cases.
+  // Conditions that indicate a DPU backfill is the right remediation:
+  //   - blocked_reason is the DPU_STALE freshness marker, OR
+  //   - no DPU rows exist for an expected page set (missing_dpu), OR
+  //   - DPU rows exist but gaps remain (dpu_partial)
+  // PAGE_COUNT_UNKNOWN and render-related blockers are NOT DPU backfill actions.
+  const dpuBackfillAction = ((): 'enqueue_dpu_backfill' | null => {
+    if (effective.ready) return null;
+    const reason = effective.blocked_reason;
+    if (reason === 'DPU_STALE') return 'enqueue_dpu_backfill';
+    // null blocked_reason with DPU gaps (missing or partial coverage)
+    if (reason === null && requirePageUnderstanding) {
+      const expPages = effective.readiness.expected_pages_total ?? 0;
+      const dpuRows = effective.readiness.dpu_rows_total ?? 0;
+      const missingPages = effective.readiness.missing_pages_total ?? 0;
+      if (expPages > 0 && (dpuRows === 0 || missingPages > 0)) return 'enqueue_dpu_backfill';
+    }
+    return null;
+  })();
+
+  const docsFingerprint = `${dealId}::${effective.readiness.expected_pages_total ?? 0}::${effective.readiness.dpu_rows_total ?? 0}::${effective.readiness.missing_pages_total ?? 0}`;
+
   return {
     ready: effective.ready,
     readiness: effective.readiness,
     blocked_reason: effective.blocked_reason,
     poll_after_ms: pollAfter,
     enqueued,
+    action: dpuBackfillAction,
+    docs_fingerprint: docsFingerprint,
   };
 }

@@ -2132,6 +2132,102 @@ export async function apiGetInvestorInsights(dealId: string): Promise<InvestorIn
   return request<InvestorInsightsReport>(`/api/v1/deals/${dealId}/investor-insights`);
 }
 
+// ─── Orchestrator Report ─────────────────────────────────────────────────────
+
+/**
+ * Minimal web-side type for the ddai_orchestrator_report_v1 JSON contract.
+ * Mirrors packages/core OrchestratorReportV1 without a direct import dependency.
+ */
+export type OrchestratorReportDecision = {
+  label: 'GO' | 'CONSIDER' | 'NO_GO';
+  confidence_band: 'High' | 'Medium' | 'Low';
+  rationale_bullets: string[];
+  thresholds_used: { stage: string; go_min_ors: number; max_acceptable_risk: number };
+};
+
+export type OrchestratorReportScores = {
+  overall_recommendation_score: number;
+  risk_severity_score: number;
+  market_score: { raw: number; persisted: number; missing_inputs: string[] };
+  financial_health_score: {
+    status: 'ok' | 'insufficient_data';
+    score: number | null;
+    is_proxy: boolean;
+    missing_sections: string[];
+  };
+};
+
+/** Verification request item inside risk_verification segment. */
+export type OrchestratorVerificationRequest = {
+  request: string;
+  priority: 'P0' | 'P1' | 'P2';
+  why: string;
+  evidence_refs?: string[];
+};
+
+export type OrchestratorReportV1 = {
+  schema_version: 'ddai_orchestrator_report_v1';
+  deal_id: string;
+  created_at: string;
+  input_fingerprint: string;
+  document_confidence: {
+    score: number;
+    band: 'Strong' | 'Good' | 'Partial' | 'Weak';
+    notes: string[];
+    /** Present in full API response; may be absent in older cached records. */
+    section_count?: number;
+    ocr_page_count?: number;
+    evidence_item_count?: number;
+    /** Raw coverage inputs from the document processing pipeline. */
+    inputs?: {
+      text_coverage_pct?: number;
+      layout_coverage_pct?: number;
+      dpu_integrity_score?: number;
+      expected_pages_total?: number;
+      dpu_rows_total?: number;
+      missing_pages_total?: number;
+      hard_missing_pages_total?: number;
+    };
+  };
+  stage_context: {
+    stage: 'Seed' | 'SeriesA' | 'Growth' | 'Unknown';
+    raise_amount: string | null;
+    instrument: string | null;
+    valuation_pre: string | null;
+    valuation_post: string | null;
+    missing_critical_terms: string[];
+  };
+  scores: OrchestratorReportScores;
+  decision: OrchestratorReportDecision;
+  /**
+   * Segment data from the orchestrator — present in full API responses.
+   * May be absent in older cached records or stripped responses.
+   */
+  segments?: {
+    risk_verification?: {
+      verification_requests?: OrchestratorVerificationRequest[];
+      data_issues?: {
+        missing_critical_terms: string[];
+        coverage_pct: number;
+        gates_failed: number;
+      };
+    };
+  };
+  diagnostics: {
+    warnings: string[];
+    inputs_present: Record<string, boolean>;
+  };
+};
+
+export type OrchestratorReportResponse = {
+  schema_version: 'ddai_orchestrator_report_v1';
+  report: OrchestratorReportV1;
+};
+
+export async function apiGetOrchestratorReport(dealId: string): Promise<OrchestratorReportResponse> {
+  return request<OrchestratorReportResponse>(`/api/v1/deals/${dealId}/orchestrator-report`);
+}
+
 export async function apiGenerateInvestorInsights(dealId: string): Promise<{ ok: boolean }> {
   // eslint-disable-next-line no-console
   console.log('[InvestorInsights] POST generate', dealId);
@@ -2141,14 +2237,36 @@ export async function apiGenerateInvestorInsights(dealId: string): Promise<{ ok:
 }
 
 /**
+ * Response shape for apiRegenerateInvestorInsights.
+ * When DPU is missing/stale/partial the server returns a 202
+ * `preparing_documents` payload instead of the normal enqueue confirmation.
+ */
+export type RegenerateInsightsResponse =
+  | { ok: boolean; deal_id: string; enqueued: boolean }
+  | {
+      status: 'preparing_documents';
+      blocked_reason: 'missing_dpu' | 'dpu_stale' | 'dpu_partial' | string | null;
+      action: 'enqueue_dpu_backfill' | string;
+      poll_after_ms: number;
+      docs_fingerprint: string | null;
+      expected_pages_total?: number;
+      dpu_rows_total?: number;
+      missing_pages_total?: number;
+    };
+
+/**
  * Force-regenerate investor insights for a deal, bypassing BullMQ dedup.
  * Each call enqueues a fresh job (timestamp-keyed jobId). Use this for the
  * explicit "Regenerate Report" UI action.
+ *
+ * When Gate 1 DPU is not ready the server returns
+ * `{ status: 'preparing_documents', action: 'enqueue_dpu_backfill', ... }`.
+ * Poll `apiGetDealReadiness(dealId, 'page_understanding_v1')` until ready, then retry.
  */
-export async function apiRegenerateInvestorInsights(dealId: string): Promise<{ ok: boolean; deal_id: string; enqueued: boolean }> {
+export async function apiRegenerateInvestorInsights(dealId: string): Promise<RegenerateInsightsResponse> {
   // eslint-disable-next-line no-console
   console.log('[InvestorInsights] POST regenerate', dealId);
-  return request<{ ok: boolean; deal_id: string; enqueued: boolean }>(
+  return request<RegenerateInsightsResponse>(
     `/api/v1/deals/${dealId}/investor-insights/regenerate`,
     { method: 'POST' },
   );

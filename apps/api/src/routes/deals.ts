@@ -30,6 +30,7 @@ import {
   buildDealScoringInputV0FromLineage,
   getSegmentConfidenceThresholds,
   detectContentArchetypeTags,
+  buildOrchestratorReportV1,
 } from "@dealdecision/core";
 import {
   BrandModel,
@@ -2486,6 +2487,75 @@ export async function registerDealRoutes(
       return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
     }
     const dealId = parsed.data.deal_id;
+
+    // ── Gate 1: DPU preflight ─────────────────────────────────────────────────
+    // Before enqueueing investor-insights, verify DPU readiness. When DPU is
+    // missing, stale, or partially covered, auto-enqueue DPU backfill and return
+    // 202 { status: "preparing_documents" } so the UI can poll rather than
+    // proceeding straight to an insights job that would fail the DPU gate.
+    //
+    // Fail-open: if the preflight itself throws (e.g. pool unavailable in test),
+    // we log and proceed rather than blocking the user.
+    try {
+      const prep = await ensureDocumentsReadyForAnalysis({
+        pool: pool as any,
+        dealId,
+        requirePageUnderstanding: true,
+        pageUnderstandingVersion: "page_understanding_v1",
+        logger: request.log,
+        enqueue,
+      });
+
+      if (!prep.ready && prep.action === "enqueue_dpu_backfill") {
+        // Map internal blocked_reason to spec-normalized client values:
+        //   "DPU_STALE"     → "dpu_stale"
+        //   null + no rows  → "missing_dpu"
+        //   null + partial  → "dpu_partial"
+        const clientBlockedReason = (() => {
+          const raw = prep.blocked_reason;
+          if (raw === "DPU_STALE") return "dpu_stale";
+          const expPages = prep.readiness.expected_pages_total ?? 0;
+          const dpuRows = prep.readiness.dpu_rows_total ?? 0;
+          const missingPages = prep.readiness.missing_pages_total ?? 0;
+          if (expPages > 0 && dpuRows === 0) return "missing_dpu";
+          if (expPages > 0 && dpuRows > 0 && missingPages > 0) return "dpu_partial";
+          return raw ?? "missing_dpu";
+        })();
+
+        request.log.info(
+          {
+            event: "REGENERATE_GATE1_DPU_BACKFILL",
+            deal_id: dealId,
+            blocked_reason: clientBlockedReason,
+            docs_fingerprint: prep.docs_fingerprint,
+            expected_pages_total: prep.readiness.expected_pages_total,
+            dpu_rows_total: prep.readiness.dpu_rows_total,
+            missing_pages_total: prep.readiness.missing_pages_total,
+            enqueued: prep.enqueued,
+          },
+          "investor-insights/regenerate DPU gate blocked — auto-enqueued backfill"
+        );
+
+        return reply.status(202).send({
+          status: "preparing_documents",
+          blocked_reason: clientBlockedReason,
+          action: "enqueue_dpu_backfill",
+          poll_after_ms: prep.poll_after_ms ?? 1500,
+          docs_fingerprint: prep.docs_fingerprint,
+          expected_pages_total: prep.readiness.expected_pages_total ?? 0,
+          dpu_rows_total: prep.readiness.dpu_rows_total ?? 0,
+          missing_pages_total: prep.readiness.missing_pages_total ?? 0,
+          enqueued: prep.enqueued,
+        });
+      }
+    } catch (err) {
+      // Fail-open: DPU preflight failed (e.g. pool unavailable in tests), proceed with enqueueing.
+      const msg = err instanceof Error ? err.message : String(err);
+      request.log.warn(
+        { event: "REGENERATE_GATE1_PREFLIGHT_FAILED", deal_id: dealId, err: msg },
+        "Gate 1 DPU preflight failed — proceeding with insights enqueue"
+      );
+    }
 
     // Unique per-request jobId — bypasses BullMQ dedup so regenerate always enqueues.
     const jobId = `investor_insights__${dealId}__v1__manual_regenerate__${Date.now()}`;
@@ -10844,6 +10914,58 @@ export async function registerDealRoutes(
       render_package: row.render_package,
       updated_at: row.updated_at,
     });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GET /api/v1/deals/:deal_id/orchestrator-report
+  // Read-only. Computes the deterministic OrchestratorReportV1 on-the-fly from
+  // the most recent investor_insight_reports render_package. No DB writes.
+  // ─────────────────────────────────────────────────────────────────────────
+  app.get("/api/v1/deals/:deal_id/orchestrator-report", async (request, reply) => {
+    const rawDealId = (request.params as { deal_id: string }).deal_id;
+    const parsed = z.object({ deal_id: z.string().uuid() }).safeParse({ deal_id: rawDealId });
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "invalid_deal_id" });
+    }
+    const dealId = parsed.data.deal_id;
+
+    const tableOk = await hasTable(pool as any, "investor_insight_reports");
+    if (!tableOk) {
+      return reply.status(404).send({ error: "not_found" });
+    }
+
+    const { rows } = await pool.query<{
+      render_package: unknown;
+      upstream_fingerprint: string;
+      schema_version?: string;
+      status: string;
+    }>(
+      `SELECT status, render_package, upstream_fingerprint
+       FROM investor_insight_reports
+       WHERE deal_id = $1
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [dealId]
+    );
+
+    if (rows.length === 0) {
+      return reply.status(404).send({ error: "not_found" });
+    }
+
+    const rp = rows[0].render_package as any;
+    if (!rp || !Array.isArray(rp.sections)) {
+      return reply.status(404).send({ error: "not_found" });
+    }
+
+    try {
+      const report = buildOrchestratorReportV1({ dealId, renderPackage: rp });
+      return reply.status(200).send({ schema_version: "ddai_orchestrator_report_v1", report });
+    } catch (err) {
+      return reply.status(500).send({
+        error: "build_failed",
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
   });
 
   if (debugRoutesEnabled) {

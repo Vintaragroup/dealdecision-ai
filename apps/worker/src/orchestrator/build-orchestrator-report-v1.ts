@@ -65,6 +65,11 @@ import {
   computeDecision,
   type DecisionInputs,
 } from "./compute-ors.js";
+import {
+  resolveRaiseAmount,
+  parseMoneyToMillions,
+  MAGNITUDE_THRESHOLD_M,
+} from "../jobs/investor-insights/resolve-raise-amount.js";
 
 // ─── Public type alias ────────────────────────────────────────────────────────
 
@@ -499,6 +504,20 @@ export function buildOrchestratorReportV1(args: {
     warnings.push("financial_layout_classifier_v1 section absent — FHC XLSX signals will be 0.");
   if (!inputsPresent.financial_reconciliation_v1)
     warnings.push("financial_reconciliation_v1 section absent — FHC RC will use neutral default of 50.");
+
+  // DPU staleness warning: when DPU rows are present but stale vs the current document
+  // fingerprint, evidence may not reflect the latest document state.  Surface this so
+  // the report consumer can trigger a backfill before relying on canonical fields.
+  if (coverage.dpu_blocked_reason === "dpu_stale") {
+    const coveragePct = coverage.text_coverage_pct;
+    const completeFlag = coverage.dpu_page_count > 0 && coveragePct >= 100 ? "true" : `false(${coveragePct}%)`;
+    const fpPart = coverage.docs_fingerprint ? ` docs_fingerprint=${coverage.docs_fingerprint}` : "";
+    const tsPart = coverage.latest_dpu_created_at ? ` latest_dpu_created_at=${coverage.latest_dpu_created_at}` : "";
+    warnings.push(
+      `dpu_stale: complete=${completeFlag} reason=dpu_stale${fpPart}${tsPart} — requires backfill to ensure evidence alignment with current docs_fingerprint`
+    );
+  }
+
   warnings.push(
     "evidence_registry: evidence_items table not accessible in build-only mode — items empty."
   );
@@ -524,6 +543,69 @@ export function buildOrchestratorReportV1(args: {
 
   const getField = (name: string): string | null =>
     canonicalFields.find((f) => f.field === name && f.computability === "Computable")?.value ?? null;
+
+  // ─── 3b. Raise Amount Resolution ──────────────────────────────────────────
+  // Defense-in-depth: apply resolveRaiseAmount to the canonical raise_amount.
+  //
+  // The primary taint filtering now happens inside processor.ts (isRaiseMatchTainted)
+  // and deal-fusion.ts (isFusionRaiseTainted) via the narrowed verb-first exemption.
+  // Here we add an additional orchestrator-level check that:
+  //   (a) raises an advisory warning when the canonical raise_amount looks like a
+  //       magnitude outlier for the detected stage (>= $100M for early-stage deals),
+  //   (b) prefers the Stage 1 raise_terms slot value when it disagrees with the
+  //       canonical raise_amount for early-stage deals.
+  //
+  // This layer fires even if a tainted value somehow slipped through the earlier
+  // checks — providing a consistent Overview ↔ AI-Analysis agreement guarantee.
+  const insightSlotsBody = findSectionBody(rp, "insight_slots") ?? "";
+  const raiseTermsSlotMatch = /^raise_terms:\s*Computable\s*\|\s*value="([^"]+)"/m.exec(insightSlotsBody);
+  const raiseTermsFromSlot = raiseTermsSlotMatch ? raiseTermsSlotMatch[1] : null;
+
+  const canonicalRaiseAmount = getField("raise_amount");
+
+  // Build a single candidate from the canonical field (no full context available
+  // at this stage, so we use the value itself as a proxy context for magnitude).
+  const raiseCandidates = canonicalRaiseAmount
+    ? [{ value: canonicalRaiseAmount, context: canonicalRaiseAmount, source: "deck" as const, evidence_ref: null }]
+    : [];
+
+  const resolvedRaise = resolveRaiseAmount({
+    raiseTermsRaw: raiseTermsFromSlot,
+    stage,
+    candidates: raiseCandidates,
+  });
+
+  // Emit a warning when the orchestrator overrides the canonical raise_amount.
+  if (resolvedRaise.from_raise_terms_override && canonicalRaiseAmount && canonicalRaiseAmount !== resolvedRaise.raise_amount) {
+    warnings.push(
+      `raise_amount_override: canonical_value=${canonicalRaiseAmount} ` +
+      `resolved=${resolvedRaise.raise_amount ?? "null"} source=raise_terms_slot ` +
+      `stage=${stage} — canonical value replaced by raise_terms slot for consistency with Overview`
+    );
+  }
+  if (resolvedRaise.rejected_candidates.length > 0) {
+    const firstRejected = resolvedRaise.rejected_candidates[0]!;
+    const amountM = parseMoneyToMillions(firstRejected.candidate.value);
+    if (firstRejected.reason === "magnitude_no_strong_verb" && amountM !== null && amountM >= MAGNITUDE_THRESHOLD_M) {
+      warnings.push(
+        `raise_amount_magnitude_rejected: value=${firstRejected.candidate.value} ` +
+        `(${amountM.toFixed(0)}M) ` +
+        `stage=${stage} — exceeds ${MAGNITUDE_THRESHOLD_M}M threshold for early-stage deal without strong raise verb`
+      );
+    }
+  }
+
+  // The resolved raise_amount supersedes the canonical field value.
+  const resolvedRaiseAmount = resolvedRaise.raise_amount;
+
+  // Patch missingCriticalTerms: if raise_amount was resolved (either from the
+  // canonical field or from the raise_terms slot override), remove it from the
+  // "missing" list so downstream risk-profile and stage_context callers don't
+  // incorrectly flag it as undisclosed.
+  if (resolvedRaiseAmount !== null) {
+    const raiseIdx = missingCriticalTerms.indexOf("raise_amount");
+    if (raiseIdx !== -1) missingCriticalTerms.splice(raiseIdx, 1);
+  }
 
   // ─── 4. DCI ───────────────────────────────────────────────────────────────
 
@@ -669,7 +751,7 @@ export function buildOrchestratorReportV1(args: {
     document_confidence: documentConfidence,
     stage_context: {
       stage,
-      raise_amount: getField("raise_amount"),
+      raise_amount: resolvedRaiseAmount,
       instrument: getField("raise_instrument"),
       valuation_pre: getField("valuation_pre"),
       valuation_post: getField("valuation_post"),

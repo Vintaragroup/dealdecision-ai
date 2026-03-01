@@ -481,3 +481,126 @@ test("pool query never references investor_insights or render_package tables", a
   if (savedKey !== undefined) process.env.OPENAI_API_KEY = savedKey;
   else delete process.env.OPENAI_API_KEY;
 });
+
+// ─── Test 11: raise_terms_raw overrides polluted canonical raise_amount ────────
+//
+// Scenario: deck pattern-matched "$11B" (market-tainted) was stored in
+// canonical_fields.raise_amount. The client also sends raise_terms_raw="$25K
+// Pre-Seed" (from insight_slots) + stage="Seed". The server must apply Rule 1
+// (raise_terms override) and inject "$25K" — not "$11B" — into the LLM prompt.
+
+test("raise_terms_raw '$25K Pre-Seed' overrides canonical raise_amount '$11B' in LLM prompt", async () => {
+  const app = Fastify({ logger: false });
+  await registerDealRoutes(app, makeMockPool());
+  await app.ready();
+
+  const savedKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+
+  let capturedUserPrompt = "";
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url: any, opts: any) => {
+    const body = JSON.parse(opts.body);
+    capturedUserPrompt = body.messages?.[1]?.content ?? "";
+    return {
+      ok: true,
+      status: 200,
+      json: async () => mockLlmOutput({
+        structure_summary: "The company is raising $25K on a Pre-Seed round.",
+        structure_assessment: { simplicity: "High", dilution_visibility: "Low", valuation_clarity: "Low", downside_protection: "Low" },
+        missing_terms: [],
+      }),
+      text: async () => "",
+    } as any;
+  };
+
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/v1/deals/${DEAL_ID}/analysis/deal-terms`,
+    payload: {
+      canonical_fields: sampleFields({ raise_amount: "$11B" }),
+      raise_terms_raw: "$25K Pre-Seed",
+      stage: "Seed",
+    },
+    headers: { "content-type": "application/json" },
+  });
+
+  assert.equal(res.statusCode, 200, `body=${res.body}`);
+
+  // The LLM prompt must reference the resolved raise amount, not the deck value.
+  assert.ok(
+    capturedUserPrompt.includes("$25K"),
+    `Expected "$25K" in LLM prompt, got: ${capturedUserPrompt}`,
+  );
+  assert.ok(
+    !capturedUserPrompt.includes("$11B"),
+    `"$11B" must not appear in LLM prompt after raise_terms override`,
+  );
+
+  globalThis.fetch = originalFetch;
+  await app.close();
+  if (savedKey !== undefined) process.env.OPENAI_API_KEY = savedKey;
+  else delete process.env.OPENAI_API_KEY;
+});
+
+// ─── Test 12: magnitude sanity — early-stage $11B without raise_terms rejected ─
+//
+// Scenario: canonical_fields.raise_amount="$11B", stage="Seed", NO raise_terms_raw.
+// Rule 3 (magnitude sanity) must null out $11B for early-stage deals.
+// The LLM prompt must show "Raise amount: not disclosed", not "$11B".
+
+test("magnitude sanity rejects early-stage $11B when no raise_terms_raw supplied", async () => {
+  const app = Fastify({ logger: false });
+  await registerDealRoutes(app, makeMockPool());
+  await app.ready();
+
+  const savedKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+
+  let capturedUserPrompt = "";
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_url: any, opts: any) => {
+    const body = JSON.parse(opts.body);
+    capturedUserPrompt = body.messages?.[1]?.content ?? "";
+    return {
+      ok: true,
+      status: 200,
+      json: async () => mockLlmOutput({
+        structure_summary: "Raise amount is not disclosed.",
+        structure_assessment: { simplicity: "Low", dilution_visibility: "Low", valuation_clarity: "Low", downside_protection: "Low" },
+        missing_terms: ["raise amount"],
+      }),
+      text: async () => "",
+    } as any;
+  };
+
+  const res = await app.inject({
+    method: "POST",
+    url: `/api/v1/deals/${DEAL_ID}/analysis/deal-terms`,
+    payload: {
+      canonical_fields: sampleFields({ raise_amount: "$11B" }),
+      // raise_terms_raw intentionally omitted
+      stage: "Seed",
+    },
+    headers: { "content-type": "application/json" },
+  });
+
+  assert.equal(res.statusCode, 200, `body=${res.body}`);
+
+  // $11B must be nulled out (Rule 3) → "not disclosed" in prompt
+  assert.ok(
+    capturedUserPrompt.includes("not disclosed"),
+    `Expected "not disclosed" in LLM prompt after magnitude rejection, got: ${capturedUserPrompt}`,
+  );
+  assert.ok(
+    !capturedUserPrompt.includes("$11B"),
+    `"$11B" must not appear in LLM prompt after magnitude rejection`,
+  );
+
+  globalThis.fetch = originalFetch;
+  await app.close();
+  if (savedKey !== undefined) process.env.OPENAI_API_KEY = savedKey;
+  else delete process.env.OPENAI_API_KEY;
+});

@@ -60,9 +60,47 @@ export function extractRaiseTermFields(
   return fields;
 }
 
-function fingerprint(fields: Record<string, string | null>): string {
+/**
+ * Extract the raise_terms value from the insight_slots section body.
+ * The line format is:
+ *   raise_terms: Computable | value="$25K Pre-Seed" | ...
+ * Returns the quoted value string or null if not present / not computable.
+ */
+export function extractRaiseTermsRaw(
+  report: InvestorInsightsReport | null,
+): string | null {
+  if (!report) return null;
+  const section = report.render_package?.sections?.find(
+    (s) => s.key === 'insight_slots',
+  );
+  if (!section || typeof section.body !== 'string') return null;
+  const m = /^raise_terms:\s*Computable\s*\|\s*value="([^"]+)"/m.exec(section.body);
+  return m ? m[1] : null;
+}
+
+/**
+ * Extract the stage field from the canonical_fields section body.
+ * Returns the stage string (e.g. "Seed", "Unknown") or null.
+ */
+export function extractStageFromReport(
+  report: InvestorInsightsReport | null,
+): string | null {
+  if (!report) return null;
+  const section = report.render_package?.sections?.find(
+    (s) => s.key === 'canonical_fields',
+  );
+  if (!section || typeof section.body !== 'string') return null;
+  const rows = parseCanonicalFieldsBody(section.body);
+  const row = rows.find((r) => r.field.toLowerCase().trim() === 'stage');
+  return row?.value ?? null;
+}
+
+function fingerprint(
+  fields: Record<string, string | null>,
+  raiseTermsRaw: string | null,
+): string {
   return JSON.stringify(
-    RAISE_TERM_FIELDS.map((k) => fields[k] ?? '').join('|'),
+    RAISE_TERM_FIELDS.map((k) => fields[k] ?? '').join('|') + '|rt=' + (raiseTermsRaw ?? ''),
   );
 }
 
@@ -87,13 +125,19 @@ export function useDealTermsAnalysis(
 
   // Derived canonical fields — recomputed only when report changes.
   const canonicalFields = extractRaiseTermFields(report);
-  const currentFingerprint = fingerprint(canonicalFields);
+  const raiseTermsRaw = extractRaiseTermsRaw(report);
+  const stage = extractStageFromReport(report);
+  const currentFingerprint = fingerprint(canonicalFields, raiseTermsRaw);
 
+  const raiseTermsRawRef = useRef(raiseTermsRaw);
+  const stageRef = useRef(stage);
   const mountedRef = useRef(true);
   const dealIdRef = useRef(dealId);
   const fpRef = useRef(currentFingerprint);
   dealIdRef.current = dealId;
   fpRef.current = currentFingerprint;
+  raiseTermsRawRef.current = raiseTermsRaw;
+  stageRef.current = stage;
 
   const run = useCallback(async () => {
     const id = dealIdRef.current;
@@ -114,7 +158,10 @@ export function useDealTermsAnalysis(
 
     setStatus('loading');
     try {
-      const result = await apiPostDealTermsAnalysis(id, fields);
+      const result = await apiPostDealTermsAnalysis(id, fields, {
+        raise_terms_raw: raiseTermsRawRef.current,
+        stage: stageRef.current,
+      });
       if (!mountedRef.current || dealIdRef.current !== id || fpRef.current !== fp) return;
       setData(result);
       setStatus('ready');

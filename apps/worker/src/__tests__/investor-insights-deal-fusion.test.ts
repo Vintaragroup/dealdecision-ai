@@ -484,6 +484,54 @@ describe("fuseDealCanonicalFacts — clean raise sentence populates raise_amount
 	});
 });
 
+// ─── Regression: verb-first "investment opportunity $11B" + market context ────
+//
+// Bug fixed: isFusionRaiseTainted previously had `if (/[A-Za-z]/.test(text[matchIndex])) return false`
+// which unconditionally skipped the taint check for ALL letter-first matches.
+// Form F of RAISE_AMOUNT_PATTERN uses "investment" as an anchor, so
+// "investment opportunity of $11B Tax Software Market" matched and $11B was fused.
+// After the fix, only "rais/seek/fund/financ/offer" prefixes bypass the taint check.
+
+describe("fuseDealCanonicalFacts — verb-first 'investment opportunity $11B' with market context: NOT raise_amount", () => {
+	// Exact pattern that triggered the bug: Form F anchor "investment" + market context nearby.
+	const pages = [
+		page(PDF_DOC, 0, "Tax Software Market: investment opportunity of $11B total revenue size for enterprise."),
+		page(PDF_DOC, 1, "Team: 3 founders, 10 engineers."),
+	];
+
+	const result = fuseDealCanonicalFacts(pages, [], [], NOW);
+
+	it("raise_amount fact is NOT fused (verb-first 'investment' + market context tainted)", () => {
+		const fact = result.facts.find((f) => f.field === "raise_amount");
+		expect(fact).toBeUndefined();
+	});
+
+	it("no raise_amount conflict emitted for tainted verb-first match", () => {
+		const conflict = result.conflicts.find((c) => c.field === "raise_amount");
+		expect(conflict).toBeUndefined();
+	});
+});
+
+describe("fuseDealCanonicalFacts — verb-first 'investment of $2M SAFE' without market context: accepted", () => {
+	// Disambiguation: a clean "investment of $2M" sentence with no market words
+	// should still be accepted as a raise_amount candidate.
+	const pages = [
+		page(PDF_DOC, 0, "Seeking investment of $2M via SAFE note for product and hiring."),
+	];
+
+	const result = fuseDealCanonicalFacts(pages, [], [], NOW);
+
+	it("raise_amount fact IS fused for clean 'investment of $2M SAFE' sentence", () => {
+		const fact = result.facts.find((f) => f.field === "raise_amount");
+		expect(fact).toBeDefined();
+	});
+
+	it("raise_amount value is $2M", () => {
+		const fact = result.facts.find((f) => f.field === "raise_amount");
+		expect(fact!.value).toBe("$2M");
+	});
+});
+
 // ─── Regression: deck_has_use_of_funds_buckets detected from heading + labels ─
 
 describe("fuseDealCanonicalFacts — deck_has_use_of_funds_buckets detected", () => {

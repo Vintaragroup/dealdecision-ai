@@ -968,35 +968,50 @@ const ASK_SLIDE_HEADING_RE =
  * TAM_MARKET_CONTEXT_RE: the presence of any of these tokens near a raise-pattern match
  * indicates the dollar figure describes a market size, NOT a fundraise amount.
  *
- * Extended to cover plain "market", "industry", "sector", "gap", "opportunit*" —
- * these are safe additions because this regex is ONLY applied to money-first matches
- * (where `isRaiseMatchTainted` skips verb-first forms entirely).
+ * Extended to cover:
+ *   - plain "market", "industry", "sector", "gap", "opportunit*"
+ *   - "total revenues?" and "revenue size"  — e.g. "total revenue of $11B"
+ *
+ * NOTE: this regex is now applied to BOTH money-first AND certain verb-first matches
+ * (specifically "invest*" starters — see isRaiseMatchTainted below).
  */
 const TAM_MARKET_CONTEXT_RE =
 	// Note: plain "market" uses (?<!-)market(?!\w) — a negative lookbehind for hyphen
 	// so that "go-to-market" (preceded by '-') does NOT trigger a taint.
 	// Only uncompounded uses like "Tax Software Market $11B" will match.
-	/\b(?:TAM|SAM|SOM|total\s+addressable\s+market|serviceable\s+addressable\s+market|serviceable\s+obtainable\s+market|addressable\s+market|market\s+size|market\s+opportunity|market\s+cap(?:italization)?|industry|sector|gap|opportunit)\b|(?<!-)market(?!\w)/i;
+	/\b(?:TAM|SAM|SOM|total\s+addressable\s+market|serviceable\s+addressable\s+market|serviceable\s+obtainable\s+market|addressable\s+market|market\s+size|market\s+opportunity|market\s+cap(?:italization)?|industry|sector|gap|opportunit|total\s+revenues?|revenue\s+size)\b|(?<!-)market(?!\w)/i;
 
 /** Characters to inspect on each side of a raise-pattern match for TAM/SAM/SOM context. */
 const TAM_TAINT_WINDOW = 200;
+
+/**
+ * STRONG_RAISE_VERB_PREFIX_RE: anchors that are *unambiguously* a fundraise context.
+ * Only these are exempt from the market-taint check when they appear verb-first.
+ *
+ * NOT included: "invest*" — "investment opportunity $11B" is a market claim.
+ * NOT included: "allocation", "proceeds" — ambiguous (could be use-of-funds).
+ */
+const STRONG_RAISE_VERB_PREFIX_RE = /^(?:rais|seek|fund(?:ed|ing)?|financ|offer(?:ing)?)/i;
 
 /**
  * Returns true when the portion of `text` within TAM_TAINT_WINDOW characters of the
  * matched span contains a TAM/SAM/SOM / market-size keyword.
  * Used to reject raise-anchor matches that are actually market-sizing sentences.
  *
- * Exception: if the match starts with a letter (i.e., a raise-verb form such as
- * "Raising $2M" or "investing $3M"), we skip the taint check entirely.  Verb-first
- * matches are reliable raise indicators regardless of nearby TAM context.  Only
- * money-first matches (Form B: "$8B investment") are prone to TAM-slide false positives.
+ * FIX (raise_amount pollution): The old code unconditionally skipped the taint check
+ * for ALL verb-first matches ("if first char is a letter, return false").  This allowed
+ * "investment opportunity of $11B Tax Software Market" to pass through because the
+ * match starts with "investment" (a letter).  We now only exempt genuine fundraise
+ * verb starters (rais.../seek.../fund.../financ.../offer...).  "invest..." is NOT exempt because
+ * it is also used in market-context phrases ("investment opportunity", "investment gap").
  */
 function isRaiseMatchTainted(text: string, matchIndex: number, matchLength: number): boolean {
-	// Match starts with a letter → verb-first form (e.g. "raising $2M").  These are
-	// genuine raise sentences; do NOT taint even if TAM keywords appear nearby.
-	const firstChar = text[matchIndex] ?? "";
-	if (/[A-Za-z]/.test(firstChar)) return false;
-	// Money-first match (e.g. "$8B investment", "€600M round") — check TAM context.
+	// Genuine fundraise-verb-first forms (e.g. "raising $2M", "seeking $500K",
+	// "funding round of $3M") are reliable raise indicators — skip taint check.
+	const matchStart = text.slice(matchIndex, matchIndex + 8);
+	if (STRONG_RAISE_VERB_PREFIX_RE.test(matchStart)) return false;
+	// All other matches — including money-first ("$8B investment") AND ambiguous
+	// verb-first starters ("investment $11B", "allocation $5B") — check TAM context.
 	const start = Math.max(0, matchIndex - TAM_TAINT_WINDOW);
 	const end   = Math.min(text.length, matchIndex + matchLength + TAM_TAINT_WINDOW);
 	return TAM_MARKET_CONTEXT_RE.test(text.slice(start, end));

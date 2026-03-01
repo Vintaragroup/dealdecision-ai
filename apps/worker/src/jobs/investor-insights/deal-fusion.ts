@@ -193,34 +193,48 @@ const DECK_USE_OF_FUNDS_BUCKETS_PATTERN = new RegExp(
 );
 
 /**
- * Expanded taint regex for raise_amount matching: includes plain "market",
- * "industry", "sector", "gap", "opportunit" — safe because it is only applied
- * to money-first matches (where the first character is NOT a letter).
+ * Expanded taint regex for raise_amount matching.  Now applied to BOTH money-first
+ * and ambiguous-verb-first matches (see isFusionRaiseTainted).
+ *
+ * Additions over the previous version:
+ *   - total revenues?  — "total revenue of $11B" / "total revenues $5B"
+ *   - revenue size     — "revenue size of the market"
  */
 const FUSION_MARKET_TAINT_RE =
 	// Note: plain "market" uses (?<!-)market(?!\w) — a negative lookbehind for hyphen
 	// so that "go-to-market" (preceded by '-') does NOT trigger a taint.
 	// Only uncompounded uses like "Tax Software Market $11B" will match.
-	/\b(?:TAM|SAM|SOM|total\s+addressable\s+market|serviceable\s+addressable\s+market|serviceable\s+obtainable\s+market|addressable\s+market|market\s+size|market\s+opportunity|market\s+cap(?:italization)?|industry|sector|gap|opportunit)\b|(?<!-)market(?!\w)/i;
+	/\b(?:TAM|SAM|SOM|total\s+addressable\s+market|serviceable\s+addressable\s+market|serviceable\s+obtainable\s+market|addressable\s+market|market\s+size|market\s+opportunity|market\s+cap(?:italization)?|industry|sector|gap|opportunit|total\s+revenues?|revenue\s+size)\b|(?<!-)market(?!\w)/i;
 
 const FUSION_TAM_TAINT_WINDOW = 200;
+
+/**
+ * FUSION_STRONG_RAISE_VERB_PREFIX_RE: mirrors processor.ts STRONG_RAISE_VERB_PREFIX_RE.
+ * Only these verb starters are unconditionally exempt from the market-taint check.
+ * "invest..." is NOT included — "investment opportunity of $11B" is a market claim.
+ */
+const FUSION_STRONG_RAISE_VERB_PREFIX_RE = /^(?:rais|seek|fund(?:ed|ing)?|financ|offer(?:ing)?)/i;
 
 /**
  * Returns true when a RAISE_AMOUNT_PATTERN match should be rejected because the
  * surrounding text suggests a market-size claim rather than an investment ask.
  *
- * Mirrors processor.ts isRaiseMatchTainted with the same verb-first exemption:
- * verb-first matches ("Raising $4M") are never tainted; only money-first matches
- * ("$11B — investment opportunity") are checked.
+ * FIX (raise_amount pollution): The old code unconditionally exempted ALL verb-first
+ * matches from the taint check.  "investment opportunity of $11B Tax Software Market"
+ * was exempted because the match started with "investment" (a letter).  We now only
+ * exempt strong, unambiguous raise-verb starters (rais.../seek.../fund.../financ.../offer...).
+ * "invest..." falls through to the taint check since it is ambiguous.
  */
 function isFusionRaiseTainted(
 	text: string,
 	matchIndex: number,
 	matchLength: number,
 ): boolean {
-	// Verb-first: starts with a letter — safe, not a market-size match.
-	if (/[A-Za-z]/.test(text[matchIndex] ?? "")) return false;
-	// Money-first: check context window for market-size language.
+	// Strong raise-verb starters are unambiguous — exempt from taint check.
+	const matchStart = text.slice(matchIndex, matchIndex + 8);
+	if (FUSION_STRONG_RAISE_VERB_PREFIX_RE.test(matchStart)) return false;
+	// All other starts (money-first, or "invest*"/"allocation"/"proceed*") —
+	// check the context window for market-size language.
 	const start = Math.max(0, matchIndex - FUSION_TAM_TAINT_WINDOW);
 	const end = Math.min(text.length, matchIndex + matchLength + FUSION_TAM_TAINT_WINDOW);
 	return FUSION_MARKET_TAINT_RE.test(text.slice(start, end));

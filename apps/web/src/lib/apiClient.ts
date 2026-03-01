@@ -2294,14 +2294,23 @@ export type DealTermsAnalysisResult = {
  * POST /api/v1/deals/:dealId/analysis/deal-terms
  * Lightweight LLM synthesis of deal structure from canonical fields.
  * Used exclusively by the AI Analysis Tab DealTermsCard.
+ *
+ * `raise_terms_raw` and `stage` are optional raise-resolution context.
+ * The server applies getCanonicalFieldsForAI() to resolve raise_amount
+ * before injecting fields into the LLM prompt.
  */
 export async function apiPostDealTermsAnalysis(
   dealId: string,
   canonicalFields: Record<string, string | null>,
+  opts?: { raise_terms_raw?: string | null; stage?: string | null },
 ): Promise<DealTermsAnalysisResult> {
   return request<DealTermsAnalysisResult>(`/api/v1/deals/${dealId}/analysis/deal-terms`, {
     method: 'POST',
-    body: JSON.stringify({ canonical_fields: canonicalFields }),
+    body: JSON.stringify({
+      canonical_fields: canonicalFields,
+      ...(opts?.raise_terms_raw != null && { raise_terms_raw: opts.raise_terms_raw }),
+      ...(opts?.stage != null && { stage: opts.stage }),
+    }),
   });
 }
 

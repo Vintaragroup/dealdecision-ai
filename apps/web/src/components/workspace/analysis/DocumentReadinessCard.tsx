@@ -22,9 +22,20 @@ import {
 // Extended local type (API may return extra fields not yet in the exported type)
 // ─────────────────────────────────────────────────────────────────────────────
 
+type StaleDiagnosticsLocal = {
+  stale_reason: string;
+  dpu_fingerprint: string | null;
+  docs_fingerprint: string | null;
+  latest_dpu_created_at: string | null;
+  newest_doc_modified_at: string | null;
+  per_doc?: unknown[];
+};
+
 type ReadinessData = PageUnderstandingReadiness & {
   docs_fingerprint?: string | null;
   latest_dpu_created_at?: string | null;
+  /** Structured stale diagnostics emitted by ensureDocumentsReadyForAnalysis when DPU is stale. */
+  stale_diagnostics?: StaleDiagnosticsLocal | null;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -332,6 +343,9 @@ export function DocumentReadinessCard({ dealId, darkMode = false }: DocumentRead
   const actionType = data.action?.type ?? null;
   const fingerprint = data.docs_fingerprint ?? null;
   const latestDpu = data.latest_dpu_created_at ?? null;
+  const staleDiagnostics = data.stale_diagnostics ?? null;
+  /** True when the DPU is explicitly flagged as stale (coverage may still be 100%). */
+  const isStaleDpu = /^dpu_stale$/i.test(blockedReason ?? '');
 
   return (
     <div className={cardClass} data-testid="readiness-card">
@@ -421,6 +435,55 @@ export function DocumentReadinessCard({ dealId, darkMode = false }: DocumentRead
               darkMode={darkMode}
             />
           )}
+          {/* Coverage and Freshness — always visible so operators can distinguish
+              "coverage complete but stale" from "coverage complete and fresh". */}
+          <MetaRow
+            label="Coverage"
+            value={
+              <span
+                className={
+                  data.missing_pages_total === 0
+                    ? darkMode ? 'text-emerald-300' : 'text-emerald-700'
+                    : darkMode ? 'text-amber-300' : 'text-amber-700'
+                }
+                data-testid="readiness-coverage-label"
+              >
+                {data.missing_pages_total === 0 ? 'Complete' : 'Incomplete'}
+              </span>
+            }
+            darkMode={darkMode}
+          />
+          <MetaRow
+            label="Freshness"
+            value={
+              <span
+                className={
+                  isStaleDpu
+                    ? darkMode ? 'text-amber-300' : 'text-amber-700'
+                    : darkMode ? 'text-emerald-300' : 'text-emerald-700'
+                }
+                data-testid="readiness-freshness-label"
+              >
+                {isStaleDpu ? 'Stale' : 'Fresh'}
+              </span>
+            }
+            darkMode={darkMode}
+          />
+          {/* Stale reason label — shows the machine-readable classification when diagnostics are available */}
+          {isStaleDpu && staleDiagnostics?.stale_reason && (
+            <MetaRow
+              label="Stale reason"
+              value={
+                <span
+                  className={darkMode ? 'text-amber-200' : 'text-amber-800'}
+                  data-testid="readiness-stale-reason-label"
+                >
+                  {staleDiagnostics.stale_reason}
+                </span>
+              }
+              darkMode={darkMode}
+            />
+          )}
           {fingerprint && (
             <MetaRow
               label="Fingerprint"
@@ -438,20 +501,103 @@ export function DocumentReadinessCard({ dealId, darkMode = false }: DocumentRead
             />
           )}
         </div>
+        {/* Stale-but-complete warning: shown when coverage is 100% yet DPU is flagged
+            stale.  This is the case that previously appeared as "ready" to the UI. */}
+        {isStaleDpu && (data.missing_pages_total ?? 0) === 0 && (
+          <div
+            className={`mt-2 rounded-md px-3 py-2 text-xs flex items-start gap-2 ${
+              darkMode
+                ? 'bg-amber-500/10 border border-amber-500/25 text-amber-200'
+                : 'bg-amber-50 border border-amber-200 text-amber-800'
+            }`}
+            data-testid="readiness-stale-complete-warning"
+            role="alert"
+          >
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <span>Coverage complete, but DPU is stale vs current document set — backfill required.</span>
+          </div>
+        )}
       </div>
 
-      {/* ── Expanded: per-document table ── */}
-      {expanded && data.documents.length > 0 && (
-        <div className={`px-4 pb-3 ${divider} pt-3`} data-testid="readiness-expanded">
-          <p
-            className={`text-xs font-semibold uppercase tracking-wide mb-2 ${
-              darkMode ? 'text-zinc-400' : 'text-zinc-500'
-            }`}
-          >
-            Per-Document Breakdown
-          </p>
-          <DocTable documents={data.documents} darkMode={darkMode} />
-        </div>
+      {/* ── Expanded: freshness section + per-document table ── */}
+      {expanded && (
+        <>
+          {/* Freshness section — shown when DPU is stale and expanded */}
+          {isStaleDpu && (
+            <div
+              className={`px-4 pb-3 ${divider} pt-3`}
+              data-testid="readiness-freshness-section"
+            >
+              <p
+                className={`text-xs font-semibold uppercase tracking-wide mb-2 ${
+                  darkMode ? 'text-zinc-400' : 'text-zinc-500'
+                }`}
+              >
+                Freshness Diagnostics
+              </p>
+              <div className="grid grid-cols-2 gap-x-4">
+                {staleDiagnostics?.stale_reason && (
+                  <MetaRow
+                    label="Stale reason"
+                    value={
+                      <span
+                        className={darkMode ? 'text-amber-200' : 'text-amber-800'}
+                        data-testid="readiness-freshness-stale-reason"
+                      >
+                        {staleDiagnostics.stale_reason}
+                      </span>
+                    }
+                    darkMode={darkMode}
+                  />
+                )}
+                {staleDiagnostics?.latest_dpu_created_at && (
+                  <MetaRow
+                    label="DPU created at"
+                    value={staleDiagnostics.latest_dpu_created_at}
+                    mono
+                    darkMode={darkMode}
+                  />
+                )}
+                {staleDiagnostics?.docs_fingerprint && (
+                  <MetaRow
+                    label="Expected fp"
+                    value={staleDiagnostics.docs_fingerprint}
+                    mono
+                    darkMode={darkMode}
+                  />
+                )}
+                {staleDiagnostics?.dpu_fingerprint && (
+                  <MetaRow
+                    label="DPU fp"
+                    value={staleDiagnostics.dpu_fingerprint}
+                    mono
+                    darkMode={darkMode}
+                  />
+                )}
+              </div>
+              {/* Prominent in-expanded reprocessing note */}
+              <p
+                className={`mt-2 text-xs ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}
+                data-testid="readiness-freshness-reprocess-note"
+              >
+                DPU complete but stale — reprocessing required before running analysis.
+              </p>
+            </div>
+          )}
+
+          {data.documents.length > 0 && (
+            <div className={`px-4 pb-3 ${divider} pt-3`} data-testid="readiness-expanded">
+              <p
+                className={`text-xs font-semibold uppercase tracking-wide mb-2 ${
+                  darkMode ? 'text-zinc-400' : 'text-zinc-500'
+                }`}
+              >
+                Per-Document Breakdown
+              </p>
+              <DocTable documents={data.documents} darkMode={darkMode} />
+            </div>
+          )}
+        </>
       )}
     </div>
   );

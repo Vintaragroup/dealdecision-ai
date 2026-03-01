@@ -70,7 +70,8 @@
     "proof:uof-and-implied:api": "pnpm --filter worker proof:uof-and-implied:api",
     "proof:financial-reconciliation:3deals": "pnpm --filter worker proof:financial-reconciliation:3deals",
     "proof:multisource-financials:3deals": "pnpm --filter worker proof:multisource-financials:3deals",
-    "verify:governed-summary-cache": "pnpm --filter worker verify:governed-summary-cache"
+    "verify:governed-summary-cache": "pnpm --filter worker verify:governed-summary-cache",
+    "proof:dpu-stale": "node scripts/proof_dpu_stale_recovery.mjs"
   },
   "devDependencies": {
     "@jest/globals": "^30.2.0",

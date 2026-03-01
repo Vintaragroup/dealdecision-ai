@@ -271,6 +271,205 @@ describe('DocumentReadinessCard — dark mode text safety', () => {
 
 // ─── Isolation check (no test runtime dependency, just FS read) ───────────────
 
+describe('DocumentReadinessCard — stale-but-complete (dpu_stale + missing=0)', () => {
+  /**
+   * Reproduces the case: missing_pages_total=0 (coverage looks complete in the UI)
+   * but blocked_reason="dpu_stale" (the DPU is stale vs the current document fingerprint).
+   * Before the fix the UI would show "Ready: Yes" and hide the stale state.
+   */
+  function makeStaleCompleteResponse() {
+    return {
+      deal_id: 'test-deal-stale',
+      version: 'page_understanding_v1',
+      ready: false,
+      blocked_reason: 'dpu_stale',
+      action: { type: 'enqueue_dpu_backfill', deal_id: 'test-deal-stale', version: 'page_understanding_v1' },
+      expected_pages_total: 30,
+      dpu_rows_total: 30,
+      missing_pages_total: 0,       // ← coverage appears complete
+      hard_missing_pages_total: 0,
+      docs_fingerprint: 'stale-fp-xyz',
+      latest_dpu_created_at: '2026-01-01T00:00:00Z',
+      documents: [
+        {
+          document_id: 'doc-stale',
+          title: 'Stale Deck',
+          page_count: 30,
+          dpu_rows: 30,
+          missing_pages: [],
+          hard_missing_pages: [],
+        },
+      ],
+      poll_after_ms: 2000,
+    };
+  }
+
+  test('Coverage label shows "Complete" when missing_pages_total=0', async () => {
+    mockGetReadiness.mockResolvedValue(makeStaleCompleteResponse() as any);
+
+    render(<DocumentReadinessCard dealId="test-deal-stale" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('readiness-coverage-label')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('readiness-coverage-label').textContent).toBe('Complete');
+  });
+
+  test('Freshness label shows "Stale" when blocked_reason=dpu_stale', async () => {
+    mockGetReadiness.mockResolvedValue(makeStaleCompleteResponse() as any);
+
+    render(<DocumentReadinessCard dealId="test-deal-stale" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('readiness-freshness-label')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('readiness-freshness-label').textContent).toBe('Stale');
+  });
+
+  test('Stale-complete warning message is visible without expanding', async () => {
+    mockGetReadiness.mockResolvedValue(makeStaleCompleteResponse() as any);
+
+    render(<DocumentReadinessCard dealId="test-deal-stale" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('readiness-stale-complete-warning')).toBeInTheDocument();
+    });
+
+    const warning = screen.getByTestId('readiness-stale-complete-warning');
+    expect(warning.textContent).toContain('Coverage complete');
+    expect(warning.textContent).toContain('DPU is stale');
+    expect(warning.textContent).toContain('backfill required');
+  });
+
+  test('Stale-complete warning is NOT shown when missing_pages > 0 (only stale, not complete)', async () => {
+    const partialStale = {
+      ...makeStaleCompleteResponse(),
+      missing_pages_total: 5,  // some pages missing — stale AND incomplete, warning should NOT fire
+    };
+    mockGetReadiness.mockResolvedValue(partialStale as any);
+
+    render(<DocumentReadinessCard dealId="test-deal-stale" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('readiness-freshness-label')).toBeInTheDocument();
+    });
+
+    // Warning should not appear — different message path (just "Incomplete")
+    expect(screen.queryByTestId('readiness-stale-complete-warning')).toBeNull();
+  });
+
+  test('Ready=true response shows Coverage=Complete and Freshness=Fresh (no stale warning)', async () => {
+    mockGetReadiness.mockResolvedValue(makeReadyResponse() as any);
+
+    render(<DocumentReadinessCard dealId="test-deal-ready" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('readiness-coverage-label')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('readiness-coverage-label').textContent).toBe('Complete');
+    expect(screen.getByTestId('readiness-freshness-label').textContent).toBe('Fresh');
+    expect(screen.queryByTestId('readiness-stale-complete-warning')).toBeNull();
+  });
+
+  test('Stale reason MetaRow shows stale_diagnostics.stale_reason when dpu_stale and diagnostics present', async () => {
+    const responseWithDiagnostics = {
+      ...makeStaleCompleteResponse(),
+      stale_diagnostics: {
+        stale_reason: 'fingerprint_mismatch',
+        dpu_fingerprint: 'dpu-fp-old-123',
+        docs_fingerprint: 'docs-fp-new-456',
+        latest_dpu_created_at: '2026-01-01T00:00:00Z',
+        newest_doc_modified_at: null,
+        per_doc: [],
+      },
+    };
+    mockGetReadiness.mockResolvedValue(responseWithDiagnostics as any);
+
+    render(<DocumentReadinessCard dealId="test-deal-stale" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('readiness-stale-reason-label')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('readiness-stale-reason-label').textContent).toBe('fingerprint_mismatch');
+  });
+
+  test('Expanding card shows Freshness Diagnostics section when dpu_stale', async () => {
+    const responseWithDiagnostics = {
+      ...makeStaleCompleteResponse(),
+      stale_diagnostics: {
+        stale_reason: 'timestamp_old',
+        dpu_fingerprint: 'dpu-fp-001',
+        docs_fingerprint: 'docs-fp-001',
+        latest_dpu_created_at: '2026-01-01T00:00:00Z',
+        newest_doc_modified_at: null,
+        per_doc: [],
+      },
+    };
+    mockGetReadiness.mockResolvedValue(responseWithDiagnostics as any);
+
+    render(<DocumentReadinessCard dealId="test-deal-stale" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('readiness-toggle')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('readiness-toggle'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('readiness-freshness-section')).toBeInTheDocument();
+    });
+
+    // Reprocess note must be visible
+    expect(screen.getByTestId('readiness-freshness-reprocess-note')).toBeInTheDocument();
+    expect(screen.getByTestId('readiness-freshness-reprocess-note').textContent).toContain(
+      'DPU complete but stale'
+    );
+    expect(screen.getByTestId('readiness-freshness-reprocess-note').textContent).toContain(
+      'reprocessing required'
+    );
+  });
+
+  test('Freshness section: dark mode uses amber/zinc (no text-black)', async () => {
+    const responseWithDiagnostics = {
+      ...makeStaleCompleteResponse(),
+      stale_diagnostics: {
+        stale_reason: 'timestamp_old',
+        dpu_fingerprint: 'dpu-fp-001',
+        docs_fingerprint: null,
+        latest_dpu_created_at: null,
+        newest_doc_modified_at: null,
+        per_doc: [],
+      },
+    };
+    mockGetReadiness.mockResolvedValue(responseWithDiagnostics as any);
+
+    const { container } = render(<DocumentReadinessCard dealId="test-deal-stale" darkMode={true} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('readiness-toggle')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('readiness-toggle'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('readiness-freshness-section')).toBeInTheDocument();
+    });
+
+    const allClasses = Array.from(container.querySelectorAll('*'))
+      .flatMap((el) => Array.from(el.classList))
+      .join(' ');
+
+    expect(allClasses).not.toContain('text-black');
+    expect(allClasses).toMatch(/text-zinc-|text-amber-/);
+  });
+});
+
+// ─── Isolation check (no test runtime dependency, just FS read) ───────────────
+
 describe('DocumentReadinessCard — scope isolation', () => {
   test('InvestorInsightsTab.tsx does NOT import DocumentReadinessCard', () => {
     const tabPath = resolve(

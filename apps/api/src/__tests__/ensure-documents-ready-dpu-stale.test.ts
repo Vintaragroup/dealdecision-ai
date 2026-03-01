@@ -292,3 +292,137 @@ test('No minDpuCreatedAt → freshness gate is never armed, self-heal does not f
   const dpuCalls = calls.filter((c) => c.type === 'populate_document_page_understanding');
   assert.equal(dpuCalls.length, 0, 'Self-heal must not fire without a freshness token');
 });
+
+// ─── Task 1: stale_diagnostics structured fields ───────────────────────────────
+
+test('stale_diagnostics.stale_reason=timestamp_old when DPU_STALE fires with no expectedDocsFingerprint', async () => {
+  // Scenario: minDpuCreatedAt triggers DPU_STALE, caller provides no expected fingerprint.
+  // Result: stale_diagnostics.stale_reason must be "timestamp_old" (timestamp is the only signal).
+  const pool = buildPool({ hasRecentDpuJob: false, latestDpuCreatedAt: OLD_TIMESTAMP });
+  const { enqueue } = buildEnqueue();
+
+  const result = await ensureDocumentsReadyForAnalysis({
+    pool,
+    dealId: BASE_DEAL_ID,
+    requirePageUnderstanding: true,
+    pageUnderstandingVersion: 'page_understanding_v1',
+    forceRefresh: false,
+    minDpuCreatedAt: FRESH_TIMESTAMP,
+    // expectedDocsFingerprint intentionally omitted
+    enqueue,
+  });
+
+  assert.equal(result.blocked_reason, 'DPU_STALE', 'Precondition: blocked_reason must be DPU_STALE');
+  assert.ok(result.stale_diagnostics != null, 'stale_diagnostics must be present when blocked_reason is set');
+  assert.equal(result.stale_diagnostics!.stale_reason, 'timestamp_old',
+    `Expected stale_reason=timestamp_old, got ${result.stale_diagnostics!.stale_reason}`);
+  assert.ok(result.stale_diagnostics!.dpu_fingerprint != null, 'dpu_fingerprint must be populated');
+  assert.ok(result.stale_diagnostics!.docs_fingerprint != null, 'docs_fingerprint must be populated');
+  assert.ok(Array.isArray(result.stale_diagnostics!.per_doc), 'per_doc must be an array');
+  // per_doc should contain the one document
+  assert.equal(result.stale_diagnostics!.per_doc.length, 1, 'per_doc should have one entry');
+  assert.equal(result.stale_diagnostics!.per_doc[0]!.document_id, DOC_ID);
+});
+
+test('stale_diagnostics.stale_reason=fingerprint_mismatch when expectedDocsFingerprint differs from computed', async () => {
+  // Scenario: DPU_STALE fires (timestamp gate) AND the caller passes an expectedDocsFingerprint
+  // that does NOT match the freshly-computed fingerprint → fingerprint_mismatch classification.
+  //
+  // The "expected" fingerprint represents what the caller stored during a previous run.
+  // The computed fingerprint is: `${dealId}::${expected_pages}::${dpu_rows}::${missing}`.
+  // We pass something obviously different to trigger the mismatch.
+  const pool = buildPool({ hasRecentDpuJob: false, latestDpuCreatedAt: OLD_TIMESTAMP });
+  const { enqueue } = buildEnqueue();
+
+  const result = await ensureDocumentsReadyForAnalysis({
+    pool,
+    dealId: BASE_DEAL_ID,
+    requirePageUnderstanding: true,
+    pageUnderstandingVersion: 'page_understanding_v1',
+    forceRefresh: false,
+    minDpuCreatedAt: FRESH_TIMESTAMP,
+    expectedDocsFingerprint: 'stale-fingerprint-from-previous-run',
+    enqueue,
+  });
+
+  assert.equal(result.blocked_reason, 'DPU_STALE', 'Precondition: blocked_reason must be DPU_STALE');
+  assert.ok(result.stale_diagnostics != null, 'stale_diagnostics must be present');
+  assert.equal(result.stale_diagnostics!.stale_reason, 'fingerprint_mismatch',
+    `Expected stale_reason=fingerprint_mismatch, got ${result.stale_diagnostics!.stale_reason}`);
+  // dpu_fingerprint should NOT equal the expected one we passed
+  assert.notEqual(result.stale_diagnostics!.dpu_fingerprint, 'stale-fingerprint-from-previous-run',
+    'dpu_fingerprint must be the freshly-computed value, not the stale one');
+});
+
+// ─── Task 2 (new): stale-but-complete scenarios ────────────────────────────────
+
+test('stale-but-complete: action=enqueue_dpu_backfill and action_detail has stable job_id when missing_pages=0', async () => {
+  // Scenario: DPU rows exist for all pages (missing_pages_total=0 — coverage complete)
+  // but the freshness gate marks it DPU_STALE.  The result should:
+  //   - still have ready=false
+  //   - action='enqueue_dpu_backfill'
+  //   - action_detail with a stable, deterministic job_id based on docs_fingerprint
+  //
+  // The existing buildPool mock already returns dpu_rows == pageCount and missing_pages=[]
+  // which represents complete coverage.
+  const pool = buildPool({ hasRecentDpuJob: false, latestDpuCreatedAt: OLD_TIMESTAMP });
+  const { enqueue } = buildEnqueue();
+
+  const result = await ensureDocumentsReadyForAnalysis({
+    pool,
+    dealId: BASE_DEAL_ID,
+    requirePageUnderstanding: true,
+    pageUnderstandingVersion: 'page_understanding_v1',
+    forceRefresh: false,
+    minDpuCreatedAt: FRESH_TIMESTAMP,
+    enqueue,
+  });
+
+  // Should remain blocked (stale wins over complete coverage)
+  assert.equal(result.ready, false, 'ready must be false when DPU_STALE even if coverage is complete');
+  assert.equal(result.blocked_reason, 'DPU_STALE');
+  assert.equal(result.action, 'enqueue_dpu_backfill', 'action must be enqueue_dpu_backfill');
+
+  // action_detail must be present with stable job_id
+  assert.ok(result.action_detail != null, 'action_detail must be populated when action=enqueue_dpu_backfill');
+  assert.equal(result.action_detail!.type, 'enqueue_dpu_backfill');
+  assert.ok(typeof result.action_detail!.job_id === 'string' && result.action_detail!.job_id.length > 0,
+    'action_detail.job_id must be a non-empty string');
+  assert.ok(result.action_detail!.job_id.startsWith('dpu_backfill:'),
+    `job_id must start with 'dpu_backfill:' — got ${result.action_detail!.job_id}`);
+  assert.ok(result.action_detail!.docs_fingerprint != null,
+    'action_detail.docs_fingerprint must be set');
+
+  // stale_diagnostics must also be present
+  assert.ok(result.stale_diagnostics != null, 'stale_diagnostics must be present');
+});
+
+test('stale-but-complete: stale_diagnostics has all required fields and 202-compatible shape', async () => {
+  // Verifies the response shape that would be returned in a 202 "preparing_documents"
+  // response: blocked_reason=dpu_stale, docs_fingerprint, and stale_diagnostics object.
+  const pool = buildPool({ hasRecentDpuJob: false, latestDpuCreatedAt: OLD_TIMESTAMP });
+  const { enqueue } = buildEnqueue();
+
+  const result = await ensureDocumentsReadyForAnalysis({
+    pool,
+    dealId: BASE_DEAL_ID,
+    requirePageUnderstanding: true,
+    pageUnderstandingVersion: 'page_understanding_v1',
+    forceRefresh: false,
+    minDpuCreatedAt: FRESH_TIMESTAMP,
+    enqueue,
+  });
+
+  assert.equal(result.blocked_reason, 'DPU_STALE');
+  assert.ok(result.docs_fingerprint != null, 'docs_fingerprint must be present for 202 response');
+
+  // stale_diagnostics shape required by 202 response
+  const sd = result.stale_diagnostics;
+  assert.ok(sd != null, 'stale_diagnostics must be non-null when blocked');
+  assert.ok(['fingerprint_mismatch', 'timestamp_old', 'doc_set_changed', 'unknown'].includes(sd!.stale_reason),
+    `stale_reason must be a known enum value, got: ${sd!.stale_reason}`);
+  assert.ok('dpu_fingerprint' in sd!, 'stale_diagnostics must have dpu_fingerprint field');
+  assert.ok('docs_fingerprint' in sd!, 'stale_diagnostics must have docs_fingerprint field');
+  assert.ok('latest_dpu_created_at' in sd!, 'stale_diagnostics must have latest_dpu_created_at field');
+  assert.ok(Array.isArray(sd!.per_doc), 'stale_diagnostics.per_doc must be an array');
+});

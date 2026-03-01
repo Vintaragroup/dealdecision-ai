@@ -45,6 +45,7 @@ import { buildClassificationText, buildSegmentFeatures, classifySegment, normali
 import { groupWordVisualAssetsByDocument, groupWordVisualAssetsByDocumentWithStats, type WordGroupingStats } from "../lib/word-visual-grouping";
 import { fetchPageUnderstandingReadinessForDeal } from "../lib/deal-page-understanding-readiness";
 import { ensureDocumentsReadyForAnalysis } from "../lib/ensure-documents-ready-for-analysis";
+import { getCanonicalFieldsForAI } from "../lib/canonical-fields-for-ai";
 
 export { computeNodeEvidenceGateV1 };
 
@@ -2546,6 +2547,7 @@ export async function registerDealRoutes(
           dpu_rows_total: prep.readiness.dpu_rows_total ?? 0,
           missing_pages_total: prep.readiness.missing_pages_total ?? 0,
           enqueued: prep.enqueued,
+          stale_diagnostics: prep.stale_diagnostics ?? null,
         });
       }
     } catch (err) {
@@ -2594,11 +2596,14 @@ export async function registerDealRoutes(
 
     const bodyParsed = z.object({
       canonical_fields: z.record(z.string(), z.string().nullable()),
+      raise_terms_raw: z.string().optional(),
+      stage: z.string().optional(),
     }).safeParse(request.body);
     if (!bodyParsed.success) {
       return reply.status(400).send({ error: "invalid_body", message: "canonical_fields must be an object" });
     }
-    const { canonical_fields } = bodyParsed.data;
+    const { canonical_fields: rawFields, raise_terms_raw, stage } = bodyParsed.data;
+    const { canonical_fields } = getCanonicalFieldsForAI({ canonical_fields: rawFields, raise_terms_raw, stage });
 
     // Verify deal exists
     const { rows: dealRows } = await pool.query<{ id: string }>(

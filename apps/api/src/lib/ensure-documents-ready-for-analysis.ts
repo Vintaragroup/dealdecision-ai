@@ -9,6 +9,48 @@ type PoolLike = {
   query: <T = any>(sql: string, params?: unknown[]) => Promise<QueryResult<T>>;
 };
 
+/**
+ * Per-document diagnostic entry included in stale_diagnostics.
+ */
+export interface StaleDiagnosticsPerDoc {
+  document_id: string;
+  expected_pages: number;
+  dpu_rows: number;
+  missing_pages: number;
+  hard_missing_pages: number;
+  dpu_created_at: string | null;
+}
+
+/**
+ * Structured diagnostics emitted when blocked_reason is set — describes WHY the
+ * DPU state is considered stale/incomplete so that callers can surface precise
+ * messaging without needing to re-parse evidence.
+ *
+ * No behavior changes: this object is purely observational.
+ */
+export interface StaleDiagnostics {
+  /**
+   * Human-readable classification of the stale condition:
+   *  - "fingerprint_mismatch"  — computed DPU fingerprint differs from expectedDocsFingerprint,
+   *                              indicating the document set changed since the last run.
+   *  - "timestamp_old"          — latest_dpu_created_at predates the min_dpu_created_at freshness
+   *                              gate set by the force_refresh caller.
+   *  - "doc_set_changed"        — reserved for future detection of document-count drift.
+   *  - "unknown"                — blocked for a reason not yet classified above.
+   */
+  stale_reason: "fingerprint_mismatch" | "timestamp_old" | "doc_set_changed" | "unknown";
+  /** Computed: `{dealId}::{expected_pages}::{dpu_rows}::{missing_pages}` */
+  dpu_fingerprint: string | null;
+  /** Same as docs_fingerprint in the enclosing result (duplicated here for locality). */
+  docs_fingerprint: string | null;
+  /** ISO timestamp of the most-recently created DPU row for this deal, or null if none. */
+  latest_dpu_created_at: string | null;
+  /** ISO timestamp of the newest modified document in the deal set, or null if unavailable. */
+  newest_doc_modified_at: string | null;
+  /** Per-document page/DPU coverage at the time the stale condition was detected. */
+  per_doc: StaleDiagnosticsPerDoc[];
+}
+
 export type EnsureDocumentsReadyResult = {
   ready: boolean;
   enqueued: {
@@ -28,10 +70,26 @@ export type EnsureDocumentsReadyResult = {
    */
   action: 'enqueue_dpu_backfill' | null;
   /**
+   * Structured action detail when action === 'enqueue_dpu_backfill'.
+   * Contains a stable, deterministic `job_id` (docs_fingerprint-based) that callers
+   * can use as a BullMQ dedupe key to avoid re-enqueueing the same backfill state.
+   */
+  action_detail: {
+    type: 'enqueue_dpu_backfill';
+    /** Stable BullMQ dedupe key: `dpu_backfill:{dealId}:{docsFingerprint}:page_understanding_v1` */
+    job_id: string;
+    docs_fingerprint: string;
+  } | null;
+  /**
    * Stable content-address string derived from deal + DPU counts.
    * Used by callers for idempotency checks (no duplicate backfill for same state).
    */
   docs_fingerprint: string | null;
+  /**
+   * Populated when blocked_reason is non-null: structured diagnostics describing the
+   * specific stale condition.  Purely observational — no behavior changes.
+   */
+  stale_diagnostics: StaleDiagnostics | null;
 };
 
 async function hasColumn(pool: PoolLike, table: string, column: string): Promise<boolean> {
@@ -96,6 +154,13 @@ export async function ensureDocumentsReadyForAnalysis(args: {
   pageUnderstandingVersion: string;
   forceRefresh?: boolean;
   minDpuCreatedAt?: string | null;
+  /**
+   * Optional: fingerprint from a previously-seen state. When provided and it differs from
+   * the freshly-computed dpuFingerprint, stale_diagnostics.stale_reason will be
+   * "fingerprint_mismatch" instead of the default "timestamp_old".
+   * No behavior changes — diagnostics only.
+   */
+  expectedDocsFingerprint?: string | null;
   logger?: FastifyBaseLogger;
   enqueue: (input: EnqueueJobInput, opts?: EnqueueJobOptions) => Promise<{ job_id: string; status: string }>;
 }): Promise<EnsureDocumentsReadyResult> {
@@ -553,6 +618,51 @@ export async function ensureDocumentsReadyForAnalysis(args: {
 
   const docsFingerprint = dpuFingerprint;
 
+  // ── Stale diagnostics (observational, no behavior changes) ────────────────
+  const staleDiag: StaleDiagnostics | null = (() => {
+    if (!effective.blocked_reason) return null;
+
+    // Classify the stale condition
+    let stale_reason: StaleDiagnostics['stale_reason'] = "unknown";
+    if (effective.blocked_reason === 'DPU_STALE') {
+      const expectedFp = args.expectedDocsFingerprint ?? null;
+      if (expectedFp != null && expectedFp !== dpuFingerprint) {
+        // The caller passed an expected fingerprint that doesn't match the freshly-
+        // computed one — the document set changed between runs.
+        stale_reason = "fingerprint_mismatch";
+      } else {
+        // Default: timestamp check is the only signal
+        stale_reason = "timestamp_old";
+      }
+    }
+
+    const perDoc = ((effective.readiness.documents ?? []) as any[]).map((d: any) => ({
+      document_id: String(d.document_id ?? ""),
+      expected_pages: toInt(d.page_count, 0),
+      dpu_rows: toInt(d.dpu_rows, 0),
+      missing_pages: Array.isArray(d.missing_pages) ? d.missing_pages.length : 0,
+      hard_missing_pages: Array.isArray(d.hard_missing_pages) ? d.hard_missing_pages.length : 0,
+      dpu_created_at: null as string | null,
+    }));
+
+    return {
+      stale_reason,
+      dpu_fingerprint: dpuFingerprint,
+      docs_fingerprint: docsFingerprint,
+      latest_dpu_created_at: (effective.readiness as any).latest_dpu_created_at ?? null,
+      newest_doc_modified_at: null,
+      per_doc: perDoc,
+    };
+  })();
+
+  const actionDetail = dpuBackfillAction === 'enqueue_dpu_backfill'
+    ? {
+        type: 'enqueue_dpu_backfill' as const,
+        job_id: `dpu_backfill:${dealId}:${docsFingerprint}:page_understanding_v1`,
+        docs_fingerprint: docsFingerprint,
+      }
+    : null;
+
   return {
     ready: effective.ready,
     readiness: effective.readiness,
@@ -560,6 +670,8 @@ export async function ensureDocumentsReadyForAnalysis(args: {
     poll_after_ms: pollAfter,
     enqueued,
     action: dpuBackfillAction,
+    action_detail: actionDetail,
     docs_fingerprint: docsFingerprint,
+    stale_diagnostics: staleDiag,
   };
 }

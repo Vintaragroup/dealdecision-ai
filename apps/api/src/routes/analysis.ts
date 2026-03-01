@@ -129,6 +129,7 @@ export async function registerAnalysisRoutes(
               dpu_rows_total: prep.readiness.dpu_rows_total ?? 0,
               missing_pages_total: prep.readiness.missing_pages_total ?? 0,
               enqueued: prep.enqueued,
+              stale_diagnostics: prep.stale_diagnostics ?? null,
             });
           }
         } catch (err) {

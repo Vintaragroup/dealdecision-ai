@@ -178,7 +178,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
     });
   }, [props.score0_100, props.scoreSource, props.reportApplied, props.decisionLabel, props.confidenceLabel, scoreText]);
 
-  const badgeBaseClassName = 'inline-flex items-center px-2 py-1 rounded-full border text-[11px] font-medium leading-none';
+  const badgeBaseClassName = 'inline-flex items-center px-2 py-1 rounded-full border text-xs font-medium leading-none';
 
   const renderProvenanceChips = (prov?: { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean }) => {
     if (!prov) return null;
@@ -340,7 +340,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
           const snippet = typeof c.snippet === 'string' ? c.snippet.trim() : '';
           const line = [docShort, pageLabel, title].filter(Boolean).join(' · ');
           return (
-            <li key={`cite-${idx}`} className="text-[11px] text-zinc-400">
+            <li key={`cite-${idx}`} className="text-xs text-zinc-400">
               <div className="font-mono">{line}</div>
               {snippet ? <div className="mt-0.5 text-zinc-500">{snippet}</div> : null}
             </li>
@@ -354,7 +354,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
     const cleaned = safeLines(paragraphs);
     return (
       <div>
-        <div className="text-[11px] uppercase tracking-wider text-zinc-500 mb-2">{title}</div>
+        <div className="text-xs uppercase tracking-wider text-zinc-500 mb-2">{title}</div>
         {cleaned.length ? (
           <div className="space-y-3">
             {cleaned.map((p, idx) => (
@@ -374,7 +374,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
     const cleaned = safeLines(items).slice(0, 6);
     return (
       <div>
-        <div className="text-[11px] uppercase tracking-wider text-zinc-500 mb-2">{title}</div>
+        <div className="text-xs uppercase tracking-wider text-zinc-500 mb-2">{title}</div>
         {cleaned.length ? (
           <ul className="space-y-1">
             {cleaned.map((s, idx) => (
@@ -449,7 +449,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
     if (!hasEvidence) {
       return (
         <div className="mt-1">
-          <span className={`inline-flex items-center px-2 py-1 rounded-full border text-[11px] font-medium leading-none ${badgeClassName}`}>
+          <span className={`inline-flex items-center px-2 py-1 rounded-full border text-xs font-medium leading-none ${badgeClassName}`}>
             No explicit citation
           </span>
         </div>
@@ -483,7 +483,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
 
         {open ? (
           <div className={panelClass} data-testid={`evidence-panel-${opts.fieldKey}`}>
-            <div className={props.darkMode ? 'text-[11px] uppercase tracking-wider text-zinc-500' : 'text-[11px] uppercase tracking-wider text-zinc-500'}>
+            <div className={props.darkMode ? 'text-xs uppercase tracking-wider text-zinc-500' : 'text-xs uppercase tracking-wider text-zinc-500'}>
               Evidence
             </div>
             <ul className="mt-2 space-y-2">
@@ -564,7 +564,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
                     title={title}
                     className={`rounded-lg border p-3 ${props.darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}
                   >
-                    <div className={`text-[11px] ${props.darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{kpi.label}</div>
+                    <div className={`text-xs ${props.darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{kpi.label}</div>
                     <div className={`mt-1 text-sm font-medium ${props.darkMode ? 'text-gray-100' : 'text-gray-900'}`}>{kpi.value}</div>
                   </div>
                 );
@@ -699,28 +699,28 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
             <div className={`mt-4 pt-4 border-t ${dividerClassName}`}>
               {props.dealSummaryCitations?.one_liner?.length ? (
                 <div>
-                  <div className="text-[11px] uppercase tracking-wider text-zinc-500">One-liner</div>
+                  <div className="text-xs uppercase tracking-wider text-zinc-500">One-liner</div>
                   {renderCitations(props.dealSummaryCitations.one_liner)}
                 </div>
               ) : null}
 
               {props.dealSummaryCitations?.product?.length ? (
                 <div className="mt-3">
-                  <div className="text-[11px] uppercase tracking-wider text-zinc-500">Product</div>
+                  <div className="text-xs uppercase tracking-wider text-zinc-500">Product</div>
                   {renderCitations(props.dealSummaryCitations.product)}
                 </div>
               ) : null}
 
               {props.dealSummaryCitations?.market?.length ? (
                 <div className="mt-3">
-                  <div className="text-[11px] uppercase tracking-wider text-zinc-500">Market</div>
+                  <div className="text-xs uppercase tracking-wider text-zinc-500">Market</div>
                   {renderCitations(props.dealSummaryCitations.market)}
                 </div>
               ) : null}
 
               {props.dealSummaryCitations?.paragraphs?.length ? (
                 <div className="mt-3">
-                  <div className="text-[11px] uppercase tracking-wider text-zinc-500">Paragraphs</div>
+                  <div className="text-xs uppercase tracking-wider text-zinc-500">Paragraphs</div>
                   {renderCitations(props.dealSummaryCitations.paragraphs)}
                 </div>
               ) : null}

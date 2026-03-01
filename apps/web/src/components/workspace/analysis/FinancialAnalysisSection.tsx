@@ -145,13 +145,13 @@ function MetricTile({
       data-testid="fin-metric-tile"
     >
       <div className="flex items-center justify-between gap-1">
-        <p className={`text-[10px] font-semibold uppercase tracking-wider leading-tight ${
+        <p className={`text-xs font-semibold uppercase tracking-wider leading-tight ${
           darkMode ? 'text-zinc-400' : 'text-slate-500'
         }`}>
           {label}
         </p>
         {tag && (
-          <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded-full ${
+          <span className={`text-xs font-medium px-1.5 py-0.5 rounded-full ${
             darkMode
               ? 'bg-amber-500/15 text-amber-300'
               : 'bg-amber-50 text-amber-700 border border-amber-200'
@@ -226,7 +226,7 @@ function CurrentMetricsGrid({
                 darkMode ? 'text-amber-300' : 'text-amber-700'
               }`}>
                 Implied Annual Operating Cost
-                <span className={`ml-2 text-[10px] font-medium px-1.5 py-0.5 rounded-full ${
+                <span className={`ml-2 text-xs font-medium px-1.5 py-0.5 rounded-full ${
                   darkMode ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-100 text-amber-700'
                 }`}>
                   Implied
@@ -238,7 +238,7 @@ function CurrentMetricsGrid({
                 {impliedAllocation.total_annual_cost ?? 'Not disclosed'}
                 {impliedAllocation.period ? ` — ${impliedAllocation.period}` : ''}
               </p>
-              <p className={`text-[10px] mt-0.5 ${
+              <p className={`text-xs mt-0.5 ${
                 darkMode ? 'text-zinc-500' : 'text-slate-400'
               }`}>
                 {impliedAllocation.basis_note}
@@ -511,7 +511,7 @@ function NarrativePanel({
         <div className="flex items-center justify-between mb-3">
           <p className={headerClass}><Sparkles className="w-3.5 h-3.5" /> Financial Analysis Summary</p>
           <div className="flex items-center gap-2">
-            <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
               darkMode
                 ? 'bg-indigo-500/20 text-indigo-300'
                 : 'bg-indigo-100 text-indigo-700 border border-indigo-200'
@@ -547,7 +547,7 @@ function NarrativePanel({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-current/10">
             {narrative.strengths.length > 0 && (
               <div>
-                <p className={`text-[10px] font-semibold uppercase tracking-wider mb-2 ${
+                <p className={`text-xs font-semibold uppercase tracking-wider mb-2 ${
                   darkMode ? 'text-emerald-400' : 'text-emerald-600'
                 }`}>
                   Strengths
@@ -565,7 +565,7 @@ function NarrativePanel({
             )}
             {narrative.considerations.length > 0 && (
               <div>
-                <p className={`text-[10px] font-semibold uppercase tracking-wider mb-2 ${
+                <p className={`text-xs font-semibold uppercase tracking-wider mb-2 ${
                   darkMode ? 'text-amber-400' : 'text-amber-600'
                 }`}>
                   Considerations
@@ -674,7 +674,7 @@ function FinancialContent({
         <p className={`text-xs ${darkMode ? 'text-zinc-400' : 'text-slate-500'}`}>
           Revenue projections, unit economics, and financial health
           {isImpliedOnly && (
-            <span className={`ml-2 font-medium px-1.5 py-0.5 rounded text-[10px] ${
+            <span className={`ml-2 font-medium px-1.5 py-0.5 rounded text-xs ${
               darkMode ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-100 text-amber-700'
             }`}>
               Implied (budget model)

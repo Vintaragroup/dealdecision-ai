@@ -4908,7 +4908,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                       {clusterEnabled ? 'On' : 'Off'}
                     </button>
                     {!clusterEligible ? (
-                      <span className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                         Needs ≥ {CLUSTER_MIN_VISUALS} visuals or 2 docs with 8+
                       </span>
                     ) : null}
@@ -4944,14 +4944,14 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                         style={{ maxWidth: 280 }}
                       >
                         <div className="flex items-center justify-between gap-2 mb-1">
-                          <div className="text-[11px] font-semibold">
+                          <div className="text-xs font-semibold">
                             {colorMode === 'document' ? 'Documents' : 'Segments'}
                           </div>
                           <Button
                             type="button"
                             variant="secondary"
                             size="sm"
-                            className="h-6 px-2 text-[11px]"
+                            className="h-6 px-2 text-xs"
                             darkMode={darkMode}
                             onClick={() => setShowSegmentsLegend(false)}
                           >
@@ -4979,7 +4979,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                           type="button"
                           variant="secondary"
                           size="sm"
-                          className="h-6 px-2 text-[11px]"
+                          className="h-6 px-2 text-xs"
                           darkMode={darkMode}
                           onClick={() => setShowSegmentsLegend(true)}
                         >
@@ -4996,12 +4996,12 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                       style={{ overflow: 'hidden' }}
                     >
                       <div className={`flex items-center justify-between gap-2 px-2 py-1 text-xs ${darkMode ? 'text-gray-100' : 'text-gray-800'}`}>
-                        <div className="text-[11px] font-semibold">MiniMap</div>
+                        <div className="text-xs font-semibold">MiniMap</div>
                         <Button
                           type="button"
                           variant="secondary"
                           size="sm"
-                          className="h-6 px-2 text-[11px]"
+                          className="h-6 px-2 text-xs"
                           darkMode={darkMode}
                           onClick={() => setShowMiniMap(false)}
                         >
@@ -5068,7 +5068,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                         type="button"
                         variant="secondary"
                         size="sm"
-                        className="h-6 px-2 text-[11px]"
+                        className="h-6 px-2 text-xs"
                         darkMode={darkMode}
                         onClick={() => setShowMiniMap(true)}
                       >
@@ -5325,7 +5325,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                                   {detPage.why.slice(0, 12).map((w: any, idx: number) => (
                                     <span
                                       key={`why-${idx}`}
-                                      className={`px-1.5 py-0.5 rounded border text-[11px] ${
+                                      className={`px-1.5 py-0.5 rounded border text-xs ${
                                         darkMode ? 'border-white/10 text-gray-300 bg-white/5' : 'border-gray-200 text-gray-700 bg-gray-50'
                                       }`}
                                     >
@@ -5342,14 +5342,14 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                                 <div className="space-y-2">
                                   {detPage.evidence.slice(0, 5).map((ev: any, idx: number) => (
                                     <div key={`ev-${idx}`} className={`rounded-md border p-2 ${darkMode ? 'border-white/10 bg-black/10' : 'border-gray-200 bg-white'}`}>
-                                      <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Score: {String(ev?.score ?? '—')}</div>
+                                      <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Score: {String(ev?.score ?? '—')}</div>
                                       <div className={`mt-1 text-xs whitespace-pre-wrap ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{String(ev?.snippet ?? '')}</div>
                                       {Array.isArray(ev?.features) && ev.features.length > 0 ? (
                                         <div className="mt-2 flex flex-wrap gap-1">
                                           {ev.features.slice(0, 12).map((f: any, fIdx: number) => (
                                             <span
                                               key={`feat-${idx}-${fIdx}`}
-                                              className={`px-1.5 py-0.5 rounded border text-[11px] ${
+                                              className={`px-1.5 py-0.5 rounded border text-xs ${
                                                 darkMode ? 'border-white/10 text-gray-300 bg-white/5' : 'border-gray-200 text-gray-700 bg-gray-50'
                                               }`}
                                             >
@@ -5418,7 +5418,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                                   {detPage.quality_flags.slice(0, 20).map((q: any, idx: number) => (
                                     <span
                                       key={`q-${idx}`}
-                                      className={`px-1.5 py-0.5 rounded border text-[11px] ${
+                                      className={`px-1.5 py-0.5 rounded border text-xs ${
                                         darkMode ? 'border-white/10 text-gray-300 bg-white/5' : 'border-gray-200 text-gray-700 bg-gray-50'
                                       }`}
                                     >
@@ -5648,7 +5648,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                         <div className={`mt-1 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                           {effective ? <div className="font-medium">Effective: {effective}</div> : null}
                           {isHumanOverride ? (
-                            <div className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ${darkMode ? 'bg-emerald-500/15 text-emerald-200' : 'bg-emerald-50 text-emerald-700'}`}>
+                            <div className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${darkMode ? 'bg-emerald-500/15 text-emerald-200' : 'bg-emerald-50 text-emerald-700'}`}>
                               Human override
                             </div>
                           ) : null}
@@ -5789,7 +5789,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
 
                             {rfExcelPreview ? (
                               <pre
-                                className={`whitespace-pre text-[11px] rounded-md p-2 border overflow-auto max-h-[240px] ${
+                                className={`whitespace-pre text-xs rounded-md p-2 border overflow-auto max-h-[240px] ${
                                   darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
                                 }`}
                               >
@@ -5991,7 +5991,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                                       {showBboxOverlay ? 'Hide bbox overlay' : 'Show bbox overlay'}
                                     </button>
                                     {showBboxOverlay ? (
-                                      <span className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Overlay is approximate</span>
+                                      <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Overlay is approximate</span>
                                     ) : null}
                                   </div>
 
@@ -6068,15 +6068,15 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                                 {Number.isFinite(selectedVisual.confidence ?? null) ? ` • confidence ${Number(selectedVisual.confidence).toFixed(2)}` : ''}
                               </div>
 
-                              <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                              <div className={`mt-1 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                                 Extractor: {selectedVisual.extractor_version || '—'}
                                 {selectedVisual.created_at ? ` • extracted ${selectedVisual.created_at}` : ''}
                               </div>
 
                               {bboxLabel ? (
-                                <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>{bboxLabel}</div>
+                                <div className={`mt-1 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>{bboxLabel}</div>
                               ) : (
-                                <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>bbox: —</div>
+                                <div className={`mt-1 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>bbox: —</div>
                               )}
 
                               {flags.chips.length > 0 ? (
@@ -6084,7 +6084,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                                   {flags.chips.map((c) => (
                                     <span
                                       key={`qf-${c}`}
-                                      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${
+                                      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${
                                         darkMode ? 'border-white/10 bg-white/5 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
                                       }`}
                                     >
@@ -6092,11 +6092,11 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                                     </span>
                                   ))}
                                   {flags.moreCount > 0 ? (
-                                    <span className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>+{flags.moreCount} more</span>
+                                    <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>+{flags.moreCount} more</span>
                                   ) : null}
                                 </div>
                               ) : (
-                                <div className={`mt-2 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>quality_flags: —</div>
+                                <div className={`mt-2 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>quality_flags: —</div>
                               )}
                             </div>
                           );
@@ -6235,7 +6235,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                           <details open>
                             <summary className={`cursor-pointer text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>XLSX preview</summary>
                             <pre
-                              className={`mt-2 whitespace-pre text-[11px] rounded-md p-2 border overflow-auto max-h-[320px] ${
+                              className={`mt-2 whitespace-pre text-xs rounded-md p-2 border overflow-auto max-h-[320px] ${
                                 darkMode ? 'border-white/10 bg-black/20 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
                               }`}
                             >
@@ -6412,7 +6412,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                                   ) : null}
                                   {barChartPreviewModel?.valuesAreNormalized ? (
                                     <span
-                                      className={`ml-2 inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${
+                                      className={`ml-2 inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${
                                         darkMode ? 'border-white/10 bg-white/5 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-800'
                                       }`}
                                       title="Heights reflect relative proportions; not absolute units."
@@ -6517,7 +6517,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                                               const dv = barChartPreviewModel.displayValues[i] ?? '';
                                               return (
                                                 <div key={`bar-${i}`} className="flex flex-col items-center justify-end">
-                                                  <div className={`text-[10px] leading-none mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`} title={String(v)}>
+                                                  <div className={`text-xs leading-none mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`} title={String(v)}>
                                                     {dv}
                                                   </div>
                                                   <div className="h-28 w-10 flex items-end">
@@ -6528,7 +6528,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                                                     />
                                                   </div>
                                                   <div
-                                                    className={`mt-1 max-w-[2.5rem] truncate text-[10px] leading-none ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}
+                                                    className={`mt-1 max-w-[2.5rem] truncate text-xs leading-none ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}
                                                     title={label}
                                                   >
                                                     {label}
@@ -6665,7 +6665,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                             return (
                               <div>
                                 <span
-                                  className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                                  className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${
                                     darkMode ? 'bg-sky-500/15 text-sky-200' : 'bg-sky-50 text-sky-700'
                                   }`}
                                 >
@@ -6742,7 +6742,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                             <div className={`mt-1 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                               {effective ? <div className="font-medium">Effective: {effective}</div> : null}
                               {isOcrInferred ? (
-                                <div className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium ${darkMode ? 'bg-amber-500/15 text-amber-200' : 'bg-amber-50 text-amber-700'}`}>
+                                <div className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ${darkMode ? 'bg-amber-500/15 text-amber-200' : 'bg-amber-50 text-amber-700'}`}>
                                   OCR-inferred hint (not trusted)
                                 </div>
                               ) : null}
@@ -6756,7 +6756,7 @@ export function DealAnalystTab({ dealId, darkMode, focusNodeId = null }: DealAna
                                 return <div className="mt-1">Best: {best ?? '—'} · Threshold: {threshold ?? '—'}</div>;
                               })()}
                               {topScores.length > 0 ? (
-                                <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                <div className={`mt-1 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                                   Top: {topScores.map((t) => `${t.seg} ${t.score}`).join(' · ')}
                                 </div>
                               ) : null}

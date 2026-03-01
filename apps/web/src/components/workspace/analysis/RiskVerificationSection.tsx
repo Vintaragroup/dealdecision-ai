@@ -143,7 +143,7 @@ function ScorePanel({
 
         {/* Confidence pill */}
         <div className="mt-2">
-          <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${confPill}`}>
+          <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${confPill}`}>
             Data confidence: {confidenceLabel}
           </span>
         </div>
@@ -168,7 +168,7 @@ function GateBadge({
   if (status === 'pass') {
     return (
       <span
-        className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+        className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${
           darkMode ? 'bg-emerald-500/15 text-emerald-300' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
         }`}
         data-testid="rv-gate-badge"
@@ -181,7 +181,7 @@ function GateBadge({
   if (status === 'fail') {
     return (
       <span
-        className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+        className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${
           darkMode ? 'bg-red-500/15 text-red-300' : 'bg-red-50 text-red-700 border border-red-200'
         }`}
         data-testid="rv-gate-badge"
@@ -193,7 +193,7 @@ function GateBadge({
   }
   return (
     <span
-      className={`inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full ${
+      className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${
         darkMode ? 'bg-zinc-700/50 text-zinc-400' : 'bg-slate-100 text-slate-500'
       }`}
       data-testid="rv-gate-badge"
@@ -257,7 +257,7 @@ function GateChecklist({
                 {gate.gate}
               </p>
               {reasonText && (
-                <p className={`text-[10px] mt-0.5 truncate ${
+                <p className={`text-xs mt-0.5 truncate ${
                   darkMode ? 'text-zinc-500' : 'text-slate-400'
                 }`}>
                   {reasonText}
@@ -336,7 +336,7 @@ function KeyRisksPanel({
               {icon}
             </span>
             <div className="min-w-0 flex-1">
-              <span className={`text-[10px] font-semibold uppercase tracking-wider mr-2 ${
+              <span className={`text-xs font-semibold uppercase tracking-wider mr-2 ${
                 darkMode ? color.dark : color.light
               }`}>
                 {risk.category}
@@ -421,7 +421,7 @@ function ConflictsPanel({
                 <td className={`px-3 py-2.5 ${darkMode ? 'text-zinc-300' : 'text-slate-600'}`}>
                   {c.value_a}
                   {c.source_a && (
-                    <span className={`block text-[10px] mt-0.5 ${darkMode ? 'text-zinc-500' : 'text-slate-400'}`}>
+                    <span className={`block text-xs mt-0.5 ${darkMode ? 'text-zinc-500' : 'text-slate-400'}`}>
                       {c.source_a}
                     </span>
                   )}
@@ -429,7 +429,7 @@ function ConflictsPanel({
                 <td className={`px-3 py-2.5 ${darkMode ? 'text-zinc-300' : 'text-slate-600'}`}>
                   {c.value_b}
                   {c.source_b && (
-                    <span className={`block text-[10px] mt-0.5 ${darkMode ? 'text-zinc-500' : 'text-slate-400'}`}>
+                    <span className={`block text-xs mt-0.5 ${darkMode ? 'text-zinc-500' : 'text-slate-400'}`}>
                       {c.source_b}
                     </span>
                   )}
@@ -443,14 +443,14 @@ function ConflictsPanel({
         <div className={`border-t px-3 pb-3 pt-2 ${
           darkMode ? 'border-white/5 bg-white/2' : 'border-slate-100 bg-slate-50/60'
         }`}>
-          <p className={`text-[10px] font-semibold uppercase tracking-wider mb-2 ${
+          <p className={`text-xs font-semibold uppercase tracking-wider mb-2 ${
             darkMode ? 'text-zinc-500' : 'text-slate-400'
           }`}>
             Reasons
           </p>
           <ul className="space-y-1">
             {conflicts.filter((c) => c.reason).map((c, i) => (
-              <li key={i} className={`text-[10px] ${darkMode ? 'text-zinc-400' : 'text-slate-500'}`}>
+              <li key={i} className={`text-xs ${darkMode ? 'text-zinc-400' : 'text-slate-500'}`}>
                 <span className="font-medium">{c.field.replaceAll('_', ' ')}:</span> {c.reason}
               </li>
             ))}
@@ -482,7 +482,7 @@ function CoverageTile({
       }`}
       data-testid="rv-coverage-tile"
     >
-      <p className={`text-[10px] font-semibold uppercase tracking-wider ${
+      <p className={`text-xs font-semibold uppercase tracking-wider ${
         darkMode ? 'text-zinc-400' : 'text-slate-500'
       }`}>
         {label}
@@ -654,7 +654,7 @@ function NarrativePanel({
             <Sparkles className="w-3.5 h-3.5" /> Risk & Verification Summary
           </p>
           <div className="flex items-center gap-2">
-            <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
               darkMode
                 ? 'bg-indigo-500/20 text-indigo-300'
                 : 'bg-indigo-100 text-indigo-700 border border-indigo-200'
@@ -694,7 +694,7 @@ function NarrativePanel({
           }`}>
             {narrative.top_risks.length > 0 && (
               <div>
-                <p className={`text-[10px] font-semibold uppercase tracking-wider mb-2 ${
+                <p className={`text-xs font-semibold uppercase tracking-wider mb-2 ${
                   darkMode ? 'text-red-400' : 'text-red-600'
                 }`}>
                   Top Risks
@@ -713,7 +713,7 @@ function NarrativePanel({
             )}
             {narrative.verification_requests.length > 0 && (
               <div>
-                <p className={`text-[10px] font-semibold uppercase tracking-wider mb-2 ${
+                <p className={`text-xs font-semibold uppercase tracking-wider mb-2 ${
                   darkMode ? 'text-indigo-400' : 'text-indigo-600'
                 }`}>
                   Verification Requests

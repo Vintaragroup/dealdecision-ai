@@ -479,8 +479,8 @@ export function Analytics({ darkMode, onNavigate, onDealClick }: AnalyticsProps)
                           <span
                             className={
                               darkMode
-                                ? 'inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-200'
-                                : 'inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-800'
+                                ? 'inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-200'
+                                : 'inline-flex items-center rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-800'
                             }
                           >
                             {attentionItems.length} item{attentionItems.length === 1 ? '' : 's'}

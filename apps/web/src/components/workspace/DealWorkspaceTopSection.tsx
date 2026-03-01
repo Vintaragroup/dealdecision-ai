@@ -430,11 +430,11 @@ export function DealWorkspaceTopSection({
                   <Skeleton className="h-4 w-4/5 max-w-[260px]" />
                 </div>
               ) : scoreAvailable ? (
-                <div className="text-[11px] text-center text-zinc-400">
+                <div className="text-xs text-center text-zinc-400">
                   {scoreLabel}: {score0_100}/100
                 </div>
               ) : (
-                <div className="text-[11px] text-center text-zinc-400">
+                <div className="text-xs text-center text-zinc-400">
                   {scoreLabel}: Not yet scored
                 </div>
               )}
@@ -452,7 +452,7 @@ export function DealWorkspaceTopSection({
                       <div>
                         <span className="text-zinc-400">Canonical score:</span>{' '}
                         <span className="font-semibold">{score0_100}</span>
-                        <span className="text-zinc-400 ml-1 text-[10px]">({canonicalScoreSource ?? 'unknown source'})</span>
+                        <span className="text-zinc-400 ml-1 text-xs">({canonicalScoreSource ?? 'unknown source'})</span>
                       </div>
                       {bandCalibrationApplied ? (
                         <>
@@ -486,7 +486,7 @@ export function DealWorkspaceTopSection({
                     <div data-testid="guardrail-criteria-snapshot">
                       <div className="text-zinc-400">Guardrail snapshot <span className="text-zinc-600">(debug)</span></div>
                       <div className={`mt-1 border rounded-lg p-2 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
-                        <pre className="whitespace-pre-wrap break-words text-[11px] leading-snug">
+                        <pre className="whitespace-pre-wrap break-words text-xs leading-snug">
                           {JSON.stringify(hardPassGuardrailCriteriaSnapshot, null, 2)}
                         </pre>
                       </div>
@@ -530,12 +530,12 @@ export function DealWorkspaceTopSection({
                   <div className="flex items-center gap-2">
                     <div className={`text-xs ${m.noteClass}`}>{loading ? <Skeleton className="h-3 w-14" /> : m.note}</div>
                     {m.conflict ? (
-                      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-amber-500/15 text-amber-200 border border-amber-500/25">
+                      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-amber-500/15 text-amber-200 border border-amber-500/25">
                         Conflict
                       </span>
                     ) : null}
                     {m.badge ? (
-                      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-white/5 text-zinc-200 border border-white/10">
+                      <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-white/5 text-zinc-200 border border-white/10">
                         {m.badge}
                       </span>
                     ) : null}
@@ -557,15 +557,15 @@ export function DealWorkspaceTopSection({
             <div className="flex items-center gap-2 mb-3">
               <H3 className="text-sm text-zinc-300 font-normal">{dealSummaryTitle}</H3>
               {dealSummarySource === 'canonical' ? (
-                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-500/15 text-emerald-200 border border-emerald-500/25">
+                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-emerald-500/15 text-emerald-200 border border-emerald-500/25">
                   Authoritative (deterministic)
                 </span>
               ) : dealSummarySource === 'overlay' ? (
-                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-blue-500/15 text-blue-200 border border-blue-500/25">
+                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-blue-500/15 text-blue-200 border border-blue-500/25">
                   Overlay (non-authoritative)
                 </span>
               ) : (
-                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-white/5 text-zinc-200 border border-white/10">
+                <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-white/5 text-zinc-200 border border-white/10">
                   Legacy
                 </span>
               )}

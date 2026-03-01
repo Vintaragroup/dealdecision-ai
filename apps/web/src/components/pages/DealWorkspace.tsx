@@ -306,7 +306,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           <div className="mt-1">
             <button
               type="button"
-              className={`text-[11px] underline ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+              className={`text-xs underline ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
               onClick={() =>
                 setExpandedJobMessageKeys((prev) => ({
                   ...prev,
@@ -2665,7 +2665,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Evidence & Coverage</div>
             <div className={`mt-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Confidence in supporting materials</div>
           </div>
-          <span className={`px-2 py-1 rounded-full border text-[11px] font-medium ${statusTone}`}>{statusLabel}</span>
+          <span className={`px-2 py-1 rounded-full border text-xs font-medium ${statusTone}`}>{statusLabel}</span>
         </div>
 
         <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
@@ -2683,7 +2683,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             <div key={item.label} className={`${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'} rounded-lg border p-3`}>
               <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>{item.label} coverage</div>
               <div className="mt-2">
-                <span className={`inline-block px-2 py-1 rounded-full border text-[11px] font-medium ${bandToBadgeClasses(item.band)}`}>{bandLabel(item.band)}</span>
+                <span className={`inline-block px-2 py-1 rounded-full border text-xs font-medium ${bandToBadgeClasses(item.band)}`}>{bandLabel(item.band)}</span>
               </div>
             </div>
           ))}
@@ -6002,7 +6002,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       {workspaceDebugEnabled ? (
         <div
           data-testid="build-stamp"
-          className={`px-4 sm:px-6 pt-2 text-[11px] opacity-70 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+          className={`px-4 sm:px-6 pt-2 text-xs opacity-70 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
         >
           Build: {buildStamp}
         </div>
@@ -6126,7 +6126,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
                             <div className="font-medium">Page Understanding Status</div>
-                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-500'} text-[11px]`}
+                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-500'} text-xs`}
                             >
                               Version: {pageUnderstandingGate.version} · ready: {String(ready)} · {statusLabel}
                               {typeof elapsedSec === 'number' ? ` · ${elapsedSec}s` : ''}
@@ -6134,7 +6134,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                           </div>
                           {readiness?.documents?.length ? (
                             <button
-                              className={`${darkMode ? 'text-gray-300 hover:text-white' : 'text-gray-600 hover:text-gray-900'} underline text-[11px]`}
+                              className={`${darkMode ? 'text-gray-300 hover:text-white' : 'text-gray-600 hover:text-gray-900'} underline text-xs`}
                               onClick={() => setShowPageUnderstandingDetails((v) => !v)}
                             >
                               {showPageUnderstandingDetails ? 'Hide' : 'Details'}
@@ -6142,7 +6142,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                           ) : null}
                         </div>
 
-                        <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+                        <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
                           <div className={`rounded-lg border px-2 py-1 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
                             <div className={`${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>expected</div>
                             <div className="font-mono">{expectedPagesTotal ?? '—'}</div>
@@ -6159,10 +6159,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
                         {showPageUnderstandingDetails && readiness?.documents?.length ? (
                           <div className="mt-2">
-                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-500'} text-[11px] mb-1`}>Per-document</div>
+                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-500'} text-xs mb-1`}>Per-document</div>
                             <div className={`rounded-lg border overflow-hidden ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
                               <div className="max-h-40 overflow-auto">
-                                <table className="w-full text-[11px]">
+                                <table className="w-full text-xs">
                                   <thead className={`${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                                     <tr className={`${darkMode ? 'bg-white/5' : 'bg-gray-50'}`}>
                                       <th className="text-left font-medium px-2 py-1">Title</th>
@@ -6192,17 +6192,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         ) : null}
 
                         {(pageUnderstandingGate.status === 'timeout' || pageUnderstandingGate.status === 'error') && pageUnderstandingGate.error ? (
-                          <div className={`mt-2 ${darkMode ? 'text-amber-200' : 'text-amber-800'} text-[11px]`}>{pageUnderstandingGate.error}</div>
+                          <div className={`mt-2 ${darkMode ? 'text-amber-200' : 'text-amber-800'} text-xs`}>{pageUnderstandingGate.error}</div>
                         ) : null}
 
                         {showOcrRequiredHint ? (
-                          <div className={`mt-2 ${darkMode ? 'text-amber-200' : 'text-amber-800'} text-[11px]`}>
+                          <div className={`mt-2 ${darkMode ? 'text-amber-200' : 'text-amber-800'} text-xs`}>
                             OCR required for one or more PDFs. Pages will be rendered and OCR extracted before analysis can start.
                           </div>
                         ) : null}
 
                         {showNoExtractHint ? (
-                          <div className={`mt-2 ${darkMode ? 'text-amber-200' : 'text-amber-800'} text-[11px]`}>
+                          <div className={`mt-2 ${darkMode ? 'text-amber-200' : 'text-amber-800'} text-xs`}>
                             Missing pages detected but no extract_visuals job observed. Check worker logs for POPULATE_DOCUMENT_PAGE_UNDERSTANDING and Redis connectivity.
                           </div>
                         ) : null}
@@ -6210,7 +6210,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         {(pageUnderstandingGate.status === 'timeout') && dealId ? (
                           <div className="mt-2 flex items-center gap-2">
                             <button
-                              className={`px-2 py-1 rounded-md border text-[11px] ${darkMode ? 'border-white/10 hover:bg-white/10' : 'border-gray-200 hover:bg-gray-100'}`}
+                              className={`px-2 py-1 rounded-md border text-xs ${darkMode ? 'border-white/10 hover:bg-white/10' : 'border-gray-200 hover:bg-gray-100'}`}
                               onClick={() => {
                                 runAnalysisWithReadinessGate(dealId, pageUnderstandingGate.version).catch(() => {
                                   // errors handled by toasts/state
@@ -6225,7 +6225,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         {((pageUnderstandingGate.status === 'ready') || (pageUnderstandingGate.status === 'error')) && !jobId && dealId ? (
                           <div className="mt-2">
                             <button
-                              className={`px-2 py-1 rounded-md border text-[11px] ${darkMode ? 'border-white/10 hover:bg-white/10' : 'border-gray-200 hover:bg-gray-100'}`}
+                              className={`px-2 py-1 rounded-md border text-xs ${darkMode ? 'border-white/10 hover:bg-white/10' : 'border-gray-200 hover:bg-gray-100'}`}
                               onClick={() => {
                                 runAnalysisWithReadinessGate(dealId, pageUnderstandingGate.version).catch(() => {
                                   // errors handled by toasts/state
@@ -6490,7 +6490,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               >
                 <div className="flex items-center justify-between gap-3">
                   <div className={`text-xs font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Analysis progress</div>
-                  <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                  <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
                     {statusLabel}
                   </div>
                 </div>
@@ -6521,13 +6521,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                           <div className="flex items-center justify-between gap-2">
                             <div className="min-w-0 flex items-center gap-1.5">
                               {icon}
-                              <div className={`text-[11px] font-medium truncate ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{step?.label ?? k}</div>
+                              <div className={`text-xs font-medium truncate ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{step?.label ?? k}</div>
                             </div>
                             <div className="flex items-center gap-2 shrink-0">
                               {pct != null ? (
                                 <span className={`text-[10px] font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{pct}%</span>
                               ) : null}
-                              <span className={`px-2 py-0.5 rounded-full border text-[10px] ${severityBadgeClass(sev)}`}>{fullProcessStepLabel(step?.status)}</span>
+                              <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass(sev)}`}>{fullProcessStepLabel(step?.status)}</span>
                             </div>
                           </div>
                           {step?.message ? (
@@ -6555,28 +6555,28 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                           ) : (
                             <Clock className={`w-3.5 h-3.5 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
                           )}
-                          <div className={`text-[11px] font-medium truncate ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Analyze deal</div>
+                          <div className={`text-xs font-medium truncate ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Analyze deal</div>
                         </div>
                         <div className="flex items-center gap-2 shrink-0">
                           {typeof progressPercent === 'number' ? (
                             <span className={`text-[10px] font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{Math.round(progressPercent)}%</span>
                           ) : null}
-                          <span className={`px-2 py-0.5 rounded-full border text-[10px] ${severityBadgeClass(analyzeStatusPill.sev)}`}>{analyzeStatusPill.label}</span>
+                          <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass(analyzeStatusPill.sev)}`}>{analyzeStatusPill.label}</span>
                         </div>
                       </div>
 
                       {pageUnderstandingGate.status === 'preparing' ? (
-                        <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        <div className={`mt-1 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                           Preparing documents…{readinessMissing != null ? ` Missing ${readinessMissing} page(s)` : ''}
                         </div>
                       ) : null}
                       {pageUnderstandingGate.status === 'timeout' ? (
-                        <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        <div className={`mt-1 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                           Still preparing page understanding — check worker logs.
                         </div>
                       ) : null}
                       {pageUnderstandingGate.status === 'error' ? (
-                        <div className={`mt-1 text-[11px] ${darkMode ? 'text-red-300' : 'text-red-700'}`}>
+                        <div className={`mt-1 text-xs ${darkMode ? 'text-red-300' : 'text-red-700'}`}>
                           {pageUnderstandingGate.error || 'Readiness polling failed'}
                         </div>
                       ) : null}
@@ -6980,7 +6980,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                       >
                         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
                           <div className="font-mono">{r.key}</div>
-                          <span className={`px-2 py-0.5 rounded-full border text-[11px] font-medium ${badgeClass(r.status)}`}>
+                          <span className={`px-2 py-0.5 rounded-full border text-xs font-medium ${badgeClass(r.status)}`}>
                             {statusLabel(r.status)}
                           </span>
                         </div>
@@ -7130,7 +7130,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                           {jobStatus ? jobDisplay.label : 'Idle'}
                         </span>
                         {jobDisplay.sublabel && (
-                          <span className={`text-[11px] leading-tight ${severityTextClass(jobDisplay.severity)}`}>
+                          <span className={`text-xs leading-tight ${severityTextClass(jobDisplay.severity)}`}>
                             {jobDisplay.sublabel}
                           </span>
                         )}
@@ -7151,19 +7151,19 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                       <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Analysis Output Status</div>
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         <div>
-                          <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Last analyze job</div>
+                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Last analyze job</div>
                           <div className={`text-xs font-mono break-all ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
                             {lastAnalyzeJob?.job_id ? `${lastAnalyzeJob.job_id} · ${String(lastAnalyzeJob.status ?? 'unknown')}` : 'None yet'}
                           </div>
                         </div>
                         <div>
-                          <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Analysis version</div>
+                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Analysis version</div>
                           <div className={`text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
                             {reportVersion != null ? `v${reportVersion}` : '—'}
                           </div>
                         </div>
                         <div>
-                          <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Report readiness</div>
+                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Report readiness</div>
                           <div className={`text-xs font-medium ${reportReady ? (darkMode ? 'text-emerald-200' : 'text-emerald-700') : (darkMode ? 'text-amber-200' : 'text-amber-700')}`}>
                             {reportReady ? 'Ready' : 'Generating'}
                           </div>
@@ -7195,7 +7195,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                       <div className="flex items-center justify-between mb-2">
                         <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Status detail</div>
                         {progressTimestamp && (
-                          <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                          <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
                             Updated {new Date(progressTimestamp).toLocaleTimeString()}
                           </div>
                         )}
@@ -7312,19 +7312,19 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                             <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Analysis metadata</div>
                             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                               <div>
-                                <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Version</div>
+                                <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Version</div>
                                 <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
                                   {reportVersion != null ? `v${reportVersion}` : '—'}
                                 </div>
                               </div>
                               <div>
-                                <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Cycle</div>
+                                <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Cycle</div>
                                 <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
                                   {reportCycleNumber != null ? String(reportCycleNumber) : '—'}
                                 </div>
                               </div>
                               <div>
-                                <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Generated</div>
+                                <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Generated</div>
                                 <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
                                   {typeof (reportFromApi as any)?.generatedAt === 'string'
                                     ? new Date((reportFromApi as any).generatedAt).toLocaleString()
@@ -7446,7 +7446,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                     })();
 
                                     return (
-                                      <span className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                      <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                                         {label ? `Pinned (${label})` : 'Pinned'}
                                       </span>
                                     );
@@ -7529,27 +7529,27 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                               <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Structured summary</div>
                               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                 <div>
-                                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Raise</div>
+                                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Raise</div>
                                   <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportView.raise || '—'}</div>
                                 </div>
                                 <div>
-                                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Business model</div>
+                                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Business model</div>
                                   <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportView.businessModel || '—'}</div>
                                 </div>
                                 <div>
-                                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Revenue</div>
+                                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Revenue</div>
                                   <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportView.revenue || '—'}</div>
                                 </div>
                                 <div>
-                                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Customers</div>
+                                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Customers</div>
                                   <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportView.customers || '—'}</div>
                                 </div>
                                 <div>
-                                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Growth</div>
+                                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Growth</div>
                                   <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportStructuredGrowthValue || topSectionGrowth || '—'}</div>
                                 </div>
                                 <div>
-                                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Recommendation</div>
+                                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Recommendation</div>
                                   {(() => {
                                     const decisionLabel = safeText((reportFromApi as any)?.metadata?.decision_v1?.label);
                                     const recommendation = decisionLabel || reportView.recommendation || null;
@@ -7664,16 +7664,16 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                               >
                                                 {title}
                                               </div>
-                                              <div className={`text-[11px] truncate ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                              <div className={`text-xs truncate ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                                                 {stage}
                                                 {hasChildren ? ` • ${children.length} chunk(s)` : ''}
                                               </div>
                                             </div>
                                             <div className="flex items-center gap-2 shrink-0">
                                               {ts ? (
-                                                <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>{ts}</div>
+                                                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>{ts}</div>
                                               ) : null}
-                                              <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass(sev)}`}>
+                                              <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass(sev)}`}>
                                                 {agg.status && String(agg.status).toLowerCase() === 'succeeded'
                                                   ? 'Done'
                                                   : agg.status && String(agg.status).toLowerCase() === 'succeeded_with_warnings'
@@ -7685,7 +7685,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                                         : fullProcessStepLabel(agg.status)}
                                               </span>
                                               {running && pct != null ? (
-                                                <div className={`text-[11px] font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{pct}%</div>
+                                                <div className={`text-xs font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{pct}%</div>
                                               ) : null}
                                             </div>
                                           </div>
@@ -7739,7 +7739,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                             <>
                               <div className="flex items-center justify-between gap-3">
                                 <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Full process</div>
-                                <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
                                   {derivedOk === true ? 'Completed' : derivedOk === false ? 'Failed' : 'Running'}
                                 </div>
                               </div>
@@ -7789,16 +7789,16 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                     >
                                       <div className="flex items-center justify-between gap-3">
                                         <div className={`text-xs font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{step?.label ?? k}</div>
-                                        <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass(sev)}`}>
+                                        <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass(sev)}`}>
                                           {fullProcessStepLabel(step?.status)}
                                         </span>
                                       </div>
                                       <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
-                                        <div className={`text-[11px] font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                        <div className={`text-xs font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                                           {step?.job_id ? `job ${step.job_id}` : 'job —'}
                                         </div>
                                         {pct != null ? (
-                                          <div className={`text-[11px] ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{Math.round(pct)}%</div>
+                                          <div className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{Math.round(pct)}%</div>
                                         ) : null}
                                       </div>
                                       {step?.message ? (
@@ -7844,20 +7844,20 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                       <div>
                         <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Overlay (non-authoritative)</div>
                         <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('muted')}`}>
+                          <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('muted')}`}>
                             phase: {String(governedOverview.llm_phase_mode ?? '—')}
                           </span>
-                          <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('muted')}`}>
+                          <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('muted')}`}>
                             created: {governedOverview.created_at ? new Date(governedOverview.created_at).toLocaleString() : '—'}
                           </span>
                           {governedQualityFlags.provider_error ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('danger')}`}>provider_error</span>
+                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('danger')}`}>provider_error</span>
                           ) : null}
                           {governedQualityFlags.model_output_not_json ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('danger')}`}>model_output_not_json</span>
+                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('danger')}`}>model_output_not_json</span>
                           ) : null}
                           {governedQualityFlags.guard_degraded ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('warning')}`}>guard_degraded</span>
+                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('warning')}`}>guard_degraded</span>
                           ) : null}
                         </div>
                       </div>
@@ -7971,20 +7971,20 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                       <div>
                         <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Overlay (non-authoritative)</div>
                         <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass(governedOverlayDegraded ? 'warning' : 'muted')}`}>
+                          <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass(governedOverlayDegraded ? 'warning' : 'muted')}`}>
                             phase: {String(governedOverview.llm_phase_mode ?? '—')}
                           </span>
-                          <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('muted')}`}>
+                          <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('muted')}`}>
                             created: {governedOverview.created_at ? new Date(governedOverview.created_at).toLocaleString() : '—'}
                           </span>
                           {governedQualityFlags.provider_error ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('danger')}`}>provider_error</span>
+                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('danger')}`}>provider_error</span>
                           ) : null}
                           {governedQualityFlags.model_output_not_json ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('danger')}`}>model_output_not_json</span>
+                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('danger')}`}>model_output_not_json</span>
                           ) : null}
                           {governedQualityFlags.guard_degraded ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-[11px] ${severityBadgeClass('warning')}`}>guard_degraded</span>
+                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('warning')}`}>guard_degraded</span>
                           ) : null}
                         </div>
                       </div>
@@ -8120,7 +8120,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 </div>
               </div>
               {analysisDiagnostics ? (
-                <div className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
                   {analysisDiagnostics.created_at ? `Updated ${new Date(analysisDiagnostics.created_at).toLocaleString()}` : null}
                 </div>
               ) : null}
@@ -8135,11 +8135,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             {analysisDiagnostics ? (
               <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Report</div>
+                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Report</div>
                   <div className={`text-xs font-mono break-all ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{analysisDiagnostics.report_id}</div>
-                  <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>phase: {String(analysisDiagnostics.llm_phase_mode ?? '—')}</div>
+                  <div className={`mt-1 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>phase: {String(analysisDiagnostics.llm_phase_mode ?? '—')}</div>
 
-                  <div className={`mt-2 text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                     <span>
                       Header latest: {typeof dioMeta?.dioAnalysisVersion === 'number' ? `v${dioMeta.dioAnalysisVersion}` : '—'}
                     </span>
@@ -8155,20 +8155,20 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     typeof (reportArtifact as any)?.analysis_version === 'number' &&
                     dioMeta.dioAnalysisVersion !== (reportArtifact as any).analysis_version
                   ) ? (
-                    <div className={`mt-1 text-[11px] ${darkMode ? 'text-amber-200' : 'text-amber-700'}`}>
+                    <div className={`mt-1 text-xs ${darkMode ? 'text-amber-200' : 'text-amber-700'}`}>
                       Version mismatch: header v{dioMeta.dioAnalysisVersion} ≠ artifact v{String((reportArtifact as any).analysis_version)}
                     </div>
                   ) : null}
 
                   {typeof (reportArtifact as any)?.dio_id === 'string' && (reportArtifact as any).dio_id ? (
-                    <div className={`mt-1 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                    <div className={`mt-1 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
                       artifact.dio_id: <span className="font-mono break-all">{String((reportArtifact as any).dio_id)}</span>
                     </div>
                   ) : null}
                 </div>
 
                 <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Coverage</div>
+                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Coverage</div>
                   <div className={`text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
                     Deterministic coverage ratio: {typeof analysisDiagnostics.deterministic_coverage_ratio === 'number' ? `${Math.round(analysisDiagnostics.deterministic_coverage_ratio * 100)}%` : '—'}
                   </div>
@@ -8178,7 +8178,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 </div>
 
                 <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Guard</div>
+                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Guard</div>
                   <div className={`text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
                     Hallucination count: {typeof analysisDiagnostics.hallucination_count === 'number' ? analysisDiagnostics.hallucination_count : '—'}
                   </div>
@@ -8188,7 +8188,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 </div>
 
                 <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                  <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Drift</div>
+                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Drift</div>
                   <div className={`text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
                     Semantic drift score: {typeof analysisDiagnostics.semantic_drift_score === 'number' ? analysisDiagnostics.semantic_drift_score.toFixed(4) : '—'}
                   </div>
@@ -8198,7 +8198,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     typeof analysisDiagnostics.model_output_not_json_count === 'number' ||
                     typeof analysisDiagnostics.guard_degraded_count === 'number'
                   ) ? (
-                    <div className={`mt-2 text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                    <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                       Errors: provider={analysisDiagnostics.provider_error_count ?? '—'} · trunc={analysisDiagnostics.model_output_truncated_count ?? '—'} · nonjson={analysisDiagnostics.model_output_not_json_count ?? '—'} · guard={analysisDiagnostics.guard_degraded_count ?? '—'}
                     </div>
                   ) : null}
@@ -8324,10 +8324,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                               >
                                 <div className="flex items-center justify-center gap-2">
                                   <span className={`inline-block w-2.5 h-2.5 rounded-sm ${bandToClasses(band)}`} />
-                                  <span className={`text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>{c.label}</span>
+                                  <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>{c.label}</span>
                                 </div>
                                 {isAnalyst && (
-                                  <div className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>{bandLabel}</div>
+                                  <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>{bandLabel}</div>
                                 )}
                               </div>
                             );
@@ -8478,7 +8478,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                               </div>
                                               {truncatedSupportReason && (
                                                 <span
-                                                  className={`text-[10px] px-2 py-0.5 rounded-full border ${darkMode ? 'border-white/10 text-gray-300' : 'border-gray-200 text-gray-700'}`}
+                                                  className={`text-xs px-2 py-0.5 rounded-full border ${darkMode ? 'border-white/10 text-gray-300' : 'border-gray-200 text-gray-700'}`}
                                                   title={truncatedSupportReason}
                                                 >
                                                   Why
@@ -8501,11 +8501,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                           </div>
                                           <div className="flex items-center gap-2">
                                             {section?.mismatch && (
-                                              <span className={`px-2 py-1 rounded-full border text-[10px] font-medium ${darkMode ? 'border-amber-400/60 text-amber-200' : 'border-amber-300 text-amber-700'}`}>
+                                              <span className={`px-2 py-1 rounded-full border text-xs font-medium ${darkMode ? 'border-amber-400/60 text-amber-200' : 'border-amber-300 text-amber-700'}`}>
                                                 Mismatch
                                               </span>
                                             )}
-                                            <span className={`px-2 py-1 rounded-full border text-[11px] font-medium ${badgeClass}`}>
+                                            <span className={`px-2 py-1 rounded-full border text-xs font-medium ${badgeClass}`}>
                                               {status === 'supported' ? 'Supported' : status === 'weak' ? 'Weak' : 'Missing'}
                                             </span>
                                           </div>
@@ -8522,7 +8522,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                             <div className={`mt-4 rounded-lg border ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
                               <div className="flex items-center justify-between gap-3 p-3">
                                 <div>
-                                  <div className={`text-[11px] uppercase tracking-wide ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                  <div className={`text-xs uppercase tracking-wide ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                                     Dev only · Score trace debug
                                   </div>
                                   <div className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
@@ -8552,7 +8552,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                               </div>
                               {showScoreTraceDebug && (
                                 <div className={`border-t ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
-                                  <div className={`grid grid-cols-[1.2fr_1fr_0.9fr_1fr_0.9fr_1.6fr_0.8fr] gap-2 px-3 py-2 text-[11px] font-semibold ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                  <div className={`grid grid-cols-[1.2fr_1fr_0.9fr_1fr_0.9fr_1.6fr_0.8fr] gap-2 px-3 py-2 text-xs font-semibold ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                                     <div>Section</div>
                                     <div>Status</div>
                                     <div>Mismatch</div>
@@ -8625,30 +8625,30 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                         >
                                           <div className="flex flex-col gap-1 min-w-0">
                                             <div className="font-semibold truncate">{sectionKey}</div>
-                                            <div className={`text-[11px] truncate ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                            <div className={`text-xs truncate ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                                               IDs: {idsLabel}
                                             </div>
                                           </div>
                                           <div className="flex items-center">
-                                            <span className={`px-2 py-1 rounded-full border text-[11px] font-medium ${badgeClass}`}>
+                                            <span className={`px-2 py-1 rounded-full border text-xs font-medium ${badgeClass}`}>
                                               {status === 'supported' ? 'Supported' : status === 'weak' ? 'Weak' : status === 'missing' ? 'Missing' : 'Unknown'}
                                             </span>
                                           </div>
                                           <div className="flex items-center">
                                             {mismatch ? (
-                                              <span className={`px-2 py-1 rounded-full border text-[11px] font-medium ${darkMode ? 'border-amber-400/60 text-amber-200' : 'border-amber-300 text-amber-700'}`}>
+                                              <span className={`px-2 py-1 rounded-full border text-xs font-medium ${darkMode ? 'border-amber-400/60 text-amber-200' : 'border-amber-300 text-amber-700'}`}>
                                                 Mismatch
                                               </span>
                                             ) : (
-                                              <span className={`text-[11px] ${darkMode ? 'text-emerald-200' : 'text-emerald-700'}`}>Aligned</span>
+                                              <span className={`text-xs ${darkMode ? 'text-emerald-200' : 'text-emerald-700'}`}>Aligned</span>
                                             )}
                                           </div>
                                           <div className="flex flex-col text-sm">
                                             <span className="font-semibold">{linked}/{total}</span>
-                                            <span className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>linked / counted</span>
+                                            <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>linked / counted</span>
                                           </div>
                                           <div className="text-sm font-semibold">{coveragePct}%</div>
-                                          <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                                             {truncatedMissing || '—'}
                                           </div>
                                           <div className="flex items-center gap-2">

@@ -528,7 +528,7 @@ export function VisualAssetNode({ id, data, selected }: NodeProps) {
             <div className="text-xs uppercase tracking-wide opacity-70">{isStructuredNative ? 'Structured item' : 'Page visual'}</div>
             <div className="text-sm font-medium leading-snug line-clamp-1">{title}</div>
             {showSegmentDiff ? (
-              <div className="mt-1 text-[11px] opacity-70">
+              <div className="mt-1 text-xs opacity-70">
                     Persisted: {persistedSegment} ➔ Computed: {computedSegment}
               </div>
             ) : null}

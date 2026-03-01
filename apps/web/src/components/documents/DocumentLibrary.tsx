@@ -362,7 +362,7 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
                 </div>
 
                 {doc.status && (
-                  <div className={`px-2 py-1 rounded-full text-[11px] mb-2 border ${
+                  <div className={`px-2 py-1 rounded-full text-xs mb-2 border ${
                     doc.status === 'completed'
                       ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
                       : doc.status === 'processing' || doc.status === 'pending'
@@ -463,7 +463,7 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
                     {doc.name}
                   </div>
                   {doc.status && (
-                    <div className={`px-2 py-0.5 inline-flex items-center rounded-full text-[11px] mb-1 border ${
+                    <div className={`px-2 py-0.5 inline-flex items-center rounded-full text-xs mb-1 border ${
                       doc.status === 'completed'
                         ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
                         : doc.status === 'processing' || doc.status === 'pending'

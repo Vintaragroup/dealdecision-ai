@@ -15,3 +15,6 @@ export type { MutedTextProps } from './MutedText';
 
 export { Label } from './Label';
 export type { LabelProps } from './Label';
+
+export { BadgeLabel } from './BadgeLabel';
+export type { BadgeLabelProps } from './BadgeLabel';

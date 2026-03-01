@@ -170,12 +170,12 @@ function RawFieldTable({
                 darkMode ? 'border-white/5 text-gray-300' : 'border-gray-100 text-gray-700'
               }`}
             >
-              <td className="py-1.5 pr-3 font-mono text-[11px] opacity-80">{fieldLabel(row.field)}</td>
+              <td className="py-1.5 pr-3 font-mono text-xs opacity-80">{fieldLabel(row.field)}</td>
               <td className={`py-1.5 pr-3 ${row.value ? '' : 'italic opacity-40'}`}>
                 {row.value ?? 'not disclosed'}
               </td>
               <td
-                className={`py-1.5 text-[10px] ${
+                className={`py-1.5 text-xs ${
                   row.computability === 'Computable'
                     ? darkMode ? 'text-emerald-400' : 'text-emerald-600'
                     : darkMode ? 'text-gray-500' : 'text-gray-400'
@@ -439,7 +439,7 @@ export function DealTermsCard({ dealId, report, darkMode, embedded }: DealTermsC
         data-testid="deal-terms-assessment"
       >
         <p
-          className={`text-[11px] font-semibold uppercase tracking-wider mb-1 ${
+          className={`text-xs font-semibold uppercase tracking-wider mb-1 ${
             darkMode ? 'text-zinc-400' : 'text-gray-400'
           }`}
         >
@@ -510,7 +510,7 @@ export function DealTermsCard({ dealId, report, darkMode, embedded }: DealTermsC
             data-testid="deal-terms-raw-table"
           >
             <p
-              className={`text-[10px] font-semibold uppercase tracking-wider mb-2 ${
+              className={`text-xs font-semibold uppercase tracking-wider mb-2 ${
                 darkMode ? 'text-zinc-400' : 'text-gray-400'
               }`}
             >

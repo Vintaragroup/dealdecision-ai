@@ -107,7 +107,7 @@ export function ActiveDealsWidget({ darkMode, deals, onDealClick }: ActiveDealsW
                   </p>
 
           {deal.fundability_v1 && typeof deal.fundability_v1 === 'object' && (
-            <p className={`text-[11px] mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+            <p className={`text-xs mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
               Fundability: {String(
                 (deal.fundability_v1 as any)?.fundability_decision_v1?.outcome ??
                   (deal.fundability_v1 as any)?.fundability_assessment_v1?.outcome ??

@@ -181,7 +181,7 @@ export function Header({ darkMode, setDarkMode, rightSidebarOpen, setRightSideba
                 <span className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                   {userLoaded ? displayName : 'Loading…'}
                 </span>
-                <span className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                   Account
                 </span>
               </div>

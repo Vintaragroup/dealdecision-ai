@@ -38,7 +38,7 @@ export function UserProfile({
         </div>
         
         {/* Level badge */}
-        <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-gradient-to-br from-[#6366f1] to-[#8b5cf6] rounded-full flex items-center justify-center text-[10px] text-white border-2 border-[#0f0f0f] shadow-[0_0_8px_rgba(99,102,241,0.6)]">
+        <div className="absolute -bottom-1 -right-1 w-5 h-5 bg-gradient-to-br from-[#6366f1] to-[#8b5cf6] rounded-full flex items-center justify-center text-xs text-white border-2 border-[#0f0f0f] shadow-[0_0_8px_rgba(99,102,241,0.6)]">
           {level}
         </div>
       </div>
@@ -61,7 +61,7 @@ export function UserProfile({
               style={{ width: `${xpPercentage}%` }}
             />
           </div>
-          <span className={`text-[10px] ${
+          <span className={`text-xs ${
             darkMode ? 'text-gray-500' : 'text-gray-600'
           }`}>
             {currentXP}/{maxXP}

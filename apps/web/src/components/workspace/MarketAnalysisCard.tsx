@@ -77,7 +77,7 @@ function KpiTile({
       data-testid="market-kpi-tile"
     >
       <p
-        className={`text-[10px] font-semibold uppercase tracking-wider ${
+        className={`text-xs font-semibold uppercase tracking-wider ${
           darkMode ? 'text-zinc-400' : 'text-gray-400'
         }`}
       >
@@ -433,7 +433,7 @@ export function MarketAnalysisCard({
               data-testid="market-missing-inputs"
             >
               <p
-                className={`text-[10px] font-semibold uppercase tracking-wider mb-2 ${
+                className={`text-xs font-semibold uppercase tracking-wider mb-2 ${
                   darkMode ? 'text-zinc-400' : 'text-gray-400'
                 }`}
               >

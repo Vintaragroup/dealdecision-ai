@@ -821,19 +821,19 @@ export function EvidencePanel({
         <div className={`rounded-xl border p-4 mb-4 ${darkMode ? 'bg-white/5 border-white/10 text-gray-200' : 'bg-white border-gray-200 text-gray-800'}`}>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div>
-              <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Summaries</div>
+              <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Summaries</div>
               <div className="text-sm font-semibold">{summaries.length}</div>
             </div>
             <div>
-              <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Metrics</div>
+              <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Metrics</div>
               <div className="text-sm font-semibold">{metrics.length}</div>
             </div>
             <div>
-              <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Sections</div>
+              <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Sections</div>
               <div className="text-sm font-semibold">{sections.length}</div>
             </div>
             <div>
-              <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Referenced in report</div>
+              <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Referenced in report</div>
               <div className="text-sm font-semibold">{referencedCount}/{legacyEvidence.length}</div>
             </div>
           </div>
@@ -912,12 +912,12 @@ export function EvidencePanel({
                     <div className="flex items-start justify-between gap-3 flex-wrap">
                       <div className="min-w-[260px]">
                         <div className="text-sm font-semibold" title={doc.document_id}>{doc.document_title}</div>
-                        <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                           {docItems.length} item(s) · {counts.summaries} summaries · {counts.metrics} metrics · {counts.sections} sections · {counts.other} other
                         </div>
                       </div>
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className={`text-[11px] px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-300' : 'border-gray-200 text-gray-700'}`}>
+                        <span className={`text-xs px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-300' : 'border-gray-200 text-gray-700'}`}>
                           Pages: {doc.pages.size}
                         </span>
                       </div>
@@ -932,7 +932,7 @@ export function EvidencePanel({
                         <div key={page.pageKey} className={`rounded-lg border p-3 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'}`}>
                           <div className="flex items-center justify-between gap-3 flex-wrap">
                             <div className={`text-xs font-semibold ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{page.pageLabel}</div>
-                            <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{pageItemCount} item(s)</div>
+                            <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{pageItemCount} item(s)</div>
                           </div>
 
                           <div className="mt-2 space-y-2">
@@ -950,7 +950,7 @@ export function EvidencePanel({
                                   <div className="flex items-center justify-between gap-2 flex-wrap">
                                     <div className="flex items-center gap-2 flex-wrap">
                                       <div
-                                        className={`text-[11px] font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
+                                        className={`text-xs font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
                                         title={
                                           hasVisual
                                             ? `${node.nodeLabel}${segRaw ? ` · segment=${segRaw}` : ''}${segSource ? ` · source=${segSource}` : ''}${segConf ? ` · confidence=${segConf}` : ''}`
@@ -964,7 +964,7 @@ export function EvidencePanel({
                                         <div className="flex items-center gap-1 flex-wrap">
                                           {segSource ? (
                                             <span
-                                              className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                                              className={`text-xs px-2 py-0.5 rounded-full border ${
                                                 darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'
                                               }`}
                                               title="Segment source"
@@ -974,7 +974,7 @@ export function EvidencePanel({
                                           ) : null}
                                           {segConf ? (
                                             <span
-                                              className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                                              className={`text-xs px-2 py-0.5 rounded-full border ${
                                                 darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'
                                               }`}
                                               title="Segment confidence"
@@ -989,7 +989,7 @@ export function EvidencePanel({
                                       <button
                                         type="button"
                                         onClick={() => onLocateVisualEvidenceNode(node.visual_asset_id as string)}
-                                        className={`text-[11px] px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200 hover:bg-white/10' : 'border-gray-200 text-gray-800 hover:bg-gray-100'}`}
+                                        className={`text-xs px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200 hover:bg-white/10' : 'border-gray-200 text-gray-800 hover:bg-gray-100'}`}
                                         title={node.nodeKey}
                                       >
                                         Locate node
@@ -1015,18 +1015,18 @@ export function EvidencePanel({
                                             <div className="flex items-center gap-2 flex-wrap">
                                               <EvidenceChip evidenceId={item.evidence_id} label={chipLabel} darkMode={darkMode} excerpt={metric ? metric.title : undefined} />
                                               {conf ? (
-                                                <span className={`text-[11px] px-2 py-0.5 rounded-full border ${darkMode ? 'border-white/10 text-gray-300' : 'border-gray-200 text-gray-700'}`}>
+                                                <span className={`text-xs px-2 py-0.5 rounded-full border ${darkMode ? 'border-white/10 text-gray-300' : 'border-gray-200 text-gray-700'}`}>
                                                   Confidence {conf}
                                                 </span>
                                               ) : null}
-                                              <span className={`text-[10px] px-2 py-0.5 rounded-full border ${inScore ? (darkMode ? 'border-indigo-400/50 text-indigo-200' : 'border-indigo-200 text-indigo-700') : (darkMode ? 'border-gray-600 text-gray-300' : 'border-gray-300 text-gray-700')}`}>
+                                              <span className={`text-xs px-2 py-0.5 rounded-full border ${inScore ? (darkMode ? 'border-indigo-400/50 text-indigo-200' : 'border-indigo-200 text-indigo-700') : (darkMode ? 'border-gray-600 text-gray-300' : 'border-gray-300 text-gray-700')}`}>
                                                 {inScore ? 'SCORE-LINKED' : 'NOT SCORE-LINKED'}
                                               </span>
-                                              <span className={`text-[10px] px-2 py-0.5 rounded-full border ${inReport ? (darkMode ? 'border-emerald-500/40 text-emerald-200' : 'border-emerald-200 text-emerald-700') : (darkMode ? 'border-gray-600 text-gray-300' : 'border-gray-300 text-gray-700')}`}>
+                                              <span className={`text-xs px-2 py-0.5 rounded-full border ${inReport ? (darkMode ? 'border-emerald-500/40 text-emerald-200' : 'border-emerald-200 text-emerald-700') : (darkMode ? 'border-gray-600 text-gray-300' : 'border-gray-300 text-gray-700')}`}>
                                                 {inReport ? 'IN REPORT' : 'NOT IN REPORT'}
                                               </span>
                                             </div>
-                                            <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'} uppercase tracking-wide`}>
+                                            <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'} uppercase tracking-wide`}>
                                               {label}
                                             </div>
                                           </div>
@@ -1042,7 +1042,7 @@ export function EvidencePanel({
                                           </div>
 
                                           {inScore && scoreSections.length > 0 ? (
-                                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} text-[11px] mt-1`}>
+                                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} text-xs mt-1`}>
                                               Score sections: {scoreSections.map(sectionLabel).join(', ')}
                                             </div>
                                           ) : null}
@@ -1057,7 +1057,7 @@ export function EvidencePanel({
                                                 return bits.join(' · ');
                                               });
                                               return (
-                                                <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} text-[11px] mt-1`}>
+                                                <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} text-xs mt-1`}>
                                                   Used in decision: {formatted.join(' | ')}
                                                   {traces.length > 3 ? ` (+${traces.length - 3} more)` : ''}
                                                 </div>
@@ -1075,7 +1075,7 @@ export function EvidencePanel({
                                               return bits.join(' · ');
                                             });
                                             return (
-                                              <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} text-[11px] mt-1`}>
+                                              <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} text-xs mt-1`}>
                                                 Potentially used in decision (section-level): {formatted.join(' | ')}
                                                 {sectionsOnly.length > 3 ? ` (+${sectionsOnly.length - 3} more)` : ''}
                                               </div>
@@ -1083,13 +1083,13 @@ export function EvidencePanel({
                                           })() : null}
 
                                           {inReport && usedInSections.length > 0 ? (
-                                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} text-[11px] mt-1`}>
+                                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} text-xs mt-1`}>
                                               Referenced in report: {usedInSections.slice(0, 3).join(', ')}{usedInSections.length > 3 ? ` (+${usedInSections.length - 3} more)` : ''}
                                             </div>
                                           ) : null}
 
                                           {item.created_at ? (
-                                            <div className={`${darkMode ? 'text-gray-500' : 'text-gray-500'} text-[11px] mt-1`}>
+                                            <div className={`${darkMode ? 'text-gray-500' : 'text-gray-500'} text-xs mt-1`}>
                                               {new Date(item.created_at).toLocaleString()}
                                             </div>
                                           ) : null}
@@ -1159,24 +1159,24 @@ export function EvidencePanel({
         <div className={`rounded-xl border p-4 ${darkMode ? 'bg-white/5 border-white/10 text-gray-200' : 'bg-white border-gray-200 text-gray-800'}`}>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div>
-              <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Items</div>
+              <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Items</div>
               <div className="text-sm font-semibold">{scoreItems.length}</div>
             </div>
             <div>
-              <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Claims</div>
+              <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Claims</div>
               <div className="text-sm font-semibold">{totals?.claims ?? '—'}</div>
             </div>
             <div>
-              <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Linked evidence</div>
+              <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Linked evidence</div>
               <div className="text-sm font-semibold">{linkedEvidenceCount ?? '—'}</div>
             </div>
             <div>
-              <div className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Last updated</div>
+              <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Last updated</div>
               <div className="text-sm font-semibold">{lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : '—'}</div>
             </div>
           </div>
           {missingSectionsForView.length > 0 && (
-            <div className={`text-[12px] mt-3 flex items-center gap-2 ${darkMode ? 'text-amber-200' : 'text-amber-700'}`}>
+            <div className={`text-xs mt-3 flex items-center gap-2 ${darkMode ? 'text-amber-200' : 'text-amber-700'}`}>
               Missing sections: {missingSectionsForView.map((m) => m.label).join(', ')}
             </div>
           )}
@@ -1220,7 +1220,7 @@ export function EvidencePanel({
           <div className={`rounded-xl border p-3 ${darkMode ? 'bg-emerald-500/5 border-emerald-400/40 text-emerald-50' : 'bg-emerald-50 border-emerald-200 text-emerald-800'}`}>
             <div className="flex items-center justify-between gap-2">
               <div>
-                <div className="text-[11px] uppercase tracking-wide">Trace for {sectionLabel(selectedScoreSectionKey)}</div>
+                <div className="text-xs uppercase tracking-wide">Trace for {sectionLabel(selectedScoreSectionKey)}</div>
                 <div className="text-sm font-semibold mt-1 flex items-center gap-2">
                   <span>{activeTraceStats.linked ?? 0}/{activeTraceStats.total ?? '—'}</span>
                   {activeTraceStats.pct != null && (
@@ -1332,17 +1332,17 @@ export function EvidencePanel({
                       )}
                     </div>
                     <div className="flex flex-col items-end gap-1">
-                      <span className={`text-[11px] px-2 py-1 rounded-full border ${scoreSupportBadgeClass(item.support)}`}>
+                      <span className={`text-xs px-2 py-1 rounded-full border ${scoreSupportBadgeClass(item.support)}`}>
                         {scoreSupportLabel(item.support)}
                       </span>
                       {showUsedInScore && (
-                        <span className={`text-[10px] px-2 py-1 rounded-full border ${darkMode ? 'border-emerald-500/40 text-emerald-200' : 'border-emerald-200 text-emerald-700'}`}>
+                        <span className={`text-xs px-2 py-1 rounded-full border ${darkMode ? 'border-emerald-500/40 text-emerald-200' : 'border-emerald-200 text-emerald-700'}`}>
                           USED IN SCORE
                         </span>
                       )}
                     </div>
                   </div>
-                  <div className="flex items-center flex-wrap gap-2 text-[11px]">
+                  <div className="flex items-center flex-wrap gap-2 text-xs">
                     <EvidenceChip evidenceId={item.id} darkMode={darkMode} />
                     {metaParts && (
                       <span className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{metaParts}</span>
@@ -1378,7 +1378,7 @@ export function EvidencePanel({
             Evidence items derived from documents and used to support the report recommendation.
           </p>
           {lastUpdated && (
-            <div className={`text-[11px] mt-1 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+            <div className={`text-xs mt-1 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
               Updated {new Date(lastUpdated).toLocaleTimeString()}
             </div>
           )}

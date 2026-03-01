@@ -108,25 +108,25 @@ export function DealsListDebugBadge() {
       <div className="rounded-lg border border-white/10 bg-black/80 text-white shadow-xl backdrop-blur px-3 py-2 w-[320px]">
         <div className="flex items-center justify-between gap-2">
           <div className="text-xs font-medium">Deals debug</div>
-          <div className="text-[10px] text-white/60">{lastUpdatedLabel}</div>
+          <div className="text-xs text-white/60">{lastUpdatedLabel}</div>
         </div>
 
         <div className="mt-2 grid grid-cols-3 gap-2">
           <div className="rounded bg-white/5 px-2 py-1">
-            <div className="text-[10px] text-white/60">liveDeals</div>
+            <div className="text-xs text-white/60">liveDeals</div>
             <div className="text-sm">{snapshot?.liveDeals ?? '—'}</div>
           </div>
           <div className="rounded bg-white/5 px-2 py-1">
-            <div className="text-[10px] text-white/60">deals</div>
+            <div className="text-xs text-white/60">deals</div>
             <div className="text-sm">{snapshot?.deals ?? '—'}</div>
           </div>
           <div className="rounded bg-white/5 px-2 py-1">
-            <div className="text-[10px] text-white/60">filtered</div>
+            <div className="text-xs text-white/60">filtered</div>
             <div className="text-sm">{snapshot?.filteredDeals ?? '—'}</div>
           </div>
         </div>
 
-        <div className="mt-2 text-[11px] text-white/80">
+        <div className="mt-2 text-xs text-white/80">
           <div>stage: <span className="text-white/90">{snapshot?.stageFilter ?? '—'}</span></div>
           <div>priority: <span className="text-white/90">{snapshot?.priorityFilter ?? '—'}</span></div>
           <div>search: <span className="text-white/90">{snapshot?.searchQuery ?? '—'}</span></div>
@@ -138,7 +138,7 @@ export function DealsListDebugBadge() {
           <Button variant="outline" size="sm" onClick={hide}>Hide</Button>
         </div>
 
-        <div className="mt-1 text-[10px] text-white/50">
+        <div className="mt-1 text-xs text-white/50">
           window.__ddaiDealsListDebug
         </div>
       </div>

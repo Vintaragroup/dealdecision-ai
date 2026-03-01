@@ -35,6 +35,7 @@ import {
   Zap,
   AlertCircle,
   Sparkles,
+  Download,
 } from 'lucide-react';
 import type {
   InvestorInsightsSection,
@@ -54,6 +55,8 @@ import { MarketAnalysisCard } from './MarketAnalysisCard';
 import { FinancialAnalysisSection } from './analysis/FinancialAnalysisSection';
 import { RiskVerificationSection } from './analysis/RiskVerificationSection';
 import { DocumentReadinessCard } from './analysis/DocumentReadinessCard';
+import { ExportReportModal } from '../ExportReportModal';
+import type { ReportSectionKey } from '../deals/analysis/ReportViewConfigModal';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Props
@@ -66,6 +69,16 @@ export interface OrchestratorFullReportViewProps {
   dealName?: string;
   /** Optional callback to trigger the backend analysis job before regenerating. */
   onRunAnalysis?: () => Promise<void> | void;
+  /**
+   * When "export", automatically opens the Export Report modal once the report is ready.
+   * Defaults to "none".
+   */
+  initialAction?: 'none' | 'export';
+  /**
+   * Restrict which report sections are rendered. When omitted (or empty) all sections
+   * are shown. Controlled by the ReportViewConfigModal upstream.
+   */
+  visibleSections?: ReportSectionKey[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -649,7 +662,13 @@ export function OrchestratorFullReportView({
   darkMode = false,
   dealName,
   onRunAnalysis,
+  initialAction = 'none',
+  visibleSections,
 }: OrchestratorFullReportViewProps) {
+  // Helper: returns true when the section should be rendered.
+  // If no explicit list is provided, all sections are visible.
+  const sectionVisible = (key: ReportSectionKey) =>
+    !visibleSections || visibleSections.length === 0 || visibleSections.includes(key);
   const {
     status: insightStatus,
     report: insightReport,
@@ -676,6 +695,8 @@ export function OrchestratorFullReportView({
     timedOut: boolean;
   };
   const [preparingDocs, setPreparingDocs] = useState<PreparingDocsState | null>(null);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const autoExportFiredRef = useRef(false);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const attemptsRef = useRef(0);
   const mountedRef = useRef(true);
@@ -745,6 +766,20 @@ export function OrchestratorFullReportView({
       }
     };
   }, [preparingDocs, dealId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Auto-open export modal when initialAction="export" and report is ready ─
+  useEffect(() => {
+    if (initialAction !== 'export') {
+      // Reset so the next 'export' open can fire
+      autoExportFiredRef.current = false;
+      return;
+    }
+    if (autoExportFiredRef.current) return;
+    if (insightStatus === 'ready' && insightReport && insightReport.status !== 'not_started') {
+      autoExportFiredRef.current = true;
+      setShowExportModal(true);
+    }
+  }, [initialAction, insightStatus, insightReport]);
 
   // ── Preparing Documents (Gate 1 DPU backfill in progress) ─────────────────
   if (preparingDocs) {
@@ -954,6 +989,16 @@ export function OrchestratorFullReportView({
             variant="outline"
             size="sm"
             darkMode={darkMode}
+            disabled={insightStatus !== 'ready' || !insightReport || insightReport.status === 'not_started'}
+            onClick={() => setShowExportModal(true)}
+            icon={<Download className="w-4 h-4" />}
+          >
+            Export
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            darkMode={darkMode}
             onClick={() => void refreshInsights()}
             icon={<RefreshCw className="w-4 h-4" />}
           >
@@ -987,110 +1032,133 @@ export function OrchestratorFullReportView({
         </div>
       </div>
 
-      {/* ── Document Readiness Panel (collapsed by default) ── */}
+      {/* ── Document Readiness Panel (always shown — system card) ── */}
       {dealId && (
         <DocumentReadinessCard dealId={dealId} darkMode={darkMode} />
       )}
 
       {/* ── Section 1: Decision Overlay ── */}
-      <section id="decision-overlay">
-        <DecisionOverlay dealId={dealId} darkMode={darkMode} />
-      </section>
+      {sectionVisible('decision_overlay') && (
+        <section id="section-decision_overlay">
+          <DecisionOverlay dealId={dealId} darkMode={darkMode} />
+        </section>
+      )}
 
       {/* ── Section 2: Executive Summary ── */}
-      <SectionWrapper
-        id="executive-summary"
-        title="Executive Summary"
-        icon={FileText}
-        darkMode={darkMode}
-      >
-        {execSummarySection ? (
-          <GovernedExecutiveSummarySection section={execSummarySection} darkMode={darkMode} />
-        ) : (
-          <EmptyFallback
-            text="Executive summary not available. Regenerate to rebuild."
-            darkMode={darkMode}
-          />
-        )}
-      </SectionWrapper>
+      {sectionVisible('executive_summary') && (
+        <SectionWrapper
+          id="section-executive_summary"
+          title="Executive Summary"
+          icon={FileText}
+          darkMode={darkMode}
+        >
+          {execSummarySection ? (
+            <GovernedExecutiveSummarySection section={execSummarySection} darkMode={darkMode} />
+          ) : (
+            <EmptyFallback
+              text="Executive summary not available. Regenerate to rebuild."
+              darkMode={darkMode}
+            />
+          )}
+        </SectionWrapper>
+      )}
 
       {/* ── Section 3: Deal Terms ── */}
-      <SectionWrapper id="deal-terms" title="Deal Terms" icon={Scale} darkMode={darkMode}>
-        {dealId ? (
-          <DealTermsCard
-            dealId={dealId}
-            report={insightReport as InvestorInsightsReport}
-            darkMode={darkMode}
-            embedded
-          />
-        ) : (
-          <EmptyFallback text="Deal ID required to load deal terms." darkMode={darkMode} />
-        )}
-      </SectionWrapper>
+      {sectionVisible('deal_terms') && (
+        <SectionWrapper id="section-deal_terms" title="Deal Terms" icon={Scale} darkMode={darkMode}>
+          {dealId ? (
+            <DealTermsCard
+              dealId={dealId}
+              report={insightReport as InvestorInsightsReport}
+              darkMode={darkMode}
+              embedded
+            />
+          ) : (
+            <EmptyFallback text="Deal ID required to load deal terms." darkMode={darkMode} />
+          )}
+        </SectionWrapper>
+      )}
 
       {/* ── Section 4: Market Analysis ── */}
-      <SectionWrapper
-        id="market-analysis"
-        title="Market Analysis"
-        icon={TrendingUp}
-        darkMode={darkMode}
-      >
-        {dealId ? (
-          <MarketAnalysisCard
+      {sectionVisible('market_analysis') && (
+        <SectionWrapper
+          id="section-market_analysis"
+          title="Market Analysis"
+          icon={TrendingUp}
+          darkMode={darkMode}
+        >
+          {dealId ? (
+            <MarketAnalysisCard
+              dealId={dealId}
+              report={insightReport}
+              darkMode={darkMode}
+              dealName={dealName}
+              embedded
+            />
+          ) : (
+            <EmptyFallback text="Deal ID required to load market analysis." darkMode={darkMode} />
+          )}
+        </SectionWrapper>
+      )}
+
+      {/* ── Section 5: Financial Analysis ── */}
+      {sectionVisible('financial_analysis') && (
+        <SectionWrapper
+          id="section-financial_analysis"
+          title="Financial Analysis"
+          icon={DollarSign}
+          darkMode={darkMode}
+        >
+          <FinancialAnalysisSection
             dealId={dealId}
             report={insightReport}
             darkMode={darkMode}
             dealName={dealName}
-            embedded
           />
-        ) : (
-          <EmptyFallback text="Deal ID required to load market analysis." darkMode={darkMode} />
-        )}
-      </SectionWrapper>
-
-      {/* ── Section 5: Financial Analysis ── */}
-      <SectionWrapper
-        id="financial-analysis"
-        title="Financial Analysis"
-        icon={DollarSign}
-        darkMode={darkMode}
-      >
-        <FinancialAnalysisSection
-          dealId={dealId}
-          report={insightReport}
-          darkMode={darkMode}
-          dealName={dealName}
-        />
-      </SectionWrapper>
+        </SectionWrapper>
+      )}
 
       {/* ── Section 6: Risk & Verification ── */}
-      <SectionWrapper
-        id="risk-verification"
-        title="Risk & Verification"
-        icon={AlertTriangle}
-        darkMode={darkMode}
-      >
-        <RiskVerificationSection
-          dealId={dealId}
-          report={insightReport}
+      {sectionVisible('risk_verification') && (
+        <SectionWrapper
+          id="section-risk_verification"
+          title="Risk & Verification"
+          icon={AlertTriangle}
           darkMode={darkMode}
-          dealName={dealName}
-        />
-      </SectionWrapper>
+        >
+          <RiskVerificationSection
+            dealId={dealId}
+            report={insightReport}
+            darkMode={darkMode}
+            dealName={dealName}
+          />
+        </SectionWrapper>
+      )}
 
       {/* ── Section 7: Evidence Appendix ── */}
-      <SectionWrapper
-        id="evidence-appendix"
-        title="Evidence Appendix"
-        icon={BookOpen}
-        darkMode={darkMode}
-      >
-        <EvidenceAppendixSection
-          orchStatus={orchStatus}
-          orchData={orchData}
+      {sectionVisible('evidence_appendix') && (
+        <SectionWrapper
+          id="section-evidence_appendix"
+          title="Evidence Appendix"
+          icon={BookOpen}
           darkMode={darkMode}
-        />
-      </SectionWrapper>
+        >
+          <EvidenceAppendixSection
+            orchStatus={orchStatus}
+            orchData={orchData}
+            darkMode={darkMode}
+          />
+        </SectionWrapper>
+      )}
+
+      {/* ── Export Report Modal ── */}
+      <ExportReportModal
+        isOpen={showExportModal}
+        darkMode={darkMode}
+        dealName={dealName}
+        dealId={dealId}
+        onClose={() => setShowExportModal(false)}
+      />
     </div>
   );
 }

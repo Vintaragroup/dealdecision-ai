@@ -77,4 +77,10 @@ COPY --from=deps /app/node_modules /app/node_modules
 COPY --from=deps /app/apps/worker/node_modules ./node_modules
 COPY --from=build /app/packages /app/packages
 
+# Install Playwright Chromium browser + OS dependencies for server-side PDF export.
+# Runs after node_modules are in place so the playwright binary is available.
+RUN apt-get update \
+	&& node /app/node_modules/.bin/playwright install chromium --with-deps \
+	&& rm -rf /var/lib/apt/lists/*
+
 CMD ["node", "dist/src/index.js"]

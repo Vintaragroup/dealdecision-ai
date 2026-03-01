@@ -22,7 +22,8 @@ export type EnqueuePersistedJobInput = {
     | "remediate_extraction"
     | "reextract_documents"
     | "orchestration"
-    | "generate_ingestion_report";
+    | "generate_ingestion_report"
+    | "export_report_pdf";
   deal_id?: string;
   document_id?: string;
   payload?: Record<string, unknown>;

@@ -107,6 +107,7 @@ import { reextractDocumentsProcessor } from "./jobs/reextract-documents";
 import { documentIntelligenceExtractProcessor } from "./jobs/document-intelligence-extract";
 import { populateDocumentPageUnderstandingProcessor } from "./jobs/populate-document-page-understanding";
 import { generateInvestorInsightsProcessor } from "./jobs/investor-insights/processor";
+import { exportReportPdfProcessor } from "./jobs/export-report-pdf/processor";
 
 // Deterministic startup instrumentation (must run at boot, before any queues are registered).
 (() => {
@@ -9815,6 +9816,10 @@ registerWorker("generate_ingestion_report", async (job: Job) => {
 // Investor Insight Engine – Stage 0 (PR1)
 // Queue: "investor_insights" | Job: "generate_investor_insights" | Concurrency: 1
 registerWorker("investor_insights", generateInvestorInsightsProcessor, { concurrency: 1 });
+
+// PDF Export — renders due-diligence reports server-side via Playwright
+// Queue: "export_report_pdf" | Concurrency: 1 (Playwright is resource-intensive)
+registerWorker("export_report_pdf", exportReportPdfProcessor, { concurrency: 1 });
 
 logWorkerQueueConfig("worker", Array.from(new Set(registeredWorkers)));
 

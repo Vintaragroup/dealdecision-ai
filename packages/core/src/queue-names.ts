@@ -14,6 +14,7 @@ export const QUEUE_NAMES = {
 	reextract_documents: "reextract_documents",
 	populate_document_page_understanding: "populate_document_page_understanding",
 	investor_insights: "investor_insights",
+	export_report_pdf: "export_report_pdf",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];

@@ -42,6 +42,7 @@ export type ApiQueues = {
   remediateExtractionQueue: Queue;
   reextractDocumentsQueue: Queue;
   investorInsightsQueue: Queue;
+  exportReportPdfQueue: Queue;
 };
 
 function assertQueueNamesRuntimeExport() {
@@ -171,6 +172,7 @@ export function getQueues(): ApiQueues {
     remediateExtractionQueue: new Queue(QUEUE_NAMES.remediate_extraction, { connection }),
     reextractDocumentsQueue: new Queue(QUEUE_NAMES.reextract_documents, { connection }),
     investorInsightsQueue: new Queue(QUEUE_NAMES.investor_insights, { connection }),
+    exportReportPdfQueue: new Queue(QUEUE_NAMES.export_report_pdf, { connection }),
   };
 
   if (!didLogQueueConfig && process.env.NODE_ENV !== "production") {

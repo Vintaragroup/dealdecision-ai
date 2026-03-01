@@ -15,7 +15,7 @@
  *   └────────────────────────┴─────────────────────────────────────────┘
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -32,6 +32,7 @@ import {
 import { Button } from '../../ui/button';
 import { ScrollArea } from '../../ui/scroll-area';
 import { OrchestratorFullReportView } from '../../workspace/OrchestratorFullReportView';
+import { apiPostExportPdf, apiGetExportPdfStatus } from '../../../lib/apiClient';
 import type { ReportSectionKey, ReportPresetId } from './ReportViewConfigModal';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -137,9 +138,11 @@ export interface ReportGeneratorPreviewSplitProps {
   onRunAnalysis?: () => Promise<void> | void;
   /** Seeded from the upstream context. Defaults to investor preset. */
   initialConfig?: Partial<ReportExportConfig>;
-  /** Stub callback for the Export PDF button. Does not call any API yet. */
+  /** Optional callback invoked when an export is triggered (e.g. for analytics). The component handles the API call internally. */
   onExportPdf?: (config: ReportExportConfig) => void;
 }
+
+type ExportState = 'idle' | 'submitting' | 'polling' | 'done' | 'error';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Component
@@ -158,6 +161,12 @@ export function ReportGeneratorPreviewSplit({
     ...DEFAULT_EXPORT_CONFIG,
     ...initialConfig,
   });
+
+  // ── Export job state ────────────────────────────────────────────────────
+  const [exportState, setExportState] = useState<ExportState>('idle');
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Preset selection ────────────────────────────────────────────────────────
   const applyPreset = useCallback((presetId: ReportPresetId) => {
@@ -188,15 +197,60 @@ export function ReportGeneratorPreviewSplit({
     }
   }, []);
 
-  // ── Export PDF stub ─────────────────────────────────────────────────────────
-  const handleExportPdf = () => {
+  // ── Export PDF ─────────────────────────────────────────────────────────────
+  const handleExportPdf = useCallback(async () => {
+    // Optional override (e.g. for tests / storybook)
     if (onExportPdf) {
       onExportPdf(exportConfig);
-    } else {
-      // Default stub — logs config and shows browser console feedback
-      console.info('[DDAI][export_pdf_stub] Config:', exportConfig);
+      return;
     }
-  };
+
+    setExportState('submitting');
+    setDownloadUrl(null);
+    setExportError(null);
+
+    try {
+      // Cast local type to contracts shape (identical string union, structurally compatible)
+      const apiConfig = exportConfig as unknown as import('@dealdecision/contracts').ReportExportConfig;
+      const res = await apiPostExportPdf(dealId, apiConfig);
+      const exportId = res.export_id;
+
+      // Poll every 2s for up to 2 minutes
+      setExportState('polling');
+      let attempts = 0;
+      const MAX_ATTEMPTS = 60;
+
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+      pollTimerRef.current = setInterval(async () => {
+        attempts++;
+        try {
+          const status = await apiGetExportPdfStatus(dealId, exportId);
+          if (status.status === 'completed') {
+            clearInterval(pollTimerRef.current!);
+            pollTimerRef.current = null;
+            setDownloadUrl((status as any).download_url ?? null);
+            setExportState('done');
+          } else if (status.status === 'failed') {
+            clearInterval(pollTimerRef.current!);
+            pollTimerRef.current = null;
+            setExportError((status as any).error_message ?? 'Export failed');
+            setExportState('error');
+          } else if (attempts >= MAX_ATTEMPTS) {
+            clearInterval(pollTimerRef.current!);
+            pollTimerRef.current = null;
+            setExportError('Export timed out. Please try again.');
+            setExportState('error');
+          }
+        } catch {
+          // Don't abort polling on transient fetch errors
+        }
+      }, 2000);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Export request failed';
+      setExportError(msg);
+      setExportState('error');
+    }
+  }, [dealId, exportConfig, onExportPdf]);
 
   const selectedCount = exportConfig.sections.length;
 
@@ -394,23 +448,83 @@ export function ReportGeneratorPreviewSplit({
               </div>
             </div>
 
-            {/* Export stub button */}
+            {/* Export button + status */}
             <div className={`pt-2 border-t ${border}`}>
-              <Button
-                variant="primary"
-                darkMode={darkMode}
-                icon={<Download className="w-4 h-4" />}
-                onClick={handleExportPdf}
-                disabled={selectedCount === 0}
-                className="w-full justify-center"
-              >
-                Export PDF
-              </Button>
-              <p className={`text-xs text-center mt-2 ${subText}`}>
-                {selectedCount === 0
-                  ? 'Select at least one section'
-                  : `${selectedCount} section${selectedCount !== 1 ? 's' : ''} · ${exportConfig.format.toUpperCase()} format`}
-              </p>
+              {/* Done state: show download + copy-link */}
+              {exportState === 'done' && downloadUrl ? (
+                <div className="space-y-2">
+                  <a
+                    href={downloadUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={`flex items-center justify-center gap-2 w-full rounded-lg py-2 text-sm font-medium border transition-colors ${
+                      darkMode
+                        ? 'bg-green-500/15 border-green-500/40 text-green-400 hover:bg-green-500/25'
+                        : 'bg-green-50 border-green-300 text-green-700 hover:bg-green-100'
+                    }`}
+                  >
+                    <Download className="w-4 h-4" />
+                    Download PDF
+                  </a>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    darkMode={darkMode}
+                    onClick={() => { navigator.clipboard.writeText(downloadUrl).catch(() => undefined); }}
+                    className="w-full justify-center text-xs"
+                  >
+                    Copy share link
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => { setExportState('idle'); setDownloadUrl(null); }}
+                    className={`w-full text-xs text-center ${subText} hover:underline`}
+                  >
+                    Export again
+                  </button>
+                </div>
+              ) : exportState === 'error' ? (
+                <div>
+                  <p className="text-xs text-red-500 text-center mb-2">
+                    {exportError ?? 'Export failed'}
+                  </p>
+                  <Button
+                    variant="outline"
+                    darkMode={darkMode}
+                    icon={<Download className="w-4 h-4" />}
+                    onClick={() => { setExportState('idle'); setExportError(null); handleExportPdf(); }}
+                    className="w-full justify-center"
+                  >
+                    Retry Export
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <Button
+                    variant="primary"
+                    darkMode={darkMode}
+                    icon={
+                      exportState === 'idle'
+                        ? <Download className="w-4 h-4" />
+                        : <span className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin inline-block" />
+                    }
+                    onClick={handleExportPdf}
+                    disabled={selectedCount === 0 || exportState !== 'idle'}
+                    className="w-full justify-center"
+                  >
+                    {exportState === 'submitting'
+                      ? 'Requesting…'
+                      : exportState === 'polling'
+                      ? 'Generating PDF…'
+                      : 'Export PDF'}
+                  </Button>
+                  <p className={`text-xs text-center mt-2 ${subText}`}>
+                    {selectedCount === 0
+                      ? 'Select at least one section'
+                      : `${selectedCount} section${selectedCount !== 1 ? 's' : ''} · ${exportConfig.format.toUpperCase()} format`}
+                  </p>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -437,16 +551,40 @@ export function ReportGeneratorPreviewSplit({
               >
                 {selectedCount} of {SECTION_DEFS.length} sections
               </span>
-              <Button
-                variant="outline"
-                size="sm"
-                darkMode={darkMode}
-                icon={<Download className="w-3.5 h-3.5" />}
-                onClick={handleExportPdf}
-                disabled={selectedCount === 0}
-              >
-                Export PDF
-              </Button>
+              {exportState === 'done' && downloadUrl ? (
+                <a
+                  href={downloadUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={`inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded border ${
+                    darkMode
+                      ? 'border-green-600 text-green-400 hover:bg-green-900/30'
+                      : 'border-green-600 text-green-700 hover:bg-green-50'
+                  }`}
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Download PDF
+                </a>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  darkMode={darkMode}
+                  icon={
+                    exportState === 'idle'
+                      ? <Download className="w-3.5 h-3.5" />
+                      : <span className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin inline-block" />
+                  }
+                  onClick={handleExportPdf}
+                  disabled={selectedCount === 0 || exportState !== 'idle'}
+                >
+                  {exportState === 'submitting'
+                    ? 'Requesting…'
+                    : exportState === 'polling'
+                    ? 'Generating…'
+                    : 'Export PDF'}
+                </Button>
+              )}
             </div>
           </div>
 

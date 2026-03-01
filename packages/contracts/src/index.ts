@@ -177,7 +177,8 @@ export type JobType =
 	| 'generate_report'
 	| 'sync_crm'
 	| 'classify_document'
-	| 'investor_insights';
+	| 'investor_insights'
+	| 'export_report_pdf';
 
 // BullMQ queue names. Keep these centralized so API + worker stay in sync.
 export const QUEUE_NAMES = {
@@ -193,6 +194,7 @@ export const QUEUE_NAMES = {
 	reextract_documents: 'reextract_documents',
 	populate_document_page_understanding: 'populate_document_page_understanding',
 	investor_insights: 'investor_insights',
+	export_report_pdf: 'export_report_pdf',
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
@@ -446,4 +448,56 @@ export interface AnalysisResult {
 	confidence_score: number;
 	completed_at: string;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Report Export — shared client/server contract
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Keys that map to renderable sections in the due-diligence report. */
+export type ReportExportSectionKey =
+	| 'decision_overlay'
+	| 'executive_summary'
+	| 'deal_terms'
+	| 'market_analysis'
+	| 'financial_analysis'
+	| 'risk_verification'
+	| 'evidence_appendix';
+
+export type ReportExportPreset = 'complete' | 'investor' | 'quick' | 'custom';
+export type ReportExportFormat = 'standard' | 'pdf' | 'word';
+
+/**
+ * UI-driven configuration for a server-side PDF export.
+ * Sent as the POST body to /api/v1/deals/:dealId/report/export-pdf.
+ * Must exactly match the shape kept in ReportGeneratorPreviewSplit (web).
+ */
+export interface ReportExportConfig {
+	preset: ReportExportPreset;
+	format: ReportExportFormat;
+	sections: ReportExportSectionKey[];
+	includeCoverPage?: boolean;
+	includePageNumbers?: boolean;
+}
+
+/** BullMQ job payload for the export_report_pdf worker job. */
+export interface ReportExportJobPayload {
+	deal_id: string;
+	export_id: string;       // UUID from deal_report_exports.id
+	config: ReportExportConfig;
+	requested_by?: string | null;
+}
+
+/** API response for POST /api/v1/deals/:dealId/report/export-pdf */
+export interface ExportPdfResponse {
+	ok: true;
+	export_id: string;
+	job_id: string | null;
+	status: 'pending';
+}
+
+/** API response for GET /api/v1/deals/:dealId/report/export-pdf/:exportId */
+export type ExportPdfStatusResponse =
+	| { status: 'pending' | 'processing' }
+	| { status: 'completed'; download_url: string; r2_key: string }
+	| { status: 'failed'; error_message: string | null };
 

@@ -50,6 +50,7 @@
     "ioredis": "^5.4.1",
     "pdfjs-dist": "^3.11.174",
     "pg": "^8.13.1",
+    "playwright": "^1.41.0",
     "tesseract.js": "^5.1.0",
     "unzipper": "^0.10.14",
     "xlsx": "^0.18.5",

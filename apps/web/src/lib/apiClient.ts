@@ -1,4 +1,4 @@
-import type { Deal, WorkspaceChatResponse, DealChatResponse, JobProgressEventV1, JobStatusDetail } from '@dealdecision/contracts';
+import type { Deal, WorkspaceChatResponse, DealChatResponse, JobProgressEventV1, JobStatusDetail, ReportExportConfig, ExportPdfResponse, ExportPdfStatusResponse } from '@dealdecision/contracts';
 
 import { debugApiInferDealId, debugApiIsEnabled, debugApiLogCall, debugApiLogSse } from './debugApi';
 import { getAuthToken } from './authToken';
@@ -2431,6 +2431,37 @@ export async function apiPostRiskVerification(
   return request<RiskVerificationNarrativeResult>(
     `/api/v1/deals/${dealId}/analysis/risk-verification`,
     { method: 'POST', body: JSON.stringify(payload) },
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PDF Export
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Request a server-side PDF export for a deal.
+ * Returns { ok, export_id, job_id, status: 'pending' }.
+ */
+export async function apiPostExportPdf(
+  dealId: string,
+  config: ReportExportConfig
+): Promise<ExportPdfResponse> {
+  return request<ExportPdfResponse>(`/api/v1/deals/${dealId}/report/export-pdf`, {
+    method: 'POST',
+    body: JSON.stringify({ config }),
+  });
+}
+
+/**
+ * Poll the status of a PDF export job.
+ * Returns { status } or { status: 'completed', download_url, r2_key }.
+ */
+export async function apiGetExportPdfStatus(
+  dealId: string,
+  exportId: string
+): Promise<ExportPdfStatusResponse> {
+  return request<ExportPdfStatusResponse>(
+    `/api/v1/deals/${dealId}/report/export-pdf/${exportId}`
   );
 }
 

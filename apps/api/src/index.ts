@@ -20,6 +20,7 @@ import { registerAdminRoutes } from "./routes/admin";
 import { registerVisualAssetRoutes } from "./routes/visual-assets";
 import { registerNodeAiAnalyzeRoutes } from "./routes/node-ai-analyze";
 import { registerUnderstandingRoutes } from "./routes/understanding";
+import { registerExportPdfRoutes } from "./routes/export-pdf";
 import { initializeLLM } from "./lib/llm";
 import { getPool } from "./lib/db";
 import { applyPendingMigrations, getMigrationStatus } from "./lib/migrations";
@@ -206,6 +207,7 @@ async function bootstrap() {
   await registerVisualAssetRoutes(app);
   await registerNodeAiAnalyzeRoutes(app);
   await registerUnderstandingRoutes(app, pool);
+  await registerExportPdfRoutes(app, pool);
 }
 
 async function start() {

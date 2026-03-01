@@ -53,6 +53,7 @@ import { DealTermsCard } from './DealTermsCard';
 import { MarketAnalysisCard } from './MarketAnalysisCard';
 import { FinancialAnalysisSection } from './analysis/FinancialAnalysisSection';
 import { RiskVerificationSection } from './analysis/RiskVerificationSection';
+import { DocumentReadinessCard } from './analysis/DocumentReadinessCard';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Props
@@ -985,6 +986,11 @@ export function OrchestratorFullReportView({
           </Button>
         </div>
       </div>
+
+      {/* ── Document Readiness Panel (collapsed by default) ── */}
+      {dealId && (
+        <DocumentReadinessCard dealId={dealId} darkMode={darkMode} />
+      )}
 
       {/* ── Section 1: Decision Overlay ── */}
       <section id="decision-overlay">

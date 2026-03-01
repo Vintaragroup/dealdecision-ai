@@ -434,3 +434,84 @@ describe("buildDealFusionSection — empty result", () => {
 		expect(section.body).not.toContain("--- conflicts ---");
 	});
 });
+
+// ─── Regression: market taint guard prevents raise_amount false positive ──────
+
+describe("fuseDealCanonicalFacts — market-size text must NOT become raise_amount", () => {
+	// Reproduce: "$11B — investment opportunity" historically matched Form E of
+	// RAISE_AMOUNT_PATTERN.  The taint guard must reject it.
+	const pages = [
+		page(PDF_DOC, 0, "Tax Software Market $11B — a significant investment opportunity for enterprise."),
+		page(PDF_DOC, 1, "Team: 3 founders, 10 engineers."),
+	];
+
+	const result = fuseDealCanonicalFacts(pages, [], [], NOW);
+
+	it("raise_amount fact is NOT fused (tainted by market context)", () => {
+		const fact = result.facts.find((f) => f.field === "raise_amount");
+		expect(fact).toBeUndefined();
+	});
+
+	it("no raise_amount conflict emitted for tainted match", () => {
+		const conflict = result.conflicts.find((c) => c.field === "raise_amount");
+		expect(conflict).toBeUndefined();
+	});
+});
+
+// ─── Regression: clean raise sentence correctly fuses raise_amount ────────────
+
+describe("fuseDealCanonicalFacts — clean raise sentence populates raise_amount", () => {
+	// Verb-first form: "Raising $4M …" must always be accepted (no taint check).
+	const pages = [
+		page(PDF_DOC, 0, "Raising $4M pre-seed to expand our engineering team and launch go-to-market."),
+	];
+
+	const result = fuseDealCanonicalFacts(pages, [], [], NOW);
+
+	it("raise_amount fact is fused", () => {
+		const fact = result.facts.find((f) => f.field === "raise_amount");
+		expect(fact).toBeDefined();
+	});
+
+	it("raise_amount value is $4M", () => {
+		const fact = result.facts.find((f) => f.field === "raise_amount");
+		expect(fact!.value).toBe("$4M");
+	});
+
+	it("raise_amount confidence is 0.8 (single-source)", () => {
+		const fact = result.facts.find((f) => f.field === "raise_amount");
+		expect(fact!.confidence).toBe(0.8);
+	});
+});
+
+// ─── Regression: deck_has_use_of_funds_buckets detected from heading + labels ─
+
+describe("fuseDealCanonicalFacts — deck_has_use_of_funds_buckets detected", () => {
+	// Typical pitch-deck slide: heading + category rows with percentages.
+	// The USE_OF_FUNDS_BUCKET_PATTERN requires prose text which this may not have,
+	// but DECK_USE_OF_FUNDS_BUCKETS_PATTERN detects it via heading + bucket labels.
+	const pages = [
+		page(
+			PDF_DOC,
+			3,
+			"USE OF FUNDS\nEngineering 40%\nMarketing 30%\nProduct 20%\nOperations 10%",
+		),
+	];
+
+	const result = fuseDealCanonicalFacts(pages, [], [], NOW);
+
+	it("deck_has_use_of_funds_buckets fact is fused", () => {
+		const fact = result.facts.find((f) => f.field === "deck_has_use_of_funds_buckets");
+		expect(fact).toBeDefined();
+	});
+
+	it("deck_has_use_of_funds_buckets is in use_of_funds category", () => {
+		const fact = result.facts.find((f) => f.field === "deck_has_use_of_funds_buckets");
+		expect(fact!.category).toBe("use_of_funds");
+	});
+
+	it("buildDealFusionSection body contains field=deck_has_use_of_funds_buckets", () => {
+		const section = buildDealFusionSection(result);
+		expect(section.body).toContain("field=deck_has_use_of_funds_buckets");
+	});
+});

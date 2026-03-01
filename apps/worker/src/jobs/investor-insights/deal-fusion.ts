@@ -176,6 +176,56 @@ const GROWTH_RATE_PATTERN =
 
 const CUSTOMER_COUNT_PATTERN = /\b(\d[\d,]+)\s+(?:customers?|active\s+users?|clients?)\b/i;
 
+/**
+ * deck_has_use_of_funds_buckets: detects a "use of funds" heading followed by
+ * allocation-category bucket labels within 300 chars — does NOT require dollar
+ * amounts, so it fires even when a slide shows only percentage splits or bare labels.
+ */
+const DECK_USE_OF_FUNDS_BUCKETS_PATTERN = new RegExp(
+	`(?:use\\s+of\\s+(?:funds|proceeds|capital)|allocation\\s+of\\s+(?:funds|proceeds)|` +
+	`capital\\s+allocation|funds\\s+will\\s+be\\s+(?:used|deployed|allocated))` +
+	`[\\s\\S]{0,300}?` +
+	`(?:\\bengineering\\b|\\bmarketing\\b|\\bproduct\\b|\\bsales\\b|\\boperations\\b|` +
+	`\\bhiring\\b|\\br&d\\b|\\bresearch\\b|\\bdevelopment\\b|` +
+	`\\btechnology\\b|\\bgo-to-market\\b|\\bcustomer\\s+(?:success|acquisition)\\b|` +
+	`\\binfrastructure\\b|\\blegal\\b|\\bfinance\\b)`,
+	"i"
+);
+
+/**
+ * Expanded taint regex for raise_amount matching: includes plain "market",
+ * "industry", "sector", "gap", "opportunit" — safe because it is only applied
+ * to money-first matches (where the first character is NOT a letter).
+ */
+const FUSION_MARKET_TAINT_RE =
+	// Note: plain "market" uses (?<!-)market(?!\w) — a negative lookbehind for hyphen
+	// so that "go-to-market" (preceded by '-') does NOT trigger a taint.
+	// Only uncompounded uses like "Tax Software Market $11B" will match.
+	/\b(?:TAM|SAM|SOM|total\s+addressable\s+market|serviceable\s+addressable\s+market|serviceable\s+obtainable\s+market|addressable\s+market|market\s+size|market\s+opportunity|market\s+cap(?:italization)?|industry|sector|gap|opportunit)\b|(?<!-)market(?!\w)/i;
+
+const FUSION_TAM_TAINT_WINDOW = 200;
+
+/**
+ * Returns true when a RAISE_AMOUNT_PATTERN match should be rejected because the
+ * surrounding text suggests a market-size claim rather than an investment ask.
+ *
+ * Mirrors processor.ts isRaiseMatchTainted with the same verb-first exemption:
+ * verb-first matches ("Raising $4M") are never tainted; only money-first matches
+ * ("$11B — investment opportunity") are checked.
+ */
+function isFusionRaiseTainted(
+	text: string,
+	matchIndex: number,
+	matchLength: number,
+): boolean {
+	// Verb-first: starts with a letter — safe, not a market-size match.
+	if (/[A-Za-z]/.test(text[matchIndex] ?? "")) return false;
+	// Money-first: check context window for market-size language.
+	const start = Math.max(0, matchIndex - FUSION_TAM_TAINT_WINDOW);
+	const end = Math.min(text.length, matchIndex + matchLength + FUSION_TAM_TAINT_WINDOW);
+	return FUSION_MARKET_TAINT_RE.test(text.slice(start, end));
+}
+
 // ─── Field registry ───────────────────────────────────────────────────────────
 
 interface FieldDef {
@@ -193,7 +243,8 @@ const FUSION_FIELDS: FieldDef[] = [
 	{ field: "valuation_pre",        category: "valuation_terms",  pattern: VALUATION_PRE_PATTERN },
 	{ field: "valuation_post",       category: "valuation_terms",  pattern: VALUATION_POST_PATTERN },
 	{ field: "valuation_safe_cap",   category: "valuation_terms",  pattern: VALUATION_SAFE_CAP_PATTERN },
-	{ field: "use_of_funds_buckets", category: "use_of_funds",     pattern: USE_OF_FUNDS_BUCKET_PATTERN },
+	{ field: "use_of_funds_buckets",          category: "use_of_funds",     pattern: USE_OF_FUNDS_BUCKET_PATTERN },
+	{ field: "deck_has_use_of_funds_buckets", category: "use_of_funds",     pattern: DECK_USE_OF_FUNDS_BUCKETS_PATTERN },
 	{ field: "tam_value",            category: "market_claims",    pattern: TAM_VALUE_PATTERN },
 	{ field: "sam_value",            category: "market_claims",    pattern: SAM_VALUE_PATTERN },
 	{ field: "som_value",            category: "market_claims",    pattern: SOM_VALUE_PATTERN },
@@ -286,6 +337,9 @@ function findFirstMatchInDoc(
 	for (const page of docPages) {
 		const m = pattern.exec(page.text ?? "");
 		if (!m) continue;
+		// Guard: skip money-first raise_amount matches whose context contains
+		// market-size language ("$11B market", "$8B TAM — investment opportunity").
+		if (field === "raise_amount" && isFusionRaiseTainted(page.text ?? "", m.index, m[0].length)) continue;
 		const snippet = m[0].slice(0, 120);
 		return {
 			document_id: page.document_id,

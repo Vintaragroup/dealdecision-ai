@@ -69,6 +69,9 @@ const PERMITTED_NEW_FILES = [
   // Gate 1 DPU backfill — auto-enqueue DPU when missing/stale/partial
   'apps/api/src/__tests__/gate1-dpu-backfill.test.ts',
   'apps/web/src/__tests__/OrchestratorFullReportView.dpuBackfill.test.tsx',
+  // Document Readiness panel — AI Analysis tab read-only diagnostic card
+  'apps/web/src/components/workspace/analysis/DocumentReadinessCard.tsx',
+  'apps/web/src/__tests__/DocumentReadinessCard.test.tsx',
 ];
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
@@ -150,6 +153,16 @@ describe('Scope guard — DealTermsCard import isolation', () => {
     expect(src).not.toContain('OrchestratorFullReportView');
   });
 
+  test('InvestorInsightsTab.tsx does NOT import DocumentReadinessCard', () => {
+    const src = readWebFile('components/workspace/InvestorInsightsTab.tsx');
+    expect(src).not.toContain('DocumentReadinessCard');
+  });
+
+  test('OrchestratorFullReportView.tsx imports DocumentReadinessCard (approved composition consumer)', () => {
+    const src = readWebFile('components/workspace/OrchestratorFullReportView.tsx');
+    expect(src).toContain('DocumentReadinessCard');
+  });
+
   test('AnalysisTab.tsx imports OrchestratorFullReportView (approved composition consumer)', () => {
     const src = readWebFile('components/workspace/AnalysisTab.tsx');
     expect(src).toContain('OrchestratorFullReportView');
@@ -225,6 +238,7 @@ describe('Scope guard — DealTermsCard import isolation', () => {
           entry.name === 'RiskVerificationSection.tsx' ||
           entry.name === 'OrchestratorSummaryCard.tsx' ||
           entry.name === 'DecisionOverlay.tsx' ||
+          entry.name === 'DocumentReadinessCard.tsx' ||
           entry.name === 'OrchestratorFullReportView.tsx' ||
           entry.name === 'useFinancialAnalysis.ts' ||
           entry.name === 'useRiskVerification.ts' ||

@@ -967,9 +967,16 @@ const ASK_SLIDE_HEADING_RE =
 /**
  * TAM_MARKET_CONTEXT_RE: the presence of any of these tokens near a raise-pattern match
  * indicates the dollar figure describes a market size, NOT a fundraise amount.
+ *
+ * Extended to cover plain "market", "industry", "sector", "gap", "opportunit*" —
+ * these are safe additions because this regex is ONLY applied to money-first matches
+ * (where `isRaiseMatchTainted` skips verb-first forms entirely).
  */
 const TAM_MARKET_CONTEXT_RE =
-	/\b(?:TAM|SAM|SOM|total\s+addressable\s+market|serviceable\s+addressable\s+market|serviceable\s+obtainable\s+market|addressable\s+market|market\s+size|market\s+opportunity|market\s+cap(?:italization)?)\b/i;
+	// Note: plain "market" uses (?<!-)market(?!\w) — a negative lookbehind for hyphen
+	// so that "go-to-market" (preceded by '-') does NOT trigger a taint.
+	// Only uncompounded uses like "Tax Software Market $11B" will match.
+	/\b(?:TAM|SAM|SOM|total\s+addressable\s+market|serviceable\s+addressable\s+market|serviceable\s+obtainable\s+market|addressable\s+market|market\s+size|market\s+opportunity|market\s+cap(?:italization)?|industry|sector|gap|opportunit)\b|(?<!-)market(?!\w)/i;
 
 /** Characters to inspect on each side of a raise-pattern match for TAM/SAM/SOM context. */
 const TAM_TAINT_WINDOW = 200;

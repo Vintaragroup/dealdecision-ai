@@ -507,11 +507,20 @@ export function buildOrchestratorReportV1(args: {
 
   const stage = detectStage(canonicalFields);
 
+  // If the deal_fusion section reports deck_has_use_of_funds_buckets as fused,
+  // suppress "use_of_funds_buckets" from missing_critical_terms: the deck has a
+  // visual/percentage use-of-funds layout that the prose pattern couldn't capture.
+  const dealFusionBody = findSectionBody(rp, "deal_fusion");
+  const deckHasUofBuckets =
+    dealFusionBody != null &&
+    /\bfield=deck_has_use_of_funds_buckets\b/.test(dealFusionBody);
+
   const missingCriticalTerms = canonicalFields
     .filter(
       (f) => CRITICAL_CANONICAL_FIELDS.has(f.field) && f.computability !== "Computable"
     )
-    .map((f) => f.field);
+    .map((f) => f.field)
+    .filter((field) => !(field === "use_of_funds_buckets" && deckHasUofBuckets));
 
   const getField = (name: string): string | null =>
     canonicalFields.find((f) => f.field === name && f.computability === "Computable")?.value ?? null;

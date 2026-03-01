@@ -142,6 +142,8 @@ async function clickRegenerateAndFlush() {
 describe('OrchestratorFullReportView — Gate 1 DPU preparing_documents state', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Mock Math.random so jitter is deterministic (0.5 → jitter = 0)
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
     // Fake only setInterval/clearInterval so the polling clock is under test
     // control. Leaving setTimeout real ensures React's scheduler and waitFor's
     // internal polling continue to work normally.
@@ -150,6 +152,7 @@ describe('OrchestratorFullReportView — Gate 1 DPU preparing_documents state', 
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks(); // restores Math.random
   });
 
   test('1. Clicking Regenerate with preparing_documents response renders the preparing overlay', async () => {
@@ -280,5 +283,153 @@ describe('OrchestratorFullReportView — Gate 1 DPU preparing_documents state', 
     });
 
     expect(mockGetReadiness.mock.calls.length).toBe(callCountBeforeUnmount);
+  });
+});
+
+// ─── Poll safety (maxAttempts, Retry CTA, blocked_reason, progress) ──────────
+
+describe('OrchestratorFullReportView — Gate 1 DPU poll safety', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5); // deterministic jitter = 0 → poll every 500ms
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Advance the fake setInterval clock for `n` ticks (each 500ms with jitter=0)
+   * and flush all queued async micro-tasks so state updates land before waitFor.
+   */
+  async function advancePollTicks(n: number, intervalMs = 500) {
+    await act(async () => {
+      // Advance past n full interval periods in one call so all ticks fire
+      // synchronously before the async work is flushed.
+      vi.advanceTimersByTime(intervalMs * (n + 1));
+      // Flush the async ops queued by all n ticks
+      for (let i = 0; i <= n; i++) {
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      }
+    });
+  }
+
+  test('5. Poll stops at maxAttempts=40 and shows Retry CTA (data-testid="preparing-docs-retry")', async () => {
+    mockRegenerate.mockResolvedValue({
+      status: 'preparing_documents',
+      blocked_reason: 'missing_dpu',
+      action: 'enqueue_dpu_backfill',
+      poll_after_ms: 500,
+      docs_fingerprint: `${DEAL_ID}::18::0::18`,
+      expected_pages_total: 18,
+      dpu_rows_total: 0,
+      missing_pages_total: 18,
+    });
+    mockGetReadiness.mockResolvedValue(makeReadiness(false));
+
+    seedReady();
+    render(<OrchestratorFullReportView dealId={DEAL_ID} />);
+    await clickRegenerateAndFlush();
+
+    expect(screen.getByTestId('preparing-documents-state')).toBeTruthy();
+    expect(screen.queryByTestId('preparing-docs-retry')).toBeNull();
+
+    // maxAttempts = 40; advance 41 ticks (40 polls + 1 to set timedOut state)
+    await advancePollTicks(41);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('preparing-docs-retry')).toBeTruthy();
+    });
+    // Overlay should still be visible in timed-out state
+    expect(screen.getByTestId('preparing-documents-state')).toBeTruthy();
+    // Spinner text changes to "Still preparing…"
+    expect(screen.getByText(/Still preparing/i)).toBeTruthy();
+  });
+
+  test('6. blocked_reason renders inside preparing overlay (data-testid="preparing-docs-reason")', async () => {
+    mockRegenerate.mockResolvedValue({
+      status: 'preparing_documents',
+      blocked_reason: 'missing_dpu',
+      action: 'enqueue_dpu_backfill',
+      poll_after_ms: 1500,
+      docs_fingerprint: `${DEAL_ID}::18::0::18`,
+    });
+    mockGetReadiness.mockResolvedValue(makeReadiness(false));
+
+    seedReady();
+    render(<OrchestratorFullReportView dealId={DEAL_ID} />);
+    await clickRegenerateAndFlush();
+
+    await waitFor(() => {
+      const reasonEl = screen.getByTestId('preparing-docs-reason');
+      expect(reasonEl).toBeTruthy();
+      expect(reasonEl.textContent).toContain('missing_dpu');
+    });
+  });
+
+  test('7. Progress hint (dpu_rows_total/expected_pages_total) renders in preparing overlay (data-testid="preparing-docs-progress")', async () => {
+    mockRegenerate.mockResolvedValue({
+      status: 'preparing_documents',
+      blocked_reason: 'dpu_partial',
+      action: 'enqueue_dpu_backfill',
+      poll_after_ms: 1500,
+      docs_fingerprint: `${DEAL_ID}::18::10::8`,
+      expected_pages_total: 18,
+      dpu_rows_total: 10,
+      missing_pages_total: 8,
+    });
+    mockGetReadiness.mockResolvedValue(makeReadiness(false));
+
+    seedReady();
+    render(<OrchestratorFullReportView dealId={DEAL_ID} />);
+    await clickRegenerateAndFlush();
+
+    await waitFor(() => {
+      const progressEl = screen.getByTestId('preparing-docs-progress');
+      expect(progressEl).toBeTruthy();
+      expect(progressEl.textContent).toContain('10');
+      expect(progressEl.textContent).toContain('18');
+    });
+  });
+
+  test('8. Clicking Retry CTA calls apiRegenerateInvestorInsights again', async () => {
+    mockRegenerate.mockResolvedValue({
+      status: 'preparing_documents',
+      blocked_reason: 'missing_dpu',
+      action: 'enqueue_dpu_backfill',
+      poll_after_ms: 500,
+      docs_fingerprint: `${DEAL_ID}::18::0::18`,
+      expected_pages_total: 18,
+      dpu_rows_total: 0,
+      missing_pages_total: 18,
+    });
+    mockGetReadiness.mockResolvedValue(makeReadiness(false));
+
+    seedReady();
+    render(<OrchestratorFullReportView dealId={DEAL_ID} />);
+    await clickRegenerateAndFlush();
+
+    // Exhaust attempts to get to timeout state
+    await advancePollTicks(41);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('preparing-docs-retry')).toBeTruthy();
+    });
+
+    const regenerateCallsBefore = mockRegenerate.mock.calls.length;
+
+    // Click Retry — clears timedOut state and calls regenerate again
+    await act(async () => {
+      screen.getByTestId('preparing-docs-retry').click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Regenerate should have been called once more
+    expect(mockRegenerate.mock.calls.length).toBeGreaterThan(regenerateCallsBefore);
   });
 });

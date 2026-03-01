@@ -660,8 +660,23 @@ export function OrchestratorFullReportView({
   const { status: orchStatus, data: orchData } = useOrchestratorReport(dealId);
 
   // ── Gate 1 DPU preparing-documents state ─────────────────────────────────
-  const [preparingDocs, setPreparingDocs] = useState<{ pollAfterMs: number } | null>(null);
+  const MAX_POLL_ATTEMPTS = 40;
+  type PreparingDocsState = {
+    pollAfterMs: number;
+    /** Normalised client blocked_reason from the API (e.g. "missing_dpu"). */
+    blockedReason: string | null;
+    /** DPU rows populated so far (for progress hint). */
+    dpuRowsTotal: number;
+    /** Total pages expected across all docs (for progress hint). */
+    expectedPagesTotal: number;
+    /** How many poll cycles have fired. */
+    attempts: number;
+    /** Set to true when maxAttempts is exhausted — show Retry CTA. */
+    timedOut: boolean;
+  };
+  const [preparingDocs, setPreparingDocs] = useState<PreparingDocsState | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const attemptsRef = useRef(0);
   const mountedRef = useRef(true);
 
   // Cleanup on unmount
@@ -673,11 +688,34 @@ export function OrchestratorFullReportView({
     };
   }, []);
 
-  // Poll readiness, then re-trigger regenerate once DPU is ready
+  // Poll readiness then re-trigger regenerate once DPU is ready.
+  // Uses setInterval with per-activation jitter (±250 ms applied once when the
+  // preparing state first activates). Attempts are tracked via a ref so the
+  // interval fires unconditionally; after MAX_POLL_ATTEMPTS ticks the interval
+  // is cleared and timedOut is set to surface the Retry CTA.
   useEffect(() => {
-    if (!preparingDocs || !dealId) return;
-    const ms = Math.max(500, preparingDocs.pollAfterMs);
+    if (!preparingDocs || !dealId || preparingDocs.timedOut) return;
+
+    // Sync the ref with the state-tracked attempt count on each effect entry.
+    attemptsRef.current = preparingDocs.attempts;
+
+    const baseMs = Math.max(500, preparingDocs.pollAfterMs);
+    // ±250 ms jitter applied once per activation — prevents thundering-herd
+    // when multiple tabs are open against the same deal.
+    const jitter = Math.floor(Math.random() * 500) - 250;
+    const pollMs = Math.max(500, baseMs + jitter);
+
     pollingRef.current = setInterval(() => {
+      if (!mountedRef.current) return;
+
+      const attempt = ++attemptsRef.current;
+      if (attempt > MAX_POLL_ATTEMPTS) {
+        clearInterval(pollingRef.current!);
+        pollingRef.current = null;
+        setPreparingDocs((prev) => (prev ? { ...prev, timedOut: true } : null));
+        return;
+      }
+
       void (async () => {
         if (!mountedRef.current) return;
         try {
@@ -697,7 +735,8 @@ export function OrchestratorFullReportView({
           // ignore transient poll errors — keep polling
         }
       })();
-    }, ms);
+    }, pollMs);
+
     return () => {
       if (pollingRef.current) {
         clearInterval(pollingRef.current);
@@ -708,23 +747,73 @@ export function OrchestratorFullReportView({
 
   // ── Preparing Documents (Gate 1 DPU backfill in progress) ─────────────────
   if (preparingDocs) {
+    const { blockedReason, dpuRowsTotal, expectedPagesTotal, timedOut } = preparingDocs;
+
+    const handleRetry = async () => {
+      if (!dealId) return;
+      setPreparingDocs(null);
+      const result = await apiRegenerateInvestorInsights(dealId);
+      if ('status' in result && result.status === 'preparing_documents') {
+        setPreparingDocs({
+          pollAfterMs: result.poll_after_ms ?? 1500,
+          blockedReason: result.blocked_reason ?? null,
+          dpuRowsTotal: result.dpu_rows_total ?? 0,
+          expectedPagesTotal: result.expected_pages_total ?? 0,
+          attempts: 0,
+          timedOut: false,
+        });
+      } else {
+        void refreshInsights();
+      }
+    };
+
     return (
       <div
         className="flex items-center justify-center h-full"
         data-testid="preparing-documents-state"
       >
-        <div className="text-center">
-          <div className="relative w-20 h-20 mx-auto mb-4">
-            <div className="absolute inset-0 border-4 border-[#6366f1]/20 rounded-full" />
-            <div className="absolute inset-0 border-4 border-[#6366f1] rounded-full border-t-transparent animate-spin" />
-            <Sparkles className="absolute inset-0 m-auto w-8 h-8 text-[#6366f1]" />
-          </div>
+        <div className="text-center max-w-sm">
+          {!timedOut && (
+            <div className="relative w-20 h-20 mx-auto mb-4">
+              <div className="absolute inset-0 border-4 border-[#6366f1]/20 rounded-full" />
+              <div className="absolute inset-0 border-4 border-[#6366f1] rounded-full border-t-transparent animate-spin" />
+              <Sparkles className="absolute inset-0 m-auto w-8 h-8 text-[#6366f1]" />
+            </div>
+          )}
           <h3 className={`text-lg mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-            Preparing Documents…
+            {timedOut ? 'Still preparing…' : 'Preparing Documents…'}
           </h3>
-          <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-            Building document understanding. This may take a moment.
+          <p className={`text-sm mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+            {timedOut
+              ? 'Document understanding is taking longer than expected.'
+              : 'Building document understanding. This may take a moment.'}
           </p>
+          {blockedReason && (
+            <p
+              className={`text-xs mb-2 font-mono ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}
+              data-testid="preparing-docs-reason"
+            >
+              {blockedReason}
+            </p>
+          )}
+          {expectedPagesTotal > 0 && (
+            <p
+              className={`text-xs mb-4 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}
+              data-testid="preparing-docs-progress"
+            >
+              {dpuRowsTotal} / {expectedPagesTotal} pages processed
+            </p>
+          )}
+          {timedOut && (
+            <button
+              type="button"
+              className="mt-2 px-4 py-2 rounded-md bg-[#6366f1] text-white text-sm font-medium hover:bg-[#4f46e5] transition-colors"
+              data-testid="preparing-docs-retry"
+              onClick={() => void handleRetry()}
+            >
+              Retry
+            </button>
+          )}
         </div>
       </div>
     );
@@ -819,7 +908,14 @@ export function OrchestratorFullReportView({
               if (!dealId) { void generateInsights(); return; }
               const result = await apiRegenerateInvestorInsights(dealId);
               if ('status' in result && result.status === 'preparing_documents') {
-                setPreparingDocs({ pollAfterMs: result.poll_after_ms ?? 1500 });
+                setPreparingDocs({
+                  pollAfterMs: result.poll_after_ms ?? 1500,
+                  blockedReason: result.blocked_reason ?? null,
+                  dpuRowsTotal: result.dpu_rows_total ?? 0,
+                  expectedPagesTotal: result.expected_pages_total ?? 0,
+                  attempts: 0,
+                  timedOut: false,
+                });
               } else {
                 void refreshInsights();
               }
@@ -872,7 +968,14 @@ export function OrchestratorFullReportView({
               if (onRunAnalysis) await onRunAnalysis();
               const result = await apiRegenerateInvestorInsights(dealId);
               if ('status' in result && result.status === 'preparing_documents') {
-                setPreparingDocs({ pollAfterMs: result.poll_after_ms ?? 1500 });
+                setPreparingDocs({
+                  pollAfterMs: result.poll_after_ms ?? 1500,
+                  blockedReason: result.blocked_reason ?? null,
+                  dpuRowsTotal: result.dpu_rows_total ?? 0,
+                  expectedPagesTotal: result.expected_pages_total ?? 0,
+                  attempts: 0,
+                  timedOut: false,
+                });
               } else {
                 void refreshInsights();
               }

@@ -15,6 +15,8 @@ import {
   logAnalysisEvent,
 } from "../services/analysis";
 import type { AnalysisRequest, AnalysisProgress, AnalysisResult } from "@dealdecision/contracts";
+import { ensureDocumentsReadyForAnalysis } from "../lib/ensure-documents-ready-for-analysis";
+import { enqueueJob as realEnqueueJob } from "../services/jobs";
 
 /**
  * Register analysis routes
@@ -22,7 +24,7 @@ import type { AnalysisRequest, AnalysisProgress, AnalysisResult } from "@dealdec
 export async function registerAnalysisRoutes(
   app: FastifyInstance,
   pool: Pool = getPool(),
-  enqueueJob = enqueueAnalysisJob
+  enqueueJob: typeof realEnqueueJob = realEnqueueJob
 ) {
   /**
    * POST /api/v1/analysis/start
@@ -74,6 +76,69 @@ export async function registerAnalysisRoutes(
           return;
         }
 
+        // ── Gate 1: DPU preflight ───────────────────────────────────────────
+        // Verify DPU readiness before enqueueing analysis. When DPU is missing,
+        // stale, or partially covered, auto-enqueue DPU backfill and return 202
+        // { status: "preparing_documents" } so the UI can poll instead of
+        // proceeding to an analysis cycle that will fail the DPU gate.
+        //
+        // Fail-open: if this preflight throws (e.g. pool unavailable in tests),
+        // proceed rather than blocking the user.
+        try {
+          const prep = await ensureDocumentsReadyForAnalysis({
+            pool: pool as any,
+            dealId: deal_id,
+            requirePageUnderstanding: true,
+            pageUnderstandingVersion: "page_understanding_v1",
+            logger: request.log,
+            enqueue: enqueueJob,
+          });
+
+          if (!prep.ready && prep.action === "enqueue_dpu_backfill") {
+            const clientBlockedReason = (() => {
+              const raw = prep.blocked_reason;
+              if (raw === "DPU_STALE") return "dpu_stale";
+              const expPages = prep.readiness.expected_pages_total ?? 0;
+              const dpuRows = prep.readiness.dpu_rows_total ?? 0;
+              const missingPages = prep.readiness.missing_pages_total ?? 0;
+              if (expPages > 0 && dpuRows === 0) return "missing_dpu";
+              if (expPages > 0 && dpuRows > 0 && missingPages > 0) return "dpu_partial";
+              return raw ?? "missing_dpu";
+            })();
+
+            request.log.info(
+              {
+                event: "ANALYSIS_START_GATE1_DPU_BACKFILL",
+                deal_id,
+                blocked_reason: clientBlockedReason,
+                docs_fingerprint: prep.docs_fingerprint,
+                expected_pages_total: prep.readiness.expected_pages_total,
+                dpu_rows_total: prep.readiness.dpu_rows_total,
+                missing_pages_total: prep.readiness.missing_pages_total,
+              },
+              "analysis/start Gate 1 blocked — auto-enqueued DPU backfill"
+            );
+
+            return reply.status(202).send({
+              status: "preparing_documents",
+              blocked_reason: clientBlockedReason,
+              action: "enqueue_dpu_backfill",
+              poll_after_ms: prep.poll_after_ms ?? 1500,
+              docs_fingerprint: prep.docs_fingerprint,
+              expected_pages_total: prep.readiness.expected_pages_total ?? 0,
+              dpu_rows_total: prep.readiness.dpu_rows_total ?? 0,
+              missing_pages_total: prep.readiness.missing_pages_total ?? 0,
+              enqueued: prep.enqueued,
+            });
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          request.log.warn(
+            { event: "ANALYSIS_START_GATE1_PREFLIGHT_FAILED", deal_id, err: msg },
+            "Gate 1 DPU preflight failed — proceeding with analysis enqueue"
+          );
+        }
+
         // Initialize or load existing analysis
         let analysisState = await loadAnalysisState(pool, deal_id);
         if (!analysisState) {
@@ -89,7 +154,8 @@ export async function registerAnalysisRoutes(
         // Enqueue Cycle 1 job
         const job = await enqueueJob({
           deal_id,
-          type: "run_analysis",
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          type: "run_analysis" as any, // legacy job type pre-dates JobType union
           payload: {
             cycle: 1,
             max_cycles,
@@ -99,7 +165,7 @@ export async function registerAnalysisRoutes(
 
         reply.status(202).send({
           deal_id,
-          job_id: job.id,
+          job_id: job.job_id,
           status: "queued",
           cycle: 1,
           message: "Analysis queued for Cycle 1",
@@ -219,7 +285,8 @@ export async function registerAnalysisRoutes(
 
         const job = await enqueueJob({
           deal_id,
-          type: "run_analysis",
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          type: "run_analysis" as any,
           payload: {
             cycle: cycle as 1 | 2 | 3,
             max_cycles: 3,
@@ -267,7 +334,8 @@ export async function registerAnalysisRoutes(
 
         const job = await enqueueJob({
           deal_id,
-          type: "run_analysis",
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          type: "run_analysis" as any,
           payload: {
             cycle: 3,
             mode: "synthesis",
@@ -303,17 +371,9 @@ function calculateConfidence(analysisState: any): number {
 }
 
 /**
- * Import pool (mock for type checking)
+ * Stub pool — must be replaced by caller injection in production.
  */
 function getPool(): Pool {
   // This will be injected by caller
   throw new Error("getPool must be provided");
-}
-
-/**
- * Import enqueue job (mock for type checking)
- */
-function enqueueAnalysisJob(job: any): Promise<{ id: string }> {
-  // This will be injected by caller
-  throw new Error("enqueueAnalysisJob must be provided");
 }

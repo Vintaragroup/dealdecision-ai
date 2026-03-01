@@ -104,6 +104,20 @@ export interface EnqueueJobOptions {
 	};
 
   /**
+   * Optional BullMQ jobId for idempotent enqueueing.
+   *
+   * When provided, BullMQ will not create a duplicate job if one with this
+   * id is already waiting or active in the queue.  The DB job row still uses
+   * its own generated UUID so audit-log uniqueness is preserved; only the
+   * BullMQ key is overridden.
+   *
+   * Callers should use a deterministic, content-addressed key so that repeated
+   * calls with the same inputs produce the same BullMQ jobId:
+   *   e.g. `dpu:${dealId}:${docId}:${docsFingerprint}:page_understanding_v1`
+   */
+  jobId?: string;
+
+  /**
    * Dependency injection for tests.
    */
   deps?: {
@@ -263,8 +277,12 @@ export async function enqueueJob(input: EnqueueJobInput, opts?: EnqueueJobOption
   try {
     // If this is running inside an external DB transaction (idempotency wrapper),
     // callers should prefer calling insertJobRow(...) in-tx and enqueueBullmqJob(...) after commit.
+    //
+    // When opts.jobId is provided it is used as the BullMQ dedup key so that
+    // repeated enqueue calls with the same deterministic key are ignored by BullMQ
+    // while AWS DB rows continue to track each attempt independently.
     await enqueueBullmqJob(
-      { type: input.type, jobId: inserted.job_id, bullPayload: inserted.bullPayload },
+      { type: input.type, jobId: opts?.jobId ?? inserted.job_id, bullPayload: inserted.bullPayload },
       { deps: { queue } }
     );
   } catch (err) {

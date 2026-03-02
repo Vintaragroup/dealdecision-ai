@@ -40,13 +40,14 @@ import {
 import type {
   InvestorInsightsSection,
   InvestorInsightsReport,
+  OrchestratorReportResponse,
 } from '../../lib/apiClient';
 import {
   apiRegenerateInvestorInsights,
   apiGetDealReadiness,
 } from '../../lib/apiClient';
 import { useInvestorInsights } from '../../hooks/useInvestorInsights';
-import { useOrchestratorReport } from '../../hooks/useOrchestratorReport';
+import { useOrchestratorReport, type UseOrchestratorReportStatus } from '../../hooks/useOrchestratorReport';
 import { Button } from '../ui/button';
 import { EmptyFallback } from './InvestorInsightsTab';
 import { DecisionOverlay } from './analysis/DecisionOverlay';
@@ -79,6 +80,14 @@ export interface OrchestratorFullReportViewProps {
    * are shown. Controlled by the ReportViewConfigModal upstream.
    */
   visibleSections?: ReportSectionKey[];
+  /**
+   * Pre-fetched orchestrator report from a parent that already called
+   * useOrchestratorReport(dealId). When provided, the internal hook call
+   * is bypassed to avoid a redundant GET /orchestrator-report request.
+   */
+  orchestratorReport?: OrchestratorReportResponse | null;
+  orchestratorStatus?: UseOrchestratorReportStatus;
+  onRefreshOrchestrator?: () => Promise<OrchestratorReportResponse | null>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -664,6 +673,8 @@ export function OrchestratorFullReportView({
   onRunAnalysis,
   initialAction = 'none',
   visibleSections,
+  orchestratorReport: orchestratorReportProp,
+  orchestratorStatus: orchestratorStatusProp,
 }: OrchestratorFullReportViewProps) {
   // Helper: returns true when the section should be rendered.
   // If no explicit list is provided, all sections are visible.
@@ -677,7 +688,17 @@ export function OrchestratorFullReportView({
     refresh: refreshInsights,
   } = useInvestorInsights(dealId);
 
-  const { status: orchStatus, data: orchData } = useOrchestratorReport(dealId);
+  // When a parent already fetched the orchestrator report, reuse it to avoid
+  // a duplicate GET /orchestrator-report. Pass undefined to skip the internal fetch.
+  const internalOrch = useOrchestratorReport(
+    orchestratorReportProp !== undefined ? undefined : dealId
+  );
+  const orchStatus: UseOrchestratorReportStatus =
+    orchestratorReportProp !== undefined
+      ? (orchestratorStatusProp ?? (orchestratorReportProp ? 'ready' : 'not_found'))
+      : internalOrch.status;
+  const orchData =
+    orchestratorReportProp !== undefined ? orchestratorReportProp : internalOrch.data;
 
   // ── Gate 1 DPU preparing-documents state ─────────────────────────────────
   const MAX_POLL_ATTEMPTS = 40;

@@ -52,7 +52,13 @@ export interface CategoryScore {
 export interface DealAnalysis {
   overallScore: number;
   previousScore: number | null;
-  grade: 'Excellent' | 'Good' | 'Fair' | 'Needs Improvement';
+  /**
+   * Grade string displayed in the snapshot.
+   * Local scoring produces: 'Excellent' | 'Good' | 'Fair' | 'Needs Improvement'.
+   * When an orchestrator report is available the overlay mapper sets this to
+   * the canonical decision label: 'GO' | 'CONSIDER' | 'NO_GO'.
+   */
+  grade: 'Excellent' | 'Good' | 'Fair' | 'Needs Improvement' | 'GO' | 'CONSIDER' | 'NO_GO';
   completeness: number;
   categories: CategoryScore[];
   redFlags: { severity: 'high' | 'medium' | 'low'; message: string; action: string }[];
@@ -69,6 +75,8 @@ export interface AnalysisSnapshotDashboardProps {
   onExportReport: () => void;
   /** Called when the "Re-analyze" button is pressed */
   onReanalyze: () => void;
+  /** When true, the Re-analyze button shows a loading spinner and is disabled */
+  isReanalyzing?: boolean;
   /**
    * When provided, a "View Full Report" button appears in the header.
    * Used in the dealId path to open the OrchestratorFullReportView modal.
@@ -102,6 +110,7 @@ export function AnalysisSnapshotDashboard({
   dealData,
   onExportReport,
   onReanalyze,
+  isReanalyzing = false,
   onViewFullReport,
 }: AnalysisSnapshotDashboardProps) {
   const userRole = useUserRole();
@@ -138,6 +147,8 @@ export function AnalysisSnapshotDashboard({
               size="sm"
               darkMode={darkMode}
               onClick={onReanalyze}
+              disabled={isReanalyzing}
+              loading={isReanalyzing}
               icon={<RefreshCw className="w-4 h-4" />}
             >
               Re-analyze

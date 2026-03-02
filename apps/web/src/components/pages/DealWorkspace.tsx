@@ -8738,6 +8738,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 }} 
                 darkMode={darkMode}
                 onRunAnalysis={runAIAnalysis}
+                isAnalyzing={analyzing}
               />
             )}
 

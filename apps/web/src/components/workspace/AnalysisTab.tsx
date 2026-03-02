@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Sparkles,
   TrendingUp,
@@ -19,6 +19,8 @@ import {
   type DealAnalysis,
   type CategoryScore,
 } from '../deals/analysis/AnalysisSnapshotDashboard';
+import { useOrchestratorReport } from '../../hooks/useOrchestratorReport';
+import { mergeSnapshotWithOrchestrator } from '../deals/analysis/mergeSnapshotWithOrchestrator';
 import {
   ReportViewConfigModal,
   type ReportViewConfig,
@@ -33,11 +35,37 @@ interface AnalysisTabProps {
   dealId?: string;
   // Optional hook to trigger the real backend analysis flow (DealWorkspace: apiPostAnalyze + jobs)
   onRunAnalysis?: () => Promise<void> | void;
+  /**
+   * Reflects DealWorkspace's `analyzing` state — true while the SSE-tracked job is running.
+   * When it transitions false the orchestrator report is refreshed automatically.
+   */
+  isAnalyzing?: boolean;
 }
 
-export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId }: AnalysisTabProps) {
+export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId, isAnalyzing = false }: AnalysisTabProps) {
   const [analysis, setAnalysis] = useState<DealAnalysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
+
+  // Lifted here (single fetch) so both the snapshot overlay and the
+  // OrchestratorFullReportView modal can share the same data without
+  // a redundant GET /orchestrator-report call.
+  const {
+    status: orchStatus,
+    data: orchData,
+    refresh: refreshOrchestrator,
+  } = useOrchestratorReport(dealId);
+
+  // Refresh the orchestrator report when DealWorkspace signals the backend job is done.
+  // `isAnalyzing` goes true→false once SSE reports completion, at which point new data
+  // is available from the orchestrator endpoint.
+  const prevIsAnalyzing = useRef<boolean>(false);
+  useEffect(() => {
+    if (prevIsAnalyzing.current && !isAnalyzing && dealId) {
+      void refreshOrchestrator();
+    }
+    prevIsAnalyzing.current = isAnalyzing;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAnalyzing]);
   const [showReport, setShowReport] = useState(false);          // local fallback ProfessionalReportGenerator
   const [isConfigOpen, setIsConfigOpen] = useState(false);         // config pre-screen
   const [isFullReportOpen, setIsFullReportOpen] = useState(false); // dealId path OrchestratorFullReportView modal
@@ -70,6 +98,8 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId }: Analy
     try {
       if (onRunAnalysis) {
         await onRunAnalysis();
+        // Note: orchestrator refresh is driven by the isAnalyzing effect (SSE job completion).
+        // No immediate refresh needed here since the job is just starting.
       }
       const result = analyzeDeal(dealData);
       setAnalysis(result);
@@ -480,6 +510,10 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId }: Analy
 
   if (!analysis) return null;
 
+  // Overlay server-driven values on top of local scoring when the orchestrator
+  // report is available. Falls back to local-only when orch data is missing.
+  const mergedAnalysis = mergeSnapshotWithOrchestrator(analysis, orchData?.report);
+
   // ── dealId path: snapshot dashboard + full-report modal ───────────────────
   if (dealId) {
     // Inline split view: replaces the full tab when 'Export Report' is clicked
@@ -499,10 +533,11 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId }: Analy
       <>
         <AnalysisSnapshotDashboard
           darkMode={darkMode}
-          analysis={analysis}
+          analysis={mergedAnalysis}
           dealData={dealData}
           onExportReport={() => setViewMode('report_preview')}
           onReanalyze={handleReAnalyze}
+          isReanalyzing={isAnalyzing || analyzing}
           onViewFullReport={() => { setFullReportInitialAction('none'); setIsConfigOpen(true); }}
         />
         {/* Step 1: Config pre-screen */}
@@ -536,6 +571,9 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId }: Analy
                   onRunAnalysis={onRunAnalysis}
                   initialAction={fullReportInitialAction}
                   visibleSections={reportViewConfig.visibleSections}
+                  orchestratorReport={orchData}
+                  orchestratorStatus={orchStatus}
+                  onRefreshOrchestrator={refreshOrchestrator}
                 />
               </div>
             </ScrollArea>
@@ -550,10 +588,11 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId }: Analy
     <>
       <AnalysisSnapshotDashboard
         darkMode={darkMode}
-        analysis={analysis}
+        analysis={mergedAnalysis}
         dealData={dealData}
         onExportReport={() => setShowReport(true)}
         onReanalyze={handleReAnalyze}
+        isReanalyzing={isAnalyzing || analyzing}
       />
       {showReport && (
         <ProfessionalReportGenerator

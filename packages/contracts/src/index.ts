@@ -418,6 +418,43 @@ export interface DealChatResponse {
 	suggested_actions?: ChatAction[];
 }
 
+// ============================================================================
+// DealChatV1 — Governed Chat with Grounded Context
+// ============================================================================
+
+export interface DealChatRequestV1 {
+	message: string;
+	deal_id: string;
+	dio_version_id?: string | null;
+}
+
+export interface DealChatSourceV1 {
+	evidence_id: string;
+	page?: number;
+	excerpt?: string;
+}
+
+/**
+ * Typed action union for DealChatV1 — no mutation, read/navigate only.
+ */
+export type DealChatActionV1 =
+	| { type: 'RUN_ANALYZE'; deal_id: string; payload?: { require_page_understanding?: boolean } }
+	| { type: 'REGENERATE_INSIGHTS'; deal_id: string; payload?: Record<string, never> }
+	| { type: 'OPEN_FULL_REPORT'; deal_id: string; payload?: { view?: string } }
+	| { type: 'SHOW_SOURCES'; payload?: Record<string, never> }
+	| { type: 'EXPORT_PDF'; deal_id: string; payload?: { preset?: string } };
+
+export interface DealChatResponseV1 {
+	message: string;
+	confidence: 'high' | 'medium' | 'low';
+	sources?: DealChatSourceV1[];
+	suggested_actions?: DealChatActionV1[];
+	/** Which data source grounded the answer — for observability/eval */
+	answer_basis?: 'product_profile_v1' | 'orchestrator_report' | 'evidence_only' | 'insufficient_data';
+	/** Fields the model acknowledged as unknown — extracted from product_profile_v1 (max 3) */
+	unknowns_used?: string[];
+}
+
 // HRM-DD Analysis Types
 export interface AnalysisRequest {
 	deal_id: string;

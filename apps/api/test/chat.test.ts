@@ -23,7 +23,7 @@ test('POST /api/v1/chat/workspace returns a reply and actions array', async () =
   assert.ok(Array.isArray(body.suggested_actions));
 });
 
-test('POST /api/v1/chat/deal returns suggested actions and citations when available', async () => {
+test('POST /api/v1/chat/deal returns DealChatResponseV1 shape', async () => {
   const app = Fastify();
   const mockPool = {
     query: async (sql: string, params: unknown[]) => {
@@ -32,10 +32,11 @@ test('POST /api/v1/chat/deal returns suggested actions and citations when availa
         return { rows: [{ oid: table }] };
       }
       if (sql.includes('FROM dio_versions')) {
-        return { rows: [{ dio_version_id: 'v1' }] };
+        // Return correct column name so hasDio is true if needed; no API key so LLM won't run
+        return { rows: [{ id: 'v1' }] };
       }
       if (sql.includes('FROM evidence')) {
-        return { rows: [{ evidence_id: 'ev-1', excerpt: 'Excerpt' }] };
+        return { rows: [] };
       }
       return { rows: [] };
     },
@@ -51,9 +52,13 @@ test('POST /api/v1/chat/deal returns suggested actions and citations when availa
 
   assert.equal(response.statusCode, 200);
   const body = response.json();
-  assert.ok(Array.isArray(body.suggested_actions));
-  assert.ok(body.suggested_actions.find((a: any) => a.type === 'run_analysis'));
-  assert.ok(body.suggested_actions.find((a: any) => a.type === 'fetch_evidence'));
-  assert.ok(Array.isArray(body.citations));
-  assert.equal(body.citations[0].evidence_id, 'ev-1');
+  // DealChatResponseV1 shape
+  assert.ok(typeof body.message === 'string', 'message should be a string');
+  assert.ok(typeof body.confidence === 'string', 'confidence should be a string');
+  assert.ok(Array.isArray(body.suggested_actions), 'suggested_actions should be an array');
+  // Without OPENAI_API_KEY the route returns a no-key advisory with RUN_ANALYZE
+  assert.ok(
+    body.suggested_actions.some((a: any) => a.type === 'RUN_ANALYZE'),
+    'should include RUN_ANALYZE action when no API key is configured',
+  );
 });

@@ -6246,10 +6246,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 variant="primary" 
                 darkMode={darkMode}
                 icon={<MessageSquare className="w-4 h-4" />}
-                onClick={() => dioMeta?.dioVersionId ? setShowAIAssistant(true) : addToast('info', 'AI Assistant needs DIO', 'Run analysis to generate DIO first')}
+                onClick={() => dioMeta?.dioVersionId ? setShowAIAssistant(true) : addToast('info', 'Deal Assistant needs DIO', 'Run analysis to generate DIO first')}
                 disabled={!dioMeta?.dioVersionId}
               >
-                AI Assistant
+                Deal Assistant
               </Button>
               
               {/* Main Actions */}
@@ -8928,6 +8928,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         dioVersionId={dioMeta?.dioVersionId}
         onRunAnalysis={runAIAnalysis}
         onFetchEvidence={handleFetchEvidence}
+        onOpenFullReport={onViewReport ? () => { setShowAIAssistant(false); onViewReport(); } : undefined}
+        onOpenExportPdf={() => { setShowAIAssistant(false); setShowExportModal(true); }}
       />
       </div>
     </div>

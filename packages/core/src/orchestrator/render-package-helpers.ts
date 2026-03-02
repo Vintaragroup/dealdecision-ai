@@ -8,7 +8,7 @@
  */
 
 import type { OrchestratorRenderPackageInput } from './render-package-input';
-import type { StageLabel } from './types';
+import type { StageLabel, ProductProfileV1 } from './types';
 
 // ─── Section lookup ──────────────────────────────────────────────────────────
 
@@ -416,4 +416,21 @@ export function detectStage(fields: ParsedCanonicalField[]): StageLabel {
   }
 
   return "Unknown";
+}
+
+// ─── Product Profile parser ────────────────────────────────────────────────────
+
+/**
+ * Parse a product_profile_v1 section body (JSON string) into a ProductProfileV1.
+ * Returns null when the body is absent, malformed, or missing schema_version.
+ */
+export function parseProductProfileBody(body: string | null): ProductProfileV1 | null {
+  if (!body || !body.trim()) return null;
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    if (parsed?.schema_version !== "product_profile_v1") return null;
+    return parsed as unknown as ProductProfileV1;
+  } catch {
+    return null;
+  }
 }

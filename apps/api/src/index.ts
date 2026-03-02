@@ -21,6 +21,7 @@ import { registerVisualAssetRoutes } from "./routes/visual-assets";
 import { registerNodeAiAnalyzeRoutes } from "./routes/node-ai-analyze";
 import { registerUnderstandingRoutes } from "./routes/understanding";
 import { registerExportPdfRoutes } from "./routes/export-pdf";
+import { registerFinancialFactsRoutes } from "./routes/financial-facts";
 import { initializeLLM } from "./lib/llm";
 import { getPool } from "./lib/db";
 import { applyPendingMigrations, getMigrationStatus } from "./lib/migrations";
@@ -208,6 +209,7 @@ async function bootstrap() {
   await registerNodeAiAnalyzeRoutes(app);
   await registerUnderstandingRoutes(app, pool);
   await registerExportPdfRoutes(app, pool);
+  await registerFinancialFactsRoutes(app);
 }
 
 async function start() {

@@ -1,4 +1,4 @@
-import type { Deal, WorkspaceChatResponse, DealChatResponse, JobProgressEventV1, JobStatusDetail, ReportExportConfig, ExportPdfResponse, ExportPdfStatusResponse } from '@dealdecision/contracts';
+import type { Deal, WorkspaceChatResponse, DealChatResponse, DealChatResponseV1, DealChatActionV1, JobProgressEventV1, JobStatusDetail, ReportExportConfig, ExportPdfResponse, ExportPdfStatusResponse } from '@dealdecision/contracts';
 
 import { debugApiInferDealId, debugApiIsEnabled, debugApiLogCall, debugApiLogSse } from './debugApi';
 import { getAuthToken } from './authToken';
@@ -1748,7 +1748,7 @@ export function apiChatWorkspace(message: string) {
 }
 
 export function apiChatDeal(dealId: string, message: string, dioVersionId?: string) {
-  return request<DealChatResponse>(`/api/v1/chat/deal`, {
+  return request<DealChatResponseV1>(`/api/v1/chat/deal`, {
     method: 'POST',
     body: JSON.stringify({
       message,

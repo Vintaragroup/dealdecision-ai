@@ -902,7 +902,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(within(top).getByText(/Consider \(Caution\)/i)).toBeInTheDocument();
   });
 
-  test('AI Assistant button is gated without DIO in live mode', async () => {
+  test('Deal Assistant button is gated without DIO in live mode', async () => {
     vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: undefined,
       dioStatus: 'missing',
@@ -912,11 +912,11 @@ describe('DealWorkspace Job Center (live mode)', () => {
     renderWorkspace({ dealId: 'deal-2' });
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /AI Assistant/i })).toBeDisabled();
+      expect(screen.getByRole('button', { name: /Deal Assistant/i })).toBeDisabled();
     });
   });
 
-  test('AI Assistant button enables when DIO exists', async () => {
+  test('Deal Assistant button enables when DIO exists', async () => {
     vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: 'v2.0.0',
       dioStatus: 'ready',
@@ -926,7 +926,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     renderWorkspace({ dealId: 'deal-3' });
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /AI Assistant/i })).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: /Deal Assistant/i })).not.toBeDisabled();
     });
   });
 
@@ -1174,7 +1174,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     renderWorkspace({ dealId: 'deal-7' });
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /AI Assistant/i })).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: /Deal Assistant/i })).not.toBeDisabled();
     });
 
     const [headerRunButton] = screen.getAllByRole('button', { name: /Run Analysis/i });
@@ -1218,7 +1218,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     renderWorkspace({ dealId: 'deal-analyze-only' });
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /AI Assistant/i })).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: /Deal Assistant/i })).not.toBeDisabled();
     });
 
     const [headerRunButton] = screen.getAllByRole('button', { name: /Run Analysis/i });
@@ -1593,7 +1593,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
     // Allow the workspace to fully mount and run its initial effects.
     await waitFor(() => {
-      expect(screen.queryByRole('button', { name: /AI Assistant/i })).not.toBeNull();
+      expect(screen.queryByRole('button', { name: /Deal Assistant/i })).not.toBeNull();
     });
 
     // 1. Build stamp must be hidden — it exposes VITE_BUILD_STAMP to non-debug users.

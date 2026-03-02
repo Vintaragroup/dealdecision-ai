@@ -4,19 +4,11 @@ import {
   Send, 
   Sparkles, 
   User, 
-  Lightbulb,
-  TrendingUp,
-  AlertTriangle,
-  FileText,
-  CheckCircle2,
-  Trash2,
   RotateCcw
 } from 'lucide-react';
-import { Button } from '../ui/button';
-import { useUserRole } from '../../contexts/UserRoleContext';
 import { DealFormData } from '../NewDealModal';
-import { apiChatDeal, isLiveBackend } from '../../lib/apiClient';
-import type { ChatAction, ChatCitation } from '@dealdecision/contracts';
+import { apiChatDeal, apiRegenerateInvestorInsights } from '../../lib/apiClient';
+import type { DealChatActionV1, DealChatSourceV1 } from '@dealdecision/contracts';
 import { EvidenceChip } from '../evidence/EvidenceChip';
 
 interface AIDealAssistantProps {
@@ -28,6 +20,8 @@ interface AIDealAssistantProps {
   dioVersionId?: string;
   onRunAnalysis?: () => Promise<void>;
   onFetchEvidence?: () => void;
+  onOpenFullReport?: () => void;
+  onOpenExportPdf?: () => void;
 }
 
 interface ChatMessage {
@@ -36,15 +30,16 @@ interface ChatMessage {
   content: string;
   timestamp: Date;
   suggestions?: string[];
-  citations?: ChatCitation[];
-  actions?: ChatAction[];
+  sources?: DealChatSourceV1[];
+  actions?: DealChatActionV1[];
+  confidence?: 'high' | 'medium' | 'low';
 }
 
-export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, dioVersionId, onRunAnalysis, onFetchEvidence }: AIDealAssistantProps) {
-  const { isInvestor } = useUserRole();
+export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, dioVersionId, onRunAnalysis, onFetchEvidence, onOpenFullReport, onOpenExportPdf }: AIDealAssistantProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [sourcesVisibleForMessageId, setSourcesVisibleForMessageId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -54,7 +49,7 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
       const greeting: ChatMessage = {
         id: '1',
         sender: 'ai',
-        content: `Hi! I'm your AI assistant for evaluating **${dealData.companyName}**. I have context on this deal's data, documents, and scores. How can I help you assess this opportunity?`,
+        content: `Hi! I'm your AI assistant for evaluating **${dealData.companyName ?? dealData.company ?? 'this deal'}**. I have context on this deal's data, documents, and scores. How can I help you assess this opportunity?`,
         timestamp: new Date(),
         suggestions: [
           'What are the biggest red flags?',
@@ -65,7 +60,7 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
       };
       setMessages([greeting]);
     }
-  }, [isOpen, dealData.companyName, isInvestor]);
+  }, [isOpen, dealData.companyName]);
 
   // Auto-scroll to bottom
   useEffect(() => {
@@ -79,17 +74,40 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
     }
   }, [isOpen]);
 
-  const handleAction = async (action: ChatAction) => {
-    if (action.type === 'run_analysis' && onRunAnalysis) {
+  const handleAction = async (action: DealChatActionV1, messageId?: string) => {
+    if (action.type === 'RUN_ANALYZE' && onRunAnalysis) {
       await onRunAnalysis();
       return;
     }
-    if (action.type === 'fetch_evidence' && onFetchEvidence) {
-      onFetchEvidence();
+    if (action.type === 'REGENERATE_INSIGHTS') {
+      try {
+        await apiRegenerateInvestorInsights(dealId);
+      } catch {
+        // non-fatal
+      }
       return;
     }
-    if (action.type === 'summarize_evidence' && action.evidence_ids?.length) {
-      setInput(`Summarize evidence: ${action.evidence_ids.join(', ')}`);
+    if (action.type === 'SHOW_SOURCES' && messageId) {
+      setSourcesVisibleForMessageId(prev => prev === messageId ? null : messageId);
+      return;
+    }
+    if (action.type === 'OPEN_FULL_REPORT') {
+      onOpenFullReport?.();
+      return;
+    }
+    if (action.type === 'EXPORT_PDF') {
+      onOpenExportPdf?.();
+      return;
+    }
+  };
+
+  const actionLabel = (action: DealChatActionV1, messageId?: string): string => {
+    switch (action.type) {
+      case 'RUN_ANALYZE': return 'Run Analysis';
+      case 'REGENERATE_INSIGHTS': return 'Regenerate Insights';
+      case 'OPEN_FULL_REPORT': return 'View Full Report';
+      case 'SHOW_SOURCES': return sourcesVisibleForMessageId === messageId ? 'Hide Sources' : 'Show Sources';
+      case 'EXPORT_PDF': return 'Export PDF';
     }
   };
 
@@ -107,7 +125,7 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
     setInput('');
     setIsTyping(true);
 
-    const canHitLive = isLiveBackend() && !!dealId;
+    const canHitLive = !!dealId;
 
     if (canHitLive) {
       try {
@@ -115,17 +133,18 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
         const aiMessage: ChatMessage = {
           id: (Date.now() + 1).toString(),
           sender: 'ai',
-          content: res.reply,
+          content: res.message,
           timestamp: new Date(),
-          citations: res.citations,
+          sources: res.sources,
           actions: res.suggested_actions,
+          confidence: res.confidence,
         };
         setMessages(prev => [...prev, aiMessage]);
       } catch (err) {
         const aiMessage: ChatMessage = {
           id: (Date.now() + 1).toString(),
           sender: 'ai',
-          content: err instanceof Error ? err.message : 'Chat is unavailable right now.',
+          content: `I couldn't reach the analysis service right now. ${err instanceof Error ? err.message : 'Please try again.'}`,
           timestamp: new Date(),
         };
         setMessages(prev => [...prev, aiMessage]);
@@ -135,19 +154,15 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
       return;
     }
 
-    // Fallback simulated AI response when not in live mode
-    setTimeout(() => {
-      const aiResponse = generateAIResponse(input, dealData, isInvestor);
-      const aiMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        sender: 'ai',
-        content: aiResponse.content,
-        timestamp: new Date(),
-        suggestions: aiResponse.suggestions
-      };
-      setMessages(prev => [...prev, aiMessage]);
-      setIsTyping(false);
-    }, 800);
+    // No dealId — shouldn't happen, but handle gracefully
+    const fallbackMessage: ChatMessage = {
+      id: (Date.now() + 1).toString(),
+      sender: 'ai',
+      content: 'Unable to process your request — no deal context is available.',
+      timestamp: new Date(),
+    };
+    setMessages(prev => [...prev, fallbackMessage]);
+    setIsTyping(false);
   };
 
   const handleSuggestionClick = (suggestion: string) => {
@@ -161,7 +176,7 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
     const greeting: ChatMessage = {
       id: Date.now().toString(),
       sender: 'ai',
-      content: `Chat cleared. How else can I help you evaluate **${dealData.companyName}**?`,
+      content: `Chat cleared. How else can I help you evaluate **${dealData.companyName ?? dealData.company ?? 'this deal'}**?`,
       timestamp: new Date()
     };
     setMessages([greeting]);
@@ -193,10 +208,10 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
             </div>
             <div>
               <h3 className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                AI Deal Assistant
+                Deal Assistant
               </h3>
               <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                Analyzing: {dealData.companyName}
+                Analyzing: {dealData.companyName ?? dealData.company ?? 'this deal'}
               </p>
             </div>
           </div>
@@ -244,7 +259,7 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
                         ? darkMode ? 'text-gray-500' : 'text-gray-400'
                         : 'text-white/70'
                     }`}>
-                      {message.sender === 'ai' ? 'AI Assistant' : 'You'} · {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {message.sender === 'ai' ? 'Deal Assistant' : 'You'} · {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </div>
                     <div className={`text-sm whitespace-pre-wrap ${
                       message.sender === 'ai'
@@ -264,13 +279,13 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
                 )}
               </div>
 
-              {message.citations && message.citations.length > 0 && (
+              {sourcesVisibleForMessageId === message.id && message.sources && message.sources.length > 0 && (
                 <div className="ml-12 flex flex-wrap gap-2">
-                  {message.citations.map((citation) => (
+                  {message.sources.map((source) => (
                     <EvidenceChip
-                      key={citation.evidence_id}
-                      evidenceId={citation.evidence_id}
-                      excerpt={citation.excerpt}
+                      key={source.evidence_id}
+                      evidenceId={source.evidence_id}
+                      excerpt={source.excerpt}
                       darkMode={darkMode}
                     />
                   ))}
@@ -282,18 +297,14 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
                   {message.actions.map((action, idx) => (
                     <button
                       key={`${action.type}-${idx}`}
-                      onClick={() => handleAction(action)}
+                      onClick={() => handleAction(action, message.id)}
                       className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${
                         darkMode
                           ? 'border-white/10 text-gray-200 hover:border-[#6366f1]/60'
                           : 'border-gray-200 text-gray-700 hover:border-[#6366f1]/60'
                       }`}
                     >
-                      {action.type === 'run_analysis' && 'Run Analysis'}
-                      {action.type === 'fetch_evidence' && 'Fetch Evidence'}
-                      {action.type === 'summarize_evidence' && 'Summarize Evidence'}
-                      {action.type === 'generate_report' && 'Generate Report'}
-                      {action.type === 'fetch_dio' && 'Load Latest DIO'}
+                      {actionLabel(action, message.id)}
                     </button>
                   ))}
                 </div>
@@ -382,65 +393,4 @@ export function AIDealAssistant({ darkMode, isOpen, onClose, dealData, dealId, d
       </div>
     </>
   );
-}
-
-// Helper function to generate contextual AI responses
-function generateAIResponse(userInput: string, dealData: DealFormData, isInvestor: boolean): { content: string; suggestions?: string[] } {
-  const input = userInput.toLowerCase();
-
-  // Investor responses
-  if (isInvestor) {
-    if (input.includes('red flag') || input.includes('risk')) {
-      return {
-        content: `Based on my analysis of **${dealData.companyName}**, here are the key red flags:\n\n🚩 **Revenue Concerns**: ${dealData.revenue || 'No revenue data provided'} - Consider validating revenue claims\n🚩 **Market Position**: ${dealData.targetMarket || 'Target market not clearly defined'}\n🚩 **Team Size**: ${dealData.teamSize || 'Team composition unclear'} - May need more bandwidth for scaling\n\nI recommend focusing your due diligence on unit economics and customer retention metrics.`,
-        suggestions: [
-          'What questions should I ask the team?',
-          'Compare to similar deals in my portfolio',
-          'Draft investment memo'
-        ]
-      };
-    }
-
-    if (input.includes('compare') || input.includes('benchmark')) {
-      return {
-        content: `Comparing **${dealData.companyName}** to typical ${dealData.stage || 'Series A'} ${dealData.industry || 'SaaS'} deals:\n\n📊 **Revenue**: ${dealData.revenue || '$0'} (Avg: $850K ARR)\n📊 **Customers**: ${dealData.customers || '0'} (Avg: 25-50 customers)\n📊 **Funding Ask**: ${dealData.fundingAmount || 'Not specified'} (Typical: $3-5M)\n\nThis deal appears ${parseFloat(dealData.revenue?.replace(/[^0-9]/g, '') || '0') > 500000 ? 'above' : 'below'} average for this stage.`,
-        suggestions: [
-          'What makes this deal unique?',
-          'Show me market opportunity analysis',
-          'Calculate potential ROI'
-        ]
-      };
-    }
-
-    if (input.includes('memo') || input.includes('summary')) {
-      return {
-        content: `Here's a draft investment memo outline for **${dealData.companyName}**:\n\n**Executive Summary**\n${dealData.companyName} is a ${dealData.industry || '[Industry]'} company seeking ${dealData.fundingAmount || '$[X]M'} for ${dealData.stage || 'growth'}.\n\n**Market Opportunity**\n${dealData.targetMarket || '[Define TAM/SAM/SOM]'}\n\n**Key Metrics**\n• Revenue: ${dealData.revenue || 'TBD'}\n• Customers: ${dealData.customers || 'TBD'}\n• Team: ${dealData.teamSize || 'TBD'} employees\n\n**Recommendation**: [To be determined after further diligence]`,
-        suggestions: [
-          'Add competitive analysis',
-          'Include risk assessment',
-          'Suggest deal terms'
-        ]
-      };
-    }
-
-    return {
-      content: `I'm analyzing **${dealData.companyName}** based on the available data. The company is in the ${dealData.industry || 'technology'} space, targeting ${dealData.targetMarket || 'a specific market segment'}.\n\nWhat specific aspect would you like me to focus on?`,
-      suggestions: [
-        'Analyze financial health',
-        'Evaluate team strength',
-        'Compare to market benchmarks',
-        'Identify key risks'
-      ]
-    };
-  }
-
-  return {
-    content: `I'm here to help you evaluate **${dealData.companyName}**. The company is in the ${dealData.industry || 'technology'} space, targeting ${dealData.targetMarket || 'a specific market segment'}.\n\nWhat would you like to do next?`,
-    suggestions: [
-      'Summarize key risks',
-      'Generate diligence questions',
-      'Draft an investment memo',
-      'Compare to market benchmarks'
-    ]
-  };
 }

@@ -111,6 +111,12 @@ import {
 	formatCoverageNote,
 	type GovernedExecutiveSummaryRecord,
 } from "./governed-executive-summary-v1";
+import {
+	generateProductProfileV1,
+	serializeProductProfileBody,
+} from "./product-profile-v1";
+import { buildFinancialFactRegistryV1 } from "../../lib/build-financial-fact-registry-v1.js";
+import { upsertFinancialFactsV1 } from "../../lib/db/financial-facts-db.js";
 
 // ─── Binding constants (version-pins.md) ───────────────────────────────────────
 
@@ -2418,6 +2424,72 @@ async function buildGovernedExecutiveSummarySection(
 }
 
 /**
+ * Build the product_profile_v1 section using a governed LLM synthesis.
+ *
+ * Sources product narrative text from DPU pages (already filtered by
+ * buildProductNarrativeBody), plus bounded evidence snippets for citation.
+ * Returns null when product narrative is absent or LLM is unavailable.
+ */
+async function buildProductProfileSection(
+	inputs: InsightSlotInputs,
+	canonicalFieldsBody: string | null,
+	dealName?: string
+): Promise<RenderPackage["sections"][number] | null> {
+	try {
+		const productNarrativeBody = buildProductNarrativeBody(inputs);
+
+		// Build bounded evidence snippets for citation
+		const evidenceSnippets = inputs.evidenceSnippets
+			.filter((e) => e.claim_text && e.claim_text.trim().length > 20)
+			.slice(0, 8)
+			.map((e) => ({ id: e.id, text: e.claim_text! }));
+
+		const result = await generateProductProfileV1({
+			productNarrativeBody,
+			canonicalFieldsBody,
+			evidenceSnippets,
+			dealName,
+		});
+
+		if (!result.ok) {
+			console.log(
+				JSON.stringify({
+					event: "PRODUCT_PROFILE_V1_SKIP",
+					reason: result.reason,
+				})
+			);
+			return null;
+		}
+
+		console.log(
+			JSON.stringify({
+				event: "PRODUCT_PROFILE_V1_RESOLVED",
+				product_type: result.value.product_type,
+				ai_claims_present: result.value.ai_claims_present,
+				ai_evidence_strength: result.value.ai_evidence_strength,
+				sources_count: result.value.sources.length,
+			})
+		);
+
+		return {
+			key: "product_profile_v1",
+			title: "Product Profile",
+			kind: "message",
+			body: serializeProductProfileBody(result.value),
+			fallback: "Product profile unavailable.",
+		};
+	} catch (err) {
+		console.error(
+			JSON.stringify({
+				event: "PRODUCT_PROFILE_V1_ERROR",
+				error: err instanceof Error ? err.message : String(err),
+			})
+		);
+		return null;
+	}
+}
+
+/**
  * Build the deck_financial_signals_v1 section from pitch-deck–derived signal mentions.
  * Only emitted when extractDeckFinancialSignalsV1 found at least one mention.
  */
@@ -3941,6 +4013,35 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				: null,
 		});
 
+		// Best-effort: populate financial fact registry (non-blocking)
+		try {
+			const factsToUpsert = buildFinancialFactRegistryV1({
+				dealId,
+				financialStatement: insightSlotInputs.bestFinancialStatement ?? null,
+				saasKpis: insightSlotInputs.saasKpis ?? null,
+				balanceSheet: insightSlotInputs.balanceSheet ?? null,
+				cashFlow: insightSlotInputs.cashFlow ?? null,
+				reconciliation: insightSlotInputs.financialReconciliation ?? null,
+				deckSignals: insightSlotInputs.deckFinancialSignals ?? null,
+			});
+			const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
+			console.log(JSON.stringify({
+				event: "POPULATE_FINANCIAL_FACTS_V1",
+				deal_id: dealId,
+				upserted_count: upserted,
+				path: "gates_failed",
+				ts: new Date().toISOString(),
+			}));
+		} catch (factErr) {
+			console.error(JSON.stringify({
+				event: "POPULATE_FINANCIAL_FACTS_V1_ERROR",
+				deal_id: dealId,
+				error: factErr instanceof Error ? factErr.message : String(factErr),
+				path: "gates_failed",
+				ts: new Date().toISOString(),
+			}));
+		}
+
 		return {
 			ok: true,
 			status: persistStatus,
@@ -4043,6 +4144,16 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		dealName ?? undefined,
 		productNarrativeBody ?? undefined
 	);
+	// Compute canonical fields body for product profile (same source as governed summaries)
+	const phase2ForProfile = extractPhase2Result(insightSlotInputs);
+	const canonicalFieldsBodyForProfile = phase2ForProfile.fields.length > 0
+		? phase2ForProfile.fields.map(formatCanonicalFieldLine).join("\n")
+		: null;
+	const productProfileSection = await buildProductProfileSection(
+		insightSlotInputs,
+		canonicalFieldsBodyForProfile,
+		dealName ?? undefined
+	);
 	const sections = buildDeterministicOnlySections(gateState, coverage, insightSlotsSections, phase2Sections, thesisSection, normMetricsFromInputs(insightSlotInputs));
 	if (governedResult) {
 		const statusIdx = sections.findIndex((s) => s.key === "analysis_status");
@@ -4054,6 +4165,9 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		const govSummaryIdx = sections.findIndex((s) => s.key === "governed_summary_v1");
 		const insertAt = govSummaryIdx >= 0 ? govSummaryIdx : 2;
 		sections.splice(insertAt, 0, governedExecResult.section);
+	}
+	if (productProfileSection) {
+		sections.push(productProfileSection);
 	}
 	sections.push(fusionSection);
 	const renderPackage = buildRenderPackage({
@@ -4116,6 +4230,35 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		governedSummaryRecord: governedResult?.record ?? null,
 		governedExecutiveSummaryRecord: governedExecResult?.record ?? null,
 	});
+
+	// Best-effort: populate financial fact registry (non-blocking)
+	try {
+		const factsToUpsert = buildFinancialFactRegistryV1({
+			dealId,
+			financialStatement: insightSlotInputs.bestFinancialStatement ?? null,
+			saasKpis: insightSlotInputs.saasKpis ?? null,
+			balanceSheet: insightSlotInputs.balanceSheet ?? null,
+			cashFlow: insightSlotInputs.cashFlow ?? null,
+			reconciliation: insightSlotInputs.financialReconciliation ?? null,
+			deckSignals: insightSlotInputs.deckFinancialSignals ?? null,
+		});
+		const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
+		console.log(JSON.stringify({
+			event: "POPULATE_FINANCIAL_FACTS_V1",
+			deal_id: dealId,
+			upserted_count: upserted,
+			path: "happy_path",
+			ts: new Date().toISOString(),
+		}));
+	} catch (factErr) {
+		console.error(JSON.stringify({
+			event: "POPULATE_FINANCIAL_FACTS_V1_ERROR",
+			deal_id: dealId,
+			error: factErr instanceof Error ? factErr.message : String(factErr),
+			path: "happy_path",
+			ts: new Date().toISOString(),
+		}));
+	}
 
 	console.log(
 		JSON.stringify({
@@ -4242,6 +4385,7 @@ export async function recomputeInsightSlotBody(
 		capTable: null,
 		saasKpis: null,
 		bankTransactions: null,
+		deckFinancialSignals: null,
 	};
 
 	return buildInsightSlotsSection(inputs).body ?? "";

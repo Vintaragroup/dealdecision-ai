@@ -35,6 +35,7 @@ import type {
   FinancialLayoutClassification,
   FinancialReconciliation,
   ReconciliationFlag,
+  ProductProfileV1,
 } from './types';
 
 import {
@@ -49,6 +50,7 @@ import {
   parseDeckFinancialSignals,
   parseExecutiveSummaryBody,
   detectStage,
+  parseProductProfileBody,
 } from './render-package-helpers';
 
 import { computeDocumentConfidenceIndex, type DciRawInputs } from './compute-dci';
@@ -451,9 +453,45 @@ function buildEmptyEvidenceRegistry(): EvidenceRegistry {
         market: [],
         financial: [],
         risk_verification: [],
+        product_profile_v1: [],
       },
     },
   };
+}
+
+// ─── Product profile segment ───────────────────────────────────────────────────
+
+const EMPTY_PRODUCT_PROFILE: ProductProfileV1 = {
+  schema_version: "product_profile_v1",
+  company_description: "",
+  problem_statement: "",
+  solution_summary: "",
+  product_type: "Unknown",
+  delivery_model: "Unknown",
+  target_customer: "",
+  buyer_persona: null,
+  core_workflow: [],
+  core_features: [],
+  differentiation_claims: [],
+  integrations_or_dependencies: [],
+  product_maturity: "Unknown",
+  ai_claims_present: false,
+  ai_usage_summary: null,
+  ai_usage_type: "None",
+  ai_defensibility_notes: null,
+  ai_evidence_strength: "none",
+  evidence: {},
+  sources: [],
+};
+
+/**
+ * Build the product_profile_v1 segment from the render package.
+ * Returns an empty default when the section is absent or unparseable.
+ */
+function buildProductProfileV1Segment(rp: OrchestratorRenderPackageInput): ProductProfileV1 {
+  const body = findSectionBody(rp, "product_profile_v1");
+  const parsed = parseProductProfileBody(body);
+  return parsed ?? EMPTY_PRODUCT_PROFILE;
 }
 
 // ─── Main export ─────────────────────────────────────────────────────────────
@@ -632,6 +670,7 @@ export function buildOrchestratorReportV1(args: {
       coverage.text_coverage_pct,
       warnings
     ),
+    product_profile_v1: buildProductProfileV1Segment(rp),
   };
 
   // ─── 11. Assemble report ───────────────────────────────────────────────────

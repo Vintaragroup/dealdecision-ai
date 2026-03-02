@@ -206,4 +206,54 @@ export type {
   DciBand,
   FinancialHealthScore,
   MarketScore,
+  // Product profile types
+  ProductProfileV1,
+  ProductProfileEvidence,
+  ProductType,
+  DeliveryModel,
+  ProductMaturity,
+  AiUsageType,
+  AiEvidenceStrength,
+  // Financial segment types
+  FinancialSegment,
+  FinancialBenchmark,
+  FinancialLayoutClassification,
+  FinancialReconciliation,
 } from "./orchestrator/types";
+// ============================================================================
+// Financial Fact Registry (v1)
+// ============================================================================
+// Persisted granular financial datapoints (metric × period × provenance).
+// Consumed by: deal chat (read), orchestrator (read-only).
+export type {
+  FinancialFactV1,
+  FinancialFactUnit,
+  FinancialFactSourceKind,
+  FinancialFactPeriodType,
+  FinancialFactConfidence,
+  FinancialFactReconciliationStatus,
+} from "./financial-facts/financial-fact-v1";
+export {
+  isFiniteFactValue,
+  capFactExcerpt,
+  computeFactId,
+  validateFinancialFact,
+  inferPeriodType,
+} from "./financial-facts/financial-fact-v1";
+
+// ============================================================================
+// Deal Assistant Answer Policy (v1)
+// ============================================================================
+// Deterministic intent classification + prompt policy block + sanity filter.
+// No LLM calls. Pure, unit-testable.
+export type {
+  QuestionIntent,
+  AnswerBasis,
+  SanityCheckResult,
+  EnforceAnswerSanityOpts,
+} from "./chat/answer-policy-v1";
+export {
+  classifyQuestionIntent,
+  buildPromptPolicyBlock,
+  enforceAnswerSanity,
+} from "./chat/answer-policy-v1";

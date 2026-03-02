@@ -27,6 +27,43 @@ export type EvidenceKind =
   | "section";
 export type SourceType = "xlsx" | "deck" | "other" | "unknown";
 
+// ─── Product profile primitives ──────────────────────────────────────────────
+
+export type ProductType =
+  | "SaaS"
+  | "Marketplace"
+  | "API"
+  | "Services"
+  | "Hardware"
+  | "Hybrid"
+  | "Unknown";
+
+export type DeliveryModel =
+  | "B2B SaaS"
+  | "PLG"
+  | "Enterprise"
+  | "Services"
+  | "Unknown";
+
+export type ProductMaturity =
+  | "Concept"
+  | "MVP"
+  | "Beta"
+  | "Live"
+  | "Scaling"
+  | "Unknown";
+
+export type AiUsageType =
+  | "Generative"
+  | "Predictive"
+  | "Recommender"
+  | "Automation"
+  | "Other"
+  | "Unknown"
+  | "None";
+
+export type AiEvidenceStrength = "strong" | "weak" | "marketing_only" | "none";
+
 // ─── Sub-structures ──────────────────────────────────────────────────────────
 
 export interface DocumentConfidenceInputs {
@@ -231,12 +268,64 @@ export interface RiskVerificationSegment {
   data_issues: DataIssues;
 }
 
+// ─── Product profile segment ─────────────────────────────────────────────────
+
+/** Per-field evidence references for the product profile. */
+export interface ProductProfileEvidence {
+  company_description?: string[];
+  problem_statement?: string[];
+  solution_summary?: string[];
+  ai_usage_summary?: string[];
+}
+
+/**
+ * Structured product & technology profile extracted from pitch materials.
+ * Populated by product_profile_v1 governed LLM synthesis.
+ */
+export interface ProductProfileV1 {
+  schema_version: "product_profile_v1";
+  /** 1–2 sentence company description. */
+  company_description: string;
+  /** 1–2 sentence problem being solved. */
+  problem_statement: string;
+  /** 1–2 sentence solution / product summary. */
+  solution_summary: string;
+  product_type: ProductType;
+  delivery_model: DeliveryModel;
+  target_customer: string;
+  buyer_persona: string | null;
+  /** 3–6 core workflow steps, stored as string array. */
+  core_workflow: string[];
+  /** 3–10 core product features. */
+  core_features: string[];
+  /** 0–8 claimed differentiators. */
+  differentiation_claims: string[];
+  /** 0–10 integrations or dependencies. */
+  integrations_or_dependencies: string[];
+  product_maturity: ProductMaturity;
+  // ─── AI-specific ─────────────────────────────────────────────────────────
+  /** true only when AI/ML is explicitly mentioned in documentation. */
+  ai_claims_present: boolean;
+  /** Null when ai_claims_present is false. */
+  ai_usage_summary: string | null;
+  ai_usage_type: AiUsageType;
+  /** Data moat / workflow moat description, or null when absent. */
+  ai_defensibility_notes: string | null;
+  ai_evidence_strength: AiEvidenceStrength;
+  // ─── Evidence ─────────────────────────────────────────────────────────────
+  /** Per-field evidence references for auditability. */
+  evidence: ProductProfileEvidence;
+  /** Segment-level source evidence IDs cited from documentation. */
+  sources: string[];
+}
+
 export interface OrchestratorSegments {
   executive_summary: ExecutiveSummarySegment;
   deal_terms: DealTermsSegment;
   market: MarketSegment;
   financial: FinancialSegment;
   risk_verification: RiskVerificationSegment;
+  product_profile_v1: ProductProfileV1;
 }
 
 // ─── Evidence Registry ───────────────────────────────────────────────────────
@@ -258,6 +347,7 @@ export interface EvidenceRegistryIndexes {
     market: string[];
     financial: string[];
     risk_verification: string[];
+    product_profile_v1: string[];
   };
 }
 

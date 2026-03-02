@@ -382,8 +382,8 @@ export default function AppShell() {
                   onToggleNotifications={() => setRightSidebarOpen((o) => !o)}
                 />
 
-                {/* Chat Assistant */}
-                <ChatAssistant darkMode={darkMode} />
+                {/* Chat Assistant — hidden when Deal Workspace is open (AIDealAssistant handles chat there) */}
+                {currentPage !== 'dealWorkspace' && <ChatAssistant darkMode={darkMode} />}
 
                 {/* Runtime-only production debug panel (disabled unless opted-in via localStorage/query param) */}
                 <ApiMutationsPanel />

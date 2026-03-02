@@ -7,9 +7,10 @@ import type {
   WorkspaceChatResponse,
 } from "@dealdecision/contracts";
 import { buildOrchestratorReportV1, classifyQuestionIntent, buildPromptPolicyBlock, enforceAnswerSanity } from "@dealdecision/core";
-import type { OrchestratorReportV1, QuestionIntent, AnswerBasis, FinancialSegment, FinancialFactV1 } from "@dealdecision/core";
+import type { OrchestratorReportV1, QuestionIntent, AnswerBasis, FinancialSegment, FinancialFactV1, PageRegistryRowV1 } from "@dealdecision/core";
 import { getPool } from "../lib/db";
 import { getFinancialFactsForChat } from "./financial-facts";
+import { getPageContextForChat } from "./pages";
 
 // ============================================================================
 // OpenAI helper (same pattern as node-ai-analyze.ts)
@@ -325,10 +326,65 @@ export function buildFactsBlock(facts: FinancialFactV1[]): string {
   return raw.length > 1500 ? raw.slice(0, 1497) + "..." : raw;
 }
 
+// ======================================================================
+// Page Registry — intent → page_type mapping + context block
+// ======================================================================
+
+/**
+ * Maps QuestionIntent to the most relevant page_type in page_registry_v1.
+ * undefined = no page registry lookup for this intent.
+ */
+const INTENT_TO_PAGE_TYPE: Partial<Record<QuestionIntent, string>> = {
+  terms:    "ask",       // deal terms / raise amount → ask pages
+  product:  "product",
+  ai:       "product",  // AI intent → product pages
+  traction: "traction",
+  team:     "team",
+  risk:     "risks",
+  // financial — handled by the financial facts block; page registry not used
+  // general   — no specific page type; fall through to orchestrator data
+};
+
+const PAGE_CONTEXT_CHAR_CAP = 1200;
+
+/**
+ * Build a PAGE CONTEXT block from page registry rows.
+ * Cap: 4 pages max, total ~1200 chars.
+ * Each page: page_type, page_number, up to 2 key_claims, 1 numeric_claim if present.
+ */
+function buildPageContextBlock(rows: PageRegistryRowV1[]): string {
+  if (rows.length === 0) return "";
+
+  const capped = rows.slice(0, 4);
+  const lines: string[] = ["--- PAGE CONTEXT (cite page_number in your answer) ---"];
+
+  let totalChars = 0;
+  for (const row of capped) {
+    if (totalChars >= PAGE_CONTEXT_CHAR_CAP) break;
+
+    const header = `[${row.page_type.toUpperCase()} — p.${row.page_number}]`;
+    const claims = row.key_claims
+      .slice(0, 2)
+      .map((c) => `  • ${cap(c.text, 200)}`);
+    const numericLine =
+      row.numeric_claims.length > 0
+        ? `  ≡ ${cap(row.numeric_claims[0].raw, 80)}: ${row.numeric_claims[0].value} ${row.numeric_claims[0].unit}${row.numeric_claims[0].currency ? ` (${row.numeric_claims[0].currency})` : ""}`
+        : null;
+
+    const pageBlock = [header, ...claims, ...(numericLine ? [numericLine] : [])].join("\n");
+    totalChars += pageBlock.length;
+    if (totalChars > PAGE_CONTEXT_CHAR_CAP) break;
+    lines.push(pageBlock);
+  }
+
+  lines.push("--- END PAGE CONTEXT ---");
+  return lines.join("\n");
+}
+
 function buildSystemPrompt(
   ctx: DealChatContext,
   intent: QuestionIntent,
-  opts: { forceFinancialBlock?: boolean; facts?: FinancialFactV1[] } = {}
+  opts: { forceFinancialBlock?: boolean; facts?: FinancialFactV1[]; pageRows?: PageRegistryRowV1[] } = {}
 ): string {
   const companyLabel = ctx.dealName ? `**${ctx.dealName}**` : "this deal";
   const r = ctx.orchestratorReport;
@@ -472,6 +528,12 @@ function buildSystemPrompt(
     lines.push(`--- END ORCHESTRATOR DATA ---`);
   }
 
+  // ── Page Context block (non-financial intents, page-level grounding) ─────
+  if (opts.pageRows && opts.pageRows.length > 0) {
+    const pageBlock = buildPageContextBlock(opts.pageRows);
+    if (pageBlock) lines.push(``, pageBlock);
+  }
+
   // Evidence for citation (ordered by relevance; registry items first)
   if (ctx.evidenceItems.length > 0) {
     lines.push(``, `--- EVIDENCE (cite by evidence_id) ---`);
@@ -583,7 +645,14 @@ export async function registerChatRoutes(
       ? await getFinancialFactsForChat(pool, deal_id)
       : [];
 
-    const systemPrompt = buildSystemPrompt(ctx, intent, { forceFinancialBlock, facts: registryFacts });
+    // Fetch page registry context for non-financial intents
+    const pageRegistryType = INTENT_TO_PAGE_TYPE[intent];
+    const pageRows: PageRegistryRowV1[] =
+      !showFinancialIntent && pageRegistryType
+        ? await getPageContextForChat(pool, deal_id, pageRegistryType, 4)
+        : [];
+
+    const systemPrompt = buildSystemPrompt(ctx, intent, { forceFinancialBlock, facts: registryFacts, pageRows });
 
     let llmMessage = "";
     let confidence: DealChatResponseV1["confidence"] = "low";

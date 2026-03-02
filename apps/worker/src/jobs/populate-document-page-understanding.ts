@@ -7,6 +7,7 @@ import { enqueuePersistedJob } from "../lib/job-enqueue";
 import { makeJobId } from "../lib/job-id";
 import { populateDocumentPageUnderstandingFromVisualExtractions } from "../lib/document-page-understanding";
 import { promoteSlideFactsFromDocumentPageUnderstanding } from "../lib/promote-slide-facts";
+import { populatePageRegistryV1 } from "../lib/page-registry/populate-page-registry-v1";
 
 function parseFiniteInt(value: unknown): number | null {
 	const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
@@ -244,6 +245,36 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 						updated: promoted.updated,
 						fact_types: promoted.facts.map((f) => f.fact_type),
 						warnings: promoted.warnings,
+						ts: new Date().toISOString(),
+					})
+				);
+			} catch {
+				// never block job completion
+			}
+		}
+
+		// Page Registry v1: index all pages with type, entities, numeric claims.
+		// Best-effort: never blocks the job. Runs after DPU + slide fact promotion.
+		if (docId && resolvedDealId) {
+			try {
+				const pageRegResult = await populatePageRegistryV1(pool as any, {
+					dealId: resolvedDealId,
+					documentId: docId,
+					pageStart,
+					pageEnd,
+					version,
+				});
+				console.log(
+					JSON.stringify({
+						event: pageRegResult.ok
+							? "PAGE_REGISTRY_V1_POPULATED"
+							: "PAGE_REGISTRY_V1_ERROR",
+						deal_id: resolvedDealId,
+						document_id: docId,
+						pages_attempted: pageRegResult.pages_attempted,
+						pages_upserted: pageRegResult.pages_upserted,
+						pages_skipped_no_text: pageRegResult.pages_skipped_no_text,
+						error: pageRegResult.error ?? null,
 						ts: new Date().toISOString(),
 					})
 				);

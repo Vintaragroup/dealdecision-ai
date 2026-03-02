@@ -242,6 +242,31 @@ export {
 } from "./financial-facts/financial-fact-v1";
 
 // ============================================================================
+// Page Registry (v1)
+// ============================================================================
+// Persisted per-page index: type classification, numeric claims, entities,
+// key claims, and evidence linkage. Consumed by: deal chat, API.
+export type {
+  PageTypeV1,
+  PageEntityKindV1,
+  PageEntityV1,
+  NumericClaimUnitV1,
+  NumericClaimV1,
+  PageClaimV1,
+  PageConfidenceV1,
+  PageRegistryRowV1,
+} from "./page-registry/page-registry-v1";
+export {
+  PAGE_TYPES_V1,
+  isPageTypeV1,
+  computePageId,
+  capPageExcerpt,
+  capClaimText,
+  capContext,
+  validatePageRegistryRow,
+} from "./page-registry/page-registry-v1";
+
+// ============================================================================
 // Deal Assistant Answer Policy (v1)
 // ============================================================================
 // Deterministic intent classification + prompt policy block + sanity filter.

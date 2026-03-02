@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS public.page_registry_v1 (
 
 -- Unique constraint on (deal_id, document_id, page_number) for upsert semantics
 ALTER TABLE public.page_registry_v1
-  ADD CONSTRAINT IF NOT EXISTS page_registry_v1_deal_doc_page_unique
+  ADD CONSTRAINT page_registry_v1_deal_doc_page_unique
   UNIQUE (deal_id, document_id, page_number);
 
 -- Indexes for common query patterns

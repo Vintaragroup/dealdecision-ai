@@ -97,8 +97,8 @@ const makeUofPool = () => ({
 		if (sql.includes("document_page_understanding")) {
 			if (sql.includes("COUNT")) {
 				// Upstream snapshot + coverage snapshot COUNT queries.
-				// excel_range pages have no page_text, so non_empty = 0.
-				return { rows: [{ total: "1", non_empty: "0" }] };
+				// Return sufficient coverage so the Evidence Gate v1 passes (E2: ≥55%).
+				return { rows: [{ total: "30", non_empty: "20" }] };
 			}
 			// Main DPU page load (SELECT document_id, page_index, payload LIMIT 500)
 			return {
@@ -114,6 +114,10 @@ const makeUofPool = () => ({
 
 		// evidence_items
 		if (sql.includes("evidence_items")) {
+			// Coverage snapshot COUNT query (Evidence Gate E3: ≥25 items).
+			if (sql.includes("COUNT")) {
+				return { rows: [{ c: "30" }] };
+			}
 			return { rows: [] };
 		}
 

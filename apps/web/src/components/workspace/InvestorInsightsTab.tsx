@@ -1140,6 +1140,13 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
   // Red failure banner: shown whenever the persisted report status is failed.
   const showGenerateFailedBanner = reportStatus === 'failed';
 
+  // Amber evidence gate banner: shown when deterministic_only AND evidence gate explicitly failed.
+  const evidenceGateFromPkg = report?.render_package?.evidence_gate ?? null;
+  const showEvidenceGateBanner =
+    reportStatus === 'deterministic_only' &&
+    evidenceGateFromPkg !== null &&
+    evidenceGateFromPkg.passed === false;
+
   const handleGenerate = async () => {
     // eslint-disable-next-line no-console
     console.log('[InvestorInsights] generate_click', dealId);
@@ -1250,6 +1257,21 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
         <div className={`flex items-start gap-3 rounded-xl border px-4 py-3 ${darkMode ? 'bg-red-500/10 border-red-500/30' : 'bg-red-50 border-red-200'}`}>
           <AlertCircle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
           <p className={`text-sm font-medium ${darkMode ? 'text-red-200' : 'text-red-800'}`}>Generation failed (see gates below)</p>
+        </div>
+      )}
+      {showEvidenceGateBanner && (
+        <div className={`flex items-start gap-3 rounded-xl border px-4 py-3 ${darkMode ? 'bg-amber-500/10 border-amber-500/30' : 'bg-amber-50 border-amber-200'}`}>
+          <AlertCircle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
+          <div>
+            <p className={`text-sm font-medium ${darkMode ? 'text-amber-200' : 'text-amber-800'}`}>
+              Full interpretation paused — insufficient evidence
+            </p>
+            <p className={`text-xs mt-0.5 ${darkMode ? 'text-amber-300/80' : 'text-amber-700/70'}`}>
+              Coverage {Math.round((evidenceGateFromPkg?.metrics?.coverage_pct ?? 0) * 100)}%,{' '}
+              Evidence {evidenceGateFromPkg?.metrics?.evidence_count ?? 0} items.{' '}
+              Re-run document extraction to improve coverage.
+            </p>
+          </div>
         </div>
       )}
       {generateState === 'error' && (

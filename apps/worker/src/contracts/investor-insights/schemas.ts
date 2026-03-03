@@ -25,6 +25,32 @@ export const GateStateSchema = z.object({
 
 export type GateState = z.infer<typeof GateStateSchema>;
 
+// ─── Evidence Gate v1 schemas ─────────────────────────────────────────────────
+// Separate from G-gate schemas; evaluates evidence quality rather than data existence.
+
+export const EvidenceGateResultSchema = z.object({
+  gate: z.enum(["E0", "E1", "E2", "E3", "E4"]),
+  passed: z.boolean(),
+  actual: z.number().nullable(),
+  threshold: z.number().nullable(),
+  reason_code: z.string().nullable(),
+});
+
+export const EvidenceGateStateSchema = z.object({
+  passed: z.boolean(),
+  blocking_reason: z.string().nullable(),
+  results: z.array(EvidenceGateResultSchema),
+  metrics: z.object({
+    docs_count: z.number(),
+    expected_pages_total: z.number(),
+    coverage_pct: z.number(),
+    evidence_count: z.number(),
+    hard_missing_pages_total: z.number().nullable(),
+  }),
+});
+
+export type EvidenceGateState = z.infer<typeof EvidenceGateStateSchema>;
+
 export const ComplianceEventSchema = z.object({
   code: z.string().min(3),
   severity: z.enum(["info", "warn", "error"]),
@@ -83,6 +109,10 @@ export const RenderPackageSchema = z.object({
 
   sections: z.array(RenderSectionSchema),
   audit_footer: z.record(z.unknown()).optional(),
+
+  // Evidence gate v1: populated when the processor reaches the quality check
+  // (i.e. G0–G5 all passed). Optional so old render packages remain valid.
+  evidence_gate: EvidenceGateStateSchema.optional(),
 
   no_empty_blocks: z.boolean(),
 });

@@ -10907,12 +10907,19 @@ export async function registerDealRoutes(
   //     can surface the right CTA
   type StatusSummaryAnalysis = 'not_started' | 'running' | 'succeeded' | 'failed';
   type StatusSummaryReport   = 'not_started' | 'running' | 'succeeded' | 'failed';
+  type StatusSummaryEvidenceGate = {
+    passed: boolean;
+    blocking_reason: string | null;
+    coverage_pct: number;
+    evidence_count: number;
+  };
   type StatusSummary = {
     analysis_status: StatusSummaryAnalysis;
     report_status: StatusSummaryReport;
     has_existing_render_package: boolean;
     blocking_reason: string | null;
     last_activity_at: string | null;
+    evidence_gate: StatusSummaryEvidenceGate | null;
   };
 
   function mapAnalysisJobStatus(raw: string | null | undefined): StatusSummaryAnalysis {
@@ -10964,12 +10971,27 @@ export async function registerDealRoutes(
       reportStatus   === 'failed'                        ? 'report_failed'   :
       null;
 
+    const rawEvidenceGate = (reportRow?.render_package as Record<string, unknown> | null)?.evidence_gate as {
+      passed?: boolean;
+      blocking_reason?: string | null;
+      metrics?: { coverage_pct?: number; evidence_count?: number };
+    } | undefined;
+    const evidenceGate: StatusSummaryEvidenceGate | null = rawEvidenceGate != null
+      ? {
+          passed:          rawEvidenceGate.passed         ?? false,
+          blocking_reason: rawEvidenceGate.blocking_reason ?? null,
+          coverage_pct:    rawEvidenceGate.metrics?.coverage_pct    ?? 0,
+          evidence_count:  rawEvidenceGate.metrics?.evidence_count  ?? 0,
+        }
+      : null;
+
     return {
       analysis_status:             analysisStatus,
       report_status:               reportStatus,
       has_existing_render_package: hasExistingRenderPkg,
       blocking_reason:             blockingReason,
       last_activity_at:            maxIsoTs(analyzeJob?.updated_at, reportRow?.updated_at),
+      evidence_gate:               evidenceGate,
     };
   }
 
@@ -10992,6 +11014,7 @@ export async function registerDealRoutes(
         has_existing_render_package: false,
         blocking_reason: null,
         last_activity_at: null,
+        evidence_gate: null,
       };
       return reply.status(200).send({ status: "not_started", status_summary: NOT_STARTED_SUMMARY });
     }

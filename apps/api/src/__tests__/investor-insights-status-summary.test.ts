@@ -174,4 +174,63 @@ test("GET investor-insights: table absent → status_summary with all not_starte
   assert.equal(ss.report_status, "not_started");
   assert.equal(ss.has_existing_render_package, false);
   assert.equal(ss.blocking_reason, null);
+  assert.equal(ss.evidence_gate, null, "evidence_gate must be null for NOT_STARTED_SUMMARY");
+});
+
+// ─── Scenario 5: render_package has evidence_gate.passed=false → evidence_gate surfaced ──
+test("GET investor-insights: evidence gate failed → status_summary.evidence_gate populated", async () => {
+  const evidenceGate = {
+    passed: false,
+    blocking_reason: "EVIDENCE_GATE_LOW_COVERAGE",
+    results: [
+      { gate: "E0", passed: true, actual: 2, threshold: 1, reason_code: null },
+      { gate: "E1", passed: true, actual: 10, threshold: 1, reason_code: null },
+      { gate: "E2", passed: false, actual: 0.45, threshold: 0.55, reason_code: "EVIDENCE_GATE_LOW_COVERAGE" },
+    ],
+    metrics: {
+      docs_count: 2,
+      expected_pages_total: 10,
+      coverage_pct: 0.45,
+      evidence_count: 12,
+      hard_missing_pages_total: null,
+    },
+  };
+
+  const pool = buildMockPool({
+    analyzeJob: { status: "succeeded", updated_at: "2025-01-01T00:00:00Z" },
+    reportRow: {
+      status: "deterministic_only",
+      engine_version: "v1",
+      upstream_fingerprint: "fp-eg",
+      gate_state: null,
+      compliance_state: null,
+      render_package: { sections: [], evidence_gate: evidenceGate },
+      updated_at: "2025-01-02T00:00:00Z",
+    },
+  });
+
+  const app = Fastify();
+  await registerDealRoutes(app, pool);
+
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/v1/deals/${DEAL_ID}/investor-insights`,
+  });
+
+  assert.equal(res.statusCode, 200);
+  const body = res.json() as any;
+  const ss = body.status_summary;
+
+  assert.ok(ss, "status_summary must be present");
+  assert.equal(ss.report_status, "succeeded");
+  assert.equal(ss.has_existing_render_package, true);
+  assert.equal(ss.blocking_reason, null,
+    "blocking_reason must be null when render_package exists, even if evidence gate failed");
+
+  const eg = ss.evidence_gate;
+  assert.ok(eg, "evidence_gate must be present in status_summary");
+  assert.equal(eg.passed, false);
+  assert.equal(eg.blocking_reason, "EVIDENCE_GATE_LOW_COVERAGE");
+  assert.equal(eg.coverage_pct, 0.45);
+  assert.equal(eg.evidence_count, 12);
 });

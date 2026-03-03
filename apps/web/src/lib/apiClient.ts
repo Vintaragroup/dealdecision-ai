@@ -2123,6 +2123,25 @@ export type InvestorInsightsReport = {
       all_passed: boolean;
       results: InvestorInsightsGateResult[];
     };
+    /** Present when the Evidence Gate v1 was evaluated (all G-gates passed). */
+    evidence_gate?: {
+      passed: boolean;
+      blocking_reason: string | null;
+      results: Array<{
+        gate: string;
+        passed: boolean;
+        actual: number | null;
+        threshold: number | null;
+        reason_code: string | null;
+      }>;
+      metrics: {
+        docs_count: number;
+        expected_pages_total: number;
+        coverage_pct: number;
+        evidence_count: number;
+        hard_missing_pages_total: number | null;
+      };
+    };
     [key: string]: unknown;
   };
   updated_at?: string;

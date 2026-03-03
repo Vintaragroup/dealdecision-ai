@@ -25,7 +25,13 @@ import {
 	type GateState,
 	type ComplianceState,
 	type RenderPackage,
+	type EvidenceGateState,
 } from "../../contracts/investor-insights/schemas";
+import {
+	computeEvidenceGateV1,
+	EVIDENCE_GATE_COVERAGE_THRESHOLD,
+	EVIDENCE_GATE_MIN_EVIDENCE_COUNT,
+} from "./evidence-gate-v1";
 import {
 	validateGateState,
 	validateRenderPackage,
@@ -580,6 +586,71 @@ function buildG3OnlyFailSections(
 	sections.push(buildCoverageSnapshotSection(coverage, gateState, normMetrics));
 	return sections;
 }
+
+/**
+ * Build deterministic-only sections for the evidence-gate-failed path.
+ *
+ * G0–G5 all passed; the E0–E4 evidence quality gates prevented LLM stages
+ * from running due to insufficient coverage or evidence signal.
+ * Deterministic Stage 0 output (slots, phase 2, thesis stub) is preserved.
+ */
+function buildEvidenceGateFailedSections(
+	gateState: GateState,
+	coverage: CoverageSnapshot,
+	evidenceGate: EvidenceGateState,
+	insightSlotsSections: Array<RenderPackage["sections"][number]>,
+	phase2Sections: Array<RenderPackage["sections"][number]>,
+	thesisSection: RenderPackage["sections"][number] | null,
+	normMetrics?: { normalizationEvents: number; normalizedPages: number }
+): RenderPackage["sections"] {
+	const coveragePct = Math.round((evidenceGate.metrics.coverage_pct ?? 0) * 100);
+	const evidenceCount = evidenceGate.metrics.evidence_count;
+	const blockingGate = evidenceGate.results.find((r) => !r.passed);
+	const reasonStr = evidenceGate.blocking_reason ?? "EVIDENCE_GATE_FAIL";
+
+	const sections: RenderPackage["sections"] = [
+		{
+			key: "gate_state",
+			title: "Readiness Gates",
+			kind: "gate_state",
+			items: gateState.results.map((r) => ({
+				gate: r.gate,
+				passed: r.passed,
+				reason_code: r.reason_code ?? null,
+				actual: r.actual ?? null,
+				threshold: r.threshold ?? null,
+			})),
+			fallback: "All structural readiness gates passed",
+		},
+		{
+			key: "analysis_status",
+			title: "Analysis Status",
+			kind: "message",
+			body: `Deterministic Stage 0 analysis complete. Full interpretation paused — insufficient evidence signal (${evidenceCount} items, ${coveragePct}% coverage). Reason: ${reasonStr}.`,
+		},
+		{
+			key: "evidence_quality_gate",
+			title: "Evidence Quality Gate",
+			kind: "message",
+			body: [
+				`Full analytical interpretation (Stages 1–7) requires stronger evidence coverage to reduce hallucination risk.`,
+				`Coverage: ${coveragePct}% (threshold: ${Math.round(EVIDENCE_GATE_COVERAGE_THRESHOLD * 100)}%)`,
+				`Evidence items: ${evidenceCount} (threshold: ${EVIDENCE_GATE_MIN_EVIDENCE_COUNT})`,
+				`Blocking gate: ${blockingGate?.gate ?? "unknown"} — ${reasonStr}`,
+				`Recommended action: re-run document extraction to improve OCR coverage, or add additional source documents.`,
+				`recommended_queue: document_intelligence_extract`,
+				`recommended_action: rerun_upstream_extraction`,
+				`recommended_reason: ${reasonStr}`,
+			].join("\n"),
+		},
+		...insightSlotsSections,
+		...phase2Sections,
+	];
+	if (thesisSection) sections.push(thesisSection);
+	sections.push(buildCoverageSnapshotSection(coverage, gateState, normMetrics));
+	return sections;
+}
+
 // ─── Stage 1: Deterministic Insight Slots ───────────────────────────────────────
 
 /**
@@ -3566,6 +3637,7 @@ function buildRenderPackage(opts: {
 	upstreamFingerprint: string;
 	engineVersion: string;
 	sections: RenderPackage["sections"];
+	evidenceGate?: EvidenceGateState;
 }): RenderPackage {
 	return {
 		render_version: "ui_contract_v1",
@@ -3580,6 +3652,7 @@ function buildRenderPackage(opts: {
 		gate_state: opts.gateState,
 		compliance_state: opts.complianceState,
 		sections: opts.sections,
+		...(opts.evidenceGate !== undefined && { evidence_gate: opts.evidenceGate }),
 		no_empty_blocks: true,
 		audit_footer: {
 			stage: "stage_0",
@@ -4118,9 +4191,166 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		}
 	}
 
-	// ── 6. Persist deterministic-only render package ──────────────────────────
-	const [coverage, insightSlotInputs, previousFusedFacts, previousGovernedSummary, previousGovernedExecSummary, dealName] = await Promise.all([
-		loadCoverageSnapshot(pool, dealId),
+	// ── 6a. Load coverage metrics for Evidence Gate evaluation ────────────────
+	const coverage = await loadCoverageSnapshot(pool, dealId);
+
+	// ── 6b. Compute Evidence Gate v1 (deterministic quality check) ────────────
+	const evidenceGate = computeEvidenceGateV1({
+		docs_count: coverage.docsCount,
+		expected_pages_total: coverage.dpuPageCount,
+		dpu_nonempty_pages: coverage.dpuNonemptyPages,
+		evidence_count: coverage.evidenceCount,
+	});
+
+	console.log(
+		JSON.stringify({
+			event: evidenceGate.passed
+				? "INVESTOR_INSIGHTS_EVIDENCE_GATE_PASS"
+				: "INVESTOR_INSIGHTS_EVIDENCE_GATE_FAIL",
+			deal_id: dealId,
+			engine_version: engineVersion,
+			passed: evidenceGate.passed,
+			blocking_reason: evidenceGate.blocking_reason,
+			metrics: evidenceGate.metrics,
+			ts: new Date().toISOString(),
+		})
+	);
+
+	if (!evidenceGate.passed) {
+		// ── Evidence gate blocked LLM stages — persist deterministic output only ──
+		const [insightSlotInputs, previousFusedFacts, dealName] = await Promise.all([
+			loadInsightSlotInputs(pool, dealId, gateState),
+			loadPreviousFusedFacts(pool, dealId),
+			loadDealName(pool, dealId),
+		]);
+		const insightSlotsSections = buildInsightSlotsSections(dealId, insightSlotInputs);
+		const phase2Sections = buildPhase2Sections(insightSlotInputs);
+		const thesisSection = buildInvestorThesisStubSection(buildThesisInputs(insightSlotInputs));
+		const fusionResult = fuseDealCanonicalFacts(
+			insightSlotInputs.dpuPages, insightSlotInputs.evidenceSnippets, previousFusedFacts
+		);
+		const fusionSection = buildDealFusionSection(fusionResult);
+		const sections = buildEvidenceGateFailedSections(
+			gateState, coverage, evidenceGate,
+			insightSlotsSections, phase2Sections, thesisSection,
+			normMetricsFromInputs(insightSlotInputs)
+		);
+		sections.push(fusionSection);
+		const renderPackage = buildRenderPackage({
+			dealId,
+			status: "deterministic_only",
+			gateState,
+			complianceState,
+			upstreamFingerprint,
+			engineVersion,
+			sections,
+			evidenceGate,
+		});
+
+		let validatedPkg = renderPackage;
+		try {
+			validatedPkg = validateRenderPackage(renderPackage);
+			validateNoEmptyBlocks(validatedPkg);
+		} catch (err) {
+			console.error(
+				JSON.stringify({
+					event: "INVESTOR_INSIGHTS_RENDER_PKG_INVALID",
+					reason_code: "SCHEMA_RENDER_PACKAGE_INVALID",
+					deal_id: dealId,
+					error: err instanceof Error ? err.message : String(err),
+				})
+			);
+		}
+
+		const auditLogEvidenceGateFail = [
+			{
+				stage: "stage_0",
+				event: "INVESTOR_INSIGHTS_EVIDENCE_GATE_FAIL_PERSIST",
+				upstream_fingerprint: upstreamFingerprint,
+				dpu_count: upstream.dpuCount,
+				dpu_coverage: upstream.dpuCoverage,
+				evidence_count: upstream.evidenceCount,
+				visual_asset_count: upstream.visualAssetCount,
+				overlay_exists: upstream.overlayExists,
+				evidence_gate_blocking_reason: evidenceGate.blocking_reason,
+				engine_version: engineVersion,
+				constitution_version: VERSION_PINS.constitution_version,
+				schema_version: VERSION_PINS.schema_version,
+				governance_version: VERSION_PINS.governance_version,
+				ui_contract_version: VERSION_PINS.ui_contract_version,
+				ts: new Date().toISOString(),
+			},
+		];
+
+		const egReportId = await persistReport(pool, {
+			dealId,
+			engineVersion,
+			upstreamFingerprint,
+			status: "deterministic_only",
+			gateState,
+			complianceState,
+			renderPackage: validatedPkg,
+			auditLog: auditLogEvidenceGateFail,
+			fusedFacts: fusionResult.facts,
+			financialFacts: insightSlotInputs.bestFinancialStatement
+				? deriveFinancialFactsV1(insightSlotInputs.bestFinancialStatement)
+				: null,
+			governedSummaryRecord: null,
+			governedExecutiveSummaryRecord: null,
+		});
+
+		// Best-effort: populate financial fact registry (non-blocking)
+		try {
+			const factsToUpsert = buildFinancialFactRegistryV1({
+				dealId,
+				financialStatement: insightSlotInputs.bestFinancialStatement ?? null,
+				saasKpis: insightSlotInputs.saasKpis ?? null,
+				balanceSheet: insightSlotInputs.balanceSheet ?? null,
+				cashFlow: insightSlotInputs.cashFlow ?? null,
+				reconciliation: insightSlotInputs.financialReconciliation ?? null,
+				deckSignals: insightSlotInputs.deckFinancialSignals ?? null,
+			});
+			const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
+			console.log(JSON.stringify({
+				event: "POPULATE_FINANCIAL_FACTS_V1",
+				deal_id: dealId,
+				upserted_count: upserted,
+				path: "evidence_gate_fail",
+				ts: new Date().toISOString(),
+			}));
+		} catch (factErr) {
+			console.error(JSON.stringify({
+				event: "POPULATE_FINANCIAL_FACTS_V1_ERROR",
+				deal_id: dealId,
+				error: factErr instanceof Error ? factErr.message : String(factErr),
+				path: "evidence_gate_fail",
+				ts: new Date().toISOString(),
+			}));
+		}
+
+		console.log(
+			JSON.stringify({
+				event: "INVESTOR_INSIGHTS_EVIDENCE_GATE_FAIL_COMPLETE",
+				deal_id: dealId,
+				engine_version: engineVersion,
+				upstream_fingerprint: upstreamFingerprint,
+				report_id: egReportId,
+				blocking_reason: evidenceGate.blocking_reason,
+				ts: new Date().toISOString(),
+			})
+		);
+
+		return {
+			ok: true,
+			status: "deterministic_only",
+			report_id: egReportId,
+			upstream_fingerprint: upstreamFingerprint,
+			evidence_gate_passed: false,
+		};
+	}
+
+	// ── 6c. Evidence gate passed — load remaining inputs and run LLM stages ───
+	const [insightSlotInputs, previousFusedFacts, previousGovernedSummary, previousGovernedExecSummary, dealName] = await Promise.all([
 		loadInsightSlotInputs(pool, dealId, gateState),
 		loadPreviousFusedFacts(pool, dealId),
 		loadPreviousGovernedSummary(pool, dealId),
@@ -4187,6 +4417,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		upstreamFingerprint,
 		engineVersion,
 		sections,
+		evidenceGate,
 	});
 
 	let validatedPkg = renderPackage;
@@ -4485,4 +4716,5 @@ export const _sectionBuilders = {
 	buildDeterministicOnlySections,
 	buildG3OnlyFailSections,
 	buildGateFailedSections,
+	buildEvidenceGateFailedSections,
 };

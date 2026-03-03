@@ -30,6 +30,12 @@ RUN pnpm --filter ./apps/worker... install --frozen-lockfile
 # so we must use a require rooted at the worker package.
 RUN node -e 'const { createRequire } = require("module"); const req = createRequire("/app/apps/worker/package.json"); req("bullmq"); console.log("bullmq_ok")'
 
+# Download Playwright Chromium browser in the deps stage so the runner stage
+# does not need outbound network access during Docker build.
+# PLAYWRIGHT_BROWSERS_PATH pins the install location so it can be COPY'd below.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN node /app/node_modules/.bin/playwright install chromium
+
 # ----------------------
 # build: compile worker
 # ----------------------
@@ -101,10 +107,9 @@ COPY --from=deps /app/node_modules /app/node_modules
 COPY --from=deps /app/apps/worker/node_modules ./node_modules
 COPY --from=build /app/packages /app/packages
 
-# Download Playwright Chromium browser binary for server-side PDF export.
-# OS dependencies are already installed in the apt-get layer above, so
-# --with-deps is intentionally omitted (avoids a second brittle apt-get update
-# inside the playwright CLI that fails on restricted build networks).
-RUN node /app/node_modules/.bin/playwright install chromium
+# Copy pre-downloaded Chromium browser from the deps stage.
+# No network access required here — browser was fetched during the deps layer.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+COPY --from=deps /ms-playwright /ms-playwright
 
 CMD ["node", "dist/src/index.js"]

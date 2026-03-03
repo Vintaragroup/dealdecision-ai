@@ -8,7 +8,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { Input } from '../ui/input';
-import { ToastContainer, ToastType } from '../ui/Toast';
+import { ToastContainer, ToastType, useToastQueue } from '../ui/Toast';
 import { DocumentsTab } from '../documents/DocumentsTab';
 import { DealFormData } from '../NewDealModal';
 import { AnimatedCounter } from '../AnimatedCounter';
@@ -142,7 +142,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const [investorScore, setInvestorScore] = useState(0);
   const [analyzing, setAnalyzing] = useState(false);
-  const [toasts, setToasts] = useState<Array<{ id: string; type: ToastType; title: string; message?: string }>>([]);
+  const { toasts, push: _pushToast, dismiss: removeToast } = useToastQueue();
   const [showExportModal, setShowExportModal] = useState(false);
   const [showTemplateExportModal, setShowTemplateExportModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
@@ -522,7 +522,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     }
   };
 
-  const shownToastKeysRef = useRef<Set<string>>(new Set());
   const delayedAnalyzeFailureToastTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const dealJobsRef = useRef<DealJobRowV2[]>([]);
   const fullProcessRunWindowRef = useRef<{ startMs: number; endMs: number } | null>(null);
@@ -4641,23 +4640,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   // Role-specific feedback items
   const feedbackItems: FeedbackItem[] = [];
 
-  const addToast = (type: ToastType, title: string, message?: string) => {
-    const newToast = {
-      id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      type,
-      title,
-      message
-    };
-    setToasts(prev => [...prev, newToast]);
+  const addToast = (type: ToastType, title: string, message?: string, toastKey?: string) => {
+    _pushToast({ type, title, message, key: toastKey });
   };
 
   const addToastOnce = (key: string, type: ToastType, title: string, message?: string) => {
-    const keys = shownToastKeysRef.current;
-    if (keys.has(key)) return;
-    keys.add(key);
-    // Avoid unbounded growth in long sessions.
-    if (keys.size > 200) keys.clear();
-    addToast(type, title, message);
+    _pushToast({ type, title, message, key });
   };
 
   const dealStageRaw = reportView.stageRaw;
@@ -4930,10 +4918,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return progressStageLabel ?? (jobStatus ? jobDisplay.label : null);
   })();
 
-  const removeToast = (id: string) => {
-    setToasts(prev => prev.filter(toast => toast.id !== id));
-  };
-
   const [pageUnderstandingGate, setPageUnderstandingGate] = useState<{
     status: 'idle' | 'preparing' | 'ready' | 'timeout' | 'error';
     version: string;
@@ -5022,7 +5006,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         addToast(
           'info',
           'Preparing documents…',
-          blockedReason ? `${blockedReason}${typeof missingTotal === 'number' ? ` • Missing ${missingTotal} page(s)` : ''}` : typeof missingTotal === 'number' ? `Missing ${missingTotal} page(s)` : 'Waiting for page understanding'
+          blockedReason ? `${blockedReason}${typeof missingTotal === 'number' ? ` • Missing ${missingTotal} page(s)` : ''}` : typeof missingTotal === 'number' ? `Missing ${missingTotal} page(s)` : 'Waiting for page understanding',
+          `deal-dpu-readiness:${dealId}`
         );
         setPageUnderstandingGate({
           status: 'preparing',
@@ -5043,7 +5028,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         const existingJobId = res.json && typeof (res.json as any).job_id === 'string' ? String((res.json as any).job_id) : null;
         const existingStatus = res.json && typeof (res.json as any).status === 'string' ? String((res.json as any).status) : 'running';
         if (existingJobId) {
-          addToast('info', 'Analysis already running', `Tracking job ${existingJobId}`);
+          addToast('info', 'Analysis already running', `Tracking job ${existingJobId}`, `deal-analysis-409:${dealId}`);
           return { job_id: existingJobId, status: existingStatus };
         }
 
@@ -5052,14 +5037,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           const arr = Array.isArray(rows) ? (rows as DealJobRowV2[]) : [];
           const best = selectBestAnalyzeJob(arr, null);
           if (best?.job_id) {
-            addToast('info', 'Analysis already running', `Tracking job ${best.job_id}`);
+            addToast('info', 'Analysis already running', `Tracking job ${best.job_id}`, `deal-analysis-409:${dealId}`);
             return { job_id: best.job_id, status: String(best.status ?? 'running') };
           }
         } catch {
           // ignore
         }
 
-        addToast('info', 'Analysis already running', 'Backend returned 409 (no job id).');
+        addToast('info', 'Analysis already running', 'Backend returned 409 (no job id).', `deal-analysis-409:${dealId}`);
         return null;
       }
 
@@ -5189,7 +5174,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     reportMissingRef.current = false;
     lastReportAttemptAtRef.current = 0;
 
-    addToast('info', 'Starting analysis…', 'Checking page understanding readiness');
+    addToast('info', 'Starting analysis…', 'Checking page understanding readiness', `deal-analysis-start:${dealId}`);
     try {
       await runAnalysisWithReadinessGate(dealId, 'page_understanding_v1', { forceRefresh: true });
     } catch (err) {
@@ -5260,7 +5245,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     reportMissingRef.current = false;
     lastReportAttemptAtRef.current = 0;
 
-    addToast('info', 'Full process started', 'Re-extract documents → extract visuals → analyze (auto after finalize)');
+    addToast('info', 'Full process started', 'Re-extract documents → extract visuals → analyze (auto after finalize)', `deal-full-process:${dealId}`);
 
     const initFullProcess = (): FullProcessUiState => ({
       started_at: new Date().toISOString(),

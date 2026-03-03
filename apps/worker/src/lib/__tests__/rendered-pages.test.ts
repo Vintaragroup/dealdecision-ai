@@ -75,8 +75,51 @@ describe("rendered pages", () => {
 		expect(cfg.enabled).toBe(true);
 		expect(cfg.persist).toBe(true);
 		expect(cfg.maxPages).toBe(10);
-		expect(cfg.dpi).toBe(200);
+		expect(cfg.dpi).toBe(300); // default is 300 for OCR quality
 		expect(cfg.format).toBe("png");
+	});
+
+	it("honours explicit VISUAL_PAGE_IMAGE_DPI env override", () => {
+		const cfg200 = getVisualPageImagePersistConfig({
+			ENABLE_VISUAL_EXTRACTION: "1",
+			VISUAL_PAGE_IMAGE_PERSIST: "1",
+			VISUAL_PAGE_IMAGE_DPI: "200",
+		} as any);
+		expect(cfg200.dpi).toBe(200);
+
+		const cfg150 = getVisualPageImagePersistConfig({
+			ENABLE_VISUAL_EXTRACTION: "1",
+			VISUAL_PAGE_IMAGE_PERSIST: "1",
+			VISUAL_PAGE_IMAGE_DPI: "150",
+		} as any);
+		expect(cfg150.dpi).toBe(150);
+
+		// Clamped at min 72
+		const cfgLow = getVisualPageImagePersistConfig({
+			ENABLE_VISUAL_EXTRACTION: "1",
+			VISUAL_PAGE_IMAGE_PERSIST: "1",
+			VISUAL_PAGE_IMAGE_DPI: "10",
+		} as any);
+		expect(cfgLow.dpi).toBe(72);
+
+		// Clamped at max 600
+		const cfgHigh = getVisualPageImagePersistConfig({
+			ENABLE_VISUAL_EXTRACTION: "1",
+			VISUAL_PAGE_IMAGE_PERSIST: "1",
+			VISUAL_PAGE_IMAGE_DPI: "1200",
+		} as any);
+		expect(cfgHigh.dpi).toBe(600);
+	});
+
+	it("default maxPixelsPerPage accommodates 300 DPI Letter pages without capping", () => {
+		// US Letter at 300 DPI: 2550 x 3300 = 8,415,000 pixels
+		// Old default 6.5 MP would have silently downscaled 300 DPI to ~258 DPI.
+		const cfg = getVisualPageImagePersistConfig({
+			ENABLE_VISUAL_EXTRACTION: "1",
+			VISUAL_PAGE_IMAGE_PERSIST: "1",
+		} as any);
+		const letterAt300Dpi = 2550 * 3300; // 8,415,000
+		expect(cfg.maxPixelsPerPage).toBeGreaterThanOrEqual(letterAt300Dpi);
 	});
 
 	it("plans chunk rendering and R2 keys for full PDFs", () => {

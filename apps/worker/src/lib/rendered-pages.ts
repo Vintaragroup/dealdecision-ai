@@ -89,11 +89,13 @@ export function getVisualPageImagePersistConfig(env: NodeJS.ProcessEnv = process
 	const maxPagesRaw = parseIntWithDefault(env.VISUAL_PAGE_IMAGE_MAX_PAGES, 10);
 	const maxPages = Number.isFinite(maxPagesRaw) ? Math.max(0, Math.min(1000, maxPagesRaw)) : 10;
 
-	const dpiRaw = parseIntWithDefault(env.VISUAL_PAGE_IMAGE_DPI, 200);
-	const dpi = Number.isFinite(dpiRaw) ? Math.max(72, Math.min(600, dpiRaw)) : 200;
+	const dpiRaw = parseIntWithDefault(env.VISUAL_PAGE_IMAGE_DPI, 300);
+	const dpi = Number.isFinite(dpiRaw) ? Math.max(72, Math.min(600, dpiRaw)) : 300;
 
-	// Hard cap on rendered raster size. Default ~6.5MP (fits common pages at 200dpi but avoids huge canvases).
-	const maxPixelsRaw = parseIntWithDefault(env.VISUAL_PAGE_IMAGE_MAX_PIXELS, 6_500_000);
+	// Hard cap on rendered raster size.
+	// At 300 DPI a US Letter page (8.5×11”) is 2550×3300 = 8.4 MP; A3 is ~14.8 MP.
+	// Default 15 MP keeps full 300 DPI fidelity for Letter/A4 without OOM risk.
+	const maxPixelsRaw = parseIntWithDefault(env.VISUAL_PAGE_IMAGE_MAX_PIXELS, 15_000_000);
 	const maxPixelsPerPage = Number.isFinite(maxPixelsRaw)
 		? Math.max(250_000, Math.min(50_000_000, maxPixelsRaw))
 		: 6_500_000;
@@ -338,6 +340,23 @@ export async function persistRenderedPageImages(params: {
 
 	if (!params.config.enabled) return { ok: true, reason: "visual_extraction_disabled" };
 	if (!params.config.persist) return { ok: true, reason: "persist_disabled" };
+
+	// Structured log: emit once per invocation so DPI is visible in production logs.
+	logger.log(
+		JSON.stringify({
+			event: "RENDER_PAGES_CONFIG",
+			document_id: params.documentId,
+			rasterizer: "pdfjs-dist",
+			VISUAL_PAGE_IMAGE_DPI: params.config.dpi,
+			max_pixels_per_page: params.config.maxPixelsPerPage,
+			max_pages: params.config.maxPages,
+			format: params.config.format,
+			page_start: params.pageStart ?? null,
+			page_end: params.pageEnd ?? null,
+			page_count_hint: typeof params.pageCount === "number" && Number.isFinite(params.pageCount) ? params.pageCount : null,
+			ts: new Date().toISOString(),
+		})
+	);
 	// If pageCount is unknown (older ingests), proceed anyway and let PDF rendering determine page count.
 	const pageCountHint = typeof params.pageCount === "number" && Number.isFinite(params.pageCount) ? params.pageCount : 0;
 

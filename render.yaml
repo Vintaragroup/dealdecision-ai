@@ -85,6 +85,8 @@ services:
         value: "1"
       - key: VISUAL_PAGE_IMAGE_PERSIST
         value: "1"
+      - key: VISUAL_PAGE_IMAGE_DPI
+        value: "300"
       - key: WORKER_CONCURRENCY
         value: "1"
       - key: VISION_BASE_URL

@@ -1,5 +1,23 @@
 import type { Pool } from "pg";
 
+type PoolLike = { query: <T = any>(sql: string, params?: unknown[]) => Promise<{ rows: T[] }> };
+
+/** Check whether a column exists in information_schema — fail-soft returns false on error. */
+async function hasColumn(pool: PoolLike, table: string, column: string): Promise<boolean> {
+  try {
+    const { rows } = await pool.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.columns
+          WHERE table_name = $1 AND column_name = $2
+       ) AS exists`,
+      [table, column]
+    );
+    return rows?.[0]?.exists === true;
+  } catch {
+    return false;
+  }
+}
+
 export type PageUnderstandingReadinessDocument = {
   document_id: string;
   title: string | null;
@@ -39,9 +57,7 @@ export type PageUnderstandingReadiness = {
   ready: boolean;
 };
 
-type QueryResult<T> = { rows: T[] };
-
-async function hasTable(pool: { query: <T = any>(sql: string, params?: unknown[]) => Promise<QueryResult<T>> }, table: string) {
+async function hasTable(pool: PoolLike, table: string) {
   try {
     const { rows } = await pool.query<{ oid: string | null }>("SELECT to_regclass($1) as oid", [table]);
     return rows?.[0]?.oid !== null;
@@ -144,8 +160,69 @@ export function computePageUnderstandingReadiness(args: {
   };
 }
 
-export async function fetchPageUnderstandingReadinessForDeal(pool: Pool, dealId: string, version: string) {
-  const dpuTableOk = await hasTable(pool as any, "document_page_understanding");
+/**
+ * Fail-soft wrapper: returns a not-ready readiness payload with blocked_reason
+ * READINESS_COMPUTE_ERROR instead of throwing when a query or migration issue
+ * prevents normal computation.
+ */
+function makeErrorFallbackReadiness(dealId: string, version: string, errorHint: string): PageUnderstandingReadiness {
+  return {
+    deal_id: dealId,
+    version,
+    documents: [],
+    expected_pages_total: 0,
+    dpu_rows_total: 0,
+    missing_pages_total: 0,
+    hard_missing_pages_total: 0,
+    blocked_reason: "READINESS_COMPUTE_ERROR",
+    poll_after_ms: 2000,
+    action: null,
+    ready: false,
+    ...(errorHint ? { error_hint: errorHint } : {}),
+  } as PageUnderstandingReadiness & { error_hint?: string };
+}
+
+export async function fetchPageUnderstandingReadinessForDeal(pool: Pool, dealId: string, version: string): Promise<PageUnderstandingReadiness> {
+  try {
+    return await _fetchPageUnderstandingReadinessForDealInner(pool as any, dealId, version);
+  } catch (err) {
+    const hint = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
+    return makeErrorFallbackReadiness(dealId, version, hint);
+  }
+}
+
+async function _fetchPageUnderstandingReadinessForDealInner(pool: PoolLike, dealId: string, version: string): Promise<PageUnderstandingReadiness> {
+  const dpuTableOk = await hasTable(pool, "document_page_understanding");
+
+  // Probe for optional columns so we can build XLSX-aware SQL only when available.
+  // These columns may not exist in older migrations or test environments.
+  const hasFileName = await hasColumn(pool, "documents", "file_name");
+  const hasFilename = !hasFileName && await hasColumn(pool, "documents", "filename");
+  const hasMimeType = await hasColumn(pool, "documents", "mime_type");
+
+  // Expressions that safely alias to '' when the column is missing.
+  const fileNameExpr = hasFileName ? "COALESCE(file_name, '')" : hasFilename ? "COALESCE(filename, '')" : "''";
+  const mimeTypeExpr = hasMimeType ? "COALESCE(mime_type, '')" : "''";
+  // Only emit the xlsx_docs CTE when we have at least one identification column.
+  const canDetectXlsx = hasFileName || hasFilename || hasMimeType;
+
+  // xlsx_docs CTE fragment — only included when columns are available.
+  // When columns are absent we fall through and treat all docs as page-based (pre-existing behavior).
+  const xlsxDocsCte = canDetectXlsx
+    ? `
+      -- Spreadsheet documents use structured extraction (not rendered page images).
+      -- Exclude them from page-based expected pages so they never appear as "missing pages".
+      xlsx_docs AS (
+        SELECT document_id FROM docs
+         WHERE lower(${fileNameExpr}) LIKE '%.xlsx'
+            OR lower(${fileNameExpr}) LIKE '%.xls'
+            OR lower(${mimeTypeExpr}) LIKE '%spreadsheet%'
+      ),`
+    : "";
+
+  const xlsxExclusionClause = canDetectXlsx
+    ? "\n           AND document_id NOT IN (SELECT document_id FROM xlsx_docs)"
+    : "";
 
   type Row = {
     document_id: string;
@@ -166,15 +243,17 @@ export async function fetchPageUnderstandingReadinessForDeal(pool: Pool, dealId:
       WITH docs AS (
         SELECT id AS document_id,
                title,
-               COALESCE(page_count, 0) AS page_count
+               COALESCE(page_count, 0) AS page_count,
+               ${fileNameExpr} AS file_name,
+               ${mimeTypeExpr} AS mime_type
           FROM documents
          WHERE deal_id = $1
            AND deleted_at IS NULL
-      ),
+      ),${xlsxDocsCte}
       expected AS (
         SELECT document_id, generate_series(0, page_count - 1) AS page_index
           FROM docs
-         WHERE page_count > 0
+         WHERE page_count > 0${xlsxExclusionClause}
       ),
       dpu_all AS (
         SELECT dpu.document_id, dpu.page_index, dpu.payload
@@ -243,22 +322,33 @@ export async function fetchPageUnderstandingReadinessForDeal(pool: Pool, dealId:
     );
     rows = res.rows ?? [];
   } else {
+    // Fallback when document_page_understanding table doesn't exist yet.
+    const xlsxFallbackCte = canDetectXlsx
+      ? `,\n      xlsx_docs AS (\n        SELECT document_id FROM docs\n         WHERE lower(${fileNameExpr}) LIKE '%.xlsx'\n            OR lower(${fileNameExpr}) LIKE '%.xls'\n            OR lower(${mimeTypeExpr}) LIKE '%spreadsheet%'\n      )`
+      : "";
+    const xlsxFallbackCase = canDetectXlsx
+      ? `WHEN page_count > 0 AND document_id NOT IN (SELECT document_id FROM xlsx_docs)`
+      : `WHEN page_count > 0`;
+
     const res = await pool.query<Row>(
       `
       WITH docs AS (
         SELECT id AS document_id,
                title,
-               COALESCE(page_count, 0) AS page_count
+               COALESCE(page_count, 0) AS page_count,
+               ${fileNameExpr} AS file_name,
+               ${mimeTypeExpr} AS mime_type
           FROM documents
          WHERE deal_id = $1
            AND deleted_at IS NULL
-      )
+      )${xlsxFallbackCte}
       SELECT document_id,
              title,
              page_count,
              0::int AS dpu_rows,
              CASE
-               WHEN page_count > 0 THEN ARRAY(SELECT generate_series(0, page_count - 1))
+               ${xlsxFallbackCase}
+               THEN ARRAY(SELECT generate_series(0, page_count - 1))
                ELSE '{}'::int[]
              END AS missing_pages
         FROM docs

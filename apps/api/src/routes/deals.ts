@@ -9945,9 +9945,14 @@ export async function registerDealRoutes(
           { event: "READINESS_CHECK_FAILED", deal_id: dealId, err: message },
           "Failed to compute/ensure page understanding readiness"
         );
-        return reply.status(500).send({
-          error: "readiness_check_failed",
-          message: "Failed to compute page understanding readiness.",
+        // Return 202 (not 500) so the UI shows "preparing" rather than "Analysis failed to start".
+        // The error is surfaced via blocked_reason so the polling loop handles it safely.
+        return reply.status(202).send({
+          status: "preparing_documents",
+          error: "page_understanding_not_ready",
+          blocked_reason: "READINESS_COMPUTE_ERROR",
+          message: "Failed to compute page understanding readiness — will retry.",
+          poll_after_ms: 2000,
           ...(process.env.NODE_ENV === "production" ? {} : { detail: message }),
         });
       }

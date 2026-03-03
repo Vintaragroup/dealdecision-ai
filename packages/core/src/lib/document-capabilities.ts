@@ -68,7 +68,10 @@ export function getDocumentCapabilities(input: {
 	const supports_visual_extraction =
 		kind === "pdf" || kind === "excel" || kind === "powerpoint" || kind === "word" || kind === "image";
 
-	const supports_page_rendering = supports_visual_extraction;
+	// Excel/spreadsheet uses structured extraction (not rendered page images), so it does NOT support page rendering.
+	// This aligns with the worker's existing `requiresRenderedPages = docKind !== "excel"` guard and prevents
+	// XLSX documents from entering the PAGE_COUNT_UNKNOWN / rendered-pages readiness gate.
+	const supports_page_rendering = supports_visual_extraction && kind !== "excel";
 
 	const render_source: RenderSource =
 		kind === "pdf"

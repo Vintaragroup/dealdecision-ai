@@ -6521,26 +6521,69 @@ registerWorker("extract_visuals", async (job: Job) => {
 
 	// Optional safety: ensure finalization/analyze happens exactly once per (deal, document) for a short window.
 	// This prevents duplicate final-chunk jobs (retries, concurrent runs) from racing.
+	// Lock is always released explicitly in the finally block below; TTL is a safety net for crashes.
+	const FINALIZE_LOCK_TTL_S = 300; // 5 min safety-net TTL; explicit release happens first
+	const FINALIZE_LOCK_STALE_TAKEOVER_S = 120; // take over if holder appears stuck > 2 min
+	let finalizeLockKey: string | null = null;
 	let finalizeLockAcquired = true;
 	if (shouldFinalize && dealIdForAudit) {
-		const lockKey = `extract_visuals:finalized:${dealIdForAudit}:${targetDocumentIds.length === 1 ? targetDocumentIds[0] : "multi"}`;
+		finalizeLockKey = `extract_visuals:finalized:${dealIdForAudit}:${targetDocumentIds.length === 1 ? targetDocumentIds[0] : "multi"}`;
 		try {
 			const triggerJobId = job.id ? String(job.id) : "";
-			const res = await (connection as any).set(lockKey, triggerJobId || "1", "NX", "EX", 1800);
-			finalizeLockAcquired = res === "OK";
+			const lockValue = JSON.stringify({ job_id: triggerJobId || "unknown", acquired_at: Date.now() });
+			const res = await (connection as any).set(finalizeLockKey, lockValue, "NX", "EX", FINALIZE_LOCK_TTL_S);
+			if (res === "OK") {
+				finalizeLockAcquired = true;
+			} else {
+				// Lock already held — check if the previous holder is stale.
+				try {
+					const existing = await (connection as any).get(finalizeLockKey);
+					const parsed = existing ? JSON.parse(existing) : null;
+					const ageMs = parsed?.acquired_at ? Date.now() - Number(parsed.acquired_at) : Infinity;
+					const ageS = ageMs / 1000;
+					if (ageS > FINALIZE_LOCK_STALE_TAKEOVER_S) {
+						// Previous holder likely crashed. Take over.
+						await (connection as any).set(finalizeLockKey, lockValue, "EX", FINALIZE_LOCK_TTL_S);
+						finalizeLockAcquired = true;
+						console.log(
+							JSON.stringify({
+								event: "EXTRACT_VISUALS_FINALIZE_LOCK_TAKEOVER",
+								deal_id: dealIdForAudit ?? null,
+								document_id: targetDocumentIds.length === 1 ? targetDocumentIds[0] : null,
+								stale_holder_job_id: parsed?.job_id ?? null,
+								age_s: Math.round(ageS),
+								reason: "stale_lock",
+							})
+						);
+					} else {
+						finalizeLockAcquired = false;
+						console.log(
+							JSON.stringify({
+								event: "EXTRACT_VISUALS_FINALIZE_LOCK_SKIP",
+								deal_id: dealIdForAudit ?? null,
+								document_id: targetDocumentIds.length === 1 ? targetDocumentIds[0] : null,
+								reason: "lock_already_held",
+								holder_job_id: parsed?.job_id ?? null,
+								holder_age_s: Math.round(ageS),
+								should_finalize: true,
+							})
+						);
+					}
+				} catch {
+					finalizeLockAcquired = false;
+					console.log(
+						JSON.stringify({
+							event: "EXTRACT_VISUALS_FINALIZE_LOCK_SKIP",
+							deal_id: dealIdForAudit ?? null,
+							document_id: targetDocumentIds.length === 1 ? targetDocumentIds[0] : null,
+							reason: "lock_already_held",
+							should_finalize: true,
+						})
+					);
+				}
+			}
 		} catch {
 			finalizeLockAcquired = true;
-		}
-		if (!finalizeLockAcquired) {
-			console.log(
-				JSON.stringify({
-					event: "EXTRACT_VISUALS_FINALIZE_LOCK_SKIP",
-					deal_id: dealIdForAudit ?? null,
-					document_id: targetDocumentIds.length === 1 ? targetDocumentIds[0] : null,
-					reason: "lock_already_held",
-					should_finalize: true,
-				})
-			);
 		}
 	}
 
@@ -7195,6 +7238,24 @@ registerWorker("extract_visuals", async (job: Job) => {
 			} catch {
 				// never block extraction completion
 			}
+		}
+	}
+
+	// Release finalize lock so immediate retries can proceed if needed.
+	// Lock has a short TTL (FINALIZE_LOCK_TTL_S) as a safety net; explicit release is the primary mechanism.
+	if (finalizeLockKey && finalizeLockAcquired) {
+		try {
+			await (connection as any).del(finalizeLockKey);
+			console.log(
+				JSON.stringify({
+					event: "EXTRACT_VISUALS_FINALIZE_LOCK_RELEASED",
+					deal_id: dealIdForAudit ?? null,
+					document_id: targetDocumentIds.length === 1 ? targetDocumentIds[0] : null,
+					lock_key: finalizeLockKey,
+				})
+			);
+		} catch {
+			// Best-effort: lock will expire via TTL if explicit release fails.
 		}
 	}
 

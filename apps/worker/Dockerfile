@@ -56,6 +56,9 @@ ENV NODE_ENV=production
 # - ImageMagick: image transforms
 # - Tesseract: OCR (binary; some flows may prefer it)
 # - Fonts: rendering fidelity
+# Playwright/Chromium runtime OS dependencies (pre-installed so that
+# `playwright install chromium` below can run without --with-deps,
+# avoiding a second brittle apt-get update inside the playwright CLI).
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
 		libreoffice \
@@ -67,6 +70,27 @@ RUN apt-get update \
 		fonts-dejavu-core \
 		fonts-liberation \
 		fonts-noto-core \
+		libnss3 \
+		libnspr4 \
+		libatk1.0-0 \
+		libatk-bridge2.0-0 \
+		libcups2 \
+		libdrm2 \
+		libdbus-1-3 \
+		libxkbcommon0 \
+		libxcomposite1 \
+		libxdamage1 \
+		libxfixes3 \
+		libxrandr2 \
+		libgbm1 \
+		libasound2 \
+		libpango-1.0-0 \
+		libcairo2 \
+		libx11-xcb1 \
+		libx11-6 \
+		libxcb1 \
+		libxext6 \
+		libxshmfence1 \
 	&& rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/apps/worker/dist ./dist
@@ -77,10 +101,10 @@ COPY --from=deps /app/node_modules /app/node_modules
 COPY --from=deps /app/apps/worker/node_modules ./node_modules
 COPY --from=build /app/packages /app/packages
 
-# Install Playwright Chromium browser + OS dependencies for server-side PDF export.
-# Runs after node_modules are in place so the playwright binary is available.
-RUN apt-get update \
-	&& node /app/node_modules/.bin/playwright install chromium --with-deps \
-	&& rm -rf /var/lib/apt/lists/*
+# Download Playwright Chromium browser binary for server-side PDF export.
+# OS dependencies are already installed in the apt-get layer above, so
+# --with-deps is intentionally omitted (avoids a second brittle apt-get update
+# inside the playwright CLI that fails on restricted build networks).
+RUN node /app/node_modules/.bin/playwright install chromium
 
 CMD ["node", "dist/src/index.js"]

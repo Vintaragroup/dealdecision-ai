@@ -793,7 +793,10 @@ async function main(): Promise<void> {
 	process.exit(allProved ? 0 : 1);
 }
 
-main().catch((err) => {
-	console.error("Unexpected error:", err);
-	process.exit(1);
-});
+// Guard: only execute when run directly as a script, not when imported by tests.
+if (require.main === module) {
+	main().catch((err) => {
+		console.error("Unexpected error:", err);
+		process.exit(1);
+	});
+}

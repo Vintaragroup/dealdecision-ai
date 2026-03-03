@@ -171,18 +171,19 @@ test('action_detail.job_id is deterministic — same state → same value; diffe
     `job_id must differ when pageCount changes (fingerprint diverges).\n  10-page: ${r1.action_detail!.job_id}\n  20-page: ${r3.action_detail!.job_id}`
   );
 
-  // Both job_ids must follow the canonical format: dpu_backfill:{dealId}:{fp}:page_understanding_v1
+  // Both job_ids must follow the canonical format: dpu_backfill__{dealId}__{fp}__page_understanding_v1
+  // (colons are replaced with __ so BullMQ never receives a colon-containing job ID)
   for (const [label, id] of [
     ['10-page', r1.action_detail!.job_id],
     ['20-page', r3.action_detail!.job_id],
   ] as const) {
     assert.ok(
-      id.startsWith(`dpu_backfill:${DEAL_ID}:`),
-      `${label} job_id must start with 'dpu_backfill:{dealId}:'. Got: ${id}`
+      id.startsWith(`dpu_backfill__${DEAL_ID}__`),
+      `${label} job_id must start with 'dpu_backfill__{dealId}__'. Got: ${id}`
     );
     assert.ok(
-      id.endsWith(':page_understanding_v1'),
-      `${label} job_id must end with ':page_understanding_v1'. Got: ${id}`
+      id.endsWith('__page_understanding_v1'),
+      `${label} job_id must end with '__page_understanding_v1'. Got: ${id}`
     );
   }
 });
@@ -208,12 +209,12 @@ test('DPU_STALE result carries correctly-shaped stale_diagnostics and action_det
     'action_detail.job_id must be a non-empty string'
   );
   assert.ok(
-    ad!.job_id.startsWith('dpu_backfill:'),
-    `job_id must start with 'dpu_backfill:'. Got: ${ad!.job_id}`
+    ad!.job_id.startsWith('dpu_backfill__'),
+    `job_id must start with 'dpu_backfill__'. Got: ${ad!.job_id}`
   );
   assert.ok(
-    ad!.job_id.endsWith(':page_understanding_v1'),
-    `job_id must end with ':page_understanding_v1'. Got: ${ad!.job_id}`
+    ad!.job_id.endsWith('__page_understanding_v1'),
+    `job_id must end with '__page_understanding_v1'. Got: ${ad!.job_id}`
   );
 
   assert.ok(

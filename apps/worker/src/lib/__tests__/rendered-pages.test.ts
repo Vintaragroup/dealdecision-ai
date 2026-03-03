@@ -5,6 +5,7 @@ import {
 	planPdfRenderChunks,
 	r2RenderedPageKey,
 	persistRenderedPageImages,
+	computeRenderDpiInfo,
 	type VisualPageImagePersistConfig,
 } from "../rendered-pages";
 
@@ -166,5 +167,73 @@ describe("rendered pages", () => {
 		expect(res.rendered_pages_created_at).toBe("2025-01-01T00:00:00.000Z");
 		expect(fs.has("/data/uploads/rendered_pages/doc_1/page_0000.png")).toBe(true);
 		expect(fs.has("/data/uploads/rendered_pages/doc_1/page_0001.png")).toBe(true);
+	});
+});
+
+// ─── P3: computeRenderDpiInfo ────────────────────────────────────────────────
+// Validates that the pure DPI derivation function correctly reports whether the
+// pixel-cap would silently downscale a page, and what the effective DPI would be.
+
+describe("computeRenderDpiInfo", () => {
+	// US Letter: 8.5 × 11 inches → 612 × 792 PDF points (1 pt = 1/72 in).
+	// At 300 DPI: scale = 300/72 ≈ 4.167 → output ≈ 2550 × 3300 px ≈ 8.4 MP.
+	// With a 15 MP cap there is plenty of headroom — no downscale expected.
+	it("300 DPI on US Letter is NOT downscaled at the 15 MP default cap", () => {
+		const result = computeRenderDpiInfo({
+			requestedDpi: 300,
+			maxPixelsPerPage: 15_000_000,
+			pageWidthPts: 612,
+			pageHeightPts: 792,
+		});
+		expect(result.wasDownscaled).toBe(false);
+		expect(result.effectiveDpi).toBe(300);
+	});
+
+	// A4: 595 × 842 PDF points. Same 300 DPI / 15 MP check.
+	it("300 DPI on A4 is NOT downscaled at the 15 MP default cap", () => {
+		const result = computeRenderDpiInfo({
+			requestedDpi: 300,
+			maxPixelsPerPage: 15_000_000,
+			pageWidthPts: 595,
+			pageHeightPts: 842,
+		});
+		expect(result.wasDownscaled).toBe(false);
+		expect(result.effectiveDpi).toBe(300);
+	});
+
+	// Force downscale: old 6.5 MP cap cannot fit 300 DPI Letter (≈8.4 MP).
+	it("300 DPI on US Letter IS downscaled when max pixels is 6.5 MP (old default)", () => {
+		const result = computeRenderDpiInfo({
+			requestedDpi: 300,
+			maxPixelsPerPage: 6_500_000,
+			pageWidthPts: 612,
+			pageHeightPts: 792,
+		});
+		expect(result.wasDownscaled).toBe(true);
+		expect(result.effectiveDpi).toBeLessThan(300);
+	});
+
+	// 72 DPI → scale = 1 exact; no cap needed.
+	it("72 DPI (scale=1) is never downscaled regardless of page size", () => {
+		const result = computeRenderDpiInfo({
+			requestedDpi: 72,
+			maxPixelsPerPage: 100_000,   // tight cap
+			pageWidthPts: 100,
+			pageHeightPts: 100,          // 100×100 pts → 100×100 px at 72dpi = 10 000 px < cap
+		});
+		expect(result.wasDownscaled).toBe(false);
+		expect(result.effectiveDpi).toBe(72);
+	});
+
+	// Zero-area page guard: should not produce NaN/Infinity.
+	it("zero-area page does not throw and effective scale is clamped to 0.1", () => {
+		const result = computeRenderDpiInfo({
+			requestedDpi: 300,
+			maxPixelsPerPage: 15_000_000,
+			pageWidthPts: 0,
+			pageHeightPts: 0,
+		});
+		expect(Number.isFinite(result.effectiveDpi)).toBe(true);
+		expect(result.effectiveScale).toBeGreaterThanOrEqual(0.1);
 	});
 });

@@ -189,6 +189,33 @@ async function copyFromDebugDir(params: {
 	return copied;
 }
 
+/**
+ * Pure helper – computes the effective render DPI and whether pixel-cap
+ * downscaling was applied. Exported for unit testing.
+ *
+ * PDF points are 1/72 inch, so scale = dpi / 72.
+ * If the resulting pixel count exceeds maxPixelsPerPage the scale is capped
+ * proportionally, which effectively lowers the DPI.
+ */
+export function computeRenderDpiInfo(params: {
+	requestedDpi: number;
+	maxPixelsPerPage: number;
+	/** Unscaled PDF viewport width in PDF points */
+	pageWidthPts: number;
+	/** Unscaled PDF viewport height in PDF points */
+	pageHeightPts: number;
+}): { effectiveDpi: number; effectiveScale: number; wasDownscaled: boolean } {
+	const scale = params.requestedDpi / 72;
+	const basePixels = Math.ceil(params.pageWidthPts) * Math.ceil(params.pageHeightPts);
+	const pixelScaleCap = basePixels > 0 ? Math.sqrt(params.maxPixelsPerPage / basePixels) : 1;
+	const effectiveScale = Math.max(0.1, Math.min(scale, pixelScaleCap));
+	return {
+		effectiveDpi: Math.round(effectiveScale * 72),
+		effectiveScale,
+		wasDownscaled: effectiveScale < scale,
+	};
+}
+
 async function renderPdfToPngFiles(params: {
 	buffer: Buffer;
 	documentId: string;
@@ -246,7 +273,6 @@ async function renderPdfToPngFiles(params: {
 	const requestedStart = typeof params.pageStart === "number" && Number.isFinite(params.pageStart) ? Math.max(0, params.pageStart) : 0;
 	const requestedEndExclusive = typeof params.pageEnd === "number" && Number.isFinite(params.pageEnd) ? Math.max(requestedStart, params.pageEnd) : null;
 	const maxByConfig = Math.max(0, params.maxPages);
-	const scale = params.dpi / 72;
 	const lastPageIndex = totalPages > 0 ? totalPages - 1 : -1;
 	const effectiveEndIndex = requestedEndExclusive == null
 		? (lastPageIndex >= 0 ? Math.min(lastPageIndex, requestedStart + maxByConfig - 1) : requestedStart + maxByConfig - 1)
@@ -261,12 +287,35 @@ async function renderPdfToPngFiles(params: {
 
 			// Compute a safe scale that respects max pixels per page.
 			const baseViewport = page.getViewport({ scale: 1 });
-			const basePixels = Math.ceil(baseViewport.width) * Math.ceil(baseViewport.height);
-			const pixelScaleCap = basePixels > 0 ? Math.sqrt(params.maxPixelsPerPage / basePixels) : 1;
-			const effectiveScale = Math.max(0.1, Math.min(scale, pixelScaleCap));
+			const dpiInfo = computeRenderDpiInfo({
+				requestedDpi: params.dpi,
+				maxPixelsPerPage: params.maxPixelsPerPage,
+				pageWidthPts: baseViewport.width,
+				pageHeightPts: baseViewport.height,
+			});
+			const { effectiveScale } = dpiInfo;
 			const viewport = page.getViewport({ scale: effectiveScale });
 			const w = Math.ceil(viewport.width);
 			const h = Math.ceil(viewport.height);
+
+			// One structured log per chunk (first page only) so production logs
+			// provide an unambiguous record of the actual render DPI.
+			if (pageIndex === requestedStart) {
+				params.logger.log(JSON.stringify({
+					event: "RENDER_PAGE_DPI",
+					document_id: params.documentId,
+					page_index: pageIndex,
+					output_width_px: w,
+					output_height_px: h,
+					megapixels: parseFloat(((w * h) / 1_000_000).toFixed(2)),
+					requested_dpi: params.dpi,
+					effective_dpi: dpiInfo.effectiveDpi,
+					was_downscaled: dpiInfo.wasDownscaled,
+					max_pixels_per_page: params.maxPixelsPerPage,
+					ts: new Date().toISOString(),
+				}));
+			}
+
 			logMemory("pdf_render:before_page_render", {
 				document_id: params.documentId,
 				page_index: pageIndex,

@@ -10892,6 +10892,87 @@ export async function registerDealRoutes(
     }
   });
 
+  // ── Status Summary helper ─────────────────────────────────────────────────
+  // Returns a normalised status_summary combining the latest analyze_deal job
+  // and the latest investor_insight_reports row. Used by GET /investor-insights
+  // so the UI has a single source of truth for display state — never derives it
+  // from raw table values.
+  //
+  // Key invariants:
+  //   - analysis succeeded but report missing → report_status "not_started",
+  //     NOT "analysis failed"
+  //   - report row exists with render_package → has_existing_render_package true
+  //     AND blocking_reason null (show the existing report, never full-screen block)
+  //   - analysis/report failed AND no render_package → blocking_reason set so UI
+  //     can surface the right CTA
+  type StatusSummaryAnalysis = 'not_started' | 'running' | 'succeeded' | 'failed';
+  type StatusSummaryReport   = 'not_started' | 'running' | 'succeeded' | 'failed';
+  type StatusSummary = {
+    analysis_status: StatusSummaryAnalysis;
+    report_status: StatusSummaryReport;
+    has_existing_render_package: boolean;
+    blocking_reason: string | null;
+    last_activity_at: string | null;
+  };
+
+  function mapAnalysisJobStatus(raw: string | null | undefined): StatusSummaryAnalysis {
+    if (!raw) return 'not_started';
+    if (['queued', 'running', 'retrying'].includes(raw)) return 'running';
+    if (['succeeded', 'succeeded_with_warnings'].includes(raw)) return 'succeeded';
+    if (['failed', 'cancelled', 'blocked'].includes(raw)) return 'failed';
+    return 'not_started';
+  }
+
+  function mapReportRowStatus(raw: string | null | undefined): StatusSummaryReport {
+    if (!raw || raw === 'not_started') return 'not_started';
+    if (['deterministic_only', 'ready', 'succeeded'].includes(raw)) return 'succeeded';
+    if (['running', 'queued', 'generating'].includes(raw)) return 'running';
+    if (raw === 'failed') return 'failed';
+    return 'not_started';
+  }
+
+  function maxIsoTs(...ts: Array<string | null | undefined>): string | null {
+    const valid = ts.filter((t): t is string => typeof t === 'string' && t.length > 0);
+    if (!valid.length) return null;
+    return valid.reduce((best, t) => (t > best ? t : best));
+  }
+
+  async function buildStatusSummary(pool: any, dealId: string): Promise<StatusSummary> {
+    const [analyzeResult, reportResult] = await Promise.all([
+      pool.query(
+        `SELECT status, updated_at FROM jobs WHERE deal_id = $1 AND type = 'analyze_deal' ORDER BY created_at DESC LIMIT 1`,
+        [dealId]
+      ) as Promise<{ rows: Array<{ status: string; updated_at: string }> }>,
+      pool.query(
+        `SELECT status, render_package, updated_at FROM investor_insight_reports WHERE deal_id = $1 ORDER BY updated_at DESC LIMIT 1`,
+        [dealId]
+      ) as Promise<{ rows: Array<{ status: string; render_package: unknown; updated_at: string }> }>,
+    ]);
+
+    const analyzeJob  = analyzeResult.rows[0]  ?? null;
+    const reportRow   = reportResult.rows[0]   ?? null;
+
+    const analysisStatus       = mapAnalysisJobStatus(analyzeJob?.status);
+    const reportStatus         = mapReportRowStatus(reportRow?.status);
+    const hasExistingRenderPkg = reportRow?.render_package != null;
+
+    // blocking_reason is only set when the UI has NO fallback content to show.
+    // If a render_package exists, the UI should always render it — never block.
+    const blockingReason: string | null =
+      hasExistingRenderPkg                               ? null :
+      analysisStatus === 'failed'                        ? 'analysis_failed' :
+      reportStatus   === 'failed'                        ? 'report_failed'   :
+      null;
+
+    return {
+      analysis_status:             analysisStatus,
+      report_status:               reportStatus,
+      has_existing_render_package: hasExistingRenderPkg,
+      blocking_reason:             blockingReason,
+      last_activity_at:            maxIsoTs(analyzeJob?.updated_at, reportRow?.updated_at),
+    };
+  }
+
   // Investor Insight Engine – Stage 0: read the latest persisted report for a deal.
   // Returns { status: "not_started" } when the table is absent or no row exists.
   // report_payload is intentionally excluded to keep the response light.
@@ -10905,28 +10986,39 @@ export async function registerDealRoutes(
 
     const tableOk = await hasTable(pool as any, "investor_insight_reports");
     if (!tableOk) {
-      return reply.status(200).send({ status: "not_started" });
+      const NOT_STARTED_SUMMARY: StatusSummary = {
+        analysis_status: "not_started",
+        report_status: "not_started",
+        has_existing_render_package: false,
+        blocking_reason: null,
+        last_activity_at: null,
+      };
+      return reply.status(200).send({ status: "not_started", status_summary: NOT_STARTED_SUMMARY });
     }
 
-    const { rows } = await pool.query<{
-      status: string;
-      engine_version: string;
-      upstream_fingerprint: string;
-      gate_state: unknown;
-      compliance_state: unknown;
-      render_package: unknown;
-      updated_at: string;
-    }>(
-      `SELECT status, engine_version, upstream_fingerprint, gate_state, compliance_state, render_package, updated_at
-         FROM investor_insight_reports
-        WHERE deal_id = $1
-        ORDER BY updated_at DESC
-        LIMIT 1`,
-      [dealId]
-    );
+    // Fetch both the report row AND the status_summary in parallel.
+    const [{ rows }, statusSummary] = await Promise.all([
+      pool.query<{
+        status: string;
+        engine_version: string;
+        upstream_fingerprint: string;
+        gate_state: unknown;
+        compliance_state: unknown;
+        render_package: unknown;
+        updated_at: string;
+      }>(
+        `SELECT status, engine_version, upstream_fingerprint, gate_state, compliance_state, render_package, updated_at
+           FROM investor_insight_reports
+          WHERE deal_id = $1
+          ORDER BY updated_at DESC
+          LIMIT 1`,
+        [dealId]
+      ),
+      buildStatusSummary(pool, dealId),
+    ]);
 
     if (rows.length === 0) {
-      return reply.status(200).send({ status: "not_started" });
+      return reply.status(200).send({ status: "not_started", status_summary: statusSummary });
     }
 
     const row = rows[0];
@@ -10938,6 +11030,7 @@ export async function registerDealRoutes(
       compliance_state: row.compliance_state,
       render_package: row.render_package,
       updated_at: row.updated_at,
+      status_summary: statusSummary,
     });
   });
 

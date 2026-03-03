@@ -75,6 +75,10 @@ test("GET /api/v1/deals/:deal_id/investor-insights returns not_started when no r
       if (sql.includes("FROM investor_insight_reports") && sql.includes("ORDER BY updated_at DESC")) {
         return { rows: [] };
       }
+      // buildStatusSummary jobs query
+      if (sql.includes("FROM jobs") && sql.includes("type = 'analyze_deal'")) {
+        return { rows: [] };
+      }
       throw new Error(`Unexpected query: ${sql}`);
     },
   } as any;
@@ -119,6 +123,10 @@ test("GET /api/v1/deals/:deal_id/investor-insights returns report shape when row
             },
           ],
         };
+      }
+      // buildStatusSummary jobs query
+      if (sql.includes("FROM jobs") && sql.includes("type = 'analyze_deal'")) {
+        return { rows: [{ status: "succeeded", updated_at: updatedAt }] };
       }
       throw new Error(`Unexpected query: ${sql}`);
     },

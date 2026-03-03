@@ -4,6 +4,21 @@ import { randomUUID } from "crypto";
 import { sanitizeDeep, sanitizeText } from "@dealdecision/core";
 import { getPool } from "../lib/db";
 
+/**
+ * Sanitize a string for use as a BullMQ job ID.
+ * BullMQ/Redis uses ':' as a key-path separator and rejects any jobId containing it.
+ * Mirrors apps/worker/src/lib/job-id.ts#sanitizeJobId — kept in-sync manually.
+ *
+ * Rules:
+ *   ':'  →  '__'  (preserve semantic grouping)
+ *   other disallowed chars  →  '_'
+ *   leading/trailing '_'  stripped
+ */
+export function safeJobId(input: string): string {
+  const colonNormalized = String(input ?? "").replace(/:+/g, "__");
+  return colonNormalized.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
 type QueueLike = {
   add: (name: string, data: Record<string, unknown>, opts: { jobId: string; removeOnComplete: boolean; removeOnFail: boolean }) => Promise<any>;
 };
@@ -264,8 +279,11 @@ export async function enqueueBullmqJob(
   if (!queue) {
     throw new Error(`queue_not_found_for_type:${params.type}`);
   }
+  // Always sanitize: BullMQ rejects IDs containing ':'. Callers may pass raw
+  // template strings (e.g. from ensure-documents-ready-for-analysis). safeJobId
+  // is idempotent for already-clean IDs.
   await queue.add(params.type, params.bullPayload, {
-    jobId: params.jobId,
+    jobId: safeJobId(params.jobId),
     removeOnComplete: true,
     removeOnFail: false,
   });

@@ -76,7 +76,7 @@ export type EnsureDocumentsReadyResult = {
    */
   action_detail: {
     type: 'enqueue_dpu_backfill';
-    /** Stable BullMQ dedupe key: `dpu_backfill:{dealId}:{docsFingerprint}:page_understanding_v1` */
+    /** Stable BullMQ dedupe key: `dpu_backfill__{dealId}__{docsFingerprint}__page_understanding_v1` */
     job_id: string;
     docs_fingerprint: string;
   } | null;
@@ -454,7 +454,8 @@ export async function ensureDocumentsReadyForAnalysis(args: {
   // Content-addressed fingerprint: captures the DPU state at the time this
   // preflight runs so callers that pass it back as opts.jobId produce
   // idempotent BullMQ enqueues for the same deal+doc state.
-  const dpuFingerprint = `${dealId}::${effective.readiness.expected_pages_total ?? 0}::${effective.readiness.dpu_rows_total ?? 0}::${effective.readiness.missing_pages_total ?? 0}`;
+  // NOTE: uses '__' separators (not ':') — BullMQ rejects job IDs containing ':'.
+  const dpuFingerprint = `${dealId}__${effective.readiness.expected_pages_total ?? 0}__${effective.readiness.dpu_rows_total ?? 0}__${effective.readiness.missing_pages_total ?? 0}`;
 
   if (requirePageUnderstanding && !effective.ready && !hasRenderWorkEnqueued) {
     const missingDocs = (effective.readiness.documents ?? [])
@@ -486,7 +487,8 @@ export async function ensureDocumentsReadyForAnalysis(args: {
               // Deterministic BullMQ key: same doc + same deal DPU state = same key.
               // BullMQ silently drops the add() if a job with this id is already
               // waiting/active, preventing queue spam on repeated API calls.
-              jobId: `dpu:${dealId}:${docId}:${dpuFingerprint}:page_understanding_v1`,
+              // NOTE: '__' separators — BullMQ rejects job IDs containing ':'.
+              jobId: `dpu__${dealId}__${docId}__${dpuFingerprint}__page_understanding_v1`,
             }
           );
           enqueued.populate_document_page_understanding.push(docId);
@@ -573,7 +575,8 @@ export async function ensureDocumentsReadyForAnalysis(args: {
             },
             {
               dedupe: { by: "document" },
-              jobId: `dpu:${dealId}:${docId}:${dpuFingerprint}:page_understanding_v1`,
+              // NOTE: '__' separators — BullMQ rejects job IDs containing ':'.
+              jobId: `dpu__${dealId}__${docId}__${dpuFingerprint}__page_understanding_v1`,
             }
           );
           enqueued.populate_document_page_understanding.push(docId);
@@ -658,7 +661,8 @@ export async function ensureDocumentsReadyForAnalysis(args: {
   const actionDetail = dpuBackfillAction === 'enqueue_dpu_backfill'
     ? {
         type: 'enqueue_dpu_backfill' as const,
-        job_id: `dpu_backfill:${dealId}:${docsFingerprint}:page_understanding_v1`,
+        // NOTE: '__' separators — BullMQ rejects job IDs containing ':'.
+        job_id: `dpu_backfill__${dealId}__${docsFingerprint}__page_understanding_v1`,
         docs_fingerprint: docsFingerprint,
       }
     : null;

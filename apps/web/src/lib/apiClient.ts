@@ -2246,6 +2246,8 @@ export type RegenerateInsightsResponse =
   | {
       status: 'preparing_documents';
       blocked_reason: 'missing_dpu' | 'dpu_stale' | 'dpu_partial' | string | null;
+      /** true when a prior render_package row already exists — UI should show a soft banner */
+      has_existing_render_package?: boolean;
       action: 'enqueue_dpu_backfill' | string;
       poll_after_ms: number;
       docs_fingerprint: string | null;

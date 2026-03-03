@@ -714,6 +714,11 @@ export function OrchestratorFullReportView({
     attempts: number;
     /** Set to true when maxAttempts is exhausted — show Retry CTA. */
     timedOut: boolean;
+    /**
+     * true when a prior render_package already exists for this deal.
+     * When set, skip the full-screen spinner and show a non-blocking banner instead.
+     */
+    hasExistingRenderPackage: boolean;
   };
   const [preparingDocs, setPreparingDocs] = useState<PreparingDocsState | null>(null);
   const [showExportModal, setShowExportModal] = useState(false);
@@ -803,26 +808,31 @@ export function OrchestratorFullReportView({
   }, [initialAction, insightStatus, insightReport]);
 
   // ── Preparing Documents (Gate 1 DPU backfill in progress) ─────────────────
-  if (preparingDocs) {
-    const { blockedReason, dpuRowsTotal, expectedPagesTotal, timedOut } = preparingDocs;
+  // handleRetry is hoisted outside the early-return so it can be referenced
+  // by both the full-screen spinner path and the soft-banner path.
+  const handlePreparingRetry = async () => {
+    if (!dealId) return;
+    setPreparingDocs(null);
+    const result = await apiRegenerateInvestorInsights(dealId);
+    if ('status' in result && result.status === 'preparing_documents') {
+      setPreparingDocs({
+        pollAfterMs: result.poll_after_ms ?? 1500,
+        blockedReason: result.blocked_reason ?? null,
+        dpuRowsTotal: result.dpu_rows_total ?? 0,
+        expectedPagesTotal: result.expected_pages_total ?? 0,
+        attempts: 0,
+        timedOut: false,
+        hasExistingRenderPackage: result.has_existing_render_package ?? false,
+      });
+    } else {
+      void refreshInsights();
+    }
+  };
 
-    const handleRetry = async () => {
-      if (!dealId) return;
-      setPreparingDocs(null);
-      const result = await apiRegenerateInvestorInsights(dealId);
-      if ('status' in result && result.status === 'preparing_documents') {
-        setPreparingDocs({
-          pollAfterMs: result.poll_after_ms ?? 1500,
-          blockedReason: result.blocked_reason ?? null,
-          dpuRowsTotal: result.dpu_rows_total ?? 0,
-          expectedPagesTotal: result.expected_pages_total ?? 0,
-          attempts: 0,
-          timedOut: false,
-        });
-      } else {
-        void refreshInsights();
-      }
-    };
+  // Full-screen spinner only when there is no existing report to fall back on.
+  if (preparingDocs && !preparingDocs.hasExistingRenderPackage) {
+    const { blockedReason, dpuRowsTotal, expectedPagesTotal, timedOut } = preparingDocs;
+    const handleRetry = handlePreparingRetry;
 
     return (
       <div
@@ -972,6 +982,7 @@ export function OrchestratorFullReportView({
                   expectedPagesTotal: result.expected_pages_total ?? 0,
                   attempts: 0,
                   timedOut: false,
+                  hasExistingRenderPackage: result.has_existing_render_package ?? false,
                 });
               } else {
                 void refreshInsights();
@@ -995,6 +1006,35 @@ export function OrchestratorFullReportView({
 
   return (
     <div className="space-y-4" data-testid="orchestrator-full-report">
+      {/* ── Soft banner: DPU still processing but existing report is available ── */}
+      {preparingDocs?.hasExistingRenderPackage && (
+        <div
+          className={`mx-6 mt-4 flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 text-sm ${
+            darkMode
+              ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+              : 'bg-amber-50 border-amber-200 text-amber-800'
+          }`}
+          data-testid="preparing-docs-banner"
+        >
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-amber-500" />
+          <div>
+            <span className="font-medium">Document processing in progress</span>
+            {' \u2014 '}this report may be incomplete until all pages are analyzed.
+            {preparingDocs.blockedReason && (
+              <span className="ml-1 font-mono opacity-60 text-xs">({preparingDocs.blockedReason})</span>
+            )}
+            {preparingDocs.timedOut && (
+              <button
+                type="button"
+                className="ml-2 underline hover:no-underline text-xs"
+                onClick={() => void handlePreparingRetry()}
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       {/* ── Header ── */}
       <div className="flex items-center justify-between">
         <div>
@@ -1042,6 +1082,7 @@ export function OrchestratorFullReportView({
                   expectedPagesTotal: result.expected_pages_total ?? 0,
                   attempts: 0,
                   timedOut: false,
+                  hasExistingRenderPackage: result.has_existing_render_package ?? false,
                 });
               } else {
                 void refreshInsights();

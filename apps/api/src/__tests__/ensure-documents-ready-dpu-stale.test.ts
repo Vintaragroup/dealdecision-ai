@@ -388,8 +388,8 @@ test('stale-but-complete: action=enqueue_dpu_backfill and action_detail has stab
   assert.equal(result.action_detail!.type, 'enqueue_dpu_backfill');
   assert.ok(typeof result.action_detail!.job_id === 'string' && result.action_detail!.job_id.length > 0,
     'action_detail.job_id must be a non-empty string');
-  assert.ok(result.action_detail!.job_id.startsWith('dpu_backfill:'),
-    `job_id must start with 'dpu_backfill:' — got ${result.action_detail!.job_id}`);
+  assert.ok(result.action_detail!.job_id.startsWith('dpu_backfill__'),
+    `job_id must start with 'dpu_backfill__' — got ${result.action_detail!.job_id}`);
   assert.ok(result.action_detail!.docs_fingerprint != null,
     'action_detail.docs_fingerprint must be set');
 

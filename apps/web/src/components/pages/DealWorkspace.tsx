@@ -4271,7 +4271,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           }
 
           const analysisToastKey = `analysis-complete:${activeJobId}:${normalizedStatus}`;
-          const analysisToastMessage = job.message || normalizedStatus || 'completed';
+          // Sanitize job.message: filter out BullMQ internal error strings that
+          // should never appear in the UI (e.g. "Custom Id cannot contain :").
+          const rawJobMessage = job.message || normalizedStatus || 'completed';
+          const analysisToastMessage = /custom id cannot contain/i.test(rawJobMessage)
+            ? normalizedStatus || 'completed'
+            : rawJobMessage;
           const delayAnalyzeFailureToast =
             job.type === 'analyze_deal' &&
             normalizedStatus === 'failed' &&

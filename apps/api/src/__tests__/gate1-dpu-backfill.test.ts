@@ -589,7 +589,7 @@ test("Gate1/analysis:start | DPU enqueue uses deterministic BullMQ jobId keyed o
 
   for (const opts of dpuOpts) {
     const jobId: string = opts.jobId;
-    assert.ok(jobId.startsWith("dpu:"), `jobId must start with 'dpu:' — got: ${jobId}`);
+    assert.ok(jobId.startsWith("dpu__"), `jobId must start with 'dpu__' — got: ${jobId}`);
     assert.ok(jobId.includes(DEAL_ID), `jobId must contain deal_id — got: ${jobId}`);
     assert.ok(jobId.endsWith("page_understanding_v1"), `jobId must end with version suffix — got: ${jobId}`);
   }

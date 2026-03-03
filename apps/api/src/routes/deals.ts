@@ -2489,6 +2489,23 @@ export async function registerDealRoutes(
     }
     const dealId = parsed.data.deal_id;
 
+    // ── Pre-check: does a usable render_package already exist? ───────────────
+    // Used below so that when DPU is partial but a prior report was already
+    // generated, the UI can show the existing report with a soft banner instead
+    // of a full-screen "Preparing Documents…" spinner.
+    let hasExistingRenderPackage = false;
+    try {
+      const existingResult = await (pool as any).query(
+        `SELECT id FROM investor_insight_reports
+          WHERE deal_id = $1 AND render_package IS NOT NULL
+          ORDER BY updated_at DESC LIMIT 1`,
+        [dealId]
+      );
+      hasExistingRenderPackage = Array.isArray(existingResult?.rows) && existingResult.rows.length > 0;
+    } catch {
+      // best-effort — if the check fails, default to false (full spinner)
+    }
+
     // ── Gate 1: DPU preflight ─────────────────────────────────────────────────
     // Before enqueueing investor-insights, verify DPU readiness. When DPU is
     // missing, stale, or partially covered, auto-enqueue DPU backfill and return
@@ -2540,6 +2557,9 @@ export async function registerDealRoutes(
         return reply.status(202).send({
           status: "preparing_documents",
           blocked_reason: clientBlockedReason,
+          // true when a prior render_package already exists — UI should show a soft
+          // "still processing" banner rather than a full-screen spinner.
+          has_existing_render_package: hasExistingRenderPackage,
           action: "enqueue_dpu_backfill",
           poll_after_ms: prep.poll_after_ms ?? 1500,
           docs_fingerprint: prep.docs_fingerprint,

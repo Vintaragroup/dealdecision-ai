@@ -10,6 +10,8 @@
 
 import type { FastifyInstance } from "fastify";
 import type { FinancialFactV1 } from "@dealdecision/core";
+import { buildFinancialCoverageV1 } from "@dealdecision/core";
+import type { FinancialCoverageV1 } from "@dealdecision/core";
 import { getPool } from "../lib/db";
 
 // ─── DB query ─────────────────────────────────────────────────────────────────
@@ -122,6 +124,26 @@ export async function getFinancialFactsForChat(
   }
 }
 
+/**
+ * Build a FinancialCoverageV1 for a deal.
+ * Fetches all facts then runs buildFinancialCoverageV1 (pure, no LLM).
+ * Returns null when the table doesn't exist or facts are absent.
+ */
+export async function getFinancialCoverageForChat(
+  pool: PoolLike,
+  dealId: string
+): Promise<FinancialCoverageV1 | null> {
+  try {
+    const tableExists = await hasFinancialFactsTable(pool);
+    if (!tableExists) return null;
+    const facts = await queryFacts(pool, dealId, { limit: 200 });
+    if (facts.length === 0) return null;
+    return buildFinancialCoverageV1(dealId, facts);
+  } catch {
+    return null;
+  }
+}
+
 // ─── Route ────────────────────────────────────────────────────────────────────
 
 export async function registerFinancialFactsRoutes(
@@ -166,5 +188,34 @@ export async function registerFinancialFactsRoutes(
 
     const facts = await queryFacts(pool, id, { metricKey, limit });
     return reply.send({ facts });
+  });
+
+  /**
+   * GET /api/v1/deals/:id/financial-coverage
+   *
+   * Returns a FinancialCoverageV1 report for the deal:
+   *   - Which financial statements are represented
+   *   - Which periods are covered
+   *   - Metrics present vs. expected-but-missing
+   *   - Any intra-registry conflicts
+   *   - Confidence distribution
+   *
+   * Returns { coverage: null } when no facts exist yet.
+   */
+  app.get<{
+    Params: { id: string };
+  }>("/api/v1/deals/:id/financial-coverage", async (request, reply) => {
+    const { id } = request.params;
+
+    const { rows: deals } = await pool.query<{ id: string }>(
+      `SELECT id FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+      [id]
+    );
+    if (deals.length === 0) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    const coverage = await getFinancialCoverageForChat(pool, id);
+    return reply.send({ coverage });
   });
 }

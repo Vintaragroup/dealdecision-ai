@@ -25,6 +25,7 @@ export type FinancialFactUnit =
 export type FinancialFactSourceKind =
   | "xlsx"
   | "pdf_table"
+  | "pdf_kpi_line"
   | "deck"
   | "unknown";
 

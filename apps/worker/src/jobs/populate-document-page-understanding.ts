@@ -8,6 +8,8 @@ import { makeJobId } from "../lib/job-id";
 import { populateDocumentPageUnderstandingFromVisualExtractions } from "../lib/document-page-understanding";
 import { promoteSlideFactsFromDocumentPageUnderstanding } from "../lib/promote-slide-facts";
 import { populatePageRegistryV1 } from "../lib/page-registry/populate-page-registry-v1";
+import { populateDealFactRegistryV1 } from "../lib/deal-facts/populate-deal-fact-registry-v1";
+import { populateFinancialFactRegistryV1 } from "../lib/financial-facts/populate-financial-fact-registry-v1";
 
 function parseFiniteInt(value: unknown): number | null {
 	const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
@@ -275,6 +277,60 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 						pages_upserted: pageRegResult.pages_upserted,
 						pages_skipped_no_text: pageRegResult.pages_skipped_no_text,
 						error: pageRegResult.error ?? null,
+						ts: new Date().toISOString(),
+					})
+				);
+			} catch {
+				// never block job completion
+			}
+
+			// Deal Fact Registry v1: extract + persist canonical non-financial facts.
+			// Best-effort: never blocks the job. Runs after page_registry_v1 population.
+			try {
+				const dealFactResult = await populateDealFactRegistryV1(pool as any, {
+					dealId: resolvedDealId,
+					documentId: docId,
+				});
+				console.log(
+					JSON.stringify({
+						event: dealFactResult.ok
+							? "DEAL_FACT_REGISTRY_V1_POPULATED"
+							: "DEAL_FACT_REGISTRY_V1_ERROR",
+						deal_id: resolvedDealId,
+						document_id: docId,
+						pages_loaded: dealFactResult.pages_loaded,
+						facts_built: dealFactResult.facts_built,
+						facts_conflicted: dealFactResult.facts_conflicted,
+						facts_upserted: dealFactResult.facts_upserted,
+						error: dealFactResult.error ?? null,
+						ts: new Date().toISOString(),
+					})
+				);
+			} catch {
+				// never block job completion
+			}
+
+			// Financial Fact Registry v1 (PDF tables): extract structured financial facts
+			// from financial-typed pages. Best-effort: never blocks the job.
+			try {
+				const finFactResult = await populateFinancialFactRegistryV1(pool as any, {
+					deal_id: resolvedDealId,
+					document_id: docId,
+				});
+				console.log(
+					JSON.stringify({
+						event:
+							finFactResult.errors.length === 0
+								? "FINANCIAL_FACT_REGISTRY_PDF_POPULATED"
+								: "FINANCIAL_FACT_REGISTRY_PDF_ERROR",
+						deal_id: resolvedDealId,
+						document_id: docId,
+						pages_scanned: finFactResult.pages_scanned,
+						pages_with_data: finFactResult.pages_with_data,
+						facts_extracted: finFactResult.facts_extracted,
+						facts_derived: finFactResult.facts_derived,
+						facts_upserted: finFactResult.facts_upserted,
+						errors: finFactResult.errors.slice(0, 3),
 						ts: new Date().toISOString(),
 					})
 				);

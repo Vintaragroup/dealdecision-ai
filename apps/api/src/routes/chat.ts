@@ -7,10 +7,11 @@ import type {
   WorkspaceChatResponse,
 } from "@dealdecision/contracts";
 import { buildOrchestratorReportV1, classifyQuestionIntent, buildPromptPolicyBlock, enforceAnswerSanity } from "@dealdecision/core";
-import type { OrchestratorReportV1, QuestionIntent, AnswerBasis, FinancialSegment, FinancialFactV1, PageRegistryRowV1 } from "@dealdecision/core";
+import type { OrchestratorReportV1, QuestionIntent, AnswerBasis, FinancialSegment, FinancialFactV1, FinancialCoverageV1, PageRegistryRowV1, DealFactV1 } from "@dealdecision/core";
 import { getPool } from "../lib/db";
-import { getFinancialFactsForChat } from "./financial-facts";
+import { getFinancialFactsForChat, getFinancialCoverageForChat } from "./financial-facts";
 import { getPageContextForChat } from "./pages";
+import { getDealFactsForChat } from "./deal-facts";
 
 // ============================================================================
 // OpenAI helper (same pattern as node-ai-analyze.ts)
@@ -327,6 +328,67 @@ export function buildFactsBlock(facts: FinancialFactV1[]): string {
 }
 
 // ======================================================================
+// Financial Coverage blocks (registry-based)
+// ======================================================================
+
+/**
+ * Build a FINANCIAL COVERAGE summary block from the registry-based profile.
+ * Shows which statements + periods are present. Caps at ~800 chars.
+ */
+export function buildCoverageSummaryBlock(coverage: FinancialCoverageV1): string {
+  if (!coverage || coverage.total_facts === 0) return "";
+  const lines: string[] = ["--- FINANCIAL COVERAGE ---"];
+
+  const stmts: string[] = [];
+  if (coverage.statements.income_statement) stmts.push("Income Statement");
+  if (coverage.statements.balance_sheet)    stmts.push("Balance Sheet");
+  if (coverage.statements.cash_flow)        stmts.push("Cash Flow");
+  if (coverage.statements.forecast)         stmts.push("Forecast");
+  if (stmts.length > 0) lines.push(`Statements present: ${stmts.join(", ")}`);
+
+  if (coverage.periods.yearly.length > 0)
+    lines.push(`Annual periods: ${coverage.periods.yearly.join(", ")}`);
+  if (coverage.periods.quarterly.length > 0)
+    lines.push(`Quarterly: ${coverage.periods.quarterly.slice(0, 6).join(", ")}`);
+  if (coverage.periods.monthly.length > 0)
+    lines.push(`Monthly: ${coverage.periods.monthly.slice(0, 4).join(", ")}`);
+  if (coverage.periods.ttm.length > 0)
+    lines.push(`TTM/LTM: ${coverage.periods.ttm.join(", ")}`);
+
+  const { high, medium, low } = coverage.confidence_distribution;
+  lines.push(`Fact confidence: ${high} high / ${medium} medium / ${low} low (${coverage.total_facts} total)`);
+
+  lines.push("--- END FINANCIAL COVERAGE ---");
+  const raw = lines.join("\n");
+  return raw.length > 800 ? raw.slice(0, 797) + "..." : raw;
+}
+
+/**
+ * Build a CONFLICT WARNING block when the same metric has conflicting values.
+ * Instructs the model to disclose the conflict rather than picking one value.
+ */
+export function buildConflictWarningBlock(coverage: FinancialCoverageV1): string {
+  if (!coverage || coverage.conflicts.length === 0) return "";
+  const lines: string[] = ["⚠ CONFLICTING FINANCIAL VALUES:"];
+  for (const c of coverage.conflicts.slice(0, 5)) {
+    const timeStr = c.timeframe ? ` (${c.timeframe})` : "";
+    const valsStr = c.values.map((v) => `$${(v / 1_000).toFixed(0)}K`).join(" vs ");
+    lines.push(`  - ${c.metric}${timeStr}: ${valsStr} — Do NOT pick one value; state that conflicting figures appear in the materials.`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Build a NOTE about expected-but-missing metrics.
+ * Instructs the model to honestly state when data is absent.
+ */
+export function buildMissingMetricsNote(coverage: FinancialCoverageV1): string {
+  if (!coverage || coverage.metrics_missing.length === 0) return "";
+  const list = coverage.metrics_missing.slice(0, 6).join(", ");
+  return `NOTE: The following financial metrics are not present in the uploaded materials: ${list}. If asked about these, state clearly that the materials do not include this data.`;
+}
+
+// ======================================================================
 // Page Registry — intent → page_type mapping + context block
 // ======================================================================
 
@@ -381,10 +443,47 @@ function buildPageContextBlock(rows: PageRegistryRowV1[]): string {
   return lines.join("\n");
 }
 
+const DEAL_FACTS_CHAR_CAP = 1400;
+
+/**
+ * Render a compact deal-facts context block for the system prompt.
+ * Only included for non-financial intents where deal facts were fetched.
+ */
+function buildDealFactsBlock(facts: DealFactV1[]): string {
+  if (facts.length === 0) return "";
+  const lines: string[] = ["--- DEAL FACTS (registry, evidence-backed) ---"];
+  let charCount = 0;
+  for (const f of facts) {
+    const valueStr = (() => {
+      const v = f.value;
+      switch (v.kind) {
+        case "money":   return `${v.currency ?? ""}${v.value}`;
+        case "number":  return `${v.value}${v.unit ? ` ${v.unit}` : ""}`;
+        case "range":   return `${v.min ?? "?"}\u2013${v.max ?? "?"}${v.unit ? ` ${v.unit}` : ""}`;
+        case "string":  return v.value;
+        case "list":    return v.items.slice(0, 5).join("; ");
+        case "entity":  return `${v.value}${v.kind2 ? ` (${v.kind2})` : ""}`;
+        case "unknown": return "(unconfirmed)";
+      }
+    })();
+    const timeStr = f.timeframe ? ` [${f.timeframe}]` : "";
+    const conflictNote = (f.conflicts_with_fact_ids?.length ?? 0) > 0
+      ? " ⚠ conflicting values in materials"
+      : "";
+    const confStr = f.confidence !== "high" ? ` [${f.confidence}]` : "";
+    const line = `${f.label}: ${valueStr}${timeStr}${confStr}${conflictNote}`;
+    charCount += line.length + 1;
+    if (charCount > DEAL_FACTS_CHAR_CAP) break;
+    lines.push(line);
+  }
+  lines.push("--- END DEAL FACTS ---");
+  return lines.join("\n");
+}
+
 function buildSystemPrompt(
   ctx: DealChatContext,
   intent: QuestionIntent,
-  opts: { forceFinancialBlock?: boolean; facts?: FinancialFactV1[]; pageRows?: PageRegistryRowV1[] } = {}
+  opts: { forceFinancialBlock?: boolean; facts?: FinancialFactV1[]; coverage?: FinancialCoverageV1 | null; pageRows?: PageRegistryRowV1[]; dealFacts?: DealFactV1[] } = {}
 ): string {
   const companyLabel = ctx.dealName ? `**${ctx.dealName}**` : "this deal";
   const r = ctx.orchestratorReport;
@@ -525,6 +624,16 @@ function buildSystemPrompt(
       if (factsBlock) lines.push(``, factsBlock);
     }
 
+    // ── Financial Coverage block (what's present / missing / conflicting) ──────
+    if (showFinancialBlock && opts.coverage) {
+      const covBlock = buildCoverageSummaryBlock(opts.coverage);
+      if (covBlock) lines.push(``, covBlock);
+      const conflictBlock = buildConflictWarningBlock(opts.coverage);
+      if (conflictBlock) lines.push(``, conflictBlock);
+      const missingBlock = buildMissingMetricsNote(opts.coverage);
+      if (missingBlock) lines.push(``, missingBlock);
+    }
+
     lines.push(`--- END ORCHESTRATOR DATA ---`);
   }
 
@@ -532,6 +641,12 @@ function buildSystemPrompt(
   if (opts.pageRows && opts.pageRows.length > 0) {
     const pageBlock = buildPageContextBlock(opts.pageRows);
     if (pageBlock) lines.push(``, pageBlock);
+  }
+
+  // ── Deal Facts block (non-financial intents, registry-level grounding) ────
+  if (intent !== "financial" && !opts.forceFinancialBlock && opts.dealFacts && opts.dealFacts.length > 0) {
+    const dfBlock = buildDealFactsBlock(opts.dealFacts);
+    if (dfBlock) lines.push(``, dfBlock);
   }
 
   // Evidence for citation (ordered by relevance; registry items first)
@@ -645,6 +760,11 @@ export async function registerChatRoutes(
       ? await getFinancialFactsForChat(pool, deal_id)
       : [];
 
+    // Fetch financial coverage (intent-gated, non-blocking, best-effort)
+    const registryCoverage: FinancialCoverageV1 | null = showFinancialIntent
+      ? await getFinancialCoverageForChat(pool, deal_id)
+      : null;
+
     // Fetch page registry context for non-financial intents
     const pageRegistryType = INTENT_TO_PAGE_TYPE[intent];
     const pageRows: PageRegistryRowV1[] =
@@ -652,7 +772,12 @@ export async function registerChatRoutes(
         ? await getPageContextForChat(pool, deal_id, pageRegistryType, 4)
         : [];
 
-    const systemPrompt = buildSystemPrompt(ctx, intent, { forceFinancialBlock, facts: registryFacts, pageRows });
+    // Fetch deal fact registry context (non-financial intents only, graceful fail)
+    const dealFacts: DealFactV1[] = !showFinancialIntent
+      ? await getDealFactsForChat(pool, deal_id, intent, 20)
+      : [];
+
+    const systemPrompt = buildSystemPrompt(ctx, intent, { forceFinancialBlock, facts: registryFacts, coverage: registryCoverage, pageRows, dealFacts });
 
     let llmMessage = "";
     let confidence: DealChatResponseV1["confidence"] = "low";

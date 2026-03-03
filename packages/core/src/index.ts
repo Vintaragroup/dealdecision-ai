@@ -242,6 +242,24 @@ export {
 } from "./financial-facts/financial-fact-v1";
 
 // ============================================================================
+// Financial Coverage v1
+// ============================================================================
+// Registry-based coverage profile: which statements / periods / metrics are
+// present, any conflicts detected, and expected-but-missing metrics.
+// Pure functions — no DB, no LLM. Used by both API and worker.
+export type {
+  FinancialConflictV1,
+  FinancialCoverageV1,
+} from "./financial-facts/financial-coverage-v1";
+export {
+  INCOME_STATEMENT_METRICS,
+  UNIT_ECONOMICS_METRICS,
+  CASH_FLOW_METRICS,
+  detectFinancialFactConflictsV1,
+  buildFinancialCoverageV1,
+} from "./financial-facts/financial-coverage-v1";
+
+// ============================================================================
 // Page Registry (v1)
 // ============================================================================
 // Persisted per-page index: type classification, numeric claims, entities,
@@ -265,6 +283,38 @@ export {
   capContext,
   validatePageRegistryRow,
 } from "./page-registry/page-registry-v1";
+
+// ============================================================================
+// Deal Fact Registry (v1)
+// ============================================================================
+// Persisted, evidence-backed non-financial canonical deal facts.
+// Covers: raise_amount, valuation, round_stage, traction_metric, team_key_role, etc.
+// Financial facts (ARR, burn, etc. sourced from financial statements) live in
+// FinancialFactV1. This registry is extractive + conflict-aware.
+export type {
+  DealFactTypeV1,
+  DealFactValueKind,
+  DealFactValueString,
+  DealFactValueNumber,
+  DealFactValueMoney,
+  DealFactValueRange,
+  DealFactValueList,
+  DealFactValueEntity,
+  DealFactValueUnknown,
+  DealFactValueV1,
+  DealFactEvidenceV1,
+  DealFactConfidence,
+  DealFactPageRef,
+  DealFactV1,
+} from "./deal-facts/deal-fact-v1";
+export {
+  DEAL_FACT_TYPES_V1,
+  isDealFactTypeV1,
+  capDealFactExcerpt,
+  capDealFactLabel,
+  computeDealFactIdV1,
+  validateDealFact,
+} from "./deal-facts/deal-fact-v1";
 
 // ============================================================================
 // Deal Assistant Answer Policy (v1)

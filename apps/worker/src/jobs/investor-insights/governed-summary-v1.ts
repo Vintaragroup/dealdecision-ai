@@ -370,6 +370,10 @@ function normalizeNumToken(t: string): string {
 	s = s.replace(/(\d\.[1-9]*[1-9])0+(?=[%bmkt]|$)/g, "$1"); // strip trailing zeros after sig digit
 	s = s.replace(/(\d)\.0+(?=[%bmkt]|$)/g, "$1");             // strip ".<all zeros>" entirely
 
+	// Strip trailing punctuation that the greedy regex may have captured.
+	// e.g. "$432750," → "$432750"  |  "$432,750." → "$432750"  |  "$1,200,000;" → "$1200000"
+	s = s.replace(/[,.:;)\]]+$/g, "");
+
 	return s;
 }
 

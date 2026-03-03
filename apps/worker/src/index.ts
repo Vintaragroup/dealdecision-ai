@@ -7096,7 +7096,9 @@ registerWorker("extract_visuals", async (job: Job) => {
 					full_text: string | null;
 					extraction_metadata: unknown | null;
 				}>(
-					"SELECT id, status, full_text, extraction_metadata FROM documents WHERE id = ANY($1::text[])",
+					// Cast param to uuid[] so PostgreSQL can use the uuid index on documents.id.
+					// Passing ::text[] causes "operator does not exist: uuid = text".
+					"SELECT id, status, full_text, extraction_metadata FROM documents WHERE id = ANY($1::uuid[])",
 					[targetDocumentIds.map((d) => sanitizeText(d))]
 				);
 

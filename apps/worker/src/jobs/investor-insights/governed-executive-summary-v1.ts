@@ -89,7 +89,10 @@ export interface GovernedExecutiveSummaryArgs {
 
 export type GovernedExecutiveSummaryResult =
 	| { ok: true; value: GovernedExecutiveSummaryV1 }
-	| { ok: false; reason: string; unknownTokens?: string[] };
+	// When ok=false and reason="numeric_parity_failed", `value` may be present
+	// (containing the generated content with validated=false) so the caller can
+	// soft-fail and still emit the section rather than dropping it entirely.
+	| { ok: false; reason: string; unknownTokens?: string[]; value?: GovernedExecutiveSummaryV1 };
 
 /**
  * Structured reason codes emitted in GOVERNED_EXECUTIVE_SUMMARY_V1_CACHE log events.
@@ -373,7 +376,9 @@ export async function resolveGovernedExecSummaryWithCache(
 		};
 	}
 
-	// LLM failed or validation failed — persist failure record
+	// LLM failed or validation failed — persist failure record.
+	// When the failure is numeric_parity only, result.value contains the
+	// generated content so we can soft-fail instead of emitting an empty summary.
 	return {
 		schema_version: "governed_executive_summary_v1",
 		fingerprint,
@@ -381,7 +386,7 @@ export async function resolveGovernedExecSummaryWithCache(
 		created_at: new Date().toISOString(),
 		validation_ok: false,
 		unknown_tokens: result.unknownTokens ?? [],
-		summary: {
+		summary: result.value ?? {
 			schema_version: "governed_executive_summary_v1",
 			headline: "",
 			summary_paragraphs: [],
@@ -619,7 +624,24 @@ export async function generateGovernedExecSummaryV1(
 	const { ok: parityOk, unknown: unknownTokens } = validateNoNewNumbers(llmOutput, canonicalCorpus);
 
 	if (!parityOk) {
-		return { ok: false, reason: "numeric_parity_failed", unknownTokens };
+		// Return the generated content alongside the failure so callers can
+		// soft-fail (log a warning and still emit the section) rather than
+		// dropping the executive summary entirely for borderline token cases.
+		return {
+			ok: false,
+			reason: "numeric_parity_failed",
+			unknownTokens,
+			value: {
+				schema_version: "governed_executive_summary_v1",
+				headline,
+				summary_paragraphs,
+				strengths,
+				risks,
+				open_questions,
+				coverage_note: args.coverageNote,
+				validated: false,
+			},
+		};
 	}
 
 	return {

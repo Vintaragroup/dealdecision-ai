@@ -190,6 +190,52 @@ describe("validateNoNewNumbers", () => {
 		expect(result.ok).toBe(true);
 		expect(result.unknown).toHaveLength(0);
 	});
+
+	// ── trailing-punctuation regression (GitHub issue: $432750, false positive) ──
+
+	it("accepts $432750, (trailing comma from sentence context) when canonical has $432750", () => {
+		// The LLM writes "raised $432750," mid-sentence — trailing comma must not
+		// cause a false-positive unknown token.
+		const canonical = "Raise amount: $432750";
+		const output = "The company has raised $432750, which represents the full seed round.";
+		const result = validateNoNewNumbers(output, canonical);
+		expect(result.ok).toBe(true);
+		expect(result.unknown).toHaveLength(0);
+	});
+
+	it("accepts $432,750. (comma-formatted, trailing period) when canonical has $432,750", () => {
+		const canonical = "Total raised: $432,750";
+		const output = "The total raise is $432,750.";
+		const result = validateNoNewNumbers(output, canonical);
+		expect(result.ok).toBe(true);
+		expect(result.unknown).toHaveLength(0);
+	});
+
+	it("accepts $1,200,000 (with grouping commas) when canonical has the same amount", () => {
+		const canonical = "ARR: $1,200,000 as of Q4 2025";
+		const output = "Annual recurring revenue stands at $1,200,000.";
+		const result = validateNoNewNumbers(output, canonical);
+		expect(result.ok).toBe(true);
+		expect(result.unknown).toHaveLength(0);
+	});
+
+	it("accepts $500k (shorthand) when canonical has $500,000", () => {
+		// $500k expands to $500000; canonical has $500,000 which normalizes to $500000.
+		const canonical = "Burn rate: $500,000 per month";
+		const output = "Monthly burn is $500K.";
+		const result = validateNoNewNumbers(output, canonical);
+		expect(result.ok).toBe(true);
+		expect(result.unknown).toHaveLength(0);
+	});
+
+	it("still rejects a trailing-comma token whose base amount is NOT in canonical", () => {
+		// $999000, (unknown amount, not in canonical) must still fail
+		const canonical = "Raise: $432750";
+		const output = "They plan to raise $999000, which exceeds prior rounds.";
+		const result = validateNoNewNumbers(output, canonical);
+		expect(result.ok).toBe(false);
+		expect(result.unknown.some((t) => t.includes("999000"))).toBe(true);
+	});
 });
 
 // ─── normalizeLlmFinanceShorthand ─────────────────────────────────────────────

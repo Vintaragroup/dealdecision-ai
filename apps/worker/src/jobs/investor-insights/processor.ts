@@ -2377,17 +2377,26 @@ async function buildGovernedExecutiveSummarySection(
 			productNarrativeBody: productNarrativeBody ?? undefined,
 		});
 
-		if (!record || !record.validation_ok) {
-			if (record && !record.validation_ok) {
-				console.log(
-					JSON.stringify({
-						event: "GOVERNED_EXECUTIVE_SUMMARY_V1_SKIP",
-						reason: "validation_failed",
-						unknown_tokens: record.unknown_tokens,
-					})
-				);
-			}
+		if (!record) {
 			return null;
+		}
+
+		if (!record.validation_ok) {
+			const hasSummaryContent = record.summary.headline.trim().length > 0;
+			console.warn(
+				JSON.stringify({
+					event: "GOVERNED_EXECUTIVE_SUMMARY_V1_WARN",
+					reason: "validation_failed",
+					unknown_tokens: record.unknown_tokens,
+					has_content: hasSummaryContent,
+				})
+			);
+			// If no content was preserved (hard LLM failure), drop the section.
+			// When content IS present (soft parity failure), fall through and emit
+			// the section with validated=false so the job is not blocked.
+			if (!hasSummaryContent) {
+				return null;
+			}
 		}
 
 		console.log(

@@ -38,10 +38,9 @@ RUN node -e 'const { createRequire } = require("module"); const req = createRequ
 # Download Playwright Chromium browser explicitly.
 # PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD suppressed the postinstall hook above;
 # this single explicit install writes the binary to PLAYWRIGHT_BROWSERS_PATH.
-# In a pnpm monorepo, playwright is installed under the worker package,
-# not at the root — use the workspace-local binary.
-RUN mkdir -p /ms-playwright \
-	&& node /app/apps/worker/node_modules/.bin/playwright install chromium
+# Use pnpm exec so pnpm resolves the binary correctly without invoking
+# it via `node` (which fails because .bin entries are shell scripts, not JS).
+RUN cd /app/apps/worker && pnpm exec playwright install chromium
 
 # ----------------------
 # build: compile worker

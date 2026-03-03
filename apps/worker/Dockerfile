@@ -11,6 +11,11 @@ RUN corepack prepare pnpm@10.28.1 --activate
 # ----------------------
 FROM base AS deps
 
+# Skip Playwright's postinstall browser download — we install it explicitly below.
+# PLAYWRIGHT_BROWSERS_PATH pins the location to a known path for the COPY below.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
 # Copy workspace metadata first (improves cache + enables workspace resolution)
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY tsconfig.base.json ./
@@ -30,11 +35,11 @@ RUN pnpm --filter ./apps/worker... install --frozen-lockfile
 # so we must use a require rooted at the worker package.
 RUN node -e 'const { createRequire } = require("module"); const req = createRequire("/app/apps/worker/package.json"); req("bullmq"); console.log("bullmq_ok")'
 
-# Download Playwright Chromium browser in the deps stage so the runner stage
-# does not need outbound network access during Docker build.
-# PLAYWRIGHT_BROWSERS_PATH pins the install location so it can be COPY'd below.
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN node /app/node_modules/.bin/playwright install chromium
+# Download Playwright Chromium browser explicitly.
+# PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD suppressed the postinstall hook above;
+# this single explicit install writes the binary to PLAYWRIGHT_BROWSERS_PATH.
+RUN mkdir -p /ms-playwright \
+	&& node /app/node_modules/.bin/playwright install chromium
 
 # ----------------------
 # build: compile worker

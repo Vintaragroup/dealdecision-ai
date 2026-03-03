@@ -21,6 +21,12 @@ import {
 
 const SCHEMA_VERSION = "governed_llm_overview_v1" as const;
 
+// Minimum number of unique evidence snippets (across all 4 display-fact fields)
+// required to justify an LLM narration call. Below this threshold the LLM
+// cannot produce reliable copy and the call is skipped — returning
+// deterministic-only with reason_code "low_evidence_count".
+export const MIN_LLM_EVIDENCE_COUNT = 3;
+
 type DisplayFactsBasisV1 = "direct_snippet" | "no_evidence";
 
 /** Shared evidence-snippet record used in display-facts building. */
@@ -1704,6 +1710,33 @@ async function generateDisplayFactsV1BestEffort(args: {
         raise_terms: noEvidence,
       },
       quality: { ...qualityBase, ok: true, skipped_reason: "no_evidence" },
+      deterministic_input,
+    };
+  }
+
+  // LLM Evidence Quality Gate: too few unique snippets across all fields means
+  // the LLM would hallucinate or produce low-value copy. Skip the call and
+  // return deterministic-only so the UI gracefully falls back.
+  if (allEvidenceIds.size < MIN_LLM_EVIDENCE_COUNT) {
+    console.log(
+      JSON.stringify({
+        event: "LLM_EVIDENCE_GATE",
+        deal_id: args.dealId,
+        evidence_count: allEvidenceIds.size,
+        threshold: MIN_LLM_EVIDENCE_COUNT,
+        llm_skipped_due_to_low_evidence: true,
+      })
+    );
+    const sparseField: DisplayFactFieldV1 = { text: null, evidence_ids: [], evidence_basis: "no_evidence" };
+    return {
+      display_facts_v1: {
+        schema_version: "display_facts_v1",
+        product_solution: sparseField,
+        market_icp: sparseField,
+        business_model: sparseField,
+        raise_terms: sparseField,
+      },
+      quality: { ...qualityBase, ok: true, skipped_reason: "low_evidence_count" },
       deterministic_input,
     };
   }

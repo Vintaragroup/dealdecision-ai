@@ -47,6 +47,32 @@ const OCR_MAX_RENDER_SCALE = 6; // Upper guard to avoid runaway memory
 const OCR_MIN_TARGET_DIM = 1400; // Aim for at least this pixel dimension on the long side
 const OCR_CONTRAST = 1.2; // Simple contrast boost during preprocessing
 const OCR_THRESHOLD = 180; // Binarize after contrast to reduce backgrounds
+// If the average luminance of the raw greyscale image is below this value the
+// slide is assumed to have a dark background (dark-mode / VC decks with white
+// text). The binarised output is then inverted so Tesseract receives the
+// canonical black-text-on-white-background it expects.
+const OCR_DARK_BG_LUMINANCE_THRESHOLD = 0.35;
+
+/**
+ * Returns true when the pixel buffer's average ITU-R BT.601 luminance is below
+ * OCR_DARK_BG_LUMINANCE_THRESHOLD, indicating a dark-background slide.
+ *
+ * Sampled at every 16th RGBA pixel (stride=64 bytes) for O(1)-ish cost on
+ * large images.
+ */
+export function hasDarkBackground(data: Uint8ClampedArray): boolean {
+  const stride = 64; // bytes — samples every 16th RGBA pixel
+  let sum = 0;
+  let count = 0;
+  for (let i = 0; i < data.length; i += stride) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    sum += (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    count += 1;
+  }
+  return count > 0 && sum / count < OCR_DARK_BG_LUMINANCE_THRESHOLD;
+}
 const DEBUG_ENABLED = process.env.PDF_EXTRACT_DEBUG === "1";
 
 // Tesseract/Leptonica can emit noisy warnings like:
@@ -753,7 +779,7 @@ async function renderPageToCanvas(
   scale = 2,
   preprocessMode: PreprocessMode = "none",
   captureDebugImages = false
-): Promise<{ canvas: any; context: any; imageData: ImageData; rawPng?: Buffer; prePng?: Buffer }> {
+): Promise<{ canvas: any; context: any; imageData: ImageData; rawPng?: Buffer; prePng?: Buffer; darkBackgroundDetected: boolean }> {
   const viewport = page.getViewport({ scale });
   const { canvas, context } = canvasFactory.create(viewport.width, viewport.height);
 
@@ -767,6 +793,7 @@ async function renderPageToCanvas(
 
   let rawPng: Buffer | undefined;
   let prePng: Buffer | undefined;
+  let darkBackgroundDetected = false;
 
   if (captureDebugImages && DEBUG_ENABLED) {
     rawPng = canvas.toBuffer("image/png");
@@ -774,16 +801,21 @@ async function renderPageToCanvas(
 
   if (preprocessMode === "basic") {
     // Grayscale + linear contrast + binarize to improve OCR on busy slides.
+    // For dark-background decks the binarised output is inverted so Tesseract
+    // receives black text on white background (its preferred input).
     const img = context.getImageData(0, 0, canvas.width, canvas.height);
     const data = img.data;
     const gain = OCR_CONTRAST;
+    darkBackgroundDetected = hasDarkBackground(data);
     for (let i = 0; i < data.length; i += 4) {
       const r = data[i];
       const g = data[i + 1];
       const b = data[i + 2];
       const gray = 0.299 * r + 0.587 * g + 0.114 * b;
       const contrasted = Math.min(255, Math.max(0, (gray - 128) * gain + 128));
-      const value = contrasted >= OCR_THRESHOLD ? 255 : 0;
+      // If dark background: invert so white text → black text (Tesseract-friendly).
+      const binarized = contrasted >= OCR_THRESHOLD ? 255 : 0;
+      const value = darkBackgroundDetected ? 255 - binarized : binarized;
       data[i] = value;
       data[i + 1] = value;
       data[i + 2] = value;
@@ -796,7 +828,7 @@ async function renderPageToCanvas(
   }
 
   const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-  return { canvas, context, imageData, rawPng, prePng };
+  return { canvas, context, imageData, rawPng, prePng, darkBackgroundDetected };
 }
 
 async function ocrPage(
@@ -816,7 +848,16 @@ async function ocrPage(
   }
 > {
   const scale = computeOcrScale(page);
-  const { canvas, imageData, rawPng, prePng } = await renderPageToCanvas(page, scale, "basic", captureDebug);
+  const { canvas, imageData, rawPng, prePng, darkBackgroundDetected } = await renderPageToCanvas(page, scale, "basic", captureDebug);
+  if (darkBackgroundDetected) {
+    console.log(
+      JSON.stringify({
+        event: "OCR_DARK_BACKGROUND",
+        dark_background_detected: true,
+        page_number: pageNumber,
+      })
+    );
+  }
 
   const regions = detectTextRegions(imageData, canvas.width, canvas.height);
   const aggregateWords: OCRResult["words"] = [];

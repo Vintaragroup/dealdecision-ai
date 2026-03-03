@@ -627,8 +627,11 @@ describe("display_facts_v1 (governed overlay)", () => {
 
         if (sql.includes("INSERT INTO evidence")) {
           capturedEvidenceInsertSql = sql;
-          // Support RETURNING ... AS evidence_id in the implementation.
-          return { rows: [{ evidence_id: expectedEvidenceId }], rowCount: 1 } as any;
+          // Return empty rows so upsertDisplayFactEvidenceBestEffort falls back to its own
+          // deterministicUuidFromKey() call, producing a unique evidence_id per (field, page).
+          // If we returned a fixed UUID here, allEvidenceIds would collapse to size=1 and
+          // trigger the LLM_EVIDENCE_GATE before the provider is even called.
+          return { rows: [], rowCount: 1 } as any;
         }
 
         if (sql.includes("FROM deal_intelligence_objects") && sql.includes("dio_data")) {
@@ -657,7 +660,13 @@ describe("display_facts_v1 (governed overlay)", () => {
         dealName: "TestCo",
         phase1_deal_overview_v2: {
           deal_name: "TestCo",
-          sources: [{ document_id: documentId, page_range: [1, 1], note: "definition" }],
+          sources: [
+            { document_id: documentId, page_range: [1, 1], note: "definition" },
+            // Extra pages ensure allEvidenceIds.size >= MIN_LLM_EVIDENCE_COUNT (3)
+            // so the LLM evidence gate does not fire in this schema-compat test.
+            { document_id: documentId, page_range: [2, 2], note: "product" },
+            { document_id: documentId, page_range: [3, 3], note: "market" },
+          ],
         },
         phase1_business_archetype_v1: { archetype: "saas" },
         phase1_update_report_v1: { summary: "" },

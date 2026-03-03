@@ -31,7 +31,7 @@ import {
 	OpenAIGPT4oProvider,
 } from "../../lib/llm/providers/openai-provider";
 import type { ProviderConfig } from "../../lib/llm/types";
-import { normalizeForFingerprint, validateNoNewNumbers, validateCompanyName } from "./governed-summary-v1";
+import { normalizeForFingerprint, validateNoNewNumbers, validateCompanyName, normalizeLlmFinanceShorthand } from "./governed-summary-v1";
 
 // Re-export normalizeForFingerprint and validateCompanyName so consumers only need one import
 export { normalizeForFingerprint, validateCompanyName };
@@ -609,8 +609,13 @@ export async function generateGovernedExecSummaryV1(
 	const risks = toStringArray(p.risks as unknown[], 120).slice(0, 5);
 	const open_questions = toStringArray(p.open_questions as unknown[], 140).slice(0, 5);
 
-	// Numeric-parity validation — only on LLM-generated text (not coverage_note)
-	const llmOutput = [headline, ...summary_paragraphs, ...strengths, ...risks, ...open_questions].join(" ");
+	// Numeric-parity validation — only on LLM-generated text (not coverage_note).
+	// Apply finance-shorthand normalization first so lowercase suffixes like "$3.5b"
+	// and "$600m" are treated consistently, and the magnitude-expansion fallback
+	// inside validateNoNewNumbers can resolve them against canonical full-integer
+	// forms (e.g. "$3,500,000,000").
+	const rawLlmOutput = [headline, ...summary_paragraphs, ...strengths, ...risks, ...open_questions].join(" ");
+	const llmOutput = normalizeLlmFinanceShorthand(rawLlmOutput);
 	const { ok: parityOk, unknown: unknownTokens } = validateNoNewNumbers(llmOutput, canonicalCorpus);
 
 	if (!parityOk) {

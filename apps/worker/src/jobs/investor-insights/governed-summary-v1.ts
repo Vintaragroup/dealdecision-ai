@@ -387,8 +387,67 @@ function extractNumericTokens(text: string): Set<string> {
 }
 
 /**
+ * Normalize finance shorthand suffixes in LLM output text to uppercase before
+ * parity validation.  This is applied to LLM-generated text only (not canonical
+ * corpus text) so that the two sides share a consistent token form.
+ *
+ * Examples:
+ *   "$3.5b"  → "$3.5B"
+ *   "$600m"  → "$600M"
+ *   "$120k"  → "$120K"
+ *   "$1.2T"  → "$1.2T" (already uppercase — no-op)
+ *
+ * Only the suffix letter following a dollar-prefixed number is uppercased; all
+ * other text is left unchanged.
+ */
+export function normalizeLlmFinanceShorthand(text: string): string {
+	// Match $<digits>[.<digits>]<k|m|b|t> (case-insensitive suffix).
+	// The suffix must be a word boundary or followed by non-alphanumeric chars.
+	return text.replace(/(\$[\d,]+(?:\.\d+)?)([kmbtKMBT])(?![a-zA-Z0-9])/g, (_, num, suffix) =>
+		num + suffix.toUpperCase()
+	);
+}
+
+/**
+ * Expand a normalized shorthand token (e.g. "$3.5b") to its integer dollar
+ * form (e.g. "$3500000000") for magnitude-equivalence fallback checks.
+ *
+ * Returns null when the token is not a recognized shorthand form.
+ *
+ * This is used as a fallback inside `validateNoNewNumbers` so that LLM output
+ * using abbreviated forms passes when the canonical corpus expresses the same
+ * value as a full integer (e.g. "$3,500,000,000").
+ */
+export function expandShorthandToken(normalized: string): string | null {
+	// normalized token looks like "$3.5b", "$600m", "$120k", "$1.2t" (lowercase suffix)
+	const m = /^\$([\d]+(?:\.[\d]+)?)([kmbt])$/.exec(normalized);
+	if (!m) return null;
+	const num = parseFloat(m[1]);
+	const suffix = m[2];
+	let multiplier: number;
+	switch (suffix) {
+		case "k": multiplier = 1_000; break;
+		case "m": multiplier = 1_000_000; break;
+		case "b": multiplier = 1_000_000_000; break;
+		case "t": multiplier = 1_000_000_000_000; break;
+		default: return null;
+	}
+	const expanded = Math.round(num * multiplier);
+	return `$${expanded}`;
+}
+
+/**
  * Validate that every numeric token in `outputText` is present
  * (after normalization) in `canonicalText`.
+ *
+ * Accepts a token when ANY of the following holds:
+ *  1. The normalized token appears as a substring of the normalized canonical text.
+ *  2. The magnitude-expanded form of the token (e.g. "$3500000000" for "$3.5b")
+ *     appears as a substring of the normalized canonical text.
+ *
+ * This allows LLM output using abbreviated shorthand (e.g. "$3.5B", "$600M")
+ * to pass when the canonical corpus expresses the same value as a full integer
+ * (e.g. "$3,500,000,000", "$600,000,000").
  *
  * @returns { ok: true } when all tokens pass, or
  *          { ok: false, unknown: string[] } with the failing raw tokens.
@@ -401,9 +460,15 @@ export function validateNoNewNumbers(
 	const outputTokens = extractNumericTokens(outputText);
 	const unknown: string[] = [];
 	for (const tok of outputTokens) {
-		if (!canonicalNormalized.includes(tok)) {
-			unknown.push(tok);
-		}
+		// Primary check: direct substring match after normalization
+		if (canonicalNormalized.includes(tok)) continue;
+
+		// Fallback: check if the magnitude-expanded form is in canonical
+		// (handles cases where canonical has "$3,500,000,000" and LLM emits "$3.5B")
+		const expanded = expandShorthandToken(tok);
+		if (expanded !== null && canonicalNormalized.includes(expanded)) continue;
+
+		unknown.push(tok);
 	}
 	return { ok: unknown.length === 0, unknown };
 }
@@ -578,13 +643,18 @@ export async function generateGovernedSummaryV1(
 	const risks = toStringArray(raw.risks);
 	const open_questions = toStringArray(raw.open_questions);
 
-	// Numeric-parity validation
-	const fullOutput = [
+	// Numeric-parity validation.
+	// Apply finance-shorthand normalization before the parity check so that LLM
+	// tokens like "$3.5b" / "$600m" use consistent uppercase suffixes, and the
+	// magnitude-expansion fallback inside validateNoNewNumbers can resolve them
+	// against canonical forms like "$3,500,000,000".
+	const rawOutput = [
 		executive_summary,
 		...strengths,
 		...risks,
 		...open_questions,
 	].join(" ");
+	const fullOutput = normalizeLlmFinanceShorthand(rawOutput);
 
 	const { ok: parityOk, unknown: unknownTokens } = validateNoNewNumbers(
 		fullOutput,

@@ -13,6 +13,8 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import {
 	validateNoNewNumbers,
+	normalizeLlmFinanceShorthand,
+	expandShorthandToken,
 	generateGovernedSummaryV1,
 	serializeGovernedSummaryBody,
 	parseGovernedSummaryBody,
@@ -133,6 +135,134 @@ describe("validateNoNewNumbers", () => {
 		const result = validateNoNewNumbers("", "Some canonical data.");
 		expect(result.ok).toBe(true);
 		expect(result.unknown).toHaveLength(0);
+	});
+
+	// ── magnitude-expansion fallback (finance shorthand regression) ──────────
+
+	it("accepts $3.5b when canonical has the full-integer form $3,500,000,000", () => {
+		const canonical = "Enterprise valuation: $3,500,000,000 post-money.";
+		const output = "The company has a valuation of $3.5B.";
+		const result = validateNoNewNumbers(output, canonical);
+		expect(result.ok).toBe(true);
+		expect(result.unknown).toHaveLength(0);
+	});
+
+	it("accepts $600m when canonical has the full-integer form $600,000,000", () => {
+		const canonical = "TAM estimated at $600,000,000 annually.";
+		const output = "The total addressable market is $600M.";
+		const result = validateNoNewNumbers(output, canonical);
+		expect(result.ok).toBe(true);
+		expect(result.unknown).toHaveLength(0);
+	});
+
+	it("accepts $900m when canonical has the full-integer form $900,000,000", () => {
+		const canonical = "Revenue target: $900,000,000 by 2027.";
+		const output = "Management targets $900M in revenue by 2027.";
+		const result = validateNoNewNumbers(output, canonical);
+		expect(result.ok).toBe(true);
+		expect(result.unknown).toHaveLength(0);
+	});
+
+	it("accepts $120k when canonical has the full-integer form $120,000", () => {
+		const canonical = "Monthly burn: $120,000.";
+		const output = "Burn runs at $120K per month.";
+		const result = validateNoNewNumbers(output, canonical);
+		expect(result.ok).toBe(true);
+		expect(result.unknown).toHaveLength(0);
+	});
+
+	it("still rejects a shorthand token whose expanded form is not in canonical", () => {
+		const canonical = "Raise: $500,000.";
+		const output = "The company is targeting $10M.";
+		const result = validateNoNewNumbers(output, canonical);
+		expect(result.ok).toBe(false);
+		expect(result.unknown.some((t) => t.includes("10m"))).toBe(true);
+	});
+
+	it("the trio $3.5b/$600m/$900m together all pass against their integer canonical forms", () => {
+		const canonical = [
+			"Valuation: $3,500,000,000 post-money.",
+			"TAM: $600,000,000.",
+			"Revenue target: $900,000,000.",
+		].join(" ");
+		const output = "Valued at $3.5B with a $600M TAM and $900M revenue target.";
+		const result = validateNoNewNumbers(output, canonical);
+		expect(result.ok).toBe(true);
+		expect(result.unknown).toHaveLength(0);
+	});
+});
+
+// ─── normalizeLlmFinanceShorthand ─────────────────────────────────────────────
+
+describe("normalizeLlmFinanceShorthand", () => {
+	it("uppercases lowercase b suffix", () => {
+		expect(normalizeLlmFinanceShorthand("valued at $3.5b")).toBe("valued at $3.5B");
+	});
+
+	it("uppercases lowercase m suffix", () => {
+		expect(normalizeLlmFinanceShorthand("raise $600m")).toBe("raise $600M");
+	});
+
+	it("uppercases lowercase k suffix", () => {
+		expect(normalizeLlmFinanceShorthand("burn $120k/mo")).toBe("burn $120K/mo");
+	});
+
+	it("leaves already-uppercase suffixes unchanged (idempotent)", () => {
+		const input = "raise $2M seed, $3.5B valuation";
+		expect(normalizeLlmFinanceShorthand(input)).toBe(input);
+	});
+
+	it("normalizes multiple tokens in one string", () => {
+		const result = normalizeLlmFinanceShorthand("valued at $3.5b, TAM $600m, target $900m");
+		expect(result).toBe("valued at $3.5B, TAM $600M, target $900M");
+	});
+
+	it("does not alter non-dollar text or percentages", () => {
+		const input = "grew 60% in 2025, team of 12";
+		expect(normalizeLlmFinanceShorthand(input)).toBe(input);
+	});
+
+	it("does not corrupt the number value — only suffix case changes", () => {
+		const result = normalizeLlmFinanceShorthand("$3.5b");
+		expect(result).toBe("$3.5B");
+		// Value numeric part unchanged
+		expect(result).toContain("3.5");
+	});
+});
+
+// ─── expandShorthandToken ─────────────────────────────────────────────────────
+
+describe("expandShorthandToken", () => {
+	it("expands $3.5b to $3500000000", () => {
+		expect(expandShorthandToken("$3.5b")).toBe("$3500000000");
+	});
+
+	it("expands $600m to $600000000", () => {
+		expect(expandShorthandToken("$600m")).toBe("$600000000");
+	});
+
+	it("expands $900m to $900000000", () => {
+		expect(expandShorthandToken("$900m")).toBe("$900000000");
+	});
+
+	it("expands $120k to $120000", () => {
+		expect(expandShorthandToken("$120k")).toBe("$120000");
+	});
+
+	it("expands $2b to $2000000000", () => {
+		expect(expandShorthandToken("$2b")).toBe("$2000000000");
+	});
+
+	it("returns null for plain dollar amounts with no suffix", () => {
+		expect(expandShorthandToken("$3337000")).toBeNull();
+	});
+
+	it("returns null for percentage tokens", () => {
+		expect(expandShorthandToken("60%")).toBeNull();
+	});
+
+	it("returns null for year tokens", () => {
+		expect(expandShorthandToken("2026")).toBeNull();
 	});
 });
 

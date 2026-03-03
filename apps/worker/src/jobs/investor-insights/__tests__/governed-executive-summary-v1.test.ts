@@ -27,7 +27,7 @@ import {
 	type GovernedExecutiveSummaryArgs,
 	type GovernedExecutiveSummaryResult,
 } from "../governed-executive-summary-v1";
-import { normalizeForFingerprint } from "../governed-summary-v1";
+import { normalizeForFingerprint, normalizeLlmFinanceShorthand } from "../governed-summary-v1";
 
 // Module-level mock so vi.mock hoisting works correctly.
 const mockCompleteFn = vi.hoisted(() => vi.fn());
@@ -410,6 +410,118 @@ describe("generateGovernedExecSummaryV1 (mocked LLM)", () => {
 		if (!result.ok) {
 			expect(result.reason).toBe("llm_output_schema_mismatch");
 		}
+	});
+
+	// ── Finance shorthand regression: $3.5b/$600m/$900m must NOT trigger validation_failed ──
+
+	it("passes validation when LLM uses $3.5B shorthand and canonical has full integer $3,500,000,000", async () => {
+		vi.stubEnv("OPENAI_API_KEY", "sk-test");
+
+		mockCompleteFn.mockResolvedValue({
+			id: "mock-id",
+			model: "gpt-4o-mini",
+			provider: "openai",
+			content: JSON.stringify({
+				headline: "AcmeCo — B2B logistics SaaS (Seed)",
+				summary_paragraphs: [
+					"AcmeCo builds route-optimization software for SMBs.",
+					"Differentiation versus incumbents is not clearly detailed in the provided materials.",
+					"The company operates in a market valued at $3.5B.",
+					"AcmeCo is raising $2M at seed stage.",
+				],
+				strengths: ["Large addressable market"],
+				risks: ["Competitive space"],
+				open_questions: ["What is the expansion plan?"],
+			}),
+			finish_reason: "stop",
+			usage: { prompt_tokens: 60, completion_tokens: 60, total_tokens: 120 },
+			latency_ms: 300,
+		});
+
+		const result = await generateGovernedExecSummaryV1({
+			// Canonical expresses TAM as full integer; raise as shorthand uppercase
+			canonicalFieldsBody: "tam_size: $3,500,000,000 | Computable\nraise_amount: $2M | Computable",
+			insightSlotsBody: null,
+			financialStmtBody: null,
+			useOfFundsBody: null,
+			conflictsBody: null,
+			impliedCapitalBody: null,
+			financialHealthBody: null,
+			financialReconciliationBody: null,
+			coverageNote: "10/20 pages. 25 evidence items.",
+		});
+
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.value.validated).toBe(true);
+		}
+		if (!result.ok) {
+			// Fail with diagnostic
+			expect({ reason: result.reason, unknownTokens: result.unknownTokens }).toEqual({ reason: "NONE", unknownTokens: [] });
+		}
+	});
+
+	it("passes validation for the symptom trio $3.5b/$600m/$900m against full-integer canonical", async () => {
+		vi.stubEnv("OPENAI_API_KEY", "sk-test");
+
+		mockCompleteFn.mockResolvedValue({
+			id: "mock-id",
+			model: "gpt-4o-mini",
+			provider: "openai",
+			content: JSON.stringify({
+				headline: "AcmeCo — SaaS (Series A)",
+				summary_paragraphs: [
+					"AcmeCo operates in an enterprise market worth $3.5b.",
+					"Differentiation versus incumbents is not clearly detailed in the provided materials.",
+					"Management projects $600m revenue potential and $900m in total market capture.",
+					"The company is raising at Series A.",
+				],
+				strengths: ["Large TAM"],
+				risks: ["Market maturity"],
+				open_questions: ["What is the path to $600m?"],
+			}),
+			finish_reason: "stop",
+			usage: { prompt_tokens: 80, completion_tokens: 80, total_tokens: 160 },
+			latency_ms: 300,
+		});
+
+		const result = await generateGovernedExecSummaryV1({
+			canonicalFieldsBody: [
+				"tam_size: $3,500,000,000 | Computable",
+				"revenue_potential: $600,000,000 | Computable",
+				"market_capture: $900,000,000 | Computable",
+			].join("\n"),
+			insightSlotsBody: null,
+			financialStmtBody: null,
+			useOfFundsBody: null,
+			conflictsBody: null,
+			impliedCapitalBody: null,
+			financialHealthBody: null,
+			financialReconciliationBody: null,
+			coverageNote: "15/20 pages. 30 evidence items.",
+		});
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) {
+			// Surface diagnostic data if unexpectedly failing
+			expect({ reason: result.reason, unknownTokens: result.unknownTokens }).toEqual({
+				reason: "NONE",
+				unknownTokens: [],
+			});
+		}
+	});
+
+	it("normalizeLlmFinanceShorthand integration: $3.5b/$600m/$900m are uppercased before parity check", () => {
+		// Unit-level check that the normalization function itself converts all three
+		const normalized = normalizeLlmFinanceShorthand(
+			"valued at $3.5b, TAM $600m, target revenue $900m by 2026"
+		);
+		expect(normalized).toContain("$3.5B");
+		expect(normalized).toContain("$600M");
+		expect(normalized).toContain("$900M");
+		expect(normalized).not.toContain("$3.5b");
+		expect(normalized).not.toContain("$600m");
+		expect(normalized).not.toContain("$900m");
 	});
 });
 

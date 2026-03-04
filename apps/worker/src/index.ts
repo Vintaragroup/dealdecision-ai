@@ -111,6 +111,7 @@ import { documentIntelligenceExtractProcessor } from "./jobs/document-intelligen
 import { populateDocumentPageUnderstandingProcessor } from "./jobs/populate-document-page-understanding";
 import { generateInvestorInsightsProcessor } from "./jobs/investor-insights/processor";
 import { exportReportPdfProcessor } from "./jobs/export-report-pdf/processor";
+import { maybeEnqueueAnalyzeDealGuarantee } from "./lib/analyze-deal-guarantee";
 
 // Deterministic startup instrumentation (must run at boot, before any queues are registered).
 (() => {
@@ -10269,12 +10270,20 @@ registerWorker(QUEUE_NAMES.finalize_extract_visuals, async (job: Job) => {
 		}
 
 		try {
-			await enqueueAnalyzeDeal({
-				dealId,
-				reason: "finalize_extract_visuals_recovery",
+			await maybeEnqueueAnalyzeDealGuarantee({
+				deal_id: dealId,
+				trigger: "finalize_extract_visuals_recovery",
 				triggerJobId,
-				shouldEnqueue: true,
-				extra: { finalize_extract_visuals: { recovery: true, document_ids: docIds } },
+				pool: pool as any,
+				logger: console as any,
+				enqueueCallback: () =>
+					enqueueAnalyzeDeal({
+						dealId,
+						reason: "finalize_extract_visuals_recovery",
+						triggerJobId,
+						shouldEnqueue: true,
+						extra: { finalize_extract_visuals: { recovery: true, document_ids: docIds } },
+					}),
 			});
 		} catch {
 			// best-effort

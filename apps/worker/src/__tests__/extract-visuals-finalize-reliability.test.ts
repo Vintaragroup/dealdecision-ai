@@ -219,6 +219,19 @@ vi.mock("pg", () => {
 			if (q.includes("INSERT INTO visual_extractions") && q.includes("ON CONFLICT")) {
 				return { rows: [], rowCount: 1 } as any;
 			}
+			// PR7-lite: maybeEnqueueAnalyzeDealGuarantee prerequisites check
+			// Returns: no active analyze_deal, 1 doc, 0 unfinalized → all guards pass
+			if (q.includes("AS active_analyze_status") && q.includes("AS total_docs") && q.includes("AS unfinalized_visual_docs")) {
+				return {
+					rows: [
+						{
+							active_analyze_status: null,
+							total_docs: 1,
+							unfinalized_visual_docs: 0,
+						},
+					],
+				};
+			}
 			// jobs INSERT (enqueuePersistedJob)
 			if (q.includes("INSERT INTO jobs")) {
 				return { rows: [{ id: "job-recovered-1" }] };

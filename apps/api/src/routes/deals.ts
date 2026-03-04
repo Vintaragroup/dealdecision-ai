@@ -173,6 +173,28 @@ async function bestEffortReadinessJobPresenceCheck(args: {
     } catch {
       // ignore: fall through to legacy blocked reason
     }
+    // PR7-lite: If all visual-extractable docs have been finalized by extract_visuals,
+    // the pipeline is complete — replace INGEST_BLOCKED_NO_JOBS with a softer reason.
+    try {
+      const { rows: unfinalizedRows } = await pool.query(
+        `SELECT 1 FROM documents
+          WHERE deal_id = $1
+            AND deleted_at IS NULL
+            AND NOT (extraction_metadata->'extract_visuals_finalized'->>'ok' = 'true')
+            AND NOT (
+                 type ILIKE '%xlsx%'
+              OR type ILIKE '%xls%'
+              OR (extraction_metadata->>'doc_kind') ILIKE '%excel%'
+            )
+          LIMIT 1`,
+        [dealId]
+      );
+      if (unfinalizedRows.length === 0) {
+        return { hasRequiredJob: false, blocked_reason: "READY_TO_ANALYZE_ENQUEUE_PENDING", checked: true };
+      }
+    } catch {
+      // ignore: fall through to INGEST_BLOCKED_NO_JOBS
+    }
     return { hasRequiredJob: false, blocked_reason: "INGEST_BLOCKED_NO_JOBS", checked: true };
   }
 
@@ -213,6 +235,28 @@ async function bestEffortReadinessJobPresenceCheck(args: {
       }
     } catch {
       // ignore
+    }
+    // PR7-lite: If all visual-extractable docs have been finalized by extract_visuals,
+    // the pipeline is complete — replace INGEST_BLOCKED_NO_JOBS with a softer reason.
+    try {
+      const { rows: unfinalizedRows } = await pool.query(
+        `SELECT 1 FROM documents
+          WHERE deal_id = $1
+            AND deleted_at IS NULL
+            AND NOT (extraction_metadata->'extract_visuals_finalized'->>'ok' = 'true')
+            AND NOT (
+                 type ILIKE '%xlsx%'
+              OR type ILIKE '%xls%'
+              OR (extraction_metadata->>'doc_kind') ILIKE '%excel%'
+            )
+          LIMIT 1`,
+        [dealId]
+      );
+      if (unfinalizedRows.length === 0) {
+        return { hasRequiredJob: false, blocked_reason: "READY_TO_ANALYZE_ENQUEUE_PENDING", checked: true };
+      }
+    } catch {
+      // ignore: fall through to INGEST_BLOCKED_NO_JOBS
     }
     return { hasRequiredJob: false, blocked_reason: "INGEST_BLOCKED_NO_JOBS", checked: true };
   } catch {
@@ -10222,6 +10266,44 @@ export async function registerDealRoutes(
           (readiness as any).blocked_reason = "DPU_EMPTY_CONTENT";
           (readiness as any).poll_after_ms = 1500;
           (readiness as any).action = { type: "rebuild_page_understanding", deal_id: dealId, version };
+        }
+
+        // PR7-lite Rules 1 + 2: Override job-presence blocked reasons when analysis is
+        // already complete or a render package exists. DPU_EMPTY_CONTENT is a separate
+        // content-quality issue and is intentionally left unchanged.
+        const _presenceBlockedReasons = new Set([
+          "INGEST_BLOCKED_NO_JOBS",
+          "READY_TO_ANALYZE_ENQUEUE_PENDING",
+          "INGEST_PENDING_OCR",
+        ]);
+        if (
+          (readiness as any).blocked_reason &&
+          _presenceBlockedReasons.has((readiness as any).blocked_reason)
+        ) {
+          try {
+            const [_jobRes, _pkgRes] = await Promise.all([
+              pool.query(
+                `SELECT status FROM jobs WHERE deal_id = $1 AND type = 'analyze_deal' ORDER BY created_at DESC LIMIT 1`,
+                [dealId]
+              ),
+              pool.query(
+                `SELECT 1 FROM investor_insight_reports WHERE deal_id = $1 AND render_package IS NOT NULL LIMIT 1`,
+                [dealId]
+              ),
+            ]);
+            const _analyzeStatus = (_jobRes as any)?.rows?.[0]?.status ?? null;
+            const _hasRenderPkg =
+              Array.isArray((_pkgRes as any)?.rows) && (_pkgRes as any).rows.length > 0;
+            if (
+              _hasRenderPkg ||
+              _analyzeStatus === "succeeded" ||
+              _analyzeStatus === "succeeded_with_warnings"
+            ) {
+              (readiness as any).blocked_reason = null;
+            }
+          } catch {
+            // best-effort override — non-critical
+          }
         }
 
         if ((readiness as any).blocked_reason) {

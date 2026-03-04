@@ -2463,7 +2463,7 @@ export async function registerDealRoutes(
       await insightsQueue.add(
         "generate_investor_insights",
         { deal_id: dealId, engine_version: "v1", triggered_by: "manual_generate", force_recompute: true },
-        { jobId, removeOnComplete: true, removeOnFail: false }
+        { jobId, removeOnComplete: true, removeOnFail: false, attempts: 3, backoff: { type: "exponential", delay: 1000 } }
       );
     } catch (err) {
       console.error("[investor-insights] enqueue_failed", { dealId, err: err instanceof Error ? err.message : String(err) });
@@ -2587,7 +2587,7 @@ export async function registerDealRoutes(
       await insightsQueue.add(
         "generate_investor_insights",
         { deal_id: dealId, engine_version: "v1", triggered_by: "manual_regenerate", force_recompute: true },
-        { jobId, removeOnComplete: true, removeOnFail: false }
+        { jobId, removeOnComplete: true, removeOnFail: false, attempts: 3, backoff: { type: "exponential", delay: 1000 } }
       );
     } catch (err) {
       console.error("[investor-insights] regenerate_enqueue_failed", { dealId, err: err instanceof Error ? err.message : String(err) });

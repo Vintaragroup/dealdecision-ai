@@ -109,11 +109,19 @@ export async function enqueuePersistedJob(input: EnqueuePersistedJobInput): Prom
   try {
     const delayMsRaw = typeof input.delay_ms === "number" && Number.isFinite(input.delay_ms) ? input.delay_ms : null;
     const delayMs = delayMsRaw != null ? Math.max(0, Math.floor(delayMsRaw)) : 250;
+    // Apply default retry opts for all job types except extract_visuals, which uses
+    // queue-level defaultJobOptions (attempts: 5) set in getQueue("extract_visuals").
+    // Job-level opts take precedence over queue defaultJobOptions, so we must not
+    // override the higher attempts count for extract_visuals jobs.
+    const retryOpts = input.type === "extract_visuals"
+      ? {}
+      : { attempts: 3, backoff: { type: "exponential" as const, delay: 1000 } };
     await queue.add(input.type, payload, {
       jobId,
       removeOnComplete: true,
       removeOnFail: false,
       delay: delayMs,
+      ...retryOpts,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

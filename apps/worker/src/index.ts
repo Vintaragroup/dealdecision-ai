@@ -2515,7 +2515,7 @@ async function ingestDocumentProcessor(job: Job) {
 					await renderQueue.add(
 						"render_document_pages",
 						{ deal_id: dealIdSafe, document_id: docId, page_start: 0, page_end: firstEnd },
-						{ jobId: renderJobId, removeOnComplete: true, removeOnFail: false }
+						{ jobId: renderJobId, removeOnComplete: true, removeOnFail: false, attempts: 3, backoff: { type: "exponential", delay: 1000 } }
 					);
 				} catch (err) {
 					console.warn(
@@ -2566,6 +2566,8 @@ async function ingestDocumentProcessor(job: Job) {
 						removeOnComplete: true,
 						removeOnFail: false,
 						delay: 500,
+						attempts: 3,
+						backoff: { type: "exponential", delay: 1000 },
 					}
 				);
 			} catch (err) {
@@ -7287,7 +7289,7 @@ registerWorker("extract_visuals", async (job: Job) => {
 			await deepScanQueue.add(
 				"deep_scan_visuals",
 				{ deal_id: dealId, parent_job_id: job.id ? String(job.id) : null },
-				{ removeOnComplete: true, removeOnFail: false, delay: 500 }
+				{ removeOnComplete: true, removeOnFail: false, delay: 500, attempts: 3, backoff: { type: "exponential", delay: 1000 } }
 			);
 		} catch (err) {
 			console.warn(
@@ -9255,7 +9257,7 @@ registerWorker("analyze_deal", async (job: Job) => {
 				await insightsQueue.add(
 					"generate_investor_insights",
 					{ deal_id: dealId, engine_version: "v1", triggered_by: "overlay_complete" },
-					{ jobId: insightsJobId, removeOnComplete: true, removeOnFail: false }
+					{ jobId: insightsJobId, removeOnComplete: true, removeOnFail: false, attempts: 3, backoff: { type: "exponential", delay: 1000 } }
 				);
 				console.log(
 					JSON.stringify({
@@ -9444,6 +9446,8 @@ registerWorker("orchestration", async (job: Job) => {
 	const forwarded = await queue.add(targetQueue, { ...data }, {
 		removeOnComplete: true,
 		removeOnFail: false,
+		attempts: 3,
+		backoff: { type: "exponential", delay: 1000 },
 	});
 
 	console.log(

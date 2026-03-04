@@ -229,16 +229,33 @@ export function createWorker(
   });
   
   worker.on('failed', (job, err) => {
+    // BullMQ increments attemptsMade after each failure.
+    const attemptsMade = job?.attemptsMade ?? 0;
+    const maxAttempts = (job?.opts?.attempts ?? 1);
+    const attemptsRemaining = Math.max(0, maxAttempts - attemptsMade);
+    const willRetry = attemptsRemaining > 0;
     const payload = {
-      event: "worker_job_failed",
+      // BULLMQ_RETRY_SCHEDULED = transient failure, BullMQ will re-queue automatically.
+      // BULLMQ_JOB_FAILED      = all attempts exhausted, job is permanently failed.
+      event: willRetry ? "BULLMQ_RETRY_SCHEDULED" : "BULLMQ_JOB_FAILED",
       queue: name,
       job_id: job?.id ?? null,
-      err_message: err?.message ?? null,
+      attempt: attemptsMade,
+      attempts_remaining: attemptsRemaining,
+      max_attempts: maxAttempts,
+      failed_reason: err?.message ?? null,
       err_code: (err as any)?.code ?? null,
-      err_stack: err?.stack ?? null,
+      ...(willRetry
+        ? { backoff_type: (job?.opts?.backoff as any)?.type ?? null }
+        : { err_stack: err?.stack ?? null }
+      ),
     };
     try {
-      console.error(JSON.stringify(payload));
+      if (willRetry) {
+        console.log(JSON.stringify(payload));
+      } else {
+        console.error(JSON.stringify(payload));
+      }
     } catch {
       console.error(`[worker] Job failed: ${job?.id} - ${name}`, err?.message);
     }

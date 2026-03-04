@@ -10911,7 +10911,7 @@ export async function registerDealRoutes(
   //   - analysis/report failed AND no render_package → blocking_reason set so UI
   //     can surface the right CTA
   type StatusSummaryAnalysis = 'not_started' | 'running' | 'succeeded' | 'failed';
-  type StatusSummaryReport   = 'not_started' | 'running' | 'succeeded' | 'failed';
+  type StatusSummaryReport   = 'not_started' | 'running' | 'deterministic_only' | 'ready' | 'succeeded' | 'failed';
   type StatusSummaryEvidenceGate = {
     passed: boolean;
     blocking_reason: string | null;
@@ -10937,7 +10937,15 @@ export async function registerDealRoutes(
 
   function mapReportRowStatus(raw: string | null | undefined): StatusSummaryReport {
     if (!raw || raw === 'not_started') return 'not_started';
-    if (['deterministic_only', 'ready', 'succeeded'].includes(raw)) return 'succeeded';
+    if (process.env.STATUS_SUMMARY_V2) {
+      // V2: expose granular report statuses — deterministic_only and ready are distinct
+      if (raw === 'deterministic_only') return 'deterministic_only';
+      if (raw === 'ready') return 'ready';
+      if (raw === 'succeeded') return 'succeeded';
+    } else {
+      // Legacy V1 (default): collapse deterministic_only and ready into succeeded
+      if (['deterministic_only', 'ready', 'succeeded'].includes(raw)) return 'succeeded';
+    }
     if (['running', 'queued', 'generating'].includes(raw)) return 'running';
     if (raw === 'failed') return 'failed';
     return 'not_started';

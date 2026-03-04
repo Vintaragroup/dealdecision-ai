@@ -70,6 +70,14 @@ export interface PopulateFinancialFactRegistryV1Opts {
   document_id?: string;
   /** If true (default), skip pages with no detected financial content */
   skip_non_financial?: boolean;
+  /**
+   * Set to true when the target document is a spreadsheet (XLSX / Excel).
+   * When set, extracted facts will carry source_kind="xlsx" rather than
+   * "pdf_table", ensuring the ranking step correctly identifies spreadsheet
+   * provenance.  Does NOT change the ranking table — excel-origin data still
+   * participates in dedup against pdf_table rows from other documents.
+   */
+  xlsx_doc?: boolean;
 }
 
 export interface PopulateFinancialFactRegistryV1Result {
@@ -84,6 +92,8 @@ export interface PopulateFinancialFactRegistryV1Result {
   facts_inline:         number;
   /** Facts dropped by confidence-based dedup (lower-rank duplicate removed) */
   facts_merged:         number;
+  /** Facts tagged source_kind="xlsx" (only when xlsx_doc=true) */
+  facts_xlsx:           number;
   /** Candidate pages rejected by the detectFinancialTableCandidate guard */
   candidates_rejected:  number;
   errors:               string[];
@@ -104,6 +114,7 @@ export async function populateFinancialFactRegistryV1(
     pages_expanded:      0,
     facts_inline:        0,
     facts_merged:        0,
+    facts_xlsx:          0,
     candidates_rejected: 0,
     errors:              [],
   };
@@ -177,10 +188,11 @@ export async function populateFinancialFactRegistryV1(
 
         // ── 3. Extract: table claims ─────────────────────────────────────────
         const tableExtracted = extractFinancialTableClaims(text, {
-          deal_id:     opts.deal_id,
-          document_id: pageRow.document_id,
-          page_number: pageRow.page_index,
-          page_id:     pageRow.page_id,
+          deal_id:              opts.deal_id,
+          document_id:          pageRow.document_id,
+          page_number:          pageRow.page_index,
+          page_id:              pageRow.page_id,
+          source_kind_override: opts.xlsx_doc ? "xlsx" : undefined,
         });
 
         // ── 4. Extract: inline KPI claims ────────────────────────────────────
@@ -198,6 +210,26 @@ export async function populateFinancialFactRegistryV1(
         result.facts_extracted += tableExtracted.length;
         result.facts_inline    += inlineExtracted.length;
 
+        // Guard: log warning when xlsx_doc is set but a table fact has no source_kind
+        if (opts.xlsx_doc) {
+          for (const f of tableExtracted) {
+            if (!f.source_kind) {
+              console.warn(
+                JSON.stringify({
+                  event: "FINANCIAL_FACT_XLSX_SOURCE_MISSING",
+                  deal_id: opts.deal_id,
+                  document_id: pageRow.document_id,
+                  page_index: pageRow.page_index,
+                  metric_key: f.metric_key,
+                  ts: new Date().toISOString(),
+                }),
+              );
+            } else {
+              result.facts_xlsx++;
+            }
+          }
+        }
+
         allExtracted.push(...pageFacts);
       } catch (pageErr: unknown) {
         const msg = pageErr instanceof Error ? pageErr.message : String(pageErr);
@@ -205,6 +237,19 @@ export async function populateFinancialFactRegistryV1(
           `page doc=${pageRow.document_id} idx=${pageRow.page_index}: ${msg}`,
         );
       }
+    }
+
+    // ── 4b. XLSX observability: emit structured log when XLSX tables produced facts ─
+    if (opts.xlsx_doc && result.facts_xlsx > 0) {
+      console.log(
+        JSON.stringify({
+          event:         "XLSX_FINANCIAL_FACTS_DETECTED",
+          deal_id:       opts.deal_id,
+          document_id:   opts.document_id ?? null,
+          fact_count:    result.facts_xlsx,
+          ts:            new Date().toISOString(),
+        }),
+      );
     }
 
     // ── 5. Confidence-based dedup across all pages ───────────────────────────
@@ -292,6 +337,7 @@ function emitExpansionSummary(
       candidates_rejected:   result.candidates_rejected,
       facts_extracted_table: result.facts_extracted,
       facts_extracted_inline:result.facts_inline,
+      facts_xlsx:            result.facts_xlsx,
       facts_after_merge:     result.facts_upserted + result.facts_merged,
       facts_derived:         result.facts_derived,
       facts_upserted:        result.facts_upserted,

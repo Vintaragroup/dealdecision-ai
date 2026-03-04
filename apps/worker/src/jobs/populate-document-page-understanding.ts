@@ -77,11 +77,12 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 	const pool = getPool();
 	let resolvedDealId: string | null = dealId || null;
 	let pageCount: number | null = null;
+	let isXlsxDoc = false;
 
 	if (docId) {
 		try {
-			const { rows } = await pool.query<{ deal_id: string | null; page_count: number | null }>(
-				"SELECT deal_id, page_count FROM documents WHERE id = $1 LIMIT 1",
+			const { rows } = await pool.query<{ deal_id: string | null; page_count: number | null; type: string | null; extraction_metadata: any }>(  
+				"SELECT deal_id, page_count, type, extraction_metadata FROM documents WHERE id = $1 LIMIT 1",
 				[sanitizeText(docId)]
 			);
 			resolvedDealId = resolvedDealId || rows?.[0]?.deal_id || null;
@@ -89,6 +90,14 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 				typeof rows?.[0]?.page_count === "number" && Number.isFinite(rows[0].page_count)
 					? Math.max(0, Math.floor(rows[0].page_count))
 					: null;
+			// Detect XLSX: check extraction_metadata.doc_kind or MIME type
+			const docType = (rows?.[0]?.type ?? "").toLowerCase();
+			const docKind = (
+				(rows?.[0]?.extraction_metadata as any)?.doc_kind ??
+				(rows?.[0]?.extraction_metadata as any)?.contentType ??
+				""
+			).toString().toLowerCase();
+			isXlsxDoc = docKind === "excel" || docType.includes("excel") || docType.endsWith("xlsx");
 		} catch {
 			pageCount = null;
 		}
@@ -316,6 +325,7 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 				const finFactResult = await populateFinancialFactRegistryV1(pool as any, {
 					deal_id: resolvedDealId,
 					document_id: docId,
+					xlsx_doc: isXlsxDoc,
 				});
 				console.log(
 					JSON.stringify({
@@ -325,11 +335,13 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 								: "FINANCIAL_FACT_REGISTRY_PDF_ERROR",
 						deal_id: resolvedDealId,
 						document_id: docId,
+						xlsx_doc: isXlsxDoc,
 						pages_scanned: finFactResult.pages_scanned,
 						pages_with_data: finFactResult.pages_with_data,
 						facts_extracted: finFactResult.facts_extracted,
 						facts_derived: finFactResult.facts_derived,
 						facts_upserted: finFactResult.facts_upserted,
+						facts_xlsx: finFactResult.facts_xlsx,
 						errors: finFactResult.errors.slice(0, 3),
 						ts: new Date().toISOString(),
 					})

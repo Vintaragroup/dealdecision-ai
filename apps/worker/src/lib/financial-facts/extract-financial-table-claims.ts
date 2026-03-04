@@ -29,6 +29,7 @@ import {
   computeFactId,
   inferPeriodType,
 } from "@dealdecision/core";
+import type { FinancialFactSourceKind } from "@dealdecision/core";
 import { normalizeMetricKey } from "./financial-metric-aliases";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -43,6 +44,11 @@ export interface ExtractFinancialTableClaimsOpts {
   page_number?: number;
   /** Optional unique ID used only for source_pointer disambiguation */
   page_id?: string;
+  /**
+   * Override the source_kind assigned to extracted facts.
+   * Defaults to "pdf_table". Pass "xlsx" when the source document is a spreadsheet.
+   */
+  source_kind_override?: FinancialFactSourceKind;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -149,7 +155,7 @@ export function extractFinancialTableClaims(
         fact_id,
         deal_id: opts.deal_id,
         document_id: opts.document_id,
-        source_kind: "pdf_table",
+        source_kind: opts.source_kind_override ?? "pdf_table",
         metric_key,
         metric_label: rawLabel !== metric_key ? rawLabel : undefined,
         period_type,

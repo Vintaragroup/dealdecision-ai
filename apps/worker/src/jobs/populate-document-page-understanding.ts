@@ -10,6 +10,7 @@ import { promoteSlideFactsFromDocumentPageUnderstanding } from "../lib/promote-s
 import { populatePageRegistryV1 } from "../lib/page-registry/populate-page-registry-v1";
 import { populateDealFactRegistryV1 } from "../lib/deal-facts/populate-deal-fact-registry-v1";
 import { populateFinancialFactRegistryV1 } from "../lib/financial-facts/populate-financial-fact-registry-v1";
+import { shouldEmitXlsxFactsMissingGuardrail } from "../lib/visual-extraction";
 
 function parseFiniteInt(value: unknown): number | null {
 	const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
@@ -78,6 +79,7 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 	let resolvedDealId: string | null = dealId || null;
 	let pageCount: number | null = null;
 	let isXlsxDoc = false;
+	let extractionMetadataRaw: any = null;
 
 	if (docId) {
 		try {
@@ -90,6 +92,7 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 				typeof rows?.[0]?.page_count === "number" && Number.isFinite(rows[0].page_count)
 					? Math.max(0, Math.floor(rows[0].page_count))
 					: null;
+			extractionMetadataRaw = rows?.[0]?.extraction_metadata ?? null;
 			// Detect XLSX: check extraction_metadata.doc_kind or MIME type
 			const docType = (rows?.[0]?.type ?? "").toLowerCase();
 			const docKind = (
@@ -346,6 +349,32 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 						ts: new Date().toISOString(),
 					})
 				);
+				// Guardrail: XLSX succeeded at the extraction layer but produced 0 xlsx-sourced
+				// financial facts. This is a signal that the xlsx worker ran cleanly but the
+				// financial fact extraction pipeline found nothing — needs investigation.
+				if (shouldEmitXlsxFactsMissingGuardrail({
+					isXlsxDoc,
+					extractionMetadata: extractionMetadataRaw,
+					factsXlsx: finFactResult.facts_xlsx,
+				})) {
+					const xlsxMeta =
+						extractionMetadataRaw &&
+						typeof extractionMetadataRaw === "object"
+							? (extractionMetadataRaw as any).xlsx ?? null
+							: null;
+					console.log(
+						JSON.stringify({
+							event: "XLSX_FACTS_MISSING_AFTER_SUCCESS",
+							deal_id: resolvedDealId,
+							document_id: docId,
+							pages_scanned: finFactResult.pages_scanned,
+							facts_extracted: finFactResult.facts_extracted,
+							facts_upserted: finFactResult.facts_upserted,
+							xlsx_pages_persisted: xlsxMeta?.pages_persisted ?? null,
+							ts: new Date().toISOString(),
+						})
+					);
+				}
 			} catch {
 				// never block job completion
 			}

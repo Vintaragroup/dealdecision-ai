@@ -71,6 +71,7 @@ import {
 	applyVisionHintsToStructuredPowerpointSlides,
 	callXlsxWorker,
 	callXlsxWorkerWithRetries,
+	buildXlsxCanonicalPatch,
 	computeVisionRoutingDecisionV1,
 	probeImageUriFetchability,
 	type ImageUriFetchDiag,
@@ -5264,6 +5265,17 @@ registerWorker("extract_visuals", async (job: Job) => {
 					const original = await getDocumentOriginalFile(docId);
 					if (original?.bytes && original.bytes.length > 0) {
 						const excelPyExtractorVersion = process.env.EXCEL_PY_EXTRACTOR_VERSION || "excel_py_v1";
+						const xlsxStartMs = Date.now();
+						console.log(
+							JSON.stringify({
+								event: "XLSX_CANONICAL_ATTEMPT",
+								document_id: docId,
+								deal_id: dealId ?? null,
+								job_id: String(job.id ?? ""),
+								extractor_version: excelPyExtractorVersion,
+								ts: new Date().toISOString(),
+							})
+						);
 						const xlsxResult = await callXlsxWorkerWithRetries(config, {
 							document_id: docId,
 							xlsx_b64: original.bytes.toString("base64"),
@@ -5273,26 +5285,34 @@ registerWorker("extract_visuals", async (job: Job) => {
 						}, {
 							logMeta: { deal_id: dealId, job_id: String(job.id ?? "") },
 						});
+						const xlsxDurationMs = Date.now() - xlsxStartMs;
 						if (!xlsxResult.ok) {
 							try {
 								await mergeDocumentExtractionMetadata({
 									documentId: docId,
-									patch: {
-										xlsx_worker_status: {
-											ok: false,
-											code: xlsxResult.code,
-											message: xlsxResult.message,
-											ts: new Date().toISOString(),
-										},
-									},
+									patch: buildXlsxCanonicalPatch({ result: xlsxResult, pagesPersisted: 0, durationMs: xlsxDurationMs }),
 								});
 							} catch {
 								// best-effort — don't let metadata write block pipeline
 							}
+							console.log(
+								JSON.stringify({
+									event: "XLSX_CANONICAL_RESULT",
+									document_id: docId,
+									deal_id: dealId ?? null,
+									job_id: String(job.id ?? ""),
+									status: "failed",
+									code: xlsxResult.code,
+									message: xlsxResult.message,
+									duration_ms: xlsxDurationMs,
+									ts: new Date().toISOString(),
+								})
+							);
 						}
-						if (xlsxResult.ok && xlsxResult.payload?.pages?.length) {
+						if (xlsxResult.ok) {
+							const xlsxPages = xlsxResult.payload?.pages ?? [];
 							let persistedLocal = 0;
-							for (const page of xlsxResult.payload.pages) {
+							for (const page of xlsxPages) {
 								const pageIdx = typeof (page as any)?.page_index === "number" ? (page as any).page_index : 0;
 								const pageImageUri = pageIdx >= 0 && pageIdx < uris.length ? uris[pageIdx] : null;
 								const res = await persistVisionResponse(pool, page as any, { pageImageUri, env: process.env });
@@ -5304,6 +5324,28 @@ registerWorker("extract_visuals", async (job: Job) => {
 								usedPython = true;
 								docsExcelPyAssetsUsed += 1;
 							}
+							const canonicalPatch = buildXlsxCanonicalPatch({ result: xlsxResult, pagesPersisted: persistedLocal, durationMs: xlsxDurationMs });
+							try {
+								await mergeDocumentExtractionMetadata({
+									documentId: docId,
+									patch: canonicalPatch,
+								});
+							} catch {
+								// best-effort — don't let metadata write block pipeline
+							}
+							console.log(
+								JSON.stringify({
+									event: "XLSX_CANONICAL_RESULT",
+									document_id: docId,
+									deal_id: dealId ?? null,
+									job_id: String(job.id ?? ""),
+									status: canonicalPatch.xlsx.status,
+									pages_returned: canonicalPatch.xlsx.pages_returned ?? 0,
+									pages_persisted: canonicalPatch.xlsx.pages_persisted ?? 0,
+									duration_ms: xlsxDurationMs,
+									ts: new Date().toISOString(),
+								})
+							);
 						}
 					}
 				} catch (err) {
@@ -5330,6 +5372,23 @@ registerWorker("extract_visuals", async (job: Job) => {
 						if (syntheticPersisted > 0) {
 							docsSyntheticAssetsUsed += 1;
 							persisted += syntheticPersisted;
+						}
+						// Record that synthetic fallback was used so downstream can distinguish
+						// "XLSX not attempted" from "XLSX attempted and succeeded".
+						try {
+							await mergeDocumentExtractionMetadata({
+								documentId: docId,
+								patch: {
+									xlsx: {
+										attempted: false,
+										status: "synthetic_fallback",
+										pages_persisted: syntheticPersisted,
+										updated_at: new Date().toISOString(),
+									},
+								},
+							});
+						} catch {
+							// best-effort
 						}
 					} catch (err) {
 						console.warn(

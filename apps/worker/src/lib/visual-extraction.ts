@@ -1814,7 +1814,94 @@ export type XlsxWorkerResultFail = {
 
 export type XlsxWorkerResult = XlsxWorkerResultOk | XlsxWorkerResultFail;
 
-type XlsxWorkerLogger = { log: (msg: string) => void; error: (msg: string) => void } | null;
+// ── XLSX Canonical Metadata ──────────────────────────────────────────────────
+/** Lifecycle status stored in extraction_metadata.xlsx after an extraction run. */
+export type XlsxCanonicalStatus = "succeeded" | "failed" | "empty" | "synthetic_fallback";
+
+export interface XlsxCanonicalMetadata {
+	attempted: boolean;
+	status: XlsxCanonicalStatus;
+	/** Error code — present only when status="failed". */
+	code?: string;
+	/** Error message — present only when status="failed". */
+	message?: string;
+	/** Number of sheet-pages returned by the XLSX worker (ok paths only). */
+	pages_returned?: number;
+	/** Number of visual_assets rows persisted from this run. */
+	pages_persisted?: number;
+	/** Wall-clock duration of the callXlsxWorkerWithRetries call in ms. */
+	duration_ms?: number;
+	/** ISO timestamp of the last write. */
+	updated_at: string;
+}
+
+/**
+ * Builds the canonical extraction_metadata.xlsx patch after a completed
+ * callXlsxWorkerWithRetries call. Also emits the legacy xlsx_worker_status
+ * key on failure for backward compatibility with existing monitoring queries.
+ */
+export function buildXlsxCanonicalPatch(params: {
+	result: XlsxWorkerResult;
+	/** Number of visual_assets rows that were persisted from the XLSX response. */
+	pagesPersisted: number;
+	durationMs: number;
+	/** Override the timestamp (defaults to now). Useful in tests. */
+	updatedAt?: string;
+}): { xlsx: XlsxCanonicalMetadata; xlsx_worker_status?: Record<string, unknown> } {
+	const updatedAt = params.updatedAt ?? new Date().toISOString();
+	if (!params.result.ok) {
+		return {
+			xlsx: {
+				attempted: true,
+				status: "failed",
+				code: params.result.code,
+				message: params.result.message,
+				duration_ms: params.durationMs,
+				updated_at: updatedAt,
+			},
+			// Legacy key retained for backward compatibility with existing monitoring.
+			xlsx_worker_status: {
+				ok: false,
+				code: params.result.code,
+				message: params.result.message,
+				ts: updatedAt,
+			},
+		};
+	}
+	const pagesReturned = params.result.payload?.pages?.length ?? 0;
+	const status: XlsxCanonicalStatus = params.pagesPersisted > 0 ? "succeeded" : "empty";
+	return {
+		xlsx: {
+			attempted: true,
+			status,
+			pages_returned: pagesReturned,
+			pages_persisted: params.pagesPersisted,
+			duration_ms: params.durationMs,
+			updated_at: updatedAt,
+		},
+	};
+}
+
+/**
+ * Returns true when the post-DPU guardrail should emit XLSX_FACTS_MISSING_AFTER_SUCCESS:
+ * the document is an XLSX doc, the XLSX worker previously recorded status="succeeded"
+ * in extraction_metadata.xlsx, but populateFinancialFactRegistryV1 produced 0 xlsx facts.
+ */
+export function shouldEmitXlsxFactsMissingGuardrail(params: {
+	isXlsxDoc: boolean;
+	extractionMetadata: unknown;
+	factsXlsx: number;
+}): boolean {
+	if (!params.isXlsxDoc) return false;
+	if (params.factsXlsx > 0) return false;
+	const meta =
+		params.extractionMetadata && typeof params.extractionMetadata === "object"
+			? (params.extractionMetadata as Record<string, unknown>)
+			: null;
+	const xlsxMeta = meta?.xlsx && typeof meta.xlsx === "object" ? (meta.xlsx as Record<string, unknown>) : null;
+	return xlsxMeta?.status === "succeeded";
+}
+
 
 type ExcelXlsxWorkerCallOptions = {
 	fetchImpl?: typeof fetch;

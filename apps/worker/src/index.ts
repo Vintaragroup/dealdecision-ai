@@ -70,6 +70,7 @@ import {
 	resegmentStructuredSyntheticAssets,
 	applyVisionHintsToStructuredPowerpointSlides,
 	callXlsxWorker,
+	callXlsxWorkerWithRetries,
 	computeVisionRoutingDecisionV1,
 	probeImageUriFetchability,
 	type ImageUriFetchDiag,
@@ -5261,16 +5262,35 @@ registerWorker("extract_visuals", async (job: Job) => {
 					const original = await getDocumentOriginalFile(docId);
 					if (original?.bytes && original.bytes.length > 0) {
 						const excelPyExtractorVersion = process.env.EXCEL_PY_EXTRACTOR_VERSION || "excel_py_v1";
-						const xlsxResp = await callXlsxWorker(config, {
+						const xlsxResult = await callXlsxWorkerWithRetries(config, {
 							document_id: docId,
 							xlsx_b64: original.bytes.toString("base64"),
 							extractor_version: excelPyExtractorVersion,
 							max_sheets: 50,
 							max_tables_per_sheet: 24,
+						}, {
+							logMeta: { deal_id: dealId, job_id: String(job.id ?? "") },
 						});
-						if (xlsxResp?.pages?.length) {
+						if (!xlsxResult.ok) {
+							try {
+								await mergeDocumentExtractionMetadata({
+									documentId: docId,
+									patch: {
+										xlsx_worker_status: {
+											ok: false,
+											code: xlsxResult.code,
+											message: xlsxResult.message,
+											ts: new Date().toISOString(),
+										},
+									},
+								});
+							} catch {
+								// best-effort — don't let metadata write block pipeline
+							}
+						}
+						if (xlsxResult.ok && xlsxResult.payload?.pages?.length) {
 							let persistedLocal = 0;
-							for (const page of xlsxResp.pages) {
+							for (const page of xlsxResult.payload.pages) {
 								const pageIdx = typeof (page as any)?.page_index === "number" ? (page as any).page_index : 0;
 								const pageImageUri = pageIdx >= 0 && pageIdx < uris.length ? uris[pageIdx] : null;
 								const res = await persistVisionResponse(pool, page as any, { pageImageUri, env: process.env });

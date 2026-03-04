@@ -5,6 +5,7 @@ export const QUEUE_NAMES = {
 	ingest_documents: "ingest_documents",
 	render_document_pages: "render_document_pages",
 	extract_visuals: "extract_visuals",
+	finalize_extract_visuals: "finalize_extract_visuals",
 	deep_scan_visuals: "deep_scan_visuals",
 	document_intelligence_extract: "document_intelligence_extract",
 	fetch_evidence: "fetch_evidence",

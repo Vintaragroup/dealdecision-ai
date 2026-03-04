@@ -46,7 +46,7 @@ const MOCK_SUCCESS_RESPONSE = {
 };
 
 function makeMockLogger() {
-	return { log: vi.fn(), error: vi.fn() };
+	return { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
 
 /** Cycles through an array of response factories, repeating the last one. */
@@ -439,7 +439,7 @@ describe("XlsxWorkerResult compile guard", () => {
 		// will fail at build time if callXlsxWorkerWithRetries returns null or undefined.
 		const r: XlsxWorkerResult = await callXlsxWorkerWithRetries(BASE_CONFIG, BASE_REQUEST, {
 			fetchImpl: mockFetch as any,
-			logger: null,
+			logger: undefined,
 		});
 
 		// At runtime: .ok is always a boolean

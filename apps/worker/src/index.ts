@@ -74,6 +74,7 @@ import {
 	buildXlsxCanonicalPatch,
 	computeVisionRoutingDecisionV1,
 	probeImageUriFetchability,
+	buildExtractVisualsFinalizedMarker,
 	type ImageUriFetchDiag,
 } from "./lib/visual-extraction";
 import { shouldSkipExtractVisualsAfterRenderV1 } from "./lib/render-followups";
@@ -2715,7 +2716,7 @@ function assertQueueNamesRuntimeExport() {
 		);
 	}
 
-	const requiredKeys = ["populate_document_page_understanding"] as const;
+	const requiredKeys = ["populate_document_page_understanding", "finalize_extract_visuals"] as const;
 	for (const key of requiredKeys) {
 		if (!(key in QUEUE_NAMES)) {
 			throw new Error(`QUEUE_NAMES is missing required key: ${key}`);
@@ -6649,6 +6650,26 @@ registerWorker("extract_visuals", async (job: Job) => {
 								should_finalize: true,
 							})
 						);
+						// Enqueue a recovery job so finalization is not permanently lost if the
+						// lock holder crashed before completing.  Delayed by 15 s to give the
+						// current holder time to finish first; the recovery job will re-check
+						// the lock on arrival and skip if finalization already succeeded.
+						try {
+							await enqueuePersistedJob({
+								type: "finalize_extract_visuals",
+								deal_id: dealIdForAudit ?? undefined,
+								payload: {
+									deal_id: dealIdForAudit ?? null,
+									document_ids: targetDocumentIds,
+									from_chunk_job_id: job.id ? String(job.id) : null,
+								},
+								parent_job_id: job.id ? String(job.id) : null,
+								idempotent: true,
+								delay_ms: 15_000,
+							});
+						} catch {
+							// Best-effort: stale-takeover (120 s) is the fallback if enqueue fails.
+						}
 					}
 				} catch {
 					finalizeLockAcquired = false;
@@ -6661,6 +6682,23 @@ registerWorker("extract_visuals", async (job: Job) => {
 							should_finalize: true,
 						})
 					);
+					// Enqueue recovery job (same intent as the non-stale branch above).
+					try {
+						await enqueuePersistedJob({
+							type: "finalize_extract_visuals",
+							deal_id: dealIdForAudit ?? undefined,
+							payload: {
+								deal_id: dealIdForAudit ?? null,
+								document_ids: targetDocumentIds,
+								from_chunk_job_id: job.id ? String(job.id) : null,
+							},
+							parent_job_id: job.id ? String(job.id) : null,
+							idempotent: true,
+							delay_ms: 15_000,
+						});
+					} catch {
+						// Best-effort.
+					}
 				}
 			}
 		} catch {
@@ -6698,6 +6736,16 @@ registerWorker("extract_visuals", async (job: Job) => {
 	}
 
 	if (shouldRunFinalize) {
+		console.log(
+			JSON.stringify({
+				event: "EXTRACT_VISUALS_FINALIZE_START",
+				deal_id: dealIdForAudit ?? null,
+				document_ids: targetDocumentIds,
+				job_id: job.id ? String(job.id) : null,
+				docs_count: targetDocumentIds.length,
+				ts: new Date().toISOString(),
+			})
+		);
 		for (const docId of targetDocumentIds) {
 			try {
 				const { rows } = await pool.query(
@@ -6716,6 +6764,12 @@ registerWorker("extract_visuals", async (job: Job) => {
 							should_finalize: true,
 						})
 					);
+					// Even when page_segments_v1 already present, ensure the finalized marker is
+					// written so downstream can confirm finalization ran for this document.
+					await mergeDocumentExtractionMetadata({
+						documentId: docId,
+						patch: buildExtractVisualsFinalizedMarker({ jobId: job.id ? String(job.id) : null, docsFinalized: 1 }),
+					});
 					continue;
 				}
 
@@ -6847,6 +6901,16 @@ registerWorker("extract_visuals", async (job: Job) => {
 								should_finalize: true,
 							})
 						);
+						// Write finalized marker even for XLSX/no-PDF docs with no DPU pages so that
+						// downstream services know finalization ran for this document.
+						try {
+							await mergeDocumentExtractionMetadata({
+								documentId: docId,
+								patch: buildExtractVisualsFinalizedMarker({ jobId: job.id ? String(job.id) : null, docsFinalized: 1 }),
+							});
+						} catch {
+							// Best-effort; PAGE_SEGMENTS_V1_SKIP is already logged.
+						}
 						continue;
 					}
 
@@ -6884,6 +6948,10 @@ registerWorker("extract_visuals", async (job: Job) => {
 							should_finalize: true,
 						})
 					);
+					await mergeDocumentExtractionMetadata({
+						documentId: docId,
+						patch: buildExtractVisualsFinalizedMarker({ jobId: job.id ? String(job.id) : null, docsFinalized: 1 }),
+					});
 					continue;
 				}
 
@@ -6935,12 +7003,26 @@ registerWorker("extract_visuals", async (job: Job) => {
 						should_finalize: true,
 					})
 				);
+				await mergeDocumentExtractionMetadata({
+					documentId: docId,
+					patch: buildExtractVisualsFinalizedMarker({ jobId: job.id ? String(job.id) : null, docsFinalized: 1 }),
+				});
 			} catch (err) {
 				console.warn(
 					`[extract_visuals] page_segments_v1 finalize write failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
 				);
 			}
 		}
+		console.log(
+			JSON.stringify({
+				event: "EXTRACT_VISUALS_FINALIZE_SUCCESS",
+				deal_id: dealIdForAudit ?? null,
+				document_ids: targetDocumentIds,
+				job_id: job.id ? String(job.id) : null,
+				docs_count: targetDocumentIds.length,
+				ts: new Date().toISOString(),
+			})
+		);
 	} else {
 		console.log(
 			JSON.stringify({
@@ -9966,6 +10048,259 @@ registerWorker("investor_insights", generateInvestorInsightsProcessor, { concurr
 // PDF Export — renders due-diligence reports server-side via Playwright
 // Queue: "export_report_pdf" | Concurrency: 1 (Playwright is resource-intensive)
 registerWorker("export_report_pdf", exportReportPdfProcessor, { concurrency: 1 });
+
+// ─── Extract Visuals Finalize Recovery ───────────────────────────────────────
+// Queue: "finalize_extract_visuals"
+// Enqueued when a chunk job detects the finalize lock is already held (lock-skip
+// recovery path).  Runs the full finalization sequence idempotently: writes
+// page_segments_v1, extract_visuals_finalized marker, promotes OCR text, and
+// enqueues analyze_deal.  Uses the same Redis lock as the primary chunk path so
+// only one runner wins when parallel recovery jobs are enqueued.
+registerWorker(QUEUE_NAMES.finalize_extract_visuals, async (job: Job) => {
+	const data = (job.data ?? {}) as {
+		deal_id?: string | null;
+		document_ids?: string[];
+		from_chunk_job_id?: string | null;
+	};
+	const pool = getPool();
+	const dealId = typeof data.deal_id === "string" && data.deal_id.trim() ? data.deal_id.trim() : null;
+	const rawDocIds = Array.isArray(data.document_ids) ? data.document_ids : [];
+	const docIds = rawDocIds.filter((d): d is string => typeof d === "string" && d.trim().length > 0);
+
+	if (!dealId || docIds.length === 0) {
+		console.warn(
+			JSON.stringify({
+				event: "FINALIZE_EXTRACT_VISUALS_SKIP",
+				reason: "missing_deal_id_or_document_ids",
+				deal_id: dealId,
+				document_ids: docIds,
+				job_id: job.id ? String(job.id) : null,
+			})
+		);
+		return { ok: false, reason: "missing_deal_id_or_document_ids" };
+	}
+
+	const FINALIZE_LOCK_TTL_S = 300;
+	const FINALIZE_LOCK_STALE_TAKEOVER_S = 120;
+	const lockKey = `extract_visuals:finalized:${dealId}:${docIds.length === 1 ? docIds[0] : "multi"}`;
+	const triggerJobId = job.id ? String(job.id) : "unknown";
+	const lockValue = JSON.stringify({ job_id: triggerJobId, acquired_at: Date.now() });
+	let lockAcquired = false;
+
+	try {
+		const res = await (connection as any).set(lockKey, lockValue, "NX", "EX", FINALIZE_LOCK_TTL_S);
+		if (res === "OK") {
+			lockAcquired = true;
+		} else {
+			// Check if the existing holder is stale — if so, take over.
+			try {
+				const existing = await (connection as any).get(lockKey);
+				const parsed = existing ? JSON.parse(existing) : null;
+				const ageMs = parsed?.acquired_at ? Date.now() - Number(parsed.acquired_at) : Infinity;
+				if (ageMs / 1000 > FINALIZE_LOCK_STALE_TAKEOVER_S) {
+					await (connection as any).set(lockKey, lockValue, "EX", FINALIZE_LOCK_TTL_S);
+					lockAcquired = true;
+				} else {
+					// Fresh lock — another runner is currently finalizing. Skip.
+					console.log(
+						JSON.stringify({
+							event: "FINALIZE_EXTRACT_VISUALS_LOCK_SKIP",
+							deal_id: dealId,
+							reason: "lock_held_by_concurrent_runner",
+							holder_job_id: parsed?.job_id ?? null,
+							holder_age_ms: Math.round(ageMs),
+						})
+					);
+					return { ok: true, reason: "lock_held_by_concurrent_runner" };
+				}
+			} catch {
+				// Cannot read lock — skip to avoid racing.
+				return { ok: true, reason: "lock_read_error_skipping" };
+			}
+		}
+
+		// ── Per-document: page_segments_v1 + finalized marker ──────────────────
+		for (const docId of docIds) {
+			try {
+				const { rows } = await pool.query(
+					"SELECT deal_id, type, extraction_metadata, full_content, page_count FROM documents WHERE id = $1 LIMIT 1",
+					[sanitizeText(docId)]
+				);
+				const row = rows?.[0] as any;
+				const existing =
+					row?.extraction_metadata && typeof row.extraction_metadata === "object" ? row.extraction_metadata : null;
+
+				if (existing && (existing as any)?.page_segments_v1) {
+					// Already written — just ensure finalized marker is present.
+					await mergeDocumentExtractionMetadata({
+						documentId: docId,
+						patch: buildExtractVisualsFinalizedMarker({ jobId: triggerJobId, docsFinalized: 1 }),
+					});
+					continue;
+				}
+
+				const fullContent = row?.full_content ?? {};
+				const pdfV2 =
+					(fullContent as any)?.pdf_v2 && typeof (fullContent as any).pdf_v2 === "object"
+						? (fullContent as any).pdf_v2
+						: fullContent;
+				const pages: any[] = Array.isArray((pdfV2 as any)?.pages) ? (pdfV2 as any).pages : [];
+
+				const mapSlideType = (raw: unknown): string => {
+					const s = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+					if (!s || s === "other") return "unknown";
+					if (s === "go_to_market") return "distribution";
+					if (s === "use_of_funds") return "raise_terms";
+					return s;
+				};
+
+				const ordered = pages
+					.map((p) => {
+						const pageIndex =
+							typeof p?.page_index === "number" && Number.isFinite(p.page_index) ? p.page_index : null;
+						if (pageIndex == null || pageIndex < 0) return null;
+						const u = p?.understanding_v1;
+						return {
+							page_index: pageIndex,
+							slide_type: typeof u?.slide_type === "string" ? String(u.slide_type) : "other",
+							slide_type_confidence:
+								typeof u?.slide_type_confidence === "number" && Number.isFinite(u.slide_type_confidence)
+									? u.slide_type_confidence
+									: null,
+							title: typeof u?.title === "string" ? String(u.title) : "",
+							segment_key: mapSlideType(u?.slide_type),
+						};
+					})
+					.filter(Boolean)
+					.sort((a: any, b: any) => a.page_index - b.page_index);
+
+				if (ordered.length === 0) {
+					// XLSX / no-pages doc: write finalized marker so downstream knows finalize ran.
+					await mergeDocumentExtractionMetadata({
+						documentId: docId,
+						patch: buildExtractVisualsFinalizedMarker({ jobId: triggerJobId, docsFinalized: 1 }),
+					});
+					continue;
+				}
+
+				const segments: any[] = [];
+				let cur: any | null = null;
+				for (const p of ordered as any[]) {
+					const key =
+						typeof p.segment_key === "string" && p.segment_key.trim() ? p.segment_key : "unknown";
+					if (!cur || cur.segment_key !== key) {
+						if (cur) segments.push(cur);
+						cur = {
+							segment_index: segments.length,
+							segment_key: key,
+							segment_label: key.replace(/_/g, " "),
+							page_start: p.page_index,
+							page_end: p.page_index,
+							title_hint: p.title || null,
+							avg_confidence: p.slide_type_confidence,
+							pages: 1,
+						};
+					} else {
+						cur.page_end = p.page_index;
+						cur.pages += 1;
+						if (typeof p.slide_type_confidence === "number") {
+							const prev = typeof cur.avg_confidence === "number" ? cur.avg_confidence : 0;
+							cur.avg_confidence = (prev * (cur.pages - 1) + p.slide_type_confidence) / cur.pages;
+						}
+						if (!cur.title_hint && p.title) cur.title_hint = p.title;
+					}
+				}
+				if (cur) segments.push(cur);
+
+				await mergeDocumentExtractionMetadata({
+					documentId: docId,
+					patch: {
+						page_segments_v1: {
+							version: "page_segments_v1",
+							generated_at: new Date().toISOString(),
+							segments,
+						},
+					},
+				});
+				await mergeDocumentExtractionMetadata({
+					documentId: docId,
+					patch: buildExtractVisualsFinalizedMarker({ jobId: triggerJobId, docsFinalized: 1 }),
+				});
+				console.log(
+					JSON.stringify({
+						event: "PAGE_SEGMENTS_V1_WRITTEN",
+						document_id: docId,
+						deal_id: dealId,
+						segments_count: segments.length,
+						source: "finalize_extract_visuals_recovery",
+						job_id: triggerJobId,
+					})
+				);
+			} catch (err) {
+				console.warn(
+					`[finalize_extract_visuals] page_segments write failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
+				);
+			}
+		}
+
+		// ── Post-finalize: DPU populate + OCR promote + analyze_deal ───────────
+		try {
+			await populateDocumentPageUnderstandingFromVisualExtractions(pool as any, {
+				dealId,
+				version: "page_understanding_v1",
+			});
+		} catch (err) {
+			console.warn(
+				`[finalize_extract_visuals] dpu populate failed: ${err instanceof Error ? err.message : String(err)}`
+			);
+		}
+
+		for (const docId of docIds) {
+			try {
+				await promoteVisualOcrToDocumentFullText({
+					pool,
+					documentId: docId,
+					dealId,
+					triggerJobId,
+				});
+			} catch {
+				// best-effort
+			}
+		}
+
+		try {
+			await enqueueAnalyzeDeal({
+				dealId,
+				reason: "finalize_extract_visuals_recovery",
+				triggerJobId,
+				shouldEnqueue: true,
+				extra: { finalize_extract_visuals: { recovery: true, document_ids: docIds } },
+			});
+		} catch {
+			// best-effort
+		}
+
+		console.log(
+			JSON.stringify({
+				event: "EXTRACT_VISUALS_FINALIZE_SUCCESS",
+				source: "finalize_extract_visuals_recovery",
+				deal_id: dealId,
+				document_ids: docIds,
+				job_id: triggerJobId,
+				ts: new Date().toISOString(),
+			})
+		);
+		return { ok: true };
+	} finally {
+		if (lockAcquired) {
+			try {
+				await (connection as any).del(lockKey);
+			} catch {
+				// lock expires via TTL
+			}
+		}
+	}
+});
 
 logWorkerQueueConfig("worker", Array.from(new Set(registeredWorkers)));
 

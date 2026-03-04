@@ -13,6 +13,7 @@ export type EnqueuePersistedJobInput = {
     | "ingest_documents"
     | "render_document_pages"
     | "extract_visuals"
+    | "finalize_extract_visuals"
     | "deep_scan_visuals"
     | "populate_document_page_understanding"
     | "document_intelligence_extract"

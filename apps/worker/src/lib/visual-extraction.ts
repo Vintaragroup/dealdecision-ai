@@ -17,6 +17,9 @@ export type VisionExtractorConfig = {
 
 type LogLike = Pick<Console, "log" | "warn" | "error">;
 
+// Alias used by XLSX worker call helpers — same shape as LogLike.
+type XlsxWorkerLogger = LogLike;
+
 type FsLike = Pick<typeof fs, "readdir" | "stat">;
 
 export type VisionExtractRequest = {
@@ -5423,4 +5426,49 @@ export async function enqueueExtractVisualsIfPossible(params: {
 		})
 	);
 	return true;
+}
+
+// ─── Extract Visuals Finalized Marker ────────────────────────────────────────
+
+/**
+ * Durable marker written to extraction_metadata once finalization fully succeeds
+ * for a document. Enables downstream services to distinguish "finalize ran" from
+ * "finalize was skipped/lost" without relying on log queries.
+ */
+export interface ExtractVisualsFinalizedMarker {
+	/** Always true when present — false is never written. */
+	ok: boolean;
+	/** ISO-8601 timestamp of when finalization completed. */
+	finalized_at: string;
+	/** BullMQ job_id of the job that ran finalization, or null if unavailable. */
+	finalized_by_job_id: string | null;
+	/** Number of documents that were finalized in this run (normally 1). */
+	docs_finalized: number;
+}
+
+/**
+ * Builds an `extraction_metadata` patch containing the `extract_visuals_finalized`
+ * marker.  Pure function — no I/O.
+ *
+ * Usage:
+ * ```ts
+ * await mergeDocumentExtractionMetadata({
+ *   documentId: docId,
+ *   patch: buildExtractVisualsFinalizedMarker({ jobId, docsFinalized: 1 }),
+ * });
+ * ```
+ */
+export function buildExtractVisualsFinalizedMarker(params: {
+	jobId: string | null;
+	docsFinalized: number;
+	finalizedAt?: string;
+}): { extract_visuals_finalized: ExtractVisualsFinalizedMarker } {
+	return {
+		extract_visuals_finalized: {
+			ok: true,
+			finalized_at: params.finalizedAt ?? new Date().toISOString(),
+			finalized_by_job_id: params.jobId,
+			docs_finalized: Math.max(0, params.docsFinalized),
+		},
+	};
 }

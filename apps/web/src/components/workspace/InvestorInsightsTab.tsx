@@ -1,8 +1,8 @@
-import { CheckCircle2, XCircle, Lightbulb, RefreshCw, AlertCircle, ChevronRight, Zap } from 'lucide-react';
+import { CheckCircle2, XCircle, Lightbulb, RefreshCw, AlertCircle, ChevronRight, Zap, Loader2 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Stack } from '../ui/layout';
 import { H3, MutedText } from '../ui/typography';
-import { useInvestorInsights } from '../../hooks/useInvestorInsights';
+import { useInvestorInsightsStatusSummary } from '../../hooks/useInvestorInsightsStatusSummary';
 import { useState, useRef, useEffect } from 'react';
 import { apiGetInvestorInsights } from '../../lib/apiClient';
 import type { InvestorInsightsSection, InvestorInsightsGateResult } from '../../lib/apiClient';
@@ -1083,11 +1083,12 @@ function SectionCard({ section, darkMode }: { section: InvestorInsightsSection; 
 // ── Main component ───────────────────────────────────────────────────────────
 
 export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabProps) {
-  const { status, report, error, refresh, generate } = useInvestorInsights(dealId);
+  const { status, report, error, refresh, generate, isRunning, isStalled } =
+    useInvestorInsightsStatusSummary(dealId);
   const [generateState, setGenerateState] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
   const [generateError, setGenerateError] = useState<string | null>(null);
 
-  // Track mount status so the poll loop does not call setState after unmount.
+  // Track mount status so the post-generate poll loop does not call setState after unmount.
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -1139,6 +1140,13 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
 
   // Red failure banner: shown whenever the persisted report status is failed.
   const showGenerateFailedBanner = reportStatus === 'failed';
+
+  // Blue "analysis/report running" banner: shown when background polling detected an
+  // in-flight job that the user did NOT explicitly trigger from this session.
+  const showBackgroundRunningBanner = isRunning && generateState !== 'ok' && generateState !== 'loading';
+
+  // Amber stall banner: running but no activity for > 10 minutes.
+  const showStalledBanner = isStalled;
 
   // Amber evidence gate banner: shown when deterministic_only AND evidence gate explicitly failed.
   const evidenceGateFromPkg = report?.render_package?.evidence_gate ?? null;
@@ -1246,6 +1254,27 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
         </div>
       )}
 
+      {/* Background running banner — auto-polling detected an in-flight job */}
+      {showBackgroundRunningBanner && (
+        <div className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 ${darkMode ? 'bg-blue-500/10 border-blue-500/30' : 'bg-blue-50 border-blue-200'}`}>
+          <Loader2 className={`w-4 h-4 shrink-0 animate-spin ${darkMode ? 'text-blue-400' : 'text-blue-600'}`} />
+          <span className={`text-sm font-medium ${darkMode ? 'text-blue-200' : 'text-blue-800'}`}>Analysis running — checking for updates…</span>
+        </div>
+      )}
+
+      {/* Stall banner — running but no recent activity */}
+      {showStalledBanner && (
+        <div className={`flex items-start gap-3 rounded-xl border px-4 py-3 ${darkMode ? 'bg-amber-500/10 border-amber-500/30' : 'bg-amber-50 border-amber-200'}`}>
+          <AlertCircle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
+          <div>
+            <p className={`text-sm font-medium ${darkMode ? 'text-amber-200' : 'text-amber-800'}`}>Analysis may be stalled</p>
+            <p className={`text-xs mt-0.5 ${darkMode ? 'text-amber-300/80' : 'text-amber-700/70'}`}>
+              No activity detected for over 10 minutes. Try clicking Regenerate Report to restart.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Generate feedback */}
       {showQueuedBanner && (
         <div className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 ${darkMode ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-emerald-50 border-emerald-200'}`}>
@@ -1310,13 +1339,16 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
       {/* Report status badge + generate action for retriable states */}
       {status === 'ready' && report && report.status !== 'not_started' && (
         <div className="flex items-center gap-2 flex-wrap">
-          <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${
+          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${
             report.status === 'deterministic_only' || report.status === 'complete'
               ? (darkMode ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300' : 'bg-emerald-50 border-emerald-200 text-emerald-700')
               : report.status === 'failed'
               ? (darkMode ? 'bg-red-500/15 border-red-500/30 text-red-300' : 'bg-red-50 border-red-200 text-red-700')
-              : (darkMode ? 'bg-blue-500/15 border-blue-500/30 text-blue-300' : 'bg-blue-50 border-blue-200 text-blue-700')
+              : isRunning
+              ? (darkMode ? 'bg-blue-500/15 border-blue-500/30 text-blue-300' : 'bg-blue-50 border-blue-200 text-blue-700')
+              : (darkMode ? 'bg-white/10 border-white/20 text-gray-300' : 'bg-gray-50 border-gray-200 text-gray-700')
           }`}>
+            {isRunning && <Loader2 className="w-3 h-3 animate-spin" />}
             {report.status}
           </span>
           {report.engine_version && (

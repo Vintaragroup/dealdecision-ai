@@ -2103,6 +2103,34 @@ export type InvestorInsightsSection = {
   fallback?: string;
 };
 
+/**
+ * Normalised status summary returned alongside every GET /investor-insights response.
+ * Combines the latest analyze_deal job status with the investor_insight_reports row
+ * so the UI has a single authoritative source for display state.
+ */
+export type InvestorInsightsStatusSummary = {
+  /** Derived from the most recent analyze_deal job row. */
+  analysis_status: 'not_started' | 'running' | 'succeeded' | 'failed';
+  /** Derived from investor_insight_reports.status via mapReportRowStatus. */
+  report_status: 'not_started' | 'running' | 'deterministic_only' | 'ready' | 'succeeded' | 'failed';
+  /** true when a render_package row already exists — UI should render it even while work continues. */
+  has_existing_render_package: boolean;
+  /**
+   * Non-null only when the UI has NO fallback content to show.
+   * Null whenever has_existing_render_package is true.
+   */
+  blocking_reason: 'analysis_failed' | 'report_failed' | string | null;
+  /** ISO timestamp of the most recent activity across job and report rows. Used for stall detection. */
+  last_activity_at: string | null;
+  /** Present when the Evidence Gate v1 was evaluated. */
+  evidence_gate: {
+    passed: boolean;
+    blocking_reason: string | null;
+    coverage_pct: number;
+    evidence_count: number;
+  } | null;
+};
+
 export type InvestorInsightsReport = {
   status: string;
   engine_version?: string;
@@ -2145,6 +2173,11 @@ export type InvestorInsightsReport = {
     [key: string]: unknown;
   };
   updated_at?: string;
+  /**
+   * Normalised status summary — always present in API responses for this deal.
+   * Combines analyze_deal job state with investor_insight_reports row state.
+   */
+  status_summary?: InvestorInsightsStatusSummary;
 };
 
 export async function apiGetInvestorInsights(dealId: string): Promise<InvestorInsightsReport> {

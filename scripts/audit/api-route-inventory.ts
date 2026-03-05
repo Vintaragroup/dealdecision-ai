@@ -36,9 +36,16 @@ const OUT_DIR = path.join(REPO_ROOT, "docs/audits");
 
 // Route files that are actually imported in apps/api/src/index.ts (registration
 // order preserved — it matters for Fastify route resolution).
+// PR12: deals.ts was decomposed into deals/ sub-modules; sub-files listed here
+// in the exact registration order from deals/index.ts.
 const REGISTERED_FILES: readonly string[] = [
   "health.ts",
-  "deals.ts",
+  "deals/investor-insights.routes.ts",
+  "deals/deal-analysis.routes.ts",
+  "deals/deal-segments.routes.ts",
+  "deals/deal-ingestion.routes.ts",
+  "deals/deal-core.routes.ts",
+  "deals/deal-operations.routes.ts",
   "jobs.ts",
   "events.ts",
   "documents.ts",

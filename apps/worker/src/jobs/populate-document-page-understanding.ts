@@ -9,7 +9,7 @@ import { populateDocumentPageUnderstandingFromVisualExtractions } from "../lib/d
 import { promoteSlideFactsFromDocumentPageUnderstanding } from "../lib/promote-slide-facts";
 import { populatePageRegistryV1 } from "../lib/page-registry/populate-page-registry-v1";
 import { populateDealFactRegistryV1 } from "../lib/deal-facts/populate-deal-fact-registry-v1";
-import { populateFinancialFactRegistryV1 } from "../lib/financial-facts/populate-financial-fact-registry-v1";
+import { populateFinancialFactRegistryV1 } from "../lib/financial-fact-registry";
 import { shouldEmitXlsxFactsMissingGuardrail } from "../lib/visual-extraction";
 
 function parseFiniteInt(value: unknown): number | null {

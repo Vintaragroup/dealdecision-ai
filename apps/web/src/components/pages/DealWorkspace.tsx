@@ -33,6 +33,7 @@ import { selectAuthoritativeFinancialCoverageV1 } from '../../lib/selectors/sele
 import { selectAuthoritativeBurnV1 } from '../../lib/selectors/selectAuthoritativeBurnV1';
 import { selectAuthoritativeRunwayV1 } from '../../lib/selectors/selectAuthoritativeRunwayV1';
 import { selectDealWorkspaceOverviewModel } from '../../lib/selectors/selectDealWorkspaceOverviewModel';
+import { selectDeterministicOverviewSlotsV1 } from '../../lib/selectors/selectDeterministicOverviewSlotsV1';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
 import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealAnalysisDiagnostics, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness, type DealAnalysisDiagnosticsSnapshot } from '../../lib/apiClient';
 import { useGovernedLlmOverview } from '../../hooks/useGovernedLlmOverview';
@@ -2327,6 +2328,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const authoritativeProductTextV1 = authoritativeProductSummaryV1.value ?? '';
   const authoritativeMarketTextV1 = authoritativeMarketSummaryV1.value ?? '';
 
+  // PR22: deterministic Overview-tab fallback slots (from investor-insights render_package).
+  // Used as a last-resort fallback when authoritative governed/structured-summary values are absent.
+  const deterministicOverviewSlots = useMemo(() => {
+    return selectDeterministicOverviewSlotsV1(investorInsights.report ?? null);
+  }, [investorInsights.report]);
+
   const canonicalTiers = canonicalDealSummaryReady && (canonicalDealSummaryV1 as any)?.tiers && typeof (canonicalDealSummaryV1 as any).tiers === 'object'
     ? (canonicalDealSummaryV1 as any).tiers
     : null;
@@ -3465,9 +3472,30 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return null;
   })();
 
-  const overviewProductCanonical = authoritativeProductTextV1 || (canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : overviewProduct);
-  const overviewMarketIcpCanonical = authoritativeMarketTextV1 || (canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : overviewMarketIcp);
-  const overviewBusinessModelCanonical = authoritativeBusinessModel.value || (reportView.applied ? reportView.businessModel : overviewBusinessModel);
+  // PR22: deterministic slot fallbacks are injected before the '—' defaults so
+  // they activate only when both authoritative and phase1 DIO values are absent.
+  const _productBase = (canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : null)
+    ?? (overviewProduct !== '—' ? overviewProduct : null);
+  const _marketBase = (canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : null)
+    ?? (overviewMarketIcp !== '—' ? overviewMarketIcp : null);
+  const _businessModelBase = authoritativeBusinessModel.value
+    || (reportView.applied ? (reportView.businessModel !== '—' ? reportView.businessModel : null) : null)
+    || (overviewBusinessModel !== '—' ? overviewBusinessModel : null);
+
+  const overviewProductCanonical =
+    authoritativeProductTextV1
+    || _productBase
+    || deterministicOverviewSlots.product?.value
+    || overviewProduct;
+  const overviewMarketIcpCanonical =
+    authoritativeMarketTextV1
+    || _marketBase
+    || deterministicOverviewSlots.market?.value
+    || overviewMarketIcp;
+  const overviewBusinessModelCanonical =
+    _businessModelBase
+    || deterministicOverviewSlots.business_model?.value
+    || (reportView.applied ? reportView.businessModel : overviewBusinessModel);
   const overviewRaiseTermsCanonical = reportStructuredRaise || (reportView.applied ? reportView.raise : overviewRaiseTerms);
   const splitTierDeepToParagraphs = (raw: string): string[] => {
     const normalized = String(raw ?? '')

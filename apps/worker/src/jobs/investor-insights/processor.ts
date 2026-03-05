@@ -104,6 +104,7 @@ import {
 } from "./stages/recovery";
 import { type GovernedSkip } from "./stages/governed-skip";
 import { XLSX_DPU_USEFUL_HEURISTIC_VERSION } from "./stages/_shared";
+import { resolveOverviewFallbacksV1 } from "./stages/deterministic-slot-fallback-v1.js";
 
 // ─── Binding constants ─────────────────────────────────────────────────────────
 
@@ -119,6 +120,38 @@ export {
 	computeConfidenceCap,
 	buildInvestorThesisStubSection,
 } from "./stages/stage-2-deterministic";
+
+// ─── PR22: Deterministic overview slot helper ─────────────────────────────────
+
+/**
+ * Build the deterministic_overview_slots payload for the render_package.
+ *
+ * Strips the verbose `evidence` / `debug` arrays (worker-internal) from each
+ * slot before persisting so the render_package stays compact.
+ *
+ * Only called when DETERMINISTIC_SLOT_FALLBACK_V1=true.
+ */
+function buildDeterministicOverviewSlots(
+	dpuPages: DpuPage[]
+): RenderPackage["deterministic_overview_slots"] {
+	const raw = resolveOverviewFallbacksV1(dpuPages);
+	const toSlot = (
+		s: { value: string; confidence: number; provenance: "deterministic_fallback_v1" } | undefined
+	): { value: string; confidence: number; provenance: "deterministic_fallback_v1" } | undefined =>
+		s ? { value: s.value, confidence: s.confidence, provenance: s.provenance } : undefined;
+
+	const product = toSlot(raw.product);
+	const market = toSlot(raw.market);
+	const businessModel = toSlot(raw.business_model);
+
+	if (!product && !market && !businessModel) return undefined;
+
+	return {
+		...(product && { product }),
+		...(market && { market }),
+		...(businessModel && { business_model: businessModel }),
+	};
+}
 
 // ─── Main processor ───────────────────────────────────────────────────────────
 
@@ -275,6 +308,10 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			upstreamFingerprint: fallbackFp,
 			engineVersion,
 			sections,
+			// PR22: deterministic slot fallbacks (flag-gated)
+			deterministicOverviewSlots: process.env["DETERMINISTIC_SLOT_FALLBACK_V1"] === "true"
+				? buildDeterministicOverviewSlots(insightSlotInputs.dpuPages)
+				: undefined,
 		});
 
 		// Validate render package; log on failure but always persist (fail-closed)
@@ -492,6 +529,10 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			engineVersion,
 			sections,
 			evidenceGate,
+			// PR22: deterministic slot fallbacks (flag-gated)
+			deterministicOverviewSlots: process.env["DETERMINISTIC_SLOT_FALLBACK_V1"] === "true"
+				? buildDeterministicOverviewSlots(insightSlotInputs.dpuPages)
+				: undefined,
 		});
 
 		let validatedPkg = renderPackage;
@@ -687,6 +728,10 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		governedSkips: governedSkips.length > 0 ? governedSkips : undefined,
 		// WS-A PR20: include recovery metadata when applicable
 		recoveryMetadata,
+		// PR22: deterministic slot fallbacks (flag-gated)
+		deterministicOverviewSlots: process.env["DETERMINISTIC_SLOT_FALLBACK_V1"] === "true"
+			? buildDeterministicOverviewSlots(insightSlotInputs.dpuPages)
+			: undefined,
 	});
 
 	let validatedPkg = renderPackage;

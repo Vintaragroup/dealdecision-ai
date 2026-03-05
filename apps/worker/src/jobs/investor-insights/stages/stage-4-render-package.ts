@@ -37,6 +37,8 @@ export function buildRenderPackage(opts: {
 	governedSkips?: GovernedSkipRecord[];
 	/** WS-A PR20: recovery metadata; only present when mode="recover_structured_json". */
 	recoveryMetadata?: RenderPackage["recovery_metadata"];
+	/** PR22: deterministic Overview-tab slot fallbacks (optional, flag-gated). */
+	deterministicOverviewSlots?: RenderPackage["deterministic_overview_slots"];
 }): RenderPackage {
 	return {
 		render_version: "ui_contract_v1",
@@ -54,6 +56,7 @@ export function buildRenderPackage(opts: {
 		...(opts.evidenceGate !== undefined && { evidence_gate: opts.evidenceGate }),
 		...(opts.governedSkips !== undefined && opts.governedSkips.length > 0 && { governed_skips: opts.governedSkips }),
 		...(opts.recoveryMetadata !== undefined && { recovery_metadata: opts.recoveryMetadata }),
+		...(opts.deterministicOverviewSlots !== undefined && { deterministic_overview_slots: opts.deterministicOverviewSlots }),
 		no_empty_blocks: true,
 		audit_footer: {
 			stage: "stage_0",

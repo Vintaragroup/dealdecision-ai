@@ -140,6 +140,36 @@ export const RenderPackageSchema = z.object({
       reason_code: z.string().nullable(),
     })
     .optional(),
+
+  // PR22: deterministic Overview-tab slot fallbacks.
+  // Populated when DETERMINISTIC_SLOT_FALLBACK_V1=true and at least one
+  // slot was extractable from DPU pages.  Optional so pre-existing render
+  // packages without this field remain valid.
+  deterministic_overview_slots: z
+    .object({
+      product: z
+        .object({
+          value: z.string().min(1),
+          confidence: z.number().min(0).max(1),
+          provenance: z.literal("deterministic_fallback_v1"),
+        })
+        .optional(),
+      market: z
+        .object({
+          value: z.string().min(1),
+          confidence: z.number().min(0).max(1),
+          provenance: z.literal("deterministic_fallback_v1"),
+        })
+        .optional(),
+      business_model: z
+        .object({
+          value: z.string().min(1),
+          confidence: z.number().min(0).max(1),
+          provenance: z.literal("deterministic_fallback_v1"),
+        })
+        .optional(),
+    })
+    .optional(),
 });
 
 export type RenderPackage = z.infer<typeof RenderPackageSchema>;

@@ -2,7 +2,6 @@ import type { Job } from "bullmq";
 import { sanitizeText } from "@dealdecision/core";
 
 import { getPool } from "../lib/db";
-import { updateJobProgress } from "../lib/job-progress";
 import { enqueuePersistedJob } from "../lib/job-enqueue";
 import { makeJobId } from "../lib/job-id";
 import { populateDocumentPageUnderstandingFromVisualExtractions } from "../lib/document-page-understanding";
@@ -11,23 +10,7 @@ import { populatePageRegistryV1 } from "../lib/page-registry/populate-page-regis
 import { populateDealFactRegistryV1 } from "../lib/deal-facts/populate-deal-fact-registry-v1";
 import { populateFinancialFactRegistryV1 } from "../lib/financial-fact-registry";
 import { shouldEmitXlsxFactsMissingGuardrail } from "../lib/visual-extraction";
-
-function parseFiniteInt(value: unknown): number | null {
-	const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
-	if (!Number.isFinite(n)) return null;
-	return Math.floor(n);
-}
-
-async function updateJob(job: Job, status: "running" | "failed" | "succeeded", message?: string, progressPct?: number | null) {
-	await updateJobProgress(job, {
-		status: status as any,
-		stage: "status_update",
-		current: typeof progressPct === "number" ? progressPct : undefined,
-		total: typeof progressPct === "number" ? 100 : undefined,
-		message,
-		error: status === "failed" ? message ?? "failed" : undefined,
-	});
-}
+import { parseFiniteInt, updateJob } from "../lib/worker-utils";
 
 async function countVisualAssetsForRange(pool: ReturnType<typeof getPool>, args: { documentId: string; pageStart: number; pageEnd: number }) {
 	try {

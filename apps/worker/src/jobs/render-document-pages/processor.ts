@@ -28,24 +28,9 @@ import {
 import { shouldSkipExtractVisualsAfterRenderV1 } from "../../lib/render-followups";
 import { resolveWritableUploadDir } from "../../lib/upload-dir-resolver";
 import { computeAndPersistVisionRoutingV1 } from "../../lib/vision-routing";
+import { updateJob } from "../../lib/worker-utils";
 
 // ── Module-level helpers ─────────────────────────────────────────────────────
-
-async function updateJob(
-	job: Job,
-	status: "running" | "failed" | "succeeded",
-	message?: string,
-	progressPct?: number | null
-) {
-	await updateJobProgress(job, {
-		status: status as any,
-		stage: "status_update",
-		current: typeof progressPct === "number" ? progressPct : undefined,
-		total: typeof progressPct === "number" ? 100 : undefined,
-		message,
-		error: status === "failed" ? message ?? "failed" : undefined,
-	});
-}
 
 async function withTimeout<T>(
 	promise: Promise<T>,

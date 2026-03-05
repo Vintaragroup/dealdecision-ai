@@ -47,29 +47,11 @@ import { pickDownloadUrlFromExtractionMetadata } from "../../lib/original-file-u
 import { promoteVisualOcrToDocumentFullText } from "../../lib/visual-ocr-promoter";
 import { resolveWritableUploadDir } from "../../lib/upload-dir-resolver";
 import { computeAndPersistVisionRoutingV1 } from "../../lib/vision-routing";
+import { makeDevLogger, updateJob } from "../../lib/worker-utils";
 
 // ── Local helpers ──────────────────────────────────────────────────────────────
 
-const devLogEnabled = process.env.NODE_ENV !== "production" || process.env.DEBUG_WORKER_LOGS === "1";
-const devLog = (event: string, payload: Record<string, unknown>) => {
-	if (!devLogEnabled) return;
-	try {
-		console.log(JSON.stringify({ event, ...payload }));
-	} catch (err) {
-		console.warn(`[devLog] failed to stringify event=${event}: ${err instanceof Error ? err.message : String(err)}`);
-	}
-};
-
-async function updateJob(job: Job, status: JobStatus, message?: string, progressPct?: number | null) {
-	await updateJobProgress(job, {
-		status: status as any,
-		stage: "status_update",
-		current: typeof progressPct === "number" ? progressPct : undefined,
-		total: typeof progressPct === "number" ? 100 : undefined,
-		message,
-		error: status === "failed" ? message ?? "failed" : undefined,
-	});
-}
+const devLog = makeDevLogger();
 
 // ── Processor ─────────────────────────────────────────────────────────────────
 

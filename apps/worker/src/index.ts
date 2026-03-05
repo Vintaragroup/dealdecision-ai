@@ -114,6 +114,7 @@ import { exportReportPdfProcessor } from "./jobs/export-report-pdf/processor";
 import { maybeEnqueueAnalyzeDealGuarantee } from "./lib/analyze-deal-guarantee";
 import { renderDocumentPagesProcessor } from "./jobs/render-document-pages/processor";
 import { resolveWritableUploadDir } from "./lib/upload-dir-resolver";
+import { makeDevLogger, updateJob } from "./lib/worker-utils";
 
 // Deterministic startup instrumentation (must run at boot, before any queues are registered).
 (() => {
@@ -232,15 +233,7 @@ if (typeof (Promise as any).withResolvers !== "function") {
 	};
 }
 
-const devLogEnabled = process.env.NODE_ENV !== "production" || process.env.DEBUG_WORKER_LOGS === "1";
-const devLog = (event: string, payload: Record<string, unknown>) => {
-	if (!devLogEnabled) return;
-	try {
-		console.log(JSON.stringify({ event, ...payload }));
-	} catch (err) {
-		console.warn(`[devLog] failed to stringify event=${event}: ${err instanceof Error ? err.message : String(err)}`);
-	}
-};
+const devLog = makeDevLogger();
 
 /**
  * Extract full text from extracted content for full-text search indexing
@@ -799,17 +792,6 @@ function startHeartbeat(
 			clearInterval(timer);
 		},
 	};
-}
-
-async function updateJob(job: Job, status: JobStatus, message?: string, progressPct?: number | null) {
-	await updateJobProgress(job, {
-		status: status as any,
-		stage: "status_update",
-		current: typeof progressPct === "number" ? progressPct : undefined,
-		total: typeof progressPct === "number" ? 100 : undefined,
-		message,
-		error: status === "failed" ? message ?? "failed" : undefined,
-	});
 }
 
 async function failLatestIngestJob(documentId: string) {

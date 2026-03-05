@@ -188,7 +188,7 @@ describe("PR18 — buildXlsxCanonicalPatch output shapes", () => {
 
 	it("ok:false → status='failed', code and message forwarded", () => {
 		const result = buildXlsxCanonicalPatch({
-			result: { ok: false, code: "XLSX_WORKER_UNAVAILABLE", message: "service down" },
+			result: { ok: false, code: "XLSX_WORKER_UNAVAILABLE", message: "service down", retryable: false },
 			pagesPersisted: 0,
 			durationMs: BASE_DURATION,
 			updatedAt: BASE_UPDATED_AT,

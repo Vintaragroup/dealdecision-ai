@@ -161,7 +161,7 @@ describe("deepScanVisualsProcessor", () => {
 
 	// 4) Early-exit: vision service verification fails
 	it("throws VISION_UNAVAILABLE when vision service verification fails", async () => {
-		mocks.verifyVisionServiceForJob.mockResolvedValue({ ok: false, reason: "connection_refused" });
+		mocks.verifyVisionServiceForJob.mockResolvedValue({ ok: false, reason: "connection_refused" } as any);
 		await expect(
 			deepScanVisualsProcessor(makeJob({ deal_id: "deal-1" }))
 		).rejects.toThrow("VISION_UNAVAILABLE");
@@ -219,7 +219,7 @@ describe("deepScanVisualsProcessor", () => {
 
 	// 10) deal_id derived from DB when only document_ids provided
 	it("derives deal_id from DB when document_ids are provided without deal_id", async () => {
-		mocks.mockPoolQuery.mockResolvedValueOnce({ rows: [{ deal_id: "derived-deal" }] });
+		mocks.mockPoolQuery.mockResolvedValueOnce({ rows: [{ deal_id: "derived-deal" }] } as any);
 		const result = await deepScanVisualsProcessor(makeJob({ document_ids: ["doc-xyz"] }));
 		expect(result).not.toEqual(expect.objectContaining({ reason: "missing_deal_id" }));
 		expect(mocks.mockPoolQuery).toHaveBeenCalledWith(
@@ -230,7 +230,7 @@ describe("deepScanVisualsProcessor", () => {
 
 	// 11) VISION_SERVICE_VERIFICATION_FAILED event logged before throw
 	it("logs VISION_SERVICE_VERIFICATION_FAILED event before throwing", async () => {
-		mocks.verifyVisionServiceForJob.mockResolvedValue({ ok: false, reason: "timeout" });
+		mocks.verifyVisionServiceForJob.mockResolvedValue({ ok: false, reason: "timeout" } as any);
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		await expect(
 			deepScanVisualsProcessor(makeJob({ deal_id: "deal-1" }))

@@ -145,7 +145,7 @@ describe("PR17.6 stage split — _shared exports", () => {
 	});
 
 	it("buildComplianceState returns failed when error event present", () => {
-		const cs = buildComplianceState([{ severity: "error", code: "TEST", message: "fail" }]);
+		const cs = buildComplianceState([{ severity: "error", code: "TEST", message: "fail", at: "2026-01-01T00:00:00.000Z" }]);
 		expect(cs.status).toBe("failed");
 	});
 });
@@ -232,14 +232,15 @@ describe("PR17.6 stage split — stage-4 render package", () => {
 		expect(pkg.status).toBe("deterministic_only");
 		expect(pkg.engine_version).toBe("v1");
 		expect(pkg.no_empty_blocks).toBe(true);
-		expect(pkg.audit_footer.stage).toBe("stage_0");
+		expect(pkg.audit_footer!.stage).toBe("stage_0");
 	});
 
 	it("buildRenderPackage includes evidence_gate when provided", () => {
 		const eg = {
 			passed: false,
 			blocking_reason: "LOW_COVERAGE",
-			metrics: { coverage_ratio: 0.1, evidence_count: 0, docs_count: 1, expected_pages_total: 10, dpu_nonempty_pages: 1 },
+			results: [] as any[],
+			metrics: { coverage_pct: 0.1, evidence_count: 0, docs_count: 1, expected_pages_total: 10, hard_missing_pages_total: null },
 		};
 		const pkg = buildRenderPackage({
 			dealId: "00000000-0000-0000-0000-000000000001",

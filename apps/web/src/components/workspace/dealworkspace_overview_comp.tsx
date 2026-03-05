@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { ChevronDown, Package, Users, DollarSign, TrendingUp, Shield, ArrowRight, AlertCircle, Lightbulb } from 'lucide-react';
 import type { EvidenceResolveResult } from '../../lib/apiClient';
-import { deriveGatingState, shouldSuppressNeedsReview, shouldSuppressNoCitation, getGatedLabel } from '../../lib/badgePolicy';
+import { deriveGatingState, shouldSuppressNoCitation, computeSlotChipPolicy } from '../../lib/badgePolicy';
 
 type FieldEvidenceRef = {
   source_document_id: string;
@@ -196,8 +196,11 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
       reportStatus: props.investorInsightsStatus,
       evidenceGate: props.reportEvidenceGate,
     });
-    const showNeedsReview = Boolean(prov.needsReview) && !shouldSuppressNeedsReview(gating);
-    const gatedLabel = getGatedLabel(gating);
+    const { showNeedsReview, showGatedChip, gatedLabel } = computeSlotChipPolicy({
+      gating,
+      source: prov.source,
+      needsReview: prov.needsReview,
+    });
 
     const chipClassName = (kind: 'deterministic' | 'governed' | 'missing' | 'needs_review' | 'gated') => {
       if (kind === 'needs_review') {
@@ -235,7 +238,7 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
         {showNeedsReview ? (
           <span className={`${badgeBaseClassName} ${chipClassName('needs_review')}`}>Needs review</span>
         ) : null}
-        {gatedLabel && !showNeedsReview ? (
+        {showGatedChip ? (
           <span className={`${badgeBaseClassName} ${chipClassName('gated')}`}>{gatedLabel}</span>
         ) : null}
       </span>

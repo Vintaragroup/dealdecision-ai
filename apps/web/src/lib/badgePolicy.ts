@@ -111,3 +111,31 @@ export function getGatedLabel(gating: BadgePolicyGatingState): string | null {
   }
   return null;
 }
+
+// ── Slot chip policy ──────────────────────────────────────────────────────────
+
+/**
+ * Computes chip visibility for a single Overview slot given gating state and
+ * the provenance of the resolved value.
+ *
+ * Extracted from `renderProvenanceChips` so it can be unit-tested in isolation.
+ *
+ * ### "Not generated (gated)" suppression rule (PR23)
+ * The gated chip is suppressed whenever the slot has actual content
+ * (`source !== 'missing'`).  When the PR22 deterministic fallback fills the
+ * slot, `source` is `'deterministic'` — rendering the gated chip alongside
+ * "Authoritative (deterministic)" would be incorrect.  The chip is only
+ * meaningful when the slot is genuinely empty AND the engine was gate-blocked.
+ */
+export function computeSlotChipPolicy(opts: {
+  gating: BadgePolicyGatingState;
+  source: 'deterministic' | 'governed' | 'missing';
+  needsReview?: boolean;
+}): { showNeedsReview: boolean; showGatedChip: boolean; gatedLabel: string | null } {
+  const gatedLabel = getGatedLabel(opts.gating);
+  const showNeedsReview = Boolean(opts.needsReview) && !shouldSuppressNeedsReview(opts.gating);
+  // "Not generated (gated)" is only correct when the slot is truly empty.
+  // Suppress it whenever deterministic or governed content is present.
+  const showGatedChip = Boolean(gatedLabel) && !showNeedsReview && opts.source === 'missing';
+  return { showNeedsReview, showGatedChip, gatedLabel };
+}

@@ -93,6 +93,18 @@ export interface CoverageSnapshot {
 	visualsCount: number;
 	/** Names of sub-queries that were rejected via Promise.allSettled. Empty = all succeeded. */
 	coverageQueryErrors: string[];
+	/**
+	 * WS-C PR20: XLSX pages that lack meaningful page_text but contain structured
+	 * row data (page_type="excel_range" AND payload.rows array present).
+	 *
+	 * These are undercounted by the standard dpu_nonempty_pages metric because the
+	 * text extraction pipeline produces empty strings from XLSX cells.  Adding
+	 * xlsxBonusPages to dpu_nonempty_pages before the evidence gate E2 check gives
+	 * a more accurate coverage estimate for XLSX-heavy deals.
+	 *
+	 * Defaults to 0 when the sub-query fails (fail-open, non-blocking).
+	 */
+	xlsxBonusPages: number;
 }
 
 // ─── DPU / slot input types ───────────────────────────────────────────────────
@@ -123,3 +135,50 @@ export interface DpuDiagnostics {
 	errorMessage?: string;
 	errorCode?: string;
 }
+
+// ─── WS-C PR20: XLSX page usefulness heuristic ───────────────────────────────
+
+/**
+ * Heuristic version tag — increment when the rule set changes so log events
+ * and test assertions can pin to a specific behaviour.
+ */
+export const XLSX_DPU_USEFUL_HEURISTIC_VERSION = "v1" as const;
+
+/**
+ * Determine whether an XLSX (excel_range) DPU page should be counted as
+ * "useful" for the purposes of the evidence-gate E2 coverage check.
+ *
+ * Standard page_text non-empty check tends to under-count XLSX pages because
+ * the extraction pipeline often produces an empty string even when the page
+ * contains structured financial data.
+ *
+ * A page is counted as useful when ANY of the following hold:
+ *   1. page_text length >= 80 characters.
+ *   2. page_text contains >= 3 numeric KPI-like tokens (digits, optionally
+ *      prefixed/suffixed with $, %, commas, dots, or K/M/B).
+ *
+ * This function is the canonical definition; the SQL query in
+ * loadCoverageSnapshot uses a simplified approximation (condition 1 only via
+ * character-count, plus `payload->'rows'` presence) to avoid per-row text
+ * scanning at the DB layer.  Unit tests validate both agree on the common cases.
+ *
+ * @param page_text  The page_text string from document_page_understanding.payload.
+ * @param page_type  The page_type value; this heuristic only applies to 'excel_range'.
+ */
+export function isXlsxPageUseful(page_text: string, page_type: string): boolean {
+	if (page_type !== "excel_range") {
+		// Non-XLSX pages: standard non-empty check.
+		return page_text.trim().length > 0;
+	}
+
+	// Condition 1: at least 80 chars of text.
+	if (page_text.length >= 80) return true;
+
+	// Condition 2: >= 3 numeric KPI-like tokens.
+	const numericTokenPattern = /(?<!\S)[\$£€]?[\d,]+(?:\.\d+)?[%KMBkmb]?(?!\S)/g;
+	const matches = page_text.match(numericTokenPattern) ?? [];
+	if (matches.length >= 3) return true;
+
+	return false;
+}
+

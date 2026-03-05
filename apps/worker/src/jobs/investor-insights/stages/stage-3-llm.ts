@@ -39,6 +39,11 @@ import {
 	buildProductNarrativeBody,
 } from "./stage-2-deterministic";
 import type { GateState } from "../../../contracts/investor-insights/schemas";
+import {
+	recordGovernedSkip,
+	productProfileReasonToSkipCode,
+	type GovernedSkip,
+} from "./governed-skip";
 
 export async function buildGovernedSummarySection(
 	inputs: InsightSlotInputs,
@@ -46,7 +51,8 @@ export async function buildGovernedSummarySection(
 	engineVersion: string,
 	governanceVersion: string,
 	dealName?: string,
-	productNarrativeBody?: string
+	productNarrativeBody?: string,
+	opts?: { governedSkips?: GovernedSkip[]; deal_id?: string; report_id?: string }
 ): Promise<{ section: RenderPackage["sections"][number]; record: GovernedSummaryRecord } | null> {
 	try {
 		const phase2Result = extractPhase2Result(inputs);
@@ -101,6 +107,22 @@ export async function buildGovernedSummarySection(
 						unknown_tokens: record.unknown_tokens,
 					})
 				);
+				recordGovernedSkip({
+					stage: "governed_summary_v1",
+					reason_code: "validation_failed",
+					deal_id: opts?.deal_id,
+					report_id: opts?.report_id,
+					governedSkips: opts?.governedSkips,
+				});
+			} else {
+				// record is null — LLM resolver returned nothing (cache miss + LLM unavailable)
+				recordGovernedSkip({
+					stage: "governed_summary_v1",
+					reason_code: "unknown",
+					deal_id: opts?.deal_id,
+					report_id: opts?.report_id,
+					governedSkips: opts?.governedSkips,
+				});
 			}
 			return null;
 		}
@@ -156,6 +178,13 @@ export async function buildGovernedSummarySection(
 				error: err instanceof Error ? err.message : String(err),
 			})
 		);
+		recordGovernedSkip({
+			stage: "governed_summary_v1",
+			reason_code: "unknown",
+			deal_id: opts?.deal_id,
+			report_id: opts?.report_id,
+			governedSkips: opts?.governedSkips,
+		});
 		return null;
 	}
 }
@@ -178,7 +207,8 @@ export async function buildGovernedExecutiveSummarySection(
 	engineVersion: string,
 	governanceVersion: string,
 	dealName?: string,
-	productNarrativeBody?: string
+	productNarrativeBody?: string,
+	opts?: { governedSkips?: GovernedSkip[]; deal_id?: string; report_id?: string }
 ): Promise<{
 	section: RenderPackage["sections"][number];
 	record: GovernedExecutiveSummaryRecord;
@@ -244,6 +274,13 @@ export async function buildGovernedExecutiveSummarySection(
 		});
 
 		if (!record) {
+			recordGovernedSkip({
+				stage: "governed_executive_summary_v1",
+				reason_code: "unknown",
+				deal_id: opts?.deal_id,
+				report_id: opts?.report_id,
+				governedSkips: opts?.governedSkips,
+			});
 			return null;
 		}
 
@@ -261,6 +298,13 @@ export async function buildGovernedExecutiveSummarySection(
 			// When content IS present (soft parity failure), fall through and emit
 			// the section with validated=false so the job is not blocked.
 			if (!hasSummaryContent) {
+				recordGovernedSkip({
+					stage: "governed_executive_summary_v1",
+					reason_code: "validation_failed",
+					deal_id: opts?.deal_id,
+					report_id: opts?.report_id,
+					governedSkips: opts?.governedSkips,
+				});
 				return null;
 			}
 		}
@@ -294,6 +338,13 @@ export async function buildGovernedExecutiveSummarySection(
 				error: err instanceof Error ? err.message : String(err),
 			})
 		);
+		recordGovernedSkip({
+			stage: "governed_executive_summary_v1",
+			reason_code: "unknown",
+			deal_id: opts?.deal_id,
+			report_id: opts?.report_id,
+			governedSkips: opts?.governedSkips,
+		});
 		return null;
 	}
 }
@@ -308,7 +359,8 @@ export async function buildGovernedExecutiveSummarySection(
 export async function buildProductProfileSection(
 	inputs: InsightSlotInputs,
 	canonicalFieldsBody: string | null,
-	dealName?: string
+	dealName?: string,
+	opts?: { governedSkips?: GovernedSkip[]; deal_id?: string; report_id?: string }
 ): Promise<RenderPackage["sections"][number] | null> {
 	try {
 		const productNarrativeBody = buildProductNarrativeBody(inputs);
@@ -333,6 +385,13 @@ export async function buildProductProfileSection(
 					reason: result.reason,
 				})
 			);
+			recordGovernedSkip({
+				stage: "product_profile_v1",
+				reason_code: productProfileReasonToSkipCode(result.reason),
+				deal_id: opts?.deal_id,
+				report_id: opts?.report_id,
+				governedSkips: opts?.governedSkips,
+			});
 			return null;
 		}
 
@@ -360,6 +419,13 @@ export async function buildProductProfileSection(
 				error: err instanceof Error ? err.message : String(err),
 			})
 		);
+		recordGovernedSkip({
+			stage: "product_profile_v1",
+			reason_code: "unknown",
+			deal_id: opts?.deal_id,
+			report_id: opts?.report_id,
+			governedSkips: opts?.governedSkips,
+		});
 		return null;
 	}
 }

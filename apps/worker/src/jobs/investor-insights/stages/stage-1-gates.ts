@@ -52,6 +52,7 @@ export function buildCoverageSnapshotSection(
 		`docs_count: ${coverage.docsCount}`,
 		`dpu_page_count: ${coverage.dpuPageCount}`,
 		`dpu_nonempty_pages: ${coverage.dpuNonemptyPages}`,
+		`xlsx_bonus_pages: ${coverage.xlsxBonusPages}`,
 		`evidence_count: ${coverage.evidenceCount}`,
 		`visuals_count: ${coverage.visualsCount}`,
 		`structured_json_available: ${structuredJsonAvailable}`,

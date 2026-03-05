@@ -98,6 +98,12 @@ import {
 	buildRenderPackage,
 	persistReport,
 } from "./stages/stage-4-render-package";
+import {
+	classifyDeterministicOnlyRecoverable,
+	buildRecoveryMetadata,
+} from "./stages/recovery";
+import { type GovernedSkip } from "./stages/governed-skip";
+import { XLSX_DPU_USEFUL_HEURISTIC_VERSION } from "./stages/_shared";
 
 // ─── Binding constants ─────────────────────────────────────────────────────────
 
@@ -136,6 +142,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		engine_version: engineVersion,
 		force_recompute: forceRecompute = false,
 		triggered_by: triggeredBy,
+		mode,
 	} = parsed;
 
 	console.log(
@@ -145,6 +152,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			engine_version: engineVersion,
 			force_recompute: forceRecompute,
 			triggered_by: triggeredBy ?? null,
+			mode,
 			ts: new Date().toISOString(),
 		})
 	);
@@ -205,6 +213,23 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				ts: new Date().toISOString(),
 			})
 		);
+
+		// WS-A PR20: classify recovery eligibility when G3 soft-failed and emit
+		// a stable observability event so external monitors can trigger recovery.
+		if (g3OnlyFail) {
+			const recovery = classifyDeterministicOnlyRecoverable(gateState);
+			console.log(
+				JSON.stringify({
+					event: "DETERMINISTIC_ONLY_RECOVERY_ELIGIBLE",
+					deal_id: dealId,
+					engine_version: engineVersion,
+					recoverable: recovery.recoverable,
+					reason_code: recovery.reason_code,
+					gate: recovery.gate,
+					ts: new Date().toISOString(),
+				})
+			);
+		}
 
 		const fallbackFp = buildFallbackFingerprint(dealId, engineVersion);
 		const [coverage, insightSlotInputs, previousFusedFacts] = await Promise.all([
@@ -397,11 +422,30 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	// ── 6a. Load coverage metrics for Evidence Gate evaluation ────────────────
 	const coverage = await loadCoverageSnapshot(pool, dealId);
 
-	// ── 6b. Compute Evidence Gate v1 (deterministic quality check) ────────────
+	// WS-C PR20: emit XLSX_DPU_USEFUL_PAGES when XLSX bonus pages were found so
+	// that the adjustment is visible in logs alongside the evidence gate metrics.
+	if (coverage.xlsxBonusPages > 0) {
+		console.log(
+			JSON.stringify({
+				event: "XLSX_DPU_USEFUL_PAGES",
+				deal_id: dealId,
+				pages_total: coverage.dpuPageCount,
+				useful_pages: coverage.xlsxBonusPages,
+				dpu_nonempty_pages_base: coverage.dpuNonemptyPages,
+				dpu_nonempty_pages_adjusted: coverage.dpuNonemptyPages + coverage.xlsxBonusPages,
+				heuristic_version: XLSX_DPU_USEFUL_HEURISTIC_VERSION,
+				ts: new Date().toISOString(),
+			})
+		);
+	}
+
+	// ── 6b. Compute Evidence Gate v1 (deterministic quality check) ────────
 	const evidenceGate = computeEvidenceGateV1({
 		docs_count: coverage.docsCount,
 		expected_pages_total: coverage.dpuPageCount,
-		dpu_nonempty_pages: coverage.dpuNonemptyPages,
+		// WS-C PR20: add xlsx bonus pages so XLSX-heavy deals are not penalised
+		// by the E2 coverage check when page_text is empty but rows data exists.
+		dpu_nonempty_pages: coverage.dpuNonemptyPages + coverage.xlsxBonusPages,
 		evidence_count: coverage.evidenceCount,
 	});
 
@@ -568,13 +612,20 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	);
 	const fusionSection = buildDealFusionSection(fusionResult);
 	const productNarrativeBody = buildProductNarrativeBody(insightSlotInputs);
+
+	// WS-B PR20: mutable array to collect governed-stage skip events from all
+	// three LLM builders.  Passed via opts and populated by recordGovernedSkip.
+	const governedSkips: GovernedSkip[] = [];
+	const llmOpts = { governedSkips, deal_id: dealId };
+
 	const governedResult = await buildGovernedSummarySection(
 		insightSlotInputs,
 		previousGovernedSummary,
 		engineVersion,
 		VERSION_PINS.governance_version,
 		dealName ?? undefined,
-		productNarrativeBody ?? undefined
+		productNarrativeBody ?? undefined,
+		llmOpts
 	);
 	const governedExecResult = await buildGovernedExecutiveSummarySection(
 		insightSlotInputs,
@@ -584,7 +635,8 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		engineVersion,
 		VERSION_PINS.governance_version,
 		dealName ?? undefined,
-		productNarrativeBody ?? undefined
+		productNarrativeBody ?? undefined,
+		llmOpts
 	);
 	// Compute canonical fields body for product profile (same source as governed summaries)
 	const phase2ForProfile = extractPhase2Result(insightSlotInputs);
@@ -594,7 +646,8 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	const productProfileSection = await buildProductProfileSection(
 		insightSlotInputs,
 		canonicalFieldsBodyForProfile,
-		dealName ?? undefined
+		dealName ?? undefined,
+		llmOpts
 	);
 	const sections = buildDeterministicOnlySections(gateState, coverage, insightSlotsSections, phase2Sections, thesisSection, normMetricsFromInputs(insightSlotInputs));
 	if (governedResult) {
@@ -612,6 +665,15 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		sections.push(productProfileSection);
 	}
 	sections.push(fusionSection);
+
+	// WS-A PR20: build recovery metadata when mode="recover_structured_json".
+	const recoveryMetadata = mode === "recover_structured_json"
+		? buildRecoveryMetadata({
+				reason_code: classifyDeterministicOnlyRecoverable(gateState).reason_code,
+				result: "succeeded",
+		  })
+		: undefined;
+
 	const renderPackage = buildRenderPackage({
 		dealId,
 		status: "deterministic_only",
@@ -621,6 +683,10 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		engineVersion,
 		sections,
 		evidenceGate,
+		// WS-B PR20: include governed_skips when any LLM stage was skipped
+		governedSkips: governedSkips.length > 0 ? governedSkips : undefined,
+		// WS-A PR20: include recovery metadata when applicable
+		recoveryMetadata,
 	});
 
 	let validatedPkg = renderPackage;

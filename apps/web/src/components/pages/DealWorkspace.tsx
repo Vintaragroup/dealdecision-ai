@@ -44,6 +44,7 @@ import { derivePhaseBInsights } from '../../lib/phaseb-findings';
 import { buildOverlayViewModel } from '../../lib/overlay/overlayViewModel';
 import { buildWorkspaceMirrorOverviewVM } from '../../lib/workspaceMirrorPr2ViewModel';
 import { deterministicIsDisplayable } from '../../lib/deterministicDisplayPolicy';
+import { deriveGatingState, shouldSuppressNeedsReview } from '../../lib/badgePolicy';
 import { useAsyncStaleGuard } from '../../lib/hooks/useAsyncStaleGuard';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { useScoreSource } from '../../contexts/ScoreSourceContext';
@@ -3771,6 +3772,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const ovMissing = workspaceMirrorVM.missing;
     const ovFacts = ovMissing ? null : (workspaceMirrorVM.facts as any);
 
+    // Derive report gating state for badge suppression.
+    // When the evidence gate blocked LLM stages from running, "Needs review"
+    // is misleading — there is nothing governed to review.
+    const reportGating = deriveGatingState({
+      reportStatus: investorInsights.report?.status,
+      evidenceGate:
+        investorInsights.report?.status_summary?.evidence_gate ??
+        investorInsights.report?.render_package?.evidence_gate,
+    });
+    const suppressNeedsReview = shouldSuppressNeedsReview(reportGating);
+
     const asClean = (v: unknown): string => {
       const s = typeof v === 'string' ? v.trim() : '';
       return s && s !== '—' ? s : '';
@@ -3788,12 +3800,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       const detVal = asClean(opts.deterministic);
       if (opts.preferDeterministic) {
         if (detVal) return { value: detVal, provenance: { source: 'deterministic' }, fromOverlay: false };
-        if (overlayVal) return { value: overlayVal, provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' }, fromOverlay: true };
+        if (overlayVal) return { value: overlayVal, provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' && !suppressNeedsReview }, fromOverlay: true };
         return { value: keyFactMissingText, provenance: { source: 'missing' }, fromOverlay: false };
       }
 
       if (overlayVal && overlaySource === 'governed') {
-        return { value: overlayVal, provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' }, fromOverlay: true };
+        return { value: overlayVal, provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' && !suppressNeedsReview }, fromOverlay: true };
       }
       const detDisplayable = detVal ? deterministicIsDisplayable(detVal) : false;
 
@@ -3804,7 +3816,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
       if (overlayVal) {
         // Overlay phrasing is preferred when deterministic looks like OCR soup / slide dump.
-        return { value: overlayVal, provenance: { source: 'deterministic', needsReview: overlayQuality === 'fallback' }, fromOverlay: true };
+        return { value: overlayVal, provenance: { source: 'deterministic', needsReview: overlayQuality === 'fallback' && !suppressNeedsReview }, fromOverlay: true };
       }
 
       // If deterministic is present but not display-safe and there's no overlay, fall back to deterministic anyway.
@@ -3839,7 +3851,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     });
 
     return { product, market, businessModel, raise };
-  }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, authoritativeProductTextV1, authoritativeMarketTextV1]);
+  }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, authoritativeProductTextV1, authoritativeMarketTextV1, investorInsights.report]);
 
   const lastWorkspaceSourcesLogRef = useRef<string | null>(null);
   useEffect(() => {
@@ -7945,6 +7957,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                           onViewFullAnalysis={() => setActiveTab('evidence')}
                           onOpenInvestorInsights={() => setActiveTab('investor-insights')}
                           investorInsightsStatus={investorInsights.status === 'error' ? undefined : (investorInsights.report?.status ?? undefined)}
+                          reportEvidenceGate={investorInsights.status === 'error' ? null : (investorInsights.report?.status_summary?.evidence_gate ?? investorInsights.report?.render_package?.evidence_gate ?? null)}
                         />
                       </div>
                     ) : null}
@@ -8084,6 +8097,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         onViewFullAnalysis={() => setActiveTab('evidence')}
                         onOpenInvestorInsights={() => setActiveTab('investor-insights')}
                         investorInsightsStatus={investorInsights.status === 'error' ? undefined : (investorInsights.report?.status ?? undefined)}
+                        reportEvidenceGate={investorInsights.status === 'error' ? null : (investorInsights.report?.status_summary?.evidence_gate ?? investorInsights.report?.render_package?.evidence_gate ?? null)}
                       />
 
                       <div className="mt-6">

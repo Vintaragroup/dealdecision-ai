@@ -86,6 +86,7 @@ export async function loadCoverageSnapshot(pool: Pool, dealId: string): Promise<
 	let dpuNonemptyPages = 0;
 	let evidenceCount = 0;
 	let visualsCount = 0;
+	let xlsxBonusPages = 0;
 
 	// Label each sub-query so failures are identifiable in the output section.
 	const queries: Array<[string, Promise<void>]> = [
@@ -141,6 +142,34 @@ export async function loadCoverageSnapshot(pool: Pool, dealId: string): Promise<
 					visualsCount = Number(rows[0]?.c ?? 0);
 				}),
 		],
+		[
+			// WS-C PR20: XLSX pages that have structured row data but empty/short page_text.
+			// These are missed by the standard non-empty page_text check but contain real
+			// financial data — counting them prevents spurious E2 gate failures on
+			// XLSX-heavy deals.
+			//
+			// Heuristic (SQL approximation of isXlsxPageUseful v1):
+			//   page_type = 'excel_range'      (XLSX-derived page)
+			//   AND length(page_text) < 80     (would fail the text-length check)
+			//   AND payload->'rows' IS NOT NULL (has structured data)
+			//
+			// The TypeScript-level isXlsxPageUseful function in _shared.ts is the
+			// canonical definition; this SQL is a safe approximation for the DB layer.
+			"xlsx_bonus_pages",
+			pool
+				.query<{ c: string }>(
+					`SELECT COUNT(*)::bigint AS c
+					   FROM public.document_page_understanding
+					  WHERE deal_id = $1::uuid
+					    AND payload->>'page_type' = 'excel_range'
+					    AND COALESCE(length(payload->>'page_text'), 0) < 80
+					    AND jsonb_typeof(payload->'rows') = 'array'`,
+					[dealId]
+				)
+				.then(({ rows }) => {
+					xlsxBonusPages = Number(rows[0]?.c ?? 0);
+				}),
+		],
 	];
 
 	const results = await Promise.allSettled(queries.map(([, p]) => p));
@@ -148,7 +177,7 @@ export async function loadCoverageSnapshot(pool: Pool, dealId: string): Promise<
 		.map((r, i) => (r.status === "rejected" ? queries[i]![0] : null))
 		.filter((label): label is string => label !== null);
 
-	return { docsCount, dpuPageCount, dpuNonemptyPages, evidenceCount, visualsCount, coverageQueryErrors };
+	return { docsCount, dpuPageCount, dpuNonemptyPages, evidenceCount, visualsCount, coverageQueryErrors, xlsxBonusPages };
 }
 
 // ─── Deal name loader ─────────────────────────────────────────────────────────

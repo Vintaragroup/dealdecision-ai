@@ -14,6 +14,7 @@ import type {
 	ComplianceState,
 	RenderPackage,
 	EvidenceGateState,
+	GovernedSkipRecord,
 } from "../../../contracts/investor-insights/schemas";
 import type { FusedFact } from "../deal-fusion";
 import type { FinancialFactsV1 } from "../../../lib/financial-facts-v1.js";
@@ -32,6 +33,10 @@ export function buildRenderPackage(opts: {
 	engineVersion: string;
 	sections: RenderPackage["sections"];
 	evidenceGate?: EvidenceGateState;
+	/** WS-B PR20: governed-skip records; omitted when all LLM stages completed. */
+	governedSkips?: GovernedSkipRecord[];
+	/** WS-A PR20: recovery metadata; only present when mode="recover_structured_json". */
+	recoveryMetadata?: RenderPackage["recovery_metadata"];
 }): RenderPackage {
 	return {
 		render_version: "ui_contract_v1",
@@ -47,6 +52,8 @@ export function buildRenderPackage(opts: {
 		compliance_state: opts.complianceState,
 		sections: opts.sections,
 		...(opts.evidenceGate !== undefined && { evidence_gate: opts.evidenceGate }),
+		...(opts.governedSkips !== undefined && opts.governedSkips.length > 0 && { governed_skips: opts.governedSkips }),
+		...(opts.recoveryMetadata !== undefined && { recovery_metadata: opts.recoveryMetadata }),
 		no_empty_blocks: true,
 		audit_footer: {
 			stage: "stage_0",

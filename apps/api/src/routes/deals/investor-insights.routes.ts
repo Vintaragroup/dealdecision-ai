@@ -308,7 +308,56 @@ export async function registerInvestorInsightsRoutes(
     return reply.status(202).send({ ok: true, deal_id: dealId, enqueued: true });
   });
 
-  // ── AI Analysis Tab: Deal Terms Synthesis ─────────────────────────────────
+  // ── Investor Insight Engine: structured-JSON recovery endpoint ─────────────
+  //
+  // POST /api/v1/deals/:deal_id/investor-insights/recover
+  //
+  // Triggers a structured-JSON-only retry for a deal whose most recent report
+  // is in deterministic_only status due to a recoverable G3 gate failure
+  // (GATE_STRUCTURED_JSON_MISSING, _PARSE_FAILED, or _SCHEMA_MISMATCH).
+  //
+  // Passes mode="recover_structured_json" to the worker processor so a
+  // DETERMINISTIC_ONLY_RECOVERY_* event trail is emitted and recovery metadata
+  // is persisted in render_package.recovery_metadata.
+  //
+  // Returns:
+  //   202 { ok: true, deal_id, enqueued: true }               — recovery queued
+  //   400 { error: "invalid_deal_id" }                        — bad UUID
+  //   500 { error: "enqueue_failed" }                         — BullMQ error
+  //
+  // Note: does NOT run a DPU preflight — recovery is specifically for structural
+  // JSON readability failures that are unrelated to DPU coverage.
+  app.post("/api/v1/deals/:deal_id/investor-insights/recover", async (request, reply) => {
+    const rawDealId = (request.params as { deal_id: string }).deal_id;
+    const parsed = z.object({ deal_id: z.string().uuid() }).safeParse({ deal_id: rawDealId });
+    if (!parsed.success) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+    const dealId = parsed.data.deal_id;
+
+    // Unique per-request jobId so each recovery attempt is individually tracked.
+    const jobId = `investor_insights__${dealId}__v1__recover__${Date.now()}`;
+
+    const insightsQueue = deps?.investorInsightsQueue ?? (getQueues().investorInsightsQueue as any);
+    try {
+      await insightsQueue.add(
+        "generate_investor_insights",
+        {
+          deal_id: dealId,
+          engine_version: "v1",
+          triggered_by: "manual_recover",
+          force_recompute: true,
+          mode: "recover_structured_json",
+        },
+        { jobId, removeOnComplete: true, removeOnFail: false, attempts: 3, backoff: { type: "exponential", delay: 1000 } }
+      );
+    } catch (err) {
+      console.error("[investor-insights] recover_enqueue_failed", { dealId, err: err instanceof Error ? err.message : String(err) });
+      return reply.status(500).send({ error: "enqueue_failed" });
+    }
+
+    return reply.status(202).send({ ok: true, deal_id: dealId, enqueued: true });
+  });
   // POST /api/v1/deals/:deal_id/analysis/deal-terms
   //
   // Lightweight LLM synthesis endpoint used EXCLUSIVELY by the AI Analysis Tab

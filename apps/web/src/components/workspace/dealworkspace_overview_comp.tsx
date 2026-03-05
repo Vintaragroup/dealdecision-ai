@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { ChevronDown, Package, Users, DollarSign, TrendingUp, Shield, ArrowRight, AlertCircle, Lightbulb } from 'lucide-react';
 import type { EvidenceResolveResult } from '../../lib/apiClient';
+import { deriveGatingState, shouldSuppressNeedsReview, shouldSuppressNoCitation, getGatedLabel } from '../../lib/badgePolicy';
 
 type FieldEvidenceRef = {
   source_document_id: string;
@@ -89,6 +90,13 @@ export type DealWorkspaceOverviewCompProps = {
   onOpenInvestorInsights?: () => void;
   /** Latest status from investor_insight_reports, if available. */
   investorInsightsStatus?: string;
+  /**
+   * Evidence gate result from the investor insights engine.
+   * Used to suppress misleading "Needs review" and "No explicit citation" badges
+   * when the engine was gated and never generated governed content.
+   * Accepts either status_summary.evidence_gate or render_package.evidence_gate.
+   */
+  reportEvidenceGate?: { passed: boolean; blocking_reason: string | null } | null;
 };
 
 export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps) {
@@ -183,11 +191,25 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
   const renderProvenanceChips = (prov?: { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean }) => {
     if (!prov) return null;
 
-    const chipClassName = (kind: 'deterministic' | 'governed' | 'missing' | 'needs_review') => {
+    // Derive badge suppression from report gating state.
+    const gating = deriveGatingState({
+      reportStatus: props.investorInsightsStatus,
+      evidenceGate: props.reportEvidenceGate,
+    });
+    const showNeedsReview = Boolean(prov.needsReview) && !shouldSuppressNeedsReview(gating);
+    const gatedLabel = getGatedLabel(gating);
+
+    const chipClassName = (kind: 'deterministic' | 'governed' | 'missing' | 'needs_review' | 'gated') => {
       if (kind === 'needs_review') {
         return props.darkMode
           ? 'bg-amber-500/10 text-amber-200 border-amber-500/40'
           : 'bg-amber-50 text-amber-800 border-amber-200/70';
+      }
+
+      if (kind === 'gated') {
+        return props.darkMode
+          ? 'bg-zinc-500/10 text-zinc-400 border-zinc-500/30'
+          : 'bg-zinc-50 text-zinc-500 border-zinc-200/70';
       }
 
       if (kind === 'missing') {
@@ -210,8 +232,11 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
     return (
       <span className="inline-flex items-center gap-1.5 ml-2">
         <span className={`${badgeBaseClassName} ${chipClassName(prov.source)}`}>{mainLabel}</span>
-        {prov.needsReview ? (
+        {showNeedsReview ? (
           <span className={`${badgeBaseClassName} ${chipClassName('needs_review')}`}>Needs review</span>
+        ) : null}
+        {gatedLabel && !showNeedsReview ? (
+          <span className={`${badgeBaseClassName} ${chipClassName('gated')}`}>{gatedLabel}</span>
         ) : null}
       </span>
     );
@@ -447,6 +472,16 @@ export function DealWorkspaceOverviewComp(props: DealWorkspaceOverviewCompProps)
       : 'bg-white text-zinc-600 border-gray-200';
 
     if (!hasEvidence) {
+      // Suppress "No explicit citation" when the report is deterministic_only.
+      // Deterministic fields are derived from structured extraction, not evidence
+      // citations per the UI model — showing the badge implies a failed search
+      // that never happened.
+      const gating = deriveGatingState({
+        reportStatus: props.investorInsightsStatus,
+        evidenceGate: props.reportEvidenceGate,
+      });
+      if (shouldSuppressNoCitation(gating)) return null;
+
       return (
         <div className="mt-1">
           <span className={`inline-flex items-center px-2 py-1 rounded-full border text-xs font-medium leading-none ${badgeClassName}`}>

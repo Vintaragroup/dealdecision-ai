@@ -9,6 +9,7 @@ import {
   type DocumentAnalysisResponse,
 } from '../../lib/apiClient';
 import { AlertCircle, RefreshCw } from 'lucide-react';
+import { InsightsDataPanel } from './InsightsDataPanel';
 
 type DataTabProps = {
   dealId: string;
@@ -251,6 +252,19 @@ export function DataTab({ dealId, darkMode }: DataTabProps) {
             )}
           </div>
         </div>
+      </div>
+
+      {/* ── Investor Insights Data ── */}
+      <div className={`border-t pt-6 ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
+        <div className="mb-4">
+          <h3 className={`text-base font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+            Investor Insights Data
+          </h3>
+          <p className={`text-sm mt-0.5 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+            Canonical facts, conflicts, and coverage metrics extracted during AI analysis.
+          </p>
+        </div>
+        <InsightsDataPanel dealId={dealId} darkMode={darkMode} />
       </div>
     </div>
   );

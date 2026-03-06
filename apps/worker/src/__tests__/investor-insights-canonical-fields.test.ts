@@ -453,6 +453,113 @@ describe("Stage 2 – Conflict Detection", () => {
 
 // ── Tests: completeness summary ───────────────────────────────────────────────
 
+// ── Tests: PR27 – AUM-tainted pages must NOT appear in conflicts ──────────────
+
+describe("Stage 2 – Conflict Detection: AUM-tainted pages filtered (PR27)", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockEvaluateGates.mockResolvedValue(g3OnlyFailGateState());
+	});
+
+	it("no conflicts section when page 12 is '$100M Alternatives Fund' AUM page and page 14 has '$2M Pre-Seed'", async () => {
+		// Scenario from production: page 12 contains fund-management / AUM language that
+		// happens to include a $100M figure; page 14 has the real raise.  Before PR27 the
+		// conflict builder would emit a spurious conflict between the two.
+		mockPool = makePool([
+			{
+				docId: "aaaaaaaa-0000-0000-0000-000000000001",
+				pageIndex: 12,
+				text: "We manage a $100M Alternatives Fund. AUM across all strategies exceeds $500M. LP commitments open.",
+			},
+			{
+				docId: "aaaaaaaa-0000-0000-0000-000000000001",
+				pageIndex: 14,
+				text: "We are raising $2M Pre-Seed to expand the platform.",
+			},
+		]);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const conflictsSection = pkg.sections.find((s: any) => s.key === "conflicts");
+		expect(conflictsSection).toBeUndefined();
+	});
+
+	it("no conflicts section when only AUM page has a dollar figure (single real raise page)", async () => {
+		mockPool = makePool([
+			{
+				docId: "aaaaaaaa-0000-0000-0000-000000000002",
+				pageIndex: 3,
+				text: "Assets under management total $250M. General partner carried interest 20%.",
+			},
+			{
+				docId: "aaaaaaaa-0000-0000-0000-000000000002",
+				pageIndex: 8,
+				text: "Raising $3M seed round via SAFE.",
+			},
+		]);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const conflictsSection = pkg.sections.find((s: any) => s.key === "conflicts");
+		expect(conflictsSection).toBeUndefined();
+	});
+
+	it("no conflicts section when AUM page present alongside real raise page (PR27 canonical coherence)", async () => {
+		// Verify the conflicts section is absent — the conflicts builder must not emit a
+		// spurious raise_amount conflict caused by the AUM page's dollar figure.
+		// (Canonical field selection for raise_amount is a separate concern handled elsewhere.)
+		mockPool = makePool([
+			{
+				docId: "aaaaaaaa-0000-0000-0000-000000000003",
+				pageIndex: 12,
+				text: "We manage a $100M Alternatives Fund with LP interests across 4 strategies.",
+			},
+			{
+				docId: "aaaaaaaa-0000-0000-0000-000000000003",
+				pageIndex: 14,
+				text: "The company is raising $2M Pre-Seed.",
+			},
+		]);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		// PR27 assertion: no spurious raise_amount conflict from AUM page
+		const conflictsSection = pkg.sections.find((s: any) => s.key === "conflicts");
+		expect(conflictsSection).toBeUndefined();
+
+		// Sanity: canonical_fields section is present
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		expect(cf).toBeTruthy();
+		expect(cf.body).toMatch(/field=raise_amount \| computability=Computable/);
+	});
+
+	it("conflict IS emitted when two non-AUM pages have different raise amounts (guard not over-filtering)", async () => {
+		// Regression: the AUM guard must NOT suppress genuine conflicts.
+		mockPool = makePool([
+			{
+				docId: "aaaaaaaa-0000-0000-0000-000000000004",
+				pageIndex: 2,
+				text: "We are raising $2M seed round to build out the team.",
+			},
+			{
+				docId: "bbbbbbbb-0000-0000-0000-000000000005",
+				pageIndex: 5,
+				text: "Current round is $3M Series A.",
+			},
+		]);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const conflictsSection = pkg.sections.find((s: any) => s.key === "conflicts");
+		expect(conflictsSection).toBeTruthy();
+		expect(conflictsSection.body).toMatch(/field=raise_amount/);
+	});
+});
+
 describe("Stage 2 – Completeness Summary", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();

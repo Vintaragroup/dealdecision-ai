@@ -45,6 +45,7 @@ import { derivePhaseBInsights } from '../../lib/phaseb-findings';
 import { buildOverlayViewModel } from '../../lib/overlay/overlayViewModel';
 import { buildWorkspaceMirrorOverviewVM } from '../../lib/workspaceMirrorPr2ViewModel';
 import { deterministicIsDisplayable } from '../../lib/deterministicDisplayPolicy';
+import { chooseGovernedKeyFact } from '../../lib/chooseGovernedKeyFact';
 import { deriveGatingState, shouldSuppressNeedsReview } from '../../lib/badgePolicy';
 import { useAsyncStaleGuard } from '../../lib/hooks/useAsyncStaleGuard';
 import { useUserRole } from '../../contexts/UserRoleContext';
@@ -3820,40 +3821,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       deterministic: string;
       overlay?: { value: string | null; quality?: string; source?: 'governed' | 'deterministic' | 'missing' } | null;
       preferDeterministic?: boolean;
-    }): { value: string; provenance: { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean }; fromOverlay: boolean } => {
-      const overlayVal = asClean(opts.overlay?.value);
-      const overlaySource = opts.overlay?.source;
-      const overlayQuality = opts.overlay?.quality;
-
-      const detVal = asClean(opts.deterministic);
-      if (opts.preferDeterministic) {
-        if (detVal) return { value: detVal, provenance: { source: 'deterministic' }, fromOverlay: false };
-        if (overlayVal) return { value: overlayVal, provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' && !suppressNeedsReview }, fromOverlay: true };
-        return { value: keyFactMissingText, provenance: { source: 'missing' }, fromOverlay: false };
-      }
-
-      if (overlayVal && overlaySource === 'governed') {
-        return { value: overlayVal, provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' && !suppressNeedsReview }, fromOverlay: true };
-      }
-      const detDisplayable = detVal ? deterministicIsDisplayable(detVal) : false;
-
-      // Deterministic may override overlay only when it looks display-safe.
-      if (detVal && detDisplayable) {
-        return { value: detVal, provenance: { source: 'deterministic' }, fromOverlay: false };
-      }
-
-      if (overlayVal) {
-        // Overlay phrasing is preferred when deterministic looks like OCR soup / slide dump.
-        return { value: overlayVal, provenance: { source: 'deterministic', needsReview: overlayQuality === 'fallback' && !suppressNeedsReview }, fromOverlay: true };
-      }
-
-      // If deterministic is present but not display-safe and there's no overlay, fall back to deterministic anyway.
-      if (detVal) {
-        return { value: detVal, provenance: { source: 'deterministic' }, fromOverlay: false };
-      }
-
-      return { value: keyFactMissingText, provenance: { source: 'missing' }, fromOverlay: false };
-    };
+    }): { value: string; provenance: { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean }; fromOverlay: boolean } =>
+      chooseGovernedKeyFact({
+        ...opts,
+        suppressNeedsReview,
+        missingText: keyFactMissingText,
+        isDisplayable: deterministicIsDisplayable,
+      });
 
     const product = chooseGovernedFirst({
       deterministic: overviewProductCanonical,

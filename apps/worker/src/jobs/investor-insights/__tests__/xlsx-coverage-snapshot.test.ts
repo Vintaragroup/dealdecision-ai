@@ -17,12 +17,12 @@ function makeGateState(g3Passed = true, g5Passed = true): GateState {
 	return {
 		all_passed: g3Passed && g5Passed,
 		results: [
-			{ gate: "G0", actual: 1, passed: true, threshold: null, reason_code: null },
-			{ gate: "G1", actual: 10, passed: true, threshold: null, reason_code: null },
-			{ gate: "G2", actual: 0.6, passed: true, threshold: 0, reason_code: null },
-			{ gate: "G3", actual: 1, passed: g3Passed, threshold: null, reason_code: null },
-			{ gate: "G4", actual: 5, passed: true, threshold: null, reason_code: null },
-			{ gate: "G5", actual: 3, passed: g5Passed, threshold: null, reason_code: null },
+			{ gate: "G0", actual: 1, passed: true },
+			{ gate: "G1", actual: 10, passed: true },
+			{ gate: "G2", actual: 0.6, passed: true, threshold: 0 },
+			{ gate: "G3", actual: 1, passed: g3Passed },
+			{ gate: "G4", actual: 5, passed: true },
+			{ gate: "G5", actual: 3, passed: g5Passed },
 		],
 	};
 }

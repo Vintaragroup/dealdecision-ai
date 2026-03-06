@@ -148,6 +148,15 @@ function pickRaiseAmount(text: string): { money: Money | null; raw: string | nul
 	return { money: best.money, raw: best.raw, confidence, reason: best.score >= 3 ? "context_keyword" : "fallback" };
 }
 
+/**
+ * Returns true when the slide text references a fund or AUM context that should
+ * never be promoted as a startup raise amount (e.g. "$100M Alternatives Fund",
+ * "$500M AUM", "Limited Partner commitment").
+ */
+function containsFundAumLanguage(text: string): boolean {
+	return /\b(?:alternatives?\s+fund|alternative\s+investment|aum|assets?\s+under\s+management|fund\s+size|investment\s+vehicle|limited\s+partners?(?:hip)?|\blp\b|general\s+partners?(?:hip)?|\bgp\b|fund\s+of\s+funds?|carried\s+interest|management\s+fee|endowment\s+fund|hedge\s+fund|private\s+equity\s+fund|venture\s+capital\s+fund|family\s+office|feeder\s+fund|co[\s-]invest)\b/i.test(text);
+}
+
 function parseRaiseTermsFromText(text: string): { value_json: Record<string, any>; confidence: number } | null {
 	const t = normalizeText(text);
 	if (!t) return null;
@@ -915,9 +924,11 @@ export async function promoteSlideFactsFromDocumentPageUnderstanding(pool: Pool,
 
 		const raise = (() => {
 			// Guardrail: only promote raise_terms_v1 when the slide is truly an explicit "ask"
-			// and never when the slide looks like market sizing (TAM/SAM/SOM / market is $X).
+			// and never when the slide looks like market sizing (TAM/SAM/SOM / market is $X)
+			// or when the slide describes a fund vehicle (AUM, LP, alternatives fund, etc.).
 			if (containsMarketSizingLanguage(slideText)) return null;
 			if (!inferIsRaiseAskSlide(slideText)) return null;
+			if (containsFundAumLanguage(slideText)) return null;
 			return parseRaiseTermsFromText(slideText);
 		})();
 		if (raise) {

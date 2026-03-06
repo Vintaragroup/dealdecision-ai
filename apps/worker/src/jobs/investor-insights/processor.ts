@@ -28,6 +28,7 @@ import {
 } from "../../contracts/investor-insights/schemas";
 import {
 	computeEvidenceGateV1,
+	EVIDENCE_GATE_COVERAGE_THRESHOLD,
 } from "./evidence-gate-v1";
 import {
 	validateGateState,
@@ -98,6 +99,8 @@ import {
 	buildRenderPackage,
 	persistReport,
 } from "./stages/stage-4-render-package";
+import { runDpuOcrBackfillForDeal } from "../../lib/dpu-ocr-backfill-v1";
+import { maybeEnqueueInvestorInsightsAfterOcrImprovement } from "../../lib/ocr-auto-rerun-v1";
 import {
 	classifyDeterministicOnlyRecoverable,
 	buildRecoveryMetadata,
@@ -457,7 +460,45 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	}
 
 	// ── 6a. Load coverage metrics for Evidence Gate evaluation ────────────────
-	const coverage = await loadCoverageSnapshot(pool, dealId);
+	let coverage = await loadCoverageSnapshot(pool, dealId);
+
+	// PR31: capture coverage ratios before and after OCR backfill so the
+	// auto-rerun helper (step 6a-rerun below) can compute the improvement delta.
+	// Both remain null when OCR backfill was skipped or failed.
+	let coverageRatioBeforeOcr: number | null = null;
+	let coverageRatioAfterOcr: number | null = null;
+
+	// ── 6a-ocr. Targeted OCR backfill (flag-gated: DPU_OCR_BACKFILL_V1=true) ──
+	// Runs BEFORE the evidence gate so that pages backfilled here count toward
+	// the E2 coverage threshold. Only triggers when coverage is currently below
+	// threshold and there are empty DPU pages with stored image URIs.
+	if (process.env["DPU_OCR_BACKFILL_V1"] === "true") {
+		const currentCoveragePct = coverage.dpuPageCount > 0
+			? (coverage.dpuNonemptyPages + coverage.xlsxBonusPages) / coverage.dpuPageCount
+			: 0;
+		if (currentCoveragePct < EVIDENCE_GATE_COVERAGE_THRESHOLD) {
+			coverageRatioBeforeOcr = currentCoveragePct;
+			try {
+				await runDpuOcrBackfillForDeal(pool, dealId);
+				// Reload coverage so the updated page_text rows count toward E2.
+				coverage = await loadCoverageSnapshot(pool, dealId);
+				coverageRatioAfterOcr = coverage.dpuPageCount > 0
+					? (coverage.dpuNonemptyPages + coverage.xlsxBonusPages) / coverage.dpuPageCount
+					: 0;
+			} catch (err) {
+				console.warn(
+					JSON.stringify({
+						event: "DPU_OCR_BACKFILL_ERROR",
+						deal_id: dealId,
+						error: err instanceof Error ? err.message : String(err),
+					})
+				);
+				// Non-fatal: continue with original coverage if backfill fails.
+				// Clear before-ratio so auto-rerun is not triggered on a failed backfill.
+				coverageRatioBeforeOcr = null;
+			}
+		}
+	}
 
 	// WS-C PR20: emit XLSX_DPU_USEFUL_PAGES when XLSX bonus pages were found so
 	// that the adjustment is visible in logs alongside the evidence gate metrics.
@@ -627,6 +668,38 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				ts: new Date().toISOString(),
 			})
 		);
+
+		// ── 6a-rerun (PR31): auto-rerun if OCR materially improved coverage ────
+		// Best-effort: fire-and-forget so this path never delays or breaks the return.
+		// The policy helper handles dedup, cooldown, and "already running" checks.
+		// getQueue is imported lazily so module-level queue init is not triggered
+		// in tests that don't mock the queue module.
+		if (coverageRatioBeforeOcr !== null && coverageRatioAfterOcr !== null) {
+			maybeEnqueueInvestorInsightsAfterOcrImprovement({
+				pool,
+				dealId,
+				coverageBefore: coverageRatioBeforeOcr,
+				coverageAfter: coverageRatioAfterOcr,
+				threshold: EVIDENCE_GATE_COVERAGE_THRESHOLD,
+				enqueue: {
+					add: async (name, data, opts) => {
+						// Lazy: avoids module-level Redis URL validation in unit tests.
+						// eslint-disable-next-line @typescript-eslint/no-explicit-any
+						const { getQueue } = await import("../../lib/queue.js") as any;
+						return getQueue("investor_insights").add(name, data, opts);
+					},
+				},
+			}).catch((err) => {
+				console.warn(
+					JSON.stringify({
+						event: "INVESTOR_INSIGHTS_AUTO_RERUN_ERROR",
+						deal_id: dealId,
+						error: err instanceof Error ? err.message : String(err),
+						ts: new Date().toISOString(),
+					})
+				);
+			});
+		}
 
 		return {
 			ok: true,

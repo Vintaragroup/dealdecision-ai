@@ -34,6 +34,7 @@
     "prove:run-analysis:prodlike": "tsx scripts/prove-run-analysis-parity.ts --mode prodlike",
     "prove:run-analysis:parity": "bash scripts/prove-run-analysis-parity.sh",
     "test:prove": "node --test --import tsx scripts/__tests__/prove-run-analysis-parity.test.ts",
+    "test:diagnostics": "node --test --import tsx scripts/__tests__/post-ocr-gate-audit.test.ts",
     "reprocess:extraction:all": "tsx scripts/reprocess-extraction-all-deals.ts",
     "rebuild:deals": "tsx scripts/rebuild-deals.ts",
     "smoke:analyst-evidence": "tsx apps/api/scripts/smoke-test-analyst-evidence.ts",

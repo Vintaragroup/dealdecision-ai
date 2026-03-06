@@ -6,6 +6,7 @@ import { useInvestorInsightsStatusSummary } from '../../hooks/useInvestorInsight
 import { useState, useRef, useEffect } from 'react';
 import { apiGetInvestorInsights } from '../../lib/apiClient';
 import type { InvestorInsightsSection, InvestorInsightsGateResult } from '../../lib/apiClient';
+import { deriveInsightsDisplayState } from '../../lib/investorInsightsDisplayPolicy';
 
 interface InvestorInsightsTabProps {
   darkMode: boolean;
@@ -161,7 +162,7 @@ export function EvidencePill({ evidenceRef, darkMode }: { evidenceRef: string; d
   );
 }
 
-function InsightSlotsSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+export function InsightSlotsSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const body = typeof section.body === 'string' ? section.body : '';
   const rows = parseInsightSlotBody(body);
 
@@ -472,7 +473,7 @@ function CompletenessStatusBadge({ status, darkMode }: { status: string; darkMod
   );
 }
 
-function CompletenessSummarySection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+export function CompletenessSummarySection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const body = typeof section.body === 'string' ? section.body : '';
   const rows = parseCompletenessBody(body);
 
@@ -645,7 +646,7 @@ function parseNormalizationDiffBody(body: string): NormDiffRow[] {
     });
 }
 
-function NormalizationDiffSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+export function NormalizationDiffSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const body = typeof section.body === 'string' ? section.body : '';
   const rows = parseNormalizationDiffBody(body);
 
@@ -952,6 +953,21 @@ const PHASE2_KEYS = new Set([
   'governed_executive_summary_v1',  // AI-governed sections require dedicated renderers
 ]);
 
+/**
+ * Section keys that belong in the Data tab rather than the Investor Insights
+ * decision surface.  The main InvestorInsightsTab component filters these out
+ * so only the true decision-layer sections are rendered here; the Data tab's
+ * InsightsDataPanel renders them in grouped subsections.
+ */
+export const DATA_SECTION_KEYS = new Set([
+  'insight_slots',
+  'canonical_fields',
+  'completeness_summary',
+  'conflicts',
+  'coverage_snapshot',
+  'debug.normalization_diff',
+]);
+
 // ─── Governed Executive Summary V1 renderer (inline — cannot import from InvestorReportView due to circular dep) ────
 
 interface GovernedExecSummaryV1 {
@@ -1126,6 +1142,9 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
 
   const hasSections = sections.length > 0;
 
+  // Decision-surface sections only (data/diagnostic sections live in the Data tab).
+  const decisionSurface = sections.filter((s) => !DATA_SECTION_KEYS.has(s.key));
+
   // Placeholder shows only when there is genuinely nothing to render.
   const isNotStarted =
     status === 'ready' && (!report || reportStatus === 'not_started') && !hasSections;
@@ -1148,12 +1167,30 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
   // Amber stall banner: running but no activity for > 10 minutes.
   const showStalledBanner = isStalled;
 
-  // Amber evidence gate banner: shown when deterministic_only AND evidence gate explicitly failed.
+  // Amber/blue evidence gate banner — mode driven by policy helper (PR32).
+  // Prefer status_summary.evidence_gate (authoritative) over render_package.evidence_gate.
   const evidenceGateFromPkg = report?.render_package?.evidence_gate ?? null;
-  const showEvidenceGateBanner =
-    reportStatus === 'deterministic_only' &&
-    evidenceGateFromPkg !== null &&
-    evidenceGateFromPkg.passed === false;
+  const evidenceGateForPolicy =
+    report?.status_summary?.evidence_gate ?? evidenceGateFromPkg ?? null;
+
+  const displayState = deriveInsightsDisplayState({
+    reportStatus: report?.status_summary?.report_status ?? reportStatus,
+    evidenceGate: evidenceGateForPolicy,
+    isRunning,
+  });
+
+  // Amber blocked banner: only when gate failed AND no rerun in flight.
+  const showEvidenceGateBanner = displayState.evidenceGateBannerMode === 'blocked';
+  // Blue auto-refresh banner: gate was failed but a job is now running.
+  const showAutoRefreshingBanner = displayState.evidenceGateBannerMode === 'auto_refreshing';
+
+  // Coverage metrics for the evidence gate banners — prefer render_package detail, fall back to status_summary.
+  const gateCoveragePct =
+    evidenceGateFromPkg?.metrics?.coverage_pct ??
+    report?.status_summary?.evidence_gate?.coverage_pct ?? 0;
+  const gateEvidenceCount =
+    evidenceGateFromPkg?.metrics?.evidence_count ??
+    report?.status_summary?.evidence_gate?.evidence_count ?? 0;
 
   const handleGenerate = async () => {
     // eslint-disable-next-line no-console
@@ -1204,7 +1241,7 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
             Investor Insights
           </H3>
           <MutedText darkMode={darkMode} className="mt-0.5">
-            Stage 0 deterministic analysis — gates, signals, and coverage summary.
+            AI decision surface — executive summary, strengths, risks, and open questions.
           </MutedText>
         </div>
         <div className="flex items-center gap-2">
@@ -1254,11 +1291,28 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
         </div>
       )}
 
-      {/* Background running banner — auto-polling detected an in-flight job */}
-      {showBackgroundRunningBanner && (
+      {/* Background running banner — auto-polling detected an in-flight job.
+           When auto-rerun is in flight the copy is more specific (PR32). */}
+      {showBackgroundRunningBanner && !showAutoRefreshingBanner && (
         <div className={`flex items-center gap-2 rounded-xl border px-4 py-2.5 ${darkMode ? 'bg-blue-500/10 border-blue-500/30' : 'bg-blue-50 border-blue-200'}`}>
           <Loader2 className={`w-4 h-4 shrink-0 animate-spin ${darkMode ? 'text-blue-400' : 'text-blue-600'}`} />
-          <span className={`text-sm font-medium ${darkMode ? 'text-blue-200' : 'text-blue-800'}`}>Analysis running — checking for updates…</span>
+          <span className={`text-sm font-medium ${darkMode ? 'text-blue-200' : 'text-blue-800'}`}>{displayState.backgroundRunningLabel}</span>
+        </div>
+      )}
+
+      {/* Auto-refreshing banner — replaces both the generic running banner and the amber
+           evidence-gate blocked banner when a rerun is in flight after OCR improvement (PR32). */}
+      {showAutoRefreshingBanner && (
+        <div className={`flex items-start gap-3 rounded-xl border px-4 py-3 ${darkMode ? 'bg-indigo-500/10 border-indigo-500/30' : 'bg-indigo-50 border-indigo-200'}`} data-testid="auto-refresh-banner">
+          <Loader2 className={`w-4 h-4 shrink-0 animate-spin mt-0.5 ${darkMode ? 'text-indigo-400' : 'text-indigo-600'}`} />
+          <div>
+            <p className={`text-sm font-medium ${darkMode ? 'text-indigo-200' : 'text-indigo-800'}`}>
+              Auto-refreshing after OCR improvement
+            </p>
+            <p className={`text-xs mt-0.5 ${darkMode ? 'text-indigo-300/80' : 'text-indigo-700/70'}`}>
+              Coverage improved — re-evaluating evidence gate. The report will update automatically.
+            </p>
+          </div>
         </div>
       )}
 
@@ -1288,17 +1342,18 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
           <p className={`text-sm font-medium ${darkMode ? 'text-red-200' : 'text-red-800'}`}>Generation failed (see gates below)</p>
         </div>
       )}
+      {/* Blocked banner (amber) — gate failed + nothing running.  Copy reflects backend truth (PR32). */}
       {showEvidenceGateBanner && (
-        <div className={`flex items-start gap-3 rounded-xl border px-4 py-3 ${darkMode ? 'bg-amber-500/10 border-amber-500/30' : 'bg-amber-50 border-amber-200'}`}>
+        <div className={`flex items-start gap-3 rounded-xl border px-4 py-3 ${darkMode ? 'bg-amber-500/10 border-amber-500/30' : 'bg-amber-50 border-amber-200'}`} data-testid="evidence-gate-blocked-banner">
           <AlertCircle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />
           <div>
             <p className={`text-sm font-medium ${darkMode ? 'text-amber-200' : 'text-amber-800'}`}>
-              Full interpretation paused — insufficient evidence
+              Blocked by evidence gate — insufficient coverage
             </p>
             <p className={`text-xs mt-0.5 ${darkMode ? 'text-amber-300/80' : 'text-amber-700/70'}`}>
-              Coverage {Math.round((evidenceGateFromPkg?.metrics?.coverage_pct ?? 0) * 100)}%,{' '}
-              Evidence {evidenceGateFromPkg?.metrics?.evidence_count ?? 0} items.{' '}
-              Re-run document extraction to improve coverage.
+              Coverage {Math.round(gateCoveragePct * 100)}%,{' '}
+              Evidence {gateEvidenceCount} items.{' '}
+              OCR backfill will run automatically to improve coverage.
             </p>
           </div>
         </div>
@@ -1340,7 +1395,7 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
       {status === 'ready' && report && report.status !== 'not_started' && (
         <div className="flex items-center gap-2 flex-wrap">
           <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${
-            report.status === 'deterministic_only' || report.status === 'complete'
+            report.status === 'deterministic_only' || report.status === 'complete' || report.status === 'succeeded'
               ? (darkMode ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300' : 'bg-emerald-50 border-emerald-200 text-emerald-700')
               : report.status === 'failed'
               ? (darkMode ? 'bg-red-500/15 border-red-500/30 text-red-300' : 'bg-red-50 border-red-200 text-red-700')
@@ -1349,7 +1404,7 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
               : (darkMode ? 'bg-white/10 border-white/20 text-gray-300' : 'bg-gray-50 border-gray-200 text-gray-700')
           }`}>
             {isRunning && <Loader2 className="w-3 h-3 animate-spin" />}
-            {report.status}
+            {displayState.reportStatusLabel}
           </span>
           {report.engine_version && (
             <span className={`text-xs font-mono ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
@@ -1376,16 +1431,26 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
         </div>
       )}
 
-      {/* Sections */}
-      {status === 'ready' && sections.length > 0 && (
+      {/* Sections — decision-surface only (data/diagnostic sections are in the Data tab) */}
+      {status === 'ready' && decisionSurface.length > 0 && (
         <Stack gap={4}>
-          {sections.map((section) => (
+          {decisionSurface.map((section) => (
             <SectionCard key={section.key} section={section} darkMode={darkMode} />
           ))}
         </Stack>
       )}
 
-      {/* Report present but no sections */}
+      {/* Report has content, but all sections are data-only — point user to Data tab */}
+      {status === 'ready' && report && report.status !== 'not_started' && decisionSurface.length === 0 && hasSections && (
+        <div className={`rounded-xl border px-4 py-3 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'}`}>
+          <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+            Extracted fields, conflicts, and coverage data are available in the{' '}
+            <strong>Data tab</strong>.
+          </p>
+        </div>
+      )}
+
+      {/* Report present but no sections at all */}
       {status === 'ready' && report && report.status !== 'not_started' && sections.length === 0 && (
         <div className={`rounded-xl border px-4 py-3 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'}`}>
           <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>

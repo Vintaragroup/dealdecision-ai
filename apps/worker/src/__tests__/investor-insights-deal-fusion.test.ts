@@ -563,3 +563,95 @@ describe("fuseDealCanonicalFacts — deck_has_use_of_funds_buckets detected", ()
 		expect(section.body).toContain("field=deck_has_use_of_funds_buckets");
 	});
 });
+
+// ─── PR26 regression: fund-AUM language must NOT become raise_amount ──────────
+//
+// Bug: fusion was picking "$100M" from a fund prospectus page containing
+// "Alternatives Fund" (AUM language) because the PR24 guard in
+// resolve-raise-amount.ts was not applied inside findFirstMatchInDoc.
+// Fix: apply isCandidateTaintedByFundAumContext to the full page text for
+// raise_amount candidates (mirrors promote-slide-facts.ts behaviour).
+
+describe("fuseDealCanonicalFacts — fund AUM page must NOT become raise_amount (PR26)", () => {
+	// Exact scenario that produced the bug: a fund prospectus page with AUM language.
+	const pages = [
+		page(PDF_DOC, 0, "$100M Alternatives Fund — total fund size targeting institutional LPs."),
+	];
+
+	const result = fuseDealCanonicalFacts(pages, [], [], NOW);
+
+	it("raise_amount fact is NOT fused (page tainted by AUM language)", () => {
+		const fact = result.facts.find((f) => f.field === "raise_amount");
+		expect(fact).toBeUndefined();
+	});
+
+	it("no raise_amount conflict emitted", () => {
+		const conflict = result.conflicts.find((c) => c.field === "raise_amount");
+		expect(conflict).toBeUndefined();
+	});
+});
+
+describe("fuseDealCanonicalFacts — AUM page filtered, real raise from separate doc wins (PR26)", () => {
+	// Two-document scenario:
+	//   Doc A (fund prospectus): $100M Alternatives Fund — should be rejected by fund-AUM guard.
+	//   Doc B (investor deck page 14): Raising $2M Pre-Seed — should win.
+	// After filtering, only one valid candidate exists → confidence 0.8, conflicts=0.
+	const FUND_DOC = "dddd4444-0000-0000-0000-000000000004";
+	const DECK_DOC = "eeee5555-0000-0000-0000-000000000005";
+
+	const pages = [
+		page(FUND_DOC, 2,  "$100M Alternatives Fund — targeting qualified purchasers, AUM strategy."),
+		page(DECK_DOC, 14, "The Ask: raising $2M Pre-Seed to build our core platform and reach first 100 customers."),
+	];
+
+	const result = fuseDealCanonicalFacts(pages, [], [], NOW);
+
+	it("raise_amount is fused with the real raise value $2M", () => {
+		const fact = result.facts.find((f) => f.field === "raise_amount");
+		expect(fact).toBeDefined();
+		expect(fact!.value).toBe("$2M");
+	});
+
+	it("raise_amount source_document_id is the investor deck, not the fund doc", () => {
+		const fact = result.facts.find((f) => f.field === "raise_amount");
+		expect(fact!.source_document_id).toBe(DECK_DOC);
+	});
+
+	it("raise_amount evidence_ref points to page 14", () => {
+		const fact = result.facts.find((f) => f.field === "raise_amount");
+		expect(fact!.evidence_ref).toContain("page:14");
+	});
+
+	it("raise_amount confidence is 0.8 (single valid source after AUM filtered)", () => {
+		const fact = result.facts.find((f) => f.field === "raise_amount");
+		expect(fact!.confidence).toBe(0.8);
+	});
+
+	it("no raise_amount conflict emitted — AUM candidate was rejected, not counted", () => {
+		const conflict = result.conflicts.find((c) => c.field === "raise_amount");
+		expect(conflict).toBeUndefined();
+	});
+});
+
+describe("fuseDealCanonicalFacts — AUM language variants all rejected from raise_amount (PR26)", () => {
+	// Verify the guard catches multiple forms of AUM / fund management language.
+	const cases: Array<{ label: string; text: string }> = [
+		{ label: "AUM",                 text: "The fund manages $500M AUM across global markets." },
+		{ label: "assets under mgmt",   text: "Raising $200M in assets under management for the vehicle." },
+		{ label: "LP commitment",       text: "Raising $250M LP commitment from institutional limited partners." },
+		{ label: "hedge fund",          text: "Seeking $75M for the hedge fund strategy." },
+		{ label: "carried interest",    text: "Fund raise: $150M subject to carried interest waterfall." },
+		{ label: "management fee",      text: "The $50M fund charges a 2% management fee to LPs." },
+	];
+
+	for (const { label, text } of cases) {
+		describe(`AUM variant: ${label}`, () => {
+			const result = fuseDealCanonicalFacts([page(PDF_DOC, 0, text)], [], [], NOW);
+
+			it(`raise_amount is NOT fused for "${label}" text`, () => {
+				const fact = result.facts.find((f) => f.field === "raise_amount");
+				expect(fact).toBeUndefined();
+			});
+		});
+	}
+});

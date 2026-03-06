@@ -24,6 +24,7 @@
  */
 
 import type { RenderPackage } from "../../contracts/investor-insights/schemas";
+import { isCandidateTaintedByFundAumContext } from "./resolve-raise-amount";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -354,6 +355,10 @@ function findFirstMatchInDoc(
 		// Guard: skip money-first raise_amount matches whose context contains
 		// market-size language ("$11B market", "$8B TAM — investment opportunity").
 		if (field === "raise_amount" && isFusionRaiseTainted(page.text ?? "", m.index, m[0].length)) continue;
+		// PR26 guard: skip raise_amount matches on pages that contain fund-management /
+		// AUM language ("$100M Alternatives Fund", "AUM", "LP commitment", etc.).
+		// Mirrors the PR24 guard in resolve-raise-amount.ts and promote-slide-facts.ts.
+		if (field === "raise_amount" && isCandidateTaintedByFundAumContext(page.text ?? "")) continue;
 		const snippet = m[0].slice(0, 120);
 		return {
 			document_id: page.document_id,

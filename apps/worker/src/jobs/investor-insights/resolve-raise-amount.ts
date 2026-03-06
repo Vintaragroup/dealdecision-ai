@@ -102,6 +102,7 @@ export type RaiseAmountCandidate = {
 
 export type RejectReason =
   | "market_context_taint"
+  | "fund_aum_context"
   | "magnitude_no_strong_verb"
   | "no_candidates";
 
@@ -141,6 +142,28 @@ export function parseMoneyToMillions(text: string): number | null {
     k: 0.001,     thousand: 0.001,
   };
   return num * (multiplier[suffix] ?? 1);
+}
+
+/**
+ * Fund/AUM context taint regex.
+ *
+ * Rejects raise candidates whose context contains fund-management language that
+ * clearly indicates the amount describes AUM or a vehicle size, not a fundraise ask.
+ *
+ * Examples rejected:
+ *   "$100M Alternatives Fund" — alternatives fund is the vehicle, not an ask
+ *   "$500M AUM" — assets under management, not a raise
+ *   "$250M LP commitment" — LP/GP mechanics, not the company's own ask
+ */
+export const FUND_AUM_CONTEXT_RE =
+  /\b(?:alternatives?\s+fund|alternative\s+investment|aum|assets?\s+under\s+management|fund\s+size|investment\s+vehicle|limited\s+partners?(?:hip)?|\blp\b|general\s+partners?(?:hip)?|\bgp\b|fund\s+of\s+funds?|carried\s+interest|management\s+fee|endowment\s+fund|hedge\s+fund|private\s+equity\s+fund|venture\s+capital\s+fund|family\s+office|feeder\s+fund|co[\s-]invest)\b/i;
+
+/**
+ * Returns true when the candidate context contains fund-management / AUM language
+ * that indicates the amount describes a vehicle or portfolio, not a fundraise ask.
+ */
+export function isCandidateTaintedByFundAumContext(context: string): boolean {
+  return FUND_AUM_CONTEXT_RE.test(context);
 }
 
 /**
@@ -227,6 +250,14 @@ export function resolveRaiseAmount({
       continue;
     }
 
+    // Rule 2b: fund/AUM context taint — rejects "$100M Alternatives Fund" etc.
+    // Applied before magnitude check: fund/AUM language is deterministically wrong
+    // regardless of amount size, stage, or raise-verb proximity.
+    if (isCandidateTaintedByFundAumContext(ctx)) {
+      rejected.push({ candidate, reason: "fund_aum_context" });
+      continue;
+    }
+
     // Rule 3: magnitude sanity — only for early stages
     if (earlyStage) {
       const amountM = parseMoneyToMillions(candidate.value);
@@ -239,17 +270,42 @@ export function resolveRaiseAmount({
       }
     }
 
-    // Candidate survived both checks — accept it.
-    return {
+    // Candidate survived all checks — accept it.
+    const accepted: ResolveRaiseAmountResult = {
       raise_amount: candidate.value,
       source: candidate.source,
       evidence_ref: candidate.evidence_ref ?? null,
       rejected_candidates: rejected,
       from_raise_terms_override: false,
     };
+    try {
+      console.log(
+        JSON.stringify({
+          event: "RAISE_CANDIDATE_SELECTED",
+          raise_amount: accepted.raise_amount,
+          source: accepted.source,
+          evidence_ref: accepted.evidence_ref,
+          rejected_count: rejected.length,
+          rejected_reasons: rejected.map((r) => r.reason),
+        })
+      );
+    } catch { /* ignore */ }
+    return accepted;
   }
 
   // No surviving candidate.
+  if (rejected.length > 0) {
+    try {
+      console.log(
+        JSON.stringify({
+          event: "RAISE_CANDIDATE_REJECTED",
+          reason: "all_candidates_rejected",
+          rejected_count: rejected.length,
+          rejected_reasons: rejected.map((r) => ({ value: r.candidate.value, reason: r.reason })),
+        })
+      );
+    } catch { /* ignore */ }
+  }
   return {
     raise_amount: null,
     source: null,

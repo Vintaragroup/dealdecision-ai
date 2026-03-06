@@ -7,6 +7,15 @@ import { useState, useRef, useEffect } from 'react';
 import { apiGetInvestorInsights } from '../../lib/apiClient';
 import type { InvestorInsightsSection, InvestorInsightsGateResult } from '../../lib/apiClient';
 import { deriveInsightsDisplayState } from '../../lib/investorInsightsDisplayPolicy';
+import {
+  SlotRow, parseInsightSlotBody, slotLabel, displayValue,
+  CanonicalFieldRow, parseCanonicalFieldsBody, fieldLabel,
+  ConflictRow, parseConflictsBody,
+  GovernedSummaryV1, parseGovernedSummaryBody,
+  LlmInterpretationV1, LlmInterpretationPosture, LlmInterpretationConfidence, parseLlmInterpretationBody,
+  ExternalDiligenceV1, parseExternalDiligenceBody,
+  DATA_SECTION_KEYS,
+} from './investorInsightsUtils';
 
 interface InvestorInsightsTabProps {
   darkMode: boolean;
@@ -84,53 +93,7 @@ export function EmptyFallback({ text, darkMode }: { text: string; darkMode: bool
 }
 
 // ── Insight Slots ─────────────────────────────────────────────────────────────
-
-export interface SlotRow {
-  slot: string;
-  state: 'Computable' | 'NotComputable' | string;
-  value: string;
-  evidence: string;
-  reason: string;
-}
-
-export function parseInsightSlotBody(body: string): SlotRow[] {
-  return body
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .flatMap((line): SlotRow[] => {
-      const colonIdx = line.indexOf(':');
-      if (colonIdx === -1) return [];
-      const slot = line.slice(0, colonIdx).trim();
-      const rest = line.slice(colonIdx + 1).trim();
-      // Split on " | " (with spaces) to avoid false splits inside a quoted value like
-      // value="Retention ratio / 60.00%". The worker sanitizes | → / in values,
-      // but we parse defensively here anyway.
-      const parts = rest.split(/ \| /).map((p) => p.trim());
-      const state = (parts[0] ?? '').trim();
-      const pick = (key: string) => {
-        const part = parts.find((p) => p.startsWith(`${key}=`));
-        if (!part) return 'none';
-        const raw = part.slice(key.length + 1).trim();
-        // Strip surrounding double-quotes if present (value="...").
-        if (raw.startsWith('"') && raw.endsWith('"') && raw.length > 1) return raw.slice(1, -1);
-        return raw;
-      };
-      return [{ slot, state, value: pick('value'), evidence: pick('evidence'), reason: pick('reason') }];
-    });
-}
-
-export function slotLabel(raw: string): string {
-  // "raise_terms" → "Raise Terms"
-  return raw.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-export function displayValue(raw: string): string {
-  if (raw === 'none') return '—';
-  // Strip surrounding quotes if present
-  if (raw.startsWith('"') && raw.endsWith('"') && raw.length > 1) return raw.slice(1, -1);
-  return raw;
-}
+// (SlotRow, parseInsightSlotBody, slotLabel, displayValue — moved to investorInsightsUtils.ts)
 
 export function EvidencePill({ evidenceRef, darkMode }: { evidenceRef: string; darkMode: boolean }) {
   const [copied, setCopied] = useState(false);
@@ -262,59 +225,7 @@ export function InsightSlotsSection({ section, darkMode }: { section: InvestorIn
 }
 
 // ── Canonical Fields ─────────────────────────────────────────────────────────
-
-export interface CanonicalFieldRow {
-  category: string;
-  field: string;
-  computability: 'Computable' | 'NotComputable' | string;
-  value: string | null;
-  evidence: string | null;
-  reason: string | null;
-}
-
-export function parseCanonicalFieldsBody(body: string): CanonicalFieldRow[] {
-  return body
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .flatMap((line): CanonicalFieldRow[] => {
-      const tokens = line.split(' | ');
-      const pick = (key: string): string => {
-        const token = tokens.find((t) => t.startsWith(`${key}=`));
-        if (!token) return 'none';
-        return token.slice(key.length + 1).trim();
-      };
-      const category = pick('category');
-      const field = pick('field');
-      if (!category || category === 'none' || !field || field === 'none') return [];
-      const computability = pick('computability');
-      const rawValue = pick('value');
-      const rawEvidence = pick('evidence');
-      const rawReason = pick('reason');
-
-      const parseNullable = (raw: string): string | null => {
-        if (raw === 'none' || raw === '') return null;
-        // Strip surrounding quotes, then trim trailing whitespace
-        if (raw.startsWith('"') && raw.endsWith('"') && raw.length > 1) {
-          return raw.slice(1, -1).trimEnd();
-        }
-        return raw.trimEnd();
-      };
-
-      return [{
-        category,
-        field,
-        computability,
-        value: parseNullable(rawValue),
-        evidence: parseNullable(rawEvidence),
-        reason: parseNullable(rawReason),
-      }];
-    });
-}
-
-export function fieldLabel(raw: string): string {
-  return raw.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-}
+// (CanonicalFieldRow, parseCanonicalFieldsBody, fieldLabel — moved to investorInsightsUtils.ts)
 
 export function CanonicalFieldsSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const body = typeof section.body === 'string' ? section.body : '';
@@ -519,34 +430,7 @@ export function CompletenessSummarySection({ section, darkMode }: { section: Inv
 }
 
 // ── Conflicts ─────────────────────────────────────────────────────────────────
-
-export interface ConflictRow {
-  field: string;
-  valueA: string;
-  evidenceA: string;
-  valueB: string;
-  evidenceB: string;
-}
-
-export function parseConflictsBody(body: string): ConflictRow[] {
-  return body
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .flatMap((line): ConflictRow[] => {
-      const tokens = line.split(' | ');
-      const pick = (key: string): string => {
-        const token = tokens.find((t) => t.startsWith(`${key}=`));
-        if (!token) return '';
-        const raw = token.slice(key.length + 1).trim();
-        if (raw.startsWith('"') && raw.endsWith('"') && raw.length > 1) return raw.slice(1, -1).trimEnd();
-        return raw.trimEnd();
-      };
-      const field = pick('field');
-      if (!field) return [];
-      return [{ field, valueA: pick('value_a'), evidenceA: pick('evidence_a'), valueB: pick('value_b'), evidenceB: pick('evidence_b') }];
-    });
-}
+// (ConflictRow, parseConflictsBody — moved to investorInsightsUtils.ts)
 
 export function ConflictsSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const body = typeof section.body === 'string' ? section.body : '';
@@ -850,29 +734,7 @@ export function CoverageSnapshotSection({ section, darkMode }: { section: Invest
 }
 
 // ── Governed Summary V1 ─────────────────────────────────────────────────────
-
-export interface GovernedSummaryV1 {
-  schema_version: 'governed_summary_v1';
-  executive_summary: string;
-  strengths: string[];
-  risks: string[];
-  open_questions: string[];
-  validated: boolean;
-}
-
-export function parseGovernedSummaryBody(body: string): GovernedSummaryV1 | null {
-  const delimiter = '---governed_summary_v1_json---\n';
-  const idx = body.indexOf(delimiter);
-  if (idx === -1) return null;
-  try {
-    const json = body.slice(idx + delimiter.length).trim();
-    const parsed = JSON.parse(json) as GovernedSummaryV1;
-    if (parsed?.schema_version !== 'governed_summary_v1') return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
+// (GovernedSummaryV1, parseGovernedSummaryBody — moved to investorInsightsUtils.ts)
 
 export function GovernedSummarySection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const body = typeof section.body === 'string' ? section.body : '';
@@ -947,26 +809,226 @@ export function GovernedSummarySection({ section, darkMode }: { section: Investo
   );
 }
 
+// ── LLM Interpretation V1 (PR34) ─────────────────────────────────────────────
+
+const POSTURE_CONFIG: Record<
+  LlmInterpretationPosture,
+  { label: string; icon: string; bg: string; text: string; border: string; darkBg: string; darkText: string; darkBorder: string }
+> = {
+  GO: {
+    label: 'GO',
+    icon: '◆',
+    bg: 'bg-emerald-50', text: 'text-emerald-800', border: 'border-emerald-200',
+    darkBg: 'bg-emerald-500/15', darkText: 'text-emerald-300', darkBorder: 'border-emerald-500/30',
+  },
+  INVESTIGATE: {
+    label: 'INVESTIGATE',
+    icon: '◈',
+    bg: 'bg-amber-50', text: 'text-amber-800', border: 'border-amber-200',
+    darkBg: 'bg-amber-500/15', darkText: 'text-amber-300', darkBorder: 'border-amber-500/30',
+  },
+  CAUTION: {
+    label: 'CAUTION',
+    icon: '⚑',
+    bg: 'bg-orange-50', text: 'text-orange-800', border: 'border-orange-200',
+    darkBg: 'bg-orange-500/15', darkText: 'text-orange-300', darkBorder: 'border-orange-500/30',
+  },
+  PASS: {
+    label: 'PASS',
+    icon: '✕',
+    bg: 'bg-red-50', text: 'text-red-800', border: 'border-red-200',
+    darkBg: 'bg-red-500/10', darkText: 'text-red-300', darkBorder: 'border-red-500/25',
+  },
+};
+
+export function PostureBadge({ posture, confidence, darkMode }: {
+  posture: LlmInterpretationPosture;
+  confidence: LlmInterpretationConfidence;
+  darkMode: boolean;
+}) {
+  const cfg = POSTURE_CONFIG[posture] ?? POSTURE_CONFIG['INVESTIGATE'];
+  const confidenceLabel = confidence === 'HIGH' ? 'High confidence'
+    : confidence === 'MEDIUM' ? 'Medium confidence'
+    : 'Low confidence';
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-sm font-semibold border ${
+      darkMode
+        ? `${cfg.darkBg} ${cfg.darkText} ${cfg.darkBorder}`
+        : `${cfg.bg} ${cfg.text} ${cfg.border}`
+    }`}>
+      <span className="text-xs">{cfg.icon}</span>
+      {cfg.label}
+      <span className={`text-xs font-normal opacity-70`}>{confidenceLabel}</span>
+    </span>
+  );
+}
+
+export function LlmInterpretationSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+  const body = typeof section.body === 'string' ? section.body : '';
+  const data: LlmInterpretationV1 | null = parseLlmInterpretationBody(body);
+
+  if (!data) {
+    return <EmptyFallback text={section.fallback ?? 'Investment interpretation unavailable.'} darkMode={darkMode} />;
+  }
+
+  const colClass = `rounded-lg border p-4 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-100 bg-gray-50'}`;
+  const textClass = `text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`;
+  const bulletClass = textClass;
+
+  return (
+    <div className="space-y-4">
+      {/* Posture badge + evidence caveat */}
+      <div className="flex flex-wrap items-center gap-3">
+        <PostureBadge posture={data.posture} confidence={data.confidence} darkMode={darkMode} />
+        {data.evidence_caveat && (
+          <span className={`inline-flex items-center gap-1 text-xs ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>
+            <span className="text-amber-500">⚠</span>
+            {data.evidence_caveat}
+          </span>
+        )}
+      </div>
+
+      {/* Executive summary */}
+      <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+        {data.executive_summary}
+      </p>
+
+      {/* Row 1: Product & Differentiation | Market Position */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-cyan-400' : 'text-cyan-700'}`}>
+            Product &amp; Differentiation
+          </div>
+          <p className={textClass}>
+            {(data as LlmInterpretationV1 & { product_differentiation?: string }).product_differentiation || 'Not determinable from available signals.'}
+          </p>
+        </div>
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-teal-400' : 'text-teal-700'}`}>
+            Market Position
+          </div>
+          <p className={textClass}>
+            {data.market_position || 'Not disclosed.'}
+          </p>
+        </div>
+      </div>
+
+      {/* Row 2: Go-To-Market Strategy | Financial Outlook */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-purple-400' : 'text-purple-700'}`}>
+            Go-To-Market Strategy
+          </div>
+          <p className={textClass}>
+            {(data as LlmInterpretationV1 & { go_to_market_strategy?: string }).go_to_market_strategy || 'Not determinable from available signals.'}
+          </p>
+        </div>
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-sky-400' : 'text-sky-700'}`}>
+            Financial Outlook
+          </div>
+          <p className={textClass}>
+            {data.financial_outlook || 'Not disclosed.'}
+          </p>
+        </div>
+      </div>
+
+      {/* Row 3: Business Quality | Capital & Raise */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-violet-400' : 'text-violet-700'}`}>
+            Business Quality
+          </div>
+          <p className={textClass}>
+            {data.business_quality || 'Insufficient data.'}
+          </p>
+        </div>
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-indigo-400' : 'text-indigo-700'}`}>
+            Capital &amp; Raise
+          </div>
+          <p className={textClass}>
+            {data.capital_and_raise_interpretation || 'Not disclosed.'}
+          </p>
+        </div>
+      </div>
+
+      {/* Row 4: Strengths | Risks */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`}>
+            Strengths
+          </div>
+          <ul className="space-y-1">
+            {data.strengths.map((s, i) => (
+              <li key={i} className={bulletClass}>• {s}</li>
+            ))}
+            {data.strengths.length === 0 && (
+              <li className={bulletClass + ' opacity-50'}>None identified</li>
+            )}
+          </ul>
+        </div>
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-red-400' : 'text-red-600'}`}>
+            Risks
+          </div>
+          <ul className="space-y-1">
+            {data.risks.map((r, i) => (
+              <li key={i} className={bulletClass}>• {r}</li>
+            ))}
+            {data.risks.length === 0 && (
+              <li className={bulletClass + ' opacity-50'}>None identified</li>
+            )}
+          </ul>
+        </div>
+      </div>
+
+      {/* Key Unknowns — full-width, only when populated */}
+      {data.key_unknowns && data.key_unknowns.length > 0 && (
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-orange-400' : 'text-orange-700'}`}>
+            Key Unknowns
+          </div>
+          <ul className="space-y-1">
+            {data.key_unknowns.map((u, i) => (
+              <li key={i} className={bulletClass}>• {u}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Top Diligence Questions — full-width, only when populated */}
+      {data.next_questions && data.next_questions.length > 0 && (
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+            Top Diligence Questions
+          </div>
+          <ul className="space-y-1">
+            {data.next_questions.map((q, i) => (
+              <li key={i} className={bulletClass}>• {q}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Validation badge */}
+      {data.validated && (
+        <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+          ✓ Numeric-parity validated — no hallucinated figures
+        </p>
+      )}
+    </div>
+  );
+}
+
 const PHASE2_KEYS = new Set([
   'insight_slots', 'coverage_snapshot', 'canonical_fields', 'completeness_summary',
   'conflicts', 'debug.normalization_diff', 'governed_summary_v1',
   'governed_executive_summary_v1',  // AI-governed sections require dedicated renderers
+  'llm_interpretation_v1',          // PR34: LLM interpretation — dedicated renderer
 ]);
 
-/**
- * Section keys that belong in the Data tab rather than the Investor Insights
- * decision surface.  The main InvestorInsightsTab component filters these out
- * so only the true decision-layer sections are rendered here; the Data tab's
- * InsightsDataPanel renders them in grouped subsections.
- */
-export const DATA_SECTION_KEYS = new Set([
-  'insight_slots',
-  'canonical_fields',
-  'completeness_summary',
-  'conflicts',
-  'coverage_snapshot',
-  'debug.normalization_diff',
-]);
+// DATA_SECTION_KEYS — moved to investorInsightsUtils.ts (imported above)
 
 // ─── Governed Executive Summary V1 renderer (inline — cannot import from InvestorReportView due to circular dep) ────
 
@@ -994,6 +1056,162 @@ function parseGovernedExecSummaryV1Body(body: string): GovernedExecSummaryV1 | n
   } catch {
     return null;
   }
+}
+
+// ─── PR35: External Due Diligence Section ────────────────────────────────────
+
+const BUCKET_LABELS: Record<string, string> = {
+  company_overview: 'Company Overview',
+  competitors: 'Competitive Landscape',
+  market_trends: 'Market Trends',
+  company_news: 'Recent News',
+  founder_team_signals: 'Founder / Team',
+  financial_market_context: 'Financial Context',
+};
+
+const BUCKET_COLORS: Record<string, { dark: string; light: string }> = {
+  company_overview: { dark: 'text-blue-400', light: 'text-blue-700' },
+  competitors: { dark: 'text-red-400', light: 'text-red-700' },
+  market_trends: { dark: 'text-teal-400', light: 'text-teal-700' },
+  company_news: { dark: 'text-amber-400', light: 'text-amber-700' },
+  founder_team_signals: { dark: 'text-violet-400', light: 'text-violet-700' },
+  financial_market_context: { dark: 'text-sky-400', light: 'text-sky-700' },
+};
+
+function extractDomain(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url.slice(0, 30);
+  }
+}
+
+function RunStatusBadge({ status, darkMode }: { status: ExternalDiligenceV1['run_status']; darkMode: boolean }) {
+  const styles: Record<string, string> = {
+    succeeded: darkMode ? 'bg-emerald-900/40 text-emerald-300 border-emerald-700' : 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    partial:   darkMode ? 'bg-amber-900/40 text-amber-300 border-amber-700'   : 'bg-amber-50 text-amber-700 border-amber-200',
+    failed:    darkMode ? 'bg-red-900/40 text-red-300 border-red-700'         : 'bg-red-50 text-red-700 border-red-200',
+    skipped:   darkMode ? 'bg-gray-800 text-gray-400 border-gray-700'         : 'bg-gray-100 text-gray-500 border-gray-200',
+  };
+  const labels: Record<string, string> = {
+    succeeded: 'Web research complete',
+    partial: 'Partial results',
+    failed: 'Web research failed',
+    skipped: 'Web research disabled',
+  };
+  return (
+    <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border ${styles[status] ?? styles.skipped}`}>
+      <span className="w-1.5 h-1.5 rounded-full bg-current opacity-70" />
+      {labels[status] ?? status}
+    </span>
+  );
+}
+
+export function ExternalDiligenceSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+  const body = typeof section.body === 'string' ? section.body : '';
+  const data: ExternalDiligenceV1 | null = parseExternalDiligenceBody(body);
+
+  if (!data) {
+    return <EmptyFallback text={section.fallback ?? 'External due diligence data unavailable.'} darkMode={darkMode} />;
+  }
+
+  const colClass = `rounded-lg border p-4 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-100 bg-gray-50'}`;
+  const metaClass = `text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`;
+  const snippetClass = `text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`;
+  const titleClass = `text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`;
+  const domainClass = `text-xs font-mono ${darkMode ? 'text-gray-500' : 'text-gray-400'}`;
+
+  // Buckets with results
+  const activeBuckets = data.buckets.filter((b) => b.results.length > 0);
+  // Corroborations
+  const corroborations = data.claim_corroborations ?? [];
+
+  return (
+    <div className="space-y-4">
+      {/* Header row */}
+      <div className="flex flex-wrap items-center gap-3">
+        <RunStatusBadge status={data.run_status} darkMode={darkMode} />
+        {data.company_name_used && (
+          <span className={metaClass}>
+            <span className="font-medium">{data.company_name_used}</span>
+            {data.sector_used && <> · {data.sector_used}</>}
+          </span>
+        )}
+        <span className={metaClass}>
+          {data.total_results_fetched} results · {data.queries_run} queries
+          {data.tavily_credits_used != null && <> · {data.tavily_credits_used} credits</>}
+        </span>
+      </div>
+
+      {/* Buckets */}
+      {activeBuckets.length > 0 && (
+        <div className="space-y-3">
+          {activeBuckets.map((bucket) => {
+            const colorDef = BUCKET_COLORS[bucket.bucket] ?? BUCKET_COLORS.company_overview;
+            const labelColor = darkMode ? colorDef.dark : colorDef.light;
+            return (
+              <div key={bucket.bucket} className={colClass}>
+                <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${labelColor}`}>
+                  {BUCKET_LABELS[bucket.bucket] ?? bucket.bucket}
+                </div>
+                <div className="space-y-2">
+                  {bucket.results.map((result, i) => (
+                    <div key={i} className="space-y-0.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <span className={titleClass}>{result.title}</span>
+                        <span className={domainClass}>{extractDomain(result.url)}</span>
+                      </div>
+                      {result.published_date && (
+                        <span className={metaClass}>{result.published_date}</span>
+                      )}
+                      <p className={snippetClass}>{result.snippet}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Claim corroborations */}
+      {corroborations.length > 0 && (
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-orange-400' : 'text-orange-700'}`}>
+            Claim Corroboration
+          </div>
+          <div className="space-y-2">
+            {corroborations.map((c, i) => {
+              const verdictStyle =
+                c.verdict === 'corroborated'
+                  ? darkMode ? 'text-emerald-400' : 'text-emerald-600'
+                  : c.verdict === 'contradicted'
+                  ? darkMode ? 'text-red-400' : 'text-red-600'
+                  : darkMode ? 'text-gray-400' : 'text-gray-500';
+              const verdictLabel =
+                c.verdict === 'corroborated' ? '✓ corroborated'
+                : c.verdict === 'contradicted' ? '✗ contradicted'
+                : '? not confirmed';
+              return (
+                <div key={i}>
+                  <span className={`text-sm font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                    {c.claim_field} = &quot;{c.claim_value}&quot;
+                  </span>
+                  <span className={`ml-2 text-xs font-medium ${verdictStyle}`}>{verdictLabel}</span>
+                  <p className={snippetClass + ' mt-0.5'}>{c.web_signal}</p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {activeBuckets.length === 0 && corroborations.length === 0 && (
+        <EmptyFallback text="No external research results available." darkMode={darkMode} />
+      )}
+    </div>
+  );
 }
 
 function GovernedExecSummaryV1Section({
@@ -1081,6 +1299,12 @@ function SectionCard({ section, darkMode }: { section: InvestorInsightsSection; 
       )}
       {section.key === 'governed_executive_summary_v1' && (
         <GovernedExecSummaryV1Section section={section} darkMode={darkMode} />
+      )}
+      {section.key === 'llm_interpretation_v1' && (
+        <LlmInterpretationSection section={section} darkMode={darkMode} />
+      )}
+      {section.key === 'external_diligence_v1' && (
+        <ExternalDiligenceSection section={section} darkMode={darkMode} />
       )}
       {/* Kind-based fallback only for sections whose key has no dedicated renderer. */}
       {!isSpecialKey && section.kind === 'gate_state' && (

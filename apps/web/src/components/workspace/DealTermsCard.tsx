@@ -20,7 +20,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import type { DealTermsAnalysisResult, DealTermsAssessmentLevel } from '../../lib/apiClient';
-import { parseCanonicalFieldsBody, fieldLabel } from './InvestorInsightsTab';
+import { parseCanonicalFieldsBody, fieldLabel } from './investorInsightsUtils';
 import type { InvestorInsightsReport } from '../../lib/apiClient';
 import { useDealTermsAnalysis } from '../../hooks/useDealTermsAnalysis';
 

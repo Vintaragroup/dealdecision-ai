@@ -16,7 +16,8 @@
 export type GovernedSkipStage =
 	| "governed_summary_v1"
 	| "governed_executive_summary_v1"
-	| "product_profile_v1";
+	| "product_profile_v1"
+	| "llm_interpretation_v1";
 
 /**
  * Stable reason codes for governed-stage skips.
@@ -68,6 +69,25 @@ export function productProfileReasonToSkipCode(reason: string | null | undefined
 	if (r.includes("feature_flag") || r.includes("disabled"))
 		return "feature_flag_disabled";
 	if (r.includes("timeout"))
+		return "timeout";
+	return "unknown";
+}
+
+/**
+ * Map an arbitrary reason string from generateLlmInterpretationV1 results to
+ * the closest GovernedSkipReasonCode.  Falls back to "unknown".
+ */
+export function llmInterpretationReasonToSkipCode(reason: string | null | undefined): GovernedSkipReasonCode {
+	if (!reason) return "unknown";
+	const r = reason.toLowerCase();
+	if (r.includes("missing_openai") || r.includes("openai_key") || r.includes("api_key"))
+		return "missing_openai_key";
+	if (r.includes("no_canonical") || r.includes("no_data"))
+		return "unknown";
+	if (r.includes("validation_failed") || r.includes("numeric_parity") || r.includes("schema_mismatch") ||
+		r.includes("invalid_posture") || r.includes("not_json"))
+		return "validation_failed";
+	if (r.includes("llm_call_failed") || r.includes("timeout") || r.includes("llm_empty"))
 		return "timeout";
 	return "unknown";
 }

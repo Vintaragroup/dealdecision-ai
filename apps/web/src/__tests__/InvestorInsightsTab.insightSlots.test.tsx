@@ -8,8 +8,9 @@ import { render, screen } from '@testing-library/react';
 import React from 'react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { InvestorInsightsTab } from '../components/workspace/InvestorInsightsTab';
+import { InsightSlotsSection, InvestorInsightsTab } from '../components/workspace/InvestorInsightsTab';
 import { apiGetInvestorInsights } from '../lib/apiClient';
+import type { InvestorInsightsSection } from '../lib/apiClient';
 
 vi.mock('../lib/apiClient', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/apiClient')>();
@@ -19,6 +20,10 @@ vi.mock('../lib/apiClient', async (importOriginal) => {
     apiGenerateInvestorInsights: vi.fn(async () => ({ ok: true })),
   };
 });
+
+function makeSection(body: string): InvestorInsightsSection {
+  return { key: 'insight_slots', title: 'Insight Slots', kind: 'message', body } as InvestorInsightsSection;
+}
 
 // Report with a mix of Computable and NotComputable slot rows.
 const INSIGHT_SLOTS_BODY = [
@@ -45,81 +50,58 @@ describe('InvestorInsightsTab – insight_slots section', () => {
     vi.clearAllMocks();
   });
 
-  test('renders both slot names from the body text', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_SLOTS);
-
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-test-1" />);
+  test('renders both slot names from the body text', () => {
+    render(<InsightSlotsSection section={makeSection(INSIGHT_SLOTS_BODY)} darkMode={false} />);
 
     // Both human-readable slot labels should appear in the table.
-    await screen.findByText('Raise Terms');
+    screen.getByText('Raise Terms');
     screen.getByText('Market Claims');
   });
 
-  test('Computable badge appears for the Computable slot', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_SLOTS);
+  test('Computable badge appears for the Computable slot', () => {
+    render(<InsightSlotsSection section={makeSection(INSIGHT_SLOTS_BODY)} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-test-1" />);
-
-    await screen.findByText('Raise Terms');
+    screen.getByText('Raise Terms');
 
     // At least one "Computable" badge should be visible.
     expect(screen.getAllByText('Computable').length).toBeGreaterThanOrEqual(1);
   });
 
-  test('NotComputable badge and reason code appear for the NotComputable slot', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_SLOTS);
+  test('NotComputable badge and reason code appear for the NotComputable slot', () => {
+    render(<InsightSlotsSection section={makeSection(INSIGHT_SLOTS_BODY)} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-test-1" />);
-
-    await screen.findByText('Market Claims');
+    screen.getByText('Market Claims');
 
     expect(screen.getByText('NotComputable')).toBeTruthy();
     expect(screen.getByText('NO_MARKET_CLAIM_MENTION')).toBeTruthy();
   });
 
-  test('evidence ref is rendered as monospace pill for Computable slot', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_SLOTS);
+  test('evidence ref is rendered as monospace pill for Computable slot', () => {
+    render(<InsightSlotsSection section={makeSection(INSIGHT_SLOTS_BODY)} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-test-1" />);
-
-    await screen.findByText('Raise Terms');
+    screen.getByText('Raise Terms');
 
     expect(screen.getByText('dpu:doc:a1b2c3d4:page:3')).toBeTruthy();
   });
 
-  test('value is displayed with quotes stripped for Computable slot', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_SLOTS);
+  test('value is displayed with quotes stripped for Computable slot', () => {
+    render(<InsightSlotsSection section={makeSection(INSIGHT_SLOTS_BODY)} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-test-1" />);
-
-    await screen.findByText('Raise Terms');
+    screen.getByText('Raise Terms');
 
     // Surrounding quotes should be stripped: "$2M SAFE" → $2M SAFE
     expect(screen.getByText('$2M SAFE')).toBeTruthy();
   });
 
-  test('value containing "/" (sanitized from "|") is rendered fully — pipe-in-value regression', async () => {
+  test('value containing "/" (sanitized from "|") is rendered fully — pipe-in-value regression', () => {
     // Guard against the bug where a "|" inside the value (e.g. from Excel structured text
     // "Retention ratio | 60.00%") fractures the pipe-delimited line and the value is truncated.
     // The worker sanitizes "|" → "/" before persisting, so the body uses "/".
-    const reportWithPipeValue = {
-      status: 'deterministic_only',
-      render_package: {
-        sections: [
-          {
-            key: 'insight_slots',
-            title: 'Insight Slots',
-            kind: 'message',
-            body: 'traction_signal: Computable | value="Retention ratio / 60.00%" | evidence=dpu:doc:58595eb2:page:1 | reason=none',
-          },
-        ],
-      },
-    } as any;
+    const body = 'traction_signal: Computable | value="Retention ratio / 60.00%" | evidence=dpu:doc:58595eb2:page:1 | reason=none';
 
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(reportWithPipeValue);
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-test-pipe" />);
+    render(<InsightSlotsSection section={makeSection(body)} darkMode={false} />);
 
-    await screen.findByText('Traction Signal');
+    screen.getByText('Traction Signal');
     // Full value must appear (not truncated at the slash)
     expect(screen.getByText('Retention ratio / 60.00%')).toBeTruthy();
     // Evidence ref must also survive
@@ -132,29 +114,15 @@ describe('InvestorInsightsTab – insight_slots section', () => {
   // This test verifies the UI correctly renders the unquoted value "raising approximately $10M"
   // and shows Computable status with the correct evidence ref.
 
-  test('renders "raising approximately $10M" value — 3ICE real DPU reference (adverb regression)', async () => {
-    const REPORT_3ICE = {
-      status: 'deterministic_only',
-      render_package: {
-        sections: [
-          {
-            key: 'insight_slots',
-            title: 'Insight Slots',
-            kind: 'message',
-            body: [
-              'raise_terms: Computable | value="raising approximately $10M" | evidence=dpu:doc:6af4720f:page:33 | reason=none',
-              'market_claims: NotComputable | value=none | evidence=none | reason=NO_MARKET_CLAIM_MENTION',
-            ].join('\n'),
-          },
-        ],
-      },
-    } as any;
+  test('renders "raising approximately $10M" value — 3ICE real DPU reference (adverb regression)', () => {
+    const body = [
+      'raise_terms: Computable | value="raising approximately $10M" | evidence=dpu:doc:6af4720f:page:33 | reason=none',
+      'market_claims: NotComputable | value=none | evidence=none | reason=NO_MARKET_CLAIM_MENTION',
+    ].join('\n');
 
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_3ICE);
-    render(<InvestorInsightsTab darkMode={false} dealId="61ef36dd-391a-4a4e-b30b-1f5d1f19f91e" />);
+    render(<InsightSlotsSection section={makeSection(body)} darkMode={false} />);
 
-    await screen.findByText('Raise Terms');
-
+    screen.getByText('Raise Terms');
     // Value must be displayed with surrounding quotes stripped.
     expect(screen.getByText('raising approximately $10M')).toBeTruthy();
     // Evidence ref must be present as a copyable pill.
@@ -225,9 +193,7 @@ describe('InvestorInsightsTab – gate rendering from render_package.gate_state'
     // G0 must show Pass (confirming multiple rows render, not just G3).
     expect(screen.getByText('G0')).toBeTruthy();
 
-    // insight_slots section must ALSO render correctly alongside gate_state.
-    expect(screen.getByText('Raise Terms')).toBeTruthy();
-    expect(screen.getByText('raising approximately $10M')).toBeTruthy();
+    // insight_slots is now in the Data tab — no longer rendered in InvestorInsightsTab.
 
     // Must NOT show the empty fallback text.
     expect(screen.queryByText(/gate data unavailable/i)).toBeNull();

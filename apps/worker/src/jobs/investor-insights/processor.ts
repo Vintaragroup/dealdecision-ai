@@ -94,6 +94,7 @@ import {
 	buildGovernedSummarySection,
 	buildGovernedExecutiveSummarySection,
 	buildProductProfileSection,
+	buildLlmInterpretationSection,
 } from "./stages/stage-3-llm";
 import {
 	buildRenderPackage,
@@ -108,6 +109,7 @@ import {
 import { type GovernedSkip } from "./stages/governed-skip";
 import { XLSX_DPU_USEFUL_HEURISTIC_VERSION } from "./stages/_shared";
 import { resolveOverviewFallbacksV1 } from "./stages/deterministic-slot-fallback-v1.js";
+import { runExternalDiligenceV1, buildExternalDiligenceRenderSection } from "./external-diligence/external-diligence-v1";
 
 // ─── Binding constants ─────────────────────────────────────────────────────────
 
@@ -561,6 +563,47 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			normMetricsFromInputs(insightSlotInputs)
 		);
 		sections.push(fusionSection);
+
+		// PR34: LLM interpretation with evidence caveat (evidence gate failed — limited coverage).
+		// Non-fatal: runs best-effort and is a no-op when LLM is unavailable.
+		const egGovernedSkips: GovernedSkip[] = [];
+		// PR35: External diligence (best-effort, non-fatal).
+		const egPhase2 = extractPhase2Result(insightSlotInputs);
+		const egCanonicalFieldsBody = egPhase2.fields.length > 0
+			? egPhase2.fields.map(formatCanonicalFieldLine).join("\n")
+			: null;
+		const egExternalDiligence = await runExternalDiligenceV1(insightSlotInputs, {
+			deal_id: dealId,
+			dealName: dealName ?? undefined,
+			canonicalFieldsBody: egCanonicalFieldsBody,
+		}).catch((err) => {
+			console.warn(JSON.stringify({
+				event: "EXTERNAL_DILIGENCE_CATCH",
+				deal_id: dealId,
+				path: "evidence_gate_fail",
+				error: err instanceof Error ? err.message : String(err),
+			}));
+			return null;
+		});
+		const llmInterpretationEg = await buildLlmInterpretationSection(insightSlotInputs, {
+			evidenceCaveat: true,
+			governedSkips: egGovernedSkips,
+			deal_id: dealId,
+			dealName: dealName ?? undefined,
+			productNarrativeBody: buildProductNarrativeBody(insightSlotInputs),
+			externalDiligenceBody: egExternalDiligence?.body ?? null,
+		});
+		if (llmInterpretationEg) {
+			sections.unshift(llmInterpretationEg);
+		}
+		// PR35: Push external diligence section when results were found
+		const egExtDiligenceSection = egExternalDiligence?.diligence
+			? buildExternalDiligenceRenderSection(egExternalDiligence.diligence)
+			: null;
+		if (egExtDiligenceSection) {
+			sections.push(egExtDiligenceSection);
+		}
+
 		const renderPackage = buildRenderPackage({
 			dealId,
 			status: "deterministic_only",
@@ -570,6 +613,8 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			engineVersion,
 			sections,
 			evidenceGate,
+			// PR34: include governed_skips when LLM interpretation was skipped
+			governedSkips: egGovernedSkips.length > 0 ? egGovernedSkips : undefined,
 			// PR22: deterministic slot fallbacks (flag-gated)
 			deterministicOverviewSlots: process.env["DETERMINISTIC_SLOT_FALLBACK_V1"] === "true"
 				? buildDeterministicOverviewSlots(insightSlotInputs.dpuPages)
@@ -779,6 +824,46 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		sections.push(productProfileSection);
 	}
 	sections.push(fusionSection);
+
+	// PR34: LLM interpretation (no caveat — evidence gate passed, full coverage).
+	// Prepended as the first section so it renders at the top of the decision surface.
+	// Non-fatal: runs best-effort and is a no-op when LLM is unavailable.
+	// PR35: External diligence (best-effort, non-blocking).
+	const extDiligencePhase2 = extractPhase2Result(insightSlotInputs);
+	const extDiligenceCanonicalBody = extDiligencePhase2.fields.length > 0
+		? extDiligencePhase2.fields.map(formatCanonicalFieldLine).join("\n")
+		: null;
+	const externalDiligence = await runExternalDiligenceV1(insightSlotInputs, {
+		deal_id: dealId,
+		dealName: dealName ?? undefined,
+		canonicalFieldsBody: extDiligenceCanonicalBody,
+	}).catch((err) => {
+		console.warn(JSON.stringify({
+			event: "EXTERNAL_DILIGENCE_CATCH",
+			deal_id: dealId,
+			path: "happy_path",
+			error: err instanceof Error ? err.message : String(err),
+		}));
+		return null;
+	});
+	const llmInterpretation = await buildLlmInterpretationSection(insightSlotInputs, {
+		evidenceCaveat: false,
+		governedSkips,
+		deal_id: dealId,
+		dealName: dealName ?? undefined,
+		productNarrativeBody,
+		externalDiligenceBody: externalDiligence?.body ?? null,
+	});
+	if (llmInterpretation) {
+		sections.unshift(llmInterpretation);
+	}
+	// PR35: Push external diligence section when results were found
+	const extDiligenceSection = externalDiligence?.diligence
+		? buildExternalDiligenceRenderSection(externalDiligence.diligence)
+		: null;
+	if (extDiligenceSection) {
+		sections.push(extDiligenceSection);
+	}
 
 	// WS-A PR20: build recovery metadata when mode="recover_structured_json".
 	const recoveryMetadata = mode === "recover_structured_json"

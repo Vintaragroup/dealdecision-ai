@@ -94,7 +94,7 @@ export const RenderSectionSchema = z.object({
 // ─── Governed-skip observability (WS-B PR20) ────────────────────────────────
 
 export const GovernedSkipSchema = z.object({
-  stage: z.enum(["governed_summary_v1", "governed_executive_summary_v1", "product_profile_v1"]),
+  stage: z.enum(["governed_summary_v1", "governed_executive_summary_v1", "product_profile_v1", "llm_interpretation_v1"]),
   reason_code: z.string().min(1),
   ts: z.string().datetime(),
 });

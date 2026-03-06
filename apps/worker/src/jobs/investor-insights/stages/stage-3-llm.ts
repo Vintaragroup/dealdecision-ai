@@ -33,6 +33,9 @@ import {
 	buildFinancialHealthMetricsSection,
 	formatImpliedCapitalForCorpus,
 	buildFinancialReconciliationSection,
+	buildDeckFinancialSignalsSection,
+	buildProductSignalsBundleSection,
+	buildGtmSignalsBundleSection,
 	extractPhase2Result,
 	formatCanonicalFieldLine,
 	formatConflictLine,
@@ -42,8 +45,14 @@ import type { GateState } from "../../../contracts/investor-insights/schemas";
 import {
 	recordGovernedSkip,
 	productProfileReasonToSkipCode,
+	llmInterpretationReasonToSkipCode,
 	type GovernedSkip,
 } from "./governed-skip";
+import {
+	generateLlmInterpretationV1,
+	serializeLlmInterpretationBody,
+	type LlmInterpretationV1,
+} from "../llm-interpretation-v1";
 
 export async function buildGovernedSummarySection(
 	inputs: InsightSlotInputs,
@@ -435,3 +444,137 @@ export async function buildProductProfileSection(
  * Only emitted when extractDeckFinancialSignalsV1 found at least one mention.
  */
 
+// ─── PR34: LLM Interpretation section ────────────────────────────────────────
+
+/**
+ * Build the llm_interpretation_v1 section — investment posture, confidence,
+ * executive summary, strengths, risks, and next questions.
+ *
+ * Called AFTER deterministic stages complete in both the happy path (evidence
+ * gate passed) and the evidence-gate-fail path (with evidenceCaveat=true).
+ *
+ * Returns null when the LLM is unavailable or the output fails validation.
+ * Failure is non-fatal; the governing principle is "no section is better than
+ * a hallucinated section".
+ */
+export async function buildLlmInterpretationSection(
+	inputs: InsightSlotInputs,
+	opts?: {
+		evidenceCaveat?: boolean;
+		governedSkips?: GovernedSkip[];
+		deal_id?: string;
+		report_id?: string;
+		dealName?: string;
+		productNarrativeBody?: string | null;
+		/** PR35: serialised external diligence body from runExternalDiligenceV1 */
+		externalDiligenceBody?: string | null;
+	}
+): Promise<RenderPackage["sections"][number] | null> {
+	try {
+		const phase2Result = extractPhase2Result(inputs);
+		const canonicalFieldsBody = phase2Result.fields.length > 0
+			? phase2Result.fields.map(formatCanonicalFieldLine).join("\n")
+			: null;
+		const conflictsBody = phase2Result.conflicts.length > 0
+			? phase2Result.conflicts.map(formatConflictLine).join("\n")
+			: null;
+		const slotsSection = buildInsightSlotsSection(inputs);
+		const insightSlotsBody =
+			typeof slotsSection.body === "string" && slotsSection.body.trim().length > 0
+				? slotsSection.body
+				: null;
+		const financialStmtBody = inputs.bestFinancialStatement
+			? (buildFinancialStatementSection(inputs.bestFinancialStatement).body ?? null)
+			: null;
+		const useOfFundsBody = inputs.bestUseOfFundsStatement
+			? (buildUseOfFundsV1Section(inputs.bestUseOfFundsStatement).body ?? null)
+			: null;
+		const financialHealthBody = inputs.bestFinancialStatement
+			? (buildFinancialHealthMetricsSection(inputs.bestFinancialStatement)?.body ?? null)
+			: null;
+		const financialReconciliationBody = inputs.financialReconciliation
+			? (buildFinancialReconciliationSection(inputs.financialReconciliation).body ?? null)
+			: null;
+		const deckFinancialSignalsBody = inputs.deckFinancialSignals
+			? (buildDeckFinancialSignalsSection(inputs.deckFinancialSignals).body ?? null)
+			: null;
+		const productSignalsBundleBody = buildProductSignalsBundleSection(inputs).body ?? null;
+		const gtmSignalsBundleBody = buildGtmSignalsBundleSection(inputs).body ?? null;
+
+		const result = await generateLlmInterpretationV1({
+			canonicalFieldsBody,
+			insightSlotsBody,
+			financialStmtBody,
+			useOfFundsBody,
+			financialHealthBody,
+			financialReconciliationBody,
+			deckFinancialSignalsBody,
+			productSignalsBundleBody,
+			gtmSignalsBundleBody,
+			externalDiligenceBody: opts?.externalDiligenceBody ?? null,
+			conflictsBody,
+			dealName: opts?.dealName ?? undefined,
+			productNarrativeBody: opts?.productNarrativeBody ?? null,
+			evidenceCaveat: opts?.evidenceCaveat ?? false,
+		});
+
+		if (!result.ok) {
+			console.log(
+				JSON.stringify({
+					event: "LLM_INTERPRETATION_V1_SKIP",
+					reason: result.reason,
+					deal_id: opts?.deal_id ?? null,
+				})
+			);
+			if (opts?.governedSkips) {
+				recordGovernedSkip({
+					stage: "llm_interpretation_v1",
+					reason_code: llmInterpretationReasonToSkipCode(result.reason),
+					deal_id: opts?.deal_id,
+					report_id: opts?.report_id,
+					governedSkips: opts.governedSkips,
+				});
+			}
+			return null;
+		}
+
+		console.log(
+			JSON.stringify({
+				event: "LLM_INTERPRETATION_V1_RESOLVED",
+				posture: result.value.posture,
+				confidence: result.value.confidence,
+				evidence_caveat: result.value.evidence_caveat !== null,
+				deal_id: opts?.deal_id ?? null,
+			})
+		);
+
+		return {
+			key: "llm_interpretation_v1",
+			title: "Investment Interpretation",
+			kind: "message",
+			body: serializeLlmInterpretationBody(result.value),
+			fallback: "Investment interpretation unavailable.",
+		};
+	} catch (err) {
+		console.error(
+			JSON.stringify({
+				event: "LLM_INTERPRETATION_V1_ERROR",
+				error: err instanceof Error ? err.message : String(err),
+				deal_id: opts?.deal_id ?? null,
+			})
+		);
+		if (opts?.governedSkips) {
+			recordGovernedSkip({
+				stage: "llm_interpretation_v1",
+				reason_code: "unknown",
+				deal_id: opts?.deal_id,
+				report_id: opts?.report_id,
+				governedSkips: opts.governedSkips,
+			});
+		}
+		return null;
+	}
+}
+
+// Re-export LlmInterpretationV1 type for consumers that import from this stage module.
+export type { LlmInterpretationV1 } from "../llm-interpretation-v1";

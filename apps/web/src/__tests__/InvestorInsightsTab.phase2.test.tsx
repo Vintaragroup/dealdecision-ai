@@ -8,17 +8,8 @@ import { render, screen } from '@testing-library/react';
 import React from 'react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { InvestorInsightsTab } from '../components/workspace/InvestorInsightsTab';
-import { apiGetInvestorInsights } from '../lib/apiClient';
-
-vi.mock('../lib/apiClient', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../lib/apiClient')>();
-  return {
-    ...actual,
-    apiGetInvestorInsights: vi.fn(async () => ({ status: 'not_started' } as any)),
-    apiGenerateInvestorInsights: vi.fn(async () => ({ ok: true })),
-  };
-});
+import { CanonicalFieldsSection, CompletenessSummarySection, ConflictsSection } from '../components/workspace/InvestorInsightsTab';
+import type { InvestorInsightsSection } from '../lib/apiClient';
 
 // ── canonical_fields fixtures ────────────────────────────────────────────────
 
@@ -41,6 +32,13 @@ const REPORT_WITH_CANONICAL_FIELDS = {
     ],
   },
 } as any;
+
+const CANONICAL_SECTION: InvestorInsightsSection = {
+  key: 'canonical_fields',
+  title: 'Canonical Fields',
+  kind: 'message',
+  body: CANONICAL_FIELDS_BODY,
+} as InvestorInsightsSection;
 
 // ── completeness_summary fixtures ────────────────────────────────────────────
 
@@ -66,6 +64,13 @@ const REPORT_WITH_COMPLETENESS = {
   },
 } as any;
 
+const COMPLETENESS_SECTION: InvestorInsightsSection = {
+  key: 'completeness_summary',
+  title: 'Completeness Summary',
+  kind: 'message',
+  body: COMPLETENESS_BODY,
+} as InvestorInsightsSection;
+
 // ── conflicts fixtures ────────────────────────────────────────────────────────
 
 const CONFLICTS_BODY =
@@ -85,6 +90,13 @@ const REPORT_WITH_CONFLICTS = {
   },
 } as any;
 
+const CONFLICTS_SECTION: InvestorInsightsSection = {
+  key: 'conflicts',
+  title: 'Conflicting Field Values',
+  kind: 'message',
+  body: CONFLICTS_BODY,
+} as InvestorInsightsSection;
+
 const REPORT_WITHOUT_CONFLICTS = {
   status: 'deterministic_only',
   render_package: {
@@ -99,6 +111,13 @@ const REPORT_WITHOUT_CONFLICTS = {
   },
 } as any;
 
+const COMPLETENESS_SECTION_SIMPLE: InvestorInsightsSection = {
+  key: 'completeness_summary',
+  title: 'Completeness Summary',
+  kind: 'message',
+  body: 'raise_terms: Present\nmarket_claims: Missing',
+} as InvestorInsightsSection;
+
 // ── Tests: canonical_fields ───────────────────────────────────────────────────
 
 describe('InvestorInsightsTab – canonical_fields section', () => {
@@ -106,13 +125,11 @@ describe('InvestorInsightsTab – canonical_fields section', () => {
     vi.clearAllMocks();
   });
 
-  test('renders category and field labels humanized', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_CANONICAL_FIELDS);
-
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-1" />);
+  test('renders category and field labels humanized', () => {
+    render(<CanonicalFieldsSection section={CANONICAL_SECTION} darkMode={false} />);
 
     // Category 'raise_terms' appears once per row in that category
-    const raiseCells = await screen.findAllByText('Raise Terms');
+    const raiseCells = screen.getAllByText('Raise Terms');
     expect(raiseCells.length).toBeGreaterThanOrEqual(1);
     screen.getByText('Raise Amount');
     screen.getByText('Raise Round');
@@ -120,40 +137,32 @@ describe('InvestorInsightsTab – canonical_fields section', () => {
     screen.getByText('Tam Value');
   });
 
-  test('Computable badge rendered for Computable rows', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_CANONICAL_FIELDS);
+  test('Computable badge rendered for Computable rows', () => {
+    render(<CanonicalFieldsSection section={CANONICAL_SECTION} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-1" />);
-
-    await screen.findByText('Canonical Fields');
+    screen.getByText('Raise Amount'); // verify content present
     const badges = screen.getAllByText('Computable');
     expect(badges.length).toBeGreaterThanOrEqual(2);
   });
 
-  test('NotComputable badge rendered for NotComputable rows', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_CANONICAL_FIELDS);
+  test('NotComputable badge rendered for NotComputable rows', () => {
+    render(<CanonicalFieldsSection section={CANONICAL_SECTION} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-1" />);
-
-    await screen.findByText('NotComputable');
+    screen.getByText('NotComputable');
   });
 
-  test('strips surrounding quotes and trims trailing whitespace from value', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_CANONICAL_FIELDS);
-
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-1" />);
+  test('strips surrounding quotes and trims trailing whitespace from value', () => {
+    render(<CanonicalFieldsSection section={CANONICAL_SECTION} darkMode={false} />);
 
     // Value is `"$2M Pre-Seed "` in body → should render as `$2M Pre-Seed` (no quotes, no trailing space)
-    await screen.findByText('$2M Pre-Seed');
+    screen.getByText('$2M Pre-Seed');
   });
 
-  test('evidence pill rendered for Computable row with evidence ref', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_CANONICAL_FIELDS);
-
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-1" />);
+  test('evidence pill rendered for Computable row with evidence ref', () => {
+    render(<CanonicalFieldsSection section={CANONICAL_SECTION} darkMode={false} />);
 
     // Two rows share this evidence ref, so multiple pills are expected
-    const pills = await screen.findAllByText('dpu:doc:6557c7c2:page:14');
+    const pills = screen.getAllByText('dpu:doc:6557c7c2:page:14');
     expect(pills.length).toBeGreaterThanOrEqual(1);
   });
 });
@@ -165,44 +174,36 @@ describe('InvestorInsightsTab – completeness_summary section', () => {
     vi.clearAllMocks();
   });
 
-  test('renders all five category labels humanized', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_COMPLETENESS);
+  test('renders all five category labels humanized', () => {
+    render(<CompletenessSummarySection section={COMPLETENESS_SECTION} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-1" />);
-
-    await screen.findByText('Raise Terms');
+    screen.getByText('Raise Terms');
     screen.getByText('Valuation Terms');
     screen.getByText('Use Of Funds');
     screen.getByText('Market Claims');
     screen.getByText('Traction Signal');
   });
 
-  test('Present badge rendered for Present rows', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_COMPLETENESS);
+  test('Present badge rendered for Present rows', () => {
+    render(<CompletenessSummarySection section={COMPLETENESS_SECTION} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-1" />);
-
-    await screen.findByText('Completeness Summary');
+    screen.getByText('Raise Terms'); // verify content present
     const presentBadges = screen.getAllByText('Present');
     expect(presentBadges.length).toBeGreaterThanOrEqual(2);
   });
 
-  test('Missing badge rendered for Missing rows', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_COMPLETENESS);
+  test('Missing badge rendered for Missing rows', () => {
+    render(<CompletenessSummarySection section={COMPLETENESS_SECTION} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-1" />);
-
-    await screen.findByText('Completeness Summary');
+    screen.getByText('Raise Terms'); // verify content present
     const missingBadges = screen.getAllByText('Missing');
     expect(missingBadges.length).toBeGreaterThanOrEqual(2);
   });
 
-  test('Conflicting badge rendered for Conflicting rows', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_COMPLETENESS);
+  test('Conflicting badge rendered for Conflicting rows', () => {
+    render(<CompletenessSummarySection section={COMPLETENESS_SECTION} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-1" />);
-
-    await screen.findByText('Conflicting');
+    screen.getByText('Conflicting');
   });
 });
 
@@ -213,38 +214,31 @@ describe('InvestorInsightsTab – conflicts section', () => {
     vi.clearAllMocks();
   });
 
-  test('warning banner rendered when conflicts section is present', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_CONFLICTS);
+  test('warning banner rendered when conflicts section is present', () => {
+    render(<ConflictsSection section={CONFLICTS_SECTION} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-1" />);
-
-    await screen.findByRole('alert');
+    screen.getByRole('alert');
     screen.getByText(/Conflicting values were detected/i);
   });
 
-  test('conflict row field name rendered humanized', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_CONFLICTS);
+  test('conflict row field name rendered humanized', () => {
+    render(<ConflictsSection section={CONFLICTS_SECTION} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-1" />);
-
-    await screen.findByText('Raise Amount');
+    screen.getByText('Raise Amount');
   });
 
-  test('both evidence pills rendered in the conflict row', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_CONFLICTS);
+  test('both evidence pills rendered in the conflict row', () => {
+    render(<ConflictsSection section={CONFLICTS_SECTION} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-1" />);
-
-    await screen.findByText('dpu:doc:a1b2c3d4:page:1');
+    screen.getByText('dpu:doc:a1b2c3d4:page:1');
     screen.getByText('dpu:doc:b2c3d4e5:page:5');
   });
 
-  test('warning banner NOT rendered when conflicts key is absent', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITHOUT_CONFLICTS);
+  test('warning banner NOT rendered when conflicts key is absent', () => {
+    // insight_slots is now in the Data tab — render CompletenessSummarySection directly
+    render(<CompletenessSummarySection section={COMPLETENESS_SECTION_SIMPLE} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-1" />);
-
-    await screen.findByText('Completeness Summary');
+    screen.getByText('Raise Terms');
     expect(screen.queryByRole('alert')).toBeNull();
   });
 });

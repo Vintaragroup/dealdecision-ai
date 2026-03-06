@@ -2684,6 +2684,115 @@ export function buildInvestorThesisStubSection(
 // ─── G3 diagnostic section (dev/staging only) ───────────────────────────────
 
 
+// ─── Product signal bundle builder (PR34.3) ──────────────────────────────────
+
+/**
+ * Regular expressions that indicate product-oriented content:
+ * capabilities, automation/AI claims, integrations, workflow descriptions,
+ * competitive differentiation language, and platform architecture signals.
+ */
+const PRODUCT_SIGNAL_RE =
+	/\b(?:automat(?:es?|ion|ing)|AI[-\s]?powered|machine\s+learning|ML\b|workflow[s]?|integrat(?:es?|ion|ing)\s+with|plug[-\s]?in|API\b|sdk\b|no[-\s]?code|low[-\s]?code|compet(?:itor|itive|ition)|differentiat(?:es?|ion|ing)|proprietary|patented?|moat\b|unique(?:ly)?|unlike|versus\s|compared\s+to|built\s+(?:on|for|around)|platform\b|capability|capabilities|feature[s]?\b|dashboard[s]?\b|real[-\s]?time\b|enterprise[-\s]grade|self[-\s]?serve|end[-\s]?to[-\s]?end|white[-\s]?label|embedded\b|native[ly]?\b)\b/i;
+
+/**
+ * Build a Product & Differentiation signal bundle body from DPU deck pages.
+ *
+ * Scans pages for product capability language, automation/AI claims,
+ * workflow integration signals, competitive positioning, and differentiation
+ * claims. Returns up to ~1000 chars of context or null when unavailable.
+ */
+function buildProductSignalsBundleSection(inputs: InsightSlotInputs): {
+	key: string;
+	title: string;
+	kind: string;
+	body: string | null;
+	fallback: string;
+} {
+	const MAX_CHARS = 1000;
+	const parts: string[] = [];
+
+	for (const page of inputs.dpuPages) {
+		const text = extractDpuText(page);
+		if (!text || text.length < 20) continue;
+		if (!PRODUCT_SIGNAL_RE.test(text)) continue;
+		const excerpt = text.trim().slice(0, 300);
+		parts.push(excerpt);
+		if (parts.join("\n\n").length >= MAX_CHARS) break;
+	}
+
+	const body = parts.length > 0 ? parts.join("\n\n").slice(0, MAX_CHARS) : null;
+
+	return {
+		key: "product_signals_bundle_v1",
+		title: "Product & Differentiation Signals",
+		kind: "message",
+		body,
+		fallback: "No product signals extracted.",
+	};
+}
+
+// ─── GTM signal bundle builder (PR34.3) ───────────────────────────────────────
+
+/**
+ * Keywords indicating go-to-market, pricing, customer segment, or distribution content.
+ */
+const GTM_SIGNAL_RE =
+	/\b(?:pricing\b|price[sd]?\b|tier[s]?\b|subscription[s]?\b|per\s+(?:seat|user|month|year)|annually\b|enterprise\s+plan|starter\s+plan|freemium\b|free\s+trial|pilot\b|target(?:ed)?\s+(?:customer|buyer|segment|market|audience|user)|ideal\s+customer|ICP\b|SMB\b|mid[-\s]?market|enterprise\s+(?:customer|client|buyer)|go[-\s]?to[-\s]?market|GTM\b|channel[s]?\b|partner(?:ship)?[s]?\b|distribution\b|resell(?:er|ing)?\b|direct\s+sale[s]?\b|inside\s+sales?\b|outbound\b|inbound\b|demand\s+gen\b|sales\s+(?:team|hire|motion|strategy)|marketing\s+(?:spend|budget|hire)|land\s+and\s+expand|net\s+retention\b|NRR\b|expansion\s+revenue)\b/i;
+
+/**
+ * Build a Go-To-Market signal bundle body from DPU deck pages and use-of-funds.
+ *
+ * Scans pages for pricing structures, target customer/ICP descriptions,
+ * subscription tiers, distribution channels, and partnership signals.
+ * Also surfaces GTM-relevant use-of-funds allocations (sales, marketing).
+ * Returns up to ~1000 chars of context or null when unavailable.
+ */
+function buildGtmSignalsBundleSection(inputs: InsightSlotInputs): {
+	key: string;
+	title: string;
+	kind: string;
+	body: string | null;
+	fallback: string;
+} {
+	const MAX_CHARS = 1000;
+	const parts: string[] = [];
+
+	for (const page of inputs.dpuPages) {
+		const text = extractDpuText(page);
+		if (!text || text.length < 20) continue;
+		if (!GTM_SIGNAL_RE.test(text)) continue;
+		const excerpt = text.trim().slice(0, 300);
+		parts.push(excerpt);
+		if (parts.join("\n\n").length >= MAX_CHARS) break;
+	}
+
+	// Supplement with use-of-funds GTM allocation signals when available
+	const uof = inputs.bestUseOfFundsStatement;
+	if (uof) {
+		const gtmBuckets = uof.buckets.filter((b) =>
+			/sales|marketing|go[-\s]?to[-\s]?market|GTM|business\s+dev|BD\b|channel|partner/i.test(b.category)
+		);
+		if (gtmBuckets.length > 0) {
+			const allocation_lines = gtmBuckets.map((b) => {
+				const pct = b.percent != null ? ` (${b.percent}%)` : "";
+				const amt = b.amount != null ? ` — $${b.amount.toLocaleString()}` : "";
+				return `  ${b.category}${pct}${amt}`;
+			});
+			parts.push(`Use-of-Funds GTM allocations:\n${allocation_lines.join("\n")}`);
+		}
+	}
+
+	const body = parts.length > 0 ? parts.join("\n\n").slice(0, MAX_CHARS) : null;
+
+	return {
+		key: "gtm_signals_bundle_v1",
+		title: "Go-To-Market Signals",
+		kind: "message",
+		body,
+		fallback: "No GTM signals extracted.",
+	};
+}
+
 
 // ── Named exports used by stage-1, stage-3, and the orchestrator ─────────────
 export {
@@ -2700,5 +2809,8 @@ export {
 	buildFinancialHealthMetricsSection,
 	formatImpliedCapitalForCorpus,
 	buildFinancialReconciliationSection,
+	buildDeckFinancialSignalsSection,
+	buildProductSignalsBundleSection,
+	buildGtmSignalsBundleSection,
 	buildThesisInputs,
 };

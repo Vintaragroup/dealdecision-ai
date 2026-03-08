@@ -1,5 +1,5 @@
 /**
- * PR35 — External Due Diligence: Tavily Search Runner
+ * PR35 / PR36.2 — External Due Diligence: Tavily Search Runner
  *
  * Cost-bounded, flag-gated Tavily search executor.
  *
@@ -34,12 +34,12 @@ import type { ExternalDiligenceQueryPlan } from "./external-diligence-schema";
 // ─── Bucket ordering (defines execution priority if total-results cap is hit) ──
 
 const BUCKET_ORDER: ExternalDiligenceBucketKey[] = [
-	"company_overview",
-	"competitors",
-	"market_trends",
-	"company_news",
+	"company_footprint",
+	"competitive_landscape",
+	"market_outlook",
 	"founder_team_signals",
-	"financial_market_context",
+	"financial_context",
+	"external_risks",
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -105,7 +105,7 @@ export async function runTavilySearches(
 		return {
 			buckets: BUCKET_ORDER.map((bucket) => ({
 				bucket,
-				query_used: plan.queries[bucket],
+				query_used: plan.queries[bucket].query,
 				results: [],
 				results_count: 0,
 				status: "skipped",
@@ -130,7 +130,7 @@ export async function runTavilySearches(
 		if (totalResultsFetched >= MAX_TOTAL_RESULTS) {
 			buckets.push({
 				bucket: bucketKey,
-				query_used: plan.queries[bucketKey],
+				query_used: plan.queries[bucketKey].query,
 				results: [],
 				results_count: 0,
 				status: "skipped",
@@ -138,7 +138,8 @@ export async function runTavilySearches(
 			continue;
 		}
 
-		const query = plan.queries[bucketKey];
+		const spec = plan.queries[bucketKey];
+		const query = spec.query;
 		const remainingSlots = MAX_TOTAL_RESULTS - totalResultsFetched;
 		const maxResults = Math.min(MAX_RESULTS_PER_QUERY, remainingSlots);
 
@@ -160,6 +161,9 @@ export async function runTavilySearches(
 				includeAnswer: false,
 				includeUsage: true,
 				timeout: 10000,
+				...(spec.topic ? { topic: spec.topic } : {}),
+				...(spec.excludeDomains ? { excludeDomains: spec.excludeDomains } : {}),
+				...(spec.days ? { days: spec.days } : {}),
 			});
 
 			queriesRun++;
@@ -203,7 +207,7 @@ export async function runTavilySearches(
 					event: "EXTERNAL_DILIGENCE_QUERY_FAIL",
 					deal_id: dealId,
 					bucket: bucketKey,
-					query,
+					query: spec.query,
 					error: message,
 					ts: new Date().toISOString(),
 				})

@@ -235,6 +235,14 @@ export interface LlmInterpretationV1 {
   market_position: string;
   /** 1–3 sentences interpreting the raise (amount, terms, use of funds). */
   capital_and_raise_interpretation: string;
+  /** PR36: external macro + sector context from web research. Empty string when unavailable. */
+  external_market_context: string;
+  /** PR36: competitive landscape from web research (named comps, market structure). Empty string when unavailable. */
+  competitive_landscape: string;
+  /** PR36: claim verification summary (supported/contradicted/mixed/insufficient). Empty string when unavailable. */
+  claim_verification_summary: string;
+  /** PR36: externally-sourced risk signals (news, regulation, sector instability). Empty string when unavailable. */
+  external_risk_signals: string;
   /** Up to 3 critical unknowns preventing high-confidence assessment. */
   key_unknowns: string[];
   /** Non-null when evidence coverage was limited at time of generation. */
@@ -259,19 +267,73 @@ export function parseLlmInterpretationBody(body: string): LlmInterpretationV1 | 
     return null;
   }
 }
-// ─── PR35: External Due Diligence V1 ─────────────────────────────────────────
+// ─── PR35 / PR36.2: External Due Diligence V1 ───────────────────────────────
 
 export type ExternalDiligenceBucketKey =
-  | 'company_overview'
-  | 'competitors'
-  | 'market_trends'
-  | 'company_news'
+  | 'company_footprint'
+  | 'competitive_landscape'
+  | 'market_outlook'
+  | 'external_risks'
   | 'founder_team_signals'
-  | 'financial_market_context';
+  | 'financial_context';
 
 export type ExternalBucketStatus = 'ok' | 'empty' | 'skipped' | 'failed';
 export type CorroborationVerdict = 'corroborated' | 'contradicted' | 'not_found';
 export type ExternalDiligenceRunStatus = 'succeeded' | 'partial' | 'failed' | 'skipped';
+
+// ─── PR36.2: Typed bucket signals ────────────────────────────────────────────
+
+export interface CompanyFootprintSignal {
+  summary: string;
+  website_found: boolean;
+  funding_profile_found: boolean;
+  press_found: boolean;
+  footprint_quality: 'strong' | 'moderate' | 'weak' | 'none';
+}
+
+export interface CompetitiveLandscapeSignal {
+  summary: string;
+  direct_competitor_names: string[];
+  adjacent_names: string[];
+  category_fragmentation: 'fragmented' | 'consolidated' | 'unknown';
+  competitive_intensity: 'high' | 'medium' | 'low' | 'unknown';
+}
+
+export interface MarketOutlookSignal {
+  summary: string;
+  direction: 'growing' | 'flat' | 'declining' | 'mixed' | 'unknown';
+  tailwinds: string[];
+  headwinds: string[];
+}
+
+export interface FounderTeamSignal {
+  summary: string;
+  profile_found: boolean;
+  prior_role_found: boolean;
+  credibility_signals: string[];
+  limited_footprint: boolean;
+}
+
+export interface FinancialContextSignal {
+  summary: string;
+  raise_level: 'typical' | 'above_benchmark' | 'below_benchmark' | 'unknown';
+  funding_environment: 'supportive' | 'selective' | 'weak' | 'unknown';
+}
+
+export interface ExternalRisksSignal {
+  summary: string;
+  risk_signals: string[];
+  has_regulatory_concern: boolean;
+  has_reputation_concern: boolean;
+}
+
+export type BucketSignal =
+  | CompanyFootprintSignal
+  | CompetitiveLandscapeSignal
+  | MarketOutlookSignal
+  | FounderTeamSignal
+  | FinancialContextSignal
+  | ExternalRisksSignal;
 
 export interface ExternalSearchResult {
   url: string;
@@ -289,6 +351,8 @@ export interface ExternalDiligenceBucket {
   results_count: number;
   status: ExternalBucketStatus;
   error_message?: string;
+  /** PR36.2: typed deterministic signal extracted from filtered results */
+  signal?: BucketSignal | null;
 }
 
 export interface ClaimCorroboration {
@@ -310,6 +374,36 @@ export interface ExternalDiligenceV1 {
   sector_used: string | null;
   ran_at: string;
   tavily_credits_used: number | null;
+  /** PR36.3: Cross-bucket synthesised investor conclusions */
+  synthesis?: ExternalSignalSynthesisV1;
+}
+
+// ─── PR36.3: External Signal Synthesis V1 ────────────────────────────────────
+
+export type SynthesizedRating = 'low' | 'moderate' | 'high' | 'unknown';
+export type DirectionalRating = 'positive' | 'neutral' | 'negative' | 'mixed' | 'unknown';
+
+export interface SynthesisItem {
+  rating: SynthesizedRating;
+  summary: string;
+  drivers: string[];
+}
+
+export interface ClaimValidationItem {
+  rating: DirectionalRating;
+  summary: string;
+  drivers: string[];
+}
+
+export interface ExternalSignalSynthesisV1 {
+  schema_version: 'external_signal_synthesis_v1';
+  market_attractiveness: SynthesisItem;
+  competitive_pressure: SynthesisItem;
+  company_visibility: SynthesisItem;
+  founder_credibility: SynthesisItem;
+  external_risk: SynthesisItem;
+  claim_validation_posture: ClaimValidationItem;
+  evidence_refs: string[];
 }
 
 const EXT_DILIGENCE_DELIMITER = '---external_diligence_v1_json---\n';
@@ -325,6 +419,76 @@ export function parseExternalDiligenceBody(body: string): ExternalDiligenceV1 | 
     const json = body.slice(idx + EXT_DILIGENCE_DELIMITER.length).trim();
     const parsed = JSON.parse(json) as ExternalDiligenceV1;
     if (parsed?.schema_version !== 'external_diligence_v1') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+// ── Deal Risk Radar V1 (PR37) ─────────────────────────────────────────────────
+
+export type MonitoringEventImpact = 'low' | 'medium' | 'high';
+export type MonitoringRunStatus = 'succeeded' | 'partial' | 'failed' | 'skipped';
+export type SignalConsensus = 'bullish' | 'bearish' | 'mixed' | 'neutral' | 'insufficient_data';
+
+export interface CompetitorEvent {
+  company: string;
+  event: string;
+  impact: MonitoringEventImpact;
+  evidence_urls: string[];
+}
+
+export interface MarketEvent {
+  description: string;
+  sector: string;
+  direction: 'positive' | 'negative' | 'neutral';
+  evidence_urls: string[];
+}
+
+export interface CompanyEvent {
+  event: string;
+  category: 'legal' | 'funding' | 'product' | 'press' | 'other';
+  impact: MonitoringEventImpact;
+  evidence_urls: string[];
+}
+
+export interface FounderSignal {
+  name: string;
+  signal: string;
+  impact: MonitoringEventImpact;
+  evidence_urls: string[];
+}
+
+export interface DealRiskRadarV1 {
+  schema_version: 'deal_risk_radar_v1';
+  deal_id: string;
+  ran_at: string;                     // ISO-8601
+  next_scheduled_at: string | null;   // ISO-8601
+  run_status: MonitoringRunStatus;
+  company_name_used: string;
+  sector_used: string;
+  total_sources_fetched: number;
+  source_count: number;               // unique sources after dedup
+  signal_consensus: SignalConsensus;
+  competitor_events: CompetitorEvent[];
+  market_events: MarketEvent[];
+  company_events: CompanyEvent[];
+  founder_signals: FounderSignal[];
+}
+
+const MONITORING_DELIMITER = '---deal_risk_radar_v1_json---\n';
+
+/**
+ * Parse a DealRiskRadarV1 from a section body string created by
+ * serializeMonitoringBody on the worker side.  Returns null on failure.
+ */
+export function parseMonitoringBody(body: string): DealRiskRadarV1 | null {
+  const idx = body.indexOf(MONITORING_DELIMITER);
+  if (idx === -1) return null;
+  try {
+    const json = body.slice(idx + MONITORING_DELIMITER.length).trim();
+    const parsed = JSON.parse(json) as DealRiskRadarV1;
+    if (parsed?.schema_version !== 'deal_risk_radar_v1') return null;
     return parsed;
   } catch {
     return null;

@@ -111,6 +111,7 @@ import { documentIntelligenceExtractProcessor } from "./jobs/document-intelligen
 import { populateDocumentPageUnderstandingProcessor } from "./jobs/populate-document-page-understanding";
 import { generateInvestorInsightsProcessor } from "./jobs/investor-insights/processor";
 import { exportReportPdfProcessor } from "./jobs/export-report-pdf/processor";
+import { monitorDealSignalsProcessor } from "./jobs/monitoring/monitor-deal-signals";
 import { maybeEnqueueAnalyzeDealGuarantee } from "./lib/analyze-deal-guarantee";
 import { renderDocumentPagesProcessor } from "./jobs/render-document-pages/processor";
 import { fetchEvidenceProcessor } from "./jobs/fetch-evidence/processor";
@@ -2209,6 +2210,10 @@ registerWorker("investor_insights", generateInvestorInsightsProcessor, { concurr
 // PDF Export — renders due-diligence reports server-side via Playwright
 // Queue: "export_report_pdf" | Concurrency: 1 (Playwright is resource-intensive)
 registerWorker("export_report_pdf", exportReportPdfProcessor, { concurrency: 1 });
+
+// Deal Risk Radar — continuous external signal monitoring (PR37)
+// Queue: "monitor_deal_signals" | Concurrency: 2 (IO-bound Tavily calls)
+registerWorker(QUEUE_NAMES.monitor_deal_signals, monitorDealSignalsProcessor, { concurrency: 2 });
 
 // ─── Extract Visuals Finalize Recovery ───────────────────────────────────────
 // Queue: "finalize_extract_visuals"

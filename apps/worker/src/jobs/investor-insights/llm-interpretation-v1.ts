@@ -1,7 +1,7 @@
 /**
  * llm-interpretation-v1.ts
  *
- * LLM Interpretation Layer — PR34.3 (upgraded from PR34.2)
+ * LLM Interpretation Layer — PR36 (upgraded from PR34.3)
  *
  * Generates a structured investor memo from deterministic pipeline outputs:
  * posture, confidence, executive summary, product differentiation,
@@ -113,6 +113,34 @@ export interface LlmInterpretationV1 {
 	 */
 	go_to_market_strategy: string;
 	/**
+	 * PR36: 1–3 sentences on the external macro + sector environment:
+	 * industry growth signals, macro tailwinds/headwinds, and sector competitiveness
+	 * derived from external due diligence market research.
+	 * Empty string when external diligence is unavailable.
+	 */
+	external_market_context: string;
+	/**
+	 * PR36: 1–3 sentences mapping the competitive landscape:
+	 * comparable companies identified via web research, market structure,
+	 * and whether the company's differentiation claims hold up externally.
+	 * Empty string when external diligence is unavailable.
+	 */
+	competitive_landscape: string;
+	/**
+	 * PR36: 1–3 sentences on claim verification:
+	 * classifies deck claims as supported / contradicted / mixed / insufficient evidence
+	 * based on claim_corroborations from external due diligence.
+	 * Empty string when external diligence is unavailable.
+	 */
+	claim_verification_summary: string;
+	/**
+	 * PR36: 1–3 sentences on externally-sourced risk signals:
+	 * regulatory risks, reputation signals, sector instability, or negative news
+	 * surfaced via external_risks and company_footprint buckets.
+	 * Empty string when external diligence is unavailable.
+	 */
+	external_risk_signals: string;
+	/**
 	 * Up to 3 critical unknowns that must be answered before conviction is possible.
 	 * Each ≤150 chars.
 	 */
@@ -173,6 +201,8 @@ const SYSTEM_PROMPT_BASE = [
 	"You are a senior investment analyst at an early-stage venture firm. Your task is to read structured,",
 	"deterministically extracted data from a startup deal and produce a concise, specific investor memo.",
 	"You are NOT summarizing a pitch deck — you are interpreting structured signals for a busy investor.",
+	"When external due diligence data is provided, integrate it to enrich your interpretation with market,",
+	"competitive, and verification signals while keeping internal evidence as the authoritative source.",
 	"",
 	"STRICT RULES — any violation will cause your output to be discarded:",
 	"1. Use the EXACT company name from the Deal Identity section. NEVER use 'Startup Corp', 'the company', or any placeholder.",
@@ -214,17 +244,31 @@ const SYSTEM_PROMPT_BASE = [
 	"   next_questions   — Top diligence questions investors should ask in the next meeting. These are action items, not restatements of unknowns.",
 	"11. Section non-duplication rule: strengths, risks, key_unknowns, and next_questions must each contain DISTINCT content.",
 	"    A risk is a known negative. An unknown is an information gap. A next_question is a concrete ask. Do not repeat the same concept across these arrays.",
-	"12. If an 'External Due Diligence' section is provided in the input, use it as CONTEXTUAL evidence only:",
-	"    - It may corroborate, contradict, or add context to claims in the deck.",
-	"    - It DOES NOT override canonical canonical field values. Canonical data takes precedence.",
-	"    - You MAY reference specific competitor names, market data, or news from this section in your output.",
-	"    - Numbers from the external section may appear in your output ONLY if they appeared verbatim in that section.",
-	"    - Do NOT treat external snippets as primary evidence about the company's own metrics.",
+	"12. External Due Diligence integration (if 'External Due Diligence' section is present):",
+	"    - Internal document evidence is AUTHORITATIVE. External signals provide corroboration or context only.",
+	"    - The LLM must NEVER override canonical field values with external data.",
+	"    - Numbers from the external section may appear ONLY if they appeared verbatim in that section.",
+	"    Populate the four external intelligence fields as follows:",
+	"    - external_market_context: Use market_outlook and financial_context buckets to summarize industry growth,",
+	"      macro tailwinds/headwinds, and sector competitiveness signals. 1–3 sentences. Use '' (empty string) if those buckets are absent or empty.",
+	"    - competitive_landscape: Use the competitors bucket to name comparable companies, characterize market structure,",
+	"      and evaluate whether the deck's differentiation claims hold up against external findings. 1–3 sentences. Use '' if that bucket is absent or empty.",
+	"    - claim_verification_summary: Use claim_corroborations to classify deck claims as:",
+	"      'supported' (external evidence aligns), 'contradicted' (external evidence conflicts),",
+	"      'mixed' (partial alignment), or 'insufficient evidence' (no external signal found).",
+	"      Describe what was corroborated and what was not. 1–3 sentences. Use '' if no corroborations exist.",
+	"    - external_risk_signals: Use external_risks and public market data to surface regulatory risks,",
+	"      reputation signals, sector instability, or concerning news. 1–3 sentences. Use '' if that bucket is absent or empty.",
+	"    CRITICAL: For all four external fields, when the relevant bucket data is absent, empty, or not useful,",
+	"    output EXACTLY '' (empty string). NEVER write 'Not disclosed.' for these four fields — use empty string only.",
+	"    If external diligence is absent from the input, set all four fields to empty string ''.",
 	"13. Return ONLY valid JSON with exactly these keys (no markdown, no code fences, no extra text):",
 	'    { "posture": "...", "confidence": "...", "executive_summary": "...",',
 	'      "product_differentiation": "...", "go_to_market_strategy": "...",',
 	'      "financial_outlook": "...", "business_quality": "...", "market_position": "...",',
 	'      "capital_and_raise_interpretation": "...",',
+	'      "external_market_context": "...", "competitive_landscape": "...",',
+	'      "claim_verification_summary": "...", "external_risk_signals": "...",',
 	'      "strengths": [...], "risks": [...], "key_unknowns": [...], "next_questions": [...] }',
 ].join("\n");
 
@@ -290,7 +334,7 @@ export async function generateLlmInterpretationV1(
 			task: "synthesis",
 			model: "gpt-4o-mini" as never,
 			temperature: 0,
-		max_tokens: 1800,
+		max_tokens: 2200,
 			messages: [
 				{ role: "system", content: systemPrompt },
 				{ role: "user", content: canonicalCorpus },
@@ -357,6 +401,15 @@ export async function generateLlmInterpretationV1(
 			return { ok: false, reason: "llm_output_schema_mismatch" };
 		}
 	}
+	// PR36: external intelligence fields — optional, default to empty string
+	const external_market_context = typeof raw["external_market_context"] === "string"
+		? (raw["external_market_context"] as string).trim() : "";
+	const competitive_landscape = typeof raw["competitive_landscape"] === "string"
+		? (raw["competitive_landscape"] as string).trim() : "";
+	const claim_verification_summary = typeof raw["claim_verification_summary"] === "string"
+		? (raw["claim_verification_summary"] as string).trim() : "";
+	const external_risk_signals = typeof raw["external_risk_signals"] === "string"
+		? (raw["external_risk_signals"] as string).trim() : "";
 	if (
 		!Array.isArray(raw["strengths"]) ||
 		!Array.isArray(raw["risks"]) ||
@@ -384,7 +437,7 @@ export async function generateLlmInterpretationV1(
 	const next_questions = toStringArray(raw["next_questions"] as unknown[], 3, 180);
 	const key_unknowns = toStringArray(raw["key_unknowns"] as unknown[], 3, 150);
 
-	// Numeric-parity validation — covers ALL text fields to prevent hallucinated figures
+	// Numeric-parity validation — covers ALL text fields including PR36 external fields
 	const allOutputText = [
 		executive_summary,
 		product_differentiation,
@@ -393,6 +446,10 @@ export async function generateLlmInterpretationV1(
 		business_quality,
 		market_position,
 		capital_and_raise_interpretation,
+		external_market_context,
+		competitive_landscape,
+		claim_verification_summary,
+		external_risk_signals,
 		...strengths,
 		...risks,
 		...next_questions,
@@ -422,6 +479,10 @@ export async function generateLlmInterpretationV1(
 			business_quality,
 			market_position,
 			capital_and_raise_interpretation,
+			external_market_context,
+			competitive_landscape,
+			claim_verification_summary,
+			external_risk_signals,
 			strengths,
 			risks,
 			next_questions,
@@ -479,6 +540,30 @@ export function serializeLlmInterpretationBody(value: LlmInterpretationV1): stri
 	lines.push("Go-To-Market Strategy");
 	lines.push(value.go_to_market_strategy);
 	lines.push("");
+
+	if (value.external_market_context) {
+		lines.push("External Market Context");
+		lines.push(value.external_market_context);
+		lines.push("");
+	}
+
+	if (value.competitive_landscape) {
+		lines.push("Competitive Landscape");
+		lines.push(value.competitive_landscape);
+		lines.push("");
+	}
+
+	if (value.claim_verification_summary) {
+		lines.push("Claim Verification");
+		lines.push(value.claim_verification_summary);
+		lines.push("");
+	}
+
+	if (value.external_risk_signals) {
+		lines.push("External Risk Signals");
+		lines.push(value.external_risk_signals);
+		lines.push("");
+	}
 
 	if (value.strengths.length > 0) {
 		lines.push("Strengths");

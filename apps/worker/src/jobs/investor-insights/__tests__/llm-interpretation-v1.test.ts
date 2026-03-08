@@ -1,5 +1,5 @@
 /**
- * llm-interpretation-v1.test.ts — PR34.3
+ * llm-interpretation-v1.test.ts — PR36
  *
  * Unit tests for the LLM interpretation layer.
  *
@@ -7,7 +7,9 @@
  *  - generateLlmInterpretationV1: success path, failure paths, numeric parity,
  *    posture/confidence validation, all field validation, evidence caveat injection,
  *    product_differentiation and go_to_market_strategy fields
- *  - serializeLlmInterpretationBody + parseLlmInterpretationBody: round-trip
+ *  - PR36 external intelligence fields: populated when externalDiligenceBody provided,
+ *    gracefully empty when absent, parity validation extended to external fields
+ *  - serializeLlmInterpretationBody + parseLlmInterpretationBody: round-trip incl. external fields
  *  - POSTURE_VALUES / CONFIDENCE_VALUES: exhaustive set checks
  */
 
@@ -48,6 +50,10 @@ const VALID_OUTPUT: LlmInterpretationV1 = {
 	market_position: "Not disclosed.",
 	capital_and_raise_interpretation: "Raising $500K in a seed round — specific structure not disclosed.",
 	key_unknowns: ["Current ARR/MRR", "Cap table structure"],
+	external_market_context: "",
+	competitive_landscape: "",
+	claim_verification_summary: "",
+	external_risk_signals: "",
 	evidence_caveat: null,
 	validated: true,
 };
@@ -83,6 +89,7 @@ const makeArgs = (overrides?: Partial<LlmInterpretationArgs>): LlmInterpretation
 	conflictsBody: null,
 	dealName: "TestCo",
 	productNarrativeBody: null,
+	externalDiligenceBody: null,
 	evidenceCaveat: false,
 	...overrides,
 });
@@ -163,6 +170,7 @@ describe("generateLlmInterpretationV1", () => {
 			gtmSignalsBundleBody: null,
 			useOfFundsBody: null,
 			conflictsBody: null,
+			externalDiligenceBody: null,
 		});
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
@@ -695,5 +703,248 @@ describe("serializeLlmInterpretationBody / parseLlmInterpretationBody", () => {
 	it("key_unknowns bullets appear when populated", () => {
 		const body = serializeLlmInterpretationBody(VALID_OUTPUT);
 		expect(body).toContain("• Current ARR/MRR");
+	});
+
+	// ── PR36 serializer coverage ──────────────────────────────────────────────
+
+	it("serialized body omits external sections when all four PR36 fields are empty", () => {
+		const body = serializeLlmInterpretationBody(VALID_OUTPUT);
+		expect(body).not.toContain("External Market Context");
+		expect(body).not.toContain("Competitive Landscape");
+		expect(body).not.toContain("Claim Verification");
+		expect(body).not.toContain("External Risk Signals");
+	});
+
+	it("serialized body includes External Market Context section when non-empty", () => {
+		const value: LlmInterpretationV1 = {
+			...VALID_OUTPUT,
+			external_market_context: "The workflow automation market is growing 25% YoY per Gartner estimates.",
+		};
+		const body = serializeLlmInterpretationBody(value);
+		expect(body).toContain("External Market Context");
+		expect(body).toContain("25% YoY");
+	});
+
+	it("serialized body includes Competitive Landscape section when non-empty", () => {
+		const value: LlmInterpretationV1 = {
+			...VALID_OUTPUT,
+			competitive_landscape: "WorkflowAI and FlowDash are primary comps.",
+		};
+		const body = serializeLlmInterpretationBody(value);
+		expect(body).toContain("Competitive Landscape");
+		expect(body).toContain("WorkflowAI");
+	});
+
+	it("serialized body includes Claim Verification section when non-empty", () => {
+		const value: LlmInterpretationV1 = {
+			...VALID_OUTPUT,
+			claim_verification_summary: "The $500K raise is corroborated by TechCrunch coverage.",
+		};
+		const body = serializeLlmInterpretationBody(value);
+		expect(body).toContain("Claim Verification");
+		expect(body).toContain("TechCrunch");
+	});
+
+	it("serialized body includes External Risk Signals section when non-empty", () => {
+		const value: LlmInterpretationV1 = {
+			...VALID_OUTPUT,
+			external_risk_signals: "No negative news detected. Sector shows no regulatory headwinds.",
+		};
+		const body = serializeLlmInterpretationBody(value);
+		expect(body).toContain("External Risk Signals");
+		expect(body).toContain("regulatory headwinds");
+	});
+
+	it("round-trips all four PR36 external fields through serialize→parse", () => {
+		const value: LlmInterpretationV1 = {
+			...VALID_OUTPUT,
+			external_market_context: "TAM growing at 25% CAGR per Gartner.",
+			competitive_landscape: "Three direct comps: WorkflowAI, FlowDash, AutoOps.",
+			claim_verification_summary: "Revenue claim of $500K partially corroborated.",
+			external_risk_signals: "No adverse news. Sector regulatory risk is low.",
+		};
+		const body = serializeLlmInterpretationBody(value);
+		const parsed = parseLlmInterpretationBody(body);
+		expect(parsed).not.toBeNull();
+		expect(parsed?.external_market_context).toBe(value.external_market_context);
+		expect(parsed?.competitive_landscape).toBe(value.competitive_landscape);
+		expect(parsed?.claim_verification_summary).toBe(value.claim_verification_summary);
+		expect(parsed?.external_risk_signals).toBe(value.external_risk_signals);
+	});
+
+	it("parseLlmInterpretationBody returns object with empty string external fields when absent from JSON", () => {
+		// Simulates legacy stored body that predates PR36
+		const legacyJson = JSON.stringify({
+			schema_version: "llm_interpretation_v1",
+			posture: "INVESTIGATE",
+			confidence: "MEDIUM",
+			executive_summary: "Legacy deal.",
+			product_differentiation: "Some product.",
+			go_to_market_strategy: "Some GTM.",
+			financial_outlook: "Not disclosed.",
+			business_quality: "Early-stage.",
+			market_position: "Not disclosed.",
+			capital_and_raise_interpretation: "Raising $500K.",
+			strengths: [],
+			risks: [],
+			next_questions: [],
+			key_unknowns: [],
+			evidence_caveat: null,
+			validated: true,
+		});
+		const body = `---llm_interpretation_v1_json---\n${legacyJson}`;
+		const parsed = parseLlmInterpretationBody(body);
+		expect(parsed).not.toBeNull();
+		// External fields absent in stored JSON should gracefully default (undefined or empty)
+		expect(parsed?.external_market_context ?? "").toBe("");
+		expect(parsed?.competitive_landscape ?? "").toBe("");
+		expect(parsed?.claim_verification_summary ?? "").toBe("");
+		expect(parsed?.external_risk_signals ?? "").toBe("");
+	});
+});
+
+// ─── PR36: generateLlmInterpretationV1 external intelligence fields ───────────
+
+describe("generateLlmInterpretationV1 — PR36 external intelligence fields", () => {
+	const OLD_ENV = process.env;
+
+	beforeEach(() => {
+		process.env = { ...OLD_ENV, OPENAI_API_KEY: "test-key-123" };
+	});
+
+	afterEach(() => {
+		process.env = OLD_ENV;
+		vi.clearAllMocks();
+	});
+
+	it("populates all four external fields when LLM returns them and externalDiligenceBody provided", async () => {
+		mockLlmResponse(makeValidJson({
+			external_market_context: "The workflow automation market is growing 25% YoY per Gartner estimates.",
+			competitive_landscape: "WorkflowAI and FlowDash are primary comps; differentiation claims are not contradicted.",
+			claim_verification_summary: "The $500K raise claim is corroborated by TechCrunch coverage.",
+			external_risk_signals: "No negative news detected. No regulatory headwinds currently.",
+		}));
+		const result = await generateLlmInterpretationV1(makeArgs({
+			canonicalFieldsBody: "field=raise_amount value=$500K",
+			externalDiligenceBody: "market_trends: Growing 25% YoY\ncompetitors: WorkflowAI, FlowDash\nclaim_corroborations: $500K TechCrunch",
+		}));
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.value.external_market_context).toContain("25% YoY");
+			expect(result.value.competitive_landscape).toContain("WorkflowAI");
+			expect(result.value.claim_verification_summary).toContain("TechCrunch");
+			expect(result.value.external_risk_signals).toContain("No negative news");
+		}
+	});
+
+	it("defaults all four external fields to empty string when LLM omits them", async () => {
+		// makeValidJson has no external fields → LLM response doesn't include them
+		mockLlmResponse(makeValidJson());
+		const result = await generateLlmInterpretationV1(makeArgs({
+			externalDiligenceBody: null,
+		}));
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.value.external_market_context).toBe("");
+			expect(result.value.competitive_landscape).toBe("");
+			expect(result.value.claim_verification_summary).toBe("");
+			expect(result.value.external_risk_signals).toBe("");
+		}
+	});
+
+	it("defaults all four external fields to empty string when externalDiligenceBody is null", async () => {
+		mockLlmResponse(makeValidJson());
+		const result = await generateLlmInterpretationV1(makeArgs({ externalDiligenceBody: null }));
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			expect(result.value.external_market_context).toBe("");
+			expect(result.value.competitive_landscape).toBe("");
+			expect(result.value.claim_verification_summary).toBe("");
+			expect(result.value.external_risk_signals).toBe("");
+		}
+	});
+
+	it("parity check allows numbers in external fields that appear in externalDiligenceBody corpus", async () => {
+		mockLlmResponse(makeValidJson({
+			external_market_context: "The market is growing at $5B TAM according to external research.",
+			competitive_landscape: "WorkflowAI raised $12M Series A.",
+		}));
+		const result = await generateLlmInterpretationV1(makeArgs({
+			canonicalFieldsBody: "field=raise_amount value=$500K",
+			externalDiligenceBody: "market_trends: $5B TAM\ncompetitors: WorkflowAI raised $12M Series A",
+		}));
+		expect(result.ok).toBe(true);
+	});
+
+	it("parity check fails when external fields introduce numbers not in any corpus", async () => {
+		mockLlmResponse(makeValidJson({
+			external_market_context: "The market TAM is $999B according to hallucinated data.",
+		}));
+		const result = await generateLlmInterpretationV1(makeArgs({
+			canonicalFieldsBody: "field=company_stage value=seed",
+			externalDiligenceBody: "market_trends: growing market, no specific figures",
+		}));
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.reason).toBe("numeric_parity_failed");
+		}
+	});
+
+	it("parity check covers competitive_landscape field", async () => {
+		mockLlmResponse(makeValidJson({
+			competitive_landscape: "Competitor raised $75M in a Series B.",  // $75M NOT in corpus
+		}));
+		const result = await generateLlmInterpretationV1(makeArgs({
+			canonicalFieldsBody: "field=company_stage value=early",
+			externalDiligenceBody: "competitors: Acme Corp, BetaCo",
+		}));
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.reason).toBe("numeric_parity_failed");
+		}
+	});
+
+	it("parity check covers claim_verification_summary field", async () => {
+		mockLlmResponse(makeValidJson({
+			claim_verification_summary: "Revenue claim of $8M ARR is not corroborated.",  // $8M NOT in corpus
+		}));
+		const result = await generateLlmInterpretationV1(makeArgs({
+			canonicalFieldsBody: "field=company_stage value=seed",
+			externalDiligenceBody: "claim_corroborations: no specific figures found",
+		}));
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.reason).toBe("numeric_parity_failed");
+		}
+	});
+
+	it("parity check covers external_risk_signals field", async () => {
+		mockLlmResponse(makeValidJson({
+			external_risk_signals: "Company fined $3M by regulator last quarter.",  // $3M NOT in corpus
+		}));
+		const result = await generateLlmInterpretationV1(makeArgs({
+			canonicalFieldsBody: "field=company_stage value=seed",
+			externalDiligenceBody: "company_news: regulatory inquiry mentioned, no dollar figures",
+		}));
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.reason).toBe("numeric_parity_failed");
+		}
+	});
+
+	it("externalDiligenceBody is included in canonical corpus for parity check", async () => {
+		mockLlmResponse(makeValidJson({
+			// Override makeValidJson defaults that contain $500K — corpus has no $500K here
+			executive_summary: "The company is in early stage with strong market opportunity.",
+			capital_and_raise_interpretation: "Raise structure not currently disclosed.",
+			external_market_context: "Market growing at $10B TAM.",
+		}));
+		// $10B is in externalDiligenceBody corpus → should pass parity
+		const result = await generateLlmInterpretationV1(makeArgs({
+			canonicalFieldsBody: null,
+			insightSlotsBody: "company_stage: Computable | value=early | evidence=doc1 | reason=detected",
+			externalDiligenceBody: "market_trends: $10B TAM growing fast",
+		}));
+		expect(result.ok).toBe(true);
 	});
 });

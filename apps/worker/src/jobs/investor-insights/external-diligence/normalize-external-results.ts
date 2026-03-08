@@ -1,14 +1,16 @@
 /**
- * PR35 — External Due Diligence: Normalizer
+ * PR35 / PR36.2 — External Due Diligence: Normalizer
  *
  * Post-processes raw Tavily bucket results into a clean ExternalDiligenceV1
  * payload before it is serialised for LLM or UI consumption.
  *
  * Responsibilities:
  *   1. Dedup results by URL across all buckets
- *   2. Build ClaimCorroboration records by cross-checking canonical Phase-2
- *      fields against web snippets (company_overview + company_news buckets)
- *   3. Derive run_status from bucket statuses
+ *   2. Quality-filter + rank each bucket (drops job boards, penalises noise)
+ *   3. Extract typed bucket signals via deterministic pattern matching
+ *   4. Build ClaimCorroboration records by cross-checking canonical Phase-2
+ *      fields against web snippets (company_footprint + external_risks buckets)
+ *   5. Derive run_status from bucket statuses
  *
  * Pure function beyond structured logging — no Tavily calls, no DB access.
  */
@@ -23,6 +25,9 @@ import type {
 } from "./external-diligence-schema";
 import type { RunTavilySearchesResult } from "./run-tavily-searches";
 import type { ExternalDiligenceQueryPlan } from "./external-diligence-schema";
+import { filterAndRankResults } from "./result-quality-filter";
+import { extractBucketSignal } from "./signal-extraction";
+import { synthesizeExternalSignals } from "./signal-synthesis/synthesize-external-signals";
 
 // ─── Deduplication ────────────────────────────────────────────────────────────
 
@@ -155,7 +160,7 @@ function buildClaimCorroborations(
 
 	// Filter to company-facing buckets for corroboration (most likely to contain accurate data)
 	const relevantResults = allResults.filter(
-		(r) => r.bucket === "company_overview" || r.bucket === "company_news"
+		(r) => r.bucket === "company_footprint" || r.bucket === "external_risks"
 	);
 	if (relevantResults.length === 0) return [];
 
@@ -227,34 +232,62 @@ export function normalizeExternalResults(
 	// 1. Dedup by URL across all buckets
 	const dedupedBuckets = deduplicateByUrl(searchResult.buckets);
 
-	// 2. Flatten all results for corroboration
-	const allResults: ExternalSearchResult[] = dedupedBuckets.flatMap(
+	// 2. Quality-filter + rank each bucket; attach typed signal
+	const processedBuckets: ExternalDiligenceBucket[] = dedupedBuckets.map((bucket) => {
+		const filtered = filterAndRankResults(
+			bucket.results,
+			bucket.bucket,
+			plan.company_name
+		);
+		const signal = extractBucketSignal(bucket.bucket, filtered, {
+			companyName: plan.company_name,
+			sector: plan.sector,
+			founderName: plan.founder_name,
+		});
+		return {
+			...bucket,
+			results: filtered,
+			results_count: filtered.length,
+			signal: signal ?? undefined,
+		};
+	});
+
+	// 3. Flatten all results for corroboration
+	const allResults: ExternalSearchResult[] = processedBuckets.flatMap(
 		(b) => b.results
 	);
 
-	// 3. Build claim corroborations
+	// 4. Build claim corroborations
 	const claimCorroborations = buildClaimCorroborations(
 		canonicalFieldsBody,
 		plan.company_name,
 		allResults
 	);
 
-	// 4. Derive run_status
-	const runStatus = deriveRunStatus(dedupedBuckets);
+	// 5. Derive run_status
+	const runStatus = deriveRunStatus(processedBuckets);
 
-	// 5. Updated total (after dedup)
+	// 6. Updated total (after dedup + filter)
 	const totalAfterDedup = allResults.length;
 
-	return {
+	const diligence: ExternalDiligenceV1 = {
 		schema_version: "external_diligence_v1",
 		run_status: runStatus,
 		total_results_fetched: totalAfterDedup,
 		queries_run: searchResult.queries_run,
-		buckets: dedupedBuckets,
+		buckets: processedBuckets,
 		claim_corroborations: claimCorroborations,
 		company_name_used: plan.company_name,
 		sector_used: plan.sector,
 		ran_at: new Date().toISOString(),
 		tavily_credits_used: searchResult.tavily_credits_used,
 	};
+
+	// 7. PR36.3: Cross-bucket synthesis — deterministic, no I/O
+	// Only synthesise when at least one bucket actually has results
+	if (processedBuckets.some((b) => b.results.length > 0)) {
+		diligence.synthesis = synthesizeExternalSignals(diligence);
+	}
+
+	return diligence;
 }

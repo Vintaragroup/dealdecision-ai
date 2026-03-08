@@ -13,7 +13,8 @@ import {
   ConflictRow, parseConflictsBody,
   GovernedSummaryV1, parseGovernedSummaryBody,
   LlmInterpretationV1, LlmInterpretationPosture, LlmInterpretationConfidence, parseLlmInterpretationBody,
-  ExternalDiligenceV1, parseExternalDiligenceBody,
+  ExternalDiligenceV1, parseExternalDiligenceBody, ExternalSignalSynthesisV1,
+  DealRiskRadarV1, parseMonitoringBody, SignalConsensus,
   DATA_SECTION_KEYS,
 } from './investorInsightsUtils';
 
@@ -863,6 +864,19 @@ export function PostureBadge({ posture, confidence, darkMode }: {
   );
 }
 
+/**
+ * Guard for PR36 external intelligence fields — suppresses empty strings and
+ * LLM placeholder phrases ("Not disclosed.") that should be treated as absent.
+ */
+function hasExtField(v: string | undefined): v is string {
+  if (!v) return false;
+  const trimmed = v.trim();
+  if (!trimmed) return false;
+  // LLM sometimes writes "Not disclosed." instead of empty string — treat as absent.
+  if (trimmed === 'Not disclosed.' || trimmed === 'Not disclosed') return false;
+  return true;
+}
+
 export function LlmInterpretationSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const body = typeof section.body === 'string' ? section.body : '';
   const data: LlmInterpretationV1 | null = parseLlmInterpretationBody(body);
@@ -933,7 +947,49 @@ export function LlmInterpretationSection({ section, darkMode }: { section: Inves
         </div>
       </div>
 
-      {/* Row 3: Business Quality | Capital & Raise */}
+      {/* Row 3: External Market Context | Competitive Landscape — only when present */}
+      {(hasExtField(data.external_market_context) || hasExtField(data.competitive_landscape)) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {hasExtField(data.external_market_context) && (
+            <div className={colClass}>
+              <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-emerald-400' : 'text-emerald-700'}`}>
+                External Market Context
+              </div>
+              <p className={textClass}>{data.external_market_context}</p>
+            </div>
+          )}
+          {hasExtField(data.competitive_landscape) && (
+            <div className={colClass}>
+              <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-lime-400' : 'text-lime-700'}`}>
+                Competitive Landscape
+              </div>
+              <p className={textClass}>{data.competitive_landscape}</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Claim Verification — full-width, only when present */}
+      {hasExtField(data.claim_verification_summary) && (
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-blue-400' : 'text-blue-700'}`}>
+            Claim Verification
+          </div>
+          <p className={textClass}>{data.claim_verification_summary}</p>
+        </div>
+      )}
+
+      {/* External Risk Signals — full-width, only when present */}
+      {hasExtField(data.external_risk_signals) && (
+        <div className={colClass}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-rose-400' : 'text-rose-700'}`}>
+            External Risk Signals
+          </div>
+          <p className={textClass}>{data.external_risk_signals}</p>
+        </div>
+      )}
+
+      {/* Row 4 (was 3): Business Quality | Capital & Raise */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div className={colClass}>
           <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-violet-400' : 'text-violet-700'}`}>
@@ -1026,6 +1082,8 @@ const PHASE2_KEYS = new Set([
   'conflicts', 'debug.normalization_diff', 'governed_summary_v1',
   'governed_executive_summary_v1',  // AI-governed sections require dedicated renderers
   'llm_interpretation_v1',          // PR34: LLM interpretation — dedicated renderer
+  'external_diligence_v1',          // PR35: External diligence — dedicated renderer
+  'deal_risk_radar_v1',             // PR37: Deal risk radar — dedicated renderer
 ]);
 
 // DATA_SECTION_KEYS — moved to investorInsightsUtils.ts (imported above)
@@ -1058,24 +1116,122 @@ function parseGovernedExecSummaryV1Body(body: string): GovernedExecSummaryV1 | n
   }
 }
 
+// ─── PR36.3: External Signal Synthesis Panel ─────────────────────────────────
+
+const SYNTHESIS_LABELS: Record<string, string> = {
+  market_attractiveness:    'Market Attractiveness',
+  competitive_pressure:     'Competitive Pressure',
+  company_visibility:       'Company Visibility',
+  founder_credibility:      'Founder Credibility',
+  external_risk:            'External Risk',
+  claim_validation_posture: 'Claim Validation',
+};
+
+const RATING_STYLES: Record<string, { pillLight: string; pillDark: string }> = {
+  high:     { pillLight: 'bg-emerald-100 text-emerald-700', pillDark: 'bg-emerald-900/40 text-emerald-300' },
+  moderate: { pillLight: 'bg-amber-100 text-amber-700',    pillDark: 'bg-amber-900/40 text-amber-300' },
+  low:      { pillLight: 'bg-red-100 text-red-700',        pillDark: 'bg-red-900/40 text-red-300' },
+  unknown:  { pillLight: 'bg-gray-100 text-gray-500',      pillDark: 'bg-gray-800 text-gray-400' },
+  positive: { pillLight: 'bg-emerald-100 text-emerald-700', pillDark: 'bg-emerald-900/40 text-emerald-300' },
+  neutral:  { pillLight: 'bg-gray-100 text-gray-500',       pillDark: 'bg-gray-800 text-gray-400' },
+  negative: { pillLight: 'bg-red-100 text-red-700',         pillDark: 'bg-red-900/40 text-red-300' },
+  mixed:    { pillLight: 'bg-amber-100 text-amber-700',     pillDark: 'bg-amber-900/40 text-amber-300' },
+};
+
+function ExternalSynthesisPanel({
+  synthesis,
+  darkMode,
+}: {
+  synthesis: ExternalSignalSynthesisV1;
+  darkMode: boolean;
+}) {
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+
+  const items = [
+    { key: 'market_attractiveness',    item: synthesis.market_attractiveness },
+    { key: 'competitive_pressure',     item: synthesis.competitive_pressure },
+    { key: 'company_visibility',       item: synthesis.company_visibility },
+    { key: 'founder_credibility',      item: synthesis.founder_credibility },
+    { key: 'external_risk',            item: synthesis.external_risk },
+    { key: 'claim_validation_posture', item: synthesis.claim_validation_posture },
+  ] as const;
+
+  const cardClass = `rounded-lg border p-3 text-left transition-colors cursor-pointer ${
+    darkMode
+      ? 'border-white/10 bg-white/5 hover:bg-white/10'
+      : 'border-gray-100 bg-gray-50 hover:bg-gray-100'
+  }`;
+
+  const headerClass = `text-xs font-semibold uppercase tracking-wide mb-3 ${
+    darkMode ? 'text-gray-300' : 'text-gray-700'
+  }`;
+
+  return (
+    <div className={`rounded-xl border p-4 ${darkMode ? 'border-white/10 bg-white/[0.03]' : 'border-gray-200 bg-white'}` }>
+      <div className={headerClass}>External Intelligence Summary</div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {items.map(({ key, item }) => {
+          const ratingStyle = RATING_STYLES[item.rating] ?? RATING_STYLES.unknown;
+          const pillClass = `text-xs font-semibold px-2 py-0.5 rounded-full ${
+            darkMode ? ratingStyle.pillDark : ratingStyle.pillLight
+          }`;
+          const isExpanded = expandedKey === key;
+          const hasDrivers = item.drivers.length > 0;
+          return (
+            <button
+              key={key}
+              className={cardClass}
+              onClick={() => hasDrivers && setExpandedKey(isExpanded ? null : key)}
+            >
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <span className={`text-xs font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  {SYNTHESIS_LABELS[key]}
+                </span>
+                <span className={pillClass}>{item.rating}</span>
+              </div>
+              <p className={`text-sm leading-snug ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                {item.summary}
+              </p>
+              {isExpanded && hasDrivers && (
+                <ul className={`mt-2 space-y-0.5 border-t pt-2 ${
+                  darkMode ? 'border-white/10' : 'border-gray-200'
+                }`}>
+                  {item.drivers.map((driver, i) => (
+                    <li key={i} className={`text-xs flex gap-1 ${
+                      darkMode ? 'text-gray-400' : 'text-gray-500'
+                    }`}>
+                      <span className="mt-0.5 shrink-0">·</span>
+                      <span>{driver}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ─── PR35: External Due Diligence Section ────────────────────────────────────
 
 const BUCKET_LABELS: Record<string, string> = {
-  company_overview: 'Company Overview',
-  competitors: 'Competitive Landscape',
-  market_trends: 'Market Trends',
-  company_news: 'Recent News',
+  company_footprint: 'Company Footprint',
+  competitive_landscape: 'Competitive Landscape',
+  market_outlook: 'Market Outlook',
+  external_risks: 'External Risks',
   founder_team_signals: 'Founder / Team',
-  financial_market_context: 'Financial Context',
+  financial_context: 'Financial Context',
 };
 
 const BUCKET_COLORS: Record<string, { dark: string; light: string }> = {
-  company_overview: { dark: 'text-blue-400', light: 'text-blue-700' },
-  competitors: { dark: 'text-red-400', light: 'text-red-700' },
-  market_trends: { dark: 'text-teal-400', light: 'text-teal-700' },
-  company_news: { dark: 'text-amber-400', light: 'text-amber-700' },
+  company_footprint: { dark: 'text-blue-400', light: 'text-blue-700' },
+  competitive_landscape: { dark: 'text-red-400', light: 'text-red-700' },
+  market_outlook: { dark: 'text-teal-400', light: 'text-teal-700' },
+  external_risks: { dark: 'text-amber-400', light: 'text-amber-700' },
   founder_team_signals: { dark: 'text-violet-400', light: 'text-violet-700' },
-  financial_market_context: { dark: 'text-sky-400', light: 'text-sky-700' },
+  financial_context: { dark: 'text-sky-400', light: 'text-sky-700' },
 };
 
 function extractDomain(url: string): string {
@@ -1128,6 +1284,11 @@ export function ExternalDiligenceSection({ section, darkMode }: { section: Inves
 
   return (
     <div className="space-y-4">
+      {/* PR36.3: Synthesis summary — cross-bucket investor conclusions */}
+      {data.synthesis && (
+        <ExternalSynthesisPanel synthesis={data.synthesis} darkMode={darkMode} />
+      )}
+
       {/* Header row */}
       <div className="flex flex-wrap items-center gap-3">
         <RunStatusBadge status={data.run_status} darkMode={darkMode} />
@@ -1147,13 +1308,19 @@ export function ExternalDiligenceSection({ section, darkMode }: { section: Inves
       {activeBuckets.length > 0 && (
         <div className="space-y-3">
           {activeBuckets.map((bucket) => {
-            const colorDef = BUCKET_COLORS[bucket.bucket] ?? BUCKET_COLORS.company_overview;
+            const colorDef = BUCKET_COLORS[bucket.bucket] ?? BUCKET_COLORS.company_footprint;
             const labelColor = darkMode ? colorDef.dark : colorDef.light;
             return (
               <div key={bucket.bucket} className={colClass}>
                 <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${labelColor}`}>
                   {BUCKET_LABELS[bucket.bucket] ?? bucket.bucket}
                 </div>
+                {/* PR36.2: signal summary — insight-first before raw evidence */}
+                {bucket.signal?.summary && (
+                  <p className={`text-sm font-medium mb-2 ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                    {bucket.signal.summary}
+                  </p>
+                )}
                 <div className="space-y-2">
                   {bucket.results.map((result, i) => (
                     <div key={i} className="space-y-0.5">
@@ -1210,6 +1377,205 @@ export function ExternalDiligenceSection({ section, darkMode }: { section: Inves
       {activeBuckets.length === 0 && corroborations.length === 0 && (
         <EmptyFallback text="No external research results available." darkMode={darkMode} />
       )}
+    </div>
+  );
+}
+
+// ── Deal Risk Radar Section (PR37) ──────────────────────────────────────────
+
+const IMPACT_BADGE: Record<string, { light: string; dark: string }> = {
+  high:   { light: 'bg-red-100 text-red-700',     dark: 'bg-red-900/40 text-red-300' },
+  medium: { light: 'bg-yellow-100 text-yellow-700', dark: 'bg-yellow-900/40 text-yellow-300' },
+  low:    { light: 'bg-gray-100 text-gray-600',   dark: 'bg-white/10 text-gray-400' },
+};
+
+const DIRECTION_BADGE: Record<string, { light: string; dark: string }> = {
+  positive: { light: 'bg-emerald-100 text-emerald-700', dark: 'bg-emerald-900/40 text-emerald-300' },
+  negative: { light: 'bg-red-100 text-red-700',         dark: 'bg-red-900/40 text-red-300' },
+  neutral:  { light: 'bg-gray-100 text-gray-500',       dark: 'bg-white/10 text-gray-400' },
+};
+
+const CONSENSUS_BADGE: Record<string, { light: string; dark: string }> = {
+  bullish:           { light: 'bg-emerald-100 text-emerald-700', dark: 'bg-emerald-900/40 text-emerald-300' },
+  bearish:           { light: 'bg-red-100 text-red-700',         dark: 'bg-red-900/40 text-red-300' },
+  mixed:             { light: 'bg-yellow-100 text-yellow-700',   dark: 'bg-yellow-900/40 text-yellow-300' },
+  neutral:           { light: 'bg-blue-100 text-blue-700',       dark: 'bg-blue-900/40 text-blue-300' },
+  insufficient_data: { light: 'bg-gray-100 text-gray-500',       dark: 'bg-white/10 text-gray-400' },
+};
+
+const CATEGORY_LABEL: Record<string, string> = {
+  legal: 'Legal', funding: 'Funding', product: 'Product', press: 'Press', other: 'Other',
+};
+
+function ImpactBadge({ impact, darkMode }: { impact: string; darkMode: boolean }) {
+  const c = IMPACT_BADGE[impact] ?? IMPACT_BADGE.low;
+  return (
+    <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-semibold uppercase ${darkMode ? c.dark : c.light}`}>
+      {impact}
+    </span>
+  );
+}
+
+function DirectionBadge({ direction, darkMode }: { direction: string; darkMode: boolean }) {
+  const c = DIRECTION_BADGE[direction] ?? DIRECTION_BADGE.neutral;
+  return (
+    <span className={`inline-block px-1.5 py-0.5 rounded text-xs font-semibold uppercase ${darkMode ? c.dark : c.light}`}>
+      {direction}
+    </span>
+  );
+}
+
+function ConsensusBadge({ consensus, darkMode }: { consensus: SignalConsensus; darkMode: boolean }) {
+  const c = CONSENSUS_BADGE[consensus] ?? CONSENSUS_BADGE.insufficient_data;
+  return (
+    <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold uppercase tracking-wide ${darkMode ? c.dark : c.light}`}>
+      {consensus.replace('_', ' ')}
+    </span>
+  );
+}
+
+export function DealRiskRadarSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+  const body = typeof section.body === 'string' ? section.body : '';
+  const data: DealRiskRadarV1 | null = parseMonitoringBody(body);
+
+  if (!data) {
+    return <EmptyFallback text={section.fallback ?? 'Monitoring data not yet available.'} darkMode={darkMode} />;
+  }
+
+  const colClass = `rounded-lg border p-4 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-100 bg-gray-50'}`;
+  const headingClass = (color: string) => `text-xs font-semibold uppercase tracking-wide mb-2 ${color}`;
+  const metaClass = `text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`;
+  const itemBodyClass = `text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`;
+  const domainClass = `text-xs font-mono ${darkMode ? 'text-gray-500' : 'text-gray-400'}`;
+  const ranAt = data.ran_at ? new Date(data.ran_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : null;
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex flex-wrap items-center gap-3">
+        <RunStatusBadge status={data.run_status as ExternalDiligenceV1['run_status']} darkMode={darkMode} />
+        {data.company_name_used && (
+          <span className={metaClass}>
+            <span className="font-medium">{data.company_name_used}</span>
+            {data.sector_used && <> · {data.sector_used}</>}
+          </span>
+        )}
+        <span className={metaClass}>
+          {data.source_count} sources · {data.total_sources_fetched} fetched
+        </span>
+        {ranAt && <span className={metaClass}>Ran {ranAt}</span>}
+        <ConsensusBadge consensus={data.signal_consensus} darkMode={darkMode} />
+      </div>
+
+      {/* Competitor events */}
+      {data.competitor_events.length > 0 && (
+        <div className={colClass}>
+          <div className={headingClass(darkMode ? 'text-purple-400' : 'text-purple-700')}>Competitor Activity</div>
+          <div className="space-y-3">
+            {data.competitor_events.map((ev, i) => (
+              <div key={i} className="space-y-0.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <ImpactBadge impact={ev.impact} darkMode={darkMode} />
+                  <span className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>{ev.company}</span>
+                </div>
+                <p className={itemBodyClass}>{ev.event}</p>
+                {ev.evidence_urls.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {ev.evidence_urls.slice(0, 2).map((u, j) => (
+                      <span key={j} className={domainClass}>{extractDomain(u)}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Company events */}
+      {data.company_events.length > 0 && (
+        <div className={colClass}>
+          <div className={headingClass(darkMode ? 'text-blue-400' : 'text-blue-700')}>Company Signals</div>
+          <div className="space-y-3">
+            {data.company_events.map((ev, i) => (
+              <div key={i} className="space-y-0.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <ImpactBadge impact={ev.impact} darkMode={darkMode} />
+                  <span className={`text-xs px-1.5 py-0.5 rounded ${darkMode ? 'bg-white/10 text-gray-300' : 'bg-gray-100 text-gray-600'}`}>
+                    {CATEGORY_LABEL[ev.category] ?? ev.category}
+                  </span>
+                </div>
+                <p className={itemBodyClass}>{ev.event}</p>
+                {ev.evidence_urls.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {ev.evidence_urls.slice(0, 2).map((u, j) => (
+                      <span key={j} className={domainClass}>{extractDomain(u)}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Market events */}
+      {data.market_events.length > 0 && (
+        <div className={colClass}>
+          <div className={headingClass(darkMode ? 'text-teal-400' : 'text-teal-700')}>Market Signals</div>
+          <div className="space-y-3">
+            {data.market_events.map((ev, i) => (
+              <div key={i} className="space-y-0.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <DirectionBadge direction={ev.direction} darkMode={darkMode} />
+                  <span className={metaClass}>{ev.sector}</span>
+                </div>
+                <p className={itemBodyClass}>{ev.description}</p>
+                {ev.evidence_urls.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {ev.evidence_urls.slice(0, 2).map((u, j) => (
+                      <span key={j} className={domainClass}>{extractDomain(u)}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Founder signals */}
+      {data.founder_signals.length > 0 && (
+        <div className={colClass}>
+          <div className={headingClass(darkMode ? 'text-orange-400' : 'text-orange-700')}>Founder / Team</div>
+          <div className="space-y-3">
+            {data.founder_signals.map((fs, i) => (
+              <div key={i} className="space-y-0.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <ImpactBadge impact={fs.impact} darkMode={darkMode} />
+                  <span className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>{fs.name}</span>
+                </div>
+                <p className={itemBodyClass}>{fs.signal}</p>
+                {fs.evidence_urls.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-1">
+                    {fs.evidence_urls.slice(0, 2).map((u, j) => (
+                      <span key={j} className={domainClass}>{extractDomain(u)}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {data.competitor_events.length === 0 &&
+        data.company_events.length === 0 &&
+        data.market_events.length === 0 &&
+        data.founder_signals.length === 0 && (
+          <EmptyFallback text="No significant signals detected in this monitoring run." darkMode={darkMode} />
+        )}
     </div>
   );
 }
@@ -1305,6 +1671,9 @@ function SectionCard({ section, darkMode }: { section: InvestorInsightsSection; 
       )}
       {section.key === 'external_diligence_v1' && (
         <ExternalDiligenceSection section={section} darkMode={darkMode} />
+      )}
+      {section.key === 'deal_risk_radar_v1' && (
+        <DealRiskRadarSection section={section} darkMode={darkMode} />
       )}
       {/* Kind-based fallback only for sections whose key has no dedicated renderer. */}
       {!isSpecialKey && section.kind === 'gate_state' && (

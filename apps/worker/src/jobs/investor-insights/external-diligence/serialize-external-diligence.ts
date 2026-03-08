@@ -1,5 +1,5 @@
 /**
- * PR35 — External Due Diligence: Serializer
+ * PR35 / PR36.2 — External Due Diligence: Serializer
  *
  * Converts an ExternalDiligenceV1 struct into a compact, structured plain-text
  * body suitable for LLM prompt injection.
@@ -23,12 +23,12 @@ import {
 // ─── Friendly bucket labels ───────────────────────────────────────────────────
 
 const BUCKET_LABELS: Record<string, string> = {
-	company_overview: "Company Overview",
-	competitors: "Competitive Landscape",
-	market_trends: "Market Trends",
-	company_news: "Recent News",
+	company_footprint: "Company Footprint",
+	competitive_landscape: "Competitive Landscape",
+	market_outlook: "Market Outlook",
+	external_risks: "External Risks",
 	founder_team_signals: "Founder / Team",
-	financial_market_context: "Financial Market Context",
+	financial_context: "Financial Context",
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -46,6 +46,10 @@ function formatBucket(bucket: ExternalDiligenceBucket): string | null {
 	if (bucket.status === "skipped" || bucket.results.length === 0) return null;
 	const label = BUCKET_LABELS[bucket.bucket] ?? bucket.bucket;
 	const lines = [`[${label}]`];
+	// Signal summary first — gives LLM a high-level interpretation before raw evidence
+	if (bucket.signal?.summary) {
+		lines.push(`Signal: ${bucket.signal.summary}`);
+	}
 	for (const r of bucket.results) {
 		const domain = extractDomain(r.url);
 		const date = r.published_date ? ` (${r.published_date})` : "";

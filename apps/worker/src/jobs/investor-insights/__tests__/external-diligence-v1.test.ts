@@ -1236,6 +1236,7 @@ describe("synthesizeExternalSignals", () => {
 		// When run through normalizeExternalResults, synthesis should be present
 		const mockSearch = {
 			queries_run: 1,
+			total_results_fetched: 6,
 			tavily_credits_used: null,
 			buckets: [
 				makeOkBucket("market_outlook", [{ url: "https://gartner.com/x", snippet: "market growing fast" }]),
@@ -1370,8 +1371,8 @@ describe("buildFounderEntityQuery", () => {
 // ─── Tests: PR36.4 inferProductCategory ──────────────────────────────────────
 
 describe("inferProductCategory", () => {
-	function makePages(text: string): Array<{ text: string }> {
-		return [{ text }];
+	function makePages(text: string): import("../stages/_shared").DpuPage[] {
+		return [{ document_id: "doc-test", page_index: 0, text, text_raw: text, norm_events_count: 0 }];
 	}
 
 	it("extracts category from 'the X platform' pattern in pages", () => {

@@ -752,7 +752,10 @@ describe("extractBucketSignal", () => {
 	});
 
 	it("market_outlook: detects growing direction from keywords", () => {
-		const results = [makeResult("The workflow automation market is growing rapidly at 25% CAGR. Strong adoption.")];
+		const results = [
+			makeResult("The workflow automation market is growing rapidly at 25% CAGR. Strong adoption."),
+			makeResult("Analysts forecast continued expansion of workflow automation through 2027 driven by AI."),
+		];
 		const signal = extractBucketSignal("market_outlook", results, { companyName: "Acme", sector: "workflow", founderName: null });
 		expect(signal).not.toBeNull();
 		expect((signal as { direction: string }).direction).toBe("growing");
@@ -760,13 +763,19 @@ describe("extractBucketSignal", () => {
 	});
 
 	it("market_outlook: detects declining direction from keywords", () => {
-		const results = [makeResult("The desktop software market is declining with shrinking demand and consolidation.")];
+		const results = [
+			makeResult("The desktop software market is declining with shrinking demand and consolidation."),
+			makeResult("Desktop application vendors are losing ground as the market contracts and struggles."),
+		];
 		const signal = extractBucketSignal("market_outlook", results, { companyName: "Acme", sector: "desktop", founderName: null });
 		expect((signal as { direction: string }).direction).toBe("declining");
 	});
 
 	it("competitive_landscape: extracts competitor names from 'vs.' pattern", () => {
-		const results = [makeResult("Acme vs. CompetitorA vs. CompetitorB in workflow automation comparison.")];
+		const results = [
+			makeResult("Acme vs. CompetitorA vs. CompetitorB in workflow automation comparison."),
+			makeResult("CompetitorA and CompetitorB are the main rivals in the workflow automation space."),
+		];
 		const signal = extractBucketSignal("competitive_landscape", results, { companyName: "Acme", sector: null, founderName: null });
 		expect(signal).not.toBeNull();
 		const comp = signal as { direct_competitor_names: string[] };

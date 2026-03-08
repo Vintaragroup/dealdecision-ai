@@ -32,6 +32,22 @@ import type { InsightSlotInputs } from "../stages/stage-2-deterministic";
  * Ordered from most-specific to least; first match wins.
  */
 const SECTOR_CATEGORY_MAP: ReadonlyArray<[pattern: RegExp, category: string]> = [
+	// ── High-specificity verticals (must precede generic fintech/AI patterns) ──
+	// Car / auto / vehicle finance lending (Carmoola-class)
+	[/\bcar\s+financ|\bauto\s+(?:lending|financ|loan)|\bvehicle\s+financ|\bmotor\s+financ|\bcar\s+loan|\bcar\s+credit|\bauto\s+fintech\b/i,
+	                                                                             "car finance technology"],
+	// Digital mortgage / lending workflow SaaS (WebMax-class)
+	[/\bmortgage\s+(?:saas|software|platform|tech(?:nology)?|workflow|fintech|origination|process)|\bdigital\s+mortgage|\blending\s+workflow|\bmortgage\s+automat|\bhomebuying\s+platform|\bmortgage\s+lead/i,
+	                                                                             "digital mortgage software"],
+	// Talent intelligence / skills platform (StackFactor-class)
+	[/\btalent\s+intelligence|\bskills?\s+(?:intelligence|mapping|assessment\s+platform)|\bworkforce\s+(?:learning|intelligence|analytics)|\btalent\s+analytics|\bskills?\s+gap\s+analysis|\bproficiency\s+(?:mapping|platform)/i,
+	                                                                             "talent intelligence platform"],
+	// Consumer / personal lending fintech (BNPL, personal loans)
+	[/\bconsumer\s+(?:lending|loan)|\bpersonal\s+loan(?:s|\s+platform)|\bbuy\s+now\s+pay\s+later|\bbnpl\b|\bloan\s+origination\s+(?:software|platform)/i,
+	                                                                             "consumer lending technology"],
+	// B2B embedded finance / open banking
+	[/\bembedded\s+finance|\bopen\s+banking|\bbanking\s+as\s+a\s+service|\bbaas\b|\bpayment\s+infrastructure/i,
+	                                                                             "embedded finance platform"],
 	// B2B software verticals
 	[/\bai\b.*\bfinance\b|\bfinance\b.*\bai\b|\bfintech\b|\bfinancial\s+tech/i,     "AI financial analysis software"],
 	[/\bai\b.*\binvest|\binvest.*\bai\b|\bventure\s+ai\b/i,                        "AI investment analysis software"],

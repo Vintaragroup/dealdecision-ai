@@ -27,6 +27,31 @@ import type {
 } from "./external-diligence-schema";
 
 // ─── Utility helpers ──────────────────────────────────────────────────────────
+/**
+ * PR36.5 — Per-bucket minimum result thresholds for confident signal extraction.
+ *
+ * When a bucket has fewer results than its threshold, the extractor must use
+ * explicitly hedged / sparse language rather than asserting discovered signals.
+ * This prevents single-result hallucinations (e.g., one headline naming a
+ * competitor causing a "high competitive intensity" signal to fire).
+ */
+const BUCKET_MIN_CONFIDENCE_RESULTS: Record<string, number> = {
+	company_footprint:       2, // ≥2 distinct sources to claim footprint quality
+	competitive_landscape:   2, // ≥2 results before naming competitors
+	market_outlook:          2, // ≥2 results before classifying direction
+	founder_team_signals:    2, // ≥2 results before credibility claims
+	financial_context:       2, // ≥2 results before funding-env assessment
+	external_risks:          1, // even 1 risk result is worth noting
+};
+
+/**
+ * Returns true when `results` has sufficient coverage to draw confident
+ * conclusions for the given bucket.
+ */
+function hasSufficientConfidence(results: ExternalSearchResult[], bucketKey: string): boolean {
+	const min = BUCKET_MIN_CONFIDENCE_RESULTS[bucketKey] ?? 2;
+	return results.length >= min;
+}
 
 function getDomain(url: string): string {
 	try {
@@ -203,6 +228,20 @@ export function extractCompetitiveLandscapeSignal(
 		};
 	}
 
+	// PR36.5: Sparse-signal gate — return hedged signal when only 1 result is available.
+	// A single result provides insufficient confidence to identify real competitors or
+	// characterise category structure.
+	if (!hasSufficientConfidence(results, "competitive_landscape")) {
+		return {
+			kind: "competitive_landscape",
+			direct_competitor_names: [],
+			adjacent_names: [],
+			category_fragmentation: "unknown",
+			competitive_intensity: "unknown",
+			summary: "Insufficient confidence to identify reliable competitors — only one external source available for this category.",
+		};
+	}
+
 	const text = combinedText(results);
 	const allNames = extractCompetitorNames(results, companyName);
 
@@ -263,6 +302,21 @@ export function extractMarketOutlookSignal(
 		};
 	}
 
+	// PR36.5: Sparse-signal gate — a single result is insufficient to classify
+	// market direction reliably. One bullish headline ≠ a growing market.
+	if (!hasSufficientConfidence(results, "market_outlook")) {
+		const text = combinedText(results);
+		const tailwinds = extractTailwinds(text);
+		const headwinds = extractHeadwinds(text);
+		const sectorLabel = sector ?? "the market";
+		return {
+			kind: "market_outlook",
+			direction: "unknown",
+			tailwinds,
+			headwinds,
+			summary: `Insufficient external data to characterise ${sectorLabel} market direction with confidence — only one source available.`,
+		};
+	}
 	const text = combinedText(results);
 	const direction = classifyMarketDirection(text);
 	const tailwinds = extractTailwinds(text);
@@ -302,6 +356,10 @@ export function extractFounderTeamSignal(
 		};
 	}
 
+	// PR36.5: Sparse-signal gate — 1 result is not sufficient to claim
+	// limited_footprint: false or assert credibility signals. Use hedged language.
+	const sparse = !hasSufficientConfidence(results, "founder_team_signals");
+
 	const text = combinedText(results);
 	const founderLower = founderName?.toLowerCase() ?? "";
 	const companyLower = companyName?.toLowerCase() ?? "";
@@ -331,18 +389,19 @@ export function extractFounderTeamSignal(
 		text.toLowerCase().includes(t.toLowerCase())
 	).slice(0, 4);
 
-	// Limited footprint: no meaningful signals
-	const limited_footprint = !profile_found && credibility_signals.length === 0 && !prior_role_found;
+	// Limited footprint: no meaningful signals; also true when sparse
+	const limited_footprint = sparse || (!profile_found && credibility_signals.length === 0 && !prior_role_found);
 
 	const targetLabel = founderName ?? (companyName ? `${companyName} founder` : "Founder");
-	const summary =
-		limited_footprint
-			? `No meaningful public footprint found for ${targetLabel}.`
-			: profile_found && credibility_signals.length > 0
-			? `${targetLabel} has a public profile with credibility signals: ${credibility_signals.slice(0, 2).join(", ")}.`
-			: profile_found
-			? `${targetLabel} has a public profile.${prior_role_found ? " Prior role evidence found." : ""}`
-			: `Partial founder signals found — ${prior_role_found ? "prior role evidence present" : "no direct profile found"}.`;
+	const summary = sparse
+		? `Limited public data available for ${targetLabel} — only one external source found; more research recommended.`
+		: limited_footprint
+		? `No meaningful public footprint found for ${targetLabel}.`
+		: profile_found && credibility_signals.length > 0
+		? `${targetLabel} has a public profile with credibility signals: ${credibility_signals.slice(0, 2).join(", ")}.`
+		: profile_found
+		? `${targetLabel} has a public profile.${prior_role_found ? " Prior role evidence found." : ""}`
+		: `Partial founder signals found — ${prior_role_found ? "prior role evidence present" : "no direct profile found"}.`;
 
 	return { kind: "founder_team_signals", profile_found, prior_role_found, credibility_signals, limited_footprint, summary };
 }

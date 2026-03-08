@@ -103,6 +103,7 @@ export type RaiseAmountCandidate = {
 export type RejectReason =
   | "market_context_taint"
   | "fund_aum_context"
+  | "volume_metric_taint"
   | "magnitude_no_strong_verb"
   | "no_candidates";
 
@@ -164,6 +165,36 @@ export const FUND_AUM_CONTEXT_RE =
  */
 export function isCandidateTaintedByFundAumContext(context: string): boolean {
   return FUND_AUM_CONTEXT_RE.test(context);
+}
+
+/**
+ * VOLUME_NOT_RAISE_RE: Operational volume / portfolio metrics that are frequently
+ * mistaken for raise amounts because they appear near large currency figures.
+ *
+ * Pattern covers the Carmoola-class failure: "cars financed = £100M" / "GMV $50M"
+ * where the money figure represents a throughput metric, NOT a fundraise ask.
+ *
+ * Rejected contexts include:
+ *   - Car / vehicle lending throughput: "cars financed", "cars on finance", "vehicles originated"
+ *   - Lending / mortgage origination volumes: "loan volume", "originations", "mortgage originations"
+ *   - Fintech transaction throughput: "GMV", "gross merchandise value", "gross transaction value"
+ *   - Deployed capital (VC/debt funds): "capital deployed", "capital invested"
+ *   - Budget / operational plans: "annual budget", "operating budget", "total budget"
+ *   - Portfolio / book size: "loan book", "book size", "loan portfolio", "debt facility"
+ *   - Operational KPIs often misread as raise: "total processed", "total facilitated"
+ *
+ * Conservative anchoring: all patterns require a specific noun phrase, not bare keywords,
+ * to minimise false positives against legitimate raise clauses.
+ */
+export const VOLUME_NOT_RAISE_RE =
+  /\b(?:cars?\s+(?:financed?|on\s+finance|sold|originated?|written)|vehicles?\s+(?:financed?|sold|originated?|written)|mortgages?\s+(?:originated?|funded|processed|written)|loans?\s+(?:originated?|funded|processed|written|disbursed)|loan\s+(?:volume|book|portfolio|originations?|size)|mortgage\s+(?:volume|originations?|book|completions?)|originations?\b|gross\s+(?:merchandise|transaction)\s+value|\bGMV\b|capital\s+deployed(?:\s+to\s+date)?|capital\s+invested(?:\s+to\s+date)?|total\s+(?:loans?|capital|debt)\s+(?:deployed|invested|originated?|disbursed)|annual\s+(?:operating\s+)?budget|total\s+(?:operating\s+)?budget|booked\s+volume|loan\s+book\b|book\s+(?:size|value)|debt\s+(?:facility|book|portfolio)|credit\s+facility\s+(?:size|outstanding|limit)|total\s+(?:facilitated|processed|transacted))\b/i;
+
+/**
+ * Returns true when the candidate context contains operational volume / portfolio
+ * language indicating the money amount is a throughput metric, not a fundraise ask.
+ */
+export function isCandidateTaintedByVolumeMetric(context: string): boolean {
+  return VOLUME_NOT_RAISE_RE.test(context);
 }
 
 /**
@@ -255,6 +286,17 @@ export function resolveRaiseAmount({
     // regardless of amount size, stage, or raise-verb proximity.
     if (isCandidateTaintedByFundAumContext(ctx)) {
       rejected.push({ candidate, reason: "fund_aum_context" });
+      continue;
+    }
+
+    // Rule 2c: volume metric taint — rejects operational throughput / portfolio metrics
+    // that masquerade as raise amounts (Carmoola-class: "cars financed = £100M").
+    // GMV, loan originations, loan book, car finance throughput, annual budget, etc.
+    // Only applied when no strong unambiguous raise verb is present immediately nearby,
+    // so legitimate "we are raising £100M and have financed 5,000 cars" slides are
+    // not rejected (the STRONG_RAISE_VERB_RE check allows them through).
+    if (isCandidateTaintedByVolumeMetric(ctx) && !hasStrongRaiseSignal(ctx)) {
+      rejected.push({ candidate, reason: "volume_metric_taint" });
       continue;
     }
 

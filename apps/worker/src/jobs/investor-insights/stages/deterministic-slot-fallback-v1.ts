@@ -16,6 +16,11 @@
  */
 
 import type { DpuPage } from "./stage-2-deterministic.js";
+import {
+    checkTextCandidateQuality,
+    isSpreadsheetFragment,
+    isIncoherentText,
+} from "../text-candidate-quality-v1.js";
 
 // ─── Output types ────────────────────────────────────────────────────────────
 
@@ -237,6 +242,9 @@ export function resolveProductFallbackV1(
             const raw = m[1] ?? m[0];
             const value = collapse(raw).replace(/\.$/, "").slice(0, MAX_VALUE_CHARS);
             if (value.length < 20) return; // too short to be useful
+            // PR36.5: quality gate — reject spreadsheet fragments, OCR continuations, incoherent text
+            const qg = checkTextCandidateQuality(value);
+            if (!qg.accept) return;
             // Penalise very long values (likely OCR run-ons)
             const score = value.length <= 120 ? 1.0 : 0.5;
             candidates.push({
@@ -343,6 +351,11 @@ export function resolveMarketFallbackV1(
             const raw = m[1] ?? m[0];
             const value = collapse(raw).replace(/\.$/, "").slice(0, MAX_VALUE_CHARS);
             if (value.length < 8) return; // too short
+            // PR36.5: quality gate — reject spreadsheet fragments and incoherent text.
+            // Note: OCR continuation check is intentionally SKIPPED here — ICP phrases
+            // extracted by pattern groups naturally start lowercase (e.g. "mid-market
+            // healthcare companies...") and must not be rejected as continuation fragments.
+            if (isSpreadsheetFragment(value) || isIncoherentText(value)) return;
             const score = baseScore + (hasKnownSegment ? 0.2 : 0);
             candidates.push({
                 value,

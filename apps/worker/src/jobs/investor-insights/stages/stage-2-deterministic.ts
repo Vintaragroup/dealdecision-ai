@@ -75,7 +75,7 @@ import {
 	extractDeckFinancialSignalsV1,
 	type DeckFinancialSignalsV1,
 } from "../../../lib/deck-financial-signals-v1.js";
-import { isCandidateTaintedByFundAumContext } from "../resolve-raise-amount.js";
+import { isCandidateTaintedByFundAumContext, isCandidateTaintedByVolumeMetric, hasStrongRaiseSignal } from "../resolve-raise-amount.js";
 
 // Re-export deriveFinancialFactsV1 so the orchestrator can import it from here
 export { deriveFinancialFactsV1 };
@@ -644,6 +644,10 @@ function detectRaiseAllMatchesForConflict(
 		// in conflict detection (mirrors the PR24/PR26 guard in resolve-raise-amount
 		// and deal-fusion).
 		if (isCandidateTaintedByFundAumContext(text)) return [];
+		// PR36.5: skip pages containing operational volume / throughput language
+		// (cars financed, GMV, loan originations, etc.) so that Carmoola-class
+		// volume figures are never treated as raise candidates in conflict detection.
+		if (isCandidateTaintedByVolumeMetric(text) && !hasStrongRaiseSignal(text)) return [];
 		const snippet = m[0].slice(0, 80);
 		return [{
 			snippet,

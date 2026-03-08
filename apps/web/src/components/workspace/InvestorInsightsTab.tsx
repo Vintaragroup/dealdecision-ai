@@ -16,6 +16,7 @@ import {
   ExternalDiligenceV1, parseExternalDiligenceBody, ExternalSignalSynthesisV1,
   DealRiskRadarV1, parseMonitoringBody, SignalConsensus,
   DATA_SECTION_KEYS,
+  REPORT_SUMMARY_KEYS,
 } from './investorInsightsUtils';
 
 interface InvestorInsightsTabProps {
@@ -1735,8 +1736,15 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
 
   const hasSections = sections.length > 0;
 
-  // Decision-surface sections only (data/diagnostic sections live in the Data tab).
-  const decisionSurface = sections.filter((s) => !DATA_SECTION_KEYS.has(s.key));
+  // Decision-surface sections only.
+  // DATA_SECTION_KEYS  → routed to the Data tab (extracted fields, coverage, diagnostics).
+  // REPORT_SUMMARY_KEYS → routed to the Report tab (long-form narrative summary blocks).
+  // PR36.6A: governed_executive_summary_v1 and governed_summary_v1 are report-only sections
+  //          and must NOT render here. The Investor Insights tab is a decision surface for
+  //          investment posture, diligence signals, and risk analysis — not a report viewer.
+  const decisionSurface = sections.filter(
+    (s) => !DATA_SECTION_KEYS.has(s.key) && !REPORT_SUMMARY_KEYS.has(s.key)
+  );
 
   // Placeholder shows only when there is genuinely nothing to render.
   const isNotStarted =
@@ -1834,7 +1842,7 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
             Investor Insights
           </H3>
           <MutedText darkMode={darkMode} className="mt-0.5">
-            AI decision surface — executive summary, strengths, risks, and open questions.
+            AI decision surface — investment posture, diligence signals, and risk analysis.
           </MutedText>
         </div>
         <div className="flex items-center gap-2">

@@ -204,6 +204,25 @@ export const DATA_SECTION_KEYS = new Set([
   'deal_fusion',
 ]);
 
+/**
+ * PR36.6A — Report Summary Keys
+ *
+ * Keys of sections that are REPORT-ONLY narrative summary blocks.  These must
+ * render in the Report tab (OrchestratorFullReportView) and must NOT appear in the
+ * Investor Insights decision surface.
+ *
+ * Routing policy:
+ *   - Investor Insights tab: EXCLUDED (decision surface only — posture, diligence, risks)
+ *   - Report tab:            INCLUDED (long-form narrative, exec summary, structured summary)
+ *
+ * Do not add investor-facing decision sections here (e.g. llm_interpretation_v1,
+ * external_diligence_v1, deal_risk_radar_v1 — those belong in Investor Insights).
+ */
+export const REPORT_SUMMARY_KEYS = new Set([
+  'governed_executive_summary_v1', // LLM-governed AI executive summary (full narrative)
+  'governed_summary_v1',           // Deterministic AI investment summary (strengths/risks/questions)
+]);
+
 // ── LLM Interpretation V1 (PR34) ─────────────────────────────────────────────
 
 export type LlmInterpretationPosture = 'GO' | 'INVESTIGATE' | 'CAUTION' | 'PASS';

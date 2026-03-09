@@ -40,7 +40,13 @@ import {
 	formatCanonicalFieldLine,
 	formatConflictLine,
 	buildProductNarrativeBody,
+	buildProductNarrativeBundle,
 } from "./stage-2-deterministic";
+import {
+	serializeContradictionMarkersBody,
+	type NarrativeContradictionBundle,
+} from "../narrative-contradiction-v1";
+import { buildFullContradictionBundle } from "./stage-2-deterministic";
 import type { GateState } from "../../../contracts/investor-insights/schemas";
 import {
 	recordGovernedSkip,
@@ -91,6 +97,11 @@ export async function buildGovernedSummarySection(
 			? (buildFinancialReconciliationSection(inputs.financialReconciliation).body ?? null)
 			: null;
 
+		// PR36.9: Compute full 7-topic contradiction bundle once in stage-2 (deterministic).
+		const gsContradictionBundle: NarrativeContradictionBundle =
+			buildFullContradictionBundle(inputs);
+		const contradictionMarkersBody = serializeContradictionMarkersBody(gsContradictionBundle);
+
 		const record = await resolveGovernedSummaryWithCache({
 			canonicalFieldsBody,
 			insightSlotsBody,
@@ -105,6 +116,7 @@ export async function buildGovernedSummarySection(
 			governanceVersion,
 			dealName: dealName ?? undefined,
 			productNarrativeBody: productNarrativeBody ?? undefined,
+			contradictionMarkersBody,
 		});
 
 		if (!record || !record.validation_ok) {
@@ -263,6 +275,11 @@ export async function buildGovernedExecutiveSummarySection(
 		const failCount = gateResults.filter((g) => !g.passed).length;
 		const gateStateText = `gates=${gateResults.length} pass=${passCount} fail=${failCount}`;
 
+		// PR36.9: Compute full 7-topic contradiction bundle once in stage-2 (deterministic).
+		const execContradictionBundle: NarrativeContradictionBundle =
+			buildFullContradictionBundle(inputs);
+		const execContradictionMarkersBody = serializeContradictionMarkersBody(execContradictionBundle);
+
 		const record = await resolveGovernedExecSummaryWithCache({
 			canonicalFieldsBody,
 			insightSlotsBody,
@@ -280,6 +297,7 @@ export async function buildGovernedExecutiveSummarySection(
 			governanceVersion,
 			dealName: dealName ?? undefined,
 			productNarrativeBody: productNarrativeBody ?? undefined,
+			contradictionMarkersBody: execContradictionMarkersBody,
 		});
 
 		if (!record) {
@@ -498,8 +516,22 @@ export async function buildLlmInterpretationSection(
 		const deckFinancialSignalsBody = inputs.deckFinancialSignals
 			? (buildDeckFinancialSignalsSection(inputs.deckFinancialSignals).body ?? null)
 			: null;
-		const productSignalsBundleBody = buildProductSignalsBundleSection(inputs).body ?? null;
-		const gtmSignalsBundleBody = buildGtmSignalsBundleSection(inputs).body ?? null;
+		const productSignalsBundle = buildProductSignalsBundleSection(inputs);
+		const gtmSignalsBundle = buildGtmSignalsBundleSection(inputs);
+		const productNarrativeBundle = buildProductNarrativeBundle(inputs);
+
+		const productSignalsBundleBody = productSignalsBundle.body ?? null;
+		const gtmSignalsBundleBody = gtmSignalsBundle.body ?? null;
+
+		// PR36.9: Compute full 7-topic contradiction bundle once in stage-2 (deterministic).
+		const contradictionBundle: NarrativeContradictionBundle =
+			buildFullContradictionBundle(inputs);
+		const contradictionMarkersBody = serializeContradictionMarkersBody(contradictionBundle);
+
+		// Use productNarrativeBody from opts (caller-provided) if given, otherwise derive
+		// from the already-ranked product narrative bundle computed above.
+		const productNarrativeBody =
+			opts?.productNarrativeBody ?? productNarrativeBundle.selectedText ?? null;
 
 		const result = await generateLlmInterpretationV1({
 			canonicalFieldsBody,
@@ -514,7 +546,8 @@ export async function buildLlmInterpretationSection(
 			externalDiligenceBody: opts?.externalDiligenceBody ?? null,
 			conflictsBody,
 			dealName: opts?.dealName ?? undefined,
-			productNarrativeBody: opts?.productNarrativeBody ?? null,
+			productNarrativeBody,
+			contradictionMarkersBody,
 			evidenceCaveat: opts?.evidenceCaveat ?? false,
 		});
 

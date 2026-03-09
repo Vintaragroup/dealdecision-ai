@@ -20,6 +20,7 @@ import type { FusedFact } from "../deal-fusion";
 import type { FinancialFactsV1 } from "../../../lib/financial-facts-v1.js";
 import type { GovernedSummaryRecord } from "../governed-summary-v1";
 import type { GovernedExecutiveSummaryRecord } from "../governed-executive-summary-v1";
+import type { NarrativeContradictionBundle } from "../narrative-contradiction-v1";
 import { VERSION_PINS } from "./_shared";
 
 // ─── Render package builder ───────────────────────────────────────────────────
@@ -90,6 +91,11 @@ export async function persistReport(
 		governedSummaryRecord?: GovernedSummaryRecord | null;
 		/** Governed executive summary record to persist in report_payload. */
 		governedExecutiveSummaryRecord?: GovernedExecutiveSummaryRecord | null;
+		/**
+		 * PR36.9: Full 7-topic contradiction bundle to persist in report_payload.
+		 * Additive-only — null/undefined means the field is omitted from the payload.
+		 */
+		narrativeContradictionBundle?: NarrativeContradictionBundle | null;
 	}
 ): Promise<string> {
 	// ── Debug: log DB context once per call ─────────────────────────────────
@@ -149,6 +155,7 @@ export async function persistReport(
 					...(opts.financialFacts ? { financial_facts_v1: opts.financialFacts } : {}),
 					...(opts.governedSummaryRecord ? { governed_summary_v1: opts.governedSummaryRecord } : {}),
 					...(opts.governedExecutiveSummaryRecord ? { governed_executive_summary_v1: opts.governedExecutiveSummaryRecord } : {}),
+					...(opts.narrativeContradictionBundle ? { narrative_contradiction_bundle: opts.narrativeContradictionBundle } : {}),
 				}),
 				JSON.stringify(opts.auditLog),
 			]

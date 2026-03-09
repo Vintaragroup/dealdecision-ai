@@ -84,8 +84,12 @@ import {
 import { isCandidateTaintedByFundAumContext, isCandidateTaintedByVolumeMetric, hasStrongRaiseSignal } from "../resolve-raise-amount.js";
 import {
 	selectBestNarrativeCandidate,
+	rankNarrativeCandidates,
+	TOPIC_MIN_THRESHOLD,
 	type NarrativeCandidate,
 } from "../narrative-evidence-ranking.js";
+import { detectNarrativeContradiction } from "../narrative-contradiction-detector.js";
+import type { NarrativeContradictionV1, RankedNarrativeBundle } from "../narrative-contradiction-v1.js";
 
 // Re-export deriveFinancialFactsV1 so the orchestrator can import it from here
 export { deriveFinancialFactsV1 };
@@ -125,8 +129,80 @@ export function buildProductNarrativeBody(inputs: InsightSlotInputs): string | n
 	});
 }
 
-// ─── Stage 1: Deterministic Insight Slots ───────────────────────────────────────
+// ─── Shared narrative bundle helper (PR36.9) ─────────────────────────────────
 
+/**
+ * Rank candidates and run contradiction detection in one pass.
+ * Returns the combined selectedText + contradiction data as a RankedNarrativeBundle.
+ *
+ * This is the Phase 3 replacement for calling selectBestNarrativeCandidate inside
+ * bundle section builders — it preserves runner-up data for contradiction routing.
+ *
+ * @internal — used only by bundle builders in this module.
+ */
+function selectWithContradiction(
+	candidates: NarrativeCandidate[],
+	topic: Parameters<typeof detectNarrativeContradiction>[1],
+	opts?: { topN?: number; maxChars?: number },
+): RankedNarrativeBundle {
+	if (candidates.length === 0) return { selectedText: null, contradiction: null };
+
+	const topN = opts?.topN ?? 3;
+	const maxChars = opts?.maxChars ?? 1000;
+	const threshold = TOPIC_MIN_THRESHOLD[topic];
+
+	const ranked = rankNarrativeCandidates(candidates, topic);
+	const qualified = ranked.filter((c) => c.score >= threshold);
+
+	const selectedText =
+		qualified.length === 0
+			? null
+			: qualified
+					.slice(0, topN)
+					.map((c) => c.text.trim())
+					.join("\n\n")
+					.slice(0, maxChars);
+
+	// Run contradiction detection when ≥2 qualified candidates exist
+	const contradiction =
+		qualified.length >= 2 ? detectNarrativeContradiction(ranked, topic) : null;
+
+	return { selectedText, contradiction };
+}
+
+// ─── Product narrative bundle builder (PR36.9) ───────────────────────────────
+
+/**
+ * Build a product narrative bundle from non-financial DPU deck pages.
+ *
+ * Like buildProductNarrativeBody but returns structured contradiction data
+ * alongside the body text. Callers in stage-3 should use this function to
+ * forward contradiction signals to the LLM corpus.
+ */
+export function buildProductNarrativeBundle(inputs: InsightSlotInputs): RankedNarrativeBundle {
+	const PRODUCT_KW_RE =
+		/\b(?:product|platform|solution|technology|we\s+(?:help|build|provide|enable|serve|power)|our\s+(?:platform|product|solution|technology|tool|software)|problem|pain\s+point|customers?|users?|clients?|mission|vision|founded|raises?|builds?)\b/i;
+	const MAX_CHARS = 800;
+	const candidates: NarrativeCandidate[] = [];
+
+	for (const page of inputs.dpuPages) {
+		const text = page.text ?? "";
+		const moneyCount = (text.match(/\$[\d,]/g) ?? []).length;
+		const totalWords = text.split(/\s+/).filter(Boolean).length;
+		if (totalWords > 0 && moneyCount / totalWords >= 0.12) continue;
+		if (!PRODUCT_KW_RE.test(text)) continue;
+		const excerpt = text.slice(0, 500).replace(/\s+/g, " ").trim();
+		if (!excerpt || excerpt.length < 30) continue;
+		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
+	}
+
+	return selectWithContradiction(candidates, "product_differentiation", {
+		topN: 3,
+		maxChars: MAX_CHARS,
+	});
+}
+
+// ─── Stage 1: Deterministic Insight Slots ───────────────────────────────────────
 /**
  * Stage 1 slot reason codes (NotComputable cases).
  * UPPER_SNAKE_CASE per reason-code format enforcement.
@@ -2738,6 +2814,7 @@ function buildProductSignalsBundleSection(inputs: InsightSlotInputs): {
 	kind: string;
 	body: string | null;
 	fallback: string;
+	contradiction: NarrativeContradictionV1 | null;
 } {
 	const MAX_CHARS = 1000;
 	const candidates: NarrativeCandidate[] = [];
@@ -2752,7 +2829,7 @@ function buildProductSignalsBundleSection(inputs: InsightSlotInputs): {
 		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
 	}
 
-	const body = selectBestNarrativeCandidate(candidates, "product_differentiation", {
+	const bundle = selectWithContradiction(candidates, "product_differentiation", {
 		topN: 3,
 		maxChars: MAX_CHARS,
 	});
@@ -2761,8 +2838,9 @@ function buildProductSignalsBundleSection(inputs: InsightSlotInputs): {
 		key: "product_signals_bundle_v1",
 		title: "Product & Differentiation Signals",
 		kind: "message",
-		body,
+		body: bundle.selectedText,
 		fallback: "No product signals extracted.",
+		contradiction: bundle.contradiction,
 	};
 }
 
@@ -2788,6 +2866,7 @@ function buildGtmSignalsBundleSection(inputs: InsightSlotInputs): {
 	kind: string;
 	body: string | null;
 	fallback: string;
+	contradiction: NarrativeContradictionV1 | null;
 } {
 	const MAX_CHARS = 1000;
 	const candidates: NarrativeCandidate[] = [];
@@ -2822,7 +2901,7 @@ function buildGtmSignalsBundleSection(inputs: InsightSlotInputs): {
 		}
 	}
 
-	const body = selectBestNarrativeCandidate(candidates, "go_to_market_strategy", {
+	const bundle = selectWithContradiction(candidates, "go_to_market_strategy", {
 		topN: 3,
 		maxChars: MAX_CHARS,
 	});
@@ -2831,11 +2910,212 @@ function buildGtmSignalsBundleSection(inputs: InsightSlotInputs): {
 		key: "gtm_signals_bundle_v1",
 		title: "Go-To-Market Signals",
 		kind: "message",
-		body,
+		body: bundle.selectedText,
 		fallback: "No GTM signals extracted.",
+		contradiction: bundle.contradiction,
 	};
 }
 
+// ─── Candidate gatherers for remaining narrative topics (PR36.9) ──────────────
+
+/**
+ * Gather market_position candidates from DPU pages matching TAM/SAM/SOM or
+ * market-size patterns.  Also surfaces any TAM-framed mentions from deck
+ * financial signals.
+ *
+ * @internal — used only by buildFullContradictionBundle.
+ */
+function gatherMarketPositionCandidates(inputs: InsightSlotInputs): NarrativeCandidate[] {
+	const candidates: NarrativeCandidate[] = [];
+	for (const page of inputs.dpuPages) {
+		const text = page.text;
+		if (!text || text.length < 20) continue;
+		if (!MARKET_PATTERN.test(text)) continue;
+		const excerpt = text.trim().slice(0, 300);
+		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
+	}
+	// Deck financial signal mentions that carry market / TAM framing
+	const dfs = inputs.deckFinancialSignals;
+	if (dfs) {
+		for (const m of dfs.revenue_mentions) {
+			if (/\bTAM\b|\bSAM\b|\bSOM\b|\baddressable\s+market\b|\bmarket\s+size\b/i.test(m.text)) {
+				candidates.push({ text: m.text, meta: { sourceType: "focused_bundle" } });
+			}
+		}
+	}
+	return candidates;
+}
+
+/**
+ * Gather financial_outlook candidates from DPU pages with explicit ARR/MRR/revenue
+ * language and from structured deck financial signals (arr_mrr_mentions, revenue_mentions).
+ *
+ * @internal — used only by buildFullContradictionBundle.
+ */
+function gatherFinancialOutlookCandidates(inputs: InsightSlotInputs): NarrativeCandidate[] {
+	const FINANCIAL_OUTLOOK_RE =
+		/\b(?:ARR\b|MRR\b|annual\s+recurring\s+revenue|monthly\s+recurring\s+revenue|revenue|burn\s+rate|runway|gross\s+margin|net\s+margin|EBITDA)\b/i;
+	const candidates: NarrativeCandidate[] = [];
+	for (const page of inputs.dpuPages) {
+		const text = page.text;
+		if (!text || text.length < 20) continue;
+		if (!FINANCIAL_OUTLOOK_RE.test(text)) continue;
+		const excerpt = text.trim().slice(0, 300);
+		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
+	}
+	// Structured deck financial signals — higher trustworthiness tier
+	const dfs = inputs.deckFinancialSignals;
+	if (dfs) {
+		for (const m of dfs.arr_mrr_mentions) {
+			candidates.push({ text: m.text, meta: { sourceType: "focused_bundle" } });
+		}
+		for (const m of dfs.revenue_mentions) {
+			candidates.push({ text: m.text, meta: { sourceType: "focused_bundle" } });
+		}
+	}
+	return candidates;
+}
+
+/**
+ * Gather capital_and_raise candidates from DPU pages matching raise patterns
+ * and from evidence snippets that contain strong raise signals.
+ *
+ * Applies the same volume-metric taint guard used by resolveRaiseAmount to
+ * avoid surfacing GMV/loan-book figures as equity-raise candidates.
+ *
+ * @internal — used only by buildFullContradictionBundle.
+ */
+function gatherCapitalRaiseCandidates(inputs: InsightSlotInputs): NarrativeCandidate[] {
+	const candidates: NarrativeCandidate[] = [];
+	for (const page of inputs.dpuPages) {
+		const text = page.text;
+		if (!text || text.length < 20) continue;
+		if (!RAISE_AMOUNT_PATTERN.test(text) && !RAISE_RANGE_PATTERN.test(text)) continue;
+		// Skip pages tainted by volume-metric language (GMV, loan-book, financed, etc.)
+		if (isCandidateTaintedByVolumeMetric(text)) continue;
+		const excerpt = text.trim().slice(0, 300);
+		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
+	}
+	// Evidence snippets carrying strong raise signal (pre-extracted, canonical tier)
+	for (const snippet of inputs.evidenceSnippets) {
+		const text = snippet.claim_text ?? snippet.claim_text_norm ?? "";
+		if (!text || text.length < 20) continue;
+		if (!hasStrongRaiseSignal(text)) continue;
+		if (isCandidateTaintedByVolumeMetric(text)) continue;
+		candidates.push({ text, meta: { sourceType: "canonical_fact" } });
+	}
+	return candidates;
+}
+
+/**
+ * Gather traction candidates from DPU pages matching ARR/MRR or engagement-rate
+ * patterns and from structured deck financial signals (arr_mrr_mentions,
+ * unit_econ_mentions).
+ *
+ * @internal — used only by buildFullContradictionBundle.
+ */
+function gatherTractionCandidates(inputs: InsightSlotInputs): NarrativeCandidate[] {
+	const candidates: NarrativeCandidate[] = [];
+	for (const page of inputs.dpuPages) {
+		const text = page.text;
+		if (!text || text.length < 20) continue;
+		if (!TRACTION_PATTERN.test(text) && !TRACTION_PCT_PATTERN.test(text)) continue;
+		const excerpt = text.trim().slice(0, 300);
+		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
+	}
+	// Deck financial signals carry traction-grade ARR/MRR and unit-econ data
+	const dfs = inputs.deckFinancialSignals;
+	if (dfs) {
+		for (const m of dfs.arr_mrr_mentions) {
+			candidates.push({ text: m.text, meta: { sourceType: "focused_bundle" } });
+		}
+		for (const m of dfs.unit_econ_mentions) {
+			candidates.push({ text: m.text, meta: { sourceType: "focused_bundle" } });
+		}
+	}
+	return candidates;
+}
+
+/**
+ * Gather business_quality candidates from DPU pages mentioning profitability,
+ * sustainable recurring-revenue model strength, or founding-team quality signals.
+ *
+ * @internal — used only by buildFullContradictionBundle.
+ */
+function gatherBusinessQualityCandidates(inputs: InsightSlotInputs): NarrativeCandidate[] {
+	const BUSINESS_QUALITY_RE =
+		/\b(?:profitable?|profitability|sustainable\b|recurring\s+(?:revenue|model)|high[-\s](?:margin|NPS|retention|LTV)|strong\s+(?:unit\s+economics?|fundamentals?|retention)|asset.{0,5}light|capital.{0,5}efficient|bootstrap(?:ped|ping)?|growing\s+(?:rapidly|organically|profitably)|founder[s]?\b|founding\s+team|domain\s+expertise)\b/i;
+	const candidates: NarrativeCandidate[] = [];
+	for (const page of inputs.dpuPages) {
+		const text = page.text;
+		if (!text || text.length < 20) continue;
+		if (!BUSINESS_QUALITY_RE.test(text)) continue;
+		const excerpt = text.trim().slice(0, 300);
+		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
+	}
+	return candidates;
+}
+
+// ─── Full contradiction bundle builder (PR36.9) ───────────────────────────────
+
+/**
+ * Build a complete NarrativeContradictionBundle covering all 7 narrative topics.
+ *
+ * Runs one selectWithContradiction pass per topic.  Fully deterministic — no I/O.
+ *
+ * Called by stage-3 LLM builders (replacing the previous inline 2-topic computation)
+ * and by the orchestrator to persist the bundle in report_payload.
+ *
+ * Contradiction is null for a given topic when:
+ *  - fewer than 2 qualified candidates exist (score ≥ TOPIC_MIN_THRESHOLD), OR
+ *  - candidates are all below the topic minimum-quality gate.
+ */
+export function buildFullContradictionBundle(
+	inputs: InsightSlotInputs,
+): import("../narrative-contradiction-v1.js").NarrativeContradictionBundle {
+	// product_differentiation: prefer narrative-page candidates over signal-keyword candidates.
+	// Fall back to the signals bundle contradiction when the narrative bundle has no conflict.
+	const productNarrBundle = buildProductNarrativeBundle(inputs);
+	const productSignalsBundle = buildProductSignalsBundleSection(inputs);
+	const gtmBundle = buildGtmSignalsBundleSection(inputs);
+
+	const marketBundle = selectWithContradiction(
+		gatherMarketPositionCandidates(inputs),
+		"market_position",
+		{ topN: 3, maxChars: 800 },
+	);
+	const financialBundle = selectWithContradiction(
+		gatherFinancialOutlookCandidates(inputs),
+		"financial_outlook",
+		{ topN: 3, maxChars: 800 },
+	);
+	const capitalBundle = selectWithContradiction(
+		gatherCapitalRaiseCandidates(inputs),
+		"capital_and_raise",
+		{ topN: 3, maxChars: 800 },
+	);
+	const tractionBundle = selectWithContradiction(
+		gatherTractionCandidates(inputs),
+		"traction",
+		{ topN: 3, maxChars: 800 },
+	);
+	const businessBundle = selectWithContradiction(
+		gatherBusinessQualityCandidates(inputs),
+		"business_quality",
+		{ topN: 3, maxChars: 800 },
+	);
+
+	return {
+		product_differentiation:
+			productNarrBundle.contradiction ?? productSignalsBundle.contradiction ?? null,
+		go_to_market_strategy: gtmBundle.contradiction ?? null,
+		market_position: marketBundle.contradiction,
+		financial_outlook: financialBundle.contradiction,
+		capital_and_raise: capitalBundle.contradiction,
+		traction: tractionBundle.contradiction,
+		business_quality: businessBundle.contradiction,
+	};
+}
 
 // ── Named exports used by stage-1, stage-3, and the orchestrator ─────────────
 export {

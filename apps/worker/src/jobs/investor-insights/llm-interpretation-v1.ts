@@ -189,6 +189,12 @@ export interface LlmInterpretationArgs {
 	 * output, and the caller passes through the coverage metrics for context.
 	 */
 	evidenceCaveat?: boolean;
+	/**
+	 * PR36.9: Serialized narrative contradiction markers body.
+	 * Produced by serializeContradictionMarkersBody() from detected topic contradictions.
+	 * When present, the LLM is instructed to NOT flatten conflicting topic evidence.
+	 */
+	contradictionMarkersBody?: string | null;
 }
 
 export type LlmInterpretationResult =
@@ -277,11 +283,22 @@ const SYSTEM_PROMPT_BASE = [
 	"    - confidence=PROVISIONAL: Treat as supporting context only — not a primary fact.",
 	"    - confidence=VERIFIED or confidence=STRONG_EVIDENCE: use normally.",
 	"    - confidence=SUPPRESSED or confidence=UNKNOWN: ignore this field entirely.",
+	"15. NARRATIVE EVIDENCE CONTRADICTIONS (PR36.9): When a '## Narrative Evidence Contradictions' section is present:",
+	"    - A topic with status=CONFLICTING means two qualified evidence candidates make materially incompatible claims.",
+	"      DO NOT write a confident settled claim for that field.",
+	"      State explicitly: 'Materials present conflicting signals regarding [X]. [describe both interpretations concisely].'",
+	"      Do NOT invent a reconciliation unless both signals are explicitly compatible.",
+	"    - A topic with status=MIXED means candidates frame the topic differently but both interpretations may hold.",
+	"      Qualify language: 'Materials suggest [X] with mixed framing...' or",
+	"      'Signals present multiple possible interpretations of [X]...'",
+	"      Present the primary framing with appropriate qualification. Do NOT suppress the topic.",
+	"    - When status=none or the contradiction section is absent: proceed normally for that topic.",
+	"    - This rule applies to: product_differentiation, go_to_market_strategy, and any topic with a contradiction record.",
 ].join("\n");
 
 const SYSTEM_PROMPT_WITH_CAVEAT =
 	SYSTEM_PROMPT_BASE +
-	"\n\n15. IMPORTANT: Evidence coverage is limited for this deal. Your interpretation is based on partial data." +
+	"\n\n16. IMPORTANT: Evidence coverage is limited for this deal. Your interpretation is based on partial data." +
 	" Set confidence to LOW unless there are multiple strong cross-validated signals. Explicitly call out where" +
 	" key data was missing in the relevant section (e.g., financial_outlook, market_position, product_differentiation)."; 
 
@@ -310,6 +327,7 @@ export async function generateLlmInterpretationV1(
 	if (args.gtmSignalsBundleBody) parts.push(`## Go-To-Market Signals\n${args.gtmSignalsBundleBody}`);
 	if (args.useOfFundsBody) parts.push(`## Use of Funds Detail\n${args.useOfFundsBody}`);
 	if (args.conflictsBody) parts.push(`## Conflicting Fields (detected)\n${args.conflictsBody}`);
+	if (args.contradictionMarkersBody) parts.push(`## Narrative Evidence Contradictions\n${args.contradictionMarkersBody}`);
 	if (args.externalDiligenceBody) parts.push(`## External Due Diligence (web research)\n${args.externalDiligenceBody}`);
 
 	if (parts.length === 0) {

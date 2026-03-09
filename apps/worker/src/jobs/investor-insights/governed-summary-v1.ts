@@ -52,6 +52,8 @@ export interface GovernedSummaryArgs {
 	dealName?: string;
 	/** Product/narrative text from deck pages (not financial tables). */
 	productNarrativeBody?: string | null;
+	/** PR36.9: Serialized contradiction markers body for this run. */
+	contradictionMarkersBody?: string | null;
 }
 
 export type GovernedSummaryResult =
@@ -112,6 +114,8 @@ export interface GovernedSummaryFingerprintInputs {
 	dealNameText?: string | null;
 	/** Product narrative text for cache invalidation. */
 	productNarrativeText?: string | null;
+	/** PR36.9: Contradiction markers text for cache invalidation. */
+	contradictionMarkersText?: string | null;
 }
 
 /**
@@ -152,6 +156,7 @@ export function computeGovernedSummaryFingerprintV1(
 		governance_version: inputs.governanceVersion ?? null,
 		deal_name: inputs.dealNameText ?? null,
 		product_narrative: inputs.productNarrativeText ? normalizeForFingerprint(inputs.productNarrativeText) : null,
+		contradiction_markers: inputs.contradictionMarkersText ? normalizeForFingerprint(inputs.contradictionMarkersText) : null,
 	};
 	// JSON.stringify with sorted keys for determinism
 	const orderedKeys = Object.keys(obj).sort() as Array<keyof typeof obj>;
@@ -190,6 +195,8 @@ export interface ResolveGovernedSummaryArgs {
 	dealName?: string;
 	/** Product/narrative text from non-financial deck pages. */
 	productNarrativeBody?: string | null;
+	/** PR36.9: Serialized contradiction markers body. */
+	contradictionMarkersBody?: string | null;
 	/**
 	 * Injectable generate function — defaults to `generateGovernedSummaryV1`.
 	 * Overriding this in tests avoids any real LLM calls.
@@ -227,6 +234,7 @@ export async function resolveGovernedSummaryWithCache(
 		governanceVersion,
 		dealName,
 		productNarrativeBody,
+		contradictionMarkersBody,
 		generateFn = generateGovernedSummaryV1,
 	} = args;
 
@@ -249,6 +257,7 @@ export async function resolveGovernedSummaryWithCache(
 		governanceVersion,
 		dealNameText: dealName ?? null,
 		productNarrativeText: productNarrativeBody ?? null,
+		contradictionMarkersText: contradictionMarkersBody ?? null,
 	});
 
 	// ── Determine cache miss reason (for observability) ──────────────────────
@@ -301,7 +310,10 @@ export async function resolveGovernedSummaryWithCache(
 		financialHealthBody,
 		financialReconciliationBody,
 		conflictsBody,
-		dealName,		productNarrativeBody,	});
+		dealName,
+		productNarrativeBody,
+		contradictionMarkersBody,
+	});
 
 	if (result.ok) {
 		return {
@@ -520,7 +532,13 @@ const SYSTEM_PROMPT =
 	"5. Keep executive_summary to 2–4 sentences. Each bullet in strengths/risks ≤100 chars. Each open_question ≤120 chars.\n" +
 	"6. Return ONLY valid JSON with exactly these keys:\n" +
 	'   { "executive_summary": "...", "strengths": [...], "risks": [...], "open_questions": [...] }\n' +
-	"7. No markdown. No code fences. No extra keys.";
+	"7. No markdown. No code fences. No extra keys.\n" +
+	"8. NARRATIVE EVIDENCE CONTRADICTIONS (PR36.9): When a '## Narrative Evidence Contradictions' section appears in the corpus:\n" +
+	"   - A topic marked status=CONFLICTING: do NOT write a confident settled claim about that topic. " +
+	"State instead: 'Materials present conflicting signals regarding [topic].'\n" +
+	"   - A topic marked status=MIXED: qualify language — e.g. 'Materials suggest [claim] with mixed framing.' " +
+	"or 'Evidence is not fully consistent regarding [topic].'\n" +
+	"   - Do NOT invent reconciliation between conflicting claims. Preserve the uncertainty rather than choosing one interpretation.";
 
 /**
  * Call gpt-4o-mini to generate a governed executive summary from canonical inputs.
@@ -542,7 +560,7 @@ export async function generateGovernedSummaryV1(
 	if (args.financialHealthBody) parts.push(`## Financial Health Metrics\n${args.financialHealthBody}`);
 	if (args.financialReconciliationBody) parts.push(`## Financial Reconciliation\n${args.financialReconciliationBody}`);
 	if (args.conflictsBody) parts.push(`## Conflicting Fields\n${args.conflictsBody}`);
-
+	if (args.contradictionMarkersBody) parts.push(`## Narrative Evidence Contradictions\n${args.contradictionMarkersBody}`);
 	if (parts.length === 0) {
 		return {
 			ok: false,

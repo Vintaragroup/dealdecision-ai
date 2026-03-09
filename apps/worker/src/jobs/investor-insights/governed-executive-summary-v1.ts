@@ -85,6 +85,8 @@ export interface GovernedExecutiveSummaryArgs {
 	dealName?: string;
 	/** Product/narrative text from non-financial deck pages. */
 	productNarrativeBody?: string | null;
+	/** PR36.9: Serialized contradiction markers body. */
+	contradictionMarkersBody?: string | null;
 }
 
 export type GovernedExecutiveSummaryResult =
@@ -152,6 +154,8 @@ export interface GovernedExecutiveSummaryFingerprintInputs {
 	dealNameText?: string | null;
 	/** Product narrative text for cache invalidation. */
 	productNarrativeText?: string | null;
+	/** PR36.9: Contradiction markers text for cache invalidation. */
+	contradictionMarkersText?: string | null;
 }
 
 /**
@@ -181,6 +185,7 @@ export function computeGovernedExecSummaryFingerprintV1(
 		governance_version: inputs.governanceVersion ?? null,
 		deal_name: inputs.dealNameText ?? null,
 		product_narrative: inputs.productNarrativeText ? normalizeForFingerprint(inputs.productNarrativeText) : null,
+		contradiction_markers: inputs.contradictionMarkersText ? normalizeForFingerprint(inputs.contradictionMarkersText) : null,
 	};
 	// JSON.stringify with sorted keys for determinism
 	const orderedKeys = Object.keys(obj).sort() as Array<keyof typeof obj>;
@@ -243,6 +248,8 @@ export interface ResolveGovernedExecSummaryArgs {
 	dealName?: string;
 	/** Product/narrative text from non-financial deck pages. */
 	productNarrativeBody?: string | null;
+	/** PR36.9: Serialized contradiction markers body. */
+	contradictionMarkersBody?: string | null;
 	/**
 	 * Injectable generate function — defaults to `generateGovernedExecSummaryV1`.
 	 * Overriding in tests avoids any real LLM calls.
@@ -281,6 +288,7 @@ export async function resolveGovernedExecSummaryWithCache(
 		governanceVersion,
 		dealName,
 		productNarrativeBody,
+		contradictionMarkersBody,
 		generateFn = generateGovernedExecSummaryV1,
 	} = args;
 
@@ -305,6 +313,7 @@ export async function resolveGovernedExecSummaryWithCache(
 		governanceVersion,
 		dealNameText: dealName ?? null,
 		productNarrativeText: productNarrativeBody ?? null,
+		contradictionMarkersText: contradictionMarkersBody ?? null,
 	});
 
 	// ── Determine cache miss reason ───────────────────────────────────────────
@@ -361,6 +370,7 @@ export async function resolveGovernedExecSummaryWithCache(
 		coverageNote,
 		dealName,
 		productNarrativeBody,
+		contradictionMarkersBody,
 	});
 
 	if (result.ok) {
@@ -472,7 +482,13 @@ const SYSTEM_PROMPT =
 	"12. No sentence may begin with the company name more than once across all paragraphs.\n" +
 	"13. Return ONLY valid JSON with exactly these keys:\n" +
 	'    { "headline": "...", "summary_paragraphs": [...], "strengths": [...], "risks": [...], "open_questions": [...] }\n' +
-	"14. No markdown. No code fences. No extra keys.";
+	"14. No markdown. No code fences. No extra keys.\n" +
+	"15. NARRATIVE EVIDENCE CONTRADICTIONS (PR36.9): When a '## Narrative Evidence Contradictions' section appears in the corpus:\n" +
+	"    - A topic marked status=CONFLICTING: do NOT write a confident settled claim about that topic. " +
+	"State instead: 'Materials present conflicting signals regarding [topic].'\n" +
+	"    - A topic marked status=MIXED: qualify language — e.g. 'Materials suggest [claim] with mixed framing.' " +
+	"or 'Evidence is not fully consistent regarding [topic].'\n" +
+	"    - Do NOT invent reconciliation between conflicting claims. Preserve the uncertainty rather than choosing one interpretation.";
 
 /**
  * Call gpt-4o-mini to generate a governed executive summary from canonical inputs.
@@ -520,6 +536,9 @@ export async function generateGovernedExecSummaryV1(
 
 	// 8. Conflicts
 	if (args.conflictsBody) parts.push(`## Conflicting Fields\n${args.conflictsBody}`);
+
+	// 9. Narrative evidence contradictions (PR36.9)
+	if (args.contradictionMarkersBody) parts.push(`## Narrative Evidence Contradictions\n${args.contradictionMarkersBody}`);
 
 	// Require at least one substantive section beyond the product placeholder
 	const hasSubstantiveData = !!(args.canonicalFieldsBody || args.insightSlotsBody);

@@ -89,6 +89,7 @@ import {
 	formatCanonicalFieldLine,
 	buildProductNarrativeBody,
 	deriveFinancialFactsV1,
+	buildFullContradictionBundle,
 } from "./stages/stage-2-deterministic";
 import {
 	buildGovernedSummarySection,
@@ -363,6 +364,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			financialFacts: insightSlotInputs.bestFinancialStatement
 				? deriveFinancialFactsV1(insightSlotInputs.bestFinancialStatement)
 				: null,
+			narrativeContradictionBundle: buildFullContradictionBundle(insightSlotInputs),
 		});
 
 		// Best-effort: populate financial fact registry (non-blocking)
@@ -671,6 +673,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				: null,
 			governedSummaryRecord: null,
 			governedExecutiveSummaryRecord: null,
+			narrativeContradictionBundle: buildFullContradictionBundle(insightSlotInputs),
 		});
 
 		// Best-effort: populate financial fact registry (non-blocking)
@@ -941,6 +944,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			: null,
 		governedSummaryRecord: governedResult?.record ?? null,
 		governedExecutiveSummaryRecord: governedExecResult?.record ?? null,
+		narrativeContradictionBundle: buildFullContradictionBundle(insightSlotInputs),
 	});
 
 	// Best-effort: populate financial fact registry (non-blocking)

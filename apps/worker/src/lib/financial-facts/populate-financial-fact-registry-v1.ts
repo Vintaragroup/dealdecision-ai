@@ -289,6 +289,12 @@ interface MergeResult {
  * Within the same rank, keep both (different source_pointer means different
  * extraction context — may reflect conflicting readings).
  *
+ * Projection safety: if the existing fact carries a realized temporal_scope
+ * (historical | current) and the incoming fact carries a projected scope
+ * (projected | scenario | target), the incoming fact is dropped regardless of
+ * its source_kind rank.  This prevents workbook forecast columns from
+ * displacing confirmed actuals.
+ *
  * Never downgrades confidence. Returns a new array.
  */
 export function mergeFactsByConfidence(facts: FinancialFactV1[]): MergeResult {
@@ -296,12 +302,29 @@ export function mergeFactsByConfidence(facts: FinancialFactV1[]): MergeResult {
   const best = new Map<string, FinancialFactV1>();
   let droppedCount = 0;
 
+  const isRealizedScope = (scope: string | undefined) =>
+    scope === "historical" || scope === "current";
+  const isProjectedScopeLocal = (scope: string | undefined) =>
+    scope === "projected" || scope === "scenario" || scope === "target";
+
   for (const fact of facts) {
     const key = `${fact.metric_key}:${fact.period_label}`;
     const existing = best.get(key);
 
     if (!existing) {
       best.set(key, fact);
+      continue;
+    }
+
+    // Projection safety: realized facts always win over projected ones.
+    if (isRealizedScope(existing.temporal_scope) && isProjectedScopeLocal(fact.temporal_scope)) {
+      droppedCount++;
+      continue;
+    }
+    // Inverse: if incoming is realized and existing is projected, replace.
+    if (isProjectedScopeLocal(existing.temporal_scope) && isRealizedScope(fact.temporal_scope)) {
+      best.set(key, fact);
+      droppedCount++;
       continue;
     }
 

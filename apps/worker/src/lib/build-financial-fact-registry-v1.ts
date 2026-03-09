@@ -58,6 +58,16 @@ export interface FinancialFactRegistryInputsV1 {
 
   /** Deck financial signals — used as low-confidence fallback. */
   deckSignals?: DeckFinancialSignalsV1 | null;
+
+  /**
+   * Workbook-intelligence facts from Phase 2 XLSX modules
+   * (table-detector → financial-model-interpreter → metric-promoter).
+   *
+   * Merged AFTER all structured parser series.  Projected / scenario workbook
+   * facts are silently dropped when a historical or current fact for the same
+   * metric_key + period_label already exists in the registry (projection safety).
+   */
+  workbookFacts?: FinancialFactV1[];
 }
 
 // ─── Builder ──────────────────────────────────────────────────────────────────
@@ -430,7 +440,49 @@ export function buildFinancialFactRegistryV1(
     }
   }
 
+  // ── 7. Workbook intelligence facts (Phase 2 XLSX modules) ─────────────────
+  if (inputs.workbookFacts && inputs.workbookFacts.length > 0) {
+    // Two-pass approach:
+    //
+    // Pass 1 — build the full set of realized keys from BOTH the existing
+    //   registry (steps 1-6) AND the workbook facts batch itself.  This makes
+    //   projection safety order-independent within the batch.
+    //
+    // Pass 2 — merge workbook facts, skipping projected/scenario facts for any
+    //   metric+period slot already covered by a realized fact.
+    const realizedKeys = new Set<string>();
+
+    // From the existing registry (steps 1-6):
+    for (const f of map.values()) {
+      if (isRealizedScope(f.temporal_scope)) {
+        realizedKeys.add(`${f.metric_key}:${f.period_label}`);
+      }
+    }
+    // From the workbook batch itself:
+    for (const wf of inputs.workbookFacts) {
+      if (isRealizedScope(wf.temporal_scope) && isFiniteFactValue(wf.value)) {
+        realizedKeys.add(`${wf.metric_key}:${wf.period_label}`);
+      }
+    }
+
+    // Pass 2: merge, applying projection safety.
+    for (const wf of inputs.workbookFacts) {
+      if (!isFiniteFactValue(wf.value)) continue;
+      // Projection safety: drop projected/scenario workbook facts when a
+      // realized (historical/current) fact already exists for the same slot.
+      if (!isRealizedScope(wf.temporal_scope)) {
+        if (realizedKeys.has(`${wf.metric_key}:${wf.period_label}`)) continue;
+      }
+      push(wf);
+    }
+  }
+
   return Array.from(map.values());
+}
+
+/** Returns true for temporal_scope values that represent realized/reported data. */
+function isRealizedScope(scope: string | undefined): boolean {
+  return scope === "historical" || scope === "current";
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

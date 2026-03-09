@@ -377,6 +377,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				cashFlow: insightSlotInputs.cashFlow ?? null,
 				reconciliation: insightSlotInputs.financialReconciliation ?? null,
 				deckSignals: insightSlotInputs.deckFinancialSignals ?? null,
+				workbookFacts: insightSlotInputs.workbookFacts,
 			});
 			const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
 			console.log(JSON.stringify({
@@ -686,6 +687,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				cashFlow: insightSlotInputs.cashFlow ?? null,
 				reconciliation: insightSlotInputs.financialReconciliation ?? null,
 				deckSignals: insightSlotInputs.deckFinancialSignals ?? null,
+				workbookFacts: insightSlotInputs.workbookFacts,
 			});
 			const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
 			console.log(JSON.stringify({
@@ -957,6 +959,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			cashFlow: insightSlotInputs.cashFlow ?? null,
 			reconciliation: insightSlotInputs.financialReconciliation ?? null,
 			deckSignals: insightSlotInputs.deckFinancialSignals ?? null,
+			workbookFacts: insightSlotInputs.workbookFacts,
 		});
 		const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
 		console.log(JSON.stringify({
@@ -1102,6 +1105,7 @@ export async function recomputeInsightSlotBody(
 		saasKpis: null,
 		bankTransactions: null,
 		deckFinancialSignals: null,
+		workbookFacts: [],
 	};
 
 	return buildInsightSlotsSection(inputs).body ?? "";

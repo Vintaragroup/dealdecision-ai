@@ -16,7 +16,10 @@ import {
 	isProjectedScope,
 	temporalScopeLabel,
 } from "@dealdecision/core";
-import type { EvidenceConfidenceLevel } from "@dealdecision/core";
+import type { EvidenceConfidenceLevel, FinancialFactV1 } from "@dealdecision/core";
+import { detectFinancialTables } from "../../../extraction/xlsx/table-detector.js";
+import { parseFinancialTable } from "../../../extraction/xlsx/financial-model-interpreter.js";
+import { promoteToFinancialFactV1 } from "../../../extraction/xlsx/metric-promoter.js";
 
 import type {
 	GateState,
@@ -320,6 +323,16 @@ export interface InsightSlotInputs {
 	 * Present for PDF/PPT-only deals; null when no financial mentions found.
 	 */
 	deckFinancialSignals: DeckFinancialSignalsV1 | null;
+	/**
+	 * Workbook-intelligence facts: FinancialFactV1 rows derived from the Phase 2
+	 * XLSX workbook modules (table-detector → financial-model-interpreter →
+	 * metric-promoter). Populated from excel_range and excel_sheet DPU pages.
+	 *
+	 * These flow into buildFinancialFactRegistryV1 and are merged with facts from
+	 * other sources using the existing confidence-based dedup logic.
+	 * Temporal scope (historical/current/projected/scenario) is preserved on each fact.
+	 */
+	workbookFacts: FinancialFactV1[];
 }
 
 
@@ -854,6 +867,8 @@ async function loadInsightSlotInputs(
 	const capTables:        CapTableV1[] = [];
 	const saasKpisAll:      SaasKpisV1[] = [];
 	let   bankTransactions: BankTransactionsV1 | null = null;
+	// Phase 2 workbook intelligence accumulator
+	const workbookFacts:    FinancialFactV1[] = [];
 
 	try {
 		const { rows } = await pool.query<{ document_id: string; page_index: number; payload: unknown }>(
@@ -912,6 +927,27 @@ async function loadInsightSlotInputs(
 			if (kpi) saasKpisAll.push(kpi);
 			const btxn = parseBankTransactionsV1(r.payload, { documentId: r.document_id, pageRef });
 			if (btxn && bankTransactions === null) bankTransactions = btxn;
+			// Phase 2 workbook intelligence: detect tables → interpret → promote
+			try {
+				const wbPayload = { ...((r.payload as Record<string, unknown>) ?? {}), page_type: "excel_range" };
+				const tables = detectFinancialTables(wbPayload);
+				for (const table of tables) {
+					const metrics = parseFinancialTable(table, {
+						deal_id: dealId,
+						document_id: r.document_id,
+						page_index: r.page_index,
+						slide_title: table.sheet_name,
+					});
+					const promoted = promoteToFinancialFactV1(metrics, {
+						deal_id: dealId,
+						document_id: r.document_id,
+						sheet_name: table.sheet_name,
+					});
+					workbookFacts.push(...promoted);
+				}
+			} catch {
+				// Workbook intelligence failures are non-fatal; existing parsers are unaffected.
+			}
 		}
 
 		// Parse implied capital allocation from excel_sheet DPU pages (structured_native_v1 fallback).
@@ -929,6 +965,26 @@ async function loadInsightSlotInputs(
 			const pageRef = `dpu:doc:${r.document_id.replace(/-/g, "").slice(0, 8)}:page:${r.page_index}`;
 			const tsUof = parseUseOfFundsTimeseriesV1(r.payload, { documentId: r.document_id, pageRef });
 			if (tsUof) useOfFundsStatements.push(tsUof);
+			// Phase 2 workbook intelligence for excel_sheet pages
+			try {
+				const tables = detectFinancialTables(r.payload);
+				for (const table of tables) {
+					const metrics = parseFinancialTable(table, {
+						deal_id: dealId,
+						document_id: r.document_id,
+						page_index: r.page_index,
+						slide_title: table.sheet_name,
+					});
+					const promoted = promoteToFinancialFactV1(metrics, {
+						deal_id: dealId,
+						document_id: r.document_id,
+						sheet_name: table.sheet_name,
+					});
+					workbookFacts.push(...promoted);
+				}
+			} catch {
+				// Workbook intelligence failures are non-fatal.
+			}
 		}
 
 		// Classify XLSX layouts for the entire deal (all pages, all documents).
@@ -1026,6 +1082,7 @@ async function loadInsightSlotInputs(
 		saasKpis:         _bestKpi,
 		bankTransactions,
 		deckFinancialSignals,
+		workbookFacts,
 	};
 }
 

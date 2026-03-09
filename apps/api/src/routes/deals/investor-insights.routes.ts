@@ -401,9 +401,14 @@ export async function registerInvestorInsightsRoutes(
         gate_state: unknown;
         compliance_state: unknown;
         render_package: unknown;
+        narrative_contradiction_bundle: unknown;
         updated_at: string;
       }>(
-        `SELECT status, engine_version, upstream_fingerprint, gate_state, compliance_state, render_package, updated_at
+        // PR36.9: also surface the contradiction bundle from report_payload so the UI
+        // can show mixed-evidence states without returning the full payload.
+        `SELECT status, engine_version, upstream_fingerprint, gate_state, compliance_state, render_package,
+                report_payload->'narrative_contradiction_bundle' AS narrative_contradiction_bundle,
+                updated_at
            FROM investor_insight_reports
           WHERE deal_id = $1
           ORDER BY updated_at DESC
@@ -425,6 +430,10 @@ export async function registerInvestorInsightsRoutes(
       gate_state: row.gate_state,
       compliance_state: row.compliance_state,
       render_package: row.render_package,
+      // PR36.9: contradiction bundle for UI mixed-signal display (null when absent).
+      ...(row.narrative_contradiction_bundle != null && {
+        narrative_contradiction_bundle: row.narrative_contradiction_bundle,
+      }),
       updated_at: row.updated_at,
       status_summary: statusSummary,
     });

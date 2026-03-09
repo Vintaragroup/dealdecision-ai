@@ -6,6 +6,45 @@
  * exports React components, letting Vite Fast Refresh work without interruption.
  */
 
+// ── PR36.9: Narrative Contradiction types (mirrored from worker) ──────────────
+
+export type NarrativeContradictionStatus = 'none' | 'mixed' | 'conflicting';
+
+export interface NarrativeContradictionV1 {
+  topic: string;
+  status: NarrativeContradictionStatus;
+  reason: string | null;
+  primary_text: string;
+  secondary_texts: string[];
+  notes: string[];
+}
+
+export interface NarrativeContradictionBundle {
+  product_differentiation?: NarrativeContradictionV1 | null;
+  go_to_market_strategy?: NarrativeContradictionV1 | null;
+  market_position?: NarrativeContradictionV1 | null;
+  financial_outlook?: NarrativeContradictionV1 | null;
+  capital_and_raise?: NarrativeContradictionV1 | null;
+  traction?: NarrativeContradictionV1 | null;
+  business_quality?: NarrativeContradictionV1 | null;
+}
+
+/**
+ * Return a contradiction record for a given topic, or null when:
+ *  - the bundle is absent
+ *  - the topic is absent in the bundle
+ *  - status is "none" (no meaningful conflict)
+ */
+export function getTopicContradiction(
+  bundle: NarrativeContradictionBundle | null | undefined,
+  topic: keyof NarrativeContradictionBundle,
+): NarrativeContradictionV1 | null {
+  if (!bundle) return null;
+  const rec = bundle[topic];
+  if (!rec || rec.status === 'none') return null;
+  return rec;
+}
+
 // ── Insight Slots ─────────────────────────────────────────────────────────────
 
 export interface SlotRow {

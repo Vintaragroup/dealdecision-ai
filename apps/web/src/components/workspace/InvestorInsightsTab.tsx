@@ -16,9 +16,22 @@ import {
   LlmInterpretationV1, LlmInterpretationPosture, LlmInterpretationConfidence, parseLlmInterpretationBody,
   ExternalDiligenceV1, parseExternalDiligenceBody, ExternalSignalSynthesisV1,
   DealRiskRadarV1, parseMonitoringBody, SignalConsensus,
+  NarrativeContradictionBundle,
   DATA_SECTION_KEYS,
   REPORT_SUMMARY_KEYS,
 } from './investorInsightsUtils';
+
+// ── PR Refactor: new high-density decision surface components ─────────────────
+import { ExecutivePulse } from './investor-insights/ExecutivePulse';
+import { IntelligenceGrid } from './investor-insights/IntelligenceGrid';
+import { SwotPanel } from './investor-insights/SwotPanel';
+import { SynthesizedNarrative } from './investor-insights/SynthesizedNarrative';
+import {
+  SentimentFilterToggle,
+  applyBucketSentimentFilter,
+} from './investor-insights/SentimentFilterToggle';
+import type { SentimentFilter } from './investor-insights/SentimentFilterToggle';
+import { ExternalDiligenceSkeleton } from './investor-insights/ExternalDiligenceSkeleton';
 
 interface InvestorInsightsTabProps {
   darkMode: boolean;
@@ -917,7 +930,16 @@ function hasExtField(v: string | undefined): v is string {
   return true;
 }
 
-export function LlmInterpretationSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+export function LlmInterpretationSection({
+  section,
+  darkMode,
+  contradictions,
+}: {
+  section: InvestorInsightsSection;
+  darkMode: boolean;
+  /** PR36.9: optional contradiction bundle for mixed-evidence display states. */
+  contradictions?: NarrativeContradictionBundle | null;
+}) {
   const body = typeof section.body === 'string' ? section.body : '';
   const data: LlmInterpretationV1 | null = parseLlmInterpretationBody(body);
 
@@ -927,67 +949,24 @@ export function LlmInterpretationSection({ section, darkMode }: { section: Inves
 
   const colClass = `rounded-lg border p-4 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-100 bg-gray-50'}`;
   const textClass = `text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`;
-  const bulletClass = textClass;
 
   return (
     <div className="space-y-4">
-      {/* Posture badge + evidence caveat */}
-      <div className="flex flex-wrap items-center gap-3">
-        <PostureBadge posture={data.posture} confidence={data.confidence} darkMode={darkMode} />
-        {data.evidence_caveat && (
-          <span className={`inline-flex items-center gap-1 text-xs ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>
-            <span className="text-amber-500">⚠</span>
-            {data.evidence_caveat}
-          </span>
-        )}
+      {/* ── Executive Pulse hero: posture gauge + vital signs ── */}
+      <ExecutivePulse data={data} darkMode={darkMode} />
+
+      {/* ── Synthesized narrative: executive + business quality + capital/raise ── */}
+      <SynthesizedNarrative data={data} darkMode={darkMode} />
+
+      {/* ── Intelligence Grid: 4-topic 2×2 signal cards (with contradiction callouts) ── */}
+      <div>
+        <div className={`text-xs font-semibold uppercase tracking-widest mb-2 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+          Intelligence Signals
+        </div>
+        <IntelligenceGrid data={data} darkMode={darkMode} contradictions={contradictions} />
       </div>
 
-      {/* Executive summary */}
-      <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-        {data.executive_summary}
-      </p>
-
-      {/* Row 1: Product & Differentiation | Market Position */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div className={colClass}>
-          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-cyan-400' : 'text-cyan-700'}`}>
-            Product &amp; Differentiation
-          </div>
-          <p className={textClass}>
-            {(data as LlmInterpretationV1 & { product_differentiation?: string }).product_differentiation || 'Not determinable from available signals.'}
-          </p>
-        </div>
-        <div className={colClass}>
-          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-teal-400' : 'text-teal-700'}`}>
-            Market Position
-          </div>
-          <p className={textClass}>
-            {data.market_position || 'Not disclosed.'}
-          </p>
-        </div>
-      </div>
-
-      {/* Row 2: Go-To-Market Strategy | Financial Outlook */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div className={colClass}>
-          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-purple-400' : 'text-purple-700'}`}>
-            Go-To-Market Strategy
-          </div>
-          <p className={textClass}>
-            {(data as LlmInterpretationV1 & { go_to_market_strategy?: string }).go_to_market_strategy || 'Not determinable from available signals.'}
-          </p>
-        </div>
-        <div className={colClass}>
-          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-sky-400' : 'text-sky-700'}`}>
-            Financial Outlook
-          </div>
-          <p className={textClass}>
-            {data.financial_outlook || 'Not disclosed.'}
-          </p>
-        </div>
-      </div>
-
-      {/* Row 3: External Market Context | Competitive Landscape — only when present */}
+      {/* ── External context — only when PR36 web research signals are present ── */}
       {(hasExtField(data.external_market_context) || hasExtField(data.competitive_landscape)) && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {hasExtField(data.external_market_context) && (
@@ -1009,7 +988,7 @@ export function LlmInterpretationSection({ section, darkMode }: { section: Inves
         </div>
       )}
 
-      {/* Claim Verification — full-width, only when present */}
+      {/* ── Claim Verification ── */}
       {hasExtField(data.claim_verification_summary) && (
         <div className={colClass}>
           <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-blue-400' : 'text-blue-700'}`}>
@@ -1019,7 +998,7 @@ export function LlmInterpretationSection({ section, darkMode }: { section: Inves
         </div>
       )}
 
-      {/* External Risk Signals — full-width, only when present */}
+      {/* ── External Risk Signals ── */}
       {hasExtField(data.external_risk_signals) && (
         <div className={colClass}>
           <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-rose-400' : 'text-rose-700'}`}>
@@ -1029,87 +1008,12 @@ export function LlmInterpretationSection({ section, darkMode }: { section: Inves
         </div>
       )}
 
-      {/* Row 4 (was 3): Business Quality | Capital & Raise */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div className={colClass}>
-          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-violet-400' : 'text-violet-700'}`}>
-            Business Quality
-          </div>
-          <p className={textClass}>
-            {data.business_quality || 'Insufficient data.'}
-          </p>
-        </div>
-        <div className={colClass}>
-          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-indigo-400' : 'text-indigo-700'}`}>
-            Capital &amp; Raise
-          </div>
-          <p className={textClass}>
-            {data.capital_and_raise_interpretation || 'Not disclosed.'}
-          </p>
-        </div>
-      </div>
+      {/* ── SWOT: Strengths, Risks, Key Unknowns, Diligence Questions ── */}
+      <SwotPanel data={data} darkMode={darkMode} contradictions={contradictions} />
 
-      {/* Row 4: Strengths | Risks */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div className={colClass}>
-          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`}>
-            Strengths
-          </div>
-          <ul className="space-y-1">
-            {data.strengths.map((s, i) => (
-              <li key={i} className={bulletClass}>• {s}</li>
-            ))}
-            {data.strengths.length === 0 && (
-              <li className={bulletClass + ' opacity-50'}>None identified</li>
-            )}
-          </ul>
-        </div>
-        <div className={colClass}>
-          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-red-400' : 'text-red-600'}`}>
-            Risks
-          </div>
-          <ul className="space-y-1">
-            {data.risks.map((r, i) => (
-              <li key={i} className={bulletClass}>• {r}</li>
-            ))}
-            {data.risks.length === 0 && (
-              <li className={bulletClass + ' opacity-50'}>None identified</li>
-            )}
-          </ul>
-        </div>
-      </div>
-
-      {/* Key Unknowns — full-width, only when populated */}
-      {data.key_unknowns && data.key_unknowns.length > 0 && (
-        <div className={colClass}>
-          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-orange-400' : 'text-orange-700'}`}>
-            Key Unknowns
-          </div>
-          <ul className="space-y-1">
-            {data.key_unknowns.map((u, i) => (
-              <li key={i} className={bulletClass}>• {u}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Top Diligence Questions — full-width, only when populated */}
-      {data.next_questions && data.next_questions.length > 0 && (
-        <div className={colClass}>
-          <div className={`text-xs font-semibold uppercase tracking-wide mb-2 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
-            Top Diligence Questions
-          </div>
-          <ul className="space-y-1">
-            {data.next_questions.map((q, i) => (
-              <li key={i} className={bulletClass}>• {q}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* Validation badge */}
+      {/* Validation footnote */}
       {data.validated && (
-        <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+        <p className={`text-xs ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
           ✓ Numeric-parity validated — no hallucinated figures
         </p>
       )}
@@ -1306,8 +1210,13 @@ function RunStatusBadge({ status, darkMode }: { status: ExternalDiligenceV1['run
 export function ExternalDiligenceSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const body = typeof section.body === 'string' ? section.body : '';
   const data: ExternalDiligenceV1 | null = parseExternalDiligenceBody(body);
+  const [sentimentFilter, setSentimentFilter] = useState<SentimentFilter>('all');
 
   if (!data) {
+    // Show skeleton when body is absent (still loading) vs empty fallback for parse failures.
+    if (!body || body.trim() === '') {
+      return <ExternalDiligenceSkeleton darkMode={darkMode} />;
+    }
     return <EmptyFallback text={section.fallback ?? 'External due diligence data unavailable.'} darkMode={darkMode} />;
   }
 
@@ -1319,8 +1228,18 @@ export function ExternalDiligenceSection({ section, darkMode }: { section: Inves
 
   // Buckets with results
   const activeBuckets = data.buckets.filter((b) => b.results.length > 0);
+  // Apply sentiment filter
+  const filteredBuckets = applyBucketSentimentFilter(activeBuckets, sentimentFilter);
   // Corroborations
   const corroborations = data.claim_corroborations ?? [];
+
+  // Counts per filter choice for badge display
+  const filterCounts: Partial<Record<SentimentFilter, number>> = {
+    all: activeBuckets.length,
+    positive: applyBucketSentimentFilter(activeBuckets, 'positive').length,
+    risk: applyBucketSentimentFilter(activeBuckets, 'risk').length,
+    mixed: applyBucketSentimentFilter(activeBuckets, 'mixed').length,
+  };
 
   return (
     <div className="space-y-4">
@@ -1344,10 +1263,25 @@ export function ExternalDiligenceSection({ section, darkMode }: { section: Inves
         </span>
       </div>
 
+      {/* Filter by Sentiment — only when there are multiple buckets to filter */}
+      {activeBuckets.length > 1 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+            Filter by Sentiment:
+          </span>
+          <SentimentFilterToggle
+            value={sentimentFilter}
+            onChange={setSentimentFilter}
+            darkMode={darkMode}
+            counts={filterCounts}
+          />
+        </div>
+      )}
+
       {/* Buckets */}
-      {activeBuckets.length > 0 && (
+      {filteredBuckets.length > 0 && (
         <div className="space-y-3">
-          {activeBuckets.map((bucket) => {
+          {filteredBuckets.map((bucket) => {
             const colorDef = BUCKET_COLORS[bucket.bucket] ?? BUCKET_COLORS.company_footprint;
             const labelColor = darkMode ? colorDef.dark : colorDef.light;
             return (
@@ -1672,7 +1606,16 @@ function GovernedExecSummaryV1Section({
   );
 }
 
-function SectionCard({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
+function SectionCard({
+  section,
+  darkMode,
+  contradictions,
+}: {
+  section: InvestorInsightsSection;
+  darkMode: boolean;
+  /** PR36.9: optional contradiction bundle threaded from the report root. */
+  contradictions?: NarrativeContradictionBundle | null;
+}) {
   const isSpecialKey = PHASE2_KEYS.has(section.key);
   return (
     <div className={`rounded-xl border p-5 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
@@ -1707,7 +1650,7 @@ function SectionCard({ section, darkMode }: { section: InvestorInsightsSection; 
         <GovernedExecSummaryV1Section section={section} darkMode={darkMode} />
       )}
       {section.key === 'llm_interpretation_v1' && (
-        <LlmInterpretationSection section={section} darkMode={darkMode} />
+        <LlmInterpretationSection section={section} darkMode={darkMode} contradictions={contradictions} />
       )}
       {section.key === 'external_diligence_v1' && (
         <ExternalDiligenceSection section={section} darkMode={darkMode} />
@@ -2075,7 +2018,12 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
       {status === 'ready' && decisionSurface.length > 0 && (
         <Stack gap={4}>
           {decisionSurface.map((section) => (
-            <SectionCard key={section.key} section={section} darkMode={darkMode} />
+            <SectionCard
+              key={section.key}
+              section={section}
+              darkMode={darkMode}
+              contradictions={report?.narrative_contradiction_bundle ?? null}
+            />
           ))}
         </Stack>
       )}

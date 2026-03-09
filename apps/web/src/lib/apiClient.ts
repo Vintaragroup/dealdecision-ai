@@ -2094,6 +2094,43 @@ export type InvestorInsightsGateResult = {
   actual?: number;
 };
 
+// ─── PR36.9: Contradiction bundle types (mirrored from worker narrative-contradiction-v1) ───
+
+export type NarrativeContradictionStatus = 'none' | 'mixed' | 'conflicting';
+
+export type NarrativeContradictionReason =
+  | 'numeric_divergence'
+  | 'category_divergence'
+  | 'source_divergence'
+  | 'insufficient_overlap';
+
+/**
+ * A single per-topic contradiction detection result persisted by the worker.
+ * Mirrors NarrativeContradictionV1 in narrative-contradiction-v1.ts.
+ */
+export type NarrativeContradictionV1 = {
+  topic: string;
+  status: NarrativeContradictionStatus;
+  reason: NarrativeContradictionReason | null;
+  primary_text: string;
+  secondary_texts: string[];
+  notes: string[];
+};
+
+/**
+ * Bundle of per-topic contradiction records persisted in report_payload.
+ * All keys are optional — the UI must handle absent topics gracefully.
+ */
+export type NarrativeContradictionBundle = {
+  product_differentiation?: NarrativeContradictionV1 | null;
+  go_to_market_strategy?: NarrativeContradictionV1 | null;
+  market_position?: NarrativeContradictionV1 | null;
+  financial_outlook?: NarrativeContradictionV1 | null;
+  capital_and_raise?: NarrativeContradictionV1 | null;
+  traction?: NarrativeContradictionV1 | null;
+  business_quality?: NarrativeContradictionV1 | null;
+};
+
 export type InvestorInsightsSection = {
   key: string;
   title: string;
@@ -2173,6 +2210,12 @@ export type InvestorInsightsReport = {
     [key: string]: unknown;
   };
   updated_at?: string;
+  /**
+   * PR36.9: Per-topic narrative contradiction bundle extracted from report_payload.
+   * Present only when the worker persisted at least one non-null topic record.
+   * UI should always guard with `?? null` before use.
+   */
+  narrative_contradiction_bundle?: NarrativeContradictionBundle | null;
   /**
    * Normalised status summary — always present in API responses for this deal.
    * Combines analyze_deal job state with investor_insight_reports row state.

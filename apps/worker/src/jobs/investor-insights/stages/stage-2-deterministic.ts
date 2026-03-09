@@ -86,6 +86,7 @@ import {
 	extractDeckFinancialSignalsV1,
 	type DeckFinancialSignalsV1,
 } from "../../../lib/deck-financial-signals-v1.js";
+import type { CrossSourceReconciliationSummary } from "../../../lib/cross-source-reconciliation.js";
 import { isCandidateTaintedByFundAumContext, isCandidateTaintedByVolumeMetric, hasStrongRaiseSignal } from "../resolve-raise-amount.js";
 import {
 	selectBestNarrativeCandidate,
@@ -333,6 +334,16 @@ export interface InsightSlotInputs {
 	 * Temporal scope (historical/current/projected/scenario) is preserved on each fact.
 	 */
 	workbookFacts: FinancialFactV1[];
+	/**
+	 * Cross-source reconciliation summary computed in step 8 of
+	 * buildFinancialFactRegistryV1 (Phase 3).  Populated by the processor after
+	 * the financial fact registry is built; undefined until then.
+	 *
+	 * Exposes aggregate counts (supported / conflicting / deck_only / workbook_only
+	 * / projected_only / unresolved) and per-metric conflict details for use by
+	 * downstream section builders and contradiction-alignment logic.
+	 */
+	crossSourceReconciliation?: CrossSourceReconciliationSummary | null;
 }
 
 

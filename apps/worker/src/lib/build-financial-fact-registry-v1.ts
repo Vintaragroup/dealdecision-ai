@@ -11,6 +11,8 @@
  *   4. Cash flow derived (burn_rate, runway_months → "current")
  *   5. FinancialBenchmark[] from orchestrator segments.financial (medium confidence)
  *   6. Deck financial signals (low confidence, skipped if XLSX data present)
+ *   7. Workbook intelligence facts (Phase 2 XLSX modules) — with projection safety
+ *   8. Cross-source reconciliation (Phase 3) — annotate cross_source_status on every fact
  *
  * Confidence assignment:
  *   - "high"   — XLSX series with reconciliation confidence ≥ 0.7
@@ -32,6 +34,7 @@ import type { CashFlowStatementV1 } from "./cash-flow-parser-v1.js";
 import type { FinancialBenchmark } from "@dealdecision/core";
 import type { DeckFinancialSignalsV1, DeckFinancialMention } from "./deck-financial-signals-v1.js";
 import type { FinancialReconciliationV1 } from "./financial-reconciliation-v1.js";
+import { reconcileFinancialFacts } from "./cross-source-reconciliation.js";
 
 // ─── Inputs ───────────────────────────────────────────────────────────────────
 
@@ -477,7 +480,19 @@ export function buildFinancialFactRegistryV1(
     }
   }
 
-  return Array.from(map.values());
+  // ── 8. Cross-source reconciliation (Phase 3) ──────────────────────────────
+  // Annotate every fact with cross_source_status by comparing deck vs workbook
+  // facts for the same metric_key + period_label slot.
+  //
+  // This is a pure in-memory step: cross_source_status is available downstream
+  // during this processing run but is NOT persisted to the DB (the upsert
+  // function uses positional parameters that do not include this column).
+  //
+  // Projection safety is preserved: reconcileFinancialFacts() only compares
+  // realized (historical|current) facts across sources.  Projected / scenario
+  // facts produce "projected_only" or scenario-matched status and are NEVER
+  // promoted to "supported" for current-company performance claims.
+  return reconcileFinancialFacts(Array.from(map.values()));
 }
 
 /** Returns true for temporal_scope values that represent realized/reported data. */

@@ -41,6 +41,33 @@ export type FinancialFactConfidence = "high" | "medium" | "low";
 
 export type FinancialFactReconciliationStatus = "ok" | "conflict" | "unknown";
 
+/**
+ * Cross-source reconciliation status for a FinancialFactV1.
+ *
+ * Set by the cross-source reconciliation engine after comparing all facts for
+ * the same metric_key + period_label across source kinds.
+ *
+ * Status semantics:
+ *  supported       — ≥1 deck fact and ≥1 workbook fact exist for this slot and
+ *                    their values agree within per-metric tolerance.
+ *  conflicting     — ≥1 deck fact and ≥1 workbook fact exist but values disagree
+ *                    beyond tolerance.
+ *  deck_only       — Realized (historical/current) fact exists only in deck sources.
+ *  workbook_only   — Realized fact exists only in workbook sources.
+ *  projected_only  — Only projected/scenario facts exist for this slot; no realized
+ *                    fact from any source.
+ *  unresolved      — Insufficient data to determine agreement (e.g. value = 0,
+ *                    non-numeric, or group has a single projected + single realized
+ *                    from the same source).
+ */
+export type CrossSourceReconciliationStatus =
+  | "supported"
+  | "conflicting"
+  | "deck_only"
+  | "workbook_only"
+  | "projected_only"
+  | "unresolved";
+
 // ─── FinancialFactV1 ──────────────────────────────────────────────────────────
 
 export interface FinancialFactV1 {
@@ -84,6 +111,18 @@ export interface FinancialFactV1 {
 
   confidence: FinancialFactConfidence;
   reconciliation_status?: FinancialFactReconciliationStatus;
+
+  /**
+   * Cross-source reconciliation status — populated by reconcileFinancialFacts()
+   * inside buildFinancialFactRegistryV1() after all sources are merged.
+   *
+   * Indicates whether this fact is corroborated by another source, in conflict,
+   * single-source, or projected-only.  Not persisted to DB (in-memory only for
+   * the current processing run).
+   *
+   * @see CrossSourceReconciliationStatus
+   */
+  cross_source_status?: CrossSourceReconciliationStatus;
 
   /**
    * Temporal scope of this financial fact.

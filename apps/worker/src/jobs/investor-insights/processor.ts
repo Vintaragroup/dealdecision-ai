@@ -49,6 +49,7 @@ import {
 	type FinancialStatementV1,
 } from "../../lib/financial-statement-parser.js";
 import { buildFinancialFactRegistryV1 } from "../../lib/build-financial-fact-registry-v1.js";
+import { buildReconciliationSummary } from "../../lib/cross-source-reconciliation.js";
 import { upsertFinancialFactsV1 } from "../../lib/db/financial-facts-db.js";
 
 // ── Stage imports ─────────────────────────────────────────────────────────────
@@ -379,11 +380,13 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				deckSignals: insightSlotInputs.deckFinancialSignals ?? null,
 				workbookFacts: insightSlotInputs.workbookFacts,
 			});
+			insightSlotInputs.crossSourceReconciliation = buildReconciliationSummary(factsToUpsert);
 			const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
 			console.log(JSON.stringify({
 				event: "POPULATE_FINANCIAL_FACTS_V1",
 				deal_id: dealId,
 				upserted_count: upserted,
+				cross_source_summary: insightSlotInputs.crossSourceReconciliation,
 				path: "gates_failed",
 				ts: new Date().toISOString(),
 			}));
@@ -689,11 +692,13 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				deckSignals: insightSlotInputs.deckFinancialSignals ?? null,
 				workbookFacts: insightSlotInputs.workbookFacts,
 			});
+			insightSlotInputs.crossSourceReconciliation = buildReconciliationSummary(factsToUpsert);
 			const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
 			console.log(JSON.stringify({
 				event: "POPULATE_FINANCIAL_FACTS_V1",
 				deal_id: dealId,
 				upserted_count: upserted,
+				cross_source_summary: insightSlotInputs.crossSourceReconciliation,
 				path: "evidence_gate_fail",
 				ts: new Date().toISOString(),
 			}));
@@ -961,11 +966,13 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			deckSignals: insightSlotInputs.deckFinancialSignals ?? null,
 			workbookFacts: insightSlotInputs.workbookFacts,
 		});
+		insightSlotInputs.crossSourceReconciliation = buildReconciliationSummary(factsToUpsert);
 		const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
 		console.log(JSON.stringify({
 			event: "POPULATE_FINANCIAL_FACTS_V1",
 			deal_id: dealId,
 			upserted_count: upserted,
+			cross_source_summary: insightSlotInputs.crossSourceReconciliation,
 			path: "happy_path",
 			ts: new Date().toISOString(),
 		}));

@@ -31,6 +31,7 @@ import {
 	extractYearFromLabel,
 	isProjectedScope,
 	temporalScopeLabel,
+	type CrossSourceReconciliationStatus,
 } from "@dealdecision/core";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -89,6 +90,19 @@ export interface FusedFact {
 	 * Always set when temporal_scope = "scenario".
 	 */
 	scenario?: string;
+	/**
+	 * Cross-source reconciliation status — mirrors FinancialFactV1.cross_source_status.
+	 *
+	 * Populated when a FusedFact is enriched via the financial fact registry
+	 * reconciliation path (buildFinancialFactRegistryV1 step 8).
+	 *
+	 * Indicates whether this fused fact is corroborated by cross-document evidence
+	 * ("supported"), in conflict ("conflicting"), single-source ("deck_only" /
+	 * "workbook_only"), or forward-looking only ("projected_only").
+	 *
+	 * When undefined: reconciliation has not been run or does not apply.
+	 */
+	cross_source_status?: CrossSourceReconciliationStatus;
 }
 
 export interface FusedConflict {

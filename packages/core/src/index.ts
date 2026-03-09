@@ -232,6 +232,7 @@ export type {
   FinancialFactPeriodType,
   FinancialFactConfidence,
   FinancialFactReconciliationStatus,
+  CrossSourceReconciliationStatus,
 } from "./financial-facts/financial-fact-v1";
 export {
   isFiniteFactValue,

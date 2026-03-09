@@ -19,6 +19,7 @@ import {
 	fuseDealCanonicalFacts,
 	buildDealFusionSection,
 	normalizeForConflict,
+	isProjectedFusedFact,
 	type FusedFact,
 } from "../jobs/investor-insights/deal-fusion";
 
@@ -654,4 +655,154 @@ describe("fuseDealCanonicalFacts — AUM language variants all rejected from rai
 			});
 		});
 	}
+});
+// ─── temporal_scope — Phase 1 pipeline hardening ─────────────────────────────
+//
+// The tests below verify that:
+//   1. ARR extracted against a forward-looking context → temporal_scope = "projected"
+//   2. ARR extracted against a past-year context → temporal_scope = "historical" or "current"
+//   3. isProjectedFusedFact() gates correctly on all scope values
+//   4. semantic_role is populated based on FUSION_FIELDS registry
+//   5. raise_amount (non-traction field) has no temporal_scope (classify_temporal=false)
+//   6. backward compat: existing non-temporal fields are unaffected
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("fuseDealCanonicalFacts — ARR in projected context → temporal_scope=projected", () => {
+	// ARR_VALUE_PATTERN requires ARR to precede the dollar amount
+	const pages = [
+		page(PDF_DOC, 3, "ARR forecasted $3M by end of 2026 based on signed pipeline."),
+	];
+	const result = fuseDealCanonicalFacts(pages, [], [], NOW);
+	const arr = result.facts.find((f) => f.field === "arr_value");
+
+	it("arr_value fact is fused", () => {
+		expect(arr).toBeDefined();
+	});
+
+	it("arr_value temporal_scope is projected (forward-looking context)", () => {
+		// classifyTemporalScope fires on the 400-char context_window when classify_temporal=true
+		expect(arr?.temporal_scope).toBe("projected");
+	});
+
+	it("arr_value semantic_role is 'arr'", () => {
+		expect(arr?.semantic_role).toBe("arr");
+	});
+});
+
+describe("fuseDealCanonicalFacts — ARR in historical context → temporal_scope = historical or current", () => {
+	// ARR_VALUE_PATTERN requires ARR to precede the dollar amount
+	const pages = [
+		page(PDF_DOC, 1, "ARR $1.2M as of FY2023 per audited financials."),
+	];
+	const result = fuseDealCanonicalFacts(pages, [], [], NOW);
+	const arr = result.facts.find((f) => f.field === "arr_value");
+
+	it("arr_value fact is fused", () => {
+		expect(arr).toBeDefined();
+	});
+
+	it("arr_value temporal_scope is historical (audited keyword in context)", () => {
+		expect(arr?.temporal_scope).toBe("historical");
+	});
+});
+
+describe("fuseDealCanonicalFacts — MRR in scenario context → temporal_scope=scenario", () => {
+	const pages = [
+		page(PDF_DOC, 5, "In the base case scenario, MRR reaches $250K within 18 months of closing."),
+	];
+	const result = fuseDealCanonicalFacts(pages, [], [], NOW);
+	const mrr = result.facts.find((f) => f.field === "mrr_value");
+
+	it("mrr_value fact is fused", () => {
+		expect(mrr).toBeDefined();
+	});
+
+	it("mrr_value temporal_scope is scenario", () => {
+		expect(mrr?.temporal_scope).toBe("scenario");
+	});
+
+	it("mrr_value semantic_role is 'mrr'", () => {
+		expect(mrr?.semantic_role).toBe("mrr");
+	});
+});
+
+// ─── isProjectedFusedFact ─────────────────────────────────────────────────────
+
+describe("isProjectedFusedFact", () => {
+	const base: FusedFact = {
+		field: "arr_value",
+		value: "$3M",
+		confidence: 0.8,
+		source_document_id: PDF_DOC,
+		evidence_ref: "page:3",
+		category: "traction",
+		captured_at: NOW,
+	};
+
+	it("returns true for temporal_scope=projected", () => {
+		expect(isProjectedFusedFact({ ...base, temporal_scope: "projected" })).toBe(true);
+	});
+
+	it("returns true for temporal_scope=scenario", () => {
+		expect(isProjectedFusedFact({ ...base, temporal_scope: "scenario" })).toBe(true);
+	});
+
+	it("returns true for temporal_scope=target", () => {
+		expect(isProjectedFusedFact({ ...base, temporal_scope: "target" })).toBe(true);
+	});
+
+	it("returns false for temporal_scope=historical", () => {
+		expect(isProjectedFusedFact({ ...base, temporal_scope: "historical" })).toBe(false);
+	});
+
+	it("returns false for temporal_scope=current", () => {
+		expect(isProjectedFusedFact({ ...base, temporal_scope: "current" })).toBe(false);
+	});
+
+	it("returns false when temporal_scope is undefined (non-traction field)", () => {
+		expect(isProjectedFusedFact({ ...base, temporal_scope: undefined })).toBe(false);
+	});
+});
+
+// ─── semantic_role for non-traction raises (no classify_temporal) ─────────────
+
+describe("fuseDealCanonicalFacts — raise_amount has semantic_role but no temporal_scope", () => {
+	const pages = [
+		page(PDF_DOC, 0, "We are raising $4M in a Series A round to expand our sales team."),
+	];
+	const result = fuseDealCanonicalFacts(pages, [], [], NOW);
+	const raise = result.facts.find((f) => f.field === "raise_amount");
+
+	it("raise_amount is fused", () => {
+		expect(raise).toBeDefined();
+	});
+
+	it("raise_amount.semantic_role is 'raise_amount'", () => {
+		expect(raise?.semantic_role).toBe("raise_amount");
+	});
+
+	it("raise_amount.temporal_scope is undefined (classify_temporal not set for raise_amount)", () => {
+		// raise_amount has classify_temporal=false, so no temporal classification is done
+		expect(raise?.temporal_scope).toBeUndefined();
+	});
+});
+
+// ─── backward compat: valuation and round_stage are unaffected ────────────────
+
+describe("fuseDealCanonicalFacts — valuation backward compat (Phase 1 non-regression)", () => {
+	// valuation_pre field uses VALUATION_PRE_PATTERN: pre-money ... $amount
+	const pages = [
+		page(PDF_DOC, 1, "Pre-money valuation of $20M for this Seed round."),
+	];
+	const result = fuseDealCanonicalFacts(pages, [], [], NOW);
+	// Field name is "valuation_pre", not "valuation"
+	const val = result.facts.find((f) => f.field === "valuation_pre");
+
+	it("valuation_pre fact is still fused after Phase 1 changes", () => {
+		expect(val).toBeDefined();
+	});
+
+	it("valuation_pre has semantic_role='valuation'", () => {
+		expect(val?.semantic_role).toBe("valuation");
+	});
 });

@@ -13,6 +13,8 @@ import type { Pool } from "pg";
 import {
 	computeEvidenceConfidence,
 	buildConfidenceSignals,
+	isProjectedScope,
+	temporalScopeLabel,
 } from "@dealdecision/core";
 import type { EvidenceConfidenceLevel } from "@dealdecision/core";
 
@@ -1114,6 +1116,12 @@ function evalMarketClaimsSlot(inputs: InsightSlotInputs): SlotResult {
  *   1. Revenue amount (derived.revenue_latest + first period label)
  *   2. YoY growth rate (derived.revenue_yoy_growth_pct + period range label)
  *
+ * Projection leakage guard (Phase 1):
+ *   When the first period's temporal_scope is "projected" or "scenario", the
+ *   value is explicitly labeled with a scope qualifier (e.g., "(projected)").
+ *   This prevents projected revenue from being silently treated as current
+ *   company performance by downstream LLM stages.
+ *
  * Returns null when the statement is absent or contains no promotable data.
  */
 function promoteFromFinancials(statement: FinancialStatementV1 | null): SlotResult | null {
@@ -1123,11 +1131,17 @@ function promoteFromFinancials(statement: FinancialStatementV1 | null): SlotResu
 	const rev = statement.derived?.revenue_latest;
 	const yoy = statement.derived?.revenue_yoy_growth_pct;
 
+	// Resolve temporal scope for the first period (most-recent, used for revenue_latest)
+	const firstPeriodScope = statement.period_scopes?.[0] ?? "unknown";
+	const firstPeriodQualifier = isProjectedScope(firstPeriodScope)
+		? " " + temporalScopeLabel(firstPeriodScope)
+		: "";
+
 	// Option 1: revenue amount with period label — most informative
 	if (typeof rev === "number" && rev > 0 && periods.length > 0) {
 		const period = periods[0]!;
 		const formatted = "$" + Math.round(rev).toLocaleString("en-US");
-		const value = `Revenue detected: ${formatted} (${period}, XLSX)`;
+		const value = `Revenue detected: ${formatted}${firstPeriodQualifier} (${period}, XLSX)`;
 		return { computable: true, value, evidence: ref, reasonCode: SLOT_REASON_CODES.DERIVED_FROM_FINANCIALS };
 	}
 
@@ -1527,12 +1541,23 @@ function buildNormalizationDiffSection(
 /**
  * Build the financial_statement_v1 section from a parsed FinancialStatementV1.
  * Emits structured revenue series, derived growth metrics, and source diagnostics.
+ *
+ * Phase 1 addition: when period_scopes are available, the periods line annotates
+ * each year with its temporal scope (e.g., "2024[historical], 2025[current],
+ * 2026[projected]") so that downstream LLM stages have explicit temporal context
+ * and cannot silently treat projected figures as current actuals.
  */
 function buildFinancialStatementSection(stmt: FinancialStatementV1): RenderPackage["sections"][number] {
+	// Build annotated periods string when scope data is available
+	const periodsAnnotated = stmt.periods.map((p, i) => {
+		const scope = stmt.period_scopes?.[i];
+		return scope && scope !== "unknown" ? `${p}[${scope}]` : p;
+	}).join(", ");
+
 	const lines: string[] = [
 		`schema_version: ${stmt.schema_version}`,
 		`source: ${stmt.source.page_ref}`,
-		`periods: ${stmt.periods.join(", ")}`,
+		`periods: ${periodsAnnotated}`,
 	];
 	if (stmt.revenue) lines.push(`revenue: ${formatRevenueSeries(stmt.revenue, stmt.periods)}`);
 	if (stmt.gross_profit) lines.push(`gross_profit: ${formatRevenueSeries(stmt.gross_profit, stmt.periods)}`);
@@ -1582,7 +1607,11 @@ function buildFinancialHealthMetricsSection(
 	];
 
 	if (d.revenue_latest != null) {
-		lines.push(`revenue_latest: $${d.revenue_latest.toLocaleString("en-US")}`);
+		// Phase 1: label projected revenue_latest explicitly so LLM cannot
+		// silently treat it as current actuals.
+		const firstScope = stmt.period_scopes?.[0] ?? "unknown";
+		const scopeTag = isProjectedScope(firstScope) ? ` ${temporalScopeLabel(firstScope)}` : "";
+		lines.push(`revenue_latest: $${d.revenue_latest.toLocaleString("en-US")}${scopeTag}`);
 	}
 	if (d.revenue_yoy_growth_pct != null) {
 		lines.push(`revenue_yoy_growth_pct: ${d.revenue_yoy_growth_pct.toFixed(1)}%`);

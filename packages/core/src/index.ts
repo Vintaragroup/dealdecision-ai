@@ -368,3 +368,24 @@ export type {
   PromotionSurface,
   FactPromotionPolicy,
 } from "./governance/fact-promotion-gate";
+
+// ============================================================================
+// Temporal Scope (Phase 1 — pipeline hardening)
+// ============================================================================
+// Canonical temporal classification primitive. Replaces scattered
+// looksLikeFutureYear / isForecast logic across financial-statement-parser,
+// deal-fusion, and stage-2-deterministic.
+export type { TemporalScope } from "./temporal/temporal-scope";
+export {
+  classifyTemporalScope,
+  extractYearFromLabel,
+  isProjectedScope,
+  temporalScopeLabel,
+} from "./temporal/temporal-scope";
+
+// ============================================================================
+// Field Typing Rules / TypedMetric (Phase 1 — now wired)
+// ============================================================================
+// Previously orphaned. Now has temporal_scope threaded through it and is
+// exported for use in investor-insights extraction.
+export type { FieldTypeV1, TypedMetric, EvidenceRef } from "./fields/field-typing-rules";

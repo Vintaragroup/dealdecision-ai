@@ -25,6 +25,13 @@
 
 import type { RenderPackage } from "../../contracts/investor-insights/schemas";
 import { isCandidateTaintedByFundAumContext } from "./resolve-raise-amount";
+import {
+	type TemporalScope,
+	classifyTemporalScope,
+	extractYearFromLabel,
+	isProjectedScope,
+	temporalScopeLabel,
+} from "@dealdecision/core";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -55,6 +62,33 @@ export interface FusedFact {
 	updated_at: string;
 	/** Ordered history of prior values for this field (most-recent first). */
 	history: FusedFactHistoryEntry[];
+	/**
+	 * Temporal scope of this fused fact.
+	 *
+	 * Populated for traction_signal and market_claims fields where temporal
+	 * context can be reliably detected from the matching text snippet.
+	 *
+	 * "projected" or "scenario" means the fact MUST NOT be presented as the
+	 * company's current performance without an explicit scope qualifier.
+	 *
+	 * undefined = temporal classification was not applicable for this field.
+	 */
+	temporal_scope?: TemporalScope;
+	/**
+	 * Semantic role of this fused fact — maps to the DealFactTypeV1 taxonomy.
+	 *
+	 * Provides an explicit typed role alongside the string field name so that
+	 * downstream consumers can use typed comparisons instead of string matching.
+	 */
+	semantic_role?: string;
+	/**
+	 * Scenario label when this fact originates from a named scenario column in a
+	 * financial model (e.g. "Base", "Upside", "Downside", "Bear", "Bull").
+	 *
+	 * Undefined for actuals and non-scenario extractions.
+	 * Always set when temporal_scope = "scenario".
+	 */
+	scenario?: string;
 }
 
 export interface FusedConflict {
@@ -247,27 +281,38 @@ interface FieldDef {
 	field: string;
 	category: string;
 	pattern: RegExp;
+	/**
+	 * Semantic role mapped to the DealFactTypeV1 taxonomy.
+	 * Carried through to FusedFact.semantic_role.
+	 */
+	semantic_role?: string;
+	/**
+	 * When true, temporal scope classification is run on the matched text
+	 * window for this field. Applies to traction metrics and market claims
+	 * where projected vs. historical scope matters for investment decisions.
+	 */
+	classify_temporal?: boolean;
 }
 
 const FUSION_FIELDS: FieldDef[] = [
-	{ field: "raise_amount",         category: "raise_terms",      pattern: RAISE_AMOUNT_PATTERN },
-	{ field: "raise_round",          category: "raise_terms",      pattern: RAISE_ROUND_PATTERN },
-	{ field: "raise_instrument",     category: "raise_terms",      pattern: RAISE_INSTRUMENT_PATTERN },
-	{ field: "raise_cap",            category: "raise_terms",      pattern: RAISE_CAP_PATTERN },
-	{ field: "raise_discount",       category: "raise_terms",      pattern: RAISE_DISCOUNT_PATTERN },
-	{ field: "valuation_pre",        category: "valuation_terms",  pattern: VALUATION_PRE_PATTERN },
-	{ field: "valuation_post",       category: "valuation_terms",  pattern: VALUATION_POST_PATTERN },
-	{ field: "valuation_safe_cap",   category: "valuation_terms",  pattern: VALUATION_SAFE_CAP_PATTERN },
-	{ field: "use_of_funds_buckets",          category: "use_of_funds",     pattern: USE_OF_FUNDS_BUCKET_PATTERN },
-	{ field: "deck_has_use_of_funds_buckets", category: "use_of_funds",     pattern: DECK_USE_OF_FUNDS_BUCKETS_PATTERN },
-	{ field: "tam_value",            category: "market_claims",    pattern: TAM_VALUE_PATTERN },
-	{ field: "sam_value",            category: "market_claims",    pattern: SAM_VALUE_PATTERN },
-	{ field: "som_value",            category: "market_claims",    pattern: SOM_VALUE_PATTERN },
-	{ field: "mrr_value",            category: "traction_signal",  pattern: MRR_VALUE_PATTERN },
-	{ field: "arr_value",            category: "traction_signal",  pattern: ARR_VALUE_PATTERN },
-	{ field: "revenue_value",        category: "traction_signal",  pattern: REVENUE_VALUE_PATTERN },
-	{ field: "growth_rate",          category: "traction_signal",  pattern: GROWTH_RATE_PATTERN },
-	{ field: "customer_count",       category: "traction_signal",  pattern: CUSTOMER_COUNT_PATTERN },
+	{ field: "raise_amount",         category: "raise_terms",      semantic_role: "raise_amount",   classify_temporal: false, pattern: RAISE_AMOUNT_PATTERN },
+	{ field: "raise_round",          category: "raise_terms",      semantic_role: "round_stage",    classify_temporal: false, pattern: RAISE_ROUND_PATTERN },
+	{ field: "raise_instrument",     category: "raise_terms",      semantic_role: "round_stage",    classify_temporal: false, pattern: RAISE_INSTRUMENT_PATTERN },
+	{ field: "raise_cap",            category: "raise_terms",      semantic_role: "valuation",      classify_temporal: false, pattern: RAISE_CAP_PATTERN },
+	{ field: "raise_discount",       category: "raise_terms",      semantic_role: "raise_amount",   classify_temporal: false, pattern: RAISE_DISCOUNT_PATTERN },
+	{ field: "valuation_pre",        category: "valuation_terms",  semantic_role: "valuation",      classify_temporal: false, pattern: VALUATION_PRE_PATTERN },
+	{ field: "valuation_post",       category: "valuation_terms",  semantic_role: "valuation",      classify_temporal: false, pattern: VALUATION_POST_PATTERN },
+	{ field: "valuation_safe_cap",   category: "valuation_terms",  semantic_role: "valuation",      classify_temporal: false, pattern: VALUATION_SAFE_CAP_PATTERN },
+	{ field: "use_of_funds_buckets",          category: "use_of_funds",     semantic_role: "use_of_funds",   classify_temporal: false, pattern: USE_OF_FUNDS_BUCKET_PATTERN },
+	{ field: "deck_has_use_of_funds_buckets", category: "use_of_funds",     semantic_role: "use_of_funds",   classify_temporal: false, pattern: DECK_USE_OF_FUNDS_BUCKETS_PATTERN },
+	{ field: "tam_value",            category: "market_claims",    semantic_role: "tam",            classify_temporal: true,  pattern: TAM_VALUE_PATTERN },
+	{ field: "sam_value",            category: "market_claims",    semantic_role: "sam",            classify_temporal: true,  pattern: SAM_VALUE_PATTERN },
+	{ field: "som_value",            category: "market_claims",    semantic_role: "som",            classify_temporal: true,  pattern: SOM_VALUE_PATTERN },
+	{ field: "mrr_value",            category: "traction_signal",  semantic_role: "mrr",            classify_temporal: true,  pattern: MRR_VALUE_PATTERN },
+	{ field: "arr_value",            category: "traction_signal",  semantic_role: "arr",            classify_temporal: true,  pattern: ARR_VALUE_PATTERN },
+	{ field: "revenue_value",        category: "traction_signal",  semantic_role: "revenue",        classify_temporal: true,  pattern: REVENUE_VALUE_PATTERN },
+	{ field: "growth_rate",          category: "traction_signal",  semantic_role: "traction_metric", classify_temporal: false, pattern: GROWTH_RATE_PATTERN },
+	{ field: "customer_count",       category: "traction_signal",  semantic_role: "traction_metric", classify_temporal: false, pattern: CUSTOMER_COUNT_PATTERN },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -330,6 +375,21 @@ function cleanValue(field: string, snippet: string): string {
 	return base;
 }
 
+/**
+ * Returns true when a FusedFact should be blocked from promotion to
+ * "current company performance" surfaces (overview headline, governed summary
+ * key metrics) because its temporal scope indicates forward-looking data.
+ *
+ * Safe to call when temporal_scope is undefined — returns false (not blocked).
+ *
+ * Blocked scopes: "projected", "scenario", "target"
+ * Allowed scopes: "historical", "current", "unknown", undefined
+ */
+export function isProjectedFusedFact(fact: FusedFact): boolean {
+	if (!fact.temporal_scope) return false;
+	return isProjectedScope(fact.temporal_scope);
+}
+
 // ─── Per-document matching ────────────────────────────────────────────────────
 
 interface DocMatch {
@@ -337,6 +397,11 @@ interface DocMatch {
 	value: string;
 	normalized: string;
 	evidence_ref: string;
+	/**
+	 * Context window (up to 400 chars) surrounding the match, used for
+	 * temporal scope classification. Includes text before and after the match.
+	 */
+	context_window: string;
 }
 
 /**
@@ -360,11 +425,16 @@ function findFirstMatchInDoc(
 		// Mirrors the PR24 guard in resolve-raise-amount.ts and promote-slide-facts.ts.
 		if (field === "raise_amount" && isCandidateTaintedByFundAumContext(page.text ?? "")) continue;
 		const snippet = m[0].slice(0, 120);
+		// Capture a 400-char context window for temporal scope classification
+		const ctxStart = Math.max(0, m.index - 150);
+		const ctxEnd = Math.min((page.text ?? "").length, m.index + m[0].length + 150);
+		const context_window = (page.text ?? "").slice(ctxStart, ctxEnd);
 		return {
 			document_id: page.document_id,
 			value: cleanValue(field, snippet),
 			normalized: normalizeForConflict(snippet),
 			evidence_ref: dpuEvidenceRef(page.document_id, page.page_index),
+			context_window,
 		};
 	}
 	return null;
@@ -410,7 +480,7 @@ export function fuseDealCanonicalFacts(
 	}
 
 	for (const fieldDef of FUSION_FIELDS) {
-		const { field, category, pattern } = fieldDef;
+		const { field, category, pattern, semantic_role, classify_temporal } = fieldDef;
 
 		// Collect the first match found in each document
 		const docMatches: DocMatch[] = [];
@@ -471,6 +541,13 @@ export function fuseDealCanonicalFacts(
 			});
 		}
 
+		// Temporal scope classification (only for fields where it matters)
+		let temporal_scope: TemporalScope | undefined;
+		if (classify_temporal) {
+			const year = extractYearFromLabel(winner.value);
+			temporal_scope = classifyTemporalScope(year, winner.context_window);
+		}
+
 		facts.push({
 			field,
 			category,
@@ -480,6 +557,8 @@ export function fuseDealCanonicalFacts(
 			source_document_id: winner.document_id,
 			updated_at: now,
 			history,
+			temporal_scope,
+			semantic_role,
 		});
 	}
 
@@ -504,8 +583,13 @@ export function buildDealFusionSection(
 	if (result.facts.length > 0) {
 		lines.push("--- fused facts ---");
 		for (const f of result.facts) {
+			const scopePart = f.temporal_scope ? ` | scope=${f.temporal_scope}` : "";
+			const rolePart  = f.semantic_role  ? ` | role=${f.semantic_role}`   : "";
+			const projectedFlag = f.temporal_scope && isProjectedScope(f.temporal_scope)
+				? " [PROJECTED — not current actuals]"
+				: "";
 			lines.push(
-				`field=${f.field} | category=${f.category} | confidence=${f.confidence.toFixed(1)} | value="${f.value}" | evidence=${f.evidence_ref} | doc=${f.source_document_id.slice(0, 8)}`
+				`field=${f.field} | category=${f.category} | confidence=${f.confidence.toFixed(1)} | value="${f.value}"${scopePart}${rolePart} | evidence=${f.evidence_ref} | doc=${f.source_document_id.slice(0, 8)}${projectedFlag}`
 			);
 		}
 	}

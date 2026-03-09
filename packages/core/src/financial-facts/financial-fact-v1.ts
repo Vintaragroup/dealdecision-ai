@@ -13,6 +13,7 @@
  */
 
 import { createHash } from "crypto";
+import type { TemporalScope } from "../temporal/temporal-scope";
 
 // ─── Unit + source types ──────────────────────────────────────────────────────
 
@@ -83,6 +84,28 @@ export interface FinancialFactV1 {
 
   confidence: FinancialFactConfidence;
   reconciliation_status?: FinancialFactReconciliationStatus;
+
+  /**
+   * Temporal scope of this financial fact.
+   *
+   * Populated by classifyTemporalScope() using the period_label and surrounding
+   * context text (e.g., column header from the XLSX sheet).
+   *
+   * "projected" or "scenario" means the value MUST NOT be presented as the
+   * company's current actual performance without an explicit qualifier.
+   *
+   * Defaults to "unknown" when the parser cannot determine scope.
+   */
+  temporal_scope?: TemporalScope;
+
+  /**
+   * Scenario label when this fact comes from a named scenario column in a
+   * financial model (e.g. "Base", "Upside", "Downside", "Bear", "Bull").
+   *
+   * Undefined for actuals / single-column models.
+   * Always set when temporal_scope = "scenario".
+   */
+  scenario?: string;
 
   // ── Provenance ────────────────────────────────────────────────────────────
   sheet_name?: string;

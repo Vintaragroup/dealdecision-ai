@@ -12,10 +12,11 @@
  */
 
 import React, { useState } from 'react';
-import type { LlmInterpretationV1 } from '../investorInsightsUtils';
-import type { ClaimCorroboration } from '../investorInsightsUtils';
+import type { LlmInterpretationV1, ClaimCorroboration, NarrativeContradictionBundle, NarrativeContradictionV1 } from '../investorInsightsUtils';
+import { getTopicContradiction } from '../investorInsightsUtils';
 import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
 import { ExternalLink } from 'lucide-react';
+import { ContradictionCallout } from './ContradictionCallout';
 
 // ── Citation parsing ──────────────────────────────────────────────────────────
 
@@ -146,9 +147,11 @@ interface NarrativeParagraphProps {
   text: string;
   citations: CitationRef[];
   darkMode: boolean;
+  /** PR36.9: When provided, shows a contradiction chip next to the section label. */
+  contradiction?: NarrativeContradictionV1 | null;
 }
 
-function NarrativeParagraph({ label, labelColor, text, citations, darkMode }: NarrativeParagraphProps) {
+function NarrativeParagraph({ label, labelColor, text, citations, darkMode, contradiction }: NarrativeParagraphProps) {
   if (!text || text.trim() === 'Not disclosed.' || text.trim() === 'Not determinable from available signals.') {
     return null;
   }
@@ -157,8 +160,17 @@ function NarrativeParagraph({ label, labelColor, text, citations, darkMode }: Na
   return (
     <div className="space-y-1">
       {label && (
-        <div className={`text-[10px] font-semibold uppercase tracking-widest ${labelColor}`}>
-          {label}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={`text-[10px] font-semibold uppercase tracking-widest ${labelColor}`}>
+            {label}
+          </span>
+          {contradiction && (
+            <ContradictionCallout
+              contradiction={contradiction}
+              darkMode={darkMode}
+              chipOnly
+            />
+          )}
         </div>
       )}
       <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
@@ -238,9 +250,11 @@ export interface SynthesizedNarrativeProps {
   /** Claim corroborations from external diligence — used to number and hyperlink sources. */
   corroborations?: ClaimCorroboration[];
   darkMode: boolean;
+  /** PR36.9: When provided, injects mixed/conflicting indicators next to section labels. */
+  contradictions?: NarrativeContradictionBundle | null;
 }
 
-export function SynthesizedNarrative({ data, corroborations = [], darkMode }: SynthesizedNarrativeProps) {
+export function SynthesizedNarrative({ data, corroborations = [], darkMode, contradictions }: SynthesizedNarrativeProps) {
   // Build citation refs from corroborations (1-indexed)
   const citations: CitationRef[] = corroborations.map((c, i) => ({
     n: i + 1,
@@ -276,6 +290,7 @@ export function SynthesizedNarrative({ data, corroborations = [], darkMode }: Sy
           text={data.business_quality || ''}
           citations={citations}
           darkMode={darkMode}
+          contradiction={getTopicContradiction(contradictions, 'business_quality')}
         />
 
         {/* Para 3: Capital & Raise interpretation */}
@@ -285,6 +300,7 @@ export function SynthesizedNarrative({ data, corroborations = [], darkMode }: Sy
           text={data.capital_and_raise_interpretation || ''}
           citations={citations}
           darkMode={darkMode}
+          contradiction={getTopicContradiction(contradictions, 'capital_and_raise')}
         />
       </div>
 

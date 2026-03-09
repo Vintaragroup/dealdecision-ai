@@ -145,11 +145,11 @@ function VitalSignCard({ label, value, tag, darkMode }: VitalSignCardProps) {
   }`;
 
   return (
-    <div className={cardClass}>
+    <div className={cardClass} data-testid={`vital-sign-${label.toLowerCase()}`}>
       <div className={`text-[10px] font-semibold uppercase tracking-widest ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
         {label}
       </div>
-      <p className={`text-xs leading-snug line-clamp-3 ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+      <p className={`text-xs leading-snug min-h-[2.5rem] ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
         {value || <span className="opacity-40 italic">Not assessed</span>}
       </p>
       {tag && (
@@ -261,15 +261,19 @@ export function ExecutivePulse({ data, darkMode }: ExecutivePulseProps) {
   }`;
 
   return (
-    <div className={borderClass}>
+    <div className={borderClass} data-testid="executive-pulse">
       <div className="grid grid-cols-1 lg:grid-cols-[220px,1fr] gap-4">
         {/* Left column: gauge + evidence caveat */}
         <div className="flex flex-col justify-between gap-3">
           <ConfidenceGauge posture={data.posture} confidence={data.confidence} darkMode={darkMode} />
           {data.evidence_caveat && (
-            <p className={`text-xs ${darkMode ? 'text-amber-300/70' : 'text-amber-700/80'}`}>
-              ⚠ {data.evidence_caveat}
-            </p>
+            <div className={`text-xs border-l-2 pl-2 leading-relaxed ${
+              darkMode
+                ? 'border-amber-500/50 text-amber-300/70'
+                : 'border-amber-400 text-amber-700/80'
+            }`}>
+              {data.evidence_caveat}
+            </div>
           )}
         </div>
 

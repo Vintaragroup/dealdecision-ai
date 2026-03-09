@@ -131,10 +131,12 @@ export function SwotPanel({ data, darkMode, contradictions }: SwotPanelProps) {
           <BulletList items={data.risks} emptyText="None identified" darkMode={darkMode} />
           {/* PR36.9: show callout when financial or business quality evidence is in conflict */}
           {riskContradiction && (
-            <ContradictionCallout
-              contradiction={riskContradiction}
-              darkMode={darkMode}
-            />
+            <div className="mt-3">
+              <ContradictionCallout
+                contradiction={riskContradiction}
+                darkMode={darkMode}
+              />
+            </div>
           )}
         </div>
       </div>
@@ -152,10 +154,12 @@ export function SwotPanel({ data, darkMode, contradictions }: SwotPanelProps) {
           <BulletList items={data.key_unknowns!} emptyText="" darkMode={darkMode} />
           {/* PR36.9: show callout when capital or traction evidence is uncertain */}
           {unknownContradiction && (
-            <ContradictionCallout
-              contradiction={unknownContradiction}
-              darkMode={darkMode}
-            />
+            <div className="mt-3">
+              <ContradictionCallout
+                contradiction={unknownContradiction}
+                darkMode={darkMode}
+              />
+            </div>
           )}
         </div>
       )}

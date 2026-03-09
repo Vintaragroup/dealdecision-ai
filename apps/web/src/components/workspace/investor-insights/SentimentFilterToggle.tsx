@@ -89,6 +89,7 @@ export function SentimentFilterToggle({
       }`}
       role="group"
       aria-label="Filter by sentiment"
+      data-testid="sentiment-filter-toggle"
     >
       {FILTER_OPTIONS.map((opt) => {
         const isActive = value === opt.value;

@@ -42,9 +42,10 @@ function TopicCard({ title, color, body, badge, darkMode, contradiction }: Topic
 
   return (
     <div
-      className={`rounded-lg border p-4 flex flex-col gap-2 ${
+      className={`rounded-lg border p-4 flex flex-col gap-2 h-full ${
         darkMode ? 'border-white/10 bg-white/5' : 'border-gray-100 bg-gray-50'
       }`}
+      data-testid={`topic-card-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
     >
       <div className="flex items-center justify-between gap-2">
         <span className={`text-xs font-semibold uppercase tracking-wide ${color}`}>
@@ -54,7 +55,7 @@ function TopicCard({ title, color, body, badge, darkMode, contradiction }: Topic
           <StatusBadge variant={badge.variant} label={badge.label} darkMode={darkMode} />
         ) : null}
       </div>
-      <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+      <p className={`text-sm leading-relaxed flex-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
         {hasContent ? body : (
           <span className={`italic ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
             Not determinable from available signals.

@@ -48,6 +48,11 @@ export function ContradictionCallout({
     ? 'bg-white/5 border-white/10'
     : 'bg-gray-50 border-gray-200';
 
+  // Left accent color for the expanded detail panel
+  const accentBorder = isConflicting
+    ? darkMode ? 'border-l-red-500/60' : 'border-l-red-400'
+    : darkMode ? 'border-l-amber-500/60' : 'border-l-amber-400';
+
   const labelText = isConflicting ? 'Conflicting evidence' : 'Mixed signals';
   const Icon = isConflicting ? AlertTriangle : Zap;
 
@@ -84,7 +89,7 @@ export function ContradictionCallout({
 
       {expanded && (
         <div
-          className={`mt-2 rounded-lg border p-3 space-y-2 text-xs ${expandBg} ${
+          className={`mt-2 rounded-lg border border-l-2 p-3 pl-3.5 space-y-2 text-xs ${accentBorder} ${expandBg} ${
             darkMode ? 'text-gray-300' : 'text-gray-700'
           }`}
           data-testid="contradiction-detail"
@@ -124,11 +129,13 @@ export function ContradictionCallout({
           {/* Reason tag */}
           {contradiction.reason && (
             <p
-              className={`text-[10px] font-mono ${
-                darkMode ? 'text-gray-600' : 'text-gray-400'
+              className={`text-[10px] font-mono border-t pt-2 mt-1 ${
+                darkMode ? 'text-gray-600 border-white/10' : 'text-gray-400 border-gray-200'
               }`}
             >
-              reason: {contradiction.reason}
+              <span className={`font-semibold ${
+                darkMode ? 'text-gray-500' : 'text-gray-400'
+              }`}>reason:</span>{' '}{contradiction.reason}
             </p>
           )}
         </div>

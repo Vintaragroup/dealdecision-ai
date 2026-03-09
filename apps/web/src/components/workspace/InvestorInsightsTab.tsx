@@ -956,7 +956,7 @@ export function LlmInterpretationSection({
       <ExecutivePulse data={data} darkMode={darkMode} />
 
       {/* ── Synthesized narrative: executive + business quality + capital/raise ── */}
-      <SynthesizedNarrative data={data} darkMode={darkMode} />
+      <SynthesizedNarrative data={data} darkMode={darkMode} contradictions={contradictions} />
 
       {/* ── Intelligence Grid: 4-topic 2×2 signal cards (with contradiction callouts) ── */}
       <div>

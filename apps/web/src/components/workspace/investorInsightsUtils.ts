@@ -64,6 +64,8 @@ export interface CanonicalFieldRow {
   value: string | null;
   evidence: string | null;
   reason: string | null;
+  /** Evidence confidence level from PR36.6 — e.g. "STRONG_EVIDENCE" | "WEAK_EVIDENCE" */
+  confidence?: string;
 }
 
 export function parseCanonicalFieldsBody(body: string): CanonicalFieldRow[] {
@@ -95,6 +97,8 @@ export function parseCanonicalFieldsBody(body: string): CanonicalFieldRow[] {
         return raw.trimEnd();
       };
 
+      const rawConfidence = pick('confidence');
+
       return [{
         category,
         field,
@@ -102,6 +106,7 @@ export function parseCanonicalFieldsBody(body: string): CanonicalFieldRow[] {
         value: parseNullable(rawValue),
         evidence: parseNullable(rawEvidence),
         reason: parseNullable(rawReason),
+        confidence: rawConfidence !== 'none' && rawConfidence !== '' ? rawConfidence : undefined,
       }];
     });
 }

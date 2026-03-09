@@ -10,6 +10,12 @@
 
 import type { Pool } from "pg";
 
+import {
+	computeEvidenceConfidence,
+	buildConfidenceSignals,
+} from "@dealdecision/core";
+import type { EvidenceConfidenceLevel } from "@dealdecision/core";
+
 import type {
 	GateState,
 	RenderPackage,
@@ -1946,6 +1952,8 @@ interface CanonicalField {
 	reasonCode: string | null;
 	/** Explicit source classification: "xlsx" for XLSX-derived, "deck" for PDF/text, "derived" for computed. */
 	source?: "xlsx" | "deck" | "derived" | null;
+	/** Evidence confidence level — computed by evidence-confidence-evaluator after extraction (PR36.6). */
+	confidence?: EvidenceConfidenceLevel;
 }
 
 interface ConflictEntry {
@@ -2508,6 +2516,20 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 		return { category: cat, status: hasComputable ? "Present" : "Missing" };
 	});
 
+	// ── PR36.6: Annotate each canonical field with its evidence confidence level ──
+	for (const field of fields) {
+		const hasConflict = conflicts.some((c) => c.field === field.field);
+		field.confidence = computeEvidenceConfidence(
+			buildConfidenceSignals({
+				computability: field.computability,
+				evidenceRef: field.evidenceRef,
+				source: field.source,
+				reasonCode: field.reasonCode,
+				hasConflict,
+			}),
+		).level;
+	}
+
 	return { fields, conflicts, completeness };
 }
 
@@ -2517,9 +2539,11 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 function formatCanonicalFieldLine(f: CanonicalField): string {
 	if (f.computability === "Computable" && f.value !== null && f.evidenceRef !== null) {
 		const src = f.source ?? "deck";
-		return `category=${f.category} | field=${f.field} | computability=Computable | value="${f.value}" | evidence=${f.evidenceRef} | reason=${f.reasonCode ?? "none"} | source=${src}`;
+		const conf = f.confidence ?? "UNKNOWN";
+		return `category=${f.category} | field=${f.field} | computability=Computable | value="${f.value}" | evidence=${f.evidenceRef} | reason=${f.reasonCode ?? "none"} | source=${src} | confidence=${conf}`;
 	}
-	return `category=${f.category} | field=${f.field} | computability=NotComputable | value=none | evidence=none | reason=${f.reasonCode ?? "UNKNOWN"} | source=unknown`;
+	const conf = f.confidence ?? "UNKNOWN";
+	return `category=${f.category} | field=${f.field} | computability=NotComputable | value=none | evidence=none | reason=${f.reasonCode ?? "UNKNOWN"} | source=unknown | confidence=${conf}`;
 }
 
 function formatConflictLine(c: ConflictEntry): string {

@@ -332,3 +332,39 @@ export {
   buildPromptPolicyBlock,
   enforceAnswerSanity,
 } from "./chat/answer-policy-v1";
+
+// ============================================================================
+// Evidence Confidence Layer (PR36.6)
+// ============================================================================
+// Classifies every canonical fact with a confidence level before promotion to
+// investor-facing output surfaces. Pure, deterministic, no LLM calls.
+export {
+  EVIDENCE_CONFIDENCE_LEVEL,
+  ALL_CONFIDENCE_LEVELS,
+} from "./evidence/evidence-confidence";
+export type {
+  EvidenceConfidenceLevel,
+  EvidenceConfidenceSignals,
+  FactConfidenceState,
+} from "./evidence/evidence-confidence";
+
+export {
+  computeEvidenceConfidence,
+  buildConfidenceSignals,
+} from "./evidence/evidence-confidence-evaluator";
+
+// ============================================================================
+// Fact Promotion Gate (PR36.6)
+// ============================================================================
+// Per-surface promotion rules: determines if a confidence level permits
+// promotion to deal_overview, display_facts, governed_summary etc.
+export {
+  getFactPromotionPolicy,
+  isFactPromotable,
+  getUncertaintyLabel,
+  isDefinitiveFact,
+} from "./governance/fact-promotion-gate";
+export type {
+  PromotionSurface,
+  FactPromotionPolicy,
+} from "./governance/fact-promotion-gate";

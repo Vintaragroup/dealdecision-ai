@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import type { DealTermsAnalysisResult, DealTermsAssessmentLevel } from '../../lib/apiClient';
 import { parseCanonicalFieldsBody, fieldLabel } from './investorInsightsUtils';
+import { getConfidenceDisplayPolicy } from '../../lib/confidenceDisplayPolicy';
 import type { InvestorInsightsReport } from '../../lib/apiClient';
 import { useDealTermsAnalysis } from '../../hooks/useDealTermsAnalysis';
 
@@ -159,32 +160,51 @@ function RawFieldTable({
           >
             <th className="text-left py-2 pr-3 font-medium w-32">Field</th>
             <th className="text-left py-2 pr-3 font-medium">Value</th>
-            <th className="text-left py-2 font-medium w-24">Computability</th>
+            <th className="text-left py-2 pr-3 font-medium w-24">Computability</th>
+            <th className="text-left py-2 font-medium w-24">Confidence</th>
           </tr>
         </thead>
         <tbody>
-          {displayRows.map((row, i) => (
-            <tr
-              key={i}
-              className={`border-b ${
-                darkMode ? 'border-white/5 text-gray-300' : 'border-gray-100 text-gray-700'
-              }`}
-            >
-              <td className="py-1.5 pr-3 font-mono text-xs opacity-80">{fieldLabel(row.field)}</td>
-              <td className={`py-1.5 pr-3 ${row.value ? '' : 'italic opacity-40'}`}>
-                {row.value ?? 'not disclosed'}
-              </td>
-              <td
-                className={`py-1.5 text-xs ${
-                  row.computability === 'Computable'
-                    ? darkMode ? 'text-emerald-400' : 'text-emerald-600'
-                    : darkMode ? 'text-gray-500' : 'text-gray-400'
+          {displayRows.map((row, i) => {
+            const confPolicy = getConfidenceDisplayPolicy(row.confidence);
+            const isMuted = confPolicy.visualTreatment === 'conflict' || confPolicy.visualTreatment === 'suppressed';
+            return (
+              <tr
+                key={i}
+                className={`border-b ${
+                  isMuted
+                    ? darkMode ? 'border-white/5 text-gray-500 opacity-60' : 'border-gray-100 text-gray-400 opacity-60'
+                    : darkMode ? 'border-white/5 text-gray-300' : 'border-gray-100 text-gray-700'
                 }`}
               >
-                {row.computability}
-              </td>
-            </tr>
-          ))}
+                <td className="py-1.5 pr-3 font-mono text-xs opacity-80">{fieldLabel(row.field)}</td>
+                <td className={`py-1.5 pr-3 ${row.value ? '' : 'italic opacity-40'}`}>
+                  {row.value ?? 'not disclosed'}
+                </td>
+                <td
+                  className={`py-1.5 pr-3 text-xs ${
+                    row.computability === 'Computable'
+                      ? darkMode ? 'text-emerald-400' : 'text-emerald-600'
+                      : darkMode ? 'text-gray-500' : 'text-gray-400'
+                  }`}
+                >
+                  {row.computability}
+                </td>
+                {/* Confidence — PR36.7 */}
+                <td className={`py-1.5 text-xs ${
+                  confPolicy.visualTreatment === 'conflict'
+                    ? darkMode ? 'text-red-400' : 'text-red-600'
+                    : confPolicy.visualTreatment === 'caution'
+                    ? darkMode ? 'text-amber-400' : 'text-amber-600'
+                    : confPolicy.visualTreatment === 'suppressed'
+                    ? darkMode ? 'text-gray-600' : 'text-gray-400'
+                    : darkMode ? 'text-gray-400' : 'text-gray-500'
+                }`}>
+                  {confPolicy.badgeLabel ?? '—'}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

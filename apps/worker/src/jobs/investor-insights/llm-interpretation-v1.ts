@@ -270,11 +270,18 @@ const SYSTEM_PROMPT_BASE = [
 	'      "external_market_context": "...", "competitive_landscape": "...",',
 	'      "claim_verification_summary": "...", "external_risk_signals": "...",',
 	'      "strengths": [...], "risks": [...], "key_unknowns": [...], "next_questions": [...] }',
+	"14. CONFIDENCE METADATA (PR36.6): Each canonical field may carry a confidence= annotation.",
+	"    - confidence=WEAK_EVIDENCE: Do NOT restate this value as a definitive fact.",
+	"      Use qualifying language, e.g.: 'limited signals suggest...' or 'with limited evidence...'.",
+	"    - confidence=CONFLICTING: Do NOT include this field's value. Omit it or note 'conflicting signals present'.",
+	"    - confidence=PROVISIONAL: Treat as supporting context only — not a primary fact.",
+	"    - confidence=VERIFIED or confidence=STRONG_EVIDENCE: use normally.",
+	"    - confidence=SUPPRESSED or confidence=UNKNOWN: ignore this field entirely.",
 ].join("\n");
 
 const SYSTEM_PROMPT_WITH_CAVEAT =
 	SYSTEM_PROMPT_BASE +
-	"\n\n14. IMPORTANT: Evidence coverage is limited for this deal. Your interpretation is based on partial data." +
+	"\n\n15. IMPORTANT: Evidence coverage is limited for this deal. Your interpretation is based on partial data." +
 	" Set confidence to LOW unless there are multiple strong cross-validated signals. Explicitly call out where" +
 	" key data was missing in the relevant section (e.g., financial_outlook, market_position, product_differentiation)."; 
 

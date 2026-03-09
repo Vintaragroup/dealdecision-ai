@@ -81,6 +81,8 @@ export type CanonicalField = {
   computability: string;
   value: string | null;
   reason: string | null;
+  /** Evidence confidence level from PR36.6 — e.g. "STRONG_EVIDENCE" | "WEAK_EVIDENCE" */
+  confidence?: string;
 };
 
 export type RiskCategory =
@@ -284,6 +286,7 @@ export function parseCanonicalFields(section: InvestorInsightsSection | null): C
       computability: segMap['computability'] ?? '',
       value:        segMap['value']         || null,
       reason:       segMap['reason']        || null,
+      confidence:   segMap['confidence']    || undefined,
     });
   }
 
@@ -341,6 +344,12 @@ export function computeRiskScore(
       f.computability !== 'Computable',
   ).length;
   risk += Math.min(criticalNotComputable * 3, 30);
+
+  // +5 per CONFLICTING critical field — PR36.7 (cap +15)
+  const criticalConflicting = sections.canonicalFields.filter(
+    (f) => CRITICAL_CANONICAL_FIELDS.has(f.field) && f.confidence === 'CONFLICTING',
+  ).length;
+  risk += Math.min(criticalConflicting * 5, 15);
 
   // + round((1 - confidence_score) * 20) if reconciliation present
   const recon = sections.reconciliation;
@@ -411,6 +420,18 @@ export function buildKeyRisks(sections: RiskSections): KeyRisk[] {
     risks.push({
       category: 'Disclosure',
       text: `"${label}" not disclosed${f.reason ? ` — ${f.reason}` : ''}`,
+    });
+  }
+
+  // CONFLICTING critical canonical fields — PR36.7
+  const conflictingCritical = sections.canonicalFields.filter(
+    (f) => CRITICAL_CANONICAL_FIELDS.has(f.field) && f.confidence === 'CONFLICTING',
+  );
+  for (const f of conflictingCritical) {
+    const label = f.field.replaceAll('_', ' ');
+    risks.push({
+      category: 'Consistency',
+      text: `"${label}" shows conflicting signals from multiple sources — verify before relying on this value`,
     });
   }
 

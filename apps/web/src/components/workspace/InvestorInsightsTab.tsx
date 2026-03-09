@@ -7,6 +7,7 @@ import { useState, useRef, useEffect } from 'react';
 import { apiGetInvestorInsights } from '../../lib/apiClient';
 import type { InvestorInsightsSection, InvestorInsightsGateResult } from '../../lib/apiClient';
 import { deriveInsightsDisplayState } from '../../lib/investorInsightsDisplayPolicy';
+import { getConfidenceDisplayPolicy } from '../../lib/confidenceDisplayPolicy';
 import {
   SlotRow, parseInsightSlotBody, slotLabel, displayValue,
   CanonicalFieldRow, parseCanonicalFieldsBody, fieldLabel,
@@ -229,6 +230,40 @@ export function InsightSlotsSection({ section, darkMode }: { section: InvestorIn
 // ── Canonical Fields ─────────────────────────────────────────────────────────
 // (CanonicalFieldRow, parseCanonicalFieldsBody, fieldLabel — moved to investorInsightsUtils.ts)
 
+// ── Confidence badge chip (used in CanonicalFieldsSection) ─────────────────
+const CONFIDENCE_BADGE_COLORS_DARK: Record<string, string> = {
+  verified:    'bg-emerald-500/15 border-emerald-500/30 text-emerald-300',
+  strong:      'bg-teal-500/15 border-teal-500/30 text-teal-300',
+  weak:        'bg-amber-500/15 border-amber-500/30 text-amber-300',
+  conflict:    'bg-red-500/15 border-red-500/30 text-red-300',
+  provisional: 'bg-white/5 border-white/15 text-gray-400',
+  suppressed:  'bg-white/3 border-white/10 text-gray-600',
+};
+const CONFIDENCE_BADGE_COLORS_LIGHT: Record<string, string> = {
+  verified:    'bg-emerald-50 border-emerald-200 text-emerald-700',
+  strong:      'bg-teal-50 border-teal-200 text-teal-700',
+  weak:        'bg-amber-50 border-amber-200 text-amber-700',
+  conflict:    'bg-red-50 border-red-200 text-red-700',
+  provisional: 'bg-gray-100 border-gray-200 text-gray-500',
+  suppressed:  'bg-gray-50 border-gray-200 text-gray-400',
+};
+
+function ConfidenceBadgeChip({ confidence, darkMode }: { confidence?: string; darkMode: boolean }) {
+  const policy = getConfidenceDisplayPolicy(confidence);
+  if (!policy.badgeLabel) return null; // legacy/unknown — no badge
+  const palette = darkMode ? CONFIDENCE_BADGE_COLORS_DARK : CONFIDENCE_BADGE_COLORS_LIGHT;
+  const cls =
+    palette[policy.badgeVariant] ??
+    (darkMode ? 'bg-white/5 border-white/10 text-gray-400' : 'bg-gray-100 border-gray-200 text-gray-500');
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${cls}`}
+    >
+      {policy.badgeLabel}
+    </span>
+  );
+}
+
 export function CanonicalFieldsSection({ section, darkMode }: { section: InvestorInsightsSection; darkMode: boolean }) {
   const body = typeof section.body === 'string' ? section.body : '';
   const rows = parseCanonicalFieldsBody(body);
@@ -242,7 +277,7 @@ export function CanonicalFieldsSection({ section, darkMode }: { section: Investo
       <table className="w-full text-sm">
         <thead>
           <tr className={`border-b ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'}`}>
-            {(['Category', 'Field', 'Status', 'Value', 'Evidence', 'Reason'] as const).map((col) => (
+            {(['Category', 'Field', 'Status', 'Value', 'Evidence', 'Reason', 'Confidence'] as const).map((col) => (
               <th
                 key={col}
                 className={`text-left px-4 py-2.5 font-semibold text-xs uppercase tracking-wide whitespace-nowrap ${
@@ -320,6 +355,10 @@ export function CanonicalFieldsSection({ section, darkMode }: { section: Investo
                   darkMode ? 'text-gray-400' : 'text-gray-500'
                 }`}>
                   {row.reason ?? <span className={darkMode ? 'text-gray-600' : 'text-gray-400'}>—</span>}
+                </td>
+                {/* Confidence — PR36.7 */}
+                <td className="px-4 py-3 whitespace-nowrap">
+                  <ConfidenceBadgeChip confidence={row.confidence} darkMode={darkMode} />
                 </td>
               </tr>
             );

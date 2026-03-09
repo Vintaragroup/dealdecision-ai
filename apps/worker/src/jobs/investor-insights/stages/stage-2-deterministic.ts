@@ -82,6 +82,10 @@ import {
 	type DeckFinancialSignalsV1,
 } from "../../../lib/deck-financial-signals-v1.js";
 import { isCandidateTaintedByFundAumContext, isCandidateTaintedByVolumeMetric, hasStrongRaiseSignal } from "../resolve-raise-amount.js";
+import {
+	selectBestNarrativeCandidate,
+	type NarrativeCandidate,
+} from "../narrative-evidence-ranking.js";
 
 // Re-export deriveFinancialFactsV1 so the orchestrator can import it from here
 export { deriveFinancialFactsV1 };
@@ -101,8 +105,7 @@ export function buildProductNarrativeBody(inputs: InsightSlotInputs): string | n
 	const PRODUCT_KW_RE =
 		/\b(?:product|platform|solution|technology|we\s+(?:help|build|provide|enable|serve|power)|our\s+(?:platform|product|solution|technology|tool|software)|problem|pain\s+point|customers?|users?|clients?|mission|vision|founded|raises?|builds?)\b/i;
 	const MAX_CHARS = 800;
-	const productParts: string[] = [];
-	let totalLen = 0;
+	const candidates: NarrativeCandidate[] = [];
 
 	for (const page of inputs.dpuPages) {
 		const text = page.text ?? "";
@@ -113,13 +116,13 @@ export function buildProductNarrativeBody(inputs: InsightSlotInputs): string | n
 		if (!PRODUCT_KW_RE.test(text)) continue;
 		const excerpt = text.slice(0, 500).replace(/\s+/g, " ").trim();
 		if (!excerpt || excerpt.length < 30) continue;
-		productParts.push(excerpt);
-		totalLen += excerpt.length;
-		if (totalLen >= MAX_CHARS) break;
+		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
 	}
 
-	if (productParts.length === 0) return null;
-	return productParts.join("\n\n").slice(0, MAX_CHARS);
+	return selectBestNarrativeCandidate(candidates, "product_differentiation", {
+		topN: 3,
+		maxChars: MAX_CHARS,
+	});
 }
 
 // ─── Stage 1: Deterministic Insight Slots ───────────────────────────────────────
@@ -2737,18 +2740,22 @@ function buildProductSignalsBundleSection(inputs: InsightSlotInputs): {
 	fallback: string;
 } {
 	const MAX_CHARS = 1000;
-	const parts: string[] = [];
+	const candidates: NarrativeCandidate[] = [];
 
 	for (const page of inputs.dpuPages) {
-		const text = extractDpuText(page);
+		// Fix: use page.text directly — extractDpuText() expected `page_text`/`normalized_text`
+		// field names which DpuPage does not have, causing it to always return null (PR36.8).
+		const text = page.text;
 		if (!text || text.length < 20) continue;
 		if (!PRODUCT_SIGNAL_RE.test(text)) continue;
 		const excerpt = text.trim().slice(0, 300);
-		parts.push(excerpt);
-		if (parts.join("\n\n").length >= MAX_CHARS) break;
+		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
 	}
 
-	const body = parts.length > 0 ? parts.join("\n\n").slice(0, MAX_CHARS) : null;
+	const body = selectBestNarrativeCandidate(candidates, "product_differentiation", {
+		topN: 3,
+		maxChars: MAX_CHARS,
+	});
 
 	return {
 		key: "product_signals_bundle_v1",
@@ -2783,18 +2790,20 @@ function buildGtmSignalsBundleSection(inputs: InsightSlotInputs): {
 	fallback: string;
 } {
 	const MAX_CHARS = 1000;
-	const parts: string[] = [];
+	const candidates: NarrativeCandidate[] = [];
 
 	for (const page of inputs.dpuPages) {
-		const text = extractDpuText(page);
+		// Fix: use page.text directly — extractDpuText() expected `page_text`/`normalized_text`
+		// field names which DpuPage does not have, causing it to always return null (PR36.8).
+		const text = page.text;
 		if (!text || text.length < 20) continue;
 		if (!GTM_SIGNAL_RE.test(text)) continue;
 		const excerpt = text.trim().slice(0, 300);
-		parts.push(excerpt);
-		if (parts.join("\n\n").length >= MAX_CHARS) break;
+		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
 	}
 
-	// Supplement with use-of-funds GTM allocation signals when available
+	// Supplement with use-of-funds GTM allocation signals — these are structured section
+	// data (higher trust tier) and contribute a single richly-formatted candidate.
 	const uof = inputs.bestUseOfFundsStatement;
 	if (uof) {
 		const gtmBuckets = uof.buckets.filter((b) =>
@@ -2806,11 +2815,17 @@ function buildGtmSignalsBundleSection(inputs: InsightSlotInputs): {
 				const amt = b.amount != null ? ` — $${b.amount.toLocaleString()}` : "";
 				return `  ${b.category}${pct}${amt}`;
 			});
-			parts.push(`Use-of-Funds GTM allocations:\n${allocation_lines.join("\n")}`);
+			candidates.push({
+				text: `Use-of-Funds GTM allocations:\n${allocation_lines.join("\n")}`,
+				meta: { sourceType: "structured_section" },
+			});
 		}
 	}
 
-	const body = parts.length > 0 ? parts.join("\n\n").slice(0, MAX_CHARS) : null;
+	const body = selectBestNarrativeCandidate(candidates, "go_to_market_strategy", {
+		topN: 3,
+		maxChars: MAX_CHARS,
+	});
 
 	return {
 		key: "gtm_signals_bundle_v1",

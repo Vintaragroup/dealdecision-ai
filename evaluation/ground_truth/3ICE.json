@@ -1,0 +1,22 @@
+{
+  "_schema": "ground_truth_v1",
+  "_notes": "Ground truth for 3ICE. Full product profile present. Sports / entertainment deal — not a typical SaaS.",
+  "deal_name": "3ICE",
+  "deal_id": "61ef36dd-391a-4a4e-b30b-1f5d1f19f91e",
+  "slots": {
+    "company_description": "3ICE is a digital competition series designed for kids to test their hockey skills",
+    "problem_statement": "There is a lack of engaging and competitive platforms for kids to showcase their hockey skills",
+    "solution_summary": "3ICE offers a skills competition that includes various challenges such as skating and shooting accuracy",
+    "target_customer": "Kids interested in hockey",
+    "product_maturity": "Live",
+    "core_workflow": ["Participate in skating challenge", "Participate in shooting accuracy challenge"],
+    "core_features": ["Fastest lap skating challenge", "Shooting accuracy challenge", "Broadcasting of competitions"],
+    "differentiation_claims": ["Similar to NFL's PUNT, PASS & KICK and PGA Tour's DRIVE, CHIP & PUTT"],
+    "ai_claims_present": false,
+    "ai_usage_type": "none",
+    "ai_evidence_strength": "none"
+  },
+  "financials": {
+    "revenue": 40000
+  }
+}

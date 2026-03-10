@@ -33,13 +33,14 @@ export async function upsertFinancialFactsV1(
   if (valid.length === 0) return 0;
 
   // Build parameterised multi-row upsert
-  // Columns (18 value cols + created_at):
+  // Columns (20 value cols + created_at):
   //   fact_id, deal_id, document_id, source_kind,
   //   metric_key, metric_label, period_type, period_label,
   //   value, unit, currency, confidence, reconciliation_status,
   //   sheet_name, page_number, row_index, col_index,
-  //   source_pointer, evidence_id, excerpt
-  const COL_COUNT = 20;
+  //   source_pointer, evidence_id, excerpt,
+  //   slide_type, slide_title
+  const COL_COUNT = 22;
   const params: unknown[] = [];
   const rowPlaceholders: string[] = [];
 
@@ -52,7 +53,8 @@ export async function upsertFinancialFactsV1(
         $${base + 8}::numeric, $${base + 9}::text, $${base + 10}::text, $${base + 11}::text,
         $${base + 12}::text, $${base + 13}::text, $${base + 14}::int,
         $${base + 15}::int, $${base + 16}::int, $${base + 17}::text,
-        $${base + 18}::text, $${base + 19}::text)`
+        $${base + 18}::text, $${base + 19}::text,
+        $${base + 20}::text, $${base + 21}::text)`
     );
     params.push(
       f.fact_id,
@@ -74,7 +76,9 @@ export async function upsertFinancialFactsV1(
       f.col_index ?? null,
       f.source_pointer ?? null,
       f.evidence_id ?? null,
-      f.excerpt ?? null
+      f.excerpt ?? null,
+      f.slide_type ?? null,
+      f.slide_title ?? null
     );
   }
 
@@ -84,7 +88,8 @@ export async function upsertFinancialFactsV1(
        metric_key, metric_label, period_type, period_label,
        value, unit, currency, confidence, reconciliation_status,
        sheet_name, page_number, row_index, col_index,
-       source_pointer, evidence_id, excerpt)
+       source_pointer, evidence_id, excerpt,
+       slide_type, slide_title)
     VALUES ${rowPlaceholders.join(",\n    ")}
     ON CONFLICT (fact_id) DO UPDATE SET
       document_id           = EXCLUDED.document_id,
@@ -103,6 +108,8 @@ export async function upsertFinancialFactsV1(
       source_pointer        = EXCLUDED.source_pointer,
       evidence_id           = EXCLUDED.evidence_id,
       excerpt               = EXCLUDED.excerpt,
+      slide_type            = EXCLUDED.slide_type,
+      slide_title           = EXCLUDED.slide_title,
       updated_at            = now()
   `;
 

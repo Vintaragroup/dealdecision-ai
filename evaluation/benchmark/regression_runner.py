@@ -81,6 +81,13 @@ class DealRegressionResult:
     current_overall: Optional[float]
     slot_verdicts: dict = field(default_factory=dict)
     financial_verdicts: dict = field(default_factory=dict)
+    # Phase 9 — financial intelligence signals
+    financial_coverage_pct: Optional[int] = None   # 0–100
+    financial_conflict_count: int = 0
+    financial_risk_flags: list[str] = field(default_factory=list)
+    # Phase 10 — slide-aware financial extraction signals
+    financial_slide_sources: list[str] = field(default_factory=list)      # distinct slide_types that contributed facts
+    financial_slide_confidence_boosts: int = 0                             # facts that received a confidence upgrade
 
     def _delta(self, baseline: Optional[float], current: Optional[float]) -> Optional[float]:
         if baseline is None or current is None:
@@ -334,6 +341,8 @@ def run_regression_benchmark(
             current_overall=scores["overall_accuracy"],
             slot_verdicts=scores["slot_verdicts"],
             financial_verdicts=scores["financial_verdicts"],
+            **{**_fetch_financial_coverage_signals(conn, deal_id),
+               **_fetch_financial_slide_signals(conn, deal_id)},
         ))
 
     # Persist current run as new baseline
@@ -398,6 +407,164 @@ def _resolve_deal_id_by_name(conn: Any, name: str) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+# ---------------------------------------------------------------------------
+# Financial coverage / conflict signals  (Phase 9)
+# ---------------------------------------------------------------------------
+
+_ALL_TRACKED_METRICS = [
+    # income statement
+    "revenue", "cogs", "gross_profit", "gross_margin", "opex", "ebitda", "net_income",
+    # unit economics
+    "arr", "mrr", "cac", "ltv", "arpu", "churn_pct", "retention_pct",
+    # cash flow
+    "cash", "burn_rate", "runway_months",
+]  # 17 total
+_TRACKED_METRICS_SET = set(_ALL_TRACKED_METRICS)
+_CONFLICT_DIVERGENCE_THRESHOLD = 0.05  # 5% relative
+
+
+# ---------------------------------------------------------------------------
+# Financial slide-source signals  (Phase 10)
+# ---------------------------------------------------------------------------
+
+_SLIDE_CONFIDENCE_BOOST: dict[str, int] = {
+    "financials":   4,
+    "traction":     3,
+    "raise_terms":  2,
+    "use_of_funds": 1,
+    "team":        -2,
+    "market":      -2,
+}
+
+
+def _fetch_financial_slide_signals(
+    conn: Any,
+    deal_id: str,
+) -> dict:
+    """
+    Query financial_facts_v1 for Phase-10 slide metadata.
+
+    Returns a dict with keys matching DealRegressionResult phase-10 fields:
+        financial_slide_sources          — sorted list of distinct slide_types
+        financial_slide_confidence_boosts — count of facts that received boost >= 2
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT slide_type, confidence"
+                " FROM financial_facts_v1"
+                " WHERE deal_id = %s AND slide_type IS NOT NULL",
+                (deal_id,),
+            )
+            rows = cur.fetchall()
+    except Exception:
+        return {"financial_slide_sources": [], "financial_slide_confidence_boosts": 0}
+
+    if not rows:
+        return {"financial_slide_sources": [], "financial_slide_confidence_boosts": 0}
+
+    slide_types: set[str] = set()
+    boost_count = 0
+    for row in rows:
+        d = dict(row) if hasattr(row, "keys") else {"slide_type": row[0], "confidence": row[1]}
+        st = d.get("slide_type") or ""
+        if st:
+            slide_types.add(st)
+            boost = _SLIDE_CONFIDENCE_BOOST.get(st, 0)
+            if boost >= 2:
+                boost_count += 1
+
+    return {
+        "financial_slide_sources":          sorted(slide_types),
+        "financial_slide_confidence_boosts": boost_count,
+    }
+
+
+def _fetch_financial_coverage_signals(
+    conn: Any,
+    deal_id: str,
+) -> dict:
+    """
+    Compute financial coverage % and conflict count from financial_facts_v1.
+
+    Returns a dict with keys matching DealRegressionResult phase-9 fields:
+        financial_coverage_pct   — 0-100 integer  (or None on DB error)
+        financial_conflict_count — integer
+        financial_risk_flags     — list[str]
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT metric_key, period_label, value"
+                " FROM financial_facts_v1"
+                " WHERE deal_id = %s",
+                (deal_id,),
+            )
+            rows = cur.fetchall()
+    except Exception:
+        return {"financial_coverage_pct": None, "financial_conflict_count": 0, "financial_risk_flags": []}
+
+    if not rows:
+        return {"financial_coverage_pct": 0, "financial_conflict_count": 0, "financial_risk_flags": []}
+
+    # ── Coverage ─────────────────────────────────────────────────────────────
+    present_metrics: set[str] = set()
+    slot_values: dict[str, list[float]] = {}   # "metric_key:period_label" → [values]
+
+    for row in rows:
+        d = dict(row) if hasattr(row, "keys") else {
+            "metric_key": row[0], "period_label": row[1], "value": row[2]
+        }
+        mk  = d.get("metric_key") or ""
+        pl  = str(d.get("period_label") or "").lower()
+        val = d.get("value")
+        if val is None:
+            continue
+        try:
+            val_f = float(val)
+        except (TypeError, ValueError):
+            continue
+        present_metrics.add(mk)
+        slot_values.setdefault(f"{mk}:{pl}", []).append(val_f)
+
+    tracked_present = _TRACKED_METRICS_SET & present_metrics
+    coverage_pct = round(len(tracked_present) / len(_ALL_TRACKED_METRICS) * 100)
+
+    # ── Conflict detection ───────────────────────────────────────────────────
+    conflict_metrics: set[str] = set()
+    for key, values in slot_values.items():
+        if len(values) < 2:
+            continue
+        min_v, max_v = min(values), max(values)
+        if min_v == 0:
+            continue
+        if (max_v - min_v) / abs(min_v) > _CONFLICT_DIVERGENCE_THRESHOLD:
+            conflict_metrics.add(key.split(":")[0])
+
+    conflict_count = len(conflict_metrics)
+
+    # ── Risk flags ───────────────────────────────────────────────────────────
+    flags: list[str] = []
+    if coverage_pct < 30:
+        flags.append("low_coverage")
+    if "revenue" in conflict_metrics:
+        flags.append("revenue_conflict")
+    if "arr" in conflict_metrics:
+        flags.append("arr_conflict")
+    if "burn_rate" in conflict_metrics:
+        flags.append("burn_conflict")
+    if "burn_rate" in present_metrics and "runway_months" not in present_metrics:
+        flags.append("burn_without_runway")
+    if conflict_count >= 3:
+        flags.append("high_conflict_count")
+
+    return {
+        "financial_coverage_pct":   coverage_pct,
+        "financial_conflict_count": conflict_count,
+        "financial_risk_flags":     sorted(flags),
+    }
 
 
 def _fetch_financial_totals(conn: Any, deal_id: str) -> dict:
@@ -532,4 +699,30 @@ def _build_report(
         lines.append(f"| {label} | {_fmt(b)} | {_fmt(c)} | {_delta_str(delta)} |")
 
     lines.append("")
+
+    # Financial Coverage Signals (Phase 9)
+    has_signals = any(d.financial_coverage_pct is not None for d in deal_results)
+    if has_signals:
+        lines.append("## Financial Coverage Signals\n")
+        lines.append("_Coverage = % of 17 tracked metrics present in financial_facts_v1._\n")
+        lines.append("| Deal | Coverage % | Conflicts | Risk Flags |")
+        lines.append("| --- | --- | --- | --- |")
+        for dr in deal_results:
+            cov   = f"{dr.financial_coverage_pct}%" if dr.financial_coverage_pct is not None else "—"
+            flags = ", ".join(dr.financial_risk_flags) if dr.financial_risk_flags else "none"
+            lines.append(f"| {dr.deal_name} | {cov} | {dr.financial_conflict_count} | {flags} |")
+        lines.append("")
+
+    # Financial Slide Sources (Phase 10)
+    has_slide_signals = any(d.financial_slide_sources for d in deal_results)
+    if has_slide_signals:
+        lines.append("## Financial Slide Sources (Phase 10)\n")
+        lines.append("_Facts extracted from slide-classified pages; confidence boosts applied per slide type._\n")
+        lines.append("| Deal | Slide Sources | High-Confidence Boosts |")
+        lines.append("| --- | --- | --- |")
+        for dr in deal_results:
+            sources = ", ".join(dr.financial_slide_sources) if dr.financial_slide_sources else "none"
+            lines.append(f"| {dr.deal_name} | {sources} | {dr.financial_slide_confidence_boosts} |")
+        lines.append("")
+
     return "\n".join(lines)

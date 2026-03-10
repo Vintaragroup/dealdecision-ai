@@ -49,6 +49,14 @@ export interface ExtractFinancialTableClaimsOpts {
    * Defaults to "pdf_table". Pass "xlsx" when the source document is a spreadsheet.
    */
   source_kind_override?: FinancialFactSourceKind;
+  /**
+   * Resolved slide type from DPU payload (resolved_slide_type).
+   * When provided, the value is stamped on each emitted fact.
+   * Confidence adjustment is handled separately by applySlideAwareness().
+   */
+  slide_type?: string;
+  /** Human-readable slide title from DPU payload. */
+  slide_title?: string;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -167,6 +175,8 @@ export function extractFinancialTableClaims(
         page_number: opts.page_number,
         source_pointer,
         excerpt: capFactExcerpt(excerpt ?? line),
+        slide_type:  opts.slide_type,
+        slide_title: opts.slide_title,
       };
 
       claims.push(fact);

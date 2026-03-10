@@ -51,6 +51,12 @@ import {
 import { buildFinancialFactRegistryV1 } from "../../lib/build-financial-fact-registry-v1.js";
 import { buildReconciliationSummary } from "../../lib/cross-source-reconciliation.js";
 import { upsertFinancialFactsV1 } from "../../lib/db/financial-facts-db.js";
+import { buildFinancialCoverageV1 } from "../../lib/financial-facts/build-financial-coverage-v1.js";
+import { detectFinancialFactConflictsV1 } from "../../lib/financial-facts/detect-financial-fact-conflicts-v1.js";
+import {
+	computeFinancialCoveragePct,
+	deriveFinancialRiskFlags,
+} from "../../lib/financial-facts/financial-coverage-signals-v1.js";
 
 // ── Stage imports ─────────────────────────────────────────────────────────────
 import {
@@ -382,11 +388,15 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			});
 			insightSlotInputs.crossSourceReconciliation = buildReconciliationSummary(factsToUpsert);
 			const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
+			const fi = await applyFinancialIntelligenceV1(pool, reportId, dealId, factsToUpsert, insightSlotInputs);
 			console.log(JSON.stringify({
 				event: "POPULATE_FINANCIAL_FACTS_V1",
 				deal_id: dealId,
 				upserted_count: upserted,
 				cross_source_summary: insightSlotInputs.crossSourceReconciliation,
+				financial_coverage_pct:   fi.coverage_pct,
+				financial_conflict_count: fi.conflict_count,
+				financial_risk_flags:     fi.risk_flags,
 				path: "gates_failed",
 				ts: new Date().toISOString(),
 			}));
@@ -694,11 +704,15 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			});
 			insightSlotInputs.crossSourceReconciliation = buildReconciliationSummary(factsToUpsert);
 			const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
+			const fi = await applyFinancialIntelligenceV1(pool, egReportId, dealId, factsToUpsert, insightSlotInputs);
 			console.log(JSON.stringify({
 				event: "POPULATE_FINANCIAL_FACTS_V1",
 				deal_id: dealId,
 				upserted_count: upserted,
 				cross_source_summary: insightSlotInputs.crossSourceReconciliation,
+				financial_coverage_pct:   fi.coverage_pct,
+				financial_conflict_count: fi.conflict_count,
+				financial_risk_flags:     fi.risk_flags,
 				path: "evidence_gate_fail",
 				ts: new Date().toISOString(),
 			}));
@@ -968,11 +982,15 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		});
 		insightSlotInputs.crossSourceReconciliation = buildReconciliationSummary(factsToUpsert);
 		const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
+		const fi = await applyFinancialIntelligenceV1(pool, reportId, dealId, factsToUpsert, insightSlotInputs);
 		console.log(JSON.stringify({
 			event: "POPULATE_FINANCIAL_FACTS_V1",
 			deal_id: dealId,
 			upserted_count: upserted,
 			cross_source_summary: insightSlotInputs.crossSourceReconciliation,
+			financial_coverage_pct:   fi.coverage_pct,
+			financial_conflict_count: fi.conflict_count,
+			financial_risk_flags:     fi.risk_flags,
 			path: "happy_path",
 			ts: new Date().toISOString(),
 		}));
@@ -1005,6 +1023,56 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		status: "deterministic_only",
 		report_id: reportId,
 		upstream_fingerprint: upstreamFingerprint,
+	};
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Phase 9 — Financial Coverage + Conflict Intelligence
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Compute financial coverage + conflicts from a fact registry, store results on
+ * insightSlotInputs, and patch the persisted report payload in a single UPDATE.
+ *
+ * Always resolves (never throws) — coverage/conflict errors are non-fatal.
+ * Returns a compact summary for structured logging.
+ */
+async function applyFinancialIntelligenceV1(
+	pool: Pool,
+	reportId: string,
+	dealId: string,
+	facts: ReturnType<typeof buildFinancialFactRegistryV1>,
+	insightSlotInputs: InsightSlotInputs,
+): Promise<{ coverage_pct: number; conflict_count: number; risk_flags: string[] }> {
+	const coverage  = buildFinancialCoverageV1(dealId, facts);
+	const conflicts = detectFinancialFactConflictsV1(facts);
+	const riskFlags = deriveFinancialRiskFlags(coverage, conflicts);
+
+	insightSlotInputs.financialCoverage  = coverage;
+	insightSlotInputs.financialConflicts = conflicts;
+	insightSlotInputs.financialRiskFlags = riskFlags;
+
+	// Best-effort: patch the report payload with coverage intelligence.
+	// Uses COALESCE so a NULL report_payload is treated as an empty object.
+	try {
+		await pool.query(
+			`UPDATE public.investor_insight_reports
+			   SET report_payload = COALESCE(report_payload, '{}'::jsonb) || $2::jsonb
+			 WHERE id = $1::uuid`,
+			[reportId, JSON.stringify({
+				financial_coverage_v1:  coverage,
+				financial_conflicts_v1: conflicts,
+				financial_risk_flags:   riskFlags,
+			})]
+		);
+	} catch {
+		// Non-fatal — coverage data still available in insightSlotInputs.
+	}
+
+	return {
+		coverage_pct:   computeFinancialCoveragePct(coverage),
+		conflict_count: conflicts.length,
+		risk_flags:     riskFlags,
 	};
 }
 

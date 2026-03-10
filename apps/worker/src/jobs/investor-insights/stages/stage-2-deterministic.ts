@@ -87,6 +87,7 @@ import {
 	type DeckFinancialSignalsV1,
 } from "../../../lib/deck-financial-signals-v1.js";
 import type { CrossSourceReconciliationSummary } from "../../../lib/cross-source-reconciliation.js";
+import type { FinancialCoverageV1, FinancialConflictV1 } from "@dealdecision/core";
 import { isCandidateTaintedByFundAumContext, isCandidateTaintedByVolumeMetric, hasStrongRaiseSignal } from "../resolve-raise-amount.js";
 import {
 	selectBestNarrativeCandidate,
@@ -344,6 +345,21 @@ export interface InsightSlotInputs {
 	 * downstream section builders and contradiction-alignment logic.
 	 */
 	crossSourceReconciliation?: CrossSourceReconciliationSummary | null;
+	/**
+	 * Financial coverage profile computed from the finalised fact registry.
+	 * Populated by the processor (Phase 9) after the registry is built.
+	 */
+	financialCoverage?: FinancialCoverageV1 | null;
+	/**
+	 * Flat list of metric conflicts detected across financial-fact sources.
+	 * Populated by the processor (Phase 9) after the registry is built.
+	 */
+	financialConflicts?: FinancialConflictV1[];
+	/**
+	 * Investor-facing risk flags derived from coverage + conflicts.
+	 * Populated by the processor (Phase 9) after the registry is built.
+	 */
+	financialRiskFlags?: string[];
 }
 
 

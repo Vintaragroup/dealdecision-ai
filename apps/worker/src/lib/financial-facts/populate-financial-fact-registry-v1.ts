@@ -37,6 +37,10 @@ import {
   extractInlineFinancialClaims,
 } from "./extract-inline-financial-claims";
 import { reconcileFinancialFactsV1 } from "./reconcile-financial-facts-v1";
+import {
+  applySlideAwareness,
+  FINANCIAL_SLIDE_TYPES,
+} from "./slide-aware-confidence-v1.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -177,9 +181,19 @@ export async function populateFinancialFactRegistryV1(
           (await fetchDpuText(pool, pageRow.document_id, pageRow.page_index));
         if (!text) continue;
 
+        // Fetch slide classification context from DPU payload (non-fatal)
+        const slideCtx = await fetchDpuSlideContext(
+          pool, pageRow.document_id, pageRow.page_index,
+        );
+
         // Guard: skip pages with no financial signal
+        // Exception: pages classified as financial slide types bypass this guard
+        // since the slide classification is stronger evidence than text density.
+        const isFinancialSlide = slideCtx.slide_type != null &&
+          FINANCIAL_SLIDE_TYPES.has(slideCtx.slide_type);
         if (
           opts.skip_non_financial !== false &&
+          !isFinancialSlide &&
           !detectFinancialTableCandidate(text)
         ) {
           result.candidates_rejected++;
@@ -193,6 +207,8 @@ export async function populateFinancialFactRegistryV1(
           page_number:          pageRow.page_index,
           page_id:              pageRow.page_id,
           source_kind_override: opts.xlsx_doc ? "xlsx" : undefined,
+          slide_type:           slideCtx.slide_type ?? undefined,
+          slide_title:          slideCtx.slide_title ?? undefined,
         });
 
         // ── 4. Extract: inline KPI claims ────────────────────────────────────
@@ -201,18 +217,24 @@ export async function populateFinancialFactRegistryV1(
           document_id: pageRow.document_id,
           page_number: pageRow.page_index,
           page_id:     pageRow.page_id,
+          slide_type:  slideCtx.slide_type ?? undefined,
+          slide_title: slideCtx.slide_title ?? undefined,
         });
 
-        const pageFacts = [...tableExtracted, ...inlineExtracted];
+        // ── 4a. Apply slide-aware confidence adjustments ─────────────────────
+        const tableAware  = applySlideAwareness(tableExtracted,  slideCtx.slide_type, slideCtx.slide_title);
+        const inlineAware = applySlideAwareness(inlineExtracted, slideCtx.slide_type, slideCtx.slide_title);
+
+        const pageFacts = [...tableAware, ...inlineAware];
         if (pageFacts.length === 0) continue;
 
         result.pages_with_data++;
-        result.facts_extracted += tableExtracted.length;
-        result.facts_inline    += inlineExtracted.length;
+        result.facts_extracted += tableAware.length;
+        result.facts_inline    += inlineAware.length;
 
         // Guard: log warning when xlsx_doc is set but a table fact has no source_kind
         if (opts.xlsx_doc) {
-          for (const f of tableExtracted) {
+          for (const f of tableAware) {
             if (!f.source_kind) {
               console.warn(
                 JSON.stringify({
@@ -458,6 +480,44 @@ async function fetchDpuText(
   );
 
   return rows[0]?.page_text ?? null;
+}
+
+// ─── Slide context helper ─────────────────────────────────────────────────────
+
+interface DpuSlideContext {
+  slide_type:  string | null;
+  slide_title: string | null;
+}
+
+/**
+ * Fetch slide classification metadata from the DPU payload for a single page.
+ *
+ * Returns null values when the DPU row is missing or the payload lacks slide fields.
+ * Never throws.
+ */
+async function fetchDpuSlideContext(
+  pool: Pool,
+  documentId: string,
+  pageIndex: number,
+): Promise<DpuSlideContext> {
+  try {
+    const { rows } = await pool.query<{ slide_type: string | null; slide_title: string | null }>(
+      `SELECT
+         payload->>'resolved_slide_type' AS slide_type,
+         payload->>'slide_title'         AS slide_title
+       FROM public.document_page_understanding
+       WHERE document_id = $1::uuid
+         AND page_index   = $2::int
+       LIMIT 1`,
+      [documentId, pageIndex],
+    );
+    return {
+      slide_type:  rows[0]?.slide_type  ?? null,
+      slide_title: rows[0]?.slide_title ?? null,
+    };
+  } catch {
+    return { slide_type: null, slide_title: null };
+  }
 }
 
 

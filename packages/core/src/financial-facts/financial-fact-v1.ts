@@ -152,6 +152,20 @@ export interface FinancialFactV1 {
   row_index?: number;
   col_index?: number;
 
+  /**
+   * Slide classification type from DPU payload (resolved_slide_type).
+   * e.g. "financials" | "traction" | "raise_terms" | "use_of_funds" | "team" | ...
+   * Populated during Phase 10 slide-aware extraction.  Undefined when no DPU
+   * slide context was available for the source page.
+   */
+  slide_type?: string;
+
+  /**
+   * Human-readable slide title extracted by the DPU pipeline.
+   * Populated alongside slide_type.
+   */
+  slide_title?: string;
+
   /** Stable pointer string: e.g. "sheet=Revenue row_idx=3 col=B value_raw=1200000" */
   source_pointer?: string;
 

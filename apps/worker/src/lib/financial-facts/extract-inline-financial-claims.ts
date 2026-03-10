@@ -88,6 +88,14 @@ export interface ExtractInlineFinancialClaimsOpts {
   page_number?: number;
   /** Optional page registry id for source_pointer disambiguation */
   page_id?: string;
+  /**
+   * Resolved slide type from DPU payload (resolved_slide_type).
+   * When provided, the value is stamped on each emitted fact.
+   * Confidence adjustment is handled separately by applySlideAwareness().
+   */
+  slide_type?: string;
+  /** Human-readable slide title from DPU payload. */
+  slide_title?: string;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -172,6 +180,8 @@ export function extractInlineFinancialClaims(
         page_number:   opts.page_number,
         source_pointer,
         excerpt:       capFactExcerpt(line),
+        slide_type:    opts.slide_type,
+        slide_title:   opts.slide_title,
       };
 
       claims.push(fact);

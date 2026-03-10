@@ -428,11 +428,23 @@ function hasNumericPart(parts: string[]): boolean {
 // ─── Skip logic ───────────────────────────────────────────────────────────────
 
 /** Skip slug-like metric keys that look like noise (single letter etc.) */
+// Stop words that alone cannot form a valid metric key
+const METRIC_STOP_TOKENS = new Set(["of", "the", "a", "an", "and", "but", "or"]);
+// Common verbs that indicate a sentence fragment rather than a metric label
+const METRIC_VERB_TOKENS = new Set(["will", "has", "have", "had", "exceed", "exceeds", "exceeded", "expects", "projected"]);
+
 function shouldSkipMetricKey(key: string, rawLabel: string): boolean {
   if (key.length < 2) return true;
   if (/^\d/.test(key)) return true;
   // Skip if raw label was entirely numeric or short noise
   if (rawLabel.trim().length < 2) return true;
+  // Reject sentence fragments: no valid financial metric has more than 5 tokens
+  const tokens = key.split("_");
+  if (tokens.length > 5) return true;
+  // Reject keys composed entirely of stop words (e.g. "of_the")
+  if (tokens.every(t => METRIC_STOP_TOKENS.has(t))) return true;
+  // Reject keys containing verb tokens — clear indicators of sentence fragments
+  if (tokens.some(t => METRIC_VERB_TOKENS.has(t))) return true;
   return false;
 }
 

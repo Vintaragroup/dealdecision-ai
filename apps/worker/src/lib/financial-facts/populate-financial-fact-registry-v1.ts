@@ -503,8 +503,8 @@ async function fetchDpuSlideContext(
   try {
     const { rows } = await pool.query<{ slide_type: string | null; slide_title: string | null }>(
       `SELECT
-         payload->>'resolved_slide_type' AS slide_type,
-         payload->>'slide_title'         AS slide_title
+         payload->'structured'->>'segment_key' AS slide_type,
+         NULL::text                             AS slide_title
        FROM public.document_page_understanding
        WHERE document_id = $1::uuid
          AND page_index   = $2::int

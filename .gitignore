@@ -158,3 +158,17 @@ tmp/
 apps/worker/tmp/*
 !apps/worker/tmp/audit_deals.json
 !apps/worker/tmp/coverage_baseline.json
+
+# DealDecisionAI evaluation outputs
+evaluation/reports/
+evaluation/*.zip
+evaluation/**/*.zip
+evaluation/reports/**/*.md
+evaluation/run_history/
+evaluation/reviews/
+
+# DB snapshots
+evaluation/db_snapshots/
+
+# Python cache
+evaluation/**/__pycache__/

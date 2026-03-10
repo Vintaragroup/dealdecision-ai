@@ -1,0 +1,16 @@
+{
+  "_schema": "ground_truth_v1",
+  "_notes": "Ground truth for Cino. FinTech shared payments platform. Series A deck (PD - Cino Deck 2025 Series A.pdf). Deal name in DB: 'Cino Deck 2025 Series A'. Values derived from deck OCR/segment audit and page-15 raise slide ('€5.6M raised to date').",
+  "deal_name": "Cino",
+  "deal_id": "cbb0c6ed-518b-4046-8200-fa588c35bd9e",
+  "slots": {
+    "company_description": "Cino is the first platform for shared payments, designed to make spending money together seamless",
+    "product_description": "A bank-agnostic card that automatically splits and debits each person's share in real-time; free to use with a premium tier",
+    "target_customer": "Friend groups and couples who frequently pay together — vacations, dining, events",
+    "revenue_model": "Freemium — free to use, monetized via 1.9% interchange fee, 1% FX fee, and €10/month premium features",
+    "stage": "Series A"
+  },
+  "financials": {
+    "raise_amount": 5600000
+  }
+}

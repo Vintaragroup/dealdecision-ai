@@ -1,0 +1,16 @@
+{
+  "_schema": "ground_truth_v1",
+  "_notes": "Cinco is a separate deal instance that ingested the same 'PD - Cino Deck 2025 Series A.pdf' deck as Cino. Ground truth derived from Cino deck content. Extraction quality is lower for this deal instance. raise_amount €5.6M confirmed from Cinco fused facts in deal audit.",
+  "deal_name": "Cinco",
+  "deal_id": "0fcec035-9aa3-4f6e-88fa-818c323add09",
+  "slots": {
+    "company_description": "Cino is the first platform for shared payments, designed to make spending money together seamless",
+    "product_description": "A payment platform that splits group spend in real-time; free to use with a premium subscription",
+    "target_customer": "Friend groups, couples, and anyone paying together in groups",
+    "revenue_model": "Freemium — free card plus interchange fees, FX fees, and €10/month premium subscription",
+    "stage": "Series A"
+  },
+  "financials": {
+    "raise_amount": 5600000
+  }
+}

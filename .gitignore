@@ -167,6 +167,7 @@ evaluation/reports/**/*.md
 evaluation/run_history/
 evaluation/reviews/
 evaluation/PHASE6_VERIFICATION_AUDIT.md
+evaluation/regression_reports
 
 # DB snapshots
 evaluation/db_snapshots/

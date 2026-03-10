@@ -693,6 +693,15 @@ function raisePreferenceScore(input: { slide_title: string | null; segment_key: 
 	return score;
 }
 
+function slideTypeToSegmentKey(slideType: string | null | undefined): string | null {
+	if (!slideType) return null;
+	const t = slideType.trim().toLowerCase();
+	if (t === 'go_to_market') return 'distribution';
+	if (t === 'use_of_funds') return 'raise_terms';
+	if (t === 'other' || t === '') return null;
+	return t;
+}
+
 function buildSlideTextFromPayload(payload: any): {
 	text: string;
 	slide_title: string | null;
@@ -707,6 +716,7 @@ function buildSlideTextFromPayload(payload: any): {
 		asNonEmptyString(structured?.title) ??
 		asNonEmptyString(structured?.slide_title) ??
 		asNonEmptyString(textBlocks?.title) ??
+		asNonEmptyString(payload?.slide_title) ??
 		null;
 
 	const bullets: string[] = Array.isArray(structured?.bullets)
@@ -723,7 +733,10 @@ function buildSlideTextFromPayload(payload: any): {
 	const slide_number_raw = structured?.slide_number ?? structured?.slideIndex ?? structured?.page_index;
 	const slide_number = typeof slide_number_raw === "number" && Number.isFinite(slide_number_raw) ? Math.floor(slide_number_raw) : null;
 
-	const segment_key = asNonEmptyString(structured?.segment_key) ?? null;
+	const segment_key =
+		asNonEmptyString(structured?.segment_key) ??
+		slideTypeToSegmentKey(asNonEmptyString(payload?.resolved_slide_type)) ??
+		null;
 
 	const parts = [slide_title, bullets.join("\n"), notes, snippet, pageText, normalized].filter((p) => typeof p === "string" && p.trim());
 	const text = normalizeText(parts.join("\n"));
@@ -1049,4 +1062,5 @@ export const __test__ = {
 	parseRaiseTermsFromText,
 	inferBusinessModelFromText,
 	stableEvidenceId,
+	slideTypeToSegmentKey,
 };

@@ -36,6 +36,10 @@ import {
 import {
   extractInlineFinancialClaims,
 } from "./extract-inline-financial-claims";
+import {
+  extractChartFactClaims,
+  inferChartMetricKey,
+} from "./extract-chart-fact-claims";
 import { reconcileFinancialFactsV1 } from "./reconcile-financial-facts-v1";
 import {
   applySlideAwareness,
@@ -63,6 +67,7 @@ const SOURCE_KIND_RANK: Record<string, number> = {
   xlsx:         3,
   pdf_kpi_line: 2,
   deck:         1,
+  chart_pixel:  1,
   unknown:      0,
 };
 
@@ -96,6 +101,8 @@ export interface PopulateFinancialFactRegistryV1Result {
   facts_inline:         number;
   /** Facts dropped by confidence-based dedup (lower-rank duplicate removed) */
   facts_merged:         number;
+  /** Facts tagged source_kind="chart_pixel" (bar chart pixel extraction) */
+  facts_chart:          number;
   /** Facts tagged source_kind="xlsx" (only when xlsx_doc=true) */
   facts_xlsx:           number;
   /** Candidate pages rejected by the detectFinancialTableCandidate guard */
@@ -118,6 +125,7 @@ export async function populateFinancialFactRegistryV1(
     pages_expanded:      0,
     facts_inline:        0,
     facts_merged:        0,
+    facts_chart:         0,
     facts_xlsx:          0,
     candidates_rejected: 0,
     errors:              [],
@@ -274,6 +282,32 @@ export async function populateFinancialFactRegistryV1(
       );
     }
 
+    // ── 5. Chart pixel extraction (visual_extractions → chart_pixel facts) ──
+    try {
+      const chartRows = await queryChartExtractions(pool, opts);
+      for (const row of chartRows) {
+        try {
+          const chartFacts = extractChartFactClaims(row.structured_json, {
+            deal_id:          opts.deal_id,
+            document_id:      row.document_id,
+            visual_asset_id:  row.visual_asset_id,
+            page_number:      row.page_index,
+            slide_type:       row.slide_type ?? undefined,
+            slide_title:      row.slide_title ?? undefined,
+            dpu_text:         row.dpu_text ?? undefined,
+          });
+          result.facts_chart += chartFacts.length;
+          allExtracted.push(...chartFacts);
+        } catch (chartErr: unknown) {
+          const msg = chartErr instanceof Error ? chartErr.message : String(chartErr);
+          result.errors.push(`chart va=${row.visual_asset_id} pg=${row.page_index}: ${msg}`);
+        }
+      }
+    } catch (chartQueryErr: unknown) {
+      const msg = chartQueryErr instanceof Error ? chartQueryErr.message : String(chartQueryErr);
+      result.errors.push(`chart query: ${msg}`);
+    }
+
     // ── 5. Confidence-based dedup across all pages ───────────────────────────
     const { merged, droppedCount } = mergeFactsByConfidence(allExtracted);
     result.facts_merged = droppedCount;
@@ -382,6 +416,7 @@ function emitExpansionSummary(
       candidates_rejected:   result.candidates_rejected,
       facts_extracted_table: result.facts_extracted,
       facts_extracted_inline:result.facts_inline,
+      facts_chart:           result.facts_chart,
       facts_xlsx:            result.facts_xlsx,
       facts_after_merge:     result.facts_upserted + result.facts_merged,
       facts_derived:         result.facts_derived,
@@ -518,6 +553,56 @@ async function fetchDpuSlideContext(
   } catch {
     return { slide_type: null, slide_title: null };
   }
+}
+
+// ─── Chart extraction DB helper ───────────────────────────────────────────────
+
+interface ChartExtractionRow {
+  visual_asset_id: string;
+  document_id: string;
+  page_index: number;
+  structured_json: Record<string, unknown>;
+  slide_type: string | null;
+  slide_title: string | null;
+  dpu_text: string | null;
+}
+
+async function queryChartExtractions(
+  pool: Pool,
+  opts: PopulateFinancialFactRegistryV1Opts,
+): Promise<ChartExtractionRow[]> {
+  const params: unknown[] = [opts.deal_id];
+  const docFilter = opts.document_id ? `AND va.document_id = $2::uuid` : "";
+  if (opts.document_id) params.push(opts.document_id);
+
+  const { rows } = await pool.query<ChartExtractionRow>(
+    `SELECT
+       va.id::text                                              AS visual_asset_id,
+       va.document_id::text,
+       va.page_index,
+       ve.structured_json,
+       dpu.payload->'structured'->>'segment_key'               AS slide_type,
+       NULL::text                                              AS slide_title,
+       COALESCE(
+         dpu.payload->>'normalized_text',
+         dpu.payload->>'page_text'
+       )                                                       AS dpu_text
+     FROM visual_assets va
+     JOIN visual_extractions ve ON ve.visual_asset_id = va.id
+     JOIN documents d ON d.id = va.document_id
+     LEFT JOIN document_page_understanding dpu
+       ON dpu.document_id = va.document_id
+      AND dpu.page_index  = va.page_index
+     WHERE d.deal_id = $1::uuid
+       AND va.asset_type = 'chart'
+       AND (va.quality_flags->>'axis_mapping_succeeded')::boolean = true
+       ${docFilter}
+     ORDER BY va.document_id, va.page_index
+     LIMIT 20`,
+    params,
+  );
+
+  return rows;
 }
 
 

@@ -133,7 +133,7 @@ export function extractFinancialTableClaims(
       const extracted = tryExtractLineClaim(line, headerPeriods);
       if (!extracted) continue;
 
-      const { rawLabel, value, unit, period_label, confidence, excerpt } =
+      const { rawLabel, value, unit, currency, period_label, confidence, excerpt } =
         extracted;
 
       const metric_key = normalizeMetricKey(rawLabel);
@@ -170,6 +170,7 @@ export function extractFinancialTableClaims(
         period_label,
         value,
         unit,
+        currency,
         confidence,
         reconciliation_status: "unknown",
         page_number: opts.page_number,
@@ -194,9 +195,21 @@ interface ExtractedLineClaim {
   rawLabel: string;
   value: number;
   unit: FinancialFactUnit;
+  currency?: string;
   period_label: string;
   confidence: "high" | "medium" | "low";
   excerpt?: string;
+}
+
+/** Map a leading currency symbol to its ISO 4217 code. */
+export function inferCurrencyCode(token: string): string | undefined {
+  const s = token.trim();
+  if (s.startsWith("$"))  return "USD";
+  if (s.startsWith("€"))  return "EUR";
+  if (s.startsWith("£"))  return "GBP";
+  if (s.startsWith("¥"))  return "JPY";
+  if (s.startsWith("₹"))  return "INR";
+  return undefined;
 }
 
 /**
@@ -264,6 +277,7 @@ function extractFromParts(
       rawLabel,
       value: parsed.value,
       unit: parsed.unit,
+      currency: parsed.unit === "currency" ? inferCurrencyCode(parts[i]) : undefined,
       period_label: period_label ?? "current",
       confidence,
       excerpt: parts.join(" | "),
@@ -278,9 +292,9 @@ function tryInlineExtract(
   line: string,
   headerPeriods: string[],
 ): ExtractedLineClaim | null {
-  // Pattern: "Revenue $1.2M" or "ARR: $2.5M in FY2024"
+  // Pattern: "Revenue $1.2M", "ARR: €2.5M in FY2024", "GTV £3.5M"
   const match = line.match(
-    /\b([A-Za-z][\w\s%-]{2,50}?)\s+(?:of\s+|:\s*)?(\$[\d,.]+[KkMmBbTt]?|\d[\d,.]+\s*[KkMmBbTt]?%?)/
+    /\b([A-Za-z][\w\s%-]{2,50}?)\s+(?:of\s+|:\s*)?([$€£¥₹][\d,.]+[KkMmBbTt]?|\d[\d,.]+\s*[KkMmBbTt]?%?)/
   );
   if (!match) return null;
 
@@ -299,6 +313,7 @@ function tryInlineExtract(
     rawLabel,
     value: parsed.value,
     unit: parsed.unit,
+    currency: parsed.unit === "currency" ? inferCurrencyCode(match[2]) : undefined,
     period_label,
     confidence: "low",
     excerpt: line,

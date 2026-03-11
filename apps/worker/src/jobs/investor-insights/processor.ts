@@ -1141,7 +1141,7 @@ export async function recomputeInsightSlotBody(
 
 	await pool
 		.query<{ id: string; claim_text: string | null }>(
-			`SELECT id, claim_text FROM public.evidence_items WHERE deal_id = $1::uuid LIMIT 50`,
+			`SELECT evidence_id AS id, content_text AS claim_text FROM public.evidence_items WHERE deal_id = $1::uuid LIMIT 50`,
 			[dealId]
 		)
 		.then(({ rows }) => {

@@ -116,7 +116,7 @@ export function buildProductNarrativeBody(inputs: InsightSlotInputs): string | n
 	const PRODUCT_KW_RE =
 		/\b(?:product|platform|solution|technology|we\s+(?:help|build|provide|enable|serve|power)|our\s+(?:platform|product|solution|technology|tool|software)|problem|pain\s+point|customers?|users?|clients?|mission|vision|founded|raises?|builds?)\b/i;
 	const MAX_CHARS = 800;
-	const candidates: NarrativeCandidate[] = [];
+	let dpuCandidates: NarrativeCandidate[] = [];
 
 	for (const page of inputs.dpuPages) {
 		const text = page.text ?? "";
@@ -127,13 +127,39 @@ export function buildProductNarrativeBody(inputs: InsightSlotInputs): string | n
 		if (!PRODUCT_KW_RE.test(text)) continue;
 		const excerpt = text.slice(0, 500).replace(/\s+/g, " ").trim();
 		if (!excerpt || excerpt.length < 30) continue;
-		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
+		dpuCandidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
 	}
 
-	return selectBestNarrativeCandidate(candidates, "product_differentiation", {
-		topN: 3,
-		maxChars: MAX_CHARS,
-	});
+	// Primary path: use ranked DPU page candidates (requires min score threshold)
+	if (dpuCandidates.length > 0) {
+		const result = selectBestNarrativeCandidate(dpuCandidates, "product_differentiation", {
+			topN: 3,
+			maxChars: MAX_CHARS,
+		});
+		if (result) return result;
+	}
+
+	// Fallback: when DPU pages yield no qualifying product narrative (e.g. non-SaaS
+	// deals whose OCR text is too garbled or uses domain-specific vocabulary),
+	// use evidence snippets directly. They are typically cleaner extractions.
+	// Bypass the scoring threshold since these are a last resort.
+	const evidenceParts: string[] = [];
+	for (const ev of inputs.evidenceSnippets) {
+		const text = (ev.claim_text_norm ?? ev.claim_text ?? "").trim();
+		if (text.length < 30) continue;
+		// Skip money-dense snippets (likely financial rows, not narrative)
+		const moneyCount = (text.match(/\$[\d,]/g) ?? []).length;
+		const totalWords = text.split(/\s+/).filter(Boolean).length;
+		if (totalWords > 0 && moneyCount / totalWords >= 0.12) continue;
+		evidenceParts.push(text.slice(0, 300).replace(/\s+/g, " ").trim());
+		if (evidenceParts.length >= 5) break;
+	}
+	if (evidenceParts.length > 0) {
+		const joined = evidenceParts.join(" ").slice(0, MAX_CHARS).trim();
+		if (joined.length >= 30) return joined;
+	}
+
+	return null;
 }
 
 // ─── Shared narrative bundle helper (PR36.9) ─────────────────────────────────
@@ -1055,7 +1081,7 @@ async function loadInsightSlotInputs(
 
 	await pool
 		.query<{ id: string; claim_text: string | null }>(
-			`SELECT id, claim_text FROM public.evidence_items WHERE deal_id = $1::uuid LIMIT 50`,
+			`SELECT evidence_id AS id, content_text AS claim_text FROM public.evidence_items WHERE deal_id = $1::uuid LIMIT 50`,
 			[dealId]
 		)
 		.then(({ rows }) => {

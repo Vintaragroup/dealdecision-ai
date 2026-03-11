@@ -36,6 +36,7 @@ import {
 import {
   parseNumericToken,
   extractPeriodFromText,
+  inferCurrencyCode,
   type ParsedNumeric,
 } from "./extract-financial-table-claims";
 import { normalizeMetricKey } from "./financial-metric-aliases";
@@ -128,7 +129,7 @@ export function extractInlineFinancialClaims(
       const extracted = tryExtractInlineClaim(line);
       if (!extracted) continue;
 
-      const { rawLabel, parsed, period_label, matchStart, matchEnd } = extracted;
+      const { rawLabel, parsed, currency, period_label, matchStart, matchEnd } = extracted;
 
       // ── Noise gate: finance keyword within ±40 chars of numeric match ──────
       const windowStart = Math.max(0, matchStart - 40);
@@ -175,6 +176,7 @@ export function extractInlineFinancialClaims(
         period_label,
         value:         parsed.value,
         unit:          parsed.unit,
+        currency,
         confidence:    "medium",
         reconciliation_status: "unknown",
         page_number:   opts.page_number,
@@ -198,6 +200,7 @@ export function extractInlineFinancialClaims(
 interface InlineClaim {
   rawLabel: string;
   parsed: ParsedNumeric;
+  currency?: string;
   period_label: string;
   /** start index in `line` of the matched numeric token */
   matchStart: number;
@@ -227,6 +230,7 @@ function tryExtractInlineClaim(line: string): InlineClaim | null {
       return {
         rawLabel: "raise amount",   // maps to raise_amount via alias
         parsed,
+        currency: parsed.unit === "currency" ? inferCurrencyCode(valueStr) : undefined,
         period_label,
         matchStart,
         matchEnd,
@@ -254,7 +258,7 @@ function tryExtractInlineClaim(line: string): InlineClaim | null {
         extractPeriodFromText(valuePart) ??
         extractPeriodFromText(line) ??
         "current";
-      return { rawLabel, parsed, period_label, matchStart, matchEnd };
+      return { rawLabel, parsed, currency: parsed.unit === "currency" ? inferCurrencyCode(firstToken) : undefined, period_label, matchStart, matchEnd };
     }
   }
 
@@ -271,7 +275,7 @@ function tryExtractInlineClaim(line: string): InlineClaim | null {
       const matchStart = line.indexOf(valueStr, labelBeforeValue.index ?? 0);
       const matchEnd = matchStart + valueStr.length;
       const period_label = extractPeriodFromText(line) ?? "current";
-      return { rawLabel, parsed, period_label, matchStart, matchEnd };
+      return { rawLabel, parsed, currency: parsed.unit === "currency" ? inferCurrencyCode(valueStr) : undefined, period_label, matchStart, matchEnd };
     }
   }
 
@@ -287,7 +291,7 @@ function tryExtractInlineClaim(line: string): InlineClaim | null {
       const matchStart = line.indexOf(valueStr, valueBeforeLabel.index ?? 0);
       const matchEnd = matchStart + valueStr.length;
       const period_label = extractPeriodFromText(line) ?? "current";
-      return { rawLabel, parsed, period_label, matchStart, matchEnd };
+      return { rawLabel, parsed, currency: parsed.unit === "currency" ? inferCurrencyCode(valueStr) : undefined, period_label, matchStart, matchEnd };
     }
   }
 

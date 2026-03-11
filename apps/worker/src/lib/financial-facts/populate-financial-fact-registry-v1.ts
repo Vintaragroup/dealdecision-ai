@@ -111,6 +111,8 @@ export interface PopulateFinancialFactRegistryV1Result {
   facts_xlsx:           number;
   /** Candidate pages rejected by the detectFinancialTableCandidate guard */
   candidates_rejected:  number;
+  /** Duplicate facts deleted after cross-document dedup (same value+metric+period) */
+  facts_deduplicated:   number;
   errors:               string[];
 }
 
@@ -133,6 +135,7 @@ export async function populateFinancialFactRegistryV1(
     facts_chart:         0,
     facts_xlsx:          0,
     candidates_rejected: 0,
+    facts_deduplicated:  0,
     errors:              [],
   };
 
@@ -336,7 +339,10 @@ export async function populateFinancialFactRegistryV1(
     // ── 7. Upsert ────────────────────────────────────────────────────────────
     const upserted = await upsertFinancialFactsV1(pool, reconciled);
     result.facts_upserted = upserted;
-  } catch (topErr: unknown) {
+    // ── 8. Cross-document value-level dedup ────────────────────────────────────
+    // Delete duplicate facts accumulated across separate per-document runs.
+    // Keeps the lexicographically smallest fact_id (deterministic).
+    result.facts_deduplicated = await deduplicateFactsByValueForDeal(pool, opts.deal_id);  } catch (topErr: unknown) {
     const msg = topErr instanceof Error ? topErr.message : String(topErr);
     result.errors.push(`populate top-level: ${msg}`);
   }
@@ -368,19 +374,37 @@ interface MergeResult {
  * its source_kind rank.  This prevents workbook forecast columns from
  * displacing confirmed actuals.
  *
+ * Sanity pre-filter: facts with implausibly small values for specific currency
+ * metrics (e.g. burn_rate < $1K) are dropped before rank-based selection.
+ *
  * Never downgrades confidence. Returns a new array.
  */
+
+/**
+ * Minimum plausible absolute value (currency unit) per metric.
+ * Facts below this threshold are discarded during merge, regardless of source.
+ */
+const CURRENCY_SANITY_MIN: Record<string, number> = {
+  burn_rate: 1_000,  // $1K/month — below this is implausibly small for any funded company
+};
+
 export function mergeFactsByConfidence(facts: FinancialFactV1[]): MergeResult {
+  // Sanity pre-filter: remove facts with implausibly small currency values.
+  const sanitized = facts.filter((f) => {
+    const min = CURRENCY_SANITY_MIN[f.metric_key];
+    return !(min !== undefined && f.unit === "currency" && Math.abs(f.value) < min);
+  });
+
   // Map key → best fact seen so far (by source rank)
   const best = new Map<string, FinancialFactV1>();
-  let droppedCount = 0;
+  let droppedCount = facts.length - sanitized.length; // count sanity-filtered as dropped
 
   const isRealizedScope = (scope: string | undefined) =>
     scope === "historical" || scope === "current";
   const isProjectedScopeLocal = (scope: string | undefined) =>
     scope === "projected" || scope === "scenario" || scope === "target";
 
-  for (const fact of facts) {
+  for (const fact of sanitized) {
     const key = `${fact.metric_key}:${fact.period_label}`;
     const existing = best.get(key);
 
@@ -440,12 +464,49 @@ function emitExpansionSummary(
       facts_derived:         result.facts_derived,
       facts_upserted:        result.facts_upserted,
       facts_merged_dropped:  result.facts_merged,
+      facts_deduplicated:    result.facts_deduplicated,
       errors:                result.errors.length,
     }),
   );
 }
 
 // ─── DB helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * Delete duplicate financial facts for a deal that share the same
+ * (metric_key, period_label, value, source_kind). Keeps the lexicographically
+ * smallest fact_id (deterministic).
+ *
+ * This handles cross-document duplicates: when the same document is uploaded
+ * twice or when two documents contain the same KPI tile, separate populate runs
+ * insert two identical facts with different fact_ids. This cleanup removes the
+ * extra copy.
+ *
+ * Returns the number of rows deleted.
+ */
+async function deduplicateFactsByValueForDeal(pool: Pool, deal_id: string): Promise<number> {
+  try {
+    const result = await pool.query(
+      `DELETE FROM financial_facts_v1
+       USING (
+         SELECT fact_id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY deal_id, metric_key, period_label, value::text, source_kind
+                  ORDER BY fact_id
+                ) AS rn
+         FROM financial_facts_v1
+         WHERE deal_id = $1
+       ) ranked
+       WHERE financial_facts_v1.fact_id = ranked.fact_id
+         AND financial_facts_v1.deal_id = $1
+         AND ranked.rn > 1`,
+      [deal_id],
+    );
+    return result.rowCount ?? 0;
+  } catch {
+    return 0;
+  }
+}
 
 interface CandidatePageRow {
   page_id: string;

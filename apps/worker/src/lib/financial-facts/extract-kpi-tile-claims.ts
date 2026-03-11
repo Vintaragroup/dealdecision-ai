@@ -115,6 +115,39 @@ const CURRENCY_METRIC_KEYS = new Set([
   "burn_rate", "gross_profit", "ebitda", "cash", "cac", "ltv", "arpu",
 ]);
 
+// ─── Context-level guards ─────────────────────────────────────────────────────
+
+/**
+ * Matches segments describing customer examples, use cases, scenarios, or
+ * hypothetical economics — NOT company-level financial facts.
+ *
+ * When matched, the segment is skipped so that "example merchant ARR $7K"
+ * or "use case: $40K MRR per merchant" never pollute company-level facts.
+ */
+const EXAMPLE_CONTEXT_RE =
+  /\b(?:use[\s-]case|use_case|scenario|hypothetical|illustrative|case\s+study|sample\s+(?:merchant|customer|client|scenario|economics)|merchant\s+example|customer\s+example|fi\s+example|institution\s+example|example\s+(?:economics|customer|merchant|client|institution))\b/i;
+
+/**
+ * Matches market-size projection phrases: "Per SAM ARR", "% of SOM", "SAM ARR".
+ * Applied only to revenue/ARR/MRR/GTV/GMV — these are market-capture projections,
+ * not current company traction metrics.
+ */
+const MARKET_PROJECTION_RE =
+  /\bper\s+(?:sam|som|tam)\b|%\s*of\s+(?:tam|sam|som)\b|\bsam\s+arr\b|\bsom\s+arr\b|\bsam\s+mrr\b|\bsom\s+mrr\b/i;
+
+/** Revenue/ARR/MRR/GTV/GMV — suppressed when MARKET_PROJECTION_RE matches the segment. */
+const MARKET_PROJECTION_SENSITIVE_KEYS = new Set(["arr", "mrr", "revenue", "gtv", "gmv"]);
+
+/**
+ * Returns true when `text` contains cue words indicating the content describes
+ * a customer example, use case, scenario, or hypothetical — NOT company metrics.
+ *
+ * Exported for testing and reuse by sibling extractors.
+ */
+export function isExampleOrScenarioContext(text: string): boolean {
+  return EXAMPLE_CONTEXT_RE.test(text);
+}
+
 // ─── Value token extraction ───────────────────────────────────────────────────
 
 /**
@@ -237,9 +270,21 @@ export function extractKpiTileClaims(
       const wordCount = segment.trim().split(/\s+/).length;
       if (wordCount > 20) continue;
 
+      // Guard: skip example/use-case/scenario segments — describes hypothetical
+      // or customer-level economics, not company traction.
+      if (isExampleOrScenarioContext(segment)) continue;
+
       // ── Step 1: find the metric in this segment ──────────────────────────
       const matchedMetric = findMetricInText(segment);
       if (!matchedMetric) continue;
+
+      // Guard: skip market-size projection context for revenue/ARR/MRR/GTV/GMV.
+      // "Per SAM ARR", "% of SOM", "SOM ARR" are market-capture projections,
+      // not company traction metrics.
+      if (
+        MARKET_PROJECTION_SENSITIVE_KEYS.has(matchedMetric.key) &&
+        MARKET_PROJECTION_RE.test(segment)
+      ) continue;
 
       // ── Step 2: find and pick best value token ───────────────────────────
       const valueTokens = extractValueTokens(segment);
@@ -337,4 +382,4 @@ export function extractKpiTileClaims(
 
 // ─── Exported internals (for testing) ────────────────────────────────────────
 
-export { findMetricInText, isYearLike, KNOWN_KPI_METRIC_KEYS, SUPPRESSED_SLIDE_TYPES };
+export { findMetricInText, isYearLike, KNOWN_KPI_METRIC_KEYS, SUPPRESSED_SLIDE_TYPES, MARKET_PROJECTION_SENSITIVE_KEYS };

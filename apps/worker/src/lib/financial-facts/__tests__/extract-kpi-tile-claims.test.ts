@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { extractKpiTileClaims, findMetricInText, isYearLike, SUPPRESSED_SLIDE_TYPES } from "../extract-kpi-tile-claims";
+import { extractKpiTileClaims, findMetricInText, isYearLike, SUPPRESSED_SLIDE_TYPES, isExampleOrScenarioContext } from "../extract-kpi-tile-claims";
 
 const BASE_OPTS = {
   deal_id:     "test-deal-id",
@@ -429,5 +429,150 @@ describe("SUPPRESSED_SLIDE_TYPES", () => {
     expect(SUPPRESSED_SLIDE_TYPES.has("traction")).toBe(false);
     expect(SUPPRESSED_SLIDE_TYPES.has("financials")).toBe(false);
     expect(SUPPRESSED_SLIDE_TYPES.has("market")).toBe(false);
+  });
+});
+
+// ─── Example / use-case context suppression ───────────────────────────────────
+
+describe("extractKpiTileClaims — example/use-case suppression", () => {
+  it("rejects segment containing 'customer example'", () => {
+    const facts = extractKpiTileClaims("Customer example ARR: $7K", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("rejects 'use case' segment", () => {
+    const facts = extractKpiTileClaims("Use case: $40K MRR per merchant", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("rejects 'use-case' (hyphen) segment", () => {
+    const facts = extractKpiTileClaims("Use-case revenue $2M", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("rejects 'scenario' segment", () => {
+    const facts = extractKpiTileClaims("Sample scenario revenue $2M", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("rejects 'hypothetical' segment", () => {
+    const facts = extractKpiTileClaims("Hypothetical ARR: $500K", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("rejects 'merchant example' segment", () => {
+    const facts = extractKpiTileClaims("Merchant example MRR: $4K", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("rejects 'case study' segment", () => {
+    const facts = extractKpiTileClaims("Case study: $3M revenue", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("rejects 'sample merchant' segment", () => {
+    const facts = extractKpiTileClaims("Sample merchant revenue $7,000", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("does NOT suppress normal company context", () => {
+    const facts = extractKpiTileClaims("$40K MRR", BASE_OPTS);
+    expect(facts).toHaveLength(1);
+  });
+
+  it("does NOT suppress when 'example' appears as part of a company name suffix", () => {
+    // "Inc ARR: $3M" — no match → extracted
+    const facts = extractKpiTileClaims("Acme Inc ARR: $3M", BASE_OPTS);
+    expect(facts).toHaveLength(1);
+  });
+});
+
+// ─── Market-size projection suppression ──────────────────────────────────────
+
+describe("extractKpiTileClaims — market projection suppression", () => {
+  it("rejects 'Per SAM ARR' segment", () => {
+    const facts = extractKpiTileClaims("$7,000 Per SAM ARR", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("rejects 'Per SOM ARR' segment", () => {
+    const facts = extractKpiTileClaims("$7,000 Per SOM ARR", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("rejects '% of SOM revenue' segment", () => {
+    const facts = extractKpiTileClaims("$2M revenue 8% of SOM", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("rejects 'SAM ARR' market header segment", () => {
+    const facts = extractKpiTileClaims("SAM ARR $118M", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("rejects 'SOM MRR' segment for mrr", () => {
+    const facts = extractKpiTileClaims("SOM MRR $499", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("does NOT suppress merchant_count (non-sensitive key) in market context", () => {
+    // merchant_count is not in MARKET_PROJECTION_SENSITIVE_KEYS, so not suppressed
+    const facts = extractKpiTileClaims("10,000 merchants", BASE_OPTS);
+    expect(facts[0]?.metric_key).toBe("merchant_count");
+  });
+
+  it("does NOT suppress retention_pct in market context", () => {
+    // retention_pct is not revenue/ARR/MRR/GTV/GMV
+    const facts = extractKpiTileClaims("85% retention", BASE_OPTS);
+    expect(facts[0]?.metric_key).toBe("retention_pct");
+  });
+});
+
+// ─── isExampleOrScenarioContext ───────────────────────────────────────────────
+
+describe("isExampleOrScenarioContext", () => {
+  it("returns true for 'customer example'", () => {
+    expect(isExampleOrScenarioContext("customer example revenue")).toBe(true);
+  });
+
+  it("returns true for 'use case'", () => {
+    expect(isExampleOrScenarioContext("Use case: $40K MRR")).toBe(true);
+  });
+
+  it("returns true for 'use-case' (hyphen)", () => {
+    expect(isExampleOrScenarioContext("use-case metric $2M")).toBe(true);
+  });
+
+  it("returns true for 'scenario'", () => {
+    expect(isExampleOrScenarioContext("scenario revenue $2M")).toBe(true);
+  });
+
+  it("returns true for 'hypothetical'", () => {
+    expect(isExampleOrScenarioContext("hypothetical ARR $500K")).toBe(true);
+  });
+
+  it("returns true for 'merchant example'", () => {
+    expect(isExampleOrScenarioContext("Merchant example MRR $499")).toBe(true);
+  });
+
+  it("returns true for 'case study'", () => {
+    expect(isExampleOrScenarioContext("Case study: $3M revenue")).toBe(true);
+  });
+
+  it("returns true for 'sample merchant'", () => {
+    expect(isExampleOrScenarioContext("sample merchant ARR")).toBe(true);
+  });
+
+  it("returns false for normal traction language", () => {
+    expect(isExampleOrScenarioContext("$40K MRR growing 20% MoM")).toBe(false);
+  });
+
+  it("returns false for company context language", () => {
+    expect(isExampleOrScenarioContext("Current ARR: $3M across 10,000 merchants")).toBe(false);
+  });
+
+  it("returns false for standalone 'example' not followed by context noun", () => {
+    // "Acme Inc" — "example" not present → false
+    expect(isExampleOrScenarioContext("Acme Inc ARR: $3M")).toBe(false);
   });
 });

@@ -81,6 +81,20 @@ const KNOWN_INLINE_METRIC_KEYS = new Set<string>([
 const FINANCE_KW_PATTERN =
   /\b(revenue|arr|mrr|burn|runway|gross|ebitda|cogs|valuation|raise|raising|raised|seed|series|forecast|opex|margin|invest|gmv|nrr|churn|retention|ltv|cac|arpu|headcount|funding|capital|cash|profit|loss|income|cost|salary|expense|expense|salary)\b/i;
 
+/**
+ * Matches example/scenario context lines — same semantics as the kpi_tile extractor.
+ * Prevents customer/portfolio example economics from becoming company-level facts.
+ */
+const EXAMPLE_CONTEXT_RE =
+  /\b(?:use[\s-]case|use_case|scenario|hypothetical|illustrative|case\s+study|sample\s+(?:merchant|customer|client|scenario|economics)|merchant\s+example|customer\s+example|fi\s+example|institution\s+example|example\s+(?:economics|customer|merchant|client|institution))\b/i;
+
+/** Market-size projection phrases — see extract-kpi-tile-claims.ts for rationale. */
+const MARKET_PROJECTION_RE =
+  /\bper\s+(?:sam|som|tam)\b|%\s*of\s+(?:tam|sam|som)\b|\bsam\s+arr\b|\bsom\s+arr\b|\bsam\s+mrr\b|\bsom\s+mrr\b/i;
+
+/** Metric keys suppressed when a market-projection context is detected. */
+const MARKET_PROJECTION_SENSITIVE_KEYS = new Set(["arr", "mrr", "revenue", "gtv", "gmv"]);
+
 // ─── Public types ─────────────────────────────────────────────────────────────
 
 export interface ExtractInlineFinancialClaimsOpts {
@@ -142,6 +156,19 @@ export function extractInlineFinancialClaims(
 
       // Discard if key is not in the known set (would be a fallback slug)
       if (!KNOWN_INLINE_METRIC_KEYS.has(metric_key)) continue;
+
+      // Guard: skip example/use-case/scenario lines — customer/portfolio examples
+      // should not contribute company-level facts.
+      if (EXAMPLE_CONTEXT_RE.test(line)) continue;
+
+      // Guard: skip market-size projection context for revenue/ARR/MRR/GTV/GMV.
+      // "Per SAM ARR", "% of SOM" etc. are market-capture projections, not traction.
+      if (MARKET_PROJECTION_SENSITIVE_KEYS.has(metric_key) && MARKET_PROJECTION_RE.test(line)) continue;
+
+      // Guard: burn_rate requires an explicit "burn" keyword in the line.
+      // Prevents labels like "Monthly Cash Out" from aliasing to burn_rate
+      // without clear burn context.
+      if (metric_key === "burn_rate" && !/\bburn\b/i.test(line)) continue;
 
       const period_type: FinancialFactPeriodType =
         period_label === "current" ? "unknown" : inferPeriodType(period_label);

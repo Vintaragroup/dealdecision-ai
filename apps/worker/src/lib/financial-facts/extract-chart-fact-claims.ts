@@ -53,11 +53,60 @@ import { extractPeriodFromText } from "./extract-financial-table-claims";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Minimum absolute value to be considered a financial quantity (filters pixel residuals). */
+/** Minimum absolute value to be considered a financial quantity (after scaling). */
 const MIN_FINANCIAL_VALUE = 1_000;
 
 /** Maximum facts to emit per chart (safety cap). */
 const MAX_CLAIMS_PER_CHART = 8;
+
+// ─── Scale unit detection ─────────────────────────────────────────────────────
+
+/**
+ * Detect the scale multiplier from any chart text (title, y_unit, series name,
+ * axis labels, nearby OCR text).
+ *
+ * Returns null when no unambiguous scale signal is found — callers should skip
+ * the chart to avoid writing wrongly-scaled values.
+ *
+ * Returns { multiplier: 1, unit: "percent" } for % charts — callers should
+ * also skip because percent values never exceed MIN_FINANCIAL_VALUE.
+ */
+export function detectChartScaleUnit(
+  text: string,
+): { multiplier: number; unit: "currency" | "percent" } | null {
+  const t = text.toLowerCase().trim();
+  if (!t) return null;
+
+  // Percent — evaluated first so "$%" or "pcnt" don't fall through to currency
+  if (/\bpercent\b|\bpct\b|\bpercentage\b|[\s(]%|^%/.test(t) || t === "%") {
+    return { multiplier: 1, unit: "percent" };
+  }
+
+  // Billion: $B, $Bn, billions, (B), "in billions"
+  if (/\$\s*b(?:n|ill)?\b|\bbillion[s]?\b|\(\s*b\s*\)|\bin\s+billion/.test(t)) {
+    return { multiplier: 1_000_000_000, unit: "currency" };
+  }
+
+  // Million: $M, $MM, millions, (M), "in millions", "($ millions)"
+  if (/\$\s*m{1,3}\b|\bmillion[s]?\b|\(\s*m\s*\)|\bin\s+million|\(\s*\$\s*m\s*\)/.test(t)) {
+    return { multiplier: 1_000_000, unit: "currency" };
+  }
+
+  // Thousand: $K, thousands, (K), "in thousands"
+  if (/\$\s*k\b|\bthousand[s]?\b|\(\s*k\s*\)|\bin\s+thousand/.test(t)) {
+    return { multiplier: 1_000, unit: "currency" };
+  }
+
+  // Bare single-character unit strings (e.g. y_unit="M", unit="k", label="B")
+  // Only match when the full candidate text is a very short unit token.
+  if (t.length <= 4) {
+    if (/^[($]*b[)$]*$/.test(t)) return { multiplier: 1_000_000_000, unit: "currency" };
+    if (/^[($]*m[)$]*$/.test(t)) return { multiplier: 1_000_000, unit: "currency" };
+    if (/^[($]*k[)$]*$/.test(t)) return { multiplier: 1_000, unit: "currency" };
+  }
+
+  return null;
+}
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -87,8 +136,11 @@ export interface ExtractChartFactClaimsOpts {
 export function inferChartMetricKey(
   slide_type: string | undefined,
   dpu_text: string | undefined,
+  chart_title?: string | null,
 ): string | null {
-  const text = (dpu_text ?? "").toLowerCase().slice(0, 1_000);
+  // Prepend chart title so explicit labels ("Revenue ($M)") beat fuzzy DPU text
+  const titlePart = chart_title ? chart_title.toLowerCase() + " " : "";
+  const text = (titlePart + (dpu_text ?? "").toLowerCase().slice(0, 1_000)).trim();
 
   // Prioritised candidates — checked in order; first match wins
   const CANDIDATES: Array<{ key: string; pats: RegExp[] }> = [
@@ -145,9 +197,27 @@ export function extractChartFactClaims(
     if (!Array.isArray(values) || values.length < 2) return [];
 
     const xLabels = Array.isArray(chart.x_labels) ? chart.x_labels as unknown[] : [];
+    const chartTitle = typeof chart.title === "string" ? chart.title : null;
+
+    // ── Scale unit detection ─────────────────────────────────────────────────
+    // Combine all available text signals in priority order: y_unit, series unit,
+    // series name, chart title, leading DPU text, x_labels.
+    const scaleTexts = [
+      typeof chart.y_unit === "string" ? chart.y_unit : "",
+      typeof s0.unit     === "string" ? s0.unit     : "",
+      typeof s0.name     === "string" ? s0.name     : "",
+      chartTitle ?? "",
+      (opts.dpu_text ?? "").slice(0, 300),
+      xLabels.filter((l): l is string => typeof l === "string").join(" "),
+    ].filter(Boolean).join(" ");
+
+    const scaleResult = detectChartScaleUnit(scaleTexts);
+    // Skip chart if no scale unit found or if it shows percentages
+    if (!scaleResult || scaleResult.unit === "percent") return [];
+    const { multiplier } = scaleResult;
 
     // ── Metric key inference ─────────────────────────────────────────────────
-    const metric_key = inferChartMetricKey(opts.slide_type, opts.dpu_text);
+    const metric_key = inferChartMetricKey(opts.slide_type, opts.dpu_text, chartTitle);
     if (!metric_key) return [];
 
     // ── Per-bar extraction ───────────────────────────────────────────────────
@@ -159,8 +229,11 @@ export function extractChartFactClaims(
       const rawVal = values[i];
       if (typeof rawVal !== "number" || !Number.isFinite(rawVal)) continue;
 
-      // Skip values below the financial threshold (pixel residuals, unit errors)
-      if (Math.abs(rawVal) < MIN_FINANCIAL_VALUE) continue;
+      // Apply axis scale (e.g. $M → ×1_000_000)
+      const scaledVal = rawVal * multiplier;
+
+      // Skip values below the financial threshold after scaling
+      if (Math.abs(scaledVal) < MIN_FINANCIAL_VALUE) continue;
 
       // Require a parseable time period from the x_label
       const xLabel = typeof xLabels[i] === "string" ? (xLabels[i] as string).trim() : "";
@@ -192,14 +265,14 @@ export function extractChartFactClaims(
         metric_key,
         period_type,
         period_label,
-        value:       rawVal,
+        value:       scaledVal,
         unit:        "currency",
         confidence:  "low",
         reconciliation_status: "unknown",
         page_number: opts.page_number,
         source_pointer,
         excerpt:     capFactExcerpt(
-          `chart_bar[${i}] x="${xLabel}" value=${rawVal} metric=${metric_key}`,
+          `chart_bar[${i}] x="${xLabel}" raw=${rawVal} scale=${multiplier} value=${scaledVal} metric=${metric_key}`,
         ),
         slide_type:  opts.slide_type,
         slide_title: opts.slide_title,

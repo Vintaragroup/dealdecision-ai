@@ -27,6 +27,7 @@ export type FinancialFactSourceKind =
   | "xlsx"
   | "pdf_table"
   | "pdf_kpi_line"
+  | "kpi_tile"
   | "chart_pixel"
   | "deck"
   | "unknown";

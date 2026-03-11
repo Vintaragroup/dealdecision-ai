@@ -40,6 +40,7 @@ import {
   extractChartFactClaims,
   inferChartMetricKey,
 } from "./extract-chart-fact-claims";
+import { extractKpiTileClaims } from "./extract-kpi-tile-claims";
 import { reconcileFinancialFactsV1 } from "./reconcile-financial-facts-v1";
 import {
   applySlideAwareness,
@@ -66,6 +67,7 @@ const SOURCE_KIND_RANK: Record<string, number> = {
   pdf_table:    4,
   xlsx:         3,
   pdf_kpi_line: 2,
+  kpi_tile:     2,
   deck:         1,
   chart_pixel:  1,
   unknown:      0,
@@ -101,6 +103,8 @@ export interface PopulateFinancialFactRegistryV1Result {
   facts_inline:         number;
   /** Facts dropped by confidence-based dedup (lower-rank duplicate removed) */
   facts_merged:         number;
+  /** Facts tagged source_kind="kpi_tile" (KPI tile callout extraction) */
+  facts_kpi:            number;
   /** Facts tagged source_kind="chart_pixel" (bar chart pixel extraction) */
   facts_chart:          number;
   /** Facts tagged source_kind="xlsx" (only when xlsx_doc=true) */
@@ -124,6 +128,7 @@ export async function populateFinancialFactRegistryV1(
     facts_upserted:      0,
     pages_expanded:      0,
     facts_inline:        0,
+    facts_kpi:           0,
     facts_merged:        0,
     facts_chart:         0,
     facts_xlsx:          0,
@@ -229,16 +234,28 @@ export async function populateFinancialFactRegistryV1(
           slide_title: slideCtx.slide_title ?? undefined,
         });
 
+        // ── 4c. Extract: KPI tile claims ─────────────────────────────────────
+        const kpiExtracted = extractKpiTileClaims(text, {
+          deal_id:     opts.deal_id,
+          document_id: pageRow.document_id,
+          page_number: pageRow.page_index,
+          page_id:     pageRow.page_id,
+          slide_type:  slideCtx.slide_type ?? undefined,
+          slide_title: slideCtx.slide_title ?? undefined,
+        });
+
         // ── 4a. Apply slide-aware confidence adjustments ─────────────────────
         const tableAware  = applySlideAwareness(tableExtracted,  slideCtx.slide_type, slideCtx.slide_title);
         const inlineAware = applySlideAwareness(inlineExtracted, slideCtx.slide_type, slideCtx.slide_title);
+        const kpiAware    = applySlideAwareness(kpiExtracted,    slideCtx.slide_type, slideCtx.slide_title);
 
-        const pageFacts = [...tableAware, ...inlineAware];
+        const pageFacts = [...tableAware, ...inlineAware, ...kpiAware];
         if (pageFacts.length === 0) continue;
 
         result.pages_with_data++;
         result.facts_extracted += tableAware.length;
         result.facts_inline    += inlineAware.length;
+        result.facts_kpi       += kpiAware.length;
 
         // Guard: log warning when xlsx_doc is set but a table fact has no source_kind
         if (opts.xlsx_doc) {
@@ -416,6 +433,7 @@ function emitExpansionSummary(
       candidates_rejected:   result.candidates_rejected,
       facts_extracted_table: result.facts_extracted,
       facts_extracted_inline:result.facts_inline,
+      facts_kpi:             result.facts_kpi,
       facts_chart:           result.facts_chart,
       facts_xlsx:            result.facts_xlsx,
       facts_after_merge:     result.facts_upserted + result.facts_merged,

@@ -118,6 +118,7 @@ import { type GovernedSkip } from "./stages/governed-skip";
 import { XLSX_DPU_USEFUL_HEURISTIC_VERSION } from "./stages/_shared";
 import { resolveOverviewFallbacksV1 } from "./stages/deterministic-slot-fallback-v1.js";
 import { runExternalDiligenceV1, buildExternalDiligenceRenderSection } from "./external-diligence/external-diligence-v1";
+import { computeLimitedScoringV1, buildLimitedScoringSection } from "./limited-scoring-v1";
 
 // ─── Binding constants ─────────────────────────────────────────────────────────
 
@@ -285,9 +286,13 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		]);
 		const insightSlotsSections = buildInsightSlotsSections(dealId, insightSlotInputs);
 		const phase2Sections = buildPhase2Sections(insightSlotInputs);
+		const thesisInputsForScoring = buildThesisInputs(insightSlotInputs);
 		const thesisSection = g3OnlyFail
-			? buildInvestorThesisStubSection(buildThesisInputs(insightSlotInputs))
+			? buildInvestorThesisStubSection(thesisInputsForScoring)
 			: null;
+		const limitedScoringSection = buildLimitedScoringSection(
+			computeLimitedScoringV1(thesisInputsForScoring, insightSlotInputs)
+		);
 		const nm = normMetricsFromInputs(insightSlotInputs);
 		const fusionResult = fuseDealCanonicalFacts(
 			insightSlotInputs.dpuPages, insightSlotInputs.evidenceSnippets, previousFusedFacts
@@ -297,6 +302,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			? buildG3OnlyFailSections(gateState, coverage, insightSlotsSections, phase2Sections, thesisSection, nm)
 			: buildGateFailedSections(gateState, coverage, insightSlotsSections, phase2Sections, nm);
 		sections.push(fusionSection);
+		sections.push(limitedScoringSection);
 
 		// Append diagnostics for any structural G3 failure (QUERY_FAILED is excluded
 		// since it indicates a DB problem, not a readability one).
@@ -568,7 +574,11 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		]);
 		const insightSlotsSections = buildInsightSlotsSections(dealId, insightSlotInputs);
 		const phase2Sections = buildPhase2Sections(insightSlotInputs);
-		const thesisSection = buildInvestorThesisStubSection(buildThesisInputs(insightSlotInputs));
+		const thesisInputsForScoring = buildThesisInputs(insightSlotInputs);
+		const thesisSection = buildInvestorThesisStubSection(thesisInputsForScoring);
+		const limitedScoringSection = buildLimitedScoringSection(
+			computeLimitedScoringV1(thesisInputsForScoring, insightSlotInputs)
+		);
 		const fusionResult = fuseDealCanonicalFacts(
 			insightSlotInputs.dpuPages, insightSlotInputs.evidenceSnippets, previousFusedFacts
 		);
@@ -579,6 +589,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			normMetricsFromInputs(insightSlotInputs)
 		);
 		sections.push(fusionSection);
+		sections.push(limitedScoringSection);
 
 		// PR34: LLM interpretation with evidence caveat (evidence gate failed — limited coverage).
 		// Non-fatal: runs best-effort and is a no-op when LLM is unavailable.
@@ -789,7 +800,11 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	]);
 	const insightSlotsSections = buildInsightSlotsSections(dealId, insightSlotInputs);
 	const phase2Sections = buildPhase2Sections(insightSlotInputs);
-	const thesisSection = buildInvestorThesisStubSection(buildThesisInputs(insightSlotInputs));
+	const thesisInputsForScoring = buildThesisInputs(insightSlotInputs);
+	const thesisSection = buildInvestorThesisStubSection(thesisInputsForScoring);
+	const limitedScoringSection = buildLimitedScoringSection(
+		computeLimitedScoringV1(thesisInputsForScoring, insightSlotInputs)
+	);
 	const fusionResult = fuseDealCanonicalFacts(
 		insightSlotInputs.dpuPages, insightSlotInputs.evidenceSnippets, previousFusedFacts
 	);
@@ -848,6 +863,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		sections.push(productProfileSection);
 	}
 	sections.push(fusionSection);
+	sections.push(limitedScoringSection);
 
 	// PR34: LLM interpretation (no caveat — evidence gate passed, full coverage).
 	// Prepended as the first section so it renders at the top of the decision surface.

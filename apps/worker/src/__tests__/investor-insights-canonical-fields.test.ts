@@ -323,6 +323,24 @@ describe("Stage 2 – Canonical Fields: market_claims + traction_signal", () => 
 		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
 		expect(cf.body).toMatch(/field=customer_count \| computability=Computable/);
 	});
+
+	// Regression: Qredible $1,582,164 MRR was falsely detected as customer count
+	// because CUSTOMER_COUNT_PATTERN matched "582,164 Client" (mid-dollar-amount).
+	it("customer_count is NOT misidentified when DPU contains '$1,582,164 Client HQ MRR'", async () => {
+		mockPool = makeSinglePagePool(
+			"Client MRR: $1,582,164 Client HQ MRR as of Q3 2024. Monthly recurring revenue from enterprise plan."
+		);
+
+		await generateInvestorInsightsProcessor(makeJob());
+		const pkg = getInsertedRenderPkg();
+
+		const cf = pkg.sections.find((s: any) => s.key === "canonical_fields");
+		const customerLine = (cf.body as string)
+			.split("\n")
+			.find((l: string) => l.includes("field=customer_count"));
+		// customer_count should NOT be detected — the digits belong to a dollar amount
+		expect(customerLine).toMatch(/computability=NotComputable/);
+	});
 });
 
 // ── Tests: use_of_funds ────────────────────────────────────────────────────────

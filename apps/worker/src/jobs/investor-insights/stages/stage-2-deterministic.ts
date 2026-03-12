@@ -115,6 +115,10 @@ export { deriveFinancialFactsV1 };
 export function buildProductNarrativeBody(inputs: InsightSlotInputs): string | null {
 	const PRODUCT_KW_RE =
 		/\b(?:product|platform|solution|technology|we\s+(?:help|build|provide|enable|serve|power)|our\s+(?:platform|product|solution|technology|tool|software)|problem|pain\s+point|customers?|users?|clients?|mission|vision|founded|raises?|builds?)\b/i;
+	// Detect slides that are primarily forward-looking (projection/forecast/target):
+	// these pages should be labeled so the LLM does not treat figures as current actuals.
+	const PROJECTION_PAGE_RE =
+		/\b(?:forecast(?:ed)?|projection|projected|pro[\s-]?forma|budget(?:ed)?|plan(?:ned)?|expected|estimated|guidance|target(?:\s+revenue)?|2026|2027|2028|fy2[5-9]|fy\s*2[5-9])\b/i;
 	const MAX_CHARS = 800;
 	let dpuCandidates: NarrativeCandidate[] = [];
 
@@ -125,8 +129,12 @@ export function buildProductNarrativeBody(inputs: InsightSlotInputs): string | n
 		const totalWords = text.split(/\s+/).filter(Boolean).length;
 		if (totalWords > 0 && moneyCount / totalWords >= 0.12) continue;
 		if (!PRODUCT_KW_RE.test(text)) continue;
-		const excerpt = text.slice(0, 500).replace(/\s+/g, " ").trim();
+		let excerpt = text.slice(0, 500).replace(/\s+/g, " ").trim();
 		if (!excerpt || excerpt.length < 30) continue;
+		// Label projection slides so the LLM doesn't treat figures as current actuals.
+		if (PROJECTION_PAGE_RE.test(text)) {
+			excerpt = `[PROJECTED DATA] ${excerpt}`;
+		}
 		dpuCandidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
 	}
 
@@ -2156,8 +2164,10 @@ const REVENUE_VALUE_PATTERN =
 const GROWTH_RATE_PATTERN =
 	/(?:growing|growth(?:\s+rate)?(?:\s+of)?)\s+\d+%|\b\d+%\s+(?:month\s+over\s+month|MoM\b|YoY\b|year\s+over\s+year|annually)/i;
 
-/** customer_count: explicit count followed by customers/users/clients */
-const CUSTOMER_COUNT_PATTERN = /\b(\d[\d,]+)\s+(?:customers?|active\s+users?|clients?)\b/i;
+/** customer_count: explicit count followed by customers/users/clients.
+ * Negative lookbehind (?<![\$\d,]) prevents matching mid-dollar-amount digits
+ * (e.g. "1,582,164" inside "$1,582,164 Client HQ MRR") as a customer count. */
+const CUSTOMER_COUNT_PATTERN = /(?<![\$\d,])\b(\d[\d,]+)\s+(?:customers?|active\s+users?|clients?)\b/i;
 
 // ── Phase 2 types ────────────────────────────────────────────────────────────
 

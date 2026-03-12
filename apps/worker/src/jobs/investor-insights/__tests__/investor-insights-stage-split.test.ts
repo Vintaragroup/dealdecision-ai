@@ -215,6 +215,48 @@ describe("PR17.6 stage split — stage-2 deterministic", () => {
 	it("buildProductNarrativeBody returns null when no pages", () => {
 		expect(buildProductNarrativeBody(makeEmptyInputs())).toBeNull();
 	});
+
+	// Regression: projection slides should be labeled so the LLM does not
+	// treat projected revenue figures as current actuals (Palm temporal scope fix).
+	it("buildProductNarrativeBody prefixes projection slides with [PROJECTED DATA]", () => {
+		const inputs = makeEmptyInputs();
+		// Text must: (1) pass PRODUCT_KW_RE, (2) stay below 12% money density,
+		// (3) score ≥8 in narrative ranking, AND (4) contain a projection keyword.
+		// Using rich product narrative text with "Projected" to ensure [PROJECTED DATA] prefix.
+		const projText =
+			"Projected: Our platform helps enterprise customers solve the problem of inefficient supply chains. " +
+			"We build technology that enables teams to collaborate. Our solution provides unique differentiation " +
+			"through proprietary machine learning. Founded by experienced operators with proven product vision. " +
+			"Forecast growth driven by customer-led expansion across verticals.";
+		inputs.dpuPages = [
+			{
+				document_id: "doc-001",
+				page_index: 0,
+				text: projText,
+				text_raw: projText,
+				norm_events_count: 0,
+			},
+		];
+		const body = buildProductNarrativeBody(inputs);
+		expect(body).not.toBeNull();
+		expect(body).toContain("[PROJECTED DATA]");
+	});
+
+	it("buildProductNarrativeBody does NOT prefix non-projection slides", () => {
+		const inputs = makeEmptyInputs();
+		inputs.dpuPages = [
+			{
+				document_id: "doc-001",
+				page_index: 0,
+				text: "Our platform serves 1200 customers across healthcare and finance verticals. Product is live.",
+				text_raw: "Our platform serves 1200 customers across healthcare and finance verticals. Product is live.",
+				norm_events_count: 0,
+			},
+		];
+		const body = buildProductNarrativeBody(inputs);
+		expect(body).not.toBeNull();
+		expect(body).not.toContain("[PROJECTED DATA]");
+	});
 });
 
 describe("PR17.6 stage split — stage-4 render package", () => {

@@ -38,6 +38,12 @@ export interface GovernedSummaryV1 {
 	open_questions: string[];
 	/** True when numeric-parity validation passed. */
 	validated: boolean;
+	/**
+	 * IDs of evidence_items records that were available as inputs when this
+	 * summary was generated. Populated deterministically after LLM generation;
+	 * omitted when no evidence snippets were available.
+	 */
+	evidence_refs?: string[];
 }
 
 export interface GovernedSummaryArgs {
@@ -735,6 +741,12 @@ export function serializeGovernedSummaryBody(value: GovernedSummaryV1): string {
 	if (value.open_questions.length > 0) {
 		lines.push(`Open Questions`);
 		value.open_questions.forEach((q) => lines.push(`• ${q}`));
+		lines.push("");
+	}
+
+	if (value.evidence_refs && value.evidence_refs.length > 0) {
+		lines.push(`Evidence References`);
+		lines.push(value.evidence_refs.join(", "));
 		lines.push("");
 	}
 

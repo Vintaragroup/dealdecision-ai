@@ -48,6 +48,8 @@ import {
   computeFactId,
   capFactExcerpt,
   inferPeriodType,
+  classifyTemporalScope,
+  extractYearFromLabel,
 } from "@dealdecision/core";
 import { extractPeriodFromText } from "./extract-financial-table-claims";
 
@@ -242,6 +244,17 @@ export function extractChartFactClaims(
 
       const period_type: FinancialFactPeriodType = inferPeriodType(period_label);
 
+      // Classify temporal scope from period year + surrounding text signals.
+      // Projection charts (future-year x-labels or "forecast"/"target" in title/DPU)
+      // are tagged "projected" so downstream dedup prefers realized facts over them.
+      const scopeContext = [
+        chartTitle ?? "",
+        opts.slide_title ?? "",
+        (opts.dpu_text ?? "").slice(0, 400),
+      ].join(" ");
+      const yearFromLabel = extractYearFromLabel(xLabel);
+      const temporal_scope = classifyTemporalScope(yearFromLabel, scopeContext);
+
       const source_pointer = [
         `visual_asset_id=${opts.visual_asset_id}`,
         `page=${opts.page_number}`,
@@ -276,6 +289,7 @@ export function extractChartFactClaims(
         ),
         slide_type:  opts.slide_type,
         slide_title: opts.slide_title,
+        temporal_scope,
       });
     }
 

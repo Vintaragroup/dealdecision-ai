@@ -158,6 +158,13 @@ export async function buildGovernedSummarySection(
 			})
 		);
 
+		// Inject evidence_refs deterministically from inputs — not LLM-generated.
+		// This populates the field after validation so it doesn't affect fingerprinting.
+		const evidenceIds = inputs.evidenceSnippets.map((ev) => ev.id).filter(Boolean);
+		if (evidenceIds.length > 0) {
+			record.summary.evidence_refs = evidenceIds;
+		}
+
 		const body = serializeGovernedSummaryBody(record.summary);
 
 		// Dev-only: append corpus inclusion markers so E2E tooling can assert that

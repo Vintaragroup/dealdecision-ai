@@ -232,8 +232,21 @@ async function evalG4(pool: Pool, dealId: string): Promise<GateResult> {
 }
 
 /**
- * G5 – Governed overlay complete (governed_llm_overviews row exists for deal).
- * Reason codes: GATE_GOVERNED_OVERLAY_MISSING, GATE_GOVERNED_OVERLAY_INCOMPLETE
+ * G5 – Governed overlay context (advisory only).
+ *
+ * Records how many governed_llm_overviews rows exist for the deal so that
+ * downstream observers can tell whether prior overlay context is available.
+ * Always passes — absence of prior overlay rows is not a hard prerequisite
+ * for governed synthesis because:
+ *
+ *   1. governed_llm_overviews rows are only written BY the LLM stage itself,
+ *      so requiring them before the first run creates a circular dependency
+ *      that permanently blocks net-new deals.
+ *   2. resolveGovernedSummaryWithCache handles a null previousRecord gracefully:
+ *      a cache miss triggers a fresh LLM call with no degradation to output quality.
+ *
+ * actual: 0  → no prior overlay (first synthesis run or bootstrapped deal)
+ * actual: N  → N prior overlay rows available as context
  */
 async function evalG5(pool: Pool, dealId: string): Promise<GateResult> {
 	try {
@@ -244,12 +257,11 @@ async function evalG5(pool: Pool, dealId: string): Promise<GateResult> {
 			[dealId]
 		);
 		const count = Number(rows[0]?.c ?? 0);
-		if (count === 0) {
-			return { gate: "G5", passed: false, reason_code: "GATE_GOVERNED_OVERLAY_MISSING", actual: 0 };
-		}
+		// Advisory: always pass regardless of count.
 		return { gate: "G5", passed: true, actual: count };
 	} catch {
-		return { gate: "G5", passed: false, reason_code: "GATE_GOVERNED_OVERLAY_INCOMPLETE" };
+		// DB failure: advisory gate — do not block synthesis on observability error.
+		return { gate: "G5", passed: true, actual: 0 };
 	}
 }
 

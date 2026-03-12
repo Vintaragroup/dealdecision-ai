@@ -245,7 +245,7 @@ function tryExtractInlineClaim(line: string): InlineClaim | null {
   // false positives; prevents P3 from stealing "raised $X" as a vague label.
   // Sentence: "raising/raised/raise/seeking/investing $X"
   const raiseMatch = line.match(
-    /(?:raising|raised|raise|seeking|investing)\s+([\$\u20ac\u00a3\u00a5\u20b9][\d,.]+[KkMmBbTt]?)/i,
+    /(?:raising|raised|raise|seeking|investing)\s+([\$\u20ac\u00a3\u00a5\u20b9][\d,.]+(?:\s*[KkMmBbTt](?!\w))?)/i,
   );
   if (raiseMatch) {
     const valueStr = raiseMatch[1]!;
@@ -276,23 +276,28 @@ function tryExtractInlineClaim(line: string): InlineClaim | null {
     const valuePart = colonMatch[2].trim();
     // Only take the first token of valuePart for numeric parsing (avoid picking
     // up unrelated text after the numeric)
-    const firstToken = valuePart.split(/\s+/)[0] ?? valuePart;
-    const parsed = parseNumericToken(firstToken);
+    // Extract value token, allowing an optional space-separated scale suffix
+    // e.g. "$2.5 M" or "$2.5M" — both captured as one token for parseNumericToken.
+    const valueTokenMatch = valuePart.match(
+      /^([$€£¥₹][\d,.]+(?:\s*[KkMmBbTt](?!\w))?|\d[\d,.]+(?:\s*[KkMmBbTt](?!\w))?%?)/,
+    );
+    const valueToken = valueTokenMatch?.[1] ?? (valuePart.split(/\s+/)[0] ?? valuePart);
+    const parsed = parseNumericToken(valueToken);
     if (parsed) {
-      const matchStart = line.indexOf(firstToken, colonMatch[1].length + 1);
-      const matchEnd = matchStart + firstToken.length;
+      const matchStart = line.indexOf(valueToken, colonMatch[1].length + 1);
+      const matchEnd = matchStart < 0 ? line.length : matchStart + valueToken.length;
       const period_label =
         extractPeriodFromText(valuePart) ??
         extractPeriodFromText(line) ??
         "current";
-      return { rawLabel, parsed, currency: parsed.unit === "currency" ? inferCurrencyCode(firstToken) : undefined, period_label, matchStart, matchEnd };
+      return { rawLabel, parsed, currency: parsed.unit === "currency" ? inferCurrencyCode(valueToken) : undefined, period_label, matchStart, matchEnd };
     }
   }
 
   // P3: "Label $value" — label runs up to currency symbol
   // Pattern: word(s) followed by $/$€/etc + number
   const labelBeforeValue = line.match(
-    /\b([A-Za-z][A-Za-z0-9\s%/&(),.'-]{1,50}?)\s+([$\u20ac\u00a3\u00a5\u20b9][\d,.]+[KkMmBbTt]?)/,
+    /\b([A-Za-z][A-Za-z0-9\s%/&(),.'-]{1,50}?)\s+([\$\u20ac\u00a3\u00a5\u20b9][\d,.]+(?:\s*[KkMmBbTt](?!\w))?)/,
   );
   if (labelBeforeValue) {
     const rawLabel = labelBeforeValue[1].trim();
@@ -308,7 +313,7 @@ function tryExtractInlineClaim(line: string): InlineClaim | null {
 
   // P4: "$value Label" — value first, then label
   const valueBeforeLabel = line.match(
-    /([$\u20ac\u00a3\u00a5\u20b9][\d,.]+[KkMmBbTt]?)\s+([A-Za-z][A-Za-z0-9\s%/&(),.'-]{1,50})/,
+    /([\$\u20ac\u00a3\u00a5\u20b9][\d,.]+(?:\s*[KkMmBbTt](?!\w))?)\s+([A-Za-z][A-Za-z0-9\s%/&(),.'-]{1,50})/,
   );
   if (valueBeforeLabel) {
     const valueStr = valueBeforeLabel[1];

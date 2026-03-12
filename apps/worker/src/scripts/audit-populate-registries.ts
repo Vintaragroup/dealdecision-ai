@@ -63,7 +63,8 @@ async function main() {
 		for (const doc of docs) {
 			const { document_id, doc_name, page_count } = doc;
 			const pageEnd = Math.max(1, page_count);
-			console.log(`\n  DOC: ${doc_name} (${document_id})  pages=0-${pageEnd}`);
+			const isXlsx = /\.xlsx?$/i.test(doc_name);
+			console.log(`\n  DOC: ${doc_name} (${document_id})  pages=0-${pageEnd}${isXlsx ? "  [xlsx]" : ""}`);
 
 			// 1. Page Registry v1
 			try {
@@ -99,6 +100,7 @@ async function main() {
 				const ff = await populateFinancialFactRegistryV1(pool as any, {
 					deal_id: dealId,
 					document_id,
+					...(isXlsx ? { xlsx_doc: true } : {}),
 				});
 				console.log(
 					`    financial_facts_v1:    scanned=${ff.pages_scanned}  with_data=${ff.pages_with_data}  extracted=${ff.facts_extracted}  derived=${ff.facts_derived}  upserted=${ff.facts_upserted}  errors=${ff.errors.length}`

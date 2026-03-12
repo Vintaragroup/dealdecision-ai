@@ -88,6 +88,8 @@ class DealRegressionResult:
     # Phase 10 — slide-aware financial extraction signals
     financial_slide_sources: list[str] = field(default_factory=list)      # distinct slide_types that contributed facts
     financial_slide_confidence_boosts: int = 0                             # facts that received a confidence upgrade
+    # Section quality labels — computed after all other signals are assembled
+    section_labels: dict = field(default_factory=dict)   # section_name → (label, note)
 
     def _delta(self, baseline: Optional[float], current: Optional[float]) -> Optional[float]:
         if baseline is None or current is None:
@@ -331,6 +333,18 @@ def run_regression_benchmark(
         # Pull baseline scores for this deal
         baseline_scores = (baseline or {}).get("deals", {}).get(deal_name, {})
 
+        fin_coverage = _fetch_financial_coverage_signals(conn, deal_id)
+        fin_slides   = _fetch_financial_slide_signals(conn, deal_id)
+
+        from lib.section_quality import compute_section_labels
+        section_labels = compute_section_labels(
+            slot_verdicts=scores["slot_verdicts"],
+            financial_verdicts=scores["financial_verdicts"],
+            financial_coverage_pct=fin_coverage.get("financial_coverage_pct"),
+            financial_conflict_count=fin_coverage.get("financial_conflict_count", 0),
+            financial_slide_sources=fin_slides.get("financial_slide_sources", []),
+        )
+
         deal_results.append(DealRegressionResult(
             deal_name=deal_name,
             baseline_semantic=baseline_scores.get("semantic_accuracy"),
@@ -341,8 +355,8 @@ def run_regression_benchmark(
             current_overall=scores["overall_accuracy"],
             slot_verdicts=scores["slot_verdicts"],
             financial_verdicts=scores["financial_verdicts"],
-            **{**_fetch_financial_coverage_signals(conn, deal_id),
-               **_fetch_financial_slide_signals(conn, deal_id)},
+            section_labels=section_labels,
+            **{**fin_coverage, **fin_slides},
         ))
 
     # Persist current run as new baseline
@@ -661,22 +675,32 @@ def _build_report(
 
     lines.append("")
 
-    # Per-deal slot verdicts
+    # Per-deal slot verdicts + section quality labels
     lines.append("## Per-Deal Slot Verdicts\n")
     for dr in deal_results:
-        if not dr.slot_verdicts:
+        if not dr.slot_verdicts and not dr.section_labels:
             continue
         lines.append(f"### {dr.deal_name}\n")
-        lines.append("| Slot | Verdict |")
-        lines.append("| --- | --- |")
-        for slot, verdict in sorted(dr.slot_verdicts.items()):
-            lines.append(f"| {slot} | {verdict} |")
+        if dr.slot_verdicts:
+            lines.append("| Slot | Verdict |")
+            lines.append("| --- | --- |")
+            for slot, verdict in sorted(dr.slot_verdicts.items()):
+                lines.append(f"| {slot} | {verdict} |")
         if dr.financial_verdicts:
-            lines.append(f"\n**Financial verdicts:**\n")
+            lines.append("\n**Financial verdicts:**\n")
             lines.append("| Metric | Verdict |")
             lines.append("| --- | --- |")
             for metric, verdict in sorted(dr.financial_verdicts.items()):
                 lines.append(f"| {metric} | {verdict} |")
+        if dr.section_labels:
+            lines.append("\n**Section quality:**\n")
+            lines.append("| Section | Label | Note |")
+            lines.append("| --- | --- | --- |")
+            from lib.section_quality import INVESTOR_SECTIONS
+            for section in INVESTOR_SECTIONS:
+                if section in dr.section_labels:
+                    lbl, note = dr.section_labels[section]
+                    lines.append(f"| {section} | {lbl} | {note} |")
         lines.append("")
 
     # Overall averages
@@ -725,4 +749,31 @@ def _build_report(
             lines.append(f"| {dr.deal_name} | {sources} | {dr.financial_slide_confidence_boosts} |")
         lines.append("")
 
+    # Section Quality Matrix — cross-deal summary
+    has_section_labels = any(d.section_labels for d in deal_results)
+    if has_section_labels:
+        from lib.section_quality import INVESTOR_SECTIONS
+        deal_names = [d.deal_name for d in deal_results]
+        lines.append("## Section Quality Matrix\n")
+        lines.append(
+            "_Labels: **Strong** = well-supported · Partial = thin evidence · "
+            "Weak = low-confidence · Missing = absent / not tracked_\n"
+        )
+        header = ["Section"] + deal_names
+        lines.append("| " + " | ".join(header) + " |")
+        lines.append("| " + " | ".join(["---"] * len(header)) + " |")
+
+        for section in INVESTOR_SECTIONS:
+            row = [section]
+            for dr in deal_results:
+                if section in dr.section_labels:
+                    lbl, note = dr.section_labels[section]
+                    # Compact cell: label only (tooltip-style note omitted for width)
+                    row.append(lbl)
+                else:
+                    row.append("—")
+            lines.append("| " + " | ".join(row) + " |")
+        lines.append("")
+
     return "\n".join(lines)
+

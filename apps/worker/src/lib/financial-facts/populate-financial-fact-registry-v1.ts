@@ -585,7 +585,7 @@ async function fetchDpuText(
   pageIndex: number,
 ): Promise<string | null> {
   const { rows } = await pool.query<{ page_text: string | null }>(
-    `SELECT COALESCE(payload->>'normalized_text', payload->>'page_text') AS page_text
+    `SELECT COALESCE(NULLIF(payload->>'normalized_text', ''), payload->>'page_text') AS page_text
      FROM public.document_page_understanding
      WHERE document_id = $1::uuid
        AND page_index   = $2::int

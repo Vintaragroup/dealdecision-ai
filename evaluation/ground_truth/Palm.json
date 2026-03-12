@@ -5,10 +5,8 @@
   "deal_id": "c4f10092-1c94-4116-b4f0-78874868f92b",
   "slots": {
     "company_description": "Palm is a golf lifestyle brand providing men's apparel and accessories for the modern golfer",
-    "product_description": "Men's lifestyle golf apparel and accessories (gloves, towels, apparel) sold DTC and through wholesale/retail partners",
-    "target_customer": "Male golfers aged 25–44, household income $100K+, who golf multiple times per year and engage with golf content",
-    "revenue_model": "Omnichannel — DTC ecommerce plus wholesale/retail partnerships (SCHEELS, Roger DuBois)",
-    "stage": "seed"
+    "solution_summary": "Men's lifestyle golf apparel and accessories (gloves, towels, apparel) sold DTC and through wholesale/retail partners",
+    "target_customer": "Male golfers aged 25–44, household income $100K+, who golf multiple times per year and engage with golf content"
   },
   "financials": {
     "revenue": 2750000,

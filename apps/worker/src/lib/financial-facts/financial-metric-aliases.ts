@@ -19,18 +19,26 @@
 /** Keys = lowercase normalized alias; values = canonical metric_key */
 export const METRIC_ALIAS_MAP: Record<string, string> = {
   // ── Revenue ──────────────────────────────────────────────────────────────
-  revenue:                   "revenue",
-  revenues:                  "revenue",
-  sales:                     "revenue",
-  "total revenue":           "revenue",
-  "total revenues":          "revenue",
-  "total sales":             "revenue",
-  "net revenue":             "revenue",
-  "net revenues":            "revenue",
-  "net sales":               "revenue",
-  "gross revenue":           "revenue",
-  "top line":                "revenue",
-  "top-line":                "revenue",
+  revenue:                              "revenue",
+  revenues:                             "revenue",
+  sales:                                "revenue",
+  "total revenue":                      "revenue",
+  "total revenues":                     "revenue",
+  "total sales":                        "revenue",
+  "net revenue":                        "revenue",
+  "net revenues":                       "revenue",
+  "net sales":                          "revenue",
+  "gross revenue":                      "revenue",
+  "top line":                           "revenue",
+  "top-line":                           "revenue",
+  // XLSX financial model variants
+  "total revenue recognized":           "revenue",
+  "revenue recognized":                 "revenue",
+  "subscription revenue recognized":    "revenue",
+  "subscription revenue":               "revenue",
+  "total subscription revenue":         "revenue",
+  "total recurring revenue":            "revenue",
+  "recurring revenue":                  "revenue",
   // ── COGS ─────────────────────────────────────────────────────────────────
   cogs:                      "cogs",
   "cost of goods sold":      "cogs",
@@ -183,6 +191,34 @@ export const METRIC_ALIAS_MAP: Record<string, string> = {
 };
 
 // ─── Normalizer ───────────────────────────────────────────────────────────────
+
+/**
+ * Set of all valid canonical metric keys — the range of METRIC_ALIAS_MAP.
+ *
+ * Used by extractors to distinguish "alias-mapped" keys (clean) from
+ * "slugified fallback" keys (potentially noisy).  Any key emitted by
+ * `normalizeMetricKey` that is NOT in this set originated from a raw label
+ * that had no alias match and was simply slugified.
+ */
+export const KNOWN_CANONICAL_METRIC_KEYS: ReadonlySet<string> = new Set(
+  Object.values(METRIC_ALIAS_MAP),
+);
+
+/**
+ * Returns true when `key` is a canonical metric key from the alias map —
+ * i.e. it was produced by an alias match, not a slug fallback.
+ */
+export function isKnownMetricKey(key: string): boolean {
+  return KNOWN_CANONICAL_METRIC_KEYS.has(key);
+}
+
+/**
+ * Financial signal keywords.  Used as a secondary acceptance criterion when a
+ * raw label does not map to any alias: the label must contain at least one of
+ * these words to be considered a plausible (if non-canonical) financial metric.
+ */
+export const FINANCIAL_SIGNAL_KEYWORDS_RE =
+  /\b(revenue|sales|income|profit|loss|cost|expense|margin|burn|runway|cash|arr|mrr|gmv|ebitda|arpu|cac|ltv|nrr|churn|retention|raise|valuation|funding|budget|forecast|opex|headcount|employees)\b/i;
 
 /**
  * Normalize a raw metric label to a canonical metric_key.

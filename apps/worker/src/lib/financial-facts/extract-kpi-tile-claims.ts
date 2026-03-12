@@ -155,11 +155,15 @@ export function isExampleOrScenarioContext(text: string): boolean {
  * in a KPI phrase.
  *
  * Intentionally broad — parseNumericToken() performs the authoritative parse.
- * Note: NO whitespace is allowed between the digits and the suffix to prevent
- * "6000 merchants" from being read as "6000M" (6 billion).
+ * Note: For currency-prefixed tokens (e.g. "$3.5 B"), a single whitespace is
+ * allowed before the scale suffix so that OCR-split tokens like "$3.5" + " B"
+ * are captured as one unit. The negative lookahead (?!\w) prevents "basis" or
+ * "billion" from being mistaken for the single-char scale suffix "b".
+ * NO whitespace is allowed for bare numeric tokens (no currency symbol) to
+ * prevent "6000 merchants" from being read as "6000M" (6 billion).
  */
 const VALUE_TOKEN_RE =
-  /[$€£¥₹]\s*[\d,.]+[KkMmBbTt]?[+~]?|[\d,.]+[KkMmBbTt%][+~]?|[\d,.]+/g;
+  /[$€£¥₹]\s*[\d,.]+(?:\s*[KkMmBbTt](?!\w))?[+~]?|[\d,.]+[KkMmBbTt%][+~]?|[\d,.]+/g;
 
 interface ExtractedValueToken {
   raw: string;

@@ -1141,7 +1141,8 @@ export async function recomputeInsightSlotBody(
 
 	await pool
 		.query<{ id: string; claim_text: string | null }>(
-			`SELECT evidence_id AS id, content_text AS claim_text FROM public.evidence_items WHERE deal_id = $1::uuid LIMIT 50`,
+			`SELECT evidence_id AS id, content_text AS claim_text FROM public.evidence_items WHERE deal_id = $1::uuid ORDER BY evidence_id ASC LIMIT 50`,
+				// ORDER BY evidence_id ASC ensures deterministic evidence selection across re-runs
 			[dealId]
 		)
 		.then(({ rows }) => {

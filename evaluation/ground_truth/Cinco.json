@@ -5,10 +5,8 @@
   "deal_id": "0fcec035-9aa3-4f6e-88fa-818c323add09",
   "slots": {
     "company_description": "Cino is the first platform for shared payments, designed to make spending money together seamless",
-    "product_description": "A payment platform that splits group spend in real-time; free to use with a premium subscription",
-    "target_customer": "Friend groups, couples, and anyone paying together in groups",
-    "revenue_model": "Freemium — free card plus interchange fees, FX fees, and €10/month premium subscription",
-    "stage": "Series A"
+    "solution_summary": "A payment platform that splits group spend in real-time; free to use with a premium subscription",
+    "target_customer": "Friend groups, couples, and anyone paying together in groups"
   },
   "financials": {
     "raise_amount": 5600000

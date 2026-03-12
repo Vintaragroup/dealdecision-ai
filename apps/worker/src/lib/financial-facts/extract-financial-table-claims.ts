@@ -30,7 +30,7 @@ import {
   inferPeriodType,
 } from "@dealdecision/core";
 import type { FinancialFactSourceKind } from "@dealdecision/core";
-import { normalizeMetricKey } from "./financial-metric-aliases";
+import { normalizeMetricKey, isKnownMetricKey, FINANCIAL_SIGNAL_KEYWORDS_RE } from "./financial-metric-aliases";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -137,8 +137,16 @@ export function extractFinancialTableClaims(
         extracted;
 
       const metric_key = normalizeMetricKey(rawLabel);
-      // Skip extremely generic/unknown labels that produce no signal
+      // Skip noise metric keys (job titles, OCR artifacts, sentence fragments)
       if (shouldSkipMetricKey(metric_key, rawLabel)) continue;
+
+      // Reject placeholder / zero currency values (e.g. OCR artifact "$000", "$0")
+      // Note: zero IS valid for percent (0% churn) and plain number (0 headcount)
+      if (unit === "currency" && value === 0) continue;
+
+      // Reject implausibly small currency values that are almost certainly
+      // OCR artifacts (e.g. "$1", "$2").  Threshold: < $100.
+      if (unit === "currency" && Math.abs(value) < 100) continue;
 
       const period_type: FinancialFactPeriodType =
         period_label === "current" ? "unknown" : inferPeriodType(period_label);
@@ -261,30 +269,84 @@ function extractFromParts(
   if (parts.length < 2) return null;
 
   // Find the label (first non-numeric, non-period part)
-  const rawLabel = parts[0];
+  let rawLabel = parts[0] ?? "";
   if (!rawLabel || rawLabel.length < 2) return null;
   if (isNumericToken(rawLabel)) return null;
 
-  // Find a numeric value in remaining parts
+  // Strip XLSX row-number prefix: "- 9: Label text" → "Label text"
+  rawLabel = rawLabel.replace(/^-?\s*\d+\s*:\s*/, "").trim();
+  if (!rawLabel) return null;
+
+  // Detect scale annotation in label: ($000) → 1000, ($M) → 1_000_000 etc.
+  const scaleMultiplier = detectScaleAnnotation(rawLabel);
+  // Strip scale annotation from label for cleaner alias normalisation
+  const cleanLabel = rawLabel.replace(/\s*\(\s*\$\s*(?:000|k|K|M|m|B|b|millions?|thousands?|billions?)\s*\)/gi, "").trim();
+
+  // Collect all parseable numeric values from remaining parts
+  const numericCandidates: Array<{
+    index: number; value: number; unit: string; currency?: string;
+  }> = [];
   for (let i = 1; i < parts.length; i++) {
-    const parsed = parseNumericToken(parts[i]);
+    // Look-ahead: if the next part is a lone scale suffix (K/M/B/T), combine it
+    // with the current part so "$3.5" + "B" → "$3.5B" before parsing.
+    const nextPart = parts[i + 1]?.trim() ?? "";
+    const tokenToTry =
+      /^[KkMmBbTt]$/.test(nextPart) && /[$€£¥₹\d]/.test(parts[i] ?? "")
+        ? (parts[i] ?? "") + nextPart
+        : (parts[i] ?? "");
+
+    const parsed = parseNumericToken(tokenToTry);
     if (parsed === null) continue;
 
-    // Look for an adjacent period label
-    const period_label = findPeriodLabel(parts, i);
-
-    return {
-      rawLabel,
-      value: parsed.value,
+    numericCandidates.push({
+      index: i,
+      value: parsed.value * scaleMultiplier,
       unit: parsed.unit,
-      currency: parsed.unit === "currency" ? inferCurrencyCode(parts[i]) : undefined,
-      period_label: period_label ?? "current",
-      confidence,
-      excerpt: parts.join(" | "),
-    };
+      currency: parsed.unit === "currency" ? inferCurrencyCode(parts[i] ?? "") : undefined,
+    });
   }
 
-  return null;
+  if (numericCandidates.length === 0) return null;
+
+  // For time-series rows (3+ numeric columns — e.g. XLSX quarterly P&L),
+  // prefer the last non-zero value to represent the most recent period.
+  // Falls back to the first candidate when all values are zero.
+  const chosen: typeof numericCandidates[number] =
+    numericCandidates.length >= 3
+      ? (numericCandidates.filter((c) => c.value !== 0).at(-1) ?? numericCandidates[0]!)
+      : numericCandidates[0]!;
+
+  // Look for an adjacent period label
+  const period_label = findPeriodLabel(parts, chosen.index);
+
+  return {
+    rawLabel: cleanLabel || rawLabel,
+    value: chosen.value,
+    unit: chosen.unit as FinancialFactUnit,
+    currency: chosen.currency,
+    period_label: period_label ?? "current",
+    confidence,
+    excerpt: parts.join(" | "),
+  };
+}
+
+/**
+ * Detect a scale multiplier from label annotations common in XLSX financial models.
+ *   "($000)" or "($ thousands)" → 1_000
+ *   "($M)" or "($ millions)"   → 1_000_000
+ *   "($B)" or "($ billions)"   → 1_000_000_000
+ *   No annotation              → 1 (pass-through)
+ */
+function detectScaleAnnotation(label: string): number {
+  const m = label.match(
+    /\(\s*\$?\s*(000|k|K|M|m|B|b|millions?|thousands?|billions?)\s*\)/i,
+  );
+  if (!m) return 1;
+  const s = (m[1] ?? "").toLowerCase();
+  if (s === "000" || s === "k" || s.startsWith("thous")) return 1_000;
+  if (s === "m" || s.startsWith("mill")) return 1_000_000;
+  if (s === "b" || s.startsWith("bill")) return 1_000_000_000;
+  return 1;
 }
 
 /** Try to extract a financial claim from an inline sentence-like line */
@@ -294,7 +356,7 @@ function tryInlineExtract(
 ): ExtractedLineClaim | null {
   // Pattern: "Revenue $1.2M", "ARR: €2.5M in FY2024", "GTV £3.5M"
   const match = line.match(
-    /\b([A-Za-z][\w\s%-]{2,50}?)\s+(?:of\s+|:\s*)?([$€£¥₹][\d,.]+[KkMmBbTt]?|\d[\d,.]+\s*[KkMmBbTt]?%?)/
+    /\b([A-Za-z][\w\s%-]{2,50}?)\s+(?:of\s+|:\s*)?([$€£¥₹][\d,.]+(?:\s*[KkMmBbTt](?!\w))?|\d[\d,.]+\s*[KkMmBbTt]?%?)/
   );
   if (!match) return null;
 
@@ -334,7 +396,9 @@ function findPeriodLabel(parts: string[], valueIndex: number): string | null {
 
 /**
  * Extract a period label from a text fragment.
- * Handles: FY2024, FY2025, Q1 2024, Q3-2024, 2024, 2024-03, TTM, LTM
+ * Handles: FY2024, FY2025, Q1 2024, Q3-2024, 2024, 2024-03, TTM, LTM,
+ *          YTD, H1 2024, H2 2024, 2024E (estimate), Forecast 2025,
+ *          Budget 2025, Q1/Q2/Q3/Q4 (no year attached)
  */
 export function extractPeriodFromText(text: string): string | null {
   const s = text.trim();
@@ -342,9 +406,26 @@ export function extractPeriodFromText(text: string): string | null {
   // TTM / LTM
   if (/^(ttm|ltm)$/i.test(s)) return s.toUpperCase();
 
+  // YTD (year-to-date) — treat as a period label so inferPeriodType maps it
+  if (/\bYTD\b/i.test(s)) return "YTD";
+
   // "FY2024" or "FY 2024"
   const fyMatch = s.match(/\bFY\s*(\d{4})\b/i);
   if (fyMatch) return `FY${fyMatch[1]}`;
+
+  // "Fiscal 2024" or "Fiscal Year 2024"
+  const fiscalMatch = s.match(/\bfiscal(?:\s+year)?\s+(\d{4})\b/i);
+  if (fiscalMatch) return `FY${fiscalMatch[1]}`;
+
+  // "Forecast 2025", "Budget 2025", "Plan 2025", "Est 2025", "Proj 2025"
+  const forecastMatch = s.match(
+    /\b(?:forecast|budget|plan|estimate[ds]?|est|proj(?:ected)?)\s+(\d{4})\b/i,
+  );
+  if (forecastMatch) return `FY${forecastMatch[1]}`;
+
+  // "2024E", "2025E", "2026E" (estimate suffix)
+  const estYearMatch = s.match(/\b(20\d{2})E\b/);
+  if (estYearMatch) return `FY${estYearMatch[1]}`;
 
   // "Q2 2024" or "Q2-2024" or "2024 Q2"
   const qMatch = s.match(/\bQ([1-4])[\s\-_](\d{4})\b|\b(\d{4})[\s\-_]Q([1-4])\b/i);
@@ -352,6 +433,18 @@ export function extractPeriodFromText(text: string): string | null {
     const q = qMatch[1] ?? qMatch[4];
     const year = qMatch[2] ?? qMatch[3];
     return `Q${q} ${year}`;
+  }
+
+  // "Q1", "Q2", "Q3", "Q4" (standalone — no year)
+  const qAloneMatch = s.match(/^Q([1-4])$/i);
+  if (qAloneMatch) return `Q${qAloneMatch[1]}`;
+
+  // "H1 2024", "H2 2024", "H1-2024", "2024 H1"
+  const halfMatch = s.match(/\bH([12])[\s\-_](\d{4})\b|\b(\d{4})[\s\-_]H([12])\b/i);
+  if (halfMatch) {
+    const h = halfMatch[1] ?? halfMatch[4];
+    const year = halfMatch[2] ?? halfMatch[3];
+    return `H${h} ${year}`;
   }
 
   // "2024-03" monthly
@@ -370,9 +463,9 @@ function extractColumnHeaders(lines: string[]): string[] {
   const periods: string[] = [];
   const headerLines = lines.slice(0, Math.min(5, lines.length));
   for (const line of headerLines) {
-    // Look for FY patterns or Q patterns
+    // Look for FY patterns, Q patterns, year, TTM/LTM, YTD, H1/H2, estimate suffix
     const matches = line.match(
-      /\b(?:FY\s*\d{4}|Q[1-4]\s+\d{4}|\d{4}|TTM|LTM)\b/gi
+      /\b(?:FY\s*\d{4}|\d{4}E|H[12]\s+\d{4}|Q[1-4]\s+\d{4}|Q[1-4]|YTD|\d{4}|TTM|LTM)\b/gi
     );
     if (matches) {
       for (const m of matches) {
@@ -442,24 +535,83 @@ function hasNumericPart(parts: string[]): boolean {
 
 // ─── Skip logic ───────────────────────────────────────────────────────────────
 
-/** Skip slug-like metric keys that look like noise (single letter etc.) */
-// Stop words that alone cannot form a valid metric key
+/** Stop words that alone cannot form a valid metric key */
 const METRIC_STOP_TOKENS = new Set(["of", "the", "a", "an", "and", "but", "or"]);
-// Common verbs that indicate a sentence fragment rather than a metric label
+/** Common verbs that indicate a sentence fragment rather than a metric label */
 const METRIC_VERB_TOKENS = new Set(["will", "has", "have", "had", "exceed", "exceeds", "exceeded", "expects", "projected"]);
 
+/**
+ * HR / job-title tokens.  A metric key slug containing any of these is almost
+ * certainly an OCR artifact from a headcount table (e.g. "warehouse_associate",
+ * "senior_director_day_rate").
+ *
+ * NOTE: "headcount" and "employees" are valid canonical keys so they do NOT
+ * appear here — only tokens that exclusively appear in job titles / HR context.
+ */
+const JOB_TITLE_TOKENS = new Set([
+  "associate", "assistant", "coordinator", "specialist", "consultant",
+  "analyst", "engineer", "developer", "designer", "scientist", "intern",
+  "director", "executive", "officer", "president", "chairman", "chairman",
+  "supervisor", "lead", "clerk", "technician", "accountant", "recruiter",
+  "representative", "ceo", "cto", "cfo", "coo", "svp", "evp",
+]);
+
+/**
+ * Calendar / day-of-week / month tokens.  A metric key slug containing any
+ * of these (and not already in the alias map) is miscategorised noise,
+ * e.g. "warehouse_associate_day", "fortune_monday".
+ */
+const CALENDAR_NOISE_TOKENS = new Set([
+  "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+  "january", "february", "march", "april", "june", "july",
+  "august", "september", "october", "november", "december",
+  "daily", "weekly",
+]);
+
+/**
+ * Returns true when the metric_key slug should be rejected as noise.
+ *
+ * Two-tier acceptance:
+ *  Tier-1 (alias-mapped): key is in KNOWN_CANONICAL_METRIC_KEYS → always accept.
+ *  Tier-2 (slug fallback): only accept if:
+ *    - ≤ 3 tokens (short descriptor)
+ *    - no job-title, calendar, or verb tokens
+ *    - raw label contains a financial signal keyword
+ */
 function shouldSkipMetricKey(key: string, rawLabel: string): boolean {
-  if (key.length < 2) return true;
+  if (!key || key.length < 2) return true;
   if (/^\d/.test(key)) return true;
-  // Skip if raw label was entirely numeric or short noise
   if (rawLabel.trim().length < 2) return true;
-  // Reject sentence fragments: no valid financial metric has more than 5 tokens
+
+  // Tier-1: clean alias-mapped key — structural checks only
+  if (isKnownMetricKey(key)) {
+    const tokens = key.split("_");
+    if (tokens.some(t => METRIC_VERB_TOKENS.has(t))) return true;
+    return false;
+  }
+
+  // Tier-2: slug fallback — apply full noise filter
+
   const tokens = key.split("_");
-  if (tokens.length > 5) return true;
-  // Reject keys composed entirely of stop words (e.g. "of_the")
+
+  // Fragment guard: no valid financial metric has more than 4 slug tokens
+  if (tokens.length > 4) return true;
+
+  // Stop-word-only keys (e.g. "of_the")
   if (tokens.every(t => METRIC_STOP_TOKENS.has(t))) return true;
-  // Reject keys containing verb tokens — clear indicators of sentence fragments
+
+  // Verb fragment
   if (tokens.some(t => METRIC_VERB_TOKENS.has(t))) return true;
+
+  // Job-title token
+  if (tokens.some(t => JOB_TITLE_TOKENS.has(t))) return true;
+
+  // Calendar / day-of-week noise
+  if (tokens.some(t => CALENDAR_NOISE_TOKENS.has(t))) return true;
+
+  // Financial signal gate: raw label must contain a recognisable finance word
+  if (!FINANCIAL_SIGNAL_KEYWORDS_RE.test(rawLabel)) return true;
+
   return false;
 }
 

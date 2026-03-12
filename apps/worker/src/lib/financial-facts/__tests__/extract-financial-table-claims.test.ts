@@ -150,3 +150,160 @@ describe("extractFinancialTableClaims", () => {
     ).not.toThrow();
   });
 });
+
+// ─── Scale-unit whitespace-split regression (F1 bug) ─────────────────────────
+
+describe("extractFinancialTableClaims — whitespace-split scale suffix", () => {
+  it("inline: '$3.5 B' is parsed as $3.5 billion", () => {
+    // Use 'Revenue' keyword so detectFinancialTableCandidate passes
+    const text = "Revenue $3.5 B";
+    const claims = extractFinancialTableClaims(text, BASE_OPTS);
+    expect(claims.some((c) => c.value === 3_500_000_000)).toBe(true);
+  });
+
+  it("inline: '$20 M' is parsed as $20 million", () => {
+    const text = "Revenue $20 M";
+    const claims = extractFinancialTableClaims(text, BASE_OPTS);
+    expect(claims.some((c) => c.value === 20_000_000)).toBe(true);
+  });
+
+  it("pipe-separated: '$3.5' + lone 'B' part is combined", () => {
+    // Two-line pipe table triggers detectFinancialTableCandidate rule B
+    const text = "ARR | $3.5 | B\nRevenue | $1M";
+    const claims = extractFinancialTableClaims(text, BASE_OPTS);
+    expect(claims.some((c) => c.value === 3_500_000_000)).toBe(true);
+  });
+
+  it("pipe-separated: '$20' + lone 'M' part is combined", () => {
+    const text = "ARR | $20 | M";
+    const claims = extractFinancialTableClaims(text, BASE_OPTS);
+    expect(claims.some((c) => c.value === 20_000_000)).toBe(true);
+  });
+
+  it("inline: '$11B' adjacent suffix is unaffected", () => {
+    // Use a longer string so detectFinancialTableCandidate passes the 10-char min
+    const text = "ARR $11B currently";
+    const claims = extractFinancialTableClaims(text, BASE_OPTS);
+    expect(claims.some((c) => c.value === 11_000_000_000)).toBe(true);
+  });
+
+  it("inline: suffix word 'basis' is not captured as scale unit 'b'", () => {
+    // '$3.5 basis points' should NOT be parsed as $3.5 billion
+    const text = "Burn $3.5 basis points";
+    const claims = extractFinancialTableClaims(text, BASE_OPTS);
+    // Should either return nothing or return $3.5 (not $3.5B)
+    expect(claims.every((c) => c.value !== 3_500_000_000)).toBe(true);
+  });
+});
+
+// ─── Noise rejection — metric key guard ──────────────────────────────────────
+
+describe("extractFinancialTableClaims — noise metric key rejection", () => {
+  it("rejects job-title row 'Warehouse Associate | $45,000'", () => {
+    // Label has no financial signal keyword; slug has a job-title token
+    const text = "Warehouse Associate | $45,000\nRevenue | $1,200,000";
+    const claims = extractFinancialTableClaims(text, BASE_OPTS);
+    expect(claims.every((c) => c.metric_key !== "warehouse_associate")).toBe(true);
+  });
+
+  it("rejects OCR artifact 'and Fortune 500 | $2,000,000'", () => {
+    const text = "and Fortune 500 | $2,000,000\nRevenue | $1,000,000";
+    const claims = extractFinancialTableClaims(text, BASE_OPTS);
+    expect(claims.every((c) => c.metric_key !== "and_fortune_500")).toBe(true);
+  });
+
+  it("accepts canonical 'Revenue' label", () => {
+    const text = "Revenue | $1,500,000";
+    const claims = extractFinancialTableClaims(text, BASE_OPTS);
+    expect(claims.some((c) => c.metric_key === "revenue")).toBe(true);
+  });
+
+  it("accepts 'ARR' label (alias-mapped)", () => {
+    const text = "ARR | $2,400,000";
+    const claims = extractFinancialTableClaims(text, BASE_OPTS);
+    expect(claims.some((c) => c.metric_key === "arr")).toBe(true);
+  });
+});
+
+// ─── Value guard — zero and implausibly small currency values ────────────────
+
+describe("extractFinancialTableClaims — currency value guard", () => {
+  it("rejects $0 currency values (OCR placeholder artifact)", () => {
+    const text = "Revenue | $0\nARR | $2,500,000";
+    const claims = extractFinancialTableClaims(text, BASE_OPTS);
+    expect(claims.every((c) => c.value !== 0 || c.unit !== "currency")).toBe(true);
+  });
+
+  it("rejects currency values under $100", () => {
+    const text = "Revenue | $42\nBurn Rate | $1,200,000";
+    const claims = extractFinancialTableClaims(text, BASE_OPTS);
+    expect(claims.every((c) => !(c.unit === "currency" && c.value < 100))).toBe(true);
+  });
+
+  it("does NOT reject zero for non-currency units", () => {
+    // 0% churn rate is semantically valid
+    const text = "Churn Rate | 0%\nRevenue | $1,000,000";
+    const claims = extractFinancialTableClaims(text, BASE_OPTS);
+    const churnFact = claims.find((c) => c.metric_key === "churn_rate");
+    // If churn extracted, its value should be 0 and unit not "currency"
+    if (churnFact) {
+      expect(churnFact.unit).not.toBe("currency");
+    }
+  });
+});
+
+// ─── Period detection — new patterns ─────────────────────────────────────────
+
+describe("extractPeriodFromText — extended patterns", () => {
+  it("'YTD' → 'YTD'", () => {
+    expect(extractPeriodFromText("YTD")).toBe("YTD");
+  });
+
+  it("'ytd' → 'YTD' (case insensitive)", () => {
+    expect(extractPeriodFromText("ytd")).toBe("YTD");
+  });
+
+  it("'H1 2024' → 'H1 2024'", () => {
+    expect(extractPeriodFromText("H1 2024")).toBe("H1 2024");
+  });
+
+  it("'H2 2025' → 'H2 2025'", () => {
+    expect(extractPeriodFromText("H2 2025")).toBe("H2 2025");
+  });
+
+  it("'2024 H1' → 'H1 2024'", () => {
+    expect(extractPeriodFromText("2024 H1")).toBe("H1 2024");
+  });
+
+  it("'2024E' → 'FY2024'", () => {
+    expect(extractPeriodFromText("2024E")).toBe("FY2024");
+  });
+
+  it("'2025E' → 'FY2025'", () => {
+    expect(extractPeriodFromText("2025E")).toBe("FY2025");
+  });
+
+  it("'Q2' standalone → 'Q2'", () => {
+    expect(extractPeriodFromText("Q2")).toBe("Q2");
+  });
+
+  it("'Q4' standalone → 'Q4'", () => {
+    expect(extractPeriodFromText("Q4")).toBe("Q4");
+  });
+
+  it("'Forecast 2025' → 'FY2025'", () => {
+    expect(extractPeriodFromText("Forecast 2025")).toBe("FY2025");
+  });
+
+  it("'Budget 2026' → 'FY2026'", () => {
+    expect(extractPeriodFromText("Budget 2026")).toBe("FY2026");
+  });
+
+  it("'Fiscal Year 2024' → 'FY2024'", () => {
+    expect(extractPeriodFromText("Fiscal Year 2024")).toBe("FY2024");
+  });
+
+  it("'Fiscal 2023' → 'FY2023'", () => {
+    expect(extractPeriodFromText("Fiscal 2023")).toBe("FY2023");
+  });
+});

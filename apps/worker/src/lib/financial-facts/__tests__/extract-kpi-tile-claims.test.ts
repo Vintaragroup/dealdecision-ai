@@ -576,3 +576,42 @@ describe("isExampleOrScenarioContext", () => {
     expect(isExampleOrScenarioContext("Acme Inc ARR: $3M")).toBe(false);
   });
 });
+
+// ─── Scale-unit whitespace-split regression (F1 bug) ─────────────────────────
+
+describe("extractKpiTileClaims — whitespace-split scale suffix", () => {
+  it("'$3.5 B ARR' is parsed as $3.5 billion", () => {
+    const facts = extractKpiTileClaims("$3.5 B ARR", BASE_OPTS);
+    expect(facts.some((f) => f.value === 3_500_000_000)).toBe(true);
+  });
+
+  it("'ARR $3.5 B' is parsed as $3.5 billion", () => {
+    const facts = extractKpiTileClaims("ARR $3.5 B", BASE_OPTS);
+    expect(facts.some((f) => f.value === 3_500_000_000 && f.metric_key === "arr")).toBe(true);
+  });
+
+  it("'$20 M revenue' is parsed as $20 million", () => {
+    const facts = extractKpiTileClaims("$20 M revenue", BASE_OPTS);
+    expect(facts.some((f) => f.value === 20_000_000)).toBe(true);
+  });
+
+  it("'$11 B valuation' is parsed as $11 billion", () => {
+    const facts = extractKpiTileClaims("$11 B valuation", BASE_OPTS);
+    expect(facts.some((f) => f.value === 11_000_000_000)).toBe(true);
+  });
+
+  it("'6000 merchants' is NOT read as 6000M (regression guard)", () => {
+    const facts = extractKpiTileClaims("6000 merchants", BASE_OPTS);
+    // must NOT produce 6_000_000_000 (6000M)
+    expect(facts.every((f) => f.value !== 6_000_000_000_000)).toBe(true);
+    // must produce the count 6000
+    expect(facts.some((f) => f.value === 6_000)).toBe(true);
+  });
+
+  it("suffix 'basis' is not captured as scale unit (no $3.5B from '$3.5 basis')", () => {
+    // This phrase has no KPI keyword so should produce zero facts anyway,
+    // but the key assertion is that value 3_500_000_000 never appears.
+    const facts = extractKpiTileClaims("Rate $3.5 basis points", BASE_OPTS);
+    expect(facts.every((f) => f.value !== 3_500_000_000)).toBe(true);
+  });
+});

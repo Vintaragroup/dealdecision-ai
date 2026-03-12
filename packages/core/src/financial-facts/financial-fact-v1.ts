@@ -244,16 +244,21 @@ export function validateFinancialFact(
 /**
  * Infer period_type from a period label string.
  * - "2024", "FY2024" → "annual"
- * - "Q1 2024", "Q3-2025" → "quarterly"
+ * - "Q1 2024", "Q3-2025", "Q1" (standalone) → "quarterly"
  * - "2024-03" → "monthly"
  * - "TTM", "LTM" → "ttm"
+ * - "YTD", "H1 YYYY", "H2 YYYY" → "annual"
  * - Otherwise → "unknown"
  */
 export function inferPeriodType(label: string): FinancialFactPeriodType {
   const s = label.trim();
   if (/^(ttm|ltm)$/i.test(s)) return "ttm";
   if (/^(Q[1-4][\s\-_]\d{4}|\d{4}[\s\-_]Q[1-4])$/i.test(s)) return "quarterly";
+  // Standalone quarter ("Q1", "Q2", ...)
+  if (/^Q[1-4]$/i.test(s)) return "quarterly";
   if (/^\d{4}-\d{2}$/.test(s)) return "monthly";
   if (/^(FY)?\d{4}$/.test(s)) return "annual";
+  // Half-year and YTD: year-scoped aggregations → annual
+  if (/^(YTD|H[12]\s+\d{4}|\d{4}\s+H[12])$/i.test(s)) return "annual";
   return "unknown";
 }

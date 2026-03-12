@@ -119,6 +119,11 @@ export function buildProductNarrativeBody(inputs: InsightSlotInputs): string | n
 	// these pages should be labeled so the LLM does not treat figures as current actuals.
 	const PROJECTION_PAGE_RE =
 		/\b(?:forecast(?:ed)?|projection|projected|pro[\s-]?forma|budget(?:ed)?|plan(?:ned)?|expected|estimated|guidance|target(?:\s+revenue)?|2026|2027|2028|fy2[5-9]|fy\s*2[5-9])\b/i;
+	// Skip pages that are primarily use-of-funds / capital-raise / hiring language.
+	// These pages describe how proceeds are deployed, not the product itself, and
+	// can outrank genuine product pages on broad PRODUCT_KW_RE matches.
+	const CAPITAL_RAISE_SKIP_RE =
+		/\b(?:capital\s+(?:raise|allocation|round)|use\s+of\s+funds?|this\s+(?:round|raise)\s+(?:will|to)\s+(?:enable|fund|support)|strategic\s+hires?\s+to\b)\b/i;
 	const MAX_CHARS = 800;
 	let dpuCandidates: NarrativeCandidate[] = [];
 
@@ -128,6 +133,7 @@ export function buildProductNarrativeBody(inputs: InsightSlotInputs): string | n
 		const moneyCount = (text.match(/\$[\d,]/g) ?? []).length;
 		const totalWords = text.split(/\s+/).filter(Boolean).length;
 		if (totalWords > 0 && moneyCount / totalWords >= 0.12) continue;
+		if (CAPITAL_RAISE_SKIP_RE.test(text)) continue;
 		if (!PRODUCT_KW_RE.test(text)) continue;
 		let excerpt = text.slice(0, 500).replace(/\s+/g, " ").trim();
 		if (!excerpt || excerpt.length < 30) continue;
@@ -223,6 +229,9 @@ function selectWithContradiction(
 export function buildProductNarrativeBundle(inputs: InsightSlotInputs): RankedNarrativeBundle {
 	const PRODUCT_KW_RE =
 		/\b(?:product|platform|solution|technology|we\s+(?:help|build|provide|enable|serve|power)|our\s+(?:platform|product|solution|technology|tool|software)|problem|pain\s+point|customers?|users?|clients?|mission|vision|founded|raises?|builds?)\b/i;
+	// Skip use-of-funds / capital-raise / hiring slides (same guard as buildProductNarrativeBody).
+	const CAPITAL_RAISE_SKIP_RE =
+		/\b(?:capital\s+(?:raise|allocation|round)|use\s+of\s+funds?|this\s+(?:round|raise)\s+(?:will|to)\s+(?:enable|fund|support)|strategic\s+hires?\s+to\b)\b/i;
 	const MAX_CHARS = 800;
 	const candidates: NarrativeCandidate[] = [];
 
@@ -231,6 +240,7 @@ export function buildProductNarrativeBundle(inputs: InsightSlotInputs): RankedNa
 		const moneyCount = (text.match(/\$[\d,]/g) ?? []).length;
 		const totalWords = text.split(/\s+/).filter(Boolean).length;
 		if (totalWords > 0 && moneyCount / totalWords >= 0.12) continue;
+		if (CAPITAL_RAISE_SKIP_RE.test(text)) continue;
 		if (!PRODUCT_KW_RE.test(text)) continue;
 		const excerpt = text.slice(0, 500).replace(/\s+/g, " ").trim();
 		if (!excerpt || excerpt.length < 30) continue;

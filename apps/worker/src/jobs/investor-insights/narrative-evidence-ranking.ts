@@ -176,6 +176,20 @@ export const GENERIC_SUPPRESSION_SIGNALS: ReadonlyArray<{ re: RegExp; label: str
 	{ re: /\bby\s+leveraging\b/i, label: "generic:by_leveraging" },
 	{ re: /\bnext[-\s]?generation\s+(?:platform|solution|technology)\b/i, label: "generic:next_gen_platform" },
 	{ re: /\bholistic\s+(?:approach|solution|platform)\b/i, label: "generic:holistic" },
+	// ── Capital-raise / use-of-funds boilerplate ──────────────────────────────
+	// These phrases appear on "Capital Allocation" / "Use of Funds" pitch-deck
+	// slides describing how proceeds are deployed — NOT the product itself.
+	// Suppressing them prevents fundraise slides from outranking product pages
+	// in buildProductNarrativeBody (Root Cause B — Palm generic boilerplate).
+	{ re: /\bstrategic\s+hires?\b/i, label: "generic:strategic_hires" },
+	{ re: /\bunlock\s+(?:the\s+)?(?:growth|potential|opportunity)\b/i, label: "generic:unlock_growth" },
+	{
+		re: /\b(?:this\s+)?(?:seed|series\s+[a-f])\s+round\s+(?:will|to)\s+(?:enable|fund|support|allow)\b/i,
+		label: "generic:raise_enables_verb",
+	},
+	{ re: /\bcapital\s+alloca(?:tion|te)\b/i, label: "generic:capital_allocation" },
+	{ re: /\bscale\s+(?:our\s+)?marketing\b/i, label: "generic:scale_marketing" },
+	{ re: /\bengage\s+(?:the\s+)?(?:necessary|key|right)\s+talent\b/i, label: "generic:engage_talent" },
 ];
 
 // ─── Source type bonus table ──────────────────────────────────────────────────

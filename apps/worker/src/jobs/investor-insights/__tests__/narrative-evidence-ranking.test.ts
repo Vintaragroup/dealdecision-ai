@@ -316,9 +316,9 @@ describe("scoreNarrativeCandidate — universal positive signals", () => {
 // ─── scoreNarrativeCandidate: generic suppression signals (Phase 5) ──────────
 
 describe("scoreNarrativeCandidate — GENERIC_SUPPRESSION_SIGNALS", () => {
-	it("covers all 15 defined suppression patterns (each has a label)", () => {
-		// Ensure the suppression array is fully populated
-		expect(GENERIC_SUPPRESSION_SIGNALS).toHaveLength(15);
+	it("covers all 21 defined suppression patterns (each has a label)", () => {
+		// Ensure the suppression array is fully populated (15 original + 6 capital-raise)
+		expect(GENERIC_SUPPRESSION_SIGNALS).toHaveLength(21);
 	});
 
 	it("'innovative platform' triggers generic suppression penalty", () => {
@@ -371,6 +371,66 @@ describe("scoreNarrativeCandidate — GENERIC_SUPPRESSION_SIGNALS", () => {
 				return acc + (match ? parseInt(match[1], 10) : 0);
 			}, 0);
 		expect(suppressPenalty).toBeLessThanOrEqual(30);
+	});
+
+	// ── Capital-raise boilerplate suppression (added for Palm regression) ──────
+
+	it("'strategic hires' triggers suppression", () => {
+		const s = signals(
+			"This seed round will fund strategic hires to scale the sales team.",
+			"product_differentiation",
+		);
+		expect(s.some((x) => x.includes("generic:strategic_hires"))).toBe(true);
+	});
+
+	it("'unlock the growth' triggers suppression", () => {
+		const s = signals(
+			"Opportunity. Proof of Concept. Unlock the growth potential in our market.",
+			"product_differentiation",
+		);
+		expect(s.some((x) => x.includes("generic:unlock_growth"))).toBe(true);
+	});
+
+	it("'seed round will enable' triggers suppression", () => {
+		const s = signals(
+			"This seed round will enable Palm to scale marketing while brand relevance is growing.",
+			"product_differentiation",
+		);
+		expect(s.some((x) => x.includes("generic:raise_enables_verb"))).toBe(true);
+	});
+
+	it("'capital allocation' triggers suppression", () => {
+		const s = signals(
+			"CAPITAL ALLOCATION — Strategic Hires. To recognise our growth opportunity.",
+			"product_differentiation",
+		);
+		expect(s.some((x) => x.includes("generic:capital_allocation"))).toBe(true);
+	});
+
+	it("'scale our marketing' triggers suppression", () => {
+		const s = signals(
+			"Proceeds will allow us to scale our marketing efforts across key channels.",
+			"product_differentiation",
+		);
+		expect(s.some((x) => x.includes("generic:scale_marketing"))).toBe(true);
+	});
+
+	it("'engage the necessary talent' triggers suppression", () => {
+		const s = signals(
+			"We will engage the necessary talent to drive growth in the next 18 months.",
+			"product_differentiation",
+		);
+		expect(s.some((x) => x.includes("generic:engage_talent"))).toBe(true);
+	});
+
+	it("genuine product description (Palm page 13) does NOT trigger capital-raise suppression", () => {
+		const s = signals(
+			"Palm enables the lifestyle of golf. Our apparel and accessories are rooted in the game of golf but are worn by lovers of golf on and off the course.",
+			"product_differentiation",
+		);
+		expect(s.some((x) => x.includes("generic:strategic_hires"))).toBe(false);
+		expect(s.some((x) => x.includes("generic:capital_allocation"))).toBe(false);
+		expect(s.some((x) => x.includes("generic:scale_marketing"))).toBe(false);
 	});
 });
 

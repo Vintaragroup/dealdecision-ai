@@ -13,6 +13,7 @@ ALTER TABLE public.financial_facts_v1
       'xlsx',
       'pdf_table',
       'pdf_kpi_line',
+      'kpi_tile',
       'chart_pixel',
       'deck',
       'unknown'

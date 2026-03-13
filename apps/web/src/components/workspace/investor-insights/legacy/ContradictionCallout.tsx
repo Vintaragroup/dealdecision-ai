@@ -15,7 +15,7 @@
 
 import React, { useState } from 'react';
 import { AlertTriangle, Zap, ChevronDown, ChevronUp } from 'lucide-react';
-import type { NarrativeContradictionV1 } from '../investorInsightsUtils';
+import type { NarrativeContradictionV1 } from '../../investorInsightsUtils';
 
 interface ContradictionCalloutProps {
   contradiction: NarrativeContradictionV1 | null;

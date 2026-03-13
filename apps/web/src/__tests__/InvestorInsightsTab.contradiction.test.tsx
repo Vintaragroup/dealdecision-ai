@@ -19,8 +19,8 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, expect, test } from 'vitest';
 
 // ── Component imports ────────────────────────────────────────────────────────
-import { ContradictionCallout } from '../components/workspace/investor-insights/ContradictionCallout';
-import { IntelligenceGrid } from '../components/workspace/investor-insights/IntelligenceGrid';
+import { ContradictionCallout } from '../components/workspace/investor-insights/legacy/ContradictionCallout';
+import { IntelligenceGrid } from '../components/workspace/investor-insights/legacy/IntelligenceGrid';
 import { LlmInterpretationSection } from '../components/workspace/InvestorInsightsTab';
 import type { NarrativeContradictionV1, NarrativeContradictionBundle } from '../components/workspace/investorInsightsUtils';
 import type { InvestorInsightsSection } from '../lib/apiClient';

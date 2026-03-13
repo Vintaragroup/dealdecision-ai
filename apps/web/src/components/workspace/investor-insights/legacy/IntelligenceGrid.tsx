@@ -19,8 +19,8 @@
  */
 
 import React from 'react';
-import type { LlmInterpretationV1, NarrativeContradictionBundle, NarrativeContradictionV1 } from '../investorInsightsUtils';
-import { getTopicContradiction } from '../investorInsightsUtils';
+import type { LlmInterpretationV1, NarrativeContradictionBundle, NarrativeContradictionV1 } from '../../investorInsightsUtils';
+import { getTopicContradiction } from '../../investorInsightsUtils';
 import { StatusBadge } from './StatusBadge';
 import type { StatusBadgeVariant } from './StatusBadge';
 import { ContradictionCallout } from './ContradictionCallout';

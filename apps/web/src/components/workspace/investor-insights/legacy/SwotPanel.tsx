@@ -15,8 +15,8 @@
  */
 
 import React from 'react';
-import type { LlmInterpretationV1, NarrativeContradictionBundle } from '../investorInsightsUtils';
-import { getTopicContradiction } from '../investorInsightsUtils';
+import type { LlmInterpretationV1, NarrativeContradictionBundle } from '../../investorInsightsUtils';
+import { getTopicContradiction } from '../../investorInsightsUtils';
 import { CheckCircle2, AlertTriangle, HelpCircle, MessageSquare } from 'lucide-react';
 import { ContradictionCallout } from './ContradictionCallout';
 

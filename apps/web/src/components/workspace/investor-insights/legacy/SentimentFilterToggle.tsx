@@ -13,7 +13,7 @@
  */
 
 import React from 'react';
-import type { ExternalDiligenceBucket } from '../investorInsightsUtils';
+import type { ExternalDiligenceBucket } from '../../investorInsightsUtils';
 
 export type SentimentFilter = 'all' | 'positive' | 'risk' | 'mixed';
 

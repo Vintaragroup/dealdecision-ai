@@ -22,16 +22,16 @@ import {
 } from './investorInsightsUtils';
 
 // ── PR Refactor: new high-density decision surface components ─────────────────
-import { ExecutivePulse } from './investor-insights/ExecutivePulse';
-import { IntelligenceGrid } from './investor-insights/IntelligenceGrid';
-import { SwotPanel } from './investor-insights/SwotPanel';
-import { SynthesizedNarrative } from './investor-insights/SynthesizedNarrative';
+import { ExecutivePulse } from './investor-insights/legacy/ExecutivePulse';
+import { IntelligenceGrid } from './investor-insights/legacy/IntelligenceGrid';
+import { SwotPanel } from './investor-insights/legacy/SwotPanel';
+import { SynthesizedNarrative } from './investor-insights/legacy/SynthesizedNarrative';
 import {
   SentimentFilterToggle,
   applyBucketSentimentFilter,
-} from './investor-insights/SentimentFilterToggle';
-import type { SentimentFilter } from './investor-insights/SentimentFilterToggle';
-import { ExternalDiligenceSkeleton } from './investor-insights/ExternalDiligenceSkeleton';
+} from './investor-insights/legacy/SentimentFilterToggle';
+import type { SentimentFilter } from './investor-insights/legacy/SentimentFilterToggle';
+import { ExternalDiligenceSkeleton } from './investor-insights/legacy/ExternalDiligenceSkeleton';
 
 interface InvestorInsightsTabProps {
   darkMode: boolean;

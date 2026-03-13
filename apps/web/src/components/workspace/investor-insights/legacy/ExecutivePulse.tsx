@@ -11,7 +11,7 @@
  */
 
 import React from 'react';
-import type { LlmInterpretationV1, LlmInterpretationPosture } from '../investorInsightsUtils';
+import type { LlmInterpretationV1, LlmInterpretationPosture } from '../../investorInsightsUtils';
 import { StatusBadge } from './StatusBadge';
 import type { StatusBadgeVariant } from './StatusBadge';
 

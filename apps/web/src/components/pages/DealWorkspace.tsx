@@ -17,7 +17,7 @@ import { TemplateExportModal } from '../TemplateExportModal';
 import { AnalysisTab } from '../workspace/AnalysisTab';
 import { DataTab } from '../workspace/DataTab';
 import { DealAnalystTab } from '../deals/tabs/DealAnalystTab';
-import { InvestorInsightsTab } from '../workspace/InvestorInsightsTab';
+import { InvestorInsightsTab } from '../workspace/investor-insights/InvestorInsightsTab';
 import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
@@ -8826,7 +8826,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
             {/* Investor Insights Tab */}
             {activeTab === 'investor-insights' && (
-              <InvestorInsightsTab dealId={dealId || 'demo'} darkMode={darkMode} />
+              <InvestorInsightsTab dealId={dealId || 'demo'} dealName={displayName} darkMode={darkMode} />
             )}
 
             {/* Reports Generated Tab */}

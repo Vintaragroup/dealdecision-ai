@@ -12,9 +12,9 @@
  */
 
 import React, { useState } from 'react';
-import type { LlmInterpretationV1, ClaimCorroboration, NarrativeContradictionBundle, NarrativeContradictionV1 } from '../investorInsightsUtils';
-import { getTopicContradiction } from '../investorInsightsUtils';
-import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
+import type { LlmInterpretationV1, ClaimCorroboration, NarrativeContradictionBundle, NarrativeContradictionV1 } from '../../investorInsightsUtils';
+import { getTopicContradiction } from '../../investorInsightsUtils';
+import { Popover, PopoverContent, PopoverTrigger } from '../../../ui/popover';
 import { ExternalLink } from 'lucide-react';
 import { ContradictionCallout } from './ContradictionCallout';
 

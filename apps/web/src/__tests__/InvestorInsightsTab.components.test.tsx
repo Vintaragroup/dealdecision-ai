@@ -34,11 +34,11 @@ import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, expect, test, vi } from 'vitest';
 
-import { ExecutivePulse } from '../components/workspace/investor-insights/ExecutivePulse';
-import { SynthesizedNarrative } from '../components/workspace/investor-insights/SynthesizedNarrative';
-import { SentimentFilterToggle } from '../components/workspace/investor-insights/SentimentFilterToggle';
-import { ExternalDiligenceSkeleton } from '../components/workspace/investor-insights/ExternalDiligenceSkeleton';
-import { ContradictionCallout } from '../components/workspace/investor-insights/ContradictionCallout';
+import { ExecutivePulse } from '../components/workspace/investor-insights/legacy/ExecutivePulse';
+import { SynthesizedNarrative } from '../components/workspace/investor-insights/legacy/SynthesizedNarrative';
+import { SentimentFilterToggle } from '../components/workspace/investor-insights/legacy/SentimentFilterToggle';
+import { ExternalDiligenceSkeleton } from '../components/workspace/investor-insights/legacy/ExternalDiligenceSkeleton';
+import { ContradictionCallout } from '../components/workspace/investor-insights/legacy/ContradictionCallout';
 
 import type { LlmInterpretationV1 } from '../components/workspace/investorInsightsUtils';
 import type { NarrativeContradictionV1, NarrativeContradictionBundle } from '../components/workspace/investorInsightsUtils';

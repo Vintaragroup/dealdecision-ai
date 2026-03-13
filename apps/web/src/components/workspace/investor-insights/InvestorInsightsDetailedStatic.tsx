@@ -18,7 +18,9 @@ import type {
   InsightModuleData,
   EvidenceItem,
   ModuleId,
+  InvestorInsightsData,
 } from '../../../types/investor-insights';
+import { MODULE_ORDER } from '../../../types/investor-insights';
 import { ExecutiveInsightSection } from './ExecutiveInsightSection';
 import { VisualIntelligencePanel } from './VisualIntelligencePanel';
 import { InsightModuleCard } from './InsightModuleCard';
@@ -362,27 +364,36 @@ const MOCK_MODULES: { id: ModuleId; data: InsightModuleData; evidence: EvidenceI
 
 interface InvestorInsightsDetailedStaticProps {
   darkMode: boolean;
+  data: InvestorInsightsData;
 }
 
-export function InvestorInsightsDetailedStatic({ darkMode }: InvestorInsightsDetailedStaticProps) {
+export function InvestorInsightsDetailedStatic({ darkMode, data }: InvestorInsightsDetailedStaticProps) {
+  const liveModules = MODULE_ORDER
+    .filter((id) => data.analysis_modules[id] !== undefined)
+    .map((id) => ({
+      id,
+      module: data.analysis_modules[id]!,
+      evidence: data.evidence_base?.[id] ?? null,
+    }));
+
   return (
     <>
       {/* Executive Insight Section */}
       <ExecutiveInsightSection
         darkMode={darkMode}
-        data={MOCK_EXECUTIVE_SUMMARY}
-        signals={MOCK_SIGNALS}
+        data={data.executive_summary}
+        signals={data.deal_signals}
       />
 
       {/* Visual Intelligence Panel */}
-      <VisualIntelligencePanel darkMode={darkMode} data={MOCK_VISUAL_INTELLIGENCE} />
+      <VisualIntelligencePanel darkMode={darkMode} data={data.visual_intelligence} />
 
       {/* Analysis Module Cards — Fragment, modules rendered directly */}
-      {MOCK_MODULES.map(({ id, data, evidence }) => (
+      {liveModules.map(({ id, module, evidence }) => (
         <InsightModuleCard
           key={id}
           darkMode={darkMode}
-          module={data}
+          module={module}
           variant="expanded"
           evidence={evidence}
         />

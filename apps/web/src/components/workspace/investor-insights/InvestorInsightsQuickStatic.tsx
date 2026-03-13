@@ -20,6 +20,7 @@ import type {
   DealSignalsData,
   InsightModuleData,
   ModuleId,
+  InvestorInsightsData,
 } from '../../../types/investor-insights';
 import { ExecutiveInsightSection } from './ExecutiveInsightSection';
 import { QuickInsightCards } from './QuickInsightCards';
@@ -160,20 +161,21 @@ const MOCK_MODULES: Partial<Record<ModuleId, InsightModuleData>> = {
 
 interface InvestorInsightsQuickStaticProps {
   darkMode: boolean;
+  data: InvestorInsightsData;
 }
 
-export function InvestorInsightsQuickStatic({ darkMode }: InvestorInsightsQuickStaticProps) {
+export function InvestorInsightsQuickStatic({ darkMode, data }: InvestorInsightsQuickStaticProps) {
   return (
     <>
       {/* Executive Insight Section */}
       <ExecutiveInsightSection
         darkMode={darkMode}
-        data={MOCK_EXECUTIVE_SUMMARY}
-        signals={MOCK_SIGNALS}
+        data={data.executive_summary}
+        signals={data.deal_signals}
       />
 
       {/* Compact module score card grid */}
-      <QuickInsightCards darkMode={darkMode} modules={MOCK_MODULES} />
+      <QuickInsightCards darkMode={darkMode} modules={data.analysis_modules} />
     </>
   );
 }

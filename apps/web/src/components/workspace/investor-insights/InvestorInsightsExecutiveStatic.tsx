@@ -153,8 +153,9 @@ const MOCK_DATA: InvestorInsightsData = {
 
 interface InvestorInsightsExecutiveStaticProps {
   darkMode: boolean;
+  data: InvestorInsightsData;
 }
 
-export function InvestorInsightsExecutiveStatic({ darkMode }: InvestorInsightsExecutiveStaticProps) {
-  return <ExecutiveBrief darkMode={darkMode} data={MOCK_DATA} />;
+export function InvestorInsightsExecutiveStatic({ darkMode, data }: InvestorInsightsExecutiveStaticProps) {
+  return <ExecutiveBrief darkMode={darkMode} data={data} />;
 }

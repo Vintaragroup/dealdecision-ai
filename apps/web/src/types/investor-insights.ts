@@ -727,7 +727,11 @@ export function adaptReportToInsightsData(
   const deal_signals: DealSignalsData = {
     overall_score: scoring?.overall_limited_score ?? null,
     recommendation: llm ? postureToRecommendation(llm.posture) : null,
-    confidence_level: llm ? confidenceToLevel(llm.confidence) : 'low',
+    confidence_level: llm
+      ? confidenceToLevel(llm.confidence)
+      : (scoring?.scoring_confidence && scoring.scoring_confidence !== 'not_scoreable'
+          ? scoring.scoring_confidence
+          : 'low'),
   };
 
   // ── Executive summary ───────────────────────────────────────────────────────
@@ -761,14 +765,14 @@ export function adaptReportToInsightsData(
       confidence_score: scoring?.overall_limited_score ?? null,
     };
 
-    // Canonical market claims (TAM/SAM/SOM) are deterministic evidence; prefer as key_insight.
+    // Canonical market claims (TAM/SAM/SOM) are deterministic evidence; prefer as primary source.
     const canonicalMarket = buildMarketNarrativeFromCanonical(canonicalRows);
     analysis_modules.market_opportunity = {
       module_id: 'market_opportunity',
       title: MODULE_TITLES.market_opportunity,
       icon: 'Globe',
       score: scoring?.market_presence_score ?? null,
-      summary: llm.market_position,
+      summary: canonicalMarket ?? llm.market_position,
       key_insight: canonicalMarket ?? (llm.external_market_context || llm.market_position),
       strengths: [],
       risks: [],
@@ -805,13 +809,16 @@ export function adaptReportToInsightsData(
       confidence_score: scoring?.traction_signal_score ?? null,
     };
 
+    // Canonical financial signals (ARR/MRR/revenue/runway/burn/cash) are deterministic evidence;
+    // prefer over LLM financial_outlook narrative when computable values are available.
+    const canonicalFinancialLlm = buildFinancialNarrativeFromCanonical(canonicalRows);
     analysis_modules.financial_outlook = {
       module_id: 'financial_outlook',
       title: MODULE_TITLES.financial_outlook,
       icon: 'DollarSign',
       score: scoring?.deal_terms_score ?? null,
-      summary: llm.financial_outlook,
-      key_insight: llm.financial_outlook,
+      summary: canonicalFinancialLlm ?? llm.financial_outlook,
+      key_insight: canonicalFinancialLlm ?? llm.financial_outlook,
       strengths: [],
       risks: [],
       deeper_analysis: llm.capital_and_raise_interpretation || null,

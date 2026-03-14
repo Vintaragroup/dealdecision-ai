@@ -104,6 +104,74 @@ export function classifyReportQuality(
   return 'deterministic_only';
 }
 
+// ─── Report completeness classifier ─────────────────────────────────────────
+
+/**
+ * Classifies the *completeness* of a report for UI display (badges, banners).
+ *
+ * Four mutually exclusive states, checked top-to-bottom:
+ *   not_generated    — report absent, not started, failed, or running with no prior data
+ *   evidence_limited — extraction ran but LLM pipeline blocked (deterministic-only / evidence gate)
+ *   partial_analysis — at least one narrative section present, but not the full required set
+ *   full_analysis    — llm_interpretation_v1 + governed_summary_v1 + limited_scoring_v1 all present
+ *
+ * Signals checked:
+ *   status_summary.report_status         'deterministic_only' → evidence_limited
+ *   render_package['status']             'deterministic_only' → evidence_limited
+ *   status_summary.evidence_gate.passed  false → evidence_limited
+ *   render_package.evidence_gate.passed  false → evidence_limited
+ *   sections key presence                llm_interpretation_v1, governed_summary_v1, limited_scoring_v1
+ */
+export type ReportCompletenessClass =
+  | 'not_generated'    // no report / not started / failed / running without prior data
+  | 'evidence_limited' // deterministic extraction only; LLM blocked by evidence gate
+  | 'partial_analysis' // some narrative generated but not the full required section set
+  | 'full_analysis';   // llm_interpretation_v1 + governed_summary_v1 + limited_scoring_v1 all present
+
+export function classifyReportCompleteness(
+  report: InvestorInsightsReport | null,
+): ReportCompletenessClass {
+  if (!report) return 'not_generated';
+
+  const reportStatus = (report.status_summary?.report_status ?? report.status ?? '') as string;
+  const hasExistingPackage = report.status_summary?.has_existing_render_package ?? false;
+
+  // Terminal non-content states
+  if (reportStatus === 'failed' || reportStatus === 'not_started') return 'not_generated';
+  if (reportStatus === 'running' && !hasExistingPackage) return 'not_generated';
+
+  const sections = report.render_package?.sections ?? [];
+  if (sections.length === 0) return 'not_generated';
+
+  // Evidence-limited: LLM pipeline explicitly blocked by deterministic-only route or evidence gate
+  const rpStatus = (report.render_package as Record<string, unknown> | undefined)?.['status'] as string | undefined;
+  const isDeterministicOnly = reportStatus === 'deterministic_only' || rpStatus === 'deterministic_only';
+  const statusSummaryGateFailed = report.status_summary?.evidence_gate?.passed === false;
+  const packageGateFailed = report.render_package?.evidence_gate?.passed === false;
+
+  const hasLlm = sections.some((s) => s.key === 'llm_interpretation_v1');
+  const hasGoverned = sections.some((s) => s.key === 'governed_summary_v1');
+  const hasScoring = sections.some((s) => s.key === 'limited_scoring_v1');
+
+  if (isDeterministicOnly || statusSummaryGateFailed || packageGateFailed) {
+    // Even if some narrative snuck through, the gate verdict takes precedence
+    if (!hasLlm && !hasGoverned) return 'evidence_limited';
+    // Rare: gate says deterministic-only but narrative sections are present — treat as partial
+    return hasLlm && hasGoverned && hasScoring ? 'full_analysis' : 'partial_analysis';
+  }
+
+  // Full: all three core sections generated
+  if (hasLlm && hasGoverned && hasScoring) return 'full_analysis';
+
+  // Partial: at least one narrative section present
+  if (hasLlm || hasGoverned) return 'partial_analysis';
+
+  // Scoring-only without any narrative: deterministic path ran, LLM didn't produce output
+  if (hasScoring) return 'evidence_limited';
+
+  return 'not_generated';
+}
+
 // ─── Source-priority helpers ──────────────────────────────────────────────────
 
 /** Pick the first computable, non-empty canonical value for a category + field. */
@@ -386,6 +454,8 @@ export interface InvestorInsightsData {
   visual_intelligence: VisualIntelligenceData;
   critical_metrics: CriticalMetrics | null;
   evidence_base: Partial<Record<ModuleId, EvidenceItem[]>> | null;
+  /** Four-state completeness classification derived from the raw report's signals. */
+  completeness_class: ReportCompletenessClass;
 }
 
 // ─── Internal parse types (mirrored from worker, not exported from packages) ──
@@ -868,5 +938,6 @@ export function adaptReportToInsightsData(
       },
     },
     evidence_base: null,
+    completeness_class: classifyReportCompleteness(report),
   };
 }

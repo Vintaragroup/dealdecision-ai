@@ -948,3 +948,269 @@ export function adaptReportToInsightsData(
     completeness_class: classifyReportCompleteness(report),
   };
 }
+
+// ─── Investment Questions model ───────────────────────────────────────────────
+
+/**
+ * One of the five structured investor questions derived from the adapted report.
+ * Used by InvestmentQuestionsPanel to render the "Why did this deal score X?" section.
+ */
+export type InvestmentQuestionKey = 'market' | 'product' | 'traction' | 'team' | 'readiness';
+
+export interface InvestmentQuestion {
+  key: InvestmentQuestionKey;
+  title: string;
+  answer: string;
+  score: number | null;
+  confidence: 'high' | 'medium' | 'low' | null;
+  /** Content status of this dimension based on available evidence. */
+  status: 'strong' | 'partial' | 'limited' | 'missing';
+}
+
+export interface DeriveInvestmentQuestionsParams {
+  insightsData: InvestorInsightsData | null;
+  dealScore: number | null;
+  scoreBand: string | null;
+  snapshotSummary: string | null;
+}
+
+const _WEAK_ANSWER_RE = /^(not\s+disclosed|not\s+available|n\/a|none|unknown|—|-)$/i;
+function _isWeakAnswer(s: string | null | undefined): boolean {
+  if (!s) return true;
+  return _WEAK_ANSWER_RE.test(s.trim());
+}
+
+function _truncate(s: string, max = 220): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max).trimEnd() + '…';
+}
+
+/**
+ * Derive the five structured investor questions from current system signals.
+ *
+ * Signal priority for each question:
+ *  market     — market_presence_score → canonical TAM/SAM → market key_insight
+ *  product    — product_technology.summary (canonical-priority) → governed strengths
+ *  traction   — traction_signal_score → canonical ARR/revenue → traction key_insight
+ *  team       — governed strengths/risks mentioning team; always conservative (no score)
+ *  readiness  — dealScore + scoreBand + completeness_class + confidence_level
+ *
+ * No LLM calls, no new architecture. Pure derivation from adapted report output.
+ */
+export function deriveInvestmentQuestions({
+  insightsData,
+  dealScore,
+  scoreBand,
+  snapshotSummary,
+}: DeriveInvestmentQuestionsParams): InvestmentQuestion[] {
+  // ── Q1: Market Opportunity ────────────────────────────────────────────────
+  const marketQuestion = ((): InvestmentQuestion => {
+    const score = insightsData?.analysis_modules.market_opportunity?.score ?? null;
+    const keyInsight = insightsData?.analysis_modules.market_opportunity?.key_insight ?? null;
+    const tam = insightsData?.critical_metrics?.market?.tam ?? null;
+
+    let answer: string;
+    let status: InvestmentQuestion['status'];
+
+    if (score !== null && score >= 70) {
+      // Prefer keyInsight (canonical TAM·SAM·SOM narrative) over bare TAM-only string.
+      answer = !_isWeakAnswer(keyInsight)
+        ? `Well-evidenced market opportunity. ${_truncate(keyInsight!, 180)}`
+        : `Well-evidenced market opportunity${tam ? ` — TAM: ${tam}` : ''}.`;
+      status = 'strong';
+    } else if (score !== null && score >= 40) {
+      // Include canonical narrative when available; it's richer than just TAM.
+      const qualifier = !_isWeakAnswer(keyInsight)
+        ? ` ${_truncate(keyInsight!, 140)}`
+        : (tam ? ` TAM: ${tam}.` : '');
+      answer = `Market opportunity is present but only partially evidenced.${qualifier}`;
+      status = 'partial';
+    } else if (score !== null) {
+      answer = !_isWeakAnswer(keyInsight)
+        ? _truncate(keyInsight!)
+        : 'Market evidence is limited or not independently verifiable from submitted materials.';
+      status = 'limited';
+    } else if (tam || !_isWeakAnswer(keyInsight)) {
+      answer = !_isWeakAnswer(keyInsight)
+        ? _truncate(keyInsight!)
+        : `Market claim present — TAM: ${tam}. Scoring not yet available.`;
+      status = 'partial';
+    } else {
+      answer = 'Insufficient market evidence available in submitted materials.';
+      status = 'missing';
+    }
+
+    return { key: 'market', title: 'Is this a real market opportunity?', answer, score, confidence: null, status };
+  })();
+
+  // ── Q2: Product Differentiation ───────────────────────────────────────────
+  const productQuestion = ((): InvestmentQuestion => {
+    const summary = insightsData?.analysis_modules.product_technology?.summary ?? null;
+    const strengths = insightsData?.executive_summary.top_strengths ?? [];
+    const productStrengths = strengths.filter((s) =>
+      /product|differentiat|tech|platform|unique|moat|ip\b|proprietary|patent/i.test(s),
+    );
+
+    let answer: string;
+    let status: InvestmentQuestion['status'];
+
+    if (!_isWeakAnswer(summary)) {
+      answer = _truncate(summary!);
+      status = 'partial';
+    } else if (productStrengths.length > 0) {
+      answer = _truncate(productStrengths[0]);
+      status = 'partial';
+    } else if (insightsData) {
+      answer = 'Product differentiation is only partially supported by available materials.';
+      status = 'partial';
+    } else {
+      answer = 'Product differentiation signals are not clearly evidenced in available materials.';
+      status = 'missing';
+    }
+
+    return { key: 'product', title: 'Is the product actually differentiated?', answer, score: null, confidence: null, status };
+  })();
+
+  // ── Q3: Traction & Validation ─────────────────────────────────────────────
+  const tractionQuestion = ((): InvestmentQuestion => {
+    const score = insightsData?.analysis_modules.traction_growth?.score ?? null;
+    const arr = insightsData?.critical_metrics?.financial?.current_arr ?? null;
+    const keyInsight = insightsData?.analysis_modules.traction_growth?.key_insight ?? null;
+
+    let answer: string;
+    let status: InvestmentQuestion['status'];
+
+    if (score !== null && score >= 70) {
+      // Prefer keyInsight (canonical traction narrative) to avoid duplicating ARR values
+      // that are already embedded in the narrative string.
+      answer = !_isWeakAnswer(keyInsight)
+        ? `Strong traction signals. ${_truncate(keyInsight!, 180)}`
+        : arr
+          ? `Strong traction signals. ARR: ${arr}.`
+          : 'Strong traction signals.';
+      status = 'strong';
+    } else if (score !== null && score >= 40) {
+      // Include the canonical narrative (Revenue/Growth) when available — it's richer than arr alone.
+      answer = !_isWeakAnswer(keyInsight)
+        ? `Early-stage traction present. ${_truncate(keyInsight!, 160)}`
+        : arr
+          ? `Early-stage traction with ${arr} ARR.`
+          : 'Early-stage traction validated.';
+      status = 'partial';
+    } else if (score !== null) {
+      answer = !_isWeakAnswer(keyInsight)
+        ? _truncate(keyInsight!)
+        : 'Limited validation from available traction signals.';
+      status = 'limited';
+    } else if (arr || !_isWeakAnswer(keyInsight)) {
+      answer = !_isWeakAnswer(keyInsight)
+        ? _truncate(keyInsight!)
+        : `Revenue signal present — ARR: ${arr}. Scoring not yet available.`;
+      status = 'partial';
+    } else {
+      answer = 'Traction signals are insufficient to evaluate validation from available materials.';
+      status = 'missing';
+    }
+
+    return { key: 'traction', title: 'Is there real traction or validation?', answer, score, confidence: null, status };
+  })();
+
+  // ── Q4: Team Strength ─────────────────────────────────────────────────────
+  // No score — team scoring is a deferred category. Always conservative.
+  const teamQuestion = ((): InvestmentQuestion => {
+    const strengths = insightsData?.executive_summary.top_strengths ?? [];
+    const risks = insightsData?.executive_summary.top_risks ?? [];
+    const TEAM_RE = /team|founder|ceo|cto|coo|chief|leadership|experience|background|track\s+record/i;
+    const teamStrengths = strengths.filter((s) => TEAM_RE.test(s));
+    const teamRisks = risks.filter((r) => TEAM_RE.test(r));
+
+    let answer: string;
+    let status: InvestmentQuestion['status'];
+
+    if (!insightsData) {
+      answer = 'Insufficient analysis available to evaluate team strength.';
+      status = 'missing';
+    } else if (teamRisks.length > 0 && teamStrengths.length === 0) {
+      answer = `Team strength only partially evidenced. Key concern: ${_truncate(teamRisks[0], 180)}`;
+      status = 'limited';
+    } else if (teamStrengths.length > 0) {
+      answer = _truncate(teamStrengths[0], 220);
+      if (teamRisks.length > 0) answer += ` Note: ${_truncate(teamRisks[0], 120)}`;
+      status = 'partial';
+    } else {
+      answer = 'Team strength is only partially supported by available materials. Structured founder data not extracted.';
+      status = 'partial';
+    }
+
+    return { key: 'team', title: 'Is this team capable of winning?', answer, score: null, confidence: null, status };
+  })();
+
+  // ── Q5: Investment Readiness ─────────────────────────────────────────────
+  const readinessQuestion = ((): InvestmentQuestion => {
+    const score = insightsData?.deal_signals.overall_score ?? dealScore;
+    const completeness = insightsData?.completeness_class ?? 'not_generated';
+    const confidenceLevel = insightsData?.deal_signals.confidence_level ?? null;
+    const recommendation = insightsData?.deal_signals.recommendation ?? null;
+
+    let answer: string;
+    let status: InvestmentQuestion['status'];
+
+    if (!score) {
+      answer = 'Not yet scoreable — insufficient evidence to make a venture readiness determination.';
+      status = 'missing';
+    } else if (score >= 70) {
+      const bandStr = scoreBand ? ` · ${scoreBand}` : '';
+      answer = snapshotSummary
+        ? _truncate(snapshotSummary)
+        : `Strong deal score (${score}/100${bandStr}). Warrants active diligence.`;
+      status = 'strong';
+    } else if (score >= 50) {
+      const bandStr = scoreBand ? ` · ${scoreBand}` : '';
+      answer = snapshotSummary
+        ? _truncate(snapshotSummary)
+        : `Moderate score (${score}/100${bandStr}). Promising but evidence remains limited.`;
+      status = 'partial';
+    } else {
+      answer = `Score: ${score}/100${scoreBand ? ` · ${scoreBand}` : ''}. Additional evidence required before making a venture decision.`;
+      status = 'limited';
+    }
+
+    // Readiness confidence follows deal_signals.confidence_level when available
+    const confidence: InvestmentQuestion['confidence'] =
+      confidenceLevel === 'high' ? 'high'
+      : confidenceLevel === 'medium' ? 'medium'
+      : score && completeness !== 'not_generated' ? 'low'
+      : null;
+
+    // Append recommendation flavour if present and answer doesn't already include it
+    if (recommendation && !answer.includes('diligence') && !answer.includes('Warrants')) {
+      const recMap: Record<string, string> = {
+        strong_invest: 'Recommendation: Strong invest signal.',
+        invest: 'Recommendation: Invest signal.',
+        investigate: 'Warrants further investigation.',
+        caution: 'Approach with caution.',
+        pass: 'Current signals suggest a pass.',
+      };
+      const recNote = recMap[recommendation];
+      if (recNote) answer += ` ${recNote}`;
+    }
+
+    return { key: 'readiness', title: 'Is this a good venture bet right now?', answer, score, confidence, status };
+  })();
+
+  return [marketQuestion, productQuestion, tractionQuestion, teamQuestion, readinessQuestion];
+}
+
+/**
+ * Maps ReportCompletenessClass to a user-facing label for the Analysis Quality badge.
+ */
+export function completenessClassLabel(c: ReportCompletenessClass): string {
+  const map: Record<ReportCompletenessClass, string> = {
+    full_analysis: 'Full Analysis',
+    partial_analysis: 'Partial Analysis',
+    evidence_limited: 'Evidence Limited',
+    not_generated: 'Not Generated',
+  };
+  return map[c] ?? 'Unknown';
+}
+

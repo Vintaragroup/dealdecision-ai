@@ -18,6 +18,8 @@ import { AnalysisTab } from '../workspace/AnalysisTab';
 import { DataTab } from '../workspace/DataTab';
 import { DealAnalystTab } from '../deals/tabs/DealAnalystTab';
 import { InvestorInsightsTab } from '../workspace/investor-insights/InvestorInsightsTab';
+import { InvestmentQuestionsPanel } from '../workspace/InvestmentQuestionsPanel';
+import { adaptReportToInsightsData } from '../../types/investor-insights';
 import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
@@ -3686,6 +3688,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     overlayVM.facts.raise_terms,
     governedInterpretationText,
   ]);
+
+  const overviewInsightsData = useMemo(() => {
+    if (!investorInsights.report) return null;
+    return adaptReportToInsightsData(investorInsights.report, displayName);
+  }, [investorInsights.report, displayName]);
 
   const kpiMissingTooltip = 'Not extracted from evidence';
   const overlayKpiTiles = useMemo(() => {
@@ -7844,6 +7851,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             {/* Overview Tab */}
             {activeTab === 'overview' && (
               <div className="space-y-6">
+                <InvestmentQuestionsPanel
+                  darkMode={darkMode}
+                  insightsData={overviewInsightsData}
+                  dealScore={reportView.applied ? reportView.score : null}
+                  scoreBand={scoreExplanationV1?.band ?? null}
+                  dealScoreLabel={canonicalScoreLabel}
+                  snapshotSummary={scoreExplanationV1?.snapshot_summary ?? null}
+                  topSectionConfidence={topSectionConfidence}
+                />
                 {hasGovernedOverview ? (
                   <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
                     <div className="flex items-start justify-between gap-3">

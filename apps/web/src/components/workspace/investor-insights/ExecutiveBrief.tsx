@@ -51,7 +51,7 @@ export function ExecutiveBrief({ darkMode, data }: ExecutiveBriefProps) {
               size={96}
               strokeWidth={8}
               darkMode={darkMode}
-              label="Overall"
+              label="Insights Score"
             />
           </div>
 

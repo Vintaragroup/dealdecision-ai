@@ -20,7 +20,7 @@
  */
 
 import type { FinancialFactV1 } from "@dealdecision/core";
-import type { InsightSlotInputs, ThesisInputsV1 } from "./stages/stage-2-deterministic";
+import type { InsightSlotInputs, ThesisInputsV1, DealTractionFact } from "./stages/stage-2-deterministic";
 import { extractPhase2Result } from "./stages/stage-2-deterministic";
 import type { RenderPackage } from "../../contracts/investor-insights/schemas";
 
@@ -64,14 +64,38 @@ interface CategoryScore {
 /**
  * Parse a money string like "$2M", "$500K", "$1.5B", "$5.6MM", "€10B"
  * to a base dollar value.  Returns null on parse failure.
+ *
+ * Range notation: "$600-900M", "$600 – $900M", "$600 to $900M"
+ * Extracts the lower bound and inherits the magnitude suffix from the upper
+ * bound when the lower bound has no suffix.  Conservative: returns the smaller
+ * value so that plausibility guards are not tricked upward.
  */
 export function parseMoneyString(s: string | null | undefined): number | null {
 	if (!s) return null;
+	const clean = s.replace(/,/g, "");
+
+	// Range detection: "$600-900M", "$600 – $900M", "$600 to $900M"
+	// Matches: lower-bound (no suffix) – separator – upper-bound WITH suffix.
+	// Lower bound inherits the upper-bound suffix.
+	const rangeM =
+		/(?:[€£$]|USD|EUR|GBP)?\s*([\d]+(?:\.\d+)?)\s*(?:[-–—]|to)\s*(?:[€£$]|USD|EUR|GBP)?\s*\d+(?:\.\d+)?\s*(MM|BB|[KkMmBbTt])\b/i.exec(
+			clean
+		);
+	if (rangeM && rangeM[1] && rangeM[2]) {
+		const lowerRaw = parseFloat(rangeM[1]);
+		const suffix = rangeM[2].toUpperCase();
+		if (isFinite(lowerRaw) && lowerRaw > 0) {
+			const multipliers: Record<string, number> = { K: 1e3, M: 1e6, MM: 1e6, B: 1e9, BB: 1e9, T: 1e12 };
+			return lowerRaw * (multipliers[suffix] ?? 1);
+		}
+	}
+
+	// Standard single-value parsing
 	// Match: optional currency prefix, number, optional magnitude suffix
 	// Handles: $, €, £, USD, EUR, GBP, and MM/BB double-letter suffixes
 	const m =
 		/(?:\$|€|£|USD|EUR|GBP)?\s*([\d,]+(?:\.\d+)?)\s*(MM|BB|[KkMmBbTt])?(?:\b|$)/i.exec(
-			s.replace(/,/g, "")
+			clean
 		);
 	if (!m || !m[1]) return null;
 	const raw = parseFloat(m[1].replace(/,/g, ""));
@@ -233,10 +257,33 @@ function scoreDealTerms(thesis: ThesisInputsV1): CategoryScore {
 // ─── Category C: Traction Existence Signal ────────────────────────────────────
 
 const STRONG_TRACTION_SCOPES = new Set(["historical", "current", "ttm"]);
+/**
+ * Canonical metric keys accepted from financial_facts_v1 workbook facts.
+ * Intentionally narrow: prevents OCR noise keys (e.g., "other_metric",
+ * sentence fragments) from influencing traction scoring.
+ */
 const TRACTION_METRIC_KEYS = new Set(["revenue", "arr", "mrr"]);
 
+/** Revenue/ARR/MRR label patterns in deal_facts_v1.traction_metric. */
+const DEAL_FACT_REVENUE_LABELS = /^(?:arr|mrr|revenue)\b/i;
+/** Growth label patterns in deal_facts_v1.traction_metric. */
+const DEAL_FACT_GROWTH_LABELS = /^growth\b/i;
+
 /**
- * Scores traction using workbook facts (XLSX) first, then text-extracted thesis fields.
+ * Type-guard: returns true when a DealTractionFact value is a money fact
+ * (has a finite positive numeric value with kind="money").
+ */
+function isDealMoneyFact(
+	v: DealTractionFact["value"]
+): v is { kind: "money"; value: number; currency?: string } {
+	if (!v || typeof v !== "object") return false;
+	const o = v as { kind?: unknown; value?: unknown };
+	return o.kind === "money" && typeof o.value === "number" && isFinite(o.value as number) && (o.value as number) > 0;
+}
+
+/**
+ * Scores traction using workbook facts (XLSX) first, then deal_facts_v1
+ * structured traction facts, then text-extracted thesis fields.
  *
  * Workbook facts (strong signal, scope = historical/current/ttm):
  *   - First qualifying metric: +50 pts
@@ -245,7 +292,12 @@ const TRACTION_METRIC_KEYS = new Set(["revenue", "arr", "mrr"]);
  * Workbook facts (weak signal, scope = projected/scenario):
  *   - First projected metric: +10 pts (half-credit; projections ≠ current actuals)
  *
- * Text-extracted fallback (when no workbook signals):
+ * deal_facts_v1 structured traction (when no workbook strong signals):
+ *   - First revenue/arr/mrr money fact (medium+ confidence): +40 pts
+ *   - Second such fact: +15 pts
+ *   - Growth-labeled fact: +15 pts bonus
+ *
+ * Text-extracted fallback (when no workbook or deal_fact signals):
  *   - thesis.revenue_value / .arr_value / .mrr_value present: +40 pts
  *
  * Growth signal bonus (workbook, metric_key = growth_rate/retention_pct/churn_pct):
@@ -255,7 +307,8 @@ const TRACTION_METRIC_KEYS = new Set(["revenue", "arr", "mrr"]);
  */
 function scoreTractionSignal(
 	thesis: ThesisInputsV1,
-	workbookFacts: FinancialFactV1[]
+	workbookFacts: FinancialFactV1[],
+	dealTractionFacts: DealTractionFact[]
 ): CategoryScore {
 	const notes: string[] = [];
 	let raw = 0;
@@ -304,38 +357,72 @@ function scoreTractionSignal(
 		notes.push("growth_metric: detected in workbook facts +15pts");
 	}
 
-	// Fallback to text-extracted thesis fields when no workbook signals were found
-	if (strongCount === 0 && !hasProjectedFact) {
-		const textHits: string[] = [];
-		if (thesis.revenue_value !== null) textHits.push(`revenue_value: "${thesis.revenue_value}"`);
-		if (thesis.arr_value !== null) textHits.push(`arr_value: "${thesis.arr_value}"`);
-		if (thesis.mrr_value !== null) textHits.push(`mrr_value: "${thesis.mrr_value}"`);
+	let dealFactsContributed = false;
 
-		if (textHits.length > 0) {
+	if (strongCount === 0 && !hasProjectedFact) {
+		// ── deal_facts_v1 structured traction (preferred over raw text) ────────
+		const revFacts = dealTractionFacts.filter(
+			(f) =>
+				f.confidence !== "low" &&
+				DEAL_FACT_REVENUE_LABELS.test(f.label) &&
+				isDealMoneyFact(f.value)
+		);
+		const growthFacts = dealTractionFacts.filter(
+			(f) =>
+				f.confidence !== "low" &&
+				DEAL_FACT_GROWTH_LABELS.test(f.label) &&
+				typeof (f.value as { value?: unknown }).value === "number"
+		);
+
+		if (revFacts.length > 0) {
 			raw += 40;
-			for (const h of textHits) notes.push(`text_signal: ${h}`);
-		} else {
-			// Check completeness row as last resort
-			const tractionRow = thesis.completeness.find((r) => r.category === "traction_signal");
-			const tractionStatus = tractionRow?.status ?? "Missing";
-			if (tractionStatus === "Present" || tractionStatus === "Conflicting") {
-				raw += 20;
-				notes.push(
-					`traction_signal completeness: ${tractionStatus} (no extractable value — completeness signal only)`
-				);
+			dealFactsContributed = true;
+			const sample = revFacts[0]!;
+			notes.push(`deal_fact: ${sample.label} [confidence=${sample.confidence}] +40pts`);
+			if (revFacts.length > 1) {
+				raw += 15;
+				notes.push(`deal_fact: ${revFacts.length} revenue/arr/mrr signals +15pts`);
+			}
+		}
+		if (growthFacts.length > 0) {
+			raw += 15;
+			dealFactsContributed = true;
+			notes.push(`deal_fact: ${growthFacts[0]!.label} [growth signal] +15pts`);
+		}
+
+		if (!dealFactsContributed) {
+			// ── Text-extracted fallback ──────────────────────────────────────────
+			const textHits: string[] = [];
+			if (thesis.revenue_value !== null) textHits.push(`revenue_value: "${thesis.revenue_value}"`);
+			if (thesis.arr_value !== null) textHits.push(`arr_value: "${thesis.arr_value}"`);
+			if (thesis.mrr_value !== null) textHits.push(`mrr_value: "${thesis.mrr_value}"`);
+
+			if (textHits.length > 0) {
+				raw += 40;
+				for (const h of textHits) notes.push(`text_signal: ${h}`);
 			} else {
-				return {
-					score: 0,
-					confidence: "low",
-					notes: ["No traction signals detected in any source"],
-				};
+				// Check completeness row as last resort
+				const tractionRow = thesis.completeness.find((r) => r.category === "traction_signal");
+				const tractionStatus = tractionRow?.status ?? "Missing";
+				if (tractionStatus === "Present" || tractionStatus === "Conflicting") {
+					raw += 20;
+					notes.push(
+						`traction_signal completeness: ${tractionStatus} (no extractable value — completeness signal only)`
+					);
+				} else {
+					return {
+						score: 0,
+						confidence: "low",
+						notes: ["No traction signals detected in any source"],
+					};
+				}
 			}
 		}
 	}
 
 	const score = Math.round(Math.min(100, Math.max(0, raw)));
 	const confidence: "high" | "medium" | "low" =
-		strongCount >= 2 ? "high" : strongCount >= 1 ? "medium" : "low";
+		strongCount >= 2 ? "high" : strongCount >= 1 || dealFactsContributed ? "medium" : "low";
 
 	return { score, confidence, notes };
 }
@@ -429,7 +516,12 @@ const CATEGORY_WEIGHTS = {
 /**
  * Compute overall score as a weighted average of non-null categories.
  * Requires ≥2 scoreable categories; otherwise returns null / "not_scoreable".
- * Overall confidence = weakest confidence across scored categories.
+ *
+ * Overall confidence: derived from the weakest of the substantive signal
+ * categories (deal_terms, traction, market) rather than ALL four.  Including
+ * completeness confidence would structurally lock every deal to "low" because
+ * the completeness confidence is driven by canonical field coverage_ratio,
+ * which is nearly always < 0.5 across the full deal corpus.
  */
 function computeOverall(cats: {
 	completeness: CategoryScore;
@@ -474,10 +566,17 @@ function computeOverall(cats: {
 	const rawOverall = totalWeight > 0 ? weightedSum / totalWeight : 0;
 	const score = Math.round(Math.min(100, Math.max(0, rawOverall)));
 
-	// Overall confidence: derived from weakest category confidence
+	// Overall confidence: use the minimum of deal_terms + traction + market
+	// (the substantive signal categories).  Completeness confidence is excluded
+	// because it is driven by canonical field coverage_ratio which is structurally
+	// low across all current deals regardless of deal quality.
+	const SIGNAL_CATEGORIES = new Set(["deal_terms", "traction", "market"]);
+	const signalEntries = scoredEntries.filter(([name]) => SIGNAL_CATEGORIES.has(name));
+	const rankSource = signalEntries.length > 0 ? signalEntries : scoredEntries;
+
 	const confidenceRank = { high: 2, medium: 1, low: 0 };
 	const minRank = Math.min(
-		...scoredEntries.map(([, cat]) => confidenceRank[cat.confidence])
+		...rankSource.map(([, cat]) => confidenceRank[cat.confidence])
 	);
 	const confidenceMap: Record<number, "high" | "medium" | "low"> = {
 		2: "high",
@@ -509,7 +608,7 @@ export function computeLimitedScoringV1(
 
 	const completeness = scoreCompleteness(thesis);
 	const dealTerms = scoreDealTerms(thesis);
-	const traction = scoreTractionSignal(thesis, inputs.workbookFacts);
+	const traction = scoreTractionSignal(thesis, inputs.workbookFacts, inputs.dealTractionFacts ?? []);
 	const market = scoreMarketPresence(thesis, phase2.fields);
 
 	const overall = computeOverall({

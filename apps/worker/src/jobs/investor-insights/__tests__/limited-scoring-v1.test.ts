@@ -149,6 +149,12 @@ describe("parseMoneyString", () => {
 		// Parsing grabs the first number token
 		expect(parseMoneyString("raising $3M Seed")).toBe(3_000_000);
 	});
+	// Range notation — extracts lower bound, inherits upper-bound suffix
+	it("parses range $600-900M → 600M (lower bound)", () => expect(parseMoneyString("$600-900M")).toBe(600_000_000));
+	it("parses range $600 – $900M → 600M", () => expect(parseMoneyString("$600 \u2013 $900M")).toBe(600_000_000));
+	it("parses range $600 to $900M → 600M", () => expect(parseMoneyString("$600 to $900M")).toBe(600_000_000));
+	it("parses range $1-2B → 1B (lower bound)", () => expect(parseMoneyString("$1-2B")).toBe(1_000_000_000));
+	it("non-range $600M is unaffected by range detection", () => expect(parseMoneyString("$600M")).toBe(600_000_000));
 });
 
 // ─── isRaiseAmountPlausible ────────────────────────────────────────────────────

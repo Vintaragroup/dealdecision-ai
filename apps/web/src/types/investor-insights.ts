@@ -14,22 +14,27 @@ import type { InvestorInsightsReport } from '../lib/apiClient';
 import type { UseInvestorInsightsStatus } from '../hooks/useInvestorInsights';
 import {
   parseLlmInterpretationBody,
+  parseGovernedSummaryBody,
+  parseCanonicalFieldsBody,
   type LlmInterpretationV1,
   type LlmInterpretationPosture,
   type LlmInterpretationConfidence,
+  type GovernedSummaryV1,
+  type CanonicalFieldRow,
 } from '../components/workspace/investorInsightsUtils';
 
 // ─── UI state machine ─────────────────────────────────────────────────────────
 
 export type InsightsState =
-  | 'initial'         // hook idle, nothing fetched yet
-  | 'loading'         // first-load fetch in progress
-  | 'error'           // fetch failed with no prior data
-  | 'empty'           // fetch succeeded but no sections to display
-  | 'stale_data'      // data present but aged (see tab auto-refresh)
-  | 'partial_error'   // background refresh failed but prior data available
-  | 'partial_loading' // background refresh in progress with prior data shown
-  | 'ready';          // data present and up-to-date
+  | 'initial'            // hook idle, nothing fetched yet
+  | 'loading'            // first-load fetch in progress
+  | 'error'              // fetch failed with no prior data
+  | 'empty'              // fetch succeeded but no sections to display
+  | 'stale_data'         // data present but aged (see tab auto-refresh)
+  | 'partial_error'      // background refresh failed but prior data available
+  | 'partial_loading'    // background refresh in progress with prior data shown
+  | 'deterministic_only' // sections present but no llm_interpretation_v1 (evidence-gate limited)
+  | 'ready';             // sections present including llm_interpretation_v1
 
 export function deriveInsightsState(
   status: UseInvestorInsightsStatus,
@@ -43,9 +48,156 @@ export function deriveInsightsState(
     return report !== null ? 'partial_error' : 'error';
   }
   // status === 'ready'
-  const hasSections = (report?.render_package?.sections?.length ?? 0) > 0;
-  if (!hasSections) return 'empty';
-  return 'ready';
+  const sections = report?.render_package?.sections ?? [];
+  if (sections.length === 0) return 'empty';
+  const hasLlm = sections.some((s) => s.key === 'llm_interpretation_v1');
+  return hasLlm ? 'ready' : 'deterministic_only';
+}
+
+// ─── Report quality state classifier ────────────────────────────────────────
+
+/**
+ * Describes the *content quality* of a report — what sections are present and
+ * usable — independent of the fetch/hook interaction state in InsightsState.
+ *
+ * Used by the adapter's source-priority logic to select the strongest available
+ * source for each module.
+ *
+ * Detection rules (checked top-to-bottom):
+ *   none              — report is null
+ *   not_started       — report_status = 'not_started' or sections array is empty
+ *   running           — report_status = 'running' or analysis_status = 'running'
+ *   failed            — report_status = 'failed'
+ *   governed_usable   — governed_summary_v1 section present (primary rendering foundation)
+ *   partial           — llm_interpretation_v1 present but governed_summary_v1 absent
+ *   deterministic_only— only scoring/canonical sections; no narrative at all
+ */
+export type ReportQualityState =
+  | 'none'               // report === null
+  | 'not_started'        // no sections generated yet
+  | 'running'            // generation actively in progress
+  | 'deterministic_only' // scoring/canonical only; no narrative sections
+  | 'governed_usable'    // governed_summary_v1 present; primary rendering foundation
+  | 'partial'            // llm present but governed absent (edge case)
+  | 'failed';            // generation failed
+
+export function classifyReportQuality(
+  report: InvestorInsightsReport | null,
+): ReportQualityState {
+  if (!report) return 'none';
+
+  const reportStatus = (report.status_summary?.report_status ?? report.status ?? '') as string;
+  const analysisStatus = (report.status_summary?.analysis_status ?? '') as string;
+
+  if (reportStatus === 'failed') return 'failed';
+  if (reportStatus === 'running' || analysisStatus === 'running') return 'running';
+  if (reportStatus === 'not_started') return 'not_started';
+
+  const sections = report.render_package?.sections ?? [];
+  if (sections.length === 0) return 'not_started';
+
+  const hasGoverned = sections.some((s) => s.key === 'governed_summary_v1');
+  const hasLlm = sections.some((s) => s.key === 'llm_interpretation_v1');
+
+  if (hasGoverned) return 'governed_usable'; // governed present — can render narrative
+  if (hasLlm) return 'partial';              // llm only, no governed (edge case)
+  return 'deterministic_only';
+}
+
+// ─── Source-priority helpers ──────────────────────────────────────────────────
+
+/** Pick the first computable, non-empty canonical value for a category + field. */
+function canonicalValue(
+  rows: CanonicalFieldRow[],
+  category: string,
+  field: string,
+): string | null {
+  return (
+    rows.find(
+      (r) => r.category === category && r.field === field && r.computability === 'Computable' && !!r.value,
+    )?.value ?? null
+  );
+}
+
+/**
+ * Patterns that identify obviously weak or placeholder text.
+ * Used to suppress weak narrative when stronger evidence is available.
+ */
+const WEAK_TEXT_RE = /^(not\s+disclosed|not\s+available|n\/a|none|no\s+data|\u2014|-)$/i;
+
+function isWeakText(s: string | null | undefined): boolean {
+  if (s == null) return true;
+  return WEAK_TEXT_RE.test(s.trim());
+}
+
+/**
+ * Build a financial summary sentence from computable canonical fields.
+ * Preferred source order: ARR/MRR/Revenue → growth_rate → runway → burn → cash.
+ * Returns null when no computable financial/revenue signal exists.
+ */
+function buildFinancialNarrativeFromCanonical(rows: CanonicalFieldRow[]): string | null {
+  const parts: string[] = [];
+  const arr = canonicalValue(rows, 'traction_signal', 'arr_value');
+  const mrr = canonicalValue(rows, 'traction_signal', 'mrr_value');
+  const rev = canonicalValue(rows, 'traction_signal', 'revenue_value');
+  const growth = canonicalValue(rows, 'traction_signal', 'growth_rate');
+  const runway = canonicalValue(rows, 'financial_health', 'runway_months');
+  const burn = canonicalValue(rows, 'financial_health', 'net_cash_burn_monthly');
+  const cash = canonicalValue(rows, 'financial_health', 'cash_balance');
+
+  if (arr) parts.push(`ARR: ${arr}`);
+  else if (mrr) parts.push(`MRR: ${mrr}`);
+  else if (rev) parts.push(`Revenue: ${rev}`);
+  if (growth) parts.push(`Growth: ${growth}`);
+  if (runway) parts.push(`Runway: ${runway} months`);
+  if (burn) parts.push(`Burn: ${burn}/mo`);
+  if (cash) parts.push(`Cash: ${cash}`);
+
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+/**
+ * Build a traction summary from computable canonical fields.
+ * Preferred source order: ARR/MRR/Revenue → growth_rate → customer_count → retention.
+ * Returns null when no computable traction signal exists.
+ */
+function buildTractionNarrativeFromCanonical(rows: CanonicalFieldRow[]): string | null {
+  const parts: string[] = [];
+  const arr = canonicalValue(rows, 'traction_signal', 'arr_value');
+  const mrr = canonicalValue(rows, 'traction_signal', 'mrr_value');
+  const rev = canonicalValue(rows, 'traction_signal', 'revenue_value');
+  const growth = canonicalValue(rows, 'traction_signal', 'growth_rate');
+  const customers = canonicalValue(rows, 'traction_signal', 'customer_count');
+  const retention = canonicalValue(rows, 'saas_metrics', 'retention_pct');
+
+  if (arr) parts.push(`ARR: ${arr}`);
+  else if (mrr) parts.push(`MRR: ${mrr}`);
+  else if (rev) parts.push(`Revenue: ${rev}`);
+  if (growth) parts.push(`Growth: ${growth}`);
+  if (customers) parts.push(`Customers: ${customers}`);
+  if (retention) parts.push(`Retention: ${retention}`);
+
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
+/**
+ * Build a market claims summary from computable canonical fields.
+ * Preferred source order: TAM → SAM → SOM → CAGR.
+ * Returns null when no computable market claim exists.
+ */
+function buildMarketNarrativeFromCanonical(rows: CanonicalFieldRow[]): string | null {
+  const parts: string[] = [];
+  const tam = canonicalValue(rows, 'market_claims', 'tam_value');
+  const sam = canonicalValue(rows, 'market_claims', 'sam_value');
+  const som = canonicalValue(rows, 'market_claims', 'som_value');
+  const cagr = canonicalValue(rows, 'market_claims', 'market_cagr');
+
+  if (tam) parts.push(`TAM: ${tam}`);
+  if (sam) parts.push(`SAM: ${sam}`);
+  if (som) parts.push(`SOM: ${som}`);
+  if (cagr) parts.push(`CAGR: ${cagr}`);
+
+  return parts.length > 0 ? parts.join(' · ') : null;
 }
 
 // ─── View mode ────────────────────────────────────────────────────────────────
@@ -480,6 +632,19 @@ export function adaptReportToInsightsData(
     ? parseMonitoringBody(radarSection.body)
     : null;
 
+  const governedSection = findSection('governed_summary_v1');
+  const governed: GovernedSummaryV1 | null = governedSection?.body
+    ? parseGovernedSummaryBody(governedSection.body)
+    : null;
+
+  const canonicalSection = findSection('canonical_fields');
+  const canonicalRows: CanonicalFieldRow[] = canonicalSection?.body
+    ? parseCanonicalFieldsBody(canonicalSection.body)
+    : [];
+  // canonicalValue() already handles the 'none'→null and Computable guard; wrap for local shorthand.
+  const getCanonical = (cat: string, field: string): string | undefined =>
+    canonicalValue(canonicalRows, cat, field) ?? undefined;
+
   // ── Deal metadata ───────────────────────────────────────────────────────────
   const deal_metadata: InvestorInsightsDealMetadata = {
     deal_id: '',
@@ -497,10 +662,10 @@ export function adaptReportToInsightsData(
 
   // ── Executive summary ───────────────────────────────────────────────────────
   const executive_summary: ExecutiveSummaryData = {
-    investment_summary: llm?.executive_summary ?? '',
+    investment_summary: llm?.executive_summary ?? governed?.executive_summary ?? '',
     key_insight: llm?.business_quality ?? '',
-    top_strengths: llm?.strengths ?? [],
-    top_risks: llm?.risks ?? [],
+    top_strengths: llm?.strengths ?? governed?.strengths ?? [],
+    top_risks: llm?.risks ?? governed?.risks ?? [],
     investment_thesis: llm
       ? [llm.product_differentiation, llm.go_to_market_strategy]
           .filter(Boolean)
@@ -526,13 +691,15 @@ export function adaptReportToInsightsData(
       confidence_score: scoring?.overall_limited_score ?? null,
     };
 
+    // Canonical market claims (TAM/SAM/SOM) are deterministic evidence; prefer as key_insight.
+    const canonicalMarket = buildMarketNarrativeFromCanonical(canonicalRows);
     analysis_modules.market_opportunity = {
       module_id: 'market_opportunity',
       title: MODULE_TITLES.market_opportunity,
       icon: 'Globe',
       score: scoring?.market_presence_score ?? null,
       summary: llm.market_position,
-      key_insight: llm.external_market_context || llm.market_position,
+      key_insight: canonicalMarket ?? (llm.external_market_context || llm.market_position),
       strengths: [],
       risks: [],
       deeper_analysis: llm.competitive_landscape || null,
@@ -552,16 +719,19 @@ export function adaptReportToInsightsData(
       confidence_score: null,
     };
 
+    // Canonical traction signals are deterministic evidence; prefer over llm.business_quality
+    // (which describes general business model quality, not traction specifically).
+    const canonicalTraction = buildTractionNarrativeFromCanonical(canonicalRows);
     analysis_modules.traction_growth = {
       module_id: 'traction_growth',
       title: MODULE_TITLES.traction_growth,
       icon: 'TrendingUp',
       score: scoring?.traction_signal_score ?? null,
-      summary: llm.business_quality,
-      key_insight: llm.business_quality,
+      summary: canonicalTraction ?? llm.business_quality,
+      key_insight: canonicalTraction ?? llm.business_quality,
       strengths: [],
       risks: [],
-      deeper_analysis: null,
+      deeper_analysis: isWeakText(canonicalTraction) ? null : llm.business_quality,
       confidence_score: scoring?.traction_signal_score ?? null,
     };
 
@@ -577,6 +747,79 @@ export function adaptReportToInsightsData(
       deeper_analysis: llm.capital_and_raise_interpretation || null,
       confidence_score: scoring?.deal_terms_score ?? null,
     };
+  }
+
+  // ── Governed + canonical fallback modules (when llm_interpretation_v1 was not produced) ──
+  // Source-priority order for each module:
+  //   financial_outlook  : canonical financial signals (ARR/MRR/revenue/runway/burn/cash)
+  //   traction_growth    : canonical traction signals (ARR/MRR/revenue/growth/customers)
+  //   market_opportunity : canonical market claims (TAM/SAM/SOM)
+  //   investment_thesis  : governed executive_summary + strengths/risks
+  if (!llm && governed) {
+    analysis_modules.investment_thesis = {
+      module_id: 'investment_thesis',
+      title: MODULE_TITLES.investment_thesis,
+      icon: 'Star',
+      score: scoring?.overall_limited_score ?? null,
+      summary: governed.executive_summary ?? '',
+      key_insight: governed.executive_summary ?? '',
+      strengths: governed.strengths ?? [],
+      risks: governed.risks ?? [],
+      deeper_analysis: null,
+      confidence_score: scoring?.overall_limited_score ?? null,
+    };
+
+    // Financial outlook: canonical financial signals first; suppress if nothing computable.
+    const canonicalFinancial = buildFinancialNarrativeFromCanonical(canonicalRows);
+    if (canonicalFinancial) {
+      analysis_modules.financial_outlook = {
+        module_id: 'financial_outlook',
+        title: MODULE_TITLES.financial_outlook,
+        icon: 'DollarSign',
+        score: null,
+        summary: canonicalFinancial,
+        key_insight: canonicalFinancial,
+        strengths: [],
+        // Surface governed risk bullets that mention financial themes.
+        risks: (governed.risks ?? []).filter((r) => /financ|revenue|burn|cash|raise/i.test(r)),
+        deeper_analysis: null,
+        confidence_score: null,
+      };
+    }
+
+    // Traction: canonical traction signals first; suppress if nothing computable.
+    const canonicalTractionFb = buildTractionNarrativeFromCanonical(canonicalRows);
+    if (canonicalTractionFb) {
+      analysis_modules.traction_growth = {
+        module_id: 'traction_growth',
+        title: MODULE_TITLES.traction_growth,
+        icon: 'TrendingUp',
+        score: scoring?.traction_signal_score ?? null,
+        summary: canonicalTractionFb,
+        key_insight: canonicalTractionFb,
+        strengths: [],
+        risks: [],
+        deeper_analysis: null,
+        confidence_score: scoring?.traction_signal_score ?? null,
+      };
+    }
+
+    // Market: canonical market claims first; suppress if nothing computable.
+    const canonicalMarketFb = buildMarketNarrativeFromCanonical(canonicalRows);
+    if (canonicalMarketFb) {
+      analysis_modules.market_opportunity = {
+        module_id: 'market_opportunity',
+        title: MODULE_TITLES.market_opportunity,
+        icon: 'Globe',
+        score: scoring?.market_presence_score ?? null,
+        summary: canonicalMarketFb,
+        key_insight: canonicalMarketFb,
+        strengths: [],
+        risks: [],
+        deeper_analysis: null,
+        confidence_score: scoring?.market_presence_score ?? null,
+      };
+    }
   }
 
   if (radar) {
@@ -612,7 +855,18 @@ export function adaptReportToInsightsData(
     executive_summary,
     analysis_modules,
     visual_intelligence,
-    critical_metrics: null,
+    critical_metrics: {
+      financial: {
+        current_arr: getCanonical('traction_signal', 'arr_value'),
+        yoy_growth: getCanonical('traction_signal', 'growth_rate'),
+        runway_months: getCanonical('financial_health', 'runway_months'),
+      },
+      product: {},
+      market: {
+        tam: getCanonical('market_claims', 'tam_value'),
+        market_cagr: getCanonical('market_claims', 'market_cagr'),
+      },
+    },
     evidence_base: null,
   };
 }

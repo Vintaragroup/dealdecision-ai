@@ -320,6 +320,21 @@ interface DpuDiagnostics {
 	errorCode?: string;
 }
 
+/**
+ * A single traction fact row from deal_facts_v1 (type = 'traction_metric').
+ * Loaded by loadInsightSlotInputs for use in traction scoring.
+ */
+export interface DealTractionFact {
+	fact_id: string;
+	type: string;
+	label: string;
+	value: { kind: "money"; value: number; currency?: string }
+	       | { kind: "number"; value: number; unit?: string }
+	       | { kind: unknown; value?: unknown };
+	timeframe: string | null;
+	confidence: "high" | "medium" | "low";
+}
+
 export interface InsightSlotInputs {
 	dpuPages: DpuPage[];
 	evidenceSnippets: EvidenceSnippet[];
@@ -404,6 +419,12 @@ export interface InsightSlotInputs {
 	 * Populated by the processor (Phase 9) after the registry is built.
 	 */
 	financialRiskFlags?: string[];
+	/**
+	 * Structured traction facts loaded from deal_facts_v1 (type='traction_metric').
+	 * Used by scoreTractionSignal as a higher-quality alternative to text extraction
+	 * when workbook facts are absent or incomplete.
+	 */
+	dealTractionFacts: DealTractionFact[];
 }
 
 
@@ -940,6 +961,8 @@ async function loadInsightSlotInputs(
 	let   bankTransactions: BankTransactionsV1 | null = null;
 	// Phase 2 workbook intelligence accumulator
 	const workbookFacts:    FinancialFactV1[] = [];
+	// deal_facts_v1 traction metrics — loaded non-fatally after main try/catch
+	let dealTractionFacts:  DealTractionFact[] = [];
 
 	try {
 		const { rows } = await pool.query<{ document_id: string; page_index: number; payload: unknown }>(
@@ -1115,6 +1138,33 @@ async function loadInsightSlotInputs(
 			// Evidence snippets are supplemental; failure is non-fatal.
 		});
 
+	await pool
+		.query<{ fact_id: string; type: string; label: string; value: unknown; timeframe: string | null; confidence: string }>(
+			`SELECT fact_id, type, label, value, timeframe, confidence
+			   FROM public.deal_facts_v1
+			  WHERE deal_id = $1
+			    AND type = 'traction_metric'
+			  ORDER BY confidence DESC, fact_id ASC
+			  LIMIT 100`,
+			[dealId]
+		)
+		.then(({ rows }) => {
+			dealTractionFacts = rows.map((r) => ({
+				fact_id: r.fact_id,
+				type: r.type,
+				label: r.label,
+				value: r.value as DealTractionFact["value"],
+				timeframe: r.timeframe,
+				confidence:
+					r.confidence === "high" || r.confidence === "medium" || r.confidence === "low"
+						? r.confidence
+						: "low",
+			}));
+		})
+		.catch(() => {
+			// deal_facts_v1 traction facts are supplemental; failure is non-fatal.
+		});
+
 	const _bestStmt = pickBestStatement(financialStatements);
 	const _bestUof  = pickBestUseOfFunds(useOfFundsStatements);
 	const _bestBs   = pickBestBalanceSheet(balanceSheets);
@@ -1155,6 +1205,7 @@ async function loadInsightSlotInputs(
 		bankTransactions,
 		deckFinancialSignals,
 		workbookFacts,
+		dealTractionFacts,
 	};
 }
 

@@ -51,12 +51,30 @@ export function ExecutiveInsightSection({ darkMode, data, signals }: ExecutiveIn
           )}
         </div>
 
-        {/* Recommendation pill */}
-        <div
-          className="flex-shrink-0 px-4 py-2 rounded-full text-sm font-semibold text-white shadow"
-          style={{ backgroundColor: recColor }}
-        >
-          {recLabel}
+        {/* Score chip + Recommendation pill */}
+        <div className="flex-shrink-0 flex items-center gap-3">
+          {signals.overall_score !== null && (
+            <div className="flex flex-col items-center">
+              <span
+                className={`text-lg font-bold tabular-nums leading-none ${
+                  signals.overall_score >= 70 ? 'text-green-500' :
+                  signals.overall_score >= 45 ? 'text-yellow-500' : 'text-red-400'
+                }`}
+                title="Investor Insights Score"
+              >
+                {signals.overall_score}
+              </span>
+              <span className={`text-xs leading-none mt-0.5 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                / 100
+              </span>
+            </div>
+          )}
+          <div
+            className="px-4 py-2 rounded-full text-sm font-semibold text-white shadow"
+            style={{ backgroundColor: recColor }}
+          >
+            {recLabel}
+          </div>
         </div>
       </div>
 

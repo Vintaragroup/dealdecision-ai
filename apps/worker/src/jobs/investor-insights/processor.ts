@@ -1198,6 +1198,7 @@ export async function recomputeInsightSlotBody(
 		bankTransactions: null,
 		deckFinancialSignals: null,
 		workbookFacts: [],
+		dealTractionFacts: [],
 	};
 
 	return buildInsightSlotsSection(inputs).body ?? "";

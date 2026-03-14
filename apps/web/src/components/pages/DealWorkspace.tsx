@@ -143,7 +143,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const buildStamp = import.meta.env.VITE_BUILD_STAMP ?? 'dev';
 
-  const [investorScore, setInvestorScore] = useState(0);
+  // reportBandScore: cached score_band_v2.overall_score from the analytical pipeline report.
+  // Set in loadReport() via resolveCanonicalScore. NOT related to limited_scoring_v1 (Investor Insights).
+  const [reportBandScore, setReportBandScore] = useState(0);
   const [analyzing, setAnalyzing] = useState(false);
   const { toasts, push: _pushToast, dismiss: removeToast } = useToastQueue();
   const [showExportModal, setShowExportModal] = useState(false);
@@ -790,17 +792,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       if (isStale(keyAtStart)) return;
       setReportFromApi((report && typeof report === 'object') ? (report as DealReport) : null);
 
-      // Use the canonical resolver so investorScore (and thus fundamentalsScore0_100 /
+      // Use the canonical resolver so reportBandScore (and thus fundamentalsScore0_100 /
       // decisionTileScore0_100) reflects the calibrated band score, not just overallScore.
       // Priority: score_band_v2.overall_score → overallScore → (no update).
       if (ready) {
         const { score: _canonicalForInvestor } = resolveCanonicalScore(report);
         if (_canonicalForInvestor != null) {
           if (isStale(keyAtStart)) return;
-          setInvestorScore(_canonicalForInvestor);
+          setReportBandScore(_canonicalForInvestor);
         } else if (typeof (report as any)?.overallScore === 'number' && Number.isFinite((report as any).overallScore)) {
           if (isStale(keyAtStart)) return;
-          setInvestorScore(Math.round((report as any).overallScore));
+          setReportBandScore(Math.round((report as any).overallScore));
         }
       }
     } catch (err: any) {
@@ -1302,7 +1304,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     score:
       (typeof dealFromApi.score === 'number' && Number.isFinite(dealFromApi.score))
         ? dealFromApi.score
-        : investorScore,
+        : reportBandScore,
     updatedTime: dealFromApi.updated_at ? new Date(dealFromApi.updated_at).toLocaleDateString() : 'Recently',
     createdDate: dealFromApi.created_at ? new Date(dealFromApi.created_at).toLocaleDateString() : 'Unknown',
     description:
@@ -1508,7 +1510,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const fundamentalsScore0_100: number | null = (() => {
     if (typeof dealFromApi?.score === 'number' && Number.isFinite(dealFromApi.score)) return Math.round(dealFromApi.score);
-    if (typeof investorScore === 'number' && Number.isFinite(investorScore)) return Math.round(investorScore);
+    if (typeof reportBandScore === 'number' && Number.isFinite(reportBandScore)) return Math.round(reportBandScore);
     return null;
   })();
   const dioStatus = (dealFromApi as any)?.dioStatus ?? undefined;
@@ -2987,7 +2989,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       if (typeof displayScore === 'number' && Number.isFinite(displayScore)) return Math.round(displayScore);
       const fromDealInfo = (dealInfo as any)?.score;
       if (typeof fromDealInfo === 'number' && Number.isFinite(fromDealInfo)) return Math.round(fromDealInfo);
-      if (typeof investorScore === 'number' && Number.isFinite(investorScore)) return Math.round(investorScore);
+      if (typeof reportBandScore === 'number' && Number.isFinite(reportBandScore)) return Math.round(reportBandScore);
       return 0;
     })();
 
@@ -3129,7 +3131,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     reportArtifact,
     decisionScoreExplanation,
     displayScore,
-    investorScore,
+    reportBandScore,
     dealInfo,
     dealFromApi,
     canonicalDealSummaryReady,
@@ -3148,7 +3150,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   // Canonical score label: when the report is loaded (score = report.overallScore),
   // label it "Overall Score". Only use the sub-engine label ("Fundamentals" / "Fundability")
   // as a fallback when showing a pre-report estimate.
-  const canonicalScoreLabel: string = reportView.applied ? 'Overall Score' : displayScoreLabel;
+  const canonicalScoreLabel: string = reportView.applied ? 'Deal Score' : displayScoreLabel;
 
   // canonicalScoreView: single score truth shared by ALL score-bearing UI surfaces
   // (TopSection gauge AND Overview tab). score0_100 is null when report is not yet applied
@@ -3250,7 +3252,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       String(_bandScore ?? 'na'),
       String(_canonical ?? 'na'),
       String(fundamentalsScore0_100 ?? 'na'),
-      String(investorScore),
+      String(reportBandScore),
       String((dealFromApi as any)?.score ?? 'na'),
       String(displayScore ?? 'na'),
       String(reportView.score),
@@ -3270,7 +3272,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         'reportFromApi.metadata.score_band_v2.overall_score': _bandScore,
         'reportEnvelope.metadata.score_band_v2.overall_score': _envelopeLevelBandScore,
         'dealFromApi.score': (dealFromApi as any)?.score ?? null,
-        investorScore,
+        reportBandScore,
       },
       // Canonical resolution
       resolved: {
@@ -3303,7 +3305,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     });
   }, [
     dealId, reportVersion, dioMeta, reportFromApi, reportEnvelope, reportReady,
-    fundamentalsScore0_100, investorScore, dealFromApi, displayScore, displayScoreLabel,
+    fundamentalsScore0_100, reportBandScore, dealFromApi, displayScore, displayScoreLabel,
     reportView, canonicalScoreLabel, canonicalScoreView, decisionTileLabel,
   ]);
 
@@ -4079,9 +4081,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     if (typeof dealInfo?.score === 'number') {
       debugLogger.logAPIData('DealWorkspace', 'displayScore', displayScore, 'From dealInfo.score (API data)');
     } else {
-      debugLogger.logFallbackData('DealWorkspace', 'displayScore', displayScore, `No API score available, using fallback investorScore (${investorScore})`);
+      debugLogger.logFallbackData('DealWorkspace', 'displayScore', displayScore, `No API score available, using fallback reportBandScore (${reportBandScore})`);
     }
-  }, [displayScore, investorScore]);
+  }, [displayScore, reportBandScore]);
 
   const loadEvidence = async () => {
     if (!dealId) return;

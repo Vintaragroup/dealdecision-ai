@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { createHash } from "crypto";
 
+import { computeEvidenceId } from "@dealdecision/core";
 import { OpenAIGPT4oProvider } from "./llm/providers/openai-provider";
 import type { ProviderConfig } from "./llm/types";
 
@@ -1188,6 +1189,64 @@ async function upsertDisplayFactEvidenceBestEffort(pool: Pool, input: {
        RETURNING ${pkCol} AS id, ${pkCol} AS evidence_id`,
       values
     );
+
+    // ── Best-effort canonical write to evidence_items ─────────────────────
+    // Non-blocking: errors here must never propagate — the function is BestEffort.
+    try {
+      const eiOk = await hasTable(pool, "evidence_items");
+      if (eiOk) {
+        const sourcePath = `display_fact:${input.documentId}:display_fact:${input.field}`;
+        const canonicalId = computeEvidenceId({
+          deal_id: input.dealId,
+          source_type: "display_fact",
+          source_path: sourcePath,
+          content_text: input.snippet,
+          tags: ["display_fact", input.field],
+        });
+        await pool.query(
+          `INSERT INTO evidence_items (
+             evidence_id,
+             deal_id,
+             source_type,
+             source_path,
+             source_document_id,
+             tags,
+             confidence,
+             extracted_at,
+             content_text,
+             meta
+           ) VALUES ($1, $2::uuid, $3, $4, $5::uuid, $6::text[], $7, now(), $8, $9::jsonb)
+           ON CONFLICT (evidence_id) DO UPDATE SET
+             confidence = GREATEST(evidence_items.confidence, EXCLUDED.confidence),
+             content_text = EXCLUDED.content_text,
+             updated_at = now()`,
+          [
+            canonicalId,
+            input.dealId,
+            "display_fact",
+            sourcePath,
+            input.documentId,
+            ["display_fact", input.field],
+            0.75,
+            input.snippet,
+            JSON.stringify({ writer: "display_fact_dual_write", field: input.field }),
+          ]
+        );
+        if (process.env.DDAI_DEBUG_EVIDENCE_WRITES === "1") {
+          console.log(
+            JSON.stringify({
+              event: "EVIDENCE_CANONICAL_WRITE",
+              deal_id: input.dealId,
+              evidence_id: canonicalId,
+              source_type: "display_fact",
+              kind: `display_fact:${input.field}`,
+            })
+          );
+        }
+      }
+    } catch {
+      // Canonical write failure must never block the legacy write result.
+    }
 
     const returned = (rows as any)?.[0] ?? null;
     const picked = (returned as any)?.evidence_id ?? (returned as any)?.id;

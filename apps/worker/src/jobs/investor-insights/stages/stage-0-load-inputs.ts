@@ -8,15 +8,15 @@
  * Canonical evidence lives in `evidence_items` (written by document_intelligence_extract).
  * Legacy evidence lives in the `evidence` table (written by fetch_evidence and other paths).
  *
- * Both loadUpstreamSnapshot and loadCoverageSnapshot query canonical `evidence_items` first.
- * If the canonical table returns zero rows, a best-effort fallback to the legacy `evidence`
- * table is attempted. The result is tagged with `evidenceSource` ('canonical' |
- * 'legacy_fallback' | 'missing') so downstream observers can distinguish the path taken.
+ * Both loadUpstreamSnapshot and loadCoverageSnapshot query canonical `evidence_items`.
+ * The result is tagged with `evidenceSource` ('canonical' | 'missing') so downstream
+ * observers can distinguish the path taken. The legacy `evidence` fallback has been
+ * retired: all active writers now dual-write to `evidence_items`, and the backfill
+ * migration has been prepared to cover pre-Phase-2 deals.
  *
  * Diagnostic log events:
- *   EVIDENCE_SOURCE_CANONICAL       — evidence_items had rows; primary path used.
- *   EVIDENCE_SOURCE_LEGACY_FALLBACK — evidence_items was empty; legacy evidence used.
- *   EVIDENCE_SOURCE_MISSING         — neither table had rows for this deal.
+ *   EVIDENCE_SOURCE_CANONICAL — evidence_items had rows; primary path used.
+ *   EVIDENCE_SOURCE_MISSING   — evidence_items had no rows for this deal.
  */
 
 import type { Pool } from "pg";
@@ -90,7 +90,6 @@ export async function loadUpstreamSnapshot(pool: Pool, dealId: string): Promise<
 	]);
 
 	// ── Evidence source resolution ────────────────────────────────────────────
-	// If evidence_items returned 0, attempt legacy fallback before tagging the source.
 	let evidenceSource: EvidenceSource;
 	if (evidenceCount > 0) {
 		evidenceSource = "canonical";
@@ -102,38 +101,14 @@ export async function loadUpstreamSnapshot(pool: Pool, dealId: string): Promise<
 			})
 		);
 	} else {
-		// evidence_items empty — try legacy evidence table as fallback.
-		try {
-			const { rows: legacyRows } = await pool.query<{ c: string }>(
-				`SELECT COUNT(*)::bigint AS c FROM public.evidence WHERE deal_id = $1::uuid`,
-				[dealId]
-			);
-			const legacyCount = Number(legacyRows[0]?.c ?? 0);
-			if (legacyCount > 0) {
-				evidenceCount = legacyCount;
-				evidenceSource = "legacy_fallback";
-				console.log(
-					JSON.stringify({
-						event: "EVIDENCE_SOURCE_LEGACY_FALLBACK",
-						deal_id: dealId,
-						legacy_count: legacyCount,
-						note: "evidence_items empty; used legacy evidence table — canonicalization recommended",
-					})
-				);
-			} else {
-				evidenceSource = "missing";
-				console.log(
-					JSON.stringify({
-						event: "EVIDENCE_SOURCE_MISSING",
-						deal_id: dealId,
-						note: "neither evidence_items nor legacy evidence has rows for this deal",
-					})
-				);
-			}
-		} catch {
-			// Legacy fallback query failed — treat as missing; do not block pipeline.
-			evidenceSource = "missing";
-		}
+		evidenceSource = "missing";
+		console.log(
+			JSON.stringify({
+				event: "EVIDENCE_SOURCE_MISSING",
+				deal_id: dealId,
+				note: "evidence_items has no rows for this deal",
+			})
+		);
 	}
 
 	return { dpuCount, dpuCoverage, evidenceCount, visualAssetCount, overlayExists, evidenceSource };
@@ -243,7 +218,6 @@ export async function loadCoverageSnapshot(pool: Pool, dealId: string): Promise<
 		.filter((label): label is string => label !== null);
 
 	// ── Evidence source resolution ────────────────────────────────────────────
-	// If evidence_items returned 0, attempt legacy fallback before tagging the source.
 	let evidenceSource: EvidenceSource;
 	if (evidenceCount > 0) {
 		evidenceSource = "canonical";
@@ -255,38 +229,14 @@ export async function loadCoverageSnapshot(pool: Pool, dealId: string): Promise<
 			})
 		);
 	} else {
-		// evidence_items empty — try legacy evidence table as fallback.
-		try {
-			const { rows: legacyRows } = await pool.query<{ c: string }>(
-				`SELECT COUNT(*)::bigint AS c FROM public.evidence WHERE deal_id = $1::uuid`,
-				[dealId]
-			);
-			const legacyCount = Number(legacyRows[0]?.c ?? 0);
-			if (legacyCount > 0) {
-				evidenceCount = legacyCount;
-				evidenceSource = "legacy_fallback";
-				console.log(
-					JSON.stringify({
-						event: "EVIDENCE_SOURCE_LEGACY_FALLBACK",
-						deal_id: dealId,
-						legacy_count: legacyCount,
-						note: "evidence_items empty; used legacy evidence table — canonicalization recommended",
-					})
-				);
-			} else {
-				evidenceSource = "missing";
-				console.log(
-					JSON.stringify({
-						event: "EVIDENCE_SOURCE_MISSING",
-						deal_id: dealId,
-						note: "neither evidence_items nor legacy evidence has rows for this deal",
-					})
-				);
-			}
-		} catch {
-			// Legacy fallback query failed — treat as missing; do not block pipeline.
-			evidenceSource = "missing";
-		}
+		evidenceSource = "missing";
+		console.log(
+			JSON.stringify({
+				event: "EVIDENCE_SOURCE_MISSING",
+				deal_id: dealId,
+				note: "evidence_items has no rows for this deal",
+			})
+		);
 	}
 
 	return { docsCount, dpuPageCount, dpuNonemptyPages, evidenceCount, visualsCount, coverageQueryErrors, xlsxBonusPages, evidenceSource };

@@ -1,16 +1,17 @@
 /**
  * Evidence split fallback tests — R1/D2 fix (feature/evidence-source-of-truth-fix)
+ * Updated for fallback retirement (feature/evidence-fallback-retirement)
  *
  * Verifies that loadUpstreamSnapshot and loadCoverageSnapshot correctly resolve
- * evidence counts from the canonical `evidence_items` table and fall back to the
- * legacy `evidence` table when the canonical table has no rows for the deal.
+ * evidence counts from the canonical `evidence_items` table. The legacy fallback
+ * path has been retired: if evidence_items has no rows the source is 'missing'.
  *
  * Cases covered:
  *   Case 1 — Canonical-only:          evidence_items has rows; evidence source = 'canonical'.
- *   Case 2 — Legacy-only:             evidence_items empty; legacy evidence used; source = 'legacy_fallback'.
- *   Case 3 — Both present:            evidence_items wins; legacy evidence not queried.
+ *   Case 2 — No canonical rows:       evidence_items empty; source = 'missing'; no legacy query.
+ *   Case 3 — Both present:            evidence_items wins.
  *   Case 4 — Neither present:         both tables return 0; source = 'missing'.
- *   Case 5 — Legacy fallback query fails: error in legacy query; source = 'missing', no throw.
+ *   Case 5 — Legacy query never fires: when evidence_items=0, legacy evidence is NOT queried.
  */
 
 import { describe, it, expect } from "vitest";
@@ -22,9 +23,8 @@ import { loadUpstreamSnapshot, loadCoverageSnapshot } from "../stages/stage-0-lo
 function makePool(opts: {
 	evidenceItemsCount: number;
 	legacyEvidenceCount: number;
-	legacyQueryThrows?: boolean;
 }): any {
-	const { evidenceItemsCount, legacyEvidenceCount, legacyQueryThrows = false } = opts;
+	const { evidenceItemsCount } = opts;
 	return {
 		query: async (sql: string, _params?: unknown[]) => {
 			// document_page_understanding counts (check before generic 'documents')
@@ -50,10 +50,9 @@ function makePool(opts: {
 			if (sql.includes("evidence_items")) {
 				return { rows: [{ c: String(evidenceItemsCount) }] };
 			}
-			// legacy evidence (fallback) — must NOT contain 'evidence_items'
+			// Legacy evidence table must NEVER be queried after fallback retirement.
 			if (sql.includes("FROM public.evidence") && !sql.includes("evidence_items")) {
-				if (legacyQueryThrows) throw new Error("legacy evidence query failed");
-				return { rows: [{ c: String(legacyEvidenceCount) }] };
+				throw new Error("UNEXPECTED: legacy evidence table queried after fallback retirement");
 			}
 			// governed_llm_overviews count
 			if (sql.includes("governed_llm_overviews")) {
@@ -78,12 +77,13 @@ describe("loadUpstreamSnapshot — evidence source resolution", () => {
 		expect(snapshot.evidenceSource).toBe("canonical");
 	});
 
-	it("Case 2: legacy-only — evidenceSource = 'legacy_fallback', count from legacy evidence", async () => {
+	it("Case 2: no canonical rows — evidenceSource = 'missing', legacy table NOT queried", async () => {
 		const pool = makePool({ evidenceItemsCount: 0, legacyEvidenceCount: 12 });
+		// Pool mock throws if legacy evidence is queried; this must not throw.
 		const snapshot = await loadUpstreamSnapshot(pool, DEAL_ID);
 
-		expect(snapshot.evidenceCount).toBe(12);
-		expect(snapshot.evidenceSource).toBe("legacy_fallback");
+		expect(snapshot.evidenceCount).toBe(0);
+		expect(snapshot.evidenceSource).toBe("missing");
 	});
 
 	it("Case 3: both present — canonical wins; legacy evidence table not substituted", async () => {
@@ -103,11 +103,12 @@ describe("loadUpstreamSnapshot — evidence source resolution", () => {
 		expect(snapshot.evidenceSource).toBe("missing");
 	});
 
-	it("Case 5: legacy fallback query throws — evidenceSource = 'missing', does not throw", async () => {
-		const pool = makePool({ evidenceItemsCount: 0, legacyEvidenceCount: 0, legacyQueryThrows: true });
+	it("Case 5: legacy query never fires — no secondary query issued when evidence_items=0", async () => {
+		// Pool throws on any legacy evidence query; confirms fallback retirement is clean.
+		const pool = makePool({ evidenceItemsCount: 0, legacyEvidenceCount: 0 });
 		const snapshot = await loadUpstreamSnapshot(pool, DEAL_ID);
 
-		// Must not throw; best-effort fallback
+		// Must not throw; evidence source is missing because evidence_items has no rows.
 		expect(snapshot.evidenceCount).toBe(0);
 		expect(snapshot.evidenceSource).toBe("missing");
 	});
@@ -133,12 +134,13 @@ describe("loadCoverageSnapshot — evidence source resolution", () => {
 		expect(snapshot.evidenceSource).toBe("canonical");
 	});
 
-	it("Case 2: legacy-only — evidenceSource = 'legacy_fallback', count from legacy evidence", async () => {
+	it("Case 2: no canonical rows — evidenceSource = 'missing', legacy table NOT queried", async () => {
 		const pool = makePool({ evidenceItemsCount: 0, legacyEvidenceCount: 11 });
+		// Pool mock throws if legacy evidence is queried; this must not throw.
 		const snapshot = await loadCoverageSnapshot(pool, DEAL_ID);
 
-		expect(snapshot.evidenceCount).toBe(11);
-		expect(snapshot.evidenceSource).toBe("legacy_fallback");
+		expect(snapshot.evidenceCount).toBe(0);
+		expect(snapshot.evidenceSource).toBe("missing");
 	});
 
 	it("Case 3: both present — canonical wins", async () => {
@@ -157,8 +159,8 @@ describe("loadCoverageSnapshot — evidence source resolution", () => {
 		expect(snapshot.evidenceSource).toBe("missing");
 	});
 
-	it("Case 5: legacy fallback query throws — evidenceSource = 'missing', no throw", async () => {
-		const pool = makePool({ evidenceItemsCount: 0, legacyEvidenceCount: 0, legacyQueryThrows: true });
+	it("Case 5: legacy query never fires — no secondary query issued when evidence_items=0", async () => {
+		const pool = makePool({ evidenceItemsCount: 0, legacyEvidenceCount: 0 });
 		const snapshot = await loadCoverageSnapshot(pool, DEAL_ID);
 
 		expect(snapshot.evidenceCount).toBe(0);
@@ -177,13 +179,13 @@ describe("loadCoverageSnapshot — evidence source resolution", () => {
 	});
 });
 
-// ─── Evidence gate E3 — end-to-end with legacy fallback ──────────────────────
+// ─── Evidence gate E3 — post-fallback-retirement behaviour ───────────────────
 
-describe("Evidence gate E3 — legacy fallback preserves gate passage", () => {
-	it("E3 passes when count comes from legacy fallback (>= threshold)", async () => {
+describe("Evidence gate E3 — post-fallback-retirement", () => {
+	it("E3 fails when evidence_items is empty (no legacy fallback)", async () => {
 		const { computeEvidenceGateV1 } = await import("../evidence-gate-v1");
 
-		// Simulate: evidence_items empty, legacy evidence provides 12 rows.
+		// Simulate: evidence_items empty; legacy evidence has rows but is NOT queried.
 		const pool = makePool({ evidenceItemsCount: 0, legacyEvidenceCount: 12 });
 		const snapshot = await loadCoverageSnapshot(pool, DEAL_ID);
 
@@ -194,11 +196,11 @@ describe("Evidence gate E3 — legacy fallback preserves gate passage", () => {
 			evidence_count: snapshot.evidenceCount,
 		});
 
-		// E3 requires >= 10; fallback gives us 12 → should pass.
+		// evidenceCount = 0 because fallback is retired; E3 must fail.
 		const e3 = gate.results.find((r) => r.gate === "E3");
-		expect(e3?.passed).toBe(true);
-		expect(gate.blocking_reason).not.toBe("EVIDENCE_GATE_LOW_EVIDENCE");
-		expect(snapshot.evidenceSource).toBe("legacy_fallback");
+		expect(e3?.passed).toBe(false);
+		expect(e3?.reason_code).toBe("EVIDENCE_GATE_LOW_EVIDENCE");
+		expect(snapshot.evidenceSource).toBe("missing");
 	});
 
 	it("E3 fails with EVIDENCE_GATE_LOW_EVIDENCE when neither table has enough rows", async () => {
